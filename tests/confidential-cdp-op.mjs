@@ -46,8 +46,13 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
     // exact debt destination (debtCx/debtCy/debtOwner) + fee — see cdpMintCollateralSigma's comment.
     const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
       [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [op.debt.cx, op.debt.cy, debtOwner]],
-      [BigInt(leg.value), debtValue, BigInt(leg.index), fee]);
+      [BigInt(leg.value), debtValue, BigInt(leg.index), fee, BigInt(op.legs.length)]);
     assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, `collateral leg ${leg.asset.slice(0, 6)} opening verifies`);
+    // The basket size is bound: the same leg authorization does not verify as a one-leg basket (no split / drop).
+    const splitCtx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
+      [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [op.debt.cx, op.debt.cy, debtOwner]],
+      [BigInt(leg.value), debtValue, BigInt(leg.index), fee, 1n]);
+    assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, splitCtx), false, 'a leg signed for a two-leg basket does not authorize a one-leg basket');
   }
   const debtAsset = cdp.debtAssetId(controller);
   const debtCtx = pool.intentContext('tacit-cdp-mint-debt-v1', chainBinding, debtAsset, nonce,
@@ -69,7 +74,7 @@ const note = (asset, value, leafIndex) => { const blinding = randomScalar(); ret
   // back to the position owner — see buildCdpMintOp's dOwner/debtC ternaries — but the collateral sigma
   // still binds that (zero) tuple + fee unconditionally, same shape as a real mint.
   const ctx = pool.intentContext('tacit-cdp-mint-collateral-v1', chainBinding, leg.asset, nonce,
-    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [Z32, Z32, owner]], [BigInt(leg.value), 0n, BigInt(leg.index), 0n]);
+    [[leg.cx, leg.cy, owner], [controllerWord, nonce, owner], [rateSnapshot, nonce, owner], [Z32, Z32, owner]], [BigInt(leg.value), 0n, BigInt(leg.index), 0n, 1n]);
   assert.equal(pool.verifyOpeningSigma(leg.cx, leg.cy, BigInt(leg.value), leg.sigR, leg.sigZ, ctx), true, 'bond collateral opening verifies (debtValue = 0 bound)');
   ok('buildCdpMintOp: bond (debtValue = 0) locks the basket with no debt note');
 }

@@ -70,9 +70,9 @@ export const CFG = {
   headerLead: num('HEADER_RELAY_LEAD', 144),
   // Headers per advanceTip tx (gas-bounded batch).
   headerMaxBatch: num('HEADER_RELAY_MAX_BATCH', 40),
-  // How far back the feeder will walk the relay's tip to rejoin the explorer's chain after a reorg or a
-  // header taken from a lagging explorer left the relay on an abandoned branch. Bitcoin reorgs deeper than a
-  // handful of blocks do not happen in practice; anything past this is for an operator to look at.
+  // Alert depth for the header feeder's fork recovery. The feeder always walks the relay's tip back to the
+  // explorer's chain and resubmits the canonical headers, at any depth; a branch deeper than this is not a
+  // normal Bitcoin reorg, so it is also raised as a critical alert (log + ALERT_WEBHOOK_URL).
   headerReorgDepth: num('HEADER_RELAY_REORG_DEPTH', 12),
 
   // Ethereum execution RPC for the relay's own on-chain calls (settle/attest/replenish).

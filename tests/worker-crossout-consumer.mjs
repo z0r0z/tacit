@@ -28,15 +28,21 @@ const ZERO32 = '0x' + '00'.repeat(32);
 const strip = (h) => String(h).replace(/^0x/, '').padStart(64, '0');
 const u256 = (v) => BigInt(v).toString(16).padStart(64, '0');
 
-// ── 1. crossoutMintLeaf == the canonical confidential-pool leaf (the bind hinge) ──
+// ── 1. crossoutMintLeaf == the guest's btc_note_leaf under the mint's vout-0 P2TR key (the bind hinge) ──
 {
-  const asset = b32('TAC'), cx = b32('cx'), cy = b32('cy'), owner = ZERO32;
-  const want = cpool.leaf(asset, cx, cy, owner);
-  const got = crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, owner });
-  assert.strictEqual(got, want, 'crossoutMintLeaf matches cpool.leaf (asset‖Cx‖Cy‖owner)');
-  // owner defaulting: null owner == ZERO32 owner (the Bitcoin pool convention)
-  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, owner: null }), want, 'null owner defaults to zero');
-  ok('crossoutMintLeaf is byte-identical to the canonical confidential-pool leaf');
+  const asset = b32('TAC'), cx = b32('cx'), cy = b32('cy');
+  const key = '0x' + '7b'.repeat(32);
+  const spk = '5120' + '7b'.repeat(32); // esplora scriptpubkey hex of a P2TR output
+  const want = cpool.btcNoteLeaf(asset, cx, cy, key);
+  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, destScriptPubKey: spk }), want, 'leaf = btc_note_leaf(asset, Cx, Cy, vout-0 x-only key)');
+  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, destScriptPubKey: '0x' + spk }), want, '0x-prefixed script accepted');
+  assert.notStrictEqual(want, cpool.leaf(asset, cx, cy, key), 'not the native leaf layout');
+  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, destScriptPubKey: '0014' + '11'.repeat(20) }), null, 'non-P2TR vout 0 has no leaf');
+  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy, destScriptPubKey: '5120' + '00'.repeat(32) }), null, 'zero key has no leaf');
+  assert.strictEqual(crossoutMintLeaf(keccak256, { assetId: asset, cx, cy }), null, 'missing script has no leaf');
+  // A burn records destCommitment = btcDestLeaf under the destination key; the mint rebuilds the same leaf.
+  assert.strictEqual(want, cpool.btcNoteLeaf(asset, cx, cy, key));
+  ok('crossoutMintLeaf reproduces the guest btc_note_leaf from the vout-0 P2TR key (null for any other script)');
 }
 
 // ── 2. INERT until a pool is deployed (no pool → buildCrossoutConsumer returns null) ──

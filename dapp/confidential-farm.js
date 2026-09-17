@@ -51,12 +51,15 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   };
 
   // OP_FARM_BOND leg sigma — main.rs `tacit-farm-bond-leg-v1`: assetA = lp_asset, assetB = nonce,
-  // notes = [(cx, cy, owner), (controller32, nonce, owner)], amounts = [value, index]. `note.value` is the
-  // leg's bonded LP-share value; `index` is the leg note's tree index (the membership leaf the guest re-proves).
-  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index }) =>
-    sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note,
-      [note.value, index],
+  // notes = [(cx, cy, owner), (controller32, nonce, owner)], amounts = [value, index, nLegs]. `note.value` is the
+  // leg's bonded LP-share value; `index` is the leg note's tree index (the membership leaf the guest re-proves);
+  // `nLegs` is the bond's leg count, so a signed basket cannot be split across several receipts.
+  const farmBondLegSigma = ({ chainBinding, controller, nonce, owner, lpAsset, note, index, nLegs }) => {
+    if (nLegs == null || BigInt(nLegs) < 1n) throw new Error('farm-bond: leg sigma needs the bond leg count');
+    return sigma('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, note,
+      [note.value, index, nLegs],
       'farm-bond-leg', [[controllerWord(controller), nonce, owner]]);
+  };
 
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
   // reward asset — an escrow-backed asset in ESCROW mode, or debtAssetId(controller) in MINT mode), assetB =
@@ -94,7 +97,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
     chainBinding, spendRoot, controller, owner, nonce, lpAsset,
     legs: legs.map((leg) => {
       const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
-      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index });
+      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, nLegs: legs.length });
       return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ, owner: leg.owner, nk: leg.nk };
     }),
   });

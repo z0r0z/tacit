@@ -518,7 +518,17 @@ fn verify_cxfers(asset: &[u8; 32], cxfers: &[ProvenanceWitness]) -> Result<Vec<V
         if skip > all_inputs.len() {
             return Err("burn-deposit: input_skip exceeds the tx's real input count");
         }
-        let input_outpoints = &all_inputs[skip..];
+        // An atomic settlement's kernel covers only its asset inputs, vin[1..1+asset_input_count]; the rest are
+        // the taker's sats. Its witnessed skip must name that position.
+        let input_outpoints = match bitcoin::axfer_asset_input_count(&env) {
+            None => &all_inputs[skip..],
+            Some(count) => {
+                if skip != 1 || 1 + count > all_inputs.len() {
+                    return Err("burn-deposit: atomic settlement asset inputs are not vin[1..1+count]");
+                }
+                &all_inputs[1..1 + count]
+            }
+        };
         if cx.input_commitments.len() != input_outpoints.len() {
             return Err("burn-deposit: input outpoint/commitment length mismatch");
         }

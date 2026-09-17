@@ -24,6 +24,7 @@ interface IAssetIdLib {
 interface IRelayLib {
     function tip() external view returns (bytes32);
     function blockParent(bytes32 blockHash) external view returns (bytes32);
+    function blockHeight(bytes32 blockHash) external view returns (uint256);
 }
 
 interface IPredecessorPoolLib {
@@ -33,6 +34,7 @@ interface IPredecessorPoolLib {
     function attestedReflectionTip() external view returns (bytes32);
     function handoffReflectionDigest() external view returns (bytes32);
     function handoffReflectionTip() external view returns (bytes32);
+    function handoffCounts() external view returns (uint256 consumed, uint256 crossOuts);
 }
 
 /// External reflection/attest surface for ConfidentialPool. Deployed separately and linked; every function
@@ -143,6 +145,15 @@ library ReflectionLib {
         uint256 crossOutCount;
     }
 
+    /// A canonical block a lagging reflection may anchor a batch tip to instead of the matured relay anchor, and
+    /// the matured anchor it was walked from; plus the walk in progress toward the next one (`advanceAncestry`).
+    struct Ancestry {
+        bytes32 checkpoint;
+        bytes32 anchor;
+        bytes32 cursor;
+        bytes32 cursorAnchor;
+    }
+
     // Every error here that also exists in ConfidentialPool carries the SAME selector (identical
     // name+signature ⇒ identical selector), so a revert raised inside a delegatecall into this library is
     // indistinguishable to callers from one raised by the pool itself — a caller checking the pool's own
@@ -192,7 +203,8 @@ library ReflectionLib {
         mapping(bytes32 => bool) storage cbtcLockSpent,
         mapping(bytes32 => bool) storage cbtcLockRedeemed,
         mapping(bytes32 => bytes32) storage pendingBtcCall,
-        mapping(bytes32 => uint64) storage overflowQueue
+        mapping(bytes32 => uint64) storage overflowQueue,
+        Ancestry storage ancestry
     ) external returns (ReflectionState memory, AssetMeta[] memory metasToRegister) {
         if (cfg.bitcoinRelayVkey == bytes32(0)) revert ZeroVKey();
         ISP1VerifierLib(cfg.sp1Verifier).verifyProof(cfg.bitcoinRelayVkey, publicValues, proofBytes);
@@ -210,17 +222,21 @@ library ReflectionLib {
             // deploy). Two anchors are accepted: the predecessor's handoff record — its first attested state
             // after retirement, fixed there, so a proof built against it stays valid however often the
             // predecessor attests afterwards — or its live state, for a rebase that wants the freshest tip.
-            // Both are drained (every attest folds every recorded consume and cross-out, and retirement
-            // freezes the counts); a binding to any other state is stale and simply re-proven.
+            // The record carries the counters it was attested at; the live anchor binds the live counters,
+            // which a retired predecessor's cross-outs can still advance (the guest admits a cross-out whose
+            // mint has not folded). A binding to any other state is stale and simply re-proven.
             IPredecessorPoolLib pred = IPredecessorPoolLib(cfg.predecessor);
-            uint256 consumed = pred.attestedBitcoinConsumedCount();
-            uint256 crossOuts = pred.attestedCrossOutCount();
             bytes32 handoff = pred.handoffReflectionDigest();
-            if (handoff != bytes32(0) && r.rebasedFromDigest == keccak256(abi.encodePacked(handoff, consumed, crossOuts))) {
+            (uint256 hConsumed, uint256 hCrossOuts) = pred.handoffCounts();
+            if (handoff != bytes32(0) && r.rebasedFromDigest == keccak256(abi.encodePacked(handoff, hConsumed, hCrossOuts))) {
                 prevAnchor = pred.handoffReflectionTip();
             } else if (
                 r.rebasedFromDigest
-                    == keccak256(abi.encodePacked(pred.attestedReflectionDigest(), consumed, crossOuts))
+                    == keccak256(
+                        abi.encodePacked(
+                            pred.attestedReflectionDigest(), pred.attestedBitcoinConsumedCount(), pred.attestedCrossOutCount()
+                        )
+                    )
             ) {
                 prevAnchor = pred.attestedReflectionTip();
             } else {
@@ -243,7 +259,7 @@ library ReflectionLib {
             revert ConsumedCountStale();
         }
         if (cfg.headerRelay != address(0)) {
-            _anchorReflection(cfg, prevAnchor, r.bitcoinPrevHash, r.bitcoinTipHash);
+            _anchorReflection(cfg, ancestry, prevAnchor, r.bitcoinPrevHash, r.bitcoinTipHash);
             st.lastReflectionBlockHash = r.bitcoinTipHash;
         }
         st.lastRelayHeight = r.bitcoinHeight;
@@ -651,17 +667,89 @@ library ReflectionLib {
     /// The two are deliberately independent. Continuity is where the append-only guarantee lives and is
     /// absolute; how FRESH the tip is only decides how many Bitcoin blocks a single proof has to span, which
     /// is why the lag bound is generous (see REFLECTION_MAX_LAG) while this exact-prev check is not.
-    function _anchorReflection(Config memory cfg, bytes32 lastReflectionBlockHash, bytes32 prev, bytes32 tip)
-        internal
-        view
-    {
+    function _anchorReflection(
+        Config memory cfg,
+        Ancestry storage ancestry,
+        bytes32 lastReflectionBlockHash,
+        bytes32 prev,
+        bytes32 tip
+    ) internal view {
         if (prev != lastReflectionBlockHash) revert UnanchoredReflection();
-        bytes32 matured = IRelayLib(cfg.headerRelay).tip();
-        for (uint256 i; i < cfg.reflectionConfirmations; ++i) {
-            if (matured == bytes32(0)) revert UnanchoredReflection();
-            matured = IRelayLib(cfg.headerRelay).blockParent(matured);
+        address relay = cfg.headerRelay;
+        bytes32 matured = _maturedAnchor(relay, cfg.reflectionConfirmations);
+        bytes32 checkpoint = ancestry.checkpoint;
+        if (checkpoint == bytes32(0)) {
+            if (_isAnchorOrAncestor(relay, tip, matured)) return;
+            revert UnanchoredReflection();
         }
-        if (!_isAnchorOrAncestor(cfg.headerRelay, tip, matured)) revert UnanchoredReflection();
+        // With a checkpoint set, heights pick the one walk that can succeed, so a recovering attest never pays
+        // for a bounded walk that was always going to miss.
+        uint256 hMatured = IRelayLib(relay).blockHeight(matured);
+        uint256 hTip = IRelayLib(relay).blockHeight(tip);
+        if (hTip == 0) revert UnanchoredReflection();
+        if (_within(hTip, hMatured)) {
+            if (_isAnchorOrAncestor(relay, tip, matured)) return;
+            revert UnanchoredReflection();
+        }
+        bytes32 anchor = ancestry.anchor;
+        if (
+            _within(hTip, IRelayLib(relay).blockHeight(checkpoint))
+                && _within(IRelayLib(relay).blockHeight(anchor), hMatured)
+                && _isAnchorOrAncestor(relay, anchor, matured) && _isAnchorOrAncestor(relay, tip, checkpoint)
+        ) return;
+        revert UnanchoredReflection();
+    }
+
+    /// True iff `low` sits at most REFLECTION_MAX_LAG blocks below `high` (or at it).
+    function _within(uint256 low, uint256 high) internal pure returns (bool) {
+        return low <= high && high - low <= REFLECTION_MAX_LAG;
+    }
+
+    function _maturedAnchor(address headerRelay, uint256 confirmations) internal view returns (bytes32 matured) {
+        matured = IRelayLib(headerRelay).tip();
+        for (uint256 i; i < confirmations; ++i) {
+            if (matured == bytes32(0)) revert UnanchoredReflection();
+            matured = IRelayLib(headerRelay).blockParent(matured);
+        }
+    }
+
+    /// Recovery for a lane that fell more than REFLECTION_MAX_LAG behind the matured anchor, where a batch from
+    /// `lastReflected` could otherwise land only by spanning the whole excess in one proof. The checkpoint is the
+    /// canonical block at height(lastReflected) + REFLECTION_MAX_LAG, the deepest one a batch starting there can
+    /// still reach, and batch tips are checked against it instead of the anchor. Each call walks at most
+    /// REFLECTION_MAX_LAG parents from the matured anchor toward that height, keeping its progress in `cursor`,
+    /// and promotes the block it reaches to the checkpoint only on arrival — so the usable checkpoint changes
+    /// only to the best one for the lane's current position, and a caller can never swap it for a worse one. The
+    /// target is fixed by chain state, so any caller moves the walk the same way. Canonicality is unchanged: every
+    /// step is a parent walk from a matured anchor, and a checkpoint or cursor counts only while that anchor is
+    /// still the matured anchor or an ancestor of it.
+    function advanceAncestry(Ancestry storage ancestry, address headerRelay, uint256 confirmations, bytes32 lastReflected)
+        external
+    {
+        IRelayLib relay = IRelayLib(headerRelay);
+        uint256 lastHeight = relay.blockHeight(lastReflected);
+        if (lastHeight == 0) revert UnanchoredReflection();
+        uint256 target = lastHeight + REFLECTION_MAX_LAG;
+        bytes32 matured = _maturedAnchor(headerRelay, confirmations);
+        uint256 maturedHeight = relay.blockHeight(matured);
+        (bytes32 walk, bytes32 anchor) = (ancestry.cursor, ancestry.cursorAnchor);
+        if (
+            walk == bytes32(0) || relay.blockHeight(walk) < target
+                || !_within(relay.blockHeight(anchor), maturedHeight) || !_isAnchorOrAncestor(headerRelay, anchor, matured)
+        ) (walk, anchor) = (matured, matured);
+        uint256 height = relay.blockHeight(walk);
+        uint256 steps = height > target ? height - target : 0;
+        if (steps > REFLECTION_MAX_LAG) steps = REFLECTION_MAX_LAG;
+        for (uint256 i; i < steps; ++i) {
+            walk = relay.blockParent(walk);
+            if (walk == bytes32(0)) revert UnanchoredReflection();
+        }
+        if (height - steps <= target) {
+            (ancestry.checkpoint, ancestry.anchor) = (walk, anchor);
+            (ancestry.cursor, ancestry.cursorAnchor) = (bytes32(0), bytes32(0));
+        } else {
+            (ancestry.cursor, ancestry.cursorAnchor) = (walk, anchor);
+        }
     }
 
     /// True iff `h == anchor` or `h` is within REFLECTION_MAX_LAG parents of `anchor`. The walk only ever

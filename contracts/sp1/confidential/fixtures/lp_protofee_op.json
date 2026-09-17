@@ -135,8 +135,8 @@
     "reserveBPost": 2200,
     "sharesPost": 1100,
     "nullifiers": [
-      "0x173895ca6607f7aad3e90bd48dd78a19f76382b196f09e3dc13e582bfcced7cf",
-      "0xde65bf221a9d099f688dd5e991699361861bc6b87d5ae1deda0800478a35f07c"
+      "0x76069a4d434e3199bcf910eb8bb0bf29ca6094c438199a0d2edee9f5fdcf1ca5",
+      "0x523f627239cc8f67a2548f80e34bbe85321318d0029f4a93ba2386847bd6abeb"
     ],
     "leaves": [
       "0x33ccbc91afcf858e30b83ace485198974bcabd90a896c5b0e926daaa4abcc2d7"

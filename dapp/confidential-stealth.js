@@ -246,10 +246,21 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     // burn-deposit native leaf, 1 = unbound reflected (legacy/TAC), 2 = generation-bound reflected. A bound note
     // MUST be witnessed as class 2 or the mint rebuilds the wrong leaf and the burn strands the note. `spentTxid`
     // / `spentVout` name the exact Bitcoin outpoint the burned note lived at (part of its burn_id identity).
+    // A class-0 deposit note is owned by its own burned outpoint, keccak(txid ‖ vout as u32 LE); the guest rejects
+    // any other owner, so it is derived here, and a supplied owner that disagrees is refused rather than proven.
+    let inOwner = burned.owner;
+    if (burned.sourceClass != null && Number(burned.sourceClass) === 0) {
+      if (burned.spentTxid == null || burned.spentVout == null) throw new Error('bridge-stealth-mint: a deposit note needs its spent outpoint');
+      const key = pool.outpointKey(burned.spentTxid, Number(burned.spentVout));
+      if (inOwner != null && String(inOwner).toLowerCase() !== String(key).toLowerCase()) {
+        throw new Error('bridge-stealth-mint: deposit note owner must be its burned outpoint key');
+      }
+      inOwner = key;
+    }
     // Harness-shaped (exec-bridgestealthmint): the burn-set root rides the witness header and every byte field
     // is hex — a raw Uint8Array would JSON-encode as an object and the harness would refuse to prove.
     return { chainBinding, bitcoinBurnRoot, poolRoot, asset, ownerPub, deadline: Number(deadline), locker,
-      inCx: burned.cx, inCy: burned.cy, inOwner: burned.owner, inIndex: burned.leafIndex, inPath: burned.path,
+      inCx: burned.cx, inCy: burned.cy, inOwner, inIndex: burned.leafIndex, inPath: burned.path,
       sourceClass: Number(burned.sourceClass), spentTxid: burned.spentTxid, spentVout: Number(burned.spentVout),
       lCx, lCy, bmNext, bmIndex, bmPath, fee: Number(fee),
       kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)), lRange: hx(lRange) };

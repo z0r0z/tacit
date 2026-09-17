@@ -29,7 +29,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET = '0x' + 'aa'.repeat(32);
 const hx = (b) => '0x' + Buffer.from(b).toString('hex');
-const id = (priv) => { const pub = secp.getPublicKey(priv, true); return { priv, pubHex: hx(pub), owner: hx(pub.subarray(1, 33)) }; };
+// A wallet: scan key + memo pubkey, and a note nk whose H(nk) is the leaf owner (the only spendable owned note).
+const id = (priv) => { const pub = secp.getPublicKey(priv, true); const nk = hx(secp.utils.randomPrivateKey()); return { priv, pubHex: hx(pub), nk, owner: pool.nkToOwner(nk) }; };
 
 const sender = id(randomScalar());
 const recipient = id(randomScalar());
@@ -48,8 +49,8 @@ ok('real confidential-transfer build verifies (40 change + 60 received conserve 
 const changeC = pool.commitXY(40n, '0x' + rChange.toString(16).padStart(64, '0'));
 const recvC = pool.commitXY(60n, '0x' + rRecv.toString(16).padStart(64, '0'));
 const outputs = [
-  { ownerPub: sender.pubHex,    value: 40n, blinding: '0x' + rChange.toString(16).padStart(64, '0'), asset: ASSET, owner: sender.owner },
-  { ownerPub: recipient.pubHex, value: 60n, blinding: '0x' + rRecv.toString(16).padStart(64, '0'),   asset: ASSET, owner: recipient.owner },
+  { ownerPub: sender.pubHex,    value: 40n, blinding: '0x' + rChange.toString(16).padStart(64, '0'), asset: ASSET, owner: sender.owner, secret: sender.nk },
+  { ownerPub: recipient.pubHex, value: 60n, blinding: '0x' + rRecv.toString(16).padStart(64, '0'),   asset: ASSET, owner: recipient.owner, secret: recipient.nk },
 ];
 const leaves = [
   pool.leaf(ASSET, changeC.cx, changeC.cy, sender.owner),

@@ -69,7 +69,7 @@ const controller32 = '0x' + '00'.repeat(12) + controller.replace(/^0x/, ''); // 
     rewardOwner: pool.nkToOwner('0x' + '11'.repeat(32)), shares,
     nonce, harvestNonce, reward, oldIndex: 0, oldPath: path, lpAsset, rewardAsset, rewardNote: { cx, cy, blinding: r } });
   writeFileSync(new URL('farm_harvest_op.json', dir),
-    JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 2, cdpMints: 1 } }, null, 2));
+    JSON.stringify({ ...op, expected: { nullifiers: 1, leaves: 1, cdpMints: 1 } }, null, 2));
   console.log('wrote farm_harvest_op.json');
 }
 

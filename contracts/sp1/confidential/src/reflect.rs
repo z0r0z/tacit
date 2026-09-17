@@ -31,7 +31,8 @@ use alloy_sol_types::SolType;
 use cxfer_core::{
     amm_canonical_pair, amm_derive_farm_id, amm_derive_pool_id_full, bip340_verify, bitcoin, bridge_burn_id, btc_note_leaf,
     burn_deposit, commitment_hash, commitment_hash_compressed, compress, decompress, from_affine_xy,
-    imt_membership, imt_non_membership, leaf, nullifier, outpoint_key, scan_tx_spends, utxo_membership,
+    imt_membership, imt_non_membership, leaf, nullifier, outpoint_key, pending_deposit_value, scan_tx_spends,
+    utxo_membership,
     verify_cxfer_conservation, BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
     CbtcLockFold, FarmEntrySet, FarmRewardSet, FarmRewardState, LiveUtxoSet, Point, PoolReserveSet,
     PoolReserveState, ScanReflection, CBTC_ZK_ASSET_ID,
@@ -317,6 +318,11 @@ fn read_scan_prior_state() -> ScanReflection {
     // scan-free burn-deposit. Sentinel-seeded (count 1) on a fresh chain.
     let consumed_outpoints_root = r32();
     let consumed_outpoints_count: u64 = io::read();
+    // The Ethereum sync committee the next Mode-B proof must start from ([0;32] = the pinned genesis committee),
+    // then the pending burn-deposit set. Both ride digest() in this order.
+    let eth_sync_committee = r32();
+    let pending_deposit_root = r32();
+    let pending_deposit_count: u64 = io::read();
     ScanReflection {
         pool_root,
         note_count,
@@ -340,6 +346,59 @@ fn read_scan_prior_state() -> ScanReflection {
         folded_crossout_count,
         consumed_outpoints_root,
         consumed_outpoints_count,
+        eth_sync_committee,
+        pending_deposit_root,
+        pending_deposit_count,
+    }
+}
+
+/// The generational-rebase drain gate over the predecessor's folded counts vs its on-chain counters.
+///
+/// Fast-lane consumes MUST be fully folded. An unfolded consume's source note is still live in the reflected
+/// state, and the rebase would hand that live note to the successor while its value has already left on
+/// Ethereum. Every attest already forces `consumed_count == bitcoinConsumedCount`, so this never blocks.
+///
+/// Cross-out mints need NOT be. A cross-out's Bitcoin mint can only be broadcast by its burner (the chain
+/// stores only a hash of the destination leaf), so an exact-equality gate lets anyone who records a cross-out
+/// and never mints it make every rebase proof unsatisfiable — after `createNextGen` has already retired the
+/// predecessor. Admitting a lag is sound: the rebase keeps the consumed-cross-out replay set, and the
+/// successor's cross-out set is its own pool's (its eth-reflection is bound to the successor address), so a
+/// pending claim is never a member there. Its mint folds only in the predecessor's reflection, which keeps
+/// running after retirement, and the note it creates is exitable only through the predecessor — one
+/// generation, never two. A folded count above the on-chain count is impossible for an honest predecessor.
+fn rebase_drain_check(
+    folded_consumed: u64,
+    onchain_consumed: u64,
+    folded_crossout: u64,
+    onchain_crossout: u64,
+) -> Result<(), &'static str> {
+    if folded_consumed != onchain_consumed {
+        return Err("predecessor not drained: unfolded fast-lane consumes");
+    }
+    if folded_crossout > onchain_crossout {
+        return Err("predecessor inconsistent: more cross-out mints folded than recorded");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod rebase_drain_tests {
+    use super::rebase_drain_check;
+
+    #[test]
+    fn consumes_must_be_fully_folded() {
+        assert!(rebase_drain_check(4, 4, 3, 3).is_ok());
+        assert!(rebase_drain_check(4, 6, 3, 3).is_err(), "an unfolded consume must block the rebase");
+        assert!(rebase_drain_check(5, 4, 3, 3).is_err(), "a folded count above the counter is inconsistent");
+    }
+
+    #[test]
+    fn a_pending_cross_out_mint_does_not_block_the_rebase() {
+        // A burner who records a cross-out and never broadcasts its Bitcoin mint must not be able to strand
+        // the migration: the claim stays payable in the predecessor's reflection alone.
+        assert!(rebase_drain_check(4, 4, 3, 4).is_ok());
+        assert!(rebase_drain_check(0, 0, 0, 1_000).is_ok());
+        assert!(rebase_drain_check(4, 4, 4, 3).is_err(), "more folded mints than recorded is inconsistent");
     }
 }
 
@@ -371,6 +430,385 @@ fn read_burn_insert() -> (
     (low_key, low_next, low_value, low_index, low_path, new_path)
 }
 
+/// Everything a burn-deposit fold reads from the witness stream, in stream order.
+struct DepositWitness {
+    burned_cx: [u8; 32],
+    burned_cy: [u8; 32],
+    spent_insert: ([u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>),
+    burn_insert: ([u8; 32], [u8; 32], [u8; 32], u64, Vec<[u8; 32]>, Vec<[u8; 32]>),
+    co_is_member: u32,
+    co_value: [u8; 32],
+    co_next: [u8; 32],
+    co_index: u64,
+    co_path: Vec<[u8; 32]>,
+    note_path: Vec<[u8; 32]>,
+    prov_headers: Vec<Vec<u8>>,
+    blob: Vec<u8>,
+}
+
+fn read_deposit_witness() -> DepositWitness {
+    let burned_cx = r32();
+    let burned_cy = r32();
+    let spent_insert = read_spent_insert();
+    let burn_insert = read_burn_insert();
+    // CROSS-LANE DOUBLE-MINT GATE presence witness (mirror fold_crossout): the prover makes an EXPLICIT claim
+    // about whether the burned outpoint is in consumed_outpoints_root, and must PROVE it. `co_is_member != 0` →
+    // a membership proof (the outpoint was already retired on the fast lane → no second mint); else → a
+    // non-membership proof (fresh → fold the burn). A lying claim is unprovable and aborts. For a member claim
+    // the leaf is (burned_outpoint, co_next); for a non-member claim it is the straddling low leaf
+    // (co_value, co_next).
+    let co_is_member: u32 = io::read();
+    let co_value = r32();
+    let co_next = r32();
+    let co_index: u64 = io::read();
+    let co_path = r_path();
+    // The proven-real burned note is onboarded as a pool member (so the Ethereum mint binds v_mint == v_burn via
+    // pool-membership + kernel); its note-tree append path is witnessed.
+    let note_path = r_path();
+    // The deposit's historical header chain. Headers are objective, public Bitcoin facts: anyone can fetch the
+    // real ones, and a forged one fails PoW/chain-linkage. Committing them on Bitcoin would blow the standard tx
+    // weight limit for a note whose provenance reaches back further than the batch's own anchor window.
+    let n_prov_headers: u32 = io::read();
+    let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
+    // The provenance DAG. It is verified, not trusted: every hop carries real transaction bytes whose txid is
+    // recomputed, is proven into a block by merkle path, has that block proven canonical by the header chain
+    // above, and has its value conservation re-checked; the chain must terminate at the burned outpoint, and
+    // exactly one real transaction produces that outpoint. Anyone can rebuild it from public chain data.
+    let blob: Vec<u8> = io::read();
+    DepositWitness {
+        burned_cx,
+        burned_cy,
+        spent_insert,
+        burn_insert,
+        co_is_member,
+        co_value,
+        co_next,
+        co_index,
+        co_path,
+        note_path,
+        prov_headers,
+        blob,
+    }
+}
+
+enum DepositOutcome {
+    /// Verified and recorded (or proven already recorded).
+    Folded,
+    /// Verified, but the burned outpoint was already retired on the fast lane: nothing to mint.
+    AlreadyConsumed,
+    /// The witness did not prove the deposit. When the burn is scanned it becomes pending; a completion that
+    /// does not verify is a bad proof.
+    Unverified,
+}
+
+/// Verify a burn-deposit — the burned note at `(burned_txid, burned_vout)` descends from its asset's supply
+/// through confirmed, conserving CXFERs, over a header chain ending at `anchor` — and fold it: ν into the spent
+/// set, the deposit note into the note tree, its burnId into the burn set. Shared by the scan (the burn's own
+/// block) and by the completion of a pending deposit in a later batch.
+#[allow(clippy::too_many_arguments)]
+fn fold_burn_deposit(
+    state: &mut ScanReflection,
+    attested_metas: &mut Vec<AssetMeta>,
+    anchor: &[u8; 32],
+    b_asset: &[u8; 32],
+    env_nu: &[u8; 32],
+    env_dest: &[u8; 32],
+    env_target: &[u8; 32],
+    burned_txid: &[u8; 32],
+    burned_vout: u32,
+    w: &DepositWitness,
+) -> DepositOutcome {
+    let verdict = (|| -> Option<DepositOutcome> {
+        // The DAG (cxfers/cmints/etch/pool-memberships) is untrusted prover-supplied stdin
+        // (see above): a malformed or non-conserving blob simply fails to verify (skip via
+        // None). The header chain is a separate stdin field, read above.
+        let pb = burn_deposit::ProvenanceBlob::parse(&w.blob)?;
+        let etch_tx = pb.etch_tx;
+        let etch_index = pb.etch_index;
+        let etch_siblings = pb.etch_siblings;
+        let etch_wtxid_siblings = pb.etch_wtxid_siblings;
+        let etch_coinbase = pb.etch_coinbase;
+        let etch_cb_txid_siblings = pb.etch_cb_txid_siblings;
+        #[allow(clippy::type_complexity)]
+        let cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
+            pb.cmints
+                .into_iter()
+                .map(|c| {
+                    (
+                        c.reveal_tx,
+                        c.commit_tx,
+                        c.merkle_siblings,
+                        c.merkle_index,
+                        c.reveal_wtxid_siblings,
+                        c.reveal_coinbase,
+                        c.reveal_cb_txid_siblings,
+                    )
+                })
+                .collect();
+        let prov = pb.prov;
+        let pool_memberships = pb.pool_memberships;
+        // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
+        let refs: Vec<&[u8]> = w.prov_headers.iter().map(|h| h.as_slice()).collect();
+        if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != *anchor {
+            return None;
+        }
+        // (2) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
+        // Runs regardless of etch presence: a DAG cxfer's OWN inclusion must always be proven,
+        // whichever leaf source (C_0 or a pool-membership shortcut) it ultimately terminates at.
+        if !prov.iter().all(|c| {
+            w.prov_headers
+                .iter()
+                .any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)
+        }) {
+            return None;
+        }
+        // valid_leaves accumulates every admissible DAG-termination point this burn may use:
+        // C_0 + authorized cmints (etch-anchored, below — gated on a REAL etch being present) and
+        // pool-membership shortcuts (gated on nothing but their own membership proof, further
+        // below). ORIGINAL holders whose note is C_0 itself (or a short cmint-rooted chain) keep
+        // working exactly as before; an actively-traded coin instead reaches a pool-membership
+        // leaf a few real hops back — NEITHER path is weaker than the other, both bottom out in
+        // an already-proven fact (a canonical etch anchor, or the reflection's own prior state).
+        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        // (3) the etch is OPTIONAL — an empty etch_tx means this burn relies solely on
+        // pool-membership shortcuts below. When present, it must be a valid CETCH in a canonical
+        // block, asset-bound (fixed OR mintable; the mint_authority gates the cmints). C_0 is its
+        // supply note. `?` here is safe: this whole block only runs when an etch was ACTUALLY
+        // supplied, so a malformed one fails this burn's verification (skip, fold nothing)
+        // rather than being silently ignored.
+        if !etch_tx.is_empty() {
+            let etch_txid = bitcoin::compute_txid(&etch_tx)?;
+            let (c0_compressed, mint_authority, _dec) =
+                bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
+            let etch_root =
+                bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
+            if !w.prov_headers
+                .iter()
+                .any(|h| bitcoin::extract_merkle_root(h) == etch_root)
+            {
+                return None;
+            }
+            // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
+            // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
+            // CETCH would pass and forge the asset's supply anchor / mint authority.
+            bitcoin::verify_tx_witness_committed(
+                &etch_tx,
+                etch_index,
+                &etch_wtxid_siblings,
+                &etch_coinbase,
+                &etch_cb_txid_siblings,
+                &etch_root,
+            )?;
+            // valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
+            // confirmed in the canonical chain. A fixed-supply asset has mint_authority = 0, so
+            // verify_cmint_authorized rejects every cmint → leaves = [C_0] (self-enforcing).
+            let c0_outpoint = outpoint_key(&etch_txid, 0);
+            let c0_ch = commitment_hash_compressed(&c0_compressed)?;
+            valid_leaves.push((c0_outpoint, c0_ch));
+            let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
+            for (
+                reveal_tx,
+                commit_tx,
+                msib,
+                midx,
+                reveal_wtxid_siblings,
+                reveal_coinbase,
+                reveal_cb_txid_siblings,
+            ) in &cmints
+            {
+                let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
+                let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
+                if !w.prov_headers
+                    .iter()
+                    .any(|h| bitcoin::extract_merkle_root(h) == root)
+                {
+                    return None;
+                }
+                // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
+                // commit's input anchor but NOT which commit OUTPUT the reveal spends, so two
+                // reveals spending different outputs of the same commit would reuse a single
+                // authorization to mint two supply leaves. Reject a repeat (one commit ⇒ one leaf).
+                let commit_txid = bitcoin::compute_txid(commit_tx)?;
+                if seen_commits.contains(&commit_txid) {
+                    return None;
+                }
+                seen_commits.push(commit_txid);
+                // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141).
+                // commit_tx needs no witness auth: bound by txid (reveal spends it) + its inputs.
+                bitcoin::verify_tx_witness_committed(
+                    reveal_tx,
+                    *midx,
+                    reveal_wtxid_siblings,
+                    reveal_coinbase,
+                    reveal_cb_txid_siblings,
+                    &root,
+                )?;
+                valid_leaves.push(burn_deposit::verify_cmint_authorized(
+                    b_asset,
+                    &mint_authority,
+                    &etch_txid,
+                    reveal_tx,
+                    commit_tx,
+                )?);
+            }
+        }
+        // (4) pool-membership shortcut leaves are REFUSED. A tree leaf commits (asset, cx, cy,
+        // owner) but no outpoint, so `verify_pool_membership_leaf` can only hand back the outpoint
+        // it was given; the DAG then accepts any hop whose witnessed input is that (outpoint,
+        // commitment) pair, and a hop's conservation kernel needs nothing but the note's opening.
+        // A holder of any tracked note's opening could therefore spend a dust UTXO of their own
+        // "as" that note, burn the hop's output and mint the note's value here — repeatably,
+        // while the real note stays live on Bitcoin. The etch and cmint leaves have no such gap
+        // (their outpoints are derived from the etch / reveal tx itself), so a lineage must bottom
+        // out there. A blob that carries memberships is a prover choice, deterministic for every
+        // prover: skip (fold nothing), never abort. Binding a shortcut soundly needs an
+        // outpoint→leaf accumulator the reflection does not keep — a later generation's feature.
+        if !pool_memberships.is_empty() {
+            return None;
+        }
+        // (5) burned note outpoint = the burn tx's first spent input (passed in by the caller).
+        let burned_outpoint = outpoint_key(burned_txid, burned_vout);
+        // CROSS-LANE DOUBLE-MINT GATE: the burned note must NOT be an outpoint whose ν was already
+        // consumed on the Ethereum fast lane. `fold_consumed` removed such an outpoint from `live`
+        // (so it scans input-free here) but recorded it in consumed_outpoints_root; its Bitcoin UTXO
+        // is still spendable, so admitting it would mint the SAME supply a second time (the fast-lane
+        // ν and this native burn-deposit ν are in disjoint domains → no spent-set collision).
+        //
+        // The prover proves its presence claim (mirror fold_crossout): a MEMBER claim needs a valid
+        // membership proof and then skips (already fast-consumed → no second mint); a NON-MEMBER
+        // claim needs a valid non-membership proof and then folds. The witness is prover-supplied,
+        // so an unproven claim MUST abort, never skip — else a malicious prover could censor a real
+        // burn (claim absent, supply a bad path) and permanently strand the burner's principal.
+        if w.co_is_member != 0 {
+            assert!(
+                imt_membership(
+                    &state.consumed_outpoints_root,
+                    &burned_outpoint,
+                    &w.co_next,
+                    w.co_index,
+                    &w.co_path,
+                ),
+                "burn-deposit: claimed-consumed outpoint is not a member (bad prover witness) — cannot skip a real burn"
+            );
+            return Some(DepositOutcome::AlreadyConsumed); // proven already fast-consumed → no second mint
+        }
+        assert!(
+            imt_non_membership(
+                &state.consumed_outpoints_root,
+                &burned_outpoint,
+                &w.co_value,
+                &w.co_next,
+                w.co_index,
+                &w.co_path,
+            ),
+            "burn-deposit: consumed-outpoint non-membership witness invalid (bad prover witness)"
+        );
+        // (6) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
+        //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
+        //     outpoint is not reachable from supply is a fake → skip.
+        let real_ch =
+            burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &prov)
+                .ok()?;
+        // The note opening is the prover's only remaining discretionary input here. Bind it to
+        // the authenticated commitment: a prover that supplies a wrong opening for a reachable
+        // (confirmed) burn would otherwise have it skipped and the digest advanced past it,
+        // permanently censoring the deposit. A mismatch is a lying prover → abort.
+        assert!(
+            commitment_hash(&w.burned_cx, &w.burned_cy) == real_ch,
+            "burn-deposit: opening does not match the authenticated provenance commitment (bad prover witness)"
+        );
+        // The envelope ν must equal the burned note's real ν; an inconsistent on-chain burn is
+        // malformed (a tx-validity fact, deterministic for every prover) → skip. The deposit note's
+        // leaf commits its own Bitcoin outpoint as the owner (see the fold below), so ν is unique to
+        // this UTXO.
+        if &nullifier(&leaf(b_asset, &w.burned_cx, &w.burned_cy, &burned_outpoint)) != env_nu {
+            return None;
+        }
+        Some(DepositOutcome::Folded)
+    })()
+    .unwrap_or(DepositOutcome::Unverified);
+    if !matches!(verdict, DepositOutcome::Folded) {
+        return verdict;
+    }
+    // A VERIFIED burn-deposit must be recorded or the proof rejected — never silently
+    // omitted, else its confirmed-on-Bitcoin burn never reaches `bitcoinBurnRoot`/the pool
+    // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
+    // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
+    // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
+    // membership-gated no-op (already recorded in both spent + burn).
+    // SPENT side: a genuine spent-duplicate ν is a membership-gated no-op; a FRESH ν must
+    // insert (a bad witness → abort).
+    let (sv, sn, si, sp, snew) = &w.spent_insert;
+    if sv == env_nu {
+        assert!(
+            imt_membership(&state.spent_root, env_nu, sn, *si, sp),
+            "burn-deposit: claimed spent-duplicate ν is not a member of spent_root"
+        );
+    } else {
+        state
+            .fold_spent(env_nu, sv, sn, *si, sp, snew)
+            .expect("burn-deposit: spent insert (bad prover witness)");
+    }
+    // BURN + note side, INDEPENDENT of the spent side: a ν may already be recorded in
+    // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
+    // normally before this burn-deposit — so gating the burn record on spent-freshness would
+    // drop a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
+    // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
+    // no-op (note already appended by the first burn); otherwise record the burn AND append
+    // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
+    // The burned note is a NATIVE leaf(asset, Cx, Cy, owner) whose owner is the burned UTXO's own
+    // outpoint key — a DISTINCT source class from an ordinary reflected note
+    // (btc_note_leaf(asset,Cx,Cy,key)). The outpoint owner makes the leaf, and so its nullifier,
+    // unique to this UTXO: a payer who knows the opening cannot deposit a same-commitment clone
+    // from another UTXO under the same ν and leave the real burn unmintable. Its burnId binds the
+    // exact burn outpoint + this leaf under the DEPOSIT source kind. OP_BRIDGE_MINT reproduces it
+    // via its self-verifying `source_class` (class 0, owner = the outpoint key).
+    let src_leaf = leaf(b_asset, &w.burned_cx, &w.burned_cy, &outpoint_key(burned_txid, burned_vout));
+    // Bind to the target deployment: the burn-deposit's target CHAIN_BINDING (env[129..161])
+    // is folded into the id, exactly like a reflected burn.
+    let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, burned_txid, burned_vout, &src_leaf, env_target);
+    let (bk, bn, bv, bi, bp, bnew) = &w.burn_insert;
+    if *bk == burn_id {
+        assert!(
+            utxo_membership(&state.burn_root, &burn_id, bn, bv, *bi, bp),
+            "burn-deposit: claimed burn-duplicate burnId is not a member of burn_root"
+        );
+    } else {
+        // Append-only (never live): spent now, not in-pool-spendable. The kernel binds
+        // v_mint == v_burn at mint (the burned value is REAL: verify_provenance_leaves proved
+        // it descends from supply).
+        state
+            .fold_note_append(&src_leaf, &w.note_path)
+            .expect("burn-deposit note append");
+        state
+            .fold_burn(&burn_id, env_dest, bk, bn, bv, *bi, bp, bnew)
+            .expect("burn-deposit burn fold");
+        // The etch was BIP141 witness-committed + canonical above, so its declared
+        // (ticker, decimals, cid) are authentic — surface them once for attest to
+        // lazy-register the asset's canonical ERC20 (idempotent on the contract).
+        if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
+            // The etch tx lives in the same provenance blob the DAG verified from (parse
+            // succeeds here since the fold only runs after it verified).
+            if let Some(meta_env) = burn_deposit::ProvenanceBlob::parse(&w.blob)
+                .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
+            {
+                if let Some((ticker, tlen, decimals, cid)) =
+                    bitcoin::parse_etch_meta(&meta_env)
+                {
+                    attested_metas.push(AssetMeta {
+                        assetId: (*b_asset).into(),
+                        ticker: ticker.into(),
+                        tickerLen: tlen,
+                        decimals,
+                        cid: cid.into(),
+                    });
+                }
+            }
+        }
+    }
+    DepositOutcome::Folded
+}
+
 pub fn main() {
     // GENERATIONAL RESUME: a nonzero rebase flag marks a successor generation's FIRST cycle. The state read
     // below is then the DRAINED PREDECESSOR's final attested state (not this generation's resume state); we
@@ -388,23 +826,16 @@ pub fn main() {
     // contract pins == knownReflectionDigest == the deploy's reflectionResumeDigest_).
     let rebased_from_digest: [u8; 32] = if rebase_mode != 0 {
         let pred_digest = state.digest();
-        // The predecessor's CURRENT on-chain fast-lane / cross-out counters (witnessed). DRAIN gate: the
-        // predecessor's reflection must have folded EVERY recorded consume + cross-out, else the reset below
-        // would abandon an unfolded consume (source note live AND already value-spent on Ethereum) or a
-        // pending cross-out mint. `state.consumed_count` / `state.folded_crossout_count` are bound to the real
-        // predecessor by `pred_digest`, which the contract pins to the predecessor's exposed digest via
-        // `rebasedFromDigest`; the same anchor binds these witnessed counters to the predecessor's exposed
-        // getters, so a lying counter fails the contract's re-derivation.
+        // The predecessor's CURRENT on-chain fast-lane / cross-out counters (witnessed), bound to the
+        // predecessor's exposed getters through `rebasedFromDigest`; `state` is bound to its digest by the same
+        // anchor. See `rebase_drain_check` for which of the two must be fully drained and why.
         let oc_consumed: u64 = io::read();
         let oc_crossout: u64 = io::read();
-        assert_eq!(
-            state.consumed_count, oc_consumed,
-            "predecessor not drained: unfolded fast-lane consumes"
-        );
-        assert_eq!(
-            state.folded_crossout_count, oc_crossout,
-            "predecessor not drained: unfolded cross-out mints"
-        );
+        if let Err(why) =
+            rebase_drain_check(state.consumed_count, oc_consumed, state.folded_crossout_count, oc_crossout)
+        {
+            panic!("{}", why);
+        }
         state.rebase();
         cxfer_core::generational_rebase_anchor(&pred_digest, oc_consumed, oc_crossout)
     } else {
@@ -422,7 +853,7 @@ pub fn main() {
     // checks — NOT the on-chain bytes32 0x0081d2c6…). Rebuilding that ELF rotates this; recompute via
     // prover-host/eth_vkey and keep in lockstep.
     const ETH_REFLECTION_VKEY: [u32; 8] = [
-        1794199949, 1219116509, 58604309, 1719811643, 185975317, 2020674183, 2092781552, 931298980,
+        1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986,
     ];
     // The EthCallOutbox the ETH->BTC message set must come from (20-byte address). PINNED, so changing it
     // requires an ELF rebuild + re-prove. Zero here is not a valid deployment: a Mode-B proof would fail
@@ -439,15 +870,20 @@ pub fn main() {
         0x65, 0xcc, 0xb9,
     ];
     // Genesis sync-committee anchor (beacon weak-subjectivity bootstrap — NOT circular with the pool),
-    // pinned at re-prove time to the mainnet finalized checkpoint. The pool address is NOT pinned
+    // pinned at re-prove time to the mainnet finalized checkpoint. It anchors only the FIRST Mode-B cycle;
+    // every later cycle starts from the committee the previous one ended on (`state.eth_sync_committee`). The pool address is NOT pinned
     // here: it's passed through as `ethPoolReflected` and gated on-chain == address(this), which breaks
     // the pool↔vkey circularity with the vkey still immutable in the constructor (D1).
-    // MAINNET genesis sync-committee root at slot 14,745,600 (== deployments/1.json ethGenesisSyncCommittee,
-    // in lockstep with eth-reflection/src/main.rs ETH_GENESIS_VALIDATORS_ROOT + ETH_GENESIS_SLOT).
+    // MAINNET genesis sync-committee root at slot 15,228,928 (period 1859 boundary; == deployments/1.json
+    // ethGenesisSyncCommittee, in lockstep with eth-reflection/src/main.rs ETH_GENESIS_VALIDATORS_ROOT). Fetched
+    // fresh at v1-final re-pin time (2026-09-17) via eth_prove's [genesis-capture] against a live finalized
+    // mainnet checkpoint (period 1859, slot 15,229,824) — the PRIOR pin (slot 14,745,600, period 1800) only had
+    // update-retention runway to roughly 2026-12-03 (get_updates(anchor_period,128) cannot reach a finalized
+    // period past anchor+128); this anchor pushes that horizon out to roughly period 1987 (~2027-02).
     const ETH_GENESIS_SYNC_COMMITTEE: [u8; 32] = [
-        0x68, 0x4d, 0xc2, 0x19, 0xa2, 0xe8, 0x85, 0x5f, 0x59, 0x56, 0x4d, 0xe7, 0xf5, 0xcc, 0x2c,
-        0x8b, 0xda, 0x79, 0x62, 0x3d, 0x20, 0xff, 0x43, 0xb5, 0x62, 0x8d, 0xee, 0x8b, 0xad, 0x21,
-        0x7f, 0x9a,
+        0xba, 0xdc, 0x9e, 0x8e, 0xdd, 0xe5, 0x25, 0xd5, 0x8e, 0xa8, 0xdf, 0x0f, 0x25, 0x8d, 0xa9,
+        0x76, 0x8b, 0xe4, 0xf2, 0xd6, 0x8a, 0xdd, 0x89, 0xd8, 0xc5, 0x5b, 0x03, 0xc2, 0x17, 0xc4,
+        0xf5, 0xec,
     ];
 
     // Mode-B gate. `verify_sp1_proof` (the eth-reflection recursion) is needed ONLY to trust a
@@ -481,17 +917,24 @@ pub fn main() {
         // EthReflectionPublicValues is 14 static ABI words; read by offset. Order: priorDigest, newDigest,
         // ethPool, crossOutSetRoot, crossOutCount, finalizedSlot, finalizedExecStateRoot, syncCommitteeRoot,
         // prevSyncCommitteeRoot, consumedNuSetRoot, consumedNuCount, ethOutbox, ethMsgSetRoot, ethMsgCount.
-        // WEAK-SUBJECTIVITY ANCHOR: every cycle's eth
-        // proof MUST have chained FROM the pinned genesis sync-committee (word 8). This is enforced statically
-        // here, NOT carried forward — the eth guest re-bootstraps from genesis each cycle and replays the LC
-        // update chain to the finalized slot. Cross-period chaining (carry word 7 syncCommitteeRoot into the
-        // next cycle's word 8) is NOT implemented; advancing past a far-future genesis is an operational
-        // re-anchor (which rotates the eth vkey ⇒ re-pin ETH_REFLECTION_VKEY + re-prove), a deferred feature.
+        // WEAK-SUBJECTIVITY ANCHOR: the eth proof must chain FROM (word 8, prevSyncCommitteeRoot) the committee
+        // the last Mode-B cycle ended on — the pinned genesis committee for the first cycle — and the committee
+        // it ends on (word 7, syncCommitteeRoot, reached through light-client updates each signed by the
+        // committee before it) becomes the next cycle's anchor. Carrying it forward keeps the trusted committee
+        // current: a fixed anchor would keep trusting keys long past their validators' exit, and its update
+        // chain would grow every cycle until beacon nodes no longer serve its oldest periods.
+        let expected_committee = if state.eth_sync_committee == [0u8; 32] {
+            ETH_GENESIS_SYNC_COMMITTEE
+        } else {
+            state.eth_sync_committee
+        };
         assert_eq!(
             &eth_pv[8 * 32..9 * 32],
-            &ETH_GENESIS_SYNC_COMMITTEE,
-            "eth-reflection: wrong genesis sync-committee"
+            &expected_committee,
+            "eth-reflection: proof does not start from the committed sync committee"
         );
+        let next_committee: [u8; 32] = eth_pv[7 * 32..8 * 32].try_into().expect("syncCommitteeRoot word");
+        assert!(next_committee != [0u8; 32], "eth-reflection: zero sync-committee root");
         let ep: [u8; 32] = eth_pv[2 * 32..3 * 32].try_into().expect("ethPool word"); // gated on-chain == address(this)
                                                                                      // A Mode-B proof must carry a REAL pool: ethPool == 0 is the mode_b==0 "no eth-state" sentinel the
                                                                                      // contract accepts, so a Mode-B proof with ethPool 0 would be mistaken for it (the guest still used
@@ -547,6 +990,7 @@ pub fn main() {
         // completeness gate, so there is nothing here to gate a count against. Deliberately unread — folding
         // a subset is correct behavior, not a censored set. (ops/DESIGN-eth-call-outbox.md)
         state.eth_refl_digest = eth_pv[32..64].try_into().expect("eth newDigest word");
+        state.eth_sync_committee = next_committee;
         (ep, cr, crossout_cnt, consumed_root, consumed_cnt, msg_root)
     } else {
         // sentinel: forward-only batch — no eth recursion, no crossout/consumed/message fold. A zero message
@@ -863,13 +1307,9 @@ pub fn main() {
                     // asset's etch supply note C_0 through confirmed, conserving CXFERs. The provenance
                     // blocks are pre-anchor, so their canonicity is a header chain whose tip == this batch's
                     // relay-pinned anchor (prev_hash). See ops/DESIGN-trustless-asset-onboarding.md.
-                    // ── witnesses (read UNCONDITIONALLY so the io stream stays in sync; fold only if valid) ──
-                    // The burn tx's own witness-commitment proof (wtxid path + same-block coinbase) is read
-                    // here: a real burn tx is always committed, so a failure is a bad prover witness (abort);
-                    // a fake burn's witness is likewise committed, so it passes this auth and is skipped by
-                    // the provenance check below. The provenance DAG itself is read separately as stdin (see
-                    // the blob read further down) — this proof authenticates only the burn envelope's own
-                    // 161 bytes, not the DAG that follows it.
+                    // The burn tx's own witness-commitment proof (wtxid path + same-block coinbase): a real burn
+                    // tx is always committed, so a failure is a bad prover witness (abort). It authenticates only
+                    // the burn envelope; the provenance is separate stdin (`read_deposit_witness`).
                     let n_burn_wsib: u32 = io::read();
                     let burn_wtxid_siblings: Vec<[u8; 32]> = (0..n_burn_wsib).map(|_| r32()).collect();
                     let n_burn_cbsib: u32 = io::read();
@@ -886,343 +1326,43 @@ pub fn main() {
                         .is_some(),
                         "burn-deposit: burn tx witness not committed (bad prover witness)"
                     );
-                    let burned_cx = r32();
-                    let burned_cy = r32();
-                    let (sv, sn, si, sp, snew) = read_spent_insert();
-                    let (bk, bn, bv, bi, bp, bnew) = read_burn_insert();
-                    // CROSS-LANE DOUBLE-MINT GATE presence witness (mirror fold_crossout): the prover makes an
-                    // EXPLICIT claim about whether the burned outpoint is in consumed_outpoints_root, and must
-                    // PROVE it. `co_is_member != 0` → a membership proof (the outpoint was already retired on the
-                    // fast lane → skip, no second mint); else → a non-membership proof (fresh → fold the burn).
-                    // A lying claim is unprovable and aborts inside the closure — so a malicious prover can no
-                    // longer censor a REAL burn by supplying a bad non-membership path (which would silently
-                    // skip it). Read unconditionally to keep the io stream in sync. For a member claim the leaf
-                    // is (burned_outpoint, co_next); for a non-member claim it is the straddling low leaf
-                    // (co_value, co_next).
-                    let co_is_member: u32 = io::read();
-                    let co_value = r32();
-                    let co_next = r32();
-                    let co_index: u64 = io::read();
-                    let co_path = r_path();
-                    // the proven-real burned note is onboarded as a pool member (so the Ethereum mint binds
-                    // v_mint == v_burn via pool-membership + kernel); its note-tree append path is witnessed.
-                    let note_path = r_path();
-                    // The burn-deposit's OWN historical header chain — read as regular stdin (prover-supplied
-                    // at prove time), NOT from the burn tx's Bitcoin-committed witness. Unlike the DAG (which
-                    // MUST be Bitcoin-committed so a prover can't substitute a different transaction history),
-                    // headers are objective, public Bitcoin facts: anyone can fetch the real ones, a forged one
-                    // fails PoW/chain-linkage right here, and there is no "which headers" discretion to close
-                    // off. Committing them on Bitcoin bought nothing but bytes — for a note whose provenance
-                    // reaches back further than the batch's own anchor window, that chain can be thousands of
-                    // headers (hundreds of KB), which blows Bitcoin's standard tx weight limit long before it
-                    // blows any real limit here. Read unconditionally to keep the io stream in sync (mirrors
-                    // the top-of-function batch header read).
-                    let n_prov_headers: u32 = io::read();
-                    let prov_headers: Vec<Vec<u8>> = (0..n_prov_headers).map(|_| io::read()).collect();
-                    // The provenance DAG, read as regular stdin alongside the header chain above. Keeping it
-                    // out of the burn envelope is what lets a burn be an ordinary 161-byte-envelope Bitcoin
-                    // transaction: the envelope stays in the committed tapscript (so it is fixed by the
-                    // address the burner spends), and provenance size is bounded by the prover, not by
-                    // Bitcoin's witness rules.
-                    //
-                    // The DAG is verified, not trusted. Every hop carries real transaction bytes whose txid
-                    // is recomputed, is proven into a block by merkle path, has that block proven canonical
-                    // by the PoW header chain above, and has its value conservation re-checked; the chain
-                    // must terminate at this burn tx's own first input, and exactly one real transaction
-                    // produces that outpoint. It is also reconstructible by anyone: the DAG is a walk of the
-                    // burned note's ancestry over confirmed transactions, derivable from public chain data
-                    // starting at that same input, so proving is not gated on the burner privately handing
-                    // the lineage to a prover.
-                    let blob: Vec<u8> = io::read();
-                    // The burned note's Bitcoin outpoint (the burn tx's first spent input), hoisted out of the
-                    // verify closure so the burnId at the fold site can bind it. Only read when verified.
-                    let mut burned_txid = [0u8; 32];
-                    let mut burned_vout = 0u32;
-
-                    // ── verify (all required; any miss → skip, fold nothing) ──
-                    let verified = (|| -> Option<()> {
-                        // The DAG (cxfers/cmints/etch/pool-memberships) is untrusted prover-supplied stdin
-                        // (see above): a malformed or non-conserving blob simply fails to verify (skip via
-                        // None). The header chain is a separate stdin field, read above.
-                        let pb = burn_deposit::ProvenanceBlob::parse(&blob)?;
-                        let etch_tx = pb.etch_tx;
-                        let etch_index = pb.etch_index;
-                        let etch_siblings = pb.etch_siblings;
-                        let etch_wtxid_siblings = pb.etch_wtxid_siblings;
-                        let etch_coinbase = pb.etch_coinbase;
-                        let etch_cb_txid_siblings = pb.etch_cb_txid_siblings;
-                        #[allow(clippy::type_complexity)]
-                        let cmints: Vec<(Vec<u8>, Vec<u8>, Vec<[u8; 32]>, u32, Vec<[u8; 32]>, Vec<u8>, Vec<[u8; 32]>)> =
-                            pb.cmints
-                                .into_iter()
-                                .map(|c| {
-                                    (
-                                        c.reveal_tx,
-                                        c.commit_tx,
-                                        c.merkle_siblings,
-                                        c.merkle_index,
-                                        c.reveal_wtxid_siblings,
-                                        c.reveal_coinbase,
-                                        c.reveal_cb_txid_siblings,
-                                    )
-                                })
-                                .collect();
-                        let prov = pb.prov;
-                        let pool_memberships = pb.pool_memberships;
-                        // (1) the pre-anchor chain is canonical Bitcoin: valid PoW + tip == this batch's anchor.
-                        let refs: Vec<&[u8]> = prov_headers.iter().map(|h| h.as_slice()).collect();
-                        if refs.is_empty() || bitcoin::verify_header_chain(&refs)? != prev_hash {
-                            return None;
-                        }
-                        // (2) every provenance CXFER's confirmed block root is one of the canonical chain's roots.
-                        // Runs regardless of etch presence: a DAG cxfer's OWN inclusion must always be proven,
-                        // whichever leaf source (C_0 or a pool-membership shortcut) it ultimately terminates at.
-                        if !prov.iter().all(|c| {
-                            prov_headers
-                                .iter()
-                                .any(|h| bitcoin::extract_merkle_root(h) == c.confirmed_block_root)
-                        }) {
-                            return None;
-                        }
-                        // valid_leaves accumulates every admissible DAG-termination point this burn may use:
-                        // C_0 + authorized cmints (etch-anchored, below — gated on a REAL etch being present) and
-                        // pool-membership shortcuts (gated on nothing but their own membership proof, further
-                        // below). ORIGINAL holders whose note is C_0 itself (or a short cmint-rooted chain) keep
-                        // working exactly as before; an actively-traded coin instead reaches a pool-membership
-                        // leaf a few real hops back — NEITHER path is weaker than the other, both bottom out in
-                        // an already-proven fact (a canonical etch anchor, or the reflection's own prior state).
-                        let mut valid_leaves: Vec<([u8; 32], [u8; 32])> = Vec::new();
-                        // (3) the etch is OPTIONAL — an empty etch_tx means this burn relies solely on
-                        // pool-membership shortcuts below. When present, it must be a valid CETCH in a canonical
-                        // block, asset-bound (fixed OR mintable; the mint_authority gates the cmints). C_0 is its
-                        // supply note. `?` here is safe: this whole block only runs when an etch was ACTUALLY
-                        // supplied, so a malformed one fails this burn's verification (skip, fold nothing)
-                        // rather than being silently ignored.
-                        if !etch_tx.is_empty() {
-                            let etch_txid = bitcoin::compute_txid(&etch_tx)?;
-                            let (c0_compressed, mint_authority, _dec) =
-                                bitcoin::verify_etch_anchor(&etch_tx, b_asset)?;
-                            let etch_root =
-                                bitcoin::verify_merkle_path(&etch_txid, &etch_siblings, etch_index);
-                            if !prov_headers
-                                .iter()
-                                .any(|h| bitcoin::extract_merkle_root(h) == etch_root)
-                            {
-                                return None;
-                            }
-                            // The CETCH (C_0 + mint authority) is read from the etch WITNESS, so bind it to the
-                            // block (BIP141), not just txid-merkle inclusion — else a swapped witness with a fake
-                            // CETCH would pass and forge the asset's supply anchor / mint authority.
-                            bitcoin::verify_tx_witness_committed(
-                                &etch_tx,
-                                etch_index,
-                                &etch_wtxid_siblings,
-                                &etch_coinbase,
-                                &etch_cb_txid_siblings,
-                                &etch_root,
-                            )?;
-                            // valid supply leaves = C_0 + each issuer-authorized cmint output, the cmint reveal
-                            // confirmed in the canonical chain. A fixed-supply asset has mint_authority = 0, so
-                            // verify_cmint_authorized rejects every cmint → leaves = [C_0] (self-enforcing).
-                            let c0_outpoint = outpoint_key(&etch_txid, 0);
-                            let c0_ch = commitment_hash_compressed(&c0_compressed)?;
-                            valid_leaves.push((c0_outpoint, c0_ch));
-                            let mut seen_commits: Vec<[u8; 32]> = Vec::with_capacity(cmints.len());
-                            for (
-                                reveal_tx,
-                                commit_tx,
-                                msib,
-                                midx,
-                                reveal_wtxid_siblings,
-                                reveal_coinbase,
-                                reveal_cb_txid_siblings,
-                            ) in &cmints
-                            {
-                                let reveal_txid = bitcoin::compute_txid(reveal_tx)?;
-                                let root = bitcoin::verify_merkle_path(&reveal_txid, msib, *midx);
-                                if !prov_headers
-                                    .iter()
-                                    .any(|h| bitcoin::extract_merkle_root(h) == root)
-                                {
-                                    return None;
-                                }
-                                // Replay guard: ONE commit tx authorizes ONE mint. The issuer signature binds the
-                                // commit's input anchor but NOT which commit OUTPUT the reveal spends, so two
-                                // reveals spending different outputs of the same commit would reuse a single
-                                // authorization to mint two supply leaves. Reject a repeat (one commit ⇒ one leaf).
-                                let commit_txid = bitcoin::compute_txid(commit_tx)?;
-                                if seen_commits.contains(&commit_txid) {
-                                    return None;
-                                }
-                                seen_commits.push(commit_txid);
-                                // The CMINT envelope is read from the reveal's WITNESS — bind it (BIP141).
-                                // commit_tx needs no witness auth: bound by txid (reveal spends it) + its inputs.
-                                bitcoin::verify_tx_witness_committed(
-                                    reveal_tx,
-                                    *midx,
-                                    reveal_wtxid_siblings,
-                                    reveal_coinbase,
-                                    reveal_cb_txid_siblings,
-                                    &root,
-                                )?;
-                                valid_leaves.push(burn_deposit::verify_cmint_authorized(
-                                    b_asset,
-                                    &mint_authority,
-                                    &etch_txid,
-                                    reveal_tx,
-                                    commit_tx,
-                                )?);
-                            }
-                        }
-                        // (4) pool-membership shortcut leaves are REFUSED. A tree leaf commits (asset, cx, cy,
-                        // owner) but no outpoint, so `verify_pool_membership_leaf` can only hand back the outpoint
-                        // it was given; the DAG then accepts any hop whose witnessed input is that (outpoint,
-                        // commitment) pair, and a hop's conservation kernel needs nothing but the note's opening.
-                        // A holder of any tracked note's opening could therefore spend a dust UTXO of their own
-                        // "as" that note, burn the hop's output and mint the note's value here — repeatably,
-                        // while the real note stays live on Bitcoin. The etch and cmint leaves have no such gap
-                        // (their outpoints are derived from the etch / reveal tx itself), so a lineage must bottom
-                        // out there. A blob that carries memberships is a prover choice, deterministic for every
-                        // prover: skip (fold nothing), never abort. Binding a shortcut soundly needs an
-                        // outpoint→leaf accumulator the reflection does not keep — a later generation's feature.
-                        if !pool_memberships.is_empty() {
-                            return None;
-                        }
-                        // (5) burned note outpoint = the burn tx's first spent input.
-                        let inputs = bitcoin::extract_inputs(tx)?;
-                        let (bt, bvo) = inputs.first()?;
-                        let burned_outpoint = outpoint_key(bt, *bvo);
-                        burned_txid = *bt;
-                        burned_vout = *bvo;
-                        // CROSS-LANE DOUBLE-MINT GATE: the burned note must NOT be an outpoint whose ν was already
-                        // consumed on the Ethereum fast lane. `fold_consumed` removed such an outpoint from `live`
-                        // (so it scans input-free here) but recorded it in consumed_outpoints_root; its Bitcoin UTXO
-                        // is still spendable, so admitting it would mint the SAME supply a second time (the fast-lane
-                        // ν and this native burn-deposit ν are in disjoint domains → no spent-set collision).
-                        //
-                        // The prover proves its presence claim (mirror fold_crossout): a MEMBER claim needs a valid
-                        // membership proof and then skips (already fast-consumed → no second mint); a NON-MEMBER
-                        // claim needs a valid non-membership proof and then folds. The witness is prover-supplied,
-                        // so an unproven claim MUST abort, never skip — else a malicious prover could censor a real
-                        // burn (claim absent, supply a bad path) and permanently strand the burner's principal.
-                        if co_is_member != 0 {
-                            assert!(
-                                imt_membership(
-                                    &state.consumed_outpoints_root,
-                                    &burned_outpoint,
-                                    &co_next,
-                                    co_index,
-                                    &co_path,
-                                ),
-                                "burn-deposit: claimed-consumed outpoint is not a member (bad prover witness) — cannot skip a real burn"
-                            );
-                            return None; // proven already fast-consumed → legit no-op (double-mint prevention)
-                        }
-                        assert!(
-                            imt_non_membership(
-                                &state.consumed_outpoints_root,
-                                &burned_outpoint,
-                                &co_value,
-                                &co_next,
-                                co_index,
-                                &co_path,
-                            ),
-                            "burn-deposit: consumed-outpoint non-membership witness invalid (bad prover witness)"
+                    let w = read_deposit_witness();
+                    // The pending-deposit insert witness, read unconditionally; used only if the deposit does
+                    // not verify.
+                    let (pk, pn, pv, pi, pp, pnew) = read_burn_insert();
+                    // The burned note's outpoint is the burn tx's first spent input. A block tx past the coinbase
+                    // always has one, and no two such txs share it, so it keys the pending record uniquely.
+                    if let Some((burned_txid, burned_vout)) =
+                        bitcoin::extract_inputs(tx).and_then(|ins| ins.first().copied())
+                    {
+                        let outcome = fold_burn_deposit(
+                            &mut state,
+                            &mut attested_metas,
+                            &prev_hash,
+                            b_asset,
+                            env_nu,
+                            env_dest,
+                            env_target,
+                            &burned_txid,
+                            burned_vout,
+                            &w,
                         );
-                        // (6) the burned note descends from a valid supply leaf (C_0 ∪ authorized cmints); the
-                        //     provenance DAG authenticates the commitment hash at the outpoint. A burn whose
-                        //     outpoint is not reachable from supply is a fake → skip.
-                        let real_ch =
-                            burn_deposit::verify_provenance_leaves(b_asset, &valid_leaves, &burned_outpoint, &prov)
-                                .ok()?;
-                        // The note opening is the prover's only remaining discretionary input here. Bind it to
-                        // the authenticated commitment: a prover that supplies a wrong opening for a reachable
-                        // (confirmed) burn would otherwise have it skipped and the digest advanced past it,
-                        // permanently censoring the deposit. A mismatch is a lying prover → abort.
-                        assert!(
-                            commitment_hash(&burned_cx, &burned_cy) == real_ch,
-                            "burn-deposit: opening does not match the authenticated provenance commitment (bad prover witness)"
-                        );
-                        // The envelope ν must equal the burned note's real ν; an inconsistent on-chain burn is
-                        // malformed (a tx-validity fact, deterministic for every prover) → skip.
-                        if &nullifier(&leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32])) != env_nu {
-                            return None;
-                        }
-                        Some(())
-                    })();
-                    if verified.is_some() {
-                        // A VERIFIED burn-deposit must be recorded or the proof rejected — never silently
-                        // omitted, else its confirmed-on-Bitcoin burn never reaches `bitcoinBurnRoot`/the pool
-                        // tree and the Ethereum bridge mint is permanently blocked. Mirror the main spent loop's
-                        // duplicate-vs-fresh discipline: a FRESH ν whose insert witness fails is a malicious
-                        // prover → ABORT; a genuine duplicate ν (re-presented bridge / ν-collision) is a
-                        // membership-gated no-op (already recorded in both spent + burn).
-                        // SPENT side: a genuine spent-duplicate ν is a membership-gated no-op; a FRESH ν must
-                        // insert (a bad witness → abort).
-                        if sv == *env_nu {
-                            assert!(
-                                imt_membership(&state.spent_root, env_nu, &sn, si, &sp),
-                                "burn-deposit: claimed spent-duplicate ν is not a member of spent_root"
-                            );
-                        } else {
+                        // The provenance is prover-supplied, so an unverified deposit is not proof the burn is
+                        // fake: record it as pending instead of dropping it, so a prover who withholds the
+                        // provenance delays the deposit but cannot erase a confirmed burn.
+                        if matches!(outcome, DepositOutcome::Unverified) {
                             state
-                                .fold_spent(env_nu, &sv, &sn, si, &sp, &snew)
-                                .expect("burn-deposit: spent insert (bad prover witness)");
-                        }
-                        // BURN + note side, INDEPENDENT of the spent side: a ν may already be recorded in
-                        // spent_root yet ABSENT from burn_root — a commitment-collision ν, or a ν that was spent
-                        // normally before this burn-deposit — so gating the burn record on spent-freshness would
-                        // drop a valid fresh burn, permanently blocking its OP_BRIDGE_MINT. Mirror the reflected-burn
-                        // replay gate independently: a genuine burn-duplicate (bk == env_nu) is a membership-gated
-                        // no-op (note already appended by the first burn); otherwise record the burn AND append
-                        // the note whenever the BURN is fresh (a bad fresh witness → abort, never skip).
-                        // The burned note is a NATIVE leaf(asset, Cx, Cy, 0) — a DISTINCT source class from an
-                        // ordinary reflected note (btc_note_leaf(asset,Cx,Cy,key)). Its burnId binds the exact
-                        // burn outpoint (the burn tx's first spent input) + this native leaf under the DEPOSIT
-                        // source kind, so it can never collide with a reflected-note burnId or a same-commitment
-                        // clone. OP_BRIDGE_MINT reproduces it via its self-verifying `source_class`
-                        // (native here ⇒ class 0, owner 0).
-                        let src_leaf = leaf(b_asset, &burned_cx, &burned_cy, &[0u8; 32]);
-                        // Bind to the target deployment: the burn-deposit's target CHAIN_BINDING (env[129..161])
-                        // is folded into the id, exactly like a reflected burn.
-                        let burn_id = bridge_burn_id(BURN_SOURCE_DEPOSIT, &burned_txid, burned_vout, &src_leaf, env_target);
-                        if bk == burn_id {
-                            assert!(
-                                utxo_membership(&state.burn_root, &burn_id, &bn, &bv, bi, &bp),
-                                "burn-deposit: claimed burn-duplicate burnId is not a member of burn_root"
-                            );
-                        } else {
-                            // Append-only (never live): spent now, not in-pool-spendable. The kernel binds
-                            // v_mint == v_burn at mint (the burned value is REAL: verify_provenance_leaves proved
-                            // it descends from supply).
-                            state
-                                .fold_note_append(&src_leaf, &note_path)
-                                .expect("burn-deposit note append");
-                            state
-                                .fold_burn(&burn_id, env_dest, &bk, &bn, &bv, bi, &bp, &bnew)
-                                .expect("burn-deposit burn fold");
-                            // The etch was BIP141 witness-committed + canonical above, so its declared
-                            // (ticker, decimals, cid) are authentic — surface them once for attest to
-                            // lazy-register the asset's canonical ERC20 (idempotent on the contract).
-                            if !attested_metas.iter().any(|m| m.assetId.0 == *b_asset) {
-                                // The etch tx lives in the same provenance blob the DAG verified from (parse
-                                // succeeds here since the fold only runs after it verified).
-                                if let Some(meta_env) = burn_deposit::ProvenanceBlob::parse(&blob)
-                                    .and_then(|pb| bitcoin::extract_taproot_envelope(&pb.etch_tx))
-                                {
-                                    if let Some((ticker, tlen, decimals, cid)) =
-                                        bitcoin::parse_etch_meta(&meta_env)
-                                    {
-                                        attested_metas.push(AssetMeta {
-                                            assetId: (*b_asset).into(),
-                                            ticker: ticker.into(),
-                                            tickerLen: tlen,
-                                            decimals,
-                                            cid: cid.into(),
-                                        });
-                                    }
-                                }
-                            }
+                                .fold_pending_deposit(
+                                    &outpoint_key(&burned_txid, burned_vout),
+                                    &pending_deposit_value(b_asset, env_nu, env_dest, env_target),
+                                    &pk,
+                                    &pn,
+                                    &pv,
+                                    pi,
+                                    &pp,
+                                    &pnew,
+                                )
+                                .expect("burn-deposit: pending insert (bad prover witness)");
                         }
                     }
                 } else {
@@ -1241,13 +1381,30 @@ pub fn main() {
             // lane-spendable pool value. Each output note leaf is DERIVED from the envelope
             // (never a free witness), its outpoint added to the live set for later spends in the batch.
             if let Some((asset, kernel_sig, commitments, range_proof)) = &cxfer {
+                // The kernel's inputs. A CXFER spends only pool notes, so they are all of this tx's spends. An
+                // atomic settlement (T_AXFER / T_AXFER_BPP) names its asset inputs by position,
+                // vin[1..1+asset_input_count], and the taker funds it with further inputs outside the kernel: those
+                // positions must all be live spends (else the tx folds nothing), and a pool note the taker adds
+                // elsewhere is nullified without entering the kernel, so it cannot keep the maker's outputs from
+                // onboarding.
+                let kernel_spends: Option<Vec<_>> =
+                    match env.as_ref().and_then(|e| bitcoin::axfer_asset_input_count(e)) {
+                        None => Some(spends.iter().collect()),
+                        Some(count) => bitcoin::extract_inputs(tx).and_then(|ins| {
+                            ins.get(1..1 + count)?
+                                .iter()
+                                .map(|(t, v)| spends.iter().find(|s| s.prev_txid == *t && s.prev_vout == *v))
+                                .collect()
+                        }),
+                    };
+                let kernel_spends = kernel_spends.unwrap_or_default();
                 let in_outpoints: Vec<([u8; 32], u32)> =
-                    spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
-                let in_points: Vec<Point> = spends
+                    kernel_spends.iter().map(|s| (s.prev_txid, s.prev_vout)).collect();
+                let in_points: Vec<Point> = kernel_spends
                     .iter()
                     .map(|s| from_affine_xy(&s.cx, &s.cy).expect("input commitment xy"))
                     .collect();
-                let in_assets: Vec<[u8; 32]> = spends.iter().map(|s| s.asset).collect();
+                let in_assets: Vec<[u8; 32]> = kernel_spends.iter().map(|s| s.asset).collect();
                 // Asset preservation: every spent note must be of the envelope's declared asset. A
                 // value-only conserving CXFER that RELABELS a cheap-asset note as a dear one is junk
                 // here, exactly like a non-conserving one — it injects no notes and carries NO output
@@ -1295,7 +1452,7 @@ pub fn main() {
                 // an unbound destination is exactly the risk being closed.
                 let dest_bound = !matches!(opcode, 0x22 | 0x23)
                     || bitcoin::note_spends_bind_outputs(tx, &in_outpoints);
-                if !spends.is_empty()
+                if !kernel_spends.is_empty()
                     && asset_preserving
                     && legacy_admissible
                     && canon_vouts.is_some()
@@ -1523,7 +1680,7 @@ pub fn main() {
             if let Some((call_id, record_hash)) = env
                 .as_ref()
                 .and_then(|e| bitcoin::parse_btc_call_envelope(e))
-                .and_then(|c| cxfer_core::fold_btc_call(&c))
+                .and_then(|c| cxfer_core::fold_btc_call(&c, &chain_binding))
             {
                 btc_calls_folded.push(call_id);
                 btc_calls_folded.push(record_hash);
@@ -1536,9 +1693,9 @@ pub fn main() {
             // Σ C_out + range BEFORE onboarding any output note (the same discipline as a cxfer). This onboards the
             // buyer's filled note (the bridgeable one) + the seller's change. Handles BOTH the partial-fill
             // (T_PREAUTH_BID_VAR 0x5C) and the exact-fill (T_PREAUTH_BID 0x5B) walk-away bids — same
-            // CXFER-family conservation, only the inline differs. OTC + the other atomic-settlement variants
-            // (T_AXFER 0x26 / 0x37 / 0x3C / 0x3D) need NO branch here — parse_cxfer_envelope_full accepts
-            // them, so the cxfer fold above handles them.
+            // CXFER-family conservation, only the inline differs. The fixed-amount atomic settlements
+            // (T_AXFER 0x26 / T_AXFER_BPP 0x3C) need NO branch here — parse_cxfer_envelope_full accepts them, so
+            // the cxfer fold above handles them; the variable-amount ones (0x37 / 0x3D) are not onboarded.
             if let Some((bid_asset, bid_kernel_sig, bid_commitments, bid_range_proof)) =
                 env.as_ref().and_then(|e| {
                     bitcoin::parse_preauth_bid_var_envelope(e)
@@ -1620,9 +1777,12 @@ pub fn main() {
                 let receipt_path = r_path();
                 let change_path = if !is_sentinel { Some(r_path()) } else { None };
                 let tip_path = if sv.tip_amount > 0 { Some(r_path()) } else { None };
-                if spends.len() == 1 {
-                    let s = &spends[0];
-                    // c_in must be the REAL spent note (so delta_in is backed by the real input value).
+                // The swap's input is the spend its intent signature names (the fold checks that signature over
+                // the candidate's outpoint first, before any state change): c_in must be that REAL spent note, so
+                // delta_in is backed by the real input value. Candidates are tried in input order and the first
+                // that folds wins; any other input is nullified by the vin scan and lost to whoever added it,
+                // so an extra input cannot make the trader's swap skip.
+                for s in spends.iter() {
                     let c_in_real = matches!(
                         (from_affine_xy(&s.cx, &s.cy), decompress(&sv.c_in)),
                         (Some(x), Some(y)) if x == y
@@ -1674,6 +1834,7 @@ pub fn main() {
                                 .is_ok()
                             {
                                 state.pools.update(&sv.pool_id, pool);
+                                break;
                             }
                         }
                     }
@@ -1690,8 +1851,9 @@ pub fn main() {
                 .and_then(|e| bitcoin::parse_swap_route_envelope(e))
             {
                 let receipt_path = r_path(); // witnessed per 0x33 (the receipt note's append path; vout 1)
-                if spends.len() == 1 {
-                    let s = &spends[0];
+                // The route's input is the spend its intent signature names, chosen exactly as for a swap_var:
+                // candidates in input order, the first that folds wins, extra inputs are lost to their adder.
+                for s in spends.iter() {
                     let c_in_real = matches!(
                         (from_affine_xy(&s.cx, &s.cy), decompress(&rt.c_in)),
                         (Some(x), Some(y)) if x == y
@@ -1703,7 +1865,7 @@ pub fn main() {
                         // min_out. Bound by the same intent signature, so it cannot be redirected. It needs no
                         // append path of its own — a refund lands at the same tree index the receipt would.
                         let refund_auth = bitcoin::output_p2tr_xonly(tx, 2).unwrap_or([0u8; 32]);
-                        let _ = state.fold_swap_route(
+                        let folded = state.fold_swap_route(
                             &rt,
                             (s.prev_txid, s.prev_vout),
                             &s.asset,
@@ -1716,6 +1878,9 @@ pub fn main() {
                             bitcoin::output_spk(tx, 2).as_deref(),
                             height,
                         );
+                        if folded.is_ok() {
+                            break;
+                        }
                     }
                 }
             }
@@ -2111,8 +2276,10 @@ pub fn main() {
                 let refund_vout =
                     cxfer_core::canonical_amm_output_vout(0x34, 0).expect("farm_init refund vout");
                 let refund_outpoint = outpoint_key(&txid, refund_vout);
-                if spends.len() == 1 {
-                    let s = &spends[0];
+                // The treasury funding is the reward-asset spend the launcher signature names (its funding_hash
+                // binds the outpoint). Candidates are tried in input order; any other input is nullified by the
+                // vin scan and lost to whoever added it, so an extra input cannot make the init skip.
+                for s in spends.iter() {
                     if s.asset == fi.reward_asset {
                         if let Some(c_in_pt) = from_affine_xy(&s.cx, &s.cy) {
                             let c_in = compress(&c_in_pt);
@@ -2140,6 +2307,9 @@ pub fn main() {
                             );
                             let launcher_x: [u8; 32] = fi.launcher_pubkey[1..33].try_into().unwrap_or([0u8; 32]);
                             let launcher_ok = bip340_verify(&fi.launcher_sig, &launcher_msg, &launcher_x);
+                            if !launcher_ok {
+                                continue;
+                            }
                             // Pre-validate the campaign window BEFORE inserting the treasury so a rejected
                             // schedule skips the WHOLE init (treasury + reward-state commit atomically).
                             // Otherwise fold_farm_init_rewards would reject end<=start AFTER fold_farm_init
@@ -2198,6 +2368,7 @@ pub fn main() {
                                     Ok(false) | Err(_) => {}
                                 }
                             }
+                            break;
                         }
                     }
                 }
@@ -2426,6 +2597,52 @@ pub fn main() {
                 );
             }
         }
+    }
+
+    // PENDING BURN-DEPOSIT COMPLETIONS. A deposit recorded as pending when its burn was scanned folds here once
+    // a prover supplies its provenance, over a header chain ending at this batch's anchor. Membership in the
+    // pending set proves the burn was scanned as a deposit with exactly these envelope fields; the burnId in
+    // `burn_root` is the replay gate, so completing twice records nothing twice. A completion must verify:
+    // it is an optional prover choice, so an unverifiable one is a bad proof, not a skip.
+    let n_deposit_completions: u32 = io::read();
+    for _ in 0..n_deposit_completions {
+        let burned_txid = r32();
+        let burned_vout: u32 = io::read();
+        let b_asset = r32();
+        let env_nu = r32();
+        let env_dest = r32();
+        let env_target = r32();
+        let pending_next = r32();
+        let pending_index: u64 = io::read();
+        let pending_path = r_path();
+        let w = read_deposit_witness();
+        assert!(
+            utxo_membership(
+                &state.pending_deposit_root,
+                &outpoint_key(&burned_txid, burned_vout),
+                &pending_next,
+                &pending_deposit_value(&b_asset, &env_nu, &env_dest, &env_target),
+                pending_index,
+                &pending_path,
+            ),
+            "pending burn-deposit completion: not a pending deposit"
+        );
+        let outcome = fold_burn_deposit(
+            &mut state,
+            &mut attested_metas,
+            &prev_hash,
+            &b_asset,
+            &env_nu,
+            &env_dest,
+            &env_target,
+            &burned_txid,
+            burned_vout,
+            &w,
+        );
+        assert!(
+            !matches!(outcome, DepositOutcome::Unverified),
+            "pending burn-deposit completion: provenance does not verify"
+        );
     }
 
     // Bound EVERY effect surfaced to the contract this cycle so a junk-flooded block can't push attest over

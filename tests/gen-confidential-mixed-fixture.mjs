@@ -86,10 +86,12 @@ for (const n of all) {
 // --- OP_TRANSFER: 2-in → recipient + change, REAL BP+ range proof + kernel (self-verified inside) --
 const TRANSFER_AMOUNT = 1200n; // to the recipient; change = 1700 − 1200 − fee
 const TRANSFER_FEE = 0n;       // self-settle leg (fee=0 ⇒ no FeePayment for the transfer)
+// OP_TRANSFER is a self-send (merge / consolidate): the dapp refuses a third-party recipient, whose native owner the
+// sender cannot mint without knowing their nullifier key — third parties are paid through stealth lock → claim.
 const tb = ux.buildTransferOp({
   walletPriv: SENDER_PRIV,
   notes: [tIn0, tIn1],
-  recipientPubHex: recipId.pubHex,
+  recipientPubHex: senderId.pubHex,
   amount: TRANSFER_AMOUNT,
   fee: TRANSFER_FEE,
 });
@@ -163,8 +165,9 @@ const fixture = {
     sigZ: unwrapOp.sigZ,
   },
   expected: {
-    transferNullifiers: transferOp.inputs.map((i) => pool.nullifier(i.cx, i.cy)),
-    unwrapNullifier: pool.nullifier(unwrapOp.cx, unwrapOp.cy),
+    // Owned native inputs: the guest records native_nu = keccak(nk ‖ leaf ‖ domain), not a commitment hash.
+    transferNullifiers: transferOp.inputs.map((i) => pool.nativeNu(i.owner, i.secret, pool.leaf(transferOp.asset, i.cx, i.cy, i.owner))),
+    unwrapNullifier: pool.nativeNu(unwrapOp.owner, unwrapOp.secret, pool.leaf(unwrapOp.asset, unwrapOp.cx, unwrapOp.cy, unwrapOp.owner)),
     unwrapWithdrawalValue: (BigInt(unwrapOp.value) - BigInt(unwrapOp.fee)).toString(),
     unwrapFeeValue: unwrapOp.fee,
     minDeadline: FIXED_DEADLINE.toString(), // only the unwrap carries one ⇒ batch min_deadline = it

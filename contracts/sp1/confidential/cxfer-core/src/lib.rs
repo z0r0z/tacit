@@ -34,6 +34,13 @@ pub mod eth_reflection;
 mod sigma;
 
 pub const KERNEL_DOMAIN: &[u8] = b"tacit-evm-cxfer-kernel-v1";
+/// OP_TRANSFER's own conservation-kernel domain. A native OP_TRANSFER input is authorized by nothing but its
+/// nullifier key and this kernel, and a relay that proves any other native op receives both. Every other op
+/// that verifies a kernel over tree-note inputs also carries a public leg (a payout, a swap input, an LP
+/// contribution) whose value enters the kernel exactly as a transfer's fee does, under the same transcript.
+/// Sharing the domain would let a relay re-prove such an op as a transfer with that public leg as its fee and
+/// collect it. A transfer-only domain makes a kernel signed for any other op fail as a transfer.
+pub const TRANSFER_KERNEL_DOMAIN: &[u8] = b"tacit-evm-transfer-kernel-v1";
 const BPP_DOMAIN: &[u8] = b"tacit-bpp-v1";
 const N_BITS: usize = 64;
 
@@ -133,8 +140,33 @@ pub fn verify_kernel_with_fee_bound(
     r: &ProjectivePoint,
     z: &Scalar,
 ) -> bool {
+    kernel_holds(KERNEL_DOMAIN, in_c, out_c, fee, out_leaves, r, z)
+}
+
+/// OP_TRANSFER's kernel: `verify_kernel_with_fee_bound` under `TRANSFER_KERNEL_DOMAIN`, so no kernel signed
+/// for another op verifies here.
+pub fn verify_transfer_kernel(
+    in_c: &[ProjectivePoint],
+    out_c: &[ProjectivePoint],
+    fee: u64,
+    out_leaves: &[[u8; 32]],
+    r: &ProjectivePoint,
+    z: &Scalar,
+) -> bool {
+    kernel_holds(TRANSFER_KERNEL_DOMAIN, in_c, out_c, fee, out_leaves, r, z)
+}
+
+fn kernel_holds(
+    domain: &[u8],
+    in_c: &[ProjectivePoint],
+    out_c: &[ProjectivePoint],
+    fee: u64,
+    out_leaves: &[[u8; 32]],
+    r: &ProjectivePoint,
+    z: &Scalar,
+) -> bool {
     let mut k = Keccak::v256();
-    k.update(KERNEL_DOMAIN);
+    k.update(domain);
     for p in in_c { k.update(&compress(p)); }
     for p in out_c { k.update(&compress(p)); }
     for l in out_leaves { k.update(l); }
@@ -149,6 +181,78 @@ pub fn verify_kernel_with_fee_bound(
     // ETH kernel op independently range-/opening-proves its outputs, so a forged identity spend is
     // unreachable — rejecting identity here would only fail-close those valid zero-excess transactions.
     ProjectivePoint::generator() * z == *r + x * e
+}
+
+#[cfg(test)]
+mod swap_blind_kernel_tests {
+    use super::*;
+
+    fn commit(v: u64, r: Scalar) -> ProjectivePoint {
+        gen_h() * Scalar::from(v) + ProjectivePoint::generator() * r
+    }
+
+    // One A→B intent (input 1000 of A) and one B→A intent (input 500 of B): on side A the input is the A→B note and
+    // the output is the B→A trader's A receipt; tips are zero-valued commitments; the pool absorbs the A imbalance.
+    #[test]
+    fn kernel_proves_the_aggregate_without_revealing_the_blinding() {
+        let (r_in0, r_in1, r_out0, r_out1, r_tip_a, r_tip_b) = (
+            Scalar::from(11u64), Scalar::from(22u64), Scalar::from(33u64), Scalar::from(44u64), Scalar::from(55u64), Scalar::from(66u64),
+        );
+        let c_in0 = compress(&commit(1000, r_in0)); // A→B input (asset A)
+        let c_in1 = compress(&commit(500, r_in1)); // B→A input (asset B)
+        let c_out0 = compress(&commit(480, r_out0)); // A→B receipt (asset B)
+        let c_out1 = compress(&commit(490, r_out1)); // B→A receipt (asset A)
+        let tip_a = compress(&commit(0, r_tip_a));
+        let tip_b = compress(&commit(0, r_tip_b));
+        let intents = [(0u8, c_in0), (1u8, c_in1)];
+        let receipts = [c_out0, c_out1];
+        // Side A: in 1000, out 490 ⇒ pool gains 510 of A (sign 0). Side B: in 500, out 480 ⇒ pool gains 20 of B.
+        let (da_sign, da_mag, db_sign, db_mag) = (0u8, 510u64, 0u8, 20u64);
+        let excess_a = r_in0 - r_out1 - r_tip_a;
+        let excess_b = r_in1 - r_out0 - r_tip_b;
+        let cb = [0x7cu8; 32];
+        let pid = [0x31u8; 32];
+        let sign = |excess: Scalar, side_a: bool, dsign: u8, dmag: u64, tip: &[u8; 33], cb: &[u8; 32], pid: &[u8; 32]| {
+            let x = swap_batch_aggregate_point(&intents, &receipts, side_a, dsign, dmag, tip).unwrap();
+            assert_eq!(x, ProjectivePoint::generator() * excess, "the aggregate point is the excess times G");
+            let k = Scalar::from(0x5eedu64 + side_a as u64);
+            let r = ProjectivePoint::generator() * k;
+            let e = swap_blind_kernel_challenge(cb, pid, side_a, &compress(&x), &compress(&r));
+            (compress(&r), (k + e * excess).to_bytes().into())
+        };
+        let (ra, za): ([u8; 33], [u8; 32]) = sign(excess_a, true, da_sign, da_mag, &tip_a, &cb, &pid);
+        let (rb, zb): ([u8; 33], [u8; 32]) = sign(excess_b, false, db_sign, db_mag, &tip_b, &cb, &pid);
+        assert!(swap_blind_aggregate_kernel(&intents, &receipts, true, da_sign, da_mag, &tip_a, &cb, &pid, &ra, &za));
+        assert!(swap_blind_aggregate_kernel(&intents, &receipts, false, db_sign, db_mag, &tip_b, &cb, &pid, &rb, &zb));
+        // The Bitcoin lane's cleartext form agrees on the same batch.
+        assert!(swap_batch_aggregate_identity(&intents, &receipts, true, da_sign, da_mag, &tip_a, &excess_a.to_bytes().into()));
+        // Bound to deployment, pool, side and the public delta.
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, true, da_sign, da_mag, &tip_a, &[0x7du8; 32], &pid, &ra, &za), "another deployment");
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, true, da_sign, da_mag, &tip_a, &cb, &[0x32u8; 32], &ra, &za), "another pool");
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, false, da_sign, da_mag, &tip_a, &cb, &pid, &ra, &za), "the other side");
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, true, da_sign, da_mag + 1, &tip_a, &cb, &pid, &ra, &za), "a padded delta");
+        // A non-canonical response is refused.
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, true, da_sign, da_mag, &tip_a, &cb, &pid, &ra, &[0xffu8; 32]), "non-canonical z");
+    }
+
+    #[test]
+    fn an_identity_excess_is_refused() {
+        // Side A: the input and the A receipt are the same point, and the tip carries no blinding (t·H) and is
+        // exactly cancelled by a pool shrink of t. The aggregate is the identity — a zero excess — which no Schnorr
+        // signature should be accepted for (anyone could "sign" it).
+        let r = Scalar::from(9u64);
+        let c = compress(&commit(100, r));
+        let t = 40u64;
+        let tip = compress(&(gen_h() * Scalar::from(t)));
+        let intents = [(0u8, c), (1u8, c)];
+        let receipts = [c, c];
+        let x = swap_batch_aggregate_point(&intents, &receipts, true, 1, t, &tip).unwrap();
+        assert_eq!(x, ProjectivePoint::identity(), "the constructed aggregate is the identity");
+        let k = Scalar::from(7u64);
+        let rp = compress(&(ProjectivePoint::generator() * k));
+        let z: [u8; 32] = k.to_bytes().into(); // z = k + e·0
+        assert!(!swap_blind_aggregate_kernel(&intents, &receipts, true, 1, t, &tip, &[1u8; 32], &[2u8; 32], &rp, &z));
+    }
 }
 
 #[cfg(test)]
@@ -288,10 +392,22 @@ mod relay_fee_kernel_tests {
                 out.iter().map(|(x, y, o)| leaf(&asset, &hx::<32>(x), &hx::<32>(y), &hx::<32>(o))).collect();
             let r = decompress(&hx::<33>(j["kernel"]["R"].as_str().unwrap())).unwrap();
             let z = scalar_reduce_be(&hx::<32>(j["kernel"]["z"].as_str().unwrap()));
-            assert!(verify_kernel_with_fee_bound(&inc, &outc, fee, &lvs, &r, &z),
+            let bound = if label == "transfer" { verify_transfer_kernel } else { verify_kernel_with_fee_bound };
+            assert!(bound(&inc, &outc, fee, &lvs, &r, &z),
                 "{}: bound kernel must ACCEPT the JS proof (guest↔JS parity)", label);
             assert!(!verify_kernel_with_fee(&inc, &outc, fee, &r, &z),
                 "{}: unbound kernel must REJECT a leaf-bound proof (binding is live)", label);
+            // Domain separation: a transfer kernel is not a kernel for any other op, and no other op's kernel is
+            // a transfer kernel. The second direction is the one that matters — a relay holding a send-unwrap's
+            // witness (nullifier key + kernel) must not be able to settle it as a transfer paying the public leg
+            // to itself as a fee.
+            if label == "transfer" {
+                assert!(!verify_kernel_with_fee_bound(&inc, &outc, fee, &lvs, &r, &z),
+                    "transfer: a transfer kernel must not verify under the generic domain");
+            } else {
+                assert!(!verify_transfer_kernel(&inc, &outc, fee, &lvs, &r, &z),
+                    "{}: this op's kernel must not verify as an OP_TRANSFER kernel", label);
+            }
         };
         let arr3 = |v: &serde_json::Value| -> Vec<(String, String, String)> {
             v.as_array().unwrap().iter()
@@ -472,15 +588,19 @@ pub fn bip340_verify(sig: &[u8; 64], msg: &[u8; 32], pubkey_x: &[u8; 32]) -> boo
 }
 
 /// SPEC-BITCOIN-HOOK-AMENDMENT §1.4: verify a value-free Bitcoin-authorized call envelope. If its BIP-340
-/// signature by `caller_pubkey` over the domain-tagged call binding (which includes the authorized `executor`
-/// — pinning the call to one deployment, no cross-deployment replay) is valid, return (call_id, record_hash):
+/// signature by `caller_pubkey` over the domain-tagged call binding is valid, return (call_id, record_hash).
+/// The binding names both the deployment's `chain_binding` (keccak(chainid ‖ pool), supplied by the reflection,
+/// never by the envelope) and the authorized `executor`: an executor address alone does not pin a chain, since
+/// the same deployer can place the same address on another chain, so a call signed for one deployment folds in
+/// no other.
 /// `call_id = keccak(caller_pubkey ‖ call_nonce)` is the one-shot key; `record_hash =
 /// keccak(executor ‖ target ‖ calldata_hash ‖ caller_pubkey)` is byte-identical to the BtcCallExecutor's
 /// `keccak(abi.encodePacked(address(this), target, calldataHash, callerPubkey))` check, so the executor can
 /// only fire a call that named it. No value, no note — a fact, not an effect.
-pub fn fold_btc_call(env: &bitcoin::BtcCallEnvelope) -> Option<([u8; 32], [u8; 32])> {
+pub fn fold_btc_call(env: &bitcoin::BtcCallEnvelope, chain_binding: &[u8; 32]) -> Option<([u8; 32], [u8; 32])> {
     let msg = kn(&[
-        b"tacit-btc-call-v1",
+        b"tacit-btc-call-v2",
+        chain_binding,
         &env.executor,
         &env.target,
         &env.calldata_hash,
@@ -978,37 +1098,104 @@ pub fn swap_batch_aggregate_identity(
     tip_x_c_secp: &[u8; 33],
     r_net_x: &[u8; 32],
 ) -> bool {
-    if intents.len() != receipts_c_out.len() {
+    match swap_batch_aggregate_point(intents, receipts_c_out, asset_x_is_a, delta_x_sign, delta_x_mag, tip_x_c_secp) {
+        // R_net_X reduced mod n (the worker uses modN, not a strict reject), then `sum == R_net_X·G`.
+        Some(sum) => sum == ProjectivePoint::generator() * scalar_reduce_be(r_net_x),
+        None => false,
+    }
+}
+
+/// Domain of the settle lane's blind-batch conservation kernel.
+pub const SWAP_BLIND_KERNEL_DOMAIN: &[u8] = b"tacit-swap-blind-kernel-v1";
+
+/// The settle lane's form of the aggregate identity. `swap_batch_aggregate_identity` checks the same point against
+/// a cleartext blinding `r_net_X`, which is fine on the Bitcoin lane (the inputs are spent atomically in the
+/// envelope's own transaction) but not where the proof is built by a delegated prover: on a side whose batch runs
+/// one way, `r_net_X + r_tip_X` IS the sum of the input blindings, and with the nullifier keys the prover already
+/// holds that is enough to spend the inputs elsewhere before the settle lands. Here the party that knows the excess
+/// signs it instead — a Schnorr proof of knowledge of `r` with `X = r·G`, bound to this deployment, pool and asset
+/// side — so conservation is proven without the prover ever learning the blinding. A non-canonical `z` and an
+/// identity excess are rejected.
+#[allow(clippy::too_many_arguments)]
+pub fn swap_blind_aggregate_kernel(
+    intents: &[(u8, [u8; 33])],
+    receipts_c_out: &[[u8; 33]],
+    asset_x_is_a: bool,
+    delta_x_sign: u8,
+    delta_x_mag: u64,
+    tip_x_c_secp: &[u8; 33],
+    chain_binding: &[u8; 32],
+    pool_id: &[u8; 32],
+    kernel_r: &[u8; 33],
+    kernel_z: &[u8; 32],
+) -> bool {
+    let x = match swap_batch_aggregate_point(intents, receipts_c_out, asset_x_is_a, delta_x_sign, delta_x_mag, tip_x_c_secp) {
+        Some(p) => p,
+        None => return false,
+    };
+    if x == ProjectivePoint::identity() {
         return false;
+    }
+    let (r, z) = match (decompress(kernel_r), scalar_canonical_be(kernel_z)) {
+        (Some(r), Some(z)) => (r, z),
+        _ => return false,
+    };
+    let e = swap_blind_kernel_challenge(chain_binding, pool_id, asset_x_is_a, &compress(&x), kernel_r);
+    ProjectivePoint::generator() * z == r + x * e
+}
+
+/// Challenge for `swap_blind_aggregate_kernel`: keccak(domain ‖ chain_binding ‖ pool_id ‖ side ‖ X ‖ R) mod n,
+/// with side = 0 for asset A and 1 for asset B.
+pub fn swap_blind_kernel_challenge(
+    chain_binding: &[u8; 32],
+    pool_id: &[u8; 32],
+    asset_x_is_a: bool,
+    x_compressed: &[u8; 33],
+    r_compressed: &[u8; 33],
+) -> Scalar {
+    let mut k = Keccak::v256();
+    k.update(SWAP_BLIND_KERNEL_DOMAIN);
+    k.update(chain_binding);
+    k.update(pool_id);
+    k.update(&[if asset_x_is_a { 0u8 } else { 1u8 }]);
+    k.update(x_compressed);
+    k.update(r_compressed);
+    let mut h = [0u8; 32];
+    k.finalize(&mut h);
+    scalar_reduce_be(&h)
+}
+
+/// Σ_{input-side} C_in − Σ_{output-side} C_out − C_tip ∓ δ·H for asset X — the point whose discrete log is the
+/// batch's blinding excess on that side. None on any undecodable commitment or a length mismatch.
+fn swap_batch_aggregate_point(
+    intents: &[(u8, [u8; 33])],
+    receipts_c_out: &[[u8; 33]],
+    asset_x_is_a: bool,
+    delta_x_sign: u8,
+    delta_x_mag: u64,
+    tip_x_c_secp: &[u8; 33],
+) -> Option<ProjectivePoint> {
+    if intents.len() != receipts_c_out.len() {
+        return None;
     }
     let mut sum = ProjectivePoint::identity();
     for (i, (direction, c_in_secp)) in intents.iter().enumerate() {
         let is_input = (asset_x_is_a && *direction == 0) || (!asset_x_is_a && *direction == 1);
         let is_output = (asset_x_is_a && *direction == 1) || (!asset_x_is_a && *direction == 0);
         if is_input {
-            match decompress(c_in_secp) {
-                Some(p) => sum = sum + p,
-                None => return false,
-            }
+            sum = sum + decompress(c_in_secp)?;
         } else if is_output {
-            match decompress(&receipts_c_out[i]) {
-                Some(p) => sum = sum - p,
-                None => return false,
-            }
+            sum = sum - decompress(&receipts_c_out[i])?;
         }
     }
     // The caller first verifies this commitment opens to the Groth16-public tip amount under the envelope's
     // r_tip. Once bound, subtracting the full point mirrors the worker and includes its blinding in R_net.
-    sum = match decompress(tip_x_c_secp) {
-        Some(p) => sum - p,
-        None => return false,
-    };
+    sum = sum - decompress(tip_x_c_secp)?;
     if delta_x_mag != 0 {
         let dh = gen_h() * Scalar::from(delta_x_mag);
         sum = if delta_x_sign == 0 { sum - dh } else { sum + dh };
     }
-    // R_net_X reduced mod n (the worker uses modN, not a strict reject), then `sum == R_net_X·G`.
-    sum == ProjectivePoint::generator() * scalar_reduce_be(r_net_x)
+    Some(sum)
 }
 
 /// SHA-256 of `data` (sp1-patched in-zkVM). Exposed for the reflection bin — e.g. the T_SWAP_BATCH
@@ -4214,6 +4401,29 @@ pub struct ScanReflection {
     // across cycles. Sentinel-seeded like spent_root (count starts at 1).
     pub consumed_outpoints_root: [u8; 32],
     pub consumed_outpoints_count: u64,
+    // Mode-B light-client anchor: the Ethereum sync committee the last Mode-B cycle ended on (the eth proof's
+    // syncCommitteeRoot). The next Mode-B proof must start from it, so the trusted committee advances with
+    // every cycle instead of staying at the pinned bootstrap, whose keys age out of the weak-subjectivity
+    // period and whose updates age out of beacon-node retention. [0;32] means the pinned genesis committee.
+    // PRESERVED across a generational rebase: the committee is a fact about Ethereum, not about a pool.
+    pub eth_sync_committee: [u8; 32],
+    // Burn-deposits a batch could not verify when their burn block was scanned (outpoint key of the burn's
+    // first input → `pending_deposit_value`). The provenance proving a deposit is prover-supplied, so a
+    // prover that withholds it must not erase a confirmed burn: the burn is recorded here instead and any
+    // later batch may complete it (`fold_pending_deposit` membership + the same verification). Never removed —
+    // the deposit's burnId in `burn_root` is the replay gate. Sentinel-seeded like `burn_root`.
+    pub pending_deposit_root: [u8; 32],
+    pub pending_deposit_count: u64,
+}
+
+/// Domain for a pending burn-deposit record.
+pub const PENDING_DEPOSIT_DOMAIN: &[u8] = b"tacit-pending-deposit-v1";
+
+/// The pending burn-deposit record: every envelope field a deposit fold consumes besides the burned outpoint,
+/// which is the record's key. Completing the deposit later re-derives it, so the completion folds exactly the
+/// burn that was scanned.
+pub fn pending_deposit_value(asset: &[u8; 32], nu: &[u8; 32], dest: &[u8; 32], target: &[u8; 32]) -> [u8; 32] {
+    kn(&[PENDING_DEPOSIT_DOMAIN, asset, nu, dest, target])
 }
 
 impl Default for ScanReflection {
@@ -4249,6 +4459,9 @@ impl ScanReflection {
             folded_crossout_count: 0,
             consumed_outpoints_root: imt_empty_root(),
             consumed_outpoints_count: 1,
+            eth_sync_committee: [0u8; 32],
+            pending_deposit_root: UtxoAccumulator::new().root(),
+            pending_deposit_count: 1,
         }
     }
 
@@ -4303,13 +4516,17 @@ impl ScanReflection {
             // CROSS-LANE DOUBLE-MINT GATE: the set of fast-lane-consumed Bitcoin outpoints — pinned so a resumed
             // cycle can't roll it back and re-open the scan-free burn-deposit of an already-fast-consumed UTXO.
             &self.consumed_outpoints_root, &u64b(self.consumed_outpoints_count),
+            // The Ethereum sync committee the next Mode-B proof must start from.
+            &self.eth_sync_committee,
+            // Burn-deposits awaiting their provenance — pinned so a resumed cycle can't drop one.
+            &self.pending_deposit_root, &u64b(self.pending_deposit_count),
         ])
     }
 
     /// Generational rebase (first cycle of a successor generation). A successor pool resumes the SHARED
     /// Bitcoin reflection from a drained predecessor: it PRESERVES every global accumulator — note tree,
     /// spent set, bridge-burn set, consumed-outpoint gate, consumed-cross-out replay gate, pools, cBTC
-    /// backing, farms, height — and RESETS only the generation-local liveness fields, which are re-anchored
+    /// backing, farms, height, pending burn-deposits, the Ethereum sync committee — and RESETS only the generation-local liveness fields, which are re-anchored
     /// to the successor's own address:
     ///   - `consumed_count → 0`: the fast-lane consume epoch restarts against the successor's own
     ///     `bitcoinConsumedCount` (seeded 0). Every already-consumed source note stays SPENT (the spent set
@@ -4319,10 +4536,11 @@ impl ScanReflection {
     ///   - `eth_refl_digest → [0;32]`: the "no Mode-B yet" sentinel, so the successor's FIRST Mode-B cycle
     ///     re-derives `eth_refl_genesis_digest(successor_address)` — binding the eth accumulator to the new
     ///     pool exactly as a genesis deploy would.
-    /// Soundness rests on the caller's DRAIN gate (the predecessor's reflection had folded every recorded
-    /// consume/cross-out, i.e. `consumed_count`/`folded_crossout_count` equal the predecessor's on-chain
-    /// counters): otherwise resetting the counters would abandon an unfolded consume (leaving its source note
-    /// live AND already value-spent on Ethereum) or a pending cross-out mint. The bridge-burn set is
+    /// Soundness rests on the caller's drain gate (`rebase_drain_check` in the reflection guest): every recorded
+    /// consume must be folded (`consumed_count` equal to the predecessor's on-chain count), since resetting the
+    /// counter would otherwise abandon an unfolded consume and leave its source note live AND already value-spent
+    /// on Ethereum. A cross-out whose Bitcoin mint has not folded is admitted: its claim is a member only of the
+    /// predecessor's cross-out set, so it mints in the predecessor's reflection alone. The bridge-burn set is
     /// PRESERVED, so an outstanding bridge-out stays mintable in the successor and needs no drain.
     pub fn rebase(&mut self) {
         self.consumed_count = 0;
@@ -6096,6 +6314,29 @@ impl ScanReflection {
         self.fold_output(&leaf, share_path, share_outpoint, &ch, &lp_asset, share_auth)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    /// Record a burn-deposit whose provenance was not verified when its burn was scanned (witnessed insert,
+    /// keyed by the burned outpoint). The key is a spent Bitcoin outpoint, so it is fresh by construction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fold_pending_deposit(
+        &mut self,
+        outpoint: &[u8; 32],
+        record: &[u8; 32],
+        low_key: &[u8; 32],
+        low_next: &[u8; 32],
+        low_value: &[u8; 32],
+        low_index: u64,
+        low_path: &[[u8; 32]],
+        new_path: &[[u8; 32]],
+    ) -> Result<(), &'static str> {
+        self.pending_deposit_root = utxo_insert_transition(
+            &self.pending_deposit_root, outpoint, record, low_key, low_next, low_value,
+            low_index, low_path, self.pending_deposit_count, new_path,
+        ).ok_or("pending-deposit insert witness invalid")?;
+        self.pending_deposit_count += 1;
+        Ok(())
+    }
+
     /// Record a bridge-out in the burn set: burnId → destCommitment (witnessed UTXO insert). `burnId` is the
     /// SOURCE-SPECIFIC identity `bridge_burn_id(kind, spent_outpoint, src_leaf)` — the exact authenticated
     /// source note, not its bare commitment ν (which the spend itself folds via `fold_spent`). bridge_mint can
@@ -7265,8 +7506,9 @@ mod tests {
         let call_nonce = [0x33u8; 32];
         let d_seed = [0x44u8; 32];
         let k_seed = [0x55u8; 32];
+        let chain_binding = [0x7cu8; 32];
         let (pubkey_x, _) = bip340_sign(&d_seed, &k_seed, &[0u8; 32]); // derive the signer pubkey first
-        let msg = kn(&[b"tacit-btc-call-v1", &executor, &target, &calldata_hash, &pubkey_x, &call_nonce]);
+        let msg = kn(&[b"tacit-btc-call-v2", &chain_binding, &executor, &target, &calldata_hash, &pubkey_x, &call_nonce]);
         let (pubkey_x2, sig) = bip340_sign(&d_seed, &k_seed, &msg);
         assert_eq!(pubkey_x, pubkey_x2, "pubkey is deterministic in d_seed");
 
@@ -7280,7 +7522,9 @@ mod tests {
         assert_eq!(env.len(), 201, "fixed envelope length");
 
         let parsed = bitcoin::parse_btc_call_envelope(&env).expect("parse");
-        let (call_id, record_hash) = fold_btc_call(&parsed).expect("valid sig folds");
+        let (call_id, record_hash) = fold_btc_call(&parsed, &chain_binding).expect("valid sig folds");
+        // the same envelope reflected by a DIFFERENT deployment folds nothing (no cross-chain replay at a shared executor address)
+        assert!(fold_btc_call(&parsed, &[0x7du8; 32]).is_none(), "a call signed for one deployment folds in no other");
         assert_eq!(call_id, kn(&[&pubkey_x, &call_nonce]), "callId = keccak(pubkey ‖ nonce)");
         // recordHash must equal the executor's keccak(abi.encodePacked(address(this), target, calldataHash, callerPubkey))
         assert_eq!(record_hash, kn(&[&executor, &target, &calldata_hash, &pubkey_x]), "recordHash binding");
@@ -7289,21 +7533,21 @@ mod tests {
         let mut bad_sig = env.clone();
         bad_sig[200] ^= 1;
         assert!(
-            bitcoin::parse_btc_call_envelope(&bad_sig).and_then(|c| fold_btc_call(&c)).is_none(),
+            bitcoin::parse_btc_call_envelope(&bad_sig).and_then(|c| fold_btc_call(&c, &chain_binding)).is_none(),
             "a bad sig folds nothing"
         );
         // a swapped executor breaks the signed binding → folds nothing (no cross-deployment replay)
         let mut bad_exec = env.clone();
         bad_exec[1] ^= 1;
         assert!(
-            bitcoin::parse_btc_call_envelope(&bad_exec).and_then(|c| fold_btc_call(&c)).is_none(),
+            bitcoin::parse_btc_call_envelope(&bad_exec).and_then(|c| fold_btc_call(&c, &chain_binding)).is_none(),
             "a swapped executor breaks the binding"
         );
         // a swapped target (now at offset 21) also breaks the binding
         let mut bad_target = env.clone();
         bad_target[21] ^= 1;
         assert!(
-            bitcoin::parse_btc_call_envelope(&bad_target).and_then(|c| fold_btc_call(&c)).is_none(),
+            bitcoin::parse_btc_call_envelope(&bad_target).and_then(|c| fold_btc_call(&c, &chain_binding)).is_none(),
             "a swapped target breaks the binding"
         );
     }
@@ -7770,7 +8014,7 @@ mod tests {
     fn genesis_digest_matches_contract_constant() {
         assert_eq!(
             ScanReflection::genesis().digest(),
-            arr32("0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d"),
+            arr32("0x76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5"),
             "ScanReflection::genesis().digest() drifted from ConfidentialPool.REFLECTION_GENESIS_DIGEST"
         );
     }
@@ -10751,6 +10995,53 @@ mod tests {
         assert_eq!(acc.get(&key), None, "removed key is gone");
     }
 
+    // A censored burn-deposit is recorded, pinned by the resume digest, provable later, and survives a rebase;
+    // the Mode-B sync committee is pinned the same way.
+    #[test]
+    fn pending_deposit_and_sync_committee_ride_the_digest_and_the_rebase() {
+        let h = |n: u32| arr32(&format!("0x{:064x}", n));
+        let mut st = ScanReflection::genesis();
+        let g = st.digest();
+        let outpoint = outpoint_key(&h(0x51), 1);
+        let record = pending_deposit_value(&h(1), &h(2), &h(3), &h(4));
+        let mut acc = UtxoAccumulator::new();
+        assert_eq!(st.pending_deposit_root, acc.root());
+        let leaves = acc.leaves();
+        let (low_i, low_k, low_n, low_v) = acc.low(&outpoint).expect("low");
+        let low_path = merkle_path(&leaves, low_i as u64);
+        let mut interm = leaves.clone();
+        interm[low_i] = utxo_leaf(&low_k, &outpoint, &low_v);
+        let new_path = merkle_path(&interm, leaves.len() as u64);
+        st.fold_pending_deposit(&outpoint, &record, &low_k, &low_n, &low_v, low_i as u64, &low_path, &new_path)
+            .expect("pending insert");
+        acc.insert(&outpoint, &record);
+        assert_eq!(st.pending_deposit_root, acc.root());
+        assert_eq!(st.pending_deposit_count, 2);
+        assert_ne!(st.digest(), g, "a pending deposit moves the resume digest");
+
+        let (i, next, value) = acc.membership(&outpoint).expect("member");
+        let path = merkle_path(&acc.leaves(), i as u64);
+        assert!(utxo_membership(&st.pending_deposit_root, &outpoint, &next, &value, i as u64, &path));
+        let other = pending_deposit_value(&h(1), &h(2), &h(9), &h(4));
+        assert!(
+            !utxo_membership(&st.pending_deposit_root, &outpoint, &next, &other, i as u64, &path),
+            "a completion must name the scanned envelope fields"
+        );
+        assert!(
+            st.fold_pending_deposit(&outpoint, &record, &low_k, &low_n, &low_v, low_i as u64, &low_path, &new_path)
+                .is_err(),
+            "the same outpoint cannot be recorded twice"
+        );
+
+        let before = st.digest();
+        st.eth_sync_committee = h(0x77);
+        assert_ne!(st.digest(), before, "the sync committee is pinned by the resume digest");
+
+        let (root, count, committee) = (st.pending_deposit_root, st.pending_deposit_count, st.eth_sync_committee);
+        st.rebase();
+        assert_eq!((st.pending_deposit_root, st.pending_deposit_count, st.eth_sync_committee), (root, count, committee));
+    }
+
     // ── Phase 2 witness builders (what the Phase-4 indexer runs) ──
     fn build_spend_witness(spent: &ImtAccumulator, utxo: &UtxoAccumulator, asset: [u8; 32], cx: [u8; 32], cy: [u8; 32], outpoint: [u8; 32]) -> SpendWitness {
         let auth_key = [0u8; 32];
@@ -10870,7 +11161,7 @@ mod tests {
     #[test]
     fn scan_reflection_genesis_digest() {
         let g = ScanReflection::genesis();
-        assert_eq!(hex::encode(g.digest()), "943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d", "full-scan genesis digest (JS indexer + contract must match)");
+        assert_eq!(hex::encode(g.digest()), "76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5", "full-scan genesis digest (JS indexer + contract must match)");
         // empty live set root == empty note-tree root (both keccak_merkle_root([])); spent + burn
         // keep the {0→0} sentinel roots.
         assert_eq!(g.live.root(), g.pool_root);

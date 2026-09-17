@@ -9,15 +9,25 @@
 //   • the cBTC.zk note is BEARER (owner = 0, no pubkey to seal to) → SEED-DERIVED: the recovery scan re-derives
 //     its blinding from priv + the lock anchor (the same derivation the Model-B lock-tx uses).
 //
-// Deps: { pool, cdp (makeConfidentialCdp), relay (makeConfidentialRelay, guard-wired), id, chainBindingHex, secp }.
-//   id: { owner (32B leaf owner), pubHex (owner pubkey the memo seals to), secret }.
+// Deps: { pool, cdp (makeConfidentialCdp), relay (makeConfidentialRelay, guard-wired), id, chainBindingHex, secp,
+//   ephRand? }.
+//   id: { pubHex (the pubkey memos seal to) }. No wallet-wide owner or nk is used for any minted note.
+//   ephRand: the memo ephemeral source, called once per memo. Defaults to a CSPRNG scalar; it must never be
+//   derived from wallet state, or every memo of the wallet shares one ephemeral pubkey (linkable on-chain) and
+//   one keystream, and whoever learns that scalar opens all of them.
 
-export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainBindingHex, secp }) {
+import { randomScalar } from './bulletproofs-plus.js';
+
+export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainBindingHex, secp, ephRand = randomScalar }) {
   const ZERO = '0x' + '00'.repeat(32);
-  const ephFromSecret = () => (BigInt(id.secret) % secp.CURVE.n) || 1n; // deterministic eph (memo carries the full opening)
-  // An OWNED note the user can re-open via a memo sealed to their pubkey (channel a).
-  const owned = ({ value, blinding, asset, cx, cy }) =>
-    ({ value: value.toString(), blinding, secret: id.secret, asset, owner: id.owner, cx, cy, ownerPub: id.pubHex });
+  // An OWNED note the user can re-open via a memo sealed to their pubkey (channel a). Its owner is H(nk) for a
+  // FRESH per-note nk, and that nk rides the memo as `secret`; the pair is checked so a mismatch cannot ship a
+  // note that decrypts but never spends.
+  const owned = ({ value, blinding, asset, cx, cy, owner, secret }) => {
+    if (owner == null || secret == null) throw new Error('defi: a minted note needs its own fresh nk and owner');
+    if (String(pool.nkToOwner(secret)).toLowerCase() !== String(owner).toLowerCase()) throw new Error('defi: minted note owner is not H(nk)');
+    return { value: value.toString(), blinding, secret, asset, owner, cx, cy, ownerPub: id.pubHex };
+  };
 
   // CDP open — lock a collateral basket → mint a cUSD debt note (net of the relay fee). The debt note is the
   // only minted spendable note (the basket is spent into the position). `positionOwner` is a FRESH per-position
@@ -46,9 +56,9 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
       leaves = [pool.leaf(debtAsset, op.debt.cx, op.debt.cy, debtOwner)];
       // leaf owner = H(debtNk) (matches the guest's debt_owner); the memo still seals to the borrower's
       // pubkey (recovery), and carries debtNk as `secret` so the borrower can later spend the note.
-      outputs = [{ ...owned({ value: BigInt(debtValue) - BigInt(fee), blinding: debtBlinding, asset: debtAsset, cx: op.debt.cx, cy: op.debt.cy }), owner: debtOwner, secret: debtNk }];
+      outputs = [owned({ value: BigInt(debtValue) - BigInt(fee), blinding: debtBlinding, asset: debtAsset, cx: op.debt.cx, cy: op.debt.cy, owner: debtOwner, secret: debtNk })];
     }
-    return relay.settle({ type: 'cdpmint', op, leaves, outputs, ephRand: ephFromSecret }, waitOpts);
+    return relay.settle({ type: 'cdpmint', op, leaves, outputs, ephRand }, waitOpts);
   }
 
   // CDP close — burn the debt notes + release the basket (first leg net of fee). Each released leg is a minted
@@ -75,8 +85,8 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     const releaseOwners = sortedNks.map((nk) => pool.nkToOwner(nk));
     const op = cdp.buildCdpCloseOp({ chainBinding: chainBindingHex(), controller, owner: pOwner, ownerPriv: positionOwnerPriv, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee, releaseBlindings: sortedBlindings, releaseOwners, debtNotes });
     const leaves = op.legs.map((leg, i) => pool.leaf(leg.asset, leg.cx, leg.cy, releaseOwners[i]));
-    const outputs = op.legs.map((leg, i) => ({ ...owned({ value: BigInt(leg.value) - (i === 0 ? BigInt(fee) : 0n), blinding: sortedBlindings[i], asset: leg.asset, cx: leg.cx, cy: leg.cy }), owner: releaseOwners[i], secret: sortedNks[i] }));
-    return relay.settle({ type: 'cdpclose', op, leaves, outputs, ephRand: ephFromSecret }, waitOpts);
+    const outputs = op.legs.map((leg, i) => owned({ value: BigInt(leg.value) - (i === 0 ? BigInt(fee) : 0n), blinding: sortedBlindings[i], asset: leg.asset, cx: leg.cx, cy: leg.cy, owner: releaseOwners[i], secret: sortedNks[i] }));
+    return relay.settle({ type: 'cdpclose', op, leaves, outputs, ephRand }, waitOpts);
   }
 
   // CDP liquidate — a KEEPER seizes an undercollateralized position: burn the keeper's cUSD notes (≥ the
@@ -91,7 +101,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // Returns the relay settle result when relayed, or { publicValues, proof } when self-settling.
   async function liquidateCdp({ controller, owner, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, liquidator, debtNotes, fee = 0n, waitOpts }) {
     const op = cdp.buildCdpLiquidateOp({ chainBinding: chainBindingHex(), controller, owner, debtValue, nonce: ZERO32, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, liquidator, debtNotes, fee });
-    const spec = { type: 'cdpliquidate', op, leaves: [], outputs: [], ephRand: ephFromSecret };
+    const spec = { type: 'cdpliquidate', op, leaves: [], outputs: [], ephRand };
     return BigInt(fee) > 0n ? relay.settle(spec, waitOpts) : relay.prove(spec, waitOpts);
   }
 
@@ -104,7 +114,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     // source and both nonces are pinned to 0, so the replacement stays keeper-reconstructable/liquidatable.
     if (!positionOwner || !positionOwnerPriv) throw new Error('topupCdp: positionOwner + positionOwnerPriv (the position\'s fresh key) are required to authorize the top-up');
     const op = cdp.buildCdpTopupOp({ chainBinding: chainBindingHex(), controller, owner: positionOwner, ownerPriv: positionOwnerPriv, debtValue, oldNonce: ZERO32, newNonce: ZERO32, rateSnapshot, oldBasket, addedCollateral, positionIndex, positionPath, spendRoot, cdpPositionRoot });
-    return relay.settle({ type: 'cdptopup', op, leaves: [], outputs: [], ephRand: ephFromSecret }, waitOpts);
+    return relay.settle({ type: 'cdptopup', op, leaves: [], outputs: [], ephRand }, waitOpts);
   }
 
   // cBTC mint — mint the bearer cBTC.zk note against a reflection-recorded self-custody lock. The note is
@@ -113,7 +123,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   async function mintCbtc({ outpoint, vBtc, blinding, waitOpts }) {
     const op = cdp.buildCbtcMintOp({ chainBinding: chainBindingHex(), outpoint, vBtc, blinding });
     const leaf = pool.leaf(pool.CBTC_ZK_ASSET_ID, op.cx, op.cy, ZERO);
-    return relay.settle({ type: 'cbtcmint', op, leaves: [leaf], outputs: [{ seedDerived: true }], ephRand: ephFromSecret }, waitOpts);
+    return relay.settle({ type: 'cbtcmint', op, leaves: [leaf], outputs: [{ seedDerived: true }], ephRand }, waitOpts);
   }
 
   // ── farms + TSR ── the receipt note is owner-blinded + recovered by the receipt scan ⇒ SEED-DERIVED (no
@@ -135,7 +145,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     const op = farm.buildBondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, nonce, lpAsset, legs });
     const shares = legs.reduce((s, l) => s + BigInt(l.value), 0n);
     const receipt = pool.farmReceiptLeaf(controller32(controller), lpAsset, shares, receiptOwner, nonce);
-    return relay.settle({ type: 'farmbond', op, leaves: [receipt], outputs: [{ seedDerived: true }], ephRand: ephFromSecret }, waitOpts);
+    return relay.settle({ type: 'farmbond', op, leaves: [receipt], outputs: [{ seedDerived: true }], ephRand }, waitOpts);
   }
 
   // OP_FARM_HARVEST — claim yield, keep staked. The receipt is NEITHER consumed NOR re-minted, so the guest
@@ -147,8 +157,8 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     const rewardOwner = pool.nkToOwner(rewardNk);
     const op = farm.buildHarvestOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, ownerPriv: receiptOwnerPriv, rewardOwner, shares, nonce, harvestNonce, reward, oldIndex, oldPath, lpAsset, rewardAsset, rewardNote, fee });
     const rewardLeaf = pool.leaf(rewardAsset, op.rewardCx, op.rewardCy, rewardOwner);
-    const outputs = [{ ...owned({ value: BigInt(reward) - BigInt(fee), blinding: rewardNote.blinding, asset: rewardAsset, cx: op.rewardCx, cy: op.rewardCy }), owner: rewardOwner, secret: rewardNk }];
-    return relay.settle({ type: 'farmharvest', op, leaves: [rewardLeaf], outputs, ephRand: ephFromSecret }, waitOpts);
+    const outputs = [owned({ value: BigInt(reward) - BigInt(fee), blinding: rewardNote.blinding, asset: rewardAsset, cx: op.rewardCx, cy: op.rewardCy, owner: rewardOwner, secret: rewardNk })];
+    return relay.settle({ type: 'farmharvest', op, leaves: [rewardLeaf], outputs, ephRand }, waitOpts);
   }
 
   // OP_FARM_UNBOND — exit: re-mint the released LP-share note (owned, net of fee); the receipt is spent.
@@ -160,8 +170,8 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
     const lpOwner = pool.nkToOwner(lpNk);
     const op = farm.buildUnbondOp({ chainBinding: chainBindingHex(), spendRoot, controller, owner: receiptOwner, ownerPriv: receiptOwnerPriv, lpOwner, shares, nonce, lpAsset, oldIndex, oldPath, releaseNote, fee, stakeAssetRegistered });
     const releaseLeaf = pool.leaf(lpAsset, releaseNote.cx, releaseNote.cy, lpOwner);
-    const outputs = [{ ...owned({ value: BigInt(shares) - BigInt(fee), blinding: releaseNote.blinding, asset: lpAsset, cx: releaseNote.cx, cy: releaseNote.cy }), owner: lpOwner, secret: lpNk }];
-    return relay.settle({ type: 'farmunbond', op, leaves: [releaseLeaf], outputs, ephRand: ephFromSecret }, waitOpts);
+    const outputs = [owned({ value: BigInt(shares) - BigInt(fee), blinding: releaseNote.blinding, asset: lpAsset, cx: releaseNote.cx, cy: releaseNote.cy, owner: lpOwner, secret: lpNk })];
+    return relay.settle({ type: 'farmunbond', op, leaves: [releaseLeaf], outputs, ephRand }, waitOpts);
   }
 
   // TSR (Tacit Savings Rate) = the SAME ops with the CollateralEngine as the controller + cUSD as the asset.

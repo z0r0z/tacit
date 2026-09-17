@@ -39,6 +39,9 @@ async function headerHex(h) {
 const relayTip = async () => Number(await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }));
 const relayTipHash = async () => publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tip' });
 const relayParent = async (h) => publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'blockParent', args: [h] });
+// Explorer hashes are displayed byte-reversed; the relay keys blocks by the header's internal byte order.
+const relayKey = (explorerHash) => `0x${explorerHash.replace(/^0x/, '').toLowerCase().match(/../g).reverse().join('')}`;
+const relayKnows = async (explorerHash) => (await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'blockWork', args: [relayKey(explorerHash)] })) > 0n;
 
 // The relay keys blocks by the hash as it appears in the header (internal byte order); explorers display
 // the byte-reversed form. Accept either so the comparison never hinges on one convention.
@@ -49,22 +52,58 @@ const sameBlock = (relayHash, explorerHash) => {
 };
 
 // The height the next submission continues from. Normally the relay's tip is on the canonical chain and that
-// is simply its tip height. If the relay's tip sits on a branch the network has since abandoned (a reorg
-// deeper than one submission, or a header taken from a lagging explorer), every submission from tipHeight+1
-// fails with UnknownParent and nothing ever advances again — the relay itself accepts a branch from ANY block
-// it knows (heaviest-chain fork choice), so walk its tip back through blockParent to the last block the
-// explorer still agrees on and resubmit from there. Bounded by headerReorgDepth; deeper divergence is an
-// operator problem, not something to paper over blindly.
-async function resumeHeight(rtip) {
-  let hash = await relayTipHash();
-  for (let h = rtip, i = 0; i <= CFG.headerReorgDepth && h >= 0; h--, i++) {
-    if (sameBlock(hash, await esplora(`/block-height/${h}`))) {
-      if (h !== rtip) log(`relay tip is on an abandoned branch (${rtip - h} blocks) — resuming from ${h}`);
-      return h;
+// is simply its tip height. If the relay's tip sits on a branch the network has since abandoned (a reorg, a
+// header taken from a lagging explorer, or a branch someone else submitted), every submission from tipHeight+1
+// would build on that branch or fail with UnknownParent. The relay accepts a branch from ANY block it knows
+// (heaviest-chain fork choice, every header PoW-checked), so walk its tip back through blockParent to the last
+// block the explorer still agrees on, at any depth, and resubmit the explorer chain from there: submitting the
+// honest chain is always safe. A fork deeper than `alertDepth` is not normal network behaviour, so it is also
+// raised through `onDeepFork` — but the feeder keeps restoring the canonical tip rather than stopping.
+// A restore can take several batches while the abandoned branch still carries more work, so the explorer blocks
+// the relay already stores past the common ancestor (`isKnown`, up to `maxHeight`) are skipped: each cycle then
+// continues the honest branch instead of resubmitting its first batch. Pure over its readers so it is testable.
+export async function findResumeHeight({ tipHeight, tipHash, parentOf, explorerHashAt, isKnown, maxHeight, alertDepth, onDeepFork }) {
+  let hash = tipHash;
+  for (let h = tipHeight; h >= 0; h--) {
+    if (sameBlock(hash, await explorerHashAt(h))) {
+      const depth = tipHeight - h;
+      if (depth > alertDepth && onDeepFork) await onDeepFork({ depth, height: h, tipHeight });
+      let height = h;
+      if (depth > 0 && isKnown) {
+        while (height + 1 <= maxHeight && await isKnown(await explorerHashAt(height + 1))) height++;
+      }
+      return { height, depth, ancestor: h };
     }
-    hash = await relayParent(hash);
+    hash = await parentOf(hash);
+    if (!hash || /^(0x)?0*$/.test(String(hash))) break; // walked past the relay's first known block
   }
-  throw new Error(`relay tip diverged from the explorer for more than ${CFG.headerReorgDepth} blocks`);
+  throw new Error(`relay tip shares no block with the explorer chain in the relay's known history (tip ${tipHeight})`);
+}
+
+async function alert(msg, extra = {}) {
+  log(`CRITICAL: ${msg}`, extra);
+  if (!CFG.alertWebhookUrl) return;
+  try {
+    await fetch(CFG.alertWebhookUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: `[tacit-relay critical] ${msg}`, level: 'critical', ...extra }),
+    });
+  } catch (e) { log('webhook post failed:', e.message); }
+}
+
+async function resumeHeight(rtip, btip) {
+  const r = await findResumeHeight({
+    tipHeight: rtip,
+    tipHash: await relayTipHash(),
+    parentOf: relayParent,
+    explorerHashAt: (h) => esplora(`/block-height/${h}`),
+    isKnown: relayKnows,
+    maxHeight: btip - 2,
+    alertDepth: CFG.headerReorgDepth,
+    onDeepFork: ({ depth: d, height: h }) => alert(`header relay tip was on a ${d}-block branch the explorer chain abandoned; resubmitting the canonical chain from ${h}`, { depth: d, height: h, relayTip: rtip }),
+  });
+  if (r.depth > 0) log(`relay tip is on an abandoned branch (${r.depth} blocks past ${r.ancestor}) — continuing the canonical chain from ${r.height}`);
+  return r;
 }
 
 async function submitAdvance(from, to) {
@@ -77,7 +116,7 @@ async function submitAdvance(from, to) {
 }
 
 // Reflection's attested height from the control plane (lightweight KV read, no assembly). Null if the
-// endpoint isn't available — then we advance only a small safe step so we can't overshoot reflection.
+// endpoint isn't available — the cycle then follows the explorer tip instead of pacing.
 async function reflectionAttested() {
   try {
     const r = await fetch(`${CFG.workerBase}/reflection/state?network=${CFG.network}`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
@@ -90,14 +129,18 @@ async function reflectionAttested() {
 async function cycle() {
   const [rtip, btip, refl] = await Promise.all([relayTip(), btcTip(), reflectionAttested()]);
   // Pace against reflection: keep the relay within headerLead of reflection's attested height, so each attest
-  // pays a short ancestor walk rather than one proportional to an unbounded lead. If reflection's height is
-  // UNKNOWN (/reflection/state not reachable), DO NOT advance — a blind advance compounds every cycle with
-  // nothing to stop it, and the resulting lead is what every later attest pays for. Fail-closed until pacing
-  // is available; reflection itself can still make progress from wherever it is.
-  if (refl == null) { log(`reflection height unavailable (/reflection/state) — NOT advancing (avoids overshoot). relay tip=${rtip}`); return false; }
-  const paceCap = refl + CFG.headerLead;
+  // pays a short ancestor walk rather than one proportional to an unbounded lead. The pace is only a cost cap.
+  // What protects reflected effects is the relay following the real chain: while it idles, a privately mined
+  // branch needs only REFLECTION_CONFIRMATIONS headers past the last reflected block to become the relay's tip.
+  // So when reflection's height is UNKNOWN (/reflection/state not reachable) the feeder keeps following the
+  // explorer tip rather than stopping; a longer attest walk is the price, and a lane that falls past the
+  // pool's lag bound recovers through advanceReflectionAncestry.
+  if (refl == null) log(`reflection height unavailable (/reflection/state) — following the explorer tip. relay tip=${rtip}`);
+  const paceCap = refl == null ? btip - 2 : refl + CFG.headerLead;
   let to = Math.min(btip - 2, paceCap);
-  const base = await resumeHeight(rtip);
+  const { height: base, depth } = await resumeHeight(rtip, btip);
+  // Off the canonical chain, restoring it outranks pacing: carry the honest branch past the abandoned tip.
+  if (depth > 0) to = Math.max(to, Math.min(btip - 2, rtip + 1));
   if (to <= base) { log(`relay current (tip=${rtip} btc=${btip} refl=${refl ?? '?'})`); return false; }
 
   // advanceTip derives each header's difficulty target from its OWN branch (blockTarget[prev] +

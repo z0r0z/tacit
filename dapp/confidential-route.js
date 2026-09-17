@@ -12,7 +12,18 @@ const ZERO32 = '0x' + '00'.repeat(32);
 const MAX_ROUTE_HOPS = 4;
 
 export function makeConfidentialRoute({ keccak256, pool, kernelSign }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+  const { leaf, nullifier, nkToOwner, nativeNu, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+
+  // The nullifier the guest records for a spent native note: leaf-bound for a bearer note (owner 0), otherwise
+  // native_nu, which binds the spender's nk. It cannot be derived from public data, so this returns null when no nk
+  // is supplied, and throws when a supplied nk does not hash to the note's owner (the guest rejects that witness).
+  function spentNullifier(asset, note, fail) {
+    const lf = leaf(asset, note.cx, note.cy, note.owner);
+    if (BigInt(note.owner ?? 0) === 0n) return nullifier(lf);
+    if (note.nk == null) return null;
+    if (String(nkToOwner(note.nk)).toLowerCase() !== String(note.owner).toLowerCase()) fail('input nk does not commit to the note owner');
+    return nativeNu(note.owner, note.nk, lf);
+  }
   const enc = new TextEncoder();
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -126,8 +137,9 @@ export function makeConfidentialRoute({ keccak256, pool, kernelSign }) {
     if (!verifyOpeningSigma(op.out.cx, op.out.cy, op.amountOut, op.outSig.R, op.outSig.z, ctx)) fail('output opening');
     return {
       swaps,
-      nullifiers: [nullifier(op.in.cx, op.in.cy)],
-      leaves: [leaf(assetFinal, op.out.cx, op.out.cy, op.out.owner)],
+      nullifiers: [spentNullifier(op.asset0, op.in, fail)],
+      // The routed output, then change in the route's START asset — the guest's leaf order.
+      leaves: [leaf(assetFinal, op.out.cx, op.out.cy, op.out.owner), ...(op.change || []).map((c) => leaf(op.asset0, c.cx, c.cy, c.owner))],
       fees: fee > 0n ? [{ assetId: op.asset0, value: fee }] : [],
     };
   }

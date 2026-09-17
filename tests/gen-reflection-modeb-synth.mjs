@@ -34,6 +34,9 @@ const BLOCK_HEIGHT = 318000;
 // == address(this), immaterial for an execute-mode digest-parity fixture.
 const ETH_POOL = '0x' + '5a'.repeat(20);
 const ETH_CALL_OUTBOX = '0x00000000526e89e1b461ca5631f0d3489a65ccb9'; // pinned in the reflection guest (reflect.rs ETH_CALL_OUTBOX)
+// The sync committee the synthetic eth proof ends on (word 7). It starts from the pinned genesis committee (word 8),
+// as a chain's first Mode-B cycle must, and the reflection then anchors the next cycle at this committee.
+const SYNC_COMMITTEE_END = '0x' + '5c'.repeat(32);
 
 // ── (1) Seed a PRIOR live note (onboarded in some earlier cycle) — the consume source ──
 const ASSET_SRC = '0x' + 'a2'.repeat(32);
@@ -98,7 +101,7 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 const ethBundle = {
   // The guest PINS the EthCallOutbox (reflect.rs): word 11 must carry it, so the message set a fold sees can
   // only have come from that outbox. An all-zero word is a hard reject, so the PV must name the pinned address.
-  ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL, undefined, 0, ETH_CALL_OUTBOX),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
+  ethPv: pool.buildEthPv(coRoot, cnRoot, 1, 1, ETH_POOL, undefined, 0, ETH_CALL_OUTBOX, SYNC_COMMITTEE_END),   // synthetic eth proof PV; ethPool set (guest gates nonzero-canonical + word0==genesis(ethPool))
   crossouts: [{ claimId: CLAIM, destCommitment, asset: ASSET_CO }],
   consumeds: [{ nu, spendRoot: btcSpendRoot, consumedVal }],
 };
@@ -132,6 +135,7 @@ const checks = {
   noteUp1: after.note === before.note + 1,
   liveSame: after.live === before.live,        // −1 consume +1 mint
   spentUp1: after.spent === before.spent + 1,
+  syncCommitteeAnchored: state.getEthSyncCommittee() === SYNC_COMMITTEE_END && input.prior.ethSyncCommittee === '0x' + '00'.repeat(32),
 };
 const allOk = Object.values(checks).every(Boolean);
 console.error(`mode-b reverse (via buildModeBBatch): ${JSON.stringify(checks)} (note ${before.note}->${after.note} live ${before.live}->${after.live} spent ${before.spent}->${after.spent}) newDigest=${input.newDigest}`);

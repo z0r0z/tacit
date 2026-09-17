@@ -134,3 +134,14 @@ test('length-dispatch: a valid classic proof is not a BP+-length proof for any m
   assert.notEqual(proof.length, bppLen2, 'valid classic m=2 proof must not be BP+ m=2 length');
   assert.equal(proof.length, bpClassicProofLen(2), 'and must equal the classic m=2 length');
 });
+
+test('canonical scalars: a scalar field >= n rejects in the mirror, as in the guest', () => {
+  const fx = load(validFiles[0]);
+  const proof = h2b(fx.proof);
+  const tHatOff = 33 * 4;
+  for (const off of [tHatOff, tHatOff + 32, tHatOff + 64, proof.length - 64, proof.length - 32]) {
+    const bad = proof.slice();
+    bad.fill(0xff, off, off + 32);
+    assert.equal(bpRangeVerify(fx.commitments, bad), false, `scalar at ${off} >= n must reject`);
+  }
+});

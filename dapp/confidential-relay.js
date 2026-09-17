@@ -15,8 +15,15 @@
 // pad or redirect it — so this is a privacy posture, not a fund control.
 //
 // fetchImpl injected for Node tests / non-window contexts; defaults to global fetch.
+//
+// checkEmittedMemos({ txHash, leaves, memos }) (optional): after a relayed settle lands, compares the memos the
+// chain actually emitted for each of this op's leaves with the ones sealed here. The relay feeds the prover the
+// memo hashes, so it could swap a memo for another consistently and the settle would still verify; the leaf
+// hash does not authenticate a memo that is simply absent or replaced. Returns { ok, mismatched } (ok null when
+// the receipt cannot be read). A mismatch fails the settle call with the sealed memos attached, so the caller
+// can keep the openings the chain no longer carries.
 
-export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
+export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemos, saveMismatchedMemos } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
   if (!f) throw new Error('confidential-relay: no fetch available');
   const root = (base || '').replace(/\/$/, '');
@@ -79,7 +86,24 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type, op, memos: sealedMemos, ...(mode ? { mode } : {}), ...(feeAsset ? { feeAsset } : {}) }, bigintSafe),
     });
-    return asJson(res);
+    return { ...(await asJson(res)), sealedMemos };
+  }
+
+  // Compare what the settle emitted with what was sealed (see checkEmittedMemos above). Only note leaves carry a
+  // memo per leaf, in leaf order; a leaf-less op (unwrap, a lock) has nothing to compare.
+  async function verifyEmittedMemos(st, leaves, memos) {
+    if (typeof checkEmittedMemos !== 'function' || !st || !st.txHash || !leaves || !leaves.length) return st;
+    const memoCheck = await checkEmittedMemos({ txHash: st.txHash, leaves, memos: memos || [] });
+    if (memoCheck && memoCheck.ok === false) {
+      const e = new Error(`settled in ${st.txHash}, but the emitted memos differ from the sealed ones for leaf ${memoCheck.mismatched.map((m) => m.index).join(', ')}: keep this note's opening, the chain cannot recover it`);
+      e.settleResult = st; e.memoCheck = memoCheck; e.sealedMemos = memos;
+      // The sealed memos are the only copy of these notes' openings: keep them before the error can be dropped.
+      if (typeof saveMismatchedMemos === 'function') {
+        try { await saveMismatchedMemos({ txHash: st.txHash, leaves, memos, memoCheck }); } catch { /* the error still carries them */ }
+      }
+      throw e;
+    }
+    return { ...st, memoCheck };
   }
 
   async function status(jobId) {
@@ -106,9 +130,9 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
 
   // Convenience: submit and block until on-chain.
   async function settle(opSpec, waitOpts) {
-    const { jobId, status: s } = await submitOp(opSpec);
-    if (s === 'settled') return { jobId, status: 'settled' };
-    return waitForSettle(jobId, waitOpts);
+    const { jobId, status: s, sealedMemos } = await submitOp(opSpec);
+    const st = s === 'settled' ? { jobId, status: 'settled' } : await waitForSettle(jobId, waitOpts);
+    return verifyEmittedMemos(st, opSpec.leaves, sealedMemos);
   }
 
   // Prove-only poll: resolve when the box has proven the op (mode 'prove'), returning
@@ -140,5 +164,5 @@ export function makeConfidentialRelay({ base, fetchImpl, guard } = {}) {
     return waitForProof(r.jobId, waitOpts);
   }
 
-  return { submitOp, status, waitForSettle, settle, waitForProof, prove };
+  return { submitOp, status, waitForSettle, settle, waitForProof, prove, verifyEmittedMemos };
 }

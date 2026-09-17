@@ -39,6 +39,9 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const commitXY = (value, blinding) => { const a = H.multiply(BigInt(value)).add(G.multiply(BigInt(blinding))).toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
   // leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner) — mirror of confidential-pool.leaf() and the contract.
   const leafHash = (asset, cx, cy, owner) => '0x' + bytesToHex(keccak256(concat([b32(asset), b32(cx), b32(cy), b32(owner)])));
+  // owner = keccak(nk ‖ "tacit-native-owner-v1") — mirror of confidential-pool.nkToOwner() and the guest.
+  const NATIVE_OWNER_DOM = new TextEncoder().encode('tacit-native-owner-v1');
+  const nkToOwner = (nk) => '0x' + bytesToHex(keccak256(concat([b32(nk), NATIVE_OWNER_DOM])));
 
   // Seal a note's opening to ownerPub. note = {value, blinding, secret, asset,
   // owner}; ephRand() → a fresh scalar.
@@ -60,7 +63,10 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
 
   // Try to open a memo against an on-chain leaf hash with my private key. Returns
   // the recovered opening iff the decrypted fields rehash to `leaf`; else null
-  // (not mine / garbage / tampered). The leaf hash is the authenticator.
+  // (not mine / garbage / tampered). The leaf hash is the authenticator for
+  // (value, blinding, asset, owner) but not for `secret`, so an owned note (non-zero
+  // owner) is also rejected unless its secret is the nk that owner commits to: a memo
+  // whose nk was garbled would otherwise look recovered and never spend.
   function openMemo(myPriv, leaf, memo) {
     if (typeof memo === 'string') { memo = decodeMemo(memo); if (!memo) return null; }
     let plain;
@@ -77,6 +83,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     const owner = '0x' + bytesToHex(plain.subarray(104, 136));
     const { cx, cy } = commitXY(value, blinding);
     if (leafHash(asset, cx, cy, owner).toLowerCase() !== String(leaf).toLowerCase()) return null;
+    if (BigInt(owner) !== 0n && nkToOwner(secret) !== owner.toLowerCase()) return null;
     return { value, blinding, secret, asset, owner, cx, cy };
   }
 

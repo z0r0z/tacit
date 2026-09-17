@@ -126,6 +126,10 @@ contract DeployV1SuiteCreateX is Script {
         }
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
         require(block.chainid != 1 || c.lineageSteward == MAINNET_OPS_MULTISIG, "mainnet: LINEAGE_STEWARD must be the ops multisig");
+        // Reflected effects are final at REFLECTION_CONFIRMATIONS headers past the last reflected block, and the
+        // relay sees only what its submitters feed it: while they are idle an attacker needs just that many
+        // privately mined headers. Keep the depth well past Bitcoin's usual six.
+        require(block.chainid != 1 || c.reflectionConfirmations >= 24, "mainnet: REFLECTION_CONFIRMATIONS must be >= 24");
         // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
         // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
         // pool. Fail closed on mainnet (and any chain that opts in) unless explicitly waived.
@@ -379,7 +383,7 @@ contract DeployV1SuiteCreateX is Script {
     function _envConfig() internal view returns (DeployV1Suite.Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3));
         // No hardcoded default: this vkey rotates with every reflection-guest reprove, and a stale literal
         // here would silently pass a wrong value until the pin-equality require below catches it. Requiring
         // the operator source it from the CURRENT elf-vkey-pin.json makes that the only path.
@@ -387,7 +391,7 @@ contract DeployV1SuiteCreateX is Script {
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
-        c.reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6));
+        c.reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24));
         c.reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         c.tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);

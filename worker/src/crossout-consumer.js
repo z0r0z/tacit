@@ -21,10 +21,11 @@ import {
 } from '../../dapp/confidential-crossout-consumer.js';
 import { makeConfidentialEvmLog } from '../../dapp/confidential-evm-log.js';
 
-// The Bitcoin pool note leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner) — byte-identical to the dapp's
-// confidential-pool `leaf` and the EVM guest leaf, so a T_CROSSOUT_MINT envelope's recomputed leaf
-// matches the recorded destCommitment. No external deps (takes the @noble keccak256 as a param) so
-// it resolves identically in the worker bundle and a node test.
+// The minted Bitcoin note leaf the reflection's fold_crossout reconstructs, and so the destCommitment the burn
+// recorded: btc_note_leaf = keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ "tacit-btc-note-v1"), where auth_key is the x-only
+// key of the mint tx's vout-0 P2TR output. The envelope's own owner field is not part of it. Returns null when
+// vout 0 is not a P2TR program: the fold rejects that mint (zero destination key). No external deps (takes the
+// @noble keccak256 as a param) so it resolves identically in the worker bundle and a node test.
 const _b32 = (x) => {
   const h = String(x).replace(/^0x/, '').padStart(64, '0');
   const u = new Uint8Array(32);
@@ -32,9 +33,18 @@ const _b32 = (x) => {
   return u;
 };
 const _hex = (u) => '0x' + Array.from(u, (b) => b.toString(16).padStart(2, '0')).join('');
-export function crossoutMintLeaf(keccak256, { assetId, cx, cy, owner }) {
-  const c = new Uint8Array(128);
-  c.set(_b32(assetId), 0); c.set(_b32(cx), 32); c.set(_b32(cy), 64); c.set(_b32(owner == null ? '0x0' : owner), 96);
+const BTC_NOTE_DOMAIN = new TextEncoder().encode('tacit-btc-note-v1');
+// x-only key of a P2TR scriptPubKey (0x51 0x20 ‖ 32 bytes), as hex; null for any other script.
+export function p2trXonlyKey(scriptPubKey) {
+  const h = String(scriptPubKey ?? '').replace(/^0x/, '').toLowerCase();
+  if (!/^5120[0-9a-f]{64}$/.test(h)) return null;
+  return '0x' + h.slice(4);
+}
+export function crossoutMintLeaf(keccak256, { assetId, cx, cy, destScriptPubKey }) {
+  const authKey = p2trXonlyKey(destScriptPubKey);
+  if (!authKey || /^0x0{64}$/.test(authKey)) return null;
+  const c = new Uint8Array(128 + BTC_NOTE_DOMAIN.length);
+  c.set(_b32(assetId), 0); c.set(_b32(cx), 32); c.set(_b32(cy), 64); c.set(_b32(authKey), 96); c.set(BTC_NOTE_DOMAIN, 128);
   return _hex(keccak256(c));
 }
 

@@ -548,6 +548,45 @@ a key its test reads, cxfer-core 211/211, all guest vkeys re-derived from the pi
 
 **→ [`AUDIT-2026-09-16-fable51-v1-final-prelock.md`](./AUDIT-2026-09-16-fable51-v1-final-prelock.md).**
 
+## Closing pre-release review — Claude Fable 5.1 → Claude Opus 5 (2026-09-16 → 09-17) — FREEZE, RE-PROVE BEFORE DEPLOY
+
+A closing review of the whole v1 immutable surface — pool, `ReflectionLib`, engine and periphery, both SP1 guests,
+the shared `cxfer-core`, the eth-reflection guest and host, and every guest↔JS wire pair on both lanes — by eleven
+independently scoped adversarial sub-reviews reconciled by one coordinating reviewer, followed by a fix round, a
+fresh three-reviewer re-audit of the fixed tree and a second fix round. **It supersedes the "lockable" verdict of
+the 2026-09-16 review above**, which missed the items below.
+
+It found **one Critical in the settle guest**: the conservation kernel's transcript did not name its op, so a relay
+holding a user's send-unwrap, swap, route or LP-add witness could settle it as an OP_TRANSFER of the same notes
+and keep the user's public amount as its "fee" — reproduced against the real `cxfer-core` checks on a committed
+fixture. **Fixed** with a transfer-only kernel domain (both directions rejected, parity-tested). **Highs, all
+fixed:** one unminted cross-out could make every generational rebase unprovable (the drain gate now admits a
+cross-out mint lag); the Mode-B light client re-trusted one fixed sync committee forever — a standing forgery
+surface and a liveness deadline around December 2026 (the committee now chains cycle to cycle, committed in the
+resume digest); burn-deposit onboarding was at the prover's discretion, so a confirmed burn could be erased
+(unverified deposits now go to a committed pending set any later batch can complete); OP_SWAP_BLIND handed the
+prover each batch's aggregate input blinding (conservation is now a Schnorr kernel over the blinding excess); the
+engine owner could confiscate cBTC escrow in about three days (policy, module and feed changes now give notice); a
+retired generation had no Bitcoin exit (cross-outs reopen once its handoff record, which now carries its counters,
+exists); CDP/farm memos were sealed under the wallet's nullifier key; a one-click farm entry would have locked LP
+principal once its memo bug was fixed; and ten JS reflection-mirror divergences that one Bitcoin transaction could
+use to halt the attester. **Mediums fixed** include the deposit nullifier ignoring its outpoint, OTC envelopes never
+reflecting, a protocol-fee split on two-sided swaps, the engine's deviation-bound and grace levers, seven-header
+finality with an idle feeder (now 24 confirmations and a feeder that keeps following the chain), unrecoverable
+reflection lag past 2,016 blocks (a permissionless ancestry checkpoint), and a missing lock-leaf event. Recorded as
+design decisions with mitigations: tETH escrow across generations (lineage-shared custody belongs in a successor;
+runbook rule until then), liquidation surplus return (bounded by a 1.5× threshold cap), in-guest memo
+authentication (client-side compare and save ship now).
+
+The re-audit found **no Critical or High in any fix**; its Mediums and Lows (a chained-committee host mode that
+would have broken the live generation, ancestry-walk griefing, three older JS halt paths) were fixed. Evidence:
+forge 88 suites green, `cxfer-core` 214/214, both guests' native tests, all 41 prover harnesses type-check, pool
+24,290 B re-pinned (286 B under EIP-170), storage slots verified, every touched node suite green. **Deploy is gated
+on rebuilding all three guest ELFs (the eth-reflection guest depends on `cxfer-core`), rotating and pinning the
+vkeys, and regenerating and replaying the fixtures against them.** Report:
+
+**→ [`AUDIT-2026-09-17-closing-review.md`](./AUDIT-2026-09-17-closing-review.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -581,6 +620,7 @@ a key its test reads, cxfer-core 211/211, all guest vkeys re-derived from the pi
 | Round 21 (parallel) | LOCK — independent dual-model confirm; round-20 fix correct+complete; 1 low/defensive (bounded griefed-blob parse cost) @ `ec322d7` | Opus 4.8 Max | claude.ai/share/ef53078b |
 | Greenlight 24 | Legacy classic-Bulletproofs verifier (dual-scheme range dispatch) — CLEAN GREENLIGHT, 0 fund-impacting @ `4b3247c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24` |
 | Final pre-lock (v1-final) + same-day follow-up | LOCKABLE — 1 Critical (burn-deposit provenance shortcut, fixed in guest), generational handoff redesigned as pool-as-factory (self-authenticating, no registry/delay/blackout), 12 guest↔JS drifts fixed, engine owner lever fixed; follow-up pass: 1 Medium fixed (retired generation stranded cUSD repay/liquidate by refusing its own canonical-token wraps), 1 High JS-mirror desync fixed (the attester refunded every zero-tip swap batch the guest clears), pins reconciled to the rebuilt ELFs, rebase race closed with a handoff anchor, token continuity settled as successor-side adoption; forge green, 211/211 core, vkeys re-derived, pool re-pinned 23,905 B | Claude Fable 5.1 | `AUDIT-2026-09-16-fable51-v1-final-prelock` |
+| Closing pre-release review (supersedes v1-final pre-lock) | FREEZE, RE-PROVE BEFORE DEPLOY — 1 Critical (settle kernel re-type: relay keeps a user's public amount as its fee, fixed with a transfer-only kernel domain), Highs fixed (rebase brick on an unminted cross-out, static Mode-B sync committee, prover-discretionary burn-deposit, swap-blind blinding leak, engine escrow confiscation lever, retired generation without a Bitcoin exit, CDP/farm memo ephemeral, one-click farm principal lock, ten JS attester halts), Mediums fixed (deposit outpoint, OTC reflection, protocol-fee split, engine levers, 24 confirmations, lag recovery checkpoint, lock-leaf event); re-audit of the fixed tree: 0 Critical / 0 High in the fixes; forge green, 214/214 core, pool re-pinned 24,290 B; ELF rebuild + vkey rotation pending | Claude Fable 5.1 → Claude Opus 5 | `AUDIT-2026-09-17-closing-review` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 

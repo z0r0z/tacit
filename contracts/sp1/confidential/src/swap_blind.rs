@@ -4,8 +4,9 @@
 //! cleartext swap amount. Correctness rests on the SAME three box-validated layers as `swap_batch`:
 //!   - `groth16::groth16_bn254_verify` over the re-derived 123 public signals (per-receipt uniform
 //!     clearing + in-circuit output range — `amm_swap_batch.circom`);
-//!   - `swap_batch_aggregate_identity` per asset (binds the receipts' total to the real spent inputs
-//!     + the public net delta + the tip);
+//!   - `swap_blind_aggregate_kernel` per asset (binds the receipts' total to the real spent inputs
+//!     + the public net delta + the tip, proven by a Schnorr signature over the blinding excess so the
+//!     prover never receives the blinding itself);
 //!   - `babyjubjub::verify_xcurve` per receipt (the onboarded secp note's hidden value == the
 //!     Groth16-proven BJJ value AS A RESIDUE mod each curve's order);
 //!   - `verify_range` (BP+) per receipt (bounds that same value to `[0, 2^64)`, the fact the sigma's
@@ -20,9 +21,16 @@
 //! See ops/DESIGN-op-swap-blind.md.
 
 use cxfer_core::{
-    bitcoin::SwapBatchEnvelope, decompress, scalar_reduce_be, swap_batch_aggregate_identity,
-    verify_pedersen_opening, verify_range,
+    bitcoin::SwapBatchEnvelope, decompress, scalar_reduce_be, swap_blind_aggregate_kernel, verify_pedersen_opening,
+    verify_range,
 };
+
+/// A per-asset conservation kernel: the compressed nonce point `R` and the response `z` of a Schnorr signature over
+/// the batch's blinding excess on that asset side (see `cxfer_core::swap_blind_aggregate_kernel`).
+pub struct AggregateKernel {
+    pub r: [u8; 33],
+    pub z: [u8; 32],
+}
 
 /// Apply a signed delta to a reserve (sign 0 = grow, 1 = shrink); None on overflow / underflow.
 fn apply_signed(reserve: u64, sign: u8, mag: u64) -> Option<u64> {
@@ -46,6 +54,9 @@ fn apply_signed(reserve: u64, sign: u8, mag: u64) -> Option<u64> {
 pub fn verify_clearing(
     env: &SwapBatchEnvelope,
     pool_id: &[u8; 32],
+    chain_binding: &[u8; 32],
+    kernel_a: &AggregateKernel,
+    kernel_b: &AggregateKernel,
     reserve_a_pre: u64,
     reserve_b_pre: u64,
 ) -> Option<(u64, u64)> {
@@ -106,7 +117,7 @@ pub fn verify_clearing(
         return None;
     }
 
-    // 3. Bind each tip commitment to its Groth16-public tip amount before its blinding enters R_net.
+    // 3. Bind each tip commitment to its Groth16-public tip amount before it enters the aggregate.
     let tip_a = decompress(&env.tip_a_c_secp)?;
     let tip_b = decompress(&env.tip_b_c_secp)?;
     if !verify_pedersen_opening(&tip_a, env.tip_a_amount, &scalar_reduce_be(&env.r_tip_a))
@@ -115,22 +126,25 @@ pub fn verify_clearing(
         return None;
     }
 
-    // 4. Aggregate Pedersen identity per asset (binds the receipts' total to the real spent inputs +
-    //    public net delta + tip). The spent inputs are the membership-proven notes the dispatch arm
-    //    nullified; here C_in_secp must equal those (the arm asserts identity by reusing the same
-    //    commitment for membership + this aggregate).
+    // 4. Aggregate conservation per asset (binds the receipts' total to the real spent inputs + public net
+    //    delta + tip). The spent inputs are the membership-proven notes the dispatch arm nullified; here
+    //    C_in_secp must equal those (the arm reuses the same commitment for membership + this aggregate).
+    //    Proven by a Schnorr kernel over the blinding excess, never by revealing it: the excess of a one-way
+    //    side is the inputs' combined blinding, which a delegated prover could otherwise spend with.
     let intents_secp: Vec<(u8, [u8; 33])> =
         env.intents.iter().map(|it| (it.direction, it.c_in_secp)).collect();
     let receipts_secp: Vec<[u8; 33]> = env.receipts.iter().map(|r| r.c_out_secp).collect();
-    if !swap_batch_aggregate_identity(
+    if !swap_blind_aggregate_kernel(
         &intents_secp, &receipts_secp, true,
-        env.delta_a_net_sign, env.delta_a_net_mag, &env.tip_a_c_secp, &env.r_net_a,
+        env.delta_a_net_sign, env.delta_a_net_mag, &env.tip_a_c_secp,
+        chain_binding, pool_id, &kernel_a.r, &kernel_a.z,
     ) {
         return None;
     }
-    if !swap_batch_aggregate_identity(
+    if !swap_blind_aggregate_kernel(
         &intents_secp, &receipts_secp, false,
-        env.delta_b_net_sign, env.delta_b_net_mag, &env.tip_b_c_secp, &env.r_net_b,
+        env.delta_b_net_sign, env.delta_b_net_mag, &env.tip_b_c_secp,
+        chain_binding, pool_id, &kernel_b.r, &kernel_b.z,
     ) {
         return None;
     }

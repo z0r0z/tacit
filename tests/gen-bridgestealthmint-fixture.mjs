@@ -26,7 +26,11 @@ const rand = () => { const b = new Uint8Array(32); (globalThis.crypto || webcryp
 
 const CHAINB = '0x' + '11'.repeat(32);
 const ASSET = '0x' + 'a5'.repeat(32);
-const ZERO_OWNER = '0x' + '00'.repeat(32);       // Bitcoin-homed burned note is owner-free (bearer)
+// A deposit-class note (a scan-free burn-deposit) is owned by its own burned outpoint: owner = outpoint_key(txid, vout)
+// = keccak(txid ‖ vout_le32), so its leaf and nullifier are unique to that UTXO.
+const SPENT_TXID = '0x' + '5a'.repeat(32), SPENT_VOUT = 1, BURN_SOURCE_DEPOSIT = 2;
+const u32le = (n) => Uint8Array.of(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+const DEPOSIT_OWNER = hx(keccak_256(Uint8Array.from([...Buffer.from(SPENT_TXID.slice(2), 'hex'), ...u32le(SPENT_VOUT)])));
 const AMOUNT = 1500n, DEADLINE = 1_900_000_000n;
 const FEE = BigInt(process.env.FEE || '0');
 // `locker` is the burner's x-only refund pubkey (the blind refund signs under it); derive a real key.
@@ -42,15 +46,15 @@ const { ownerPub } = stealth.oneTimeAddress({ recipientSpendPub: B, ephemeralPri
 const rIn = randomScalar();
 const inC = pool.commitXY(AMOUNT, rIn);
 const tree = new pool.Tree();
-const inLeaf = pool.leaf(ASSET, inC.cx, inC.cy, ZERO_OWNER);
+const inLeaf = pool.leaf(ASSET, inC.cx, inC.cy, DEPOSIT_OWNER);
 tree.insert(inLeaf);
 const poolRoot = tree.root();
 const { path: inPath } = tree.rootAndPath(0);
-const nu = pool.nullifier(inC.cx, inC.cy);
+const nu = pool.nullifier(inLeaf);
 
 // the lock L the value is minted into + the opening sigma + conservation kernel (echoes bm* into the witness)
 const lBlinding = randomScalar();
-const burned = { cx: inC.cx, cy: inC.cy, owner: ZERO_OWNER, blinding: rIn, leafIndex: 0, path: inPath };
+const burned = { cx: inC.cx, cy: inC.cy, owner: DEPOSIT_OWNER, blinding: rIn, leafIndex: 0, path: inPath };
 const mint = stealth.buildBridgeStealthMint({
   chainBinding: CHAINB, asset: ASSET, poolRoot, burned, ownerPub, amount: AMOUNT, deadline: DEADLINE,
   locker: LOCKER, lBlinding, bmNext: '0x' + 'ff'.repeat(32), bmIndex: 0, bmPath: pool.zeros, fee: FEE,
@@ -60,7 +64,6 @@ const mint = stealth.buildBridgeStealthMint({
 const destLeaf = stealth.stealthLockLeafBlind(ASSET, mint.lCx, mint.lCy, ownerPub, DEADLINE, LOCKER);
 // The burn set is keyed by the SOURCE-SPECIFIC bridge_burn_id (deposit class = source_kind 2), not the bare
 // ν — the exact spent outpoint + full source leaf the mint reconstructs. Match the fields the witness emits.
-const SPENT_TXID = '0x' + '00'.repeat(32), SPENT_VOUT = 0, BURN_SOURCE_DEPOSIT = 2;
 const burnId = pool.bridgeBurnId(BURN_SOURCE_DEPOSIT, SPENT_TXID, SPENT_VOUT, inLeaf, CHAINB);
 const burnAcc = pool.makeUtxoAccumulator();
 burnAcc.insert('0x' + '00'.repeat(31) + '07', '0x' + '00'.repeat(31) + '99'); // unrelated prior burn
@@ -74,8 +77,8 @@ process.stdout.write(JSON.stringify({
   bitcoinBurnRoot,
   asset: ASSET,
   poolRoot,
-  inCx: inC.cx, inCy: inC.cy, inOwner: ZERO_OWNER,
-  sourceClass: 0, spentTxid: SPENT_TXID, spentVout: SPENT_VOUT, // class 0 = deposit-native leaf (matches pool.leaf above)
+  inCx: inC.cx, inCy: inC.cy, inOwner: DEPOSIT_OWNER,
+  sourceClass: 0, spentTxid: SPENT_TXID, spentVout: SPENT_VOUT, // class 0 = deposit-native leaf owned by its outpoint
   inIndex: 0, inPath,
   ownerPub,
   amount: Number(AMOUNT), deadline: Number(DEADLINE),
@@ -84,6 +87,6 @@ process.stdout.write(JSON.stringify({
   bmNext: bm.next, bmIndex: bm.index, bmPath: bm.path,
   fee: Number(FEE),
   kernelR: mint.kernelR, kernelZ: mint.kernelZ,
-  lRange: '0x' + Buffer.from(mint.lRange).toString('hex'),
+  lRange: mint.lRange,
   expect: { destLeaf, nullifier: nu },
 }, null, 2) + '\n');

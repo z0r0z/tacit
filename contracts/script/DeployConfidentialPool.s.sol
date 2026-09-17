@@ -34,7 +34,7 @@ contract DeployConfidentialPool is Script {
     // settle prover never learns r. Pinned to the committed canonical ELF sp1/confidential/elf/cxfer-guest
     // (elf-vkey-pin.json is the sha256 source of truth); a real Groth16 of this ELF verifies on-chain at
     // this vkey for every op (test/Confidential*ProofReal). Override via PROGRAM_VKEY env if the guest changes.
-    bytes32 constant DEFAULT_VKEY = 0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243;
+    bytes32 constant DEFAULT_VKEY = 0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3;
 
     // cBTC.zk canonical asset id (cxfer-core CBTC_ZK_ASSET_ID) — the shared id real-BTC-locked cBTC notes
     // mint under. When a factory + a CollateralEngine are both wired, the pool constructor deploy-or-adopts
@@ -116,7 +116,7 @@ contract DeployConfidentialPool is Script {
         // has not occurred since the 2013 consensus-bug fork and would be a Bitcoin-wide event that freezes
         // every exchange and bridge — not worth over-provisioning latency against. Only affects BTC→ETH mints;
         // ETH-native + ETH→BTC are unaffected. Raise per appetite via env. Ctor-bounded to 1..144.
-        uint256 reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6));
+        uint256 reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24));
         // GENERATIONAL deploys: the reflection-resume digest. 0 (default) = a genesis-anchored gen-1 (the
         // first cycle continues the protocol genesis digest). For a later generation that JOINS the shared
         // Bitcoin reflection mid-stream, set this to the CURRENT reflected digest (paired with a near-tip

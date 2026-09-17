@@ -323,7 +323,12 @@ fn main() {
         s.write(&hexv(f["sigR"].as_str().unwrap()));
         s.write(&hexv(f["sigZ"].as_str().unwrap()));
     }
-    for _ in 0..64u32 { s.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); } // CP-04: memo hashes; guest reads its own leaves+lock_leaves count
+    // Memo hashes: exactly the op's own list when the relay supplies one (the guest reads leaves+lock_leaves of
+    // them, so a padded or truncated list breaks a large settle); a bare fixture with no memos gets 64 empty ones.
+    match f.get("memoHashes").and_then(|v| v.as_array()) {
+        Some(mh) => { for h in mh { s.write(&hexv(h.as_str().unwrap())); } }
+        None => { for _ in 0..64u32 { s.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); } }
+    }
 
     let client = ProverClient::builder().cpu().build();
     let pk = client.setup(Elf::Static(ELF)).expect("setup");

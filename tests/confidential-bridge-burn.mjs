@@ -31,14 +31,14 @@ const ASSET = '0x' + 'a5'.repeat(32);
 const OWNER_B = '0x' + '00'.repeat(31) + '0b'; // recipient's Bitcoin owner field
 const BITCOIN = 1; // destChain id
 
-// Burn two Ethereum notes (1000 + 500) into two Bitcoin notes (900 + 600).
+// Burn two Ethereum notes (1000 + 500) into ONE Bitcoin note (1500). A burn has exactly one destination: every
+// destination carries the same bound ν and the pool records one cross-out per ν, so the guest refuses more.
 const inputs = [
   { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
   { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
 ];
 const outputs = [
-  { value: 900n, blinding: randomScalar(), owner: OWNER_B },
-  { value: 600n, blinding: randomScalar(), owner: OWNER_B },
+  { value: 1500n, blinding: randomScalar(), owner: OWNER_B },
 ];
 // Note-bound ν (spec B3): keccak(Cx ‖ Cy ‖ "spent") of the first burned input — what the
 // guest derives (main.rs OP_BRIDGE_BURN), so the fixture locks the guest's real claimId.
@@ -51,9 +51,8 @@ const burn = ct.buildBridgeBurn({ inputs, outputs, assetId: ASSET, destChain: BI
 assert.ok(ct.verifyBridgeBurn(burn), 'bridge-burn verifies (conservation + range + claim binding)');
 ok('arbitrary-amount bridge-burn conserves Σin=Σout across the chain boundary and verifies');
 
-// ── one crossOut per destination, each claimId distinct + correctly derived ──
-assert.strictEqual(burn.crossOuts.length, 2, 'one crossOut per Bitcoin output');
-assert.notStrictEqual(burn.crossOuts[0].claimId, burn.crossOuts[1].claimId, 'distinct claimIds');
+// ── one crossOut for the single destination, its claimId correctly derived ──
+assert.strictEqual(burn.crossOuts.length, 1, 'one crossOut for the single Bitcoin destination');
 const legacyNu = '0x' + Buffer.from(keccak_256(Uint8Array.from(Buffer.from(inputs[0].secret.slice(2), 'hex')))).toString('hex');
 assert.notStrictEqual(bindNullifier, legacyNu, 'binding ν is note-bound (B3), not the legacy secret hash');
 for (const c of burn.crossOuts) {
@@ -64,11 +63,18 @@ for (const c of burn.crossOuts) {
   assert.strictEqual(c.destCommitment, ct.btcDestLeaf(c.assetId, c.cx, c.cy, c.owner), 'destCommitment = Bitcoin-homed leaf');
   assert.strictEqual(c.nullifier, bindNullifier, 'every crossOut binds the same note-bound burn ν (B3)');
 }
-ok('each Bitcoin output yields a distinct, self-deriving crossOut (claimId binds destChain‖dest‖ν‖asset)');
+ok('the Bitcoin destination yields a self-deriving crossOut (claimId binds destChain‖dest‖ν‖asset)');
+
+// ── a multi-destination burn is refused at build (the guest refuses it too) ──
+assert.throws(() => ct.buildBridgeBurn({
+  inputs, outputs: [{ value: 900n, blinding: randomScalar(), owner: OWNER_B }, { value: 600n, blinding: randomScalar(), owner: OWNER_B }],
+  assetId: ASSET, destChain: BITCOIN, bindNullifier,
+}), /exactly one destination/, 'multi-destination burn rejected');
+ok('a burn naming more than one Bitcoin destination is rejected');
 
 // ── non-conservation is rejected at build ──
 assert.throws(() => ct.buildBridgeBurn({
-  inputs, outputs: [{ value: 900n, blinding: randomScalar(), owner: OWNER_B }, { value: 700n, blinding: randomScalar(), owner: OWNER_B }],
+  inputs, outputs: [{ value: 1600n, blinding: randomScalar(), owner: OWNER_B }],
   assetId: ASSET, destChain: BITCOIN, bindNullifier,
 }), /not conserved/, 'inflated burn rejected');
 ok('a burn that mints more on Bitcoin than it burns on Ethereum is rejected (no value creation)');
@@ -93,4 +99,4 @@ writeFileSync(join(here, '..', 'contracts', 'test', 'fixtures', 'bridge_burn.jso
 writeFileSync(join(here, '..', 'contracts', 'sp1', 'confidential', 'fixtures', 'bridge_burn.json'), fxJson); // cxfer-core native test
 ok('wrote bridge_burn.json fixtures for the Solidity + Rust cross-impl KATs');
 
-console.log(`\n${n}/5 confidential-bridge-burn checks passed`);
+console.log(`\n${n}/6 confidential-bridge-burn checks passed`);

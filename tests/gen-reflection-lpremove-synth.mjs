@@ -35,7 +35,12 @@ const recvA = pool.compressXY(...Object.values(pool.commitXY(deltaA, rRecvA)));
 const recvB = pool.compressXY(...Object.values(pool.commitXY(deltaB, rRecvB)));
 // vout-2 share-refund destination (bound into the kernel; the note is re-minted here only on the zero-leg
 // branch — this fixture is an accept case, so vout 2 is present-but-unused, still P2TR + kernel-bound).
-const RECV_REFUND_XONLY = 'e2'.repeat(32);
+// LPREMOVE_SCENARIO=refund-nonp2tr makes vout 2 a P2WPKH output. Its authority reads as the zero key (the kernel
+// signs that), and the fold declines the whole remove because a refund note there would be unspendable: the
+// check runs before the accept-vs-refund branch, so the pool is untouched and no withdrawal note is onboarded.
+const SCENARIO = process.env.LPREMOVE_SCENARIO || 'accept';
+const REFUND_NONP2TR = SCENARIO === 'refund-nonp2tr';
+const RECV_REFUND_XONLY = REFUND_NONP2TR ? '00'.repeat(32) : 'e2'.repeat(32);
 const kernelSig = lpRemoveKernelSig({ poolIdHex: POOL_ID, shareAmount, deltaA, deltaB, recvAHex: recvA, recvBHex: recvB, lpOutpoints: [['0x' + seedTxid.toString('hex'), seedVout]], refundDestXonlyHex: '0x' + RECV_REFUND_XONLY }, rShare);
 
 // 0x2E envelope (687 bytes): op ‖ asset_a ‖ asset_b ‖ share_amount(8) ‖ delta_a(8) ‖ delta_b(8) ‖
@@ -63,7 +68,8 @@ const witKp = cat([[0x01], [0x40], Buffer.alloc(0x40)]); // note-spend: 64-byte 
 const RECV_A_XONLY = 'e0'.repeat(32), RECV_B_XONLY = 'e1'.repeat(32);
 const p2trOut = (xonlyHex) => cat([u64le(0), [0x22], [0x51, 0x20], Buffer.from(xonlyHex, 'hex')]);
 // THREE outputs: recvA @0, recvB @1, share-refund @2 (P2TR, kernel-bound; onboarded only on the zero-leg branch).
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inEnv, inShare, [0x03], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), p2trOut(RECV_REFUND_XONLY), witEnv, witKp, Buffer.alloc(4)]);
+const refundOut = REFUND_NONP2TR ? cat([u64le(0), [0x16], [0x00, 0x14], Buffer.alloc(20, 0xe2)]) : p2trOut(RECV_REFUND_XONLY);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(2), inEnv, inShare, [0x03], p2trOut(RECV_A_XONLY), p2trOut(RECV_B_XONLY), refundOut, witEnv, witKp, Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -98,15 +104,22 @@ console.error('DBG openings=', JSON.stringify(_t1.openings), 'lpRemove=', JSON.s
 const lr = input.blocks[0].txs[1].lpRemove;
 const p = state.pools.get(POOL_ID);
 console.error(`lp_remove: share=${shareAmount} dA=${deltaA} dB=${deltaB} folded=${!!lr} reservesPost=A:${p.reserveA} B:${p.reserveB} sharesPost=${p.totalShares} newDigest=${input.newDigest}`);
-if (!lr) { console.error('FATAL: lp_remove was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
-// Anti-false-pass: a fold-object is set even on a skip path, so assert the pool registry ACTUALLY changed
-// (reserves drawn down). A both-skip would leave it unchanged and digest-match trivially.
-if (state.pools.root() === poolsRoot0 || BigInt(p.reserveA) !== reserveA - deltaA || BigInt(p.totalShares) !== totalShares - shareAmount) {
-  console.error('FATAL: lp_remove did not mutate the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
+if (REFUND_NONP2TR) {
+  const fa0 = pool.commitXY(deltaA, rRecvA);
+  const leafA0 = pool.btcNoteLeaf(ASSET_A, fa0.cx, fa0.cy, '0x' + RECV_A_XONLY);
+  if (state.pools.root() !== poolsRoot0) { console.error('FATAL: a remove with a non-P2TR refund output moved the pool'); process.exit(1); }
+  if (state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === leafA0.toLowerCase())) { console.error('FATAL: a declined remove onboarded a withdrawal note'); process.exit(1); }
+} else {
+  if (!lr) { console.error('FATAL: lp_remove was not folded (a gate failed) — fixture would not validate'); process.exit(1); }
+  // Anti-false-pass: a fold-object is set even on a skip path, so assert the pool registry ACTUALLY changed
+  // (reserves drawn down). A both-skip would leave it unchanged and digest-match trivially.
+  if (state.pools.root() === poolsRoot0 || BigInt(p.reserveA) !== reserveA - deltaA || BigInt(p.totalShares) !== totalShares - shareAmount) {
+    console.error('FATAL: lp_remove did not mutate the pool as expected (fold skipped — would be a both-skip false pass)'); process.exit(1);
+  }
+  // Both withdrawn notes are FORMED from the recomputed payout under the on-chain blindings, at the vout-0/1 keys.
+  const fa = pool.commitXY(deltaA, rRecvA), fb = pool.commitXY(deltaB, rRecvB);
+  const leafA = pool.btcNoteLeaf(ASSET_A, fa.cx, fa.cy, '0x' + RECV_A_XONLY), leafB = pool.btcNoteLeaf(ASSET_B, fb.cx, fb.cy, '0x' + RECV_B_XONLY);
+  const has = (lf) => state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === lf.toLowerCase());
+  if (!has(leafA) || !has(leafB)) { console.error('FATAL: FORMED recv leaves not onboarded at vout 0/1'); process.exit(1); }
 }
-// Both withdrawn notes are FORMED from the recomputed payout under the on-chain blindings, at the vout-0/1 keys.
-const fa = pool.commitXY(deltaA, rRecvA), fb = pool.commitXY(deltaB, rRecvB);
-const leafA = pool.btcNoteLeaf(ASSET_A, fa.cx, fa.cy, '0x' + RECV_A_XONLY), leafB = pool.btcNoteLeaf(ASSET_B, fb.cx, fb.cy, '0x' + RECV_B_XONLY);
-const has = (lf) => state._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === lf.toLowerCase());
-if (!has(leafA) || !has(leafB)) { console.error('FATAL: FORMED recv leaves not onboarded at vout 0/1'); process.exit(1); }
 console.log(JSON.stringify(input));

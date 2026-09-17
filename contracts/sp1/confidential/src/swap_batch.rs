@@ -260,8 +260,8 @@ pub fn fold_swap_batch(
     //    INPUT asset (direction 0 = A→B inputs asset A; direction 1 = B→A inputs asset B). The aggregate
     //    identity counts each intent's input once, so without distinctness a single real UTXO reused across
     //    two intents would be double-counted (inflation), and without the asset check an asset-X note could
-    //    pose as an A/B input (relabel — the Pedersen commitment is asset-blind). Every detected spend must
-    //    back exactly one intent input (no unaccounted real spend).
+    //    pose as an A/B input (relabel — the Pedersen commitment is asset-blind). The matched spend is the one
+    //    the intent signature names: a same-commitment note someone else adds as an input cannot displace it.
     let mut used = vec![false; spends.len()];
     for (i, it) in env.intents.iter().enumerate() {
         if it.direction > 1 {
@@ -276,12 +276,32 @@ pub fn fold_swap_batch(
             Some(p) => p,
             None => return false,
         };
+        // INTENT AUTHORIZATION: the trader's BIP-340 intent_sig binds the pool, direction, the exact
+        // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION script (vout i+1),
+        // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
+        // relabel/re-price a trade while aggregate conservation holds. Reconstruct the signed message from the
+        // confirmed tx (a candidate spend's outpoint + the receipt's P2TR destination) and verify it; also
+        // verify the INPUT cross-curve so `c_in_bjj` (the value the Groth16 clears over) is the real twin of
+        // the spent `c_in_secp`. A failed check is deterministic from the confirmed tx, so it cannot censor an
+        // honest batch. tip_asset == direction (AMM.md §"Tip mechanics").
+        let trader_x: [u8; 32] = match it.trader_pubkey[1..33].try_into() {
+            Ok(x) => x,
+            Err(_) => return false,
+        };
         let mut matched = None;
         for (j, sp) in spends.iter().enumerate() {
             if used[j] || sp.asset != expected_asset {
                 continue;
             }
-            if matches!(from_affine_xy(&sp.cx, &sp.cy), Some(x) if x == in_pt) {
+            if !matches!(from_affine_xy(&sp.cx, &sp.cy), Some(x) if x == in_pt) {
+                continue;
+            }
+            let msg = swap_batch_intent_msg(
+                &pool_id, it.direction, &[(sp.prev_txid, sp.prev_vout)], &it.c_in_secp, &it.c_in_bjj,
+                &it.in_xcurve_sigma, &receipt_spks[i], it.min_out, it.tip_amount, it.direction, it.expiry_height,
+                &it.trader_pubkey, &refund_spks[i],
+            );
+            if bip340_verify(&it.intent_sig, &msg, &trader_x) {
                 matched = Some(j);
                 break;
             }
@@ -294,27 +314,6 @@ pub fn fold_swap_batch(
         // Remember the matched input asset: it is what intent i's refund note rides if the clearing below
         // turns out to be stale.
         intent_in_assets.push(expected_asset);
-        // INTENT AUTHORIZATION: the trader's BIP-340 intent_sig binds the pool, direction, the exact
-        // spent input outpoint, the input commitments + cross-curve, the receipt DESTINATION script (vout i+1),
-        // min_out, tip, and expiry — so a coordinator can neither redirect a receipt to its own key nor
-        // relabel/re-price a trade while aggregate conservation holds. Reconstruct the signed message from the
-        // confirmed tx (the matched spend's outpoint + the receipt's P2TR destination) and verify it; also
-        // verify the INPUT cross-curve so `c_in_bjj` (the value the Groth16 clears over) is the real twin of
-        // the spent `c_in_secp`. A failed check is deterministic from the confirmed tx, so it cannot censor an
-        // honest batch. tip_asset == direction (AMM.md §"Tip mechanics").
-        let sp = &spends[j];
-        let msg = swap_batch_intent_msg(
-            &pool_id, it.direction, &[(sp.prev_txid, sp.prev_vout)], &it.c_in_secp, &it.c_in_bjj,
-            &it.in_xcurve_sigma, &receipt_spks[i], it.min_out, it.tip_amount, it.direction, it.expiry_height,
-            &it.trader_pubkey, &refund_spks[i],
-        );
-        let trader_x: [u8; 32] = match it.trader_pubkey[1..33].try_into() {
-            Ok(x) => x,
-            Err(_) => return false,
-        };
-        if !bip340_verify(&it.intent_sig, &msg, &trader_x) {
-            return false;
-        }
         // EXPIRY → REFUND THE WHOLE BATCH, not skip. `expiry_height` is bound per intent, so the deadline is
         // each trader's own; what changes is the response to an expired-but-CONFIRMED batch. Bitcoin cannot make
         // a late tx unconfirmable (nLocktime is "invalid BEFORE N", and these txs carry locktime 0), so a
@@ -350,9 +349,11 @@ pub fn fold_swap_batch(
             return false;
         }
     }
-    if used.iter().any(|u| !*u) {
-        return false;
-    }
+    // A spend no intent claims is someone's extra input, added after the traders signed (an input signed
+    // ANYONECANPAY admits one). It cannot join the batch, but skipping would destroy every trader's already
+    // nullified input for it, so the batch refunds instead, after the receipt checks like an expired one; the
+    // extra input's value is lost to whoever added it.
+    let unclaimed_spend = used.iter().any(|u| !*u);
     // 6. per receipt: the cross-curve sigma binds C_out_secp ↔ C_out_BJJ (the secp note's value == the
     //    Groth16-proven cleared amount) as a MODULAR equality only (cxfer-core/src/sigma.rs). The BJJ
     //    side's range is enforced in-circuit; C_out_secp needs its own BP+ proof or the sigma's residue
@@ -378,7 +379,7 @@ pub fn fold_swap_batch(
     // An expired intent refunds the whole batch. Placed here — after the one-to-one matching, the per-intent
     // authorization and the receipt cross-curve checks, before any reserve-dependent work — so every refund is
     // minted against a proven real, distinct, authorized input, and so an expired batch never needs to clear.
-    if any_expired {
+    if any_expired || unclaimed_spend {
         return onboard_batch_refunds(state, env, txid, &intent_in_assets, refund_paths, refund_auths);
     }
     // ---- STATE-DEPENDENT CLEARING. Every failure from here to the commit means the batch does not clear

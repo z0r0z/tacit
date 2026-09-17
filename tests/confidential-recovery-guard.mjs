@@ -25,17 +25,18 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const ASSET = '0x' + 'aa'.repeat(32);
 const hx = (b) => '0x' + Buffer.from(b).toString('hex');
 
-// A wallet identity: scan key + the 33B owner pubkey (memo target) + the 32B leaf owner field.
+// A wallet identity: scan key + the 33B owner pubkey (memo target) + an nk whose H(nk) is the 32B leaf owner.
 function identity(priv) {
   const pub = secp.getPublicKey(priv, true);
-  return { priv, pubHex: hx(pub), owner: hx(pub.subarray(1, 33)) };
+  const nk = hx(secp.utils.randomPrivateKey());
+  return { priv, pubHex: hx(pub), nk, owner: pool.nkToOwner(nk) };
 }
 
 // Build a note owned by `id` for `value` with blinding `r`.
 function note(id, value, r) {
   const rHex = '0x' + BigInt(r).toString(16).padStart(64, '0');
   const { cx, cy } = pool.commitXY(value, rHex);
-  return { value, blinding: rHex, secret: 0, asset: ASSET, owner: id.owner, ownerPub: id.pubHex, cx, cy,
+  return { value, blinding: rHex, secret: id.nk, asset: ASSET, owner: id.owner, ownerPub: id.pubHex, cx, cy,
            leaf: pool.leaf(ASSET, cx, cy, id.owner) };
 }
 

@@ -58,6 +58,7 @@ interface IPredecessorPool {
     function attestedReflectionTip() external view returns (bytes32);
     function handoffReflectionDigest() external view returns (bytes32);
     function handoffReflectionTip() external view returns (bytes32);
+    function handoffCounts() external view returns (uint256 consumed, uint256 crossOuts);
 }
 
 /// One collateral basket leg (asset, public value) — mirrors the settle guest's CdpLeg + CollateralEngine.
@@ -364,7 +365,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // knownReflectionDigest is seeded to this so the first attestation continues genesis. Pinned in
     // cxfer-core (genesis_digest_matches_contract_constant). Tied to BITCOIN_RELAY_VKEY (one prover).
     bytes32 internal constant REFLECTION_GENESIS_DIGEST =
-        0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d;
+        0x76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5;
 
     // cBTC.zk's canonical asset id = keccak256("tacit-cbtc-zk-lock-v1") (cxfer-core CBTC_ZK_ASSET_ID) — the
     // fixed domain const the reflection guest mints real-BTC-locked cBTC notes under. Pinned so the
@@ -550,12 +551,16 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     /// after pendingOverflowChunks, same reason as everything else in this block: no eth-reflection-pinned
     /// slot moves.
     address public successor;
-    /// The rebase anchor a successor may bind instead of this generation's live state: the digest and tip of
-    /// the FIRST attest after retirement, written once. Every attest folds every recorded consume and cross-out
-    /// (the count gates) and retirement freezes both counts, so this record is drained for good; and because
-    /// it never moves, a rebase proof built against it cannot be staled by anyone attesting here afterwards.
+    /// The rebase anchor a successor may bind instead of this generation's live state: the digest, tip and
+    /// the two lane counters of the FIRST attest after retirement, written once. That attest folded every
+    /// recorded consume and cross-out (the count gates), so the record is drained; and because it never moves,
+    /// a rebase proof built against it cannot be staled by anyone attesting or crossing out here afterwards.
     bytes32 internal handoffDigest;
     bytes32 internal handoffTip;
+    uint256 internal handoffConsumedCount;
+    uint256 internal handoffCrossOutCount;
+    /// The checkpoint a reflection lane that fell far behind anchors its batches to (`advanceReflectionAncestry`).
+    ReflectionLib.Ancestry internal ancestry;
 
     // ──────────────────── Public-values layout ────────────────────
 
@@ -747,6 +752,10 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // memo (owner-only; unverified passthrough), aligned, from firstLeafIndex.
     event LeavesInserted(uint256 indexed firstLeafIndex, bytes32[] leaves, bytes[] memos);
     event NullifiersSpent(bytes32[] nullifiers);
+    // Lock-set data availability: each appended locked note (adaptor / stealth locks, bridge stealth mints, protocol-
+    // fee skims), from firstLockIndex. A claim or refund proves membership against the lock root, so a wallet must be
+    // able to rebuild the lock tree from logs alone, whichever entrypoint (router, helper, relayer) carried the settle.
+    event LockLeavesInserted(uint256 indexed firstLockIndex, bytes32[] lockLeaves);
     // An Ethereum note was burned for Bitcoin; validators honor it once past finality.
     event CrossOutRecorded(
         bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId
@@ -1066,6 +1075,11 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         return handoffTip;
     }
 
+    /// @notice The fast-lane consume and cross-out counts `handoffReflectionDigest` was attested at.
+    function handoffCounts() external view returns (uint256 consumed, uint256 crossOuts) {
+        return (handoffConsumedCount, handoffCrossOutCount);
+    }
+
     // ──────────────────── Generations ────────────────────
     // A pool is the factory of its own successor. `createNextGen` — the lineage steward's one privileged
     // call, one-shot — CREATE2-deploys the next generation from THIS pool's context and records it as
@@ -1080,9 +1094,12 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     // split onward both generations reflect the same Bitcoin history; the successor rebases at its own first
     // attest from this generation's handoff record (its first attested state after retirement, fixed there so
     // no later attest here can stale a rebase proof) or from its live state (ReflectionLib.attest), and
-    // nothing folded here after that can originate value: Bitcoin-homed spends, cross-outs and cBTC mints are refused, a
+    // nothing folded here after that can originate value: Bitcoin-homed spends and cBTC mints are refused, a
     // bridge mint pays only a burn bound to this address, and a Bitcoin-authorized call executes only
-    // through the executor its record names.
+    // through the executor its record names. Cross-outs stay open: they are this generation's Bitcoin exit
+    // (a bridged asset, or cBTC a locker needs to redeem a lock registered here), and a cross-out recorded
+    // after the rebase point mints only in this generation's reflection, never the successor's, so the value
+    // it carries stays one generation's.
     //
     // What the steward can and cannot do: it chooses the successor's code, nothing else. It cannot touch
     // escrow, freeze an exit or redirect a payout; the worst a compromised steward does is close new entry
@@ -1116,7 +1133,7 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         assembly ("memory-safe") {
             next := create2(0, add(code, 0x20), mload(code), salt)
         }
-        if (next == address(0)) revert NotAContract();
+        if (next.code.length == 0) revert NotAContract();
         successor = next;
         emit GenerationRetired(next);
     }
@@ -1696,7 +1713,8 @@ contract ConfidentialPool is ReentrancyGuardTransient {
             cbtcLockSpent,
             cbtcLockRedeemed,
             pendingBtcCall,
-            overflowQueue
+            overflowQueue,
+            ancestry
         );
         knownReflectionDigest = st.knownReflectionDigest;
         knownBitcoinSpentRoot = st.knownBitcoinSpentRoot;
@@ -1709,12 +1727,22 @@ contract ConfidentialPool is ReentrancyGuardTransient {
         if (successor != address(0) && handoffDigest == bytes32(0)) {
             handoffDigest = st.knownReflectionDigest;
             handoffTip = st.lastReflectionBlockHash;
+            handoffConsumedCount = bitcoinConsumedCount;
+            handoffCrossOutCount = crossOutCount;
         }
         // Lazy-register each etch-authenticated asset (disjoint storage; order-independent from the lock/
         // terminal effects the library already applied).
         for (uint256 i; i < metas.length; ++i) {
             _autoRegisterFromMeta(metas[i]);
         }
+    }
+
+    /// @notice Recovery for a reflection lane more than REFLECTION_MAX_LAG blocks behind the matured relay anchor:
+    ///         walks a canonical checkpoint (at most that many parents per call) down toward the deepest block a
+    ///         batch from the last reflected block can reach, so the lane catches up in ordinary-sized batches.
+    ///         Permissionless; the target is fixed by chain state. See `ReflectionLib.advanceAncestry`.
+    function advanceReflectionAncestry() external {
+        ReflectionLib.advanceAncestry(ancestry, address(HEADER_RELAY), REFLECTION_CONFIRMATIONS, lastReflectionBlockHash);
     }
 
     // ──────────────────── Settle (the one proof entrypoint) ────────────────────
@@ -1946,8 +1974,9 @@ contract ConfidentialPool is ReentrancyGuardTransient {
                 rSlot := lockRoot.slot
                 fSlot := lockFilledSubtrees.slot
             }
-            (, bytes32 root) = _appendLeaves(pv.lockLeaves, iSlot, rSlot, fSlot);
+            (uint256 firstLockIndex, bytes32 root) = _appendLeaves(pv.lockLeaves, iSlot, rSlot, fSlot);
             everKnownLockRoot[root] = true;
+            emit LockLeavesInserted(firstLockIndex, pv.lockLeaves);
         }
 
         // ── Generic CDP (ops 15–17, 19) + cBTC mint (op 18) ───────────────────────────────────────────
@@ -2304,9 +2333,13 @@ contract ConfidentialPool is ReentrancyGuardTransient {
     ///      primitive by construction, never a purely local exit (the note is still spendable on Bitcoin and
     ///      through the successor). A cBTC lock that never minted here reclaims its escrow directly
     ///      (`claimEscrow` on a never-minted outpoint) and its sats are self-custodied, so nothing strands.
-    function _requireLocalExitOnly(PublicValues memory pv, bool btcHomed) internal pure {
+    ///      Cross-outs wait for the handoff record: until it is written, each one would move the counters the
+    ///      first post-retirement attest must match, so a stream of them could hold off the record — and the
+    ///      successor's rebase — indefinitely.
+    function _requireLocalExitOnly(PublicValues memory pv, bool btcHomed) internal view {
         if (
-            btcHomed || pv.swaps.length != 0 || pv.cbtcMints.length != 0 || pv.crossOuts.length != 0
+            btcHomed || pv.swaps.length != 0 || pv.cbtcMints.length != 0
+                || (pv.crossOuts.length != 0 && handoffDigest == bytes32(0))
         ) _rv(PoolRetired.selector);
         for (uint256 i; i < pv.liquidity.length; ++i) {
             if (pv.liquidity[i].sharesPost >= pv.liquidity[i].sharesPre) _rv(PoolRetired.selector);

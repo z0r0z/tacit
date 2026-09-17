@@ -23,6 +23,7 @@ fn assert_expected_vkey(vk: &str) {
     }
 }
 
+fn u64f(v: &serde_json::Value) -> Option<u64> { v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())) } // a u64 as a JSON number or a decimal string (the dapp relay stringifies BigInt amounts)
 fn main() {
     let fixture = std::env::var("FARM_FIXTURE").expect("set FARM_FIXTURE");
     let op: u8 = std::env::var("FARM_OP")
@@ -54,8 +55,8 @@ fn main() {
         for leg in legs {
             s.write(&hexv(leg["cx"].as_str().unwrap()));
             s.write(&hexv(leg["cy"].as_str().unwrap()));
-            s.write(&leg["value"].as_u64().unwrap());
-            s.write(&leg["index"].as_u64().unwrap());
+            s.write(&u64f(&leg["value"]).unwrap());
+            s.write(&u64f(&leg["index"]).unwrap());
             for p in leg["path"].as_array().unwrap() {
                 s.write(&hexv(p.as_str().unwrap()));
             }
@@ -66,14 +67,14 @@ fn main() {
     } else if op == 21 {
         s.write(&hexv(f["controller"].as_str().unwrap()));
         s.write(&hexv(f["owner"].as_str().unwrap()));
-        s.write(&f["shares"].as_u64().unwrap());
+        s.write(&u64f(&f["shares"]).unwrap());
         s.write(&hexv(f["nonce"].as_str().unwrap())); // stable position nonce (part of the receipt leaf)
         s.write(&hexv(f["harvestNonce"].as_str().unwrap())); // per-harvest freshness for the reward leg
-        s.write(&f["reward"].as_u64().unwrap());
-        s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0));
+        s.write(&u64f(&f["reward"]).unwrap());
+        s.write(&f.get("fee").and_then(u64f).unwrap_or(0));
         // v3 receipt: the STAKED asset (bond and unbond must agree; receipt membership enforces it).
         s.write(&hexv(f["lpAsset"].as_str().unwrap()));
-        s.write(&f["oldIndex"].as_u64().unwrap());
+        s.write(&u64f(&f["oldIndex"]).unwrap());
         for p in f["oldPath"].as_array().unwrap() {
             s.write(&hexv(p.as_str().unwrap()));
         }
@@ -89,11 +90,11 @@ fn main() {
     } else {
         s.write(&hexv(f["controller"].as_str().unwrap()));
         s.write(&hexv(f["owner"].as_str().unwrap()));
-        s.write(&f["shares"].as_u64().unwrap());
-        s.write(&f.get("fee").and_then(|v| v.as_u64()).unwrap_or(0));
+        s.write(&u64f(&f["shares"]).unwrap());
+        s.write(&f.get("fee").and_then(u64f).unwrap_or(0));
         s.write(&hexv(f["nonce"].as_str().unwrap()));
         s.write(&hexv(f["lpAsset"].as_str().unwrap()));
-        s.write(&f["oldIndex"].as_u64().unwrap());
+        s.write(&u64f(&f["oldIndex"]).unwrap());
         for p in f["oldPath"].as_array().unwrap() {
             s.write(&hexv(p.as_str().unwrap()));
         }
@@ -106,7 +107,12 @@ fn main() {
         s.write(&osig[..32].to_vec());
         s.write(&osig[32..].to_vec());
     }
-    for _ in 0..64u32 { s.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); } // CP-04: memo hashes; guest reads its own leaves+lock_leaves count
+    // Memo hashes: exactly the op's own list when the relay supplies one (the guest reads leaves+lock_leaves of
+    // them, so a padded or truncated list breaks a large settle); a bare fixture with no memos gets 64 empty ones.
+    match f.get("memoHashes").and_then(|v| v.as_array()) {
+        Some(mh) => { for h in mh { s.write(&hexv(h.as_str().unwrap())); } }
+        None => { for _ in 0..64u32 { s.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); } }
+    }
 
     let __pv = ProverClient::builder().cpu().build().execute(Elf::Static(ELF), s.clone()).run().expect("pv-exec").0; // cuda groth16 drops PV; cpu execute (before any cuda client) carries it
     let client = ProverClient::builder().cpu().build();

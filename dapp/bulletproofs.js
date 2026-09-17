@@ -184,13 +184,18 @@ export function bpRangeVerify(commitmentsCompressed, proofBytes, n_bits = N_BITS
     T_1 = secp.ProjectivePoint.fromHex(bytesToHex(proofBytes.slice(off, off + 33))); off += 33;
     T_2 = secp.ProjectivePoint.fromHex(bytesToHex(proofBytes.slice(off, off + 33))); off += 33;
   } catch { return false; }
-  const t_hat = modN(bytes32ToBigint(proofBytes.slice(off, off + 32))); off += 32;
-  const tau_x = modN(bytes32ToBigint(proofBytes.slice(off, off + 32))); off += 32;
-  const mu = modN(bytes32ToBigint(proofBytes.slice(off, off + 32))); off += 32;
+  // Scalars must be canonical (< n), as the guest requires: a reducing parse would accept byte strings the
+  // guest rejects and fold a transaction the reflection skips.
+  const rdScalar = () => { const v = bytes32ToBigint(proofBytes.slice(off, off + 32)); off += 32; return v < SECP_N ? v : null; };
+  const t_hat = rdScalar();
+  const tau_x = rdScalar();
+  const mu = rdScalar();
+  if (t_hat === null || tau_x === null || mu === null) return false;
   const Lk = [], Rk = [];
   try { for (let k = 0; k < log_nm; k++) { Lk.push(secp.ProjectivePoint.fromHex(bytesToHex(proofBytes.slice(off, off + 33)))); off += 33; Rk.push(secp.ProjectivePoint.fromHex(bytesToHex(proofBytes.slice(off, off + 33)))); off += 33; } } catch { return false; }
-  const a_final = modN(bytes32ToBigint(proofBytes.slice(off, off + 32))); off += 32;
-  const b_final = modN(bytes32ToBigint(proofBytes.slice(off, off + 32))); off += 32;
+  const a_final = rdScalar();
+  const b_final = rdScalar();
+  if (a_final === null || b_final === null) return false;
   if (off !== proofBytes.length) return false;
 
   const t = _bpTranscriptC();

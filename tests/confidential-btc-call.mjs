@@ -17,11 +17,12 @@ const executor = hexToBytes('aa'.repeat(20));
 const target = hexToBytes('bb'.repeat(20));
 const calldata = hexToBytes('deadbeef');
 const callNonce = hexToBytes('33'.repeat(32));
-const DOMAIN = new TextEncoder().encode('tacit-btc-call-v1');
+const DOMAIN = new TextEncoder().encode('tacit-btc-call-v2');
+const chainBinding = hexToBytes('7c'.repeat(32)); // keccak(chainid ‖ pool) of the deployment the call is for
 const calldataHash = keccak_256(calldata);
 
 const built = encodeBtcCallEnvelope({
-  executor, target, calldata, callNonce, callerPubkey,
+  chainBinding, executor, target, calldata, callNonce, callerPubkey,
   sign: (m) => signSchnorr(m, priv),
 });
 
@@ -37,7 +38,7 @@ test('envelope is 201 bytes, op 0x68, fields at the guest parse offsets', () => 
 });
 
 test('embedded sig is a valid BIP-340 sig over the call message (guest bip340_verify accepts)', () => {
-  const msg = keccak_256(concatBytes(DOMAIN, executor, target, calldataHash, callerPubkey, callNonce));
+  const msg = keccak_256(concatBytes(DOMAIN, chainBinding, executor, target, calldataHash, callerPubkey, callNonce));
   assert.ok(verifySchnorr(built.payload.subarray(137, 201), msg, callerPubkey));
 });
 
@@ -69,11 +70,23 @@ test('encodeExecuteBtcCall: selector + ABI(bytes32,address,bytes32,bytes) layout
 
 test('a different executor yields a different recordHash (no cross-deployment replay)', () => {
   const other = encodeBtcCallEnvelope({
-    executor: hexToBytes('cc'.repeat(20)), target, calldata, callNonce, callerPubkey,
+    chainBinding, executor: hexToBytes('cc'.repeat(20)), target, calldata, callNonce, callerPubkey,
     sign: (m) => signSchnorr(m, priv),
   });
   assert.notEqual(other.recordHash, built.recordHash);
   assert.equal(other.callId, built.callId, 'callId is executor-independent (caller+nonce only)');
+});
+
+test('the signature binds the deployment: the same call signed for another chain binding verifies under neither the other message nor this one', () => {
+  const otherChain = hexToBytes('7d'.repeat(32));
+  const forOther = encodeBtcCallEnvelope({ chainBinding: otherChain, executor, target, calldata, callNonce, callerPubkey, sign: (m) => signSchnorr(m, priv) });
+  const msgHere = keccak_256(concatBytes(DOMAIN, chainBinding, executor, target, calldataHash, callerPubkey, callNonce));
+  assert.equal(verifySchnorr(forOther.payload.subarray(137, 201), msgHere, callerPubkey), false, 'a signature for another deployment does not verify here');
+  assert.equal(forOther.recordHash, built.recordHash, 'the record is identical, so the signature is what pins the deployment');
+});
+
+test('a chain binding is required', () => {
+  assert.throws(() => encodeBtcCallEnvelope({ executor, target, calldata, callNonce, callerPubkey, sign: (m) => signSchnorr(m, priv) }), /expected bytes/);
 });
 
 console.log(`\nconfidential-btc-call: ${passed} passed`);

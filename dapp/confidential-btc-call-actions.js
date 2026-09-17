@@ -17,10 +17,10 @@ import { encodeBtcCallEnvelope } from './confidential-btc-call.js';
 // Broadcast the value-free request: a commit+reveal pair that inscribes the 0x68 envelope in the reveal's
 // Taproot witness (the reflection reads it there). No asset input, no value output — the caller pays only
 // Bitcoin fees. Returns the txids + the identifiers the Ethereum executeBtcCall needs.
-export async function broadcastBtcCall({ executor, target, calldata, callNonce }) {
+export async function broadcastBtcCall({ chainBinding, executor, target, calldata, callNonce }) {
   await ensurePrivkey();
   const built = encodeBtcCallEnvelope({
-    executor, target, calldata, callNonce,
+    chainBinding, executor, target, calldata, callNonce,
     callerPubkey: wallet.xonly(),
     sign: (m) => signSchnorr(m, wallet.priv),
   });

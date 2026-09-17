@@ -455,7 +455,7 @@ test('buildLpBondOp: fused add+bond witness — canonical order, derived shares,
   // Pass the notes in REVERSE (high, low) to exercise canonicalization.
   const b = ux.buildLpBondOp({
     walletPriv, controller, aNote: bNote, bNote: aNote, feeBps: 30,
-    reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n, bondNonce: '0x' + '77'.repeat(32),
+    reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n,
   });
   assert.equal(b.assetA, assetLow, 'canonicalized: assetA is the lex-smaller id');
   assert.equal(b.assetB, assetHigh);
@@ -465,12 +465,89 @@ test('buildLpBondOp: fused add+bond witness — canonical order, derived shares,
   // both legs re-verify against the SAME bound context the build assembled
   const bondPid = ux.pool.evmPoolId(assetLow, assetHigh, 30), bondLpAsset = ux.pool.evmLpShareId(bondPid);
   const ctx = ux.pool.intentContext('tacit-lp-bond-v1', b.op.chainBinding, assetLow, assetHigh,
-    [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), '0x' + '77'.repeat(32), id.owner], [bondLpAsset, bondPid, id.owner]],
+    [[aNote.cx, aNote.cy, id.owner], [bNote.cx, bNote.cy, id.owner], ['0x' + '00'.repeat(12) + controller.replace(/^0x/, ''), b.bondNonce, b.receiptOwner], [bondLpAsset, bondPid, b.receiptOwner]],
     [1000n, 1000n, b.dShares, 0n, 0n]); // guest form: [d_a, d_b, d_shares, op_deadline, fee] — no rps words
   assert.ok(ux.pool.verifyOpeningSigma(aNote.cx, aNote.cy, 1000n, b.op.a.sigR, b.op.a.sigZ, ctx), 'A sigma opens under the bound bond context');
   assert.ok(ux.pool.verifyOpeningSigma(bNote.cx, bNote.cy, 1000n, b.op.b.sigR, b.op.b.sigZ, ctx), 'B sigma opens under the bound bond context');
   // a missing controller is refused (no silent unbonded add)
-  assert.throws(() => ux.buildLpBondOp({ walletPriv, aNote, bNote, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n, bondNonce: z }), /controller/);
+  assert.throws(() => ux.buildLpBondOp({ walletPriv, aNote, bNote, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n }), /controller/);
+});
+
+// OP_LP_BOND → OP_FARM_HARVEST → OP_FARM_UNBOND at the witness level: the receipt a bond emits is owned by a real
+// BIP-340 key that re-derives from the wallet key + the position, so the harvest and unbond the guest authorizes
+// against that receipt can actually be signed, and the bond ships the one memo its one receipt leaf needs.
+test('lpBond: receipt key + nonce re-derive from the wallet, and the bond → harvest → unbond witnesses verify', async () => {
+  const { makeConfidentialFarm } = await import('../dapp/confidential-farm.js');
+  const { verifySchnorr } = await import('../dapp/bulletproofs.js');
+  const submitted = [];
+  const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const reserves = '0x' + [1n, 0n, 0n, 10000n, 10000n, 30n, 10000n].map(w).join('');
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    const obj = String(url).includes('/confidential/submit') ? (submitted.push(body), { jobId: 'j', status: 'settled' })
+      : String(url).includes('/confidential/status') ? { jobId: 'j', status: 'settled' }
+      : { result: body && body.method === 'eth_call' ? reserves : '0x0' };
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  } });
+  const pool = ux.pool;
+  const farm = makeConfidentialFarm({ keccak256: keccak_256, pool });
+  const walletPriv = '0x' + 'c4'.repeat(32);
+  const id = ux.identity(walletPriv);
+  const controller = '0x' + 'fa'.repeat(20);
+  const assetLow = '0x0a' + 'a'.repeat(62), assetHigh = '0x' + 'b0'.repeat(32);
+  const tree = new pool.Tree();
+  const mk = (asset, idx) => {
+    const dn = pool.deriveNote(id.priv, asset, idx);
+    const blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+    const owner = pool.nkToOwner(dn.secret);
+    const c = pool.commitXY(1000n, blinding);
+    const leafIndex = tree.insert(pool.leaf(asset, c.cx, c.cy, owner));
+    return { asset, value: '1000', ...c, owner, secret: dn.secret, blinding, leafIndex };
+  };
+  const aNote = mk(assetLow, 0), bNote = mk(assetHigh, 1);
+  for (const n of [aNote, bNote]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
+
+  const r = await ux.lpBond({ walletPriv, controller, aNote, bNote, feeBps: 30 });
+  const sub = submitted.at(-1);
+  assert.equal(sub.type, 'lpbond');
+  assert.equal(sub.memos.length, 1, 'one memo for the one receipt leaf');
+  assert.equal(sub.memos[0], '0x', 'the receipt memo is the seed-derived empty memo');
+  assert.equal(sub.op.owner, r.receiptOwner);
+  assert.notEqual(r.receiptOwner.toLowerCase(), id.owner.toLowerCase(), 'receipt is not owned by the wallet nk-hash owner');
+
+  // Recovery: the position re-derives from the wallet key + (controller, lpAsset, spent A note leaf) alone.
+  const pos = ux.lpBondPosition({ walletPriv, controller, lpAsset: r.lpAsset, anchorLeaf: pool.leaf(assetLow, aNote.cx, aNote.cy, aNote.owner) });
+  assert.equal(pos.owner, r.receiptOwner, 'receipt owner re-derives');
+  assert.equal(pos.nonce, r.bondNonce, 'bond nonce re-derives');
+  const again = ux.buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps: 30, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n });
+  assert.equal(again.bondNonce, r.bondNonce, 'deterministic nonce');
+  const other = ux.lpBondPosition({ walletPriv, controller, lpAsset: r.lpAsset, anchorLeaf: '0x' + '99'.repeat(32) });
+  assert.notEqual(other.owner, pos.owner, 'a different position gets a different key');
+  assert.notEqual(other.nonce, pos.nonce, 'and a different nonce');
+  // The owner is a real x-only key whose discrete log is ownerPriv.
+  const xOnly = '0x' + Buffer.from(secp.getPublicKey(Buffer.from(pos.ownerPriv.slice(2), 'hex'), true).slice(1)).toString('hex');
+  assert.equal(xOnly, pos.owner, 'owner = x(ownerPriv·G)');
+
+  const controller32 = '0x' + '00'.repeat(12) + controller.slice(2);
+  const receipt = pool.farmReceiptLeaf(controller32, r.lpAsset, r.dShares, pos.owner, pos.nonce);
+  assert.equal(receipt, r.receiptLeaf, 'the receipt the bond emits');
+  const rTree = new pool.Tree(); const ri = rTree.insert(receipt); const { root: rRoot, path: rPath } = rTree.rootAndPath(ri);
+  const b32 = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, '').padStart(64, '0'), 'hex'));
+
+  const rewardAsset = farm.debtAssetId(controller), reward = 250n, rb = 9n;
+  const rewardOwner = pool.nkToOwner('0x' + '11'.repeat(32));
+  const hv = farm.buildHarvestOp({ chainBinding: '0x' + '00'.repeat(32), spendRoot: rRoot, controller, owner: pos.owner, ownerPriv: pos.ownerPriv, rewardOwner, shares: r.dShares, nonce: pos.nonce, harvestNonce: '0x' + 'b2'.repeat(32), reward, oldIndex: ri, oldPath: rPath, lpAsset: r.lpAsset, rewardAsset, rewardNote: { ...pool.commitXY(reward, rb), blinding: rb } });
+  assert.equal(pool.merkleRootFrom(receipt, ri, rPath).toLowerCase(), rRoot.toLowerCase(), 'harvest proves the bond receipt');
+  const hMsg = pool.evmLpHarvestOwnerMsg({ farmId: controller32, oldLeaf: receipt, reward, fee: 0n, newNonce: '0x' + 'b2'.repeat(32), rewardAsset, rewardCx: hv.rewardCx, rewardCy: hv.rewardCy, rewardOwner });
+  assert.ok(verifySchnorr(Uint8Array.from(Buffer.from(hv.ownerSig.slice(2), 'hex')), hMsg, b32(pos.owner)), 'harvest owner signature verifies under the receipt owner');
+
+  const lpOwner = pool.nkToOwner('0x' + '22'.repeat(32)), ub = 11n;
+  const un = farm.buildUnbondOp({ chainBinding: '0x' + '00'.repeat(32), spendRoot: rRoot, controller, owner: pos.owner, ownerPriv: pos.ownerPriv, lpOwner, shares: r.dShares, nonce: pos.nonce, lpAsset: r.lpAsset, oldIndex: ri, oldPath: rPath, releaseNote: { ...pool.commitXY(r.dShares, ub), blinding: ub } });
+  const uMsg = pool.evmLpUnbondOwnerMsg({ farmId: controller32, receipt, shares: r.dShares, fee: 0n, lpAsset: r.lpAsset, releaseCx: un.releaseCx, releaseCy: un.releaseCy, releaseOwner: lpOwner });
+  assert.ok(verifySchnorr(Uint8Array.from(Buffer.from(un.ownerSig.slice(2), 'hex')), uMsg, b32(pos.owner)), 'unbond owner signature verifies under the receipt owner');
+  // A signature from the wallet-constant identity key does not authorize the receipt.
+  const { signSchnorr } = await import('../dapp/bulletproofs.js');
+  assert.ok(!verifySchnorr(signSchnorr(uMsg, id.priv), uMsg, b32(pos.owner)), 'the identity key cannot unbond');
 });
 
 test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding reaches the settler', () => {
@@ -506,4 +583,200 @@ test('buildUnwrap: the opening sigma binds recipient + fee, and no raw blinding 
   // stretching the expiry (a box submitting the exit past its deadline) also breaks the sigma
   assert.ok(!pool.verifyOpeningSigma(note.cx, note.cy, BigInt(note.value), op.sigR, op.sigZ, ctxOf(recip, 0n, dl + 86400n)),
     'stretching the deadline breaks the sigma (no stale-submit grief)');
+});
+
+// wrapLp / wrapSwap spend PENDING deposits created by buildWrap, so the deposit id they recompute (and the owner
+// every sigma binds) must be the per-note owner that wrap committed — nkToOwner(deriveNote(asset, index).secret) —
+// or the guest looks up a deposit that was never made and the settle reverts.
+function depositOpMock(captured) {
+  const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const reserves = '0x' + [1n, 0n, 0n, 10_000_000n, 10_000_000n, 30n, 10_000_000n].map(w).join('');
+  return async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    let obj;
+    if (String(url).includes('/confidential/submit')) { captured.push(body); obj = { jobId: 'j1', status: 'settled' }; }
+    else if (String(url).includes('/confidential/status')) obj = { jobId: 'j1', status: 'settled' };
+    else obj = { result: body && body.method === 'eth_call' ? reserves : '0x0' };
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+}
+
+test('wrapSwap / wrapLp: deposit ids and deposit owners match the notes buildWrap committed', async () => {
+  const captured = [];
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: depositOpMock(captured) }); // mainnet registers several pool assets
+  const walletPriv = '0x' + '77'.repeat(32);
+  const amountWei = '1000000000000000';
+  const id = ux.identity(walletPriv);
+  const other = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').ticker;
+
+  const wEth = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH', index: 3 });
+  await ux.wrapSwap({ walletPriv, fromTicker: 'cETH', toTicker: other, amountWei, index: 3 });
+  const swapOp = captured.at(-1).op;
+  assert.equal(swapOp.depositIds[0], wEth.depositId, 'wrap-swap spends the deposit wrap created');
+  assert.equal(swapOp.deposit.owner, wEth.note.owner, 'wrap-swap deposit owner is the per-note wrap owner');
+  assert.notEqual(swapOp.deposit.owner, id.owner, 'not the wallet-constant identity owner');
+
+  const wUsd = ux.buildWrap({ walletPriv, amountWei, ticker: other, index: 1 });
+  const lpRes = await ux.wrapLp({ walletPriv, aTicker: 'cETH', bTicker: other, aAmountWei: amountWei, bAmountWei: amountWei, aIndex: 3, bIndex: 1 });
+  const lpOp = captured.at(-1).op;
+  const byAsset = { [wEth.note.asset.toLowerCase()]: wEth, [wUsd.note.asset.toLowerCase()]: wUsd };
+  const legA = byAsset[lpOp.assetA.toLowerCase()], legB = byAsset[lpOp.assetB.toLowerCase()];
+  assert.deepEqual(lpOp.depositIds, [legA.depositId, legB.depositId], 'wrap-lp spends both wrap deposits, in canonical order');
+  assert.equal(lpOp.a.owner, legA.note.owner, 'leg A owner is its wrap owner');
+  assert.equal(lpOp.b.owner, legB.note.owner, 'leg B owner is its wrap owner');
+  // The leg sigmas open under the context the guest rebuilds from those owners.
+  const pool = ux.pool;
+  const ctx = pool.intentContext('tacit-wrap-lp-v1', lpOp.chainBinding, lpOp.assetA, lpOp.assetB,
+    [[lpOp.a.cx, lpOp.a.cy, legA.note.owner], [lpOp.b.cx, lpOp.b.cy, legB.note.owner], [lpOp.share.cx, lpOp.share.cy, lpOp.share.owner], [lpRes.lpAsset, lpRes.pid, lpOp.share.owner]],
+    [BigInt(lpOp.a.value), BigInt(lpOp.b.value), lpRes.dShares, 0n, 0n]);
+  assert.ok(pool.verifyOpeningSigma(lpOp.a.cx, lpOp.a.cy, BigInt(lpOp.a.value), lpOp.a.sigR, lpOp.a.sigZ, ctx), 'leg A sigma binds the wrap owner');
+  assert.ok(pool.verifyOpeningSigma(lpOp.b.cx, lpOp.b.cy, BigInt(lpOp.b.value), lpOp.b.sigR, lpOp.b.sigZ, ctx), 'leg B sigma binds the wrap owner');
+});
+
+// Every note a route mints gets its own fresh nk (sealed in its memo), never the wallet-constant identity owner
+// whose nk would reach the relay on the note's next spend. buildRoute refuses a partial spend today, so the
+// change path is asserted to fail closed and the routed output is checked on a whole-note route.
+test('route: minted notes use a fresh per-note nk, never the identity owner', async () => {
+  const captured = [];
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: depositOpMock(captured) });
+  const walletPriv = '0x' + '78'.repeat(32);
+  const id = ux.identity(walletPriv);
+  const w = ux.buildWrap({ walletPriv, amountWei: '10000000000000000', ticker: 'cETH', index: 0 });
+  const tree = new ux.pool.Tree();
+  const leafIndex = tree.insert(w.leaf);
+  const inNote = { ...w.note, leafIndex, path: tree.rootAndPath(leafIndex).path, root: tree.root() };
+  const other = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').assetId;
+  const path = [{ assetNext: other, feeBps: 30 }];
+  await assert.rejects(ux.route({ walletPriv, inNote, amountIn: BigInt(inNote.value) / 2n, path, minOut: 0n }), /partial-spend change/);
+  await ux.route({ walletPriv, inNote, amountIn: BigInt(inNote.value), path, minOut: 0n });
+  const sub = captured.at(-1);
+  assert.equal(sub.memos.length, 1, 'whole-note route: one routed output, sealed');
+  const out = sub.op.out;
+  assert.notEqual(String(out.owner).toLowerCase(), id.owner.toLowerCase(), 'output is not minted to the identity owner');
+  const opened = ux.indexer._memo.openMemo(walletPriv, ux.pool.leaf(other, out.cx, out.cy, out.owner), sub.memos[0]);
+  assert.ok(opened, 'the output memo opens for the wallet');
+  assert.equal(String(ux.pool.nkToOwner(opened.secret)).toLowerCase(), String(out.owner).toLowerCase(), 'the sealed nk owns the output leaf');
+});
+
+test('crossOut: a destination owner is required for every destination chain', async () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => { throw new Error('no network expected'); } });
+  const walletPriv = '0x' + '79'.repeat(32);
+  const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  const note = { ...w.note, leafIndex: 0, path: ux.pool.zeros, root: '0x' + '00'.repeat(32), nullifier: '0x' + '11'.repeat(32) };
+  await assert.rejects(ux.crossOut({ walletPriv, notes: [note], destChain: 8453 }), /destOwner/);
+  await assert.rejects(ux.crossOut({ walletPriv, notes: [note], destChain: 1 }), /destOwner/);
+});
+
+// After a relayed settle, the memos the pool emitted for our leaves must equal the memos sealed locally: the relay
+// picks the memo hashes it proves, so a substituted memo still settles, and only this comparison notices.
+test('relayed settle: emitted memos are compared byte-for-byte with the sealed ones', async () => {
+  const w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const encodeLeavesInserted = (leaves, memos) => {
+    const lv = [w32(leaves.length), ...leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0'))].join('');
+    const bodies = memos.map((m) => { const h = String(m).replace(/^0x/, ''); const len = h.length / 2; return w32(len) + h.padEnd(Math.ceil(len / 32) * 64, '0'); });
+    let off = 32 * memos.length; const heads = [];
+    for (const b of bodies) { heads.push(w32(off)); off += b.length / 2; }
+    const mv = w32(memos.length) + heads.join('') + bodies.join('');
+    return '0x' + w32(64) + w32(64 + lv.length / 2) + lv + mv;
+  };
+  const run = async (tamper) => {
+    const state = {};
+    const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      let obj;
+      if (String(url).includes('/confidential/submit')) { state.sub = body; obj = { jobId: 'j', status: 'pending' }; }
+      else if (String(url).includes('/confidential/status')) obj = { jobId: 'j', status: 'settled', txHash: '0x' + 'ab'.repeat(32) };
+      else if (body && body.method === 'eth_getTransactionReceipt') {
+        const { op, memos } = state.sub;
+        const leaves = op.outputs.map((o) => state.pool.leaf(op.asset, o.cx, o.cy, o.owner));
+        const shipped = tamper ? [memos[1], memos[0]] : memos;
+        obj = { result: { logs: [{ address: state.poolAddr, topics: [state.topic, '0x' + w32(5)], data: encodeLeavesInserted(leaves, shipped) }] } };
+      } else obj = { result: '0x0' };
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    } });
+    state.pool = ux.pool; state.poolAddr = ux.cfg.pool;
+    state.topic = makeConfidentialEvmLogTopic();
+    const walletPriv = '0x' + '5a'.repeat(32);
+    const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+    return ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, waitOpts: { intervalMs: 0, sleep: async () => {} } });
+  };
+  const good = await run(false);
+  assert.equal(good.memoCheck.ok, true, 'identical memos pass');
+  await assert.rejects(run(true), (e) => /emitted memos differ/.test(e.message) && e.memoCheck.mismatched.length === 2 && Array.isArray(e.sealedMemos));
+});
+
+function makeConfidentialEvmLogTopic() {
+  return '0x' + Buffer.from(keccak_256(new TextEncoder().encode('LeavesInserted(uint256,bytes32[],bytes[])'))).toString('hex');
+}
+
+// Fast-lane exit: Bitcoin-homed notes move into a native note through an authenticated OP_TRANSFER shaped for
+// exec-fastlane. Each input must be a btc_note_leaf_bound member of the Bitcoin pool root, unspent in the
+// reflected spent set, and signed by its Taproot key over btc_note_spend_msg — checked here as the guest does.
+test('fastlane exit: authenticated transfer witness (bound leaf, non-membership, BIP-340 spend sig, transfer kernel)', async () => {
+  const { verifySchnorr } = await import('../dapp/bulletproofs.js');
+  const { makeConfidentialTransfer } = await import('../dapp/confidential-transfer.js');
+  const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+  const submitted = [];
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    const obj = String(url).includes('/confidential/submit') ? (submitted.push(body), { jobId: 'j', status: 'proven' })
+      : String(url).includes('/confidential/status') ? { jobId: 'j', status: 'proven', publicValues: '0xaa', proof: '0xbb' }
+      : { result: body && body.method === 'eth_gasPrice' ? '0x3b9aca00' : body && body.method === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : '0x0' };
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  } });
+  const pool = ux.pool;
+  const walletPriv = '0x' + '5b'.repeat(32);
+  const asset = ux.assets[0].assetId;
+  const hb = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, '').padStart(64, '0'), 'hex'));
+  const authPriv = '0x' + '3c'.repeat(32);
+  const authKey = '0x' + Buffer.from(secp.getPublicKey(hb(authPriv), true).slice(1)).toString('hex');
+  // Build the Bitcoin pool tree under this deployment's chain binding, as the reflection does.
+  const chainBinding = (() => { const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: ux.assets[0].ticker }); return w.wrapOp.chainBinding; })();
+  const mk = (value, blinding) => ({ asset, value: String(value), blinding: '0x' + BigInt(blinding).toString(16).padStart(64, '0'), ...pool.commitXY(value, '0x' + BigInt(blinding).toString(16).padStart(64, '0')) });
+  const notes = [mk(70000n, 11n), mk(30000n, 12n)];
+  const tree = new pool.Tree();
+  notes.forEach((n) => { n.leafIndex = tree.insert(pool.btcNoteLeafBound(asset, n.cx, n.cy, authKey, chainBinding)); });
+  const spendRoot = tree.root();
+  notes.forEach((n) => { n.path = tree.rootAndPath(n.leafIndex).path; });
+  const spent = new pool.Tree();
+  const MAX = '0x' + 'ff'.repeat(32), ZERO = '0x' + '00'.repeat(32);
+  spent.insert(pool.imtLeaf(ZERO, MAX));
+  const bitcoinSpentRoot = spent.root();
+  notes.forEach((n) => { n.low = { value: ZERO, next: MAX, index: 0, path: spent.rootAndPath(0).path }; });
+
+  const fee = 100n;
+  const b = ux.buildFastlaneExitOp({ walletPriv, notes, authPriv, spendRoot, bitcoinSpentRoot, fee });
+  const t = b.op.transfer;
+  assert.equal(b.op.bitcoinSpentRoot, bitcoinSpentRoot);
+  assert.equal(t.inputs.length, 2); assert.equal(t.outputs.length, 1);
+  const outLeaves = t.outputs.map((o) => pool.leaf(asset, o.cx, o.cy, o.owner));
+  assert.deepEqual(b.leaves, outLeaves);
+  const OP_ID = '0x' + Buffer.from('tacit.op.transfer'.padEnd(32, '\0')).toString('hex');
+  for (const inp of t.inputs) {
+    assert.equal(inp.owner, authKey, 'input owner is the Taproot authority key');
+    const lf = pool.btcNoteLeafBound(asset, inp.cx, inp.cy, inp.owner, b.op.chainBinding);
+    const msg = pool.btcNoteSpendMsg(b.op.chainBinding, OP_ID, lf, pool.nullifier(lf), outLeaves, fee, 0n);
+    assert.ok(verifySchnorr(hb(inp.sig), hb(msg), hb(authKey)), 'BIP-340 spend signature verifies under the note key');
+    assert.ok(inp.low && inp.low.path.length === 32, 'non-membership witness carried per input');
+  }
+  const Point = ct.H.constructor; // the transfer module's own point class
+  const kernel = { R: Point.fromHex(t.kernel.R.slice(2)), z: BigInt(t.kernel.z) };
+  const pt = (o) => Point.fromAffine({ x: BigInt(o.cx), y: BigInt(o.cy) });
+  assert.ok(ct.verifyKernel({ inC: t.inputs.map(pt), outC: t.outputs.map(pt), fee, kernel, outLeaves, domain: 'transfer' }), 'kernel verifies under the OP_TRANSFER domain with outputs bound');
+  assert.ok(!ct.verifyKernel({ inC: t.inputs.map(pt), outC: t.outputs.map(pt), fee, kernel, outLeaves }), 'and not under the generic domain');
+  const opened = ux.indexer._memo.openMemo(walletPriv, outLeaves[0], b.memos[0]);
+  assert.ok(opened && opened.value === 99900n, 'the native output (value − fee) is recoverable from its memo');
+
+  // Every precondition the guest enforces is checked before proving.
+  assert.throws(() => ux.buildFastlaneExitOp({ walletPriv, notes, authPriv, spendRoot, bitcoinSpentRoot: ZERO, fee }), /bitcoinSpentRoot/);
+  assert.throws(() => ux.buildFastlaneExitOp({ walletPriv, notes, authPriv: '0x' + '3d'.repeat(32), spendRoot, bitcoinSpentRoot, fee }), /not a member/);
+  assert.throws(() => ux.buildFastlaneExitOp({ walletPriv, notes, authPriv, spendRoot: '0x' + '12'.repeat(32), bitcoinSpentRoot, fee }), /not a member/);
+  const nuSpent = pool.nullifier(pool.btcNoteLeafBound(asset, notes[0].cx, notes[0].cy, authKey, chainBinding));
+  const bad = notes.map((n) => ({ ...n, low: { ...n.low, next: nuSpent } }));
+  assert.throws(() => ux.buildFastlaneExitOp({ walletPriv, notes: bad, authPriv, spendRoot, bitcoinSpentRoot, fee }), /non-membership/);
+
+  // Dispatch: the relay type the prover maps to exec-fastlane.
+  await ux.fastlaneExit({ walletPriv, notes, authPriv, spendRoot, bitcoinSpentRoot, fee: 0n, waitOpts: { intervalMs: 0, sleep: async () => {} } });
+  assert.equal(submitted.at(-1).type, 'fastlane');
+  assert.equal(submitted.at(-1).mode, 'prove', 'self-relay by default: the box proves, the user settles');
 });

@@ -45,7 +45,7 @@ const inputs = [
 ];
 const outputs = [{ value: 900n, blinding: randomScalar(), owner: OWNER }, { value: 600n, blinding: randomScalar(), owner: OWNER }];
 
-const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs, assetId: ASSET });
+const t = ct.buildTransfer({ inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })), outputs, assetId: ASSET, domain: 'transfer' });
 if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 
 // Output leaves (native), in the guest's output order — bound in each input's spend signature.

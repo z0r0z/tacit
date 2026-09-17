@@ -141,9 +141,14 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     uint256 public maxStaleness = 3600; // Chainlink freshness (seconds), fail-closed
     uint256 public maxDeviationBps; // |chainlink − amm| bound vs the TWAP (0 = skip; set once a pool deepens)
     uint256 public lastFeedChangeAt; // timestamp of the last setFeeds; liquidations wait FEED_CHANGE_LIQ_GRACE after it
+    // Timestamp of the last move that could make a live escrow newly enforceable (arming or swapping the enforcement
+    // module, raising the maintenance ratio). No escrow may be flagged until MIN_ESCROW_GRACE_WINDOW after it, so the
+    // notice a locker gets is measured from the owner's public act, not from a flag raised in the same block.
+    uint256 public lastEscrowPolicyChangeAt;
     uint256 public escrowRatioBps = 15000; // cBTC escrow over-collateralization (1.5×) vs the locked BTC value
     uint256 public cdpRatioBps = 15000; // cUSD mint collateralization floor (1.5×): debt_usd ≤ collateral_usd / ratio
     uint256 public liqRatioBps = 12500; // cUSD liquidation threshold (1.25×): below this, a position is seizable
+    uint256 public constant MAX_LIQ_RATIO_BPS = 15_000; // a liquidation seizes the whole basket: caps the equity it takes
 
     // --- cBTC escrow accounting (wstETH per lock outpoint, per funder) ---
     // Per-(outpoint, funder) so "anyone may fund" is preserved AND each funder reclaims exactly its own
@@ -388,12 +393,26 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // mis-scale; a real Chainlink BTC/USD feed is 8 dp, every sane feed is ≤ 18. This keeps the
         // failure at configuration (owner-visible) rather than later at user settlement.
         if (IAggregatorV3(wstEthBtc).decimals() > 18 || IAggregatorV3(btcUsd).decimals() > 18) revert BadFeed();
+        // Once the deviation bound is armed it cannot be disarmed (setDeviationBound), and dropping a TWAP would
+        // disarm it just as surely: the bound is skipped for a feed with no second source. Both stay wired.
+        if (maxDeviationBps != 0 && (wstEthBtcTwap_ == address(0) || btcUsdTwap_ == address(0))) revert BadFeed();
+        // Only a real change re-arms the grace: re-submitting the same sources changes no price, and letting it
+        // reset the clock would let the owner freeze liquidations indefinitely while bad debt accrues.
+        bool changed = wstEthBtc != address(wstEthBtcFeed) || btcUsd != address(btcUsdFeed)
+            || wstEthBtcTwap_ != address(wstEthBtcTwap) || btcUsdTwap_ != address(btcUsdTwap);
         wstEthBtcFeed = IAggregatorV3(wstEthBtc);
         btcUsdFeed = IAggregatorV3(btcUsd);
         wstEthBtcTwap = IAmmTwap(wstEthBtcTwap_);
         btcUsdTwap = IAmmTwap(btcUsdTwap_);
-        lastFeedChangeAt = block.timestamp; // freeze liquidations for FEED_CHANGE_LIQ_GRACE so a feed swap can't insta-liquidate
+        if (changed) lastFeedChangeAt = block.timestamp; // freeze liquidations for FEED_CHANGE_LIQ_GRACE so a feed swap can't insta-liquidate
         emit FeedsSet(wstEthBtc, btcUsd);
+    }
+
+    /// @notice Disabled. Without an owner the feeds and parameters could never change again, so a deprecated
+    ///         Chainlink feed would freeze every priced path (mints, top-ups, liquidations, the cBTC escrow check)
+    ///         for good. Ownership can still move to a new account, a timelock included.
+    function renounceOwnership() public payable override onlyOwner {
+        revert BadParams();
     }
 
     /// @notice Set the Chainlink↔AMM-TWAP deviation bound (bps). 0 disables it (single-source Chainlink) —
@@ -414,15 +433,22 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // Liquidation threshold must sit below the mint floor (else a fresh mint is instantly liquidatable) and
         // at least 110%: a 100% floor lets governance configure liquidations at par (no liquidator margin →
         // structural bad debt on every seize); 110% keeps an incentive + solvency buffer above the debt.
-        // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent; 0 staleness is a footgun.
+        // Escrow below 100% of the locked BTC value weakens the cBTC rug deterrent. A staleness bound under an hour
+        // (shorter than a Chainlink heartbeat) would make every priced path revert, freezing mints, top-ups,
+        // liquidations and the cBTC escrow check.
         // Upper ceilings are sanity bounds (a governance fat-finger is fail-closed but bounded anyway): a
         // ratio over 10x is nonsensical for a CDP, and accepting prices older than a day defeats freshness.
+        // The liquidation threshold has a hard ceiling for a different reason: a liquidation seizes the whole
+        // basket for the debt, so the threshold is also the most a borrower can lose above their debt. At
+        // MAX_LIQ_RATIO_BPS a liquidated position gives up at most half its debt's value in equity, whatever
+        // governance later sets.
         // When the escrow margin call is armed, the mint ratio must stay strictly above the maintenance ratio
         // (the same invariant setEscrowHealthParams enforces from the other side), so a ratio cut can't make a
         // fresh mint instantly enforceable.
         if (
-            _maxStaleness == 0 || _maxStaleness > 1 days || _escrowRatioBps < 10_000 || _escrowRatioBps > 100_000
-                || _liqRatioBps < 11_000 || _liqRatioBps >= _cdpRatioBps || _cdpRatioBps > 100_000
+            _maxStaleness < 1 hours || _maxStaleness > 1 days || _escrowRatioBps < 10_000 || _escrowRatioBps > 100_000
+                || _liqRatioBps < 11_000 || _liqRatioBps > MAX_LIQ_RATIO_BPS || _liqRatioBps >= _cdpRatioBps
+                || _cdpRatioBps > 100_000
                 || (escrowMaintenanceBps != 0 && _escrowRatioBps <= escrowMaintenanceBps)
         ) {
             revert BadParams();
@@ -455,6 +481,11 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         ) {
             revert BadParams();
         }
+        // Tightening either lever (a higher maintenance ratio, a shorter grace window) can make a flagged lock
+        // enforceable sooner than its locker was told, so both give notice.
+        if (maintenanceBps > escrowMaintenanceBps || graceWindow < escrowGraceWindow) {
+            lastEscrowPolicyChangeAt = block.timestamp;
+        }
         escrowMaintenanceBps = maintenanceBps;
         escrowGraceWindow = graceWindow;
         emit EscrowHealthParamsSet(maintenanceBps, graceWindow);
@@ -468,6 +499,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     ///         re-checked on-chain.
     function setEscrowEnforcementModule(address module) external onlyOwner {
         if (module != address(0) && module.code.length == 0) revert BadPool();
+        if (module != address(0) && module != escrowEnforcementModule) lastEscrowPolicyChangeAt = block.timestamp;
         escrowEnforcementModule = module;
         emit EscrowEnforcementModuleSet(module);
     }
@@ -712,6 +744,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function flagEscrowUnhealthy(bytes32 outpoint) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
+        _requireEscrowNotice();
         if (
             escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
                 || POOL.cbtcLockSpent(outpoint)
@@ -735,6 +768,18 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         }
     }
 
+    /// @dev Enforcement judges health at the live mark under owner-set policy, so both inputs must be public for a
+    ///      while before they can seize anything: the policy (module, maintenance ratio) for MIN_ESCROW_GRACE_WINDOW,
+    ///      the feeds for FEED_CHANGE_LIQ_GRACE. Without it an owner could arm a module and a hostile feed and flag
+    ///      every lock in the same block, leaving lockers only the flag's own grace to cure against terms they had
+    ///      no warning of.
+    function _requireEscrowNotice() internal view {
+        if (
+            block.timestamp < lastEscrowPolicyChangeAt + MIN_ESCROW_GRACE_WINDOW
+                || block.timestamp < lastFeedChangeAt + FEED_CHANGE_LIQ_GRACE
+        ) revert GraceNotElapsed();
+    }
+
     /// @notice Permissionlessly clear an outpoint's unhealthy flag once it is GENUINELY cured (healthy at the
     ///         current on-chain mark). Anyone may call — the locker's own recourse to reset the grace clock
     ///         after a real top-up or price recovery, so a later independent unhealthy episode starts a FRESH
@@ -756,6 +801,7 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
     function enforceEscrowToReserve(bytes32 outpoint) external onlyEnforcementModule {
         if (escrowMaintenanceBps == 0) revert EnforcementDisabled();
         if (address(POOL) == address(0)) revert BadPool();
+        _requireEscrowNotice();
         if (
             escrowSlashed[outpoint] || !POOL.cbtcMinted(outpoint) || POOL.cbtcLockRedeemed(outpoint)
                 || POOL.cbtcLockSpent(outpoint)
@@ -1106,8 +1152,9 @@ contract CollateralEngine is Ownable, ReentrancyGuard {
         // a replacement position must never land on one.
         if (uint256(newPositionLeaf) <= 2) revert BadPositionLeaf();
         if (debtValue == 0) revert BadAmount();
-        // Same feed-change notice as mint: a top-up is re-priced at the mark, so it waits out a fresh feed too.
-        if (block.timestamp < lastFeedChangeAt + FEED_CHANGE_LIQ_GRACE) revert FeedChangeGrace();
+        // No feed-change grace here. The grace protects borrowers from being liquidated at a price they had no notice
+        // of; a top-up only adds collateral and mints nothing, so gating it would take away exactly the remedy the
+        // grace exists to give (and at expiry leave top-up and liquidation opening in the same second).
         drip();
         // The replacement leaf carries the SAME principal and the SAME snapshot (membership of the old leaf
         // pins `rateSnapshot`), so accrual continues uninterrupted — a top-up adds collateral, it does not

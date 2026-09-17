@@ -8,6 +8,8 @@
 //   1. kit + bundle wired  → the burn-deposit witness flows through assembleJob into job.input.
 //   2. no kit (gate)       → getBurnDeposits is never consulted, so the indexer never sees a bundle
 //                            without its verifier (which would throw); the burn carries no witness.
+//   4. unregistered burn   → recorded pending, never blocks the batch.
+//   5. late registration   → the next batch completes the pending deposit.
 //
 // Run: node tests/confidential-reflection-attest-burndeposit.mjs
 
@@ -53,27 +55,23 @@ const mkBundle = () => ({
   burnedInput: { prevTxid: v(0xb117), prevVout: 0 },
   etch: { tx: 'aa'.repeat(40), ...mined(0xe7) },
   provHeaders: ['0x' + '00'.repeat(80)],
-  cxfers: [{ txid: dtx(0x0a), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
+  cxfers: [{ txid: dtx(0x0a), tx: '0x' + 'cc'.repeat(60), inputs: [{ prevTxid: dtx(0x0b), prevVout: 0, commitment: G }], outputs: [{ commitment: G, vout: 0 }], rangeProof: '0x', kernelSig: '0x' + '11'.repeat(64), ...mined(0x0a) }],
   cmints: [],
 });
 
-// A burnDepositKit whose mirror returns a fixed verdict (real crypto tested elsewhere).
+// A burnDepositKit whose admission returns a fixed verdict (the real admission: tests/burn-deposit-admission.mjs).
 const makeKit = (verdict) => ({
   assembler: makeBurnDepositAssembler({ dsha256, cat, bytesToHex }),
-  parseEtchAnchor: () => ({ c0Compressed: G, mintAuthority: MINT_AUTH }),
-  computeTxidInternal: () => ETCH_TXID_INT,
-  mirror: {
-    verifyCmintAuthorized: () => null,
-    verifyProvenanceLeaves: () => verdict,
-  },
+  admitBurnDeposit: () => ({ admitted: verdict, reason: 'stub', burnedTxid: null, burnedVout: 0, burnedNoteLeaf: v(0x1eaf) }),
 });
+const TARGET = v(0x7c7c7c);
 
 // A scanned block at the genesis height with a single 0x2B burn of a note NOT in the live set
 // (→ the burn-deposit branch). The bundle is keyed by this tx's display txid.
 const BURN_TXID = dtx(0x20);
 const burnBlock = { txs: [
   { txidDisplay: dtx(0x01), rawHex: coinbase, vins: [], decode: null },
-  { txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57) } },
+  { txidDisplay: BURN_TXID, rawHex: 'bb'.repeat(40), vins: [{ prevTxidDisplay: dtx(0xb1), vout: 0 }], decode: { type: 'burn', assetId, nullifier: v(0x17ad), dest: v(0xde57), target: TARGET } },
 ] };
 
 // A plain (non-burn) tx block — exercises the safety gate without tripping the pre-existing burn-of-
@@ -109,6 +107,7 @@ const run = async () => {
     const bd = job.input.blocks[0].txs[1].burnDeposit;
     ok(bd != null, 'wired: the burn-deposit witness is emitted into the prover input');
     ok(bd && bd.spentInsert && bd.spentInsert.sLowPath.length === 32, 'wired: real spent-insert witness (valid → folds)');
+    eq(job.newSnapshot.noteLeaves.length, 1, 'wired: the admitted burned note is appended to the note tree');
     ok(bd && Array.isArray(bd.notePath) && bd.notePath.length === 32, 'wired: note-append path witnessed');
     ok(bd && bd.burnInsert && bd.burnInsert.bLowPath.length === 32, 'wired: real burn-insert witness');
   }
@@ -140,23 +139,59 @@ const run = async () => {
     eq(bundleLookups, 0, 'no-kit: getBurnDeposits is never consulted (kit-gated)');
   }
 
-  // ── 4. COMPLETENESS GATE: a 0x2B burn of a non-live note with NO holder bundle REFUSES the batch.
-  //      The guest-side fold is still skip-not-panic (an unregistered burn folds nothing, never a wrong
-  //      digest), but the reflection height this batch would cover can never be scanned again once
-  //      attested — so an unresolved burn here is not a delay, it is permanent. assembleJob refuses
-  //      rather than silently attest past it (confidential-pool.js's unresolvedBurnDeposits +
-  //      reflection-attest.js's fail-loud check). Register the bundle and retry to proceed. ──
+  // ── 4. An unregistered 0x2B burn of a non-live note never blocks the batch (anyone can broadcast a junk 161-byte
+  //      0x2B): the guest records it in the pending set, and so does the assembler. It is reported for alerting. ──
+  const noBundle = async () => new Map();
   {
     const att = makeScanReflectionAttester({
       deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
       getBlockTxs: async () => burnBlock, getHeaders, genesisHeight: GENESIS,
-      burnDepositKit: makeKit(true), getBurnDeposits: async () => new Map(), // no bundle for the burn
+      burnDepositKit: makeKit(true), getBurnDeposits: noBundle,
     });
     await att.setTip(GENESIS + 1);
-    let threw = false, message = '';
-    try { await att.assembleJob(); } catch (e) { threw = true; message = e.message; }
-    ok(threw, 'completeness: a bundle-less burn-deposit-shaped tx refuses the batch');
-    ok(message.includes('burn-deposit(s) with no registered provenance'), 'completeness: the refusal explains why');
+    let job, threw = false;
+    try { job = await att.assembleJob(); } catch { threw = true; }
+    ok(!threw, 'unregistered burn: the batch is not refused');
+    ok(job && job.pendingBurnDeposits.length === 1 && job.pendingBurnDeposits[0].height === GENESIS + 1, 'unregistered burn: reported with its height');
+    const bd = job && job.input.blocks[0].txs[1].burnDeposit;
+    eq(bd && bd.blob, '0x', 'unregistered burn: empty blob (the guest does not verify it)');
+    ok(bd && bd.pendingInsert && bd.pendingInsert.pLowPath.length === 32 && bd.pendingInsert.pNewPath.length === 32, 'unregistered burn: a real pending-insert witness is emitted');
+    eq(job && job.newSnapshot.pendingDepositNodes.length, 2, 'unregistered burn: the pending set holds it (count 2)');
+    eq(job && job.newSnapshot.noteLeaves.length, 0, 'unregistered burn: nothing is onboarded');
+  }
+
+  // ── 5. A bundle registered after the burn's block was attested completes the pending deposit in the next batch. ──
+  {
+    let registered = false;
+    const lookups = [];
+    const lateBundles = async (txids) => {
+      lookups.push(txids);
+      const map = new Map();
+      if (registered) for (const t of txids) if (t === BURN_TXID) map.set(t, mkBundle());
+      return map;
+    };
+    const att = makeScanReflectionAttester({
+      deps, storage: freshStore(), prove: async () => ({}), submit: async () => '0x',
+      getBlockTxs: async (h) => (h === GENESIS + 1 ? burnBlock : plainBlock), getHeaders, genesisHeight: GENESIS, batchSize: 1,
+      burnDepositKit: makeKit(true), getBurnDeposits: lateBundles,
+    });
+    await att.setTip(GENESIS + 3);
+    const j1 = await att.assembleJob();
+    eq(j1.input.depositCompletions.length, 0, 'late bundle: nothing to complete while unregistered');
+    await att.ackJob(j1.attestedTo, j1.newSnapshot);
+    registered = true;
+    const j2 = await att.assembleJob();
+    ok(lookups[lookups.length - 1].includes(BURN_TXID), 'late bundle: the pending burn txid is looked up with the next batch');
+    eq(j2.input.depositCompletions.length, 1, 'late bundle: the next batch emits one completion');
+    const c = j2.input.depositCompletions[0];
+    ok(c && c.pendingPath.length === 32 && c.deposit.spentInsert.sLowPath.length === 32 && c.deposit.burnInsert.bLowPath.length === 32, 'late bundle: membership + deposit witnesses');
+    ok(c && c.deposit.blob && c.deposit.blob !== '0x' && c.deposit.burnWtxidSiblings === undefined, 'late bundle: the completion carries the blob and no burn-tx witness siblings');
+    eq(j2.newSnapshot.noteLeaves.length, 1, 'late bundle: the burned note is onboarded');
+    eq(j2.completedBurnDeposits.length, 1, 'late bundle: reported as completed');
+    ok(j2.input.newDigest !== j1.input.newDigest, 'late bundle: the digest moves');
+    await att.ackJob(j2.attestedTo, j2.newSnapshot);
+    const j3 = await att.assembleJob();
+    eq(j3.input.depositCompletions.length, 0, 'late bundle: a completed deposit is not completed again');
   }
 
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }

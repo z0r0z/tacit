@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 FXD=contracts/sp1/confidential/fixtures
 
-# "<generator-suffix>:<fixture-basename>" pairs.
+# "<generator-suffix>[@ENV=VALUE]:<fixture-basename>" pairs. The optional @ENV=VALUE selects a generator scenario.
 PAIRS="
 cbtc:reflection_cbtc_lock
 cbtc-spend:reflection_cbtc_spend
@@ -24,6 +24,15 @@ lpremove:reflection_lpremove
 protofee:reflection_protofee
 swaproute:reflection_swaproute
 swapvar:reflection_swapvar
+swapvar@SWAPVAR_SCENARIO=unknown-pool:reflection_swapvar_unknown_pool
+swapvar@SWAPVAR_SCENARIO=classic-change:reflection_swapvar_classic_change
+swapvar@SWAPVAR_SCENARIO=tip-nonp2tr:reflection_swapvar_tip_nonp2tr
+swapvar@SWAPVAR_SCENARIO=extra-input:reflection_swapvar_extra_input
+farminit@FARMINIT_SCENARIO=extra-input:reflection_farminit_extra_input
+harvest@HARVEST_SCENARIO=zero-reward:reflection_harvest_zero_reward
+farm-lifecycle@LIFECYCLE_SCENARIO=unbond-nonp2tr:reflection_farm_lifecycle_unbond_nonp2tr
+lpbond@LPBOND_SCENARIO=debt-overflow:reflection_lpbond_debt_overflow
+lpremove@LPREMOVE_SCENARIO=refund-nonp2tr:reflection_lpremove_refund_nonp2tr
 poolresume:reflection_poolresume
 modeb:reflection_modeb
 "
@@ -31,12 +40,29 @@ modeb:reflection_modeb
 rc=0
 for pair in $PAIRS; do
   g="${pair%%:*}"; fx="${pair##*:}"
+  scen=""
+  case "$g" in *@*) scen="${g#*@}"; g="${g%%@*}";; esac
   out="$FXD/$fx.json"
-  if node "tests/gen-reflection-$g-synth.mjs" > "$out.tmp" 2>/dev/null && [ -s "$out.tmp" ]; then
+  if env $scen node "tests/gen-reflection-$g-synth.mjs" > "$out.tmp" 2>/dev/null && [ -s "$out.tmp" ]; then
     mv "$out.tmp" "$out"
     echo "OK   $fx  ($(node -e "process.stdout.write(require('./$out').newDigest||'?')" 2>/dev/null))"
   else
     rm -f "$out.tmp"; echo "FAIL $g"; rc=1
+  fi
+done
+# Generators outside the -synth naming: the cxfer / cBTC-redeem / farm-lifecycle inputs and the burn-deposit set
+# (the plain fold, a withheld provenance recorded pending, and the later batch completing it).
+for pair in "cxfer-synth:reflection_input:" "cbtc-redeem-synth:cbtc_redeem_reflection_input:" \
+            "farm-lifecycle-synth:reflection_farm_lifecycle:" "burn-deposit:reflection_burn_deposit:" \
+            "burn-deposit:reflection_burn_deposit_pending:BURNDEP_SCENARIO=pending" \
+            "burn-deposit:reflection_burn_deposit_complete:BURNDEP_SCENARIO=complete"; do
+  g="${pair%%:*}"; rest="${pair#*:}"; fx="${rest%%:*}"; scen="${rest#*:}"
+  out="$FXD/$fx.json"
+  if env $scen node "tests/gen-reflection-$g.mjs" > "$out.tmp" 2>/dev/null && [ -s "$out.tmp" ]; then
+    mv "$out.tmp" "$out"
+    echo "OK   $fx  ($(node -e "process.stdout.write(require('./$out').newDigest||'?')" 2>/dev/null))"
+  else
+    rm -f "$out.tmp"; echo "FAIL $g ($fx)"; rc=1
   fi
 done
 # swap_batch needs the production ceremony HEAD zkey (not in-repo: fetch CID

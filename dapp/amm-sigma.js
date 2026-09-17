@@ -8,7 +8,9 @@
 // neither side can claim a different hidden amount.
 //
 // Wire format (169 bytes): A_secp(33) || A_BJJ(32) || z_a(40) || z_r_secp(32) || z_r_BJJ(32)
-// Soundness: 128-bit (FS challenge space 2^128). Statistical ZK: ≈ 128-bit.
+// Soundness: the FS challenge is 128-bit, but z_a is reduced modulo two DIFFERENT group orders (secp256k1
+// and BabyJubJub), so a cheating prover's residue-gap slack narrows the actual bound to ≈2^-125 (not 2^-128).
+// Still adequate; see ops/AUDIT-FLAG-swapbatch-value-bound.md for the residue-gap analysis.
 
 import { secp, sha256, concatBytes, hmac } from './vendor/tacit-deps.min.js';
 import {
@@ -212,7 +214,10 @@ export function verifyXCurve(proof, C_secp_bytes, C_BJJ_bytes) {
 
   const e = challenge(C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes);
 
-  const lhsS = (z_a === 0n ? SECP_ZERO : H_SECP.multiply(modSecp(z_a)))
+  // z_a is up to 320 bits, so a nonzero z_a can still be ≡ 0 mod n; that term is the identity (the guest reduces
+  // the same way), and the secp library refuses a zero scalar rather than returning it.
+  const zaSecp = modSecp(z_a);
+  const lhsS = (zaSecp === 0n ? SECP_ZERO : H_SECP.multiply(zaSecp))
     .add(z_r_secp === 0n ? SECP_ZERO : G_SECP.multiply(z_r_secp));
   const rhsS = A_secp_pt.add(e === 0n ? SECP_ZERO : C_secp_pt.multiply(e));
   if (!lhsS.equals(rhsS)) return false;

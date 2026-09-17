@@ -16,7 +16,7 @@ sp1_zkvm::entrypoint!(main);
 use alloy_sol_types::private::{Address, U256};
 use alloy_sol_types::{sol, SolValue};
 use cxfer_core::{
-    bridge_burn_id, btc_note_leaf, btc_note_leaf_bound, btc_note_spend_msg, pedersen_commit_xy, protofee_blind,
+    bridge_burn_id, btc_note_leaf, btc_note_leaf_bound, btc_note_spend_msg, outpoint_key, pedersen_commit_xy, protofee_blind,
     BURN_SOURCE_DEPOSIT, BURN_SOURCE_REFLECTED,
     adaptor_lock_leaf, bip340_verify, bitcoin, cdp_basket_leg, cdp_basket_root, cdp_close_msg, cdp_topup_msg, adaptor_claim_msg,
     cdp_debt_asset_id,
@@ -28,7 +28,8 @@ use cxfer_core::{
     pool_id_with_protocol_fee, protocol_fee_cut, amm_derive_pool_id_v1, compress, verify_opening_pok_blind,
     scalar_reduce_be, stealth_claim_msg, stealth_claim_msg_blind, stealth_lock_leaf,
     adaptor_refund_msg, stealth_lock_leaf_blind, stealth_refund_msg, utxo_leaf, verify_kernel,
-    verify_kernel_with_fee, verify_kernel_with_fee_bound, verify_opening_sigma, verify_range, Point, CBTC_ZK_ASSET_ID,
+    verify_kernel_with_fee, verify_kernel_with_fee_bound, verify_opening_sigma, verify_range, verify_transfer_kernel, Point,
+    CBTC_ZK_ASSET_ID,
 };
 use sp1_zkvm::io;
 
@@ -122,7 +123,7 @@ const OP_SEND_AND_UNWRAP: u8 = 28; // partial public exit: spend ONE hidden note
 const OP_LP_BOND: u8 = 29; // 1-click farm entry: add liquidity AND bond the resulting shares into a farm in one settle — OP_LP_ADD fused with OP_FARM_BOND. The LP-share note never materializes; the derived shares flow straight into a farm_receipt_leaf + bond CdpMint. (swap-and-send needs NO op — OP_SWAP already mints to an arbitrary out_owner.)
 const OP_WRAP_LP: u8 = 32; // 1-click LP from an external wallet: consume two pending PUBLIC deposits as the A/B contributions and mint the shielded LP-share note in one settle — OP_LP_ADD fused with OP_WRAP. No tree notes, so no membership/nullifiers/change: a deposit's value is EXACT and public (bound in deposit_id), which is what removes the intermediate note entirely (fewer leaves, one less linkability point, and one tx instead of three).
 const OP_WRAP_SWAP: u8 = 33; // 1-click swap from an external wallet: consume a pending PUBLIC deposit as the swap input and mint the hidden output note in one settle — OP_SWAP fused with OP_WRAP. Same deposit-exactness argument as OP_WRAP_LP.
-const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + per-asset aggregate Pedersen identity + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Relay tips are live: each trader authorizes its own per-intent tip in the PoK ctx, the circuit binds their sum to the public per-asset aggregate, and that aggregate is paid to msg.sender. See ops/DESIGN-op-swap-blind.md
+const OP_SWAP_BLIND: u8 = 31; // prover-blind confidential AMM batch: like OP_SWAP but the box never reads a cleartext amount — clearing is proven by an in-guest BN254 Groth16 (amm_swap_batch) + a per-asset conservation kernel (a Schnorr signature over the blinding excess, which the prover never receives) + per-receipt cross-curve sigma; per-intent input authority via verify_opening_pok_blind. Relay tips are live: each trader authorizes its own per-intent tip in the PoK ctx, the circuit binds their sum to the public per-asset aggregate, and that aggregate is paid to msg.sender. See ops/DESIGN-op-swap-blind.md
 const OP_SURPLUS_DRAW: u8 = 34; // governance realizes the accumulated fee surplus as a cUSD re-mint: mint one controller-derived cUSD note (MINT mode, no collateral) opening to a public amount + emit a positionLeaf == 2 (SURPLUS_RECEIPT) sentinel CdpMint carrying the minted note leaf, so the cUSD engine binds amount + destination to a one-shot owner authorization. DORMANT — no dapp/worker emitter; governance tooling is built when the fee is activated.
 const OP_WRAP_CDP_MINT: u8 = 30; // 1-click cUSD: consume pending PUBLIC deposit(s) as the collateral basket and mint a confidential CDP debt note (cUSD) in one settle — OP_CDP_MINT with deposit-collateral instead of tree notes (used by router.wrapAndMintCusd). The debt-mint/position/CdpMint are identical to OP_CDP_MINT.
 // Opcode map: 0–34 assigned (5 is held, see OP_COVENANT_MINT above). swap-and-send + non-interactive stealth
@@ -714,8 +715,11 @@ pub fn main() {
 
                 let kernel_r = decompress(&r33()).expect("kernel R");
                 let kernel_z = scalar_reduce_be(&r32());
+                // A native input here is authorized by its nullifier key and this kernel alone, so the kernel is
+                // verified under OP_TRANSFER's own domain: a kernel a relay received for another op (whose public
+                // leg would otherwise pass as this transfer's fee) does not verify.
                 assert!(
-                    verify_kernel_with_fee_bound(&in_pts, &out_pts, fee, &out_leaves, &kernel_r, &kernel_z),
+                    verify_transfer_kernel(&in_pts, &out_pts, fee, &out_leaves, &kernel_r, &kernel_z),
                     "conservation"
                 );
                 if fee != 0 {
@@ -810,10 +814,12 @@ pub fn main() {
                 assert!(dest_chain == 1, "bridge-burn: unsupported dest chain");
                 let n_in: u32 = io::read();
                 let m_out: u32 = io::read();
+                // Exactly one destination. Every destination of a burn carries the same bound nullifier, and the
+                // pool records at most one cross-out per nullifier (DuplicateBridgeNullifier), so a multi-destination
+                // burn could be proven but never settled. Split into separate burns to pay several recipients.
                 assert!(
-                    n_in > 0 && m_out > 0 && n_in <= MAX_ITEMS_PER_OP && m_out <= MAX_ITEMS_PER_OP
-                        && is_agg_size(m_out),
-                    "bridge-burn: item count out of range"
+                    n_in > 0 && n_in <= MAX_ITEMS_PER_OP && m_out == 1,
+                    "bridge-burn: needs 1..=MAX_ITEMS_PER_OP inputs and exactly one destination"
                 );
 
                 let mut in_pts: Vec<Point> = Vec::with_capacity(n_in as usize);
@@ -935,7 +941,8 @@ pub fn main() {
                 let pool_root = r32();
 
                 // Burned input note: membership in the Bitcoin pool. The reflected leaf domain differs by
-                // source class: a scan-free burn-deposit note is the native leaf(asset,cx,cy,0) (class 0); an
+                // source class: a scan-free burn-deposit note is the native leaf(asset,cx,cy,outpoint_key) whose owner
+                // is its own burned UTXO's outpoint key (class 0); an
                 // ordinary (legacy/unbound) reflected note is btc_note_leaf(asset,cx,cy,auth_key) (class 1,
                 // `in_owner` = its Bitcoin Taproot x-only key); a generation-bound reflected note is
                 // btc_note_leaf_bound(asset,cx,cy,auth_key,chain_binding) (class 2, homed to THIS deployment).
@@ -956,7 +963,12 @@ pub fn main() {
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
                 let in_leaf = match source_class {
-                    0 => leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    0 => {
+                        // A deposit note is owned by its own burned outpoint; any other owner is not a note the
+                        // reflection onboarded.
+                        assert!(in_owner == outpoint_key(&spent_txid, spent_vout), "bridge_mint: deposit note owner must be its outpoint");
+                        leaf(&asset, &in_cx, &in_cy, &in_owner)
+                    }
                     1 => btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner),
                     2 => btc_note_leaf_bound(&asset, &in_cx, &in_cy, &in_owner, &chain_binding),
                     _ => panic!("bridge_mint: unknown burned-note source class"),
@@ -967,7 +979,7 @@ pub fn main() {
                 );
                 // A burned note's ν is leaf-bound in EVERY source class: the reflection recorded it as
                 // nullifier(src_leaf) when it folded the burn, so the mint reproduces that exact ν to spend it.
-                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is the zero sentinel —
+                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is its burned outpoint key —
                 // it carries no secret nullifier key, so it takes the same leaf-bound ν as the Bitcoin-homed classes.
                 let nu = nullifier(&in_leaf);
                 // The burn's source identity: the exact spent outpoint + the note's FULL authenticated source
@@ -1083,7 +1095,10 @@ pub fn main() {
                 let in_leaf_index: u64 = io::read();
                 let in_path = r_path();
                 let in_leaf = match source_class {
-                    0 => leaf(&asset, &in_cx, &in_cy, &in_owner),
+                    0 => {
+                        assert!(in_owner == outpoint_key(&spent_txid, spent_vout), "bridge_stealth_mint: deposit note owner must be its outpoint");
+                        leaf(&asset, &in_cx, &in_cy, &in_owner)
+                    }
                     1 => btc_note_leaf(&asset, &in_cx, &in_cy, &in_owner),
                     2 => btc_note_leaf_bound(&asset, &in_cx, &in_cy, &in_owner, &chain_binding),
                     _ => panic!("bridge_stealth_mint: unknown burned-note source class"),
@@ -1094,7 +1109,7 @@ pub fn main() {
                 );
                 // A burned note's ν is leaf-bound in EVERY source class: the reflection recorded it as
                 // nullifier(src_leaf) when it folded the burn, so the mint reproduces that exact ν to spend it.
-                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is the zero sentinel —
+                // A class-0 (native-deposit) note is a Bitcoin-side bearer leaf whose owner is its burned outpoint key —
                 // it carries no secret nullifier key, so it takes the same leaf-bound ν as the Bitcoin-homed classes.
                 let nu = nullifier(&in_leaf);
                 // Source-specific burn identity: exact outpoint + full authenticated source leaf (see
@@ -1679,6 +1694,13 @@ pub fn main() {
                 // confidential swaps settle individually (carve is natural) while Bitcoin batches via reflection
                 // (lazy-mint is natural). A per-swap carve also leaves no accrual to crystallize, so the EVM lane
                 // has no `k_last`/`protocol_fee_accrued` state at all.
+                // A protocol-fee pool clears one-sided batches only. The cut is taken on each leg's GROSS input, while the
+                // clearing price charges the LP fee on the NET imbalance, so opposing intents in one batch would hand the
+                // fee recipient more than its fraction of the LP fee (and a balanced batch could not clear at all).
+                assert!(
+                    protocol_fee_bps == 0 || gross_a_in == 0 || gross_b_in == 0,
+                    "swap: a protocol-fee pool clears one-sided batches only"
+                );
                 let (a_post, b_post, cut_a_out, cut_b_out) = if protocol_fee_bps != 0 {
                     let recipient_x: [u8; 32] =
                         protocol_fee_recipient[1..].try_into().expect("swap: recipient x");
@@ -1793,8 +1815,10 @@ pub fn main() {
                 let delta_a_net_mag: u64 = io::read();
                 let delta_b_net_sign: u8 = io::read();
                 let delta_b_net_mag: u64 = io::read();
-                let r_net_a = r32();
-                let r_net_b = r32();
+                // Per-asset conservation kernels (R, z) over the batch's blinding excess — signed by whoever
+                // knows it, so the prover never receives the aggregate blinding (see swap_blind_aggregate_kernel).
+                let kernel_a = swap_blind::AggregateKernel { r: r33(), z: r32() };
+                let kernel_b = swap_blind::AggregateKernel { r: r33(), z: r32() };
                 // Relay tip per asset (public; paid to msg.sender below). verify_clearing binds each tip
                 // commitment to its amount (verify_pedersen_opening) before its blinding enters R_net.
                 let tip_a_amount: u64 = io::read();
@@ -1934,8 +1958,10 @@ pub fn main() {
                     delta_a_net_mag,
                     delta_b_net_sign,
                     delta_b_net_mag,
-                    r_net_a,
-                    r_net_b,
+                    // The settle lane proves conservation with the kernels above; the envelope's cleartext
+                    // blindings (the Bitcoin lane's form) are unused here and left zero.
+                    r_net_a: [0u8; 32],
+                    r_net_b: [0u8; 32],
                     fee_bps: fee_bps as u16,
                     tip_a_amount,
                     tip_b_amount,
@@ -1947,7 +1973,8 @@ pub fn main() {
                     receipts: env_receipts,
                     proof,
                 };
-                let (a_post, b_post) = swap_blind::verify_clearing(&env, &circuit_pool_id, reserve_a_pre, reserve_b_pre)
+                let (a_post, b_post) =
+                    swap_blind::verify_clearing(&env, &circuit_pool_id, &chain_binding, &kernel_a, &kernel_b, reserve_a_pre, reserve_b_pre)
                     .expect("swap-blind: clearing");
 
                 // The EVM pool slot id (what the contract gates pre==live + sets post). pf==0 ⇒ the
@@ -2908,6 +2935,10 @@ pub fn main() {
                 // analog of OP_SWAP's binding. Per-asset conservation ties each party's spent input to
                 // the counterparty's received note + that party's own change. Amounts are prover-
                 // visible (the matcher) but kept out of PublicValues; only ν + leaves are committed.
+                // Native batches only. OTC mints each party's receipt and change under the SAME owner label its input
+                // is keyed by; in a Bitcoin-homed batch that label is the input's x-only Taproot key, which no
+                // nullifier key hashes to, so every output would be unspendable while the Bitcoin source is retired.
+                assert!(!batch_authenticated, "otc: Bitcoin-homed inputs are not supported (outputs would be unspendable)");
                 let asset_a = r32();
                 let asset_b = r32();
                 let v_a: u64 = io::read();
@@ -3985,13 +4016,15 @@ pub fn main() {
                         // stability fee is armed (owed = principal·rate/snapshot). Carried as a synthetic
                         // note tuple (mirrors controller32); the engine still accepts [RAY, rate] for drip.
                         // (d_cx, d_cy) binds the EXACT debt destination; `fee` is in the amounts vector.
+                        // `n_legs` binds the basket's size into every leg's authorization, so a prover cannot split a
+                        // signed basket into several positions against one debt note, or drop a leg from it.
                         &[
                             (cx, cy, owner),
                             (controller32, nonce, owner),
                             (rate_snapshot, nonce, owner),
                             (d_cx, d_cy, debt_owner),
                         ],
-                        &[value, debt_value, index, fee],
+                        &[value, debt_value, index, fee, n_legs as u64],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
@@ -4147,13 +4180,14 @@ pub fn main() {
                         &dep_id,
                         // bind rate_snapshot (see OP_CDP_MINT) so the box can't substitute a stale snapshot.
                         // (d_cx, d_cy) binds the EXACT debt destination; `fee` is in the amounts vector.
+                        // `n_legs` binds the basket size (see OP_CDP_MINT): no split, no dropped leg.
                         &[
                             (cx, cy, owner),
                             (controller32, nonce, owner),
                             (rate_snapshot, nonce, owner),
                             (d_cx, d_cy, debt_owner),
                         ],
-                        &[value, debt_value, fee],
+                        &[value, debt_value, fee, n_legs as u64],
                     );
                     assert!(
                         verify_opening_sigma(&c, value, &sig_r, &sig_z, &ctx),
@@ -4340,8 +4374,11 @@ pub fn main() {
                 }
                 // burn debt notes (any holders) summing to EXACTLY the position debt
                 let n_debt: u32 = io::read();
+                // A zero-debt position (a bond: OP_CDP_MINT with debt_value == 0) has no debt note to burn, so it closes
+                // with none; every debt-bearing position must burn at least one. The owner signature above authorizes
+                // the close either way.
                 assert!(
-                    n_debt > 0 && n_debt <= MAX_ITEMS_PER_OP,
+                    n_debt <= MAX_ITEMS_PER_OP && (n_debt > 0 || debt_value == 0),
                     "cdp-close: debt input count out of range"
                 );
                 let mut repaid: u128 = 0;
@@ -4792,7 +4829,8 @@ pub fn main() {
                         &lp_asset,
                         &nonce,
                         &[(cx, cy, owner), (controller32, nonce, owner)],
-                        &[value, index],
+                        // `n_legs` binds the bond's size, so the legs cannot be split into several receipts.
+                        &[value, index, n_legs as u64],
                     );
                     assert!(
                         verify_opening_sigma(&pt, value, &sig_r, &sig_z, &ctx),
@@ -5057,7 +5095,7 @@ pub fn main() {
                 // that leaf against a one-shot owner authorization, so a keeper can build this proof but can
                 // neither inflate the draw nor redirect it.
                 let controller = r20();
-                let owner = r32(); // the destination note's owner (x-only pubkey the surplus is minted to)
+                let owner = r32(); // the destination note's owner, a native owner keccak(nk ‖ dom) like every leaf() note
                 let amount: u64 = io::read();
                 assert!(amount > 0, "surplus-draw: zero amount");
                 // The destination commitment + its opening sigma proves the minted note opens to EXACTLY

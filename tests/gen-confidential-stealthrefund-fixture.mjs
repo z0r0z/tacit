@@ -96,7 +96,7 @@ const fixture = {
   oRange: '0x' + Buffer.from(refund.oRange).toString('hex'),
   lockerSig: refund.lockerSig,
   expected: {
-    lockNullifier: pool.nullifier(lCx, lCy),
+    lockNullifier: pool.nullifier(lockLeaf), // the guest spends the lock by its leaf-bound nullifier
     oLeaf: pool.leaf(ASSET, refund.oCx, refund.oCy, REFUND_OWNER),
     oValue: net.toString(),
     feeValue: FEE.toString(),

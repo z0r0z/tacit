@@ -61,10 +61,13 @@ eq(classifyConfidentialTx(tacitTx([0x2F, 0]))?.type ?? null, null, 'malformed sw
 // the fold env; a malformed stub still falls through to 'unsupported', which is fine — the guest re-parses txData).
 // AXFER (atomic settlement) folds via the SAME parse_cxfer_envelope_full → fold_cxfer as cxfer, so the JS
 // mirrors it as 'cxfer' (identical fold → digest parity). A minimal valid cxfer body: opcode ‖ asset(32) ‖
-// kernelSig(64) ‖ N=1 ‖ commitment(33) ‖ amount_ct(8) ‖ rpLen=0.
+// kernelSig(64) ‖ N=1 ‖ commitment(33) ‖ amount_ct(8) ‖ rpLen=0. An AXFER carries asset_input_count(1) after the asset.
 const cxferBody = (op) => [op, ...Array(32).fill(0xa5), ...Array(64).fill(0x11), 0x01, ...Array(33).fill(0x02), ...Array(8).fill(0), 0x00, 0x00];
+const axferBody = (op) => [op, ...Array(32).fill(0xa5), 0x01, ...Array(64).fill(0x11), 0x01, ...Array(33).fill(0x02), ...Array(8).fill(0), 0x00, 0x00];
 eq(classifyConfidentialTx(tacitTx(cxferBody(0x22)))?.type, 'cxfer', 'cxfer (0x22) → cxfer');
-eq(classifyConfidentialTx(tacitTx(cxferBody(0x26)))?.type, 'cxfer', 'AXFER (0x26) → cxfer (mirrored: same fold as cxfer)');
+eq(classifyConfidentialTx(tacitTx(axferBody(0x26)))?.type, 'cxfer', 'AXFER (0x26) → cxfer (mirrored: same fold as cxfer)');
+eq(classifyConfidentialTx(tacitTx(axferBody(0x26)))?.assetInputCount, 1, 'AXFER (0x26) carries its asset_input_count');
+eq(classifyConfidentialTx(tacitTx(cxferBody(0x26)))?.type ?? null, null, 'AXFER (0x26) without asset_input_count → null (does not parse)');
 // Variable-amount AXFER (0x37 / 0x3D) is DISABLED — the guest rejects it in parse_cxfer_envelope_full, so the
 // JS mirror returns null (plain traffic / unsupported-skip), NOT a cxfer fold.
 eq(classifyConfidentialTx(tacitTx(cxferBody(0x37)))?.type ?? null, null, 'AXFER_VAR (0x37) → null (disabled, skipped)');

@@ -674,8 +674,9 @@ pub struct BtcCallEnvelope {
 /// calldata_hash(32) ‖ caller_pubkey(32, x-only) ‖ call_nonce(32) ‖ sig(64)` = 201 bytes. `executor` is the
 /// specific BtcCallExecutor the caller authorizes — bound into the signed message AND the recordHash so the
 /// call can fire on exactly that deployment (chain + pool) and nowhere else (no cross-deployment replay). The
-/// BIP-340 `sig` by `caller_pubkey` over `keccak("tacit-btc-call-v1" ‖ executor ‖ target ‖ calldata_hash ‖
-/// caller_pubkey ‖ call_nonce)` proves a Bitcoin party authorized exactly this call; the reflection surfaces
+/// BIP-340 `sig` by `caller_pubkey` over `keccak("tacit-btc-call-v2" ‖ chain_binding ‖ executor ‖ target ‖
+/// calldata_hash ‖ caller_pubkey ‖ call_nonce)` proves a Bitcoin party authorized exactly this call on exactly
+/// one deployment (`chain_binding` is the reflecting deployment's own, not an envelope field); the reflection surfaces
 /// (callId, recordHash) for the BtcCallExecutor to fire. No value, no note. (SPEC-BITCOIN-HOOK-AMENDMENT §1.4.)
 pub fn parse_btc_call_envelope(env: &[u8]) -> Option<BtcCallEnvelope> {
     if env.len() != 201 || env[0] != 0x68 {
@@ -1025,11 +1026,11 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// well-formed CXFER envelope.
 ///
 /// Also accepts the **fixed-amount atomic-settlement family** — `T_AXFER` (0x26, OTC) and its BP+ variant
-/// `T_AXFER_BPP` (0x3C). Both are byte-identical to CXFER (worker `decodeAxferPayload` == `decodeCxferPayload`,
-/// differing only in opcode + rangeproof flavor) and conserve under the SAME `tacit-kernel-v1` kernel — they're
-/// one ancestry family. The Bitcoin tx carries aux NON-tacit (sats) inputs; those aren't pool UTXOs, so
-/// `scan_tx_spends` never sees them, and a confirmed atomic settlement's output notes onboard exactly like a
-/// CXFER's (no new fold). A variant whose rangeproof/wire doesn't actually match fails the conservation gate
+/// `T_AXFER_BPP` (0x3C). Their layout is CXFER's with one extra byte, `asset_input_count`, between the asset id
+/// and the kernel signature (`op ‖ asset(32) ‖ asset_input_count(1) ‖ kernel_sig(64) ‖ N ‖ …`, SPEC §5.7), and
+/// they conserve under the SAME `tacit-kernel-v1` kernel. Their asset inputs are exactly
+/// `vin[1..1+asset_input_count]` (`axfer_asset_input_count`); every other input is the taker's sats, outside the
+/// kernel. A confirmed atomic settlement's output notes onboard like a CXFER's. A variant whose rangeproof/wire doesn't actually match fails the conservation gate
 /// (skip-not-panic) — fail-closed, never an over-mint. See ops/DESIGN-bridge-multiasset-provenance.md (Track A).
 ///
 /// The variable-amount variants `T_AXFER_VAR` (0x37) / `T_AXFER_VAR_BPP` (0x3D) are NOT accepted: their
@@ -1038,13 +1039,17 @@ pub fn parse_cxfer_envelope(env: &[u8]) -> Option<([u8; 32], Vec<[u8; 33]>)> {
 /// them as an unsupported envelope; the vin-scan still retires their inputs, a self-burn for whoever crafts one).
 pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<[u8; 33]>, Vec<u8>)> {
     let op = env.first().copied()?;
-    let known = op == 0x23 || op == 0x22 || op == 0x26 || op == 0x3C;
-    if env.len() < 1 + 32 + 64 + 1 || !known {
+    let atomic = op == 0x26 || op == 0x3C;
+    if !(op == 0x23 || op == 0x22 || atomic) {
+        return None;
+    }
+    let head = if atomic { 1 + 32 + 1 } else { 1 + 32 };
+    if env.len() < head + 64 + 1 || (atomic && env[33] == 0) {
         return None;
     }
     let asset: [u8; 32] = env[1..33].try_into().ok()?;
-    let kernel_sig: [u8; 64] = env[33..97].try_into().ok()?;
-    let mut p = 1 + 32 + 64;
+    let kernel_sig: [u8; 64] = env[head..head + 64].try_into().ok()?;
+    let mut p = head + 64;
     let n = env[p] as usize;
     p += 1;
     if ![1usize, 2, 4, 8].contains(&n) || p + n * (33 + 8) + 2 > env.len() {
@@ -1062,6 +1067,15 @@ pub fn parse_cxfer_envelope_full(env: &[u8]) -> Option<([u8; 32], [u8; 64], Vec<
     }
     let range_proof = env[p..p + rp_len].to_vec();
     Some((asset, kernel_sig, commitments, range_proof))
+}
+
+/// The fixed-amount atomic-settlement family's `asset_input_count` (T_AXFER 0x26 / T_AXFER_BPP 0x3C): the
+/// kernel's inputs are exactly `vin[1..1+count]`. None for any other envelope, and for one that does not parse.
+pub fn axfer_asset_input_count(env: &[u8]) -> Option<usize> {
+    match env.first().copied()? {
+        0x26 | 0x3C => parse_cxfer_envelope_full(env).map(|_| env[33] as usize),
+        _ => None,
+    }
 }
 
 /// The generation-bound CXFER opcode (`T_CXFER_BOUND`). Same conservation shape as `T_CXFER`, with a 32-byte
@@ -3105,13 +3119,15 @@ mod tests {
 
     #[test]
     fn parse_atomic_settlement_variants_accepted_as_cxfer() {
-        // The FIXED-amount atomic-settlement family (T_AXFER 0x26, + BP+ 0x3C) is byte-identical to CXFER;
-        // the cxfer parser must accept each so the existing fold onboards its tacit output notes (the sats
-        // legs are native-BTC, invisible to the kernel).
+        // The FIXED-amount atomic-settlement family (T_AXFER 0x26, + BP+ 0x3C) carries asset_input_count
+        // between the asset id and the kernel signature; CXFER does not. Both parse to the same tuple.
         let (c0, c1) = ([0x02u8; 33], [0x03u8; 33]);
         let mk = |op: u8| {
             let mut env = vec![op];
             env.extend_from_slice(&[0xAAu8; 32]); // asset_id
+            if matches!(op, 0x26 | 0x3C) {
+                env.push(1u8); // asset_input_count
+            }
             env.extend_from_slice(&[0x07u8; 64]); // kernel_sig
             env.push(2u8); // N = 2
             env.extend_from_slice(&c0); env.extend_from_slice(&[0u8; 8]);
@@ -3125,6 +3141,17 @@ mod tests {
             assert_eq!(ks, [0x07u8; 64]);
             assert_eq!(commits, vec![c0, c1]);
             assert_eq!(rp, vec![0xbbu8; 4]);
+            assert_eq!(axfer_asset_input_count(&mk(op)), Some(1));
+            let mut no_inputs = mk(op);
+            no_inputs[33] = 0;
+            assert!(parse_cxfer_envelope_full(&no_inputs).is_none(), "an atomic settlement needs an asset input");
+            let mut cxfer_layout = vec![op];
+            cxfer_layout.extend_from_slice(&mk(0x23)[1..]);
+            assert!(parse_cxfer_envelope_full(&cxfer_layout).is_none(), "an AXFER without the count byte does not parse");
+        }
+        for op in [0x22u8, 0x23] {
+            assert!(parse_cxfer_envelope_full(&mk(op)).is_some());
+            assert_eq!(axfer_asset_input_count(&mk(op)), None);
         }
         // The variable-amount variants (T_AXFER_VAR 0x37 / T_AXFER_VAR_BPP 0x3D) are DISABLED — rejected here
         // (unbindable maker-change destination); the reflection then skips them as unsupported.

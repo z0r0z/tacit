@@ -330,7 +330,7 @@ contract DeployV1Suite is Script {
     function _envConfig() internal view returns (Config memory c) {
         c.sp1Verifier = vm.envAddress("SP1_VERIFIER");
         require(c.sp1Verifier != address(0) && c.sp1Verifier.code.length != 0, "SP1_VERIFIER not a contract");
-        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x0024bd069d742dfda9305da47c56a2765ca9109f3d0e5f88c9d9839dbe50b243));
+        c.programVkey = vm.envOr("PROGRAM_VKEY", bytes32(0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3));
         // No hardcoded default: this vkey rotates with every reflection-guest reprove, and a stale literal
         // here would silently pass a wrong value until the pin-equality require in run() catches it.
         // Requiring the operator source it from the CURRENT elf-vkey-pin.json makes that the only path.
@@ -338,7 +338,7 @@ contract DeployV1Suite is Script {
         c.canonicalFactory = vm.envOr("CANONICAL_FACTORY", address(0));
         c.headerRelay = vm.envOr("HEADER_RELAY", address(0));
         c.genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
-        c.reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6));
+        c.reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24));
         c.reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         c.tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
         c.deployEngine = vm.envOr("DEPLOY_ENGINE", true);

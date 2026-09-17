@@ -70,7 +70,11 @@ for fx in reflection_input reflection_burn_deposit cbtc_redeem_reflection_input 
           reflection_modeb reflection_cbtc_lock reflection_cbtc_spend reflection_crossout reflection_farminit reflection_harvest \
           reflection_lp_poolinit reflection_lp_add reflection_lp_add_refund reflection_lpremove reflection_protofee \
           reflection_swaproute reflection_swapvar reflection_poolresume reflection_swapbatch \
-          reflection_lpbond reflection_farmrefund reflection_bid; do
+          reflection_lpbond reflection_farmrefund reflection_bid \
+          reflection_swapvar_unknown_pool reflection_swapvar_classic_change reflection_swapvar_tip_nonp2tr \
+          reflection_harvest_zero_reward reflection_farm_lifecycle_unbond_nonp2tr reflection_lpbond_debt_overflow \
+          reflection_lpremove_refund_nonp2tr reflection_swapvar_extra_input reflection_farminit_extra_input \
+          reflection_burn_deposit_pending reflection_burn_deposit_complete; do
   if [ ! -f "$FXD/$fx.json" ]; then printf '   MISS  %s  (no committed fixture — run gen-all-reflection-fixtures.sh)\n' "$fx"; fail=1; continue; fi
   out=$(cd "$EXEC" && REFLECT_ELF="$ELF" cargo run --release --quiet --bin reflect-execute -- "$FXD/$fx.json" 2>&1)
   if printf '%s' "$out" | grep -q "DIGEST_MATCH"; then

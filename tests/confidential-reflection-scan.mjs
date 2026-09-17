@@ -23,7 +23,7 @@ const ne = (a, b, msg) => { if (a === b) { console.error(`FAIL ${msg} (should di
 // The full-scan genesis digest — the three-way anchor: JS == cxfer-core ScanReflection::genesis().digest()
 // == ConfidentialPool.REFLECTION_GENESIS_DIGEST. Commits the empty live set + cBTC lock set + pool registry +
 // the fast-lane consumed-ν count (Mode-B; 0 at genesis). Matches ConfidentialPool.sol:246.
-const SCAN_GENESIS = '0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d';
+const SCAN_GENESIS = '0x76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5';
 const LIVE2_ROOT = '0x768094fe74b364fbfc1343a12d1a5ac81d553ba3a0270e69bf7efc8673b66519';
 
 const last = (b) => '0x' + '00'.repeat(31) + b;     // 32-byte word, b in the last byte (key)

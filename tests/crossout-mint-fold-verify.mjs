@@ -35,7 +35,10 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const u32le = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
 const hb = (h) => Buffer.from(String(h).replace(/^0x/, ''), 'hex');
-const OWNER = '0x' + '00'.repeat(32);                 // crossout-mint notes are owner-free (Bitcoin pool convention)
+const OWNER = '0x' + '00'.repeat(32);                 // the envelope's owner field (not part of the minted leaf)
+// The minted note is homed to the mint tx's vout-0 P2TR key: the burn names it, the fold reads it from vout 0.
+const DEST_KEY = '0x' + '7b'.repeat(32);
+const DEST_SPK = Buffer.concat([Buffer.from([0x51, 0x20]), hb(DEST_KEY)]);
 const ETH_POOL = '0x' + '5a'.repeat(20);
 const BLOCK_HEIGHT = 318000;
 
@@ -49,7 +52,7 @@ function buildCrossoutBlock({ asset, claimId, cx, cy }) {
   const dummyTxid = Buffer.alloc(32, 0x65);
   const inputsBuf = cat([dummyTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
   const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+  const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [DEST_SPK.length], DEST_SPK, wit0, Buffer.alloc(4)]);
   const txid = computeTxid(tx);
   const txidHex = '0x' + Buffer.from(txid).toString('hex');
   const dsha = (b) => sha256(sha256(b));
@@ -75,7 +78,7 @@ function buildCrossoutBlock({ asset, claimId, cx, cy }) {
 
 // Assemble a one-0x65 Mode-B batch whose crossOutSet contains `claimId`'s destCommitment.
 async function foldOneCrossout({ asset, claimId, cx, cy }) {
-  const destCommitment = pool.leaf(asset, cx, cy, OWNER);
+  const destCommitment = pool.btcNoteLeaf(asset, cx, cy, DEST_KEY);
   const coLeaf = pool.ethCrossoutLeaf(claimId, pool.DEST_CHAIN_BITCOIN, destCommitment, asset);
   const coImt = pool.makeImtAccumulator(); coImt.insert(coLeaf);
   const coRoot = coImt.root();
@@ -108,8 +111,8 @@ const { cx, cy } = pool.commitXY(50000n, 0xC0DEn);
 {
   const payload = encodeCrossoutMint({ assetId: ASSET, claimId: CLAIM, cx, cy, owner: OWNER });
   const dec = decodeCrossoutMint(payload);
-  const leafFromEnvelope = crossoutMintLeaf(keccak256, { assetId: dec.assetId, cx: dec.cx, cy: dec.cy, owner: dec.owner });
-  const destCommitment = pool.leaf(ASSET, cx, cy, OWNER);
+  const leafFromEnvelope = crossoutMintLeaf(keccak256, { assetId: dec.assetId, cx: dec.cx, cy: dec.cy, destScriptPubKey: DEST_SPK.toString('hex') });
+  const destCommitment = pool.btcNoteLeaf(ASSET, cx, cy, DEST_KEY);
   assert.strictEqual(leafFromEnvelope, destCommitment, 'the broadcast envelope recomputes the recorded destCommitment leaf');
   ok('the 0x65 the CLI broadcasts recomputes the eth-recorded destCommitment (the membership target)');
 }
@@ -154,7 +157,7 @@ const { cx, cy } = pool.commitXY(50000n, 0xC0DEn);
 {
   const FAKE_CLAIM = '0x' + 'f1'.repeat(32);
   // crossOutSet contains the REAL claim only; the fake 0x65's leaf is absent → non-membership → skip.
-  const realDest = pool.leaf(ASSET, cx, cy, OWNER);
+  const realDest = pool.btcNoteLeaf(ASSET, cx, cy, DEST_KEY);
   const coImt = pool.makeImtAccumulator();
   coImt.insert(pool.ethCrossoutLeaf(CLAIM, pool.DEST_CHAIN_BITCOIN, realDest, ASSET));
   const coRoot = coImt.root();

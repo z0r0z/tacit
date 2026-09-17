@@ -25,26 +25,37 @@ const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER = '0x' + Buffer.from('owner-stealth'.padEnd(32, '\0')).toString('hex');      // EVM note owner
-const BTC_OWNER = '0x' + '00'.repeat(32); // Bitcoin-homed pool notes are owner-free (ZERO_OWNER bearer convention; reflection fold_crossout mints leaf(asset,cx,cy,0), so a non-zero dest owner records an UNFOLDABLE destCommitment = burned value that can never be minted on Bitcoin)
 const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
 const ptHex = (P) => '0x' + Buffer.from(P.toRawBytes(true)).toString('hex');
 
-// 2 EVM notes burned → 2 Bitcoin dest notes (Σin == Σout).
+// 2 EVM notes burned → ONE Bitcoin destination note (Σin == Σout). The guest accepts exactly one destination per
+// burn: every destination carries the same bound nullifier, and the pool records one cross-out per nullifier.
+// Native inputs: each owner is H(nk), and the guest reads nk right after the membership path.
+const IN_NK = ['0x' + '11'.repeat(32), '0x' + '22'.repeat(32)];
 const inputs = [
-  { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
-  { value: 500n, blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
+  { value: 1000n, blinding: randomScalar(), nk: IN_NK[0], owner: pool.nkToOwner(IN_NK[0]) },
+  { value: 500n, blinding: randomScalar(), nk: IN_NK[1], owner: pool.nkToOwner(IN_NK[1]) },
 ];
-const outputs = [
-  { value: 900n, blinding: randomScalar(), owner: BTC_OWNER },
-  { value: 600n, blinding: randomScalar(), owner: BTC_OWNER },
-];
+// The Bitcoin destination names the recipient's x-only Taproot key (the key reflection reads from the mint's
+// vout-0 P2TR output); the guest rejects a zero key.
+const DEST_PRIV = 0x5eedn;
+const DEST_XONLY = '0x' + Buffer.from(secp.getPublicKey(beHex(DEST_PRIV).slice(2), true).slice(1)).toString('hex');
+const outputs = [{ value: 1500n, blinding: randomScalar(), owner: DEST_XONLY }];
 
-// bindNullifier = nullifier of the FIRST input's commitment (the guest re-derives the same bind).
-const in0 = ct.commit(inputs[0].value, inputs[0].blinding);
-const { cx: cx0, cy: cy0 } = xy(in0);
-const bindNullifier = pool.nullifier(cx0, cy0);
+// Pool tree (input membership) → spendRoot (EVM-homed) + paths.
+const tree = new pool.Tree();
+const inMeta = inputs.map((inp) => {
+  const { cx, cy } = xy(ct.commit(inp.value, inp.blinding));
+  const leaf = pool.leaf(ASSET, cx, cy, inp.owner);
+  tree.insert(leaf);
+  return { cx, cy, owner: inp.owner, nk: inp.nk, leaf };
+});
+const spendRoot = tree.root();
+inMeta.forEach((m, i) => { m.path = tree.rootAndPath(i).path; m.leafIndex = i; });
+
+// bindNullifier = the FIRST input's native nullifier (the guest binds every claimId of the burn to it).
+const bindNullifier = pool.nativeNullifier(inMeta[0].nk, inMeta[0].leaf);
 
 const t = ct.buildBridgeBurn({
   inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })),
@@ -52,19 +63,13 @@ const t = ct.buildBridgeBurn({
 });
 if (!ct.verifyBridgeBurn(t)) throw new Error('JS self-verify (verifyBridgeBurn) failed');
 
-// Pool tree (input membership) → spendRoot (EVM-homed) + paths.
-const tree = new pool.Tree();
-const inMeta = inputs.map((inp, i) => { const { cx, cy } = xy(t.inC[i]); tree.insert(pool.leaf(ASSET, cx, cy, OWNER)); return { cx, cy, secret: inp.secret }; });
-const spendRoot = tree.root();
-inMeta.forEach((m, i) => { m.path = tree.rootAndPath(i).path; m.leafIndex = i; });
-
 const fixture = {
   note: 'crossOut (OP_BRIDGE_BURN) settle witness — EVM notes burned → Bitcoin dest notes (crossOuts); round-trip step 1',
   chainBinding: '0x' + '00'.repeat(32),
   spendRoot,
-  asset: ASSET, owner: OWNER,
+  asset: ASSET,
   destChain: 1, // BITCOIN
-  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: OWNER, leafIndex: m.leafIndex, path: m.path, secret: m.secret })),
+  inputs: inMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner, leafIndex: m.leafIndex, path: m.path, nk: m.nk })),
   outputs: t.outC.map((P, j) => { const { cx, cy } = xy(P); return { cx, cy, owner: outputs[j].owner }; }),
   rangeProof: '0x' + Buffer.from(t.rangeProof).toString('hex'),
   kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
@@ -75,4 +80,4 @@ const fixture = {
 
 const out = 'contracts/sp1/confidential/fixtures/crossout_op.json';
 writeFileSync(out, JSON.stringify(fixture, null, 2) + '\n');
-console.log('wrote', out, '—', t.crossOuts.length, 'crossOuts; bind', bindNullifier.slice(0, 12), '; Σ 1500 burned → dest', outputs.map((o) => Number(o.value)).join('+'));
+console.log('wrote', out, '—', t.crossOuts.length, 'crossOut; bind', bindNullifier.slice(0, 12), '; Σ 1500 burned → one dest', DEST_XONLY.slice(0, 12));

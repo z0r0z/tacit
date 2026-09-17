@@ -31,9 +31,11 @@ const RES_A = 1_000_000n, RES_B = 1_000_000n;
 
 // Two traders, both selling A for B, each with a distinct input note.
 const traders = [
-  { amountIn: 1000n, blinding: 111n, owner: '0x' + '01'.repeat(32), nk: '0x' + '05'.repeat(32), outOwner: '0x' + 'a1'.repeat(32), rOutSecp: 222n },
-  { amountIn: 3000n, blinding: 333n, owner: '0x' + '02'.repeat(32), nk: '0x' + '06'.repeat(32), outOwner: '0x' + 'a2'.repeat(32), rOutSecp: 444n },
+  { amountIn: 1000n, blinding: 111n, nk: '0x' + '05'.repeat(32), outOwner: '0x' + 'a1'.repeat(32), rOutSecp: 222n },
+  { amountIn: 3000n, blinding: 333n, nk: '0x' + '06'.repeat(32), outOwner: '0x' + 'a2'.repeat(32), rOutSecp: 444n },
 ];
+// Each input note is owned by its nk, as the guest requires to authorize the spend.
+for (const t of traders) t.owner = pool.nkToOwner(t.nk);
 
 // Build the spend tree from each trader's INPUT note leaf (commit to the GROSS amountIn).
 const tree = new pool.Tree();

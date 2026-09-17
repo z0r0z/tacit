@@ -74,19 +74,18 @@ const mkBundle = (cmints = []) => ({
   cmints,
 });
 
-// A burnDepositKit whose mirror returns a fixed verdict + records the valid_leaves it was handed.
+// A burnDepositKit whose admission returns a fixed verdict + records what it was asked to decide. The real
+// admission (the guest's checks over the emitted blob) is covered by tests/burn-deposit-admission.mjs.
+const STUB_LEAF = v(0x1eaf);
 function makeKit(verdict) {
-  const seen = { leaves: null, cmintCalls: 0 };
+  const seen = { args: null, calls: 0 };
   return {
     seen,
     kit: {
       assembler: makeBurnDepositAssembler({ dsha256, cat, bytesToHex }),
-      parseEtchAnchor: () => ({ c0Compressed: G, mintAuthority: MINT_AUTH }),
-      computeTxidInternal: () => ETCH_TXID_INT,
-      mirror: {
-        verifyCmintAuthorized: () => { seen.cmintCalls++; return [...CMINT_LEAF]; },
-        verifyProvenanceLeaves: (asset, leaves) => { seen.leaves = leaves; return verdict; },
-      },
+      // burnedTxid null: the synthetic burn tx bytes carry no parseable input, so the scan falls back to the vin it
+      // already decoded — the same outpoint the guest reads as the burn tx's first input.
+      admitBurnDeposit: (args) => { seen.args = args; seen.calls++; return { admitted: verdict, reason: 'stub', burnedTxid: null, burnedVout: 0, burnedNoteLeaf: STUB_LEAF }; },
     },
   };
 }
@@ -116,7 +115,13 @@ const burnBlock = (txidDisplay) => ({ txs: [
   eq(after.note, before.note + 1, 'valid: the burned note is appended to the pool tree (noteCount +1)');
   eq(after.spent, before.spent + 1, 'valid: ν nullified in the shared spent set');
   eq(after.burn, before.burn + 1, 'valid: bridge-out ν → dest recorded in the burn set');
-  eq(seen.leaves.length, 1, 'fixed-supply: valid_leaves = [C_0] only (no cmints)');
+  ok(seen.args && seen.args.envNu === v(0x17ad), 'valid: admission is asked about the ENVELOPE ν');
+  ok(seen.args && seen.args.blobHex.length > 2 && seen.args.provHeaders.length === 1, 'valid: admission sees the exact blob + header chain that is emitted');
+  ok(bd && bd.blob === seen.args.blobHex, 'valid: the emitted blob is the one admission decided on');
+  ok(bd && bd.coIsMember === 0, 'valid: a fresh outpoint carries a non-membership presence witness');
+  // The burn record is keyed by the burn tx's first input and the envelope target, with the admitted leaf.
+  const burnId = idx.pool.bridgeBurnId(2, internalTxid(dtx(0xb1)), 0, STUB_LEAF, v(0x7c7c7c));
+  ok(idx.state().burnContains(burnId), 'valid: burn id binds the burn tx input 0 + envelope target (not the bundle burnedInput)');
   // The DAG blob rides SP1 stdin now (not the burn tx's witness), so a VALID bundle must serialize one.
   ok(bd && typeof bd.blob === 'string' && bd.blob.length > 2, 'valid: a provenance blob is serialized for stdin');
 }
@@ -149,23 +154,24 @@ const burnBlock = (txidDisplay) => ({ txs: [
   eq(rootsAfter.burnRoot, rootsBefore.burnRoot, 'invalid: burnRoot unchanged');
 }
 
-// ── 3. MINTABLE: a cmint in the bundle is authorized into valid_leaves = C_0 ∪ {cmint}. ──
+// ── 3. MINTABLE: the bundle's cmints are serialized into the blob admission decides on (and the guest reads). ──
 {
+  const plain = makeKit(true);
+  await makeScanReflectionIndexer({ ...deps, burnDepositKit: plain.kit }).assembleBlocks([burnBlock(dtx(0x41))], { headers: [BATCH_HDR], anchorHeight: 702, burnDeposits: new Map([[dtx(0x41), mkBundle()]]) });
   const { kit, seen } = makeKit(true);
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const tx0 = dtx(0x40);
   const cmints = [{ revealTx: 'cc'.repeat(60), commitTx: 'dd'.repeat(30), ...mined(0xcc) }];
   await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 702, burnDeposits: new Map([[tx0, mkBundle(cmints)]]) });
-  eq(seen.cmintCalls, 1, 'mintable: verifyCmintAuthorized called once for the cmint');
-  eq(seen.leaves.length, 2, 'mintable: valid_leaves = [C_0, authorized cmint]');
-  eq(seen.leaves[1][0], CMINT_LEAF[0], 'mintable: the cmint leaf outpoint is admitted');
+  eq(seen.calls, 1, 'mintable: admission decided once');
+  ok(seen.args.blobHex.length > plain.seen.args.blobHex.length, 'mintable: the cmint rides the admitted blob');
 }
 
 // ── 3b. A bundle that carries POOL-MEMBERSHIP shortcut leaves folds NOTHING, whatever the mirror would say:
 //        a tree leaf commits no outpoint, so such a leaf seeds the DAG with a prover-asserted (outpoint,
 //        commitment) pair — the reflection guest refuses the whole blob, and the mirror must agree. ──
 {
-  const { kit, seen } = makeKit(true); // the DAG mirror would ADMIT it — the refusal must come first
+  const { kit, seen } = makeKit(false); // the real admission refuses a blob with memberships (tests/burn-deposit-admission.mjs)
   const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
   const before = idx.state().counts();
   const rootsBefore = idx.roots();
@@ -176,11 +182,30 @@ const burnBlock = (txidDisplay) => ({ txs: [
   const bd = input.blocks[0].txs[1].burnDeposit;
   ok(bd != null, 'pool-membership: a burnDeposit witness is still emitted (stream sync)');
   ok(bd.provHeaders && bd.provHeaders.length === 0, 'pool-membership: prov_headers withheld (guest skips)');
-  eq(seen.leaves, null, 'pool-membership: the DAG mirror is never consulted');
+  ok(seen.args && seen.args.blobHex.length > 2, 'pool-membership: the memberships ride the blob admission decides on');
   eq(after.note, before.note, 'pool-membership: no note appended');
   eq(after.spent, before.spent, 'pool-membership: no ν nullified');
   eq(after.burn, before.burn, 'pool-membership: no burn recorded');
   eq(idx.roots().poolRoot, rootsBefore.poolRoot, 'pool-membership: poolRoot unchanged');
+}
+
+// ── 3c. A valid burn whose outpoint was already retired by a fast-lane consume folds NOTHING, and carries a
+//        MEMBERSHIP presence witness (co_is_member = 1): the guest proves that membership and skips. ──
+{
+  const { kit } = makeKit(true);
+  const idx = makeScanReflectionIndexer({ ...deps, burnDepositKit: kit });
+  const acc = idx.pool.makeImtAccumulator();
+  acc.insert(idx.pool.outpointKey(internalTxid(dtx(0xb1)), 0));
+  idx.state().setConsumedOutpointsLinks(acc.links());
+  const before = idx.state().counts();
+  const tx0 = dtx(0x39);
+  const input = await idx.assembleBlocks([burnBlock(tx0)], { headers: [BATCH_HDR], anchorHeight: 703, burnDeposits: new Map([[tx0, mkBundle()]]) });
+  const bd = input.blocks[0].txs[1].burnDeposit;
+  const after = idx.state().counts();
+  eq(bd.coIsMember, 1, 'fast-lane-consumed: membership presence witness');
+  eq(after.note, before.note, 'fast-lane-consumed: no note appended');
+  eq(after.spent, before.spent, 'fast-lane-consumed: no ν nullified');
+  eq(after.burn, before.burn, 'fast-lane-consumed: no burn recorded');
 }
 
 // ── 4. Restart durability: after a valid burn-deposit fold, a snapshot round-trip reconstructs the digest. ──

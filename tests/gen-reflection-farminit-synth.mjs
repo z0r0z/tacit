@@ -5,6 +5,9 @@
 // guest↔JS digest-parity check for the farm-init fold (incl. amm_derive_farm_id + the funding kernel). No note
 // is onboarded (the treasury is virtual), so there is no note-path witness. Sentinel change: funding == reward_total.
 //   node tests/gen-reflection-farminit-synth.mjs > /tmp/farminit-reflect-input.json
+// FARMINIT_SCENARIO=extra-input puts another live reward-asset note (same commitment) at vin 0, ahead of the
+// launcher's funding input: the launcher signature's funding_hash names the real outpoint, so the extra candidate is
+// passed over and the farm still registers.
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
@@ -63,9 +66,11 @@ const envelope = cat([
   u32le(REFUND_EXPIRY), REFUND_DEST, REFUND_BLIND,
 ]);
 const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([envelope.length & 0xff, (envelope.length >> 8) & 0xff]), envelope, [0x68]]);
-const inputsBuf = cat([seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+const EXTRA = process.env.FARMINIT_SCENARIO === 'extra-input';
+const extraTxid = Buffer.alloc(32, 0x3e);
+const inputsBuf = cat([...(EXTRA ? [extraTxid, u32le(0), [0x00], [0xfd, 0xff, 0xff, 0xff]] : []), seedTxid, u32le(seedVout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
 const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
-const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, Buffer.alloc(4)]);
+const tx = cat([[0x02, 0x00, 0x00, 0x00], [0x00, 0x01], varint(EXTRA ? 2 : 1), inputsBuf, [0x01], Buffer.alloc(8), [0x00], wit0, ...(EXTRA ? [[0x00]] : []), Buffer.alloc(4)]);
 const txid = computeTxid(tx);
 const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(tx);
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
@@ -77,11 +82,16 @@ const coords = new Map();
 const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
 state.foldOutput(pool.leaf(REWARD_ASSET, cInXY.cx, cInXY.cy, ZERO_OWNER), inOutpoint, pool.commitmentHash(cInXY.cx, cInXY.cy), REWARD_ASSET);
 coords.set(inOutpoint.toLowerCase(), { cx: cInXY.cx, cy: cInXY.cy });
+if (EXTRA) {
+  const extraOutpoint = pool.outpointKey('0x' + extraTxid.toString('hex'), 0);
+  state.foldOutput(pool.leaf(REWARD_ASSET, cInXY.cx, cInXY.cy, ZERO_OWNER), extraOutpoint, pool.commitmentHash(cInXY.cx, cInXY.cy), REWARD_ASSET);
+  coords.set(extraOutpoint.toLowerCase(), { cx: cInXY.cx, cy: cInXY.cy });
+}
 
 const txSpec = {
   txData: '0x' + tx.toString('hex'),
   txid: '0x' + Buffer.from(txid).toString('hex'),
-  vins: [{ prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
+  vins: [...(EXTRA ? [{ prevTxid: '0x' + extraTxid.toString('hex'), vout: 0 }] : []), { prevTxid: '0x' + seedTxid.toString('hex'), vout: seedVout }],
   env: {
     type: 'farm_init', poolId: POOL_ID, farmNonce: FARM_NONCE, launcherPubkey: LAUNCHER_PUBKEY, rewardAsset: REWARD_ASSET,
     rewardTotal: rewardTotal.toString(), rewardPerBlock: rewardPerBlock.toString(), startHeight, endHeight,
@@ -97,4 +107,5 @@ const farmId = pool.ammDeriveFarmId(POOL_ID, LAUNCHER_PUBKEY, REWARD_ASSET, FARM
 const farm = state.pools.get(farmId);
 console.error(`farm-init: reward_total=${rewardTotal} registered=${!!farm} treasury=${farm ? farm.reserveA : '-'} newDigest=${input.newDigest}`);
 if (!farm) { console.error('FATAL: farm was not registered (kernel/gate failed) — fixture would not validate'); process.exit(1); }
+if (EXTRA && state.counts().live !== 0) { console.error('FATAL: extra-input farm-init left an input live'); process.exit(1); }
 console.log(JSON.stringify(input));

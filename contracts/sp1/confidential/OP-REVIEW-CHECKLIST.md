@@ -54,6 +54,14 @@ Real bug: the mod-`n` fee-wrap (make `fee > value` so `Σout ≡ value − fee m
 
 - [ ] Reuse `verify_kernel_with_fee_bound` verbatim for n-in/m-out shapes. It binds the output **leaves**, which
       is what stops a delegated prover relabelling an output owner. Do not hand-roll conservation on a new op.
+- [ ] **A kernel signature names its op.** If two ops accept the same `(R, z)` over the same inputs and leaves, a
+      relayer can settle the witness as whichever op pays it (the transfer re-type: a send-unwrap's public amount
+      claimed as a transfer fee). An op whose authorization is the kernel alone uses its own transcript domain
+      (`TRANSFER_KERNEL_DOMAIN` for OP_TRANSFER, `SWAP_BLIND_KERNEL_DOMAIN` for OP_SWAP_BLIND). Check that no
+      two ops share a domain unless they read `fee·H` identically.
+- [ ] **A delegated prover never receives an aggregate blinding.** An op that proves conservation from a
+      revealed `Σr` hands every input's blinding sum to whoever proves it; prove it with a Schnorr kernel over the
+      blinding excess instead (OP_SWAP_BLIND's aggregate kernels).
 - [ ] Every kernel-with-fee op either bounds outputs with an explicit BP+ range, or re-opens the input to a
       cleartext `u64` first. Without one of those the mod-`n` wrap is reachable.
 - [ ] `fee < value` asserted, and change is range-proven — not merely computed.

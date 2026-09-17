@@ -124,6 +124,10 @@ struct EthSetState {
     crossouts: Vec<CoRecord>,
     #[serde(default)]
     consumeds: Vec<CnRecord>,
+    // The finalized slot the last landed proof reached: the next proof bootstraps there, so it starts from the
+    // sync committee the Bitcoin reflection now expects.
+    #[serde(default)]
+    bootstrap_slot: Option<u64>,
 }
 #[derive(Serialize, Deserialize, Clone)]
 struct CoRecord {
@@ -314,11 +318,14 @@ fn main() -> anyhow::Result<()> {
     if pool == Address::ZERO {
         anyhow::bail!("POOL must be the deployed ConfidentialPool (the guest proves its bitcoinConsumedCount slot)");
     }
-    // GENESIS_SLOT pins the bootstrap checkpoint so prevSyncCommitteeRoot (the genesis anchor the
-    // Bitcoin guest gates) is REPRODUCIBLE across re-proves — without it get_client(None) bootstraps to
-    // whatever is latest-finalized and the genesis drifts. Set it to the slot the pinned genesis was
-    // captured at (10462624 for 0x8a83…). POOL binds ethPool == the deployed ConfidentialPool, so the
-    // on-chain gate ethPoolReflected == address(this) passes for a live attest.
+    // The bootstrap checkpoint's sync committee becomes prevSyncCommitteeRoot, which the Bitcoin guest requires
+    // to equal the committee its last Mode-B cycle ended on (the pinned genesis committee before the first
+    // cycle). The committed state records the finalized slot of the last proof whose Bitcoin batch landed; with
+    // SYNC_COMMITTEE_MODE=chained the next run bootstraps there, and GENESIS_SLOT (the pinned genesis slot) covers
+    // the first run, before any proof landed. Without either, get_client(None) bootstraps to whatever is latest-finalized and the proof
+    // fails that gate. The [genesis-capture] log line prints the bootstrap committee root to compare against the
+    // reflection state. POOL binds ethPool == the deployed ConfidentialPool, so the on-chain gate
+    // ethPoolReflected == address(this) passes for a live attest.
     let genesis_slot: Option<u64> = std::env::var("GENESIS_SLOT")
         .ok()
         .and_then(|s| s.parse().ok());
@@ -338,6 +345,18 @@ fn main() -> anyhow::Result<()> {
         "STATE_PATH_DEBUG path={} last_block={} crossouts={} consumeds={}",
         state_path().display(), state.last_block, state.crossouts.len(), state.consumeds.len()
     );
+    // SYNC_COMMITTEE_MODE=chained bootstraps from the committed state's last landed slot; anything else keeps
+    // bootstrapping from GENESIS_SLOT every run, which is what a reflection guest pinned to one genesis committee
+    // requires. One binary therefore serves both generations, chosen per deployment.
+    let chained = std::env::var("SYNC_COMMITTEE_MODE").map(|m| m == "chained").unwrap_or(false);
+    let bootstrap_slot = if chained { state.bootstrap_slot.or(genesis_slot) } else { genesis_slot };
+    // EXPECT_SYNC_COMMITTEE: the committee the reflection state says the next proof must start from (0x-hex, the
+    // pinned genesis committee when that state holds none). Checked right after bootstrap, before anything is
+    // proven, so a mismatched start is refused instead of paid for.
+    let expect_committee: Option<String> = std::env::var("EXPECT_SYNC_COMMITTEE")
+        .ok()
+        .map(|v| v.trim_start_matches("0x").to_lowercase())
+        .filter(|v| !v.is_empty());
     let from_block =
         if state.last_block == 0 && state.crossouts.is_empty() && state.consumeds.is_empty() {
             deploy_block
@@ -351,15 +370,19 @@ fn main() -> anyhow::Result<()> {
     let (lc_bytes, ethr_bytes, full_co, full_cn, exec_block) = {
         let rt = tokio::runtime::Runtime::new()?;
         let out = rt.block_on(async {
-            eprintln!("bootstrapping helios on {rpc} (chain {chain_id}) genesis_slot={genesis_slot:?} pool={pool}");
-            let client = get_client(genesis_slot, &rpc, chain_id).await?;
+            eprintln!("bootstrapping helios on {rpc} (chain {chain_id}) bootstrap_slot={bootstrap_slot:?} pool={pool}");
+            let client = get_client(bootstrap_slot, &rpc, chain_id).await?;
             {
                 use tree_hash::TreeHash;
-                eprintln!(
-                    "[genesis-capture] genesis_slot={:?} sync_committee_root=0x{}",
-                    genesis_slot,
-                    hex::encode(client.store.current_sync_committee.tree_hash_root().0)
-                );
+                let root = hex::encode(client.store.current_sync_committee.tree_hash_root().0);
+                eprintln!("[genesis-capture] bootstrap_slot={:?} sync_committee_root=0x{}", bootstrap_slot, root);
+                if let Some(want) = &expect_committee {
+                    if &root != want {
+                        anyhow::bail!(
+                            "bootstrap sync committee 0x{root} != expected 0x{want}: set GENESIS_SLOT / the committed state to a slot in that committee's period"
+                        );
+                    }
+                }
             }
             let mut updates = get_updates(&client).await;
             let finality_update = client.rpc.get_finality_update().await
@@ -709,7 +732,7 @@ fn main() -> anyhow::Result<()> {
         pv.len()
     );
     println!(
-        "PREV_SYNC_COMMITTEE (ETH_GENESIS_SYNC_COMMITTEE) = 0x{}",
+        "PREV_SYNC_COMMITTEE = 0x{}",
         hex::encode(&pv[8 * 32..9 * 32])
     );
     println!("ethPool word = 0x{}", hex::encode(&pv[2 * 32..3 * 32]));
@@ -733,6 +756,7 @@ fn main() -> anyhow::Result<()> {
         last_block: exec_block,
         crossouts: full_co,
         consumeds: full_cn,
+        bootstrap_slot: Some(u64::from_be_bytes(pv[5 * 32 + 24..6 * 32].try_into().unwrap())),
     };
     std::fs::write(pending_state_path(), serde_json::to_string(&new_state)?)?;
     let bundle = EthSetBundle {

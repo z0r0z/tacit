@@ -314,22 +314,55 @@ contract CbtcEscrowHelperForkTest is Test {
         uint256 shareB = helper.helperEscrowOf(outpoint, b);
 
         assertEq(eng.escrowOf(outpoint, address(helper)), shareA + shareB);
-        pool.setMinted(outpoint, false); // releasable
+        pool.setMinted(outpoint, false); // releasable, and still mintable
 
-        // B reclaims FIRST: pulls the WHOLE engine-side pot into the helper, keeps only its own share.
+        // B reclaims FIRST, before any mint: B is paid, and A's part goes straight back into the engine so the
+        // lock A still funds stays mintable.
         uint256 bBefore = wsteth.balanceOf(b);
         vm.prank(b);
         helper.reclaimEscrow(outpoint);
         assertEq(wsteth.balanceOf(b), bBefore + shareB);
-        assertEq(eng.escrowOf(outpoint, address(helper)), 0, "engine side fully drained by the first reclaim");
-        assertEq(wsteth.balanceOf(address(helper)), shareA, "A's share now sits in the helper, not the engine");
+        assertEq(eng.escrowOf(outpoint, address(helper)), shareA, "the co-funder's escrow is still posted");
+        assertEq(eng.escrowTotal(outpoint), shareA);
+        assertEq(wsteth.balanceOf(address(helper)), 0);
 
-        // A reclaims SECOND: engine side is already 0, so the helper must pay out of its own held balance.
         uint256 aBefore = wsteth.balanceOf(a);
         vm.prank(a);
         helper.reclaimEscrow(outpoint);
         assertEq(wsteth.balanceOf(a), aBefore + shareA);
+        assertEq(eng.escrowOf(outpoint, address(helper)), 0);
         assertEq(wsteth.balanceOf(address(helper)), 0, "fully drained, nothing stuck");
+        assertEq(helper.helperEscrowTotal(outpoint), 0);
+    }
+
+    /// Once the lock is redeemed the engine takes no new escrow for it, so the first reclaim pulls the whole pot
+    /// and the rest waits in the helper for the other depositors.
+    function test_reclaimEscrow_multiDepositor_afterRedeem_restWaitsInHelper() public {
+        _skipUnlessForked();
+        address a = address(0xA);
+        address b = address(0xB);
+        bytes32 outpoint = keccak256("outpoint-multi-redeemed");
+        vm.deal(a, 1 ether);
+        vm.prank(a);
+        helper.postEscrowWithETH{value: 1 ether}(outpoint);
+        uint256 shareA = helper.helperEscrowOf(outpoint, a);
+        vm.deal(b, 2 ether);
+        vm.prank(b);
+        helper.postEscrowWithETH{value: 2 ether}(outpoint);
+        uint256 shareB = helper.helperEscrowOf(outpoint, b);
+        pool.setMinted(outpoint, true);
+        pool.setRedeemed(outpoint, true);
+
+        vm.prank(b);
+        helper.reclaimEscrow(outpoint);
+        assertEq(eng.escrowOf(outpoint, address(helper)), 0, "the whole pot is pulled");
+        assertEq(wsteth.balanceOf(address(helper)), shareA, "A's share waits in the helper");
+        uint256 aBefore = wsteth.balanceOf(a);
+        vm.prank(a);
+        helper.reclaimEscrow(outpoint);
+        assertEq(wsteth.balanceOf(a), aBefore + shareA);
+        assertEq(wsteth.balanceOf(address(helper)), 0);
+        assertEq(shareB > 0, true);
     }
 
     // ─────────────────────── postEscrowWithETHAndSettle ───────────────────────
@@ -591,8 +624,8 @@ contract CbtcEscrowHelperLiveEngineForkTest is Test {
         vm.prank(b);
         helper.reclaimEscrow(outpoint);
         assertEq(wsteth.balanceOf(b), bBefore + shareB);
-        assertEq(CollateralEngine(LIVE_ENGINE).escrowOf(outpoint, address(helper)), 0);
-        assertEq(wsteth.balanceOf(address(helper)), shareA);
+        assertEq(CollateralEngine(LIVE_ENGINE).escrowOf(outpoint, address(helper)), shareA, "co-funder still posted");
+        assertEq(wsteth.balanceOf(address(helper)), 0);
 
         uint256 aBefore = wsteth.balanceOf(a);
         vm.prank(a);

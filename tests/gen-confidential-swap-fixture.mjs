@@ -37,7 +37,7 @@ const intent = swap.buildIntent({
   direction: 'A->B', amountIn: 100, priceNum: 90, priceDen: 100, minOut: 90,
   rInSecp: BigInt(det('in-secp')), rOutSecp: BigInt(det('out-secp')),
   nonceIn: BigInt(det('in-nonce')), nonceOut: BigInt(det('out-nonce')),
-  inNote: { owner: OWNER, leafIndex: 0, path: pool.zeros }, outOwner: OWNER_OUT,
+  inNote: { owner: OWNER, nk: IN_NK, leafIndex: 0, path: pool.zeros }, outOwner: OWNER_OUT,
 });
 
 const tree = new pool.Tree();

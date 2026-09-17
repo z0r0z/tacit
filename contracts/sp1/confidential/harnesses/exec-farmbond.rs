@@ -11,6 +11,7 @@
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
+fn u64f(v: &serde_json::Value) -> Option<u64> { v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())) } // a u64 as a JSON number or a decimal string (the dapp relay stringifies BigInt amounts)
 fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/farmbond_op.json".to_string())).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
@@ -31,8 +32,8 @@ fn main() {
     for leg in legs {
         stdin.write(&hexv(leg["cx"].as_str().unwrap()));
         stdin.write(&hexv(leg["cy"].as_str().unwrap()));
-        stdin.write(&leg["value"].as_u64().unwrap());
-        stdin.write(&leg["index"].as_u64().unwrap());
+        stdin.write(&u64f(&leg["value"]).unwrap());
+        stdin.write(&u64f(&leg["index"]).unwrap());
         for p in leg["path"].as_array().expect("leg path") { stdin.write(&hexv(p.as_str().unwrap())); }
         stdin.write(&hexv(leg["sigR"].as_str().unwrap()));
         stdin.write(&hexv(leg["sigZ"].as_str().unwrap()));
@@ -42,7 +43,7 @@ fn main() {
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 
-    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); if f.get("memoHashes").is_some() { for h in &mh { stdin.write(&hexv(h)); } } else { for _ in 0..64usize { stdin.write(&hexv(empty)); } } }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {

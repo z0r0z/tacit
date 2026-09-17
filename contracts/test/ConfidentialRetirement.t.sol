@@ -108,7 +108,8 @@ contract ConfidentialRetirementTest is Test {
     }
 
     function _handoffBinding(ConfidentialPool p) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(p.handoffReflectionDigest(), p.bitcoinConsumedCount(), p.crossOutCount()));
+        (uint256 consumed, uint256 crossOuts) = p.handoffCounts();
+        return keccak256(abi.encodePacked(p.handoffReflectionDigest(), consumed, crossOuts));
     }
 
     /// A reflection batch's public values continuing from `prev`: a forward batch (rebased == 0) whose
@@ -234,6 +235,14 @@ contract ConfidentialRetirementTest is Test {
         // one-shot: this generation has exactly one successor, ever
         vm.expectRevert(ConfidentialPool.AlreadyRetired.selector);
         pool.createNextGen(code, keccak256("another"));
+        // a successor with no runtime code would end the lineage on the spot
+        ConfidentialPool fresh = new ConfidentialPool(
+            verifier, PROGRAM_VKEY, RELAY_VKEY, address(0), address(relay), ANCHOR, CONFIRMATIONS, bytes32(0),
+            bytes32(0), address(0), address(this), address(0), address(0)
+        );
+        vm.expectRevert(ConfidentialPool.NotAContract.selector);
+        fresh.createNextGen(hex"00", SALT);
+        assertEq(fresh.successor(), address(0));
         // a generation with no steward can never retire
         ConfidentialPool lone = new ConfidentialPool(
             verifier, PROGRAM_VKEY, RELAY_VKEY, address(0), address(relay), ANCHOR, CONFIRMATIONS, bytes32(0),
@@ -418,15 +427,34 @@ contract ConfidentialRetirementTest is Test {
         pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), new ReflectionLib.AssetMeta[](0), new bytes32[](0));
     }
 
+    /// A retired generation still crosses out: it is the Bitcoin exit for value held here (a bridged asset, or
+    /// the cBTC a locker needs to redeem a lock registered here). The handoff record keeps the counters it was
+    /// attested at, so a cross-out recorded afterwards cannot stale a rebase built against the record.
+    function test_retired_still_crosses_out_and_the_handoff_record_keeps_its_counts() public {
+        ConfidentialPool succ = _createNext(pool);
+        // before the handoff record exists a cross-out waits, so none can stall the attest that writes it
+        (ConfidentialPool.PublicValues memory early, bytes[] memory earlyMemos) = _crossOut(pool);
+        vm.expectRevert(ConfidentialPool.PoolRetired.selector);
+        _settle(pool, early, earlyMemos);
+        _attest(pool);
+        bytes32 binding = _handoffBinding(pool);
+        bytes32 handoffTip = pool.handoffReflectionTip();
+        (ConfidentialPool.PublicValues memory co, bytes[] memory coMemos) = _crossOut(pool);
+        _settle(pool, co, coMemos);
+        assertEq(pool.crossOutCount(), 1, "the cross-out is recorded on the retired generation");
+        (uint256 consumed, uint256 crossOuts) = pool.handoffCounts();
+        assertEq(consumed, 0);
+        assertEq(crossOuts, 0, "the record keeps the count it was attested at");
+        assertTrue(_binding(pool) != binding, "the live anchor moved with the cross-out");
+        succ.attestBitcoinStateProven(_relayPv(succ, keccak256("successor-genesis"), handoffTip, binding), "");
+        assertEq(succ.knownReflectionDigest(), keccak256(abi.encode(keccak256("successor-genesis"), "next")));
+    }
+
     function test_retired_refuses_cross_lane() public {
         _retirePool();
         // Bitcoin-homed spend (shared reflected root)
         vm.expectRevert(ConfidentialPool.PoolRetired.selector);
         _settle(pool, _btcHomedSpend(pool), new bytes[](0));
-        // crossOut
-        (ConfidentialPool.PublicValues memory co, bytes[] memory coMemos) = _crossOut(pool);
-        vm.expectRevert(ConfidentialPool.PoolRetired.selector);
-        _settle(pool, co, coMemos);
         // swap
         ConfidentialPool.PublicValues memory v = _pv(pool);
         v.swaps = new ConfidentialPool.SwapSettlement[](1);

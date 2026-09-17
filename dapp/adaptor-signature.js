@@ -12,7 +12,7 @@
 // (tests/adaptor-signature.mjs) is that `verifySchnorr` accepts the completed signature.
 
 import { G, ZERO, SECP_N, modN, bigintToBytes32, bytes32ToBigint } from './bulletproofs.js';
-import { secp, sha256, concatBytes, bytesToHex } from './vendor/tacit-deps.min.js';
+import { secp, sha256, keccak_256, concatBytes, bytesToHex } from './vendor/tacit-deps.min.js';
 
 const Pt = secp.ProjectivePoint;
 const te = new TextEncoder();
@@ -87,3 +87,48 @@ export const completedSig = (RxPub, s) => concatBytes(Uint8Array.from(RxPub), bi
 export function extract(sTilde, s, R, T) {
   return isEvenY(R.add(T)) ? modN(s - sTilde) : modN(sTilde - s);
 }
+
+// ── EVM leg: the OP_ADAPTOR_CLAIM kernel ──
+// The BIP-340 construction above locks a Bitcoin kernel signature. It does NOT verify on the EVM lane:
+// OP_ADAPTOR_CLAIM checks the settle guest's conservation kernel (cxfer-core verify_kernel) over the locked note L
+// and the claim output O, whose challenge is e = keccak("tacit-evm-cxfer-kernel-v1" ‖ L ‖ O ‖ R) mod n over
+// 33-byte compressed points, with z·G == R + e·(L − O) and no x-only or even-y rule. The guest commits `z` as the
+// t-reveal. The adaptor form of that kernel: pre-sign with nonce point R = k·G and published point R' = R + T,
+// s̃ = k + e'·x where e' is the challenge over R'; completing gives z = s̃ + t, and anyone holding s̃ extracts
+// t = z − s̃. `x` is the kernel excess r_L − r_O. The kernel { R: R', z } is what the claim witness carries.
+const EVM_KERNEL_DOMAIN = te.encode('tacit-evm-cxfer-kernel-v1');
+const compressed = (P) => P.toRawBytes(true);
+
+export function evmKernelChallenge(inC, outC, R) {
+  const h = keccak_256(concatBytes(EVM_KERNEL_DOMAIN, ...inC.map(compressed), ...outC.map(compressed), compressed(R)));
+  return bytes32ToBigint(h) % SECP_N;
+}
+
+// Pre-sign the claim kernel over (inC → outC) with excess `x`, locked to adaptor point T, under a fresh `nonce`.
+export function evmKernelPresign({ excess, inC, outC, T, nonce }) {
+  const k = modN(nonce);
+  if (k === 0n) throw new Error('adaptor: nonce was zero');
+  const R = mulG(k);
+  const Rhat = R.add(T);
+  const e = evmKernelChallenge(inC, outC, Rhat);
+  return { R, T, Rhat, sTilde: modN(k + e * modN(excess)), e };
+}
+
+// Verify a claim-kernel pre-signature: s̃·G == R + e'·(ΣinC − ΣoutC), e' over R + T.
+export function evmKernelVerifyPresign({ inC, outC, R, T, sTilde }) {
+  const X = inC.reduce((acc, P) => acc.add(P), ZERO).add(outC.reduce((acc, P) => acc.add(P), ZERO).negate());
+  const e = evmKernelChallenge(inC, outC, R.add(T));
+  return mulG(sTilde).equals(R.add(mul(X, e)));
+}
+
+// Complete with t → the kernel { R: R + T, z } the guest verifies; extract t back from a published z.
+export const evmKernelComplete = ({ R, T, sTilde }, t) => ({ R: R.add(T), z: modN(sTilde + modN(t)) });
+export const evmKernelExtract = (sTilde, z) => modN(z - sTilde);
+
+// Deterministic per-leg nonce for a claim kernel, bound to the excess, the (L, O) pair and T (as deriveNonce is for
+// a BIP-340 leg), so one excess never signs two different claim kernels with the same nonce.
+export function evmKernelNonce({ excess, inC, outC, T }) {
+  const msg32 = keccak_256(concatBytes(EVM_KERNEL_DOMAIN, ...inC.map(compressed), ...outC.map(compressed)));
+  return deriveNonce(modN(excess), msg32, T);
+}
+

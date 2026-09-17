@@ -39,6 +39,26 @@ const run = async () => {
   ok((await swapBatchGroth16Verify(vk, publics, bad)) === false, 'tampered proof rejected');
   ok((await swapBatchGroth16Verify(vk, publics.map((x, i) => (i === 0 ? x + 1n : x)), proofBytes)) === false, 'tampered public input rejected');
   ok((await swapBatchGroth16Verify(vk, publics, new Uint8Array(255))) === false, 'wrong-length proof → false (no crash)');
+
+  // Non-canonical coordinate encodings. The guest's Fq::from_slice rejects any 32-byte coordinate >= q instead of
+  // reducing it, and A or C at infinity; snarkjs alone would reduce x + q back to x and accept the proof.
+  const Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+  const withLimb = (off, v) => { const o = new Uint8Array(proofBytes); o.set(be32(v), off); return o; };
+  const limbAt = (off) => { let v = 0n; for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(proofBytes[off + i]); return v; };
+  for (const [off, name] of [[0, 'A.x'], [32, 'A.y'], [64, 'B.x_c0'], [96, 'B.x_c1'], [128, 'B.y_c0'], [160, 'B.y_c1'], [192, 'C.x'], [224, 'C.y']]) {
+    const v = limbAt(off);
+    if (v + Q < (1n << 256n)) {
+      const alias = withLimb(off, v + Q);
+      ok(parseGroth16Proof256(alias) === null, `${name} + q is refused by the parser`);
+      ok((await swapBatchGroth16Verify(vk, publics, alias)) === false, `${name} + q does not verify`);
+    }
+    ok(parseGroth16Proof256(withLimb(off, Q)) === null, `${name} == q is refused`);
+  }
+  ok(parseGroth16Proof256(withLimb(0, Q - 1n)) !== null, 'a coordinate of q - 1 still parses (bound is exclusive)');
+  const zeroA = new Uint8Array(proofBytes); zeroA.fill(0, 0, 64);
+  const zeroC = new Uint8Array(proofBytes); zeroC.fill(0, 192, 256);
+  ok(parseGroth16Proof256(zeroA) === null && (await swapBatchGroth16Verify(vk, publics, zeroA)) === false, 'A at infinity (all-zero) is refused');
+  ok(parseGroth16Proof256(zeroC) === null && (await swapBatchGroth16Verify(vk, publics, zeroC)) === false, 'C at infinity (all-zero) is refused');
   console.log(failures ? `\n${failures} FAIL` : '\nall ok');
   process.exit(failures ? 1 : 0);
 };

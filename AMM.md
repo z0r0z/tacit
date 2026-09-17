@@ -526,8 +526,13 @@ authorises that UTXO as a real tacit asset.
 Public reserves and supply are how the protocol stays purely
 indexer-validated — anyone can reconstruct exactly what every
 reserve is at every height by replaying confirmed envelopes.
-**Per-trader amounts** within a batch are hidden via Pedersen;
-**per-LP holdings** are hidden via the confidentiality of
+**Per-trader amounts** within a batch are hidden via Pedersen —
+but `min_out` and `tip` ride the envelope in cleartext per
+trader_pubkey, so an observer can narrow a trader's amount to a
+range (or, for a small batch, close to a point estimate); see
+spec/amm/dapp-checklist.md's privacy warnings for the batch sizes
+where this matters. **Per-LP holdings** are hidden via the
+confidentiality of
 `lp_asset_id` UTXOs (CXFER-style). LPs who want anonymous positions
 deposit their LP-share UTXO into the mixer's `(lp_asset_id,
 denomination)` pool and withdraw to a fresh address.
@@ -2279,6 +2284,13 @@ chain observers do not.
   commits" below (the on-chain `trader_pubkey` field is then a
   Pedersen-style commit, indistinguishable from a fresh secp256k1
   pubkey, with the underlying identity never revealed).
+- **Per-intent `direction`, `min_out` and `tip_amount`**, next to that
+  `trader_pubkey`: they are part of the signed intent and of the
+  proof's public signals. A tight `min_out` is therefore close to the
+  trader's actual output, and with the public clearing price it bounds
+  the input too — per-trader amount hiding is only as wide as the
+  trader's slippage tolerance. An emitter should round `min_out` to a
+  coarse ladder and use a batch-uniform tip for that reason.
 
 This is the **same posture as the mixer**: aggregate state visible,
 individual user activity hidden — for the same reason (trustless
@@ -2322,9 +2334,10 @@ the same pattern to `trader_pubkey` on intent submission without
 any protocol change — same construction, no wire-format impact.
 
 **Trader privacy in a batch.** With `n_intents ≥ 2`, no observer
-can attribute a specific amount to a specific trader — per-intent
+can attribute an exact amount to a specific trader — per-intent
 commitments are Pedersen-hiding, and the batch proof reveals only
-the aggregate. With `n_intents = 1`, **privacy is zero**: the batch
+the aggregate — but each trader's public `min_out` and tip bound it
+to within that trader's slippage tolerance (see the Public list). With `n_intents = 1`, **privacy is zero**: the batch
 deltas equal the single trader's amount and direction in the clear,
 and the trader_pubkey is on chain. The dapp MUST surface a hard
 warning when an intent is likely to settle solo — this is not a

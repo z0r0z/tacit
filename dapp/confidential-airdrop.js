@@ -243,8 +243,11 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   // note, not just a commitment — a prior version tracked only the owner HASH here, never the nk itself,
   // so nothing downstream could actually authorize spending these notes. Output note =
   // { value, blinding, owner, secret, cx, cy, role }.
-  function buildFunding({ sources, amounts, lockerNk, lockerScanPriv, fee = 0n, salt = '0x' + '00'.repeat(32) }) {
+  function buildFunding({ asset, sources, amounts, lockerNk, lockerScanPriv, fee = 0n, salt = '0x' + '00'.repeat(32) }) {
     if (!pool || !transfer) throw new Error('airdrop funding needs { pool, transfer } injected');
+    // The kernel binds each output's tree leaf leaf(asset, Cx, Cy, owner), exactly as the guest rebuilds it, so the
+    // asset is required: without it the proof binds leaves the guest never reconstructs and cannot settle.
+    if (!asset) throw new Error('airdrop funding needs the asset id');
     const locker = pool.nkToOwner(lockerNk);
     const plan = planFunding({ sources, amounts, fee });
     const denomNotes = new Array(amounts.length);
@@ -268,7 +271,10 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
       }
       const t = transfer.buildTransfer({
         inputs: [{ value: BigInt(src.value), blinding: BigInt(src.blinding) }],
-        outputs: outs.map((o) => ({ value: o.value, blinding: o.blinding })), fee: p.fee,
+        outputs: outs.map((o) => ({ value: o.value, blinding: o.blinding, owner: o.owner })), fee: p.fee,
+        assetId: asset,
+        // The split settles as OP_TRANSFER, whose kernel has its own domain (see confidential-transfer.js).
+        domain: 'transfer',
       });
       return { sourceIndex: p.sourceIndex, ...t,
         source: { cx: src.cx, cy: src.cy, owner: locker, leafIndex: src.leafIndex, path: src.path, blinding: src.blinding },
@@ -291,7 +297,7 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   //   settleLocks({ ops, leaves, memos }) → settle the stealth-lock batch.
   // The barrier between them is real: the locks need the denominations' membership in the settled root.
   async function runAirdrop({ chainBinding, asset, lockerNk, lockerScanPriv, deadline, spendRoot, recipients, sources, fee = 0n, salt = '0x' + '00'.repeat(32), settleSplit, indexDenoms, settleLocks }) {
-    const funding = buildFunding({ sources, amounts: recipients.map((r) => r.amount), lockerNk, lockerScanPriv, fee, salt });
+    const funding = buildFunding({ asset, sources, amounts: recipients.map((r) => r.amount), lockerNk, lockerScanPriv, fee, salt });
     await settleSplit(funding.ops);
     const membership = await indexDenoms(funding.denomNotes);
     const fundingNotes = fundingNotesFor({ denomNotes: funding.denomNotes, membership });

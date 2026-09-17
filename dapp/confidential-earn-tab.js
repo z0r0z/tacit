@@ -122,6 +122,14 @@ export async function renderEarnTab(wallet) {
           selfRelay: true,
           waitOpts: { onUpdate: (s) => { if (st) st.textContent = `Farm entry ${s.status}…`; } },
         });
+        // Remember the position locally so harvest/unbond can find it without a scan. Nothing secret is stored:
+        // the receipt key re-derives from the wallet key + (controller, lpAsset, anchorLeaf) via ux.lpBondPosition.
+        try {
+          const k = 'tacit-lp-bond-positions';
+          const list = JSON.parse(localStorage.getItem(k) || '[]');
+          list.push({ controller: p._controller, lpAsset: r.lpAsset, anchorLeaf: r.anchorLeaf, receiptLeaf: r.receiptLeaf, receiptOwner: r.receiptOwner, bondNonce: r.bondNonce, shares: String(r.dShares) });
+          localStorage.setItem(k, JSON.stringify(list));
+        } catch { /* storage unavailable: the position is still recoverable from chain + key */ }
         if (st) st.innerHTML = `Bonded into ${p.label}`
           + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '')
           + ` — ${r.dShares} LP shares earning TAC.`;

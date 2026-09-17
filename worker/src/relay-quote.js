@@ -56,6 +56,8 @@ export function feeLegsOf(type, op) {
     case 'adaptorlock': case 'adaptorclaim': case 'cdptopup': case 'stealthlock':
     case 'bridgestealthmint':
       return [];
+    case 'fastlane':
+      return v(op.transfer?.fee) > 0n ? [{ value: v(op.transfer.fee) }] : [];
     // single fee leg: transfer/route/lp/bid/unwrap/bridgeburn/adaptorrefund/cdpmint/cdpclose/cdpliquidate/farmharvest/farmunbond
     default:
       return v(op.fee) > 0n ? [{ value: v(op.fee) }] : [];
@@ -84,6 +86,8 @@ export function feeAssetOf(type, op) {
       return op.assetA || null; // the relay fee is carved from the A side (see quoteLpAdd in confidential-pool-ux.js)
     case 'route':
       return op.asset0 || null; // the route's START asset (the only note the trader actually spends)
+    case 'fastlane':
+      return op.transfer?.asset || null; // the Bitcoin-homed transfer's fee is carved from its own asset
     default:
       return null; // swap (per-intent) / otc (two legs) / everything else: no single verified answer
   }

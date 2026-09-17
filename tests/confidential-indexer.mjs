@@ -28,7 +28,6 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const pubHex = (priv) => '0x' + Buffer.from(G.multiply(priv).toRawBytes(true)).toString('hex');
 const ASSET = '0x' + 'a5'.repeat(32);
-const OWNER = '0x' + '00'.repeat(31) + '07';
 
 // my wallet scan key + a stranger
 const myPriv = randomScalar(), myPub = pubHex(myPriv);
@@ -42,9 +41,9 @@ function emit(note, pub) {
   return { leaf, memo: enc, cx, cy };
 }
 
-const noteA = { value: 4242n, blinding: randomScalar(), secret: '0x' + 'a1'.repeat(32), asset: ASSET, owner: OWNER };
-const noteStranger = { value: 99n, blinding: randomScalar(), secret: '0x' + 'b2'.repeat(32), asset: ASSET, owner: OWNER };
-const noteB = { value: 10n, blinding: randomScalar(), secret: '0x' + 'c3'.repeat(32), asset: ASSET, owner: OWNER };
+const noteA = { value: 4242n, blinding: randomScalar(), secret: '0x' + 'a1'.repeat(32), asset: ASSET, owner: pool.nkToOwner('0x' + 'a1'.repeat(32)) };
+const noteStranger = { value: 99n, blinding: randomScalar(), secret: '0x' + 'b2'.repeat(32), asset: ASSET, owner: pool.nkToOwner('0x' + 'b2'.repeat(32)) };
+const noteB = { value: 10n, blinding: randomScalar(), secret: '0x' + 'c3'.repeat(32), asset: ASSET, owner: pool.nkToOwner('0x' + 'c3'.repeat(32)) };
 
 const a = emit(noteA, myPub);
 const s = emit(noteStranger, sPub);

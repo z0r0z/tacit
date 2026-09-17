@@ -12,6 +12,17 @@
 // harness native-executes it and the PV's bitcoinBurnRoot reflects the folded burn (env_nu → env_dest).
 //
 //   node tests/gen-reflection-burn-deposit.mjs > contracts/sp1/confidential/fixtures/reflection_burn_deposit.json
+//
+// AXFER=1 makes the provenance hop a T_AXFER (0x26) atomic settlement: vin0 is the envelope's commit input, vin1 the
+// asset input the kernel covers (asset_input_count 1), vin2 a taker sats input outside it; its witnessed input_skip
+// is 1. AXFER_SKIP=<n> witnesses a different skip, which the guest refuses for an atomic settlement.
+//
+// BURNDEP_SCENARIO selects a pending-deposit input instead, both built through the JS assembler:
+//   pending  — the burn's provenance is withheld: the guest cannot verify it and records it in the pending set.
+//   complete — the second batch after `pending`: a later block whose batch completes the pending deposit with the
+//              provenance, over a header chain that now ends at the burn block (this batch's anchor).
+// BURNDEP_COMPLETION_DEST (complete only) names a different dest in the completion: it is not the pending record,
+// so the assembler leaves it out (the guest would abort on it) and reports it as dropped.
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
@@ -22,7 +33,8 @@ import { makeConfidentialProver } from '../dapp/evm-confidential.js';
 import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { makeBurnDepositAssembler } from '../dapp/burn-deposit-assembler.js';
-import { computeTxid, computeMerkleRoot, bitsToTarget, dsha256, varint, cat } from './btc-mini.mjs';
+import { makeBurnDepositKit } from '../dapp/burn-deposit-bitcoin.js';
+import { computeTxid, computeMerkleRoot, bitsToTarget, dsha256, varint, cat, makeCoinbaseForEnvTx } from './btc-mini.mjs';
 
 const _cat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
@@ -172,12 +184,31 @@ const cxSig = process.env.TAMPER ? Buffer.alloc(64, 0xff) : cxSigValid;
 const burnTerm = cburn > 0n ? prover.H.multiply(cburn).negate() : secp.ProjectivePoint.ZERO; // − cburn·H
 const Pchk = inCpt.add(burned.negate()).add(burnTerm);
 if (Buffer.compare(Buffer.from(compress(Pchk).slice(1)), Buffer.from(px)) !== 0) throw new Error('step not conserving');
+const AXFER = !!process.env.AXFER;
 const cxEnv = cat([
-  [0x22], assetId, cxSig, [0x01],
+  ...(AXFER ? [[0x26], assetId, [0x01]] : [[0x22], assetId]), cxSig, [0x01],
   burnedC, Buffer.alloc(8),
   u16le(cxRange.length), cxRange,
 ]);
-const cxTx = revealTx(cxEnv, inTxid, 0);
+// An atomic settlement spends [commit input, asset input, taker sats input]; only input 0 carries the envelope witness.
+function axferTx(payload, assetPrevTxid) {
+  const tapscript = cat([
+    [0x20], Buffer.alloc(32), [0xac], [0x00, 0x63],
+    [0x05], Buffer.from('TACIT'), [0x01, 0x01],
+    [0x4d], Buffer.from([payload.length & 0xff, (payload.length >> 8) & 0xff]), payload,
+    [0x68],
+  ]);
+  const wit0 = cat([[0x03], [0x40], Buffer.alloc(0x40), varint(tapscript.length), tapscript, [0x21], Buffer.alloc(0x21, 0xc0)]);
+  const vin = (txid, vout) => cat([Buffer.from(txid), u32le(vout), [0x00], [0xfd, 0xff, 0xff, 0xff]]);
+  return cat([
+    [0x02, 0x00, 0x00, 0x00], [0x00, 0x01],
+    [0x03], vin(Buffer.alloc(32, 0xc3), 0), vin(assetPrevTxid, 0), vin(Buffer.alloc(32, 0xa7), 1),
+    [0x01], Buffer.alloc(8), [0x00],
+    wit0, [0x00], [0x00],
+    Buffer.alloc(4),
+  ]);
+}
+const cxTx = AXFER ? axferTx(cxEnv, inTxid) : revealTx(cxEnv, inTxid, 0);
 const cxTxid = computeTxid(cxTx);
 const cxTxidHex = hexp(cxTxid);
 const { cx: burnedCx, cy: burnedCy } = xyHex(burned);
@@ -211,9 +242,12 @@ const cmintBlock = MINTABLE ? witnessBlock(cmint.revealMintTx, 3) : null;
 // ── 4. Burn tx (0x2B) spending the burned note → env_nu (the note's real ν) + env_dest. The provenance DAG
 // rides the burn tx's Taproot witness: the payload is [129-byte burn envelope ++ serialized ProvenanceBlob],
 // so the guest reads the provenance from env[129..] (wtxid-authenticated) — not from the proof's stdin.
-// env_nu is the burned note's LEAF-BOUND nullifier (the guest checks nullifier(leaf(asset,Cx,Cy,0)) == env_nu
-// and skips the fold on mismatch): a native deposit leaf owner is the zero sentinel, so ν is leaf-bound.
-const envNu = pool.nullifier(pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)));
+// env_nu is the burned note's LEAF-BOUND nullifier: the guest checks nullifier(leaf(asset,Cx,Cy,owner)) == env_nu,
+// where owner = outpoint_key(burn tx input 0) — the burned UTXO itself (here the cxfer output (cxTxid, 0)) — and
+// skips the fold on mismatch. Owning the leaf by its outpoint makes ν unique to that UTXO.
+const burnedOwner = pool.outpointKey(cxTxidHex, 0);
+const burnedNoteLeaf = pool.leaf(assetHex, burnedCx, burnedCy, burnedOwner);
+const envNu = pool.nullifier(burnedNoteLeaf);
 const envDest = '0x' + 'dd'.repeat(32);
 // The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn targets — folded into the
 // DEPOSIT-class bridge_burn_id (env[129..161]).
@@ -255,6 +289,7 @@ const provStatic = bdAssembler.buildBurnDepositStatic({
     // 0 for a transfer; > 0 for a CBURN step. CBURN_LIE=1 witnesses a DIFFERENT burn than was signed
     // (0 instead of `cburn`) → the kernel verify key shifts → rejected (you can't understate the burn).
     burnedAmount: Number(process.env.CBURN_LIE ? 0n : cburn),
+    inputSkip: process.env.AXFER_SKIP != null ? Number(process.env.AXFER_SKIP) : (AXFER ? 1 : 0),
     rangeProof: hexp(cxRange), kernelSig: hexp(cxSig),
     blockTxids: cxBlock.txids, blockWtxids: cxBlock.wtxids,
     coinbase: process.env.WITNESS_TAMPER ? cxBlock.coinbase.slice(0, -2) + '01' : cxBlock.coinbase, index: 1,
@@ -278,51 +313,116 @@ const burnWit = bdAssembler.witnessPath(
 
 const burnHdr = mineLinked(burnBlock.root, dsha256(lastProvHdr));
 
-// ── 6. IMT inserts from genesis (the burned note's ν + the bridge-out dest). ──
-const state = pool.makeScanReflectionState();
-state.setHeight(ANCHOR_HEIGHT - 1);
-const c0 = state.counts();
-const priorDigest = state.digest();
-const prior = {
-  poolRoot: state.poolRoot(), noteCount: c0.note,
-  spentRoot: state.spentRoot(), spentCount: c0.spent,
-  live: [], liveCount: 0,
-  burnRoot: state.burnRoot(), burnCount: c0.burn,
-  height: c0.height,
-  cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
-};
-// ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
-// uses (it computes the burn-tx witness-commitment paths + the spent/burn IMT inserts).
-const burnDeposit = bdAssembler.assembleBurnDeposit({
-  burnWtxidSiblings: burnWit.wtxidSiblings,
-  burnCbTxidSiblings: burnWit.coinbaseTxidSiblings,
-  burned: { cx: burnedCx, cy: burnedCy },
-  // The burned note's Bitcoin outpoint = the burn tx's first spent input (the cxfer output it spends), which
-  // keys the DEPOSIT-class bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/vout).
-  burnedTxid: cxTxidHex, burnedVout: 0,
-  // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, ZERO_OWNER)), so the
-  // Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
-  burnedNoteLeaf: pool.leaf(assetHex, burnedCx, burnedCy, '0x' + '00'.repeat(32)),
-  nu: envNu, dest: envDest, target: envTarget, scanState: state,
-  provHeaders: provHdrs.map((h) => hexp(h)),
-  blob: hexp(provBlob),
-});
-// The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
-// the other accumulators only, so mirror that final transition before committing the parity digest.
-state.setHeight(ANCHOR_HEIGHT);
-const fixture = {
-  note: 'TAC burn-deposit: C_0 → conserving cxfer → burned note → 0x2B burn; native-exec the reflect guest to fold it.',
-  prior,
-  anchorHeight: ANCHOR_HEIGHT,
-  headers: [hexp(burnHdr)],
-  blocks: [{ txs: [
-    { txData: burnBlock.coinbase, openings: [], spentInserts: [], outputs: [], burnDeposit: null },
-    { txData: hexp(burnTx), openings: [], spentInserts: [], outputs: [], burnDeposit },
-  ] }],
-  newDigest: state.digest(),
-};
+const SCENARIO = process.env.BURNDEP_SCENARIO || '';
+if (SCENARIO === 'pending' || SCENARIO === 'complete') {
+  const txidHex = (tx) => hexp(computeTxid(tx));
+  const burnSpec = (ctx) => ({
+    txData: hexp(burnTx), txid: txidHex(burnTx), vins: [{ prevTxid: cxTxidHex, vout: 0 }],
+    env: { type: 'burn', assetId: assetHex, nullifier: envNu, dest: envDest, target: envTarget, burnDeposit: ctx },
+  });
+  const Z = '0x' + '00'.repeat(32);
+  // Batch 1: the burn block, provenance withheld (empty blob + header chain), so the guest reaches Unverified.
+  const state = pool.makeScanReflectionState();
+  state.setHeight(ANCHOR_HEIGHT - 1);
+  const withheld = {
+    valid: false, nu: envNu, dest: envDest, target: envTarget, burnedTxid: cxTxidHex, burnedVout: 0,
+    burnedCx: Z, burnedCy: Z, burnedNoteLeaf: Z,
+    witness: { burnWtxidSiblings: burnWit.wtxidSiblings, burnCbTxidSiblings: burnWit.coinbaseTxidSiblings, provHeaders: [], blob: '0x' },
+  };
+  const batch1 = await pool.assembleReflectionScanInput(state, {
+    anchorHeight: ANCHOR_HEIGHT, headers: [hexp(burnHdr)],
+    blocks: [{ txs: [{ txData: burnBlock.coinbase, txid: hexp(burnBlock.txids[0]), vins: [], env: null }, burnSpec(withheld)] }],
+  }, new Map());
+  if (state.pendingDepositCount() !== 2 || state.counts().note !== 0) { console.error('FATAL: the withheld burn was not recorded pending'); process.exit(1); }
+  let out = batch1;
+  if (SCENARIO === 'complete') {
+    // Batch 2: one later block (a plain tx), linked to the burn block. The completion's chain runs through the burn
+    // block, so its tip is this batch's anchor.
+    const prevOut = Buffer.alloc(32, 0x6d);
+    const plain = cat([[0x02, 0x00, 0x00, 0x00], varint(1), prevOut, u32le(0), [0x00], [0xff, 0xff, 0xff, 0xff], varint(1), Buffer.alloc(8), [0x00], Buffer.alloc(4)]);
+    const { coinbaseSpec, cbTxid } = makeCoinbaseForEnvTx(plain);
+    const nextHdr = mineLinked(computeMerkleRoot([cbTxid, computeTxid(plain)]), dsha256(burnHdr));
+    const chain = [...provHdrs, burnHdr].map((h) => hexp(h));
+    const kit = makeBurnDepositKit({ secp, keccak256: keccak_256, sha256 });
+    const verdict = kit.admitBurnDeposit({
+      burnTxHex: hexp(burnTx), envAsset: assetHex, envNu, blobHex: hexp(provBlob), provHeaders: chain,
+      burnedCx, burnedCy, batchPrevHash: hexp(dsha256(burnHdr)),
+    });
+    if (!verdict.admitted) { console.error(`FATAL: the completion does not verify (${verdict.reason})`); process.exit(1); }
+    const completion = {
+      valid: true, reason: verdict.reason, burnedTxid: cxTxidHex, burnedVout: 0,
+      asset: assetHex, nu: envNu, dest: process.env.BURNDEP_COMPLETION_DEST || envDest, target: envTarget,
+      burnedCx, burnedCy, burnedNoteLeaf: verdict.burnedNoteLeaf, witness: { provHeaders: chain, blob: hexp(provBlob) },
+    };
+    state.setHeight(ANCHOR_HEIGHT);
+    const burnsBefore = state.counts().burn;
+    out = await pool.assembleReflectionScanInput(state, {
+      anchorHeight: ANCHOR_HEIGHT + 1, headers: [hexp(nextHdr)],
+      blocks: [{ txs: [coinbaseSpec, { txData: hexp(plain), txid: txidHex(plain), vins: [{ prevTxid: hexp(prevOut), vout: 0 }], env: null }] }],
+      depositCompletions: [completion],
+    }, new Map());
+    if (process.env.BURNDEP_COMPLETION_DEST) {
+      if (out.depositCompletions.length !== 0 || out.droppedDepositCompletions.length !== 1) { console.error('FATAL: a completion off the pending record was not dropped'); process.exit(1); }
+    } else if (out.depositCompletions.length !== 1 || state.counts().note !== 1 || state.counts().burn !== burnsBefore + 1) {
+      console.error('FATAL: the completion did not onboard the deposit'); process.exit(1);
+    }
+    console.error(`complete: completions=${out.depositCompletions.length} dropped=${out.droppedDepositCompletions.length} notes=${state.counts().note} priorPending=${out.prior.pendingDepositCount}`);
+  }
+  console.error(`${SCENARIO}: pendingCount=${state.pendingDepositCount()} newDigest=${out.newDigest}`);
+  console.log(JSON.stringify(out));
+} else {
+  // ── 6. IMT inserts from genesis (the burned note's ν + the bridge-out dest). ──
+  const state = pool.makeScanReflectionState();
+  state.setHeight(ANCHOR_HEIGHT - 1);
+  const c0 = state.counts();
+  const priorDigest = state.digest();
+  const prior = {
+    poolRoot: state.poolRoot(), noteCount: c0.note,
+    spentRoot: state.spentRoot(), spentCount: c0.spent,
+    live: [], liveCount: 0,
+    burnRoot: state.burnRoot(), burnCount: c0.burn,
+    height: c0.height,
+    cbtcLocks: [], cbtcBackingSats: 0, // the gap the committed assembler/harness omit (guest reads them)
+  };
+  // ── 7. Fixture (the burnDeposit witness) — built via the shared dapp/burn-deposit-assembler.js the worker
+  // uses (it computes the burn-tx witness-commitment paths + the spent/burn IMT inserts).
+  const burnDeposit = bdAssembler.assembleBurnDeposit({
+    burnWtxidSiblings: burnWit.wtxidSiblings,
+    burnCbTxidSiblings: burnWit.coinbaseTxidSiblings,
+    burned: { cx: burnedCx, cy: burnedCy },
+    // The burned note's Bitcoin outpoint = the burn tx's first spent input (the cxfer output it spends), which
+    // keys the DEPOSIT-class bridge_burn_id the burn-set fold records under (mirror the guest's burned_txid/vout).
+    burnedTxid: cxTxidHex, burnedVout: 0,
+    // the proven-real burned note onboarded as a pool member (leaf(asset, Cx, Cy, outpoint_key(burned input))), so
+    // the Ethereum OP_BRIDGE_MINT binds v_mint == v_burn by membership + kernel, exactly as for a reflected note.
+    burnedNoteLeaf,
+    nu: envNu, dest: envDest, target: envTarget, scanState: state,
+    provHeaders: provHdrs.map((h) => hexp(h)),
+    blob: hexp(provBlob),
+  });
+  // The pending-set insert the guest reads after every scanned burn-deposit and uses only when the deposit does not
+  // verify. Carrying the real one (against the prior's pending set) keeps a tampered variant executable: the guest
+  // records it pending, and its digest then differs from this fixture's.
+  burnDeposit.pendingInsert = pool.makeScanReflectionState().foldPendingDeposit({
+    burnedTxid: cxTxidHex, burnedVout: 0, asset: assetHex, nu: envNu, dest: envDest, target: envTarget,
+  });
+  // The guest advances the reflected height after consuming this scan block. The insert helpers above mutate
+  // the other accumulators only, so mirror that final transition before committing the parity digest.
+  state.setHeight(ANCHOR_HEIGHT);
+  const fixture = {
+    note: 'TAC burn-deposit: C_0 → conserving cxfer → burned note → 0x2B burn; native-exec the reflect guest to fold it.',
+    prior,
+    anchorHeight: ANCHOR_HEIGHT,
+    headers: [hexp(burnHdr)],
+    blocks: [{ txs: [
+      { txData: burnBlock.coinbase, openings: [], spentInserts: [], outputs: [], burnDeposit: null },
+      { txData: hexp(burnTx), openings: [], spentInserts: [], outputs: [], burnDeposit },
+    ] }],
+    newDigest: state.digest(),
+  };
 
-console.error(`mode=${MINTABLE ? 'MINTABLE' : 'fixed'} etch=${etchTxidHex.slice(0, 12)} cxfer=${cxTxidHex.slice(0, 12)} burn=${hexp(burnTxid).slice(0, 12)} env_nu=${envNu.slice(0, 12)}`);
-console.error(`prov_tip=${hexp(dsha256(lastProvHdr)).slice(0, 12)} scan_prev=${hexp(burnHdr.subarray(4, 36)).slice(0, 12)} (must match)`);
-console.error(`priorDigest=${priorDigest} newDigest=${fixture.newDigest}`);
-console.log(JSON.stringify(fixture, null, 2));
+  console.error(`mode=${MINTABLE ? 'MINTABLE' : 'fixed'} etch=${etchTxidHex.slice(0, 12)} cxfer=${cxTxidHex.slice(0, 12)} burn=${hexp(burnTxid).slice(0, 12)} env_nu=${envNu.slice(0, 12)}`);
+  console.error(`prov_tip=${hexp(dsha256(lastProvHdr)).slice(0, 12)} scan_prev=${hexp(burnHdr.subarray(4, 36)).slice(0, 12)} (must match)`);
+  console.error(`priorDigest=${priorDigest} newDigest=${fixture.newDigest}`);
+  console.log(JSON.stringify(fixture, null, 2));
+}

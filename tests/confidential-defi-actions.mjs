@@ -141,4 +141,44 @@ const freshPositionOwner = () => freshPositionKey().owner;
   ok('unbondFarm / withdrawSavings: released LP-share note memo-sealed');
 }
 
+// Memo ephemerals are fresh per memo and never the wallet nk; each memo opens to a note whose nk owns its leaf.
+{
+  const sealed = [];
+  const capRelay = { settle: async ({ leaves = [], outputs = [], ephRand }) => {
+    const memos = guard.sealMemosForOutputs({ outputs, ephRand });
+    guard.assertOutputsRecoverable({ leaves, outputs, memos });
+    memos.forEach((m, i) => sealed.push({ memo: m, leaf: leaves[i] }));
+    return { jobId: 'mock', status: 'settled' };
+  } };
+  const walletNk = '0x' + BigInt(randomScalar()).toString(16).padStart(64, '0');
+  const idW = { owner: pool.nkToOwner(walletNk), pubHex, secret: walletNk };
+  const acts = makeConfidentialDefiActions({ pool, cdp, farm, relay: capRelay, id: idW, chainBindingHex, secp });
+  const debtNk = randomScalar();
+  await acts.openCdp({ controller, debtValue: 1000n, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 0)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner(), debtNk, acknowledgeFeeShortfall: true });
+  await acts.openCdp({ controller, debtValue: 1000n, rateSnapshot, fee: 30n, collateral: [coll(assetA, 600n, 1)], spendRoot: '0x' + '22'.repeat(32), debtBlinding: randomScalar(), positionOwner: freshPositionOwner(), debtNk: randomScalar(), acknowledgeFeeShortfall: true });
+  const rb = randomScalar(), hk = freshPositionKey();
+  await acts.harvestFarm({ controller, shares: 100n, nonce, harvestNonce: '0x' + '83'.repeat(32), reward: 50n, oldIndex: 1, oldPath: pool.zeros, lpAsset: '0x' + 'dd'.repeat(32), rewardAsset: '0x' + 'ee'.repeat(32), rewardNote: { ...pool.commitXY(45n, rb), blinding: rb }, rewardNk: randomScalar(), fee: 5n, spendRoot: '0x' + '22'.repeat(32), receiptOwner: hk.owner, receiptOwnerPriv: hk.priv });
+  assert.equal(sealed.length, 3);
+  const ephs = sealed.map(({ memo: m }) => memo.decodeMemo(m).ephemeralPub.toLowerCase());
+  assert.equal(new Set(ephs).size, 3, 'every memo has its own ephemeral pubkey');
+  const nkPub = '0x' + Buffer.from(secp.ProjectivePoint.BASE.multiply(BigInt(walletNk) % secp.CURVE.n).toRawBytes(true)).toString('hex');
+  assert.ok(!ephs.includes(nkPub.toLowerCase()), 'no memo ephemeral is the wallet nk');
+  for (const { memo: m, leaf } of sealed) {
+    const note = memo.openMemo(priv, leaf, m);
+    assert.ok(note, 'the owner opens the memo');
+    assert.equal(String(pool.nkToOwner(note.secret)).toLowerCase(), String(note.owner).toLowerCase(), 'the sealed nk owns the leaf');
+    assert.notEqual(String(note.owner).toLowerCase(), idW.owner.toLowerCase(), 'no minted note uses the wallet-constant owner');
+  }
+  ok('memos: fresh ephemeral per memo (not the wallet nk); each opens to a fresh nk that owns its leaf');
+}
+// A minted note must carry its own nk: a descriptor whose owner is not H(nk) is refused before submit.
+{
+  let threw = null; const hk = freshPositionKey();
+  try {
+    await actions.harvestFarm({ controller, shares: 100n, nonce, harvestNonce: '0x' + '84'.repeat(32), reward: 50n, oldIndex: 1, oldPath: pool.zeros, lpAsset: '0x' + 'dd'.repeat(32), rewardAsset: '0x' + 'ee'.repeat(32), rewardNote: { ...pool.commitXY(50n, 7n), blinding: 7n }, rewardNk: undefined, spendRoot: '0x' + '22'.repeat(32), receiptOwner: hk.owner, receiptOwnerPriv: hk.priv });
+  } catch (e) { threw = e; }
+  assert.ok(threw && /rewardNk/.test(threw.message), 'harvest without a fresh reward nk is refused');
+  ok('minted notes require their own fresh nk');
+}
+
 console.log(`confidential-defi-actions: all ${n} checks passed`);

@@ -22,7 +22,7 @@
 //   globals:  assetA, assetB, feeBps (≤1000), protocolFeeBps==0, protocolFeeRecipient(33B, may be 0),
 //             reserveAPre, reserveBPre,
 //             deltaANetSign/Mag, deltaBNetSign/Mag  (the batch's net reserve move),
-//             rNetA(32B), rNetB(32B)                (per-asset aggregate Pedersen blindings),
+//             kernelA{R(33B),z(32B)}, kernelB{R,z}  (per-asset Schnorr conservation kernels),
 //             tipAAmount, tipACSecp(33B)=Pedersen(tipA,rTipA), rTipA(32B),
 //             tipBAmount, tipBCSecp(33B)=Pedersen(tipB,rTipB), rTipB(32B),
 //   proof:    a REAL 256-byte amm_swap_batch Groth16 proof over the 123 public signals, produced
@@ -172,8 +172,11 @@ fn main() {
     stdin.write(&f["deltaANetMag"].as_u64().unwrap());          // main.rs:1692  delta_a_net_mag: u64
     stdin.write(&(f["deltaBNetSign"].as_u64().unwrap() as u8)); // main.rs:1693  delta_b_net_sign: u8
     stdin.write(&f["deltaBNetMag"].as_u64().unwrap());          // main.rs:1694  delta_b_net_mag: u64
-    stdin.write(&hexv(f["rNetA"].as_str().unwrap())); // main.rs:1695  r_net_a = r32()
-    stdin.write(&hexv(f["rNetB"].as_str().unwrap())); // main.rs:1696  r_net_b = r32()
+    // Per-asset conservation kernels (R 33B, z 32B), A then B; the aggregate blindings never reach the prover.
+    stdin.write(&hexv(f["kernelA"]["R"].as_str().unwrap())); // kernel_a.r = r33()
+    stdin.write(&hexv(f["kernelA"]["z"].as_str().unwrap())); // kernel_a.z = r32()
+    stdin.write(&hexv(f["kernelB"]["R"].as_str().unwrap())); // kernel_b.r = r33()
+    stdin.write(&hexv(f["kernelB"]["z"].as_str().unwrap())); // kernel_b.z = r32()
     // Global per-asset relay tips (paid to msg.sender; bound to their commitments + Σ per-intent tips).
     stdin.write(&f["tipAAmount"].as_u64().unwrap_or(0)); // tip_a_amount: u64
     stdin.write(&hexv(f["tipACSecp"].as_str().unwrap())); // tip_a_c_secp = r33()  (Pedersen(tipA,rTipA))
@@ -231,7 +234,7 @@ fn main() {
 
     // CP-04 memo tail: the guest reads exactly (leaves + lock_leaves) keccak256("") memo hashes
     // after all ops; over-supplying is harmless (leftover stdin is ignored). Same as exec-swap.rs.
-    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); if f.get("memoHashes").is_some() { for h in &mh { stdin.write(&hexv(h)); } } else { for _ in 0..64usize { stdin.write(&hexv(empty)); } } }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
 
@@ -295,17 +298,25 @@ fn main() {
         return;
     }
 
-    let client = ProverClient::builder().cpu().build();
+    // Network proving (not CPU+native-gnark): this op's in-guest Groth16 verification of the
+    // amm_swap_batch ceremony proof runs into the billions of cycles (~7.6B for a 1-intent batch per the
+    // v1-final reprove's execute-mode measurement), far past what the box's cgroup memory cap can carry
+    // through a local native-gnark wrap — the same reason every other settle harness in this round already
+    // uses .network(). Generous explicit limits so the SDK submits straight to the network instead of
+    // re-executing locally first to estimate them (this host cannot cheaply re-run a 7.6B-cycle guest).
+    let client = ProverClient::builder().network().build();
     let elf = Elf::Static(ELF);
     println!("setup...");
     let pk = client.setup(elf).expect("setup failed");
     let vk = pk.verifying_key().bytes32();
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
-    println!("proving groth16 (cpu+native-gnark)...");
+    println!("proving groth16 (network)...");
     let proof = client
         .prove(&pk, stdin)
         .groth16()
+        .cycle_limit(16_000_000_000)
+        .gas_limit(16_000_000_000)
         .run()
         .expect("groth16 proof failed");
     println!(

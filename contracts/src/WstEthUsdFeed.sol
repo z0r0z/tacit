@@ -30,6 +30,13 @@ interface IWstEth {
 ///         Output decimals = 8 (Chainlink USD convention). Fail-closed: reverts on a non-positive or
 ///         carried-over underlying round, or a zero exchange rate. View-only, immutable sources — nothing
 ///         here is governable.
+///
+///         LIMITATION: `stEthPerToken()` is Lido's redemption accounting, not what wstETH sells for. In a stETH
+///         depeg this feed keeps reporting the full pooled-ETH value, so escrows sized and checked against it
+///         are worth less than it says exactly when that matters. Two engine settings bound the gap: the
+///         escrow ratio (`escrowRatioBps`, a standing haircut) and, once a market wstETH/BTC TWAP is wired,
+///         the deviation bound (`maxDeviationBps`), which fails every wstETH-priced path closed while the
+///         protocol rate and the market disagree by more than it allows.
 contract WstEthUsdFeed {
     IWstEth public immutable WSTETH;
     IChainlinkFeed public immutable ETH_USD;

@@ -19,7 +19,7 @@ contract ForkAttestGate is Script {
             vm.envAddress("CANONICAL_FACTORY"),
             vm.envAddress("HEADER_RELAY"),
             vm.envBytes32("GENESIS_REFLECTION_ANCHOR"),
-            vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6)),
+            vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24)),
             vm.envBytes32("REFLECTION_RESUME_DIGEST"),
             vm.envBytes32("TETH_BITCOIN_ID"),
             address(0) // engine not needed to validate the attest

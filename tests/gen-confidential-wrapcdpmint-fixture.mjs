@@ -49,7 +49,7 @@ const DEBT_NK = '0x' + 'e5'.repeat(32);
 const debtOwner = pool.nkToOwner(DEBT_NK);
 const collCtx = pool.intentContext('tacit-wrap-cdp-mint-collateral-v1', CHAIN_BINDING, COLL_ASSET, depId,
   [[coll.cx, coll.cy, OWNER], [CONTROLLER32, NONCE32, OWNER], [RATE_SNAPSHOT32, NONCE32, OWNER], [debt.cx, debt.cy, debtOwner]],
-  [COLL_VALUE, DEBT_VALUE, FEE]);
+  [COLL_VALUE, DEBT_VALUE, FEE, 1n]); // n_legs: the basket size is bound into every leg
 const collSig = pool.openingSigma(COLL_VALUE, beHex(collBlind), collCtx,
   pool.deriveOpeningNonce(beHex(collBlind), collCtx, 'wrap'));
 if (!pool.verifyOpeningSigma(coll.cx, coll.cy, COLL_VALUE, collSig.R, collSig.z, collCtx))

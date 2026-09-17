@@ -101,9 +101,17 @@ export function swapBatchPublicSignals(env, poolIdHex, reserveA, reserveB) {
 // C(G1 64), big-endian field bytes) → a snarkjs proof object. Byte-identical to the dapp's _parseGroth16Proof
 // (and parse_g16_proof in the guest); pi_b limbs in snarkjs [c0, c1] order. Accepts a Uint8Array or 0x-hex.
 const be32dec = (b, o) => { let v = 0n; for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(b[o + i]); return v.toString(); };
+// BN254 base-field modulus q. The guest parses every proof coordinate with `Fq::from_slice`, which rejects a
+// 32-byte value >= q instead of reducing it, and it rejects A or C at infinity (all-zero encoding). snarkjs would
+// silently reduce such a coordinate and accept the proof, so both encodings are refused here before verification.
+const BN254_Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+const be32big = (b, o) => { let v = 0n; for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(b[o + i]); return v; };
 export function parseGroth16Proof256(proofBytes) {
   const b = proofBytes instanceof Uint8Array ? proofBytes : hb32Var(proofBytes);
   if (!(b instanceof Uint8Array) || b.length !== 256) return null;
+  for (let o = 0; o < 256; o += 32) if (be32big(b, o) >= BN254_Q) return null;
+  const isZero64 = (o) => be32big(b, o) === 0n && be32big(b, o + 32) === 0n;
+  if (isZero64(0) || isZero64(192)) return null;
   return {
     pi_a: [be32dec(b, 0), be32dec(b, 32), '1'],
     pi_b: [[be32dec(b, 64), be32dec(b, 96)], [be32dec(b, 128), be32dec(b, 160)], ['1', '0']],
@@ -213,26 +221,28 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (Number(it.direction) > 1) return null;
     const expectedAsset = Number(it.direction) === 0 ? p.assetA : p.assetB; // input side (A→B inputs A)
     let cin; try { cin = pool.decompressCommitment(it.cInSecp); } catch { return null; }
+    // INTENT AUTHORIZATION (mirror guest): the trader's per-intent BIP-340 intent_sig binds the pool,
+    // direction, the spent outpoint, c_in (secp + bjj) + its cross-curve, the receipt destination (vout i+1),
+    // min_out, tip, expiry, and the refund destination (vout n+1+i); tip_asset == direction. The matched spend is
+    // the first unused one of the input asset and commitment whose outpoint the signature verifies over, so a
+    // same-commitment note someone else adds as an input cannot displace the trader's own. No such spend skips
+    // the batch (the guest skips it too).
     let matched = -1;
     for (let j = 0; j < spends.length; j++) {
       if (used[j]) continue;
       if (norm(spends[j].asset || ZERO_OWNER) !== norm(expectedAsset)) continue;
-      if (norm(spends[j].cx) === norm(cin.cx) && norm(spends[j].cy) === norm(cin.cy)) { matched = j; break; }
+      if (norm(spends[j].cx) !== norm(cin.cx) || norm(spends[j].cy) !== norm(cin.cy)) continue;
+      const msg = swapBatchIntentMsg({
+        poolId, direction: it.direction, inputOutpoints: [spends[j].outpoint], cInSecp: it.cInSecp,
+        cInBjj: it.cInBjj, inXcurveSigma: it.inXcurveSigma, receiveSpk: receiptSpks[i], minOut: it.minOut,
+        tipAmount: it.tipAmount, tipAsset: it.direction, expiryHeight: it.expiryHeight, traderPubkey: it.traderPubkey,
+        refundSpk: refundSpks[i],
+      });
+      if (batchIntentSigOk(it.intentSig, msg, it.traderPubkey)) { matched = j; break; }
     }
-    if (matched < 0) return null;              // no distinct real spend of the intent's input asset
+    if (matched < 0) return null;              // no distinct, authorized real spend of the intent's input asset
     used[matched] = true;
     intentInAssets.push(expectedAsset);        // the asset intent i's refund note rides if the batch is stale
-    // INTENT AUTHORIZATION (mirror guest): the trader's per-intent BIP-340 intent_sig binds the pool,
-    // direction, the matched spent outpoint, c_in (secp + bjj) + its cross-curve, the receipt destination
-    // (vout i+1), min_out, tip, expiry, and the refund destination (vout n+1+i). A bad sig SKIPS the batch (the
-    // guest skips it too), so onboarding here would desync the digest chain. tip_asset == direction.
-    const msg = swapBatchIntentMsg({
-      poolId, direction: it.direction, inputOutpoints: [spends[matched].outpoint], cInSecp: it.cInSecp,
-      cInBjj: it.cInBjj, inXcurveSigma: it.inXcurveSigma, receiveSpk: receiptSpks[i], minOut: it.minOut,
-      tipAmount: it.tipAmount, tipAsset: it.direction, expiryHeight: it.expiryHeight, traderPubkey: it.traderPubkey,
-      refundSpk: refundSpks[i],
-    });
-    if (!batchIntentSigOk(it.intentSig, msg, it.traderPubkey)) return null;
     // INPUT cross-curve sigma: c_in_bjj (the value the Groth16 clears over) is the real twin of the spent
     // c_in_secp — verified per intent (mirror guest verify_xcurve over the input), so a relabeled input skips.
     if (!verifyXCurve(hu8(it.inXcurveSigma), hu8(it.cInSecp), hu8(it.cInBjj))) return null;
@@ -242,7 +252,10 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (authZeroBatch(receiptAuths[i])) return null;
     if (authZeroBatch(refundAuths[i])) return null;
   }
-  if (used.some((u) => !u)) return null;        // every detected spend must back exactly one intent (no unaccounted spend)
+  // A spend no intent claims is an extra input someone added after the traders signed. It cannot join the batch, and
+  // skipping would destroy every trader's already nullified input, so the batch refunds after the receipt checks,
+  // like an expired one.
+  const unclaimedSpend = used.some((u) => !u);
 
   // Onboard one REFUND note per intent (intent i at vout n+1+i), committing its input commitment verbatim on its
   // input asset. Reserves untouched. Mirror onboard_batch_refunds.
@@ -264,7 +277,7 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
     if (!verifyXCurve(hu8(env.receipts[i].outXcurveSigma), hu8(env.receipts[i].cOutSecp), hu8(env.receipts[i].cOutBjj))) return onboardRefunds();
     if (!receiptRangeOk(env.receipts[i].cOutSecp, env.receipts[i].rangeProof)) return onboardRefunds();
   }
-  if (anyExpired) return onboardRefunds();
+  if (anyExpired || unclaimedSpend) return onboardRefunds();
 
   // ---- STATE-DEPENDENT CLEARING. Every failure here means the batch lost a race with a concurrent op; its
   //      Groth16 proof is pinned to the reserves it was generated against, so it cannot be re-cleared in-guest —

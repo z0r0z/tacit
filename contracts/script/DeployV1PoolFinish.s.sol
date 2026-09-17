@@ -53,21 +53,33 @@ contract DeployV1PoolFinish is Script {
         require(engine.code.length != 0, "engine not deployed");
         require(publicAmm.code.length != 0, "publicAmm not deployed");
 
-        bytes memory poolArgs = abi.encode(
-            vm.envAddress("SP1_VERIFIER"),
-            vm.envBytes32("PROGRAM_VKEY"),
-            vm.envBytes32("BITCOIN_RELAY_VKEY"),
-            factory,
-            vm.envAddress("HEADER_RELAY"),
-            vm.envBytes32("GENESIS_REFLECTION_ANCHOR"),
-            vm.envUint("REFLECTION_CONFIRMATIONS"),
-            vm.envBytes32("REFLECTION_RESUME_DIGEST"),
-            vm.envBytes32("TETH_BITCOIN_ID"),
-            engine,
-            vm.envOr("PREDECESSOR", address(0)),
-            publicAmm
+        // Encoded in two halves (all static types, so the concatenation is the full ABI encoding) to stay
+        // within the stack limit.
+        bytes memory poolArgs = bytes.concat(
+            abi.encode(
+                vm.envAddress("SP1_VERIFIER"),
+                vm.envBytes32("PROGRAM_VKEY"),
+                vm.envBytes32("BITCOIN_RELAY_VKEY"),
+                factory,
+                vm.envAddress("HEADER_RELAY"),
+                vm.envBytes32("GENESIS_REFLECTION_ANCHOR"),
+                vm.envUint("REFLECTION_CONFIRMATIONS")
+            ),
+            abi.encode(
+                vm.envBytes32("REFLECTION_RESUME_DIGEST"),
+                vm.envBytes32("TETH_BITCOIN_ID"),
+                engine,
+                vm.envAddress("LINEAGE_STEWARD"),
+                vm.envOr("PREDECESSOR", address(0)),
+                publicAmm
+            )
         );
-        require(poolArgs.length == 12 * 32, "pool ctor arity != 12");
+        require(poolArgs.length == 13 * 32, "pool ctor arity != 13");
+        require(
+            block.chainid != 1 || vm.envAddress("LINEAGE_STEWARD") == 0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2,
+            "mainnet: LINEAGE_STEWARD must be the ops multisig"
+        );
+        require(vm.envUint("REFLECTION_CONFIRMATIONS") >= 24 || block.chainid != 1, "mainnet: REFLECTION_CONFIRMATIONS must be >= 24");
 
         vm.startBroadcast();
         // 1. Pool (the gas-heavy one).

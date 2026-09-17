@@ -195,14 +195,15 @@ pub fn main() {
     // updates to it (prover-host eth_prove.rs:189-202,335-339), so all three checks are liveness-safe.
     //
     // VALUES are the MAINNET anchor, in lockstep with ETH_GENESIS_SYNC_COMMITTEE (reflect.rs): mainnet
-    // genesis_validators_root = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95 at the
-    // mainnet checkpoint slot 14,745,600 (== deployments/1.json ethGenesisValidatorsRoot / ethGenesisSlot).
-    // See ops/CHECKLIST-mainnet-reprove.md.
+    // genesis_validators_root = 0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95, chain-genesis
+    // constant (never changes with a re-pin). ETH_GENESIS_SLOT documents the weak-subjectivity bootstrap slot the
+    // v1-final re-pin (2026-09-17) used to derive ETH_GENESIS_SYNC_COMMITTEE — period 1859 boundary, slot
+    // 15,228,928 (== deployments/1.json ethGenesisValidatorsRoot / ethGenesisSlot). See ops/CHECKLIST-mainnet-reprove.md.
     const ETH_GENESIS_VALIDATORS_ROOT: [u8; 32] = [
         0x4b, 0x36, 0x3d, 0xb9, 0x4e, 0x28, 0x61, 0x20, 0xd7, 0x6e, 0xb9, 0x05, 0x34, 0x0f, 0xdd, 0x4e,
         0x54, 0xbf, 0xe9, 0xf0, 0x6b, 0xf3, 0x3f, 0xf6, 0xcf, 0x5a, 0xd2, 0x7f, 0x51, 0x1b, 0xfe, 0x95,
     ];
-    const ETH_GENESIS_SLOT: u64 = 14745600;
+    const ETH_GENESIS_SLOT: u64 = 15228928;
     assert_eq!(
         genesis_root.0, ETH_GENESIS_VALIDATORS_ROOT,
         "eth-reflection: wrong genesis_validators_root (chain pin)"
@@ -212,8 +213,8 @@ pub fn main() {
         "eth-reflection: resumed store must be a next=None bootstrap (a pre-set next_sync_committee admits a forged period+1 chain)"
     );
     // The store resumes from the LAST-PROVEN committee, not necessarily genesis: the current_sync_committee's
-    // root (prev_sync_committee_hash, surfaced as prevSyncCommitteeRoot) is chained on-chain against the pool's
-    // last attested value, which starts at ETH_GENESIS_SYNC_COMMITTEE and only advances forward. So a resume
+    // root (prev_sync_committee_hash, surfaced as prevSyncCommitteeRoot) must equal the committee the Bitcoin
+    // guest's last Mode-B cycle ended on, which starts at ETH_GENESIS_SYNC_COMMITTEE and only advances. So a resume
     // cannot roll back to an earlier committee (root wouldn't match) and cannot skip ahead (next=None bars a
     // pre-loaded period+1). ETH_GENESIS_SLOT is no longer pinned here — the head-advance gate below (which reads
     // exec_state_root only from the REPLACED header) is what keeps the resumed header's exec root out of the
@@ -235,7 +236,7 @@ pub fn main() {
     //
     // The witnessed bootstrap `store` is raw CBOR. We pin its genesis_validators_root, its
     // next_sync_committee == None, its current_sync_committee (via prev_sync_committee_hash, which
-    // reflect.rs pins to ETH_GENESIS_SYNC_COMMITTEE) and its finalized SLOT — but NOT its
+    // reflect.rs chains to the committee its last Mode-B cycle ended on) and its finalized SLOT — but NOT its
     // finalized_header's execution payload. Nothing here proves the bootstrap header's
     // execution_state_root is real; a host could fabricate it.
     //

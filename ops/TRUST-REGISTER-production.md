@@ -35,7 +35,7 @@ intentionally needs governance.
 | cUSD CDP controller | `ConfidentialPool` proof callbacks only | Mint/close/liquidate/topup hooks enforce policy; owner cannot mint cUSD directly. | Feeds fresh, sane, and monitored; TWAP deviation bound enabled once pool liquidity is deep enough. |
 | `FarmController` | `gov` | Set reward rate/duration, recover leftover escrow after emission plus grace, shorten/clear lock. | `gov` should be the farm sponsor or DAO. Deploy with maximum intended lock; cannot extend later. |
 | `BtcCallExecutor` | none | Permissionlessly fires a proven one-shot call to a contract target. | Every production hook target must require `msg.sender == executor` and authenticate `callerPubkey`/calldata for its own authority model. |
-| `BitcoinLightRelay` | deployer for `genesis`; then none | Deployer seeds one checkpoint. After initialization, `advanceTip` and `retarget` are permissionless. | Treat genesis as a ceremony. Save source data and transaction hash in launch notes. |
+| `BitcoinLightRelay` | deployer for `genesis`; then none | Deployer seeds one checkpoint. After initialization, `advanceTip` is permissionless (each header's target is derived from its own branch, so there is no separate retarget call). | Treat genesis as a ceremony. Save source data and transaction hash in launch notes. |
 | `CanonicalAssetFactory` / bridged ERC20s | none after construction | Factory deploys deterministic canonical tokens; token minter is immutable. | Pin factory codehash in deploy; launch UI allowlists expected canonical assets only. |
 | `ConfidentialRouter` | none | Immutable periphery targets: pool, Permit2, optional zRouter. | Deploy only with code-backed targets. Router is replaceable periphery, not custody core. |
 

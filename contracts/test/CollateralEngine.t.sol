@@ -332,6 +332,13 @@ contract CollateralEngineTest is CollateralEngineHarness {
         assertEq(address(eng.btcUsdTwap()), address(twap));
     }
 
+    function test_owner_cannot_renounce() public {
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.renounceOwnership();
+        assertEq(eng.owner(), admin);
+    }
+
     function test_setParams_and_deviation_bounds() public {
         vm.prank(admin);
         vm.expectRevert(CollateralEngine.BadParams.selector);
@@ -362,9 +369,14 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.expectRevert(CollateralEngine.BadParams.selector);
         eng.setParams(3600, 15000, 100_001, 12500);
 
+        // the liquidation threshold is capped: a liquidation seizes the whole basket
+        vm.prank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(3600, 15000, 100_000, 15_001);
+
         // the ceilings themselves are accepted (boundary)
         vm.prank(admin);
-        eng.setParams(1 days, 100_000, 100_000, 99_999);
+        eng.setParams(1 days, 100_000, 100_000, 15_000);
         assertEq(eng.maxStaleness(), 1 days);
         assertEq(eng.cdpRatioBps(), 100_000);
 
@@ -731,16 +743,32 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.onCdpMint(legs, 40000e8, keccak256("g"), RAY);
         btcUsd.setAnswer(45000e8); // now unhealthy (below the 50000 liq threshold)
 
-        // A fresh feed swap re-arms the grace: even an unhealthy position cannot be liquidated inside the window.
+        // Re-submitting the same feeds changes no price and does not re-arm the grace (else the owner could freeze
+        // liquidations forever). Timestamps are explicit: this suite compiles via_ir, which caches block.timestamp.
+        uint256 armed = eng.lastFeedChangeAt();
+        uint256 t1 = armed + 6 hours + 1;
+        vm.warp(t1);
+        btcUsd.setUpdatedAt(t1);
+        wstEthBtc.setUpdatedAt(t1);
         vm.prank(admin);
         eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(0));
+        assertEq(eng.lastFeedChangeAt(), armed, "a same-feed resubmit does not re-arm the grace");
+
+        // A real feed swap re-arms the grace: even an unhealthy position cannot be liquidated inside the window.
+        MockFeed btcUsd2 = new MockFeed(45000e8, 8);
+        btcUsd2.setUpdatedAt(t1);
+        vm.prank(admin);
+        eng.setFeeds(address(wstEthBtc), address(btcUsd2), address(0), address(0));
+        assertEq(eng.lastFeedChangeAt(), t1, "a real feed swap re-arms the grace");
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
         eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("g"));
+        btcUsd = btcUsd2;
 
         // After the window the liquidation proceeds.
-        vm.warp(block.timestamp + 6 hours + 1);
-        btcUsd.setUpdatedAt(block.timestamp);
+        uint256 t2 = t1 + 6 hours + 1;
+        vm.warp(t2);
+        btcUsd.setUpdatedAt(t2);
         vm.prank(address(pool));
         eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("g"));
         assertEq(eng.outstandingCusd(), 0);
@@ -751,14 +779,16 @@ contract CollateralEngineTest is CollateralEngineHarness {
     /// (or moving the other parameters) re-arms nothing.
     function test_raising_liq_ratio_freezes_liquidations_for_the_grace_window() public {
         CdpLeg[] memory legs = _legs(1e8);
-        vm.prank(address(pool));
-        eng.onCdpMint(legs, 40000e8, keccak256("p"), RAY); // 60000 vs 40000 debt = 150%, healthy at 125%
-        // cdp 160% / liq 151%: the 150% position is now below the liquidation line.
         vm.prank(admin);
-        eng.setParams(3600, 15000, 16000, 15100);
+        eng.setParams(3600, 15000, 14000, 12500); // lowering moves nothing into reach, and arms no grace
+        vm.prank(address(pool));
+        eng.onCdpMint(legs, 42000e8, keccak256("p"), RAY); // 60000 vs 42000 debt ≈ 143%, healthy at 125%
+        // cdp 160% / liq 150%: the 143% position is now below the liquidation line.
+        vm.prank(admin);
+        eng.setParams(3600, 15000, 16000, 15000);
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
-        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        eng.onCdpLiquidate(legs, 42000e8, 42000e8, RAY, keccak256("p"));
         // Lowering it back inside the window does not re-arm (the clock keeps running from the raise).
         vm.prank(admin);
         eng.setParams(3600, 15000, 16000, 13000);
@@ -769,31 +799,33 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setParams(3600, 15000, 16000, 13000); // a non-raise: no new grace
         vm.prank(admin);
-        eng.setParams(3600, 15000, 16000, 15100); // a raise: fresh grace
+        eng.setParams(3600, 15000, 16000, 15000); // a raise: fresh grace
         vm.prank(address(pool));
         vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
-        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        eng.onCdpLiquidate(legs, 42000e8, 42000e8, RAY, keccak256("p"));
         uint256 t2 = t1 + 6 hours + 1;
         vm.warp(t2);
         btcUsd.setUpdatedAt(t2);
         wstEthBtc.setUpdatedAt(t2);
         vm.prank(address(pool));
-        eng.onCdpLiquidate(legs, 40000e8, 40000e8, RAY, keccak256("p"));
+        eng.onCdpLiquidate(legs, 42000e8, 42000e8, RAY, keccak256("p"));
         assertEq(eng.outstandingCusd(), 0);
     }
 
-    /// A feed swap gives mints and top-ups the same notice liquidations get: nothing prices at the new mark
-    /// inside the window (a hostile high mark could otherwise mint unbacked debt the moment it lands).
-    function test_feed_change_freezes_mints_and_topups_for_the_grace_window() public {
+    /// A feed swap freezes MINTS for the grace (a hostile high mark could otherwise mint unbacked debt the moment it
+    /// lands), but never top-ups: a top-up mints nothing, and it is the borrower's remedy the grace exists to give.
+    function test_feed_change_freezes_mints_but_not_topups_for_the_grace_window() public {
         CdpLeg[] memory legs = _legs(1e8);
         vm.prank(address(pool));
         eng.onCdpMint(legs, 40000e8, keccak256("m0"), RAY);
+        MockFeed btcUsd2 = new MockFeed(60000e8, 8);
+        btcUsd2.setUpdatedAt(btcUsd.upAt()); // explicit (via_ir caches block.timestamp)
         vm.prank(admin);
-        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(0));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd2), address(0), address(0));
+        btcUsd = btcUsd2; // later refreshes must reach the feed the engine now reads
         vm.startPrank(address(pool));
         vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
         eng.onCdpMint(legs, 40000e8, keccak256("m1"), RAY);
-        vm.expectRevert(CollateralEngine.FeedChangeGrace.selector);
         eng.onCdpTopup(legs, _legs(2e8), 40000e8, RAY, keccak256("m0"), keccak256("m0b"));
         // Closing is never gated: a borrower can always leave.
         eng.onCdpClose(40000e8, 40000e8, RAY, legs, keccak256("m0"));
@@ -1249,6 +1281,14 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.postEscrow(o, escrowWei);
     }
 
+    /// Let the escrow-policy notice (MIN_ESCROW_GRACE_WINDOW after arming) and the feed grace elapse, and keep the
+    /// feeds fresh across the warp, so a margin-call test can flag.
+    function _passEscrowNotice() internal {
+        vm.warp(block.timestamp + 3 days + 1);
+        wstEthBtc.setUpdatedAt(block.timestamp);
+        btcUsd.setUpdatedAt(block.timestamp);
+    }
+
     function test_escrow_health_dormant_by_default() public {
         bytes32 o = keccak256("health-dormant");
         _liveMintedLock(o, 1 ether); // far below any sane coverage…
@@ -1324,6 +1364,14 @@ contract CollateralEngineTest is CollateralEngineHarness {
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
 
+        // Arming gives public notice: nothing can be flagged until MIN_ESCROW_GRACE_WINDOW after it.
+        wstEthBtc.setAnswer(0.02e8);
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
+        eng.flagEscrowUnhealthy(o);
+        wstEthBtc.setAnswer(0.05e8);
+        _passEscrowNotice();
+
         // Healthy now ⇒ cannot flag.
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowHealthy.selector);
@@ -1365,6 +1413,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
+        _passEscrowNotice();
 
         wstEthBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
@@ -1398,6 +1447,7 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.setEscrowEnforcementModule(module);
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
+        _passEscrowNotice();
 
         wstEthBtc.setAnswer(0.02e8); // unhealthy (need 55, have 30)
         vm.prank(module);
@@ -1435,12 +1485,101 @@ contract CollateralEngineTest is CollateralEngineHarness {
 
         vm.prank(admin);
         eng.setEscrowHealthParams(11000, 3 days);
+        _passEscrowNotice();
         // A redeemed lock has no live escrow to enforce.
         pool.setRedeemed(o, true);
         wstEthBtc.setAnswer(0.02e8);
         vm.prank(module);
         vm.expectRevert(CollateralEngine.EscrowLocked.selector);
         eng.flagEscrowUnhealthy(o);
+    }
+
+    /// Arming the margin call cannot be turned into a same-block seizure: a module armed together with a hostile mark
+    /// (or a raised maintenance ratio) can flag nothing until MIN_ESCROW_GRACE_WINDOW after the arming, and a feed
+    /// swap after arming holds flagging and enforcement for the feed grace too.
+    function test_escrow_policy_change_gives_notice_before_any_flag_or_enforce() public {
+        bytes32 o = keccak256("health-notice");
+        _liveMintedLock(o, 30 ether);
+        vm.etch(module, hex"00");
+        vm.prank(admin);
+        eng.setEscrowEnforcementModule(module);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 3 days);
+        uint256 armed = eng.lastEscrowPolicyChangeAt(); // explicit times: this suite compiles via_ir
+        wstEthBtc.setAnswer(0.02e8); // unhealthy at the new mark
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
+        eng.flagEscrowUnhealthy(o);
+
+        uint256 t1 = armed + 3 days - 1;
+        vm.warp(t1);
+        wstEthBtc.setUpdatedAt(t1);
+        btcUsd.setUpdatedAt(t1);
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
+        eng.flagEscrowUnhealthy(o);
+
+        uint256 t2 = armed + 3 days;
+        vm.warp(t2);
+        wstEthBtc.setUpdatedAt(t2);
+        btcUsd.setUpdatedAt(t2);
+        vm.prank(module);
+        eng.flagEscrowUnhealthy(o);
+
+        // Raising the maintenance ratio re-arms the notice; lowering it does not.
+        vm.prank(admin);
+        eng.setEscrowHealthParams(12000, 3 days);
+        assertEq(eng.lastEscrowPolicyChangeAt(), t2);
+        uint256 t3 = t2 + 1;
+        vm.warp(t3);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 3 days);
+        assertEq(eng.lastEscrowPolicyChangeAt(), t2);
+        // Lengthening the grace window gives no notice; shortening it does.
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 5 days);
+        assertEq(eng.lastEscrowPolicyChangeAt(), t2);
+        vm.prank(admin);
+        eng.setEscrowHealthParams(11000, 3 days);
+        assertEq(eng.lastEscrowPolicyChangeAt(), t3);
+
+        // After the notice, a fresh feed swap still holds enforcement for the feed grace.
+        uint256 t4 = t2 + 3 days + 1;
+        vm.warp(t4);
+        MockFeed wstEthBtc2 = new MockFeed(0.02e8, 8);
+        wstEthBtc2.setUpdatedAt(t4);
+        btcUsd.setUpdatedAt(t4);
+        vm.prank(admin);
+        eng.setFeeds(address(wstEthBtc2), address(btcUsd), address(0), address(0));
+        vm.prank(module);
+        vm.expectRevert(CollateralEngine.GraceNotElapsed.selector);
+        eng.enforceEscrowToReserve(o);
+    }
+
+    /// Once the deviation bound is armed it cannot be disarmed by dropping a TWAP either.
+    function test_setFeeds_cannot_drop_a_twap_once_the_deviation_bound_is_armed() public {
+        MockTwap t1 = new MockTwap(0.05e8, 8);
+        MockTwap t2 = new MockTwap(60000e8, 8);
+        vm.startPrank(admin);
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(t1), address(t2));
+        eng.setDeviationBound(500);
+        vm.expectRevert(CollateralEngine.BadFeed.selector);
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(0), address(t2));
+        vm.expectRevert(CollateralEngine.BadFeed.selector);
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(t1), address(0));
+        eng.setFeeds(address(wstEthBtc), address(btcUsd), address(t1), address(t2));
+        vm.stopPrank();
+    }
+
+    /// A staleness bound under an hour would make every priced path revert; it is refused.
+    function test_setParams_refuses_a_staleness_bound_under_an_hour() public {
+        vm.startPrank(admin);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(1, 15000, 16000, 12500);
+        vm.expectRevert(CollateralEngine.BadParams.selector);
+        eng.setParams(1 hours - 1, 15000, 16000, 12500);
+        eng.setParams(1 hours, 15000, 16000, 12500);
+        vm.stopPrank();
     }
 
     // ─────────────────────── Q-01: same-settle savings-bond + fee guard ───────────────────────

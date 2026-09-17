@@ -55,8 +55,9 @@ export async function renderSwapTab(wallet) {
   body.innerHTML = `
     <div class="tab-form">
     <div class="note-concept"><b>Swap, shielded.</b> Trade one note for another against the
-      confidential AMM — amounts and balances stay private, the trade clears on the <span class="eth-word">Ethereum</span>
-      lane and settles gasless. Instant and note-to-note: you end up holding a <b>shielded note</b>, not real coins.
+      confidential AMM — your note balances stay private, but a swap settled on its own moves the pool's public
+      reserves by exactly your trade, so its input and output amounts are visible on-chain. It clears on the
+      <span class="eth-word">Ethereum</span> lane and settles gasless. Instant and note-to-note: you end up holding a <b>shielded note</b>, not real coins.
       To trade for <span class="btc-word">real sats</span> on Bitcoin, use the <a href="#tab=market">order book</a>.</div>
     <div id="cswap-notes" class="muted">Scanning your notes…</div>
     <div class="divider">

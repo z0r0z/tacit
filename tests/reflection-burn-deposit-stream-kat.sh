@@ -8,7 +8,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 run_valid() {
-  node "$ROOT/tests/gen-reflection-burn-deposit.mjs" > "$tmp/valid.json"
+  env "$@" node "$ROOT/tests/gen-reflection-burn-deposit.mjs" > "$tmp/valid.json"
   out=$(REFLECT_ELF="$ELF" "${EXEC[@]}" "$tmp/valid.json")
   echo "$out"
   grep -q 'EXECUTE_OK' <<<"$out"
@@ -32,8 +32,10 @@ run_invalid() {
 }
 
 run_valid
+run_valid AXFER=1
 run_invalid bad-etch ETCH_WITNESS_TAMPER=1
 run_invalid bad-cmint MINTABLE=1 CMINT_TAMPER=1
 run_invalid nonconserving TAMPER=1
 run_invalid witness-mismatch WITNESS_TAMPER=1
+run_invalid axfer-skip-0 AXFER=1 AXFER_SKIP=0
 echo 'burn-deposit full-stream invalid KATs PASS'

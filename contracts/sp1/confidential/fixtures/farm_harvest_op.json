@@ -53,7 +53,7 @@
   "ownerSig": "0xfff9feef1fad2d49475f0032828aa68e387d9835525d024df733dc51dd5b0c7fc02728f1d4e61b060ffe141d57c9db8108f4c77d101a93a125b3eb15b731d16d",
   "expected": {
     "nullifiers": 1,
-    "leaves": 2,
+    "leaves": 1,
     "cdpMints": 1
   }
 }

@@ -12,6 +12,9 @@
 //   1. positive.json   — DIGEST_MATCH (the rebase preserves-vs-resets correctly).
 //   2. undrained.json  — guest ABORTS (the in-guest drain assertion rejects an un-drained predecessor).
 //   3. mismatch.json   — the CONTRACT rejects (rebasedFromDigest / resume digest don't match the predecessor).
+//   4. pending-crossout.json — DIGEST_MATCH with a cross-out recorded on the predecessor whose Bitcoin mint
+//      never landed (on-chain crossOutCount > folded). The rebase must still go through: only the burner can
+//      broadcast that mint, so requiring it would let one unminted cross-out strand the migration.
 //
 //   node tests/gen-h02-migration-fixtures.mjs
 
@@ -25,7 +28,7 @@ import { computeTxid, computeMerkleRoot, mineHeader, varint, cat, makeCoinbaseFo
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 const u32le = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
-const OUT_DIR = 'ops/box-artifacts/h02-migration-fixtures';
+const OUT_DIR = process.env.H02_OUT_DIR || 'ops/box-artifacts/h02-migration-fixtures';
 const BLOCK_HEIGHT = 412000;
 
 // Seed a NON-EMPTY, DRAINED predecessor: nonzero PRESERVED globals (a pool, a live cBTC.zk lock + backing) and
@@ -110,7 +113,7 @@ const flip = (hx32) => { const b = Buffer.from(hx32.slice(2), 'hex'); b[0] ^= 0x
 {
   const state = makePredecessor();
   const input = await pool.assembleReflectionScanInput(
-    state, { ...plainBatch(), rebase: { predecessorConsumedCount: Number(PRED_CONSUMED) + 2 } }, new Map());
+    state, { ...plainBatch(), rebase: { predecessorConsumedCount: Number(PRED_CONSUMED) + 2, expectGuestReject: true } }, new Map());
   input.expect = 'guest-abort';
   input.expectReason = 'predecessor not drained: unfolded fast-lane consumes (state.consumed_count != witnessed bitcoinConsumedCount)';
   writeFileSync(`${OUT_DIR}/undrained.json`, JSON.stringify(input) + '\n');
@@ -138,4 +141,21 @@ const flip = (hx32) => { const b = Buffer.from(hx32.slice(2), 'hex'); b[0] ^= 0x
   console.error(`mismatch: real rebasedFrom=${input.rebasedFromDigest} tampered=${input.tamperedRebasedFromDigest}`);
 }
 
-console.error('wrote positive.json, undrained.json, mismatch.json to ' + OUT_DIR);
+// ── 4. POSITIVE — a pending cross-out mint does not block the rebase ────────────────────────────────────
+// The predecessor recorded one more cross-out than its reflection folded (the burner never broadcast the Bitcoin
+// mint). The witnessed on-chain crossOutCount exceeds folded_crossout_count; the guest admits the lag, rebases,
+// and binds rebasedFromDigest to the on-chain count the successor contract reads.
+{
+  const state = makePredecessor();
+  const predDigest = state.digest();
+  const onchainCrossOut = Number(PRED_CROSSOUT) + 1;
+  const input = await pool.assembleReflectionScanInput(
+    state, { ...plainBatch(), rebase: { predecessorCrossOutCount: onchainCrossOut } }, new Map());
+  if (input.predecessorCrossOutCount !== onchainCrossOut) throw new Error('FATAL: pending cross-out count not witnessed');
+  if (input.rebasedFromDigest !== pool.generationalRebaseAnchor(predDigest, PRED_CONSUMED, BigInt(onchainCrossOut)))
+    throw new Error('FATAL: rebasedFromDigest must bind the on-chain cross-out count');
+  writeFileSync(`${OUT_DIR}/pending-crossout.json`, JSON.stringify(input) + '\n');
+  console.error(`pending-crossout: witnessed crossOut=${onchainCrossOut} vs folded=${PRED_CROSSOUT} → guest must rebase`);
+}
+
+console.error('wrote positive.json, undrained.json, mismatch.json, pending-crossout.json to ' + OUT_DIR);

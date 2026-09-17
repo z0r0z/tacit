@@ -116,9 +116,11 @@ contract MockSP1Verifier is ISP1Verifier {
 contract MockRelay {
     bytes32 public tip;
     mapping(bytes32 => bytes32) public blockParent;
+    mapping(bytes32 => uint256) public blockHeight;
 
     constructor(bytes32 t) {
         tip = t;
+        blockHeight[t] = 1_000_000;
     }
 
     function setTip(bytes32 t) external {
@@ -127,6 +129,7 @@ contract MockRelay {
 
     function setParent(bytes32 child, bytes32 parent) external {
         blockParent[child] = parent;
+        blockHeight[child] = blockHeight[parent] + 1;
     }
 }
 
@@ -143,7 +146,7 @@ contract ConfidentialPoolTest is Test {
     bytes32 constant VKEY = bytes32(uint256(0xABCD)); // placeholder program vkey
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF)); // placeholder Bitcoin-relay vkey
     bytes32 constant ANCHOR = bytes32(uint256(0xB17C0)); // seeded reflection anchor == mock relay tip
-    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x943d32812a0683fd7f2202e696fb047854ac5618c115e3572a6b9417506eb79d;
+    bytes32 constant REFLECTION_GENESIS_DIGEST = 0x76cd653a3e997bc0fc0c36f6f678ca61438819ca0e34ed3e3125329350239ce5;
     MockRelay relay;
 
     function setUp() public {
@@ -1735,6 +1738,36 @@ contract ConfidentialPoolTest is Test {
         _attestRange(chain[0], chain[maturedAt - 2017], 1); // one past the walk bound
         _attestRange(chain[0], chain[maturedAt - 2016], 1); // the deepest chunk the bound admits
         _attestRange(chain[maturedAt - 2016], chain[maturedAt], 2);
+    }
+
+    // A lane more than the walk bound behind is not stuck behind one huge proof: the ancestry checkpoint walks
+    // down to the deepest block a batch from the cursor can reach, and small batches anchor to it. It counts only
+    // while the anchor it was walked from is still canonical.
+    function test_reflection_ancestry_checkpoint_recovers_a_lane_past_the_lag_bound() public {
+        uint256 n = 2 * 2016 + 6 + 10;
+        bytes32[] memory chain = _seedBranch(ANCHOR, n, bytes32("far-behind"));
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[10], 10);
+        pool.advanceReflectionAncestry();
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[9], 9); // one bounded walk is not deep enough yet
+        pool.advanceReflectionAncestry();
+        pool.advanceReflectionAncestry(); // at the target: a further call moves nothing
+        _attestRange(chain[0], chain[10], 10);
+        // anyone advancing again after the lane moved only starts the next walk; the usable checkpoint stays
+        pool.advanceReflectionAncestry();
+        _attestRange(chain[10], chain[2016], 2016);
+        _attestRange(chain[2016], chain[n - 6], uint64(n - 6)); // and the matured anchor as ever
+    }
+
+    function test_reflection_ancestry_checkpoint_dies_with_its_anchor() public {
+        uint256 n = 2 * 2016 + 6 + 10;
+        bytes32[] memory chain = _seedBranch(ANCHOR, n, bytes32("far-behind-a"));
+        pool.advanceReflectionAncestry();
+        pool.advanceReflectionAncestry();
+        _seedBranch(chain[100], n, bytes32("far-behind-b")); // the checkpoint's anchor is orphaned
+        vm.expectRevert(ConfidentialPool.UnanchoredReflection.selector);
+        _attestRange(chain[0], chain[10], 10);
     }
 
     // The reflection digest chains: a proof must continue knownReflectionDigest, and each

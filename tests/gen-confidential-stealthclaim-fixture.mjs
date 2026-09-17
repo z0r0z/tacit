@@ -89,7 +89,7 @@ const fixture = {
   kernelR: claim.kernelR, kernelZ: claim.kernelZ, mRange: '0x' + Buffer.from(claim.mRange).toString('hex'),
   ownerSig: claim.ownerSig,
   expected: {
-    lockNullifier: pool.nullifier(lCx, lCy),
+    lockNullifier: pool.nullifier(lockLeaf), // the guest spends the lock by its leaf-bound nullifier
     mLeaf: pool.leaf(ASSET, claim.mCx, claim.mCy, M_OWNER),
     mValue: net.toString(),
     feeValue: FEE.toString(),

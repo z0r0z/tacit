@@ -14,25 +14,17 @@
 //!   (b) the `bn` package version/source resolves to the SP1-accelerated build;
 //!   (c) `Gt::one()` is the correct target (the multi-pairing product is 1 iff the equation holds).
 //!
-//! ACTIVATION GATE — the verifier is now validated against the BAKED ceremony key; the remaining gap to going
-//! live is the emitter + an end-to-end guest run, not the verifier. Status:
-//!   1. DONE — a REAL finalized-ceremony proof verifies against the baked `batch_vk()`, with a tampered-public
-//!      and a G2-limb-swap negative, in `swapbatch_baked_ceremony_key_accepts_real_proof_and_rejects_forgeries`
+//! VALIDATION STATUS — both consumers are LIVE: the settle guest's OP_SWAP_BLIND verifies through this module,
+//! and the reflection's Track-C 0x2F dispatch calls `swap_batch::fold_swap_batch`, which does too.
+//!   1. A REAL finalized-ceremony proof verifies against the baked `batch_vk()`, with a tampered-public and a
+//!      G2-limb-swap negative, in `swapbatch_baked_ceremony_key_accepts_real_proof_and_rejects_forgeries`
 //!      (fixtures/swapbatch_ceremony_vector.bin, gen-swapbatch-ceremony-vector.mjs). Resolves (a)/(c) against
-//!      the exact burned key — not just the dev vector below.
-//!   2. DONE (2 of 3) — tampered-public + swapped-G2 negatives covered by both tests; A/C = ∞ is enforced
-//!      structurally in `g1_proof` (A and C barred from ∞) but not yet a checked-in vector.
-//!   3. REMAINING — an end-to-end OP_SWAP_BLIND / `fold_swap_batch` vector run through guest execution
-//!      (`MODE=execute` on the prover box) over a full real envelope. This is emitter + harness work, not a
-//!      verifier gap.
-//!   4. DONE — (b): the dependency is `substrate-bn-succinct-rs 0.6.0` (the SP1-accelerated variant, by package
-//!      name), pinned in Cargo.lock by exact version + checksum.
-//! Both consumers ship HARD-DISABLED at the guest level this generation — inertness does NOT rest on the
-//! absence of an emitter: OP_SWAP_BLIND's settle dispatch is a `panic!` (proof-fatal, op 31 is unprovable),
-//! and the reflection Track-C 0x2F dispatch folds NOTHING (it reads only the envelope's append paths for
-//! stream alignment and never calls `fold_swap_batch`). So this verifier is unreachable and nothing onboards
-//! value through it, regardless of emitters. It is retained as source for a later guest that re-enables the op
-//! once it is box-validated end-to-end (an emitter is then also required, but is not what gates it today).
+//!      the exact burned key.
+//!   2. A and C are barred from ∞ structurally in `g1_proof`.
+//!   3. End-to-end guest runs over full real envelopes: fixtures/swapbatch_op.json (settle) and
+//!      fixtures/reflection_swapbatch.json (reflection, replayed to DIGEST_MATCH on the prover box).
+//!   4. (b): the dependency is `substrate-bn-succinct-rs 0.6.0` (the SP1-accelerated variant, by package name),
+//!      pinned in Cargo.lock by exact version + checksum.
 
 use bn::{pairing_batch, AffineG1, AffineG2, Fq, Fq2, Fr, Gt, G1, G2};
 use cxfer_core::{G16Proof, G16Vk};

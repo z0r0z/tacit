@@ -61,7 +61,18 @@ export function solveClearing(X, Y, R_A, R_B, fee_bps) {
 }
 
 export function makeConfidentialSwap({ keccak256, pool }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+  const { leaf, nullifier, nkToOwner, nativeNu, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+
+  // The nullifier the guest records for a spent native note: leaf-bound for a bearer note (owner 0), otherwise
+  // native_nu, which binds the spender's nk. It cannot be derived from public data, so this returns null when no nk
+  // is supplied, and throws when a supplied nk does not hash to the note's owner (the guest rejects that witness).
+  function spentNullifier(asset, note, fail) {
+    const lf = leaf(asset, note.cx, note.cy, note.owner);
+    if (BigInt(note.owner ?? 0) === 0n) return nullifier(lf);
+    if (note.nk == null) return null;
+    if (String(nkToOwner(note.nk)).toLowerCase() !== String(note.owner).toLowerCase()) fail('input nk does not commit to the note owner');
+    return nativeNu(note.owner, note.nk, lf);
+  }
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
@@ -103,17 +114,21 @@ export function makeConfidentialSwap({ keccak256, pool }) {
     const { amountOut, rem } = clearOut(direction, swapIn, priceNum, priceDen);
     const inC = commitXY(amountIn, rInSecp);     // C_in commits to the GROSS amountIn (its opening binds that)
     const outC = commitXY(amountOut, rOutSecp);  // C_out = amount_out·H + r_out·G
-    // Optimistic-flow keys (for the pending-swap overlay/reconcile): `inNullifier` is the spent note's ν
-    // (note-bound, needs no asset) and shows up in the indexer's `spent` set at settle; `outLeaf` is the
-    // expected output note's leaf and shows up in `LeavesInserted`. outLeaf needs the OUTPUT asset, which
-    // depends on direction — computed here when the pair is supplied, else filled in by verifyBatch (which
-    // always has the pair). Both equal exactly what the guest emits, so reconcile keys line up.
-    const inNullifier = nullifier(inC.cx, inC.cy);
+    // Optimistic-flow keys (for the pending-swap overlay/reconcile): `inNullifier` is the spent note's ν and
+    // shows up in the indexer's `spent` set at settle; `outLeaf` is the expected output note's leaf and shows up
+    // in `LeavesInserted`. Both need the pair (the input leaf is hashed under the INPUT asset, the output leaf
+    // under the OUTPUT asset), and ν also needs the note's nk — computed here when those are supplied, else
+    // filled in by verifyBatch. Both equal exactly what the guest emits, so reconcile keys line up.
+    const nk = inNote.nk ?? inNote.secret;
+    const inAsset = (assetA && assetB) ? (direction === 'A->B' ? assetA : assetB) : null;
+    const inNullifier = inAsset
+      ? spentNullifier(inAsset, { cx: inC.cx, cy: inC.cy, owner: inNote.owner, nk }, (m) => { throw new Error('swap: ' + m); })
+      : null;
     const outAsset = (assetA && assetB) ? (direction === 'A->B' ? assetB : assetA) : null;
     const outLeaf = outAsset ? leaf(outAsset, outC.cx, outC.cy, outOwner) : null;
     return {
       direction, dirByte: direction === 'A->B' ? 0 : 1,
-      in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, leafIndex: inNote.leafIndex, path: inNote.path },
+      in: { cx: inC.cx, cy: inC.cy, owner: inNote.owner, nk, leafIndex: inNote.leafIndex, path: inNote.path },
       amountIn: BigInt(amountIn), fee: feeBig, swapIn, amountOut, rem,
       minOut: BigInt(minOut ?? 0), deadline: BigInt(deadline ?? 0),
       out: { cx: outC.cx, cy: outC.cy, owner: outOwner },
@@ -177,7 +192,7 @@ export function makeConfidentialSwap({ keccak256, pool }) {
       else { gBin += swapIn; gAout += it.amountOut; }
       if (fee > 0n) fees.push({ assetId: inAsset, value: fee });
 
-      const inNu = nullifier(it.in.cx, it.in.cy);
+      const inNu = spentNullifier(inAsset, { ...it.in, nk: it.in.nk ?? it.inNk }, fail);
       const outLf = leaf(outAsset, it.out.cx, it.out.cy, it.out.owner);
       nullifiers.push(inNu);
       leaves.push(outLf);

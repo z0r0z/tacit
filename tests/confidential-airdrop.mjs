@@ -175,9 +175,19 @@ const events = leaves.map((leaf, i) => ({ leaf, memo: memos[i] }));
 // (7) funding build: each transfer op conserves + ranges; denom notes commit to the right amount, owned by locker
 {
   const source = (() => { const blinding = randomScalar(); return { value: 2_000_000n, blinding, ...pool.commitXY(2_000_000n, blinding), leafIndex: 0, path: pool.zeros }; })();
-  const { ops, denomNotes } = airdrop.buildFunding({ sources: [source], amounts: recips.map((r) => r.amount), lockerNk, lockerScanPriv });
+  const { ops, denomNotes } = airdrop.buildFunding({ asset, sources: [source], amounts: recips.map((r) => r.amount), lockerNk, lockerScanPriv });
   assert.equal(ops.length, 1, 'one funding op');
   assert.equal(transfer.verifyTransfer(ops[0]), true, 'funding transfer conserves + ranges (guest re-verifies this)');
+  // The kernel must bind the leaves the guest rebuilds for OP_TRANSFER outputs — leaf(asset, Cx, Cy, locker) — and
+  // only under the transfer kernel domain (a generic-domain reading of the same proof must fail).
+  const ptHexF = (P) => { const a = P.toAffine(); return { cx: '0x' + a.x.toString(16).padStart(64, '0'), cy: '0x' + a.y.toString(16).padStart(64, '0') }; };
+  ops[0].outC.forEach((P, j) => {
+    const { cx, cy } = ptHexF(P);
+    assert.equal(ops[0].outLeaves[j].toLowerCase(), pool.leaf(asset, cx, cy, locker).toLowerCase(), `funding output ${j} binds the guest's leaf`);
+  });
+  assert.equal(ops[0].domain, 'transfer', 'funding split is built under the OP_TRANSFER kernel domain');
+  assert.equal(transfer.verifyTransfer({ ...ops[0], domain: undefined }), false, 'the split kernel does not verify under the generic domain');
+  assert.throws(() => airdrop.buildFunding({ sources: [source], amounts: recips.map((r) => r.amount), lockerNk, lockerScanPriv }), /asset id/, 'funding without an asset is refused');
   for (let i = 0; i < recips.length; i++) {
     assert.equal(denomNotes[i].value, recips[i].amount, `denom ${i} commits to recipient ${i}'s amount`);
     assert.equal(denomNotes[i].owner.toLowerCase(), locker.toLowerCase(), `denom ${i} owned by locker (membership keys on locker)`);

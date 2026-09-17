@@ -81,10 +81,11 @@ fn main() {
         stdin.write(&hexv(o["owner"].as_str().unwrap()));
     }
     stdin.write(&hexv(t["rangeProof"].as_str().unwrap()));
+    // The relay fee as a decimal string (the dapp's wire form) or a JSON number; absent means fee-free.
     stdin.write(
         &t["fee"]
-            .as_str()
-            .map(|s| s.parse::<u64>().unwrap())
+            .as_u64()
+            .or_else(|| t["fee"].as_str().map(|s| s.parse::<u64>().expect("fastlane: fee")))
             .unwrap_or(0),
     );
     // Every input here is Bitcoin-homed (batch_authenticated), so verify_btc_input_auths (main.rs:713)
@@ -96,11 +97,11 @@ fn main() {
     stdin.write(&hexv(t["kernel"]["R"].as_str().unwrap()));
     stdin.write(&hexv(t["kernel"]["z"].as_str().unwrap()));
 
-    // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count.
-    for _ in 0..64u32 {
-        stdin.write(&hexv(
-            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-        ));
+    // Memo hashes: exactly the op's own list when the relay supplies one (the guest reads leaves+lock_leaves of
+    // them, so a padded or truncated list breaks a large settle); a bare fixture with no memos gets 64 empty ones.
+    match f.get("memoHashes").and_then(|v| v.as_array()) {
+        Some(mh) => { for h in mh { stdin.write(&hexv(h.as_str().unwrap())); } }
+        None => { for _ in 0..64u32 { stdin.write(&hexv("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")); } }
     }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());

@@ -1141,8 +1141,10 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
 // getBurnDeposits reads (`reflection:burndep:{net}:{burnTxidDisplay}`), so when the scan folds that 0x2B burn
 // it finds the bundle and onboards the burned note (else it skips — no bundle, no mint). The guest re-verifies
 // the bundle in-zkVM (provenance DAG -> C_0 + per-cxfer inclusion + conservation), so this is a passthrough
-// store: a bad bundle just makes the fold skip, never mis-attests. Box-token gated like the other box routes;
-// 7-day TTL is ample for the burn to bury + fold.
+// store: a bad bundle leaves the burn pending, never mis-attests. Box-token gated like the other box routes. A
+// burn whose bundle was missing or refused when its block was scanned stays pending and completes in any later
+// batch once a valid bundle is stored here, so bundles are kept long enough to cover a slow submission, and a
+// holder can simply register again after expiry.
 async function handleReflectionBurndep(req, env, url, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
@@ -1154,7 +1156,7 @@ async function handleReflectionBurndep(req, env, url, cors) {
   const bundle = body.bundle;
   if (!bundle || typeof bundle !== 'object') return jsonResponse({ ok: false, error: 'missing bundle object' }, 400, cors);
   const key = `reflection:burndep:${network}:${txid}`;
-  await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 7 * 86400 });
+  await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 90 * 86400 });
   return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
@@ -13074,9 +13076,12 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     if (!cm) return jsonResponse({ error: 'invalid crossout-mint payload' }, 400, cors);
     const cc = buildCrossoutConsumer(env, { network, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
     if (!cc) return jsonResponse({ error: 'crossout bridge not active', network }, 400, cors);
-    // The minted Bitcoin pool leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner) — must equal the recorded destCommitment.
-    const leaf = crossoutMintLeaf(keccak_256, cm);
-    const bind = await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf });
+    // The minted Bitcoin note leaf = btc_note_leaf(asset, Cx, Cy, x-only key of vout 0) — must equal the recorded
+    // destCommitment. A mint whose vout 0 is not P2TR has no leaf (the reflection fold rejects it too).
+    const leaf = crossoutMintLeaf(keccak_256, { ...cm, destScriptPubKey: tx?.vout?.[0]?.scriptpubkey });
+    const bind = leaf
+      ? await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf })
+      : { bound: false, rejected: 'non-p2tr-mint-output' };
     const status = bind.bound ? 'minted' : (bind.rejected ? 'rejected' : 'pending-reflection');
     await env.REGISTRY_KV.put(`crossout-minted:${network}:${cm.assetId.toLowerCase()}:${cm.claimId.toLowerCase()}`, JSON.stringify({
       claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,

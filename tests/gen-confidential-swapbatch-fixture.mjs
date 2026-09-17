@@ -83,6 +83,7 @@ const spendRoot = tree.root();
 const intents = built.map((b) => {
   const inNote = {
     owner: OWNER_IN,
+    nk: IN_NK,
     leafIndex: b.leafIndex,
     path: tree.rootAndPath(b.leafIndex).path,
   };

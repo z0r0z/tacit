@@ -30,6 +30,9 @@ const POOL_ID = '0x' + '35'.repeat(32), FARM_ID = '0x' + '44'.repeat(32);
 const REWARD_ASSET = '0x' + 'c3'.repeat(32);
 const NONCE0 = '0x' + '07'.repeat(32);
 const LAUNCHER_PUB = '0x02' + 'aa'.repeat(32);
+// LPBOND_SCENARIO=debt-overflow seeds a farm whose live rps makes shares·rps exceed u128: FarmRewardState::bond
+// refuses it, so the bond takes the refund branch (the LP-share value is re-minted to the refund destination).
+const SCENARIO = process.env.LPBOND_SCENARIO || 'bond';
 const SHARES = 100, RATE = 100, TREASURY = 1_000_000n;
 const BLOCK_HEIGHT = 313000, GAP = 10; // farm seeded GAP blocks ago ⇒ live rps accrues on bond accrue()
 const ZERO_OWNER = '0x' + '00'.repeat(32);
@@ -91,7 +94,9 @@ const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 // prior: a registered farm (launcher_pubkey + lp_asset) + the C0-backed treasury + the live LP-share note.
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: '0', rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
+state.farmRewards.load([SCENARIO === 'debt-overflow'
+  ? { farmId: FARM_ID, rate: String(RATE), totalShares: '1', rps: String((1n << 127n) - 1n), totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }
+  : { farmId: FARM_ID, rate: String(RATE), totalShares: '0', rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET }]);
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: ZERO_OWNER, reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);
 const coords = new Map();
 const inOutpoint = pool.outpointKey('0x' + seedTxid.toString('hex'), seedVout);
@@ -121,13 +126,19 @@ const receiptAppended = state._acc.notes.leaves.some((l) => hx(l).toLowerCase() 
 const lpNullified = state.live.get(inOutpoint) == null; // the spent LP-share note left the live set
 console.error(`lp_bond: shares ${sharesPre}->${sharesPost} notes ${noteCountPre}->${noteCountPost} receiptAppended=${receiptAppended} lpNullified=${lpNullified} folded=${!!(lb && lb.owner !== ZERO_OWNER)} newDigest=${input.newDigest}`);
 
-// Anti-false-pass: assert REAL post-fold state mutations read from `state` (not the fold-object, which is set
-// even on the unbacked skip path). The bond must: (1) APPEND the exact owner-blinded receipt leaf to the note
-// tree (count +1, the specific leaf present), (2) credit total_shares += bond_amount, (3) nullify the consumed
-// LP-share input. A skip (e.g. wrong envelope length / unbacked kernel) appends nothing → would be a both-skip
-// false pass; FATAL it.
-if (!receiptAppended) { console.error(`FATAL: bond receipt leaf NOT appended (fold skipped — would be a both-skip false pass)`); process.exit(1); }
-if (noteCountPost !== noteCountPre + 1) { console.error(`FATAL: note count did not increase by 1 (${noteCountPre}->${noteCountPost})`); process.exit(1); }
-if (sharesPost !== sharesPre + BigInt(SHARES)) { console.error(`FATAL: total_shares not credited by ${SHARES} (${sharesPre}->${sharesPost})`); process.exit(1); }
-if (!lpNullified) { console.error('FATAL: consumed LP-share input was not nullified'); process.exit(1); }
+if (SCENARIO === 'debt-overflow') {
+  if (receiptAppended || sharesPost !== sharesPre) { console.error('FATAL: an overflowing bond opened a position'); process.exit(1); }
+  if (noteCountPost !== noteCountPre + 1 || !lpNullified) { console.error('FATAL: an overflowing bond did not refund the LP-share value'); process.exit(1); }
+  if (state.farmEntries.len() !== 0) { console.error('FATAL: an overflowing bond stamped an entry'); process.exit(1); }
+} else {
+  // Anti-false-pass: assert REAL post-fold state mutations read from `state` (not the fold-object, which is set
+  // even on the unbacked skip path). The bond must: (1) APPEND the exact owner-blinded receipt leaf to the note
+  // tree (count +1, the specific leaf present), (2) credit total_shares += bond_amount, (3) nullify the consumed
+  // LP-share input. A skip (e.g. wrong envelope length / unbacked kernel) appends nothing → would be a both-skip
+  // false pass; FATAL it.
+  if (!receiptAppended) { console.error(`FATAL: bond receipt leaf NOT appended (fold skipped — would be a both-skip false pass)`); process.exit(1); }
+  if (noteCountPost !== noteCountPre + 1) { console.error(`FATAL: note count did not increase by 1 (${noteCountPre}->${noteCountPost})`); process.exit(1); }
+  if (sharesPost !== sharesPre + BigInt(SHARES)) { console.error(`FATAL: total_shares not credited by ${SHARES} (${sharesPre}->${sharesPost})`); process.exit(1); }
+  if (!lpNullified) { console.error('FATAL: consumed LP-share input was not nullified'); process.exit(1); }
+}
 console.log(JSON.stringify(input));

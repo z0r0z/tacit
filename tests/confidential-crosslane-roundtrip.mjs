@@ -35,7 +35,9 @@ const pubHex = (priv) => '0x' + Buffer.from(G.multiply(priv).toRawBytes(true)).t
 // A two-sided day-one asset — the canonical mainnet TAC id (tETH behaves identically).
 const ASSET = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const BITCOIN = 1, ETHEREUM = 2;            // destChain selectors (1=bitcoin, 2=ethereum)
-const OWNER_ETH = '0x' + '00'.repeat(31) + 'e7';
+// The minted ETH note is owned by its nk (owner = H(nk)), the only kind of owned note that can spend.
+const OWNER_ETH_NK = '0x' + 'c5'.repeat(32);
+const OWNER_ETH = pool.nkToOwner(OWNER_ETH_NK);
 const OWNER_BTC = '0x' + '00'.repeat(31) + 'b7';
 const VALUE = 1500n;
 
@@ -44,7 +46,7 @@ const btcInputs = [
   { value: 1000n, blinding: randomScalar(), secret: '0x' + '11'.repeat(32) },
   { value: 500n,  blinding: randomScalar(), secret: '0x' + '22'.repeat(32) },
 ];
-const mintBlinding = randomScalar(), mintSecret = '0x' + 'c5'.repeat(32);
+const mintBlinding = randomScalar(), mintSecret = OWNER_ETH_NK;
 const c0 = pool.commitXY(btcInputs[0].value, btcInputs[0].blinding);
 const inBind = pool.nullifier(c0.cx, c0.cy);
 const bridgeIn = ct.buildBridgeBurn({

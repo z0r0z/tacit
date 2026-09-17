@@ -12,6 +12,7 @@
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../elf/cxfer-guest"));
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }
+fn u64f(v: &serde_json::Value) -> Option<u64> { v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())) } // a u64 as a JSON number or a decimal string (the dapp relay stringifies BigInt amounts)
 fn main() {
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("OP_FILE").unwrap_or_else(|_| "/root/work/cxfer/fixtures/farm_harvest_op.json".to_string())).unwrap()).unwrap();
     let mut stdin = SP1Stdin::new();
@@ -25,16 +26,16 @@ fn main() {
     stdin.write(&21u8);          // OP_FARM_HARVEST
     stdin.write(&hexv(f["controller"].as_str().unwrap())); // 20-byte FarmController address
     stdin.write(&hexv(f["owner"].as_str().unwrap()));
-    stdin.write(&f["shares"].as_u64().unwrap());
+    stdin.write(&u64f(&f["shares"]).unwrap());
     stdin.write(&hexv(f["nonce"].as_str().unwrap())); // the position's stable nonce (part of the receipt leaf)
     stdin.write(&hexv(f["harvestNonce"].as_str().unwrap())); // per-harvest freshness for the reward leg
-    stdin.write(&f["reward"].as_u64().unwrap());
-    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee carved from the reward (0 = self-settle), after reward
+    stdin.write(&u64f(&f["reward"]).unwrap());
+    stdin.write(&u64f(&f["fee"]).unwrap_or(0)); // relay fee carved from the reward (0 = self-settle), after reward
     // RECEIPT v3: the STAKED asset is committed in farm_receipt_leaf, so harvest witnesses it here
     // (between `fee` and `oldIndex`). It is forced to equal the bonded asset by receipt membership below —
     // which is what closes the cross-asset re-labelling that v1 allowed.
     stdin.write(&hexv(f["lpAsset"].as_str().expect("farmharvest: lpAsset (receipt v3)")));
-    stdin.write(&f["oldIndex"].as_u64().unwrap());
+    stdin.write(&u64f(&f["oldIndex"]).unwrap());
     for p in f["oldPath"].as_array().expect("oldPath") { stdin.write(&hexv(p.as_str().unwrap())); }
     stdin.write(&hexv(f["rewardAsset"].as_str().unwrap()));
     stdin.write(&hexv(f["rewardOwner"].as_str().unwrap())); // reward note SPEND owner = H(nk) (not the receipt auth key)
@@ -48,7 +49,7 @@ fn main() {
 
     // CP-04: feed keccak256("") memo hashes; the guest reads exactly its (leaves+lock_leaves) count, tests settle with matching empty memos.
 
-    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); if f.get("memoHashes").is_some() { for h in &mh { stdin.write(&hexv(h)); } } else { for _ in 0..64usize { stdin.write(&hexv(empty)); } } }
 
     let mode = std::env::var("MODE").unwrap_or_else(|_| "execute".into());
     if mode == "execute" {
@@ -57,7 +58,7 @@ fn main() {
         println!("VKEY={}", pk.verifying_key().bytes32());
         let (pv, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
         println!("EXECUTE_OK cycles={} pv_bytes={} reward={} fee={}",
-            report.total_instruction_count(), pv.as_slice().len(), f["reward"], f["fee"].as_u64().unwrap_or(0));
+            report.total_instruction_count(), pv.as_slice().len(), f["reward"], u64f(&f["fee"]).unwrap_or(0));
         return;
     }
     let client = ProverClient::builder().network().build();

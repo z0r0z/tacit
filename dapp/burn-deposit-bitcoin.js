@@ -9,7 +9,7 @@
 // round-trips buildRevealTx, asset_id == sha256(internalTxid‖vout0), a full synthetic burn-deposit verifies).
 
 import { makeConfidentialPool, isLegacyBridgeAsset } from './confidential-pool.js';
-import { verifySchnorr, signSchnorr, pedersenCommit, pointToBytes, bigintToBytes32, modN } from './bulletproofs.js';
+import { verifySchnorr, signSchnorr, pedersenCommit, pointToBytes, bigintToBytes32, modN, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint, bppRangeProve } from './bulletproofs-plus.js';
 import { sha256 as _sha256 } from './vendor/tacit-deps.min.js';
 import { makeBurnDepositProvenance } from './burn-deposit-provenance.js';
@@ -274,10 +274,11 @@ function parseCetch(envHex) {
   const commitment = env.subarray(p, p + 33); p += 33;
   p += 8; // amount_ct
   const rpLen = env[p] | (env[p + 1] << 8); p += 2;
+  const rangeProof = env.subarray(p, p + rpLen);
   p += rpLen;
   if (p + 32 > env.length) return null;
   const mintAuthority = env.subarray(p, p + 32);
-  return { c0Compressed: bytesToHex(commitment), mintAuthority: bytesToHex(mintAuthority), decimals };
+  return { c0Compressed: bytesToHex(commitment), mintAuthority: bytesToHex(mintAuthority), decimals, rangeProof: bytesToHex(rangeProof) };
 }
 
 // parse_cmint (cxfer-core::bitcoin::parse_cmint): a T_MINT (0x24) envelope →
@@ -326,29 +327,39 @@ function parseBurnEnvelope(envHex) {
   };
 }
 
-// parse_cxfer_envelope_full (cxfer-core::bitcoin::parse_cxfer_envelope_full): a confidential transfer
-// (T_CXFER_BPP 0x22 OR T_CXFER 0x23, identical wire shape) → { asset, kernelSig, commitments[], rangeProof }
-// (all hex; commitments compressed). Layout (env[0]∈{0x22,0x23}):
-//   opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
-// T_CXFER_BPP(0x22) / T_CXFER(0x23) + the FIXED-amount atomic-settlement family T_AXFER(0x26/0x3C): identical
-// wire shape, all folded by the guest via the same parse_cxfer_envelope_full → fold_cxfer (single-asset
-// Σin=Σout kernel + BP+ range), so the JS reflection mirrors them all as 'cxfer'. The variable-amount variants
+// parse_cxfer_envelope_full (cxfer-core::bitcoin::parse_cxfer_envelope_full): a confidential transfer →
+// { asset, kernelSig, commitments[], rangeProof, assetInputCount } (all hex; commitments compressed). Layouts:
+//   T_CXFER_BPP 0x22 / T_CXFER 0x23:
+//     opcode(1) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1,∈{1,2,4,8}) ‖ N×(commitment(33) ‖ amount_ct(8)) ‖ rpLen(2 LE) ‖ rp
+//   the FIXED-amount atomic settlement T_AXFER 0x26 / T_AXFER_BPP 0x3C:
+//     opcode(1) ‖ assetId(32) ‖ asset_input_count(1, ≥ 1) ‖ kernel_sig(64) ‖ N ‖ … (as above)
+// asset_input_count names the kernel's inputs by position, vin[1..1+count]; it is null for 0x22/0x23. All four fold
+// through the guest's same fold_cxfer (single-asset Σin=Σout kernel + range), so the JS reflection mirrors them as 'cxfer'. The variable-amount variants
 // T_AXFER_VAR(0x37) / T_AXFER_VAR_BPP(0x3D) are DISABLED (unbindable maker-change destination) — NOT in the set,
 // so they parse to null here exactly like the guest, and classifyConfidentialTx falls through to plain traffic.
 const CXFER_OPCODES = new Set([0x22, 0x23, 0x26, 0x3c]);
 function parseCxferEnvelopeFull(envHex) {
   const env = hexToBytes(envHex);
-  if (env.length < 1 + 32 + 64 + 1 || !CXFER_OPCODES.has(env[0])) return null;
+  if (!env.length || !CXFER_OPCODES.has(env[0])) return null;
+  const atomic = env[0] === 0x26 || env[0] === 0x3c;
+  const head = atomic ? 1 + 32 + 1 : 1 + 32;
+  if (env.length < head + 64 + 1 || (atomic && env[33] === 0)) return null;
   const asset = env.subarray(1, 33);
-  const kernelSig = env.subarray(33, 97);
-  let p = 97;
+  const kernelSig = env.subarray(head, head + 64);
+  let p = head + 64;
   const n = env[p]; p += 1;
   if (![1, 2, 4, 8].includes(n) || p + n * (33 + 8) + 2 > env.length) return null;
   const commitments = [];
   for (let i = 0; i < n; i++) { commitments.push(bytesToHex(env.subarray(p, p + 33))); p += 33 + 8; }
   const rpLen = env[p] | (env[p + 1] << 8); p += 2;
   if (p + rpLen !== env.length) return null;
-  return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)) };
+  return { asset: bytesToHex(asset), kernelSig: bytesToHex(kernelSig), commitments, rangeProof: bytesToHex(env.subarray(p, p + rpLen)), assetInputCount: atomic ? env[33] : null };
+}
+// axfer_asset_input_count: the atomic settlement's asset_input_count, or null for any other envelope (or one that
+// does not parse).
+function axferAssetInputCount(envHex) {
+  const cx = parseCxferEnvelopeFull(envHex);
+  return cx ? cx.assetInputCount : null;
 }
 
 // T_CXFER_BOUND (0x39): the generation-bound CXFER → { target, asset, kernelSig, commitments[], rangeProof }.
@@ -861,7 +872,7 @@ function classifyConfidentialTx(rawTxHex) {
     // (any null) is skipped, matching the guest's skip-not-fold (keeps the witness/spent-set stream in sync).
     const vouts = cx.commitments.map((_, i) => canonicalOutputVout(opcode, i, cx.commitments.length));
     if (vouts.some((v) => v === null)) return null;
-    return { type: 'cxfer', opcode, assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts };
+    return { type: 'cxfer', opcode, assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts, assetInputCount: cx.assetInputCount };
   }
   // A generation-bound CXFER (0x39): the bound-note fold. Surfaces target_chain_binding so the assembler/guest
   // can require it == this deployment's chainBinding before onboarding. Identity vouts, like v1 CXFER.
@@ -930,7 +941,7 @@ function classifyConfidentialTx(rawTxHex) {
   return null;
 }
 
-export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, parseCxferBoundEnvelope, encodeCxferBoundEnvelope, buildTacMigration, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
+export { readVarint, extractInputs, inputFirstWitnessItem, sigBindsAllOutputs, noteSpendsBindOutputs, extractTaprootEnvelope, parseCetch, parseCmint, parseBurnEnvelope, parseCxferEnvelopeFull, axferAssetInputCount, parseCxferBoundEnvelope, encodeCxferBoundEnvelope, buildTacMigration, parsePreauthBidEnvelope, parseSwapBatchEnvelope, parseSwapVarEnvelope, parseSwapRouteEnvelope, parseHarvestEnvelope, parseProtocolFeeClaimEnvelope, parseFarmInitEnvelope, parseLpAddEnvelope, parseLpRemoveEnvelope, parseCbtcLockEnvelope, parseCbtcRedeemEnvelope, parseCrossoutMintEnvelope, parseEthCallEnvelope, txOutputValue, txOutputScript, classifyConfidentialTx };
 
 // Build the burnDepositKit the worker injects (buildScanReflectionAttester → makeScanReflectionIndexer).
 // Sources every crypto primitive from the SAME modules the pool/guest use (so verdicts match byte-for-byte)
@@ -997,5 +1008,329 @@ export function makeBurnDepositKit({ secp, keccak256, sha256 }) {
   });
   const assembler = makeBurnDepositAssembler({ dsha256: dsha, cat, bytesToHex });
 
-  return { mirror, assembler, parseEtchAnchor, computeTxidInternal: computeTxid };
+
+  // ── Burn-deposit admission: the exact decision the reflection guest makes for a 0x2B burn of a note that is not
+  // in the live set, computed over the SAME bytes the guest will read (the serialized provenance blob, the header
+  // chain, the burn tx and its envelope). The worker only emits a non-empty blob when this admits, so a bundle the
+  // guest would refuse never reaches the prover as a fold. The guest re-verifies all of it; this port only has to
+  // agree with it.
+  const hexU8 = (h) => hexToBytes(typeof h === 'string' ? h : bytesToHex(h));
+  const eqBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const isZeroBytes = (b) => b.every((x) => x === 0);
+  // bits_to_target: nBits → 32-byte big-endian target; negative, zero-mantissa or exponent > 32 is invalid.
+  const bitsToTarget = (h) => {
+    if (h.length < 76) return null;
+    const bits = (h[72] | (h[73] << 8) | (h[74] << 16) | (h[75] * 0x1000000)) >>> 0;
+    const exp = bits >>> 24, mant = bits & 0x7fffff;
+    if (bits & 0x00800000) return null;
+    if (mant === 0) return null;
+    if (exp > 32) return null;
+    const t = new Uint8Array(32);
+    const be4 = (v) => Uint8Array.of((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+    if (exp <= 3) t.set(be4(mant >>> (8 * (3 - exp))), 28);
+    else if (exp - 3 + 4 <= 32) t.set(be4(mant), 32 - (exp - 3) - 4);
+    return t;
+  };
+  const beLte = (a, b) => { for (let i = 0; i < 32; i++) { if (a[i] < b[i]) return true; if (a[i] > b[i]) return false; } return true; };
+  // verify_header_chain: every header 80 bytes with valid PoW, each linking to the previous; returns the tip hash.
+  function headerChainTip(headers) {
+    if (!headers.length) return null;
+    let prev = null;
+    for (const hh of headers) {
+      const h = hexU8(hh);
+      if (h.length !== 80) return null;
+      const bh = dsha(h);
+      const target = bitsToTarget(h);
+      if (!target) return null;
+      if (!beLte(Uint8Array.from(bh).reverse(), target)) return null;
+      if (prev && !eqBytes(h.subarray(4, 36), prev)) return null;
+      prev = Uint8Array.from(bh);
+    }
+    return prev;
+  }
+  // verify_merkle_path: fold a txid up its siblings by the index bits (double-SHA256, internal order).
+  function merklePathRoot(txid, siblings, index) {
+    let acc = Uint8Array.from(txid); let idx = index >>> 0;
+    for (const sib of siblings) { acc = dsha(idx & 1 ? cat([sib, acc]) : cat([acc, sib])); idx >>>= 1; }
+    return acc;
+  }
+  // The coinbase's BIP141 commitment output (last `6a24aa21a9ed‖32B` wins), scanned over the outputs only.
+  function coinbaseCommitmentOutput(tx) {
+    if (tx.length < 4) return null;
+    let pos = (tx.length > 5 && tx[4] === 0x00 && tx[5] === 0x01) ? 6 : 4;
+    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+    for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+    let c = null;
+    for (let i = 0; i < outCount; i++) {
+      pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1];
+      const end = pos + r[0]; if (end > tx.length) return null;
+      const sc = tx.subarray(pos, end);
+      if (sc.length >= 38 && sc[0] === 0x6a && sc[1] === 0x24 && sc[2] === 0xaa && sc[3] === 0x21 && sc[4] === 0xa9 && sc[5] === 0xed) c = sc.subarray(6, 38);
+      pos = end;
+    }
+    return c;
+  }
+  // parse_coinbase_commitment: a SegWit coinbase whose input-0 witness is exactly one 32-byte reserved value.
+  function coinbaseCommitment(tx) {
+    if (tx.length < 6 || tx[4] !== 0x00 || tx[5] !== 0x01) return null;
+    let pos = 6;
+    let r = readVarint(tx, pos); if (!r) return null; const inCount = r[0]; pos += r[1];
+    for (let i = 0; i < inCount; i++) { pos += 36; r = readVarint(tx, pos); if (!r) return null; pos += r[1] + r[0] + 4; }
+    r = readVarint(tx, pos); if (!r) return null; const outCount = r[0]; pos += r[1];
+    let c = null;
+    for (let i = 0; i < outCount; i++) {
+      pos += 8; r = readVarint(tx, pos); if (!r) return null; pos += r[1];
+      const end = pos + r[0]; if (end > tx.length) return null;
+      const sc = tx.subarray(pos, end);
+      if (sc.length >= 38 && sc[0] === 0x6a && sc[1] === 0x24 && sc[2] === 0xaa && sc[3] === 0x21 && sc[4] === 0xa9 && sc[5] === 0xed) c = sc.subarray(6, 38);
+      pos = end;
+    }
+    if (!c) return null;
+    r = readVarint(tx, pos); if (!r) return null; if (r[0] !== 1) return null; pos += r[1];
+    r = readVarint(tx, pos); if (!r) return null; if (r[0] !== 32) return null; pos += r[1];
+    if (pos + 32 > tx.length) return null;
+    return { commitment: c, reserved: tx.subarray(pos, pos + 32) };
+  }
+  // verify_tx_witness_committed → 'ok' | 'no' | 'abort'. 'abort' is a coinbase that carries a commitment output but
+  // no committed reserved value: the guest treats that as a tampered proof and panics, so it must never be emitted.
+  function witnessCommitted(tx, txIndex, wtxidSiblings, coinbase, cbTxidSiblings, txidRoot) {
+    const cbTxid = computeTxidBytes(coinbase);
+    if (!cbTxid) return 'no';
+    if (!eqBytes(merklePathRoot(cbTxid, cbTxidSiblings, 0), txidRoot)) return 'no';
+    const cc = coinbaseCommitment(coinbase);
+    if (!cc) return coinbaseCommitmentOutput(coinbase) ? 'abort' : 'no';
+    const wroot = merklePathRoot(dsha(tx), wtxidSiblings, txIndex);
+    return eqBytes(dsha(cat([wroot, cc.reserved])), cc.commitment) ? 'ok' : 'no';
+  }
+  // verify_range: the scheme is selected by proof length (classic Bulletproofs or BP+), anything else rejects.
+  function rangeOk(compressedList, proof) {
+    try {
+      return proof.length === bpClassicProofLen(compressedList.length)
+        ? bpRangeVerify(compressedList, proof)
+        : bppRangeVerify(compressedList.map((c) => bppPoint(c)), proof);
+    } catch { return false; }
+  }
+  const pointOk = (c33) => { try { secp.ProjectivePoint.fromHex(bytesToHex(c33).slice(2)); return c33.length === 33; } catch { return false; } };
+  const chCompressed = (c33) => (pointOk(c33) ? commitmentHashCompressed(bytesToHex(c33)).toLowerCase() : null);
+  const opKey = (txid, vout) => pool.outpointKey(bytesToHex(txid), vout >>> 0).toLowerCase();
+  // burn_deposit::ProvenanceBlob::parse, including its count caps and exact consumption.
+  function parseBlob(b) {
+    let i = 0;
+    const u32 = () => { if (i + 4 > b.length) throw 0; const v = (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] * 0x1000000)) >>> 0; i += 4; return v; };
+    const u64 = () => { if (i + 8 > b.length) throw 0; let v = 0n; for (let k = 7; k >= 0; k--) v = (v << 8n) | BigInt(b[i + k]); i += 8; return v; };
+    const bytes = () => { const n = u32(); if (i + n > b.length) throw 0; const v = b.subarray(i, i + n); i += n; return v; };
+    const a = (n) => { if (i + n > b.length) throw 0; const v = b.subarray(i, i + n); i += n; return v; };
+    const vec = (n) => { const c = u32(); if (c > 4096) throw 0; const out = []; for (let k = 0; k < c; k++) out.push(a(n)); return out; };
+    const vu32 = () => { const c = u32(); if (c > 4096) throw 0; const out = []; for (let k = 0; k < c; k++) out.push(u32()); return out; };
+    try {
+      const etchTx = bytes(), etchIndex = u32(), etchSiblings = vec(32), etchWtxidSiblings = vec(32);
+      const etchCoinbase = bytes(), etchCbTxidSiblings = vec(32);
+      const ncm = u32(); if (ncm > 1024) return null;
+      const cmints = [];
+      for (let k = 0; k < ncm; k++) cmints.push({ revealTx: bytes(), commitTx: bytes(), merkleSiblings: vec(32), merkleIndex: u32(), revealWtxidSiblings: vec(32), revealCoinbase: bytes(), revealCbTxidSiblings: vec(32) });
+      const ncx = u32(); if (ncx > 256) return null;
+      const prov = [];
+      for (let k = 0; k < ncx; k++) prov.push({ tx: bytes(), inputCommitments: vec(33), outputVouts: vu32(), burnedAmount: u64(), inputSkip: u32(), merkleIndex: u32(), merkleSiblings: vec(32), confirmedBlockRoot: a(32), wtxidSiblings: vec(32), coinbase: bytes(), coinbaseTxidSiblings: vec(32) });
+      const npm = u32(); if (npm > 256) return null;
+      const poolMemberships = [];
+      for (let k = 0; k < npm; k++) poolMemberships.push({ outpoint: a(32), cx: a(32), cy: a(32), owner: a(32), noteClass: u32(), chainBinding: a(32), leafIndex: u64(), path: vec(32) });
+      if (i !== b.length) return null;
+      return { etchTx, etchIndex, etchSiblings, etchWtxidSiblings, etchCoinbase, etchCbTxidSiblings, cmints, prov, poolMemberships };
+    } catch { return null; }
+  }
+  // verify_etch_anchor: asset id bound to the etch txid, a well-formed CETCH, and a range-bounded C_0.
+  function etchAnchor(etchTx, assetHex) {
+    const txid = computeTxidBytes(etchTx);
+    if (!txid) return null;
+    const pre = new Uint8Array(36); pre.set(txid, 0);
+    if (bytesToHex(sha256(pre)).toLowerCase() !== bytesToHex(hexU8(assetHex)).toLowerCase()) return null;
+    const env = extractTaprootEnvelope(bytesToHex(etchTx));
+    if (!env) return null;
+    const ce = parseCetch(env);
+    if (!ce) return null;
+    const c0 = hexToBytes(ce.c0Compressed);
+    if (!pointOk(c0) || !rangeOk([c0], hexToBytes(ce.rangeProof))) return null;
+    return { c0, mintAuthority: hexToBytes(ce.mintAuthority), etchTxid: txid };
+  }
+  // verify_cmint_authorized.
+  function cmintLeaf(assetHex, mintAuthority, etchTxid, revealTx, commitTx) {
+    if (isZeroBytes(mintAuthority)) return null;
+    const env = extractTaprootEnvelope(bytesToHex(revealTx));
+    if (!env) return null;
+    const cm = parseCmint(env);
+    if (!cm) return null;
+    if (!eqBytes(hexToBytes(cm.asset), hexU8(assetHex))) return null;
+    if (!eqBytes(hexToBytes(cm.etchTxid), etchTxid)) return null;
+    const commitTxid = computeTxidBytes(commitTx);
+    if (!commitTxid) return null;
+    const rIns = extractInputs(bytesToHex(revealTx));
+    if (!rIns || !rIns.length) return null;
+    if (!eqBytes(hexToBytes(rIns[0].prevTxid), commitTxid) || rIns[0].prevVout !== 0) return null;
+    const cIns = extractInputs(bytesToHex(commitTx));
+    if (!cIns || !cIns.length) return null;
+    const vle = new Uint8Array(4); new DataView(vle.buffer).setUint32(0, cIns[0].prevVout >>> 0, true);
+    const msg = sha256(cat([new TextEncoder().encode('tacit-mint-v1'), hexU8(assetHex), hexToBytes(cIns[0].prevTxid), vle, hexToBytes(cm.commitment), hexToBytes(cm.encryptedAmount)]));
+    if (!verifySchnorr(hexToBytes(cm.issuerSig), msg, mintAuthority)) return null;
+    const c = hexToBytes(cm.commitment);
+    if (!pointOk(c) || !rangeOk([c], hexToBytes(cm.rangeProof))) return null;
+    const revealTxid = computeTxidBytes(revealTx);
+    if (!revealTxid) return null;
+    return [opKey(revealTxid, 0), chCompressed(c)];
+  }
+  // burn_deposit::verify_cxfers → the linkage shape, or 'abort' / null.
+  function verifiedHops(assetHex, prov) {
+    const out = [];
+    for (const p of prov) {
+      const txid = computeTxidBytes(p.tx);
+      if (!txid) return null;
+      if (!eqBytes(merklePathRoot(txid, p.merkleSiblings, p.merkleIndex), p.confirmedBlockRoot)) return null;
+      const w = witnessCommitted(p.tx, p.merkleIndex, p.wtxidSiblings, p.coinbase, p.coinbaseTxidSiblings, p.confirmedBlockRoot);
+      if (w !== 'ok') return w === 'abort' ? 'abort' : null;
+      const envHex = extractTaprootEnvelope(bytesToHex(p.tx));
+      if (!envHex) return null;
+      const cx = parseCxferEnvelopeFull(envHex);
+      if (!cx) return null;
+      if (!eqBytes(hexToBytes(cx.asset), hexU8(assetHex))) return null;
+      const all = extractInputs(bytesToHex(p.tx));
+      if (!all) return null;
+      if (p.inputSkip > all.length) return null;
+      // An atomic settlement's kernel covers only its asset inputs, vin[1..1+asset_input_count]; the rest are the
+      // taker's sats, and its witnessed skip must name that position.
+      let ins;
+      if (cx.assetInputCount == null) ins = all.slice(p.inputSkip);
+      else if (p.inputSkip !== 1 || 1 + cx.assetInputCount > all.length) return null;
+      else ins = all.slice(1, 1 + cx.assetInputCount);
+      if (p.inputCommitments.length !== ins.length) return null;
+      if (p.outputVouts.length !== cx.commitments.length) return null;
+      if (!p.inputCommitments.every(pointOk)) return null;
+      const inputPoints = p.inputCommitments.map((c) => secp.ProjectivePoint.fromHex(bytesToHex(c).slice(2)));
+      let conserves = false;
+      try {
+        conserves = pool.verifyCxferConservation({
+          asset: assetHex, inputOutpoints: ins.map((x) => [x.prevTxid, x.prevVout]), inputPoints,
+          outsCompressed: cx.commitments, rangeProof: cx.rangeProof, kernelSig: cx.kernelSig, burned: p.burnedAmount,
+        });
+      } catch { conserves = false; }
+      if (!conserves) return null;
+      const inputs = ins.map((x, k) => [opKey(hexToBytes(x.prevTxid), x.prevVout), chCompressed(p.inputCommitments[k])]);
+      const opcode = hexToBytes(envHex)[0];
+      const outputs = [];
+      for (let k = 0; k < cx.commitments.length; k++) {
+        const ch = chCompressed(hexToBytes(cx.commitments[k]));
+        if (!ch) return null;
+        const canonical = canonicalOutputVout(opcode, k, cx.commitments.length);
+        if (canonical === null || p.outputVouts[k] !== canonical) return null;
+        outputs.push([canonical, ch]);
+      }
+      out.push({ txid, inputs, outputs });
+    }
+    return out;
+  }
+  // burn_deposit::verify_provenance_dag_leaves: every hop reachable from a supply leaf (fixpoint), no duplicate
+  // producer or double consume, and the burned outpoint produced by the DAG but not consumed inside it.
+  function dagCommitmentHash(leaves, burnedOutpoint, hops) {
+    if (!hops.length) return null;
+    const produced = new Map();
+    for (const h of hops) {
+      if (!h.outputs.length) return null;
+      for (const [vout, ch] of h.outputs) { const op = opKey(h.txid, vout); if (produced.has(op)) return null; produced.set(op, ch); }
+    }
+    const consumed = new Set();
+    for (const h of hops) {
+      if (!h.inputs.length) return null;
+      for (const [op] of h.inputs) { if (consumed.has(op)) return null; consumed.add(op); }
+    }
+    const reachable = leaves.map(([o, c]) => [o.toLowerCase(), String(c).toLowerCase()]);
+    const accepted = hops.map(() => false);
+    for (;;) {
+      let progress = false;
+      hops.forEach((h, k) => {
+        if (accepted[k]) return;
+        if (h.inputs.every(([op, ch]) => reachable.some(([o, c]) => o === op && c === ch))) {
+          accepted[k] = true; progress = true;
+          for (const [vout, ch] of h.outputs) reachable.push([opKey(h.txid, vout), ch]);
+        }
+      });
+      if (!progress) break;
+    }
+    if (accepted.some((x) => !x)) return null;
+    if (consumed.has(burnedOutpoint)) return null;
+    return produced.has(burnedOutpoint) ? produced.get(burnedOutpoint) : null;
+  }
+  // The burned note's leaf: a native leaf whose owner is its own Bitcoin outpoint key, so its nullifier is unique to
+  // that UTXO. The envelope ν must be this leaf's nullifier.
+  const burnDepositLeaf = (assetHex, cx, cy, burnedTxidHex, burnedVout) =>
+    pool.leaf(assetHex, cx, cy, pool.outpointKey(burnedTxidHex, burnedVout >>> 0));
+  // admitBurnDeposit → { admitted, reason, burnedTxid, burnedVout, burnedNoteLeaf }. `burnedTxid/Vout` are always the
+  // burn tx's first input (what the guest binds), whatever the bundle claims. A consumed-outpoint (fast-lane) check is
+  // state-dependent and is made by the fold itself, not here.
+  function admitBurnDeposit({ burnTxHex, envAsset, envNu, blobHex, provHeaders = [], burnedCx, burnedCy, batchPrevHash }) {
+    const burnIns = extractInputs(burnTxHex);
+    const burnedTxid = burnIns && burnIns.length ? burnIns[0].prevTxid.toLowerCase() : null;
+    const burnedVout = burnIns && burnIns.length ? burnIns[0].prevVout : 0;
+    const res = (admitted, reason) => ({
+      admitted, reason, burnedTxid, burnedVout,
+      burnedNoteLeaf: burnedTxid && burnedCx && burnedCy ? burnDepositLeaf(envAsset, burnedCx, burnedCy, burnedTxid, burnedVout) : null,
+    });
+    const pb = parseBlob(hexU8(blobHex || '0x'));
+    if (!pb) return res(false, 'blob does not parse');
+    const tip = headerChainTip(provHeaders);
+    if (!tip || !batchPrevHash || bytesToHex(tip).toLowerCase() !== String(batchPrevHash).toLowerCase()) return res(false, 'header chain does not reach the batch anchor');
+    const roots = new Set(provHeaders.map((hh) => bytesToHex(hexU8(hh).subarray(36, 68)).toLowerCase()));
+    if (!pb.prov.every((c) => roots.has(bytesToHex(c.confirmedBlockRoot).toLowerCase()))) return res(false, 'a hop block is not in the header chain');
+    const leaves = [];
+    if (pb.etchTx.length) {
+      const anchor = etchAnchor(pb.etchTx, envAsset);
+      if (!anchor) return res(false, 'etch anchor');
+      const etchRoot = merklePathRoot(anchor.etchTxid, pb.etchSiblings, pb.etchIndex);
+      if (!roots.has(bytesToHex(etchRoot).toLowerCase())) return res(false, 'etch block not in the header chain');
+      const ew = witnessCommitted(pb.etchTx, pb.etchIndex, pb.etchWtxidSiblings, pb.etchCoinbase, pb.etchCbTxidSiblings, etchRoot);
+      if (ew !== 'ok') return res(false, ew === 'abort' ? 'etch coinbase downgraded' : 'etch witness not committed');
+      const c0Ch = chCompressed(anchor.c0);
+      if (!c0Ch) return res(false, 'C_0 not a point');
+      leaves.push([opKey(anchor.etchTxid, 0), c0Ch]);
+      const seenCommits = [];
+      for (const cm of pb.cmints) {
+        const revealTxid = computeTxidBytes(cm.revealTx);
+        if (!revealTxid) return res(false, 'cmint reveal txid');
+        const root = merklePathRoot(revealTxid, cm.merkleSiblings, cm.merkleIndex);
+        if (!roots.has(bytesToHex(root).toLowerCase())) return res(false, 'cmint block not in the header chain');
+        const commitTxid = computeTxidBytes(cm.commitTx);
+        if (!commitTxid) return res(false, 'cmint commit txid');
+        if (seenCommits.some((c) => eqBytes(c, commitTxid))) return res(false, 'cmint commit reused');
+        seenCommits.push(commitTxid);
+        const cw = witnessCommitted(cm.revealTx, cm.merkleIndex, cm.revealWtxidSiblings, cm.revealCoinbase, cm.revealCbTxidSiblings, root);
+        if (cw !== 'ok') return res(false, cw === 'abort' ? 'cmint coinbase downgraded' : 'cmint witness not committed');
+        const leaf = cmintLeaf(envAsset, anchor.mintAuthority, anchor.etchTxid, cm.revealTx, cm.commitTx);
+        if (!leaf) return res(false, 'cmint not authorized');
+        leaves.push(leaf);
+      }
+    }
+    if (pb.poolMemberships.length) return res(false, 'pool-membership leaves are refused');
+    if (!burnedTxid) return res(false, 'burn tx has no inputs');
+    const burnedOutpoint = pool.outpointKey(burnedTxid, burnedVout).toLowerCase();
+    if (!pb.prov.length) return res(false, 'empty provenance');
+    const hops = verifiedHops(envAsset, pb.prov);
+    if (hops === 'abort') return res(false, 'hop coinbase downgraded');
+    if (!hops) return res(false, 'a provenance hop does not verify');
+    const realCh = dagCommitmentHash(leaves, burnedOutpoint, hops);
+    if (!realCh) return res(false, 'burned note does not descend from a supply leaf');
+    // A wrong opening for a reachable burn is a prover error the guest aborts on; the blob is then withheld instead.
+    if (pool.commitmentHash(burnedCx, burnedCy).toLowerCase() !== realCh) return res(false, 'bundle opening does not match the authenticated commitment');
+    const leaf = burnDepositLeaf(envAsset, burnedCx, burnedCy, burnedTxid, burnedVout);
+    if (pool.nullifier(leaf).toLowerCase() !== String(envNu).toLowerCase()) return res(false, 'envelope nullifier does not match the burned note');
+    return res(true, 'admitted');
+  }
+  // The 161-byte burn envelope for a burn-deposit spending `burnedTxid:burnedVout` (internal byte order):
+  //   0x2B ‖ asset(32) ‖ pool-root field(32, unused) ‖ ν(32) ‖ dest(32) ‖ target(32), ν = nullifier(burnDepositLeaf).
+  function buildBurnDepositEnvelope({ assetId, cx, cy, burnedTxid, burnedVout, dest, target, poolRootField = null }) {
+    const leaf = burnDepositLeaf(assetId, cx, cy, burnedTxid, burnedVout);
+    const nu = pool.nullifier(leaf);
+    const f32 = (h) => { const b = hexU8(h); if (b.length !== 32) throw new Error('burn envelope: 32-byte field expected'); return b; };
+    const env = cat([Uint8Array.of(0x2b), f32(assetId), poolRootField ? f32(poolRootField) : new Uint8Array(32), f32(nu), f32(dest), f32(target)]);
+    return { envelope: bytesToHex(env), nu, burnedNoteLeaf: leaf };
+  }
+
+  return { mirror, assembler, parseEtchAnchor, computeTxidInternal: computeTxid, admitBurnDeposit, buildBurnDepositEnvelope, burnDepositLeaf };
 }

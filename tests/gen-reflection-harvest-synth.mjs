@@ -9,6 +9,8 @@
 // digest-parity check for the harvest fold. Replaces the prior stale 226-byte (worker-protocol) envelope,
 // which the current guest (parse_lp_harvest_envelope requires 346) + dapp classifier no longer accept.
 //   node tests/gen-reflection-harvest-synth.mjs > /tmp/harvest-reflect-input.json
+// HARVEST_SCENARIO=zero-reward claims a zero reward: fold_harvest declines it after fold_lp_harvest has already
+// accrued the farm and re-stamped the receipt, and the guest restores both, so nothing about the farm changes.
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
@@ -30,7 +32,8 @@ const HARVEST_DOM = new TextEncoder().encode('tacit-farm-harvest-owner-v1');
 const FARM_ID = '0x' + '44'.repeat(32), REWARD_ASSET = '0x' + 'c3'.repeat(32);
 const NONCE0 = '0x' + '01'.repeat(32), NONCE1 = '0x' + '02'.repeat(32);
 const LAUNCHER_PUB = '0x02' + 'aa'.repeat(32), LP_ASSET = '0x' + 'a5'.repeat(32);
-const SHARES = 100, RATE = 100, TREASURY = 1_000_000n, REWARD = 250, REWARD_R = 0xF00Dn;
+const SCENARIO = process.env.HARVEST_SCENARIO || 'reward';
+const SHARES = 100, RATE = 100, TREASURY = 1_000_000n, REWARD = SCENARIO === 'zero-reward' ? 0 : 250, REWARD_R = 0xF00Dn;
 const BLOCK_HEIGHT = 312500, GAP = 10; // bond seeded GAP blocks ago ⇒ rps = RATE·GAP·2^64/SHARES
 
 // One-time receipt owner; OWNER_PRIV signs the harvest spend.
@@ -87,11 +90,19 @@ const hv = input.blocks[0].txs[1].harvest;
 const treasuryPost = BigInt(state.pools.get(FARM_ID).reserveA);
 const folded = !!(hv && hv.leaf && hv.leaf.toLowerCase() === R0.toLowerCase());
 console.error(`harvest (346B trustless): reward=${REWARD} treasury ${treasury0}->${treasuryPost} folded=${folded} newEntry=${hv && hv.newEntry} newDigest=${input.newDigest}`);
-// Anti-false-pass: the harvest must ACTUALLY materialize — the C0-backed treasury debited by exactly REWARD
-// (read from state, not computed) AND the position re-stamped to the live rps. A skip (e.g. a stale envelope
-// the guest rejects) leaves the treasury untouched and reports the zeroed skip witness — a trivial digest match.
-if (treasuryPost !== treasury0 - BigInt(REWARD)) {
-  console.error(`FATAL: harvest did NOT debit the treasury by ${REWARD} (fold skipped — would be a both-skip false pass)`); process.exit(1);
+if (SCENARIO === 'zero-reward') {
+  const st = state.farmRewards.get(FARM_ID);
+  if (treasuryPost !== treasury0) { console.error('FATAL: zero-reward harvest moved the treasury'); process.exit(1); }
+  if (BigInt(st.rps) !== 0n || BigInt(st.lastHeight) !== BigInt(BLOCK_HEIGHT - GAP) || BigInt(state.farmEntries.get(R0)) !== ENTRY0) {
+    console.error('FATAL: a declined harvest left the farm accrued or the receipt re-stamped'); process.exit(1);
+  }
+} else {
+  // Anti-false-pass: the harvest must ACTUALLY materialize — the C0-backed treasury debited by exactly REWARD
+  // (read from state, not computed) AND the position re-stamped to the live rps. A skip (e.g. a stale envelope
+  // the guest rejects) leaves the treasury untouched and reports the zeroed skip witness — a trivial digest match.
+  if (treasuryPost !== treasury0 - BigInt(REWARD)) {
+    console.error(`FATAL: harvest did NOT debit the treasury by ${REWARD} (fold skipped — would be a both-skip false pass)`); process.exit(1);
+  }
+  if (!folded || !hv.newEntry || hv.newEntry === '0') { console.error('FATAL: harvest receipt was not re-stamped (owner-sig / gate failed)'); process.exit(1); }
 }
-if (!folded || !hv.newEntry || hv.newEntry === '0') { console.error('FATAL: harvest receipt was not re-stamped (owner-sig / gate failed)'); process.exit(1); }
 console.log(JSON.stringify(input));

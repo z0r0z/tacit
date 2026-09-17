@@ -12,6 +12,7 @@
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash, webcrypto } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { randomScalar, bppRangeVerify } from '../dapp/bulletproofs-plus.js';
 import { signSchnorr, verifySchnorr, SECP_N } from '../dapp/bulletproofs.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
@@ -94,6 +95,27 @@ const mint = stealth.buildBridgeStealthMint({
   assert.equal(verifySchnorr(fromHex(claim.ownerSig), claimMsg, b32(ownerPub)), true, 'recipient one-time-key claim sig verifies under ownerPub (guest accepts)');
   assert.equal(verifySchnorr(fromHex(hx(signSchnorr(claimMsg, b32(bPriv)))), claimMsg, b32(ownerPub)), false, 'the base spend key (sender-knowable) cannot claim');
   ok('minted lock plugs into OP_STEALTH_CLAIM (blind) — only the recipient can claim, not the sender');
+}
+
+// (4) a class-0 deposit note is owned by its burned outpoint key: the builder derives it, refuses a
+//     disagreeing owner, and needs the outpoint to do either.
+{
+  const spentTxid = '0x' + '5a'.repeat(32), spentVout = 1;
+  const key = pool.outpointKey(spentTxid, spentVout);
+  const vle = new Uint8Array(4); new DataView(vle.buffer).setUint32(0, spentVout, true);
+  assert.equal(key, hx(keccak256(Uint8Array.from([...b32(spentTxid), ...vle]))), 'outpointKey == keccak(txid ‖ vout u32 LE)');
+  const base = { chainBinding: cb, asset, poolRoot, ownerPub, amount, deadline, locker, lBlinding, bmNext: '0x' + 'ff'.repeat(32), bmIndex: 0, bmPath: pool.zeros };
+  const dep = { ...pool.commitXY(amount, rIn), blinding: rIn, leafIndex: 0, path: pool.zeros, sourceClass: 0, spentTxid, spentVout };
+  const derived = stealth.buildBridgeStealthMint({ ...base, burned: { ...dep } });
+  assert.equal(derived.inOwner, key, 'class 0 without an owner: the outpoint key is witnessed');
+  assert.equal(stealth.buildBridgeStealthMint({ ...base, burned: { ...dep, owner: key.toUpperCase().replace('0X', '0x') } }).inOwner.toLowerCase(), key, 'matching owner accepted');
+  assert.throws(() => stealth.buildBridgeStealthMint({ ...base, burned: { ...dep, owner: ZERO_OWNER } }), /outpoint key/, 'the zero owner is refused for a deposit note');
+  assert.throws(() => stealth.buildBridgeStealthMint({ ...base, burned: { ...dep, spentVout: undefined } }), /spent outpoint/, 'no outpoint, no deposit mint');
+  const bound = stealth.buildBridgeStealthMint({ ...base, burned: { ...dep, sourceClass: 2, owner: '0x' + '00'.repeat(31) + 'b7' } });
+  assert.equal(bound.inOwner, '0x' + '00'.repeat(31) + 'b7', 'class 2 keeps its Taproot auth key');
+  const fixture = JSON.parse(readFileSync(new URL('../contracts/sp1/confidential/fixtures/bridgestealthmint_op.json', import.meta.url), 'utf8'));
+  if (Number(fixture.sourceClass) === 0) assert.equal(String(fixture.inOwner).toLowerCase(), pool.outpointKey(fixture.spentTxid, Number(fixture.spentVout)), 'bridgestealthmint_op.json: class-0 owner is its outpoint key');
+  ok('class-0 deposit note: owner = outpoint key (derived, mismatch refused); other classes unchanged');
 }
 
 console.log(`confidential-bridge-stealth-op: all ${n} checks passed`);

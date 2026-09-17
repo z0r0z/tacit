@@ -27,6 +27,9 @@ interface IWstEth {
 
 interface IConfidentialPoolSettle {
     function settle(bytes calldata publicValues, bytes calldata proofBytes, bytes[] calldata memos) external;
+    function cbtcMinted(bytes32 outpoint) external view returns (bool);
+    function cbtcLockSpent(bytes32 outpoint) external view returns (bool);
+    function cbtcLockRedeemed(bytes32 outpoint) external view returns (bool);
 }
 
 /// @title CbtcEscrowHelper
@@ -41,19 +44,21 @@ interface IConfidentialPoolSettle {
 ///         `postEscrow` on a depositor's behalf, THIS CONTRACT becomes the engine's funder-of-record — only
 ///         it, not the original depositor, can ever call the engine's `claimEscrow`. This helper solves that
 ///         itself: `helperEscrowOf[outpoint][depositor]` tracks each depositor's own share of what THIS
-///         contract has posted, and `reclaimEscrow` pulls the engine-held pot back to this contract (once, for
-///         the whole outpoint — the engine has no per-depositor entry to give back partially) then forwards
-///         exactly the caller's own tracked share, so multiple depositors funding the same outpoint through
-///         this helper can each reclaim independently, in any order, once the engine will release it.
+///         contract has posted, and `reclaimEscrow` pulls the engine-held pot back to this contract (the
+///         engine has no per-depositor entry to give back partially) then forwards exactly the caller's own
+///         tracked share, so multiple depositors funding the same outpoint through this helper can each
+///         reclaim independently, in any order, once the engine will release it. While the lock can still be
+///         minted against, the other depositors' part of the pot is posted straight back in the same call, so
+///         one depositor reclaiming never cancels a mint the rest still fund.
 ///
 ///         Solvency invariant: for every outpoint, `engine.escrowOf(outpoint, address(this))` plus this
-///         contract's own wstETH balance already pulled back for that outpoint always equals the sum of
-///         every not-yet-reclaimed `helperEscrowOf[outpoint][*]`. Posting only ever raises both sides by the
-///         same amount (`_postToEngine`); reclaiming only ever pulls the engine's WHOLE remaining pot for an
-///         outpoint the first time any depositor calls (subsequent callers for the same outpoint find the
-///         engine side already drained and just take their share of this contract's balance). No cross-
-///         outpoint mixing risk: each outpoint's engine-side entry is independent and this contract never
-///         pulls for one outpoint to pay another.
+///         contract's own wstETH balance already pulled back for that outpoint always equals
+///         `helperEscrowTotal[outpoint]`, the sum of every not-yet-reclaimed `helperEscrowOf[outpoint][*]`.
+///         Posting raises both sides by the same amount (`_postToEngine`); a reclaim lowers both by the
+///         caller's share, leaving the rest either back in the engine (lock still mintable) or held here
+///         (lock minted, redeemed or spent, when the engine no longer takes new escrow for it). No cross-
+///         outpoint mixing: each outpoint's engine-side entry is independent and this contract never pulls
+///         for one outpoint to pay another.
 ///
 ///         Immutable, no proxy, no owner — matches this repo's peripheral-contract convention. Bound to
 ///         exactly one CollateralEngine (and, transitively, the ConfidentialPool wired to it at the time this
@@ -66,6 +71,8 @@ contract CbtcEscrowHelper is ReentrancyGuard {
     // outpoint => depositor => this depositor's own share of what this contract posted to the engine and has
     // not yet reclaimed.
     mapping(bytes32 => mapping(address => uint256)) public helperEscrowOf;
+    // outpoint => the sum of every depositor's not-yet-reclaimed share.
+    mapping(bytes32 => uint256) public helperEscrowTotal;
 
     event HelperEscrowPosted(bytes32 indexed outpoint, address indexed depositor, uint256 amount);
     event HelperEscrowStaked(bytes32 indexed outpoint, address indexed depositor, uint256 ethIn, uint256 wstEthOut);
@@ -161,17 +168,27 @@ contract CbtcEscrowHelper is ReentrancyGuard {
     /// @notice Trustlessly reclaim your OWN tracked share of this contract's escrow for `outpoint`, once
     ///         CollateralEngine will release it (reflection-proven honest redeem, or no cBTC ever minted
     ///         against the lock) — permissionless, no owner, refund always goes to the caller's own tracked
-    ///         share. Pulls the engine's whole remaining pot for this outpoint back to this contract only the
-    ///         FIRST time any depositor reclaims (later callers for the same outpoint find it already here);
-    ///         the engine's own `claimEscrow` reverts (`EscrowLocked`) if the lock genuinely isn't releasable
-    ///         yet, which propagates here unchanged — this contract adds no new release condition.
+    ///         share. Pulls the engine's remaining pot for this outpoint back to this contract and, while the
+    ///         lock can still be minted against, posts everyone else's part straight back; once the lock is
+    ///         minted, redeemed or spent the rest stays here for the other depositors. The engine's own
+    ///         `claimEscrow` reverts (`EscrowLocked`) if the lock genuinely isn't releasable yet, which
+    ///         propagates here unchanged — this contract adds no new release condition.
     function reclaimEscrow(bytes32 outpoint) external nonReentrant {
         uint256 share = helperEscrowOf[outpoint][msg.sender];
         if (share == 0) revert NothingToRelease();
+        helperEscrowOf[outpoint][msg.sender] = 0;
+        uint256 rest = helperEscrowTotal[outpoint] - share;
+        helperEscrowTotal[outpoint] = rest;
         if (COLLATERAL_ENGINE.escrowOf(outpoint, address(this)) != 0) {
             COLLATERAL_ENGINE.claimEscrow(outpoint);
+            if (
+                rest != 0 && !POOL.cbtcMinted(outpoint) && !POOL.cbtcLockSpent(outpoint)
+                    && !POOL.cbtcLockRedeemed(outpoint)
+            ) {
+                SafeTransferLib.safeApprove(address(WSTETH), address(COLLATERAL_ENGINE), rest);
+                COLLATERAL_ENGINE.postEscrow(outpoint, rest);
+            }
         }
-        helperEscrowOf[outpoint][msg.sender] = 0;
         SafeTransferLib.safeTransfer(address(WSTETH), msg.sender, share);
         emit HelperEscrowReclaimed(outpoint, msg.sender, share);
     }
@@ -192,6 +209,7 @@ contract CbtcEscrowHelper is ReentrancyGuard {
     ///      in the same call), never a standing allowance.
     function _postToEngine(bytes32 outpoint, address depositor, uint256 amount) internal {
         helperEscrowOf[outpoint][depositor] += amount;
+        helperEscrowTotal[outpoint] += amount;
         SafeTransferLib.safeApprove(address(WSTETH), address(COLLATERAL_ENGINE), amount);
         COLLATERAL_ENGINE.postEscrow(outpoint, amount);
         emit HelperEscrowPosted(outpoint, depositor, amount);

@@ -112,10 +112,14 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // encumbered for the gross debt while the relayer keeps the proceeds. The debt note's own sigma does not
   // help: it is produced by whoever CHOSE that commitment, so it proves consistency, not consent. The
   // `owner` label on the minted leaf does not help either — notes are BEARER, so a label is not authority.
-  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index, rateSnapshot, fee = 0n, debtCx, debtCy, debtOwner }) =>
-    sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
-      [note.value, debtValue, index, fee], 'cdp-mint-collateral',
+  // `nLegs` (the basket size) is bound too, so a prover cannot split the signed basket into several positions against
+  // one debt note or drop a leg.
+  const cdpMintCollateralSigma = ({ chainBinding, controller, nonce, owner, asset, note, debtValue, index, rateSnapshot, fee = 0n, debtCx, debtCy, debtOwner, nLegs }) => {
+    if (nLegs == null) throw new Error('cdp-mint collateral sigma: nLegs (basket size) is required');
+    return sigma('tacit-cdp-mint-collateral-v1', chainBinding, asset, nonce, note,
+      [note.value, debtValue, index, fee, nLegs], 'cdp-mint-collateral',
       [[controllerWord(controller), nonce, owner], [rateSnapshot, nonce, owner], [debtCx, debtCy, debtOwner]]);
+  };
   // The debt note opens to the NET (debtValue − fee); the gross debtValue + the relay fee are bound in the
   // context (mirroring the guest's OP_CDP_MINT). The caller MUST build `note` committing to debtValue − fee
   // and pass the gross `debtValue` + `fee` (fee = 0 ⇒ the note opens to the full debtValue). The settler is
@@ -190,6 +194,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
       const sig = cdpMintCollateralSigma({
         chainBinding, controller, nonce, owner, asset: leg.asset, note, debtValue,
         index: leg.leafIndex, rateSnapshot, fee, debtCx: debtC.cx, debtCy: debtC.cy, debtOwner: dOwner,
+        nLegs: BigInt(legsSorted.length),
       });
       return { asset: leg.asset, cx: leg.cx, cy: leg.cy, owner: leg.owner, nk: leg.nk, value: String(BigInt(leg.value)), index: Number(leg.leafIndex), path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ };
     });

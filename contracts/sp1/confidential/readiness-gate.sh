@@ -341,7 +341,19 @@ run_gate "Reflection storage slots == compiled ConfidentialPool layout" BRIDGE \
 # NON-CONSERVING case (gen-reflection-nonconserve) EXECUTE_OK, burn-set UNCHANGED, nothing folded, no panic.
 # So 0x004002de folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
 # Lineage (superseded): 0x001dfdc1.
-CONFIRMED_SOUND_REFL_VKEYS="0x004002de15c5a657052725f8d9573c4dcecc9874bde6e7ab0da7815838f06771 0x001dfdc126c24bacb497f7186913220bc3e62fcbb674d4822cdbbfd71b57aaa9 0x0097a385128aa14d92aebd08e5550b4b488df8e62de440ee225304f3ebd18c8d 0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02 0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583 0x00a01b6858aef05a5720f16aeaa2e4c522a53d374b7749e693297c3db6776b65 0x0014b726c0ae74b7e10821c816d9478b4e1b34c75c4b870165636154bc5aec56 0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb 0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
+# CONFIRMED 0x00f8c4dc (2026-09-17, v1-final pre-lock closing review): the largest reprove of the cycle —
+# cxfer-core changed for C-1 (transfer-kernel domain separation), H-1 (rebase drain-gate cross-out lag
+# admission), R1 (eth sync-committee chaining fold into the digest), R2 (pending burn-deposit set + late
+# provenance fold), R3 (deposit-class leaf owner = outpoint key), P-2 (AXFER asset_input_count parser),
+# F-5 (AMM ops refund instead of skip on an unclaimed extra live input), and BTC-call chain-id binding —
+# rotating the reflection ELF sha 51269e2f…→6b184852… (bitcoin_relay_vkey 0x004002de→0x00f8c4dc). None of
+# these touch verify_cxfer_conservation / fold_cxfer's check-before-fold gate. Both-sided REFLECT-1 test
+# RE-RUN against THIS rebuilt ELF via reflect-execute: CONSERVING control (reflection_input.json) FOLDS
+# with DIGEST_MATCH ✓ against the JS assembler (0x6d2d62a2…); NON-CONSERVING case
+# (gen-reflection-nonconserve) EXECUTE_OK (4,958,727 cycles), burn-set UNCHANGED, nothing folded, no panic.
+# So 0x00f8c4dc folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
+# Lineage (superseded): 0x004002de.
+CONFIRMED_SOUND_REFL_VKEYS="0x00f8c4dcfac00cb79a20878cf8d07ceb7ab5c66c53046c15d348eabd8598be3e 0x004002de15c5a657052725f8d9573c4dcecc9874bde6e7ab0da7815838f06771 0x001dfdc126c24bacb497f7186913220bc3e62fcbb674d4822cdbbfd71b57aaa9 0x0097a385128aa14d92aebd08e5550b4b488df8e62de440ee225304f3ebd18c8d 0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02 0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583 0x00a01b6858aef05a5720f16aeaa2e4c522a53d374b7749e693297c3db6776b65 0x0014b726c0ae74b7e10821c816d9478b4e1b34c75c4b870165636154bc5aec56 0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb 0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
 if [ "$refl_confirmed" = 1 ]; then

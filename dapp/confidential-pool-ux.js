@@ -44,7 +44,34 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // passes the recovery assert at submit; wrap (on-chain) uses it directly as the reference integration.
   const memo = indexer._memo;   // sealMemo / encodeMemo / decodeMemo
   const guard = makeRecoveryGuard({ memo });
-  const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard });
+  const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
+  // A relay that emitted different memos than the ones sealed here leaves those notes unrecoverable from the
+  // chain; the sealed memos (openable with this wallet's keys) are kept locally under the settle's tx hash.
+  function saveMismatchedMemos({ txHash, leaves, memos }) {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(`tacit:unrecoverable-memos:${txHash}`, JSON.stringify({ leaves, memos, savedAt: Date.now() }));
+  }
+  // After a relayed settle: the memo the pool emitted for each of our leaves must be byte-identical to the one
+  // sealed here (the relay chooses the memo hashes it proves, so it could substitute a memo consistently).
+  async function checkEmittedMemos({ txHash, leaves, memos }) {
+    let receipt = null;
+    try { receipt = await rpc('eth_getTransactionReceipt', [txHash]); } catch { /* reported as unchecked */ }
+    if (!receipt || !Array.isArray(receipt.logs)) return { ok: null, mismatched: [], reason: 'receipt unavailable' };
+    const emitted = new Map();
+    for (const log of receipt.logs) {
+      if (cfg.pool && String(log.address || '').toLowerCase() !== String(cfg.pool).toLowerCase()) continue;
+      const ev = evmLog.decodeLog(log);
+      if (!ev || ev.type !== 'LeavesInserted') continue;
+      ev.leaves.forEach((lf, i) => emitted.set(String(lf).toLowerCase(), String(ev.memos[i] ?? '0x').toLowerCase()));
+    }
+    const norm = (m) => '0x' + String(m ?? '').replace(/^0x/, '').toLowerCase();
+    const mismatched = [];
+    leaves.forEach((lf, i) => {
+      const got = emitted.get(String(lf).toLowerCase());
+      if (got === undefined || got !== norm(memos[i])) mismatched.push({ index: i, leaf: lf, expected: norm(memos[i]), emitted: got ?? null });
+    });
+    return { ok: mismatched.length === 0, mismatched };
+  }
 
   // Only assets with a deployed assetId are usable in the pool (cTAC/cBTC/cUSD are declared but null until
   // the suite deploys; the public TAC ERC20 is not a pool note asset).
@@ -171,7 +198,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // commit/reveal) is a separate BTC-wallet driver (cbtc-lock.js); this exposes ③ mintCbtc (+ CDP/farm).
   const _cdp = makeConfidentialCdp({ keccak256, pool, signSchnorr });
   const _farm = makeConfidentialFarm({ keccak256, pool });
-  const defiActions = (walletPriv) => makeConfidentialDefiActions({ pool, cdp: _cdp, farm: _farm, relay, id: identity(walletPriv), chainBindingHex, secp });
+  const defiActions = (walletPriv) => makeConfidentialDefiActions({ pool, cdp: _cdp, farm: _farm, relay, id: identity(walletPriv), chainBindingHex, secp, ephRand: freshEph });
   // ③ Mint a cBTC.zk bearer note against a reflection-recorded self-custody lock. outpoint = the lock's
   // 32-byte outpoint (lockTxid‖lockVout), vBtc = locked sats, blinding = the note's recoverable blinding.
   async function mintCbtc({ walletPriv, outpoint, vBtc, blinding, waitOpts } = {}) {
@@ -243,11 +270,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const tag = new TextEncoder().encode('tacit-evm-cnote-secret-v1');
     const buf = new Uint8Array(priv.length + tag.length); buf.set(priv); buf.set(tag, priv.length);
     const secret = '0x' + _hex(keccak256(buf));
-    // NOTE: this owner is wallet-CONSTANT, so every note minted through it shares one published owner and is
-    // linkable in the leaf. That is a privacy weakness, not a loss of funds, and it is what the ops which
-    // still use `id.owner` (LP / swap / route / crossOut) did before — they are now at least spendable.
-    // The assemblers that derive a FRESH per-note nk (wrap, self-send) are the ones that are also unlinkable;
-    // the remainder should move to per-note derivation the same way.
+    // This owner is wallet-CONSTANT: a note minted to it would publish one owner across the wallet's notes, and
+    // its nk would reach the relay every time such a note is spent. No assembler mints to it; every output gets
+    // a fresh per-note nk sealed into its memo (or a seed-derived one, like wrap). It is kept only to recognise
+    // notes an older build minted.
     return { priv, pubHex: '0x' + _hex(pub), owner: pool.nkToOwner(secret), secret };
   }
 
@@ -315,9 +341,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // object returned by buildWrap.
   async function submitWrapSettle({ built, waitOpts } = {}) {
     if (!built || !built.wrapOp) throw new Error('submitWrapSettle: pass the buildWrap() result');
-    const sub = await relay.submitOp({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, ephRand: built.ephRand, mode: 'settle' });
-    if (sub.status === 'settled') return { jobId: sub.jobId, ...sub };
-    return relay.waitForSettle(sub.jobId, waitOpts);
+    const sub = await relay.submitOp({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, memos: built.memos, ephRand: built.ephRand, mode: 'settle' });
+    const st = sub.status === 'settled' ? { jobId: sub.jobId, ...sub } : await relay.waitForSettle(sub.jobId, waitOpts);
+    return relay.verifyEmittedMemos(st, [built.leaf], sub.sealedMemos);
   }
 
   // Sign + broadcast the wrap deposit from the user's (funded) Sepolia EVM account. Returns the txHash +
@@ -570,8 +596,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // value is EXACT and public (bound in deposit_id, gated on-chain as pending), which is why these ops need
   // no membership, nullifier, change or kernel — there is no hidden total to conserve.
   //
-  // Deposit blindings are wallet-DERIVED (reproducible commit, exactly like buildWrap), so the caller must
-  // have wrapped with the same (asset, index) pair. `index` disambiguates concurrent deposits of one asset.
+  // Deposit notes are wallet-DERIVED exactly like buildWrap (blinding and per-note owner = nkToOwner(nk) from
+  // deriveNote(asset, index)), so the caller must have wrapped with the same (asset, index) pair; the deposit id
+  // this recomputes then names the pending deposit that wrap created. `index` disambiguates concurrent deposits
+  // of one asset.
   const ZERO_RCPT_HEX = '0x' + '00'.repeat(33); // canonical no-skim protocol-fee recipient
 
   function _depositLeg({ id, ticker, amountWei, index }) {
@@ -582,10 +610,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (deposit <= 0n || deposit % unitScale !== 0n) throw new Error(`${ticker}: amount not aligned to unitScale`);
     const value = deposit / unitScale;
     if (value > (2n ** 64n - 1n)) throw new Error(`${ticker}: value exceeds u64`);
-    const { blinding: bn } = pool.deriveNote(id.priv, meta.assetId, index);
+    const { secret, blinding: bn } = pool.deriveNote(id.priv, meta.assetId, index);
+    const owner = pool.nkToOwner(secret);
     const blinding = '0x' + BigInt(bn).toString(16).padStart(64, '0');
     const { cx, cy } = pool.commitXY(value, blinding);
-    return { meta, value, blinding, cx, cy, depositId: pool.depositId(meta.assetId, value, cx, cy, id.owner) };
+    return { meta, value, blinding, cx, cy, owner, depositId: pool.depositId(meta.assetId, value, cx, cy, owner) };
   }
 
   // OP_WRAP_LP — add liquidity straight from two pending deposits.
@@ -615,14 +644,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // wrap_lp ctx binds `(lp_asset, pid, s_owner)` using the SAME s_owner as the share note's own tuple,
     // not a separate caller-identity binding, so this is safe to vary independently of id.owner): every
     // wrap-lp otherwise mints its share under the wallet-constant identity().owner, letting a relay link
-    // every LP position a wallet opens by that one constant owner. The A/B deposit owners stay id.owner —
-    // those are the ALREADY-PUBLIC pending deposits from an earlier wrap, not a new output.
+    // every LP position a wallet opens by that one constant owner. The A/B deposit owners are the ones their
+    // wraps committed (per-note, from _depositLeg), since those are already-public pending deposits.
     const shareNk = '0x' + randomScalar().toString(16).padStart(64, '0');
     const shareOwner = pool.nkToOwner(shareNk);
     // The shared ctx binds BOTH deposits, the minted share note and the pool identity, so a relay can
     // neither redirect the position nor settle it against a different pool/tier.
     const ctx = pool.intentContext('tacit-wrap-lp-v1', cb, assetA, assetB,
-      [[A.cx, A.cy, id.owner], [B.cx, B.cy, id.owner], [sC.cx, sC.cy, shareOwner], [lpAsset, pid, shareOwner]],
+      [[A.cx, A.cy, A.owner], [B.cx, B.cy, B.owner], [sC.cx, sC.cy, shareOwner], [lpAsset, pid, shareOwner]],
       [A.value, B.value, dShares, BigInt(deadline), BigInt(fee)]);
     const sigOf = (leg, tag) => pool.openingSigma(leg.value, leg.blinding, ctx, pool.deriveOpeningNonce(leg.blinding, ctx, tag));
     const aSig = sigOf(A, 'wrap-lp-a'), bSig = sigOf(B, 'wrap-lp-b');
@@ -636,8 +665,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       op: 32, chainBinding: cb, spendRoot: '0x' + '00'.repeat(32), assetA, assetB, feeBps: Number(feeBps),
       protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: sharesPre.toString(),
-      a: { value: A.value.toString(), cx: A.cx, cy: A.cy, owner: id.owner, sigR: aSig.R, sigZ: aSig.z },
-      b: { value: B.value.toString(), cx: B.cx, cy: B.cy, owner: id.owner, sigR: bSig.R, sigZ: bSig.z },
+      a: { value: A.value.toString(), cx: A.cx, cy: A.cy, owner: A.owner, sigR: aSig.R, sigZ: aSig.z },
+      b: { value: B.value.toString(), cx: B.cx, cy: B.cy, owner: B.owner, sigR: bSig.R, sigZ: bSig.z },
       share: { cx: sC.cx, cy: sC.cy, owner: shareOwner, sigR: sSig.R, sigZ: sSig.z },
       opDeadline: BigInt(deadline).toString(), deadline: BigInt(deadline).toString(), fee: BigInt(fee).toString(),
       depositIds: [A.depositId, B.depositId],
@@ -678,12 +707,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const direction = lo ? 0 : 1; // SWAP_DIR_A_TO_B / B_TO_A
     // Fresh per-note owner for the swap output (confirmed against the guest: main.rs's wrap_swap ctx binds
     // `(dep_id, pid, out_owner)` using the SAME out_owner as the output's own tuple, not a separate
-    // caller-identity binding, so this is safe to vary independently of id.owner). `deposit.owner` stays
-    // id.owner — that's the already-public pending deposit from an earlier wrap, not a new output.
+    // caller-identity binding, so this is safe to vary independently of id.owner). `deposit.owner` is the
+    // per-note owner the earlier wrap committed (from _depositLeg), since the deposit is already public.
     const outNk = '0x' + randomScalar().toString(16).padStart(64, '0');
     const outOwner = pool.nkToOwner(outNk);
     const ctx = pool.intentContext('tacit-wrap-swap-v1', cb, assetA, assetB,
-      [[D.cx, D.cy, id.owner], [oC.cx, oC.cy, outOwner], [D.depositId, pid, outOwner]],
+      [[D.cx, D.cy, D.owner], [oC.cx, oC.cy, outOwner], [D.depositId, pid, outOwner]],
       [BigInt(direction), D.value, amountOut, BigInt(minOut), BigInt(deadline), BigInt(fee)]);
     const dSig = pool.openingSigma(D.value, D.blinding, ctx, pool.deriveOpeningNonce(D.blinding, ctx, 'wrap-swap-in'));
     const oSig = pool.openingSigma(amountOut, rOutBl, ctx, pool.deriveOpeningNonce(rOutBl, ctx, 'wrap-swap-out'));
@@ -697,7 +726,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       protocolFeeBps: 0, protocolFeeRecipient: ZERO_RCPT_HEX,
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), direction,
       amountIn: D.value.toString(), fee: BigInt(fee).toString(),
-      deposit: { cx: D.cx, cy: D.cy, owner: id.owner, sigR: dSig.R, sigZ: dSig.z },
+      deposit: { cx: D.cx, cy: D.cy, owner: D.owner, sigR: dSig.R, sigZ: dSig.z },
       minOut: BigInt(minOut).toString(),
       out: { cx: oC.cx, cy: oC.cy, owner: outOwner, sigR: oSig.R, sigZ: oSig.z },
       opDeadline: BigInt(deadline).toString(), deadline: BigInt(deadline).toString(),
@@ -805,7 +834,35 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // lpAddShares, and the guest emits a farm_receipt_leaf + bond directly — the intermediate LP-share note
   // never materializes. The A/B sigmas bind the bond target (controller, owner, nonce) into the same context
   // so a relay can't re-point the bonded liquidity. Mirrors tests/gen-confidential-lpbond-fixture.mjs.
-  function buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps = 30, reserveAPre, reserveBPre, sharesPre, bondNonce, rpsEntry = 0n, opDeadline = 0n, fee = 0n } = {}) {
+
+  // The receipt key and nonce of an OP_LP_BOND position, derived from the wallet key and the position itself:
+  // the controller, the LP-share asset, and the anchor = the leaf of the canonical-A note the bond spends. That
+  // note is consumed by the bond, so the anchor is unique per position, and the wallet re-opens its own spent
+  // notes from their memos, so a restored wallet re-derives every position key from chain + key alone. `owner`
+  // is the BIP-340 x-only key the receipt commits to and OP_FARM_HARVEST / OP_FARM_UNBOND verify a signature
+  // under; `ownerPriv` signs those. Neither is related to any other published value, so positions stay unlinkable.
+  function lpBondPosition({ walletPriv, controller, lpAsset, anchorLeaf }) {
+    if (!controller || !lpAsset || !anchorLeaf) throw new Error('lp-bond: position needs controller, lpAsset and anchorLeaf');
+    const id = identity(walletPriv);
+    const hb = (h, n) => Uint8Array.from((String(h).replace(/^0x/, '').padStart(n * 2, '0').match(/../g) || []).map((x) => parseInt(x, 16)));
+    const enc = new TextEncoder();
+    const body = [hb(String(controller).replace(/^0x/, '').slice(-40), 20), hb(lpAsset, 32), hb(anchorLeaf, 32)];
+    // keccak(tag ‖ walletPriv ‖ controller ‖ lpAsset ‖ anchor): keyed by the wallet scalar, as identity() is.
+    const tagged = (tag) => {
+      const t = enc.encode(tag);
+      const m = new Uint8Array(t.length + id.priv.length + 84); m.set(t); m.set(id.priv, t.length); let o = t.length + id.priv.length;
+      for (const x of body) { m.set(x, o); o += x.length; }
+      return keccak256(m);
+    };
+    let d = 0n; for (const x of tagged('tacit-evm-lp-bond-receipt-key-v1')) d = (d << 8n) | BigInt(x);
+    d %= SECP_N; if (d === 0n) d = 1n;
+    const ownerPriv = '0x' + d.toString(16).padStart(64, '0');
+    const owner = '0x' + _hex(secp.getPublicKey(hb(ownerPriv, 32), true).subarray(1));
+    const nonce = '0x' + _hex(tagged('tacit-evm-lp-bond-nonce-v1'));
+    return { owner, ownerPriv, nonce };
+  }
+
+  function buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps = 30, reserveAPre, reserveBPre, sharesPre, opDeadline = 0n, fee = 0n } = {}) {
     if (!aNote || !bNote) throw new Error('lp-bond: need an A note and a B note');
     if (!controller) throw new Error('lp-bond: farm controller address required');
     const id = identity(walletPriv);
@@ -823,14 +880,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const addr20 = (a) => '0x' + String(a).replace(/^0x/, '').padStart(40, '0').slice(-40);
     const controller32 = '0x' + '00'.repeat(12) + addr20(controller).replace(/^0x/, '');
     const cb = chainBindingHex();
-    // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + the deltas incl. DERIVED d_shares.
     const pid = pool.evmPoolId(assetA, assetB, feeBps), lpAsset = pool.evmLpShareId(pid); // bind pool identity
     // Mirror the guest exactly: the A/B tuples carry the notes' OWN owners (the ones the wire sends and the guest
     // hashes), and the amounts are [d_a, d_b, d_shares, op_deadline, fee] — the entry checkpoint is stamped at
     // execution by the controller, so it is deliberately NOT part of the authorization.
     const aOwner = nA.owner || id.owner, bOwner = nB.owner || id.owner;
+    // The receipt is owned by this position's own BIP-340 key (never the wallet-constant nk-hash owner, which has
+    // no discrete log and so could never sign the harvest or unbond).
+    const anchorLeaf = pool.leaf(assetA, nA.cx, nA.cy, aOwner);
+    const position = lpBondPosition({ walletPriv, controller: addr20(controller), lpAsset, anchorLeaf });
+    const { owner, nonce: bondNonce } = position;
+    // ctx binds A,B + the bond target (controller32, bond_nonce, owner) + the deltas incl. DERIVED d_shares.
     const ctx = pool.intentContext('tacit-lp-bond-v1', cb, assetA, assetB,
-      [[nA.cx, nA.cy, aOwner], [nB.cx, nB.cy, bOwner], [controller32, bondNonce, id.owner], [lpAsset, pid, id.owner]],
+      [[nA.cx, nA.cy, aOwner], [nB.cx, nB.cy, bOwner], [controller32, bondNonce, owner], [lpAsset, pid, owner]],
       [dA, dB, dShares, BigInt(opDeadline), fee]);
     const aSig = pool.openingSigma(dA, nA.blinding, ctx, pool.deriveOpeningNonce(nA.blinding, ctx, 'lp-bond-a'));
     const bSig = pool.openingSigma(dB, nB.blinding, ctx, pool.deriveOpeningNonce(nB.blinding, ctx, 'lp-bond-b'));
@@ -838,31 +900,36 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!pool.verifyOpeningSigma(nB.cx, nB.cy, dB, bSig.R, bSig.z, ctx)) throw new Error('lp-bond: B sigma self-verify failed');
 
     const op = {
-      chainBinding: cb, spendRoot: nA.root, controller: addr20(controller), owner: id.owner,
-      rpsEntry: String(rpsEntry), bondNonce, assetA, assetB, feeBps: Number(feeBps),
+      chainBinding: cb, spendRoot: nA.root, controller: addr20(controller), owner,
+      bondNonce, assetA, assetB, feeBps: Number(feeBps),
       reserveAPre: rA.toString(), reserveBPre: rB.toString(), sharesPre: S.toString(),
       a: { cx: nA.cx, cy: nA.cy, owner: aOwner, nk: nA.secret, index: Number(nA.leafIndex), path: nA.path, d: dA.toString(), sigR: aSig.R, sigZ: aSig.z },
       b: { cx: nB.cx, cy: nB.cy, owner: bOwner, nk: nB.secret, index: Number(nB.leafIndex), path: nB.path, d: dB.toString(), sigR: bSig.R, sigZ: bSig.z },
       opDeadline: Number(opDeadline), fee: fee.toString(),
     };
-    return { op, dShares, assetA, assetB, dA, dB, bondNonce };
+    // The one leaf the guest emits: the receipt, committing (controller, lpAsset, d_shares, owner, nonce).
+    const receiptLeaf = pool.farmReceiptLeaf(controller32, lpAsset, dShares, owner, bondNonce);
+    return { op, dShares, assetA, assetB, dA, dB, lpAsset, pid, bondNonce, receiptOwner: owner, receiptLeaf, anchorLeaf };
   }
 
   // Build + settle a 1-click farm entry. Reads the pair's live reserves, derives the shares, and submits the
-  // OP_LP_BOND witness gaslessly through the relay (no output-note leaves ⇒ no recovery memo, like unwrap; the
-  // farm receipt is recovered from controller+nonce+shares). `bondNonce` defaults to a fresh random scalar.
-  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, bondNonce, rpsEntry = 0n, selfRelay = false, waitOpts } = {}) {
+  // OP_LP_BOND witness through the relay. The guest emits one leaf (the receipt), so the settle carries one memo
+  // for it: the empty seed-derived memo, since the receipt key and nonce re-derive from the wallet key and the
+  // spent A note (lpBondPosition) and the shares are public in the bond's CdpMint.
+  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, selfRelay = false, waitOpts } = {}) {
     if (!controller) throw new Error('lp-bond: farm controller not configured for this network');
     const res = await poolReserves(routePoolId(aNote.asset, bNote.asset, feeBps));
     if (!res) throw new Error('lp-bond: pool not initialized for this pair / fee tier');
-    const nonce = bondNonce || ('0x' + BigInt(randomScalar()).toString(16).padStart(64, '0'));
     const b = buildLpBondOp({
       walletPriv, controller, aNote, bNote, feeBps,
       reserveAPre: res.reserveA, reserveBPre: res.reserveB, sharesPre: res.totalShares,
-      bondNonce: nonce, rpsEntry,
     });
-    const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves: [], outputs: null, ephRand: null }, sealedMemos: [], selfRelay, walletPriv, waitOpts });
-    return { ...r, dShares: b.dShares, bondNonce: nonce, assetA: b.assetA, assetB: b.assetB };
+    const leaves = [b.receiptLeaf];
+    const outputs = [{ seedDerived: true }];
+    const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand: freshEph });
+    guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
+    const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    return { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB };
   }
 
   // Plain confidential LP add / pool init (OP_LP_ADD) — the DEFAULT liquidity path (farm bonding via lpBond is
@@ -1187,6 +1254,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       // conservation is Σin = Σout + fee, and the kernel must be built over that same fee the guest reads.
       fee,
       assetId: asset,
+      // Settles as OP_TRANSFER, whose kernel has its own domain (see confidential-transfer.js).
+      domain: 'transfer',
     });
     if (!_ct.verifyTransfer(t)) throw new Error('transfer: self-verify failed');
 
@@ -1220,7 +1289,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const outMeta = txOutputs.map((_, j) => ({ cx: xy(t.outC[j]).cx, cy: xy(t.outC[j]).cy, owner: _pad32(outOwners[j], `output ${j} owner`) }));
 
     const op = {
-      chainBinding: _pad32(cb, 'chainBinding'), spendRoot: _pad32(spendRoot, 'spendRoot'), asset: _pad32(asset, 'asset'), owner: _pad32(id.owner, 'owner'),
+      chainBinding: _pad32(cb, 'chainBinding'), spendRoot: _pad32(spendRoot, 'spendRoot'), asset: _pad32(asset, 'asset'),
       inputs: inMeta, outputs: outMeta,
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
@@ -1259,6 +1328,95 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       type: 'transfer', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand },
       sealedMemos: b.memos, selfRelay, walletPriv, waitOpts,
     });
+  }
+
+  // ── fast-lane exit: move Bitcoin-homed notes into native notes (OP_TRANSFER, authenticated batch) ──
+  // A Bitcoin-homed note (a reflected Bitcoin pool note bound to this deployment) is spent on the EVM lane by an
+  // OP_TRANSFER whose batch carries a non-zero bitcoinSpentRoot. The guest then reads every input as
+  // btc_note_leaf_bound(asset, Cx, Cy, auth_key, chainBinding) proven against the Bitcoin pool root, proves each
+  // input's ν absent from the reflected Bitcoin spent set, and requires a BIP-340 signature under the note's
+  // Taproot x-only key over btc_note_spend_msg(chainBinding, "tacit.op.transfer", leaf, ν, output leaves, fee, 0).
+  // The outputs here are native notes to the caller (fresh nk each, memo-sealed), which then exit through the
+  // ordinary unwrap / send-unwrap paths. Wire shape = harnesses/exec-fastlane.rs (relay type 'fastlane').
+  //
+  // The caller supplies what only the reflected Bitcoin state holds: `spendRoot` (a relay-known Bitcoin pool
+  // root), each note's `leafIndex`/`path` under it, `bitcoinSpentRoot`, and each note's non-membership witness
+  // `low: { value, next, index, path }` (makeScanReflectionState / the reflection assembler produce all of them).
+  // Every one is re-checked here, so a stale witness fails before any proving. `authPriv` is the note's Taproot
+  // key (per note, or one for all). With no relay accepting the type, prove it yourself: write
+  // `{ ...op, memoHashes }` (keccak of each sealed memo) to OP_FILE, run exec-fastlane with MODE=groth16, and send
+  // ConfidentialPool.settle(publicValues, proof, memos) from any account (submitSettle).
+  const OP_ID_TRANSFER_HEX = '0x' + _hex(new TextEncoder().encode('tacit.op.transfer')).padEnd(64, '0');
+  function buildFastlaneExitOp({ walletPriv, notes, authPriv, spendRoot, bitcoinSpentRoot, fee = 0n } = {}) {
+    if (!notes || !notes.length) throw new Error('fastlane: no input notes');
+    const asset = notes[0].asset;
+    if (notes.some((n) => String(n.asset).toLowerCase() !== String(asset).toLowerCase())) throw new Error('fastlane: all inputs must be one asset');
+    if (!spendRoot || /^(0x)?0*$/.test(String(spendRoot))) throw new Error('fastlane: spendRoot (the Bitcoin pool root) is required');
+    if (!bitcoinSpentRoot || /^(0x)?0*$/.test(String(bitcoinSpentRoot))) throw new Error('fastlane: a non-zero bitcoinSpentRoot is required (it is what makes the batch Bitcoin-homed)');
+    fee = BigInt(fee);
+    const total = notes.reduce((s, n) => s + BigInt(n.value), 0n);
+    if (fee >= total) throw new Error('fastlane: fee >= input value');
+    const id = identity(walletPriv);
+    const cb = chainBindingHex();
+    const beHex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+    const hb = (h) => Uint8Array.from((String(h).replace(/^0x/, '').padStart(64, '0').match(/../g) || []).map((x) => parseInt(x, 16)));
+    const lt = (a, b) => BigInt(a) < BigInt(b);
+
+    const outNk = '0x' + randomScalar().toString(16).padStart(64, '0');
+    const outOwner = pool.nkToOwner(outNk);
+    const rOut = randomScalar();
+    const t = _ct.buildTransfer({
+      inputs: notes.map((n) => ({ value: BigInt(n.value), blinding: BigInt(n.blinding) })),
+      outputs: [{ value: total - fee, blinding: rOut, owner: outOwner }],
+      fee, assetId: asset, domain: 'transfer',
+    });
+    if (!_ct.verifyTransfer(t)) throw new Error('fastlane: transfer self-verify failed');
+    const xy = (P) => { const a = P.toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
+    const outs = t.outC.map((P) => ({ ...xy(P), owner: outOwner }));
+    const outLeaves = outs.map((o) => pool.leaf(asset, o.cx, o.cy, o.owner));
+
+    const inputs = notes.map((n, i) => {
+      const c = xy(t.inC[i]);
+      if (String(c.cx).toLowerCase() !== String(n.cx).toLowerCase() || String(c.cy).toLowerCase() !== String(n.cy).toLowerCase()) {
+        throw new Error(`fastlane: input ${i} opening does not match its commitment`);
+      }
+      const priv = n.authPriv ?? authPriv;
+      if (priv == null) throw new Error(`fastlane: input ${i} needs its Taproot key (authPriv)`);
+      const authKey = '0x' + _hex(secp.getPublicKey(hb(beHex(priv)), true).subarray(1));
+      if (n.authKey && String(n.authKey).toLowerCase() !== authKey) throw new Error(`fastlane: input ${i} authPriv is not the note's Taproot key`);
+      const lf = pool.btcNoteLeafBound(asset, c.cx, c.cy, authKey, cb);
+      if (String(_rootFromPath(lf, Number(n.leafIndex), n.path)).toLowerCase() !== String(spendRoot).toLowerCase()) {
+        throw new Error(`fastlane: input ${i} is not a member of the Bitcoin pool root (stale path or wrong root)`);
+      }
+      const nu = pool.nullifier(lf);
+      const low = n.low || {};
+      const lowLeaf = pool.imtLeaf(low.value, low.next);
+      const nonMember = String(_rootFromPath(lowLeaf, Number(low.index), low.path || [])).toLowerCase() === String(bitcoinSpentRoot).toLowerCase()
+        && lt(low.value, nu) && (BigInt(low.next) === 0n || lt(nu, low.next));
+      if (!nonMember) throw new Error(`fastlane: input ${i} non-membership witness does not prove it unspent on Bitcoin`);
+      const msg = pool.btcNoteSpendMsg(cb, OP_ID_TRANSFER_HEX, lf, nu, outLeaves, fee, 0n);
+      const sig = '0x' + _hex(signSchnorr(hb(msg), hb(beHex(priv))));
+      return { cx: c.cx, cy: c.cy, owner: authKey, leafIndex: Number(n.leafIndex), path: n.path,
+        low: { value: low.value, next: low.next, index: Number(low.index), path: low.path }, sig };
+    });
+
+    const op = {
+      chainBinding: cb, spendRoot, bitcoinSpentRoot,
+      transfer: {
+        asset, inputs, outputs: outs,
+        rangeProof: '0x' + _hex(t.rangeProof), fee: fee.toString(),
+        kernel: { R: '0x' + _hex(t.kernel.R.toRawBytes(true)), z: beHex(t.kernel.z) },
+      },
+    };
+    const outputs = [{ value: (total - fee).toString(), blinding: beHex(rOut), secret: outNk, asset, owner: outOwner, cx: outs[0].cx, cy: outs[0].cy, ownerPub: id.pubHex }];
+    const memos = guard.sealMemosForOutputs({ outputs, ephRand: freshEph });
+    guard.assertOutputsRecoverable({ leaves: outLeaves, outputs, memos });
+    return { op, leaves: outLeaves, outputs, memos, fee, amount: total - fee, asset };
+  }
+
+  async function fastlaneExit({ selfRelay = true, waitOpts, ...args } = {}) {
+    const b = buildFastlaneExitOp(args);
+    return _dispatch({ type: 'fastlane', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: freshEph }, sealedMemos: b.memos, selfRelay, walletPriv: args.walletPriv, waitOpts });
   }
 
   // ── stealth send / claim / refund (non-interactive third-party push, OP_STEALTH_LOCK/CLAIM/REFUND) ──
@@ -1452,7 +1610,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `destOwner` for a Bitcoin destination is the recipient's x-only TAPROOT key — NOT an owner label. The
   // guest folds it into btc_note_leaf and reflection binds it to the mint tx's vout-0 P2TR program
   // (main.rs OP_BRIDGE_BURN rejects a zero key outright). Passing an nk-hash owner here mints a note nobody
-  // can ever spend, so it is required explicitly rather than defaulted to id.owner.
+  // can ever spend, so it is required explicitly for every destination chain and never defaulted.
   async function crossOut({ walletPriv, notes, amount, destOwner, destBlinding, destChain = 1, fee = 0n, selfRelay = false, waitOpts } = {}) {
     if (!notes || !notes.length) throw new Error('crossOut: no input notes');
     const id = identity(walletPriv);
@@ -1468,7 +1626,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         throw new Error('crossOut: a Bitcoin destination needs destOwner = the recipient x-only Taproot key (32 non-zero bytes); an owner label would mint an unspendable note');
       }
     }
-    const owner = destOwner || id.owner;
+    if (destOwner == null || /^(0x)?0*$/.test(String(destOwner))) throw new Error('crossOut: destOwner (the destination note owner) is required');
+    const owner = destOwner;
     // Default to a recoverable blinding rather than a fresh random scalar: the crossOut's destination is a
     // Bitcoin-homed note with no memo channel (same bearer constraint as cBTC, see cbtc-note-recovery.js's
     // header), so a random blinding here means the note can never be re-opened from the identity key alone —
@@ -1506,7 +1665,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // `outputs` is what exec-bridgeburn reads per destination note (cx, cy, owner=dest auth key); `crossOuts`
     // is kept for the caller/consumer (claimId + destCommitment) but is NOT what the harness streams.
     const op = {
-      chainBinding: chainBindingHex(), spendRoot: notes[0].root, asset, owner: id.owner,
+      chainBinding: chainBindingHex(), spendRoot: notes[0].root, asset,
       destChain,
       inputs: inMeta,
       outputs: t.crossOuts.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })),
@@ -1627,7 +1786,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // from the spent note's own (unchangeable) owner, same reasoning as every other op fixed above.
     const outNk = '0x' + randomScalar().toString(16).padStart(64, '0');
     const outOwner = pool.nkToOwner(outNk);
-    const change = changeVal > 0n ? [{ value: changeVal, blinding: rChange, owner: id.owner }] : [];
+    // Change gets its own fresh nk too: a wallet-constant owner would link every partial route, and its nk
+    // would reach the relay on the change's next spend.
+    const changeNk = changeVal > 0n ? '0x' + randomScalar().toString(16).padStart(64, '0') : null;
+    const changeOwner = changeNk ? pool.nkToOwner(changeNk) : null;
+    const change = changeVal > 0n ? [{ value: changeVal, blinding: rChange, owner: changeOwner }] : [];
     const op = _route.buildRoute({
       asset0: inNote.asset, chainBinding: chainBindingHex(), inNote, amountIn: spend,
       rIn: BigInt(inNote.blinding), hops: q.hops, minOut: BigInt(minOut), outOwner, rOut,
@@ -1641,8 +1804,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // Change is a REAL note — seal + register it or the remainder is silently lost. Leaf order matches the
     // guest: the routed output first, then change (in the START asset, never the endpoint asset).
     for (const c of (op.change || [])) {
-      leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, id.owner));
-      outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: id.secret, asset: inNote.asset, owner: id.owner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
+      leaves.push(pool.leaf(inNote.asset, c.cx, c.cy, changeOwner));
+      outputs.push({ value: c.value.toString(), blinding: beHex(c.blinding), secret: changeNk, asset: inNote.asset, owner: changeOwner, cx: c.cx, cy: c.cy, ownerPub: id.pubHex });
     }
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
@@ -1695,7 +1858,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // to submitOp, instead of letting it reseal with a fresh ephRand — otherwise the memo the local recovery
     // check validated is never the one that actually ships (see submitOp's own `outputs`+`memos` branch).
     if (!selfRelay) return relay.settle({ type, ...spec, memos: sealedMemos }, waitOpts);
-    const proven = await relay.prove({ type, ...spec }, waitOpts);
+    const proven = await relay.prove({ type, ...spec, memos: sealedMemos }, waitOpts);
     return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: sealedMemos });
   }
 
@@ -2028,6 +2191,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, buildLpBondOp, lpBond, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, lpBondPosition, buildLpBondOp, lpBond, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
 }

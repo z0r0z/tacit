@@ -28,9 +28,21 @@ import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 //                   without its verifier — which would throw).
 //   getBurnDeposits: (optional) (txidsDisplay[]) => Promise<Map(txidDisplay → holder-traced bundle)> for
 //                   any burn-deposit in the batch. Looked up by the burn's display txid (a bundle is bound
-//                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired.
+//                   to the burn tx, not a block height). Only consulted when burnDepositKit is wired. The
+//                   lookup also covers burns an earlier batch recorded pending, so a bundle registered after
+//                   the burn's block was attested still completes the deposit.
 //   prove/submit as above. batchSize caps blocks per cycle (a huge backlog proves in chunks).
-export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, ethBundleSource, streamBlocks = false, streamWindow = 4 , chainBinding = null }) {
+export function makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize = 16, burnDepositKit, getBurnDeposits, listBurnDepositTxids, ethBundleSource, streamBlocks = false, streamWindow = 4 , chainBinding = null }) {
+  // Pending burn-deposits whose bundle has been registered. Anyone can add a pending record with a junk 0x2B
+  // envelope, so a batch looks up bundles only for records a listing says exist rather than one read per record.
+  const norm = (t) => String(t).replace(/^0x/, '').toLowerCase();
+  async function registeredPending(idx) {
+    const pending = idx.pendingBurnTxids();
+    if (!pending.length || !listBurnDepositTxids) return pending;
+    const registered = new Set((await listBurnDepositTxids()).map(norm));
+    return pending.filter((t) => registered.has(norm(t)));
+  }
+
   const range = (from, to) => { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
   // attestedHeight = the last block folded into the persisted snapshot; the next batch starts at
   // attestedHeight+1. Genesis: the pool resumes from GENESIS_REFLECTION_ANCHOR = block `genesisHeight`
@@ -107,6 +119,13 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       // fetched — getRawBlock runs immediately before the indexer's txSpec, so a block's bundles are present when
       // its txs are specced. Empty for the common (no-bundle) catch-up.
       const burnDeposits = (burnDepositKit && getBurnDeposits) ? new Map() : undefined;
+      // Bundles for burns recorded pending by earlier batches are fetched up front; the assembler completes them
+      // after the block scan.
+      if (burnDeposits) {
+        const pendingTxids = await registeredPending(idx);
+        const bd = pendingTxids.length ? await getBurnDeposits(pendingTxids, from - 1) : null;
+        if (bd) for (const [k, v] of bd) burnDeposits.set(k, v);
+      }
       const cache = new Map();
       const ensure = (i) => { if (i >= 0 && i < heights.length && !cache.has(i)) cache.set(i, getBlockTxs(heights[i])); };
       for (let i = 0; i < Math.min(streamWindow, heights.length); i++) ensure(i);
@@ -117,7 +136,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
           const blk = await cache.get(i);
           cache.delete(i); ensure(i + streamWindow);
           if (burnDeposits) {
-            const bd = await getBurnDeposits((blk.txs || []).map((t) => t.txidDisplay));
+            const bd = await getBurnDeposits((blk.txs || []).map((t) => t.txidDisplay), from - 1);
             if (bd) for (const [k, v] of bd) burnDeposits.set(k, v);
           }
           return blk;
@@ -145,7 +164,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       let burnDeposits;
       if (burnDepositKit && getBurnDeposits) {
         const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
-        burnDeposits = await getBurnDeposits(txids);
+        burnDeposits = await getBurnDeposits([...new Set([...txids, ...(await registeredPending(idx))])], from - 1);
       }
       // Mode-B reverse reflection (ETH→BTC): if an eth-reflection bundle source is wired, fetch the eth
       // proof's attested sets for this range (+ the resolved Bitcoin source note per consumed ν) and assemble
@@ -167,16 +186,15 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
       const ops = [...new Set(input.unsupportedEnvelopes.map((u) => '0x' + (u.opcode || 0).toString(16)))].join(',');
       throw new Error(`reflection: ${input.unsupportedEnvelopes.length} unmirrored guest-folded envelope(s) [${ops}] in blocks ${from}..${to}; mirror the fold in the JS scan before attesting (fail-loud, no divergent attestation)`);
     }
-    // Fail-loud, liveness reason: a 0x2B burn in this range with no registered provenance bundle folds
-    // cleanly (skip-not-panic in the guest, no digest risk) but the reflection height this batch covers
-    // can never be scanned again once attested — an omitted burn's onboarding is gone forever, not just
-    // delayed. Refuse to build the batch rather than let a registration race silently and permanently
-    // strand a real burn; register the bundle (POST /reflection/burndep, now open to anyone) and retry.
-    if (input.unresolvedBurnDeposits && input.unresolvedBurnDeposits.length) {
-      const txids = input.unresolvedBurnDeposits.map((b) => b.txid).join(',');
-      throw new Error(`reflection: ${input.unresolvedBurnDeposits.length} burn-deposit(s) with no registered provenance in blocks ${from}..${to} [${txids}]; register via POST /reflection/burndep before attesting past this height (fail-loud, an unresolved burn here is unrecoverable once attested)`);
-    }
-    return { jobId: input.newDigest, priorDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length };
+    // A 0x2B burn of a non-live note with no registered provenance bundle is recorded in the pending set, in the guest
+    // and here, so it never blocks the batch: anyone can broadcast a junk 161-byte 0x2B envelope, and a real burn
+    // registered later completes in whichever batch first sees its bundle. The unregistered burns of this range are
+    // returned for alerting, with the completions this batch folds.
+    const unresolved = input.unresolvedBurnDeposits || [];
+    return {
+      jobId: input.newDigest, priorDigest, input, newSnapshot: idx.snapshot(), attestedTo: to, blocks: heights.length,
+      pendingBurnDeposits: unresolved, completedBurnDeposits: (input.depositCompletions || []).map((c) => ({ burnedTxid: c.burnedTxid, burnedVout: c.burnedVout })),
+    };
   }
 
   // Advance the attested anchor after the on-chain attestation lands. Idempotent: a stale ack
@@ -302,11 +320,28 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     const burnTxWitness = bundle.burnTxWitness ? { ...bundle.burnTxWitness, ...(await blockWitness(bundle.burnTxWitness, bundle.burnTxWitness.tx)) } : null;
     return { ...bundle, etch, cxfers, cmints, burnTxWitness };
   }
-  const getBurnDeposits = async (txidsDisplay) => {
+  // A bundle's provenance header chain must end at the batch's anchor block, which keeps moving: a burn left
+  // pending is completed batches later, so the chain a holder submitted is carried forward here, from its last
+  // header to `anchorHeight`, out of the same header source the batch uses. Headers are public chain data, so
+  // extending them adds nothing a holder could have got wrong.
+  const extendProvHeaders = async (bundle, anchorHeight) => {
+    const hs = bundle.provHeaders;
+    if (anchorHeight == null || !Array.isArray(hs) || !hs.length) return bundle;
+    const last = String(hs[hs.length - 1]).replace(/^0x/, '');
+    if (!/^[0-9a-fA-F]{160}$/.test(last)) return bundle;
+    const lastHash = _hex(_dsha(Uint8Array.from(last.match(/../g).map((x) => parseInt(x, 16)))).reverse());
+    let lastHeight;
+    try { lastHeight = Number(JSON.parse(await api(env, `/block/${lastHash}`, {}, network)).height); } catch { return bundle; }
+    if (!Number.isInteger(lastHeight) || lastHeight >= anchorHeight) return bundle;
+    const heights = [];
+    for (let h = lastHeight + 1; h <= anchorHeight; h++) heights.push(h);
+    return { ...bundle, provHeaders: [...hs, ...(await getHeaders(heights))] };
+  };
+  const getBurnDeposits = async (txidsDisplay, anchorHeight) => {
     const map = new Map();
     for (const txid of txidsDisplay) {
       const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
-      if (raw) map.set(txid, await enrichBurnDeposit(JSON.parse(raw)));
+      if (raw) map.set(txid, await extendProvHeaders(await enrichBurnDeposit(JSON.parse(raw)), anchorHeight));
     }
     return map;
   };
@@ -393,5 +428,16 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   const streamBlocks = env.REFLECTION_STREAM === '1';
   const cap = streamBlocks ? Math.max(1, parseInt(env.REFLECTION_MAX_BATCH || '64', 10)) : MAX_BATCH;
   const batchSize = Math.min(cap, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));
-  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, ethBundleSource, streamBlocks , chainBinding: env.REFLECTION_CHAIN_BINDING || null });
+  const listBurnDepositTxids = async () => {
+    const prefix = `reflection:burndep:${network}:`;
+    const out = [];
+    let cursor;
+    do {
+      const page = await env.REGISTRY_KV.list({ prefix, cursor });
+      for (const k of page.keys) out.push(k.name.slice(prefix.length));
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+    return out;
+  };
+  return makeScanReflectionAttester({ deps, storage, prove, submit, getBlockTxs, getHeaders, genesisHeight, batchSize, burnDepositKit: kit, getBurnDeposits, listBurnDepositTxids, ethBundleSource, streamBlocks , chainBinding: env.REFLECTION_CHAIN_BINDING || null });
 }

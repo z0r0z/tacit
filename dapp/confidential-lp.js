@@ -16,7 +16,18 @@
 const ZERO32 = '0x' + '00'.repeat(32);
 
 export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) {
-  const { leaf, nullifier, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+  const { leaf, nullifier, nkToOwner, nativeNu, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
+
+  // The nullifier the guest records for a spent native note: leaf-bound for a bearer note (owner 0), otherwise
+  // native_nu, which binds the spender's nk. It cannot be derived from public data, so this returns null when no nk
+  // is supplied, and throws when a supplied nk does not hash to the note's owner (the guest rejects that witness).
+  function spentNullifier(asset, note, fail) {
+    const lf = leaf(asset, note.cx, note.cy, note.owner);
+    if (BigInt(note.owner ?? 0) === 0n) return nullifier(lf);
+    if (note.nk == null) return null;
+    if (String(nkToOwner(note.nk)).toLowerCase() !== String(note.owner).toLowerCase()) fail('input nk does not commit to the note owner');
+    return nativeNu(note.owner, note.nk, lf);
+  }
   const enc = new TextEncoder();
   const hexToBytes = (h) => { h = (h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -248,8 +259,14 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
         reserveAPost, reserveBPost, sharesPost,
       },
       fees: fee > 0n ? [{ assetId: op.assetA, value: fee }] : [],
-      nullifiers: [nullifier(op.a.cx, op.a.cy), nullifier(op.b.cx, op.b.cy)],
-      leaves: [leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner)],
+      // Every contributing input on both legs, then the share note followed by A change and B change — the
+      // guest's nullifier and leaf order.
+      nullifiers: [...legIns(op.a).map((n) => spentNullifier(op.assetA, n, fail)), ...legIns(op.b).map((n) => spentNullifier(op.assetB, n, fail))],
+      leaves: [
+        leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner),
+        ...(op.aChange || []).map((c) => leaf(op.assetA, c.cx, c.cy, c.owner)),
+        ...(op.bChange || []).map((c) => leaf(op.assetB, c.cx, c.cy, c.owner)),
+      ],
     };
   }
 
@@ -329,8 +346,11 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
         reserveAPost: op.reserveAPre - op.dA, reserveBPost: op.reserveBPre - op.dB, sharesPost: op.sharesPre - op.dShares,
       },
       fees: fee > 0n ? [{ assetId: op.assetA, value: fee }] : [],
-      nullifiers: [nullifier(op.share.cx, op.share.cy)],
-      leaves: [leaf(op.assetA, op.a.cx, op.a.cy, op.a.owner), leaf(op.assetB, op.b.cx, op.b.cy, op.b.owner)],
+      nullifiers: [spentNullifier(lpAsset, op.share, fail)],
+      leaves: [
+        leaf(op.assetA, op.a.cx, op.a.cy, op.a.owner), leaf(op.assetB, op.b.cx, op.b.cy, op.b.owner),
+        ...(op.shareChange || []).map((c) => leaf(lpAsset, c.cx, c.cy, c.owner)),
+      ],
     };
   }
 

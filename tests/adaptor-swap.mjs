@@ -80,4 +80,24 @@ const mR = sha('leg R: responder Y -> initiator'); // claimed by initiator (near
   ok('safety: deadline ordering enforced + a tampered pre-sig is caught before committing the counter-leg');
 }
 
-console.log(`\n${n}/4 adaptor-swap orchestration checks passed`);
+// ── 5. cross-lane: the responder's leg is an EVM OP_ADAPTOR_CLAIM kernel, the initiator's a Bitcoin BIP-340 leg ──
+{
+  const { keccak_256 } = await import('../node_modules/@noble/hashes/sha3.js');
+  const { makeConfidentialTransfer } = await import('../dapp/confidential-transfer.js');
+  const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+  const rL = sc('evm-rL'), rO = sc('evm-rO'), v = 5000n;
+  const L = ct.commit(v, rL), O = ct.commit(v, rO);
+  const ctx = swap.open({ t, nearDeadline: 1000, farDeadline: 2000 });
+  const li = swap.lock(ctx, 'initiator', { dPriv: dI, msg32: mI });
+  assert.throws(() => swap.lock(ctx, 'responder', { lane: 'evm', dPriv: dR, msg32: mR }), /evm leg needs excess/);
+  swap.lock(ctx, 'responder', { lane: 'evm', excess: modN(rL - rO), inC: [L], outC: [O] });
+  assert.ok(swap.ready(ctx), 'both legs verify (BIP-340 pre-sig + claim-kernel pre-sig)');
+  const { kernel, s: claimS } = swap.claim(ctx);
+  assert.ok(ct.verifyKernel({ inC: [L], outC: [O], kernel }), 'the EVM claim kernel passes the guest-mirror verify_kernel');
+  const { t: tSeen, sig } = swap.counterclaim(ctx, claimS);
+  assert.strictEqual(tSeen, modN(t), 't recovered from the committed kernel z');
+  assert.strictEqual(verifySchnorr(sig, mI, li.Px), true, 'the Bitcoin leg completes with it');
+  ok('cross-lane: EVM claim kernel reveals t through z; the Bitcoin leg completes');
+}
+
+console.log(`\n${n}/5 adaptor-swap orchestration checks passed`);

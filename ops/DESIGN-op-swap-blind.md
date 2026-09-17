@@ -61,15 +61,22 @@ it **dormant** (dapp/worker don't emit it), and arm it later as a pure off-chain
 
 ## 2. Threat model
 
-Solver-blind. The prover/solver who assembles the SP1 stdin never learns any trader's amount; the
-guest never reads a cleartext swap amount. Correctness rests on:
+Solver-blind ON-CHAIN, not off-chain. The SP1 GUEST never reads a cleartext swap amount — its
+stdin carries only commitments, the Groth16 proof and the per-asset aggregate kernel, so chain
+observers and the relay learn nothing beyond net reserve deltas. That is NOT the same as "nobody
+sees the amounts": whoever assembles the Groth16 WITNESS (the coordinator collecting each
+trader's intent before it is proven) necessarily holds every trader's cleartext amount and
+blinding as circuit private inputs — the circuit can't be proven otherwise. Correctness rests on:
 - the **Groth16 proof** (the amm_swap_batch circuit) — each receipt's split is the uniform clearing,
   and each output amount is in range (the circuit's range constraints replace a per-output BP+);
 - the **aggregate Pedersen identity** — Σ inputs − Σ outputs − tip − Δ·H = R_net·G per asset, so
   total value conserves without revealing individual amounts;
 - the **cross-curve sigma** — each secp note's hidden value == its Groth16-proven BJJ value.
 
-Chain observers and the solver both see only: net reserve deltas, nullifiers, output leaves, tips.
+Chain observers and the relay see only: net reserve deltas, nullifiers, output leaves, tips. The
+coordinator (whoever assembles the batch witness off-chain) sees every trader's amount and
+blinding, same as it does for the cleartext `T_SWAP_BATCH`/`OP_SWAP` paths — solver-blindness here
+is a chain-observer property, not a claim that the batch has no privileged party.
 
 ## 3. THE EVM-specific security requirement (the swap_batch trap)
 

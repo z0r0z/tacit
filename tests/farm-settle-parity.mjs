@@ -39,13 +39,26 @@ const roundtrip = (label, n, sig, domain, assetA, assetB, notes, amounts, tamper
   ok(pool.verifyOpeningSigma(n.cx, n.cy, n.value, sig.sigR, sig.sigZ, bad) === false, `${label}: tampered amount rejected`);
 };
 
-// 2. OP_FARM_BOND leg — tacit-farm-bond-leg-v1, notes=[(leg),(controller32,nonce,owner)], amounts=[value,index]
+// 2. OP_FARM_BOND leg — tacit-farm-bond-leg-v1, notes=[(leg),(controller32,nonce,owner)], amounts=[value,index,nLegs]
 {
-  const value = 100, index = 7, nonce = '0x' + '02'.repeat(32);
+  const value = 100, index = 7, nLegs = 2, nonce = '0x' + '02'.repeat(32);
   const n = note(value, 0x1111n);
-  const sig = farm.farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note: n, index });
-  roundtrip('bond', n, sig, 'tacit-farm-bond-leg-v1', lpAsset, nonce,
-    [[n.cx, n.cy, owner], [controllerWord, nonce, owner]], [value, index], [value, index + 1]);
+  const sig = farm.farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note: n, index, nLegs });
+  const notes = [[n.cx, n.cy, owner], [controllerWord, nonce, owner]];
+  roundtrip('bond', n, sig, 'tacit-farm-bond-leg-v1', lpAsset, nonce, notes, [value, index, nLegs], [value, index + 1, nLegs]);
+  // A leg signed for a 2-leg bond must not verify inside a bond of any other size.
+  for (const other of [1, 3]) {
+    const ctx = pool.intentContext('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, notes, [value, index, other].map(BigInt));
+    ok(pool.verifyOpeningSigma(n.cx, n.cy, n.value, sig.sigR, sig.sigZ, ctx) === false, `bond: leg signed for ${nLegs} legs rejected in a ${other}-leg bond`);
+  }
+  let threw = false;
+  try { farm.farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note: n, index }); } catch { threw = true; }
+  ok(threw, 'bond: leg sigma refuses to sign without the leg count');
+  // buildBondOp signs every leg under the basket size it assembles.
+  const legs = [note(60, 0x51n), note(40, 0x52n)].map((l, i) => ({ ...l, index: i, path: [], owner: '0x' + '0e'.repeat(32), nk: '0x' + '0f'.repeat(32) }));
+  const op = farm.buildBondOp({ chainBinding, spendRoot: '0x' + '00'.repeat(32), controller, owner, nonce, lpAsset, legs });
+  ok(op.legs.every((w, i) => pool.verifyOpeningSigma(w.cx, w.cy, legs[i].value, w.sigR, w.sigZ,
+    pool.intentContext('tacit-farm-bond-leg-v1', chainBinding, lpAsset, nonce, [[w.cx, w.cy, owner], [controllerWord, nonce, owner]], [legs[i].value, i, 2].map(BigInt)))), 'buildBondOp: each leg binds n_legs == legs.length');
 }
 
 // 3. OP_FARM_HARVEST reward — tacit-farm-harvest-reward-v1, notes=[(reward)], amounts=[reward], asset=reward_asset

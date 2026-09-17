@@ -50,8 +50,8 @@ const op = lp.buildAdd({
   aChange: (process.env.CHANGE ? [{ value: 10n, blinding: det('a-change'), owner: OWNER }] : []),
   bChange: (process.env.CHANGE ? [{ value: 20n, blinding: det('b-change'), owner: OWNER }] : []),
   assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, protocolFeeBps: PF_BPS, protocolFeeRecipient: PF_RCPT, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
-  aNote: { owner: A_OWNER, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
-  bNote: { owner: B_OWNER, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
+  aNote: { owner: A_OWNER, nk: A_NK, leafIndex: 0, path: pool.zeros }, dA: 100, rA: det('a-secp'),
+  bNote: { owner: B_OWNER, nk: B_NK, leafIndex: 0, path: pool.zeros }, dB: 200, rB: det('b-secp'),
   shareOwner: SHARE_OWNER, rShares: det('share-secp'),
   nonceA: det('a-nonce'), nonceB: det('b-nonce'), nonceShares: det('share-nonce'),
 });

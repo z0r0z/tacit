@@ -13,15 +13,21 @@ its predecessor by having been created by it.
 - The successor's constructor accepts a predecessor only when `msg.sender` is that predecessor, and only with
   both reflected-genesis inputs (resume digest, genesis anchor) zero: its genesis is proven, never pinned.
 - `successor != 0` is retirement. On the retired generation: wraps, public-AMM entry, swaps, liquidity adds,
-  cBTC mints, new positions/bonds/draws, Bitcoin-homed spends and cross-outs are refused. Everything that
-  releases value already inside stays open: unwraps, transfers, LP removes, position closes/top-ups/harvests,
-  stealth/adaptor locks and their claims/refunds, bridge mints of burns that targeted this generation, and
-  the deferred-effect drains. Its reflection (`attestBitcoinStateProven`) stays open too.
+  cBTC mints, new positions/bonds/draws and Bitcoin-homed spends are refused. Everything that releases value
+  already inside stays open: unwraps, transfers, LP removes, position closes/top-ups/harvests, stealth/adaptor
+  locks and their claims/refunds, cross-outs to Bitcoin, bridge mints of burns that targeted this generation,
+  and the deferred-effect drains. Its reflection (`attestBitcoinStateProven`) stays open too. Cross-outs are
+  the Bitcoin exit for bridged assets and for the cBTC a locker needs to redeem a lock registered here; one
+  recorded after the rebase point mints only in this generation's reflection, so its note exits here.
 - The successor's FIRST attest is a rebase cycle: the proof carries `rebasedFromDigest` bound to the
-  predecessor's attested digest + drained counters and continues from the matching tip. Two anchors are
-  accepted: the predecessor's handoff record (`handoffReflectionDigest` / `handoffReflectionTip`, fixed at its
-  first attest after retirement — a proof built against it stays valid however often the predecessor attests
-  afterwards) or its live state (`attestedReflectionDigest` / `attestedReflectionTip`, for the freshest tip).
+  predecessor's attested digest + on-chain counters and continues from the matching tip. The guest requires every
+  fast-lane consume to be folded (every attest already enforces it) and admits cross-outs whose Bitcoin mint has
+  not landed; a successor must run a reflection guest with that rule (`rebase_drain_check`), since an exact
+  cross-out gate lets one unminted cross-out make the rebase unprovable after the predecessor is retired. Two anchors are
+  accepted: the predecessor's handoff record (`handoffReflectionDigest` / `handoffReflectionTip` / `handoffCounts`,
+  fixed at its first attest after retirement — a proof built against it stays valid however often the predecessor
+  attests or crosses out afterwards) or its live state (`attestedReflectionDigest` / `attestedReflectionTip` and
+  the live counters, for the freshest tip; a cross-out landing before the rebase is submitted stales it).
 - What the steward can do: choose the successor's code. What it cannot do: touch escrow, freeze an exit,
   redirect a payout, or move the pointer twice.
 
@@ -41,9 +47,17 @@ its predecessor by having been created by it.
    registered on the predecessor whose redemption its engine must see (`claimEscrow`). The lane can pause
    and resume; it only has to stay within `REFLECTION_MAX_LAG` (2016 blocks) of the relay anchor, so revisit
    it at least every ~10 days until the predecessor's lock set is fully redeemed or slashed and no
-   predecessor-bound burn can still be outstanding.
-6. Users holding Bitcoin-homed notes need no action: the successor resumed the same reflected state. Users
-   holding EVM notes on the predecessor exit them there (exits never close) and re-enter on the successor.
+   predecessor-bound burn can still be outstanding. Keep its Mode-B lane running too for as long as it can
+   record cross-outs (they stay open) or has one whose Bitcoin mint has not folded: the successor's rebase admits
+   that lag (only the burner can broadcast the mint, so requiring it would let one unminted cross-out strand the
+   migration), and such a mint folds only in the predecessor's reflection. The note it creates exits through the
+   predecessor.
+6. Users holding legacy (unbound) Bitcoin-homed notes need no action: the successor resumed the same reflected
+   state. A note bound to the predecessor's chain binding is usable on the successor only after a Bitcoin
+   transfer that names the successor (the bound transfer re-homes it); bridge-burning it with the successor as
+   target, or fast-laning it there, cannot succeed, and a burn naming the successor destroys it. The dapp must
+   pick the target from the note's own binding. Users holding EVM notes on the predecessor exit them there
+   (exits never close) and re-enter on the successor.
 
 ## Trust residue, stated plainly
 
@@ -52,12 +66,31 @@ retires a generation prematurely costs users nothing but the trip out and back i
 a zero steward can never be retired; a lineage whose steward is lost ends at that generation, and a fresh
 genesis lineage can be started at any time.
 
+## Native ETH (tETH) escrow across generations
+
+Every generation that hosts tETH registers native ETH under the same Bitcoin tETH id, but each holds its own ETH
+escrow, and a Bitcoin tETH note carries no record of which generation's escrow backs it. A note crossed out of
+the predecessor can therefore be burned to the successor and paid from the successor's escrow, leaving the
+predecessor holding ETH that only a burn targeting it can release. Nothing is created, but the successor's own
+depositors can find its escrow short until someone makes the round trip (cross out of the successor, burn to the
+predecessor, unwrap there), which needs both generations' lanes alive. Before a successor hosts tETH:
+
+- measure the Bitcoin-side tETH the predecessor (and any earlier generation sharing the id) backs, from the
+  reflected live set and its cross-out log;
+- if it is not negligible, the dapp must burn Bitcoin tETH to the generation holding the matching escrow
+  surplus (each generation's escrow and its wrap/unwrap/bridge totals are public), and ops keeps every
+  predecessor lane alive until that surplus is gone.
+
+The exact fix is custody shared across the lineage (one native-ETH vault every generation settles against), which
+has to ship in a successor's code before any lineage retires a generation that holds tETH.
+
 ## Token continuity across generations
 
 Each generation mints its own canonical ERC20s (`CanonicalBridgedERC20.MINTER` is immutable and in the CREATE2
 salt), so a retired generation's public tacBTC / TAC / bridged tokens are not the successor's. They can always
 re-enter the generation that minted them (`wrap` of a pool-minted asset stays open after retirement), but a
-retired generation refuses cross-outs, so those tokens have no path to Bitcoin or to the successor on their own.
+retired generation's cross-outs reach Bitcoin only through its own reflection, so those tokens have no path to the
+successor on their own.
 Continuity is a trust decision made at migration time, never a standing lever, and it belongs in the SUCCESSOR's
 code:
 

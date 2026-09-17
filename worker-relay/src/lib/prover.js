@@ -208,6 +208,9 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     farmbond: 'exec-farmbond', farmharvest: 'exec-farmharvest', farmunbond: 'exec-farmunbond',
     adaptorlock: 'exec-adaptorlock', adaptorclaim: 'exec-adaptorclaim', adaptorrefund: 'exec-adaptorrefund',
     cdpliquidate: 'exec-cdpliquidate', cdptopup: 'exec-cdptopup', lpbond: 'exec-lpbond', wrapcdpmint: 'exec-wrapcdpmint',
+    // Bitcoin-homed (authenticated) OP_TRANSFER batches: `fastlane` is the dapp's fast-lane exit shape
+    // ({ chainBinding, spendRoot, bitcoinSpentRoot, transfer }); `crosslane` is the flat fixture shape.
+    fastlane: 'exec-fastlane', crosslane: 'exec-crosslane',
   };
   const binName = PEROP[type];
   if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);

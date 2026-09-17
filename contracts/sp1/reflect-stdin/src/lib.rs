@@ -66,6 +66,12 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     for x in bcbsib {
         r32(s, x);
     }
+    write_deposit_witness(s, bd);
+}
+
+/// The deposit witness proper (reflect.rs `read_deposit_witness`), shared by a scanned burn-deposit and a
+/// pending-deposit completion.
+fn write_deposit_witness(s: &mut SP1Stdin, bd: &serde_json::Value) {
     h(s, bd, "burnedCx");
     h(s, bd, "burnedCy");
     let si = &bd["spentInsert"];
@@ -103,6 +109,32 @@ fn write_burn_deposit(s: &mut SP1Stdin, bd: &serde_json::Value) {
     // 161-byte-envelope transaction. Absent or empty ⇒ a zero-length blob, which the guest's parse refuses,
     // so it skips the fold — the same shape an unbundled burn produces.
     s.write(&hexv(bd["blob"].as_str().unwrap_or("")));
+}
+
+/// A pending-set insert witness (low node + the two paths). Absent ⇒ zeros: the guest reads it for every
+/// burn-deposit but uses it only when the deposit does not verify.
+fn write_pending_insert(s: &mut SP1Stdin, pi: Option<&serde_json::Value>) {
+    match pi.filter(|v| !v.is_null()) {
+        Some(pi) => {
+            r32(s, &pi["pLowKey"]);
+            r32(s, &pi["pLowNext"]);
+            r32(s, &pi["pLowValue"]);
+            s.write(&pi["pLowIndex"].as_u64().unwrap());
+            path(s, &pi["pLowPath"]);
+            path(s, &pi["pNewPath"]);
+        }
+        None => {
+            for _ in 0..3 {
+                s.write(&[0u8; 32].to_vec());
+            }
+            s.write(&0u64);
+            for _ in 0..2 {
+                for _ in 0..32 {
+                    s.write(&[0u8; 32].to_vec());
+                }
+            }
+        }
+    }
 }
 
 /// Serialize a reflection fixture (the dapp assembler's `assembleReflectionScanInput` output) into the
@@ -325,6 +357,17 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
         None => s.write(&hex::decode("5f3e94ca833807f1196d5ebe6d8f764b8dbc4edd0f473ff628fb4fd9abd17eb0").unwrap()),
     }
     s.write(&p.get("consumedOutpointsCount").and_then(|v| v.as_u64()).unwrap_or(1));
+    // The Ethereum sync committee the next Mode-B proof starts from (zero = the pinned genesis committee), then
+    // the pending burn-deposit set (sentinel-seeded like burnRoot: the empty UtxoAccumulator root, count 1).
+    match p.get("ethSyncCommittee").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["ethSyncCommittee"]),
+        None => s.write(&[0u8; 32].to_vec()),
+    }
+    match p.get("pendingDepositRoot").and_then(|v| v.as_str()) {
+        Some(_) => r32(&mut s, &p["pendingDepositRoot"]),
+        None => s.write(&hex::decode("ae277ba2588457dbaf81ba23ca8cf28373074420e4dccce0fde1eeeb901fc241").unwrap()),
+    }
+    s.write(&p.get("pendingDepositCount").and_then(|v| v.as_u64()).unwrap_or(1));
 
     // GENERATIONAL RESUME drain counters: on a rebase cycle the guest reads the predecessor's CURRENT on-chain
     // fast-lane / cross-out counts here (right after read_scan_prior_state, before the Mode-B gate) and asserts
@@ -444,6 +487,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
             }
             if let Some(bd) = tx.get("burnDeposit").filter(|v| !v.is_null()) {
                 write_burn_deposit(&mut s, bd);
+                write_pending_insert(&mut s, bd.get("pendingInsert"));
             } else if let Some(bi) = tx.get("burnInsert").filter(|v| !v.is_null()) {
                 r32(&mut s, &bi["bLowKey"]);
                 r32(&mut s, &bi["bLowNext"]);
@@ -594,6 +638,26 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 path(&mut s, &pf["notePath"]);
             }
         }
+    }
+    // Pending burn-deposit completions, after the block scan: the pending record (burned outpoint + envelope
+    // fields), its membership witness in the pending set, then the same deposit witness a scanned deposit reads.
+    let completions = f
+        .get("depositCompletions")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    s.write(&(completions.len() as u32));
+    for c in completions {
+        r32(&mut s, &c["burnedTxid"]);
+        s.write(&(c["burnedVout"].as_u64().unwrap() as u32));
+        r32(&mut s, &c["asset"]);
+        r32(&mut s, &c["nu"]);
+        r32(&mut s, &c["dest"]);
+        r32(&mut s, &c["target"]);
+        r32(&mut s, &c["pendingNext"]);
+        s.write(&c["pendingIndex"].as_u64().unwrap());
+        path(&mut s, &c["pendingPath"]);
+        write_deposit_witness(&mut s, &c["deposit"]);
     }
     s
 }

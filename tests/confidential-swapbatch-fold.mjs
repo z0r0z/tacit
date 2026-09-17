@@ -116,6 +116,14 @@ const refunds = async (label, run) => {
 await refunds('stale batch (Groth16 fails)', (st) => foldSwapBatch(pool, st, env, txid, spends, { ...OPTS, verify: async () => false }));
 await refunds('stale batch (aggregate fails)', (st) => foldSwapBatch(pool, st, { ...env, rNetA: beHex(rIn - rTipA + 1n) }, txid, spends, OPTS));
 await refunds('expired intent', (st) => foldSwapBatch(pool, st, mkEnv([mkIntent({ expiryHeight: 99 })]), txid, spends, OPTS));
+// An extra live input no intent claims (someone added it after the traders signed) refunds the batch rather than
+// skipping it: the traders' inputs are already nullified. The extra input's value is not refunded.
+const otherNote = pool.commitXY(777n, 0x4242n);
+await refunds('extra unclaimed spend', (st) => foldSwapBatch(pool, st, env, txid, [...spends, { cx: otherNote.cx, cy: otherNote.cy, asset: ASSET_A, outpoint: ['0x' + '99'.repeat(32), 1] }], OPTS));
+// A same-asset, same-commitment extra input listed FIRST cannot take the trader's place: matching requires the
+// intent signature over the candidate's outpoint, so the trader's own spend is matched and the extra one is left
+// unclaimed (refund, not skip).
+await refunds('same-commitment extra spend ahead of the real one', (st) => foldSwapBatch(pool, st, env, txid, [{ cx: cInXY.cx, cy: cInXY.cy, asset: ASSET_A, outpoint: ['0x' + '98'.repeat(32), 0] }, ...spends], OPTS));
 
 // ── fail-closed gates (skip, no mutation) ──
 const rejects = async (label, st, run) => {

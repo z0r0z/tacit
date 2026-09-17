@@ -3,7 +3,9 @@
 // This is the EVM settle twin of the reflection T_SWAP_BATCH fold. It assembles the exact envelope
 // the guest's OP_SWAP_BLIND arm reads (src/main.rs:1665..1865) and computed via swap_blind.rs
 // verify_clearing: a REAL amm_swap_batch Groth16 proof over the 123 public signals, per-asset
-// aggregate Pedersen blindings, per-receipt cross-curve sigmas, and per-intent blind opening PoKs.
+// conservation kernels (Schnorr signatures over the blinding excess — never the blinding itself, which on a
+// one-way side is the inputs' combined blinding and would let a delegated prover spend them), per-receipt
+// cross-curve sigmas, and per-intent blind opening PoKs.
 //
 // The op ships DORMANT in the guest (no live emitter); this module is the reviewable settle-side
 // builder for arming it post-launch. It DOES NOT reimplement any crypto: every primitive is imported
@@ -25,20 +27,71 @@
 import { solveClearing } from './confidential-swap.js';
 import { pedersenBJJ, packPoint, N_BJJ, P_FR, mod as modField } from './amm-bjj.js';
 import { proveXCurveDeterministic } from './amm-sigma.js';
-import { SECP_N, modN, pedersenCommit, pointToBytes } from './bulletproofs.js';
+import { SECP_N, modN, pedersenCommit, pointToBytes, G, H, ZERO } from './bulletproofs.js';
 import { bppRangeProve } from './bulletproofs-plus.js';
-import { sha256 } from './vendor/tacit-deps.min.js';
+import { sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 
 const N_MAX = 16;
 const SWAP_DIR_A_TO_B = 0;
 const SWAP_DIR_B_TO_A = 1;
 // Guest intent-context domain (src/main.rs:1790). MUST match exactly or verify_opening_pok_blind fails.
 const SWAP_BLIND_INTENT_TAG = 'tacit-swap-blind-intent-v1';
+// Guest conservation-kernel domain (cxfer-core SWAP_BLIND_KERNEL_DOMAIN).
+const SWAP_BLIND_KERNEL_DOMAIN = new TextEncoder().encode('tacit-swap-blind-kernel-v1');
 
 const hexToBytes = (h) => { h = String(h || '').replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
 const bytesToHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const be32 = (n) => { const o = new Uint8Array(32); let v = BigInt(n); for (let i = 31; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
 const be32hex = (n) => bytesToHex(be32(n));
+
+const catBytes = (parts) => { const t = parts.reduce((s, p) => s + p.length, 0); const o = new Uint8Array(t); let i = 0; for (const p of parts) { o.set(p, i); i += p.length; } return o; };
+
+// keccak(domain ‖ chainBinding ‖ poolId ‖ side ‖ X ‖ R) mod n — cxfer-core swap_blind_kernel_challenge.
+function aggregateKernelChallenge(chainBinding, poolId, assetXIsA, X, R) {
+  const msg = catBytes([SWAP_BLIND_KERNEL_DOMAIN, hexToBytes(chainBinding), hexToBytes(poolId), Uint8Array.of(assetXIsA ? 0 : 1), X.toRawBytes(true), R.toRawBytes(true)]);
+  return modN(BigInt(bytesToHex(keccak_256(msg))));
+}
+
+// Σ_{input-side} C_in − Σ_{output-side} C_out − C_tip ∓ δ·H for asset X (cxfer-core swap_batch_aggregate_point).
+function aggregatePoint({ intents, receipts, assetXIsA, deltaSign, deltaMag, tipCSecp }) {
+  const pt = (v) => G.constructor.fromHex(typeof v === 'string' ? v.replace(/^0x/, '') : v);
+  let sum = ZERO;
+  intents.forEach((it, i) => {
+    const isInput = (assetXIsA && it.direction === SWAP_DIR_A_TO_B) || (!assetXIsA && it.direction === SWAP_DIR_B_TO_A);
+    const isOutput = (assetXIsA && it.direction === SWAP_DIR_B_TO_A) || (!assetXIsA && it.direction === SWAP_DIR_A_TO_B);
+    if (isInput) sum = sum.add(pt(it.cInSecp));
+    else if (isOutput) sum = sum.add(pt(receipts[i].cOutSecp).negate());
+  });
+  sum = sum.add(pt(tipCSecp).negate());
+  const mag = BigInt(deltaMag);
+  if (mag !== 0n) sum = deltaSign === 0 ? sum.add(H.multiply(mag).negate()) : sum.add(H.multiply(mag));
+  return sum;
+}
+
+// Sign the conservation kernel for one asset side, given the blinding excess. Whoever calls this learns the excess,
+// so it belongs with the party that already holds the traders' blindings (a self-batch, or a trusted coordinator) —
+// never with the prover, which receives only (R, z).
+export function signAggregateKernel({ excess, chainBinding, poolId, assetXIsA }) {
+  const x = modN(BigInt(excess));
+  if (x === 0n) throw new Error('swap-blind: zero blinding excess (resample a blinding)');
+  const X = G.multiply(x);
+  const k = randScalar(SECP_N);
+  const R = G.multiply(k);
+  const e = aggregateKernelChallenge(chainBinding, poolId, assetXIsA, X, R);
+  return { R: bytesToHex(R.toRawBytes(true)), z: be32hex(modN(k + e * x)) };
+}
+
+// Verify a conservation kernel exactly as cxfer-core swap_blind_aggregate_kernel does.
+export function verifyAggregateKernel({ intents, receipts, assetXIsA, deltaSign, deltaMag, tipCSecp, chainBinding, poolId, kernel }) {
+  let X, R;
+  try { X = aggregatePoint({ intents, receipts, assetXIsA, deltaSign, deltaMag, tipCSecp }); R = G.constructor.fromHex(String(kernel.R).replace(/^0x/, '')); } catch { return false; }
+  if (X.equals(ZERO)) return false;
+  const z = BigInt(kernel.z);
+  if (z >= SECP_N) return false;
+  const e = aggregateKernelChallenge(chainBinding, poolId, assetXIsA, X, R);
+  const lhs = z === 0n ? ZERO : G.multiply(z);
+  return lhs.equals(R.add(e === 0n ? ZERO : X.multiply(e)));
+}
 
 function randScalar(mod) {
   while (true) {
@@ -318,8 +371,9 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       }
       return modN(acc - rTipX);
     };
-    const rNetA = rNetFor(true, rTipA);
-    const rNetB = rNetFor(false, rTipB);
+    // The prover receives only the kernels (R, z) — never the excess itself (see signAggregateKernel).
+    const kernelA = signAggregateKernel({ excess: rNetFor(true, rTipA), chainBinding, poolId: circuitPoolId, assetXIsA: true });
+    const kernelB = signAggregateKernel({ excess: rNetFor(false, rTipB), chainBinding, poolId: circuitPoolId, assetXIsA: false });
 
     // EVM pool id the contract gates pre==live + sets post (pf==0 ⇒ no-skim id). Callers pass the same
     // recipient-less derivation; protocolFeeRecipient defaults to all-zero (33B) as the guest reads r33.
@@ -329,7 +383,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       protocolFeeRecipient: '0x' + '00'.repeat(33),
       reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre),
       ...deltas,
-      rNetA: be32hex(rNetA), rNetB: be32hex(rNetB),
+      kernelA, kernelB,
       tipAAmount, tipACSecp: bytesToHex(tipACSecp), rTipA: be32hex(rTipA),
       tipBAmount, tipBCSecp: bytesToHex(tipBCSecp), rTipB: be32hex(rTipB),
       nIntents: filled.length,
@@ -353,7 +407,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
       reserveAPre: Number(reserveAPre), reserveBPre: Number(reserveBPre),
       deltaANetSign: deltas.deltaANetSign, deltaANetMag: Number(deltas.deltaANetMag),
       deltaBNetSign: deltas.deltaBNetSign, deltaBNetMag: Number(deltas.deltaBNetMag),
-      rNetA: envelope.rNetA, rNetB: envelope.rNetB,
+      kernelA: envelope.kernelA, kernelB: envelope.kernelB,
       tipAAmount: Number(tipAAmount), tipACSecp: envelope.tipACSecp, rTipA: envelope.rTipA,
       tipBAmount: Number(tipBAmount), tipBCSecp: envelope.tipBCSecp, rTipB: envelope.rTipB,
       proof: envelope.proof,

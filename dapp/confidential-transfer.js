@@ -23,6 +23,16 @@ import {
 } from './bulletproofs-plus.js';
 
 const KERNEL_DOMAIN = new TextEncoder().encode('tacit-evm-cxfer-kernel-v1');
+// OP_TRANSFER's own kernel domain (cxfer-core TRANSFER_KERNEL_DOMAIN). A native transfer input is authorized by its
+// nullifier key and the kernel alone, so a transfer kernel must never share a transcript with another op's kernel —
+// otherwise a relay holding, say, a send-unwrap witness could settle it as a transfer and take the payout as its fee.
+// Pass `domain: 'transfer'` exactly when the result settles as OP_TRANSFER.
+const TRANSFER_KERNEL_DOMAIN = new TextEncoder().encode('tacit-evm-transfer-kernel-v1');
+const kernelDomainBytes = (domain) => {
+  if (domain === 'transfer') return TRANSFER_KERNEL_DOMAIN;
+  if (domain == null) return KERNEL_DOMAIN;
+  throw new Error(`unknown kernel domain: ${domain}`);
+};
 
 export function makeConfidentialTransfer({ keccak256 }) {
   const H = bppGens().H;
@@ -56,8 +66,8 @@ export function makeConfidentialTransfer({ keccak256 }) {
   // fresh prover-supplied-owner leaves (transfer / wrap-transfer / send-unwrap change), mirroring the
   // guest's verify_kernel_with_fee_bound (leaves hashed AFTER out points, BEFORE R). Empty ⇒ the original
   // transcript (bridge-burn / crossout, which force ZERO_OWNER or bind owner elsewhere, pass none).
-  function kernelChallenge(inC, outC, R, outLeaves = []) {
-    const parts = [KERNEL_DOMAIN];
+  function kernelChallenge(inC, outC, R, outLeaves = [], domain) {
+    const parts = [kernelDomainBytes(domain)];
     for (const P of inC) parts.push(ptBytes(P));
     for (const P of outC) parts.push(ptBytes(P));
     for (const lf of outLeaves) parts.push(b32(lf));
@@ -69,7 +79,7 @@ export function makeConfidentialTransfer({ keccak256 }) {
   // leaf) or no leaf at all (bridge-stealth, where burn-set membership pins it). Returns the kernel { R, z }
   // over Σin = Σout + fee with the given ordered `outLeaves` bound, mirroring verify_kernel_with_fee_bound.
   // No range proof (the caller adds one only where the guest reads it). The fee is public ⇒ excess = Σr_in − Σr_out.
-  function kernelSign({ inputs, outputs, fee = 0n, outLeaves = [] }) {
+  function kernelSign({ inputs, outputs, fee = 0n, outLeaves = [], domain }) {
     const f = BigInt(fee);
     if (inputs.reduce((s, i) => s + i.value, 0n) !== outputs.reduce((s, o) => s + o.value, 0n) + f) {
       throw new Error('kernelSign: Σin ≠ Σout + fee');
@@ -79,14 +89,14 @@ export function makeConfidentialTransfer({ keccak256 }) {
     const excess = modN(inputs.reduce((s, i) => s + i.blinding, 0n) - outputs.reduce((s, o) => s + o.blinding, 0n));
     const k = randomScalar();
     const R = mul(G, k);
-    const e = kernelChallenge(inC, outC, R, outLeaves);
+    const e = kernelChallenge(inC, outC, R, outLeaves, domain);
     return { R, z: modN(k + e * excess), inC, outC };
   }
 
   // inputs: [{ value, blinding }]; outputs: [{ value, blinding, owner }] with Σ value equal (modulo fee).
   // `assetId` + each output `owner` bind the output LEAF into the kernel (so a delegated prover can't mutate
   // an output owner into an unspendable leaf). Output count m must be in {1, 2, 4, 8} (BP+ aggregation).
-  function buildTransfer({ inputs, outputs, fee = 0n, assetId }) {
+  function buildTransfer({ inputs, outputs, fee = 0n, assetId, domain }) {
     const f = BigInt(fee);
     const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
     const sumOut = outputs.reduce((s, o) => s + o.value, 0n);
@@ -109,29 +119,29 @@ export function makeConfidentialTransfer({ keccak256 }) {
     );
     const k = randomScalar();
     const R = mul(G, k);
-    const e = kernelChallenge(inC, outC, R, outLeaves);
+    const e = kernelChallenge(inC, outC, R, outLeaves, domain);
     const z = modN(k + e * excess);
 
-    return { inC, outC, rangeProof, kernel: { R, z }, fee: f, outLeaves };
+    return { inC, outC, rangeProof, kernel: { R, z }, fee: f, outLeaves, domain };
   }
 
   // Kernel-only conservation check (no range proof) — for ops whose range is bounded elsewhere or absent
   // (stealth blind lock / bridge-stealth mint). Mirrors verify_kernel_with_fee_bound.
-  function verifyKernel({ inC, outC, fee = 0n, kernel, outLeaves = [] }) {
+  function verifyKernel({ inC, outC, fee = 0n, kernel, outLeaves = [], domain }) {
     let X = sum(inC).add(sum(outC).negate());
     if (BigInt(fee) !== 0n) X = X.add(mul(H, BigInt(fee)).negate()); // multiply-by-0 throws in noble
-    const e = kernelChallenge(inC, outC, kernel.R, outLeaves);
+    const e = kernelChallenge(inC, outC, kernel.R, outLeaves, domain);
     return mul(G, kernel.z).equals(kernel.R.add(mul(X, e)));
   }
 
   // Verifies ranges + conservation. Returns true iff the transfer creates no
   // value and contains no negative output.
-  function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n, outLeaves = [] }) {
+  function verifyTransfer({ inC, outC, rangeProof, kernel, fee = 0n, outLeaves = [], domain }) {
     if (!bppRangeVerify(outC, rangeProof)) return false;
     const f = BigInt(fee);
     // Σ C_in − Σ C_out − fee·H (the public fee leaves the shielded set); fee = 0 ⇒ the original check.
     const X = sum(inC).add(sum(outC).negate()).add(mul(H, f).negate());
-    const e = kernelChallenge(inC, outC, kernel.R, outLeaves);
+    const e = kernelChallenge(inC, outC, kernel.R, outLeaves, domain);
     const lhs = mul(G, kernel.z);                        // z·G
     const rhs = kernel.R.add(mul(X, e));                 // R + e·X
     return lhs.equals(rhs);
@@ -147,10 +157,12 @@ export function makeConfidentialTransfer({ keccak256 }) {
   //
   // inputs: [{value, blinding}] (Ethereum notes being burned, nullified).
   // outputs: [{value, blinding, owner}] (Bitcoin destination notes; owner = the
-  //   recipient's Bitcoin owner field). Count m ∈ {1, 2, 4, 8}.
+  //   recipient's x-only Taproot key). Exactly ONE output: every destination of a burn carries the same bound
+  //   nullifier and the pool records one cross-out per nullifier, so the guest refuses more than one.
   // bindNullifier: the burn's canonical nullifier (the first input's ν), binding
   //   every claimId of this burn to a specific consumed note (anti-replay).
   function buildBridgeBurn({ inputs, outputs, assetId, destChain, bindNullifier, fee = 0n }) {
+    if (outputs.length !== 1) throw new Error('bridge-burn: exactly one destination per burn');
     const f = BigInt(fee);
     const sumIn = inputs.reduce((s, i) => s + i.value, 0n);
     const sumOut = outputs.reduce((s, o) => s + o.value, 0n);

@@ -96,4 +96,39 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   ok('the two-leg swap round-trips through the real kernel verifier: claim leg 2 → reveal t → complete leg 1');
 }
 
-console.log(`\n${n}/5 BIP-340-faithful adaptor-signature checks passed`);
+// ── 6. EVM leg: the OP_ADAPTOR_CLAIM kernel (keccak transcript over L, O, R) ──
+// The guest verifies the claim with verify_kernel, not BIP-340. The EVM variant completes to a kernel that the
+// dapp's mirror of that verifier accepts, reveals t through `z`, and verifies the committed claim fixture's kernel
+// under the same transcript; a BIP-340 completion does not.
+{
+  const { readFileSync } = await import('node:fs');
+  const { keccak_256 } = await import('../node_modules/@noble/hashes/sha3.js');
+  const { makeConfidentialTransfer } = await import('../dapp/confidential-transfer.js');
+  const { evmKernelChallenge, evmKernelPresign, evmKernelVerifyPresign, evmKernelComplete, evmKernelExtract } = await import('../dapp/adaptor-signature.js');
+  const { G: G0 } = await import('../dapp/bulletproofs.js');
+  const ct = makeConfidentialTransfer({ keccak256: keccak_256 });
+  for (let i = 0; i < 8; i++) {
+    const v = 5000n + BigInt(i), rL = sc('rL' + i), rO = sc('rO' + i), t = sc('evm-t' + i);
+    const L = ct.commit(v, rL), O = ct.commit(v, rO), T = adaptorPoint(t);
+    const ps = evmKernelPresign({ excess: modN(rL - rO), inC: [L], outC: [O], T, nonce: sc('evm-k' + i) });
+    assert.ok(evmKernelVerifyPresign({ inC: [L], outC: [O], R: ps.R, T, sTilde: ps.sTilde }), 'claim-kernel pre-sig verifies');
+    assert.ok(!evmKernelVerifyPresign({ inC: [L], outC: [ct.commit(v - 1n, rO)], R: ps.R, T, sTilde: ps.sTilde }), 'pre-sig is bound to the output commitment');
+    const kernel = evmKernelComplete(ps, t);
+    assert.ok(ct.verifyKernel({ inC: [L], outC: [O], kernel }), 'completed kernel passes the guest-mirror verify_kernel');
+    assert.ok(!ct.verifyKernel({ inC: [L], outC: [O], kernel: evmKernelComplete(ps, t + 1n) }), 'a wrong t does not');
+    assert.strictEqual(evmKernelExtract(ps.sTilde, kernel.z), modN(t), 't is extracted from the committed z');
+    // A BIP-340 pre-signature over the same excess does not produce a claim kernel.
+    const bip = presign(modN(rL - rO), sha('evm-claim-' + i), T, sc('evm-k' + i));
+    const s = complete(bip.sTilde, t, bip.R, T);
+    assert.ok(!ct.verifyKernel({ inC: [L], outC: [O], kernel: { R: bip.Rhat, z: s } }), 'BIP-340 completion is not an EVM claim kernel');
+  }
+  // The committed OP_ADAPTOR_CLAIM fixture kernel verifies under the same transcript the variant signs.
+  const f = JSON.parse(readFileSync(new URL('../contracts/sp1/confidential/fixtures/adaptor_claim_op.json', import.meta.url), 'utf8'));
+  const P = (cx, cy) => G0.constructor.fromAffine({ x: BigInt(cx), y: BigInt(cy) });
+  const Lf = P(f.lCx, f.lCy), Of = P(f.oCx, f.oCy), Rf = G0.constructor.fromHex(f.kernelR.slice(2));
+  const X = Lf.add(Of.negate());
+  assert.ok(G0.multiply(modN(BigInt(f.kernelS))).equals(Rf.add(X.multiply(evmKernelChallenge([Lf], [Of], Rf)))), 'fixture claim kernel satisfies the EVM transcript');
+  ok('EVM claim leg: keccak-transcript adaptor kernel completes to a guest-valid kernel and reveals t; BIP-340 does not');
+}
+
+console.log(`\n${n}/6 adaptor-signature checks passed (BIP-340 legs + EVM claim kernel)`);

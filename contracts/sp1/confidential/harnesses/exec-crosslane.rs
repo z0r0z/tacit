@@ -48,7 +48,7 @@ fn main() {
         stdin.write(&hexv(o["owner"].as_str().unwrap()));
     }
     stdin.write(&hexv(f["rangeProof"].as_str().unwrap()));
-    stdin.write(&f["fee"].as_u64().unwrap_or(0)); // relay fee (0 = fee-free transfer), read after bp_proof
+    stdin.write(&f["fee"].as_u64().or_else(|| f["fee"].as_str().map(|s| s.parse::<u64>().expect("crosslane: fee"))).unwrap_or(0)); // relay fee (number or decimal string; 0 = fee-free transfer), read after bp_proof
     // Per Bitcoin-homed input: one 64-byte BIP-340 signature, in input order (verify_btc_input_auths,
     // main.rs:713, reads these right after `fee` and before the kernel).
     for inp in ins {
@@ -61,7 +61,7 @@ fn main() {
     // fold memo_root. Feed keccak256("") hashes; the guest consumes exactly its (leaves+lock_leaves)
     // count. Omitting these ran the memo reads past end-of-stdin → guest halted before io::commit
     // (EMPTY public values), regardless of the cross-lane path.
-    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); for i in 0..64usize { stdin.write(&hexv(mh.get(i).map(|s| s.as_str()).unwrap_or(empty))); } }
+    { let empty = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"; let mh: Vec<String> = f.get("memoHashes").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(); if f.get("memoHashes").is_some() { for h in &mh { stdin.write(&hexv(h)); } } else { for _ in 0..64usize { stdin.write(&hexv(empty)); } } }
 
     // MODE=execute (default) — cross-lane validation only; MODE=groth16 — GPU prove + write the
     // on-chain artifacts (public_values.hex + proof_bytes.hex) for ConfidentialCrossLaneProofReal.

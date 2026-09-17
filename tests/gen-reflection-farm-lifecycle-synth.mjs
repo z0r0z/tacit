@@ -52,7 +52,12 @@ const SALT_H = 0xd1, SALT_U = 0xd2;
 // destination output's Taproot key (fold_harvest / fold_lp_unbond), so a non-P2TR destination is a
 // fail-closed reject there — these must be real Taproot programs for the lifecycle to fold at all.
 const REWARD_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9d)]); // harvest reward destination
-const RETURN_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x9e)]); // unbond lp-return destination
+// LIFECYCLE_SCENARIO=unbond-nonp2tr pays the lp-return to a P2WPKH output: the unbond declines before it
+// nullifies the receipt, so the position (stamp + shares) survives the harvest that precedes it.
+const SCENARIO = process.env.LIFECYCLE_SCENARIO || 'harvest-unbond';
+const RETURN_SPK = SCENARIO === 'unbond-nonp2tr'
+  ? cat([[0x00, 0x14], Buffer.alloc(20, 0x9e)])
+  : cat([[0x51, 0x20], Buffer.alloc(32, 0x9e)]); // unbond lp-return destination
 const mkTx = (env, salt, destSpk) => {
   const tapscript = cat([[0x20], Buffer.alloc(32), [0xac], [0x00, 0x63], [0x05], Buffer.from('TACIT'), [0x01, 0x01], [0x4d], Buffer.from([env.length & 0xff, (env.length >> 8) & 0xff]), env, [0x68]]);
   const dummyTxid = Buffer.alloc(32, salt);
@@ -121,6 +126,13 @@ const input = await pool.assembleReflectionScanInput(state, {
 
 const hv = input.blocks[0].txs[1].harvest, ub = input.blocks[0].txs[2].lpUnbond;
 console.error(`resume n_farms=1 (launcher+lp_asset)  harvest folded=${!!(hv && hv.leaf)} (reward ${REWARD})  unbond folded=${!!(ub && ub.spentInsert)} (lp-return ${SHARES})  stampCleared=${state.farmEntries.get(R0) === null}  newDigest=${input.newDigest}`);
-if (!hv || !hv.leaf || !ub || !ub.spentInsert) { console.error('FATAL: a farm fold bailed (owner-sig or gate failed) — fixture would not validate'); process.exit(1); }
-if (state.farmEntries.get(R0) !== null) { console.error('FATAL: unbond did not clear the entry stamp'); process.exit(1); }
+if (SCENARIO === 'unbond-nonp2tr') {
+  const st = state.farmRewards.get(FARM_ID);
+  if (!hv || !hv.leaf) { console.error('FATAL: harvest did not fold'); process.exit(1); }
+  if (state.farmEntries.get(R0) === null || BigInt(st.totalShares) !== BigInt(SHARES)) { console.error('FATAL: a declined unbond retired the position'); process.exit(1); }
+  if (state.counts().note !== 2) { console.error('FATAL: a declined unbond onboarded an lp-return note'); process.exit(1); }
+} else {
+  if (!hv || !hv.leaf || !ub || !ub.spentInsert) { console.error('FATAL: a farm fold bailed (owner-sig or gate failed) — fixture would not validate'); process.exit(1); }
+  if (state.farmEntries.get(R0) !== null) { console.error('FATAL: unbond did not clear the entry stamp'); process.exit(1); }
+}
 console.log(JSON.stringify(input));

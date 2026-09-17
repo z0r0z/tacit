@@ -19,6 +19,10 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 ///         (predecessor, SALT_NEXT_GEN, keccak256(initCode)), which this script predicts and asserts.
 contract CreateNextGen is Script {
     function run() external {
+        require(
+            block.chainid != 1 || vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24)) >= 24,
+            "mainnet: REFLECTION_CONFIRMATIONS must be >= 24"
+        );
         ConfidentialPool predecessor = ConfidentialPool(vm.envAddress("PREDECESSOR"));
         bytes32 salt = vm.envBytes32("SALT_NEXT_GEN");
         bytes memory args = abi.encode(
@@ -28,7 +32,7 @@ contract CreateNextGen is Script {
             vm.envAddress("CANONICAL_FACTORY"),
             vm.envAddress("HEADER_RELAY"),
             bytes32(0), // genesis anchor: read live from the predecessor at the first attest
-            vm.envOr("REFLECTION_CONFIRMATIONS", uint256(6)),
+            vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24)),
             bytes32(0), // resume digest: proven by the first attest's rebase
             vm.envOr("TETH_BITCOIN_ID", bytes32(0)),
             vm.envOr("COLLATERAL_ENGINE", address(0)),

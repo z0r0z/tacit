@@ -40,6 +40,7 @@ const t = ct.buildTransfer({
   inputs: inputs.map((i) => ({ value: i.value, blinding: i.blinding })),
   outputs,
   assetId: ASSET, // bind output leaves (owner) into the kernel
+  domain: 'transfer', // OP_TRANSFER's own kernel domain
 });
 if (!ct.verifyTransfer(t)) throw new Error('JS self-verify failed');
 

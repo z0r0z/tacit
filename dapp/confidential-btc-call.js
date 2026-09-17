@@ -10,15 +10,16 @@
 //
 // The 0x68 envelope is 201 bytes:
 //   executor(20) ‖ target(20) ‖ calldataHash(32) ‖ callerPubkey(32, x-only) ‖ callNonce(32) ‖ sig(64)
-// The BIP-340 `sig` (by callerPubkey) is over keccak("tacit-btc-call-v1" ‖ executor ‖ target ‖ calldataHash ‖
-// callerPubkey ‖ callNonce) — binding the call to ONE executor (deployment), so it can never replay onto a
-// different pool/chain. callId = keccak(callerPubkey ‖ callNonce); recordHash = keccak(executor ‖ target ‖
+// The BIP-340 `sig` (by callerPubkey) is over keccak("tacit-btc-call-v2" ‖ chainBinding ‖ executor ‖ target ‖
+// calldataHash ‖ callerPubkey ‖ callNonce), where chainBinding = keccak(chainid ‖ pool) of the one deployment the
+// call is for. The reflection verifies it with its own chain binding, so the call cannot replay onto another
+// pool or chain, even one whose executor sits at the same address. callId = keccak(callerPubkey ‖ callNonce); recordHash = keccak(executor ‖ target ‖
 // calldataHash ‖ callerPubkey) — byte-identical to the executor's keccak(abi.encodePacked(address(this),
 // target, calldataHash, callerPubkey)) check.
 
 import { keccak_256, concatBytes, hexToBytes, bytesToHex } from './vendor/tacit-deps.min.js';
 
-const CALL_DOMAIN = new TextEncoder().encode('tacit-btc-call-v1');
+const CALL_DOMAIN = new TextEncoder().encode('tacit-btc-call-v2');
 
 // Normalize an address / hash / calldata arg to bytes. Accepts a Uint8Array or a hex string (0x-prefixed
 // or not). `len` (when given) asserts the byte length — addresses are 20, hashes/keys/nonces are 32.
@@ -40,7 +41,8 @@ function randomNonce() {
 // Build the 0x68 envelope payload + the derived (callId, recordHash). `executor`/`target` are 20-byte
 // Ethereum addresses, `calldata` the Ethereum call bytes, `callNonce` an optional 32-byte caller nonce.
 // `callerPubkey` is the 32-byte x-only (even-y) Bitcoin signer; `sign` is `(msg32) => sig64` (BIP-340).
-export function encodeBtcCallEnvelope({ executor, target, calldata, callNonce, callerPubkey, sign }) {
+export function encodeBtcCallEnvelope({ chainBinding, executor, target, calldata, callNonce, callerPubkey, sign }) {
+  const binding = toBytes(chainBinding, 32);
   const exec = toBytes(executor, 20);
   const tgt = toBytes(target, 20);
   const data = toBytes(calldata);
@@ -48,7 +50,7 @@ export function encodeBtcCallEnvelope({ executor, target, calldata, callNonce, c
   const caller = toBytes(callerPubkey, 32);
   const calldataHash = keccak_256(data);
 
-  const msg = keccak_256(concatBytes(CALL_DOMAIN, exec, tgt, calldataHash, caller, nonce));
+  const msg = keccak_256(concatBytes(CALL_DOMAIN, binding, exec, tgt, calldataHash, caller, nonce));
   const sig = sign(msg); // BIP-340, verified in-guest by bip340_verify
   if (!(sig instanceof Uint8Array) || sig.length !== 64) throw new Error('btc-call: sign must return a 64-byte sig');
 

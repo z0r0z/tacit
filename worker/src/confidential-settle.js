@@ -80,7 +80,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
   async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
-    if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
+    if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint', 'fastlane'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
     if (exit != null && (mode !== 'settle' || !EXIT_TYPES.includes(type))) {
       throw new Error('submitJob: an exit recipe rides only on a relayed unwrap or sendunwrap');

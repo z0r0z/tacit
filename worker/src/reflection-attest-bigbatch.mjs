@@ -82,7 +82,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
     let burnDeposits;
     if (burnDepositKit && getBurnDeposits) {
       const txids = blocks.flatMap((b) => (b.txs || []).map((t) => t.txidDisplay));
-      burnDeposits = await getBurnDeposits(txids);
+      burnDeposits = await getBurnDeposits(txids, from - 1);
     }
     // Mode-B reverse reflection (ETH→BTC): if an eth-reflection bundle source is wired, fetch the eth
     // proof's attested sets for this range (+ the resolved Bitcoin source note per consumed ν) and assemble
@@ -203,11 +203,28 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     })));
     return { ...bundle, etch, cxfers, cmints };
   }
-  const getBurnDeposits = async (txidsDisplay) => {
+  // A bundle's provenance header chain must end at the batch's anchor block, which keeps moving: a burn left
+  // pending is completed batches later, so the chain a holder submitted is carried forward here, from its last
+  // header to `anchorHeight`, out of the same header source the batch uses. Headers are public chain data, so
+  // extending them adds nothing a holder could have got wrong.
+  const extendProvHeaders = async (bundle, anchorHeight) => {
+    const hs = bundle.provHeaders;
+    if (anchorHeight == null || !Array.isArray(hs) || !hs.length) return bundle;
+    const last = String(hs[hs.length - 1]).replace(/^0x/, '');
+    if (!/^[0-9a-fA-F]{160}$/.test(last)) return bundle;
+    const lastHash = _hex(_dsha(Uint8Array.from(last.match(/../g).map((x) => parseInt(x, 16)))).reverse());
+    let lastHeight;
+    try { lastHeight = Number(JSON.parse(await api(env, `/block/${lastHash}`, {}, network)).height); } catch { return bundle; }
+    if (!Number.isInteger(lastHeight) || lastHeight >= anchorHeight) return bundle;
+    const heights = [];
+    for (let h = lastHeight + 1; h <= anchorHeight; h++) heights.push(h);
+    return { ...bundle, provHeaders: [...hs, ...(await getHeaders(heights))] };
+  };
+  const getBurnDeposits = async (txidsDisplay, anchorHeight) => {
     const map = new Map();
     for (const txid of txidsDisplay) {
       const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
-      if (raw) map.set(txid, await enrichBurnDeposit(JSON.parse(raw)));
+      if (raw) map.set(txid, await extendProvHeaders(await enrichBurnDeposit(JSON.parse(raw)), anchorHeight));
     }
     return map;
   };

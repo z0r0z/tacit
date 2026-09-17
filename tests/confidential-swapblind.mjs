@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync as rf } from 'node:fs';
 import assert from 'node:assert';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { makeConfidentialSwapblind } from '../dapp/confidential-swapblind.js';
+import { makeConfidentialSwapblind, verifyAggregateKernel } from '../dapp/confidential-swapblind.js';
 import { swapBatchGroth16Prove, swapBatchPublicSignals, parseGroth16Proof256, serializeGroth16Proof256 } from '../dapp/confidential-swapbatch.js';
 import { verifyXCurve } from '../dapp/amm-sigma.js';
 
@@ -159,19 +159,31 @@ ok('(c) verify_opening_pok_blind mirror accepts the PoK');
   ok('(c-neg) redirected-owner context + tampered response rejected');
 }
 
-// ── (d) aggregate Pedersen identity per asset ─────────────────────────────────────────────────
-const intentsSecp = envelope.intents.map((i) => ({ direction: i.direction, cInSecp: bytesToHex(i.cInSecp) }));
-const receiptsCOut = envelope.receipts.map((r) => bytesToHex(r.cOutSecp));
-assert(pool.swapBatchAggregateIdentity(intentsSecp, receiptsCOut, true, envelope.deltaANetSign, envelope.deltaANetMag, envelope.tipACSecp, envelope.rNetA), '(d) asset-A aggregate identity holds');
-assert(pool.swapBatchAggregateIdentity(intentsSecp, receiptsCOut, false, envelope.deltaBNetSign, envelope.deltaBNetMag, envelope.tipBCSecp, envelope.rNetB), '(d) asset-B aggregate identity holds');
-ok('(d) per-asset aggregate Pedersen identity holds (A and B)');
+// ── (d) per-asset conservation kernel (the prover never receives the blinding excess) ───────────
+const kIntents = envelope.intents.map((i) => ({ direction: i.direction, cInSecp: bytesToHex(i.cInSecp) }));
+const kReceipts = envelope.receipts.map((r) => ({ cOutSecp: bytesToHex(r.cOutSecp) }));
+const kPoolId = pool.ammDerivePoolIdFull(assetA, assetB, feeBps, 0, '0x' + '00'.repeat(33), 0);
+const kArgs = (assetXIsA, over = {}) => ({
+  intents: kIntents, receipts: kReceipts, assetXIsA,
+  deltaSign: assetXIsA ? envelope.deltaANetSign : envelope.deltaBNetSign,
+  deltaMag: assetXIsA ? envelope.deltaANetMag : envelope.deltaBNetMag,
+  tipCSecp: assetXIsA ? envelope.tipACSecp : envelope.tipBCSecp,
+  chainBinding, poolId: kPoolId, kernel: assetXIsA ? envelope.kernelA : envelope.kernelB, ...over,
+});
+assert(verifyAggregateKernel(kArgs(true)), '(d) asset-A conservation kernel verifies');
+assert(verifyAggregateKernel(kArgs(false)), '(d) asset-B conservation kernel verifies');
+assert(!('rNetA' in envelope) && !('rNetB' in envelope) && !('rNetA' in fixture) && !('rNetB' in fixture), '(d) no cleartext blinding excess leaves the builder');
+ok('(d) per-asset conservation kernels verify (A and B); no blinding excess is emitted');
 
-// forgery negative — bump r_net → reject (no unbacked residue accepted).
+// forgery negatives — wrong delta, wrong side, other deployment, other pool, tampered z → reject.
 {
-  const badR = '0x' + ((BigInt(envelope.rNetA) + 1n) % N).toString(16).padStart(64, '0');
-  assert(!pool.swapBatchAggregateIdentity(intentsSecp, receiptsCOut, true, envelope.deltaANetSign, envelope.deltaANetMag, envelope.tipACSecp, badR), 'wrong r_net_a rejected');
-  assert(!pool.swapBatchAggregateIdentity(intentsSecp, receiptsCOut, true, envelope.deltaANetSign, envelope.deltaANetMag + 1n, envelope.tipACSecp, envelope.rNetA), 'wrong delta magnitude rejected');
-  ok('(d-neg) wrong r_net / wrong delta rejected');
+  assert(!verifyAggregateKernel(kArgs(true, { deltaMag: BigInt(envelope.deltaANetMag) + 1n })), 'padded delta rejected');
+  assert(!verifyAggregateKernel(kArgs(true, { kernel: envelope.kernelB })), 'the other side\'s kernel rejected');
+  assert(!verifyAggregateKernel(kArgs(true, { chainBinding: '0x' + '7d'.repeat(32) })), 'another deployment rejected');
+  assert(!verifyAggregateKernel(kArgs(true, { poolId: '0x' + '31'.repeat(32) })), 'another pool rejected');
+  const zBad = '0x' + ((BigInt(envelope.kernelA.z) + 1n) % N).toString(16).padStart(64, '0');
+  assert(!verifyAggregateKernel(kArgs(true, { kernel: { R: envelope.kernelA.R, z: zBad } })), 'tampered z rejected');
+  ok('(d-neg) padded delta / wrong side / other deployment / other pool / tampered z rejected');
 }
 
 // ── (e) stdin field order + byte lengths (exec-swapblind.rs / main.rs:1665..1815) ─────────────
@@ -188,8 +200,10 @@ ok('(d) per-asset aggregate Pedersen identity holds (A and B)');
   eq('protocol_fee_recipient', b(fixture.protocolFeeRecipient), 33);
   assert(Number.isInteger(fixture.reserveAPre) && Number.isInteger(fixture.reserveBPre), 'reserves u64');
   assert([0, 1].includes(fixture.deltaANetSign) && [0, 1].includes(fixture.deltaBNetSign), 'delta signs u8 {0,1}');
-  eq('r_net_a', b(fixture.rNetA), 32);
-  eq('r_net_b', b(fixture.rNetB), 32);
+  eq('kernel_a.R', b(fixture.kernelA.R), 33);
+  eq('kernel_a.z', b(fixture.kernelA.z), 32);
+  eq('kernel_b.R', b(fixture.kernelB.R), 33);
+  eq('kernel_b.z', b(fixture.kernelB.z), 32);
   assert.strictEqual(fixture.tipAAmount, Number(tip), 'tip_a_amount == tip');
   eq('tip_a_c_secp', b(fixture.tipACSecp), 33);
   eq('r_tip_a', b(fixture.rTipA), 32);
@@ -217,7 +231,7 @@ ok('(d) per-asset aggregate Pedersen identity holds (A and B)');
     eq('pok_z_r', b(it.pokZr), 32);
   }
   // fixture field order matches the harness write order (main.rs read order).
-  const order = ['note', 'chainBinding', 'spendRoot', 'assetA', 'assetB', 'feeBps', 'protocolFeeBps', 'protocolFeeRecipient', 'reserveAPre', 'reserveBPre', 'deltaANetSign', 'deltaANetMag', 'deltaBNetSign', 'deltaBNetMag', 'rNetA', 'rNetB', 'tipAAmount', 'tipACSecp', 'rTipA', 'tipBAmount', 'tipBCSecp', 'rTipB', 'proof', 'intents', 'expected'];
+  const order = ['note', 'chainBinding', 'spendRoot', 'assetA', 'assetB', 'feeBps', 'protocolFeeBps', 'protocolFeeRecipient', 'reserveAPre', 'reserveBPre', 'deltaANetSign', 'deltaANetMag', 'deltaBNetSign', 'deltaBNetMag', 'kernelA', 'kernelB', 'tipAAmount', 'tipACSecp', 'rTipA', 'tipBAmount', 'tipBCSecp', 'rTipB', 'proof', 'intents', 'expected'];
   assert.deepStrictEqual(Object.keys(fixture), order, 'fixture field order matches the guest read order');
   ok('(e) stdin field order + byte lengths match the guest read order');
 }

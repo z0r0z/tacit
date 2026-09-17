@@ -40,7 +40,9 @@ const ETHEREUM = 2;                        // destChain selector (1=bitcoin, 2=e
 
 // The Ethereum recipient: a scan key + their owner field.
 const rPriv = randomScalar(), rPub = pubHex(rPriv);
-const OWNER_ETH = '0x' + '00'.repeat(31) + 'e7';
+// The minted ETH note is owned by its nk (owner = H(nk)), the only kind of owned note that can spend.
+const OWNER_ETH_NK = '0x' + 'c5'.repeat(32);
+const OWNER_ETH = pool.nkToOwner(OWNER_ETH_NK);
 
 // ── 1. Bitcoin side: burn 1500 of confidential value, destined for one Ethereum note ──
 const btcInputs = [
@@ -49,7 +51,7 @@ const btcInputs = [
 ];
 const mintValue = 1500n;
 const mintBlinding = randomScalar();
-const mintSecret = '0x' + 'c5'.repeat(32);
+const mintSecret = OWNER_ETH_NK;
 // The burn's canonical ν is NOTE-BOUND (spec B3): keccak(Cx ‖ Cy ‖ "spent") of the first
 // burned input — exactly what the guest derives (main.rs OP_BRIDGE_BURN), not keccak(secret).
 const c0 = memo.commitXY(btcInputs[0].value, btcInputs[0].blinding);
