@@ -213,7 +213,29 @@ async function cycle() {
   return true;
 }
 
+// One-time escape valve for a generation cutover: ETH_PROVE_STATE_PATH lives on this service's OWN
+// persistent disk, keyed by nothing generation-specific, so a pool migration leaves the outgoing
+// generation's real cumulative crossouts/consumeds committed here with no natural way to age out (unlike
+// the pending/confirmed KV records, which have their own /reflection/eth-state/clear and .../confirmed/clear
+// resets). eth_prove.rs already treats a missing/unparseable state file as EthSetState::default() (all
+// zero) on its own (see its state_path() load), so deleting this file is the whole fix — no Rust change
+// needed. Gated on an env var rather than run unconditionally so this never fires by accident against a
+// generation with real, still-pending-confirmation local state.
+async function resetLocalStateIfRequested() {
+  if (process.env.RESET_ETH_PROVE_STATE !== '1') return;
+  const committed = path.join(CFG.ethProveOutDir, 'eth_set_state.json');
+  await Promise.all([
+    rm(committed, { force: true }),
+    rm(path.join(CFG.ethProveOutDir, 'eth_set_state.pending.json'), { force: true }),
+    rm(LOCAL_INFLIGHT_PATH, { force: true }),
+    rm(STALL_WATCH_PATH, { force: true }),
+  ]);
+  log(`RESET_ETH_PROVE_STATE=1 — deleted ${committed} and local sidecar bookkeeping; `
+    + 'next cycle bootstraps eth_prove from zero (crossouts=[], consumeds=[], last_block=0)');
+}
+
 async function main() {
+  await resetLocalStateIfRequested();
   log(`starting — worker=${CFG.workerBase} network=${CFG.network} outDir=${CFG.ethProveOutDir} `
     + `poll=${CFG.ethStatePollSecs}s dryRun=${CFG.ethStateDryRun}`);
   if (!CFG.ethStateDryRun && CFG.sp1Prover === 'network' && !CFG.networkPrivateKey) {
