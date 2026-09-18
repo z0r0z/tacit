@@ -19,7 +19,7 @@ envVarGroups:
       - key: CHAIN_ID
         value: "1"
       - key: POOL_ADDR
-        value: "0x0000000098A73197B3255aD9db1ed8544410f5Ba"
+        value: "0x000000000Ed1eabD231Be41d93b719056F7febFC"
       - key: HEADER_RELAY_ADDR
         value: "0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0"
       - key: VAPP_DEPOSIT_ADDR
@@ -141,7 +141,7 @@ services:
         value: "0"
       - key: ETH_STATE_POLL_SECS
         value: "60"
-      # ── gen4-pinned constants (scratchpad/MODEB-RECIPE.md §1) — re-pin every generation bump ──
+      # ── gen5-pinned constants (scratchpad/MODEB-RECIPE.md §1) — re-pin every generation bump ──
       - key: SOURCE_CONSENSUS_RPC
         value: https://ethereum-beacon-api.publicnode.com
       - key: SOURCE_CHAIN_ID
@@ -151,9 +151,9 @@ services:
       - key: SOURCE_PROOF_RPC
         value: https://eth-mainnet.public.blastapi.io
       - key: ETH_CALL_OUTBOX
-        value: "0x00000000002c40c367ed873136e17151652de080"
+        value: "0x00000000a26a6E291972666a9687741dBa11Af46"
       - key: DEPLOY_BLOCK
-        value: "25926840"
+        value: "25998736"
       - key: GENESIS_SLOT
         value: "14745600"
       - key: SCAN_CHUNK
@@ -180,14 +180,11 @@ services:
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
-      # Per-service override, ahead of the shared group's POOL_ADDR: settle has no dependency on the
-      # reflection cursor (a plain wrap/unwrap/send settle never touches Bitcoin-side state), so it can move
-      # to a new generation the moment its contracts are live — unlike tacit-reflection/tacit-header, which
-      # must stay on the OLD generation until that generation's reflection KV state is seeded (see
-      # ops notes: flipping the whole group before seeding would abandon the live generation's attestation
-      # mid-stream). Remove this override once the full-suite cutover (seed + group flip) is done.
-      - key: POOL_ADDR
-        value: "0x000000000Ed1eabD231Be41d93b719056F7febFC"
+      # No per-service POOL_ADDR override here: settle had one ahead of the group while gen5's reflection
+      # KV state was still being seeded (settle has no reflection-cursor dependency, so it could move the
+      # moment gen5's contracts were live; tacit-reflection/tacit-header could not, until seeded). The
+      # full-suite cutover (seed + group flip) is done, so the group's POOL_ADDR above is gen5 for
+      # everyone — an override here would now just be redundant.
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
       # Tight poll so a queued job starts proving within ~3s instead of up to 15s — the worker is always-on, so
