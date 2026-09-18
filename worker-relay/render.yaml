@@ -154,8 +154,10 @@ services:
         value: "0x00000000a26a6E291972666a9687741dBa11Af46"
       - key: DEPLOY_BLOCK
         value: "25998736"
+      # Must equal the guest's ETH_GENESIS_SLOT (period 1859); an older bootstrap makes the eth proof replay
+      # dozens of sync-committee periods and the network refuses it as unexecutable.
       - key: GENESIS_SLOT
-        value: "14745600"
+        value: "15228928"
       - key: SCAN_CHUNK
         value: "300"
       - key: SCAN_DELAY_MS
