@@ -4,9 +4,12 @@
 //! so the Bitcoin reflection guest can fold cross-out value into the bridge-mintable pool root
 //! without trusting the worker. See `ops/PLAN-eth-reflection-modeB.md`.
 //!
-//! Built on sp1-helios (helios 0.11.1, Zellic-audited): the sync-committee + finality verification and
-//! the contract storage-slot MPT proof are reused verbatim (`helios_consensus_core::*`,
-//! `sp1_helios_primitives::verify_storage_slot_proofs`). Our addition is the fold: each verified
+//! Built on sp1-helios (helios 0.11.1, Zellic-audited): the sync-committee + finality verification is
+//! reused verbatim (`helios_consensus_core::*`). The contract storage-slot MPT proof is a local,
+//! zero-tolerant fork of `sp1_helios_primitives::verify_storage_slot_proofs` (`verify_storage_slot_proofs_
+//! allow_zero` below, "Change B") -- upstream only verifies inclusion, but a slot whose real value is 0 is
+//! deleted from the trie entirely and can only ever produce an exclusion proof, which the fast-lane
+//! freshness read needs at count 0 on every fresh generation. Our addition is the fold: each verified
 //! `crossOutCommitment[claimId]` storage slot is bound to its cross-out fields and inserted into the
 //! cross-out indexed-Merkle tree (`cxfer-core::eth_reflection`) keyed by the `EthCrossOut` leaf, the SAME
 //! leaf the Bitcoin guest proves membership/non-membership against and the SAME `claim_id` binding the
@@ -21,7 +24,7 @@ use alloy_primitives::{Address, B256};
 use alloy_sol_types::{sol, SolValue};
 use helios_consensus_core::{apply_finality_update, apply_update, verify_finality_update, verify_update};
 use serde::{Deserialize, Serialize};
-use sp1_helios_primitives::{types::ProofInputs, verify_storage_slot_proofs};
+use sp1_helios_primitives::types::ProofInputs;
 use tree_hash::TreeHash;
 
 use cxfer_core::eth_reflection::{

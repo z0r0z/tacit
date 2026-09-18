@@ -22,10 +22,14 @@ function num(name, dflt) {
 // ── Mainnet addresses (from ops runbook / PRICING-RELAY-ECONOMICS.md) ──
 // These default to the live mainnet deployment; override via env for Sepolia rehearsal.
 export const ADDR = {
-  // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest()
-  pool: opt('POOL_ADDR', '0x0000000098A73197B3255aD9db1ed8544410f5Ba'),
-  // ConfidentialRouter — escrowAddressFor() + activateExit() for relayed L2 exits
-  router: opt('ROUTER_ADDR', '0x00000000F104E2C1ebe9693eD19491b9897a8193'),
+  // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest(). Per-generation:
+  // this default is a fallback only, never the real source of truth -- always set POOL_ADDR explicitly
+  // per service on a generation cutover (a stale default here silently pointed a fresh eth-state build
+  // at gen4's history during the gen5 cutover; caught, but only by chance).
+  pool: opt('POOL_ADDR', '0x000000000Ed1eabD231Be41d93b719056F7febFC'),
+  // ConfidentialRouter — escrowAddressFor() + activateExit() for relayed L2 exits. Per-generation, same
+  // caveat as pool above.
+  router: opt('ROUTER_ADDR', '0x000000005dA3E3B73726af3c774Deeb9472D4992'),
   // Succinct vApp deposit contract — deposit(uint256) tops up the network prover balance
   vApp: opt('VAPP_DEPOSIT_ADDR', '0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F'),
   // PROVE token — the prover-fee currency (approve + deposit to vApp)

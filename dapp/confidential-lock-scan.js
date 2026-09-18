@@ -31,9 +31,11 @@ const SELECTOR_RELAY_SETTLE = 'fcccb833';
 const SELECTOR_RELAY_SETTLE_SEEDED = 'e2b28725';
 
 // Mainnet ConfidentialPool and TacitRelayer: a settle sent straight to either is exactly what that contract ran
-// (see scanLockLeaves on provenance).
-const MAINNET_POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
-const MAINNET_RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+// (see scanLockLeaves on provenance). Per-generation -- both real callers (confidential-pool-ux.js) rely on
+// these as their only source, with no override, so a generation cutover MUST update these two constants or
+// stealth-lock scanning silently keeps reading the retired generation's pool.
+const MAINNET_POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 
 export function makeConfidentialLockScan({ pool }) {
   const strip0x = (h) => String(h == null ? '' : h).replace(/^0x/, '');

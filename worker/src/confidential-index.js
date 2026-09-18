@@ -39,7 +39,9 @@ const BUDGET_MS = 8000; // wall clock per refresh; the next one resumes from the
 const SEL_SETTLE = '717fd7f2';
 const SEL_RELAY_SETTLE = 'fcccb833';
 const SEL_RELAY_SETTLE_SEEDED = 'e2b28725';
-const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5'; // TacitRelayer on mainnet
+const RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3'; // TacitRelayer on mainnet -- per-generation,
+// no override wired from _CONFIDENTIAL_DEPLOYMENTS (see confIndex() in index.js), so a cutover MUST update
+// this constant directly or lock-leaf scanning silently reads the retired generation's relayer.
 const SLOT_LOCK_COUNT = 84; // ConfidentialPool.lockNextLeafIndex
 const SLOT_LOCK_ROOT = 85; // ConfidentialPool.lockRoot
 
