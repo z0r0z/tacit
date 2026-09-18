@@ -27,10 +27,19 @@ function proverEnv(extra = {}) {
   return env;
 }
 
-// Run a binary with a hard timeout; resolve with {code} or reject on timeout/spawn error.
-function run(bin, { env, cwd, timeoutMs, tag }) {
+// Run a binary with a hard timeout; resolve with {code} or reject on timeout/spawn error. `memLimitKB`
+// wraps the spawn in `sh -c 'ulimit -v ...; exec "$0"'` (sh, not bash — the runtime image is node:20-bookworm
+// -slim, which may not carry bash; ulimit is a POSIX sh builtin too) so a runaway child hits its OWN
+// allocator failure (a normal, catchable non-zero exit) well before the container's shared cgroup memory
+// ceiling — otherwise the OOM killer can take out the whole container (parent Node process included), which
+// no try/catch around this call can ever observe. See eth-state-sidecar.js's execute-preflight comment for
+// the incident this fixes: the preflight's own catch block never fired because the crash killed the
+// container, not the child.
+function run(bin, { env, cwd, timeoutMs, tag, memLimitKB }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, [], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = memLimitKB
+      ? spawn('sh', ['-c', 'ulimit -v "$1"; exec "$0"', bin, String(memLimitKB)], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+      : spawn(bin, [], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const timer = timeoutMs
       ? setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${tag} timed out after ${timeoutMs}ms`)); }, timeoutMs)
@@ -143,7 +152,13 @@ export async function proveEthState({ mode = 'network', timeoutMs } = {}) {
       rm(path.join(CFG.ethProveOutDir, 'eth_set_state.pending.json'), { force: true }),
     ]);
   }
-  const { code, out, err } = await run(CFG.ethProveBin, { env: ethProveEnv(mode), cwd: CFG.ethProveOutDir, timeoutMs, tag: `eth_prove:${mode}` });
+  // execute mode runs the (heavy) eth-reflection guest through SP1's local CPU interpreter — observed to
+  // spike to >1.2GB in well under a second on this host and take the whole container down with it (the
+  // sidecar's own catch-and-skip-to-network fallback never gets a chance to run). Cap it well under the
+  // container's ceiling so the child's own allocator fails cleanly instead. network mode never does local
+  // execution (explicit cycle/gas limits route straight to the network prover), so it needs no cap.
+  const memLimitKB = mode === 'execute' ? 900_000 : undefined; // ~900MB, comfortably under a 2GB container
+  const { code, out, err } = await run(CFG.ethProveBin, { env: ethProveEnv(mode), cwd: CFG.ethProveOutDir, timeoutMs, tag: `eth_prove:${mode}`, memLimitKB });
   const tail = (out + err).slice(-4000);
   if (mode === 'execute') {
     const m = out.match(/EXECUTE_OK cycles=(\d+) pv_bytes=(\d+)/);
