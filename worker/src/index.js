@@ -922,6 +922,23 @@ async function handleReflectionEthStateClear(req, env, url, cors) {
   return jsonResponse({ ok: true, cleared: ethStatePendingKey(network) }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
+// POST /reflection/eth-state/confirmed/clear?network= — drop the CONFIRMED eth-state record outright.
+// ethStateConfirmedKey is network-scoped, not generation-scoped, so a pool migration leaves the outgoing
+// generation's real cumulative crossouts/consumeds sitting here with nothing to age them out (unlike
+// pending, which the staleness gate eventually supersedes on its own). The next eth_prove cycle then
+// permanently fails its on-chain freshness assertions — the new pool's real attestedCrossOutCount/
+// attestedBitcoinConsumedCount can never equal a stale predecessor's counts, no retry fixes that. Clearing
+// this is exactly the sidecar's own documented "cold start" case (see eth-state-sidecar.js's `confirmed ?
+// ... : 'no confirmed candidate yet (cold start)'` branch) — safe for a fresh generation with zero landed
+// history, NOT something to run against a generation with real folded state still pending confirmation.
+async function handleReflectionEthStateConfirmedClear(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  await env.REGISTRY_KV.delete(ethStateConfirmedKey(network));
+  return jsonResponse({ ok: true, cleared: ethStateConfirmedKey(network) }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
 // POST /reflection/eth-state/confirm?network= — promote the current pending eth-state candidate to
 // confirmed directly, bypassing the normal /reflection/ack flow (which requires a real jobId from a
 // /reflection/job call whose batch actually attested on-chain). This exists for exactly one recovery
@@ -24357,6 +24374,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/clear' && req.method === 'POST') return handleReflectionEthStateClear(req, env, url, cors);
+    if (url.pathname === '/reflection/eth-state/confirmed/clear' && req.method === 'POST') return handleReflectionEthStateConfirmedClear(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/confirm' && req.method === 'POST') return handleReflectionEthStateConfirm(req, env, url, cors);
 
     // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
