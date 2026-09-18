@@ -55,7 +55,7 @@ fn main() {
         // here so a drift fails LOUDLY before the GPU spend, printing the value to re-pin. Keep this array in
         // lockstep with reflect.rs:169-170 (rebuilding the eth ELF rotates it).
         const ETH_REFLECTION_VKEY: [u32; 8] =
-            [1794199949, 1219116509, 58604309, 1719811643, 185975317, 2020674183, 2092781552, 931298980];
+            [1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986];
         let derived = eth_pk.verifying_key().hash_u32();
         assert_eq!(
             derived, ETH_REFLECTION_VKEY,
