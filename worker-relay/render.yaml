@@ -43,7 +43,7 @@ envVarGroups:
       # vkey here makes the harness assert it at startup and fail loudly instead. Rotate this together with
       # the guest ELF pin and the on-chain program_vkey; never on its own.
       - key: EXPECT_VKEY
-        value: "0x00711089f0dc47b5512aae81461535cfd754ecbaec86dc88dc821c3ef1f4c0a4"
+        value: "0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3"
       - key: BITCOIN_PROVE_BIN
         value: /app/prover/bin/bitcoin_prove
       - key: EXEC_BIN
@@ -187,7 +187,7 @@ services:
       # ops notes: flipping the whole group before seeding would abandon the live generation's attestation
       # mid-stream). Remove this override once the full-suite cutover (seed + group flip) is done.
       - key: POOL_ADDR
-        value: "0x0000000098A73197B3255aD9db1ed8544410f5Ba"
+        value: "0x000000000Ed1eabD231Be41d93b719056F7febFC"
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
       # Tight poll so a queued job starts proving within ~3s instead of up to 15s — the worker is always-on, so
