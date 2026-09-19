@@ -159,7 +159,7 @@ await tacit.stealthSend({ walletPriv, notes, recipientPubHex, amount: 5_000_000n
 ```
 
 `selfRelay: true` proves and submits from your own account with `fee: 0n`; otherwise the fee must clear the
-relay's gas-priced floor — `tacit.quoteOpFee(...)` or `GET /confidential/quote`. Each of these returns once
+relay's gas-priced floor — `tacit.quoteOpFee(...)` or `GET /confidential/quote?asset=cETH`. Each of these returns once
 the settle lands; pass `waitOpts` to tune the polling.
 
 ## 6. Relay API
@@ -170,7 +170,7 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 |---|---|
 | `POST /confidential/submit` | `{ type, op, memos, mode?, feeAsset? }` → `{ jobId }`. `mode: 'prove'` returns a proof for you to submit yourself; default `'settle'` has the relay submit it. |
 | `GET /confidential/status?id=` | `pending` → `proving` → `settled` \| `failed` |
-| `GET /confidential/quote` | the current gas-priced fee floor |
+| `GET /confidential/quote?asset=cETH` | `{ ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }` — floors are in the asset's **in-system units**, not wei. `asset` takes a ticker or a `0x` asset id. |
 | `GET /confidential/index?from=&limit=` | the pool's event stream plus the stealth lock set, in chain order behind one cursor — recover a key's notes and locks without running a scanner |
 | `GET /health` | liveness |
 

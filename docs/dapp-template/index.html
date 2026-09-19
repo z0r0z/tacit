@@ -290,11 +290,14 @@ async function loadRelay() {
   } catch { setPill($('r-health'), false, 'unreachable'); }
 
   try {
-    const r = await fetch(`${CFG.relayBase}/confidential/quote`);
+    // GET /confidential/quote?asset=<ticker|0x assetId>
+    //   → { ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }
+    // Floors are in the asset's IN-SYSTEM units (cETH: 8dp), not wei.
+    const r = await fetch(`${CFG.relayBase}/confidential/quote?asset=cETH`);
     const j = await r.json();
-    // The quote's exact shape is the relay's business; render whatever scalar it reports.
-    const v = j.floor ?? j.minFee ?? j.feeFloor ?? j.quote ?? null;
-    $('r-quote').textContent = v != null ? String(v) : JSON.stringify(j).slice(0, 48);
+    $('r-quote').textContent = j.gasAwareFloorUnits
+      ? `${j.gasAwareFloorUnits} units cETH`
+      : (j.error || '—');
   } catch { $('r-quote').textContent = '—'; }
 }
 
