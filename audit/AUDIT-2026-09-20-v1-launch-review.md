@@ -30,21 +30,23 @@ down cheaply; and nothing published that routes a newcomer to the wrong contract
 
 ## Verdict
 
-**Green-lit for V1 launch, with one operational item to clear first (L-2, a multisig action) and one
-deploy to land (L-1, already fixed in this tree).**
+**Green-lit for V1 launch, with three items to clear first:** a deploy to land (L-1, already fixed in this
+tree), a multisig action (L-2), and one decision (L-4 — wire fast-lane consumed-source registration, or
+keep the fast lane operator-assisted until it is).
 
 The immutable surface needs no change and gets none. No double-spend, inflation, theft, or brick path was
 found; the cross-out brick vector that bit earlier generations was verified *closed in the gen5 guest*, by
 following the pin chain rather than by trusting the note that said so. All 884 Forge tests pass and all five
 pin gates are green on this tree.
 
-Both launch items are outside the proof system:
+Every launch item is outside the proof system:
 
 | | Finding | Severity | Status |
 |---|---|---|---|
 | **L-1** | Unauthenticated request-body DoS on the public API | High (availability) | **Fixed here**, needs an API redeploy |
 | **L-2** | Three of five live token-list entries point at the retired gen4 suite | Medium (misrouting) | Needs a multisig refresh |
 | **L-3** | Published manifests and integration guides carried retired-generation addresses | Medium (misrouting) | **Fixed here** |
+| **L-4** | Nothing registers a fast-lane consumed source, so the next fast-lane spend stalls reflection | Medium (liveness) | Needs a decision — see below |
 | **D-1** | Relayed swaps reveal their amounts to the relay operator | Disclosure, by construction | Recorded, not changed |
 
 ---
@@ -141,6 +143,53 @@ entries are stale and why.
   referring to retired generations generically.
 
 Each now carries the live gen5 suite, with the historical results kept and labelled as historical.
+
+## L-4 — Nothing registers a fast-lane consumed source (Medium, liveness)
+
+**Not changed here — the clean fix moves an auth boundary on the live API, which is the maintainer's call.**
+
+A Mode-B reflection batch that folds a fast-lane-consumed ν needs that note's own
+`{cx, cy, srcTxid, srcVout}`. The settle proof cannot supply it: it proves membership against the Bitcoin
+pool root, never the underlying outpoint. So the spender has to hand it over. Today nobody does.
+
+The chain, each link confirmed in the tree:
+
+1. `worker-relay/src/eth-state-sidecar.js` publishes `{ ethPv, crossouts, consumeds, ethCompressedProof,
+   lastBlock, execBlock }` — no `consumedSources`.
+2. `handleReflectionEthStatePost` therefore stores `consumedSources: []` every time.
+3. `ethBundleSource` falls back to the holder-registered KV registry
+   (`reflection:consumedsrc:<network>:<nu>`), written only by `POST /reflection/consumed-source`.
+4. The one client for that endpoint, `reflectionConsumedSourceRegister` in
+   `worker-relay/src/lib/worker-client.js:49`, is **exported and never called** — a repo-wide search returns
+   only its own definition.
+5. `buildModeBBatch` does not skip an unresolved entry, it **throws**:
+   `mode-b: consumed ν has no resolved Bitcoin source note`.
+
+So the first fast-lane spend past `alreadyFoldedConsumedCount` wedges Mode-B assembly, and once any
+cross-out or new consume exists Mode-B is the only way the lane advances. The existing `tools/modeb-*.mjs`
+and `reflection-headrebuild.mjs` scripts all **hardcode** `consumedSources` — that is how previous consumes
+were handled, by hand.
+
+Bounded, and not a brick: one authenticated `POST /reflection/consumed-source` with the note's
+`{nu, cx, cy, srcTxid, srcVout}` unblocks it, and the guest re-verifies membership in-zkVM, so a wrong entry
+makes the fold skip rather than mis-attest. No funds are at risk in any case. But the dapp exposes
+`fastlaneExit`, so this is a user-reachable stall, and it will be hit the first time someone uses the fast
+lane for real.
+
+There is also a contradiction worth resolving on its own terms: the handler's comment says "whoever spent
+the note via the fast lane registers it here", but the endpoint is `checkConfidentialAuth`-gated, so the one
+party that actually knows the outpoint — the user — cannot call it.
+
+Two ways out, both small:
+
+- **Open the endpoint** (validated + rate-limited, keeping the passthrough-store posture its own comment
+  already argues for) and have `dapp/confidential-pool-ux.js` register the source right after a successful
+  `fastlaneExit`. This matches the stated design and needs no operator in the loop.
+- **Keep it gated** and have the relay register it after settling a `fastlane` job — but the relay would
+  need the outpoint passed through the job envelope, since the settle witness does not carry it.
+
+I did not pick one: moving an auth boundary on the live public API at launch is a decision, not a cleanup.
+Until it is wired, treat a fast-lane spend as an operator-assisted action.
 
 ## D-1 — Relayed swaps reveal their amounts to the relay operator (disclosure)
 
@@ -351,3 +400,5 @@ Recorded so they are not re-derived. These are *this* round's; the 09-19 review'
    unread from here.
 5. Decide on `OP_SWAP_BLIND` (D-1): wire it after a real end-to-end prover run, or launch on `OP_SWAP` and
    state the relay-visibility property plainly in user-facing material.
+6. Wire fast-lane consumed-source registration (L-4), or gate `fastlaneExit` behind an operator step until
+   it is wired.
