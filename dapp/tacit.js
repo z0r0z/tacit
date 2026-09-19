@@ -82,7 +82,7 @@ import { renderSwapTab } from './confidential-swap-tab.js';
 import { renderEarnTab } from './confidential-earn-tab.js';
 import { renderGovernTab } from './confidential-govern-tab.js';
 import { renderFactoryTab } from './confidential-factory-tab.js';
-import { CONFIDENTIAL_DEPLOYMENTS as CROSSLANE_DEPLOYMENTS, setActiveNetwork as _setConfidentialNet } from './confidential-deployments.js';
+import { CONFIDENTIAL_DEPLOYMENTS as CROSSLANE_DEPLOYMENTS, setActiveNetwork as _setConfidentialNet, isProtectedOutpoint as _isProtectedOutpoint } from './confidential-deployments.js';
 import { makeCrossLaneGuard } from './confidential-crosslane-guard.js';
 import { makeCrossChainAssets } from './cross-chain-asset-resolver.js';
 import { makeTacitAddress } from './tacit-address.js';
@@ -3504,8 +3504,12 @@ async function getUtxos(a, onProgress) {
   // 2–5s reindex window. Applied to every getUtxos return path so any
   // back-to-back broadcast — sweep buy, manual rapid sends, AMM
   // — is safe from double-spending the same UTXO across two txs.
+  // Also drop any outpoint registered as a live cBTC self-custody lock, so ordinary coin selection never
+  // spends one. A lock is a plain spendable output, and spending it outside a redemption retires it against
+  // its escrow. Filtering at this single point covers every caller. A genuine redemption builds its
+  // transaction from the outpoint explicitly rather than through coin selection, so it is unaffected.
   const _filterRecent = (utxos) => Array.isArray(utxos)
-    ? utxos.filter(u => !_isRecentlySpent(u.txid, u.vout))
+    ? utxos.filter(u => !_isRecentlySpent(u.txid, u.vout) && !_isProtectedOutpoint(u.txid, u.vout))
     : utxos;
   if (_heavyAddresses.has(a)) {
     // Heavy path: try the sniff-then-cache shortcut.
@@ -10187,6 +10191,21 @@ try {
 function _crosslaneConfigured(net) {
   const d = CROSSLANE_DEPLOYMENTS[net || currentNetworkName()];
   return !!(d && d.pool && d.assets.some((a) => a.live));
+}
+
+// CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the value the pool stamps
+// into its immutables and the guest commits, so a proof is bound to one deployment. Needed here to rebuild a
+// generation-BOUND Bitcoin note leaf (btc_note_leaf_bound), which is the only leaf domain the EVM fast lane
+// accepts — see the cross-lane guard call site. Mirrors confidential-pool-ux.js `chainBindingHex()`; kept
+// standalone because that one closes over the ux module's own config. Returns null when the generation isn't
+// configured, and the caller then checks only the legacy unbound domain.
+function _confidentialChainBinding(net) {
+  const d = CROSSLANE_DEPLOYMENTS[net || currentNetworkName()];
+  if (!d || !d.pool || !d.chainId) return null;
+  const cid = BigInt(d.chainId).toString(16).padStart(64, '0');
+  const addr = String(d.pool).replace(/^0x/, '').toLowerCase().padStart(40, '0');
+  const bytes = Uint8Array.from(((cid + addr).match(/../g) || []).map((h) => parseInt(h, 16)));
+  return '0x' + [...keccak_256(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ─── Persistent bridge pipeline state ──────────────────────────────
@@ -28043,15 +28062,26 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       const _guard = makeCrossLaneGuard({ keccak256: keccak_256 });
       // nullifierSpent's auto-getter was internalized (EIP-170); read the mapping slot directly.
       const _ethGetStorageAt = (to, slot, tag) => _ethRpcCall('eth_getStorageAt', [to, slot, tag || 'latest']);
-      const _ZERO_AUTH = '0x' + '00'.repeat(32);
+      // The EVM chain binding this generation's bound leaves commit — keccak(chainid ‖ pool).
+      const _xlBinding = _confidentialChainBinding(currentNetworkName());
       for (const u of pickedAssetUtxos) {
         const { cx, cy } = _cp.commitXY(u.amount, u.blinding);
-        // ν is leaf-bound: the Ethereum-recorded consume is nullifier(btc_note_leaf(asset,Cx,Cy,auth_key)),
-        // where auth_key is the x-only Taproot key of the note's Bitcoin UTXO (its spend authority). Thread the
-        // per-note auth_key here when the cross-lane pool is wired; the holdings record does not yet carry it.
-        const authKey = u.authKey || u.kBtcXonly || _ZERO_AUTH;
-        const nu = _cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey));
-        const v = await _guard.bitcoinSpendBlocked(_ethGetStorageAt, _xlPool, nu);
+        // ν is LEAF-bound, and a Bitcoin-homed note has two possible leaf domains — the legacy unbound
+        // btc_note_leaf(asset,Cx,Cy,auth_key) and the generation-bound
+        // btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding) — which hash to DIFFERENT nullifiers.
+        // The EVM fast lane records the BOUND form, so both nullifiers are checked.
+        const authKey = u.authKey || u.kBtcXonly;
+        // Refuse when the note's auth key is unknown: without it the nullifier cannot be derived, so the
+        // Ethereum spend status cannot be checked. Re-scanning the wallet repopulates the key.
+        if (!authKey) {
+          throw new Error(
+            'cross-lane: this note has no recorded Bitcoin auth key, so its Ethereum spend status cannot be '
+            + 'checked. Re-scan the wallet to repopulate it, or spend from a note that carries one.',
+          );
+        }
+        const nus = [_cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey))];
+        if (_xlBinding) nus.push(_cp.nullifier(_cp.btcNoteLeafBound(assetIdHex, cx, cy, authKey, _xlBinding)));
+        const v = await _guard.bitcoinSpendBlockedAny(_ethGetStorageAt, _xlPool, nus);
         if (v.blocked) throw new Error(`cross-lane: an input note is already spent on Ethereum (${v.reason}); it cannot also be spent on Bitcoin`);
       }
     }

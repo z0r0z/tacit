@@ -431,3 +431,46 @@ export async function copyToClipboard(text, btn) {
     return false;
   }
 }
+
+
+// ── Protected outpoints: live cBTC self-custody locks, never spendable by coin selection ──────────────
+//
+// A cBTC lock is a plain Bitcoin output carrying a 0x66 envelope; nothing on Bitcoin prevents it from being
+// spent (covenant-enforced locks are held behind the reserved OP_COVENANT_MINT opcode). This registry keeps
+// such outputs out of ordinary coin selection, and is consumed by tacit.js's getUtxos filter, the single point
+// every UTXO read passes through.
+//
+// An outpoint is registered when its lock is broadcast and released only once the lock is genuinely retired
+// (a proven redemption, or a spend that already happened). It is not released on mint, which is why it is a
+// separate store from `tacit-cbtc-pending-locks-v1`, whose lifecycle ends at mint.
+//
+// Persisted across reloads. If local storage is cleared the wallet falls back to unprotected selection, so
+// this is a safeguard rather than something correctness depends on.
+const _PROTECTED_OUTPOINTS_KEY = 'tacit-protected-outpoints-v1';
+let _protectedOutpoints = null;
+function _loadProtectedOutpoints() {
+  if (_protectedOutpoints) return _protectedOutpoints;
+  try {
+    const raw = JSON.parse(localStorage.getItem(_PROTECTED_OUTPOINTS_KEY) || '[]');
+    _protectedOutpoints = new Set(Array.isArray(raw) ? raw.map(String) : []);
+  } catch { _protectedOutpoints = new Set(); }
+  return _protectedOutpoints;
+}
+function _saveProtectedOutpoints() {
+  try { localStorage.setItem(_PROTECTED_OUTPOINTS_KEY, JSON.stringify([..._loadProtectedOutpoints()])); } catch {}
+}
+export function isProtectedOutpoint(txid, vout) {
+  return _loadProtectedOutpoints().has(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+}
+/** Register a cBTC lock output as unspendable by ordinary coin selection. Idempotent. */
+export function protectOutpoint(txid, vout) {
+  _loadProtectedOutpoints().add(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+  _saveProtectedOutpoints();
+}
+/** Release a lock outpoint — call ONLY once it is genuinely retired (redeemed, or already spent). */
+export function unprotectOutpoint(txid, vout) {
+  _loadProtectedOutpoints().delete(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+  _saveProtectedOutpoints();
+}
+/** The live protected set, as `txid:vout` strings — for UI that wants to show why a balance is reserved. */
+export function listProtectedOutpoints() { return [..._loadProtectedOutpoints()]; }

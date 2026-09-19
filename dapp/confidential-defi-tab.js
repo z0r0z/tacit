@@ -3,14 +3,19 @@
 // relay (confidential-defi-actions.js). Kept OUT of tacit.js (a thin hook calls renderCdpTab) to keep the
 // giant file thin, mirroring confidential-pool-tab.js.
 //
-// VERIFICATION STATUS: OPEN (mint cUSD), cBTC-mint, and CLOSE assemble the exact guest witnesses and submit
-// to the relay; they go live the moment a CollateralEngine is configured (cfg.collateralEngine) and the
-// coordinated re-prove/redeploy lands. CLOSE rebuilds the CDP position tree from the CdpPositionInserted
-// event to prove membership. (Top-up is the same machinery; not surfaced yet.)
+// VERIFICATION STATUS: OPEN (mint cUSD), cBTC-mint and CLOSE assemble the exact guest witnesses and submit to
+// the relay, and every prerequisite is now live — the CollateralEngine is configured and the gen5 redeploy +
+// re-prove have landed, with the exec-cdpmint/cdpclose/cdpliquidate/cbtcmint prover binaries deployed. CLOSE
+// rebuilds the CDP position tree from the CdpPositionInserted event to prove membership. (Top-up is the same
+// machinery; not surfaced yet.)
+//
+// NOT YET EXERCISED ON MAINNET: as of the 2026-09-19 review, outstandingCusd == 0 and both tacBTC and tacUSD
+// have zero supply — no CDP has ever been opened on gen5 and no cBTC has been minted. Treat the first real
+// use as a rehearsal. See audit/AUDIT-2026-09-19-cbtc-cusd-cdp-review.md for the launch gates.
 
 import { secp, sha256, keccak_256, hmac } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater, protectOutpoint } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -25,11 +30,15 @@ function getUx() {
 const el = (id) => document.getElementById(id);
 const ZERO32 = '0x' + '00'.repeat(32);
 
+// Requires a CSPRNG and throws without one, matching bulletproofs-plus.js `randomScalar`. These 32 bytes seed a
+// CDP position's debt-note blinding, nullifier key and released-collateral blindings, so they must come from
+// `crypto.getRandomValues`, which is only available in a secure context (HTTPS).
 function rand32Hex() {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error('CSPRNG unavailable — open tacit over HTTPS (a secure context) to build this op');
+  }
   const b = new Uint8Array(32);
-  (globalThis.crypto || {}).getRandomValues
-    ? globalThis.crypto.getRandomValues(b)
-    : b.forEach((_, i) => { b[i] = Math.floor(Math.random() * 256); }); // never hit in a real browser
+  globalThis.crypto.getRandomValues(b);
   return '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
@@ -249,6 +258,10 @@ function wireCbtc(wallet, ux) {
         const hrp = Number(ux.cfg.chainId) === 1 ? 'bc' : 'tb';
         const lm = makeCbtcLockMint({ priv: wallet.priv, pool: ux.pool, cbtcAsset: ux.pool.CBTC_ZK_ASSET_ID, hrp });
         const res = await lm.lock({ amountSats });
+        // Reserve the lock output from ordinary coin selection as soon as it is broadcast. The lock is a plain
+        // spendable UTXO, and spending it outside a redemption retires it against its escrow. Registered here
+        // rather than at mint time because the broadcast-to-mint window is when other payments are most likely.
+        try { protectOutpoint(res.lockTxid, res.lockVout); } catch {}
         // blinding comes back as a BigInt (deriveCbtcNoteBlinding); JSON.stringify can't serialize that, so
         // store it as hex and convert back to BigInt at mint time.
         addPendingCbtcLock({ ...res, blinding: '0x' + BigInt(res.blinding).toString(16).padStart(64, '0') });
