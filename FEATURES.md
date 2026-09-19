@@ -53,6 +53,13 @@ trustlessly via the zk reflection bridge, so a balance is never chain-siloed.
 - **Public by nature:** the deposit/withdraw boundary (the funding source and amount in,
   the recipient and amount out) — inherent to any shielded pool — and the fact that a
   cross-chain exit surfaces on both chains. This is ordinary public-DeFi metadata.
+- **Visible to whoever proves for you:** a relayer never sees a spending key and can only
+  earn the fee bound in your proof, so it can neither move your funds nor redirect a
+  payout. It does see the IP the op arrives from, and — for an AMM swap — that swap's
+  amounts, because the guest computes the clearing and must read them. Nothing else about
+  you is exposed: not your balance, not your other notes, not who you are. Self-settling
+  (`fee: 0`) removes the relayer from the picture entirely, and a prover-blind swap path
+  (`OP_SWAP_BLIND`) is armed in the deployed guest for when it is wired end to end.
 
 ## The trust model
 

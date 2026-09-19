@@ -9,7 +9,7 @@
 
 These ops live in a **separate namespace** from the Bitcoin-side wire opcodes
 in [`SPEC.md` §1.1](../SPEC.md). Bitcoin ops are envelope bytes (`0x21`–`0x5E`)
-carried in Taproot witnesses; confidential-pool ops are a `u8` op tag (0–30)
+carried in Taproot witnesses; confidential-pool ops are a `u8` op tag (0–34)
 inside a proven settlement batch and never appear on a Bitcoin wire. They
 touch the Bitcoin lane only at the four reflection seams noted below.
 
@@ -48,10 +48,17 @@ touch the Bitcoin lane only at the four reflection seams noted below.
 | 28 | `OP_SEND_AND_UNWRAP` | ✅ shipped | Partial public exit: one hidden note → public payout + hidden change. |
 | 29 | `OP_LP_BOND` | ✅ shipped | 1-click farm entry: `OP_LP_ADD` fused with `OP_FARM_BOND`. |
 | 30 | `OP_WRAP_CDP_MINT` | ✅ shipped | 1-click cUSD: public deposit collateral → confidential debt note in one settle. |
+| 31 | `OP_SWAP_BLIND` | ✅ shipped (guest) | Prover-blind confidential AMM batch: the box never reads a cleartext amount. Clearing + per-output range come from an in-guest BN254 Groth16 (`amm_swap_batch`, baked ceremony VK), conservation from a per-asset aggregate Pedersen kernel, and the onboarded value from a per-receipt cross-curve sigma. Per-intent relay tips are trader-authorized in the PoK context and summed by the circuit. No-skim pools only (`protocol_fee_bps == 0`); ≤ 16 intents. **Armed in the deployed guest and built by the dapp, but not yet wired into the relay's submit allowlist or op→binary map — so relayed swaps currently settle as `OP_SWAP`.** |
+| 32 | `OP_WRAP_LP` | ✅ shipped | 1-click LP from an external wallet: two pending PUBLIC deposits are the A/B contributions and the shielded LP-share note mints in one settle. No tree notes, so no membership, nullifiers or change — a deposit's value is exact and public (bound in `deposit_id`), which is what removes the intermediate note. |
+| 33 | `OP_WRAP_SWAP` | ✅ shipped | 1-click swap from an external wallet: a pending PUBLIC deposit is the swap input and the hidden output note mints in one settle. Same deposit-exactness argument as `OP_WRAP_LP`. Canonical (no-skim) pools only — a fee-switch pool must route through `OP_SWAP`, which realizes the skim per swap. |
+| 34 | `OP_SURPLUS_DRAW` | ⏸ dormant | Governance realizes the accumulated fee surplus as a cUSD re-mint: one controller-derived note (MINT mode, no collateral) opening to a public amount, plus a `positionLeaf == 2` sentinel `CdpMint` carrying the minted leaf so the engine binds amount + destination to a one-shot owner authorization. No dapp or worker emitter — the tooling is built when the stability fee is activated. |
 
-Bytes 31–255 are free for a future guest generation. Byte 5 is reserved (do
-not reuse). Every settled op balances through the same conservation kernel as
-`OP_TRANSFER`, and any op may be relayed gaslessly with the fee bound in-proof.
+Bytes 35–255 are free for a future guest generation. Byte 5 is reserved (do
+not reuse), and bytes 0–34 are all claimed by the deployed guest — including
+the four above, which a reader of an older revision of this table would have
+believed were still free. Every settled op balances through the same
+conservation kernel as `OP_TRANSFER`, and any op may be relayed gaslessly with
+the fee bound in-proof.
 
 ## Tangent map — where this lane touches the Bitcoin SPEC
 
