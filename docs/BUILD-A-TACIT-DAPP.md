@@ -189,8 +189,9 @@ sees the witness. If a trade size matters to you, prove locally.
 
 ## 7. Iterating on the design
 
-The template is deliberately one file with no dependencies beyond two ESM imports, so you can throw away its
-look entirely without touching its logic. Two conventions worth keeping:
+The template ships as one file with zero dependencies — the live pool and relay panels are plain `fetch`,
+and the dapp-module imports are commented at the wiring point for when you need them. So you can throw its
+look away entirely without touching its logic. Two conventions worth keeping:
 
 - **Tokens on `:root`, nothing hardcoded.** The live dapp's palette is cream `#f4eee3`, ink `#171717`, orange
   `#ff9818`, monospace, dashed dividers. Swap the token values and the whole thing re-skins.
