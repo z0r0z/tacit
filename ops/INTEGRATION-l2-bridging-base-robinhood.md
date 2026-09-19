@@ -27,12 +27,17 @@ added to Solidity for this feature.
 unwrap(note, recipient = escrow) → escrow deployed & funded → escrow calls the L2 bridge → L2 credit
 ```
 
-## 2. Contracts in use (mainnet, re-verified 2026-09-05)
+## 2. Contracts in use (mainnet, gen5 — refreshed 2026-09-20)
+
+> The live round-trips recorded in this document were run on 2026-09-05 against **gen3**
+> (pool `0x…047DD77C`, router `0x…20E09BC`). Those results still stand — the L2 machinery is on the
+> router and is generation-independent — but the addresses below are gen5's, which is what you
+> integrate against today.
 
 ```
-pool                = 0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677
-router              = 0x000000004c5BF191225F9049b385d6F3820E09BC
-router.executorImpl = 0x3f202d64F58DAf07380a06E8A874bb0036E9945E   (read live, never hardcode)
+pool                = 0x000000000Ed1eabD231Be41d93b719056F7febFC
+router              = 0x000000005dA3E3B73726af3c774Deeb9472D4992
+router.executorImpl = <read live from the router; do not hardcode — it is per-generation>
 ETH assetId (shared) = 0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34
 
 Base (OP-Stack, chain id 8453):

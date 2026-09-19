@@ -15,7 +15,8 @@ The audit is largely sound and its configuration findings are correct and worth 
 central operational conclusion is wrong, and acting on it would have cost real money to remediate
 a problem that does not exist. Details in §3.
 
-Live suite: pool `0x0000000000047DD77CeCEfE5Dc015EB7bFa9C677`. No redeploy required — confirmed.
+Live suite at the time of this review (gen3, since superseded by gen5 — see `docs/DEPLOYMENTS.md`
+for the current addresses). No redeploy required — confirmed.
 
 ---
 

@@ -55,14 +55,33 @@ Key constraints that shaped these payloads:
   `description` — same as the already-live TAC ERC20 card, which also reads
   "Tacit Token" / symbol "TAC".
 
-## Addresses / ids used (mainnet, gen4 pool `0x…98A73197`)
+## Addresses / ids used
 
-| | value |
-|---|---|
-| tacBTC (`CanonicalBridgedERC20`) | `0x5Fc0376DA9f1dE8dd68b50648779C83b79f7C50F` |
-| tacUSD (`CanonicalBridgedERC20`) | `0xA70f3853D56c1fC3F5b800E44907c7AD885Ab905` |
-| `CBTC_ZK_ASSET_ID` (fixed protocol constant, not per-generation) | `0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8` |
-| cUSD confidential asset id (gen4 CollateralEngine-derived, **will change on redeploy**) | `0x4e8455a57c4a996ba6e40ee87f01c88421ecfdbbeac9762dcee0c5713363dacb` |
+> **The listings that went live on 2026-09-11 were made against the gen4 suite, and gen5 replaced it
+> on 2026-09-18.** Three of the five are therefore stale on-chain and point at a retired
+> generation's contracts: `tacBTC`, `tacUSD` (both canonical ERC20s are minter-bound to their own
+> pool, so gen5 deployed new ones) and the shielded `cUSD` id (derived from the CollateralEngine
+> address). `cBTC` and `tETH` are keyed by generation-independent ids and remain correct.
+> `TokenList.list()`/`listForeign()`/`setArt()` are `onlyOwner`, so refreshing them is a multisig
+> action — see "Refresh needed" below.
+
+Current (gen5) values, from `contracts/deployments/1-createx.json`:
+
+| | value | status |
+|---|---|---|
+| tacBTC (`CanonicalBridgedERC20`) | `0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696` | **listing stale** (lists gen4 `0x5Fc0376D…`) |
+| tacUSD (`CanonicalBridgedERC20`) | `0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564` | **listing stale** (lists gen4 `0xA70f3853…`) |
+| `CBTC_ZK_ASSET_ID` (fixed protocol constant, not per-generation) | `0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8` | listing current |
+| cUSD confidential asset id (CollateralEngine-derived, **changes on every redeploy** — `keccak("tacit-cdp-debt-v1" ‖ engine)`) | `0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d` | **listing stale** (lists gen4 `0x4e8455a5…`) |
+| `TETH_BITCOIN_ID` (stable across generations) | `0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34` | listing current |
+
+### Refresh needed before the public launch
+
+A user discovering Tacit through the public TokenList is currently handed two retired-generation
+ERC20s and a retired shielded id. Nothing is at risk in the protocol sense — the gen4 contracts are
+real and their holders can still exit — but a newcomer following the list would be transacting
+against a generation that accepts no new value. Re-point the three stale entries at the gen5 values
+above (same art, same ranks) as part of going public.
 
 Verified via `cast call` against `ethereum-rpc.publicnode.com`: both tokens
 deployed, `contractURI()` matches the pinned IPFS metadata baked into

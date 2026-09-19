@@ -1,15 +1,11 @@
 # Integration handoff: wrap ETH → confidential stealth-send → claim → unwrap
 
-Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Last reviewed against mainnet
-2026-09-14 for the **gen4** pool. **Do not hardcode any address, vkey, or code pointer from this
-document into long-lived config** — re-check the live manifest and this repo at actual integration
-time (see §6, "Known limitations"). This project has redeployed multiple times; every generation is
-a fresh, immutable address set.
-
-**gen5 update (2026-09-18):** gen5 is now the live generation on mainnet (deploy block 25998736) —
-see `docs/DEPLOYMENTS.md` for the current address/vkey table. The gen4 addresses and counters below
-are a dated snapshot, kept for reference only; this document's own standing rule applies as always —
-re-check the live manifest before hardcoding anything.
+Status: engineering handoff, ETH-only (no Bitcoin/cross-chain leg). Addresses below are the **gen5**
+suite, live on mainnet since 2026-09-18 (deploy block 25998736), re-checked 2026-09-20. **Do not
+hardcode any address, vkey, or code pointer from this document into long-lived config** — re-check
+the live manifest and this repo at actual integration time (see §6, "Known limitations"). This
+project has redeployed several times; every generation is a fresh, immutable address set, and a
+retired generation's addresses keep working for exits but accept no new value.
 
 ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send / claim /
 unwrap settle against the settle guest alone, unaffected by reflection height or catch-up state. The
@@ -30,17 +26,20 @@ requested from Tacit's relay API, which proves and/or submits on the caller's be
 
 ## 2. Contracts in use (mainnet)
 
-The **gen4** suite (live since 2026-09-08). Canonical source is the manifest
+The **gen5** suite (live since 2026-09-18). Canonical source is the manifest
 `contracts/deployments/1-createx.json`:
 
 ```
-mainnet.pool              = 0x0000000098A73197B3255aD9db1ed8544410f5Ba
-mainnet.router            = 0x00000000F104E2C1ebe9693eD19491b9897a8193
-mainnet.collateralEngine  = 0x000000008cAD17f5BB485A7D521E89A9C4716cC0
+mainnet.pool              = 0x000000000Ed1eabD231Be41d93b719056F7febFC
+mainnet.router            = 0x000000005dA3E3B73726af3c774Deeb9472D4992
+mainnet.collateralEngine  = 0x000000003f608BDdF0ca45934003ffb9DbDF70DB
 mainnet.assetFactory      = 0x0000000042c2D57499Df64BAF81bfA2C6E100535
-mainnet.relayer           = 0x00000000705D345449950e900271F27E7fEEABc5
-mainnet.btcCallExecutor   = 0x00000000f448614cc7b5152f108471f020a97D13
+mainnet.relayer           = 0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3
+mainnet.btcCallExecutor   = 0x00000000Df8263Ac5810C53B31AaE20ee53C247f
 ```
+
+The predecessor (gen4) suite is retired: it still honours exits for value already committed to it,
+but takes no new deposits. Do not integrate against it.
 
 `dapp/confidential-deployments.generated.js` is the dapp's own pointer at these addresses —
 regenerate it with `node tools/sync-deployment-config.mjs contracts/deployments/1-createx.json
@@ -548,21 +547,30 @@ in `dapp/confidential-stealth.js`; the leaf hash and exit-recipe ABI encoding in
 
 ### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
 
-The underlying rule, relevant to any pool generation: if an ETH→BTC `crossOut` ever lands while
-`attestedBitcoinConsumedCount()` is still 0, the reflection fold **freezes permanently for that
-pool** — unrecoverable without another full redeploy. The counter must first be seeded by one real
-Bitcoin-homed fast-lane consume. Check both counters on whichever pool you're integrating against
-before assuming a `crossOut` path is safe to expose in a UI:
+Recording a cross-out moves `crossOutCount`, and a forward (non-Mode-B) reflection batch commits a
+zero for that counter — so from the first cross-out on, **every** attest must be a Mode-B batch
+carrying an Ethereum-state proof. That is the intended behaviour, and it costs a proof per attest
+rather than blocking anything.
+
+Earlier generations had a genuine cold-start hazard here: Mode-B's Ethereum-state proof read
+`bitcoinConsumedCount` as an *inclusion* proof, and a counter still at zero lives in an unwritten
+slot that cannot be included — so a cross-out recorded before the first Bitcoin-homed fast-lane
+spend left the lane with no way forward. **That is fixed in the guest, not worked around
+operationally:** `verify_storage_slot_proofs_allow_zero` in
+`contracts/sp1/eth-reflection/src/main.rs` accepts an *exclusion* proof for a zero-valued counter (a
+never-written slot is genuinely absent from the storage trie, and a `++`-only counter cannot be
+legitimately absent once non-zero), so Mode-B bootstraps from zero. Gen5 ships that guest — its
+`eth_reflection_vkey` is `0x00ca8171…`, whose recursion digest is pinned into `reflect.rs`'s
+`ETH_REFLECTION_VKEY`, which in turn produced the `BITCOIN_RELAY_VKEY` the live pool holds
+immutably. So a cross-out is safe on gen5 regardless of counter order.
+
+Still worth reading both counters live on whichever pool you integrate against, as orientation
+rather than as a gate:
 
 ```
-attestedCrossOutCount()          // gen4, checked 2026-09-14: 6
-attestedBitcoinConsumedCount()   // gen4, checked 2026-09-14: 1
+attestedCrossOutCount()
+attestedBitcoinConsumedCount()
 ```
-
-**Gen4 has already passed this gate** — both counters are non-zero and the Mode-B Bitcoin-state
-reflection lane is live and has folded real cross-chain activity. This is generation-specific,
-though: a future redeploy resets both counters to zero again, and the same freeze risk applies fresh
-until that new pool's own first fast-lane consume lands. Re-check live, don't assume from this doc.
 
 This does not constrain anything else in this document: wrap / stealth-send / claim / unwrap never
 touch that counter. It only matters if you're also adding a Bitcoin bridge button to the same UI.
