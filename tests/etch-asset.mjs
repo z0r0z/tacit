@@ -25,6 +25,7 @@ import {
 import { bpRangeAggProve, bpRangeAggVerify, pointToBytes } from './bulletproofs.mjs';
 
 const NETWORK   = process.env.NETWORK || 'signet';
+// Public signet/Sepolia test key. It holds nothing of value; do not reuse it anywhere.
 const PRIVKEY   = process.env.ETCH_PRIVKEY || '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const TICKER    = process.env.TICKER || 'tETH';
 const DECIMALS  = parseInt(process.env.DECIMALS || '8', 10);

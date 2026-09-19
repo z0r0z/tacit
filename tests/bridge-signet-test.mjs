@@ -10,6 +10,7 @@
  * Usage: node tests/bridge-signet-test.mjs
  */
 
+// Public signet/Sepolia test key. It holds nothing of value; do not reuse it anywhere.
 const SIGNET_PRIVKEY = '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const SIGNET_ADDRESS = 'tb1qc0tjnm339uu89as6lhauegpc340m747n3jnsu5';
 const MEMPOOL_API = 'https://mempool.space/signet/api';

@@ -5,6 +5,7 @@
  */
 import { createHash, randomBytes } from 'crypto';
 
+// Public signet/Sepolia test key. It holds nothing of value; do not reuse it anywhere.
 const SIGNET_PRIVKEY = '827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222';
 const MEMPOOL_API = 'https://mempool.space/signet/api';
 const NETWORK_TAG = 0x01;

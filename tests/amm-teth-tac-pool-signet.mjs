@@ -78,6 +78,7 @@ const FOUNDER = {
 // Signet bridge round-trip wallet — holds the bridge-minted tETH (see
 // tests/bridge-sepolia-signet-e2e.mjs).
 const BRIDGE = (() => {
+  // Public signet/Sepolia test key. It holds nothing of value; do not reuse it anywhere.
   const priv = hexToBytes('827aee3498ebbf5f4374387dc9937741ac87ec58a7a67c8091241d0797589222');
   return { priv, pub: secp.getPublicKey(priv, true), addr: 'tb1qc0tjnm339uu89as6lhauegpc340m747n3jnsu5' };
 })();
