@@ -230,13 +230,12 @@ not just `HEAD`.
 - `.env`, `.env.mainnet`, `.env.render`, `.env.tacit-api-render` are gitignored **and were never committed**
   (verified by `git log --all --diff-filter=A` over all added paths, not just by checking `HEAD`).
 - No provider credential formats anywhere in history: `sk-`, `ghp_`, `AKIA`, `xox[baprs]-`, JWT.
-- One hardcoded private key, `827aee34…`, in `tests/bridge-3a.mjs` and `tests/amm-teth-tac-pool-signet.mjs`. It
-  is a **signet** burner (its Bitcoin address is `tb1qc0tjnm…`), and its Ethereum derivation
-  `0x5145e7D0a12B36Db79a2F9eE089c4590BBcC8a82` has **balance 0 and nonce 0 on both mainnet and Sepolia**. Not a
-  leak. Label it as a burner in the file so neither a secret scanner nor a reader misreads it.
-  *Not verified:* the Bitcoin-mainnet balance for that key (tooling blocked during the session). The Ethereum
-  evidence, the `tb1q` prefix and the signet-only call sites make it conclusive, but the check is cheap and
-  someone should run it before publication.
+- One hardcoded private key, `827aee34…`, appearing in eight test scripts under `tests/`. It is a **signet**
+  burner (its Bitcoin address is `tb1qc0tjnm…`). Its Ethereum derivation
+  `0x5145e7D0a12B36Db79a2F9eE089c4590BBcC8a82` has **balance 0 and nonce 0 on both mainnet and Sepolia**, and its
+  Bitcoin-mainnet twin address (the same witness program re-encoded with the `bc` prefix, derived without the
+  private key) has **no funded outputs and a zero balance**. Not a leak. Every occurrence now carries a comment
+  saying it is a public test key.
 
 ### Dapp posture
 
@@ -265,7 +264,7 @@ not just `HEAD`.
 4. **State the three honest limitations** — reflection liveness, the deep-reorg halt, relay front-running — in
    the integration materials rather than only in this file. Each has a good answer; omitting them reads worse
    than stating them.
-5. **Label the signet burner key** in the two test files, and run its Bitcoin-mainnet balance check.
+5. ~~Label the signet burner key and check its Bitcoin-mainnet balance.~~ Done: labelled in all eight files; both balances are zero.
 
 ## Evidence
 
