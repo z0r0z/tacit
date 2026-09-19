@@ -4,7 +4,7 @@
 in one window rather than fanned out to sub-reviewers, so every claim below was reached and re-checked by the
 same reader. Where a prior round's verdict was available it was deliberately *not* consulted before forming an
 independent one; prior notes were read only afterwards, to reconcile.
-**Date:** 2026-09-19 · **Branch:** `main` at `f3917087`, plus the five off-chain fixes this review landed
+**Date:** 2026-09-19 · **Branch:** `main` at `f3917087`, plus the off-chain fixes this review landed
 (uncommitted, for maintainer review) · **Posture:** the surface is already **deployed and live on Ethereum
 mainnet**. This review asks one question the earlier rounds did not: *is this safe to publish?*
 
@@ -36,7 +36,7 @@ itself would expose.
 **Clear to publish.**
 
 No double-spend, insolvency, theft, or bricking path was found in the immutable surface. The live mainnet
-bytecode was proven byte-identical to this tree. Five hardening items were found off-chain, all fixed here; one
+bytecode was proven byte-identical to this tree. Four hardening items and one defense-in-depth check were found off-chain, all landed here; one
 of them is the only finding in this review with live operational consequence, and it is a cost-of-service issue
 for the relay operator, not a risk to user funds.
 
@@ -162,15 +162,17 @@ side-channel.
 **Fixed:** extracted a shared `constantTimeEqual()`, applied it there, and refactored `checkBearerConstantTime`
 onto it.
 
-### O-5 — Path traversal in the IPFS proxy sub-path
+### O-5 — IPFS proxy sub-path: defense in depth *(not exploitable as first assessed)*
 
-`/ipfs/<cid><sub>` validated the CID strictly (CIDv0/v1 format, plus raw-block digest re-verification) but
-accepted any `sub` matching `(\/[^?#]*)?`. Since the sub-path is concatenated onto the gateway base and `fetch`
-normalises `..`, a request could resolve off the gateway's `/ipfs/` prefix and proxy an arbitrary path on a
-whitelisted gateway host back through the worker's permissive CORS and 24-hour edge cache.
+`/ipfs/<cid><sub>` validates the CID strictly (CIDv0/v1 format, plus raw-block digest re-verification) and
+accepts any `sub` matching `(\/[^?#]*)?`, which the handler concatenates onto the gateway base. On first reading
+this looked like a way to walk off the gateway's `/ipfs/` prefix with `..` segments.
 
-Bounded — the gateway list is fixed and the hosts are public read-only IPFS gateways — but it is cache
-poisoning under the worker's own origin.
+**It is not reachable in the deployed service.** The handler takes the path from `new URL(req.url).pathname`, and
+the URL parser collapses dot segments before the handler sees them. A live probe of the *unchanged* service with
+`--path-as-is` and `/ipfs/<cid>/../x` returned `400 invalid CID format` — the request had already been normalised to
+`/x`. The added check that rejects `.` and `..` segments is therefore harmless redundancy that keeps the handler
+safe if it is ever fed a path from another source; it is listed here so the earlier assessment is not repeated.
 
 **Fixed:** `.` and `..` segments rejected. Directory CIDs only ever need forward segments.
 
@@ -248,14 +250,18 @@ not just `HEAD`.
 - **Randomness:** `randomScalar` is CSPRNG-only with rejection sampling and throws if unavailable. O-3 was the
   one helper that did not follow it.
 - **Worker proxies:** `/chain/*` is a strict regex whitelist of read-only Esplora paths — no SSRF. `/ipfs/*`
-  validates CID format and re-hashes raw blocks against the CID; O-5 was its one gap.
+  validates CID format and re-hashes raw blocks against the CID; see O-5 for the sub-path check.
 - **Worker auth:** every mutating reflection and confidential endpoint is behind a constant-time bearer gate and
   returns 404 rather than 401 when unconfigured, so the surface is not enumerable.
 
 ## Recommendations before publishing
 
-1. **Redeploy the API service** (the O-1 gate), and confirm `RELAY_FEE_FLOOR = "1"` in its environment so the
-   profitability gate is doing real work rather than being metered around.
+1. ~~Redeploy the API service (the O-1 gate).~~ Done: `tacit-api` was redeployed on 2026-09-19 and the metering
+   was confirmed live (the sixth rapid request from one address returns 429). `RELAY_FEE_FLOOR` is **unset** in
+   production, so the metering is currently the only protection on relayed submits. **Do not set it to `1` yet:**
+   the change lifts the metering for every relayed submit, but the fee gate can only price a cETH fee leg and
+   passes every other asset through, so setting the flag would re-open the zero-fee path for those assets.
+   The metering should be decoupled from the flag before the floor is enabled.
 2. **Say plainly that the guest ELFs are not yet reproducibly buildable**, and give the rebuild recipe. This is
    the most likely question from a serious reader and the answer is better volunteered than extracted. A
    containerised, pinned-toolchain guest build that a third party can run to reproduce the pinned sha256s would
@@ -284,6 +290,6 @@ No contract, guest, vkey, or pin is touched.
 
 | File | Change |
 |---|---|
-| `worker/src/index.js` | O-1 relayed-submit metering; O-4 shared `constantTimeEqual()`; O-5 IPFS sub-path traversal |
+| `worker/src/index.js` | O-1 relayed-submit metering; O-4 shared `constantTimeEqual()`; O-5 IPFS sub-path check (defense in depth) |
 | `worker-relay/src/lib/prover.js` | O-2 `PEROP` hoisted to module scope; `type` validated before any filesystem write |
 | `dapp/confidential-defi-tab.js` | O-3 `rand32Hex()` fails closed without a CSPRNG |
