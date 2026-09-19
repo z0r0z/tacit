@@ -74,6 +74,9 @@ export const CFG = {
   headerLead: num('HEADER_RELAY_LEAD', 144),
   // Headers per advanceTip tx (gas-bounded batch).
   headerMaxBatch: num('HEADER_RELAY_MAX_BATCH', 40),
+  // Opt-in spend guard for long catch-ups: when > 0, the header feeder and the reflection folder wait instead of
+  // submitting while the live gas price is above this many gwei. 0 (default) disables it.
+  maxGasGwei: num('MAX_GAS_GWEI', 0),
   // Alert depth for the header feeder's fork recovery. The feeder always walks the relay's tip back to the
   // explorer's chain and resubmits the canonical headers, at any depth; a branch deeper than this is not a
   // normal Bitcoin reorg, so it is also raised as a critical alert (log + ALERT_WEBHOOK_URL).

@@ -14,7 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG } from './lib/config.js';
-import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, gasAboveCap } from './lib/chain.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -148,6 +148,8 @@ async function cycle() {
   // difficulty-epoch boundary transparently within one submission. No special-casing needed here.
   const from = base + 1;
   if (to - from + 1 > CFG.headerMaxBatch) to = from + CFG.headerMaxBatch - 1;
+  const dear = await gasAboveCap();
+  if (dear) { log(`gas ${dear.toFixed(3)} gwei is above MAX_GAS_GWEI=${CFG.maxGasGwei} — waiting`); return false; }
   log(`advancing relay ${from}..${to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
   const tx = await submitAdvance(from, to);
   log(`relay advanced to ${to} tx=${tx}`);

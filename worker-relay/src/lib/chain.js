@@ -22,6 +22,16 @@ const chain = CFG.chainId === 1 ? mainnet : { ...mainnet, id: CFG.chainId };
 
 export const publicClient = createPublicClient({ chain, transport });
 
+// The live gas price in gwei when it is above MAX_GAS_GWEI, else null (also null when the guard is off or the price
+// cannot be read, so a flaky RPC never stalls a lane).
+export async function gasAboveCap() {
+  if (!(CFG.maxGasGwei > 0)) return null;
+  try {
+    const gwei = Number(await publicClient.getGasPrice()) / 1e9;
+    return gwei > CFG.maxGasGwei ? gwei : null;
+  } catch { return null; }
+}
+
 // A SECOND opinion, deliberately not sharing the fallback list above. viem's fallback() sticks with the
 // first endpoint that doesn't error, so as long as RPC_URL answers every call — receipts included — every
 // read in a normal cycle goes through it alone; the public fallbacks are all reachability insurance, not a

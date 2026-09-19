@@ -23,7 +23,7 @@
 import { CFG } from './lib/config.js';
 import { reflectionJob, reflectionAck, heartbeat } from './lib/worker-client.js';
 import { proveReflection } from './lib/prover.js';
-import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI } from './lib/chain.js';
+import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap } from './lib/chain.js';
 
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -61,6 +61,13 @@ async function cycle() {
     return false;
   }
 
+  // Spend guard (opt-in): decided BEFORE a proof is bought, so waiting for cheaper gas wastes nothing.
+  const dear = await gasAboveCap();
+  if (dear) {
+    log(`gas ${dear.toFixed(3)} gwei is above MAX_GAS_GWEI=${CFG.maxGasGwei} — waiting`);
+    await heartbeat('reflection', `waiting for gas <= ${CFG.maxGasGwei} gwei (now ${dear.toFixed(3)})`);
+    return false;
+  }
   log(`job attestedTo=${attestedTo} pending=${job.pending ?? '?'} — proving (network groth16)...`);
   await heartbeat('reflection', `proving ${newDigest}`);
   const { publicValues, proofBytes } = await proveReflection(job.input);
