@@ -73,10 +73,11 @@ async function cycle() {
   const { publicValues, proofBytes } = await proveReflection(job.input);
 
   log('proved — submitting attestBitcoinStateProven...');
-  const txHash = await relayWallet.writeContract({
-    address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven',
-    args: [publicValues, proofBytes],
-  });
+  // A bare estimate leaves no headroom if state moves between estimating and inclusion, and a revert here costs the
+  // whole proof. Unused gas is refunded, so the pad only insures.
+  const attestCall = { address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven', args: [publicValues, proofBytes] };
+  const attestGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account });
+  const txHash = await relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n });
   // Wait for CONFIRMATIONS, not just inclusion. The ack advances the worker's canonical cursor, and
   // there is no recovery from the cursor being ahead of the chain (see the drift guard above), so acking
   // on a one-block receipt strands it permanently the first time that block is reorged. Observed exactly

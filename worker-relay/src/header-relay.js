@@ -109,7 +109,9 @@ async function resumeHeight(rtip, btip) {
 async function submitAdvance(from, to) {
   let hex = '';
   for (let h = from; h <= to; h++) hex += await headerHex(h);
-  const txHash = await relayWallet.writeContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${hex}`] });
+  const advanceCall = { address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${hex}`] };
+  const advanceGas = await publicClient.estimateContractGas({ ...advanceCall, account: relayWallet.account });
+  const txHash = await relayWallet.writeContract({ ...advanceCall, gas: (advanceGas * 125n) / 100n });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   if (rcpt.status !== 'success') throw new Error(`advanceTip reverted ${txHash}`);
   return txHash;
