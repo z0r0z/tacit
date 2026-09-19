@@ -21,7 +21,7 @@ backwards to the source.
   the burn/consume/cross-out folds.
 - **Deployment identity:** the live mainnet bytecode at `0x000000000Ed1eabD231Be41d93b719056F7febFC`, its linked
   library, its 19 immutables, and the guest ELF ↔ vkey ↔ deployed-immutable chain.
-- **Off-chain, mutable:** the Cloudflare worker API (`worker/src/index.js`, ~27.8k lines — routing, auth,
+- **Off-chain, mutable:** the API (`worker/src/index.js`, ~27.8k lines — routing, auth,
   proxies, rate limits), the settle relay and its prover wrapper (`worker-relay/src`), the dapp's randomness,
   XSS and CSP posture, and the repository's secret-leak exposure under publication.
 
@@ -43,10 +43,12 @@ for the relay operator, not a risk to user funds.
 The immutable surface needs no change and gets none. Nothing in this review alters a contract, a guest, or a
 vkey.
 
-**One deploy gate:** finding **O-1** (relay submit metering) is fixed in this tree but is a worker change, so it
-takes effect only on `wrangler deploy`. Until that deploy lands, `/confidential/submit` accepts relayed settles
-at any fee including zero. Deploy the worker before the endpoint is advertised publicly, or set
-`RELAY_FEE_FLOOR = "1"`, or both.
+**One deploy gate:** finding **O-1** (relay submit metering) is fixed in this tree but is an API change, so it
+takes effect only once the production API service (`tacit-api` on Render, which does not deploy from git
+automatically) is redeployed from the new commit. **Whether `/confidential/submit` is exposed today depends on the
+`RELAY_FEE_FLOOR` value in that service's environment, which this review could not read** — check it. If it is
+unset, relayed settles are accepted at any fee including zero until the redeploy lands. Redeploy the API before the
+endpoint is advertised publicly, or set `RELAY_FEE_FLOOR = "1"`, or both.
 
 ## Method
 
@@ -106,10 +108,12 @@ No Critical, High, or Medium finding in the immutable surface. All findings are 
 ### O-1 — Relayed settles were unmetered when the profitability gate is off *(the material one)*
 
 `handleConfidentialSubmit` rate-limited only `mode:'prove'`, on the stated ground that *"relayed settle jobs are
-fee-gated."* They are not. `buildRelayFeeGate` returns `null` unless `RELAY_FEE_FLOOR == '1'`, and that variable
-is commented out in `worker/wrangler.toml`; even when set, the gate can only price a cETH fee leg and passes
-every other asset through. So a public, unauthenticated POST reached the relay's job queue with no cost to the
-sender, and each accepted job costs the relay a `$PROVE` cycle plus mainnet gas. The only backstop was
+fee-gated."* That holds only when the gate is on. `buildRelayFeeGate` returns `null` unless `RELAY_FEE_FLOOR == '1'`,
+and even when set the gate can only price a cETH fee leg and passes every other asset through. The variable is
+commented out in the repository's example configuration (`worker/wrangler.toml`); the production value lives in
+the API service's environment on Render, which this review could not read, so **the live exposure is unconfirmed**.
+Wherever the gate is off, a public, unauthenticated POST reaches the relay's job queue with no cost to the sender,
+and each accepted job costs the relay a `$PROVE` cycle plus mainnet gas. The only other backstop is
 `MAX_PENDING_JOBS = 512`.
 
 **Not a user-funds issue.** `settle` is permissionless, the fee is bound inside the proof, and the relay never
@@ -251,8 +255,8 @@ not just `HEAD`.
 
 ## Recommendations before publishing
 
-1. **Deploy the worker** (the O-1 gate), and set `RELAY_FEE_FLOOR = "1"` so the profitability gate is doing real
-   work rather than being metered around.
+1. **Redeploy the API service** (the O-1 gate), and confirm `RELAY_FEE_FLOOR = "1"` in its environment so the
+   profitability gate is doing real work rather than being metered around.
 2. **Say plainly that the guest ELFs are not yet reproducibly buildable**, and give the rebuild recipe. This is
    the most likely question from a serious reader and the answer is better volunteered than extracted. A
    containerised, pinned-toolchain guest build that a third party can run to reproduce the pinned sha256s would
