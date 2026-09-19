@@ -255,7 +255,8 @@ services:
         value: "50"
       - key: ETH_GAS_BUFFER_WEI
         value: "30000000000000000"
+      # Healthy steady state is ~HEADER_RELAY_LEAD (144) plus a few blocks of batch cadence, so this sits above it.
       - key: REFLECTION_LAG_ALERT_BLOCKS
-        value: "6"
+        value: "200"
       - key: ALERT_WEBHOOK_URL
         sync: false

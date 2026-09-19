@@ -208,7 +208,7 @@ export const CFG = {
   // ── Replenish / monitor thresholds ──
   proveBalanceFloor: num('PROVE_BALANCE_FLOOR', 50), // PROVE, whole tokens
   ethGasBufferWei: BigInt(opt('ETH_GAS_BUFFER_WEI', '30000000000000000')), // 0.03 ETH
-  reflectionLagAlertBlocks: num('REFLECTION_LAG_ALERT_BLOCKS', 6),
+  reflectionLagAlertBlocks: num('REFLECTION_LAG_ALERT_BLOCKS', 200), // above the ~144-block relay lead that is normal
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't

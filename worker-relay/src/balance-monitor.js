@@ -14,7 +14,7 @@
 
 import { formatEther, formatUnits } from 'viem';
 import { CFG } from './lib/config.js';
-import { publicClient, relayWallet, ERC20_ABI, PROVE, readPool } from './lib/chain.js';
+import { publicClient, relayWallet, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -67,11 +67,24 @@ async function checkReflectionLag() {
   let attested = Number(health.attestedHeight ?? NaN);
   let tip = Number(health.tipHeight ?? health.bitcoinTip ?? NaN);
 
+  // On-chain fallback when /prover-health is unreachable or omits the lag fields, which is when the lag
+  // reading matters most. The pool exposes the attested tip HASH rather than a height, so resolve the height
+  // through the light relay's `blockHeight`, the same lookup ReflectionLib's anchor check uses.
   if (!Number.isFinite(lag)) {
     try {
-      const onchain = Number(await readPool('attestedBitcoinHeight'));
-      if (Number.isFinite(onchain)) attested = onchain;
-    } catch { /* getter name may differ; TODO confirm */ }
+      const attestedTip = await readPool('attestedReflectionTip');
+      const h = Number(await publicClient.readContract({
+        address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'blockHeight', args: [attestedTip],
+      }));
+      // blockHeight returns 0 for a hash the relay has never seen — not a real height, so do not treat a
+      // miss as "attested at height 0", which would report an absurd lag and mask the real failure.
+      if (Number.isFinite(h) && h > 0) attested = h;
+    } catch (e) { log(`on-chain attested-height read failed: ${e?.message || e}`); }
+    // Fall back to the relay's own tip height when health gave us no Bitcoin tip.
+    if (!Number.isFinite(tip)) {
+      try { tip = Number(await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' })); }
+      catch (e) { log(`relay tipHeight read failed: ${e?.message || e}`); }
+    }
     if (Number.isFinite(tip) && Number.isFinite(attested)) lag = tip - attested;
   }
 

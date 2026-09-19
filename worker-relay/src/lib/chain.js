@@ -79,6 +79,9 @@ export const POOL_ABI = [
   { type: 'function', name: 'attestBitcoinStateProven', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }], outputs: [] },
   { type: 'function', name: 'settle', stateMutability: 'nonpayable', inputs: [{ type: 'bytes' }, { type: 'bytes' }, { type: 'bytes[]' }], outputs: [] },
   { type: 'function', name: 'attestedReflectionDigest', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
+  // The Bitcoin block hash reflection has attested up to. The pool exposes no attested HEIGHT getter, so
+  // the monitor resolves this through BitcoinLightRelay.blockHeight to compute the reflection lag.
+  { type: 'function', name: 'attestedReflectionTip', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
   // Live counters (NOT "as of last attest" despite the name — these read the pool's current storage
   // directly, ConfidentialPool.sol:1031-1040). Cheap view calls the eth-state sidecar uses to log/sanity-
   // check freshness against; they are diagnostic only, not the sidecar's trigger (see eth-state-sidecar.js
@@ -152,6 +155,9 @@ export const RELAY_ABI = [
   { type: 'function', name: 'tip', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
   { type: 'function', name: 'blockParent', stateMutability: 'view', inputs: [{ name: 'h', type: 'bytes32' }], outputs: [{ type: 'bytes32' }] },
   { type: 'function', name: 'blockWork', stateMutability: 'view', inputs: [{ name: 'h', type: 'bytes32' }], outputs: [{ type: 'uint256' }] },
+  // Used by the monitor's on-chain reflection-lag fallback to resolve the pool's attested TIP HASH to a
+  // height (the pool exposes no height getter). Returns 0 for a hash the relay has never seen.
+  { type: 'function', name: 'blockHeight', stateMutability: 'view', inputs: [{ name: 'h', type: 'bytes32' }], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'advanceTip', stateMutability: 'nonpayable', inputs: [{ name: 'headers', type: 'bytes' }], outputs: [] },
 ];
 export const HEADER_RELAY = getAddress(ADDR.headerRelay);
