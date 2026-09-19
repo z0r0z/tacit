@@ -88,8 +88,10 @@ export function buildGovernance(deps) {
   // Contract selectors (computed, not hardcoded, to avoid typos).
   const _SEL_CURRENT_ROOT = keccak256 ? bytesToHex(keccak256(enc('currentRoot()'))).slice(0, 8) : '4b9f2d36';
   // ConfidentialPool.nullifierSpent mapping declaration slot (the public auto-getter was internalized to fit
-  // EIP-170, so read the slot directly): nullifierSpent[ν] @ keccak256(ν ‖ uint256(69)).
-  const _NULLIFIER_SPENT_SLOT = '00'.repeat(31) + '45'; // uint256(69)
+  // EIP-170, so read the slot directly): nullifierSpent[ν] @ keccak256(ν ‖ uint256(70)).
+  // Pinned against the compiled storage layout by contracts/sp1/confidential/verify-storage-slots.sh; re-run
+  // that script after any change to the pool's storage.
+  const _NULLIFIER_SPENT_SLOT = '00'.repeat(31) + '46'; // uint256(70)
   const _nullifierSpentSlot = (nul) =>
     keccak256 ? '0x' + bytesToHex(keccak256(hexToBytes(nul + _NULLIFIER_SPENT_SLOT))) : null;
   const GOV_CATEGORIES = ['collateral-engine', 'spec-amendment', 'parameter', 'treasury', 'general'];

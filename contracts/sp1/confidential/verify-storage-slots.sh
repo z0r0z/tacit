@@ -36,6 +36,25 @@ for pair in \
   fi
 done
 
+# nullifierSpent: not a guest-proven slot, but read directly by two off-chain consumers —
+# dapp/confidential-crosslane-guard.js (the Bitcoin-spend pre-check) and worker/src/governance.js (voting
+# weight). Both hardcode the declaration slot, so it is pinned here against the compiler layout, the same way
+# the guest slot constants are.
+NS_WANT="$(printf '%s' "$LAYOUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const l=JSON.parse(s);const f=l.storage.find(x=>x.label=="nullifierSpent");process.stdout.write(f?String(f.slot):"MISSING")})')"
+NS_DAPP="$(grep -oE 'NULLIFIER_SPENT_SLOT = [0-9]+' "$CONTRACTS/../dapp/confidential-crosslane-guard.js" | grep -oE '[0-9]+$' || echo MISSING)"
+# The worker stores it as the 32-byte big-endian hex word ('00'.repeat(31) + 'XX'); decode the last byte.
+NS_WORKER_HEX="$(grep -oE "_NULLIFIER_SPENT_SLOT = '00'\.repeat\(31\) \+ '[0-9a-fA-F]{2}'" "$CONTRACTS/../worker/src/governance.js" | grep -oE "'[0-9a-fA-F]{2}'$" | tr -d "'" || echo '')"
+NS_WORKER="$( [ -n "$NS_WORKER_HEX" ] && printf '%d' "0x$NS_WORKER_HEX" || echo MISSING )"
+for pair in "dapp/confidential-crosslane-guard.js:$NS_DAPP" "worker/src/governance.js:$NS_WORKER"; do
+  where="${pair%%:*}"; have="${pair##*:}"
+  if [ "$NS_WANT" != "$have" ]; then
+    echo "DRIFT: nullifierSpent is at slot ${NS_WANT} but ${where} uses ${have}"
+    fail=1
+  else
+    echo "ok: nullifierSpent slot ${NS_WANT} == ${where}"
+  fi
+done
+
 # EthCallOutbox: the eth-reflection guest proves these outbox slots by the same eth_getProof, so they must
 # match the compiler layout too — a shift here silently breaks the eth-call outbox reflection.
 LAYOUT_OUTBOX="$(forge inspect EthCallOutbox storageLayout --json 2>/dev/null)"

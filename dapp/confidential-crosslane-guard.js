@@ -21,9 +21,10 @@
 // provisional-yield ("Bitcoin arbitrates, the fast lane yields") — step 2.
 //
 // Enforcement points: the worker indexer-of-record (security) and the dapp pre-spend
-// check (UX). When the EVM pool is not wired (`poolAddress` falsy — cross-lane
-// inactive, the current mainnet posture) the guard is a no-op, so pure-Bitcoin
-// operation is unchanged.
+// check (UX). When the EVM pool is not wired (`poolAddress` falsy) the guard is a
+// no-op, so pure-Bitcoin operation is unchanged — but note that cross-lane IS wired
+// on mainnet as of the gen5 deployment, so that branch is a test/other-network path,
+// not the live posture.
 //
 // `ethGetStorageAt(address, slot, blockTag)` is injected (worker / dapp eth_getStorageAt
 // wrapper), so this module is pure and unit-testable with a mock. It reads the
@@ -39,9 +40,9 @@ export function makeCrossLaneGuard({ keccak256 }) {
     for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
     return out;
   };
-  // ConfidentialPool.nullifierSpent is `mapping(bytes32 => bool)` at declaration slot 69
+  // ConfidentialPool.nullifierSpent is `mapping(bytes32 => bool)` at declaration slot 70
   // (forge inspect storageLayout; KAT-pinned in cxfer-core eth_reflection layout test).
-  const NULLIFIER_SPENT_SLOT = 69;
+  const NULLIFIER_SPENT_SLOT = 70;
 
   // Storage location of nullifierSpent[ν] = keccak256(ν ‖ uint256(slot)) — the Solidity
   // mapping-slot rule. (Browser-safe hex, no Buffer, so it loads identically in the dapp.)
@@ -82,5 +83,33 @@ export function makeCrossLaneGuard({ keccak256 }) {
     }
   }
 
-  return { NULLIFIER_SPENT_SLOT, spentSlot, evmNullifierSpent, bitcoinSpendBlocked };
+  // Multi-domain form — THE ONE CALLERS SHOULD USE for a real note.
+  //
+  // A note's ν is LEAF-bound, and a Bitcoin-homed note has TWO possible leaf domains: the legacy
+  // unbound `btc_note_leaf(asset,Cx,Cy,auth_key)` and the generation-bound
+  // `btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding)`. They hash differently, so they yield
+  // DIFFERENT nullifiers for the same note.
+  //
+  // The EVM fast lane (a Bitcoin-homed note spent directly on Ethereum) accepts only generation-bound notes —
+  // `input_leaf_authed` builds `btc_note_leaf_bound`, pinned by the guest test
+  // `fast_lane_input_requires_a_generation_bound_note` — so the bound ν is the one a fast-lane spend records.
+  // Check every candidate ν and block if any is spent.
+  //
+  // Each generation has its own `chain_binding`, so pass one candidate per live generation the note
+  // could have been homed to (current pool first). An empty list is a caller bug, not "nothing to
+  // check" — it fails closed.
+  async function bitcoinSpendBlockedAny(ethGetStorageAt, poolAddress, nullifierHexes, opts = {}) {
+    if (!poolAddress) return { blocked: false, reason: 'crosslane-inactive' };
+    const list = (nullifierHexes || []).filter(Boolean);
+    if (!list.length) {
+      return { blocked: true, reason: 'evm-unverifiable', error: 'no nullifier candidates supplied' };
+    }
+    for (const nu of list) {
+      const v = await bitcoinSpendBlocked(ethGetStorageAt, poolAddress, nu, opts);
+      if (v.blocked) return { ...v, nullifier: nu };
+    }
+    return { blocked: false, reason: 'evm-unspent' };
+  }
+
+  return { NULLIFIER_SPENT_SLOT, spentSlot, evmNullifierSpent, bitcoinSpendBlocked, bitcoinSpendBlockedAny };
 }

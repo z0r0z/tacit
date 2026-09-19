@@ -25,12 +25,16 @@ const NU = '0x' + '11'.repeat(32);
 const WORD_TRUE = '0x' + '0'.repeat(63) + '1';
 const WORD_FALSE = '0x' + '0'.repeat(64);
 
-// 1. storage slot = keccak256(ν ‖ uint256(69)) — the Solidity mapping-slot rule for nullifierSpent (slot 69)
+// 1. storage slot = keccak256(ν ‖ uint256(70)) — the Solidity mapping-slot rule for nullifierSpent (slot 70).
+//    The constant itself is checked against the compiled storage layout by
+//    contracts/sp1/confidential/verify-storage-slots.sh; this case covers the slot-derivation rule.
 {
-  const slotWord = '0'.repeat(62) + '45'; // uint256(69) == 0x45
+  assert.equal(guard.NULLIFIER_SPENT_SLOT, 70, 'nullifierSpent declaration slot');
+  // The expectation is derived from the guard's own constant, so this case tests the mapping-slot rule
+  // rather than a fixed digest.
+  const slotWord = guard.NULLIFIER_SPENT_SLOT.toString(16).padStart(64, '0');
   const expect = '0x' + Buffer.from(keccak_256(Buffer.from('11'.repeat(32) + slotWord, 'hex'))).toString('hex');
-  assert.equal(guard.spentSlot(NU), expect, 'slot is keccak256(ν ‖ uint256(69))');
-  assert.equal(guard.NULLIFIER_SPENT_SLOT, 69, 'nullifierSpent declaration slot');
+  assert.equal(guard.spentSlot(NU), expect, 'slot is keccak256(ν ‖ uint256(slot))');
 }
 
 // 7. storage-read shape + tag forwarding (capture what the guard sends)
@@ -92,6 +96,66 @@ const WORD_FALSE = '0x' + '0'.repeat(64);
 {
   const ethCall = async () => '0x' + '0'.repeat(62) + '01' + 'ff'.repeat(0); // ...0001
   assert.equal(await guard.evmNullifierSpent(ethCall, POOL, NU), true, 'low-bit set → spent');
+}
+
+// ── bitcoinSpendBlockedAny: the multi-leaf-domain gate ────────────────────────────────────────────
+//
+// A Bitcoin-homed note has two possible leaf domains — legacy `btc_note_leaf` and generation-bound
+// `btc_note_leaf_bound` — which hash to different nullifiers, and the EVM fast lane records the bound form.
+// These cases pin that every candidate nullifier is checked.
+const NU_UNBOUND = '0x' + 'a1'.repeat(32);
+const NU_BOUND = '0x' + 'b2'.repeat(32);
+
+// 7. only the BOUND ν is spent on the EVM → still blocked (the fast-lane case)
+{
+  const spent = new Set([guard.spentSlot(NU_BOUND)]);
+  const ethCall = async (_to, slot) => (spent.has(slot) ? WORD_TRUE : WORD_FALSE);
+  const r = await guard.bitcoinSpendBlockedAny(ethCall, POOL, [NU_UNBOUND, NU_BOUND]);
+  assert.equal(r.blocked, true, 'a fast-laned (generation-bound) note must block the Bitcoin spend');
+  assert.equal(r.reason, 'evm-spent');
+  assert.equal(r.nullifier, NU_BOUND, 'reports which domain matched');
+  // And the single-ν form on the unbound domain alone would have MISSED it — the bug this closes.
+  const miss = await guard.bitcoinSpendBlocked(ethCall, POOL, NU_UNBOUND);
+  assert.equal(miss.blocked, false, 'unbound-only check misses a bound-domain consume (the regression)');
+}
+
+// 8. only the LEGACY ν is spent → still blocked (order-independent)
+{
+  const spent = new Set([guard.spentSlot(NU_UNBOUND)]);
+  const ethCall = async (_to, slot) => (spent.has(slot) ? WORD_TRUE : WORD_FALSE);
+  const r = await guard.bitcoinSpendBlockedAny(ethCall, POOL, [NU_UNBOUND, NU_BOUND]);
+  assert.equal(r.blocked, true, 'a legacy-domain consume blocks too');
+  assert.equal(r.nullifier, NU_UNBOUND);
+}
+
+// 9. neither spent → not blocked, and every candidate was actually queried
+{
+  const seen = [];
+  const ethCall = async (_to, slot) => { seen.push(slot); return WORD_FALSE; };
+  const r = await guard.bitcoinSpendBlockedAny(ethCall, POOL, [NU_UNBOUND, NU_BOUND]);
+  assert.equal(r.blocked, false, 'unspent in both domains → safe to honor on Bitcoin');
+  assert.equal(seen.length, 2, 'every candidate domain is queried');
+}
+
+// 10. empty candidate list is a CALLER BUG, not "nothing to check" → fail closed
+{
+  let called = false;
+  const ethCall = async () => { called = true; return WORD_FALSE; };
+  const r = await guard.bitcoinSpendBlockedAny(ethCall, POOL, []);
+  assert.equal(r.blocked, true, 'no candidates supplied → cannot confirm unspent → fail closed');
+  assert.equal(r.reason, 'evm-unverifiable');
+  assert.equal(called, false);
+}
+
+// 11. an RPC failure on ANY candidate fails the whole check closed
+{
+  const ethCall = async (_to, slot) => {
+    if (slot === guard.spentSlot(NU_BOUND)) throw new Error('rpc down');
+    return WORD_FALSE;
+  };
+  const r = await guard.bitcoinSpendBlockedAny(ethCall, POOL, [NU_UNBOUND, NU_BOUND]);
+  assert.equal(r.blocked, true, 'an unverifiable candidate blocks, even if another read clean');
+  assert.equal(r.reason, 'evm-unverifiable');
 }
 
 console.log('confidential-crosslane-guard: all checks passed');
