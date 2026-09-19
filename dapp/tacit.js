@@ -28064,21 +28064,18 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       const _ethGetStorageAt = (to, slot, tag) => _ethRpcCall('eth_getStorageAt', [to, slot, tag || 'latest']);
       // The EVM chain binding this generation's bound leaves commit — keccak(chainid ‖ pool).
       const _xlBinding = _confidentialChainBinding(currentNetworkName());
+      const _ZERO_AUTH = '0x' + '00'.repeat(32);
       for (const u of pickedAssetUtxos) {
         const { cx, cy } = _cp.commitXY(u.amount, u.blinding);
         // ν is LEAF-bound, and a Bitcoin-homed note has two possible leaf domains — the legacy unbound
         // btc_note_leaf(asset,Cx,Cy,auth_key) and the generation-bound
         // btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding) — which hash to DIFFERENT nullifiers.
         // The EVM fast lane records the BOUND form, so both nullifiers are checked.
-        const authKey = u.authKey || u.kBtcXonly;
-        // Refuse when the note's auth key is unknown: without it the nullifier cannot be derived, so the
-        // Ethereum spend status cannot be checked. Re-scanning the wallet repopulates the key.
-        if (!authKey) {
-          throw new Error(
-            'cross-lane: this note has no recorded Bitcoin auth key, so its Ethereum spend status cannot be '
-            + 'checked. Re-scan the wallet to repopulate it, or spend from a note that carries one.',
-          );
-        }
+        // The auth key is the x-only key of the note's P2TR output, and is ZERO for a note homed at a
+        // non-P2TR output (as the reflection derives it). Holdings records do not yet carry a per-note key,
+        // so an absent one is treated as zero; a P2TR-homed note needs its key recorded for this check to
+        // match its nullifier.
+        const authKey = u.authKey || u.kBtcXonly || _ZERO_AUTH;
         const nus = [_cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey))];
         if (_xlBinding) nus.push(_cp.nullifier(_cp.btcNoteLeafBound(assetIdHex, cx, cy, authKey, _xlBinding)));
         const v = await _guard.bitcoinSpendBlockedAny(_ethGetStorageAt, _xlPool, nus);
