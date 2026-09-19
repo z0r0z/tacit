@@ -38,7 +38,10 @@ with no federation, sidechain, or multisig bridge.
 >
 > **Deployed contracts:**
 > [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md) — immutable mainnet addresses
-> (Etherscan-verified) · [`contracts/deployments/1.json`](./contracts/deployments/1.json) — machine-readable manifest.
+> (Etherscan-verified) · [`contracts/deployments/1-createx.json`](./contracts/deployments/1-createx.json)
+> — machine-readable manifest written by the deploy script (addresses, source of truth) ·
+> [`contracts/deployments/1.json`](./contracts/deployments/1.json) — the same suite plus vkeys, asset
+> ids and reflection/beacon genesis parameters.
 
 ---
 
