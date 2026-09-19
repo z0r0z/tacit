@@ -9,7 +9,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createKVNamespace } from './kv-store.mjs';
@@ -79,6 +79,62 @@ export function clientIpFrom(nodeReq, env) {
 
 const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-tacit-forwarded-ip']);
 
+// --- request body ceiling ---------------------------------------------------
+// On Cloudflare the platform capped an inbound body (100 MB) before the worker
+// ever saw it; on Node nothing does, and `req.json()` / `req.formData()` buffer
+// the whole body into the V8 heap before any handler's own size check runs. On
+// a 512 MB instance with the memory guard armed, one unauthenticated POST of a
+// few hundred MB to any POST route reaches the hard ratio and recycles the
+// process — repeat it and the public API never stays up. Every legitimate body
+// is far below this (the largest handler-side cap is the 16 MB reflection
+// snapshot), so the ceiling only ever rejects abuse.
+export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+
+export function maxRequestBytes(env) {
+  const raw = Number(env?.MAX_REQUEST_BYTES ?? process.env.MAX_REQUEST_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_REQUEST_BYTES;
+}
+
+// Declared length, when the client sent an honest one. Returns null for a
+// chunked body (no Content-Length) — `limitBody` still caps those as they
+// stream, so a missing header buys nothing.
+export function declaredBodyBytes(nodeReq) {
+  const raw = nodeReq.headers['content-length'];
+  if (raw == null) return null;
+  const n = Number(Array.isArray(raw) ? raw[0] : raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// Cap a Node readable at `limit` bytes: the returned stream errors as soon as
+// the body runs past it, so a lying or absent Content-Length cannot buffer more
+// than the ceiling. `req.json()` then rejects and the route answers 400/500
+// rather than the process dying. Counting happens in a Transform rather than a
+// `data` listener on the socket, which would flip it into flowing mode and lose
+// the body before `Readable.toWeb` ever read it.
+export const BODY_LIMIT_EXCEEDED = Symbol('bodyLimitExceeded');
+
+export function limitBody(nodeReq, limit) {
+  let seen = 0;
+  const gate = new Transform({
+    transform(chunk, _enc, cb) {
+      seen += chunk.length;
+      if (seen > limit) { cb(new Error(`request body exceeds ${limit} bytes`)); return; }
+      cb(null, chunk);
+    },
+  });
+  gate.on('error', () => {
+    // Flag it for the server handler, which answers 413 and then closes. Stop
+    // piping and drain the rest to nowhere: destroying the socket here would
+    // reset the connection before any response could be written, so the client
+    // would see a bare connection failure instead of being told why.
+    nodeReq[BODY_LIMIT_EXCEEDED] = true;
+    nodeReq.unpipe(gate);
+    nodeReq.resume();
+  });
+  nodeReq.pipe(gate);
+  return gate;
+}
+
 export function toWebRequest(nodeReq, env) {
   const proto = trustProxy(env)
     ? (nodeReq.headers['x-forwarded-proto'] || 'https')
@@ -95,7 +151,7 @@ export function toWebRequest(nodeReq, env) {
 
   const init = { method: nodeReq.method, headers };
   if (nodeReq.method !== 'GET' && nodeReq.method !== 'HEAD') {
-    init.body = Readable.toWeb(nodeReq);
+    init.body = Readable.toWeb(limitBody(nodeReq, maxRequestBytes(env)));
     init.duplex = 'half';
   }
   return new Request(url, init);
@@ -191,13 +247,44 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
         }));
         return;
       }
+      // Reject an oversize body on its declared length, before a byte of it is
+      // read — the streaming cap in `toWebRequest` is the backstop for a body
+      // that arrives chunked or under-declares itself.
+      const bodyLimit = maxRequestBytes(env);
+      const declared = declaredBodyBytes(nodeReq);
+      if (declared !== null && declared > bodyLimit) {
+        nodeReq.resume(); // drain so the socket closes cleanly instead of stalling the client
+        nodeRes.writeHead(413, { 'Content-Type': 'application/json' });
+        nodeRes.end(JSON.stringify({ error: `request body exceeds ${bodyLimit} bytes` }));
+        return;
+      }
       const req = toWebRequest(nodeReq, env);
+      const overBody = () => nodeReq[BODY_LIMIT_EXCEEDED] === true;
       // This is what the request retained, not what it peaked at: a handler
       // that allocates hundreds of MB and frees it before returning shows as
       // nothing here. That case still surfaces, as a mem-guard soft/hard line
       // with no request to blame, which narrows it just as usefully.
       const before = memTraceBytes ? process.memoryUsage().heapUsed : 0;
-      const resp = await workerModule.fetch(req, env, ctxFactory.makeCtx());
+      let resp;
+      try {
+        resp = await workerModule.fetch(req, env, ctxFactory.makeCtx());
+      } catch (e) {
+        if (!overBody()) throw e;
+        resp = null; // the streaming cap tripped mid-read; answered as 413 below
+      }
+      // A body that ran past the ceiling while streaming (chunked, or an
+      // under-declared Content-Length) reaches here either as a thrown read
+      // error or as a handler's own "bad json" — neither says what happened, so
+      // the flag wins and the client is told plainly.
+      if (overBody()) {
+        if (!nodeRes.headersSent) {
+          nodeRes.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+        }
+        if (!nodeRes.writableEnded) {
+          nodeRes.end(JSON.stringify({ error: `request body exceeds ${bodyLimit} bytes` }));
+        }
+        return;
+      }
       if (memTraceBytes) {
         const after = process.memoryUsage().heapUsed;
         if (after - before > memTraceBytes) {
