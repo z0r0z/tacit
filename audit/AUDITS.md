@@ -587,6 +587,77 @@ vkeys, and regenerating and replaying the fixtures against them.** Report:
 
 **→ [`AUDIT-2026-09-17-closing-review.md`](./AUDIT-2026-09-17-closing-review.md).**
 
+## Public-release review — Claude Opus 5 (2026-09-19) — CLEAR TO PUBLISH
+
+The first review to run **after** deployment rather than before it, and the first scoped to the question *is
+this safe to make public*. Single reviewer, 1M context — the whole immutable surface read in one window rather
+than fanned out — and deliberately not shown the prior round's verdict before forming its own.
+
+Its load-bearing contribution is a verification the earlier rounds structurally could not perform: **proving the
+code reviewed is the code running.** The live mainnet runtime was fetched, the compiler's own `linkReferences`
+and `immutableReferences` maps used to normalise the library address and the constructor-written immutables in
+both the live code and a fresh local build, and the two compared — **byte-identical, 24290 bytes**, and the same
+for the linked `ReflectionLib`. The 19 immutables were then read straight out of the live bytecode: both vkeys
+equal the pin, `CHAIN_BINDING` recomputes, and `reflect.rs`'s pinned `ETH_CALL_OUTBOX` equals the deployed
+outbox.
+
+**No Critical, High or Medium in the immutable surface**, which is unchanged by this round — no contract, guest,
+vkey or pin is touched. Ten concrete attacks were constructed and refuted against the specific line that refuses
+each (recorded in the report so they are not re-derived). Five hardening items were found off-chain and fixed:
+relayed settles were unmetered because the profitability gate they relied on is off by default (a cost-of-service
+issue for the relay operator, never a user-funds path); a prover-fixture path built from an unvalidated job field;
+CDP key material that could fall back to `Math.random()` outside a secure context; one bearer gate comparing in
+non-constant time; and a path-traversal in the IPFS proxy sub-path. A full git-history scan for publication
+exposure came back clean.
+
+The report also records the three honest limitations worth stating publicly rather than omitting — reflection
+liveness depends on someone running the prover (EVM-side notes stay spendable regardless), a Bitcoin reorg deeper
+than 24 confirmations halts reflection by design, and relayed settles are front-runnable as a deliberate trade for
+a relayer-agnostic proof — and names the largest remaining gap between *audited* and *independently verifiable*:
+the guest ELFs are not yet reproducibly buildable by a third party. Report:
+
+**→ [`AUDIT-2026-09-19-public-release-review.md`](./AUDIT-2026-09-19-public-release-review.md).**
+
+## cBTC / cUSD / CDP focused review — Claude Opus 5 (2026-09-19) — MECHANISM SOUND, CONFIG NOT LAUNCH-READY
+
+Companion to the public-release review above, which deliberately deferred the collateral layer because its
+trust model differs from the pool's. This pass read `CollateralEngine` in full, the cBTC lock lifecycle in the
+reflection guest, the CDP op family, and — decisively — **the live mainnet configuration**, since several
+findings exist only in the deployed parameters and are invisible in a source-only review.
+
+**No code defect was found.** The rug/redeem discrimination is sound and race-free (a redeem must unlock the
+lock in the same Bitcoin transaction that burns exactly its sats, and is folded before the rug scan, so an
+honest redeemer is never slashable and a rugger cannot spoof one). Governance restraint is real: every
+borrower-adverse move gives notice, and re-submitting identical feeds deliberately does not reset the grace
+clock. Health is measured against accrued debt everywhere. The oracle composition was exercised live and
+works.
+
+What is not ready is the configuration. Three launch gates: there is **no cUSD debt ceiling and one can never
+be added** (the pool pins the engine immutably); **liquidation requires the liquidator to source cUSD** in
+full, with no partial liquidation or auction, while no cUSD market exists yet; and the **insurance reserve is
+empty**. Beyond those, the cBTC rug deterrent is a price ratio rather than a constant — 1.5× escrow tolerates
+roughly a 33% wstETH depreciation against BTC before rugging pays — and the margin call that would correct
+drift is dormant. The single lock live on mainnet today already sits at 96% of its locked BTC value, with the
+mint gate correctly declining it and nothing on-chain moving it back.
+
+A **second pass in the same session** closed three coverage gaps the review had left open — the TSR savings
+accounting, the `fold_cbtc_lock` registration fold, and the keeper-side liquidation tooling. The TSR
+accounting itself verified correct (the `feeBudgetCusd` invariant holds across all six mutation paths, and the
+non-obvious `floor(sum) >= sum(floor)` reasoning behind booking surplus from the aggregate delta is right), and
+the liquidation tooling turned out to be complete and its prover binary actually deployed — it is simply not
+operated by anyone. But that pass also produced **the most consequential finding in either report**: there is
+**no bad-debt write-off path**, so an unliquidatable position keeps accruing stability fee into the TSR's cUSD
+mint authorization forever, with no counterparty obligation behind it. Inert while the fee is dormant, and
+unfixable in place because the pool pins the engine immutably — so it is a hard precondition on ever arming
+the stability fee rather than a live defect.
+
+Two properties the report asks to be stated plainly in public materials: **cBTC is economically secured, not
+custodially guaranteed** (the locker self-custodies and can rug; the system detects reliably but cannot
+prevent), and **cUSD's peg is genuinely oracle-dependent** in the Maker sense, unlike cBTC's conservation peg.
+Report:
+
+**→ [`AUDIT-2026-09-19-cbtc-cusd-cdp-review.md`](./AUDIT-2026-09-19-cbtc-cusd-cdp-review.md).**
+
 ## Rounds
 
 | Round | Scope | Model(s) | Report + response |
@@ -621,6 +692,8 @@ vkeys, and regenerating and replaying the fixtures against them.** Report:
 | Greenlight 24 | Legacy classic-Bulletproofs verifier (dual-scheme range dispatch) — CLEAN GREENLIGHT, 0 fund-impacting @ `4b3247c` | GPT-5.5 Pro | `TACIT_FINANCE_GREENLIGHT_AUDIT_GPT-RESPONSE-24` |
 | Final pre-lock (v1-final) + same-day follow-up | LOCKABLE — 1 Critical (burn-deposit provenance shortcut, fixed in guest), generational handoff redesigned as pool-as-factory (self-authenticating, no registry/delay/blackout), 12 guest↔JS drifts fixed, engine owner lever fixed; follow-up pass: 1 Medium fixed (retired generation stranded cUSD repay/liquidate by refusing its own canonical-token wraps), 1 High JS-mirror desync fixed (the attester refunded every zero-tip swap batch the guest clears), pins reconciled to the rebuilt ELFs, rebase race closed with a handoff anchor, token continuity settled as successor-side adoption; forge green, 211/211 core, vkeys re-derived, pool re-pinned 23,905 B | Claude Fable 5.1 | `AUDIT-2026-09-16-fable51-v1-final-prelock` |
 | Closing pre-release review (supersedes v1-final pre-lock) | FREEZE, RE-PROVE BEFORE DEPLOY — 1 Critical (settle kernel re-type: relay keeps a user's public amount as its fee, fixed with a transfer-only kernel domain), Highs fixed (rebase brick on an unminted cross-out, static Mode-B sync committee, prover-discretionary burn-deposit, swap-blind blinding leak, engine escrow confiscation lever, retired generation without a Bitcoin exit, CDP/farm memo ephemeral, one-click farm principal lock, ten JS attester halts), Mediums fixed (deposit outpoint, OTC reflection, protocol-fee split, engine levers, 24 confirmations, lag recovery checkpoint, lock-leaf event); re-audit of the fixed tree: 0 Critical / 0 High in the fixes; forge green, 214/214 core, pool re-pinned 24,290 B; ELF rebuild + vkey rotation pending | Claude Fable 5.1 → Claude Opus 5 | `AUDIT-2026-09-17-closing-review` |
+| Public release (post-deploy) | CLEAR TO PUBLISH — 0 Critical/High/Medium in the immutable surface; live mainnet bytecode proven byte-identical to source (link refs + immutables normalised), both vkeys and `CHAIN_BINDING` verified out of the deployed bytecode, all pin scripts green, forge 884/884; 10 attacks constructed and refuted; 5 off-chain hardening fixes (relay submit metering, prover fixture path, CDP CSPRNG fail-open, constant-time bearer gate, IPFS sub-path traversal); git-history secret scan clean @ `f3917087` | Claude Opus 5 | `AUDIT-2026-09-19-public-release-review` |
+| cBTC / cUSD / CDP (post-deploy, focused) | MECHANISM SOUND, CONFIG NOT LAUNCH-READY — 0 code defects; rug/redeem discrimination race-free, governance notice real, oracle composition exercised live ($81,090/BTC, 1.5x escrow). 3 launch gates: no cUSD debt ceiling (and none addable — engine pinned immutably), liquidation needs full-amount cUSD with no market yet, insuranceReserve empty. Plus: rug deterrent decays ~33% wstETH/BTC with margin call dormant, single-source oracle, sub-par bad-debt band. Second pass closed 3 coverage gaps (TSR accounting — verified correct; `fold_cbtc_lock` — clean; liquidation tooling — complete but unoperated) and found the report's sharpest item: NO BAD-DEBT WRITE-OFF, so an unliquidatable position accrues fee into the TSR mint authorization forever — inert while the fee is dormant, unfixable in place @ `f3917087` | Claude Opus 5 | `AUDIT-2026-09-19-cbtc-cusd-cdp-review` |
 
 \* Round-4 dispositions are recorded inline in the Greenlight pass round 4 section above (no separate `-4` file).
 
