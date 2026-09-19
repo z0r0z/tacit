@@ -780,3 +780,30 @@ test('fastlane exit: authenticated transfer witness (bound leaf, non-membership,
   assert.equal(submitted.at(-1).type, 'fastlane');
   assert.equal(submitted.at(-1).mode, 'prove', 'self-relay by default: the box proves, the user settles');
 });
+
+// ── self-settle submit: priority tip and the genesis-LP entrypoint ──
+const settleStub = (tipHex) => async (url, opts) => {
+  const m = JSON.parse(opts.body).method;
+  const result = m === 'eth_getTransactionCount' ? '0x0' : m === 'eth_gasPrice' ? '0x3b9aca00' : m === 'eth_maxPriorityFeePerGas' ? tipHex : '0x';
+  return { ok: true, json: async () => ({ result }) };
+};
+const settleArgs = { settlerPriv: '0x' + '11'.repeat(32), publicValues: '0x' + 'ab'.repeat(40), proof: '0x' + 'cd'.repeat(40), broadcast: false };
+
+test('submitSettle: priority tip follows the node suggestion and is capped at 1.5 gwei', async () => {
+  const low = await makeConfidentialPoolUx({ ...deps, fetchImpl: settleStub('0x2faf080') }).submitSettle(settleArgs); // 0.05 gwei
+  assert.ok(low.signedRaw.includes('8402faf080'), 'signed tx carries the node-suggested 0.05 gwei tip');
+  const high = await makeConfidentialPoolUx({ ...deps, fetchImpl: settleStub('0xb2d05e00') }).submitSettle(settleArgs); // 3 gwei
+  assert.ok(high.signedRaw.includes('8459682f00'), 'a suggestion above the cap is clamped to 1.5 gwei');
+});
+
+test('submitSettle: a founding LP add goes through createPairAndSettle, an ordinary settle stays settle()', async () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: settleStub('0x2faf080') });
+  const sel = (sig) => Buffer.from(keccak_256(Buffer.from(sig))).toString('hex').slice(0, 8);
+  const A = '0x' + '01'.repeat(32), B = '0x' + '02'.repeat(32);
+  const plain = await ux.submitSettle(settleArgs);
+  assert.ok(plain.signedRaw.includes(sel('settle(bytes,bytes,bytes[])')), 'ordinary settle keeps the settle selector');
+  assert.ok(!plain.signedRaw.includes(sel('createPairAndSettle(bytes32,bytes32,uint32,bytes,bytes,bytes[])')));
+  const found = await ux.submitSettle({ ...settleArgs, pair: { assetA: A, assetB: B, feeBps: 30 } });
+  assert.ok(found.signedRaw.includes(sel('createPairAndSettle(bytes32,bytes32,uint32,bytes,bytes,bytes[])')), 'founding add uses createPairAndSettle');
+  assert.ok(found.signedRaw.includes('01'.repeat(32) + '02'.repeat(32) + '0'.repeat(62) + '1e'), 'assetA, assetB and feeBps=30 ride the head words');
+});

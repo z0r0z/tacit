@@ -352,7 +352,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const w = buildWrap({ walletPriv, amountWei, ticker, index });
     const acct = account(walletPriv);
     const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
-    const tip = 1500000000n; // 1.5 gwei priority
+    const tip = await _priorityTip();
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = {
       chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
@@ -438,9 +438,20 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   // Sign + broadcast a router wrap (one tx). Mirrors wrap() but targets cfg.router.
   // Sign + (optionally) broadcast one EIP-1559 tx. Reads the pending nonce unless one is supplied.
+  // Priority fee: the node's own suggestion, capped at the historical 1.5 gwei. A fixed 1.5 gwei tip dominates the
+  // cost when the base fee is a fraction of a gwei, and it also inflates the balance every submit must hold up
+  // front (gasLimit x maxFeePerGas).
+  async function _priorityTip() {
+    const CAP = 1500000000n;
+    try {
+      const t = BigInt(await rpc('eth_maxPriorityFeePerGas', []));
+      if (t > 0n) return t < CAP ? t : CAP;
+      return 100000000n;
+    } catch { return CAP; }
+  }
   async function _sendEvmTx({ acct, to, value = 0n, data, gasLimit, nonce, send = true }) {
     const n = nonce != null ? BigInt(nonce) : BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
-    const tip = 1500000000n;
+    const tip = await _priorityTip();
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = { chainId: BigInt(cfg.chainId), nonce: n, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
       gasLimit: BigInt(gasLimit), to, value: BigInt(value), data };
@@ -676,7 +687,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs, memos: sealedMemos });
-    const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
     return { ...r, dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
@@ -795,7 +806,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       });
     }
     const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
-    const tip = 1500000000n;
+    const tip = await _priorityTip();
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = {
       chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
@@ -1036,7 +1047,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     guard.assertOutputsRecoverable({ leaves: allLeaves, outputs: allOutputs, memos });
 
     const opWire = toLpAddWire(op);
-    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts });
+    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
@@ -1716,7 +1727,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       calldata = _router.wrapWithPermitCalldata({ token: invoice.underlying, amount, commit: invoice.commit, deadline, v: sig.v, r: sig.r, s: sig.s });
     }
     const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
-    const tip = 1500000000n;
+    const tip = await _priorityTip();
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = { chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit: BigInt(gasLimit), to, value: BigInt(value), data: calldata };
     const signed = evmTx.signEip1559(tx, acct.priv);
@@ -1816,7 +1827,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // liquidation keeper: a liquidation has no relay fee, so the keeper box-PROVES (relay prove mode) then
   // submits settle itself (it's gas-funded + the seized-basket recipient). `memos` is [] for a fee-less
   // liquidation (no minted note leaves). publicValues + proof come from the relay prove result.
-  async function submitSettle({ settlerPriv, publicValues, proof, memos = [], gasLimit = 1200000n, broadcast = true } = {}) {
+  async function submitSettle({ settlerPriv, publicValues, proof, memos = [], gasLimit = 1200000n, broadcast = true, pair = null } = {}) {
     const acct = account(settlerPriv);
     const pv = String(publicValues).startsWith('0x') ? publicValues : '0x' + publicValues;
     const pf = String(proof).startsWith('0x') ? proof : '0x' + proof;
@@ -1828,8 +1839,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // heads: 3 offsets (pv, proof, memos). pv at 0x60; proof after pv; memos after proof.
     const pvBlock = word(a.len) + a.padded;
     const pfBlock = word(b.len) + b.padded;
-    const memosOffWords = 3; // 3 head words
-    const offPv = 0x60;
+    // A founding LP add must go through createPairAndSettle: a plain settle() reverts PoolNotInit until the slot exists.
+    // That entrypoint carries three extra head words (assetA, assetB, feeBps) ahead of the three dynamic offsets.
+    const headWords = pair ? 6 : 3;
+    const offPv = headWords * 32;
     const offPf = offPv + 32 + a.padded.length / 2;
     const offMemos = offPf + 32 + b.padded.length / 2;
     const memosBlock = memos.length === 0 ? word(0) : (() => { // count + offsets + each (len+data)
@@ -1837,10 +1850,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       for (const m of memos) { const e = enc(m); head += word(cursor); body += word(e.len) + e.padded; cursor += 32 + e.padded.length / 2; }
       return head + body;
     })();
-    const data = '0x' + _selector('settle(bytes,bytes,bytes[])')
+    const data = '0x' + (pair ? _selector('createPairAndSettle(bytes32,bytes32,uint32,bytes,bytes,bytes[])') : _selector('settle(bytes,bytes,bytes[])'))
+      + (pair ? word(BigInt(pair.assetA)) + word(BigInt(pair.assetB)) + word(BigInt(pair.feeBps)) : '')
       + word(offPv) + word(offPf) + word(offMemos) + pvBlock + pfBlock + memosBlock;
     const nonce = BigInt(await rpc('eth_getTransactionCount', [acct.address, 'pending']));
-    const tip = 1500000000n;
+    const tip = await _priorityTip();
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = { chainId: BigInt(cfg.chainId), nonce, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip, gasLimit: BigInt(gasLimit), to: cfg.pool, value: 0n, data };
     const signed = evmTx.signEip1559(tx, acct.priv);
@@ -1853,13 +1867,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // still being provisioned / when one is down) at the cost of revealing the user's EOA as msg.sender.
   // `sealedMemos` are sealed HERE in the client and passed through to settle() verbatim — nothing server-side
   // re-seals them, which is why the memo ephemeral can be (and now is) fresh randomness per memo.
-  async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts }) {
+  async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts, pair = null }) {
     // Pass the memos THIS caller already sealed (and checked via assertOutputsRecoverable) straight through
     // to submitOp, instead of letting it reseal with a fresh ephRand — otherwise the memo the local recovery
     // check validated is never the one that actually ships (see submitOp's own `outputs`+`memos` branch).
     if (!selfRelay) return relay.settle({ type, ...spec, memos: sealedMemos }, waitOpts);
     const proven = await relay.prove({ type, ...spec, memos: sealedMemos }, waitOpts);
-    return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: sealedMemos });
+    return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: sealedMemos, pair });
   }
 
   // ── gasless exit (0xbow-style relayed unwrap) ──
