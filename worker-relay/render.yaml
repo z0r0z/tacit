@@ -156,13 +156,12 @@ services:
         value: "25998736"
       # The resume digest carries the sync committee the last Mode-B cycle ended on (period 1860, root 0xc52c…);
       # the eth proof must bootstrap from a slot in that period, and an older bootstrap replays dozens of periods
-      # that the network refuses as unexecutable. Chained mode then follows the committed state's landed slot.
+      # that the network refuses as unexecutable. Chained mode then follows the committed state's landed slot, so no fixed
+      # committee pin is set: the expected committee advances every period and the assembler checks it per job.
       - key: GENESIS_SLOT
         value: "15237120"
       - key: SYNC_COMMITTEE_MODE
         value: chained
-      - key: EXPECT_SYNC_COMMITTEE
-        value: "0xc52cc62495aaa42671114668b3bd8ab7ea0798e99b57217fff456e52c9ac93d8"
       - key: SCAN_CHUNK
         value: "300"
       - key: SCAN_DELAY_MS
