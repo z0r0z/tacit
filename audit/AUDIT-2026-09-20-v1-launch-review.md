@@ -199,10 +199,25 @@ to be confirmed on *this* deployment, not on the generation where it was first s
    immutable `BITCOIN_RELAY_VKEY` in gen5's live bytecode.
 5. `verify-vkey-pin.sh` and `verify-lockstep-pins.sh` both pass on this tree, so no link in that chain has
    drifted.
+6. Independently, the live pool reports `attestedBitcoinConsumedCount() == 1` — the counter is written, so
+   the unwritten-slot case the old guest could not prove does not arise on gen5 at all.
 
-**Conclusion: a cross-out is safe on gen5 in any counter order.** The remaining consequence is economic, not
-safety — from the first cross-out on, every attest must be Mode-B and therefore carries an Ethereum-state
-proof cost. `ops/INTEGRATION-simple-wrap-send-claim-eth.md` §6a said the opposite (it still described the
+**Conclusion: a cross-out is safe on gen5 in any counter order.**
+
+Live mainnet state, read during this review, makes it doubly safe — the old operational precondition ("seed
+the consume counter before any cross-out") is *already satisfied* on gen5, so even the pre-fix guest would
+not have frozen here:
+
+```
+pool 0x000000000Ed1eabD231Be41d93b719056F7febFC
+  nextLeafIndex                 24
+  attestedBitcoinConsumedCount   1     <- slot already written; cold-start window closed
+  attestedCrossOutCount          0
+  successor                      0     <- active generation, not retired
+```
+
+The remaining consequence is economic, not safety — from the first cross-out on, every attest must be Mode-B
+and therefore carries an Ethereum-state proof cost. `ops/INTEGRATION-simple-wrap-send-claim-eth.md` §6a said the opposite (it still described the
 pre-fix hazard and told integrators to treat counter order as a gate) and has been corrected.
 
 ### Conservation and spend-once, across all 34 opcodes

@@ -1,5 +1,5 @@
-// Dapp-side orchestration for the confidential-pool UX — mainnet (pool 0x…98A73197, live since
-// 2026-09-08) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
+// Dapp-side orchestration for the confidential-pool UX — mainnet (pool 0x…0Ed1eabD, live since
+// 2026-09-18) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
 // the already-built primitives into one tab-facing API so tacit.js stays a thin renderer over the LIVE pool:
 //   - evm-account        → the persistent per-network EVM identity derived from the Tacit wallet scalar
 //   - confidential-evm-log + confidential-indexer → seed-only confidential balance from the pool's logs

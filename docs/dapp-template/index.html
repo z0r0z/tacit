@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tacit — dapp skeleton</title>
+<meta name="description" content="A minimal starting point for a Tacit V1 confidential-pool dapp.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23171717'/%3E%3Ctext x='32' y='45' text-anchor='middle' font-family='Georgia,serif' font-weight='700' font-size='40' fill='%23ff9818'%3Et%3C/text%3E%3C/svg%3E">
+<style>
+  /* ─── tokens ────────────────────────────────────────────────────────────
+     The whole skin lives here. Change these nine values and nothing else,
+     and the page re-themes. Matches the live dapp's palette. */
+  :root {
+    --paper:  #f4eee3;
+    --card:   #fffaf2;
+    --field:  #faf5eb;
+    --ink:    #171717;
+    --muted:  #857f76;
+    --line:   #ddd5c8;
+    --orange: #ff9818;
+    --green:  #438568;
+    --red:    #b8341d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --r: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#100f0d; --card:#181613; --field:#1e1b17; --ink:#ece6da;
+      --muted:#8b8478; --line:#2e2a24; --orange:#ff9818; --green:#5fae8a; --red:#d4604a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#100f0d; --card:#181613; --field:#1e1b17; --ink:#ece6da;
+    --muted:#8b8478; --line:#2e2a24; --orange:#ff9818; --green:#5fae8a; --red:#d4604a;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin:0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font: 13px/1.6 var(--mono);
+    padding: 0 16px 64px;          /* 16px side gutter, phone-safe */
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header { padding: 28px 0 18px; border-bottom: 1px dashed var(--line); }
+  .brand { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .brand h1 { font-size:20px; margin:0; letter-spacing:-.01em; font-weight:700; }
+  .brand h1 span { color: var(--orange); }
+  .tag { color: var(--muted); font-size:12px; }
+  .pill {
+    display:inline-block; padding:2px 8px; border:1px solid var(--line);
+    border-radius:999px; font-size:11px; color:var(--muted); background:var(--card);
+  }
+  .pill.live { color: var(--green); border-color: currentColor; }
+  .pill.down { color: var(--red);   border-color: currentColor; }
+
+  section { margin-top: 22px; }
+  h2 {
+    font-size:11px; text-transform:uppercase; letter-spacing:.1em;
+    color:var(--muted); margin:0 0 8px; font-weight:600;
+  }
+  .card {
+    background: var(--card); border:1px solid var(--line);
+    border-radius: var(--r); padding:14px 16px;
+  }
+  .row {
+    display:flex; justify-content:space-between; gap:12px;
+    padding:6px 0; border-bottom:1px dashed var(--line);
+  }
+  .row:last-child { border-bottom:0; }
+  .row .k { color: var(--muted); flex:0 0 auto; }
+  .row .v { text-align:right; word-break:break-all; }
+  .v.num { font-variant-numeric: tabular-nums; }
+
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 0; border-bottom:1px dashed var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+  td.id { color:var(--muted); word-break:break-all; font-size:11px; }
+  tr:last-child td { border-bottom:0; }
+
+  label { display:block; color:var(--muted); font-size:11px; margin:10px 0 4px; }
+  input, select {
+    width:100%; padding:8px 10px; font:inherit; color:var(--ink);
+    background:var(--field); border:1px solid var(--line); border-radius:6px;
+  }
+  input:focus, select:focus { outline:none; border-color: var(--orange); }
+  button {
+    margin-top:12px; padding:9px 16px; font:inherit; cursor:pointer;
+    background:var(--ink); color:var(--paper); border:1px solid var(--ink); border-radius:6px;
+  }
+  button:hover:not(:disabled) { background:var(--orange); border-color:var(--orange); color:#171717; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+
+  .note {
+    border-left:2px solid var(--orange); padding:2px 0 2px 12px;
+    color:var(--muted); margin:10px 0;
+  }
+  code { background:var(--field); padding:1px 5px; border-radius:4px; }
+  a { color: var(--orange); }
+  footer { margin-top:32px; padding-top:14px; border-top:1px dashed var(--line); color:var(--muted); font-size:11px; }
+  .grid { display:grid; gap:16px; grid-template-columns:1fr; }
+  @media (min-width: 720px) { .grid.two { grid-template-columns:1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <h1>tacit<span>.</span></h1>
+    <span class="tag">confidential pool — dapp skeleton</span>
+    <span class="pill" id="net">mainnet · gen5</span>
+  </div>
+</header>
+
+<!-- ── live reads: these work the moment you open the file ───────────────── -->
+<div class="grid two">
+  <section>
+    <h2>Pool</h2>
+    <div class="card" id="pool">
+      <div class="row"><span class="k">address</span><span class="v" id="p-addr">…</span></div>
+      <div class="row"><span class="k">leaves</span><span class="v num" id="p-leaves">…</span></div>
+      <div class="row"><span class="k">root</span><span class="v" id="p-root">…</span></div>
+      <div class="row"><span class="k">cross-outs</span><span class="v num" id="p-xout">…</span></div>
+      <div class="row"><span class="k">btc consumed</span><span class="v num" id="p-cons">…</span></div>
+      <div class="row"><span class="k">retired</span><span class="v" id="p-retired">…</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Relay</h2>
+    <div class="card">
+      <div class="row"><span class="k">api</span><span class="v" id="r-base">…</span></div>
+      <div class="row"><span class="k">health</span><span class="v" id="r-health">…</span></div>
+      <div class="row"><span class="k">fee floor</span><span class="v" id="r-quote">…</span></div>
+      <p class="note">
+        The relay proves and settles for a fee carved from the op. It never sees a spending key
+        and can only earn that fee. Self-settle with <code>fee: 0n</code> if you would rather not use it.
+      </p>
+    </div>
+  </section>
+</div>
+
+<section>
+  <h2>Assets</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>asset</th><th>id</th><th style="text-align:right">unitScale</th></tr></thead>
+      <tbody id="assets"></tbody>
+    </table>
+    <p class="note">
+      The pool keys by <em>asset id</em>, not token address. In-system values are
+      <code>amount / unitScale</code> and must divide exactly — ETH is 18-dec at scale 1e10, so the pool
+      sees 8 decimals.
+    </p>
+  </div>
+</section>
+
+<!-- ── the wiring point: everything below needs the dapp modules ─────────── -->
+<section>
+  <h2>Your account</h2>
+  <div class="card">
+    <p class="note">
+      Tacit derives its own EVM account from the wallet seed — fund that address once and every call
+      signs itself. Wire <code>makeConfidentialPoolUx</code> below to light this up.
+    </p>
+    <label for="seed">wallet seed (hex scalar) — never paste a real one into a page you have not read</label>
+    <input id="seed" placeholder="0x…" autocomplete="off" spellcheck="false">
+    <button id="derive" disabled>derive account</button>
+    <div class="row" style="margin-top:12px"><span class="k">address</span><span class="v" id="a-addr">—</span></div>
+    <div class="row"><span class="k">balance</span><span class="v num" id="a-bal">—</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>Wrap ETH → cETH</h2>
+  <div class="card">
+    <label for="amt">amount (ETH)</label>
+    <input id="amt" value="0.01" inputmode="decimal">
+    <button id="wrap" disabled>wrap</button>
+    <p class="note">
+      Two steps. <code>pool.wrap()</code> is a plain tx that escrows the ETH and registers a pending
+      deposit — no proof. It becomes a spendable note only once an <code>OP_WRAP</code> settle consumes it
+      (<code>submitWrapSettle</code>).
+    </p>
+  </div>
+</section>
+
+<footer>
+  Skeleton for the Tacit V1 confidential pool. Read
+  <a href="../BUILD-A-TACIT-DAPP.md">BUILD-A-TACIT-DAPP.md</a> next; addresses come from
+  <a href="../../contracts/deployments/1-createx.json">1-createx.json</a>, which is the source of truth.
+</footer>
+
+</div>
+
+<script type="module">
+// ─────────────────────────────────────────────────────────────────────────
+// Config. Mirrors contracts/deployments/1-createx.json — re-read that file
+// after any redeploy rather than trusting these constants.
+// ─────────────────────────────────────────────────────────────────────────
+const CFG = {
+  chainId: 1,
+  pool:    '0x000000000Ed1eabD231Be41d93b719056F7febFC',
+  router:  '0x000000005dA3E3B73726af3c774Deeb9472D4992',
+  engine:  '0x000000003f608BDdF0ca45934003ffb9DbDF70DB',
+  relayBase: 'https://api.tacit.finance',
+  rpcs: [
+    'https://ethereum-rpc.publicnode.com',
+    'https://eth.drpc.org',
+    'https://eth.merkle.io',
+  ],
+  assets: [
+    { t: 'cETH', id: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', scale: 10n ** 10n },
+    { t: 'cBTC', id: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', scale: 10n ** 10n },
+    { t: 'cUSD', id: '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d', scale: 10n ** 10n },
+    { t: 'TAC',  id: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', scale: 10n ** 10n },
+  ],
+};
+
+// Selectors for the pool's public getters (keccak of the signature, first 4 bytes).
+const SEL = {
+  currentRoot:                 '0xfdab463d',
+  nextLeafIndex:               '0x0be4f422',
+  attestedCrossOutCount:       '0xa6f8c9d6',
+  attestedBitcoinConsumedCount:'0x281d8cc9',
+  successor:                   '0x6ff968c3',
+};
+
+const $ = (id) => document.getElementById(id);
+const short = (h, n = 6) => h && h.length > 2 * n + 2 ? `${h.slice(0, n + 2)}…${h.slice(-n)}` : h;
+
+// Minimal JSON-RPC with fallback: try each endpoint, first success wins.
+async function ethCall(to, data) {
+  let lastErr;
+  for (const url of CFG.rpcs) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }),
+      });
+      const j = await r.json();
+      if (j.error || !j.result) throw new Error(j.error?.message || 'no result');
+      return j.result;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('every RPC failed');
+}
+
+const asBig = (hex) => BigInt(hex || '0x0');
+
+// ── live pool state ──────────────────────────────────────────────────────
+async function loadPool() {
+  $('p-addr').textContent = short(CFG.pool, 8);
+  $('p-addr').title = CFG.pool;
+  try {
+    const [root, leaves, xout, cons, succ] = await Promise.all([
+      ethCall(CFG.pool, SEL.currentRoot),
+      ethCall(CFG.pool, SEL.nextLeafIndex),
+      ethCall(CFG.pool, SEL.attestedCrossOutCount),
+      ethCall(CFG.pool, SEL.attestedBitcoinConsumedCount),
+      ethCall(CFG.pool, SEL.successor),
+    ]);
+    $('p-root').textContent   = short(root, 8);
+    $('p-root').title         = root;
+    $('p-leaves').textContent = asBig(leaves).toLocaleString();
+    $('p-xout').textContent   = asBig(xout).toString();
+    $('p-cons').textContent   = asBig(cons).toString();
+    const retired = asBig(succ) !== 0n;
+    $('p-retired').textContent = retired ? 'yes — do not deposit' : 'no';
+    $('p-retired').style.color = retired ? 'var(--red)' : 'var(--green)';
+  } catch (e) {
+    for (const k of ['p-root', 'p-leaves', 'p-xout', 'p-cons', 'p-retired']) $(k).textContent = '—';
+    $('p-root').textContent = `rpc unreachable (${e.message})`;
+  }
+}
+
+// ── relay health + fee floor ─────────────────────────────────────────────
+async function loadRelay() {
+  $('r-base').textContent = CFG.relayBase.replace(/^https?:\/\//, '');
+  const setPill = (el, ok, text) => {
+    el.innerHTML = `<span class="pill ${ok ? 'live' : 'down'}">${text}</span>`;
+  };
+  try {
+    const r = await fetch(`${CFG.relayBase}/health`);
+    setPill($('r-health'), r.ok, r.ok ? 'up' : `http ${r.status}`);
+  } catch { setPill($('r-health'), false, 'unreachable'); }
+
+  try {
+    const r = await fetch(`${CFG.relayBase}/confidential/quote`);
+    const j = await r.json();
+    // The quote's exact shape is the relay's business; render whatever scalar it reports.
+    const v = j.floor ?? j.minFee ?? j.feeFloor ?? j.quote ?? null;
+    $('r-quote').textContent = v != null ? String(v) : JSON.stringify(j).slice(0, 48);
+  } catch { $('r-quote').textContent = '—'; }
+}
+
+// ── asset table ──────────────────────────────────────────────────────────
+function loadAssets() {
+  $('assets').innerHTML = CFG.assets.map((a) => `
+    <tr>
+      <td>${a.t}</td>
+      <td class="id" title="${a.id}">${short(a.id, 10)}</td>
+      <td style="text-align:right">1e${a.scale.toString().length - 1}</td>
+    </tr>`).join('');
+}
+
+loadPool();
+loadRelay();
+loadAssets();
+
+// ─────────────────────────────────────────────────────────────────────────
+// WIRING POINT — everything above is live with no dependencies. To make the
+// account / wrap / send panels real, import the dapp modules (they are plain
+// ESM, no build step) and drop the object in. Nothing else on this page has
+// to change: the panels only ever render what a builder returned.
+//
+//   import * as secp from 'https://esm.sh/@noble/secp256k1@2';
+//   import { keccak_256 as keccak256 } from 'https://esm.sh/@noble/hashes@1/sha3';
+//   import { sha256 } from 'https://esm.sh/@noble/hashes@1/sha256';
+//   import { makeConfidentialPoolUx } from '../../dapp/confidential-pool-ux.js';
+//
+//   const tacit = makeConfidentialPoolUx({ secp, keccak256, sha256, network: 'mainnet' });
+//
+//   $('derive').disabled = false;
+//   $('derive').onclick = () => {
+//     const acct = tacit.account($('seed').value.trim());   // sync
+//     $('a-addr').textContent = acct.address;
+//     $('wrap').disabled = false;
+//     tacit.balance($('seed').value.trim())
+//       .then((f) => { $('a-bal').textContent = JSON.stringify(f); });
+//   };
+//
+//   $('wrap').onclick = async () => {
+//     const wei = BigInt(Math.round(parseFloat($('amt').value) * 1e18));
+//     const w = await tacit.wrap({ walletPriv: $('seed').value.trim(), amountWei: wei, ticker: 'cETH' });
+//     // keep w.note + w.memo — that IS the note; then, once w.txHash is mined:
+//     await tacit.submitWrapSettle({ built: w });
+//   };
+//
+// Read docs/BUILD-A-TACIT-DAPP.md §4-5 before wiring: the two things that
+// bite first are that you cannot transfer directly to a third party (use
+// stealthSend), and that a membership witness goes stale as soon as anyone
+// else settles (rescan immediately before spending).
+// ─────────────────────────────────────────────────────────────────────────
+</script>
+</body>
+</html>
