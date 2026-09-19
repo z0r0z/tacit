@@ -200,7 +200,38 @@ export async function commitEthProveState() {
 // ── Settle: exec harness ──
 // Writes the op JSON to OP_FILE, spawns the exec bin (MODE=groth16, network prove),
 // returns { publicValues, proof }. A per-job timeout guards the FIFO.
+// Each confidential op is a SINGLE-op SP1 binary (exec-<type>) that reads OP_FILE and proves that one op —
+// there is no unified OP_TYPE-dispatching `exec` deployed. Map the relay type to its binary; if a type has
+// no built binary yet, fail clearly rather than invoking the wrong prover.
+// Relay op type → its single-op network prover binary (names per the canonical harness_for map).
+const PEROP = {
+  wrap: 'exec-wrap', transfer: 'exec-prove', batchtransfer: 'exec-batchtransfer', wraplp: 'exec-wraplp', wrapswap: 'exec-wrapswap', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
+  wraptransfer: 'exec-wraptransfer', sendunwrap: 'exec-sendunwrap', otc: 'exec-otc', route: 'exec-route', bid: 'exec-bid',
+  bridgeburn: 'exec-bridgeburn', bridgemint: 'exec-bridgemint', cbtcmint: 'exec-cbtcmint',
+  cdpmint: 'exec-cdpmint', cdpclose: 'exec-cdpclose',
+  // Stealth lock/claim. This is the ONLY sound way to pay a third party: a native note's owner is
+  // keccak(nk ‖ dom), so a sender who builds the recipient's note either picks nk (and keeps spend
+  // authority over their money) or derives the owner from a pubkey (and mints a note nobody can spend).
+  // The lock escrows to a one-time key instead, and the recipient claims it into a note under an nk only
+  // they can derive.
+  stealthlock: 'exec-stealthlock', stealthclaim: 'exec-stealthclaim', stealthrefund: 'exec-stealthrefund',
+  stealthlockbatch: 'exec-stealthlockbatch', bridgestealthmint: 'exec-bridgestealthmint',
+  farmbond: 'exec-farmbond', farmharvest: 'exec-farmharvest', farmunbond: 'exec-farmunbond',
+  adaptorlock: 'exec-adaptorlock', adaptorclaim: 'exec-adaptorclaim', adaptorrefund: 'exec-adaptorrefund',
+  cdpliquidate: 'exec-cdpliquidate', cdptopup: 'exec-cdptopup', lpbond: 'exec-lpbond', wrapcdpmint: 'exec-wrapcdpmint',
+  // Bitcoin-homed (authenticated) OP_TRANSFER batches: `fastlane` is the dapp's fast-lane exit shape
+  // ({ chainBinding, spendRoot, bitcoinSpentRoot, transfer }); `crosslane` is the flat fixture shape.
+  fastlane: 'exec-fastlane', crosslane: 'exec-crosslane',
+};
+
 export async function proveSettle({ type, op, memos = [], timeoutMs }) {
+  // Resolve `type` to its binary before anything touches the filesystem. `type` originates in the worker's
+  // job queue and is used to build the fixture path (`${type}_op.json`), so the allowlist above is the only
+  // thing that supplies a path component, independent of any upstream validation.
+  const binName = PEROP[type];
+  if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);
+  const bin = path.join(path.dirname(CFG.execBin), binName);
+
   await mkdir(CFG.fixtureDir, { recursive: true });
   const opFile = path.join(CFG.fixtureDir, `${type}_op.json`);
   // The guest commits to keccak256(memo) per emitted leaf; settle() then passes the real memos and the
@@ -215,33 +246,6 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   await mkdir(cwd, { recursive: true });
   await rm(path.join(cwd, 'public_values.hex'), { force: true });
   await rm(path.join(cwd, 'proof_bytes.hex'), { force: true });
-
-  // Each confidential op is a SINGLE-op SP1 binary (exec-<type>) that reads OP_FILE and proves that one op —
-  // there is no unified OP_TYPE-dispatching `exec` deployed. Map the relay type to its binary; if a type has
-  // no built binary yet, fail clearly rather than invoking the wrong prover.
-  // Relay op type → its single-op network prover binary (names per the canonical harness_for map).
-  const PEROP = {
-    wrap: 'exec-wrap', transfer: 'exec-prove', batchtransfer: 'exec-batchtransfer', wraplp: 'exec-wraplp', wrapswap: 'exec-wrapswap', swap: 'exec-swap', unwrap: 'exec-unwrap', lp: 'exec-lp', lpremove: 'exec-lpremove',
-    wraptransfer: 'exec-wraptransfer', sendunwrap: 'exec-sendunwrap', otc: 'exec-otc', route: 'exec-route', bid: 'exec-bid',
-    bridgeburn: 'exec-bridgeburn', bridgemint: 'exec-bridgemint', cbtcmint: 'exec-cbtcmint',
-    cdpmint: 'exec-cdpmint', cdpclose: 'exec-cdpclose',
-    // Stealth lock/claim. This is the ONLY sound way to pay a third party: a native note's owner is
-    // keccak(nk ‖ dom), so a sender who builds the recipient's note either picks nk (and keeps spend
-    // authority over their money) or derives the owner from a pubkey (and mints a note nobody can spend).
-    // The lock escrows to a one-time key instead, and the recipient claims it into a note under an nk only
-    // they can derive.
-    stealthlock: 'exec-stealthlock', stealthclaim: 'exec-stealthclaim', stealthrefund: 'exec-stealthrefund',
-    stealthlockbatch: 'exec-stealthlockbatch', bridgestealthmint: 'exec-bridgestealthmint',
-    farmbond: 'exec-farmbond', farmharvest: 'exec-farmharvest', farmunbond: 'exec-farmunbond',
-    adaptorlock: 'exec-adaptorlock', adaptorclaim: 'exec-adaptorclaim', adaptorrefund: 'exec-adaptorrefund',
-    cdpliquidate: 'exec-cdpliquidate', cdptopup: 'exec-cdptopup', lpbond: 'exec-lpbond', wrapcdpmint: 'exec-wrapcdpmint',
-    // Bitcoin-homed (authenticated) OP_TRANSFER batches: `fastlane` is the dapp's fast-lane exit shape
-    // ({ chainBinding, spendRoot, bitcoinSpentRoot, transfer }); `crosslane` is the flat fixture shape.
-    fastlane: 'exec-fastlane', crosslane: 'exec-crosslane',
-  };
-  const binName = PEROP[type];
-  if (!binName) throw new Error(`exec:${type} — no prover binary deployed for this op (have: ${Object.keys(PEROP).join(', ')})`);
-  const bin = path.join(path.dirname(CFG.execBin), binName);
 
   const { code, out } = await run(bin, {
     // The per-op binary proves its own op from OP_FILE; OP_TYPE is passed for forward-compat with a future

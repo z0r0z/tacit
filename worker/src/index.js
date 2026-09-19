@@ -657,7 +657,13 @@ async function handleProverHeartbeat(req, env, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
   const tok = env.PROVER_HEARTBEAT_TOKEN || '';
-  if (!tok || body.token !== tok) return jsonResponse({ ok: false, error: 'unauthorized' }, 401, cors);
+  // Constant-time compare, like every other bearer gate here (checkDebugAuth /
+  // checkConfidentialAuth / ceremonyAuthOk). A `!==` on the raw secret short-circuits at the
+  // first differing byte; forging a beat only fakes liveness, but the token is shared with the
+  // prover box's env so it should not be the one secret with a timing side-channel.
+  if (!tok || !constantTimeEqual(String(body.token || ''), tok)) {
+    return jsonResponse({ ok: false, error: 'unauthorized' }, 401, cors);
+  }
   const rec = {
     ts: Date.now(),
     network: String(body.network || 'mainnet'),
@@ -1442,11 +1448,15 @@ async function handleConfidentialSubmit(req, env, cors) {
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
-  // Only the free (prove-only) path is rate-limited; relayed settle jobs are fee-gated and user-sent ones pay gas.
-  if ((body.mode || 'settle') === 'prove') {
+  // Prove-only submits are always metered per IP. Relayed ('settle') submits are metered too whenever the
+  // profitability gate is not enforcing a floor: `buildRelayFeeGate` is off unless RELAY_FEE_FLOOR == '1'
+  // (and only prices a cETH fee leg), and each relayed job costs the relay a prove cycle plus gas. Setting
+  // RELAY_FEE_FLOOR = "1" lifts the metering for fee-paying submits.
+  const submitMode = body.mode || 'settle';
+  if (submitMode === 'prove' || env.RELAY_FEE_FLOOR !== '1') {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const rl = await proveRateLimit(env, ip);
-    if (!rl.ok) return jsonResponse({ ok: false, error: `too many prove requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+    if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit });
@@ -9338,6 +9348,11 @@ async function handleIpfsProxy(req, env, cors) {
   }
   const cid = cidMatch[1];
   const sub = cidMatch[2] || '';
+  // The sub-path is appended to the gateway base and fetch() normalizes `..` segments, so keep it within the
+  // /ipfs/ prefix. Directory CIDs only need forward segments; reject `.` and `..`.
+  if (sub.split('/').some((seg) => seg === '..' || seg === '.')) {
+    return new Response(JSON.stringify({ error: 'invalid CID sub-path' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
+  }
   // Length sanity-check: CIDv0 = 46 chars exactly; CIDv1 ≥ 50 chars.
   // Defends against arbitrary path tokens being injected as CIDs.
   const okCidv0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid);
@@ -24105,15 +24120,21 @@ export {
 
 // ============== DISCORD TOKEN-GATE HANDLERS ==============
 
-function checkBearerConstantTime(req, secret) {
-  const auth = req.headers.get('Authorization') || '';
-  const m = auth.match(/^Bearer (.+)$/);
-  if (!m) return false;
-  const a = m[1], b = secret;
+// Length-then-XOR compare over two strings. Length is compared first (and leaks, as it does in
+// every such gate here — the secrets are fixed-length env values, so it carries nothing), then
+// every remaining byte is examined regardless of where the first mismatch is.
+function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+function checkBearerConstantTime(req, secret) {
+  const auth = req.headers.get('Authorization') || '';
+  const m = auth.match(/^Bearer (.+)$/);
+  if (!m) return false;
+  return constantTimeEqual(m[1], secret);
 }
 
 async function handleDiscordNonce(req, env, cors) {
