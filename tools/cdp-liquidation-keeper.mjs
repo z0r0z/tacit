@@ -13,10 +13,19 @@
 //      healthy, so a stale read is fail-safe (the proof just won't settle).
 //
 // VERIFICATION: the action path (buildCdpLiquidateOp → liquidateCdp) is guest-verified — a decode/price bug
-// is fail-safe (op rejected, no wrong fund movement). Run against a deployed pool+engine. The box needs an
-// exec-cdpliquidate.rs harness/serializer (rides the re-prove) for the proof to be produced.
+// is fail-safe (op rejected, no wrong fund movement). The exec-cdpliquidate prover binary IS deployed on the
+// relay (worker-relay/prover/bin/), so the proof path is live; `cdpliquidate` is likewise in the worker's
+// submit allowlist and the relay's PEROP map.
 //
-// Usage: KEEPER_PRIV=0x.. [NETWORK=signet] [BTC_USD_FEED=0x..] [MIN_HEALTH_BPS=12500] [ONCE=1]
+// STATUS: this is a SCRIPT, not a deployed service — worker-relay/render.yaml runs no keeper. Liquidations
+// only happen while somebody runs this. It also needs cUSD INVENTORY: onCdpLiquidate burns notes summing to
+// the FULL accrued debt (no partial liquidation, no auction), so a keeper holding no cUSD cannot act at all
+// and must source it first. Both points are launch gates in
+// audit/AUDIT-2026-09-19-cbtc-cusd-cdp-review.md.
+//
+// NETWORK defaults to signet — pass NETWORK=mainnet explicitly to run against the live deployment.
+//
+// Usage: KEEPER_PRIV=0x.. [NETWORK=signet|mainnet] [BTC_USD_FEED=0x..] [MIN_HEALTH_BPS=12500] [ONCE=1]
 //        node tools/cdp-liquidation-keeper.mjs
 
 import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
