@@ -211,8 +211,15 @@ I did not wire it. Turning on a path that has never run through the live prove/s
 to make at launch on an untested basis, and I cannot exercise the prover box from here. It is a small change
 (one allowlist entry, one `PEROP` entry) once someone can run a real swapblind job end-to-end.
 
-The honest launch statement: *amounts are hidden from the chain and from every other user; a swap relayed by
-Tacit's relay is visible to Tacit's relay; self-settle, or wait for the prover-blind path, if that matters.*
+One nuance that is easy to state wrongly: `selfRelay: true` does **not** remove the relay from the picture.
+`_dispatch` still calls `relay.prove(...)` and only changes who submits the settle — so the relay still
+receives the witness and still sees the amounts. What self-relaying avoids is the fee and having the relay's
+address on the transaction. Genuinely removing it means proving locally (native-gnark on CPU, which the stack
+supports). Both `FEATURES.md` and the new build guide were corrected to say this precisely rather than
+implying self-settle is sufficient.
+
+The honest launch statement: *amounts are hidden from the chain and from every other user; a swap proven by
+Tacit's relay is visible to Tacit's relay; prove locally, or wait for the prover-blind path, if that matters.*
 The same applies to IP metadata — the dapp talks to the API directly, so the relay sees a submitting user's
 address alongside their op.
 

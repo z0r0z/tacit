@@ -158,9 +158,14 @@ await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0xabc…' });
 await tacit.stealthSend({ walletPriv, notes, recipientPubHex, amount: 5_000_000n });
 ```
 
-`selfRelay: true` proves and submits from your own account with `fee: 0n`; otherwise the fee must clear the
-relay's gas-priced floor — `tacit.quoteOpFee(...)` or `GET /confidential/quote?asset=cETH`. Each of these returns once
-the settle lands; pass `waitOpts` to tune the polling.
+Fees: by default the relay proves *and* submits, and the fee must clear its gas-priced floor
+(`tacit.quoteOpFee(...)`, or `GET /confidential/quote?asset=cETH`). `selfRelay: true` with `fee: 0n` has the
+relay prove but **you** submit and pay gas — note that the relay still receives the witness either way; what
+you avoid is the fee and having the relay's address on the transaction. Removing the relay entirely means
+proving locally (native-gnark on CPU — no GPU, no network payment; see
+`ops/INTEGRATION-simple-wrap-send-claim-eth.md`).
+
+Each of these returns once the settle lands; pass `waitOpts` to tune the polling.
 
 ## 6. Relay API
 
@@ -179,7 +184,8 @@ Submits are rate-limited per IP and the queue is bounded; a rejected submit is b
 **What the relay learns.** It never sees a spending key — only opening sigmas — and can only earn the
 proof-bound fee. But it does see your IP, and for an `OP_SWAP` it sees that swap's amounts, because the guest
 computes the clearing and therefore must read them. Everything else (who you are, your balance, your other
-notes) stays hidden. Self-settle if a trade size matters to you.
+notes) stays hidden. Note that `selfRelay` does **not** change this — the relay still proves, so it still
+sees the witness. If a trade size matters to you, prove locally.
 
 ## 7. Iterating on the design
 
