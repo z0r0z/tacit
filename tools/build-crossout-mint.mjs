@@ -69,7 +69,9 @@ const leaf = d.tapLeafHash(envelopeScript);
 const { Q_xonly, parity } = d.tweakedOutputKey(d.TAP_NUMS, leaf);
 const p2trSpk = d.p2trScript(Q_xonly);
 const cb = d.controlBlock(d.TAP_NUMS, parity);
-const senderP2wpkh = d.p2wpkhScript(d.wallet.hash160 ? d.wallet.hash160() : d.hash160(d.wallet.pub));
+// p2wpkhScript takes the PUBLIC KEY and hashes it itself; passing a pre-hashed value double-hashes it and sends the change
+// to an address no key controls.
+const senderP2wpkh = d.p2wpkhScript(d.wallet.pub);
 // vout 0 of the reveal: P2TR paying the burner-named key. OP_1 <32-byte key>.
 const destSpk = d.hexToBytes('5120' + destHex);
 
@@ -87,6 +89,7 @@ if (commitChange < 0) throw new Error('fee UTXO too small: need ' + (commitValue
 const commitOutputs = [{ value: commitValue, script: p2trSpk }];
 if (commitChange >= 294) commitOutputs.push({ value: commitChange, script: senderP2wpkh });
 
+if (commitChange >= 294 && d.bytesToHex(senderP2wpkh) !== '0014' + d.bytesToHex(d.hash160(d.wallet.pub))) throw new Error('self-check failed: change script is not the wallet P2WPKH');
 const commitTx = { version: 2, locktime: 0, inputs: [{ txid: feeU.txid, vout: feeU.vout, sequence: 0xfffffffd, witness: [] }], outputs: commitOutputs };
 commitTx.inputs[0].witness = d.signP2wpkhInput(commitTx, 0, feeU.value);
 const commitHex = d.bytesToHex(d.serializeTx(commitTx));
@@ -115,3 +118,5 @@ console.log('commitTxid', commitTxid);
 console.log('revealTxid', revealTxid);
 writeFileSync(OUT_FILE, JSON.stringify({ commitHex, commitTxid, revealHex, revealTxid, claimId, destXonly: '0x' + destHex }, null, 1));
 console.log('WROTE', OUT_FILE, '(NOT broadcast — review, then broadcast commit then reveal)');
+// The dapp module import leaves timers running; this builder is one-shot, so end the process once the file is written.
+process.exit(0);
