@@ -162,11 +162,25 @@ The earner -> sink description below still describes how `replenishOnce` works; 
 the sink and every "to the sink" step collapses into the ordinary single-wallet case. If a second key is ever
 introduced again, that logic is what keeps fees flowing to the account that can use them.
 
-**What one key costs:** the settle service, header, reflection and eth-state now all sign from `0x68…`, so a
-nonce collision between services is possible (the settle path already refreshes and resubmits on a lost
-nonce, and the sink's approve/deposit retry). It is rare — maintenance is ~5 txs/hour — and a lost race fails
-before broadcast, so it is a retry rather than a loss. It replaces the alternative of splitting fees away from
-the account that pays for proving, which was the worse trade.
+**What one key costs — and it is not hypothetical.** The settle service, header, reflection and eth-state all sign
+from `0x68…`, so nonces can collide. Within hours of the merge it happened: a relayed wrap was signed at nonce
+2715, and another sender's transaction took 2715 first, so nothing the relay broadcast under it could ever land.
+The relay waited out two full receipt timeouts (re-broadcasting at the same, dead nonce) before noticing — 6.5
+minutes for a settle that then landed in 13 seconds.
+
+The sender was not a service. **`0x68…` is also the raw `WALLET_PRIV` EOA that test sessions use**, so anything
+run with that key in its environment signs as the production relayer. Two mitigations, one code and one process:
+
+- *Code:* `awaitInclusion` polls both "did one of ours land" and "has this nonce been consumed", so a dead
+  nonce is noticed within seconds and the settle is re-sent at a fresh one (receipts are re-checked before
+  declaring the nonce taken, so our own transaction with a lagging receipt is never re-sent).
+- *Process:* tests should sign from a derived signer, never from `0x68…`. Anything held there (test dust, rETH)
+  should be moved out in one batched transaction at a quiet moment. Longer term, a relayer key that is not also a
+  development key removes the class of problem — but the prover balance is tied to this address
+  (`NETWORK_PRIVATE_KEY`), so that is a migration, not a config change.
+
+It still replaces the alternative of splitting fees away from the account that pays for proving, which was the
+worse trade.
 
 ### Where fee income goes: earner -> sink
 
@@ -184,14 +198,14 @@ the earner, exact-out ETH for the sink, PROVE to the sink, native-ETH surplus fo
 cannot pay for a transaction cannot buy PROVE either. With consolidated keys the earner *is* the sink and
 every sink step collapses into the ordinary single-wallet case — no change needed for that migration.
 
-**It runs inside `tacit-settle`, not as a cron**, in the loop's idle time (`REPLENISH_IN_SETTLE=1`). That
-service already holds `SETTLE_KEY`, so no secret is copied anywhere, and running only where the loop would
-otherwise sleep serialises it with settles on the same nonce. A failure is logged and never stops settling.
-The `tacit-replenish` cron can stay suspended; it cannot sweep the settle wallet without that key.
+**It runs inside `tacit-settle`, not as a cron**, in the loop's idle time (`REPLENISH_IN_SETTLE=1`). Running only
+where the loop would otherwise sleep serialises it with settles on the same nonce. A failure is logged and never
+stops settling. The `tacit-replenish` cron is **retired**: still defined in the blueprint but inert (its command
+is a no-op and it is suspended), because a resumed cron would be a second replenisher racing the settle service
+for the same wallet's nonces.
 
-One known edge: the sink's approve + deposit are signed by the relay key from inside the settle service, while
-the header/reflection services also use that key. A nonce collision would fail one of the two txs and both
-retry, but it is a real overlap; it disappears with key consolidation.
+The sink's approve + deposit share the relayer key with header/reflection/eth-state, so a collision is possible;
+they retry a lost nonce race (it fails before broadcast, so retrying is safe).
 
 Verified by running the real `replenishOnce` against a stub RPC and asserting on the signed transactions
 (`tests/replenish-flow.test.mjs`) — who signed, where each swap was delivered, who deposited — not by matching
