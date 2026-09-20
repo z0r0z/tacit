@@ -1446,9 +1446,13 @@ const USD_PEGGED_FEE_TICKERS = ['cUSD', 'cUSDC', 'cUSDT'];
 // This number is a COST FLOOR, so the error that matters is overvaluing: a fee paid in cTAC is accepted as
 // worth more than it is, and the relay quietly under-collects. Undervaluing merely asks for a little more TAC.
 // It started at 250 (a round estimate); the public trade record (228 trades, 2026-05-24 to 2026-08-24) says
-// the volume-weighted average is ~172 sats, the last 30 days ~170, the last fill 180, and only the median
-// (253) is near 250 — so 250 overvalued TAC by roughly 45%. 175 sits with the evidence and errs conservative.
-// A judgement, not a measurement, hence overridable with TAC_PRICE_SATS.
+// the volume-weighted average over the WHOLE record is ~172 sats and the last fill 180, and only the median
+// (253) is near 250 — so 250 overvalued TAC by roughly 45%. 175 sits with the evidence.
+//
+// Whole-record and volume-weighted on purpose: TAC has been waiting on a relaunch, so a low recent window
+// (July, 55% of volume at ~103) reflects a lull rather than what TAC is worth, and chasing it would undervalue
+// it. Reproduce with `node tools/tac-price-reference.mjs`. A judgement, not a measurement, hence overridable
+// with TAC_PRICE_SATS.
 const TAC_PRICE_SATS_DEFAULT = 175;
 function feeAssetRow(type, op, env = {}) {
   try {
