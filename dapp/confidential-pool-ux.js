@@ -17,6 +17,8 @@ import { makeRecoveryGuard } from './confidential-recovery-guard.js';
 import { makeConfidentialRouter } from './confidential-router.js';
 import { makeConfidentialTransfer } from './confidential-transfer.js';
 import { makeConfidentialRoute } from './confidential-route.js';
+import { makeConfidentialSwap } from './confidential-swap.js';
+import { makeConfidentialSwapCoordinator } from './confidential-swap-coordinator.js';
 import { makeConfidentialLp } from './confidential-lp.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
@@ -1758,7 +1760,48 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       feeBps: Number(BigInt('0x' + word(5))), totalShares: BigInt('0x' + word(6)),
     };
   }
+  // The pool's live note-tree root. Every membership proof in a batch must reconstruct ONE root, and a
+  // freshly-scanned note carries that same value — so reading it here keeps the batch's members consistent
+  // without threading a root through the coordinator. A stale path simply fails the guest's membership
+  // assert rather than settling wrongly.
+  async function poolCurrentRoot() {
+    const res = await ethCall(cfg.pool, '0x' + _selector('currentRoot()'));
+    const hex = String(res || '').replace(/^0x/, '');
+    if (hex.length < 64) throw new Error('pool currentRoot() unavailable');
+    return '0x' + hex.slice(0, 64);
+  }
   const routePoolId = (a, b, feeBps) => _route.poolId(a, b, feeBps);
+
+  // ── batched OP_SWAP (intent coordinator) ───────────────────────────────────────────────────────────
+  // A solo swap is a batch of one: its public reserve delta IS its exact amount, so the size is visible to
+  // anyone reading the settle. Buffering intents per pool and clearing N of them at ONE uniform price makes
+  // the single delta cover all of them, so individual sizes hide in the aggregate. The guest's OP_SWAP
+  // already loops over `intents`, so this is purely off-chain — no contract change, no re-prove.
+  //
+  // Availability, not default: `swapBatched` exists so a caller can opt in. Batching only buys privacy when
+  // peers are actually trading the same pool inside the window — with no concurrent volume every batch is a
+  // batch of one, which is today's privacy plus the wait. Flip the caller, not this, once volume justifies it.
+  const _swap = makeConfidentialSwap({ keccak256, pool });
+  const _swapCoordinator = makeConfidentialSwapCoordinator({
+    swap: _swap,
+    pool,
+    kernelSign: (x) => _ct.kernelSign(x),
+    chainBindingHex,
+    ephRand: freshEph,
+    // Canonical reserves for the pool the batch clears against, plus the spend root its members prove into.
+    reservesFor: async (poolId) => {
+      const r = await poolReserves(poolId);
+      if (!r) return null;
+      return { reserveA: r.reserveA, reserveB: r.reserveB, feeBps: r.feeBps, spendRoot: await poolCurrentRoot() };
+    },
+    // One settle for the whole batch. Goes through the same relay path a solo op uses.
+    submitBatch: async ({ op, leaves, outputs, ephRand }) =>
+      relay.settle({ type: 'swap', op, leaves, outputs, ephRand }),
+  });
+  // Queue one swap intent. Resolves with this trader's own slice once the batch it joined settles.
+  const swapBatched = (intent) => _swapCoordinator.addIntent(intent);
+  const swapBatchPending = () => _swapCoordinator.pending();
+  const swapBatchFlush = (poolId) => _swapCoordinator.flush(poolId);
 
   // Quote a route: walk `path` ([{ assetNext, feeBps }]) from asset0, fetching each hop's live reserves.
   // Returns { amountOut, hops } where hops carry the reserves the route op pins. null if any hop is dead.
@@ -2205,6 +2248,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    erc2612Nonce: _erc2612Nonce, poolReserves, routePoolId, quoteRoute, route, lpBondPosition, buildLpBondOp, lpBond, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
 }
