@@ -60,7 +60,7 @@ bookkeeping needs no redeploy, no re-prove and no vkey rotation.
 |---|---|---|
 | settle runway | `SETTLE_RUNWAY_ALERT` (25 settles) | critical |
 | ETH absolute floor | `ETH_GAS_BUFFER_WEI` (0.03) | critical if runway unavailable, else warning |
-| undeposited PROVE | `PROVE_BALANCE_FLOOR` (50) | critical |
+| undeposited PROVE | `PROVE_BALANCE_FLOOR` (50) | warning (a proxy that reads ~0 by design — see below) |
 | reflection lag | `REFLECTION_LAG_ALERT_BLOCKS` (200) | warning |
 | snapshot size | `SNAPSHOT_BYTES_WARN` (64 MiB) | warning |
 
@@ -78,6 +78,20 @@ Two things about how it reports:
 A fixed wei floor says "low"; it does not say *when*. 0.03 ETH is weeks at 0.15 gwei and under a day at
 30 gwei. The monitor prices a real settle (`OP_GAS.transfer`, 600k, measured) at the live gas price and
 alerts on settles remaining, which is the number you can act on.
+
+### Which wallets it sees — and why `SETTLE_ADDRESS` exists
+
+`SETTLE_KEY` is set on `tacit-settle` alone. Anywhere else it falls back to `RELAY_KEY`, so the two wallets
+collapse into one and the monitor reports a single healthy wallet while the one paying for settles runs dry.
+That is exactly what the first version did. Watching a balance needs an address, not a key, so the monitor
+cron carries `SETTLE_ADDRESS` (public — declared in `render.yaml`) and `watchedWallets` in `lib/chain.js`
+corrects the picture with it. Signing is a separate question: `fundedWallets` stays what a service can
+actually sign for, which is why **replenish still needs the real `SETTLE_KEY`** to sweep the settle wallet's
+fees (see 3a).
+
+A healthy run reads: settle wallet with a runway in *settles*, relay wallet with a runway in *maintenance
+runs*, snapshot counts matching `tools/capacity-report.mjs`, and `0 criticals`. The cron should be green —
+if it is red, that now means something.
 
 ### What the PROVE check is not
 
