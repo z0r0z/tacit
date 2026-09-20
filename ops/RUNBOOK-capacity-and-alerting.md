@@ -117,10 +117,10 @@ zQuoter/zRouter, deposit the PROVE to the Succinct vApp. That loop is fully buil
    wallet from the service's own logs (`replenish` prints `earner 0x…`), never from who sends pool settles:**
    prove-mode jobs are settled by the *user's* transaction, so other addresses appear as `msg.sender` too.
    (Initially misread from settle senders as `0xfd1fa372…`; the real earner is `0xB2DA…59Dd`.)
-3. **The fee gate accepted any op without `op.feeUsd` for free**, which was every op. That is why every
-   fee balance was flat zero. The gate now logs `UNPAID:` per job and counts them;
-   `RELAY_REQUIRE_PRICED_FEE=1` refuses them outright. **Default off** — nothing populates `op.feeUsd`
-   yet, so turning it on before the producer is wired would refuse every job.
+3. **The fee gate accepted any op without a priced fee for free**, which was every op. The gate now logs
+   `UNPAID:` per job and counts them; `RELAY_REQUIRE_PRICED_FEE=1` refuses them outright. **Default off**:
+   only cETH and USD-pegged assets (cUSD today) can be priced server-side, so turning it on would refuse
+   every relayed op in any other asset (cBTC, cTAC, unregistered assets).
 4. **The maintenance lane was missing from the cost model.** Header attestation is 264,241 gas (measured,
    three consecutive receipts) at ~111 runs/day, and nobody pays a fee for it — but the bridge stops in
    both directions without it. It is now amortised across `EXPECTED_OPS_PER_DAY`.
@@ -173,7 +173,28 @@ Verified by running the real `replenishOnce` against a stub RPC and asserting on
 (`tests/replenish-flow.test.mjs`) — who signed, where each swap was delivered, who deposited — not by matching
 source text. Enabling it needs `REPLENISH_IN_SETTLE=1`, `FEE_ASSETS`, and a deploy of `tacit-settle`.
 
+### Guards on every swap
+
+Fee income is small and the aggregator is not always right, so replenish refuses to act on what it cannot
+trust. **Found in production on the first pass:** the earner held 0.81 USDT and the router quoted 417 PROVE
+for it (~$0.002 each) — while quoting 416 PROVE for 100 USDT (~$0.24). One of those is wrong by ~100x. The swap
+reverted at simulation so nothing was lost, but the code should not depend on that.
+
+- **Dust floor** (`SWEEP_MIN_USD`, default $5): a fee asset below it is held and accumulates. Tiny swaps cost
+  gas out of proportion and are exactly where the quotes go bad. The log says `holding to accumulate`.
+- **Quote sanity** (`QUOTE_SANITY_BAND`, default 2x): every PROVE quote, and every stablecoin gas top-up, is
+  checked against an independent price and refused with `REFUSING … implausible` when outside the band. The
+  band is wide on purpose — it catches a 100x error, not ordinary slippage.
+- **Operator float** (`ETH_SWEEP_ABOVE_WEI`, default 0.1 ETH): native ETH is only converted to PROVE above
+  this, so a deliberate gas top-up is never swept into PROVE.
+- **Nonce races** on the sink's approve/deposit are retried; they fail before broadcast so retrying is safe.
+
 ### Proving is not free for the user — and prove-mode is unpaid
+
+**Bounded, as of this change:** a global daily ceiling (`PROVE_MODE_DAILY_CAP`, default 400) is spent only
+when a job is actually accepted — never on a submit that fails validation, so junk cannot drain everyone's
+allowance — and refusal points at proving locally, the free path where the witness never reaches us. So the
+worst case is a number we chose. Original finding:
 
 Live logs show real users already using the relay in `mode=prove` (wraptransfer, bridgeburn, lpremove), each
 proved on our PROVE (~$0.07) with **no fee at all**: prove-only jobs skip the fee gate, and the fee could not be
