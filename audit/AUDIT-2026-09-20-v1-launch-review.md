@@ -30,9 +30,11 @@ down cheaply; and nothing published that routes a newcomer to the wrong contract
 
 ## Verdict
 
-**Green-lit for V1 launch, with three items to clear first:** a deploy to land (L-1, already fixed in this
-tree), a multisig action (L-2), and one decision (L-4 — wire fast-lane consumed-source registration, or
-keep the fast lane operator-assisted until it is).
+**Green-lit for V1 launch.** The immutable surface is sound; everything outstanding is off-chain and
+operational: a deploy to land (**L-1**, already fixed in this tree), a multisig action (**L-2**), and two
+items that gate the *Bitcoin-lane* surface specifically — **L-4** (fast-lane consumed-source registration)
+and **L-5** (the wallet cannot see generation-bound notes). If the BTC→ETH on-ramp stays non-user-facing at
+launch, L-4 and L-5 are low-exposure; if it does not, they are prerequisites.
 
 The immutable surface needs no change and gets none. No double-spend, inflation, theft, or brick path was
 found; the cross-out brick vector that bit earlier generations was verified *closed in the gen5 guest*, by
@@ -47,6 +49,7 @@ Every launch item is outside the proof system:
 | **L-2** | Three of five live token-list entries point at the retired gen4 suite | Medium (misrouting) | Needs a multisig refresh |
 | **L-3** | Published manifests and integration guides carried retired-generation addresses | Medium (misrouting) | **Fixed here** |
 | **L-4** | Nothing registers a fast-lane consumed source, so the next fast-lane spend stalls reflection | Medium (liveness) | Needs a decision — see below |
+| **L-5** | The wallet scanner has no branch for `T_CXFER_BOUND` (0x39), so generation-bound Bitcoin notes are not discovered | Medium (recoverability) | Pre-existing, repo-tracked — not patched here |
 | **D-1** | Relayed swaps reveal their amounts to the relay operator | Disclosure, by construction | Recorded, not changed |
 
 ---
@@ -190,6 +193,40 @@ Two ways out, both small:
 
 I did not pick one: moving an auth boundary on the live public API at launch is a decision, not a cleanup.
 Until it is wired, treat a fast-lane spend as an operator-assisted action.
+
+## L-5 — The wallet scanner does not recognize generation-bound Bitcoin notes (Medium, recoverability)
+
+**Pre-existing and already tracked by the repo's own guard test; not patched here.**
+
+`tests/recovery-parity.test.mjs` asserts that every declared opcode either has a `scanHoldings` branch or an
+explicit allowlist entry with a documented reason. It reports one gap, and has been reporting it before this
+review:
+
+```
+0x39 T_CXFER_BOUND — declared in dapp/worker but scanHoldings does not recognize it.
+Summary: 19 scanned, 21 allowlisted, 1 GAPS
+```
+
+`T_CXFER_BOUND` (0x39) is the **generation-bound** CXFER — the opcode that produces a Bitcoin-side note homed
+to this deployment, whose leaf is `btc_note_leaf_bound(asset‖Cx‖Cy‖auth_key‖chain_binding)`. That is precisely
+the note class the fast lane can spend on Ethereum: an ordinary `T_CXFER`/`T_CXFER_BPP` (0x23/0x22) output
+folds as legacy-domain `bound = 0` and is *not* fast-lane-authenticatable. `dapp/tacit.js` has scan branches
+for 0x23 and 0x22 but none for 0x39.
+
+Consequence: a holder who receives a generation-bound note does not see it in their wallet balance. The note
+is not lost — it exists in the reflected pool and its opening is recoverable from the memo / seed — but
+nothing surfaces it, so in practice the holder has no way to find or spend it through the dapp.
+
+I did not add the branch. It touches `dapp/tacit.js`, which auto-deploys from `main`, and a scanner branch
+for the bound domain has to get the leaf domain, the chain-binding check and the holdings record's auth key
+right; there is no real 0x39 note available here to test against, and a fail-closed mistake on a live wallet
+path is the exact regression shape this repo has been bitten by before. It should be written and exercised
+against a real bound note, or 0x39 should be allowlisted with a reason if the intent is that bound notes are
+surfaced some other way.
+
+This pairs with the note recorded elsewhere that the BTC→ETH on-ramp is not yet user-facing: if that stays
+true at launch, the exposure is small. If it does not, this is the gap that decides whether a bridged holder
+can see their money.
 
 ## D-1 — Relayed swaps reveal their amounts to the relay operator (disclosure)
 
@@ -341,6 +378,16 @@ proves, so a guest compromise has to beat both.
 | `verify-guest-slots.sh` | PASS |
 | `verify-reflection-slots.sh` | PASS |
 
+The JavaScript suite is **not** a clean gate in this environment and should not be read as one: of 199 files,
+**173 pass, 17 fail and 9 block on network I/O** past a 90s limit. Every one of the 17 failures was
+reproduced at the pre-review commit `e29a83e4` in a separate worktree, so none is introduced here. They fall
+into three groups: a missing optional dev dependency (`circomlibjs`) for the **sunset** mixer's Groth16
+sample; ceremony tests that need a live worker/KV for a ceremony that is already complete; and legacy
+Bitcoin-lane AMM harness shape drift (`receipt[0].rangeProof must be Uint8Array`). The one that is not
+cosmetic is `recovery-parity`, which is finding L-5 above. Two environment traps worth recording: `timeout`
+does not exist on this macOS, so a runner loop built on it reports every test as exit 127, and two concurrent
+full-suite runs make tests fail spuriously by starving each other.
+
 ### Off-chain, re-checked
 
 - **Route auth is complete.** Every `/admin/*` and `/debug/*` route is `checkDebugAuth`-gated and default-denies
@@ -409,3 +456,5 @@ Recorded so they are not re-derived. These are *this* round's; the 09-19 review'
    state the relay-visibility property plainly in user-facing material.
 6. Wire fast-lane consumed-source registration (L-4), or gate `fastlaneExit` behind an operator step until
    it is wired.
+7. Add the `T_CXFER_BOUND` scan branch, or allowlist it with a reason (L-5) — required before the BTC→ETH
+   on-ramp is made user-facing.
