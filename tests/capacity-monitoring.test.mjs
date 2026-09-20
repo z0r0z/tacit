@@ -108,6 +108,32 @@ test('the capacity report needs no credentials', () => {
   for (const f of ALL) ok(report.includes(`'${f}'`), `report does not model ${f}`);
 });
 
+// The string checks above pin names, not behaviour — and that is how the first version shipped reading the
+// arrays one level too high (`s.noteLeaves` instead of `s.snapshot.noteLeaves`), reporting zero for every
+// count while `bytes` looked fine. So run the real handler, against the record shape the live KV holds.
+await asyncTest('capacity counts are read from the nested snapshot, not the record root', async () => {
+  const src = stateHandler.replace(/^async function handleReflectionState/, 'return async function handleReflectionState');
+  const record = {
+    attestedHeight: 967805, tipHeight: 967831,
+    snapshot: { noteLeaves: ['a', 'b', 'c'], spentLinks: ['x', 'y'], liveTriples: ['t'], coords: ['c1', 'c2'] },
+  };
+  const raw = JSON.stringify(record);
+  const handler = new Function('checkConfidentialAuth', 'jsonResponse', src)(
+    () => true,
+    (body) => body,
+  );
+  const out = await handler({}, { REGISTRY_KV: { get: async () => raw } }, new URL('https://x/reflection/state?network=mainnet'), {});
+  ok(out.capacity, 'no capacity block');
+  ok(out.capacity.noteLeaves === 3, `noteLeaves read ${out.capacity.noteLeaves}, expected 3`);
+  ok(out.capacity.spentLinks === 2, `spentLinks read ${out.capacity.spentLinks}, expected 2`);
+  ok(out.capacity.liveTriples === 1 && out.capacity.coords === 2, 'live-set counts wrong');
+  ok(out.capacity.bytes === raw.length, 'bytes must be the serialized record length');
+  // A flat record (no .snapshot wrapper) must still work — older/other writers.
+  const flat = JSON.stringify({ noteLeaves: ['a'], spentLinks: [] });
+  const out2 = await handler({}, { REGISTRY_KV: { get: async () => flat } }, new URL('https://x/reflection/state'), {});
+  ok(out2.capacity.noteLeaves === 1, 'flat record shape no longer read');
+});
+
 await asyncTest('the live snapshot still has the arrays the model is built on', async () => {
   if (process.env.OFFLINE) { console.log('    (skipped — OFFLINE)'); return; }
   const res = await fetch('https://api.tacit.finance/reflection/dump?network=mainnet');

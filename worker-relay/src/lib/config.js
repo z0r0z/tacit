@@ -125,6 +125,11 @@ export const CFG = {
   // separate nonspaces. SETTLE_KEY falls back to RELAY_KEY.
   relayKey: req('RELAY_KEY'),
   settleKey: opt('SETTLE_KEY', process.env.RELAY_KEY),
+  // PUBLIC address of the settle wallet, for services that must WATCH it but have no business holding its
+  // key (the monitor). SETTLE_KEY is set on the settle service alone, so anywhere else it silently falls
+  // back to RELAY_KEY and the two wallets collapse into one — which is precisely how the monitor went on
+  // reporting a single healthy wallet while the one paying for settles was ~ten settles from empty.
+  settleAddress: opt('SETTLE_ADDRESS', ''),
 
   // Idle poll intervals (seconds).
   reflectionPollSecs: num('REFLECTION_POLL_SECS', 30),

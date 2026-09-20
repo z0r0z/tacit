@@ -47,7 +47,7 @@ test('fundedWallets names both spending roles and dedupes them', () => {
 
 test('the monitor checks every funded wallet, not just RELAY_KEY', () => {
   const block = monitor.slice(monitor.indexOf('async function checkEth'), monitor.indexOf('async function checkSnapshotCapacity'));
-  ok(/for \(const \{ address, roles \} of fundedWallets\)/.test(block), 'checkEth does not iterate fundedWallets');
+  ok(/for \(const \{ address, roles \} of watchedWallets\)/.test(block), 'checkEth does not iterate watchedWallets');
   ok(!/relayWallet\.account\.address/.test(block), 'checkEth still pins the relay wallet');
   // A settle wallet and a maintenance-only wallet do not cost the same per run, so they must not be
   // priced with the same figure.
@@ -160,6 +160,67 @@ test('metering is no longer something the fee floor can switch off', () => {
 test('rate-limit buckets cannot collide', () => {
   // Same IP, two buckets, one KV namespace — the bucket name has to be in the key.
   ok(/cps:rl:\$\{bucket\}:\$\{ip\}/.test(worker), 'bucket name missing from the rate-limit key');
+});
+
+// ── behaviour, not just source: which wallets does each service actually see? ──
+// The first version of fundedWallets passed every string check and was still wrong in production: the
+// monitor cron has no SETTLE_KEY, so the settle wallet silently collapsed into the relay wallet and the
+// one paying for settles went unwatched. That is a property of ENV, so test it under env.
+import { spawnSync } from 'node:child_process';
+const RELAY_PK = '0x' + '11'.repeat(32);
+const SETTLE_PK = '0x' + '22'.repeat(32);
+const SETTLE_ADDR = '0xfd1fa372ca3f94f67e91595dd49dbf939381b5d2';
+function wallets(extraEnv) {
+  const script = `
+    const c = await import('${join(ROOT, 'worker-relay/src/lib/chain.js')}');
+    console.log(JSON.stringify({
+      funded: c.fundedWallets.map(w => ({ a: w.address.toLowerCase(), r: w.roles })),
+      watched: c.watchedWallets.map(w => ({ a: w.address.toLowerCase(), r: w.roles })),
+    }));`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: join(ROOT, 'worker-relay'),
+    env: { PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RPC_URL: 'http://127.0.0.1:1', RELAY_KEY: RELAY_PK, ...extraEnv },
+    encoding: 'utf8',
+  });
+  if (r.status !== 0) throw new Error(`chain.js failed to load: ${(r.stderr || '').split('\n').slice(-3).join(' ')}`);
+  return JSON.parse(r.stdout.trim().split('\n').pop());
+}
+
+test('single key: one wallet carrying both roles, nothing to fund twice', () => {
+  const w = wallets({});
+  ok(w.funded.length === 1, `expected 1 funded wallet, got ${w.funded.length}`);
+  ok(w.funded[0].r.includes('relay') && w.funded[0].r.includes('settle'), 'the one wallet must carry both roles');
+  ok(w.watched.length === 1, 'watching a single-key deployment must also be one wallet');
+});
+
+test('split keys: two wallets, each with its own role', () => {
+  const w = wallets({ SETTLE_KEY: SETTLE_PK });
+  ok(w.funded.length === 2, `expected 2 funded wallets, got ${w.funded.length}`);
+  ok(w.funded.some((x) => x.r.join() === 'relay') && w.funded.some((x) => x.r.join() === 'settle'), 'roles must not overlap');
+});
+
+test('the MONITOR case: no SETTLE_KEY, SETTLE_ADDRESS names the settle wallet', () => {
+  // Exactly the production shape that was broken: RELAY_KEY only, plus a public address for the settle wallet.
+  const w = wallets({ SETTLE_ADDRESS: SETTLE_ADDR });
+  ok(w.watched.length === 2, `the monitor must watch TWO wallets, saw ${w.watched.length}`);
+  const settle = w.watched.find((x) => x.r.includes('settle'));
+  ok(settle && settle.a === SETTLE_ADDR, 'the settle role must sit on SETTLE_ADDRESS');
+  const relay = w.watched.find((x) => x.r.includes('relay'));
+  ok(relay && !relay.r.includes('settle'), 'the relay wallet must NOT still claim the settle role');
+  // Signing is a different question: without the key, funding must not pretend to cover the settle wallet.
+  ok(w.funded.length === 1, 'fundedWallets is what we can SIGN for — it must stay at one wallet here');
+});
+
+test('SETTLE_ADDRESS agreeing with SETTLE_KEY changes nothing', () => {
+  const probe = wallets({ SETTLE_KEY: SETTLE_PK });
+  const settleAddr = probe.funded.find((x) => x.r.includes('settle')).a;
+  const w = wallets({ SETTLE_KEY: SETTLE_PK, SETTLE_ADDRESS: settleAddr });
+  ok(w.watched.length === 2, 'consistent key + address must still be two wallets');
+});
+
+test('PROVE proxy check cannot page', () => {
+  const block = monitor.slice(monitor.indexOf('async function checkProve'), monitor.indexOf('async function checkEth'));
+  ok(!/alert\('critical'/.test(block), 'the undeposited-PROVE check is a proxy that reads ~0 by design — it must not be critical');
 });
 
 // ── batching stays inside what the guest actually supports ──────────────────

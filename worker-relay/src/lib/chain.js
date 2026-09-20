@@ -208,3 +208,24 @@ export async function readReflectionDigest(client = publicClient) {
   } catch { /* pre-getter pool — fall through to the pinned slot */ }
   return client.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}` });
 }
+
+// What to WATCH, as opposed to what to sign with: fundedWallets, corrected by SETTLE_ADDRESS when this
+// service does not hold the settle key.
+//
+// Without the key, `settleWallet` falls back to RELAY_KEY and fundedWallets reports one wallet carrying both
+// roles — wrong, and silently so. SETTLE_ADDRESS says where the settle wallet really is, so the monitor can
+// watch it with nothing but a public address. Replenish still needs the actual key to sign the swaps, so it
+// keeps using fundedWallets.
+export const watchedWallets = (() => {
+  const out = fundedWallets.map((w) => ({ address: w.address, roles: [...w.roles] }));
+  const declared = CFG.settleAddress;
+  if (!declared) return out;
+  const addr = getAddress(declared);
+  if (out.some((w) => w.address.toLowerCase() === addr.toLowerCase() && w.roles.includes('settle'))) return out;
+  for (const w of out) w.roles = w.roles.filter((r) => r !== 'settle');
+  const kept = out.filter((w) => w.roles.length);
+  const existing = kept.find((w) => w.address.toLowerCase() === addr.toLowerCase());
+  if (existing) existing.roles.push('settle');
+  else kept.push({ address: addr, roles: ['settle'] });
+  return kept;
+})();

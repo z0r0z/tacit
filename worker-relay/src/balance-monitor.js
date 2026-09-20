@@ -21,7 +21,7 @@
 
 import { formatEther, formatUnits } from 'viem';
 import { CFG, OP_GAS } from './lib/config.js';
-import { publicClient, relayWallet, fundedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -57,8 +57,12 @@ async function checkProve() {
   //
   // Read it for what it is: a healthy figure here means replenish is working, and a zero means replenish
   // has stopped — but neither tells you the prover can pay. Treat a stalled prover as the symptom to watch.
+  // A WARNING, never a critical. Replenish deposits everything it buys into the vApp straight away, so a
+  // healthy relay reads ~0 here by design — as a critical this fired on every run, which turned the cron
+  // permanently red and taught everyone to ignore the one signal that is supposed to mean something. A
+  // check that is wrong most of the time must not be able to page.
   if (whole < CFG.proveBalanceFloor) {
-    await alert('critical', `PROVE balance ${whole} < floor ${CFG.proveBalanceFloor} — replenish/deposit or proving stalls`, { prove: whole });
+    await alert('warning', `PROVE (undeposited) ${whole} < ${CFG.proveBalanceFloor} — expected while replenish deposits eagerly; a stalled prover is the real signal`, { prove: whole });
   }
 }
 
@@ -73,7 +77,7 @@ async function checkEth() {
   try { gasPrice = await publicClient.getGasPrice(); }
   catch (e) { log(`gas price read failed, runway unavailable: ${e?.message || e}`); }
 
-  for (const { address, roles } of fundedWallets) {
+  for (const { address, roles } of watchedWallets) {
     const bal = await publicClient.getBalance({ address });
     const who = `${address} (${roles.join('+')})`;
     log(`ETH ${who} = ${formatEther(bal)}`);

@@ -253,6 +253,11 @@ services:
       - fromGroup: tacit-relay-shared
       - key: PROVE_BALANCE_FLOOR
         value: "50"
+      # PUBLIC address of the settle wallet. SETTLE_KEY lives on tacit-settle alone, so without this the
+      # monitor falls back to RELAY_KEY and sees one wallet — the one paying for settles goes unwatched.
+      # An address, not a secret: watching a balance needs no key.
+      - key: SETTLE_ADDRESS
+        value: "0xfd1fa372ca3f94f67e91595dd49dbf939381b5d2"
       - key: ETH_GAS_BUFFER_WEI
         value: "30000000000000000"
       # Healthy steady state is ~HEADER_RELAY_LEAD (144) plus a few blocks of batch cadence, so this sits above it.

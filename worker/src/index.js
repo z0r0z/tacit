@@ -1115,7 +1115,11 @@ async function handleReflectionState(req, env, url, cors) {
   if (!raw) return jsonResponse({ network, attestedHeight: null, tipHeight: null }, 200, { ...cors, 'Cache-Control': 'no-store' });
   let s;
   try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
-  const len = (k) => (Array.isArray(s[k]) ? s[k].length : 0);
+  // The persisted record nests the ledger arrays under `.snapshot` (the dump route returns this same record
+  // verbatim, and its consumers read `.snapshot.noteLeaves`). Reading them off the top level reports zero
+  // for every count while `bytes` looks right, which is exactly the shape of a bug nothing complains about.
+  const snap = s.snapshot && typeof s.snapshot === 'object' ? s.snapshot : s;
+  const len = (k) => (Array.isArray(snap[k]) ? snap[k].length : 0);
   return jsonResponse({
     network,
     attestedHeight: s.attestedHeight ?? null,
