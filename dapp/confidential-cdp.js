@@ -10,7 +10,10 @@
 //   basket root  = keccak Merkle root over the leg hashes, depth 32, zero-padded (keccak_merkle_root)
 //   position leaf= keccak( "tacit-cdp-position-v1"  ‖ controller[20] ‖ debtAsset[32] ‖ basketRoot[32]
 //                          ‖ debtValue_be[32] ‖ rateSnapshot[32] ‖ owner[32] ‖ nonce[32] )
-//     rateSnapshot = the controller's RAY-scaled debt accumulator at mint (32B BE); 0 for fee-free controllers.
+//     rateSnapshot = the controller's RAY-scaled debt accumulator at mint (32B BE). For a CDP mint it must lie in [RAY, rate],
+//                    so at a dormant (fee-free) controller the only valid value is RAY (1e27): CollateralEngine.onCdpMint reverts
+//                    BadSnapshot for anything lower, 0 included. The same field carries a receipt leaf on a savings bond/harvest
+//                    and the destination commitment on a surplus draw, where the engine treats it as inert.
 //   position ν   = keccak( "tacit-cdp-position-v1"  ‖ positionLeaf[32] ‖ "spent" )
 //   cBTC commit  = keccak( Cx[32] ‖ Cy[32] )                          (== cxfer-core commitment_hash)
 
