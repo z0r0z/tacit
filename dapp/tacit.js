@@ -29086,41 +29086,53 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   // Taker contributes: fundingGap = (knownOut + fee) - knownIn
   const knownInValue = offer.commit_value + offer.asset_utxo.value;
   const knownOutValue = offer.partial_reveal.outputs.reduce((s, o) => s + o.value, 0);
-  const fundingGap = knownOutValue + fee - knownInValue;
-  if (fundingGap < 0) throw new Error('partial tx is over-funded; refusing to take');
-
   _progress('sign-start');
   const allUtxos = await getUtxos(wallet.address());
   const usable = await pickSafeCommitSats(allUtxos);
-  const picked = []; let total = 0;
-  for (const u of usable) {
-    picked.push(u); total += u.value;
-    if (total >= fundingGap + DUST) break; // need DUST for taker change
-  }
-  if (total < fundingGap) throw new Error(`insufficient sats: need ${fundingGap}, have ${total}`);
-  const takerChange = total - fundingGap;
-
-  const tx = {
-    version: offer.partial_reveal.version,
-    locktime: offer.partial_reveal.locktime,
-    inputs: offer.partial_reveal.inputs.map(i => ({
-      txid: i.txid, vout: i.vout, sequence: i.sequence,
-      witness: i.witness.map(w => hexToBytes(w)),
-    })),
-    outputs: offer.partial_reveal.outputs.map(o => ({
-      value: o.value, script: hexToBytes(o.script_hex),
-    })),
+  // The size estimate above under-counts the maker's reveal (its script-path witness carries the whole envelope), so at a
+  // near-floor fee rate the finished transaction paid below the minimum relay fee and the broadcast was rejected.
+  // Assemble and sign with the estimated fee, measure the real virtual size, and re-price until the fee covers it.
+  const assemble = (feeSats) => {
+    const fundingGap = knownOutValue + feeSats - knownInValue;
+    if (fundingGap < 0) throw new Error('partial tx is over-funded; refusing to take');
+    const picked = []; let total = 0;
+    for (const u of usable) {
+      picked.push(u); total += u.value;
+      if (total >= fundingGap + DUST) break; // need DUST for taker change
+    }
+    if (total < fundingGap) throw new Error(`insufficient sats: need ${fundingGap}, have ${total}`);
+    const takerChange = total - fundingGap;
+    const built = {
+      version: offer.partial_reveal.version,
+      locktime: offer.partial_reveal.locktime,
+      inputs: offer.partial_reveal.inputs.map(i => ({
+        txid: i.txid, vout: i.vout, sequence: i.sequence,
+        witness: i.witness.map(w => hexToBytes(w)),
+      })),
+      outputs: offer.partial_reveal.outputs.map(o => ({
+        value: o.value, script: hexToBytes(o.script_hex),
+      })),
+    };
+    for (const u of picked) {
+      built.inputs.push({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] });
+    }
+    if (takerChange >= DUST) {
+      built.outputs.push({ value: takerChange, script: p2wpkhScript(wallet.pub) });
+    }
+    for (let i = 0; i < picked.length; i++) {
+      const idx = 2 + i;
+      built.inputs[idx].witness = signP2wpkhInput(built, idx, picked[i].value);
+    }
+    const vsize = Math.ceil((serializeTx(built, false).length * 3 + serializeTx(built, true).length) / 4);
+    return { tx: built, feeSats, vsize };
   };
-  for (const u of picked) {
-    tx.inputs.push({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] });
+  let assembled = assemble(fee);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const needed = feeFor(assembled.vsize, feeRate);
+    if (assembled.feeSats >= needed) break;
+    assembled = assemble(needed);
   }
-  if (takerChange >= DUST) {
-    tx.outputs.push({ value: takerChange, script: p2wpkhScript(wallet.pub) });
-  }
-  for (let i = 0; i < picked.length; i++) {
-    const idx = 2 + i;
-    tx.inputs[idx].witness = signP2wpkhInput(tx, idx, picked[i].value);
-  }
+  const tx = assembled.tx;
 
   const txHex = bytesToHex(serializeTx(tx));
   const finalTxid = txid(tx);
