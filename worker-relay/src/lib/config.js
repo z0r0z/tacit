@@ -63,8 +63,9 @@ export const CFG = {
   // ── BitcoinLightRelay header feeder (header-relay.js) ──
   // Bitcoin esplora(s) for raw block headers (comma list; tried in order, next on failure).
   btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api'),
-  // Reflection maturity depth — matches the pool's REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
-  reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 6),
+  // Reflection maturity depth — matches the pool's immutable REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
+  // 24 on the gen5 mainnet pool; override for a pool deployed with a different depth.
+  reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 24),
   // Keep the on-chain relay at most this many blocks ahead of reflection's attested height. This is not a
   // correctness bound — the pool accepts a batch tip up to REFLECTION_MAX_LAG below its matured anchor, so
   // reflection closes any backlog in ordinary batches whatever the relay has done meanwhile. It is a COST

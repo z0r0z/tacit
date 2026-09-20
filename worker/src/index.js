@@ -1054,8 +1054,12 @@ async function handleReflectionSeed(req, env, url, cors) {
 // the live Bitcoin tip, is what bounds this: the header feeder deliberately trails live Bitcoin, so a target
 // taken from esplora alone overshoots what the pool will accept. Ported from the scheduled() handler so the
 // tip tracks the relay even when the CF scheduled cron doesn't run (Render origin). Called on /reflection/job.
+// The pool's maturity depth is an immutable constructor arg: 24 on the mainnet pool, 6 elsewhere unless overridden.
+function reflectionConf(env, network) {
+  return parseInt(env.REFLECTION_CONFIRMATIONS || (network === 'mainnet' ? '24' : '6'), 10);
+}
 async function advanceReflectionTip(env, network, att) {
-  const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
+  const conf = reflectionConf(env, network);
   try {
     const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10);
     let target = tip - conf;
@@ -27587,15 +27591,15 @@ export default {
       // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
       // does NOT prove (the box does), unless a synchronous box HTTP prover (REFLECTION_PROVE_URL) is set,
       // in which case it runs the full cycle inline after setting the tip. Config-gated (env.REFLECTION_ATTEST
-      // + REFLECTION_GENESIS_HEIGHT → a null attester is an inert no-op). REFLECTION_CONFIRMATIONS (default 6)
-      // matches the contract's maturity window so a job's tip is buried enough to attest.
+      // + REFLECTION_GENESIS_HEIGHT → a null attester is an inert no-op). The per-network maturity depth
+      // (reflectionConf) matches the pool's immutable window so a job's tip is buried enough to attest.
       {
-        const conf = parseInt(env.REFLECTION_CONFIRMATIONS || '6', 10);
         await _stage('reflectionSetTip', () => Promise.allSettled(
           _cronNets.map(async (net) => {
             const att = scanReflectionAttesterFor(env, net);
             if (!att) return;
             try {
+              const conf = reflectionConf(env, net);
               const tip = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, net)).trim(), 10);
               // The attest's committed tip must be at or below HEADER_RELAY.tip() walked back
               // REFLECTION_CONFIRMATIONS (contract _anchorReflection). So cap the scan target at the relay's

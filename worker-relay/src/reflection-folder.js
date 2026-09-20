@@ -21,9 +21,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG } from './lib/config.js';
+import { isMatured } from './lib/maturity.js';
 import { reflectionJob, reflectionAck, heartbeat } from './lib/worker-client.js';
 import { proveReflection } from './lib/prover.js';
-import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap } from './lib/chain.js';
+import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -60,6 +61,19 @@ async function cycle() {
     await heartbeat('reflection', `drift prior=${job.priorDigest} onchain=${onchain}`);
     return false;
   }
+
+  // MATURITY GUARD. The pool only accepts a batch whose tip is at or below the header relay's tip walked back
+  // REFLECTION_CONFIRMATIONS. A batch above that reverts UnanchoredReflection deterministically, and the proof
+  // is bought before the submit, so within `confirmations` blocks of the tip every cycle would burn a proof on
+  // a revert. Wait for the relay to mature the batch instead — this is decided before any spend.
+  try {
+    const relayTip = Number(await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }));
+    if (relayTip > 0 && !isMatured(attestedTo, relayTip, CFG.reflectionConfirmations)) {
+      log(`batch tip ${attestedTo} is not yet matured (relay tip ${relayTip}, needs ${attestedTo + CFG.reflectionConfirmations}) — waiting`);
+      await heartbeat('reflection', `waiting for relay tip ${attestedTo + CFG.reflectionConfirmations} (now ${relayTip})`);
+      return false;
+    }
+  } catch (e) { log(`maturity check unavailable (${e.message}) — proceeding`); }
 
   // Spend guard (opt-in): decided BEFORE a proof is bought, so waiting for cheaper gas wastes nothing.
   const dear = await gasAboveCap();

@@ -18,7 +18,10 @@ const TAC_TOKEN = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279';
 const TAC_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const UNIT_SCALE = 10n ** 10n; // 8-dec native -> 18-dec ERC-20
 const REFLECTION_CONFIRMATIONS = 24n; // the pool's immutable
-const MAX_LAG_GO = 12; // a cross-out is safe only once reflection is essentially at the tip
+const REFLECTION_CONFIRMATIONS_N = Number(REFLECTION_CONFIRMATIONS);
+// Slack allowed on top of the pool's maturity depth: reflection can never attest within REFLECTION_CONFIRMATIONS of the
+// Bitcoin tip, so a lag of exactly that depth IS caught up. A cross-out is safe once reflection is within this slack of it.
+const MAX_LAG_SLACK = 12;
 const RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://eth.merkle.io'];
 const ESPLORAS = ['https://mempool.space/api', 'https://blockstream.info/api'];
 
@@ -86,9 +89,9 @@ try {
   } else {
     const lag = btc - Number(attested);
     note('info', 'chain heights', `bitcoin=${btc}  relay=${relayTip}  reflection-attested=${attested}`);
-    lag <= MAX_LAG_GO
-      ? note('ok', 'reflection is caught up', `lag ${lag} <= ${MAX_LAG_GO} blocks`)
-      : note('fail', 'reflection is NOT caught up', `lag ${lag} blocks (> ${MAX_LAG_GO}). Do not cross out until it closes — and do not flip REFLECTION_MODEB_REQUIRED=1 early either; both belong to whoever runs the catch-up`);
+    lag <= REFLECTION_CONFIRMATIONS_N + MAX_LAG_SLACK
+      ? note('ok', 'reflection is caught up', `lag ${lag} <= ${REFLECTION_CONFIRMATIONS_N} (maturity depth) + ${MAX_LAG_SLACK} blocks`)
+      : note('fail', 'reflection is NOT caught up', `lag ${lag} blocks (> ${REFLECTION_CONFIRMATIONS_N} maturity depth + ${MAX_LAG_SLACK}). Do not cross out until it closes — and do not flip REFLECTION_MODEB_REQUIRED=1 early either; both belong to whoever runs the catch-up`);
     // The batch tip must sit at/below relay.tip - 24; if the relay is not that far ahead reflection cannot advance.
     relayTip - REFLECTION_CONFIRMATIONS >= attested
       ? note('ok', 'relay is ahead of reflection by at least the confirmation depth', `relay-24=${relayTip - REFLECTION_CONFIRMATIONS} >= attested=${attested}`)
