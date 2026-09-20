@@ -55,7 +55,7 @@ function normalizeExit(e) {
   };
 }
 
-export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) {
+export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
   //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
@@ -80,6 +80,13 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
   async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null }) {
     if (!type || !op) throw new Error('submitJob: type + op required');
+    // Drop a caller-supplied feeUsd FIRST, before anything derives from `op`.
+    //
+    // Position matters as much as the deletion: `jobIdOf(type, op, mode)` hashes the op, so stripping this
+    // after the id was computed would leave a caller able to vary a field the guest never reads, mint a
+    // fresh job id for the identical op, and walk straight past dedup. Removing it here means the id is
+    // taken over the op the guest will actually see.
+    if (typeof op === 'object' && 'feeUsd' in op) delete op.feeUsd;
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint', 'fastlane'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
     if (exit != null && (mode !== 'settle' || !EXIT_TYPES.includes(type))) {
@@ -102,8 +109,25 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
     if (!pend.includes(id) && pend.length >= MAX_PENDING_JOBS) {
       throw new Error('submitJob: queue full, retry later');
     }
+    // What this op actually pays us, DERIVED from the op's own fee legs — never taken from the caller.
+    //
+    // `op` is client JSON, so any field on it is attacker-controlled. The relay's fee gate used to read
+    // `op.feeUsd`, which meant a hostile integrator could have declared any number it liked and had the
+    // gate believe it. Nothing populated the field, so the bypass was never reachable — but wiring the
+    // producer is exactly what would have made it reachable, so the value is derived here instead and the
+    // client's copy is dropped before the op is stored.
+    let priced = null;
+    if (mode === 'settle' && priceFee) {
+      try { priced = await priceFee({ type, op }); }
+      catch { priced = null; } // pricing is advisory; never fail a submit because an oracle blinked
+    }
+
     const job = {
       id, type, op, mode, memos: memos || [],
+      // Derived fee, for the relay's profitability gate. null feeUsd = "we could not price it", which the
+      // relay treats as unpaid work rather than as free permission.
+      feeUnits: priced?.feeUnits ?? null,
+      feeUsd: priced?.feeUsd ?? null,
       // feeAsset: the public ERC20/ETH address of this op's relay FeePayment (native ETH = the zero
       // address / null). The box needs it for the relaySettle path so TacitRelayer forwards the right
       // token to the ops fee recipient; the direct-settle path ignores it (fee → msg.sender in-kind).
@@ -142,7 +166,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race — another poller's write landed after ours
       // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
-      return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null };
+      // feeUnits/feeUsd are the worker-DERIVED fee (see submitJob). They must ride along or the relay's
+      // profitability gate sees undefined and treats every job as unpaid work.
+      return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null, feeUnits: j.feeUnits ?? null, feeUsd: j.feeUsd ?? null };
     }
     return null;
   }
@@ -181,7 +207,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
     for (const { id, j, nonce } of claimed) {
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race for this one — leave it for the next round
-      picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null });
+      picked.push({ jobId: id, type: j.type, op: j.op, memos: j.memos, mode: 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null, feeUnits: j.feeUnits ?? null, feeUsd: j.feeUsd ?? null });
     }
     return picked;
   }
@@ -245,7 +271,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, sleep }) 
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:job:<id> (job).
-export function buildConfidentialSettler(env, { hash, feeGate }) {
+export function buildConfidentialSettler(env, { hash, feeGate, priceFee }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   const storage = {
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
@@ -253,5 +279,5 @@ export function buildConfidentialSettler(env, { hash, feeGate }) {
     getJob: async (id) => { const s = await KV.get('cps:job:' + id); return s ? JSON.parse(s) : null; },
     putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job)),
   };
-  return makeConfidentialSettler({ storage, hash, feeGate });
+  return makeConfidentialSettler({ storage, hash, feeGate, priceFee });
 }

@@ -113,8 +113,37 @@ all-in per op**, which the $0.50 `MIN_FLOOR_USD` covers. At 10 gwei the maintena
 $10.78/op — which is the real argument for batching, since job batching splits one settle's gas across its
 members while the maintenance overhead stays fixed per day.
 
-**Order to switch on:** fund both wallets → resume `tacit-replenish` → wire `op.feeUsd` at the producer →
-watch `UNPAID:` go to zero → set `RELAY_REQUIRE_PRICED_FEE=1`.
+### The fee is derived, never declared
+
+`op.feeUsd` was the obvious way to wire this, and it is the wrong one: `/confidential/submit` takes a
+client-supplied op, so any field on it is attacker-controlled. A hostile integrator could have declared any
+fee it liked and had the gate believe it — the bypass was unreachable only because nothing populated the
+field, and wiring the producer is precisely what would have made it reachable.
+
+So the worker derives the fee from the op's own legs (`totalFee`/`feeAssetOf` — the same witness fields the
+guest enforces), stores it as `job.feeUsd`, and **strips any caller-supplied `op.feeUsd` before `jobIdOf`
+hashes the op** (stripping it later would leave a caller able to vary an ignored field to mint a fresh job
+id for the same op and walk past dedup). The relay reads `job.feeUsd` only.
+
+Only cETH is priceable server-side today — `unitScale` is wei-per-unit, so units × scale × ETH/USD is exact
+with no oracle beyond the Chainlink ETH price. Every other asset yields `feeUsd: null`, which the relay
+logs as unpaid work rather than treating as permission to relay for free. Widening that means a per-asset
+USD oracle, not a guess.
+
+### Metering no longer depends on the fee floor
+
+`RELAY_FEE_FLOOR=1` used to skip per-IP metering entirely, on the theory that a fee floor makes flooding
+self-limiting. But the gate only prices a cETH fee leg and passes every other asset through ungated, so
+lifting the meter would have re-opened zero-fee floods for every non-cETH asset. **That coupling is why the
+floor could never safely be switched on.**
+
+The flag now only selects a bucket: fee-paying relayed submits get their own, more generous allowance
+(`PAID_RL_BURST` / `PAID_RL_REFILL_MS`), everything else keeps the strict one, and the bucket name is part
+of the rate-limit key so the two cannot collide. Metering is no longer something the floor can turn off.
+
+**Order to switch on:** fund both wallets → deploy worker + worker-relay → resume `tacit-replenish` →
+watch `UNPAID:` fall as cETH-fee ops start pricing → set `RELAY_FEE_FLOOR=1` (now safe) →
+set `RELAY_REQUIRE_PRICED_FEE=1` last.
 
 ## 4. Responding
 

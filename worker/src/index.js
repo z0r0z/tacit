@@ -89,7 +89,7 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
-import { passesFloor, feeAssetOf, floorInFeeUnits } from './relay-quote.js';
+import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
@@ -1392,6 +1392,35 @@ function buildRelayFeeGate(env) {
     return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit: weiPerCEthUnit, marginBps });
   };
 }
+// Price an op's OWN fee legs in USD, for the relay's profitability gate.
+//
+// Deliberately derived, never declared: `totalFee`/`feeAssetOf` read the same witness fields the guest
+// enforces, so the number here is the fee the op genuinely carries. A caller cannot inflate it, and the
+// one field a caller could have set (`op.feeUsd`) is stripped in submitJob before the op is stored.
+//
+// Only cETH is priceable server-side today — its `unitScale` is wei-per-unit, so units x scale x ETH/USD is
+// exact with no oracle beyond the ETH price the gate already reads. Every other asset returns feeUsd: null,
+// which the relay reads as "unpaid work" and logs, rather than as permission to relay for free. That is the
+// honest shape: widening it means a per-asset USD oracle, not a guess.
+function buildFeePricer(env) {
+  const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
+  if (!cEth?.assetId || !cEth?.unitScale) return null;
+  const cEthAssetId = String(cEth.assetId).toLowerCase();
+  const weiPerUnit = BigInt(cEth.unitScale);
+  return async ({ type, op }) => {
+    let units;
+    try { units = totalFee(type, op); } catch { return null; }
+    if (!units || units <= 0n) return { feeUnits: '0', feeUsd: 0 };
+    const asset = feeAssetOf(type, op);
+    const out = { feeUnits: units.toString(), feeUsd: null };
+    if (!asset || String(asset).toLowerCase() !== cEthAssetId) return out; // carried a fee, can't price it
+    const ethUsd = await _ethUsdPrice().catch(() => null);
+    if (!ethUsd) return out;
+    out.feeUsd = (Number(units * weiPerUnit) / 1e18) * ethUsd;
+    return out;
+  };
+}
+
 // GET /confidential/quote?asset=<ticker|0x assetId>&effects=<N> — the relay's fee policy, published rather
 // than left for every integrator to mirror `confidential-pool-ux.js`'s RELAY_FEE_ASSETS table by hand. Two
 // parts: a STATIC per-asset floor (this table, kept in sync with the dapp's copy by convention — both are
@@ -1450,7 +1479,7 @@ function confSettler(env) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return null;
   const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
-  return buildConfidentialSettler(env, { hash, feeGate: buildRelayFeeGate(env) });
+  return buildConfidentialSettler(env, { hash, feeGate: buildRelayFeeGate(env), priceFee: buildFeePricer(env) });
 }
 // Default-deny Bearer gate for the box-only routes (mirrors checkDebugAuth; constant-time compare).
 function checkConfidentialAuth(req, env) {
@@ -1494,17 +1523,19 @@ async function dumpRateLimit(env, ip) {
   await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
   return { ok: true };
 }
-async function proveRateLimit(env, ip) {
+// Token bucket, per IP, per NAMED bucket. The bucket name is part of the key so a caller paying a real fee
+// is metered separately from an anonymous prove-only submit rather than sharing one allowance.
+async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST, refillMs = PROVE_RL_REFILL_MS) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };
-  const key = 'cps:rl:' + ip;
+  const key = `cps:rl:${bucket}:${ip}`;
   const now = Date.now();
   let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
-  if (!b || typeof b.tokens !== 'number') b = { tokens: PROVE_RL_BURST, ts: now };
-  const refill = Math.floor((now - b.ts) / PROVE_RL_REFILL_MS);
-  if (refill > 0) { b.tokens = Math.min(PROVE_RL_BURST, b.tokens + refill); b.ts = now; }
+  if (!b || typeof b.tokens !== 'number') b = { tokens: burst, ts: now };
+  const refill = Math.floor((now - b.ts) / refillMs);
+  if (refill > 0) { b.tokens = Math.min(burst, b.tokens + refill); b.ts = now; }
   if (b.tokens <= 0) {
-    const retryAfter = Math.max(1, Math.ceil((PROVE_RL_REFILL_MS - (now - b.ts)) / 1000));
+    const retryAfter = Math.max(1, Math.ceil((refillMs - (now - b.ts)) / 1000));
     return { ok: false, retryAfter };
   }
   b.tokens -= 1;
@@ -1516,14 +1547,22 @@ async function handleConfidentialSubmit(req, env, cors) {
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
-  // Prove-only submits are always metered per IP. Relayed ('settle') submits are metered too whenever the
-  // profitability gate is not enforcing a floor: `buildRelayFeeGate` is off unless RELAY_FEE_FLOOR == '1'
-  // (and only prices a cETH fee leg), and each relayed job costs the relay a prove cycle plus gas. Setting
-  // RELAY_FEE_FLOOR = "1" lifts the metering for fee-paying submits.
+  // EVERY submit is metered. This used to be skipped entirely when RELAY_FEE_FLOOR == '1', on the theory
+  // that a fee floor makes flooding self-limiting — but `buildRelayFeeGate` only ever prices a cETH fee
+  // leg and passes every other asset through ungated, so lifting the meter would have re-opened zero-fee
+  // floods for every non-cETH asset. That coupling is why the floor could never safely be switched on.
+  //
+  // So the flag now only chooses WHICH bucket applies. Fee-paying relayed submits get their own, more
+  // generous allowance (they are paying for the work); prove-only and unflagged submits keep the strict
+  // one. Metering is no longer something the floor can turn off.
   const submitMode = body.mode || 'settle';
-  if (submitMode === 'prove' || env.RELAY_FEE_FLOOR !== '1') {
+  const feeFloorOn = env.RELAY_FEE_FLOOR === '1';
+  const paying = submitMode !== 'prove' && feeFloorOn;
+  {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
-    const rl = await proveRateLimit(env, ip);
+    const rl = paying
+      ? await proveRateLimit(env, ip, 'paid', Number(env.PAID_RL_BURST || 30), Number(env.PAID_RL_REFILL_MS || 10000))
+      : await proveRateLimit(env, ip);
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
   try {
@@ -2052,6 +2091,32 @@ async function _ethGasPrice(network) {
       if (!r.ok) continue;
       const j = await r.json();
       if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
+// Live ETH/USD from the Chainlink aggregator, for pricing an op's fee leg in USD. Same feed the relay's
+// own cost model reads, so both sides of the gate agree on what a wei is worth. Cached ~1 min: the feed
+// moves far more slowly than submits arrive, and a per-submit RPC round trip would be a latency tax on
+// every op. Returns null on failure, which the caller turns into "unpriced" rather than a wrong number.
+let _ethUsd = { at: 0, v: null };
+async function _ethUsdPrice(network = 'mainnet') {
+  if (Date.now() - _ethUsd.at < 60_000 && _ethUsd.v) return _ethUsd.v;
+  const body = JSON.stringify({
+    jsonrpc: '2.0', id: 1, method: 'eth_call',
+    params: [{ to: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', data: '0xfeaf968c' }, 'latest'], // latestRoundData()
+  });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (typeof j?.result !== 'string' || j.result.length < 194) continue;
+      // latestRoundData() -> (roundId, answer, startedAt, updatedAt, answeredInRound); answer is word 1, 8dp.
+      const usd = Number(BigInt('0x' + j.result.slice(2 + 64, 2 + 128))) / 1e8;
+      if (!Number.isFinite(usd) || usd <= 0) continue;
+      _ethUsd = { at: Date.now(), v: usd };
+      return usd;
     } catch {}
   }
   return null;

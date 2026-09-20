@@ -54,7 +54,12 @@ let unpricedJobs = 0;
 // (mode 'prove' or user-pays-gas) bypass the gate.
 export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   if (job.mode === 'prove') return { ok: true, reason: 'prove-only (no on-chain submit)' };
-  const feeUsd = Number(job.op?.feeUsd ?? job.feeUsd ?? NaN);
+  // DERIVED value only. `job.feeUsd` is computed by the worker from the op's own fee legs (the same
+  // witness fields the guest enforces); `job.op` is client JSON, so anything on it is attacker-controlled.
+  // Reading `op.feeUsd` first — as this did — would have let a hostile integrator declare any fee it liked
+  // the moment the producer was wired. The worker strips that field on submit; not reading it here is the
+  // other half of the same fix.
+  const feeUsd = Number(job.feeUsd ?? NaN);
   if (!Number.isFinite(feeUsd)) {
     // An op that carries no priced fee is unpaid work. Every relayed op has taken this path so far — the
     // producer never set `op.feeUsd` — which is why the relay's fee balances have been flat zero while it

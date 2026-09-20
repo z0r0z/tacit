@@ -109,5 +109,58 @@ test('the fee model still moves with live gas and live PROVE', () => {
   ok(/ethUsdPrice/.test(chain), 'live ETH price feed removed');
 });
 
+// ── the fee is derived, not declared ────────────────────────────────────────
+const settler = read('worker/src/confidential-settle.js');
+const worker = read('worker/src/index.js');
+
+test('a client-supplied feeUsd is stripped BEFORE the job id is derived', () => {
+  ok(/'feeUsd' in op\) delete op\.feeUsd/.test(settler), 'submitJob must drop a caller-supplied op.feeUsd');
+  // Position is the security property, not just the deletion: jobIdOf hashes the op, so stripping after
+  // the id was taken would let a caller vary a field the guest never reads to mint a fresh id for the
+  // same op and slip past dedup.
+  const strip = settler.indexOf('delete op.feeUsd');
+  const idAt = settler.indexOf('const id = jobIdOf(');
+  ok(strip > -1 && idAt > -1 && strip < idAt, 'op.feeUsd must be stripped before jobIdOf hashes the op');
+});
+
+test('the relay reads only the worker-derived fee', () => {
+  // The bypass: op is client JSON. Reading op.feeUsd would let an integrator declare its own fee.
+  ok(/const feeUsd = Number\(job\.feeUsd \?\? NaN\)/.test(settle), 'feeGate must read job.feeUsd only');
+  ok(!/job\.op\?\.feeUsd/.test(settle), 'feeGate still reads the client-controlled op.feeUsd');
+});
+
+test('the pricer derives from the op witness, not from any declared field', () => {
+  ok(/function buildFeePricer/.test(worker), 'buildFeePricer missing');
+  ok(/totalFee\(type, op\)/.test(worker), 'pricer must read the op\'s own fee legs');
+  ok(/feeUsd: null/.test(worker), 'an unpriceable asset must yield null, not a guess');
+});
+
+test('the derived fee actually reaches the relay', () => {
+  // Storing feeUsd on the job is only half of it: nextJob/nextBatch project a SUBSET of the job, and both
+  // originally dropped it — which would have left the gate seeing undefined and calling every job unpaid,
+  // with all the wiring in place and inert.
+  const projections = settler.match(/jobId: id, type: j\.type, op: j\.op[^\n]*/g) || [];
+  ok(projections.length >= 2, `expected nextJob and nextBatch projections, found ${projections.length}`);
+  for (const p of projections) ok(/feeUsd: j\.feeUsd/.test(p), `a job projection drops feeUsd: ${p.slice(0, 60)}…`);
+});
+
+test('pricing failure never fails a submit', () => {
+  ok(/catch \{ priced = null; \}/.test(settler), 'a blinking oracle must not reject a user op');
+});
+
+test('metering is no longer something the fee floor can switch off', () => {
+  // The old coupling: RELAY_FEE_FLOOR=1 skipped metering entirely, but the gate only prices cETH — so it
+  // re-opened zero-fee floods for every other asset. That is why the floor could never be turned on.
+  ok(!/submitMode === 'prove' \|\| env\.RELAY_FEE_FLOOR !== '1'/.test(worker),
+    'metering is still gated on RELAY_FEE_FLOOR');
+  ok(/const paying = submitMode !== 'prove' && feeFloorOn/.test(worker), 'no separate paid bucket');
+  ok(/'paid', Number\(env\.PAID_RL_BURST/.test(worker), 'paid submits must use their own bucket');
+});
+
+test('rate-limit buckets cannot collide', () => {
+  // Same IP, two buckets, one KV namespace — the bucket name has to be in the key.
+  ok(/cps:rl:\$\{bucket\}:\$\{ip\}/.test(worker), 'bucket name missing from the rate-limit key');
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);
