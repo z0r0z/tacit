@@ -84,3 +84,62 @@ export function validateConsumedSource(sub, liveTriples, pool, chainBinding) {
     record: { nu: norm(nu), cx: norm(cx), cy: norm(cy), srcTxid: String(srcTxid).replace(/^0x/, '').toLowerCase(), srcVout },
   };
 }
+
+/**
+ * Derive a fast-lane-consumed ν's Bitcoin source from the reflection's OWN state — no submission.
+ *
+ * This is the form that removes the trust question rather than managing it. Both halves of the answer are
+ * already public and already held:
+ *   - Ethereum's settle carries `bitcoinConsumedSources[i]`, the full source leaf, and the pool folds it
+ *     into `bitcoinConsumed[ν]`;
+ *   - Bitcoin carries each note's commitment in its own creation envelope, which the reflection scanner
+ *     parses and keeps in `coords` (outpointKey → {cx, cy, txid, vout}) — off-chain bookkeeping the scanner
+ *     derives itself, persisted in the snapshot and deliberately outside `digest()`.
+ * So the source never needed to be told to us. Walk the live set, rebuild each note's leaf over its own
+ * generation domain from state, and take the one whose nullifier is the ν we are resolving.
+ *
+ * With this there is no write path to poison: nothing outside the worker contributes, and the worker's own
+ * inputs are chain data it re-derives. `validateConsumedSource` remains as the check on any legacy stored
+ * record, so the two together mean a source is either derived from chain state or proven against it.
+ *
+ * @returns {{ok:true, record:object} | {ok:false, reason:string}}
+ */
+export function deriveConsumedSource(nu, liveTriples, coords, pool, chainBinding) {
+  if (!HEX32.test(String(nu || ''))) return { ok: false, reason: 'nu must be 32-byte hex' };
+  if (!Array.isArray(liveTriples) || !liveTriples.length) {
+    return { ok: false, reason: 'no reflected live set to derive from' };
+  }
+  const get = coords instanceof Map ? (k) => coords.get(k) : (k) => (coords || {})[k];
+  let missingPreimage = 0;
+  for (const row of liveTriples) {
+    const [key, , liveAsset, liveAuth, boundRaw] = row;
+    const co = get(norm(key)) || get(String(key).replace(/^0x/, '').toLowerCase());
+    if (!co || co.cx == null || co.cy == null) continue;
+    const bound = boundRaw ? 1 : 0;
+    if (bound === 1 && !HEX32.test(String(chainBinding || ''))) continue;
+    const leaf = bound === 1
+      ? pool.btcNoteLeafBound(liveAsset, norm(co.cx), norm(co.cy), liveAuth, norm(chainBinding))
+      : pool.btcNoteLeaf(liveAsset, norm(co.cx), norm(co.cy), liveAuth);
+    if (!eqHex(pool.nullifier(leaf), nu)) continue;
+    // Found it. The outpoint preimage is what the guest re-hashes as outpoint_key(txid, vout); a coords
+    // entry written before the preimage was recorded cannot serve a fast-lane consume, so say so plainly
+    // rather than emitting a half record the assembler would throw on later.
+    if (co.txid == null || co.vout == null) { missingPreimage++; continue; }
+    return {
+      ok: true,
+      record: {
+        nu: norm(nu),
+        cx: norm(co.cx),
+        cy: norm(co.cy),
+        srcTxid: String(co.txid).replace(/^0x/, '').toLowerCase(),
+        srcVout: Number(co.vout),
+      },
+    };
+  }
+  return {
+    ok: false,
+    reason: missingPreimage
+      ? `matched a live note but its coords entry predates the outpoint preimage (${missingPreimage}) — rescan to backfill`
+      : 'no live note reproduces this nullifier',
+  };
+}

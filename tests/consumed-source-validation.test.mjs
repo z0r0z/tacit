@@ -15,7 +15,7 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { validateConsumedSource } from '../worker/src/consumed-source.js';
+import { validateConsumedSource, deriveConsumedSource } from '../worker/src/consumed-source.js';
 
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 
@@ -142,6 +142,69 @@ test('case and 0x-prefix variations of a genuine submission still validate', () 
   );
   ok(r.ok, `reason: ${r.reason}`);
   ok(r.record.nu.startsWith('0x') && r.record.nu === r.record.nu.toLowerCase(), 'record is normalised');
+});
+
+
+// ── derivation: the source resolved from state alone, with nothing submitted ──────────────────────────
+console.log('\nderivation from reflected state (no submission):\n');
+
+const coordsFor = (bound) => new Map([[pool.outpointKey('0x' + TXID, VOUT), { cx: CX, cy: CY, txid: TXID, vout: VOUT }]]);
+
+for (const bound of [false, true]) {
+  const name = bound ? 'generation-bound (0x39) note' : 'legacy-domain note';
+  const f = fixture(bound);
+  test(`derives the source for a ${name} with no input beyond the nullifier`, () => {
+    const r = deriveConsumedSource(f.nu, f.live, coordsFor(bound), pool, CHAIN_BINDING);
+    ok(r.ok, r.reason);
+    ok(r.record.srcTxid === TXID, `txid: ${r.record.srcTxid}`);
+    ok(r.record.srcVout === VOUT, `vout: ${r.record.srcVout}`);
+    ok(r.record.cx === CX && r.record.cy === CY, 'coords');
+  });
+  test(`the derived record passes validation for a ${name} (the two agree)`, () => {
+    const d = deriveConsumedSource(f.nu, f.live, coordsFor(bound), pool, CHAIN_BINDING);
+    ok(d.ok, d.reason);
+    const v = validateConsumedSource(d.record, f.live, pool, CHAIN_BINDING);
+    ok(v.ok, `derived record failed validation: ${v.reason}`);
+  });
+}
+
+test('derivation returns nothing for a nullifier no live note produces', () => {
+  const f = fixture(false);
+  const r = deriveConsumedSource('0x' + '5a'.repeat(32), f.live, coordsFor(false), pool, CHAIN_BINDING);
+  ok(!r.ok && /no live note reproduces/.test(r.reason), `reason: ${r.reason}`);
+});
+
+test('a legacy coords entry without the outpoint preimage is reported, not half-answered', () => {
+  const f = fixture(false);
+  const legacy = new Map([[pool.outpointKey('0x' + TXID, VOUT), { cx: CX, cy: CY }]]); // pre-change shape
+  const r = deriveConsumedSource(f.nu, f.live, legacy, pool, CHAIN_BINDING);
+  ok(!r.ok, 'must not return a record without txid/vout');
+  ok(/preimage/.test(r.reason), `reason: ${r.reason}`);
+});
+
+test('derivation ignores a live note whose coords are absent', () => {
+  const f = fixture(false);
+  const r = deriveConsumedSource(f.nu, f.live, new Map(), pool, CHAIN_BINDING);
+  ok(!r.ok && /no live note reproduces/.test(r.reason), `reason: ${r.reason}`);
+});
+
+test('derivation picks the RIGHT note out of a populated live set', () => {
+  const f = fixture(false);
+  // Surround the real note with decoys that differ only in asset / auth key.
+  const decoyKeys = ['0x' + 'a1'.repeat(32), '0x' + 'a2'.repeat(32)];
+  const live = [
+    [decoyKeys[0], pool.commitmentHash(CX, CY), '0x' + 'cc'.repeat(32), AUTH, 0],
+    ...f.live,
+    [decoyKeys[1], pool.commitmentHash(CX, CY), ASSET, '0x' + 'dd'.repeat(32), 0],
+  ];
+  const coords = new Map([
+    [decoyKeys[0], { cx: CX, cy: CY, txid: '11'.repeat(32), vout: 0 }],
+    [pool.outpointKey('0x' + TXID, VOUT), { cx: CX, cy: CY, txid: TXID, vout: VOUT }],
+    [decoyKeys[1], { cx: CX, cy: CY, txid: '22'.repeat(32), vout: 9 }],
+  ]);
+  const r = deriveConsumedSource(f.nu, live, coords, pool, CHAIN_BINDING);
+  ok(r.ok, r.reason);
+  ok(r.record.srcTxid === TXID, `picked the wrong note: ${r.record.srcTxid}`);
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

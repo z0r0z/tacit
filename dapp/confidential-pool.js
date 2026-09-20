@@ -2121,7 +2121,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // rangeProof, outputs:[{cx,cy, compressed, commitmentHash, noteLeaf, vout}]} }] }] }. A cxfer
   // env's outputs are folded ONLY if it conserves value (REFLECT-1); a non-conserving cxfer's
   // detected spends are still nullified but it injects no notes (the guest skips it identically).
-  // `coords` is a Map(outpointKey → {cx,cy}) of every
+  // `coords` is a Map(outpointKey → {cx,cy,txid,vout}) of every
   // live pool note (so a detected spend's opening is known); it is advanced as outputs land/spends
   // clear. The guest re-derives txids + the block merkle root, so completeness is enforced there;
   // here we SIMULATE the scan to emit the matching witnesses in stream order: per tx, the spend
@@ -2544,7 +2544,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               // and bridge-mintable, only fast-lane-unspendable — the scan degrades rather than halting.
               const w = state.foldOutput(o.noteLeaf, outpoint, o.commitmentHash, envAsset, p2trXonly(txOutputScript(tx.txData, o.vout)));
               outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
-              coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
+              coords.set(norm(outpoint), { cx: o.cx, cy: o.cy, txid: tx.txid, vout: o.vout });
             }
           } else {
             nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !hasSpends ? 'no-live-spends' : !destBound ? 'unbound-destination' : (!legacyAdmissible ? 'non-legacy-asset' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
@@ -2575,7 +2575,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
               // Same per-output authority as the v1 path (mirror the guest's fold_cxfer_bound output_auths).
               const w = state.foldOutputBound(o.noteLeaf, outpoint, o.commitmentHash, envAsset, p2trXonly(txOutputScript(tx.txData, o.vout)));
               outputs.push({ noteLeaf: w.noteLeaf, notePath: w.notePath, vout: o.vout });
-              coords.set(norm(outpoint), { cx: o.cx, cy: o.cy });
+              coords.set(norm(outpoint), { cx: o.cx, cy: o.cy, txid: tx.txid, vout: o.vout });
             }
           } else {
             nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !hasSpends ? 'no-live-spends' : !destBound ? 'unbound-destination' : (!targetOk ? 'wrong-chain-binding' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
@@ -2886,7 +2886,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             // commitment returns null (the guest aborts only inside a fold, so emit a bogus sentinel).
             const coDestAuth = p2trXonly(txOutputScript(tx.txData, 0));
             const w = state.foldCrossout(tx.env.asset, tx.env.claimId, tx.env.cx, tx.env.cy, modeBIn.crossoutImt, modeBIn.crossoutSetRoot, tx.txid, 0, coDestAuth);
-            if (w) coords.set(norm(outpointKey(tx.txid, 0)), { cx: tx.env.cx, cy: tx.env.cy });
+            if (w) coords.set(norm(outpointKey(tx.txid, 0)), { cx: tx.env.cx, cy: tx.env.cy, txid: tx.txid, vout: 0 });
             crossoutMint = w
               ? { isMember: w.isMember, mNext: w.mNext, mLowValue: w.mLowValue, mIndex: w.mIndex, mPath: w.mPath.map(norm), notePath: w.notePath, consumedInsert: w.consumedInsert }
               : { isMember: 0, mNext: ZW, mLowValue: ZW, mIndex: 0, mPath: Array(32).fill(ZW), notePath: state.notePathPeek(), consumedInsert: bogusConsumedInsert };

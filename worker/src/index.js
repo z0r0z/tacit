@@ -93,7 +93,7 @@ import { passesFloor, feeAssetOf, floorInFeeUnits } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
-import { validateConsumedSource } from './consumed-source.js';
+import { validateConsumedSource, deriveConsumedSource } from './consumed-source.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
 import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEPLOYMENTS } from '../../dapp/confidential-crossout-consumer.js';
@@ -764,13 +764,33 @@ function scanReflectionAttesterFor(env, network) {
       if (!raw) { lastEthContentHash = null; return null; }
       const st = JSON.parse(raw);
       lastEthContentHash = st.contentHash || null;
-      // Fill in any consumed ν the sidecar's own publish left unresolved from the holder-registered
-      // registry (handleReflectionConsumedSource) — see that handler's comment for why the sidecar can't
-      // derive this itself. Registered entries only ever supplement, never override, what the sidecar sent.
+      // Fill in any consumed ν the sidecar's own publish left unresolved. DERIVE it first, from this
+      // worker's own reflected state: the scanner already keeps every live note's (cx, cy, txid, vout) in
+      // `coords`, parsed out of that note's own Bitcoin creation envelope and persisted in the snapshot
+      // (deliberately outside digest()). So the source is recomputable from chain data we hold and never
+      // has to be supplied by anyone — which is what keeps this off the trust surface entirely.
+      //
+      // The holder-registered record is only a fallback, for a live note whose coords entry predates the
+      // outpoint preimage. It is validated against the same live set before it can be stored, so it cannot
+      // disagree with a derivation; it can only fill a gap a rescan would otherwise have to fill.
       const known = new Set((st.consumedSources || []).map((s) => String(s.nu).toLowerCase()));
       const missing = (st.consumeds || []).filter((c) => !known.has(String(c.nu).toLowerCase()));
+      let liveTriples = null, coordsMap = null;
+      if (missing.length) {
+        try {
+          const scanRaw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+          const snap = scanRaw ? (JSON.parse(scanRaw).snapshot || {}) : {};
+          liveTriples = snap.liveTriples || null;
+          coordsMap = new Map(snap.coords || []);
+        } catch { /* fall through to the stored records */ }
+      }
+      const poolForDerive = missing.length ? makeConfidentialPool({ secp, keccak256: keccak_256, sha256 }) : null;
       const resolved = await Promise.all(missing.map(async (c) => {
         const nu = String(c.nu).replace(/^0x/, '').toLowerCase();
+        if (liveTriples) {
+          const d = deriveConsumedSource('0x' + nu, liveTriples, coordsMap, poolForDerive, env.REFLECTION_CHAIN_BINDING || null);
+          if (d.ok) return d.record;
+        }
         const rec = await env.REGISTRY_KV.get(`reflection:consumedsrc:${network}:${nu}`);
         return rec ? JSON.parse(rec) : null;
       }));
