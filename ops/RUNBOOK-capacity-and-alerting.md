@@ -141,6 +141,44 @@ because it is a fixed ~111 runs/day regardless of volume — so the single bigge
 serving more ops per day, not shaving per-op gas. And batching helps on the settle half only: it splits one
 settle's gas across its members while the maintenance overhead stays flat.
 
+### Where fee income goes: earner -> sink
+
+Two wallets, two jobs, and the money has to move between them:
+
+- **Earner = the settle wallet.** It is `msg.sender` on every settle, so the pool's `_payout` credits the fee
+  there, and it burns the settle gas.
+- **Sink = the relay wallet (`0x68…`, `RELAY_KEY`).** It pays the maintenance lane (header attestation,
+  reflection) and earns nothing — **and it is the account whose vApp deposit funds proving**, because a
+  deposit credits whoever sends it. PROVE that lands on the settle wallet cannot pay for a proof.
+
+So `replenishOnce` delivers straight to the sink (swaps take a recipient, so no second hop): exact-out ETH for
+the earner, exact-out ETH for the sink, PROVE to the sink, native-ETH surplus forwarded to the sink; then the
+**sink deposits once**, after every earner has delivered. Gas legs clear before PROVE, because a wallet that
+cannot pay for a transaction cannot buy PROVE either. With consolidated keys the earner *is* the sink and
+every sink step collapses into the ordinary single-wallet case — no change needed for that migration.
+
+**It runs inside `tacit-settle`, not as a cron**, in the loop's idle time (`REPLENISH_IN_SETTLE=1`). That
+service already holds `SETTLE_KEY`, so no secret is copied anywhere, and running only where the loop would
+otherwise sleep serialises it with settles on the same nonce. A failure is logged and never stops settling.
+The `tacit-replenish` cron can stay suspended; it cannot sweep the settle wallet without that key.
+
+One known edge: the sink's approve + deposit are signed by the relay key from inside the settle service, while
+the header/reflection services also use that key. A nonce collision would fail one of the two txs and both
+retry, but it is a real overlap; it disappears with key consolidation.
+
+Verified by running the real `replenishOnce` against a stub RPC and asserting on the signed transactions
+(`tests/replenish-flow.test.mjs`) — who signed, where each swap was delivered, who deposited — not by matching
+source text. Enabling it needs `REPLENISH_IN_SETTLE=1`, `FEE_ASSETS`, and a deploy of `tacit-settle`.
+
+### Proving is not free for the user — and prove-mode is unpaid
+
+Live logs show real users already using the relay in `mode=prove` (wraptransfer, bridgeburn, lpremove), each
+proved on our PROVE (~$0.07) with **no fee at all**: prove-only jobs skip the fee gate, and the fee could not be
+collected anyway — the user sends the settle tx themselves, so a bound fee is paid to the user. It is bounded
+by per-IP metering (5 burst, 1 per 40s), so this is a small, capped subsidy, but it is real and it is the
+largest unpaid path. Charging for it means a fee outside the settle tx (or accepting it as the cost of
+self-settle). A decision, not a bug.
+
 ### The fee is derived, never declared
 
 `op.feeUsd` was the obvious way to wire this, and it is the wrong one: `/confidential/submit` takes a
@@ -187,6 +225,14 @@ of the rate-limit key so the two cannot collide. Metering is no longer something
 **Order to switch on:** fund both wallets → deploy worker + worker-relay → resume `tacit-replenish` →
 watch `UNPAID:` fall as cETH-fee ops start pricing → set `RELAY_FEE_FLOOR=1` (now safe) →
 set `RELAY_REQUIRE_PRICED_FEE=1` last.
+
+### Alerting without a webhook
+
+`ALERT_WEBHOOK_URL` is deliberately left unset. Render already has **email enabled for failures** at the
+account level (`emailEnabled: true`, `notificationsToSend: "failure"`) and the monitor inherits it, so a
+critical — which exits non-zero — fails the run and Render emails the owner with no configuration. Set a
+webhook only if you want a second channel (Slack/Discord); it needs a URL from you. (Settings verified via the
+API; delivery of an actual failure email has not been exercised.)
 
 ## 4. Responding
 
