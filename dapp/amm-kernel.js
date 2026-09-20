@@ -13,7 +13,7 @@
 import { secp, sha256, hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
 import {
   G, H, ZERO, SECP_N, modN, bigintToBytes32,
-  signSchnorr, verifySchnorr,
+  signSchnorr, verifySchnorr, pedersenCommit,
 } from './bulletproofs.js';
 
 const DOMAIN_LP_ADD    = new TextEncoder().encode('tacit-amm-lp-add-v1');
@@ -231,4 +231,18 @@ export function lpBondKernelVerify({ farmId, lpAsset, bondAmount, lpInputs, lpIn
   try { key = lpBondKernelKey({ lpInputCommitments, bondAmount }); }
   catch { return false; }
   return verifySchnorr(sig64, msg, key.xOnly);
+}
+
+// The LP-add mint is bound by the kernel signatures (real value in) plus a DIRECT opening of the share commitment:
+// shareCSecp must equal share_amount·H + shareR·G for the public share_amount and the envelope's shareR. The
+// envelope carries no proof tail, so this opening is the check that ties the committed value to the amount the pool
+// credits. Anything that does not open exactly (wrong amount, wrong blinding, malformed point) is rejected.
+export function lpAddShareOpens({ shareAmount, shareCSecp, shareR }) {
+  try {
+    const amount = BigInt(shareAmount);
+    if (amount <= 0n || amount >= 1n << 64n) return false;
+    const r = BigInt('0x' + bytesToHex(asBytes(shareR, 32, 'shareR')));
+    const opened = pedersenCommit(amount, r).toRawBytes(true);
+    return bytesToHex(opened) === bytesToHex(asBytes(shareCSecp, 33, 'shareCSecp'));
+  } catch { return false; }
 }

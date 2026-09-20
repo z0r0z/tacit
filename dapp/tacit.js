@@ -17924,30 +17924,15 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         !ammSigmaMod.verifyXCurve(dec.shareXcurveSigma, dec.shareCSecp, dec.shareCBJJ)) {
       _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
     }
-    // LP_ADD Groth16 — MANDATORY whenever the canonical AMM VK is pinned. Binds
-    // share_amount to the BJJ commitment and range-bounds the inputs in-circuit.
-    // The proof is in the on-chain envelope and the VK is inlined, so this is a
-    // trustless-from-chain consensus check every client runs. (Was gated on
-    // _isAmmCeremonyUnlocked — false on mainnet — which let an LP-share be
-    // credited with no value-binding; that was the Tier-0 gap.)
+    // Value binding — MANDATORY whenever the canonical AMM VK is pinned. The envelope has no proof tail: the mint is
+    // bound by the kernel signatures (real value in) plus a direct opening of the share commitment under the
+    // envelope's shareR, so a client can verify it from chain alone. Without it an LP-share could be credited
+    // against a commitment that opens to a different value than the public share amount. (An earlier version
+    // demanded a Groth16 proof the encoder never emits, which marked every founder's LP-share invalid.)
     if (_isAmmCeremonyFinalized()) {
-      const poolIdBytes = _scanLpAddPoolId(dec);
-      if (!poolIdBytes || !dec.proof || !dec.shareCBJJ) {
+      if (!dec.shareR || !ammKernelMod.lpAddShareOpens({ shareAmount: dec.shareAmount, shareCSecp: dec.shareCSecp, shareR: dec.shareR })) {
         _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
       }
-      const coords = _ammBjjCoords(dec.shareCBJJ);
-      if (!coords) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
-      const ok = await verifyAmmProof({
-        circuitKey: 'lp_add', vkCid: CANONICAL_AMM_VK_CID,
-        publicInputs: [
-          _ammPoolIdFr(poolIdBytes).toString(),
-          String(dec.variant | 0),
-          BigInt(dec.shareAmount).toString(),
-          coords.u.toString(), coords.v.toString(),
-        ],
-        proof: dec.proof,
-      });
-      if (!ok) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
     }
     validatedSet.set(key, true);
     return true;
