@@ -1448,6 +1448,24 @@ function tacPriceSats(env) {
   const v = Number(env && env.TAC_PRICE_SATS);
   return v > 0 ? v : null;
 }
+// How to value one pool asset's fee units, from its deployment row alone. Null for anything we cannot price.
+function feeAssetForRow(row, env = {}) {
+  try {
+    if (!row || !row.unitScale) return null;
+    if (row.ticker === 'cETH') return { row, kind: 'eth' };
+    if (!(USD_PEGGED_FEE_TICKERS.includes(row.ticker) || row.ticker === 'cBTC' || row.ticker === 'cTAC')) return null;
+    const dec = Number(row.decimals);
+    if (!Number.isInteger(dec) || dec < 0 || dec > 36) return null;
+    const perUnit = Number(BigInt(row.unitScale)) / 10 ** dec; // whole tokens per in-pool unit
+    if (row.ticker === 'cBTC') return { row, kind: 'btc', btcPerUnit: perUnit }; // 1:1 with BTC
+    if (row.ticker === 'cTAC') {
+      const sats = tacPriceSats(env);
+      if (!sats) return null; // no configured reference -> unpriced, never guessed
+      return { row, kind: 'btc', btcPerUnit: (perUnit * sats) / 1e8, private: true };
+    }
+    return { row, kind: 'usd', usdPerUnit: perUnit };
+  } catch { return null; }
+}
 function feeAssetRow(type, op, env = {}) {
   try {
     if (!op || typeof op !== 'object') return null;
@@ -1458,18 +1476,7 @@ function feeAssetRow(type, op, env = {}) {
     const row = rows.find((a) => a.ticker === 'cETH')
       || rows.find((a) => USD_PEGGED_FEE_TICKERS.includes(a.ticker))
       || rows.find((a) => a.ticker === 'cBTC' || a.ticker === 'cTAC');
-    if (!row || !row.unitScale) return null;
-    if (row.ticker === 'cETH') return { row, kind: 'eth' };
-    const dec = Number(row.decimals);
-    if (!Number.isInteger(dec) || dec < 0 || dec > 36) return null;
-    const perUnit = Number(BigInt(row.unitScale)) / 10 ** dec; // whole tokens per in-pool unit
-    if (row.ticker === 'cBTC') return { row, kind: 'btc', btcPerUnit: perUnit }; // 1:1 with BTC
-    if (row.ticker === 'cTAC') {
-      const sats = tacPriceSats(env);
-      if (!sats) return null; // no configured reference -> unpriced, never guessed
-      return { row, kind: 'btc', btcPerUnit: (perUnit * sats) / 1e8 };
-    }
-    return { row, kind: 'usd', usdPerUnit: perUnit };
+    return feeAssetForRow(row, env);
   } catch { return null; }
 }
 // Dollars per in-pool unit, or null when it cannot be valued right now (a BTC-denominated asset needs the
@@ -1483,23 +1490,26 @@ async function usdPerUnitOf(p) {
   return null;
 }
 
+// Wei per in-pool fee unit, or null when it cannot be valued right now. Exact for cETH; otherwise the asset's
+// dollar value per unit converted at the live ETH price.
+async function weiPerFeeUnitOf(p) {
+  if (p.kind === 'eth') return BigInt(p.row.unitScale);
+  const usdPerUnit = await usdPerUnitOf(p);
+  if (!usdPerUnit) return null;
+  const ethUsd = await _ethUsdPrice().catch(() => null);
+  if (!ethUsd) return null;
+  const w = BigInt(Math.floor((usdPerUnit / ethUsd) * 1e18));
+  return w > 0n ? w : null;
+}
+
 function buildRelayFeeGate(env) {
   if (env.RELAY_FEE_FLOOR !== '1') return null;
   const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
   return async ({ type, op }) => {
     const p = feeAssetRow(type, op, env);
     if (!p) return true; // can't price it — pass through
-    let weiPerFeeUnit;
-    if (p.kind === 'eth') {
-      weiPerFeeUnit = BigInt(p.row.unitScale);
-    } else {
-      const usdPerUnit = await usdPerUnitOf(p);
-      if (!usdPerUnit) return true; // no BTC price — fail open rather than stall the whole relay
-      const ethUsd = await _ethUsdPrice().catch(() => null);
-      if (!ethUsd) return true; // no ETH price — fail open rather than stall the whole relay
-      weiPerFeeUnit = BigInt(Math.floor((usdPerUnit / ethUsd) * 1e18));
-      if (weiPerFeeUnit <= 0n) return true;
-    }
+    const weiPerFeeUnit = await weiPerFeeUnitOf(p);
+    if (!weiPerFeeUnit) return true; // no price to value the fee with — fail open rather than stall the whole relay
     let gasPriceHex;
     try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
     if (!gasPriceHex) return true; // RPC outage — fail open rather than stall the whole relay
@@ -1586,14 +1596,19 @@ function handleConfidentialQuote(req, env, url, cors) {
   const unitScale = BigInt(asset.unitScale || '1');
   const staticFloorUnits = (policy.minUnderlying / unitScale).toString();
   const out = { ticker, assetId: asset.assetId, relayFeeEligible: true, staticFloorUnits, gasAwareFloorUnits: null };
-  if (ticker === 'cETH') {
+  // A live gas-aware floor is published for every asset the gate holds to one — with ONE deliberate exception.
+  // cTAC's reference price is private deployment config, and a floor in cTAC units would hand it out: the floor in
+  // dollars is public (gas x ETH price), so dollars / units IS the price. cTAC gets the static floor only.
+  const priced = ticker === 'cTAC' ? null : feeAssetForRow(asset, env);
+  if (priced) {
     const effects = BigInt(Math.max(2, parseInt(url.searchParams.get('effects') || '2', 10) || 2));
     return (async () => {
       let gasPriceHex;
       try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
-      if (gasPriceHex) {
+      const weiPerFeeUnit = await weiPerFeeUnitOf(priced).catch(() => null);
+      if (gasPriceHex && weiPerFeeUnit) {
         try {
-          out.gasAwareFloorUnits = floorInFeeUnits({ gasPriceWei: BigInt(gasPriceHex), weiPerFeeUnit: unitScale, effects, marginBps: BigInt(env.RELAY_FEE_MARGIN_BPS || '1000') }).toString();
+          out.gasAwareFloorUnits = floorInFeeUnits({ gasPriceWei: BigInt(gasPriceHex), weiPerFeeUnit, effects, marginBps: BigInt(env.RELAY_FEE_MARGIN_BPS || '1000') }).toString();
         } catch { /* leave gasAwareFloorUnits null on any conversion hiccup */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });

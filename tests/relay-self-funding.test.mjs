@@ -54,10 +54,10 @@ test('the monitor checks every funded wallet, not just RELAY_KEY', () => {
   const block = monitor.slice(monitor.indexOf('async function checkEth'), monitor.indexOf('async function checkSnapshotCapacity'));
   ok(/for \(const \{ address, roles \} of watchedWallets\)/.test(block), 'checkEth does not iterate watchedWallets');
   ok(!/relayWallet\.account\.address/.test(block), 'checkEth still pins the relay wallet');
-  // A settle wallet and a maintenance-only wallet do not cost the same per run, so they must not be
-  // priced with the same figure.
-  ok(/roles\.includes\('settle'\)/.test(block), 'runway must distinguish a settle wallet from a maintenance one');
-  ok(/OP_GAS\.maintenance/.test(block), 'a maintenance-only wallet must be priced on maintenance gas');
+  // Each wallet's burn depends on the roles it carries (maintenance vs settles), so the roles must feed the
+  // runway. The arithmetic itself is tested with real numbers in capacity-monitoring.test.mjs.
+  ok(/burnGasPerDay\(\{ roles,/.test(block) || /const burn = \{ roles,/.test(block), 'runway must be computed from the wallet\'s roles');
+  ok(/gas: OP_GAS/.test(block), 'runway must use the measured gas table');
 });
 
 const loopOf = () => replenish.slice(replenish.indexOf('for (const { address: owner, wallet, roles: held } of earners)'), replenish.indexOf("log('replenish done')"));
@@ -460,7 +460,7 @@ async function gateVerdicts(extraEnv, cases) {
     const s = await import('${join(ROOT, 'worker-relay/src/settle-relay.js')}');
     const out = [];
     for (const c of ${JSON.stringify(cases)}) out.push(await s.feeGate(c.job, c.gwei, 0.25, 2570));
-    console.log(JSON.stringify(out.map(o => ({ ok: o.ok, reason: o.reason }))));`;
+    console.log(JSON.stringify(out.map(o => ({ ok: o.ok, reason: o.reason, publicReason: o.publicReason }))));`;
   return new Promise((resolve, reject) => {
     const child = spawnAsync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: join(ROOT, 'worker-relay'),
@@ -488,6 +488,64 @@ test('gate: the dapp standard fee is accepted at 0.1 gwei (marginal cost), refus
 test('gate: RELAY_GATE_INCLUDE_MAINTENANCE=1 holds ops to the full cost', async () => {
   const [d] = await gateVerdicts({ RELAY_GATE_INCLUDE_MAINTENANCE: '1' }, [{ job: job(0.257), gwei: 0.1 }]);
   ok(d.ok === false && /cost/.test(d.reason) && !/marginal/.test(d.reason), `with maintenance included the same fee must be refused: ${d.reason}`);
+});
+
+// ── the published quote must match what the gate enforces — without leaking the private cTAC reference ──
+const quoteSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf('function confSettler'));
+function loadQuote({ gasWei = 60_000_000n, ethUsd = 2570, btcUsd = 80000, env = {} } = {}) {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', 'floorInFeeUnits', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'jsonResponse', 'ENV',
+    quoteSrc + '; return (asset, effects) => handleConfidentialQuote({}, ENV, new URL("https://x/confidential/quote?asset=" + asset + "&effects=" + (effects || 2)), {});');
+  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, rq.floorInFeeUnits, DEPLOY, async () => '0x' + gasWei.toString(16), async () => ethUsd, async () => btcUsd, (body) => body, env);
+}
+test('quote: cUSD and cBTC publish a live gas-aware floor (the gate enforces one, so integrators must be able to see it)', async () => {
+  const q = loadQuote();
+  for (const t of ['cETH', 'cUSD', 'cBTC']) {
+    const r = await q(t);
+    ok(r.gasAwareFloorUnits && BigInt(r.gasAwareFloorUnits) > 0n, `${t} must publish a gas-aware floor, got ${r.gasAwareFloorUnits}`);
+  }
+});
+
+test('quote: the published floor is the SAME number the gate enforces', async () => {
+  // A quote that says 100 while the gate wants 120 sends every integrator who follows it to a refusal.
+  const q = await loadQuote()('cBTC');
+  const floor = BigInt(q.gasAwareFloorUnits);
+  const { gate } = loadGate({ btcUsd: 80000 });
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor + 1n) }) === true, 'a fee just above the published floor must pass the gate');
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor / 2n) }) === false, 'a fee at half the published floor must be refused by the gate');
+});
+
+test('quote: cTAC NEVER publishes a live floor, even when the reference is configured (it would reveal the private price)', async () => {
+  const r = await loadQuote({ env: TAC_ENV })('cTAC');
+  ok(r.gasAwareFloorUnits === null, `a cTAC floor in cTAC units would let anyone recover the reference price; got ${r.gasAwareFloorUnits}`);
+  // The property that matters: the response must not DEPEND on the reference at all. Two very different configured
+  // prices must produce byte-identical output, so nothing in it can be used to back the price out.
+  const other = await loadQuote({ env: { TAC_PRICE_SATS: String(TEST_TAC_SATS * 7) } })('cTAC');
+  ok(JSON.stringify(r) === JSON.stringify(other), `the cTAC quote changed with the configured reference:\n ${JSON.stringify(r)}\n ${JSON.stringify(other)}`);
+  const unset = await loadQuote({ env: {} })('cTAC');
+  ok(JSON.stringify(r) === JSON.stringify(unset), 'the cTAC quote must be the same whether or not a reference is configured');
+});
+
+test('quote: a BTC/USD outage leaves the floor unpublished rather than wrong', async () => {
+  const r = await loadQuote({ btcUsd: null })('cBTC').catch(() => ({ gasAwareFloorUnits: null }));
+  ok(r.gasAwareFloorUnits === null, 'with no BTC price the floor must be null, not a guess');
+});
+
+test('gate: the PUBLIC rejection text does not carry the dollar value of the submitter\'s own fee', async () => {
+  // For cTAC that value is units x the private reference price. `reason` is logged AND acked to the job, so it
+  // must not be the thing a submitter can read a price off.
+  const [v] = await gateVerdicts({}, [{ job: job(0.1234567), gwei: 0.5 }]);
+  ok(v.ok === false, 'this fee must be refused at 0.5 gwei');
+  ok(v.publicReason && !/0\.123/.test(v.publicReason), `the public reason leaks the fee value: ${v.publicReason}`);
+  ok(/0\.123/.test(v.reason), 'the private (logged) reason should keep the detail for debugging');
+  ok(/marginal cost of \$/.test(v.publicReason), 'the public reason should still say what the threshold is');
+});
+
+test('the relay ACKS the public reason (the job\'s submitter reads the ack), and only LOGS the private one', () => {
+  // The gate producing a safe message is worthless if the ack sends the detailed one. cycle() is not exported, so
+  // pin the call sites: the ack carries publicReason, the log keeps the full reason for debugging.
+  ok(/confidentialAck\(\{ jobId, error: `feeGate: \$\{gate\.publicReason \|\| gate\.reason\}` \}\)/.test(settle),
+    'the ack must send gate.publicReason, not the detailed reason');
+  ok(/rejected by feeGate: \$\{gate\.reason\}/.test(settle), 'the log must keep the full reason');
 });
 
 test('rate-limit buckets cannot collide', () => {

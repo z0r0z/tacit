@@ -89,7 +89,10 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   const need = CFG.gateIncludesMaintenance ? q.costUsd : q.marginalCostUsd;
   const label = CFG.gateIncludesMaintenance ? 'cost' : 'marginal cost';
   if (feeUsd + 1e-9 < need) {
-    return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}` };
+    // `reason` is logged AND acked to the job, where the submitter can read it. It must not carry the dollar value
+    // of their fee: for an asset priced from private config (cTAC) that value is units x the private reference
+    // price, so echoing it back would let anyone read the price off a rejection. Our own cost is not sensitive.
+    return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}`, publicReason: `bound fee is below the ${label} of $${need.toFixed(4)} at current gas and PROVE prices` };
   }
   return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ ${label} $${need.toFixed(4)}`, quote: q };
 }
@@ -378,7 +381,7 @@ async function cycle() {
   const gate = await feeGate(job, gasGwei, provePx, ethPx);
   if (!gate.ok) {
     log(`job ${jobId} type=${type} rejected by feeGate: ${gate.reason}`);
-    await confidentialAck({ jobId, error: `feeGate: ${gate.reason}` });
+    await confidentialAck({ jobId, error: `feeGate: ${gate.publicReason || gate.reason}` });
     return true;
   }
 

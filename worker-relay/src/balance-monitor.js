@@ -5,7 +5,7 @@
 //
 // Alerts (log always; POST to ALERT_WEBHOOK_URL if set) when:
 //   * PROVE balance (relay wallet's undeposited PROVE) < floor
-//   * settle runway (what the ETH balance still buys at the live gas price) < N settles
+//   * gas runway (days of this wallet's actual burn at the live gas price) < N days
 //   * reflection lag (relay tip - attested Bitcoin height) > N blocks
 //   * reflection snapshot size > warn threshold — the one cumulative resource
 //
@@ -20,7 +20,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { formatEther, formatUnits } from 'viem';
-import { CFG, OP_GAS } from './lib/config.js';
+import { CFG, OP_GAS, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
+import { burnGasPerDay, runwayDays } from './lib/runway.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
@@ -82,19 +83,24 @@ async function checkEth() {
     const who = `${address} (${roles.join('+')})`;
     log(`ETH ${who} = ${formatEther(bal)}`);
 
-    // Runway: what the balance still buys at the live gas price. A settle-capable wallet is priced on a
-    // real settle (`OP_GAS.transfer`, measured); a relay-only wallet pays for the maintenance lane, whose
-    // per-run cost is its own figure.
+    // Runway in DAYS of this wallet's actual burn at the live gas price. It must be days, not "settles": once
+    // the two roles were merged this one wallet pays for the maintenance lane AND the settles, and maintenance
+    // (header attestation, reflection) costs about as much per day as the settles do at any realistic volume.
+    // "635 settles left" was true and useless — the same wallet really had ~6 days, and under one at 10x gas.
+    //   burn = (maintenance runs/day x maintenance gas)   if it carries the relay role
+    //        + (expected ops/day x settle gas)            if it carries the settle role
     let runway = null;
-    const settles = roles.includes('settle');
-    const perOp = settles ? OP_GAS.transfer : OP_GAS.maintenance;
-    if (gasPrice && perOp * gasPrice > 0n) {
-      runway = Number(bal / (perOp * gasPrice));
-      log(`  runway = ${runway} ${settles ? 'settles' : 'maintenance runs'} @ ${formatUnits(gasPrice, 9)} gwei`);
-      if (runway < CFG.settleRunwayAlert) {
-        await alert('critical',
-          `${who} runway ${runway} < ${CFG.settleRunwayAlert} at ${formatUnits(gasPrice, 9)} gwei — fund it or ${settles ? 'settles' : 'attestation'} stalls`,
-          { address, roles, runway, ethWei: bal.toString(), gasPriceWei: gasPrice.toString() });
+    const burn = { roles, maintenanceRunsPerDay: MAINTENANCE_RUNS_PER_DAY, expectedOpsPerDay: CFG.expectedOpsPerDay, gas: OP_GAS };
+    const burnGas = burnGasPerDay(burn);
+    if (gasPrice && burnGas * gasPrice > 0n) {
+      runway = runwayDays({ balanceWei: bal, gasPriceWei: gasPrice, ...burn });
+      const settlesLeft = Number(bal / (OP_GAS.transfer * gasPrice));
+      log(`  runway = ${runway.toFixed(1)} days of burn (${(Number(burnGas * gasPrice) / 1e18).toFixed(5)} ETH/day; ~${settlesLeft} settles if it did nothing else) @ ${formatUnits(gasPrice, 9)} gwei`);
+      const extra = { address, roles, runwayDays: runway, ethWei: bal.toString(), gasPriceWei: gasPrice.toString() };
+      if (runway < CFG.runwayDaysCritical) {
+        await alert('critical', `${who} has ~${runway.toFixed(1)} days of gas left at ${formatUnits(gasPrice, 9)} gwei (< ${CFG.runwayDaysCritical}) — fund it or attestation and settles stall`, extra);
+      } else if (runway < CFG.runwayDaysWarn) {
+        await alert('warning', `${who} has ~${runway.toFixed(1)} days of gas left at ${formatUnits(gasPrice, 9)} gwei (< ${CFG.runwayDaysWarn}) — top it up soon`, extra);
       }
     }
 

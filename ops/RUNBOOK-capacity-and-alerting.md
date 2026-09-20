@@ -58,7 +58,7 @@ bookkeeping needs no redeploy, no re-prove and no vkey rotation.
 
 | check | threshold (env) | level |
 |---|---|---|
-| settle runway | `SETTLE_RUNWAY_ALERT` (25 settles) | critical |
+| gas runway (days of the wallet's real burn) | `RUNWAY_DAYS_CRITICAL` (3) / `RUNWAY_DAYS_WARN` (7) | critical / warning |
 | ETH absolute floor | `ETH_GAS_BUFFER_WEI` (0.03) | critical if runway unavailable, else warning |
 | undeposited PROVE | `PROVE_BALANCE_FLOOR` (50) | warning (a proxy that reads ~0 by design — see below) |
 | reflection lag | `REFLECTION_LAG_ALERT_BLOCKS` (200) | warning |
@@ -75,23 +75,22 @@ Two things about how it reports:
 
 ### Runway, not a floor
 
-A fixed wei floor says "low"; it does not say *when*. 0.03 ETH is weeks at 0.15 gwei and under a day at
-30 gwei. The monitor prices a real settle (`OP_GAS.transfer`, 600k, measured) at the live gas price and
-alerts on settles remaining, which is the number you can act on.
+A fixed wei floor says "low"; it does not say *when*. The monitor computes **days of the wallet's actual burn**
+at the live gas price: maintenance runs/day x measured maintenance gas if it carries the relay role, plus expected
+ops/day x measured settle gas if it carries the settle role (`lib/runway.js`). Days, not "settles left": the
+merged wallet pays for both jobs, and reporting settles alone said "635 settles" for a wallet that really had
+~6 days (and under one at 10x gas).
 
-### Which wallets it sees — and why `SETTLE_ADDRESS` exists
+### Which wallets it sees
 
-`SETTLE_KEY` is set on `tacit-settle` alone. Anywhere else it falls back to `RELAY_KEY`, so the two wallets
-collapse into one and the monitor reports a single healthy wallet while the one paying for settles runs dry.
-That is exactly what the first version did. Watching a balance needs an address, not a key, so the monitor
-cron carries `SETTLE_ADDRESS` (public — declared in `render.yaml`) and `watchedWallets` in `lib/chain.js`
-corrects the picture with it. Signing is a separate question: `fundedWallets` stays what a service can
-actually sign for, which is why **replenish still needs the real `SETTLE_KEY`** to sweep the settle wallet's
-fees (see 3a).
+There is one signing key now (see "One wallet" below), so the monitor watches one wallet carrying both roles.
+`watchedWallets` in `lib/chain.js` still honours an optional `SETTLE_ADDRESS` (a public address, for watching a
+wallet whose key this service does not hold) — it is unset today, and should stay unset unless a second key is
+ever reintroduced. The monitor originally saw only one wallet because `SETTLE_KEY` lived on the settle service
+alone and fell back to `RELAY_KEY` everywhere else; that is the reason the option exists.
 
-A healthy run reads: settle wallet with a runway in *settles*, relay wallet with a runway in *maintenance
-runs*, snapshot counts matching `tools/capacity-report.mjs`, and `0 criticals`. The cron should be green —
-if it is red, that now means something.
+A healthy run reads: one wallet with its runway in **days**, snapshot counts matching `tools/capacity-report.mjs`,
+and `0 criticals`. The cron should be green — if it is red, that now means something.
 
 ### What the PROVE check is not
 
@@ -113,14 +112,15 @@ zQuoter/zRouter, deposit the PROVE to the Succinct vApp. That loop is fully buil
 2. **`SETTLE_KEY` is split from `RELAY_KEY`.** The settle wallet is `msg.sender` on every settle, so it
    both earns the fee (`_payout`) and burns the gas. The monitor and replenish both looked only at
    `RELAY_KEY`, so the wallet paying for settles was not watched at all. Both now iterate `fundedWallets`
-   (and the monitor, which has no `SETTLE_KEY`, uses `SETTLE_ADDRESS` — see §3). **Identify the settle
+   (and the monitor, which has no `SETTLE_KEY`, used `SETTLE_ADDRESS` — since retired, see §3). **Identify the settle
    wallet from the service's own logs (`replenish` prints `earner 0x…`), never from who sends pool settles:**
    prove-mode jobs are settled by the *user's* transaction, so other addresses appear as `msg.sender` too.
    (Initially misread from settle senders as `0xfd1fa372…`; the real earner is `0xB2DA…59Dd`.)
 3. **The fee gate accepted any op without a priced fee for free**, which was every op. The gate now logs
    `UNPAID:` per job and counts them; `RELAY_REQUIRE_PRICED_FEE=1` refuses them outright. **Default off**:
-   only cETH and USD-pegged assets (cUSD today) can be priced server-side, so turning it on would refuse
-   every relayed op in any other asset (cBTC, cTAC, unregistered assets).
+   cETH, cUSD, cBTC and cTAC can be priced server-side, but not cUSDC/cUSDT (not registered in the deployment
+   data) or any unregistered asset, and cTAC only when its reference is configured — so turning it on would
+   refuse every relayed op in those.
 4. **The maintenance lane was missing from the cost model.** Header attestation is 264,241 gas (measured,
    three consecutive receipts) at ~111 runs/day, and nobody pays a fee for it — but the bridge stops in
    both directions without it. It is now amortised across `EXPECTED_OPS_PER_DAY`.

@@ -250,11 +250,11 @@ export const CFG = {
   // ── Replenish / monitor thresholds ──
   proveBalanceFloor: num('PROVE_BALANCE_FLOOR', 50), // PROVE, whole tokens
   ethGasBufferWei: BigInt(opt('ETH_GAS_BUFFER_WEI', '30000000000000000')), // 0.03 ETH
-  // A floor says "low"; runway says WHEN. The relay stalls when it can no longer afford the next settle,
-  // so the actionable number is how many settles the balance still buys at the live gas price — which
-  // moves with the market, where a fixed wei floor does not. A quiet 0.03 ETH is weeks at 0.15 gwei and
-  // under a day at 30 gwei.
-  settleRunwayAlert: num('SETTLE_RUNWAY_ALERT', 25), // settles remaining before the relay is considered at risk
+  // A floor says "low"; runway says WHEN. The relay stalls when it can no longer afford its next transaction, so
+  // the actionable number is how many DAYS the wallet lasts at its real burn and the live gas price — which
+  // moves with the market, where a fixed wei floor does not. Critical below the first, a warning below the second.
+  runwayDaysCritical: num('RUNWAY_DAYS_CRITICAL', 3),
+  runwayDaysWarn: num('RUNWAY_DAYS_WARN', 7),
   reflectionLagAlertBlocks: num('REFLECTION_LAG_ALERT_BLOCKS', 200), // above the ~144-block relay lead that is normal
   // The reflection snapshot is the protocol's one cumulative resource (see handleReflectionState). The
   // assembler has been measured peaking +58-216MB above the snapshot against a 1280MB heap, so the

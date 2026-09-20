@@ -82,19 +82,46 @@ test('a missing capacity block degrades quietly instead of throwing', () => {
   ok(/return;/.test(check), 'guard must return rather than alert');
 });
 
-test('runway uses the measured settle gas, not a magic number', () => {
-  ok(/import \{ CFG, OP_GAS \}/.test(monitor), 'monitor does not import OP_GAS');
-  // Priced per role now: a settle wallet on OP_GAS.transfer, a maintenance-only one on OP_GAS.maintenance.
-  ok(/const perOp = settles \? OP_GAS\.transfer : OP_GAS\.maintenance/.test(monitor),
-    'runway must price each wallet on the work it actually does');
-  ok(/perOp \* gasPrice/.test(monitor), 'runway must price at the live gas price');
+test('runway is measured in DAYS of the wallet\'s real burn, not in settles', () => {
+  ok(/import \{ burnGasPerDay, runwayDays \} from '\.\/lib\/runway\.js'/.test(monitor), 'monitor does not use the shared runway arithmetic');
+  ok(/runway < CFG\.runwayDaysCritical/.test(monitor) && /runway < CFG\.runwayDaysWarn/.test(monitor), 'no critical and warning day thresholds');
   ok(/getGasPrice\(\)/.test(monitor), 'runway must read the live gas price');
 });
 
-test('the absolute floor is only a backstop for a missing runway', () => {
-  // With runway known it says everything the floor would; alerting on both is a second line for one fact
-  // (and the floor sat above both wallets' balances, so it fired on every run).
-  ok(/if \(runway === null && bal < CFG\.ethGasBufferWei\)/.test(monitor), 'the floor must only apply when runway is unavailable');
+// The arithmetic itself, with real numbers. The production case: the merged relayer wallet held 0.02014 ETH at
+// 0.053 gwei; the monitor called that "635 settles" and the truth was ~6 days.
+const { runwayDays, burnGasPerDay } = await import(join(ROOT, 'worker-relay/src/lib/runway.js'));
+const GAS = { maintenance: 264_000n, transfer: 600_000n };
+const mk = (o) => runwayDays({ maintenanceRunsPerDay: 111, expectedOpsPerDay: 50, gas: GAS, ...o });
+const wei = (eth) => BigInt(Math.round(eth * 1e18));
+const gwei = (g) => BigInt(Math.round(g * 1e9));
+
+test('a merged wallet is priced on BOTH its jobs: ~6 days, not "635 settles"', () => {
+  const d = mk({ roles: ['relay', 'settle'], balanceWei: wei(0.02014), gasPriceWei: gwei(0.053) });
+  ok(d > 6.0 && d < 6.8, `expected ~6.4 days, got ${d}`);
+  const settlesOnly = Number(wei(0.02014)) / Number(600_000n * gwei(0.053));
+  ok(settlesOnly > 600 && d < settlesOnly / 50, 'the days figure must be far below the misleading settles figure');
+});
+
+test('the runway shrinks with gas price, so a spike is visible', () => {
+  const a = mk({ roles: ['relay', 'settle'], balanceWei: wei(0.02), gasPriceWei: gwei(0.05) });
+  const b = mk({ roles: ['relay', 'settle'], balanceWei: wei(0.02), gasPriceWei: gwei(0.5) });
+  ok(Math.abs(a / b - 10) < 0.01, `10x the gas must be 1/10th the runway, got ratio ${a / b}`);
+  ok(b < 1, `at 0.5 gwei this wallet should have under a day, got ${b}`);
+});
+
+test('roles are priced separately when the wallets are split', () => {
+  const relay = mk({ roles: ['relay'], balanceWei: wei(0.01), gasPriceWei: gwei(0.05) });
+  const settle = mk({ roles: ['settle'], balanceWei: wei(0.01), gasPriceWei: gwei(0.05) });
+  const both = mk({ roles: ['relay', 'settle'], balanceWei: wei(0.01), gasPriceWei: gwei(0.05) });
+  ok(relay > both && settle > both, 'a wallet doing both jobs must have less runway than one doing either');
+  ok(Math.abs(1 / both - (1 / relay + 1 / settle)) < 1e-9, 'burn rates must add');
+});
+
+test('no gas price, or no roles, gives no runway rather than a wrong one', () => {
+  ok(mk({ roles: ['relay'], balanceWei: wei(1), gasPriceWei: 0n }) === null, 'a zero gas price must not divide by zero');
+  ok(mk({ roles: [], balanceWei: wei(1), gasPriceWei: gwei(0.05) }) === null, 'a wallet with no roles burns nothing');
+  ok(burnGasPerDay({ roles: [], maintenanceRunsPerDay: 111, expectedOpsPerDay: 50, gas: GAS }) === 0n, 'no roles -> zero burn');
 });
 
 test('a critical exits non-zero so the cron surfaces it without a webhook', () => {
@@ -105,7 +132,7 @@ test('a critical exits non-zero so the cron surfaces it without a webhook', () =
 });
 
 test('both new thresholds are env-overridable', () => {
-  for (const k of ['SETTLE_RUNWAY_ALERT', 'SNAPSHOT_BYTES_WARN']) {
+  for (const k of ['RUNWAY_DAYS_CRITICAL', 'RUNWAY_DAYS_WARN', 'SNAPSHOT_BYTES_WARN']) {
     ok(new RegExp(`'${k}'`).test(config), `${k} is not configurable`);
   }
 });

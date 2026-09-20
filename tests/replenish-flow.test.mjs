@@ -40,8 +40,8 @@ const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chai
   .replace('export const ZQUOTER_ABI =', 'return');
 const zQuoterAbi = new Function(abiSrc)();
 
-async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0, badEthOutFactor = 0, fn = 'replenishOnce', fnArgs = null }) {
-  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor, badEthOutFactor });
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0, badEthOutFactor = 0, badGasCostFactor = 0, fn = 'replenishOnce', fnArgs = null }) {
+  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor, badEthOutFactor, badGasCostFactor });
   const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.${fn}(${JSON.stringify(fnArgs ?? opts)});`;
   const env = {
     PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
@@ -178,6 +178,46 @@ await test('an asset with no exact valuation is held, never guessed at', async (
     feeAssets: '0x' + 'cd'.repeat(20),
     balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
     tokenBalances: { ['0x' + 'cd'.repeat(20)]: { [settle]: 10n ** 20n } },
+  });
+  ok(swaps(sent).length === 0, 'swapped an asset it cannot value');
+  ok(/cannot value/.test(log), 'the hold must be logged');
+});
+
+await test('gas top-up has hysteresis: a wallet only a little under the buffer is left alone', async () => {
+  // buffer is 0.01 ETH in these tests; 0.007 is under it but not clearly low, so no swap should be sent.
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.007), [relay]: ETH(0.007) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(!swaps(sent).some((x) => x.exactOut), `topped up gas although the wallets were not clearly low: ${show(swaps(sent))}`);
+});
+
+await test('a clearly-low wallet IS refilled to the buffer (hysteresis is not "never")', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.05) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(swaps(sent).some((x) => x.exactOut && x.recipient === settle), 'a wallet at 10% of the buffer must be refilled');
+});
+
+await test('a broken wstETH gas quote is refused (the gas leg checks every asset, not just stablecoins)', async () => {
+  const { sent, log } = await run({
+    feeAssets: A.wsteth, badGasCostFactor: 1000,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.05) },
+    tokenBalances: { [A.wsteth]: { [settle]: ETH(5) }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(!swaps(sent).some((x) => x.exactOut), 'sent a gas swap on an implausible wstETH quote');
+  ok(/REFUSING/.test(log) && /gas top-up/.test(log), 'the refusal must be logged');
+});
+
+await test('an asset that cannot be valued is held for gas too, not swapped', async () => {
+  const odd = '0x' + 'cd'.repeat(20);
+  const { sent, log } = await run({
+    feeAssets: odd,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.05) },
+    tokenBalances: { [odd]: { [settle]: 10n ** 20n } },
   });
   ok(swaps(sent).length === 0, 'swapped an asset it cannot value');
   ok(/cannot value/.test(log), 'the hold must be logged');

@@ -386,19 +386,23 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
         if (toSink) gasLegs.push([sinkAddr, 'sink']);
         for (const [who, label] of gasLegs) {
           const have = await publicClient.getBalance({ address: who });
-          if (have >= buffer) continue;
+          // Refill only when CLEARLY low (under half the buffer), then fill to the buffer. Topping up whenever a
+          // wallet dips under the buffer means a wallet hovering near it — settles burn gas continuously —
+          // buys ETH in tiny slices on every pass, each one paying swap gas and leaning on the aggregator's
+          // least reliable quotes.
+          if (have >= buffer / 2n) continue;
           const need = buffer - have;
           try {
             const left = await erc20Balance(asset, owner);
             const qe = await quote(asset, ETH, need, who, /* exactOut */ true);
-            // A stablecoin cost far above the ETH it buys is a bad quote, not a price: refuse it rather than
-            // hand the aggregator the whole balance for a sliver of gas.
-            if (STABLE_FEE_ASSETS.has(asset.toLowerCase())) {
-              const ethUsd = await ethUsdPrice();
-              const dec = Number(await publicClient.readContract({ address: asset, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => 6));
-              const costUsd = Number(qe.amountIn) / 10 ** dec, worthUsd = (Number(need) / 1e18) * ethUsd;
-              if (costUsd > worthUsd * CFG.quoteSanityBand) { log(`  REFUSING ${label} gas top-up: ${costUsd.toFixed(2)} ${asset} for $${worthUsd.toFixed(2)} of ETH — implausible, holding`); continue; }
-            }
+            // A cost far above the ETH it buys is a bad quote, not a price: refuse it rather than hand the
+            // aggregator the whole balance for a sliver of gas. Valued exactly (stablecoin decimals, wstETH's
+            // on-chain rate) — never by the aggregator being checked — and an asset that cannot be valued is held.
+            const ethUsd = await ethUsdPrice();
+            const costUsd = await usdValueOf(asset, qe.amountIn, ethUsd);
+            if (costUsd === null) { log(`  ${label} gas top-up: cannot value ${asset} — holding`); continue; }
+            const worthUsd = (Number(need) / 1e18) * ethUsd;
+            if (costUsd > worthUsd * CFG.quoteSanityBand) { log(`  REFUSING ${label} gas top-up: $${costUsd.toFixed(2)} of ${asset} for $${worthUsd.toFixed(2)} of ETH — implausible, holding`); continue; }
             if (qe.amountIn > 0n && qe.amountIn <= left) {
               log(`  ${label} gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH (to ${who})`);
               await fireSwap(qe, wallet);
