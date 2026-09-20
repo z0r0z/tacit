@@ -7080,6 +7080,44 @@ function decodeCXferPayload(payload) {
   return { kind: 'cxfer', assetId, kernelSig, outputs, rangeproof };
 }
 
+// T_CXFER_BOUND (0x39) — the GENERATION-BOUND CXFER. Byte-for-byte T_CXFER with a 32-byte
+// `target_chain_binding` inserted after the opcode:
+//   0x39 ‖ target(32) ‖ asset_id(32) ‖ kernel_sig(64) ‖ N(1∈{1,2,4,8}) ‖ N×(commitment(33)‖amount_ct(8))
+//   ‖ rpLen(2 LE) ‖ rangeproof
+// Mirrors cxfer-core::bitcoin::parse_cxfer_bound_envelope and dapp/burn-deposit-bitcoin.js's
+// parseCxferBoundEnvelope, but returns the same shape decodeCXferPayload does so the holdings scanner
+// and the amount/blinding recovery path can treat it as an ordinary cxfer.
+//
+// The binding matters to the REFLECTION, not to Bitcoin: a bound note's reflected leaf is
+// btc_note_leaf_bound(asset‖Cx‖Cy‖auth_key‖chain_binding) rather than btc_note_leaf(…), which is what
+// makes it spendable on the Ethereum fast lane. On the Bitcoin side it is an ordinary note UTXO — same
+// vout layout (cxfer-core canonical_output_vout maps 0x39 to identity, as it does 0x22/0x23) and the
+// same ECDH/self amount recovery — so discovery and Bitcoin-side spending need nothing special.
+const T_CXFER_BOUND = 0x39;
+function decodeCXferBoundPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 32 + 64 + 1 + (33 + 8) + 2) return null;
+  if (payload[0] !== T_CXFER_BOUND) return null;
+  let p = 1;
+  const targetChainBinding = payload.slice(p, p + 32); p += 32;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(n)) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, encryptedAmount });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rpLen);
+  return { kind: 'cxferbound', assetId, targetChainBinding, kernelSig, outputs, rangeproof };
+}
+
 // T_CXFER_BPP (SPEC §5.47 amendment) — byte-for-byte mirror of CXFER except
 // the opcode is 0x22 and the rangeproof is a Bulletproofs+ aggregated proof
 // instead of standard Bulletproofs. Kernel sig, asset_id, commitment, and
@@ -16651,7 +16689,7 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
     for (const node of slice) {
       const { tx, env } = decodedMap.get(node.txid) || { tx: null, env: null };
       if (!tx || !env) continue;
-      if (env.opcode === T_CXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
+      if (env.opcode === T_CXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_CXFER_BOUND) {
         for (let i = 1; i < tx.vin.length; i++) enqueue(tx.vin[i].txid, tx.vin[i].vout);
       } else if (env.opcode === T_AXFER || env.opcode === T_AXFER_BPP) {
         const dec = env.opcode === T_AXFER_BPP
@@ -19453,10 +19491,11 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.commitment;
-    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP) {
+    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP || env.opcode === T_CXFER_BOUND) {
       const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
                 : env.opcode === T_AXFER       ? decodeAxferPayload(env.payload)
                 : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
+                : env.opcode === T_CXFER_BOUND ? decodeCXferBoundPayload(env.payload)
                 : env.opcode === T_AXFER_BPP   ? decodeAxferBppPayload(env.payload)
                                                : decodeCBurnPayload(env.payload);
       if (!dec) continue;
@@ -20245,10 +20284,11 @@ async function _scanHoldingsImpl() {
       }
     }
 
-    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP) {
+    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP || env.opcode === T_CXFER_BOUND) {
       const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
                 : env.opcode === T_AXFER       ? decodeAxferPayload(env.payload)
                 : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
+                : env.opcode === T_CXFER_BOUND ? decodeCXferBoundPayload(env.payload)
                 : env.opcode === T_AXFER_BPP   ? decodeAxferBppPayload(env.payload)
                                                : decodeCBurnPayload(env.payload);
       if (dec && tx.vin.length >= 2) {
