@@ -1396,6 +1396,15 @@ function buildRelayFeeGate(env) {
     return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit: weiPerCEthUnit, marginBps });
   };
 }
+// True iff the op carries a cETH fee leg above zero — the one fee the relay's gate can hold to a floor.
+function hasVerifiableFee(type, op) {
+  try {
+    const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
+    if (!cEth?.assetId || !op || typeof op !== 'object') return false;
+    return totalFee(type, op) > 0n && String(feeAssetOf(type, op) || '').toLowerCase() === String(cEth.assetId).toLowerCase();
+  } catch { return false; }
+}
+
 // Price an op's OWN fee legs in USD, for the relay's profitability gate.
 //
 // Deliberately derived, never declared: `totalFee`/`feeAssetOf` read the same witness fields the guest
@@ -1560,8 +1569,11 @@ async function handleConfidentialSubmit(req, env, cors) {
   // generous allowance (they are paying for the work); prove-only and unflagged submits keep the strict
   // one. Metering is no longer something the floor can turn off.
   const submitMode = body.mode || 'settle';
-  const feeFloorOn = env.RELAY_FEE_FLOOR === '1';
-  const paying = submitMode !== 'prove' && feeFloorOn;
+  // "Paying" means the gate can actually VERIFY a fee: a cETH fee leg above zero, which buildRelayFeeGate
+  // then holds to the gas-priced floor. Anything it cannot price — zero-fee ops, or a fee in any other
+  // asset — passes that gate ungated, so it must stay on the strict bucket. Keying this on the flag alone
+  // would hand the looser allowance to exactly the traffic the gate is blind to.
+  const paying = submitMode !== 'prove' && env.RELAY_FEE_FLOOR === '1' && hasVerifiableFee(body.type, body.op);
   {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const rl = paying

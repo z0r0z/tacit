@@ -153,8 +153,24 @@ test('metering is no longer something the fee floor can switch off', () => {
   // re-opened zero-fee floods for every other asset. That is why the floor could never be turned on.
   ok(!/submitMode === 'prove' \|\| env\.RELAY_FEE_FLOOR !== '1'/.test(worker),
     'metering is still gated on RELAY_FEE_FLOOR');
-  ok(/const paying = submitMode !== 'prove' && feeFloorOn/.test(worker), 'no separate paid bucket');
+  ok(/const paying = submitMode !== 'prove' && env\.RELAY_FEE_FLOOR === '1' && hasVerifiableFee\(body\.type, body\.op\)/.test(worker),
+    'the paid bucket must require a fee the gate can actually verify, not just the flag');
   ok(/'paid', Number\(env\.PAID_RL_BURST/.test(worker), 'paid submits must use their own bucket');
+});
+
+test('only a VERIFIABLE fee earns the generous bucket', () => {
+  // Run the real helper. A zero-fee op, or a fee in an asset the gate cannot price, must stay strict —
+  // those are precisely the submits the gate passes through blind.
+  const src = worker.slice(worker.indexOf('function hasVerifiableFee'), worker.indexOf("// Price an op's OWN fee legs"));
+  const cEthId = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
+  const totalFee = (t, op) => BigInt(op.fee ?? 0);
+  const feeAssetOf = (t, op) => op.asset || null;
+  const _CONFIDENTIAL_DEPLOYMENTS = { mainnet: { assets: [{ ticker: 'cETH', assetId: cEthId }] } };
+  const f = new Function('totalFee', 'feeAssetOf', '_CONFIDENTIAL_DEPLOYMENTS', src + '; return hasVerifiableFee;')(totalFee, feeAssetOf, _CONFIDENTIAL_DEPLOYMENTS);
+  ok(f('transfer', { asset: cEthId, fee: 5000 }) === true, 'a cETH fee > 0 is verifiable');
+  ok(f('transfer', { asset: cEthId, fee: 0 }) === false, 'a zero fee must NOT earn the paid bucket');
+  ok(f('transfer', { asset: '0x' + 'ab'.repeat(32), fee: 5000 }) === false, 'a fee in an asset the gate cannot price must not qualify');
+  ok(f('transfer', null) === false && f('transfer', 'junk') === false, 'a malformed op must not qualify or throw');
 });
 
 test('rate-limit buckets cannot collide', () => {
