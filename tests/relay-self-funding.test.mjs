@@ -209,7 +209,7 @@ test('metering is no longer something the fee floor can switch off', () => {
   // re-opened zero-fee floods for every other asset. That is why the floor could never be turned on.
   ok(!/submitMode === 'prove' \|\| env\.RELAY_FEE_FLOOR !== '1'/.test(worker),
     'metering is still gated on RELAY_FEE_FLOOR');
-  ok(/const paying = submitMode !== 'prove' && env\.RELAY_FEE_FLOOR === '1' && hasVerifiableFee\(body\.type, body\.op\)/.test(worker),
+  ok(/const paying = submitMode !== 'prove' && env\.RELAY_FEE_FLOOR === '1' && hasVerifiableFee\(body\.type, body\.op, env\)/.test(worker),
     'the paid bucket must require a fee the gate can actually verify, not just the flag');
   ok(/'paid', Number\(env\.PAID_RL_BURST/.test(worker), 'paid submits must use their own bucket');
 });
@@ -260,7 +260,10 @@ test('the floor tracks live gas and ETH price, not a constant', async () => {
 
 // ── BTC-denominated assets: cBTC is BTC, cTAC is a reference price in sats ────
 const cTac = ASSET('cTAC');
-const TAC_DEFAULT_SATS = Number(/const TAC_PRICE_SATS_DEFAULT = (\d+);/.exec(worker)[1]); // follow the source, don't hard-code it
+// An arbitrary value for the tests. It is not a price anyone should read anything into: the real reference lives
+// in private deployment config (TAC_PRICE_SATS), never in source.
+const TEST_TAC_SATS = 200;
+const TAC_ENV = { TAC_PRICE_SATS: String(TEST_TAC_SATS) };
 const usdFloorAt = (gasWei, ethUsd = 2570) => (Number(rq.floorWei({ gasPriceWei: gasWei, effects: 2n, marginBps: 1000n })) / 1e18) * ethUsd;
 const unitsForUsd = (asset, usd, { btcUsd = 80000, sats = 1e8 } = {}) => {
   const perUnit = Number(BigInt(asset.unitScale)) / 10 ** Number(asset.decimals); // whole tokens per unit
@@ -274,25 +277,34 @@ test('cBTC is priced at 1:1 with BTC and held to the same floor', async () => {
   ok(await gate({ type: 'transfer', op: transfer(cBtc, unitsForUsd(cBtc, floor * 0.5)) }) === false, 'a cBTC fee worth half the floor must be rejected — it was free before');
 });
 
-test('cTAC is priced from the sats reference, and the reference is overridable', async () => {
+test('cTAC is priced from the configured reference, and changing it changes the value', async () => {
   const floor = usdFloorAt(60_000_000n);
-  // at the default price a fee worth 1.5x the floor in TAC must pass, half must not
-  const g = loadGate({ btcUsd: 80000 }).gate;
-  const overDefault = unitsForUsd(cTac, floor * 1.5, { sats: TAC_DEFAULT_SATS }), underDefault = unitsForUsd(cTac, floor * 0.5, { sats: TAC_DEFAULT_SATS });
-  ok(await g({ type: 'transfer', op: transfer(cTac, overDefault) }) === true, 'cTAC fee above the floor at the default price must pass');
-  ok(await g({ type: 'transfer', op: transfer(cTac, underDefault) }) === false, 'cTAC fee below the floor at the default price must be rejected');
+  // a fee worth 1.5x the floor in TAC must pass, half must not
+  const g = loadGate({ btcUsd: 80000, env: TAC_ENV }).gate;
+  const overDefault = unitsForUsd(cTac, floor * 1.5, { sats: TEST_TAC_SATS }), underDefault = unitsForUsd(cTac, floor * 0.5, { sats: TEST_TAC_SATS });
+  ok(await g({ type: 'transfer', op: transfer(cTac, overDefault) }) === true, 'cTAC fee above the floor at the configured price must pass');
+  ok(await g({ type: 'transfer', op: transfer(cTac, underDefault) }) === false, 'cTAC fee below the floor at the configured price must be rejected');
   // If TAC is really worth half as much, the SAME token count is worth half the dollars and must now fail.
-  const halved = loadGate({ btcUsd: 80000, env: { TAC_PRICE_SATS: String(TAC_DEFAULT_SATS / 2) } }).gate;
-  // overDefault was 1.5x the floor at the default, so at half the price it is worth 0.75x the floor and must fail.
+  const halved = loadGate({ btcUsd: 80000, env: { TAC_PRICE_SATS: String(TEST_TAC_SATS / 2) } }).gate;
+  // overDefault was 1.5x the floor at the configured price, so at half the price it is worth 0.75x the floor and must fail.
   ok(await halved({ type: 'transfer', op: transfer(cTac, overDefault) }) === false, 'halving TAC_PRICE_SATS must halve the value of a given TAC fee');
-  ok(await halved({ type: 'transfer', op: transfer(cTac, unitsForUsd(cTac, floor * 1.5, { sats: TAC_DEFAULT_SATS / 2 })) }) === true, 'and a fee sized for the new price must pass');
+  ok(await halved({ type: 'transfer', op: transfer(cTac, unitsForUsd(cTac, floor * 1.5, { sats: TEST_TAC_SATS / 2 })) }) === true, 'and a fee sized for the new price must pass');
 });
 
-test('the cTAC reference is not overvalued against the trade record', () => {
-  // The public record (228 trades) puts the volume-weighted average at ~172 sats and the last fill at 180. A default
-  // materially above that overvalues every cTAC fee and under-collects. This pins the conservative side.
-  ok(TAC_DEFAULT_SATS <= 200, `TAC_PRICE_SATS default is ${TAC_DEFAULT_SATS}, above what has traded (VWAP ~172) — that overvalues cTAC fees`);
-  ok(TAC_DEFAULT_SATS >= 100, `TAC_PRICE_SATS default is ${TAC_DEFAULT_SATS}, implausibly low against the record`);
+test('with no cTAC reference configured, cTAC is unpriced — never guessed', async () => {
+  // The reference is operator-supplied private config with no default in source. Absent, the honest answer is
+  // "we cannot price this": the gate passes it through and it does not earn the paid bucket.
+  const { gate, hasVerifiableFee } = loadGate({ btcUsd: 80000 });
+  ok(await gate({ type: 'transfer', op: transfer(cTac, 1) }) === true, 'an unpriced cTAC fee must pass through, not be refused');
+  ok(hasVerifiableFee('transfer', transfer(cTac, 1_000_000)) === false, 'an unpriced cTAC fee must not earn the paid bucket');
+});
+
+test('a configured cTAC reference makes cTAC verifiable (env must reach hasVerifiableFee)', () => {
+  // Regression: hasVerifiableFee was called without env, so a CONFIGURED cTAC still looked unverifiable and
+  // its submits were metered on the strict bucket.
+  const { hasVerifiableFee } = loadGate({ btcUsd: 80000 });
+  ok(hasVerifiableFee('transfer', transfer(cTac, 1_000_000), TAC_ENV) === true, 'a configured cTAC fee must be verifiable');
+  ok(/hasVerifiableFee\(body\.type, body\.op, env\)/.test(worker), 'the submit handler must pass env to hasVerifiableFee');
 });
 
 test('the BTC price moves the requirement, not a constant', async () => {

@@ -1440,20 +1440,14 @@ async function handleReflectionAck(req, env, cors) {
 // Anything else (cBTC, cTAC, an unregistered asset) returns null: we hold no oracle for it, so it is neither
 // gated nor priced — and the relay counts it as unpaid work rather than as free permission.
 const USD_PEGGED_FEE_TICKERS = ['cUSD', 'cUSDC', 'cUSDT'];
-// Reference price for cTAC in sats. There is no reliable on-chain oracle for it — the pool is thin and a
-// thin pool is manipulable — so it is anchored on what has actually traded on the Bitcoin-side orderbook.
-//
-// This number is a COST FLOOR, so the error that matters is overvaluing: a fee paid in cTAC is accepted as
-// worth more than it is, and the relay quietly under-collects. Undervaluing merely asks for a little more TAC.
-// It started at 250 (a round estimate); the public trade record (228 trades, 2026-05-24 to 2026-08-24) says
-// the volume-weighted average over the WHOLE record is ~172 sats and the last fill 180, and only the median
-// (253) is near 250 — so 250 overvalued TAC by roughly 45%. 175 sits with the evidence.
-//
-// Whole-record and volume-weighted on purpose: TAC has been waiting on a relaunch, so a low recent window
-// (July, 55% of volume at ~103) reflects a lull rather than what TAC is worth, and chasing it would undervalue
-// it. Reproduce with `node tools/tac-price-reference.mjs`. A judgement, not a measurement, hence overridable
-// with TAC_PRICE_SATS.
-const TAC_PRICE_SATS_DEFAULT = 175;
+// cTAC has no reliable on-chain oracle, so its reference price is operator-supplied: TAC_PRICE_SATS, in sats
+// per TAC. There is deliberately NO default here. The value is a pricing judgement, it belongs in the
+// deployment's private configuration rather than in source, and without one cTAC is simply left unpriced
+// (the relay logs such ops as unpaid work) — better than guessing.
+function tacPriceSats(env) {
+  const v = Number(env && env.TAC_PRICE_SATS);
+  return v > 0 ? v : null;
+}
 function feeAssetRow(type, op, env = {}) {
   try {
     if (!op || typeof op !== 'object') return null;
@@ -1471,8 +1465,8 @@ function feeAssetRow(type, op, env = {}) {
     const perUnit = Number(BigInt(row.unitScale)) / 10 ** dec; // whole tokens per in-pool unit
     if (row.ticker === 'cBTC') return { row, kind: 'btc', btcPerUnit: perUnit }; // 1:1 with BTC
     if (row.ticker === 'cTAC') {
-      const sats = Number(env.TAC_PRICE_SATS || TAC_PRICE_SATS_DEFAULT);
-      if (!(sats > 0)) return null;
+      const sats = tacPriceSats(env);
+      if (!sats) return null; // no configured reference -> unpriced, never guessed
       return { row, kind: 'btc', btcPerUnit: (perUnit * sats) / 1e8 };
     }
     return { row, kind: 'usd', usdPerUnit: perUnit };
@@ -1515,8 +1509,8 @@ function buildRelayFeeGate(env) {
   };
 }
 // True iff the op carries a fee above zero in an asset the gate can value — the fees it can hold to a floor.
-function hasVerifiableFee(type, op) {
-  try { return feeAssetRow(type, op) !== null && totalFee(type, op) > 0n; } catch { return false; }
+function hasVerifiableFee(type, op, env = {}) {
+  try { return feeAssetRow(type, op, env) !== null && totalFee(type, op) > 0n; } catch { return false; }
 }
 
 // Price an op's OWN fee legs in USD, for the relay's profitability gate.
@@ -1727,7 +1721,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   // then holds to the gas-priced floor. Anything it cannot price — zero-fee ops, or a fee in any other
   // asset — passes that gate ungated, so it must stay on the strict bucket. Keying this on the flag alone
   // would hand the looser allowance to exactly the traffic the gate is blind to.
-  const paying = submitMode !== 'prove' && env.RELAY_FEE_FLOOR === '1' && hasVerifiableFee(body.type, body.op);
+  const paying = submitMode !== 'prove' && env.RELAY_FEE_FLOOR === '1' && hasVerifiableFee(body.type, body.op, env);
   {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const rl = paying
