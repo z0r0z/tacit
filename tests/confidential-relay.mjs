@@ -197,4 +197,25 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('a prove-only ack without publicValues/proof fails closed');
 }
 
+// ───────────────── 3. a transient status-poll error does not abandon a running job ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const base = mockFetch(q);
+  let failNext = 3;
+  const flaky = async (u, o) => { if (String(u).includes('/confidential/status') && failNext > 0) { failNext--; throw new Error('fetch failed'); } return base(u, o); };
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: flaky });
+  const { jobId } = await relay.submitOp({ type: 'swap', op: swapOp, memos: ['0xbb'] });
+  await q.nextJob(); await q.ackJob(jobId, { txHash: '0xfeed' });
+  const final = await relay.waitForSettle(jobId, { intervalMs: 0, sleep: noSleep });
+  assert.strictEqual(final.status, 'settled');
+  assert.strictEqual(failNext, 0, 'the three transient failures were all retried');
+  ok('waitForSettle retries transient status errors and still resolves');
+
+  const dead = async (u, o) => { if (String(u).includes('/confidential/status')) throw new Error('connect timeout'); return base(u, o); };
+  const relay2 = makeConfidentialRelay({ base: '', fetchImpl: dead });
+  const j2 = (await relay2.submitOp({ type: 'swap', op: swapOp, memos: ['0xcc'] })).jobId;
+  await assert.rejects(() => relay2.waitForSettle(j2, { intervalMs: 0, sleep: noSleep }), (e) => e.message.includes(j2) && /8 times in a row/.test(e.message));
+  ok('persistent status errors still fail, naming the job so a caller can resume');
+}
+
 console.log(`\n${n} confidential-relay checks passed.`);

@@ -112,13 +112,28 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     return asJson(res);
   }
 
+  // A status poll that survives a transient network error (a dropped connection, a header timeout) instead of
+  // abandoning a job that is still proving. Gives up only after `maxErrors` polls in a row fail, and the error then
+  // names the job so a caller can resume polling it rather than resubmit.
+  async function pollStatus(jobId, state, { wait, intervalMs, maxErrors = 8 } = {}) {
+    for (;;) {
+      try { const st = await status(jobId); state.errors = 0; return st; }
+      catch (e) {
+        state.errors = (state.errors || 0) + 1;
+        if (state.errors >= maxErrors) throw new Error(`status polling for job ${jobId} failed ${state.errors} times in a row (${e && e.message || e}); the job may still be running`);
+        await wait(intervalMs);
+      }
+    }
+  }
+
   // Poll until the job settles or fails. onUpdate(state) fires on each status change.
   async function waitForSettle(jobId, { intervalMs = 4000, timeoutMs = 5 * 60 * 1000, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null;
+    const pollState = {};
     for (;;) {
-      const st = await status(jobId);
+      const st = await pollStatus(jobId, pollState, { wait, intervalMs });
       if (st.status !== last) { last = st.status; if (onUpdate) onUpdate(st); }
       if (st.status === 'settled') return st;
       if (st.status === 'failed') throw new Error(`settle failed: ${st.error || 'unknown'}`);
@@ -142,8 +157,9 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null;
+    const pollState = {};
     for (;;) {
-      const st = await status(jobId);
+      const st = await pollStatus(jobId, pollState, { wait, intervalMs });
       if (st.status !== last) { last = st.status; if (onUpdate) onUpdate(st); }
       if (st.status === 'proven') return st;
       if (st.status === 'settled') return st;
