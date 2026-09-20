@@ -1440,35 +1440,60 @@ async function handleReflectionAck(req, env, cors) {
 // Anything else (cBTC, cTAC, an unregistered asset) returns null: we hold no oracle for it, so it is neither
 // gated nor priced — and the relay counts it as unpaid work rather than as free permission.
 const USD_PEGGED_FEE_TICKERS = ['cUSD', 'cUSDC', 'cUSDT'];
-function feeAssetRow(type, op) {
+// Reference price for cTAC in sats. There is no reliable on-chain oracle for it — the pool is thin and a
+// thin pool is manipulable — but the Bitcoin-side orderbook has traded it around 250 sats over time, which is
+// a far steadier anchor. Overridable (TAC_PRICE_SATS) because it is a judgement, not a measurement.
+const TAC_PRICE_SATS_DEFAULT = 250;
+function feeAssetRow(type, op, env = {}) {
   try {
     if (!op || typeof op !== 'object') return null;
     const assetId = feeAssetOf(type, op);
     if (!assetId) return null;
     const want = String(assetId).toLowerCase();
     const rows = (_CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || []).filter((a) => String(a.assetId || '').toLowerCase() === want);
-    const row = rows.find((a) => a.ticker === 'cETH') || rows.find((a) => USD_PEGGED_FEE_TICKERS.includes(a.ticker));
+    const row = rows.find((a) => a.ticker === 'cETH')
+      || rows.find((a) => USD_PEGGED_FEE_TICKERS.includes(a.ticker))
+      || rows.find((a) => a.ticker === 'cBTC' || a.ticker === 'cTAC');
     if (!row || !row.unitScale) return null;
     if (row.ticker === 'cETH') return { row, kind: 'eth' };
     const dec = Number(row.decimals);
     if (!Number.isInteger(dec) || dec < 0 || dec > 36) return null;
-    return { row, kind: 'usd', usdPerUnit: Number(BigInt(row.unitScale)) / 10 ** dec };
+    const perUnit = Number(BigInt(row.unitScale)) / 10 ** dec; // whole tokens per in-pool unit
+    if (row.ticker === 'cBTC') return { row, kind: 'btc', btcPerUnit: perUnit }; // 1:1 with BTC
+    if (row.ticker === 'cTAC') {
+      const sats = Number(env.TAC_PRICE_SATS || TAC_PRICE_SATS_DEFAULT);
+      if (!(sats > 0)) return null;
+      return { row, kind: 'btc', btcPerUnit: (perUnit * sats) / 1e8 };
+    }
+    return { row, kind: 'usd', usdPerUnit: perUnit };
   } catch { return null; }
+}
+// Dollars per in-pool unit, or null when it cannot be valued right now (a BTC-denominated asset needs the
+// BTC/USD feed). Null means "unpriced" to every caller — never a guess.
+async function usdPerUnitOf(p) {
+  if (p.kind === 'usd') return p.usdPerUnit;
+  if (p.kind === 'btc') {
+    const btcUsd = await _btcUsdPrice().catch(() => null);
+    return btcUsd ? p.btcPerUnit * btcUsd : null;
+  }
+  return null;
 }
 
 function buildRelayFeeGate(env) {
   if (env.RELAY_FEE_FLOOR !== '1') return null;
   const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
   return async ({ type, op }) => {
-    const p = feeAssetRow(type, op);
+    const p = feeAssetRow(type, op, env);
     if (!p) return true; // can't price it — pass through
     let weiPerFeeUnit;
     if (p.kind === 'eth') {
       weiPerFeeUnit = BigInt(p.row.unitScale);
     } else {
+      const usdPerUnit = await usdPerUnitOf(p);
+      if (!usdPerUnit) return true; // no BTC price — fail open rather than stall the whole relay
       const ethUsd = await _ethUsdPrice().catch(() => null);
       if (!ethUsd) return true; // no ETH price — fail open rather than stall the whole relay
-      weiPerFeeUnit = BigInt(Math.floor((p.usdPerUnit / ethUsd) * 1e18));
+      weiPerFeeUnit = BigInt(Math.floor((usdPerUnit / ethUsd) * 1e18));
       if (weiPerFeeUnit <= 0n) return true;
     }
     let gasPriceHex;
@@ -1500,12 +1525,17 @@ function buildFeePricer(env) {
     try { units = totalFee(type, op); } catch { return null; }
     if (!units || units <= 0n) return { feeUnits: '0', feeUsd: 0 };
     const out = { feeUnits: units.toString(), feeUsd: null };
-    const p = feeAssetRow(type, op);
+    const p = feeAssetRow(type, op, env);
     if (!p) return out; // carried a fee, can't price it
-    if (p.kind === 'usd') { out.feeUsd = Number(units) * p.usdPerUnit; return out; }
-    const ethUsd = await _ethUsdPrice().catch(() => null);
-    if (!ethUsd) return out;
-    out.feeUsd = (Number(units * BigInt(p.row.unitScale)) / 1e18) * ethUsd;
+    if (p.kind === 'eth') {
+      const ethUsd = await _ethUsdPrice().catch(() => null);
+      if (!ethUsd) return out;
+      out.feeUsd = (Number(units * BigInt(p.row.unitScale)) / 1e18) * ethUsd;
+      return out;
+    }
+    const usdPerUnit = await usdPerUnitOf(p);
+    if (!usdPerUnit) return out;
+    out.feeUsd = Number(units) * usdPerUnit;
     return out;
   };
 }
@@ -2300,28 +2330,36 @@ async function _ethGasPrice(network) {
 // own cost model reads, so both sides of the gate agree on what a wei is worth. Cached ~1 min: the feed
 // moves far more slowly than submits arrive, and a per-submit RPC round trip would be a latency tax on
 // every op. Returns null on failure, which the caller turns into "unpriced" rather than a wrong number.
-let _ethUsd = { at: 0, v: null };
-async function _ethUsdPrice(network = 'mainnet') {
-  if (Date.now() - _ethUsd.at < 60_000 && _ethUsd.v) return _ethUsd.v;
-  const body = JSON.stringify({
-    jsonrpc: '2.0', id: 1, method: 'eth_call',
-    params: [{ to: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', data: '0xfeaf968c' }, 'latest'], // latestRoundData()
-  });
+const CHAINLINK_ETH_USD = '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419';
+const CHAINLINK_BTC_USD = '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c';
+// An answer older than this is treated as no answer at all. A stale feed is worse than a missing one: it
+// silently misprices every fee while looking perfectly healthy, whereas "unavailable" makes the gate fail
+// open and the relay count the op as unpriced. Both feeds beat hourly, so three hours is a wide margin.
+const CHAINLINK_MAX_AGE_S = 3 * 3600;
+const _chainlinkCache = new Map();
+async function _chainlinkUsd(feed, network = 'mainnet') {
+  const hit = _chainlinkCache.get(feed);
+  if (hit && Date.now() - hit.at < 60_000 && hit.v) return hit.v;
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: feed, data: '0xfeaf968c' }, 'latest'] }); // latestRoundData()
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
     try {
       const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
       if (!r.ok) continue;
       const j = await r.json();
-      if (typeof j?.result !== 'string' || j.result.length < 194) continue;
-      // latestRoundData() -> (roundId, answer, startedAt, updatedAt, answeredInRound); answer is word 1, 8dp.
-      const usd = Number(BigInt('0x' + j.result.slice(2 + 64, 2 + 128))) / 1e8;
-      if (!Number.isFinite(usd) || usd <= 0) continue;
-      _ethUsd = { at: Date.now(), v: usd };
+      if (typeof j?.result !== 'string' || j.result.length < 322) continue;
+      // latestRoundData() -> (roundId, answer, startedAt, updatedAt, answeredInRound), one 32-byte word each; answer is 8dp.
+      const word = (i) => BigInt('0x' + j.result.slice(2 + 64 * i, 2 + 64 * (i + 1)));
+      const usd = Number(word(1)) / 1e8;
+      const age = Math.floor(Date.now() / 1000) - Number(word(3));
+      if (!Number.isFinite(usd) || usd <= 0 || age > CHAINLINK_MAX_AGE_S) continue;
+      _chainlinkCache.set(feed, { at: Date.now(), v: usd });
       return usd;
     } catch {}
   }
   return null;
 }
+const _ethUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_ETH_USD, network);
+const _btcUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_BTC_USD, network);
 // eth_getStorageAt for reading internal (no-getter) pool mappings by slot — e.g.
 // ConfidentialPool.nullifierSpent[ν], whose auto-getter was internalized to fit EIP-170.
 async function _ethGetStorageAt(network, address, slot) {

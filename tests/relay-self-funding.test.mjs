@@ -220,10 +220,11 @@ test('metering is no longer something the fee floor can switch off', () => {
 const rq = await import(join(ROOT, 'worker/src/relay-quote.js'));
 const { CONFIDENTIAL_DEPLOYMENTS: DEPLOY } = await import(join(ROOT, 'dapp/confidential-deployments.js'));
 const gateSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf("// Price an op's OWN fee legs"));
-function loadGate({ gasWei = 60_000_000n, ethUsd = 2570 } = {}) {
-  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice',
-    gateSrc + '; return { feeAssetRow, hasVerifiableFee, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1" }) };');
-  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x' + gasWei.toString(16), async () => ethUsd);
+function loadGate({ gasWei = 60_000_000n, ethUsd = 2570, btcUsd = 80000, env = {} } = {}) {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'ENV',
+    gateSrc + '; return { feeAssetRow, hasVerifiableFee, usdPerUnitOf, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1", ...ENV }) };');
+  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x' + gasWei.toString(16), async () => ethUsd,
+    async () => { if (btcUsd === null) throw new Error('btc feed down'); return btcUsd; }, env);
 }
 const ASSET = (t) => DEPLOY.mainnet.assets.filter((a) => a.ticker === t)[0];
 const cEth = ASSET('cETH'), cUsd = ASSET('cUSD'), cBtc = ASSET('cBTC');
@@ -256,11 +257,73 @@ test('the floor tracks live gas and ETH price, not a constant', async () => {
   ok(await loadGate({ gasWei: 20_000_000_000n }).gate({ type: 'transfer', op: transfer(cUsd, fee) }) === false, '$0.10 must NOT cover the floor at 20 gwei');
 });
 
+// ── BTC-denominated assets: cBTC is BTC, cTAC is a reference price in sats ────
+const cTac = ASSET('cTAC');
+const usdFloorAt = (gasWei, ethUsd = 2570) => (Number(rq.floorWei({ gasPriceWei: gasWei, effects: 2n, marginBps: 1000n })) / 1e18) * ethUsd;
+const unitsForUsd = (asset, usd, { btcUsd = 80000, sats = 1e8 } = {}) => {
+  const perUnit = Number(BigInt(asset.unitScale)) / 10 ** Number(asset.decimals); // whole tokens per unit
+  return BigInt(Math.ceil(usd / (perUnit * (sats / 1e8) * btcUsd)));
+};
+
+test('cBTC is priced at 1:1 with BTC and held to the same floor', async () => {
+  const { gate } = loadGate({ btcUsd: 80000 });
+  const floor = usdFloorAt(60_000_000n);
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, unitsForUsd(cBtc, floor * 1.5)) }) === true, 'a cBTC fee worth 1.5x the floor must pass');
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, unitsForUsd(cBtc, floor * 0.5)) }) === false, 'a cBTC fee worth half the floor must be rejected — it was free before');
+});
+
+test('cTAC is priced from the sats reference, and the reference is overridable', async () => {
+  const floor = usdFloorAt(60_000_000n);
+  // at the default 250 sats a TAC is ~$0.20; a fee worth 1.5x the floor in TAC must pass, half must not
+  const g = loadGate({ btcUsd: 80000 }).gate;
+  const overDefault = unitsForUsd(cTac, floor * 1.5, { sats: 250 }), underDefault = unitsForUsd(cTac, floor * 0.5, { sats: 250 });
+  ok(await g({ type: 'transfer', op: transfer(cTac, overDefault) }) === true, 'cTAC fee above the floor at 250 sats must pass');
+  ok(await g({ type: 'transfer', op: transfer(cTac, underDefault) }) === false, 'cTAC fee below the floor at 250 sats must be rejected');
+  // If TAC is really worth half as much, the SAME token count is worth half the dollars and must now fail.
+  const halved = loadGate({ btcUsd: 80000, env: { TAC_PRICE_SATS: '125' } }).gate;
+  // overDefault was 1.5x the floor at 250 sats, so at 125 sats it is worth 0.75x the floor and must fail.
+  ok(await halved({ type: 'transfer', op: transfer(cTac, overDefault) }) === false, 'halving TAC_PRICE_SATS must halve the value of a given TAC fee');
+  ok(await halved({ type: 'transfer', op: transfer(cTac, unitsForUsd(cTac, floor * 1.5, { sats: 125 })) }) === true, 'and a fee sized for the new price must pass');
+});
+
+test('the BTC price moves the requirement, not a constant', async () => {
+  const floor = usdFloorAt(60_000_000n);
+  const units = unitsForUsd(cBtc, floor * 1.5, { btcUsd: 80000 });
+  ok(await loadGate({ btcUsd: 80000 }).gate({ type: 'transfer', op: transfer(cBtc, units) }) === true, 'passes at $80k BTC');
+  ok(await loadGate({ btcUsd: 20000 }).gate({ type: 'transfer', op: transfer(cBtc, units) }) === false, 'the same sats are worth a quarter as much at $20k BTC and must now fail');
+});
+
+test('a BTC/USD outage fails OPEN for BTC-denominated fees', async () => {
+  const { gate, hasVerifiableFee } = loadGate({ btcUsd: null });
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, 1) }) === true, 'no BTC price must fail open, not reject every cBTC op');
+  ok(hasVerifiableFee('transfer', transfer(cBtc, 100)) === true, 'the asset is still verifiable in principle; only the price is unavailable');
+});
+
+test('the oracle reader rejects a stale answer instead of trusting it', () => {
+  // A stale feed looks healthy while silently misvaluing every fee. Run the real reader against canned
+  // Chainlink answers: fresh is accepted, old is treated as no answer.
+  const src = worker.slice(worker.indexOf('const CHAINLINK_ETH_USD'), worker.indexOf('const _ethUsdPrice'));
+  const mkAnswer = (usd, ageS) => {
+    const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+    return '0x' + w(1) + w(Math.round(usd * 1e8)) + w(0) + w(Math.floor(Date.now() / 1000) - ageS) + w(1);
+  };
+  const run = async (result) => {
+    const fetchStub = async () => ({ ok: true, json: async () => ({ result }) });
+    const f = new Function('fetch', '_TETH_ETH_RPCS', 'AbortSignal', src + '; return _chainlinkUsd;')(fetchStub, { mainnet: ['http://x'] }, AbortSignal);
+    return f('0xfeed' + Math.random());
+  };
+  return Promise.all([run(mkAnswer(80000, 60)), run(mkAnswer(80000, 4 * 3600)), run(mkAnswer(-5, 60))]).then(([fresh, stale, neg]) => {
+    ok(fresh === 80000, `a fresh answer must be accepted, got ${fresh}`);
+    ok(stale === null, `an answer older than 3h must be rejected, got ${stale}`);
+    ok(neg === null, 'a non-positive answer must be rejected');
+  });
+});
+
 test('an asset we cannot value is neither gated nor claimed verifiable', async () => {
   const { gate, hasVerifiableFee } = loadGate();
-  ok(await gate({ type: 'transfer', op: transfer(cBtc, 1) }) === true, 'cBTC has no oracle, so the gate must pass it through, not guess');
-  ok(hasVerifiableFee('transfer', transfer(cBtc, 1_000_000)) === false, 'an unpriceable fee must not earn the paid bucket');
-  ok(hasVerifiableFee('transfer', transfer({ assetId: '0x' + 'ab'.repeat(32) }, 5)) === false, 'an unknown asset must not qualify');
+  const stranger = { assetId: '0x' + 'ab'.repeat(32) };
+  ok(await gate({ type: 'transfer', op: transfer(stranger, 1) }) === true, 'an unregistered asset has no price, so the gate must pass it through, not guess');
+  ok(hasVerifiableFee('transfer', transfer(stranger, 1_000_000)) === false, 'an unpriceable fee must not earn the paid bucket');
 });
 
 test('only a VERIFIABLE fee earns the generous bucket', async () => {
@@ -273,10 +336,10 @@ test('only a VERIFIABLE fee earns the generous bucket', async () => {
 
 test('a gate that cannot read gas or ETH price fails OPEN, not closed', async () => {
   // A relay that rejects every op the moment an RPC blips is worse than one that eats a cheap settle.
-  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice',
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice',
     gateSrc + '; return buildRelayFeeGate({ RELAY_FEE_FLOOR: "1" });');
-  const noGas = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => null, async () => 2570);
-  const noEth = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => { throw new Error('rpc down'); });
+  const noGas = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => null, async () => 2570, async () => 80000);
+  const noEth = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => { throw new Error('rpc down'); }, async () => 80000);
   ok(await noGas({ type: 'transfer', op: transfer(cEth, 1) }) === true, 'no gas price must fail open');
   ok(await noEth({ type: 'transfer', op: transfer(cUsd, 1) }) === true, 'no ETH price must fail open for a USD fee');
 });
