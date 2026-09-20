@@ -334,7 +334,7 @@ test('rate-limit buckets cannot collide', () => {
 import { spawnSync } from 'node:child_process';
 const RELAY_PK = '0x' + '11'.repeat(32);
 const SETTLE_PK = '0x' + '22'.repeat(32);
-const SETTLE_ADDR = '0xfd1fa372ca3f94f67e91595dd49dbf939381b5d2';
+const SETTLE_ADDR = '0xb2daf4571cf2afffa34482b34a6ece01137e59dd';
 function wallets(extraEnv) {
   const script = `
     const c = await import('${join(ROOT, 'worker-relay/src/lib/chain.js')}');

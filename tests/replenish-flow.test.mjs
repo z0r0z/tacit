@@ -40,8 +40,8 @@ const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chai
   .replace('export const ZQUOTER_ABI =', 'return');
 const zQuoterAbi = new Function(abiSrc)();
 
-async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [] }) {
-  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor });
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0 }) {
+  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor });
   const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.replenishOnce(${JSON.stringify(opts)});`;
   const env = {
     PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
@@ -128,6 +128,37 @@ await test('an operator top-up is NOT swept into PROVE by default', async () => 
   });
   ok(swaps(sent).length === 0, `converted an operator's gas float to PROVE: ${show(swaps(sent))}`);
   ok(!sent.some((t) => t.value > 0n), 'moved ETH around even though both wallets were already above the buffer');
+});
+
+await test('dust is held, not swapped (the 0.81 USDT case)', async () => {
+  const { sent, log } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { [A.usdc]: { [settle]: 810_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(swaps(sent).length === 0, `swapped dust: ${show(swaps(sent))}`);
+  ok(/dust floor/.test(log), 'the hold must be logged so it is visible, not silent');
+});
+
+await test('a quote that is 100x off is refused, not sent', async () => {
+  // This is what the aggregator actually did on 2026-09-20: 417 PROVE for $0.81 of USDT. It reverted at
+  // simulation that time; the point is that the code must not depend on being lucky.
+  const { sent, log } = await run({
+    feeAssets: A.usdc, badProveQuoteFactor: 100,
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(!swaps(sent).some((x) => !x.exactOut), 'sent a PROVE swap on an implausible quote');
+  ok(/REFUSING/.test(log) && /implausible/.test(log), 'the refusal must be logged');
+});
+
+await test('a sane quote on the same balance IS converted (the guard is not just refusing everything)', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(swaps(sent).some((x) => !x.exactOut && x.recipient === relay), 'a plausible $1000 USDC balance was not converted to PROVE');
 });
 
 await test('a nonce race on the sink deposit is retried, not lost', async () => {

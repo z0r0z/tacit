@@ -112,8 +112,11 @@ zQuoter/zRouter, deposit the PROVE to the Succinct vApp. That loop is fully buil
 1. **`tacit-replenish` was SUSPENDED.** The flywheel had never run. Operator action.
 2. **`SETTLE_KEY` is split from `RELAY_KEY`.** The settle wallet is `msg.sender` on every settle, so it
    both earns the fee (`_payout`) and burns the gas. The monitor and replenish both looked only at
-   `RELAY_KEY`. Measured that day: relay `0x68575B…` held 0.0109 ETH and looked fine, while settle
-   `0xfd1fa372…` held 0.00098 — about ten settles — and nothing alerted. Both now iterate `fundedWallets`.
+   `RELAY_KEY`, so the wallet paying for settles was not watched at all. Both now iterate `fundedWallets`
+   (and the monitor, which has no `SETTLE_KEY`, uses `SETTLE_ADDRESS` — see §3). **Identify the settle
+   wallet from the service's own logs (`replenish` prints `earner 0x…`), never from who sends pool settles:**
+   prove-mode jobs are settled by the *user's* transaction, so other addresses appear as `msg.sender` too.
+   (Initially misread from settle senders as `0xfd1fa372…`; the real earner is `0xB2DA…59Dd`.)
 3. **The fee gate accepted any op without `op.feeUsd` for free**, which was every op. That is why every
    fee balance was flat zero. The gate now logs `UNPAID:` per job and counts them;
    `RELAY_REQUIRE_PRICED_FEE=1` refuses them outright. **Default off** — nothing populates `op.feeUsd`

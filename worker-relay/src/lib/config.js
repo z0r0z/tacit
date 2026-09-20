@@ -124,6 +124,14 @@ export const CFG = {
   // revenue, and a manual top-up is gas by intent — converting everything over the small gas buffer would
   // quietly turn an operator's deliberate float into PROVE. Below this it stays ETH; only genuine excess goes.
   ethSweepAboveWei: BigInt(opt('ETH_SWEEP_ABOVE_WEI', '100000000000000000')), // 0.1 ETH
+  // Don't convert less than this many dollars of a fee asset in one go. Dust swaps cost gas out of
+  // proportion, and the aggregator's quotes for tiny amounts are unreliable: on 2026-09-20 0.81 USDT was
+  // quoted at 417 PROVE (~$0.002 each) while 100 USDT quoted at the same 416 PROVE (~$0.24) — the first was
+  // simply wrong, and the swap correctly reverted. Below the floor the asset is held and accumulates.
+  sweepMinUsd: num('SWEEP_MIN_USD', 5),
+  // A PROVE quote is refused if it is more than this factor away from what an independent price implies.
+  // Wide on purpose: it exists to catch a quote that is off by 100x, not to second-guess normal slippage.
+  quoteSanityBand: num('QUOTE_SANITY_BAND', 2),
   // Relayed L2 exits: once the settle lands, call ConfidentialRouter.activateExit(recipe) from the settle key so
   // the user never sends it from a wallet that would link to the exit. Sent only when the op's bound fee covers
   // the settle plus the activation (ACTIVATE_MARGIN_BPS over that cost). ACTIVATE_EXITS=0 turns it off.

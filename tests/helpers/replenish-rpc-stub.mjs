@@ -13,7 +13,7 @@ const require = createRequire(new URL('../../worker-relay/package.json', import.
 const viem = await import(require.resolve('viem'));
 const { encodeFunctionResult, decodeFunctionData, parseTransaction, keccak256, recoverTransactionAddress, toHex } = viem;
 
-export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, nonceRaceFor = [] }) {
+export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, nonceRaceFor = [], badProveQuoteFactor = 0 }) {
   const sent = [];
   const raced = new Set(); // addresses that have already had their one injected 'nonce too low'
   const nonces = new Map();
@@ -52,10 +52,22 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
                 const { args } = decodeFunctionData({ abi: zQuoterAbi, data });
                 const [recipient, exactOut, tokenIn, tokenOut, amount] = args;
                 const marker = '0xa11ce000' + (exactOut ? '01' : '00') + lc(recipient).slice(2).padStart(64, '0');
-                // exact-out: ~$23 of a 6dp stable buys 0.009 ETH, so amountIn stays inside a realistic balance
+                // Realistic prices, so the code's own sanity checks are exercised rather than bypassed:
+                // ETH $1840 (the static fallback the relay uses when no feed answers), stables $1, PROVE $0.25.
+                const usdPerUnit = (t) => {
+                  t = lc(t);
+                  if (t === '0x0000000000000000000000000000000000000000') return 1840 / 1e18;
+                  if (t === '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' || t === '0xdac17f958d2ee523a2206206994597c13d831ec7') return 1e-6;
+                  if (t === lc(addr.prove)) return 0.25 / 1e18;
+                  return 1e-18;
+                };
+                const inU = usdPerUnit(tokenIn), outU = usdPerUnit(tokenOut);
+                const skew = lc(tokenOut) === lc(addr.prove) && badProveQuoteFactor ? badProveQuoteFactor : 1; // simulate a broken aggregator
+                const amountIn = exactOut ? BigInt(Math.ceil(Number(amount) * outU / inU)) + 1n : amount;
+                const amountOut = exactOut ? amount : BigInt(Math.floor(Number(amount) * inU / outU * skew));
                 const out = encodeFunctionResult({
                   abi: zQuoterAbi, functionName: 'buildSwapAuto',
-                  result: [{ source: 1, feeBps: 30n, amountIn: exactOut ? amount / 400_000_000n + 1n : amount, amountOut: exactOut ? amount : amount * 4n }, marker, 0n, tokenIn === '0x0000000000000000000000000000000000000000' ? amount : 0n],
+                  result: [{ source: 1, feeBps: 30n, amountIn, amountOut }, marker, 0n, tokenIn === '0x0000000000000000000000000000000000000000' ? amount : 0n],
                 });
                 return ok(id, out);
               }
@@ -64,7 +76,10 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
                 return ok(id, '0x' + BigInt(tokenBalances[lc(to)]?.[lc(owner)] ?? 0n).toString(16).padStart(64, '0'));
               }
               if (sel === '0xdd62ed3e') return ok(id, '0x' + '0'.repeat(64)); // allowance -> 0, forces an approve
-              if (sel === '0x313ce567') return ok(id, '0x' + (18).toString(16).padStart(64, '0')); // decimals
+              if (sel === '0x313ce567') { // decimals: the stables are 6dp, everything else 18
+                const six = ['0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', '0xdac17f958d2ee523a2206206994597c13d831ec7'].includes(lc(to));
+                return ok(id, '0x' + (six ? 6 : 18).toString(16).padStart(64, '0'));
+              }
               return ok(id, '0x');
             }
             case 'eth_sendRawTransaction': {

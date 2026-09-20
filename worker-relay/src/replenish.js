@@ -15,7 +15,7 @@
 import { getAddress, maxUint256 } from 'viem';
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import {
-  publicClient, relayWallet, fundedWallets, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
+  publicClient, relayWallet, fundedWallets, ethUsdPrice, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
   PROVE, VAPP, ZQUOTER, ZROUTER,
 } from './lib/chain.js';
 
@@ -199,6 +199,38 @@ async function depositProveToVApp(wallet = relayWallet) {
   log(`vApp deposit ok: tx=${h}`);
 }
 
+// Dollar value of an ERC20 fee balance, for the dust floor and the quote sanity check. Stablecoins are exact
+// (balance / 10^decimals); anything else (wstETH) is valued through its own ETH quote and the live ETH
+// price. Returns null when it cannot be valued — the caller then holds rather than guessing.
+const STABLE_FEE_ASSETS = new Set([
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC
+  '0xdac17f958d2ee523a2206206994597c13d831ec7', // USDT
+]);
+async function usdValueOf(asset, amount, ethUsd) {
+  try {
+    if (STABLE_FEE_ASSETS.has(asset.toLowerCase())) {
+      const dec = Number(await publicClient.readContract({ address: asset, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => 6));
+      return Number(amount) / 10 ** dec;
+    }
+    const q = await quote(asset, ETH, amount, relayWallet.account.address);
+    return (Number(q.amountOut) / 1e18) * ethUsd;
+  } catch { return null; }
+}
+
+// Refuse a PROVE quote that an independent price says is nonsense. The aggregator returned 417 PROVE for
+// $0.81 of USDT (the same as for $100) — a 100x error that, had it not reverted at simulation, would have
+// been a swap at a wildly wrong price. Reference price is the live PROVE->ETH probe, which is clamped to a
+// band around the configured value, so a manipulated reference cannot swing this far either.
+async function provePlausible(q, usdIn, ethUsd, label) {
+  const px = await provePriceUsd(ethUsd);
+  const expected = usdIn / px;
+  const got = Number(q.amountOut) / 1e18;
+  const band = CFG.quoteSanityBand;
+  if (Number.isFinite(got) && got >= expected / band && got <= expected * band) return true;
+  log(`  REFUSING ${label}: quote gives ${got.toFixed(2)} PROVE for $${usdIn.toFixed(2)} (~$${(usdIn / (got || 1)).toFixed(4)}/PROVE) but the reference is $${px.toFixed(4)} — implausible, holding`);
+  return false;
+}
+
 // One replenish pass: turn fee income into the two things the relay burns — ETH gas and PROVE.
 //
 // Two roles matter, and they are not the same wallet:
@@ -278,6 +310,8 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
           const excess = remaining > keep ? remaining - keep : 0n;
           if (excess < MIN_ETH_SWEEP) { log(`  ETH ${remaining} within the gas float (<= ${keep} + dust) — keeping as gas`); continue; }
           const q = await quote(ETH, PROVE, excess, sinkAddr); // PROVE lands on the sink, which deposits it
+          const ethUsd = await ethUsdPrice();
+          if (!(await provePlausible(q, (Number(excess) / 1e18) * ethUsd, ethUsd, 'ETH->PROVE'))) continue;
           log(`  ETH excess ${excess} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
           continue;
@@ -298,6 +332,14 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
           try {
             const left = await erc20Balance(asset, owner);
             const qe = await quote(asset, ETH, need, who, /* exactOut */ true);
+            // A stablecoin cost far above the ETH it buys is a bad quote, not a price: refuse it rather than
+            // hand the aggregator the whole balance for a sliver of gas.
+            if (STABLE_FEE_ASSETS.has(asset.toLowerCase())) {
+              const ethUsd = await ethUsdPrice();
+              const dec = Number(await publicClient.readContract({ address: asset, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => 6));
+              const costUsd = Number(qe.amountIn) / 10 ** dec, worthUsd = (Number(need) / 1e18) * ethUsd;
+              if (costUsd > worthUsd * CFG.quoteSanityBand) { log(`  REFUSING ${label} gas top-up: ${costUsd.toFixed(2)} ${asset} for $${worthUsd.toFixed(2)} of ETH — implausible, holding`); continue; }
+            }
             if (qe.amountIn > 0n && qe.amountIn <= left) {
               log(`  ${label} gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH (to ${who})`);
               await fireSwap(qe, wallet);
@@ -308,7 +350,12 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
         if (!convertToProve) continue; // hold the rest
         const rem = await erc20Balance(asset, owner);
         if (rem > 0n) {
+          const ethUsd = await ethUsdPrice();
+          const usd = await usdValueOf(asset, rem, ethUsd);
+          if (usd === null) { log(`  ${asset}: cannot value ${rem} — holding`); continue; }
+          if (usd < CFG.sweepMinUsd) { log(`  ${asset}: $${usd.toFixed(2)} is under the $${CFG.sweepMinUsd} dust floor — holding to accumulate`); continue; }
           const q = await quote(asset, PROVE, rem, sinkAddr); // PROVE lands on the sink, which deposits it
+          if (!(await provePlausible(q, usd, ethUsd, `${asset}->PROVE`))) continue;
           log(`  ${rem} ${asset} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
         }
