@@ -10478,6 +10478,31 @@ function decodeCXferBppPayload(payload) {
   return { asset_id: bytesToHex(assetId), outputs };
 }
 
+// T_CXFER_BOUND (0x39) structural decoder: the T_CXFER_BPP body with a 32-byte target_chain_binding after the opcode.
+// The worker only needs the per-vout commitments (commitmentForUtxo); the kernel, range proof and binding are verified
+// by the reflection guest and by clients.
+function decodeCXferBoundPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 32 + 64 + 1) return null;
+  if (payload[0] !== T_CXFER_BOUND) return null;
+  let p = 1;
+  p += 32; // target_chain_binding
+  const assetId = payload.slice(p, p + 32); p += 32;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(N)) return null;
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), outputs };
+}
+
 // T_AXFER structural decoder. Same shape as CXFER plus an asset_input_count
 // byte after asset_id (SPEC §5.7). The kernel sig and rangeproof verify
 // client-side; the worker only needs the per-vout commitments to power
@@ -15057,6 +15082,12 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     const cx = decodeCXferBppPayload(decoded.payload);
     if (!cx) throw new Error('invalid T_CXFER_BPP payload');
     if (vout >= cx.outputs.length) throw new Error(`T_CXFER_BPP vout ${vout} out of range`);
+    return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
+  }
+  if (decoded.opcode === T_CXFER_BOUND) {
+    const cx = decodeCXferBoundPayload(decoded.payload);
+    if (!cx) throw new Error('invalid T_CXFER_BOUND payload');
+    if (vout >= cx.outputs.length) throw new Error(`T_CXFER_BOUND vout ${vout} out of range`);
     return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
   }
   if (decoded.opcode === T_AXFER) {
