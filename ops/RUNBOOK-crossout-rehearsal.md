@@ -107,3 +107,45 @@ ongoing per-attest proving cost from the first cross-out onward, not a one-off. 
 
 Append the burn, attest, mint and spend transaction hashes to the mainnet proof index, and record the outcome
 of the open question above.
+
+## 6. What the first real cross-outs taught (2026-09-20) — read before running one
+
+Two cross-outs ran on gen5 (TAC 1.23456789, and native ETH as tETH at 30,010 units). Every item below cost a proof, a
+delay or funds the first time.
+
+**Answer to the open question in section 4.** With `REFLECTION_MODEB_REQUIRED=1` every reflection job needs an
+eth-state candidate, and the sidecar republishes on its own whenever its pending slot is free (each attest frees it),
+so Mode-B batches self-sustain. The cost is an eth-state proof per attest for as long as the flag stays at 1.
+
+**The stale-candidate window (this is what wastes proofs).** A cross-out changes `crossOutCount` on-chain. Until the
+eth-state candidate covers it, any Mode-B attest reverts `ConsumedCountStale()` (selector `0x55a09618`,
+`ReflectionLib.sol`, reused for the cross-out count) after the proof has already been bought. Procedure:
+1. Suspend the reflection cron (Render `POST /services/{id}/suspend`) BEFORE the cross-out.
+2. Cross out; verify the event, `crossOutCount`, and storage slots 77 and 172 from chain.
+3. Wait until Ethereum's FINALIZED head passes the cross-out block (`cast block finalized`). Finality advances an epoch
+   (32 blocks) at a time, so it jumps rather than creeps. Clearing earlier makes the sidecar prove a candidate that
+   misses the cross-out and re-wedges it.
+4. Only when the sidecar is idle (not mid-prove), `POST /reflection/eth-state/clear` drops the stale pending candidate
+   (box token). Otherwise the sidecar waits `ETH_STATE_PENDING_STALE_SECS` (4 h) on its own candidate.
+5. The next candidate appears within ~2 minutes. Check the served job's `input.ethPv` words: word 3 is the
+   crossOutSetRoot, **word 4 is crossOutCount**, word 10 is the consumed count. Require the new count, a new
+   contentHash and `execBlock` at or past the cross-out block. Then resume the cron.
+
+**Return leg: no migration hop.** A cross-out mint note is a tracked class-1 leaf. Burn it directly with the ordinary
+class-1 burn (a two-input tx: a fresh envelope-commit input, then the note key-path spent with K; the 161-byte envelope
+lives inside the tapscript, so any node relays it: no private-miner submission, no provenance bundle). Do NOT insert a
+v1 CXFER hop for anything but TAC: opcodes 0x22 and 0x23 are allowed only for TAC (`LEGACY_BRIDGE_ASSETS`), and for any
+other asset the hop nullifies the input and mints nothing.
+
+**Native ETH.** `assets(0x3cba71e1…)` reads registered, native, linked to itself, unitScale 1e10; there is no
+per-asset gate in the guest. `tools/build-crossout-mint.mjs` defaults `ASSET_ID` to TAC, so pass the ETH id or the mint
+folds nothing. Amounts are note units, so any unit count crosses; wrap the exact amount first (a cross-out burns the
+whole note) and pin the note by leaf index when other operators share the wallet key.
+
+**Bitcoin tx hygiene.** After building ANY Bitcoin transaction, parse its serialized outputs and compare each script to
+what you intended before broadcasting. The mint builder once sent every commit change to a double-hashed address (13,746
+sats lost); `tests/crossout-mint-builder.test.mjs` now pins the change and destination scripts. Keep a free plain coin
+for each pending Bitcoin step, and never spend a coin that is an input of a queued burn.
+
+**Timing.** The mint is scanned only after 24 Bitcoin confirmations and only by a Mode-B batch, so budget hours, and
+more when blocks are slow. Keep `REFLECTION_MODEB_REQUIRED=1` until reflection has scanned past the mint's block.
