@@ -83,10 +83,14 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
     provePriceUsd,
     ethPriceUsd,
   });
-  if (feeUsd + 1e-9 < q.costUsd) {
-    return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < cost $${q.costUsd.toFixed(4)}` };
+  // Hold the fee to the op's MARGINAL cost by default (see gateIncludesMaintenance in config): refusing an op
+  // for failing to cover a share of fixed overhead rejected ordinary dapp fees whenever gas was above ~0.06 gwei.
+  const need = CFG.gateIncludesMaintenance ? q.costUsd : q.marginalCostUsd;
+  const label = CFG.gateIncludesMaintenance ? 'cost' : 'marginal cost';
+  if (feeUsd + 1e-9 < need) {
+    return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}` };
   }
-  return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ cost $${q.costUsd.toFixed(4)}`, quote: q };
+  return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ ${label} $${need.toFixed(4)}`, quote: q };
 }
 
 async function liveGasGwei() {

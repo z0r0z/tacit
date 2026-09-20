@@ -1529,7 +1529,11 @@ function buildFeePricer(env) {
   return async ({ type, op }) => {
     let units;
     try { units = totalFee(type, op); } catch { return null; }
-    if (!units || units <= 0n) return { feeUnits: '0', feeUsd: 0 };
+    // No fee leg at all is NOT a $0 fee. Some ops are fee-less by design (wrap, cbtcmint, bridgemint, adaptor
+    // and stealth locks …) and are relayed as a deliberate subsidy; reporting $0 made the relay's gate compare
+    // zero against cost and refuse every one of them. Unpriced is the honest value: the relay logs it as
+    // subsidised work, and the daily free-relay budget below is what bounds it.
+    if (!units || units <= 0n) return { feeUnits: '0', feeUsd: null };
     const out = { feeUnits: units.toString(), feeUsd: null };
     const p = feeAssetRow(type, op, env);
     if (!p) return out; // carried a fee, can't price it
@@ -1680,20 +1684,26 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
 //   - exhausting it fails the request with an explanation, and the user always has the free alternative of
 //     proving locally (the fee-free path where the witness never reaches us).
 // Approximate by design (KV read-modify-write is not atomic); it overshoots by a handful at worst.
-const proveBudgetKey = () => 'cps:budget:prove:' + new Date().toISOString().slice(0, 10);
-async function proveBudget(env) {
+const budgetKey = (name) => `cps:budget:${name}:` + new Date().toISOString().slice(0, 10);
+async function dailyBudget(env, name, cap) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
-  const cap = Number(env.PROVE_MODE_DAILY_CAP || 400);
   if (!kv || !(cap > 0)) return { ok: true, used: 0, cap: 0 };
-  const used = Number((await kv.get(proveBudgetKey())) || 0);
+  const used = Number((await kv.get(budgetKey(name))) || 0);
   return { ok: used < cap, used, cap };
 }
-async function spendProveBudget(env) {
+async function spendDailyBudget(env, name) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return;
-  const used = Number((await kv.get(proveBudgetKey())) || 0);
-  await kv.put(proveBudgetKey(), String(used + 1), { expirationTtl: 172800 });
+  const used = Number((await kv.get(budgetKey(name))) || 0);
+  await kv.put(budgetKey(name), String(used + 1), { expirationTtl: 172800 });
 }
+const proveBudget = (env) => dailyBudget(env, 'prove', Number(env.PROVE_MODE_DAILY_CAP || 400));
+const spendProveBudget = (env) => spendDailyBudget(env, 'prove');
+// Relayed ops that carry NO fee at all (fee-less by design: wrap, cbtcmint, bridgemint …) are a deliberate
+// subsidy, and the per-IP bucket bounds one source, not many. Same two rules as the prove budget: spent only on
+// an ACCEPTED, non-deduped job (junk can't drain it), and refusal says what to do instead.
+const freeRelayBudget = (env) => dailyBudget(env, 'free', Number(env.FREE_RELAY_DAILY_CAP || 300));
+const isFeeless = (type, op) => { try { return !!op && typeof op === 'object' && totalFee(type, op) === 0n; } catch { return false; } };
 
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
@@ -1721,6 +1731,11 @@ async function handleConfidentialSubmit(req, env, cors) {
       : await proveRateLimit(env, ip);
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
+  const feeless = submitMode === 'settle' && isFeeless(body.type, body.op);
+  if (feeless) {
+    const b = await freeRelayBudget(env);
+    if (!b.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${b.used}/${b.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
+  }
   if (submitMode === 'prove') {
     const b = await proveBudget(env);
     if (!b.ok) return jsonResponse({ ok: false, error: `prove capacity for today is used up (${b.used}/${b.cap}) — prove locally instead, or use a relayed settle`, code: 'prove_budget' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
@@ -1728,7 +1743,10 @@ async function handleConfidentialSubmit(req, env, cors) {
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit });
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
-    if (submitMode === 'prove' && !r.deduped) await spendProveBudget(env).catch(() => {});
+    if (!r.deduped) {
+      if (submitMode === 'prove') await spendProveBudget(env).catch(() => {});
+      else if (feeless) await spendDailyBudget(env, 'free').catch(() => {});
+    }
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }

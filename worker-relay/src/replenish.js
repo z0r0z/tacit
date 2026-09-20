@@ -47,7 +47,11 @@ export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd
   const maintenanceUsdPerDay = MAINTENANCE_RUNS_PER_DAY * Number(OP_GAS.maintenance) * gwei * 1e-9 * ethPx;
   const maintenanceCostUsd = maintenanceUsdPerDay / Math.max(1, CFG.expectedOpsPerDay);
 
-  const costUsd = gasCostUsd + proveCostUsd + maintenanceCostUsd;
+  // MARGINAL cost: what this one op costs us to do. Maintenance is a fixed running cost of the protocol, not
+  // something one op causes, so it is amortised into the QUOTED price (costUsd) but is not what decides whether
+  // an op is worth doing at all.
+  const marginalCostUsd = gasCostUsd + proveCostUsd;
+  const costUsd = marginalCostUsd + maintenanceCostUsd;
 
   const marginedUsd = costUsd * (1 + CFG.opsMargin);
   let feeUsd = Math.max(CFG.minFloorUsd, marginedUsd);
@@ -64,7 +68,7 @@ export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd
 
   return {
     op, tradeSizeUsd,
-    gasCostUsd, proveCostUsd, maintenanceCostUsd, costUsd,
+    gasCostUsd, proveCostUsd, maintenanceCostUsd, marginalCostUsd, costUsd,
     feeUsd,
     displayedBps: tradeSizeUsd > 0 ? (feeUsd / tradeSizeUsd) * 10_000 : null,
     belowFloor: marginedUsd < CFG.minFloorUsd, // caller may recommend self-settle

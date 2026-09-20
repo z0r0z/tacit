@@ -241,6 +241,11 @@ export const CFG = {
   // Refuse ops that carry no priced fee. Default OFF: nothing populates op.feeUsd yet, so switching this
   // on before the producer is wired would refuse every job. Turn it on once fees actually arrive.
   requirePricedFee: opt('RELAY_REQUIRE_PRICED_FEE', '0') === '1',
+  // What the relay's fee gate holds a priced fee to. Default: the op's MARGINAL cost (gas + PROVE) — an op that
+  // loses money on its own is refused, one that merely under-contributes to fixed overhead is not. Counting
+  // maintenance per op is stricter than the published floor and rejected the dapp's standard fee from about
+  // 0.06 gwei up, AFTER the job had queued. Set RELAY_GATE_INCLUDE_MAINTENANCE=1 to hold ops to the full cost.
+  gateIncludesMaintenance: opt('RELAY_GATE_INCLUDE_MAINTENANCE', '0') === '1',
 
   // ── Replenish / monitor thresholds ──
   proveBalanceFloor: num('PROVE_BALANCE_FLOOR', 50), // PROVE, whole tokens

@@ -135,8 +135,9 @@ test('the cost model carries the maintenance lane', () => {
   ok(/maintenance: 264_000n/.test(config), 'measured maintenance gas missing');
   ok(/MAINTENANCE_RUNS_PER_DAY/.test(config), 'maintenance cadence not configurable');
   ok(/maintenanceCostUsd/.test(replenish), 'quoteRelayFee does not price maintenance');
-  ok(/costUsd = gasCostUsd \+ proveCostUsd \+ maintenanceCostUsd/.test(replenish),
-    'maintenance must be part of costUsd, not just reported alongside it');
+  // costUsd is the QUOTED price and carries maintenance; the gate decides on marginalCostUsd (gas + PROVE).
+  ok(/costUsd = marginalCostUsd \+ maintenanceCostUsd/.test(replenish), 'maintenance must be part of the quoted costUsd');
+  ok(/marginalCostUsd = gasCostUsd \+ proveCostUsd/.test(replenish), 'the marginal cost must be gas + PROVE');
 });
 
 test('maintenance overhead is amortised, and cannot divide by zero', () => {
@@ -353,13 +354,13 @@ test('a gate that cannot read gas or ETH price fails OPEN, not closed', async ()
 });
 
 // ── prove-mode: a bounded subsidy, and a budget that junk cannot drain ─────────
-const submitSrc = worker.slice(worker.indexOf('const proveBudgetKey'), worker.indexOf('async function handleConfidentialJob'));
-function loadSubmit({ cap = '3', submitJob, kvStore = new Map() }) {
+const submitSrc = worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob'));
+function loadSubmit({ cap = '3', freeCap = '3', submitJob, kvStore = new Map(), feeOf = () => 0n }) {
   const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
-  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'ctx',
+  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx',
     submitSrc + '; return handleConfidentialSubmit;');
-  const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, {});
-  const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap }, {});
+  const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, (type, op) => feeOf(type, op), {});
+  const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap, FREE_RELAY_DAILY_CAP: freeCap }, {});
   return { call, kvStore };
 }
 
@@ -388,9 +389,93 @@ test('a deduped submit does not spend the budget', async () => {
   ok(kvStore.size === 0, 'a dedupe hit spent budget');
 });
 
-test('the budget applies to prove-mode only, never to a relayed settle', async () => {
-  const { call } = loadSubmit({ cap: '1', submitJob: async () => ({ jobId: 'j', status: 'pending' }) });
-  for (let i = 0; i < 5; i++) ok((await call({ type: 'transfer', op: {}, mode: 'settle' })).status === 200, 'a relayed settle pays its own way and must not be budgeted');
+test('the prove budget never touches a fee-paying relayed settle', async () => {
+  const { call } = loadSubmit({ cap: '1', feeOf: () => 5000n, submitJob: async () => ({ jobId: 'j', status: 'pending' }) });
+  for (let i = 0; i < 5; i++) ok((await call({ type: 'transfer', op: {}, mode: 'settle' })).status === 200, 'a relayed settle that pays its way must not be budgeted');
+});
+
+// ── fee-less ops: relayed free by design, so they must be accepted — and bounded ──
+test('a fee-less relayed op is accepted, and spends the free budget only when accepted', async () => {
+  let n = 0;
+  const { call, kvStore } = loadSubmit({ freeCap: '3', feeOf: () => 0n, submitJob: async () => ({ jobId: 'j' + ++n, status: 'pending' }) });
+  for (let i = 0; i < 3; i++) ok((await call({ type: 'cbtcmint', op: {}, mode: 'settle' })).status === 200, `fee-less job ${i + 1} within the cap must be accepted`);
+  const over = await call({ type: 'cbtcmint', op: {}, mode: 'settle' });
+  ok(over.status === 429 && over.body.code === 'free_budget', `the job over the free cap must be refused, got ${over.status}`);
+  ok(/attach a fee/.test(over.body.error), 'the refusal must say what to do instead');
+  ok(kvStore.size === 1, 'the free budget and the prove budget must be separate counters');
+});
+
+test('a relayed op that carries a fee never touches the free budget', async () => {
+  const { call, kvStore } = loadSubmit({ freeCap: '1', feeOf: () => 5000n, submitJob: async () => ({ jobId: 'j', status: 'pending' }) });
+  for (let i = 0; i < 10; i++) ok((await call({ type: 'transfer', op: {}, mode: 'settle' })).status === 200, 'a fee-paying op must not be budgeted');
+  ok(kvStore.size === 0, 'a fee-paying op spent the free budget');
+});
+
+test('junk and dedupe hits cannot drain the free budget', async () => {
+  const junk = loadSubmit({ freeCap: '3', feeOf: () => 0n, submitJob: async () => { throw new Error('unknown type'); } });
+  for (let i = 0; i < 20; i++) await junk.call({ type: '__junk__', op: {}, mode: 'settle' });
+  ok(junk.kvStore.size === 0, 'failed submits spent the free budget');
+  const dup = loadSubmit({ freeCap: '3', feeOf: () => 0n, submitJob: async () => ({ jobId: 'j', status: 'pending', deduped: true }) });
+  for (let i = 0; i < 10; i++) ok((await dup.call({ type: 'cbtcmint', op: {}, mode: 'settle' })).status === 200, 'a dedupe hit must always pass');
+  ok(dup.kvStore.size === 0, 'a dedupe hit spent the free budget');
+});
+
+test('prove-mode is not counted against the free-relay budget', async () => {
+  const { call } = loadSubmit({ freeCap: '1', cap: '50', feeOf: () => 0n, submitJob: async () => ({ jobId: 'j' + Math.random(), status: 'pending' }) });
+  for (let i = 0; i < 5; i++) ok((await call({ type: 'cbtcmint', op: {}, mode: 'prove' })).status === 200, 'prove-mode has its own budget');
+});
+
+// ── the pricer: no fee is UNPRICED, never $0 ─────────────────────────────────
+const pricerSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf('\n}\n', worker.indexOf('function buildFeePricer')) + 3);
+function loadPricer() {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice',
+    pricerSrc + '; return buildFeePricer({});');
+  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => 2570, async () => 80000);
+}
+test('an op with no fee is priced as unpriced (null), not as $0', async () => {
+  // $0 made the relay compare zero against cost and refuse every fee-less-by-design op (wrap, cbtcmint, …).
+  const pr = loadPricer();
+  const none = await pr({ type: 'cbtcmint', op: { asset: cEth.assetId } });
+  ok(none.feeUsd === null, `no fee must be unpriced (null), got ${none.feeUsd}`);
+  const paid = await pr({ type: 'transfer', op: transfer(cEth, 10000) });
+  ok(typeof paid.feeUsd === 'number' && paid.feeUsd > 0, 'a real fee must still be priced');
+});
+
+// ── the relay's gate, run for real under real env ───────────────────────────
+import { spawn as spawnAsync } from 'node:child_process';
+async function gateVerdicts(extraEnv, cases) {
+  const script = `
+    const s = await import('${join(ROOT, 'worker-relay/src/settle-relay.js')}');
+    const out = [];
+    for (const c of ${JSON.stringify(cases)}) out.push(await s.feeGate(c.job, c.gwei, 0.25, 2570));
+    console.log(JSON.stringify(out.map(o => ({ ok: o.ok, reason: o.reason }))));`;
+  return new Promise((resolve, reject) => {
+    const child = spawnAsync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'worker-relay'),
+      env: { PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RPC_URL: 'http://127.0.0.1:1', RELAY_KEY: '0x' + '11'.repeat(32), ...extraEnv },
+    });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => (out += d)); child.stderr.on('data', (d) => (err += d));
+    child.on('close', (code) => code === 0 ? resolve(JSON.parse(out.trim().split('\n').pop())) : reject(new Error(err.split('\n').slice(-3).join(' '))));
+  });
+}
+// dapp's standard cETH fee ~ $0.257; at 0.1 gwei marginal cost is ~$0.23 and the full cost (with maintenance) ~$0.38
+const job = (feeUsd) => ({ type: 'transfer', mode: 'settle', feeUsd, op: {} });
+test('gate: an unpriced (fee-less) op is accepted as a subsidy, not refused', async () => {
+  const [v] = await gateVerdicts({}, [{ job: { type: 'cbtcmint', mode: 'settle', feeUsd: null, op: {} }, gwei: 0.06 }]);
+  ok(v.ok === true && /not priced|subsid/i.test(v.reason), `an unpriced op must be accepted: ${v.reason}`);
+});
+test('gate: the dapp standard fee is accepted at 0.1 gwei (marginal cost), refused only if it loses money', async () => {
+  const [ok01, low01, ok15] = await gateVerdicts({}, [
+    { job: job(0.257), gwei: 0.1 }, { job: job(0.10), gwei: 0.1 }, { job: job(0.257), gwei: 0.15 },
+  ]);
+  ok(ok01.ok === true, `0.257 at 0.1 gwei must pass on marginal cost: ${ok01.reason}`);
+  ok(low01.ok === false && /marginal cost/.test(low01.reason), `a fee below marginal cost must be refused: ${low01.reason}`);
+  ok(ok15.ok === false, 'at 0.15 gwei the op loses money on its own and must be refused');
+});
+test('gate: RELAY_GATE_INCLUDE_MAINTENANCE=1 holds ops to the full cost', async () => {
+  const [d] = await gateVerdicts({ RELAY_GATE_INCLUDE_MAINTENANCE: '1' }, [{ job: job(0.257), gwei: 0.1 }]);
+  ok(d.ok === false && /cost/.test(d.reason) && !/marginal/.test(d.reason), `with maintenance included the same fee must be refused: ${d.reason}`);
 });
 
 test('rate-limit buckets cannot collide', () => {
