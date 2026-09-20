@@ -37,7 +37,8 @@ const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 const TIP_FLOOR_WEI = BigInt(process.env.SETTLE_TIP_FLOOR_WEI || '50000000'); // 0.05 gwei
 const TIP_CAP_WEI = BigInt(process.env.SETTLE_TIP_CAP_WEI || '2000000000'); // 2 gwei
 const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
-const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '180000', 10));
+const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '90000', 10));
+const INCLUSION_POLL_MS = 4_000;
 // A node's answer when this key's nonce is already used — by another sender on the key (the header relay can
 // share it) or by an earlier broadcast of ours that landed. Clients word it differently.
 export const NONCE_TAKEN = /nonce ?too ?low|lower than the current nonce|nonce has already been used|NONCE_EXPIRED/i;
@@ -109,6 +110,45 @@ async function submitSettle(proof, memos, label) {
   return submitCall({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [proof.publicValues, proof.proof, memos] }, label);
 }
 
+// Wait for a broadcast to land — or for it to become impossible to land.
+//
+// Waiting on a receipt alone cannot tell "slow" from "dead". A transaction is DEAD the moment another sender on
+// this key mines a transaction with the same nonce: nothing we sent under that nonce can ever be included, yet a
+// receipt wait sits out its full timeout, and every escalation round re-broadcasts at the SAME nonce and is dead
+// too. Seen in production 2026-09-20: a relayed wrap was signed at nonce 2715, another sender's transaction took
+// 2715 before it landed, and the relay spent two full 3-minute rounds on a transaction that could never be
+// included before noticing on the third — 6.5 minutes for a settle that then landed in 13 seconds.
+//
+// So each poll checks both things: has any of OUR broadcasts landed, and has this nonce been consumed. The
+// receipts are always checked first, and once more after a short pause before declaring the nonce taken — the
+// block that consumed it may be ours, with its receipt not yet visible. Dependencies are injected so the
+// timing and the chain can be faked in a test.
+//   -> { state: 'landed' | 'reverted', hash } | { state: 'taken' } | { state: 'timeout' }
+export async function awaitInclusion({
+  hashes, nonce, waitMs, pollMs = INCLUSION_POLL_MS, getReceipt, getConfirmedNonce,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, recheckMs = 3_000,
+}) {
+  const verdict = async () => {
+    for (const h of hashes) {
+      const r = await getReceipt(h).catch(() => null);
+      if (r) return { state: r.status === 'success' ? 'landed' : 'reverted', hash: h };
+    }
+    return null;
+  };
+  const deadline = now() + waitMs;
+  for (;;) {
+    const v = await verdict();
+    if (v) return v;
+    const confirmed = await getConfirmedNonce().catch(() => null);
+    if (confirmed !== null && confirmed !== undefined && BigInt(confirmed) > BigInt(nonce)) {
+      await sleep(recheckMs);
+      return (await verdict()) || { state: 'taken' };
+    }
+    if (now() >= deadline) return { state: 'timeout' };
+    await sleep(pollMs);
+  }
+}
+
 // Submit one relay transaction — a settle (gas estimated here), or an exit activation whose `gasLimit` the caller
 // already fixed and simulated at.
 async function submitCall(base, label, gasLimit = null) {
@@ -161,6 +201,21 @@ async function submitCall(base, label, gasLimit = null) {
       }
     }
 
+    // Wait for inclusion — but stop early if this nonce is consumed by someone else, since nothing broadcast under
+    // it can land any more (see awaitInclusion). A submit error that already said "nonce taken" skips the wait.
+    if (txHash && !taken) {
+      const res = await awaitInclusion({
+        hashes: seen, nonce, waitMs: RECEIPT_WAIT_MS,
+        getReceipt: (h) => publicClient.getTransactionReceipt({ hash: h }),
+        getConfirmedNonce: () => publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'latest' }),
+      });
+      if (res.state === 'landed') return res.hash;
+      // A revert is the chain's verdict and is terminal.
+      if (res.state === 'reverted') throw new Error(`${base.functionName} reverted ${res.hash}`);
+      if (res.state === 'taken') { log(`${label} nonce ${nonce} was consumed by another sender before ours landed`); taken = true; }
+      else log(`${label} not included within ${RECEIPT_WAIT_MS}ms at tip ${tip} wei — escalating`);
+    }
+
     // The nonce is spent. If one of our own broadcasts spent it, that transaction is the answer; otherwise another
     // sender took it, none of ours can land any more, and the proof is still good — send again at a fresh nonce.
     if (taken) {
@@ -179,19 +234,6 @@ async function submitCall(base, label, gasLimit = null) {
         continue;
       }
       break;
-    }
-
-    if (txHash) {
-      try {
-        const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: RECEIPT_WAIT_MS });
-        if (rcpt.status !== 'success') throw new Error(`${base.functionName} reverted ${txHash}`);
-        return txHash;
-      } catch (e) {
-        // A revert is the chain's verdict and is terminal. Only a timeout — accepted but not included — is
-        // worth escalating for.
-        if (!/timed out|timeout/i.test(String(e && e.message))) throw e;
-        log(`${label} not included within ${RECEIPT_WAIT_MS}ms at tip ${tip} wei — escalating`);
-      }
     }
 
     // A replaced transaction can still be the included one; check before spending another round.

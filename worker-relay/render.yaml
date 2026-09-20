@@ -222,30 +222,21 @@ services:
       - key: FEE_ASSETS
         value: "0x0000000000000000000000000000000000000000,0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,0xdAC17F958D2ee523a2206206994597C13D831ec7,0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 
-  # Cron: sweep fees → PROVE + ETH, deposit PROVE to the vApp.
+  # RETIRED. Replenish now runs inside tacit-settle, in the loop's idle time (REPLENISH_IN_SETTLE), because that
+  # is where the fee income lands and it serialises with settles on the one relayer key's nonce. Left defined but
+  # inert — and suspended — so that a blueprint sync or an accidental resume cannot start a SECOND replenisher
+  # racing the settle service for the same wallet's nonces. Do not point this back at src/replenish.js.
   - type: cron
     name: tacit-replenish
     runtime: docker
     rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     plan: starter
-    schedule: "*/30 * * * *"
-    dockerCommand: node src/replenish.js
+    schedule: "0 0 1 1 *"
+    dockerCommand: node -e "console.log('tacit-replenish is retired: replenish runs inside tacit-settle')"
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
-      # Underlying tokens the relay converts to PROVE. The settle fee arrives as the
-      # underlying (ETH / escrow ERC20 / minted canonical), so no unwrap leg. address(0) =
-      # native ETH (surplus over the gas buffer only). TAC is intentionally omitted — held.
-      # Order: ETH, USDC, USDT, wstETH.
-      - key: FEE_ASSETS
-        value: "0x0000000000000000000000000000000000000000,0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,0xdAC17F958D2ee523a2206206994597C13D831ec7,0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
-      - key: SLIPPAGE_BPS
-        value: "100"
-      - key: PROVE_PRICE_USD
-        value: "0.19"
-      - key: ETH_PRICE_USD
-        value: "1840"
 
   # Cron: balance + reflection-lag pager.
   - type: cron
