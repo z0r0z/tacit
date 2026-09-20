@@ -7,6 +7,13 @@ the live manifest and this repo at actual integration time (see §6, "Known limi
 project has redeployed several times; every generation is a fresh, immutable address set, and a
 retired generation's addresses keep working for exits but accept no new value.
 
+**Two current limits on the Bitcoin side**, neither of which affects the ETH-only flows in this document:
+a generation-bound note (`T_CXFER_BOUND`, 0x39) is now surfaced by the wallet scanner, but spending one on
+the Ethereum fast lane still needs its Bitcoin source registered with the reflection, which is
+operator-assisted until that index is backfilled. And relayed swaps settle as `OP_SWAP`, so the prover sees
+their amounts; the prover-blind `OP_SWAP_BLIND` is proven correct against the deployed guest but is gated on
+batching and fee pricing (`ops/DESIGN-swap-batch-queue.md`).
+
 ETH-only integration does NOT depend on the Bitcoin reflection lane. Wrap / stealth-send / claim /
 unwrap settle against the settle guest alone, unaffected by reflection height or catch-up state. The
 Bitcoin lane has its own gate — see §6a.
@@ -545,7 +552,13 @@ note-memo byte layout in `dapp/confidential-memo.js`; the stealth-lock domains a
 in `dapp/confidential-stealth.js`; the leaf hash and exit-recipe ABI encoding in
 `contracts/src/ConfidentialPool.sol` and `dapp/confidential-router.js`'s `encodeExitRecipe`.
 
-### 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
+#### Request bodies
+
+The API caps an inbound body at `MAX_REQUEST_BYTES` (32 MiB default) and answers `413` above it —
+on the declared `Content-Length` before reading, or mid-stream for a chunked body. Every real op is far
+below that.
+
+## 6a. Bitcoin-lane gate — matters even though this doc is ETH-only
 
 Recording a cross-out moves `crossOutCount`, and a forward (non-Mode-B) reflection batch commits a
 zero for that counter — so from the first cross-out on, **every** attest must be a Mode-B batch
@@ -571,6 +584,10 @@ rather than as a gate:
 attestedCrossOutCount()
 attestedBitcoinConsumedCount()
 ```
+
+As of 2026-09-20 gen5 reads `attestedBitcoinConsumedCount() == 1` and `attestedCrossOutCount() == 2` — real
+cross-outs have landed and the lane has kept advancing, which is the guest-level fix above holding up in
+production rather than in argument.
 
 This does not constrain anything else in this document: wrap / stealth-send / claim / unwrap never
 touch that counter. It only matters if you're also adding a Bitcoin bridge button to the same UI.

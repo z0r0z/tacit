@@ -37,6 +37,12 @@ merges and consolidation. `dapp/confidential-stealth.js` has the payment path.
 sees 8 decimals. Get this wrong and the deposit is unconsumable — the guest never sees `unitScale` and
 reproduces the deposit id from the value alone.
 
+**The Bitcoin lane is not symmetric with the Ethereum one.** Wrapping, sending, swapping and exiting on the
+EVM side are fully live. The Bitcoin side has two current limits worth knowing before you design around it:
+a generation-bound note (`T_CXFER_BOUND`, 0x39) is now discovered by the wallet scanner, but *spending* one
+on the Ethereum fast lane still needs its Bitcoin source registered with the reflection, which is
+operator-assisted today. Nothing in this guide's flows depends on either.
+
 **A wrap is two steps.** `pool.wrap(...)` is a plain transaction that escrows funds and registers a *pending
 deposit* — no proof. The deposit becomes a spendable note only when an `OP_WRAP` settle consumes it. The
 first step works with nothing but an RPC; the second needs the relay.
@@ -181,11 +187,22 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 
 Submits are rate-limited per IP and the queue is bounded; a rejected submit is backpressure, not failure.
 
+**Request bodies are capped** (`MAX_REQUEST_BYTES`, 32 MiB by default). Over that you get a `413` — on the
+declared `Content-Length` before the body is read, or mid-stream for a chunked body. Every real op is far
+below it; if you hit it, you are almost certainly sending something you did not mean to.
+
 **What the relay learns.** It never sees a spending key — only opening sigmas — and can only earn the
 proof-bound fee. But it does see your IP, and for an `OP_SWAP` it sees that swap's amounts, because the guest
 computes the clearing and therefore must read them. Everything else (who you are, your balance, your other
 notes) stays hidden. Note that `selfRelay` does **not** change this — the relay still proves, so it still
 sees the witness. If a trade size matters to you, prove locally.
+
+`OP_SWAP_BLIND` is the op that removes even that: clearing is proven by an in-guest Groth16 circuit, so the
+box never reads an amount. It is **armed in the deployed guest and proven correct against it**, but not yet
+reachable through the relay — enabling it is a batching and pricing exercise, since the pairing is a fixed
+cost amortised across a batch's intents. See
+[`ops/DESIGN-swap-batch-queue.md`](../ops/DESIGN-swap-batch-queue.md). Until then, relayed swaps are
+`OP_SWAP` and the paragraph above is the honest description.
 
 ## 7. Iterating on the design
 
@@ -210,6 +227,7 @@ look away entirely without touching its logic. Two conventions worth keeping:
 | `MemoLeafMismatch` | memo count or order does not match `pv.leaves` |
 | settle says `failed` with a guest assert | the witness is malformed; the assert text names the field |
 | relay rejects the submit | fee below the floor, or the queue is full |
+| `413 request body exceeds …` | body over `MAX_REQUEST_BYTES` (32 MiB default) |
 
 A failed proof costs the relay, not you, and moves no state. A settle either applies completely or reverts.
 
@@ -219,4 +237,6 @@ A failed proof costs the relay, not you, and moves no state. A settle either app
 - [`ops/INTEGRATION-simple-wrap-send-claim-eth.md`](../ops/INTEGRATION-simple-wrap-send-claim-eth.md) — the
   full ETH-only handoff, with the stealth path in depth
 - [`SPEC.md`](../SPEC.md) — canonical wire formats
+- [`ops/DESIGN-swap-batch-queue.md`](../ops/DESIGN-swap-batch-queue.md) — how swap batching and
+  `OP_SWAP_BLIND` reach production across the API, relayer and dapp
 - [`audit/AUDITS.md`](../audit/AUDITS.md) — the review history

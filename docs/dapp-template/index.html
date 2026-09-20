@@ -137,7 +137,9 @@
       <div class="row"><span class="k">fee floor</span><span class="v" id="r-quote">…</span></div>
       <p class="note">
         The relay proves and settles for a fee carved from the op. It never sees a spending key
-        and can only earn that fee. Self-settle with <code>fee: 0n</code> if you would rather not use it.
+        and can only earn that fee — but it does prove for you, so it sees the witness. Self-submitting
+        drops the fee; only proving locally removes it. Request bodies are capped at 32&nbsp;MiB
+        (<code>413</code> above that).
       </p>
     </div>
   </section>
