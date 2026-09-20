@@ -197,6 +197,24 @@ Verified by running the real `replenishOnce` against a stub RPC and asserting on
 (`tests/replenish-flow.test.mjs`) — who signed, where each swap was delivered, who deposited — not by matching
 source text. Enabling it needs `REPLENISH_IN_SETTLE=1`, `FEE_ASSETS`, and a deploy of `tacit-settle`.
 
+### What the gates refuse (and what they deliberately do not)
+
+Two gates, one rule each:
+
+- **Worker, at submit:** a priced fee (cETH, cUSD, cBTC, cTAC) must clear the published gas-aware floor. Refusal is
+  immediate and says so, before anything is queued.
+- **Relay, at claim:** a priced fee must cover the op's **marginal cost** — gas + PROVE. An op that loses money on
+  its own is refused; one that merely under-contributes to fixed overhead is not. Maintenance stays in the
+  *quoted* price (`costUsd`) but is not a per-op admission test. `RELAY_GATE_INCLUDE_MAINTENANCE=1` restores the
+  strict rule. (Counting maintenance per op refused the dapp's standard ~$0.257 cETH fee from ~0.06 gwei up —
+  after the job had queued. Found 2026-09-20; only test traffic was hit, 3 relayed jobs in 3.5h.)
+
+**No fee is unpriced, never $0.** Ops fee-less by design (wrap, cbtcmint, bridgemint, adaptor/stealth locks,
+cdptopup) are relayed as a deliberate subsidy. The pricer used to report them as $0, which the relay then
+compared against cost and refused. They now arrive unpriced and are accepted as logged `UNPAID` work, bounded by
+`FREE_RELAY_DAILY_CAP` (default 300/day, spent only on an accepted non-deduped job, so junk cannot drain it).
+A relayed op that *carries* a fee leg but pays too little is still refused — that is a different case.
+
 ### Guards on every swap
 
 Fee income is small and the aggregator is not always right, so replenish refuses to act on what it cannot
