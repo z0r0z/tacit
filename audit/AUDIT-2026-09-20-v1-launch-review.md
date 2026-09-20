@@ -48,7 +48,7 @@ Every launch item is outside the proof system:
 | **L-1** | Unauthenticated request-body DoS on the public API | High (availability) | **Fixed here**, needs an API redeploy |
 | **L-3** | Published manifests and integration guides carried retired-generation addresses | Medium (misrouting) | **Fixed here** |
 | **L-4** | Nothing registers a fast-lane consumed source, so the next fast-lane spend stalls reflection | Medium (liveness) | Needs a decision — see below |
-| **L-5** | The wallet scanner has no branch for `T_CXFER_BOUND` (0x39), so generation-bound Bitcoin notes are not discovered | Medium (recoverability) | Pre-existing, repo-tracked — not patched here |
+| **L-5** | The wallet scanner has no branch for `T_CXFER_BOUND` (0x39), so generation-bound Bitcoin notes are not discovered | Medium (recoverability) | **Fixed here** |
 | **D-1** | Relayed swaps reveal their amounts to the relay operator | Disclosure, by construction | Recorded, not changed |
 
 ---
@@ -221,12 +221,30 @@ Consequence: a holder who receives a generation-bound note does not see it in th
 is not lost — it exists in the reflected pool and its opening is recoverable from the memo / seed — but
 nothing surfaces it, so in practice the holder has no way to find or spend it through the dapp.
 
-I did not add the branch. It touches `dapp/tacit.js`, which auto-deploys from `main`, and a scanner branch
-for the bound domain has to get the leaf domain, the chain-binding check and the holdings record's auth key
-right; there is no real 0x39 note available here to test against, and a fail-closed mistake on a live wallet
-path is the exact regression shape this repo has been bitten by before. It should be written and exercised
-against a real bound note, or 0x39 should be allowlisted with a reason if the intent is that bound notes are
-surfaced some other way.
+**Fixed after the review, on the maintainer's instruction** (`086411d6`, `bc407233`). The branch is purely
+additive — it fires only on opcode `0x39`, which nothing handled before — and the binding turned out to be a
+*reflection* concern rather than a Bitcoin one: on Bitcoin a bound note is an ordinary note UTXO with the
+identity vout layout (`cxfer-core::canonical_output_vout` maps `0x39` exactly as it maps `0x22`/`0x23`), and
+amount recovery is opcode-agnostic once decoded. So it needed a decoder and three dispatch sites
+(identification, recovery, provenance walk) and nothing else. The stealth sites are deliberately untouched:
+`0x39` is not in `STEALTH_DOMAIN_BY_OPCODE`, so bound notes are not stealth-addressed.
+
+Because the decoder and the encoder live in different files (`dapp/tacit.js` vs
+`dapp/burn-deposit-bitcoin.js`) and the existing guardrail is textual only, the new
+`tests/cxfer-bound-scan-parity.test.mjs` round-trips the decoder against the real encoder across every legal
+aggregation size and pins the field offsets to the wire spec, plus the rejection cases (wrong opcode,
+truncated, trailing bytes, illegal `N`). 12 cases, all passing; `recovery-parity` now reports 41/41 and
+0 GAPS.
+
+**The deploy step that nearly made this a no-op.** `dapp/sw.js` caches `/tacit.js` *cache-first, keyed on the
+full URL*, and `node build/build.mjs` — which rewrites the `?cb=<sha>` handle in `index.html` to the bundle's
+content hash — **is not part of the Render pipeline**. Editing the bundle moved it to `d1f2568e` while
+`index.html` still pointed at `0fe107bc`, so the fix would have been live on the server and absent in every
+returning browser, exactly as happened to three JS fixes on 2026-08-03. Caught before the push, `npm run
+build` run, token committed. Any commit touching the bundle needs that step; `npm run build:verify` checks
+it. (The worker's `/tacit.js` route fails safe here — `handleDappBundle` serves its KV brotli copy only when
+the stored metadata `cb` equals the requested one, so a stale KV entry falls through to origin rather than
+serving old bytes.)
 
 This pairs with the note recorded elsewhere that the BTC→ETH on-ramp is not yet user-facing: if that stays
 true at launch, the exposure is small. If it does not, this is the gap that decides whether a bridged holder
@@ -455,8 +473,8 @@ Recorded so they are not re-derived. These are *this* round's; the 09-19 review'
    but only on changes inside its `server` rootDir — which this fix is, so a push to `main` triggers it.
 2. Wire fast-lane consumed-source registration (L-4), or gate `fastlaneExit` behind an operator step until
    it is wired.
-3. Add the `T_CXFER_BOUND` scan branch, or allowlist it with a reason (L-5) — required before the BTC→ETH
-   on-ramp is made user-facing.
+3. ~~Add the `T_CXFER_BOUND` scan branch (L-5).~~ **Done** — branch added, round-trip tested, and the
+   cache-bust token rebuilt so the bundle change actually reaches returning browsers.
 4. ~~Set `CONFIDENTIAL_BOX_TOKEN` and `DEBUG_TOKEN` to distinct values.~~ **Resolved** — both are set on
    `tacit-api`, so `checkConfidentialAuth`'s `CONFIDENTIAL_BOX_TOKEN || DEBUG_TOKEN` fallback never engages.
 5. ~~Confirm `RELAY_FEE_FLOOR`.~~ **Resolved** — it is UNSET on `tacit-api`, which is the correct posture:
