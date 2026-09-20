@@ -272,6 +272,21 @@ async function batchCycle() {
     }
     return true;
   }
+  // The batch is proved as `batchtransfer`, which is a TRANSFER-specific guest op — it folds transfer
+  // witnesses and nothing else. `nextBatch` defaults to types:['transfer'], so today the two agree, but
+  // the agreement is implicit: it lives in a default argument on one side of an HTTP boundary and a
+  // hardcoded string on the other. Widening the claim types without a heterogeneous guest batch type
+  // would quietly feed non-transfers into batchtransfer.
+  //
+  // So check it here, where the op is actually built. These jobs are already claimed, so a mismatch is
+  // released back rather than failed — the ordinary single-op path settles them correctly.
+  const wrongType = jobs.filter((j) => j.type !== 'transfer');
+  if (wrongType.length) {
+    log(`REFUSING to batch: ${wrongType.length} non-transfer job(s) claimed (${[...new Set(wrongType.map((j) => j.type))].join(', ')}) — batchtransfer folds transfers only`);
+    for (const id of ids) await confidentialAck({ jobId: id, error: 'released: non-transfer job claimed into a transfer batch' });
+    return true;
+  }
+
   log(`batching ${jobs.length} transfers into one settle: ${ids.map((i) => i.slice(0, 10)).join(' ')}`);
   const op = {
     chainBinding: jobs[0].op.chainBinding,

@@ -108,10 +108,24 @@ zQuoter/zRouter, deposit the PROVE to the Succinct vApp. That loop is fully buil
    three consecutive receipts) at ~111 runs/day, and nobody pays a fee for it — but the bridge stops in
    both directions without it. It is now amortised across `EXPECTED_OPS_PER_DAY`.
 
-At 0.15 gwei and ETH $1840, 50 ops/day: settle gas $0.166 + PROVE $0.074 + maintenance $0.162 = **$0.40
-all-in per op**, which the $0.50 `MIN_FLOOR_USD` covers. At 10 gwei the maintenance share alone is
-$10.78/op — which is the real argument for batching, since job batching splits one settle's gas across its
-members while the maintenance overhead stays fixed per day.
+All-in cost per op at ETH $1840 and 50 ops/day (settle gas + PROVE $0.074 + maintenance share):
+
+| gas | settle | maintenance | **all-in** |
+|---|---|---|---|
+| 0.05 gwei | $0.055 | $0.054 | **$0.18** |
+| 0.1 gwei | $0.110 | $0.108 | **$0.29** |
+| 0.5 gwei | $0.552 | $0.539 | **$1.17** |
+| 1 gwei | $1.104 | $1.078 | **$2.26** |
+
+Mainnet has been sitting around 0.05–0.15 gwei, so the realistic operating point is the top of that table
+and the $0.50 `MIN_FLOOR_USD` covers it with room. The floor only stops covering cost somewhere above
+~0.2 gwei, at which point the dynamic quote takes over — which is the whole point of pricing off live gas
+rather than a constant.
+
+Two things follow. Maintenance is roughly **as expensive as the settles themselves** at any gas price,
+because it is a fixed ~111 runs/day regardless of volume — so the single biggest lever on unit cost is
+serving more ops per day, not shaving per-op gas. And batching helps on the settle half only: it splits one
+settle's gas across its members while the maintenance overhead stays flat.
 
 ### The fee is derived, never declared
 
@@ -129,6 +143,21 @@ Only cETH is priceable server-side today — `unitScale` is wei-per-unit, so uni
 with no oracle beyond the Chainlink ETH price. Every other asset yields `feeUsd: null`, which the relay
 logs as unpaid work rather than treating as permission to relay for free. Widening that means a per-asset
 USD oracle, not a guess.
+
+### What batching can and cannot do
+
+Job batching is **already on** (`SETTLE_BATCH_MAX=8` on `tacit-settle`) and it is **transfers only** — not
+a conservative default, a hard limit. The relay proves a claimed batch as `batchtransfer`, a
+transfer-specific guest op; there is no heterogeneous batch type, so widening the claimed types would feed
+non-transfers into a circuit that does not understand them. That coupling used to live implicitly in a
+default argument on one side of an HTTP boundary and a hardcoded string on the other; it is now a named
+`BATCHABLE_TYPES` in the worker and a re-check in the relay, which releases a mismatched batch back to the
+single-op path rather than folding it.
+
+Swaps have their own answer and it is a different mechanism: **intent** batching through `OP_SWAP`, which
+amortises the *proof* (one Groth16 verify across up to 16 traders) rather than the gas. That coordinator is
+mounted in the dapp (`ux.swapBatched`) but not the default path. See
+[DESIGN-swap-batch-queue.md](DESIGN-swap-batch-queue.md).
 
 ### Metering no longer depends on the fee floor
 

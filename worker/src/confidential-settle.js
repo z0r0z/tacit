@@ -178,7 +178,14 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // anything queued between two settles. Batching splits the settle's gas across its members and stops each
   // settle transaction from being a one-user event. FIFO order is preserved; a job that doesn't fit the
   // batch's root is simply left for the next round rather than reordered around.
-  async function nextBatch({ max = 8, types = ['transfer'] } = {}) {
+  // Job types that can share one settle. This is NOT a tuning knob: the relay proves a claimed batch as
+  // `batchtransfer`, a transfer-specific guest op, so anything added here without a matching guest batch
+  // type would be folded by a circuit that does not understand it. Swaps have their own answer — intent
+  // batching through OP_SWAP, which amortises the PROOF rather than the gas — and it lives in the dapp
+  // coordinator, not here. The relay re-checks this at the point it builds the op.
+  const BATCHABLE_TYPES = ['transfer'];
+
+  async function nextBatch({ max = 8, types = BATCHABLE_TYPES } = {}) {
     const pend = await storage.getPending();
     const claimed = []; // { id, j, nonce } — verified in one shared wait below, not per-job
     let root = null, binding = null;

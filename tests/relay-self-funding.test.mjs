@@ -162,5 +162,24 @@ test('rate-limit buckets cannot collide', () => {
   ok(/cps:rl:\$\{bucket\}:\$\{ip\}/.test(worker), 'bucket name missing from the rate-limit key');
 });
 
+// ── batching stays inside what the guest actually supports ──────────────────
+test('the batch claim types match the op the relay actually builds', () => {
+  // The coupling spans an HTTP boundary: a default argument in the worker, a hardcoded guest op type in
+  // the relay. Nothing links them, so widening one silently breaks the other.
+  ok(/const BATCHABLE_TYPES = \['transfer'\]/.test(settler), 'batchable types are not named');
+  ok(/types = BATCHABLE_TYPES/.test(settler), 'nextBatch does not use the named list');
+  ok(/type: 'batchtransfer'/.test(settle), 'the relay no longer proves batchtransfer — re-check this pairing');
+});
+
+test('the relay refuses a batch containing a non-transfer', () => {
+  ok(/jobs\.filter\(\(j\) => j\.type !== 'transfer'\)/.test(settle), 'no guard on batch member types');
+  // Claimed jobs must reach a terminal state; releasing beats failing a user's op over our own misclaim.
+  ok(/released: non-transfer job claimed into a transfer batch/.test(settle),
+    'a mismatched batch must release its members, not silently fold them');
+  const guard = settle.indexOf("jobs.filter((j) => j.type !== 'transfer')");
+  const build = settle.indexOf("type: 'batchtransfer'");
+  ok(guard > -1 && build > -1 && guard < build, 'the guard must run before the batch op is built');
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);
