@@ -3169,6 +3169,26 @@ function ammLpAddKernelVerify({
   return verifySchnorr(sig64, msg, key);
 }
 
+// POOL_INIT (variant 1) founder-refund binding, read from the confirmed tx exactly as the dapp signs it: refund A
+// pays out at vout 2 and refund B at vout 3 (WIRE order), the expiry and the per-side blindings ride the envelope
+// tail, and everything is then mapped to CANONICAL order in lockstep with the deltas and kernel sigs. A refund
+// vout that is not P2TR reads as zero, which the founder never signed. Both kernel signatures commit to this tail,
+// so verifying them without it can never succeed.
+function ammPoolInitRefunds(tx, lp, swapped) {
+  const p2trXonly = (vout) => {
+    const spk = (tx?.vout?.[vout]?.scriptpubkey || '').toLowerCase();
+    return /^5120[0-9a-f]{64}$/.test(spk) ? hexToBytes(spk.slice(4)) : new Uint8Array(32);
+  };
+  const wireA = p2trXonly(2), wireB = p2trXonly(3);
+  return {
+    expiryHeight: lp.expiry_height >>> 0,
+    refundXonlyA: swapped ? wireB : wireA,
+    refundXonlyB: swapped ? wireA : wireB,
+    refundBlindingA: hexToBytes(swapped ? lp.refund_b_blinding : lp.refund_a_blinding),
+    refundBlindingB: hexToBytes(swapped ? lp.refund_a_blinding : lp.refund_b_blinding),
+  };
+}
+
 // LP_REMOVE kernel msg:
 //   SHA256("tacit-amm-lp-remove-v1" || pool_id(32) || share_amount_LE(8)
 //          || delta_A_LE(8) || delta_B_LE(8) || recv_A_C_secp(33) || recv_B_C_secp(33)
@@ -21955,12 +21975,14 @@ async function scanForEtches(env, network) {
           const initBSide = initInputsByAsset.get(initAssetBHex);
           if (!initASide || initASide.inputs.length === 0) continue;
           if (!initBSide || initBSide.inputs.length === 0) continue;
+          const initRefunds = ammPoolInitRefunds(tx, lp, swapped);
           const initKernelOkA = ammLpAddKernelVerify({
             variant: 1, poolId: poolIdBytes,
             assetX: aBytes, deltaX: deltaA, shareAmount: BigInt(lp.share_amount),
             shareCSecpBytes, inputsX: initASide.inputs,
             inputCommitments: initASide.commitments,
             sig64: hexToBytes(lp.kernel_sig_a),
+            expiryHeight: initRefunds.expiryHeight, refundDestXonly: initRefunds.refundXonlyA, refundBlinding: initRefunds.refundBlindingA,
           });
           if (!initKernelOkA) continue;
           const initKernelOkB = ammLpAddKernelVerify({
@@ -21969,6 +21991,7 @@ async function scanForEtches(env, network) {
             shareCSecpBytes, inputsX: initBSide.inputs,
             inputCommitments: initBSide.commitments,
             sig64: hexToBytes(lp.kernel_sig_b),
+            expiryHeight: initRefunds.expiryHeight, refundDestXonly: initRefunds.refundXonlyB, refundBlinding: initRefunds.refundBlindingB,
           });
           if (!initKernelOkB) continue;
 
@@ -24047,7 +24070,7 @@ export {
   verifyXCurve, XCURVE_PROOF_LEN,
   BJJ_P_FR, BJJ_N, BJJ_ORDER,
   // LP_ADD + LP_REMOVE kernel sig helpers.
-  ammLpAddKernelMsg, ammLpAddKernelKey, ammLpAddKernelVerify,
+  ammLpAddKernelMsg, ammLpAddKernelKey, ammLpAddKernelVerify, ammPoolInitRefunds,
   ammLpRemoveKernelMsg, ammLpRemoveKernelKey, ammLpRemoveKernelVerify,
   ammLpBondKernelMsg, ammLpBondKernelVerify,
   ammCollectAssetInputs,
