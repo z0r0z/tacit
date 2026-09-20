@@ -207,5 +207,22 @@ test('derivation picks the RIGHT note out of a populated live set', () => {
   ok(r.record.srcTxid === TXID, `picked the wrong note: ${r.record.srcTxid}`);
 });
 
+test('a WRONG outpoint preimage is rejected, whatever wrote it', () => {
+  // The live key is keccak(txid || vout_le32), so a preimage that does not hash to it cannot be genuine.
+  // This is what lets a backfill be untrusted: a wrong entry fails closed instead of stalling the lane.
+  const f = fixture(false);
+  const bad = new Map([[pool.outpointKey('0x' + TXID, VOUT), { cx: CX, cy: CY, txid: 'ab'.repeat(32), vout: VOUT }]]);
+  const r = deriveConsumedSource(f.nu, f.live, bad, pool, CHAIN_BINDING);
+  ok(!r.ok, 'must reject a forged preimage');
+  ok(/does not hash to its own outpoint key/.test(r.reason), `reason: ${r.reason}`);
+});
+
+test('a preimage with the right txid but the wrong vout is rejected', () => {
+  const f = fixture(false);
+  const bad = new Map([[pool.outpointKey('0x' + TXID, VOUT), { cx: CX, cy: CY, txid: TXID, vout: VOUT + 1 }]]);
+  const r = deriveConsumedSource(f.nu, f.live, bad, pool, CHAIN_BINDING);
+  ok(!r.ok && /does not hash/.test(r.reason), `reason: ${r.reason}`);
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);

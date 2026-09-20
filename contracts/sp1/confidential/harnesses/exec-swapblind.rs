@@ -1,7 +1,37 @@
 // OP_SWAP_BLIND (31 / 0x1F) box harness (not part of the crate build). Mirrors exec-swap.rs.
-// NOTE: OP_SWAP_BLIND is HARD-DISABLED in this generation — the guest arm is proof-fatal, so an
-// execute/prove run against this harness now aborts by design. Kept as the dormant-path record for
-// a later guest that re-enables the op once it is box-validated end-to-end and an emitter exists.
+//
+// STATUS (measured 2026-09-20, supersedes the "HARD-DISABLED / proof-fatal" note this header used to
+// carry): the guest arm is LIVE — it was un-panicked in the 2026-08-26 reprove and src/main.rs runs the
+// real clearing. An execute against the committed elf/cxfer-guest, with EXPECT_VKEY pinned to the
+// deployed PROGRAM_VKEY 0x006cd47f…232d6e3, returns:
+//
+//     EXECUTE_OK cycles=7611678765 swaps=1 reserves 1000000/1000000→1001000/999004 tips A=0 B=0
+//
+// matching fixtures/swapblind_op.json's `expected`. So the op is correct end to end: in-guest BN254
+// Groth16 verify, per-asset conservation kernels, cross-curve sigmas, blind PoKs and the k-check all
+// pass. fixtures/swapblind_op.json is likewise complete (a real 256-byte amm_swap_batch proof), which
+// retires the "FIXTURE REGENERATION (BLOCKER)" note that used to sit below.
+//
+// WHAT ACTUALLY GATES ENABLEMENT IS COST, NOT CORRECTNESS — and it is a batching/pricing question:
+//   - 7.6e9 cycles is for a ONE-INTENT batch. The Groth16 verify (swap_blind.rs, one
+//     groth16_bn254_verify over the whole envelope) is a FIXED cost; only the per-intent loop
+//     (membership, xcurve sigma, blind PoK, BP+ range) scales. So cost per trader is roughly
+//     fixed/n_intents + marginal, and the guest caps n_intents at 16 — a full batch amortises the
+//     pairing across 16 traders rather than one.
+//   - That is the intended design: several parties' swaps clear in one proof, and what they are buying
+//     is prover-blindness — the box never sees a cleartext amount, unlike OP_SWAP.
+//   - The per-proof ceiling still has to move: every other settle harness proves under
+//     cycle_limit(256_000_000), which a swap-blind batch exceeds by ~30x. This harness already sets
+//     16_000_000_000 below.
+//   - Enabling it therefore means (a) a batcher that aggregates enough intents to amortise, (b) a
+//     relay fee priced for the real cycle cost, and (c) raising the settle-side cycle limit. It is a
+//     product decision, not a dead path.
+//
+// The Bitcoin lane runs the SAME verify (swap_batch.rs fold_swap_batch → groth16_bn254_verify over the
+// same batch_vk()), but inside a reflection proof that is produced anyway, and that lane already
+// budgets ETHPROVE_CYCLE_LIMIT=3e9 rather than 256e6 — so its marginal cost is the verify added to an
+// existing proof rather than a separate proof needing its own fee. Cheaper in kind, still not free.
+//
 // Reads the OP_SWAP_BLIND envelope from a fixture JSON, writes it to SP1Stdin in the EXACT guest
 // io::read()/r32()/r33() order (src/main.rs:1665..1865), then:
 //   MODE=execute (default) — execute the guest, decode PublicValues, assert swaps[0] == expected.
@@ -10,43 +40,6 @@
 // Each stdin.write below is annotated with the guest source line it mirrors, so the read order is
 // reviewable line-by-line against main.rs.
 //
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// TODO — FIXTURE REGENERATION (BLOCKER for a real run).
-//
-// The existing fixtures/swapbatch_op.json is an OP_SWAP (op 6) fixture — cleartext amountIn/
-// amountOut/rem, single per-note secp opening sigmas (inSigR/inSigZ), and NO Groth16 proof. It
-// CANNOT drive OP_SWAP_BLIND, which is prover-blind and needs a different envelope. A new
-// fixtures/swapblind_op.json must be generated (by dapp/confidential-swapblind.js →
-// buildSwapBlindOp, the settle-side emitter) carrying ALL of:
-//
-//   globals:  assetA, assetB, feeBps (≤1000), protocolFeeBps==0, protocolFeeRecipient(33B, may be 0),
-//             reserveAPre, reserveBPre,
-//             deltaANetSign/Mag, deltaBNetSign/Mag  (the batch's net reserve move),
-//             kernelA{R(33B),z(32B)}, kernelB{R,z}  (per-asset Schnorr conservation kernels),
-//             tipAAmount, tipACSecp(33B)=Pedersen(tipA,rTipA), rTipA(32B),
-//             tipBAmount, tipBCSecp(33B)=Pedersen(tipB,rTipB), rTipB(32B),
-//   proof:    a REAL 256-byte amm_swap_batch Groth16 proof over the 123 public signals, produced
-//             under the FINALIZED ceremony zkey whose VK == the guest's baked batch_vk()
-//             (== fixtures/swap_batch_vk.json; ceremony hash
-//             2d9db81d741e59d65e1b52ac3d37c5da521ef8c3728e9cd715c9a8a45bd495f4). The publics MUST be
-//             re-derivable by swap_batch::swap_batch_public_signals(env, circuit_pool_id,
-//             reserveAPre, reserveBPre) — i.e. pool_id_fr = SHA256(amm_derive_pool_id_v1(assetA,
-//             assetB, feeBps)) mod r, with the per-intent BJJ commitments matching cInBjj/cOutBjj.
-//   intents[] (n≤16, each): direction(0=A→B,1=B→A),
-//             inCx,inCy(on-curve secp), inOwner, inLeafIndex, inPath(32 hashes) → leaf must be a
-//             real member of spendRoot; cInBjj(32B packed BJJ), inXcurveSigma(169B) binding
-//             C_in_secp↔C_in_bjj; minOut, deadline;
-//             outCx,outCy, outOwner, cOutBjj(32B), outXcurveSigma(169B);
-//             pokR(33B), pokZv(32B), pokZr(32B) — verify_opening_pok_blind over the intent context
-//             (b"tacit-swap-blind-intent-v1", chainBinding, assetA, assetB,
-//              [(inCx,inCy,inOwner),(outCx,outCy,outOwner)], [direction,minOut,deadline,tip]).
-//   expected: poolId (== pool_id_with_protocol_fee(assetA,assetB,feeBps,recipient,0)),
-//             reserveAPost, reserveBPost, nullifiers[], leaves[].
-//
-// The single-trader witness demo (dapp/circuits/amm/dev-zkey/demo_swap_batch.mjs) shows the
-// clearing/witness math; fixtures/gen-swapbatch-ceremony-vector.mjs shows the real-ceremony proving
-// command. The emitter ties these into a full settle envelope.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
     Elf, HashableKey, ProvingKey, SP1Stdin,

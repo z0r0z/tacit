@@ -125,6 +125,13 @@ export function deriveConsumedSource(nu, liveTriples, coords, pool, chainBinding
     // entry written before the preimage was recorded cannot serve a fast-lane consume, so say so plainly
     // rather than emitting a half record the assembler would throw on later.
     if (co.txid == null || co.vout == null) { missingPreimage++; continue; }
+    // SELF-VERIFY THE PREIMAGE. The live key IS keccak(txid ‖ vout_le32), so re-hashing the pair proves it
+    // is the genuine preimage of this outpoint. That makes the derivation indifferent to where the preimage
+    // came from — the scanner's own fold, a backfill job, anything — because a wrong one cannot survive this
+    // check. Without it the derivation would be trusting a stored field; with it, nothing has to be trusted.
+    if (!eqHex(pool.outpointKey(norm(co.txid), Number(co.vout)), key)) {
+      return { ok: false, reason: 'coords preimage does not hash to its own outpoint key (corrupt or backfilled wrong)' };
+    }
     return {
       ok: true,
       record: {

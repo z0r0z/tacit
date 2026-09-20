@@ -49,7 +49,7 @@ Every launch item is outside the proof system:
 | **L-3** | Published manifests and integration guides carried retired-generation addresses | Medium (misrouting) | **Fixed here** |
 | **L-4** | Nothing registers a fast-lane consumed source, so the next fast-lane spend stalls reflection | Medium (liveness) | Needs a decision — see below |
 | **L-5** | The wallet scanner has no branch for `T_CXFER_BOUND` (0x39), so generation-bound Bitcoin notes are not discovered | Medium (recoverability) | **Fixed here** |
-| **D-1** | Relayed swaps reveal their amounts to the relay operator | Disclosure, by construction | Recorded, not changed |
+| **D-1** | Relayed swaps reveal their amounts to the relay operator | Disclosure, by construction | Recorded; `OP_SWAP_BLIND` proven correct by execute, gated on batching + fee pricing |
 
 ---
 
@@ -266,9 +266,40 @@ so the box never reads a cleartext amount. It is **armed in the deployed guest**
 neither the API's submit allowlist (`worker/src/confidential-settle.js`) nor the relay's op→binary map
 (`worker-relay/src/lib/prover.js`). **So every relayed swap today is `OP_SWAP`.**
 
-I did not wire it. Turning on a path that has never run through the live prove/settle pipeline is not a change
-to make at launch on an untested basis, and I cannot exercise the prover box from here. It is a small change
-(one allowlist entry, one `PEROP` entry) once someone can run a real swapblind job end-to-end.
+**Exercised 2026-09-20, after this review.** It runs. An SP1 *execute* (no proof bought) of
+`harnesses/exec-swapblind.rs` over `fixtures/swapblind_op.json`, against the committed
+`elf/cxfer-guest` with `EXPECT_VKEY` pinned to the deployed `PROGRAM_VKEY` `0x006cd47f…232d6e3`,
+returns `EXECUTE_OK … reserves 1000000/1000000 → 1001000/999004`, matching the fixture's `expected`.
+The whole arm passes: in-guest BN254 Groth16 verify, per-asset conservation kernels, cross-curve sigmas,
+blind PoKs, the constant-product check. So the opcode is correct against the *deployed* guest, and the
+harness header claiming it is "HARD-DISABLED / proof-fatal" with the fixture as a "BLOCKER" is stale on both
+counts — corrected in the same pass.
+
+What gates enablement is **cost**, and it is a batching and pricing question rather than a defect:
+
+- The measurement is **7,611,678,765 cycles for a ONE-INTENT batch**. The Groth16 verify is a *fixed*
+  cost — `swap_blind.rs` calls `groth16_bn254_verify` once over the whole envelope — and only the
+  per-intent loop (membership, cross-curve sigma, blind PoK, BP+ range) scales. Cost per trader is
+  therefore roughly `fixed / n_intents + marginal`, and the guest caps `n_intents` at 16. A full batch
+  amortises one pairing across sixteen traders, which is the design: several parties clear in one proof.
+- What those traders buy is **prover-blindness** — the box never reads a cleartext amount, which `OP_SWAP`
+  cannot offer. That is the thing worth paying a higher proving cost for, so the comparison that matters is
+  not "cheaper than `OP_SWAP`" but "worth it for the privacy".
+- The per-proof ceiling still has to move: every other settle harness proves under
+  `cycle_limit(256_000_000)`, which a swap-blind batch exceeds by ~30×. `exec-swapblind.rs` already sets
+  `16_000_000_000`, so someone met this before.
+
+Enabling it therefore needs a batcher that aggregates enough intents to amortise, a relay fee priced for the
+real cycle cost, and a raised settle-side cycle limit — not a code fix. I did not wire the allowlist and
+`PEROP` entries, because turning it on without those three would produce jobs that are rejected by the cycle
+limit or settled at a loss.
+
+**The Bitcoin lane is better placed.** `swap_batch.rs`'s `fold_swap_batch` runs the *same*
+`groth16_bn254_verify` against the same baked `batch_vk()`, but it does so **inside a reflection proof that
+is produced anyway** for the lane to advance, and that lane already budgets `ETHPROVE_CYCLE_LIMIT = 3e9`
+rather than `256e6`. So its marginal cost is a verify added to an existing proof rather than a separate proof
+needing its own fee — cheaper in kind, though still large enough that the reflection budget would want
+checking when a swap batch actually folds.
 
 One nuance that is easy to state wrongly: `selfRelay: true` does **not** remove the relay from the picture.
 `_dispatch` still calls `relay.prove(...)` and only changes who submits the settle — so the relay still
