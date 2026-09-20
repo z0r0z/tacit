@@ -82,7 +82,10 @@ test('a missing capacity block degrades quietly instead of throwing', () => {
 
 test('runway uses the measured settle gas, not a magic number', () => {
   ok(/import \{ CFG, OP_GAS \}/.test(monitor), 'monitor does not import OP_GAS');
-  ok(/OP_GAS\.transfer \* gasPrice/.test(monitor), 'runway must price a real settle at the live gas price');
+  // Priced per role now: a settle wallet on OP_GAS.transfer, a maintenance-only one on OP_GAS.maintenance.
+  ok(/const perOp = settles \? OP_GAS\.transfer : OP_GAS\.maintenance/.test(monitor),
+    'runway must price each wallet on the work it actually does');
+  ok(/perOp \* gasPrice/.test(monitor), 'runway must price at the live gas price');
   ok(/getGasPrice\(\)/.test(monitor), 'runway must read the live gas price');
 });
 

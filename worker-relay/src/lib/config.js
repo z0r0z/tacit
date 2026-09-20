@@ -205,6 +205,12 @@ export const CFG = {
   minFloorUsd: num('MIN_FLOOR_USD', 0.5), // absolute floor so tiny trades cover their gas
   opsMargin: num('OPS_MARGIN', 0.12), // ~12% over cost
   bpsCap: num('BPS_CAP', 30), // displayed bps ceiling for mid/large trades
+  // Ops/day the maintenance overhead is amortised across. Set it to what the relay actually serves; too
+  // high quietly under-prices every op and the relay bleeds, too low prices us out of competitiveness.
+  expectedOpsPerDay: num('EXPECTED_OPS_PER_DAY', 50),
+  // Refuse ops that carry no priced fee. Default OFF: nothing populates op.feeUsd yet, so switching this
+  // on before the producer is wired would refuse every job. Turn it on once fees actually arrive.
+  requirePricedFee: opt('RELAY_REQUIRE_PRICED_FEE', '0') === '1',
 
   // ── Replenish / monitor thresholds ──
   proveBalanceFloor: num('PROVE_BALANCE_FLOOR', 50), // PROVE, whole tokens
@@ -237,7 +243,18 @@ export const OP_GAS = {
   unwrap: 323_000n,
   transfer: 600_000n, // from a live 1-in/2-out settle estimate (600,356); 2 output leaves + membership
   swapblind: 900_000n, // heavier than swap: in-guest amm_swap_batch Groth16 verify + 2 cross-curve sigmas + opening-PoK. Consulted only for the (dormant) relayed path; tips=0 self-settle pays its own gas. Refine from a live estimate at arming.
+  // Bitcoin header attestation — the maintenance lane. Measured 2026-09-20 from three consecutive live
+  // receipts (264,253 / 264,241 / 264,241). NOT a user op: nobody pays a fee for it, but the bridge and
+  // the fast lane stop working in both directions without it, so it is a standing cost the margin on user
+  // ops has to carry. See MAINTENANCE_RUNS_PER_DAY.
+  maintenance: 264_000n,
 };
+
+// How often the maintenance lane runs, for the overhead term in the fee model. Measured 2026-09-20: 96
+// header-relay transactions in 6,000 blocks (~20.8h) ≈ 4.6/hour. Reflection attestation rides the same
+// wallet and cadence. Deliberately an env knob — the cadence follows HEADER_RELAY_LEAD and batch size,
+// so a deployment that paces differently should say so rather than inherit this number silently.
+export const MAINTENANCE_RUNS_PER_DAY = Number(process.env.MAINTENANCE_RUNS_PER_DAY || 111);
 export const DEFAULT_OP_GAS = 600_000n;
 
 // Measured PROVE per incremental op — near the groth16 floor (PRICING doc: ~$0.03/op).

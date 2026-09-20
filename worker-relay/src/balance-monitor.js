@@ -21,7 +21,7 @@
 
 import { formatEther, formatUnits } from 'viem';
 import { CFG, OP_GAS } from './lib/config.js';
-import { publicClient, relayWallet, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { publicClient, relayWallet, fundedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -62,35 +62,46 @@ async function checkProve() {
   }
 }
 
+// Check EVERY wallet the relay spends from, not just RELAY_KEY.
+//
+// This check used to read `relayWallet` alone. On a split-key deployment that is the wrong wallet: the
+// settle wallet is msg.sender on every settle, so it is the one that burns gas per op, and it can sit
+// minutes from empty while the relay wallet looks fine. Measured 2026-09-20 — relay 0.0109 ETH (healthy)
+// while settle held 0.00098, about ten settles. Nothing alerted, because nothing was looking.
 async function checkEth() {
-  const owner = relayWallet.account.address;
-  const bal = await publicClient.getBalance({ address: owner });
-  log(`ETH (relay) = ${formatEther(bal)}`);
+  let gasPrice = null;
+  try { gasPrice = await publicClient.getGasPrice(); }
+  catch (e) { log(`gas price read failed, runway unavailable: ${e?.message || e}`); }
 
-  // Runway: what the balance still buys at the live gas price. `transfer` is the representative settle —
-  // it is the op the relay actually runs in volume, and its 600k is measured rather than guessed.
-  let runway = null;
-  try {
-    const gasPrice = await publicClient.getGasPrice();
-    const perSettle = OP_GAS.transfer * gasPrice;
-    if (perSettle > 0n) {
-      runway = Number(bal / perSettle);
-      log(`settle runway = ${runway} settles @ ${formatUnits(gasPrice, 9)} gwei (${formatEther(perSettle)} ETH each)`);
+  for (const { address, roles } of fundedWallets) {
+    const bal = await publicClient.getBalance({ address });
+    const who = `${address} (${roles.join('+')})`;
+    log(`ETH ${who} = ${formatEther(bal)}`);
+
+    // Runway: what the balance still buys at the live gas price. A settle-capable wallet is priced on a
+    // real settle (`OP_GAS.transfer`, measured); a relay-only wallet pays for the maintenance lane, whose
+    // per-run cost is its own figure.
+    let runway = null;
+    const settles = roles.includes('settle');
+    const perOp = settles ? OP_GAS.transfer : OP_GAS.maintenance;
+    if (gasPrice && perOp * gasPrice > 0n) {
+      runway = Number(bal / (perOp * gasPrice));
+      log(`  runway = ${runway} ${settles ? 'settles' : 'maintenance runs'} @ ${formatUnits(gasPrice, 9)} gwei`);
       if (runway < CFG.settleRunwayAlert) {
         await alert('critical',
-          `settle runway ${runway} < ${CFG.settleRunwayAlert} at ${formatUnits(gasPrice, 9)} gwei — fund ${owner} or the relay stalls`,
-          { runway, ethWei: bal.toString(), gasPriceWei: gasPrice.toString() });
+          `${who} runway ${runway} < ${CFG.settleRunwayAlert} at ${formatUnits(gasPrice, 9)} gwei — fund it or ${settles ? 'settles' : 'attestation'} stalls`,
+          { address, roles, runway, ethWei: bal.toString(), gasPriceWei: gasPrice.toString() });
       }
     }
-  } catch (e) { log(`gas price read failed, runway unavailable: ${e?.message || e}`); }
 
-  // Absolute floor. Two alerts for one condition is noise, so this only escalates when runway did not
-  // already cover it: critical if the gas read failed (the floor is then the only signal there is), and
-  // otherwise a warning — a low balance that a quiet market makes survivable is still worth saying, but
-  // it is not a second page.
-  if (bal < CFG.ethGasBufferWei) {
-    const level = runway === null ? 'critical' : 'warning';
-    await alert(level, `ETH gas ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} — fund ${owner}`, { ethWei: bal.toString(), runway });
+    // Absolute floor. Two alerts for one condition is noise, so this only escalates when runway did not
+    // already cover it: critical if the gas read failed (the floor is then the only signal there is), and
+    // otherwise a warning — a low balance that a quiet market makes survivable is still worth saying, but
+    // it is not a second page.
+    if (bal < CFG.ethGasBufferWei) {
+      const level = runway === null ? 'critical' : 'warning';
+      await alert(level, `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} — fund it`, { address, roles, ethWei: bal.toString(), runway });
+    }
   }
 }
 

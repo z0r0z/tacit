@@ -43,6 +43,10 @@ const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAI
 export const NONCE_TAKEN = /nonce ?too ?low|lower than the current nonce|nonce has already been used|NONCE_EXPIRED/i;
 const NONCE_REFRESHES = 3;
 
+// Count of jobs relayed for free this process — surfaced in the log so an unpaid relay is observable
+// rather than something you infer later from an empty wallet.
+let unpricedJobs = 0;
+
 // Reject a job whose proof-bound fee doesn't cover its all-in cost + margin.
 // The fee is carved from the op input and enforced by the guest, so the worker
 // already knows the USD value it will collect: the op carries feeUsd (preferred),
@@ -52,8 +56,20 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   if (job.mode === 'prove') return { ok: true, reason: 'prove-only (no on-chain submit)' };
   const feeUsd = Number(job.op?.feeUsd ?? job.feeUsd ?? NaN);
   if (!Number.isFinite(feeUsd)) {
-    // Can't price the bound fee → do not block launch volume, but flag it.
-    return { ok: true, reason: 'fee not priced (accepted; TODO wire op.feeUsd)' };
+    // An op that carries no priced fee is unpaid work. Every relayed op has taken this path so far — the
+    // producer never set `op.feeUsd` — which is why the relay's fee balances have been flat zero while it
+    // paid for every settle out of its own gas. The flywheel downstream (sweep -> ETH/PROVE -> vApp) is
+    // complete and correct; it has simply never had anything to sweep.
+    //
+    // Defaulting to closed here would stop production dead, since nothing populates the field yet, so the
+    // default preserves today's behaviour and makes the subsidy VISIBLE instead of silent. Wire
+    // `op.feeUsd` at the producer, then set RELAY_REQUIRE_PRICED_FEE=1 to actually collect.
+    if (CFG.requirePricedFee) {
+      return { ok: false, reason: 'op carries no priced fee and RELAY_REQUIRE_PRICED_FEE=1' };
+    }
+    unpricedJobs++;
+    log(`UNPAID: job type=${job.type} carries no op.feeUsd — relaying at our own expense (${unpricedJobs} so far this process)`);
+    return { ok: true, reason: 'fee not priced (accepted as subsidy — set RELAY_REQUIRE_PRICED_FEE=1 to refuse)' };
   }
   const q = quoteRelayFee({
     op: job.type,

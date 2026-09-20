@@ -13,9 +13,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getAddress, maxUint256 } from 'viem';
-import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
+import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import {
-  publicClient, relayWallet, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
+  publicClient, relayWallet, fundedWallets, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
   PROVE, VAPP, ZQUOTER, ZROUTER,
 } from './lib/chain.js';
 
@@ -35,7 +35,19 @@ export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd
   // gas cost USD = gas * gwei * 1e-9 ETH/gas * ethPriceUsd
   const gasCostUsd = Number(gas) * gwei * 1e-9 * ethPx;
   const proveCostUsd = OP_PROVE * provePx;
-  const costUsd = gasCostUsd + proveCostUsd;
+
+  // The maintenance lane's share. Bitcoin header attestation (and the reflection folding that rides the
+  // same wallet) is what keeps the bridge working in both directions and the fast lane usable, but no user
+  // pays a fee for it — so if it is left out of the cost model the relay prices every op below its true
+  // cost and bleeds exactly as fast as it works. Amortise the daily maintenance burn across the ops we
+  // expect to serve in a day.
+  //
+  // At low volume this term dominates, which is not a modelling artefact: it is the real reason a quiet
+  // relay cannot fund itself, and it should be visible in the quote rather than discovered in the balance.
+  const maintenanceUsdPerDay = MAINTENANCE_RUNS_PER_DAY * Number(OP_GAS.maintenance) * gwei * 1e-9 * ethPx;
+  const maintenanceCostUsd = maintenanceUsdPerDay / Math.max(1, CFG.expectedOpsPerDay);
+
+  const costUsd = gasCostUsd + proveCostUsd + maintenanceCostUsd;
 
   const marginedUsd = costUsd * (1 + CFG.opsMargin);
   let feeUsd = Math.max(CFG.minFloorUsd, marginedUsd);
@@ -52,7 +64,7 @@ export function quoteRelayFee({ op, tradeSizeUsd = 0, liveGasGwei, provePriceUsd
 
   return {
     op, tradeSizeUsd,
-    gasCostUsd, proveCostUsd, costUsd,
+    gasCostUsd, proveCostUsd, maintenanceCostUsd, costUsd,
     feeUsd,
     displayedBps: tradeSizeUsd > 0 ? (feeUsd / tradeSizeUsd) * 10_000 : null,
     belowFloor: marginedUsd < CFG.minFloorUsd, // caller may recommend self-settle
@@ -82,12 +94,12 @@ async function erc20Balance(token, owner) {
 // gas buffer + this floor is converted to PROVE; the buffer stays as native gas.
 const MIN_ETH_SWEEP = BigInt(process.env.MIN_ETH_SWEEP_WEI || '5000000000000000'); // 0.005 ETH
 
-async function ensureApproval(token, spender, amount) {
-  const owner = relayWallet.account.address;
+async function ensureApproval(token, spender, amount, wallet = relayWallet) {
+  const owner = wallet.account.address;
   const cur = await publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'allowance', args: [owner, spender] });
   if (cur >= amount) return;
-  log(`approving ${spender} for token ${token}`);
-  const h = await relayWallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] });
+  log(`approving ${spender} for token ${token} (owner ${owner})`);
+  const h = await wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] });
   await publicClient.waitForTransactionReceipt({ hash: h });
 }
 
@@ -95,15 +107,15 @@ const SLIPPAGE_BPS = BigInt(process.env.SLIPPAGE_BPS || 100); // 1%
 
 // One-time max approvals so every subsequent sweep is a bare swap (no per-swap approve tx):
 // each ERC20 fee asset -> zRouter, and PROVE -> vApp for the deposit. Native ETH needs none.
-async function maxPreApprove(assets) {
-  const owner = relayWallet.account.address;
+async function maxPreApprove(assets, wallet = relayWallet) {
+  const owner = wallet.account.address;
   const pairs = assets.filter((a) => a !== ETH).map((a) => [a, ZROUTER]);
   pairs.push([PROVE, VAPP]);
   for (const [token, spender] of pairs) {
     const cur = await publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'allowance', args: [owner, spender] });
     if (cur >= maxUint256 / 2n) continue; // already effectively unlimited
-    log(`pre-approving ${spender} for ${token}`);
-    const h = await relayWallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] });
+    log(`pre-approving ${spender} for ${token} (owner ${owner})`);
+    const h = await wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] });
     await publicClient.waitForTransactionReceipt({ hash: h });
   }
 }
@@ -146,8 +158,8 @@ export async function provePriceUsd(ethPriceUsd) {
 // Fire the quoted route: send the zQuoter callData straight at zRouter (to: zRouter,
 // data: callData, value: msgValue). Approvals are set once up front (maxPreApprove);
 // native-ETH routes carry their input in msgValue. No manual route/fee-tier picking.
-async function fireSwap(quoted) {
-  const h = await relayWallet.sendTransaction({ to: ZROUTER, data: quoted.callData, value: quoted.msgValue || 0n });
+async function fireSwap(quoted, wallet = relayWallet) {
+  const h = await wallet.sendTransaction({ to: ZROUTER, data: quoted.callData, value: quoted.msgValue || 0n });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: h });
   if (rcpt.status !== 'success') throw new Error(`zRouter swap reverted ${h}`);
   return h;
@@ -156,16 +168,16 @@ async function fireSwap(quoted) {
 // Deposits the wallet's PROVE into the vApp. DEPOSIT_AMOUNT_WEI caps how much goes in (default: the
 // whole balance, the sweep-loop behaviour) — a bounded deposit keeps the rest of the treasury out of
 // the prover account when topping up for one known job.
-async function depositProveToVApp() {
-  const owner = relayWallet.account.address;
+async function depositProveToVApp(wallet = relayWallet) {
+  const owner = wallet.account.address;
   const bal = await erc20Balance(PROVE, owner);
   if (bal === 0n) { log('no PROVE to deposit'); return; }
   const cap = process.env.DEPOSIT_AMOUNT_WEI ? BigInt(process.env.DEPOSIT_AMOUNT_WEI) : bal;
   const amt = cap < bal ? cap : bal;
   if (amt === 0n) { log('DEPOSIT_AMOUNT_WEI=0 — nothing to deposit'); return; }
-  await ensureApproval(PROVE, VAPP, amt);
-  log(`depositing ${amt} PROVE to vApp ${VAPP} (wallet balance ${bal})`);
-  const h = await relayWallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [amt] });
+  await ensureApproval(PROVE, VAPP, amt, wallet);
+  log(`depositing ${amt} PROVE to vApp ${VAPP} from ${owner} (wallet balance ${bal})`);
+  const h = await wallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [amt] });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: h });
   if (rcpt.status !== 'success') throw new Error(`vApp deposit reverted ${h}`);
   log(`vApp deposit ok: tx=${h}`);
@@ -183,60 +195,73 @@ async function main() {
     log('replenish done (deposit only)');
     return;
   }
+  const buffer = CFG.ethGasBufferWei;
   const assets = feeAssets();
   if (assets.length === 0) { log('FEE_ASSETS empty — nothing to sweep (manual PROVE top-up mode)'); return; }
 
-  // One-time max approvals (zRouter + vApp) so the loop is pure swaps.
-  await maxPreApprove(assets);
+  // Sweep and fund EVERY wallet the relay spends from, not just RELAY_KEY.
+  //
+  // The two roles genuinely differ in where value lands. The SETTLE wallet is msg.sender on every settle,
+  // so the pool's `_payout` credits the fee to it and its own gas is what the settle burns — it both earns
+  // and spends. The RELAY wallet pays for the maintenance lane (header attestation, reflection), which
+  // earns nothing. Sweeping only `relayWallet`, as this loop used to, therefore looked for fees where they
+  // never arrive and topped up the wallet that was not paying for settles.
+  //
+  // Funding each wallet from its OWN fee income keeps that honest, and self-corrects when the keys are
+  // consolidated: SETTLE_KEY defaults to RELAY_KEY, in which case this is one wallet and one pass.
+  for (const { address: owner, wallet, roles } of fundedWallets) {
+    log(`— wallet ${owner} (${roles.join('+')})`);
+    try { await maxPreApprove(assets, wallet); }
+    catch (e) { log(`  pre-approve failed (continuing): ${e.message}`); }
 
-  const buffer = CFG.ethGasBufferWei;
+    // Bias: keep native ETH as gas (only the surplus over the buffer goes to PROVE); convert the
+    // stablecoins/wstETH fully to PROVE to cover network basis. Hold TAC (never in FEE_ASSETS).
+    for (const asset of assets) {
+      try {
+        if (asset === ETH) {
+          const ethBal = await publicClient.getBalance({ address: owner });
+          const surplus = ethBal > buffer ? ethBal - buffer : 0n;
+          if (surplus < MIN_ETH_SWEEP) { log(`  ETH ${ethBal} <= buffer+dust — keeping as gas`); continue; }
+          const q = await quote(ETH, PROVE, surplus, owner);
+          log(`  ETH surplus ${surplus} -> ~${q.amountOut} PROVE`);
+          await fireSwap(q, wallet);
+          continue;
+        }
 
-  // Bias: keep native ETH as gas (only the surplus over the buffer goes to PROVE); convert the
-  // stablecoins/wstETH fully to PROVE to cover network basis. Hold TAC (never in FEE_ASSETS).
-  for (const asset of assets) {
-    try {
-      if (asset === ETH) {
+        const bal = await erc20Balance(asset, owner);
+        if (bal === 0n) continue;
+        log(`  fee asset ${asset} balance=${bal}`);
+
+        // If ETH is below the gas buffer, first buy just enough ETH from this asset (exact-out),
+        // then convert whatever's left to PROVE. Gas before PROVE is the right order: a wallet that
+        // cannot pay for a transaction cannot buy PROVE either, so the gas leg has to clear first.
         const ethBal = await publicClient.getBalance({ address: owner });
-        const surplus = ethBal > buffer ? ethBal - buffer : 0n;
-        if (surplus < MIN_ETH_SWEEP) { log(`ETH ${ethBal} ≤ buffer+dust — keeping as gas`); continue; }
-        const q = await quote(ETH, PROVE, surplus, owner);
-        log(`  ETH surplus ${surplus} -> ~${q.amountOut} PROVE`);
-        await fireSwap(q);
-        continue;
-      }
+        if (ethBal < buffer) {
+          const need = buffer - ethBal;
+          try {
+            const qe = await quote(asset, ETH, need, owner, /* exactOut */ true);
+            if (qe.amountIn > 0n && qe.amountIn <= bal) {
+              log(`  gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH`);
+              await fireSwap(qe, wallet);
+            }
+          } catch (e) { log(`  gas top-up quote failed (continuing to PROVE): ${e.message}`); }
+        }
 
-      const bal = await erc20Balance(asset, owner);
-      if (bal === 0n) continue;
-      log(`fee asset ${asset} balance=${bal}`);
-
-      // If ETH is below the gas buffer, first buy just enough ETH from this asset (exact-out),
-      // then convert whatever's left to PROVE.
-      const ethBal = await publicClient.getBalance({ address: owner });
-      if (ethBal < buffer) {
-        const need = buffer - ethBal;
-        try {
-          const qe = await quote(asset, ETH, need, owner, /* exactOut */ true);
-          if (qe.amountIn > 0n && qe.amountIn <= bal) {
-            log(`  gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH`);
-            await fireSwap(qe);
-          }
-        } catch (e) { log(`  gas top-up quote failed (continuing to PROVE): ${e.message}`); }
+        const rem = await erc20Balance(asset, owner);
+        if (rem > 0n) {
+          const q = await quote(asset, PROVE, rem, owner);
+          log(`  ${rem} ${asset} -> ~${q.amountOut} PROVE`);
+          await fireSwap(q, wallet);
+        }
+      } catch (e) {
+        log(`  sweep for ${asset} failed (continuing): ${e.message}`);
       }
-
-      const rem = await erc20Balance(asset, owner);
-      if (rem > 0n) {
-        const q = await quote(asset, PROVE, rem, owner);
-        log(`  ${rem} ${asset} -> ~${q.amountOut} PROVE`);
-        await fireSwap(q);
-      }
-    } catch (e) {
-      log(`  sweep for ${asset} failed (continuing): ${e.message}`);
     }
-  }
 
-  // Deposit all accumulated PROVE to the vApp (top up the network prover balance).
-  try { await depositProveToVApp(); }
-  catch (e) { log(`vApp deposit failed: ${e.message}`); }
+    // Deposit this wallet's accumulated PROVE to the vApp (top up the network prover balance).
+    try { await depositProveToVApp(wallet); }
+    catch (e) { log(`  vApp deposit failed: ${e.message}`); }
+  }
 
   log('replenish done');
 }

@@ -54,6 +54,29 @@ export const settleWallets = [
   ...(CFG.settleAllowPublic ? [{ url: `${CFG.rpcUrl} (PUBLIC)`, wallet: walletFor(CFG.settleKey || CFG.relayKey, transport) }] : []),
 ];
 
+// Every address the relay spends from, deduped — the set the monitor must watch and replenish must fund.
+//
+// SETTLE_KEY defaults to RELAY_KEY, so for a single-key deployment this is one entry and nothing changes.
+// When they are split, though, the two roles diverge in a way that is easy to miss: the SETTLE wallet is
+// `msg.sender` on every settle, so it is both the address that burns the gas AND the address the pool's
+// `_payout` credits the fee to. The RELAY wallet pays for the maintenance lane — header attestation,
+// reflection — which earns nothing at all.
+//
+// Watching or funding only one of them is therefore not a partial view, it is the wrong view: on a split
+// deployment the settle wallet can be minutes from empty while the relay wallet looks healthy, and a
+// replenish that tops up `relayWallet` refills the one that is not paying for settles. Both roles are
+// named here so neither can be addressed by accident.
+export const fundedWallets = (() => {
+  const seen = new Map();
+  for (const [role, w] of [['relay', relayWallet], ['settle', settleWallet]]) {
+    const addr = w.account.address.toLowerCase();
+    const prior = seen.get(addr);
+    if (prior) { prior.roles.push(role); continue; }
+    seen.set(addr, { address: w.account.address, wallet: w, roles: [role] });
+  }
+  return [...seen.values()];
+})();
+
 // Live ETH/USD (Chainlink). The relay's cost is gas × ETH price, so a hardcoded price misprices every job
 // the moment ETH moves — overstating cost rejects profitable work, understating it relays at a loss. Cached
 // ~1 min (the feed moves more slowly than that); falls back to the static CFG.ethPriceUsd if the read fails.

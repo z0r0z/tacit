@@ -89,6 +89,33 @@ That gap cannot be closed on-chain. Probed 2026-09-20 against `0x5Ad5Bc4B…951F
 `deposit(uint256)`. The deposited balance lives off-chain in Succinct's rollup. Closing it properly means
 the Succinct API with a key — a credential decision, not a code one. **Do not re-derive this.**
 
+## 3a. Paying for itself
+
+The relay is meant to be self-funding: charge a fee per op, sweep the fees to ETH and PROVE through
+zQuoter/zRouter, deposit the PROVE to the Succinct vApp. That loop is fully built in `replenish.js`. On
+2026-09-20 it had never produced anything, for four independent reasons — each invisible on its own:
+
+1. **`tacit-replenish` was SUSPENDED.** The flywheel had never run. Operator action.
+2. **`SETTLE_KEY` is split from `RELAY_KEY`.** The settle wallet is `msg.sender` on every settle, so it
+   both earns the fee (`_payout`) and burns the gas. The monitor and replenish both looked only at
+   `RELAY_KEY`. Measured that day: relay `0x68575B…` held 0.0109 ETH and looked fine, while settle
+   `0xfd1fa372…` held 0.00098 — about ten settles — and nothing alerted. Both now iterate `fundedWallets`.
+3. **The fee gate accepted any op without `op.feeUsd` for free**, which was every op. That is why every
+   fee balance was flat zero. The gate now logs `UNPAID:` per job and counts them;
+   `RELAY_REQUIRE_PRICED_FEE=1` refuses them outright. **Default off** — nothing populates `op.feeUsd`
+   yet, so turning it on before the producer is wired would refuse every job.
+4. **The maintenance lane was missing from the cost model.** Header attestation is 264,241 gas (measured,
+   three consecutive receipts) at ~111 runs/day, and nobody pays a fee for it — but the bridge stops in
+   both directions without it. It is now amortised across `EXPECTED_OPS_PER_DAY`.
+
+At 0.15 gwei and ETH $1840, 50 ops/day: settle gas $0.166 + PROVE $0.074 + maintenance $0.162 = **$0.40
+all-in per op**, which the $0.50 `MIN_FLOOR_USD` covers. At 10 gwei the maintenance share alone is
+$10.78/op — which is the real argument for batching, since job batching splits one settle's gas across its
+members while the maintenance overhead stays fixed per day.
+
+**Order to switch on:** fund both wallets → resume `tacit-replenish` → wire `op.feeUsd` at the producer →
+watch `UNPAID:` go to zero → set `RELAY_REQUIRE_PRICED_FEE=1`.
+
 ## 4. Responding
 
 **Settle runway low** — fund the relay wallet. Read the current address from a recent pool settle rather
