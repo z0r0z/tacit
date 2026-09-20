@@ -1098,6 +1098,15 @@ async function advanceReflectionTip(env, network, att) {
 
 // Lightweight read of the persisted reflection cursor (NO block assembly) — the header feeder reads
 // attestedHeight to pace the on-chain relay (keep it ≤ headerLead ahead). Box-token gated.
+//
+// It also reports the snapshot's SIZE, which is the protocol's one genuinely cumulative resource. Nothing
+// on the immutable surface grows with history — the note tree is fixed-depth with O(depth) inserts, roots
+// and nullifiers are O(1) mappings that are never iterated, and the guest touches accumulated state only
+// through witnessed membership proofs, so its cycle cost tracks batch size rather than ledger size. This
+// snapshot is the exception: `noteLeaves` and `spentLinks` are append-only and never compacted, so the
+// assembler's working set is what will bind first, long before anything on-chain does. The numbers cost
+// nothing to report (the snapshot is already read and parsed here), and having them on an endpoint is what
+// lets the monitor watch the curve instead of discovering it.
 async function handleReflectionState(req, env, url, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
@@ -1106,7 +1115,21 @@ async function handleReflectionState(req, env, url, cors) {
   if (!raw) return jsonResponse({ network, attestedHeight: null, tipHeight: null }, 200, { ...cors, 'Cache-Control': 'no-store' });
   let s;
   try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
-  return jsonResponse({ network, attestedHeight: s.attestedHeight ?? null, tipHeight: s.tipHeight ?? null }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  const len = (k) => (Array.isArray(s[k]) ? s[k].length : 0);
+  return jsonResponse({
+    network,
+    attestedHeight: s.attestedHeight ?? null,
+    tipHeight: s.tipHeight ?? null,
+    capacity: {
+      bytes: raw.length,
+      // Append-only: these never shrink, and together they set the floor on snapshot size forever.
+      noteLeaves: len('noteLeaves'),
+      spentLinks: len('spentLinks'),
+      // Transient: freed when a note is spent, so these track the live set rather than history.
+      liveTriples: len('liveTriples'),
+      coords: len('coords'),
+    },
+  }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // Export the persisted reflection record verbatim (the counterpart to /reflection/seed). The

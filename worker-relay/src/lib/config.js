@@ -209,7 +209,17 @@ export const CFG = {
   // ── Replenish / monitor thresholds ──
   proveBalanceFloor: num('PROVE_BALANCE_FLOOR', 50), // PROVE, whole tokens
   ethGasBufferWei: BigInt(opt('ETH_GAS_BUFFER_WEI', '30000000000000000')), // 0.03 ETH
+  // A floor says "low"; runway says WHEN. The relay stalls when it can no longer afford the next settle,
+  // so the actionable number is how many settles the balance still buys at the live gas price — which
+  // moves with the market, where a fixed wei floor does not. A quiet 0.03 ETH is weeks at 0.15 gwei and
+  // under a day at 30 gwei.
+  settleRunwayAlert: num('SETTLE_RUNWAY_ALERT', 25), // settles remaining before the relay is considered at risk
   reflectionLagAlertBlocks: num('REFLECTION_LAG_ALERT_BLOCKS', 200), // above the ~144-block relay lead that is normal
+  // The reflection snapshot is the protocol's one cumulative resource (see handleReflectionState). The
+  // assembler has been measured peaking +58-216MB above the snapshot against a 1280MB heap, so the
+  // snapshot itself wants to stay well under a fifth of that ceiling; crossing this is the signal to
+  // schedule frontier compaction, not an emergency.
+  snapshotBytesWarn: num('SNAPSHOT_BYTES_WARN', 64 * 1024 * 1024),
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't
