@@ -620,7 +620,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/note-witness']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1136,6 +1136,50 @@ async function handleReflectionState(req, env, url, cors) {
   }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
+// Public, cheap summary of where reflection stands, so an integrator does not have to download the whole
+// snapshot (/reflection/dump) just to learn whether a cross-out or a mint has been folded yet.
+//   attestedHeight  the Bitcoin height the pool has attested through
+//   tipHeight       the header relay's tip; a block folds once tipHeight - REFLECTION_CONFIRMATIONS reaches it
+//   foldedCrossoutCount  cross-outs the reflection state has folded; compare with the pool's crossOutCount()
+// The record is large, so the parsed summary is held for a few seconds and shared by every caller.
+const REFLECTION_STATUS_TTL_MS = 10000;
+const _reflectionStatusCache = new Map();
+async function handleReflectionStatus(req, env, url, cors) {
+  const authed = checkConfidentialAuth(req, env);
+  if (!authed) {
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const rl = await dumpRateLimit(env, ip);
+    if (!rl.ok) {
+      return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s` }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+    }
+  }
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const headers = { ...cors, 'Cache-Control': 'public, max-age=10' };
+  const hit = _reflectionStatusCache.get(network);
+  if (hit && Date.now() - hit.at < REFLECTION_STATUS_TTL_MS) return jsonResponse(hit.body, 200, headers);
+  const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  let s;
+  try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
+  const snap = s.snapshot && typeof s.snapshot === 'object' ? s.snapshot : s;
+  const attested = s.attestedHeight ?? null, tip = s.tipHeight ?? null;
+  const body = {
+    network,
+    attestedHeight: attested,
+    tipHeight: tip,
+    lagBlocks: Number.isInteger(attested) && Number.isInteger(tip) ? tip - attested : null,
+    confirmations: reflectionConf(env, network),
+    foldedCrossoutCount: Number.isInteger(snap.foldedCrossoutCount) ? snap.foldedCrossoutCount : null,
+    consumedCount: Number.isInteger(snap.consumedCount) ? snap.consumedCount : null,
+    liveNotes: Array.isArray(snap.liveTriples) ? snap.liveTriples.length : null,
+    burnDeposits: Array.isArray(snap.pendingDepositRecords) ? snap.pendingDepositRecords.length : null,
+    updatedAt: new Date().toISOString(),
+  };
+  _reflectionStatusCache.set(network, { at: Date.now(), body });
+  return jsonResponse(body, 200, headers);
+}
+
 // Export the persisted reflection record verbatim (the counterpart to /reflection/seed). The
 // off-worker assembler needs the FULL snapshot — not just the cursor — to build a large catch-up
 // batch off-box when the in-worker eager fold would exhaust the worker's heap. Box-token gated like
@@ -1378,31 +1422,59 @@ async function handleReflectionAck(req, env, cors) {
 // keep clearing this floor; a THIRD-PARTY integrator quoting a thinner margin is exactly who this protects
 // the relay against. Fails OPEN (passes the op through) on an RPC outage or an unpriceable fee leg — a
 // missing profitability check is a cost the relay eats; wrongly rejecting a real user's submit is worse.
+// What asset is this op's fee paid in, and can we value it? The ONE place that answers, so the gate, the
+// pricer and the paid-bucket check cannot disagree about which fees are verifiable.
+//
+//   kind 'eth' — cETH: `unitScale` is exact wei-per-unit, no oracle needed.
+//   kind 'usd' — a USD-pegged pool asset (cUSD, and cUSDC/cUSDT once they are registered in the deployment
+//                data): value is units x unitScale / 10^decimals dollars, converted to wei at the live ETH
+//                price when the gate needs a wei figure.
+//
+// Anything else (cBTC, cTAC, an unregistered asset) returns null: we hold no oracle for it, so it is neither
+// gated nor priced — and the relay counts it as unpaid work rather than as free permission.
+const USD_PEGGED_FEE_TICKERS = ['cUSD', 'cUSDC', 'cUSDT'];
+function feeAssetRow(type, op) {
+  try {
+    if (!op || typeof op !== 'object') return null;
+    const assetId = feeAssetOf(type, op);
+    if (!assetId) return null;
+    const want = String(assetId).toLowerCase();
+    const rows = (_CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || []).filter((a) => String(a.assetId || '').toLowerCase() === want);
+    const row = rows.find((a) => a.ticker === 'cETH') || rows.find((a) => USD_PEGGED_FEE_TICKERS.includes(a.ticker));
+    if (!row || !row.unitScale) return null;
+    if (row.ticker === 'cETH') return { row, kind: 'eth' };
+    const dec = Number(row.decimals);
+    if (!Number.isInteger(dec) || dec < 0 || dec > 36) return null;
+    return { row, kind: 'usd', usdPerUnit: Number(BigInt(row.unitScale)) / 10 ** dec };
+  } catch { return null; }
+}
+
 function buildRelayFeeGate(env) {
   if (env.RELAY_FEE_FLOOR !== '1') return null;
   const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
-  const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
-  if (!cEth || !cEth.assetId || !cEth.unitScale) return null; // deployment not resolved — fail open, don't gate blind
-  const cEthAssetId = String(cEth.assetId).toLowerCase();
-  const weiPerCEthUnit = BigInt(cEth.unitScale);
   return async ({ type, op }) => {
-    const feeAsset = feeAssetOf(type, op);
-    if (!feeAsset || String(feeAsset).toLowerCase() !== cEthAssetId) return true; // can't price it — pass through
+    const p = feeAssetRow(type, op);
+    if (!p) return true; // can't price it — pass through
+    let weiPerFeeUnit;
+    if (p.kind === 'eth') {
+      weiPerFeeUnit = BigInt(p.row.unitScale);
+    } else {
+      const ethUsd = await _ethUsdPrice().catch(() => null);
+      if (!ethUsd) return true; // no ETH price — fail open rather than stall the whole relay
+      weiPerFeeUnit = BigInt(Math.floor((p.usdPerUnit / ethUsd) * 1e18));
+      if (weiPerFeeUnit <= 0n) return true;
+    }
     let gasPriceHex;
     try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
     if (!gasPriceHex) return true; // RPC outage — fail open rather than stall the whole relay
     let gasPriceWei;
     try { gasPriceWei = BigInt(gasPriceHex); } catch { return true; }
-    return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit: weiPerCEthUnit, marginBps });
+    return passesFloor({ type, op, gasPriceWei, weiPerFeeUnit, marginBps });
   };
 }
-// True iff the op carries a cETH fee leg above zero — the one fee the relay's gate can hold to a floor.
+// True iff the op carries a fee above zero in an asset the gate can value — the fees it can hold to a floor.
 function hasVerifiableFee(type, op) {
-  try {
-    const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
-    if (!cEth?.assetId || !op || typeof op !== 'object') return false;
-    return totalFee(type, op) > 0n && String(feeAssetOf(type, op) || '').toLowerCase() === String(cEth.assetId).toLowerCase();
-  } catch { return false; }
+  try { return feeAssetRow(type, op) !== null && totalFee(type, op) > 0n; } catch { return false; }
 }
 
 // Price an op's OWN fee legs in USD, for the relay's profitability gate.
@@ -1411,25 +1483,22 @@ function hasVerifiableFee(type, op) {
 // enforces, so the number here is the fee the op genuinely carries. A caller cannot inflate it, and the
 // one field a caller could have set (`op.feeUsd`) is stripped in submitJob before the op is stored.
 //
-// Only cETH is priceable server-side today — its `unitScale` is wei-per-unit, so units x scale x ETH/USD is
-// exact with no oracle beyond the ETH price the gate already reads. Every other asset returns feeUsd: null,
-// which the relay reads as "unpaid work" and logs, rather than as permission to relay for free. That is the
-// honest shape: widening it means a per-asset USD oracle, not a guess.
+// What is priceable is decided by `feeAssetRow`: cETH (exact, `unitScale` is wei-per-unit) and USD-pegged
+// pool assets (units x unitScale / 10^decimals dollars). Everything else returns feeUsd: null, which the
+// relay reads as "unpaid work" and logs, rather than as permission to relay for free. Widening it means
+// registering the asset with a peg or an oracle, not a guess.
 function buildFeePricer(env) {
-  const cEth = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets?.find((a) => a.ticker === 'cETH');
-  if (!cEth?.assetId || !cEth?.unitScale) return null;
-  const cEthAssetId = String(cEth.assetId).toLowerCase();
-  const weiPerUnit = BigInt(cEth.unitScale);
   return async ({ type, op }) => {
     let units;
     try { units = totalFee(type, op); } catch { return null; }
     if (!units || units <= 0n) return { feeUnits: '0', feeUsd: 0 };
-    const asset = feeAssetOf(type, op);
     const out = { feeUnits: units.toString(), feeUsd: null };
-    if (!asset || String(asset).toLowerCase() !== cEthAssetId) return out; // carried a fee, can't price it
+    const p = feeAssetRow(type, op);
+    if (!p) return out; // carried a fee, can't price it
+    if (p.kind === 'usd') { out.feeUsd = Number(units) * p.usdPerUnit; return out; }
     const ethUsd = await _ethUsdPrice().catch(() => null);
     if (!ethUsd) return out;
-    out.feeUsd = (Number(units * weiPerUnit) / 1e18) * ethUsd;
+    out.feeUsd = (Number(units * BigInt(p.row.unitScale)) / 1e18) * ethUsd;
     return out;
   };
 }
@@ -9774,7 +9843,81 @@ async function handleChainOutspendsBatch(req, env, network, cors) {
   return new Response(JSON.stringify({ outspends: out }), { status: 200, headers });
 }
 
+// ---- /chain read cache -------------------------------------------------------------------------------------------
+// The proxy's `cf.cacheTtl` hint only means something on an edge runtime; on the Node host it is ignored, so every
+// reader used to re-fetch immutable data (a confirmed tx, a block) from the public explorers, and a holdings scan
+// multiplies that by hundreds of txs. This keeps immutable responses in a bounded in-process LRU and collapses
+// concurrent identical requests into one upstream call. Responses that can still change (unconfirmed tx, address
+// state, a spend not yet confirmed) are never stored.
+const CHAIN_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const _chainCache = new Map(); // key -> { body, status, contentType, exp, size }
+let _chainCacheBytes = 0;
+const _chainInflight = new Map(); // key -> Promise<{ body, status, contentType, cached }>
+const _chainCacheStats = { hit: 0, miss: 0, coalesced: 0, stored: 0 };
+function _chainCacheGet(key) {
+  const e = _chainCache.get(key);
+  if (!e) return null;
+  if (e.exp <= Date.now()) { _chainCache.delete(key); _chainCacheBytes -= e.size; return null; }
+  _chainCache.delete(key); _chainCache.set(key, e); // most-recently-used last
+  return e;
+}
+function _chainCachePut(key, entry, maxBytes = CHAIN_CACHE_MAX_BYTES) {
+  if (entry.size > maxBytes / 8) return; // one huge body must not evict everything else
+  const prev = _chainCache.get(key);
+  if (prev) { _chainCache.delete(key); _chainCacheBytes -= prev.size; }
+  _chainCache.set(key, entry); _chainCacheBytes += entry.size;
+  while (_chainCacheBytes > maxBytes && _chainCache.size) {
+    const oldest = _chainCache.keys().next().value;
+    _chainCacheBytes -= _chainCache.get(oldest).size; _chainCache.delete(oldest);
+  }
+  _chainCacheStats.stored++;
+}
+// How long a response for `path` may be reused, in ms (0 = never). `body` is the upstream text on a 200.
+function _chainCacheTtlMs(path, body) {
+  const p = path.split('?')[0];
+  if (/^\/blocks\/tip\/(height|hash)$/.test(p)) return 15_000;
+  if (/^\/(v1\/fees\/recommended|fee-estimates)$/.test(p)) return 30_000;
+  if (/^\/block\/[0-9a-f]{64}(\/txids)?$/i.test(p)) return 24 * 3600_000; // addressed by hash, immutable
+  if (/^\/tx\/[0-9a-f]{64}\/hex$/i.test(p)) return 3600_000; // addressed by txid; an unconfirmed witness can still be replaced
+  if (/^\/block-height\/\d+$/.test(p)) return 60_000; // a recent height can still reorg
+  if (/^\/tx\/[0-9a-f]{64}(\/status|\/outspend\/\d+)?$/i.test(p)) {
+    let j; try { j = JSON.parse(body); } catch { return 0; }
+    const confirmed = /\/outspend\//.test(p) ? (j && j.spent === true && j.status && j.status.confirmed === true) : (j && j.confirmed === true) || (j && j.status && j.status.confirmed === true);
+    if (!confirmed) return 0;
+    return 30 * 60_000;
+  }
+  return 0;
+}
 async function handleChainProxy(req, env, network, cors) {
+  const u = new URL(req.url);
+  const key = `${network}:${u.pathname}${u.search}`;
+  const mk = (e, how) => {
+    const h = new Headers(cors);
+    h.set('Content-Type', e.contentType || 'application/json');
+    h.set('X-Chain-Cache', how);
+    if (e.retryAfter) h.set('Retry-After', e.retryAfter);
+    if (e.status === 200 && e.ttl > 0) h.set('Cache-Control', 'public, max-age=60');
+    return new Response(e.body, { status: e.status, headers: h });
+  };
+  const hit = _chainCacheGet(key);
+  if (hit) { _chainCacheStats.hit++; return mk(hit, 'hit'); }
+  const running = _chainInflight.get(key);
+  if (running) { _chainCacheStats.coalesced++; return mk(await running, 'coalesced'); }
+  const job = (async () => {
+    const r = await _handleChainProxyUncached(req, env, network, cors);
+    const body = await r.text();
+    const out = { body, status: r.status, contentType: r.headers.get('Content-Type'), retryAfter: r.headers.get('Retry-After'), ttl: 0 };
+    if (r.status === 200) {
+      const ttl = _chainCacheTtlMs(u.pathname.slice('/chain'.length), body);
+      if (ttl > 0) { out.ttl = ttl; _chainCachePut(key, { ...out, exp: Date.now() + ttl, size: body.length }); }
+    }
+    return out;
+  })();
+  _chainInflight.set(key, job);
+  _chainCacheStats.miss++;
+  try { return mk(await job, 'miss'); } finally { _chainInflight.delete(key); }
+}
+async function _handleChainProxyUncached(req, env, network, cors) {
   const u = new URL(req.url);
   const rawPath = u.pathname.slice('/chain'.length);   // strip leading "/chain"
   const path = rawPath || '/';
@@ -24557,6 +24700,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/seed' && req.method === 'POST') return handleReflectionSeed(req, env, url, cors);
     if (url.pathname === '/reflection/state' && req.method === 'GET') return handleReflectionState(req, env, url, cors);
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
+    if (url.pathname === '/reflection/status' && req.method === 'GET') return handleReflectionStatus(req, env, url, cors);
     if (url.pathname === '/reflection/note-witness' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionNoteWitness(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
     if (url.pathname === '/reflection/consumed-source' && req.method === 'POST') return handleReflectionConsumedSource(req, env, url, cors);
