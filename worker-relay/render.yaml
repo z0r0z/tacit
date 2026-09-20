@@ -233,7 +233,7 @@ services:
     dockerfilePath: ./Dockerfile
     plan: starter
     schedule: "0 0 1 1 *"
-    dockerCommand: node -e "console.log('tacit-replenish is retired: replenish runs inside tacit-settle')"
+    dockerCommand: 'echo tacit-replenish is retired - replenish runs inside tacit-settle'
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
