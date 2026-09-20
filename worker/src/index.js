@@ -6445,9 +6445,15 @@ function tradesRingKey(network, aid) {
 // p99 normal-operation latency. Callers that need a tighter bound pass
 // `timeoutMs` in opts; callers that explicitly want no timeout pass `0`.
 const UPSTREAM_DEFAULT_TIMEOUT_MS = 8000;
+// Some public explorers throttle the runtime's default user agent while serving the same request to an identifiable
+// client. Name ourselves on every upstream read.
+const UPSTREAM_USER_AGENT = 'tacit-chain-proxy/1 (+https://tacit.finance)';
 function _buildUpstreamInit(opts) {
   const { cacheTtl, timeoutMs, ...rest } = opts || {};
   const init = { ...rest };
+  const hdrs = new Headers(init.headers || {});
+  if (!hdrs.has('user-agent')) hdrs.set('user-agent', UPSTREAM_USER_AGENT);
+  init.headers = hdrs;
   // `cacheTtl` + `cacheEverything` instructs Cloudflare's edge cache to keep
   // the upstream response for this long regardless of upstream Cache-Control
   // headers. Only safe to set on content-addressed / immutable endpoints
