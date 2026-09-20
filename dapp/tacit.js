@@ -18155,6 +18155,14 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     if (!d || vout >= d.outputs.length) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
+  if (parentEnv.opcode === T_CXFER_BOUND) {
+    // Generation-bound CXFER (0x39): the T_CXFER body behind a 32-byte target binding. Same per-output commitments and
+    // identity vout layout, so a bound note (a cross-out mint's transfer, e.g. tETH) resolves like any other tacit output
+    // and can be listed, taken and walked as an input.
+    const d = decodeCXferBoundPayload(parentEnv.payload);
+    if (!d || vout >= d.outputs.length) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
+  }
   if (parentEnv.opcode === T_AXFER) {
     // Same shape as CXFER for indexing — vouts >= N are aux BTC outputs not
     // governed by the tacit kernel sig, treated as non-tacit (null).
@@ -29093,8 +29101,10 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   // near-floor fee rate the finished transaction paid below the minimum relay fee and the broadcast was rejected.
   // Assemble and sign with the estimated fee, measure the real virtual size, and re-price until the fee covers it.
   const assemble = (feeSats) => {
-    const fundingGap = knownOutValue + feeSats - knownInValue;
-    if (fundingGap < 0) throw new Error('partial tx is over-funded; refusing to take');
+    const rawGap = knownOutValue + feeSats - knownInValue;
+    // The first pass is priced from the size estimate, which can be low; only the pass priced from the measured size decides
+    // whether the partial is genuinely over-funded (checked after the loop), so a small lot is not refused prematurely.
+    const fundingGap = rawGap < 0 ? 0 : rawGap;
     const picked = []; let total = 0;
     for (const u of usable) {
       picked.push(u); total += u.value;
@@ -29124,7 +29134,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
       built.inputs[idx].witness = signP2wpkhInput(built, idx, picked[i].value);
     }
     const vsize = Math.ceil((serializeTx(built, false).length * 3 + serializeTx(built, true).length) / 4);
-    return { tx: built, feeSats, vsize };
+    return { tx: built, feeSats, vsize, rawGap };
   };
   let assembled = assemble(fee);
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -29132,6 +29142,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
     if (assembled.feeSats >= needed) break;
     assembled = assemble(needed);
   }
+  if (assembled.rawGap < 0) throw new Error('partial tx is over-funded; refusing to take');
   const tx = assembled.tx;
 
   const txHex = bytesToHex(serializeTx(tx));
