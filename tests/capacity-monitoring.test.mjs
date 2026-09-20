@@ -41,10 +41,12 @@ const APPEND_ONLY = ['noteLeaves', 'spentLinks'];
 const TRANSIENT = ['liveTriples', 'coords'];
 const ALL = [...APPEND_ONLY, ...TRANSIENT];
 
-const stateHandler = worker.slice(
-  worker.indexOf('async function handleReflectionState'),
-  worker.indexOf('async function handleReflectionDump'),
-);
+// The handler ends at the next top-level function, whatever that is. This used to end at a NAMED neighbour
+// (handleReflectionDump), which broke the moment another handler was added between them and its own KV read
+// was counted against this one.
+const stateStart = worker.indexOf('async function handleReflectionState');
+const nextFn = worker.slice(stateStart + 1).search(/\n(async )?function \w+/);
+const stateHandler = worker.slice(stateStart, stateStart + 1 + nextFn);
 
 test('/reflection/state reports a capacity block', () => {
   ok(stateHandler.length > 0, 'handleReflectionState not found');
@@ -87,6 +89,12 @@ test('runway uses the measured settle gas, not a magic number', () => {
     'runway must price each wallet on the work it actually does');
   ok(/perOp \* gasPrice/.test(monitor), 'runway must price at the live gas price');
   ok(/getGasPrice\(\)/.test(monitor), 'runway must read the live gas price');
+});
+
+test('the absolute floor is only a backstop for a missing runway', () => {
+  // With runway known it says everything the floor would; alerting on both is a second line for one fact
+  // (and the floor sat above both wallets' balances, so it fired on every run).
+  ok(/if \(runway === null && bal < CFG\.ethGasBufferWei\)/.test(monitor), 'the floor must only apply when runway is unavailable');
 });
 
 test('a critical exits non-zero so the cron surfaces it without a webhook', () => {

@@ -28,9 +28,14 @@ const settle = read('worker-relay/src/settle-relay.js');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (!c) throw new Error(m); };
+const pending = [];
 const test = (label, fn) => {
-  try { fn(); console.log(`  PASS  ${label}`); pass++; }
-  catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; }
+  let r;
+  try { r = fn(); } catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; return; }
+  if (r && typeof r.then === 'function') {
+    // Async test: register it so the summary waits for it, and print in order of completion.
+    pending.push(r.then(() => { console.log(`  PASS  ${label}`); pass++; }).catch((e) => { console.log(`  FAIL  ${label}: ${e.message}`); fail++; }));
+  } else { console.log(`  PASS  ${label}`); pass++; }
 };
 
 console.log('relay self-funding:\n');
@@ -208,19 +213,113 @@ test('metering is no longer something the fee floor can switch off', () => {
   ok(/'paid', Number\(env\.PAID_RL_BURST/.test(worker), 'paid submits must use their own bucket');
 });
 
-test('only a VERIFIABLE fee earns the generous bucket', () => {
-  // Run the real helper. A zero-fee op, or a fee in an asset the gate cannot price, must stay strict —
-  // those are precisely the submits the gate passes through blind.
-  const src = worker.slice(worker.indexOf('function hasVerifiableFee'), worker.indexOf("// Price an op's OWN fee legs"));
-  const cEthId = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
-  const totalFee = (t, op) => BigInt(op.fee ?? 0);
-  const feeAssetOf = (t, op) => op.asset || null;
-  const _CONFIDENTIAL_DEPLOYMENTS = { mainnet: { assets: [{ ticker: 'cETH', assetId: cEthId }] } };
-  const f = new Function('totalFee', 'feeAssetOf', '_CONFIDENTIAL_DEPLOYMENTS', src + '; return hasVerifiableFee;')(totalFee, feeAssetOf, _CONFIDENTIAL_DEPLOYMENTS);
-  ok(f('transfer', { asset: cEthId, fee: 5000 }) === true, 'a cETH fee > 0 is verifiable');
-  ok(f('transfer', { asset: cEthId, fee: 0 }) === false, 'a zero fee must NOT earn the paid bucket');
-  ok(f('transfer', { asset: '0x' + 'ab'.repeat(32), fee: 5000 }) === false, 'a fee in an asset the gate cannot price must not qualify');
-  ok(f('transfer', null) === false && f('transfer', 'junk') === false, 'a malformed op must not qualify or throw');
+// ── the fee gate, run for real ──────────────────────────────────────────────
+// Extract the actual gate + helpers from the worker source and run them against the REAL deployment data
+// and the REAL passesFloor, with only the two network reads (gas price, ETH/USD) stubbed. A string match
+// cannot tell you whether a fee that is too low is actually rejected.
+const rq = await import(join(ROOT, 'worker/src/relay-quote.js'));
+const { CONFIDENTIAL_DEPLOYMENTS: DEPLOY } = await import(join(ROOT, 'dapp/confidential-deployments.js'));
+const gateSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf("// Price an op's OWN fee legs"));
+function loadGate({ gasWei = 60_000_000n, ethUsd = 2570 } = {}) {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice',
+    gateSrc + '; return { feeAssetRow, hasVerifiableFee, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1" }) };');
+  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x' + gasWei.toString(16), async () => ethUsd);
+}
+const ASSET = (t) => DEPLOY.mainnet.assets.filter((a) => a.ticker === t)[0];
+const cEth = ASSET('cETH'), cUsd = ASSET('cUSD'), cBtc = ASSET('cBTC');
+const transfer = (asset, fee) => ({ asset: asset.assetId, fee: String(fee) });
+
+test('cETH: a fee under the gas-aware floor is rejected, one over it is accepted', async () => {
+  const { gate } = loadGate();
+  // floor in cETH units at this gas, using the same function the gate uses
+  const floorUnits = rq.floorInFeeUnits({ gasPriceWei: 60_000_000n, weiPerFeeUnit: BigInt(cEth.unitScale), effects: 2n, marginBps: 1000n });
+  ok(await gate({ type: 'transfer', op: transfer(cEth, floorUnits + 1n) }) === true, 'a fee above the floor must pass');
+  ok(await gate({ type: 'transfer', op: transfer(cEth, floorUnits / 2n) }) === false, 'a fee at half the floor must be rejected');
+});
+
+test('cUSD: the same floor now applies to a USD-pegged fee (used to pass ungated)', async () => {
+  const { gate } = loadGate();
+  // dollars -> cUSD units: units = usd / usdPerUnit; usdPerUnit = unitScale / 10^decimals
+  const usdPerUnit = Number(BigInt(cUsd.unitScale)) / 10 ** Number(cUsd.decimals);
+  const floorWei = rq.floorWei({ gasPriceWei: 60_000_000n, effects: 2n, marginBps: 1000n });
+  const floorUsd = (Number(floorWei) / 1e18) * 2570;
+  const over = BigInt(Math.ceil((floorUsd * 1.5) / usdPerUnit)), under = BigInt(Math.floor((floorUsd * 0.5) / usdPerUnit));
+  ok(await gate({ type: 'transfer', op: transfer(cUsd, over) }) === true, `a cUSD fee of ~$${(floorUsd * 1.5).toFixed(4)} must pass`);
+  ok(await gate({ type: 'transfer', op: transfer(cUsd, under) }) === false, `a cUSD fee of ~$${(floorUsd * 0.5).toFixed(4)} must be rejected — it was free before`);
+  ok(await gate({ type: 'transfer', op: transfer(cUsd, 0) }) === false, 'a zero cUSD fee must be rejected');
+});
+
+test('the floor tracks live gas and ETH price, not a constant', async () => {
+  const usdPerUnit = Number(BigInt(cUsd.unitScale)) / 10 ** Number(cUsd.decimals);
+  const fee = BigInt(Math.round(0.10 / usdPerUnit)); // $0.10 in cUSD units (floor is ~$0.06 at 0.06 gwei, ~$20 at 20 gwei)
+  ok(await loadGate({ gasWei: 60_000_000n }).gate({ type: 'transfer', op: transfer(cUsd, fee) }) === true, '$0.10 covers the floor at 0.06 gwei');
+  ok(await loadGate({ gasWei: 20_000_000_000n }).gate({ type: 'transfer', op: transfer(cUsd, fee) }) === false, '$0.10 must NOT cover the floor at 20 gwei');
+});
+
+test('an asset we cannot value is neither gated nor claimed verifiable', async () => {
+  const { gate, hasVerifiableFee } = loadGate();
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, 1) }) === true, 'cBTC has no oracle, so the gate must pass it through, not guess');
+  ok(hasVerifiableFee('transfer', transfer(cBtc, 1_000_000)) === false, 'an unpriceable fee must not earn the paid bucket');
+  ok(hasVerifiableFee('transfer', transfer({ assetId: '0x' + 'ab'.repeat(32) }, 5)) === false, 'an unknown asset must not qualify');
+});
+
+test('only a VERIFIABLE fee earns the generous bucket', async () => {
+  const { hasVerifiableFee } = loadGate();
+  ok(hasVerifiableFee('transfer', transfer(cEth, 5000)) === true, 'a cETH fee > 0 is verifiable');
+  ok(hasVerifiableFee('transfer', transfer(cUsd, 5000)) === true, 'a cUSD fee > 0 is verifiable');
+  ok(hasVerifiableFee('transfer', transfer(cEth, 0)) === false, 'a zero fee must NOT earn the paid bucket');
+  ok(hasVerifiableFee('transfer', null) === false && hasVerifiableFee('transfer', 'junk') === false, 'a malformed op must not qualify or throw');
+});
+
+test('a gate that cannot read gas or ETH price fails OPEN, not closed', async () => {
+  // A relay that rejects every op the moment an RPC blips is worse than one that eats a cheap settle.
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice',
+    gateSrc + '; return buildRelayFeeGate({ RELAY_FEE_FLOOR: "1" });');
+  const noGas = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => null, async () => 2570);
+  const noEth = mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => { throw new Error('rpc down'); });
+  ok(await noGas({ type: 'transfer', op: transfer(cEth, 1) }) === true, 'no gas price must fail open');
+  ok(await noEth({ type: 'transfer', op: transfer(cUsd, 1) }) === true, 'no ETH price must fail open for a USD fee');
+});
+
+// ── prove-mode: a bounded subsidy, and a budget that junk cannot drain ─────────
+const submitSrc = worker.slice(worker.indexOf('const proveBudgetKey'), worker.indexOf('async function handleConfidentialJob'));
+function loadSubmit({ cap = '3', submitJob, kvStore = new Map() }) {
+  const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
+  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'ctx',
+    submitSrc + '; return handleConfidentialSubmit;');
+  const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, {});
+  const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap }, {});
+  return { call, kvStore };
+}
+
+test('prove-mode is bounded by a global daily budget', async () => {
+  let n = 0;
+  const { call } = loadSubmit({ cap: '3', submitJob: async () => ({ jobId: 'j' + ++n, status: 'pending' }) });
+  for (let i = 0; i < 3; i++) ok((await call({ type: 'transfer', op: {}, mode: 'prove' })).status === 200, `job ${i + 1} within the cap must be accepted`);
+  const over = await call({ type: 'transfer', op: {}, mode: 'prove' });
+  ok(over.status === 429 && over.body.code === 'prove_budget', `the job over the cap must be refused, got ${over.status}`);
+  ok(/prove locally/.test(over.body.error), 'the refusal must point at the free alternative');
+});
+
+test('junk submissions cannot drain the prove budget', async () => {
+  // Spending on REQUEST instead of on ACCEPTANCE would let anyone exhaust everyone's allowance with
+  // requests that fail validation. Only an accepted, new job may spend.
+  const { call, kvStore } = loadSubmit({ cap: '3', submitJob: async () => { throw new Error('unknown type'); } });
+  for (let i = 0; i < 20; i++) await call({ type: '__junk__', op: {}, mode: 'prove' });
+  ok([...kvStore.values()].every((v) => Number(v) === 0) || kvStore.size === 0, `failed submits spent the budget: ${[...kvStore.entries()]}`);
+  const real = await loadSubmit({ cap: '3', submitJob: async () => ({ jobId: 'j', status: 'pending' }), kvStore }).call({ type: 'transfer', op: {}, mode: 'prove' });
+  ok(real.status === 200, 'a real job must still be accepted after a flood of junk');
+});
+
+test('a deduped submit does not spend the budget', async () => {
+  const { call, kvStore } = loadSubmit({ cap: '3', submitJob: async () => ({ jobId: 'j', status: 'pending', deduped: true }) });
+  for (let i = 0; i < 10; i++) ok((await call({ type: 'transfer', op: {}, mode: 'prove' })).status === 200, 'a dedupe hit costs us nothing and must always pass');
+  ok(kvStore.size === 0, 'a dedupe hit spent budget');
+});
+
+test('the budget applies to prove-mode only, never to a relayed settle', async () => {
+  const { call } = loadSubmit({ cap: '1', submitJob: async () => ({ jobId: 'j', status: 'pending' }) });
+  for (let i = 0; i < 5; i++) ok((await call({ type: 'transfer', op: {}, mode: 'settle' })).status === 200, 'a relayed settle pays its own way and must not be budgeted');
 });
 
 test('rate-limit buckets cannot collide', () => {
@@ -308,5 +407,6 @@ test('the relay refuses a batch containing a non-transfer', () => {
   ok(guard > -1 && build > -1 && guard < build, 'the guard must run before the batch op is built');
 });
 
+await Promise.all(pending);
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);

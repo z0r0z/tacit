@@ -94,12 +94,28 @@ async function erc20Balance(token, owner) {
 // gas buffer + this floor is converted to PROVE; the buffer stays as native gas.
 const MIN_ETH_SWEEP = BigInt(process.env.MIN_ETH_SWEEP_WEI || '5000000000000000'); // 0.005 ETH
 
+// The sink's transactions are signed from inside the settle service, while the header/reflection services
+// sign with the same key. A send that loses that race fails BEFORE broadcast (nonce too low / underpriced),
+// so retrying it is safe and cheap; anything else is a real error and is rethrown untouched.
+const NONCE_RACE = /nonce ?too ?low|lower than the current nonce|nonce has already been used|replacement transaction underpriced|already known/i;
+async function withNonceRetry(label, fn, tries = 3) {
+  for (let i = 1; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      const msg = String(e?.shortMessage || e?.message || e);
+      if (i >= tries || !NONCE_RACE.test(msg)) throw e;
+      log(`  ${label}: nonce race with another service on this key (attempt ${i}/${tries}) — retrying`);
+      await new Promise((r) => setTimeout(r, 3000 * i));
+    }
+  }
+}
+
 async function ensureApproval(token, spender, amount, wallet = relayWallet) {
   const owner = wallet.account.address;
   const cur = await publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'allowance', args: [owner, spender] });
   if (cur >= amount) return;
   log(`approving ${spender} for token ${token} (owner ${owner})`);
-  const h = await wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] });
+  const h = await withNonceRetry('approve', () => wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, maxUint256] }));
   await publicClient.waitForTransactionReceipt({ hash: h });
 }
 
@@ -177,7 +193,7 @@ async function depositProveToVApp(wallet = relayWallet) {
   if (amt === 0n) { log('DEPOSIT_AMOUNT_WEI=0 — nothing to deposit'); return; }
   await ensureApproval(PROVE, VAPP, amt, wallet);
   log(`depositing ${amt} PROVE to vApp ${VAPP} from ${owner} (wallet balance ${bal})`);
-  const h = await wallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [amt] });
+  const h = await withNonceRetry('vApp deposit', () => wallet.writeContract({ address: VAPP, abi: VAPP_ABI, functionName: 'deposit', args: [amt] }));
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: h });
   if (rcpt.status !== 'success') throw new Error(`vApp deposit reverted ${h}`);
   log(`vApp deposit ok: tx=${h}`);
@@ -255,9 +271,14 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
             }
           }
           if (!convertToProve) continue;
-          if (surplus < MIN_ETH_SWEEP) { log(`  ETH surplus ${surplus} <= dust — keeping as gas`); continue; }
-          const q = await quote(ETH, PROVE, surplus, sinkAddr); // PROVE lands on the sink, which deposits it
-          log(`  ETH surplus ${surplus} -> ~${q.amountOut} PROVE (to sink)`);
+          // Only genuine excess becomes PROVE. Above the gas buffer is not enough on its own: a manual
+          // top-up sits there too, and it is gas by intent. Convert what exceeds ETH_SWEEP_ABOVE_WEI.
+          const remaining = await publicClient.getBalance({ address: owner });
+          const keep = CFG.ethSweepAboveWei > buffer ? CFG.ethSweepAboveWei : buffer;
+          const excess = remaining > keep ? remaining - keep : 0n;
+          if (excess < MIN_ETH_SWEEP) { log(`  ETH ${remaining} within the gas float (<= ${keep} + dust) — keeping as gas`); continue; }
+          const q = await quote(ETH, PROVE, excess, sinkAddr); // PROVE lands on the sink, which deposits it
+          log(`  ETH excess ${excess} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
           continue;
         }

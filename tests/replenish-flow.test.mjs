@@ -40,14 +40,14 @@ const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chai
   .replace('export const ZQUOTER_ABI =', 'return');
 const zQuoterAbi = new Function(abiSrc)();
 
-async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances }) {
-  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A });
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [] }) {
+  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor });
   const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.replenishOnce(${JSON.stringify(opts)});`;
   const env = {
     PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
     RPC_URL: stub.url, RPC_URLS_FALLBACK: stub.url, SETTLE_RPC_URL: stub.url, SETTLE_RPC_URLS: stub.url, SETTLE_ALLOW_PUBLIC: '0',
     FEE_ASSETS: feeAssets, ETH_GAS_BUFFER_WEI: String(ETH(0.01)),
-    ...(splitKeys ? { SETTLE_KEY: SETTLE_PK } : {}),
+    ...(splitKeys ? { SETTLE_KEY: SETTLE_PK } : {}), ...extraEnv,
   };
   // ASYNC spawn, deliberately: the stub server lives in THIS process, so a synchronous spawn would block the
   // event loop that has to answer the child's requests and deadlock the pair.
@@ -103,9 +103,9 @@ await test('split keys: the RELAY wallet, not the settle wallet, deposits to the
   ok(approve > -1 && approve < deposit, 'the sink must approve PROVE to the vApp before depositing');
 });
 
-await test('split keys: native ETH surplus is forwarded to the sink, then the rest becomes PROVE', async () => {
+await test('split keys: native ETH is forwarded to the sink, and only genuine excess becomes PROVE', async () => {
   const { sent } = await run({
-    feeAssets: A.eth,
+    feeAssets: A.eth, extraEnv: { ETH_SWEEP_ABOVE_WEI: String(ETH(0.02)) },
     balances: { [settle]: ETH(0.05), [relay]: ETH(0.002) },
     tokenBalances: { [A.prove]: { [relay]: 100n * 10n ** 18n } },
   });
@@ -113,8 +113,31 @@ await test('split keys: native ETH surplus is forwarded to the sink, then the re
   ok(xfer, 'the earner never sent ETH to the sink');
   ok(xfer.value === ETH(0.008), `expected to top the sink up to the buffer (0.008), sent ${Number(xfer.value) / 1e18}`);
   const prove = swaps(sent).find((x) => !x.exactOut && x.recipient === relay);
-  ok(prove, 'the remaining surplus was not converted to PROVE for the sink');
-  ok(prove.value === ETH(0.05) - ETH(0.01) - ETH(0.008), `PROVE swap should spend surplus after the buffer and the sink top-up, spent ${Number(prove.value) / 1e18}`);
+  ok(prove, 'the excess over the sweep threshold was not converted to PROVE for the sink');
+  // 0.05 - 0.008 forwarded = 0.042 left; only what exceeds the 0.02 float is converted.
+  ok(prove.value === ETH(0.042) - ETH(0.02), `should convert only the excess over the float (0.022), converted ${Number(prove.value) / 1e18}`);
+});
+
+await test('an operator top-up is NOT swept into PROVE by default', async () => {
+  // 0.05 ETH is above the 0.03 buffer, but it is a deliberate gas float, not revenue. The default sweep
+  // threshold (0.1 ETH) must leave it alone — converting it would silently eat the operator's gas.
+  const { sent } = await run({
+    feeAssets: A.eth,
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { [A.prove]: { [relay]: 0n } },
+  });
+  ok(swaps(sent).length === 0, `converted an operator's gas float to PROVE: ${show(swaps(sent))}`);
+  ok(!sent.some((t) => t.value > 0n), 'moved ETH around even though both wallets were already above the buffer');
+});
+
+await test('a nonce race on the sink deposit is retried, not lost', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc, nonceRaceFor: [relay],
+    balances: { [settle]: ETH(0.02), [relay]: ETH(0.02) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  const deposits = sent.filter((t) => t.to === A.vApp && t.from === relay);
+  ok(deposits.length === 1, `expected the deposit to land exactly once after the retry, saw ${deposits.length}`);
 });
 
 await test('a sink already at its buffer is not topped up', async () => {

@@ -98,13 +98,12 @@ async function checkEth() {
       }
     }
 
-    // Absolute floor. Two alerts for one condition is noise, so this only escalates when runway did not
-    // already cover it: critical if the gas read failed (the floor is then the only signal there is), and
-    // otherwise a warning — a low balance that a quiet market makes survivable is still worth saying, but
-    // it is not a second page.
-    if (bal < CFG.ethGasBufferWei) {
-      const level = runway === null ? 'critical' : 'warning';
-      await alert(level, `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} — fund it`, { address, roles, ethWei: bal.toString(), runway });
+    // Absolute floor — a BACKSTOP for when the runway could not be computed (no gas price). Once runway is
+    // known it says everything the floor would, in a unit you can act on (settles left), so alerting on both
+    // is just a second line for the same fact. It also fired on every run: 0.03 ETH sits above what either
+    // wallet needs to run for weeks at today's gas, which taught the log to be ignored.
+    if (runway === null && bal < CFG.ethGasBufferWei) {
+      await alert('critical', `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} and runway unavailable — fund it`, { address, roles, ethWei: bal.toString() });
     }
   }
 }

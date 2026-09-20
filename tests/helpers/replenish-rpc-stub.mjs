@@ -13,8 +13,9 @@ const require = createRequire(new URL('../../worker-relay/package.json', import.
 const viem = await import(require.resolve('viem'));
 const { encodeFunctionResult, decodeFunctionData, parseTransaction, keccak256, recoverTransactionAddress, toHex } = viem;
 
-export async function startStub({ balances, tokenBalances, zQuoterAbi, addr }) {
+export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, nonceRaceFor = [] }) {
   const sent = [];
+  const raced = new Set(); // addresses that have already had their one injected 'nonce too low'
   const nonces = new Map();
   const lc = (a) => String(a).toLowerCase();
   const ok = (id, result) => ({ jsonrpc: '2.0', id, result });
@@ -70,9 +71,20 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr }) {
               const raw = params[0];
               const tx = parseTransaction(raw);
               const from = await recoverTransactionAddress({ serializedTransaction: raw });
+              // Simulate losing a nonce race to another service signing with the same key: reject the FIRST send
+              // from a chosen address, before broadcast, exactly as a node does.
+              if (nonceRaceFor.map(lc).includes(lc(from)) && !raced.has(lc(from))) {
+                raced.add(lc(from));
+                return { jsonrpc: '2.0', id, error: { code: -32000, message: 'nonce too low: next nonce 5, tx nonce 4' } };
+              }
               const hash = keccak256(raw);
               nonces.set(lc(from), (nonces.get(lc(from)) ?? 0) + 1);
               sent.push({ from: lc(from), to: lc(tx.to), value: tx.value ?? 0n, data: tx.data ?? '0x', hash });
+              // A plain ETH transfer moves balance, so a later read sees it (replenish re-reads after forwarding).
+              if ((tx.data ?? '0x') === '0x' && (tx.value ?? 0n) > 0n) {
+                balances[lc(from)] = (balances[lc(from)] ?? 0n) - tx.value;
+                balances[lc(tx.to)] = (balances[lc(tx.to)] ?? 0n) + tx.value;
+              }
               return ok(id, hash);
             }
             case 'eth_getTransactionReceipt': {

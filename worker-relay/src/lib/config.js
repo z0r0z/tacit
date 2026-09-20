@@ -120,6 +120,10 @@ export const CFG = {
   replenishIntervalMin: num('REPLENISH_INTERVAL_MIN', 30),
   // Convert fee income to PROVE and deposit it. On by default; REPLENISH_DEPOSIT_PROVE=0 keeps a pass to gas.
   replenishDepositProve: opt('REPLENISH_DEPOSIT_PROVE', '1') !== '0',
+  // Native ETH is only converted to PROVE above this. ETH that arrives as fee income is gas as much as it is
+  // revenue, and a manual top-up is gas by intent — converting everything over the small gas buffer would
+  // quietly turn an operator's deliberate float into PROVE. Below this it stays ETH; only genuine excess goes.
+  ethSweepAboveWei: BigInt(opt('ETH_SWEEP_ABOVE_WEI', '100000000000000000')), // 0.1 ETH
   // Relayed L2 exits: once the settle lands, call ConfidentialRouter.activateExit(recipe) from the settle key so
   // the user never sends it from a wallet that would link to the exit. Sent only when the op's bound fee covers
   // the settle plus the activation (ACTIVATE_MARGIN_BPS over that cost). ACTIVATE_EXITS=0 turns it off.

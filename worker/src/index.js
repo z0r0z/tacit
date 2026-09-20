@@ -1631,6 +1631,34 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
   await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
   return { ok: true };
 }
+// A GLOBAL daily ceiling on prove-mode jobs, on top of the per-IP bucket.
+//
+// Prove-mode proves on OUR network PROVE and, unlike a relayed settle, can never carry a collectable fee: the
+// user sends the settle tx themselves, so any fee bound into the op is paid to the user. The per-IP bucket
+// bounds one source (~90/hr), but says nothing about many — and each job is real PROVE spend. This bounds the
+// total, so the worst case is a number we chose instead of one an attacker does.
+//
+// Two rules keep it from becoming its own denial-of-service:
+//   - it is SPENT only when a job is actually accepted (new, non-deduped), never on a submit that fails
+//     validation — otherwise junk requests could exhaust everyone's allowance;
+//   - exhausting it fails the request with an explanation, and the user always has the free alternative of
+//     proving locally (the fee-free path where the witness never reaches us).
+// Approximate by design (KV read-modify-write is not atomic); it overshoots by a handful at worst.
+const proveBudgetKey = () => 'cps:budget:prove:' + new Date().toISOString().slice(0, 10);
+async function proveBudget(env) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  const cap = Number(env.PROVE_MODE_DAILY_CAP || 400);
+  if (!kv || !(cap > 0)) return { ok: true, used: 0, cap: 0 };
+  const used = Number((await kv.get(proveBudgetKey())) || 0);
+  return { ok: used < cap, used, cap };
+}
+async function spendProveBudget(env) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv) return;
+  const used = Number((await kv.get(proveBudgetKey())) || 0);
+  await kv.put(proveBudgetKey(), String(used + 1), { expirationTtl: 172800 });
+}
+
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
@@ -1657,8 +1685,14 @@ async function handleConfidentialSubmit(req, env, cors) {
       : await proveRateLimit(env, ip);
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
+  if (submitMode === 'prove') {
+    const b = await proveBudget(env);
+    if (!b.ok) return jsonResponse({ ok: false, error: `prove capacity for today is used up (${b.used}/${b.cap}) — prove locally instead, or use a relayed settle`, code: 'prove_budget' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
+  }
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit });
+    // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
+    if (submitMode === 'prove' && !r.deduped) await spendProveBudget(env).catch(() => {});
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }
