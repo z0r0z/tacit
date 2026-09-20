@@ -210,9 +210,17 @@ services:
       # searcher taking the bound fee. 0 keeps submission private-only.
       - key: SETTLE_ALLOW_PUBLIC
         value: "1"
-      # optional: separate signer for settle gas (falls back to RELAY_KEY)
-      - key: SETTLE_KEY
-        sync: false
+      # One key. The settle service signs with RELAY_KEY (the account behind the network prover key, the vApp
+      # depositor and the maintenance wallet), so fee income lands on the wallet that can use it. Do not add a
+      # separate SETTLE_KEY: it splits fees from the account that funds proving.
+      #
+      # Fee income -> ETH gas + PROVE, swept from inside this service during idle time (see replenishOnce).
+      - key: REPLENISH_IN_SETTLE
+        value: "1"
+      - key: REPLENISH_INTERVAL_MIN
+        value: "30"
+      - key: FEE_ASSETS
+        value: "0x0000000000000000000000000000000000000000,0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,0xdAC17F958D2ee523a2206206994597C13D831ec7,0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 
   # Cron: sweep fees → PROVE + ETH, deposit PROVE to the vApp.
   - type: cron
@@ -253,11 +261,6 @@ services:
       - fromGroup: tacit-relay-shared
       - key: PROVE_BALANCE_FLOOR
         value: "50"
-      # PUBLIC address of the settle wallet. SETTLE_KEY lives on tacit-settle alone, so without this the
-      # monitor falls back to RELAY_KEY and sees one wallet — the one paying for settles goes unwatched.
-      # An address, not a secret: watching a balance needs no key.
-      - key: SETTLE_ADDRESS
-        value: "0xB2DAF4571cF2AFFfa34482b34a6ECe01137E59Dd"
       - key: ETH_GAS_BUFFER_WEI
         value: "30000000000000000"
       # Healthy steady state is ~HEADER_RELAY_LEAD (144) plus a few blocks of batch cadence, so this sits above it.

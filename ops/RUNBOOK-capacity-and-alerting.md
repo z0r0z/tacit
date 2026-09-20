@@ -144,6 +144,30 @@ because it is a fixed ~111 runs/day regardless of volume — so the single bigge
 serving more ops per day, not shaving per-op gas. And batching helps on the settle half only: it splits one
 settle's gas across its members while the maintenance overhead stays flat.
 
+### One wallet (merged 2026-09-20)
+
+There is now a single signing key. The settle service used to hold its own `SETTLE_KEY`, which put fee income
+on a wallet that could not fund proving; that key was retired and the service signs with `RELAY_KEY`
+(`0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`) — the maintenance wallet, the vApp depositor, and the account
+behind the network prover key. **This is the direction that works:** moving the relay key instead would orphan
+the vApp prover balance, so the settle key went, not the relay key.
+
+It was done without stranding anything, from inside the service that held the old key (so the key value was
+never read or copied): `drainToSink` (`REPLENISH_DRAIN_TO_SINK=1`) moved every fee asset and then the ETH to
+`0x68…`, leaving only a gas reserve; the old wallet was confirmed empty on-chain before `SETTLE_KEY` was
+deleted. Moved: 0.01297 ETH + 0.81 USDT. The monitor's `SETTLE_ADDRESS` was removed with it — there is one
+wallet to watch, carrying both roles.
+
+The earner -> sink description below still describes how `replenishOnce` works; with one wallet the earner *is*
+the sink and every "to the sink" step collapses into the ordinary single-wallet case. If a second key is ever
+introduced again, that logic is what keeps fees flowing to the account that can use them.
+
+**What one key costs:** the settle service, header, reflection and eth-state now all sign from `0x68…`, so a
+nonce collision between services is possible (the settle path already refreshes and resubmits on a lost
+nonce, and the sink's approve/deposit retry). It is rare — maintenance is ~5 txs/hour — and a lost race fails
+before broadcast, so it is a retry rather than a loss. It replaces the alternative of splitting fees away from
+the account that pays for proving, which was the worse trade.
+
 ### Where fee income goes: earner -> sink
 
 Two wallets, two jobs, and the money has to move between them:
