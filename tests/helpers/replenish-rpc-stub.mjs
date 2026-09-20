@@ -1,0 +1,99 @@
+// A stub Ethereum JSON-RPC server, just faithful enough to drive worker-relay/src/replenish.js end to end.
+//
+// It answers the reads replenish makes (balances, ERC20 balanceOf/allowance/decimals, zQuoter.buildSwapAuto)
+// from a fixed scenario, accepts signed transactions, and RECORDS every one: who signed it, where it went,
+// what it carried. The test then asserts on what the code actually sent rather than on what its source
+// says it does — which is the only kind of check that catches a swap delivered to the wrong recipient.
+//
+// buildSwapAuto returns callData that is just a marker + the recipient it was asked to deliver to, so a
+// recorded swap can be traced back to "who was this swap for".
+import http from 'node:http';
+import { createRequire } from 'node:module';
+const require = createRequire(new URL('../../worker-relay/package.json', import.meta.url));
+const viem = await import(require.resolve('viem'));
+const { encodeFunctionResult, decodeFunctionData, parseTransaction, keccak256, recoverTransactionAddress, toHex } = viem;
+
+export async function startStub({ balances, tokenBalances, zQuoterAbi, addr }) {
+  const sent = [];
+  const nonces = new Map();
+  const lc = (a) => String(a).toLowerCase();
+  const ok = (id, result) => ({ jsonrpc: '2.0', id, result });
+  const hexOf = (n) => '0x' + BigInt(n).toString(16);
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', async () => {
+      const handle = async ({ id, method, params }) => {
+        try {
+          switch (method) {
+            case 'eth_chainId': return ok(id, '0x1');
+            case 'net_version': return ok(id, '1');
+            case 'eth_blockNumber': return ok(id, hexOf(24_000_000));
+            case 'eth_gasPrice': return ok(id, hexOf(60_000_000));
+            case 'eth_maxPriorityFeePerGas': return ok(id, hexOf(1_000_000));
+            case 'eth_estimateGas': return ok(id, hexOf(250_000));
+            case 'eth_getBlockByNumber': return ok(id, {
+              number: hexOf(24_000_000), hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32),
+              timestamp: hexOf(1_790_000_000), baseFeePerGas: hexOf(50_000_000), gasLimit: hexOf(30_000_000),
+              gasUsed: '0x0', transactions: [], nonce: '0x0000000000000000', difficulty: '0x0', totalDifficulty: '0x0',
+              miner: '0x' + '00'.repeat(20), extraData: '0x', logsBloom: '0x' + '00'.repeat(256), sha3Uncles: '0x' + '00'.repeat(32),
+              stateRoot: '0x' + '00'.repeat(32), receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', uncles: [],
+            });
+            case 'eth_getBalance': return ok(id, hexOf(balances[lc(params[0])] ?? 0n));
+            case 'eth_getTransactionCount': {
+              const a = lc(params[0]); const n = nonces.get(a) ?? 0; return ok(id, hexOf(n));
+            }
+            case 'eth_call': {
+              const { to, data } = params[0];
+              const sel = data.slice(0, 10);
+              if (lc(to) === lc(addr.zQuoter)) {
+                const { args } = decodeFunctionData({ abi: zQuoterAbi, data });
+                const [recipient, exactOut, tokenIn, tokenOut, amount] = args;
+                const marker = '0xa11ce000' + (exactOut ? '01' : '00') + lc(recipient).slice(2).padStart(64, '0');
+                // exact-out: ~$23 of a 6dp stable buys 0.009 ETH, so amountIn stays inside a realistic balance
+                const out = encodeFunctionResult({
+                  abi: zQuoterAbi, functionName: 'buildSwapAuto',
+                  result: [{ source: 1, feeBps: 30n, amountIn: exactOut ? amount / 400_000_000n + 1n : amount, amountOut: exactOut ? amount : amount * 4n }, marker, 0n, tokenIn === '0x0000000000000000000000000000000000000000' ? amount : 0n],
+                });
+                return ok(id, out);
+              }
+              if (sel === '0x70a08231') { // balanceOf(address)
+                const owner = '0x' + data.slice(34, 74);
+                return ok(id, '0x' + BigInt(tokenBalances[lc(to)]?.[lc(owner)] ?? 0n).toString(16).padStart(64, '0'));
+              }
+              if (sel === '0xdd62ed3e') return ok(id, '0x' + '0'.repeat(64)); // allowance -> 0, forces an approve
+              if (sel === '0x313ce567') return ok(id, '0x' + (18).toString(16).padStart(64, '0')); // decimals
+              return ok(id, '0x');
+            }
+            case 'eth_sendRawTransaction': {
+              const raw = params[0];
+              const tx = parseTransaction(raw);
+              const from = await recoverTransactionAddress({ serializedTransaction: raw });
+              const hash = keccak256(raw);
+              nonces.set(lc(from), (nonces.get(lc(from)) ?? 0) + 1);
+              sent.push({ from: lc(from), to: lc(tx.to), value: tx.value ?? 0n, data: tx.data ?? '0x', hash });
+              return ok(id, hash);
+            }
+            case 'eth_getTransactionReceipt': {
+              const t = sent.find((x) => x.hash === params[0]);
+              if (!t) return ok(id, null);
+              return ok(id, {
+                transactionHash: t.hash, transactionIndex: '0x0', blockHash: '0x' + '11'.repeat(32), blockNumber: hexOf(24_000_000),
+                from: t.from, to: t.to, cumulativeGasUsed: hexOf(100_000), gasUsed: hexOf(90_000), effectiveGasPrice: hexOf(51_000_000),
+                logs: [], logsBloom: '0x' + '00'.repeat(256), status: '0x1', type: '0x2', contractAddress: null,
+              });
+            }
+            default: return { jsonrpc: '2.0', id, error: { code: -32601, message: `stub: ${method} not implemented` } };
+          }
+        } catch (e) { return { jsonrpc: '2.0', id, error: { code: -32000, message: `stub error in ${method}: ${e.message}` } }; }
+      };
+      const parsed = JSON.parse(body);
+      const out = Array.isArray(parsed) ? await Promise.all(parsed.map(handle)) : await handle(parsed);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(out));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${server.address().port}`, sent, close: () => new Promise((r) => server.close(r)) };
+}

@@ -107,10 +107,10 @@ const SLIPPAGE_BPS = BigInt(process.env.SLIPPAGE_BPS || 100); // 1%
 
 // One-time max approvals so every subsequent sweep is a bare swap (no per-swap approve tx):
 // each ERC20 fee asset -> zRouter, and PROVE -> vApp for the deposit. Native ETH needs none.
-async function maxPreApprove(assets, wallet = relayWallet) {
+async function maxPreApprove(assets, wallet = relayWallet, includeProve = true) {
   const owner = wallet.account.address;
   const pairs = assets.filter((a) => a !== ETH).map((a) => [a, ZROUTER]);
-  pairs.push([PROVE, VAPP]);
+  if (includeProve) pairs.push([PROVE, VAPP]); // only needed to deposit; a gas-only pass never touches PROVE
   for (const [token, spender] of pairs) {
     const cur = await publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'allowance', args: [owner, spender] });
     if (cur >= maxUint256 / 2n) continue; // already effectively unlimited
@@ -183,15 +183,41 @@ async function depositProveToVApp(wallet = relayWallet) {
   log(`vApp deposit ok: tx=${h}`);
 }
 
-async function main() {
-  const owner = relayWallet.account.address;
-  log(`replenish start — relay=${owner}`);
+// One replenish pass: turn fee income into the two things the relay burns — ETH gas and PROVE.
+//
+// Two roles matter, and they are not the same wallet:
+//
+//   EARNER — where fee income lands. The settle wallet is msg.sender on every settle, so the pool's
+//            `_payout` credits it there. It also burns settle gas.
+//   SINK   — the RELAY wallet (`relayWallet`). It pays for the maintenance lane (header attestation,
+//            reflection) and earns nothing, AND it is the account behind the network prover key, so it is
+//            the only wallet whose vApp deposit actually funds proving. A deposit credits whoever sends it.
+//
+// So income flows earner -> sink. Swaps take a recipient, which lets one swap deliver straight to the
+// sink rather than landing on the earner and being moved again:
+//
+//   fee asset -> ETH gas for the earner            (exact-out, recipient = earner)
+//   fee asset -> ETH gas for the sink              (exact-out, recipient = sink)
+//   fee asset -> PROVE                             (recipient = sink)
+//   native ETH surplus -> transfer to sink, remainder -> PROVE to sink
+//   sink deposits its PROVE to the vApp
+//
+// When the keys are consolidated the earner IS the sink and every "to the sink" step collapses into the
+// ordinary single-wallet case, so this needs no changes for that migration.
+//
+// `roles` limits which wallets act as earners (null = every funded wallet, the cron's behaviour). The
+// settle service passes ['settle'] so it never sweeps the sink as if it earned fees.
+// `convertToProve: false` keeps a pass to gas only.
+export async function replenishOnce({ roles = null, convertToProve = true } = {}) {
+  const sink = relayWallet;
+  const sinkAddr = sink.account.address;
+  log(`replenish start — sink=${sinkAddr} roles=${roles ? roles.join('+') : 'all'} convertToProve=${convertToProve}`);
   // DEPOSIT_ONLY: skip the fee-asset sweep entirely and just move PROVE into the vApp. The sweep
   // early-returns when FEE_ASSETS is unset ("manual top-up mode"), which also skipped the deposit —
   // so a manual top-up previously had no path through this job at all.
   if (process.env.DEPOSIT_ONLY === '1') {
     log('DEPOSIT_ONLY=1 — skipping fee sweep, depositing PROVE only');
-    await depositProveToVApp();
+    await depositProveToVApp(sink);
     log('replenish done (deposit only)');
     return;
   }
@@ -199,31 +225,39 @@ async function main() {
   const assets = feeAssets();
   if (assets.length === 0) { log('FEE_ASSETS empty — nothing to sweep (manual PROVE top-up mode)'); return; }
 
-  // Sweep and fund EVERY wallet the relay spends from, not just RELAY_KEY.
-  //
-  // The two roles genuinely differ in where value lands. The SETTLE wallet is msg.sender on every settle,
-  // so the pool's `_payout` credits the fee to it and its own gas is what the settle burns — it both earns
-  // and spends. The RELAY wallet pays for the maintenance lane (header attestation, reflection), which
-  // earns nothing. Sweeping only `relayWallet`, as this loop used to, therefore looked for fees where they
-  // never arrive and topped up the wallet that was not paying for settles.
-  //
-  // Funding each wallet from its OWN fee income keeps that honest, and self-corrects when the keys are
-  // consolidated: SETTLE_KEY defaults to RELAY_KEY, in which case this is one wallet and one pass.
-  for (const { address: owner, wallet, roles } of fundedWallets) {
-    log(`— wallet ${owner} (${roles.join('+')})`);
-    try { await maxPreApprove(assets, wallet); }
+  const earners = roles ? fundedWallets.filter((w) => w.roles.some((r) => roles.includes(r))) : fundedWallets;
+  if (!earners.length) { log(`no funded wallet holds role ${roles.join('/')} in this service — nothing to do`); return; }
+
+  for (const { address: owner, wallet, roles: held } of earners) {
+    const toSink = owner.toLowerCase() !== sinkAddr.toLowerCase();
+    log(`— earner ${owner} (${held.join('+')})${toSink ? ` -> sink ${sinkAddr}` : ' (is the sink)'}`);
+    try { await maxPreApprove(assets, wallet, false); } // fee assets -> zRouter, from the wallet that holds them
     catch (e) { log(`  pre-approve failed (continuing): ${e.message}`); }
 
-    // Bias: keep native ETH as gas (only the surplus over the buffer goes to PROVE); convert the
-    // stablecoins/wstETH fully to PROVE to cover network basis. Hold TAC (never in FEE_ASSETS).
+    // Bias: native ETH stays as gas up to the buffer; stablecoins/wstETH are converted. Hold TAC (never
+    // in FEE_ASSETS).
     for (const asset of assets) {
       try {
         if (asset === ETH) {
           const ethBal = await publicClient.getBalance({ address: owner });
-          const surplus = ethBal > buffer ? ethBal - buffer : 0n;
-          if (surplus < MIN_ETH_SWEEP) { log(`  ETH ${ethBal} <= buffer+dust — keeping as gas`); continue; }
-          const q = await quote(ETH, PROVE, surplus, owner);
-          log(`  ETH surplus ${surplus} -> ~${q.amountOut} PROVE`);
+          let surplus = ethBal > buffer ? ethBal - buffer : 0n;
+          // Feed the sink's gas first, by a plain transfer — the sink earns nothing and would otherwise
+          // drain to zero while the earner sat on a surplus.
+          if (toSink && surplus > 0n) {
+            const sinkBal = await publicClient.getBalance({ address: sinkAddr });
+            if (sinkBal < buffer) {
+              const send = (buffer - sinkBal) < surplus ? (buffer - sinkBal) : surplus;
+              log(`  sink gas: sending ${send} wei ETH -> ${sinkAddr}`);
+              const h = await wallet.sendTransaction({ to: sinkAddr, value: send });
+              const r = await publicClient.waitForTransactionReceipt({ hash: h });
+              if (r.status !== 'success') throw new Error(`sink gas transfer reverted ${h}`);
+              surplus -= send;
+            }
+          }
+          if (!convertToProve) continue;
+          if (surplus < MIN_ETH_SWEEP) { log(`  ETH surplus ${surplus} <= dust — keeping as gas`); continue; }
+          const q = await quote(ETH, PROVE, surplus, sinkAddr); // PROVE lands on the sink, which deposits it
+          log(`  ETH surplus ${surplus} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
           continue;
         }
@@ -232,41 +266,47 @@ async function main() {
         if (bal === 0n) continue;
         log(`  fee asset ${asset} balance=${bal}`);
 
-        // If ETH is below the gas buffer, first buy just enough ETH from this asset (exact-out),
-        // then convert whatever's left to PROVE. Gas before PROVE is the right order: a wallet that
-        // cannot pay for a transaction cannot buy PROVE either, so the gas leg has to clear first.
-        const ethBal = await publicClient.getBalance({ address: owner });
-        if (ethBal < buffer) {
-          const need = buffer - ethBal;
+        // Gas before PROVE: a wallet that cannot pay for a transaction cannot buy PROVE either, so the
+        // exact-out gas legs clear first — the earner's own, then the sink's.
+        const gasLegs = [[owner, 'earner']];
+        if (toSink) gasLegs.push([sinkAddr, 'sink']);
+        for (const [who, label] of gasLegs) {
+          const have = await publicClient.getBalance({ address: who });
+          if (have >= buffer) continue;
+          const need = buffer - have;
           try {
-            const qe = await quote(asset, ETH, need, owner, /* exactOut */ true);
-            if (qe.amountIn > 0n && qe.amountIn <= bal) {
-              log(`  gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH`);
+            const left = await erc20Balance(asset, owner);
+            const qe = await quote(asset, ETH, need, who, /* exactOut */ true);
+            if (qe.amountIn > 0n && qe.amountIn <= left) {
+              log(`  ${label} gas top-up: ~${qe.amountIn} ${asset} -> ${need} ETH (to ${who})`);
               await fireSwap(qe, wallet);
             }
-          } catch (e) { log(`  gas top-up quote failed (continuing to PROVE): ${e.message}`); }
+          } catch (e) { log(`  ${label} gas top-up quote failed (continuing): ${e.message}`); }
         }
 
+        if (!convertToProve) continue; // hold the rest
         const rem = await erc20Balance(asset, owner);
         if (rem > 0n) {
-          const q = await quote(asset, PROVE, rem, owner);
-          log(`  ${rem} ${asset} -> ~${q.amountOut} PROVE`);
+          const q = await quote(asset, PROVE, rem, sinkAddr); // PROVE lands on the sink, which deposits it
+          log(`  ${rem} ${asset} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
         }
       } catch (e) {
         log(`  sweep for ${asset} failed (continuing): ${e.message}`);
       }
     }
+  }
 
-    // Deposit this wallet's accumulated PROVE to the vApp (top up the network prover balance).
-    try { await depositProveToVApp(wallet); }
+  // The sink deposits, once, after every earner has delivered — it is the account that funds proving.
+  if (convertToProve) {
+    try { await depositProveToVApp(sink); }
     catch (e) { log(`  vApp deposit failed: ${e.message}`); }
   }
 
   log('replenish done');
 }
 
-// Run only when invoked directly (also imported by settle-relay for quoteRelayFee).
+// Run only when invoked directly (also imported by settle-relay for quoteRelayFee and replenishOnce).
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((e) => { console.error('fatal', e); process.exit(1); });
+  replenishOnce().catch((e) => { console.error('fatal', e); process.exit(1); });
 }

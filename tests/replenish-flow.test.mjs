@@ -1,0 +1,158 @@
+// replenishOnce, run for real against a stub RPC, asserting on the transactions it actually SIGNS.
+//
+// relay-self-funding.test.mjs pins the shape of the source; this pins the behaviour, because the property
+// that matters — fee income earned on the settle wallet ends up as gas on BOTH wallets and as PROVE
+// deposited by the RELAY wallet — is about who signs what and where each swap is delivered. A regex cannot
+// see that, and an earlier bug in this same area (a wallet the monitor never looked at) passed every regex.
+//
+// Run: node tests/replenish-flow.test.mjs
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+import { startStub } from './helpers/replenish-rpc-stub.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(join(ROOT, 'worker-relay/package.json'));
+const { privateKeyToAccount } = await import(require.resolve('viem/accounts'));
+
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (!c) throw new Error(m); };
+const test = async (label, fn) => {
+  try { await fn(); console.log(`  PASS  ${label}`); pass++; }
+  catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; }
+};
+
+const RELAY_PK = '0x' + '11'.repeat(32), SETTLE_PK = '0x' + '22'.repeat(32);
+const relay = privateKeyToAccount(RELAY_PK).address.toLowerCase();
+const settle = privateKeyToAccount(SETTLE_PK).address.toLowerCase();
+const A = {
+  zQuoter: '0x000000a7dfdd39f4d74c7b201501ead119f8b86c', zRouter: '0x000000000000fb114709235f1ccbffb925f600e4',
+  prove: '0x6bef15d938d4e72056ac92ea4bdd0d76b1c4ad29', vApp: '0x5ad5bc4b18f7c173dce17a57682cb0dc8788951f',
+  usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', eth: '0x0000000000000000000000000000000000000000',
+};
+const ETH = (n) => BigInt(Math.round(n * 1e18));
+const show = (x) => JSON.stringify(x, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+
+// Pull the real ABI out of chain.js so the stub encodes exactly what the code decodes.
+const chainSrc = (await import('node:fs')).readFileSync(join(ROOT, 'worker-relay/src/lib/chain.js'), 'utf8');
+const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chainSrc.indexOf('];', chainSrc.indexOf('export const ZQUOTER_ABI')) + 2)
+  .replace('export const ZQUOTER_ABI =', 'return');
+const zQuoterAbi = new Function(abiSrc)();
+
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances }) {
+  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A });
+  const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.replenishOnce(${JSON.stringify(opts)});`;
+  const env = {
+    PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
+    RPC_URL: stub.url, RPC_URLS_FALLBACK: stub.url, SETTLE_RPC_URL: stub.url, SETTLE_RPC_URLS: stub.url, SETTLE_ALLOW_PUBLIC: '0',
+    FEE_ASSETS: feeAssets, ETH_GAS_BUFFER_WEI: String(ETH(0.01)),
+    ...(splitKeys ? { SETTLE_KEY: SETTLE_PK } : {}),
+  };
+  // ASYNC spawn, deliberately: the stub server lives in THIS process, so a synchronous spawn would block the
+  // event loop that has to answer the child's requests and deadlock the pair.
+  const r = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: join(ROOT, 'worker-relay'), env });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ status: 'timeout', stdout, stderr }); }, 45_000);
+    child.on('close', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  await stub.close();
+  if (r.status !== 0) throw new Error(`replenish exited ${r.status}: ${(r.stderr || r.stdout).split('\n').slice(-6).join(' | ')}`);
+  return { sent: stub.sent, log: r.stdout };
+}
+
+// A swap the stub built is a marker + the recipient it was asked to deliver to.
+const swaps = (sent) => sent.filter((t) => t.to === A.zRouter && t.data.startsWith('0xa11ce000')).map((t) => ({
+  signer: t.from, exactOut: t.data.slice(10, 12) === '01', recipient: '0x' + t.data.slice(-40), value: t.value,
+}));
+
+console.log('replenish flow (real code, stub RPC):\n');
+
+await test('split keys: fee income becomes gas for BOTH wallets and PROVE for the sink', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.002) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  const s = swaps(sent);
+  const gasEarner = s.find((x) => x.exactOut && x.recipient === settle);
+  const gasSink = s.find((x) => x.exactOut && x.recipient === relay);
+  const prove = s.find((x) => !x.exactOut && x.recipient === relay);
+  ok(gasEarner, `no exact-out gas swap delivering to the settle wallet. swaps: ${show(s)}`);
+  ok(gasSink, 'no exact-out gas swap delivering to the RELAY wallet (it earns nothing and would drain)');
+  ok(prove, 'no PROVE swap delivering to the relay wallet');
+  for (const x of s) ok(x.signer === settle, `a swap was signed by ${x.signer}, not the earner — fee assets live on the settle wallet`);
+  ok(!s.some((x) => !x.exactOut && x.recipient === settle), 'PROVE was delivered to the settle wallet, where it cannot fund proving');
+});
+
+await test('split keys: the RELAY wallet, not the settle wallet, deposits to the vApp', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.002) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  const toVapp = sent.filter((t) => t.to === A.vApp);
+  ok(toVapp.length === 1, `expected exactly one vApp deposit, saw ${toVapp.length}`);
+  ok(toVapp[0].from === relay, `the vApp deposit was signed by ${toVapp[0].from}, not the relay wallet — it would credit the wrong account`);
+  ok(!sent.some((t) => t.to === A.vApp && t.from === settle), 'the settle wallet must never touch the vApp');
+  // The approval PROVE -> vApp is the sink's, and must come before the deposit.
+  const approve = sent.findIndex((t) => t.to === A.prove && t.from === relay);
+  const deposit = sent.findIndex((t) => t.to === A.vApp);
+  ok(approve > -1 && approve < deposit, 'the sink must approve PROVE to the vApp before depositing');
+});
+
+await test('split keys: native ETH surplus is forwarded to the sink, then the rest becomes PROVE', async () => {
+  const { sent } = await run({
+    feeAssets: A.eth,
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.002) },
+    tokenBalances: { [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  const xfer = sent.find((t) => t.from === settle && t.to === relay && t.value > 0n);
+  ok(xfer, 'the earner never sent ETH to the sink');
+  ok(xfer.value === ETH(0.008), `expected to top the sink up to the buffer (0.008), sent ${Number(xfer.value) / 1e18}`);
+  const prove = swaps(sent).find((x) => !x.exactOut && x.recipient === relay);
+  ok(prove, 'the remaining surplus was not converted to PROVE for the sink');
+  ok(prove.value === ETH(0.05) - ETH(0.01) - ETH(0.008), `PROVE swap should spend surplus after the buffer and the sink top-up, spent ${Number(prove.value) / 1e18}`);
+});
+
+await test('a sink already at its buffer is not topped up', async () => {
+  const { sent } = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.02) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
+  });
+  ok(!swaps(sent).some((x) => x.exactOut && x.recipient === relay), 'bought gas for a sink that already had plenty');
+  // Not vacuous: the earner is still low, so its OWN gas swap must have happened. Otherwise this passes
+  // simply because nothing was bought at all.
+  ok(swaps(sent).some((x) => x.exactOut && x.recipient === settle), 'the earner was low too, so its own gas swap must still run');
+});
+
+await test('gas-only mode: no PROVE swap and no vApp deposit', async () => {
+  const { sent } = await run({
+    opts: { roles: ['settle'], convertToProve: false },
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.001), [relay]: ETH(0.002) },
+    tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  ok(!swaps(sent).some((x) => !x.exactOut), 'converted to PROVE in gas-only mode');
+  ok(!sent.some((t) => t.to === A.vApp), 'deposited in gas-only mode');
+  ok(swaps(sent).some((x) => x.exactOut), 'gas-only mode must still buy gas');
+});
+
+await test('consolidated keys: one wallet, nothing sent to itself, it deposits its own PROVE', async () => {
+  const { sent } = await run({
+    splitKeys: false, opts: { roles: ['settle'] },
+    feeAssets: A.usdc,
+    balances: { [relay]: ETH(0.001) },
+    tokenBalances: { [A.usdc]: { [relay]: 1_000_000_000n }, [A.prove]: { [relay]: 100n * 10n ** 18n } },
+  });
+  ok(!sent.some((t) => t.to === relay), 'a consolidated wallet sent something to itself');
+  const s = swaps(sent);
+  ok(s.every((x) => x.signer === relay && x.recipient === relay), 'every swap must be signed by, and delivered to, the one wallet');
+  ok(sent.some((t) => t.to === A.vApp && t.from === relay), 'the one wallet must deposit its own PROVE');
+});
+
+console.log(`\n${pass} passed, ${fail} failed.`);
+process.exit(fail ? 1 : 0);

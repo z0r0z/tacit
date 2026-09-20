@@ -26,7 +26,7 @@ import { confidentialJob, confidentialBatch, confidentialAck, confidentialActiva
 import { proveSettle } from './lib/prover.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
-import { quoteRelayFee, provePriceUsd } from './replenish.js';
+import { quoteRelayFee, provePriceUsd, replenishOnce } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -386,6 +386,18 @@ async function cycle() {
   return true;
 }
 
+// Fee income -> gas, run from the settle loop's idle time. Serialised with settles (same wallet, same
+// nonce) by construction: it is only ever awaited where the loop would otherwise sleep. Off unless
+// REPLENISH_IN_SETTLE=1, and it can never take the loop down — a failure is logged and retried next interval.
+let lastReplenishAt = 0;
+async function maybeReplenish() {
+  if (!CFG.replenishInSettle) return;
+  if (Date.now() - lastReplenishAt < CFG.replenishIntervalMin * 60_000) return;
+  lastReplenishAt = Date.now();
+  try { await replenishOnce({ roles: ['settle'], convertToProve: CFG.replenishDepositProve }); }
+  catch (e) { log(`replenish failed (settling continues): ${e?.message || e}`); }
+}
+
 async function main() {
   log(`starting — worker=${CFG.workerBase} pool=${POOL} poll=${CFG.settlePollSecs}s timeout=${CFG.settleJobTimeoutSecs}s`);
   if (CFG.sp1Prover === 'network' && !CFG.networkPrivateKey) {
@@ -407,7 +419,7 @@ async function main() {
   for (;;) {
     try {
       const worked = await cycle();
-      if (!worked) await sleep(CFG.settlePollSecs);
+      if (!worked) { await maybeReplenish(); await sleep(CFG.settlePollSecs); }
     } catch (e) {
       log('cycle error (continuing):', e.message);
       await heartbeat('settle', `error ${e.message}`);

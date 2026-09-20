@@ -111,6 +111,15 @@ export const CFG = {
   // does not amortize, so the win flattens out — and a bigger batch means a longer proof and more ops lost
   // together if it fails. 1 disables batching.
   settleBatchMax: num('SETTLE_BATCH_MAX', 8),
+  // Replenish from INSIDE the settle service, during idle time. The settle wallet earns the fees and holds
+  // the only copy of SETTLE_KEY, so running the sweep here means the key never has to be copied to a cron.
+  // It runs between cycles — never concurrently — because a swap and a settle from the same wallet would
+  // race for one nonce. Fee income flows earner -> sink (see replenishOnce): the settle wallet earns, the
+  // RELAY wallet pays maintenance gas and is the account whose vApp deposit funds proving.
+  replenishInSettle: opt('REPLENISH_IN_SETTLE', '0') === '1',
+  replenishIntervalMin: num('REPLENISH_INTERVAL_MIN', 30),
+  // Convert fee income to PROVE and deposit it. On by default; REPLENISH_DEPOSIT_PROVE=0 keeps a pass to gas.
+  replenishDepositProve: opt('REPLENISH_DEPOSIT_PROVE', '1') !== '0',
   // Relayed L2 exits: once the settle lands, call ConfidentialRouter.activateExit(recipe) from the settle key so
   // the user never sends it from a wallet that would link to the exit. Sent only when the op's bound fee covers
   // the settle plus the activation (ACTIVATE_MARGIN_BPS over that cost). ACTIVATE_EXITS=0 turns it off.

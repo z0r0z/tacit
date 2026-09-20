@@ -55,25 +55,75 @@ test('the monitor checks every funded wallet, not just RELAY_KEY', () => {
   ok(/OP_GAS\.maintenance/.test(block), 'a maintenance-only wallet must be priced on maintenance gas');
 });
 
-test('replenish sweeps and funds every wallet from its own income', () => {
-  ok(/for \(const \{ address: owner, wallet, roles \} of fundedWallets\)/.test(replenish),
-    'the sweep loop does not iterate fundedWallets');
-  // Every write must go through the per-wallet handle. A stray `relayWallet.` inside the loop would send
-  // one wallet's swap from another's key, which is exactly the bug being fixed.
-  const loop = replenish.slice(replenish.indexOf('for (const { address: owner, wallet, roles }'), replenish.indexOf("log('replenish done')"));
-  ok(!/relayWallet\./.test(loop), 'the sweep loop still references relayWallet directly');
-  for (const call of ['maxPreApprove(assets, wallet)', 'fireSwap(q, wallet)', 'depositProveToVApp(wallet)']) {
-    ok(loop.includes(call), `sweep loop does not pass the wallet through: ${call}`);
+const loopOf = () => replenish.slice(replenish.indexOf('for (const { address: owner, wallet, roles: held } of earners)'), replenish.indexOf("log('replenish done')"));
+
+test('replenish sweeps every earner, and the sink is the relay wallet', () => {
+  ok(/for \(const \{ address: owner, wallet, roles: held \} of earners\)/.test(replenish), 'the sweep does not iterate earners');
+  ok(/const sink = relayWallet;/.test(replenish), 'the sink must be the relay wallet');
+  // Swaps and transfers inside the earner loop must be signed by the EARNER's own handle. A stray
+  // `relayWallet.` there would send one wallet's swap from another's key.
+  const loop = loopOf();
+  ok(loop.length > 0, 'earner loop not found');
+  ok(!/relayWallet\./.test(loop), 'the earner loop references relayWallet directly');
+  for (const call of ['maxPreApprove(assets, wallet, false)', 'fireSwap(q, wallet)', 'wallet.sendTransaction']) {
+    ok(loop.includes(call), `earner loop does not sign with the earner's own wallet: ${call}`);
   }
 });
 
 test('gas is bought before PROVE', () => {
-  // A wallet that cannot pay for a transaction cannot buy PROVE either, so the exact-out gas leg has to
+  // A wallet that cannot pay for a transaction cannot buy PROVE either, so the exact-out gas legs have to
   // clear first. If these ever swap order a drained wallet can never recover on its own.
-  const loop = replenish.slice(replenish.indexOf('for (const { address: owner, wallet, roles }'), replenish.indexOf("log('replenish done')"));
-  const gasLeg = loop.indexOf('gas top-up');
+  const loop = loopOf();
+  const gasLeg = loop.indexOf('gas top-up:');
   const proveLeg = loop.indexOf('-> ~${q.amountOut} PROVE', gasLeg);
   ok(gasLeg > -1 && proveLeg > gasLeg, 'the ETH gas top-up must precede the PROVE conversion');
+});
+
+// ── the earner -> sink flow ─────────────────────────────────────────────────
+test('PROVE is delivered to the SINK, because only the sink can use it', () => {
+  // A vApp deposit credits whoever sends it, and the account behind the network prover key is the relay
+  // wallet. PROVE landing on the settle wallet could not fund proving.
+  const loop = loopOf();
+  const proveQuotes = loop.match(/quote\((?:ETH|asset), PROVE, [^)]*\)/g) || [];
+  ok(proveQuotes.length >= 2, `expected both the ETH and ERC20 PROVE quotes, found ${proveQuotes.length}`);
+  for (const q of proveQuotes) ok(/sinkAddr\)$/.test(q), `a PROVE swap does not deliver to the sink: ${q}`);
+});
+
+test('only the sink deposits to the vApp, once, after every earner has delivered', () => {
+  ok(/depositProveToVApp\(sink\)/.test(replenish), 'the deposit must be made by the sink');
+  ok(!/depositProveToVApp\(wallet\)/.test(replenish), 'an earner must never deposit — that credits the wrong account');
+  const loopStart = replenish.indexOf('for (const { address: owner, wallet, roles: held } of earners)');
+  const depositAt = replenish.indexOf('depositProveToVApp(sink)', loopStart);
+  const lastEarnerLine = replenish.lastIndexOf('sweep for ${asset} failed');
+  ok(depositAt > lastEarnerLine, 'the deposit must come after the earner loop, not inside it');
+});
+
+test('the sink gets its own gas, since it earns nothing', () => {
+  const loop = loopOf();
+  ok(/gasLegs\.push\(\[sinkAddr, 'sink'\]\)/.test(loop), 'no exact-out gas leg for the sink');
+  ok(/to: sinkAddr, value: send/.test(loop), 'native ETH surplus is not forwarded to the sink');
+  ok(/toSink/.test(loop), 'the sink legs must only apply when earner and sink differ');
+});
+
+test('consolidated keys collapse to the ordinary single-wallet case', () => {
+  ok(/const toSink = owner\.toLowerCase\(\) !== sinkAddr\.toLowerCase\(\)/.test(replenish),
+    'earner === sink must be detected so nothing is sent to oneself');
+});
+
+test('the settle service sweeps only its earner and never the sink as one', () => {
+  ok(/replenishOnce\(\{ roles: \['settle'\]/.test(settle), 'the settle service must scope replenish to the settle role');
+});
+
+test('replenish in the settle loop runs only in idle time, off by default', () => {
+  // Same wallet, same nonce as a settle — concurrency here would be a nonce race, so it is awaited only
+  // where the loop would otherwise sleep.
+  ok(/if \(!worked\) \{ await maybeReplenish\(\); await sleep/.test(settle), 'replenish must run only when the loop is idle');
+  ok(/opt\('REPLENISH_IN_SETTLE', '0'\) === '1'/.test(config), 'REPLENISH_IN_SETTLE must default off');
+  ok(/replenish failed \(settling continues\)/.test(settle), 'a replenish failure must not take the loop down');
+});
+
+test('the PROVE leg is on by default and switchable', () => {
+  ok(/opt\('REPLENISH_DEPOSIT_PROVE', '1'\) !== '0'/.test(config), 'REPLENISH_DEPOSIT_PROVE must default on');
 });
 
 test('the cost model carries the maintenance lane', () => {
