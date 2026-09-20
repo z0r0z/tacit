@@ -26,7 +26,7 @@ import { confidentialJob, confidentialBatch, confidentialAck, confidentialActiva
 import { proveSettle } from './lib/prover.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
-import { quoteRelayFee, provePriceUsd, replenishOnce } from './replenish.js';
+import { quoteRelayFee, provePriceUsd, replenishOnce, drainToSink } from './replenish.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -390,7 +390,15 @@ async function cycle() {
 // nonce) by construction: it is only ever awaited where the loop would otherwise sleep. Off unless
 // REPLENISH_IN_SETTLE=1, and it can never take the loop down — a failure is logged and retried next interval.
 let lastReplenishAt = 0;
+let drained = false;
 async function maybeReplenish() {
+  // Key consolidation runs once, ahead of everything else, and only where asked. It is idle-time work like the
+  // rest, so it can never race a settle on the same nonce.
+  if (CFG.replenishDrainToSink && !drained) {
+    drained = true;
+    try { await drainToSink({ roles: ['settle'] }); }
+    catch (e) { log(`drain failed (settling continues): ${e?.message || e}`); }
+  }
   if (!CFG.replenishInSettle) return;
   if (Date.now() - lastReplenishAt < CFG.replenishIntervalMin * 60_000) return;
   lastReplenishAt = Date.now();

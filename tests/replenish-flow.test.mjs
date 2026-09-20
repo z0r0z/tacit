@@ -29,7 +29,7 @@ const settle = privateKeyToAccount(SETTLE_PK).address.toLowerCase();
 const A = {
   zQuoter: '0x000000a7dfdd39f4d74c7b201501ead119f8b86c', zRouter: '0x000000000000fb114709235f1ccbffb925f600e4',
   prove: '0x6bef15d938d4e72056ac92ea4bdd0d76b1c4ad29', vApp: '0x5ad5bc4b18f7c173dce17a57682cb0dc8788951f',
-  usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', eth: '0x0000000000000000000000000000000000000000',
+  usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', usdt: '0xdac17f958d2ee523a2206206994597c13d831ec7', eth: '0x0000000000000000000000000000000000000000',
 };
 const ETH = (n) => BigInt(Math.round(n * 1e18));
 const show = (x) => JSON.stringify(x, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -40,9 +40,9 @@ const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chai
   .replace('export const ZQUOTER_ABI =', 'return');
 const zQuoterAbi = new Function(abiSrc)();
 
-async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0 }) {
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0, fn = 'replenishOnce', fnArgs = null }) {
   const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor });
-  const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.replenishOnce(${JSON.stringify(opts)});`;
+  const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.${fn}(${JSON.stringify(fnArgs ?? opts)});`;
   const env = {
     PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
     RPC_URL: stub.url, RPC_URLS_FALLBACK: stub.url, SETTLE_RPC_URL: stub.url, SETTLE_RPC_URLS: stub.url, SETTLE_ALLOW_PUBLIC: '0',
@@ -206,6 +206,55 @@ await test('consolidated keys: one wallet, nothing sent to itself, it deposits i
   const s = swaps(sent);
   ok(s.every((x) => x.signer === relay && x.recipient === relay), 'every swap must be signed by, and delivered to, the one wallet');
   ok(sent.some((t) => t.to === A.vApp && t.from === relay), 'the one wallet must deposit its own PROVE');
+});
+
+// ── key consolidation: drain the settle wallet into the relay wallet ─────────
+const transfers = (sent, token) => sent.filter((t) => t.to === token && t.data.startsWith('0xa9059cbb')).map((t) => ({
+  signer: t.from, to: '0x' + t.data.slice(34, 74), amount: BigInt('0x' + t.data.slice(74, 138)),
+}));
+
+await test('drain: every fee asset and the ETH move to the relay wallet, and the earner is left empty', async () => {
+  const { sent } = await run({
+    fn: 'drainToSink', fnArgs: { roles: ['settle'] }, feeAssets: [A.eth, A.usdc, A.usdt].join(','),
+    balances: { [settle]: ETH(0.013), [relay]: ETH(0.015) },
+    tokenBalances: { [A.usdc]: { [settle]: 5_000_000n }, [A.usdt]: { [settle]: 810_000n } },
+  });
+  const usdc = transfers(sent, A.usdc), usdt = transfers(sent, A.usdt);
+  ok(usdc.length === 1 && usdc[0].amount === 5_000_000n && usdc[0].to === relay && usdc[0].signer === settle, `USDC not moved whole to the relay wallet: ${show(usdc)}`);
+  ok(usdt.length === 1 && usdt[0].amount === 810_000n && usdt[0].to === relay, `USDT dust must move too: ${show(usdt)}`);
+  const eth = sent.find((t) => t.from === settle && t.to === relay && t.data === '0x' && t.value > 0n);
+  ok(eth, 'the ETH never moved');
+  const left = ETH(0.013) - eth.value;
+  ok(left > 0n && left < ETH(0.0001), `should leave only a small gas reserve, left ${Number(left) / 1e18}`);
+  ok(eth.value > ETH(0.0129), 'should move nearly all of the ETH');
+});
+
+await test('drain: ERC20s go before ETH, while there is still gas to pay for them', async () => {
+  const { sent } = await run({
+    fn: 'drainToSink', fnArgs: { roles: ['settle'] }, feeAssets: [A.eth, A.usdc].join(','),
+    balances: { [settle]: ETH(0.013), [relay]: ETH(0.015) },
+    tokenBalances: { [A.usdc]: { [settle]: 5_000_000n } },
+  });
+  const erc = sent.findIndex((t) => t.to === A.usdc), eth = sent.findIndex((t) => t.data === '0x' && t.value > 0n);
+  ok(erc > -1 && eth > -1 && erc < eth, 'the ETH transfer must come last, or the token transfers have no gas');
+});
+
+await test('drain: an ETH balance too small to cover its own transfer is left alone', async () => {
+  const { sent } = await run({
+    fn: 'drainToSink', fnArgs: { roles: ['settle'] }, feeAssets: A.eth,
+    balances: { [settle]: 1_000_000_000n /* 1 gwei of wei — dust */, [relay]: ETH(0.015) },
+    tokenBalances: {},
+  });
+  ok(!sent.some((t) => t.value > 0n), 'tried to send an ETH balance that cannot pay for its own transfer');
+});
+
+await test('drain: with consolidated keys there is nothing to move', async () => {
+  const { sent, log } = await run({
+    splitKeys: false, fn: 'drainToSink', fnArgs: { roles: ['settle'] }, feeAssets: [A.eth, A.usdc].join(','),
+    balances: { [relay]: ETH(0.02) }, tokenBalances: { [A.usdc]: { [relay]: 5_000_000n } },
+  });
+  ok(sent.length === 0, `moved something although earner and sink are the same wallet: ${sent.length} txs`);
+  ok(/already the relay wallet/.test(log), 'the no-op must say so');
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

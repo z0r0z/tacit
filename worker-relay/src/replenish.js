@@ -231,6 +231,50 @@ async function provePlausible(q, usdIn, ethUsd, label) {
   return false;
 }
 
+// Merge the earner into the sink: move everything the settle wallet holds to the relay wallet. This is the
+// one-shot that lets the keys be consolidated without stranding anything — run it, confirm the settle wallet
+// is empty, then drop SETTLE_KEY and the two roles are one wallet.
+//
+// Order matters. ERC20 fee assets go first, while there is still ETH to pay their transfer gas; ETH goes last,
+// less a reserve for its own transfer (priced at the live max fee with headroom, because a balance that is a
+// hair short of value + gas simply fails). It moves ALL of every fee asset, dust included — the dust floor
+// exists to avoid pointless swaps, and a transfer to ourselves is neither.
+export async function drainToSink({ roles = ['settle'] } = {}) {
+  const sink = relayWallet;
+  const sinkAddr = sink.account.address;
+  const earners = fundedWallets.filter((w) => w.roles.some((r) => roles.includes(r)) && w.address.toLowerCase() !== sinkAddr.toLowerCase());
+  if (!earners.length) { log('drain: the settle wallet is already the relay wallet — nothing to move'); return { moved: [] }; }
+  const moved = [];
+  for (const { address: owner, wallet } of earners) {
+    log(`drain: ${owner} -> ${sinkAddr}`);
+    for (const asset of feeAssets().filter((a) => a !== ETH)) {
+      try {
+        const bal = await erc20Balance(asset, owner);
+        if (bal === 0n) continue;
+        const h = await withNonceRetry('drain erc20', () => wallet.writeContract({ address: asset, abi: ERC20_ABI, functionName: 'transfer', args: [sinkAddr, bal] }));
+        const r = await publicClient.waitForTransactionReceipt({ hash: h });
+        if (r.status !== 'success') throw new Error(`transfer reverted ${h}`);
+        log(`  moved ${bal} of ${asset}`);
+        moved.push({ asset, amount: bal });
+      } catch (e) { log(`  drain of ${asset} failed (continuing): ${e.message}`); }
+    }
+    try {
+      const bal = await publicClient.getBalance({ address: owner });
+      const fees = await publicClient.estimateFeesPerGas();
+      const reserve = 21000n * fees.maxFeePerGas * 2n; // 2x headroom over the live max fee
+      if (bal <= reserve) { log(`  ETH ${bal} does not cover a transfer (reserve ${reserve}) — leaving it`); continue; }
+      const send = bal - reserve;
+      const h = await withNonceRetry('drain eth', () => wallet.sendTransaction({ to: sinkAddr, value: send }));
+      const r = await publicClient.waitForTransactionReceipt({ hash: h });
+      if (r.status !== 'success') throw new Error(`ETH transfer reverted ${h}`);
+      log(`  moved ${send} wei ETH (kept ${reserve} for gas)`);
+      moved.push({ asset: ETH, amount: send });
+    } catch (e) { log(`  drain of ETH failed: ${e.message}`); }
+  }
+  log('drain: done');
+  return { moved };
+}
+
 // One replenish pass: turn fee income into the two things the relay burns — ETH gas and PROVE.
 //
 // Two roles matter, and they are not the same wallet:

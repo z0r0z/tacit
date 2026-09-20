@@ -117,6 +117,10 @@ export const CFG = {
   // race for one nonce. Fee income flows earner -> sink (see replenishOnce): the settle wallet earns, the
   // RELAY wallet pays maintenance gas and is the account whose vApp deposit funds proving.
   replenishInSettle: opt('REPLENISH_IN_SETTLE', '0') === '1',
+  // One-shot key consolidation: move everything the settle wallet holds (fee assets, then ETH) to the relay
+  // wallet, on the first idle pass. Set it, let it run, then remove SETTLE_KEY so the settle service signs with
+  // RELAY_KEY and the two roles are one wallet. A no-op when they already are.
+  replenishDrainToSink: opt('REPLENISH_DRAIN_TO_SINK', '0') === '1',
   replenishIntervalMin: num('REPLENISH_INTERVAL_MIN', 30),
   // Convert fee income to PROVE and deposit it. On by default; REPLENISH_DEPOSIT_PROVE=0 keeps a pass to gas.
   replenishDepositProve: opt('REPLENISH_DEPOSIT_PROVE', '1') !== '0',
