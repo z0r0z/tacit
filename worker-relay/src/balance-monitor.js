@@ -22,6 +22,7 @@
 import { formatEther, formatUnits } from 'viem';
 import { CFG, OP_GAS, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import { burnGasPerDay, runwayDays } from './lib/runway.js';
+import { queueVerdict } from './lib/queue-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
@@ -122,6 +123,23 @@ async function checkEth() {
 //
 // This is a slow curve, not an incident: the point of watching it is to schedule compaction deliberately
 // rather than meet it during a catch-up.
+// Is anyone waiting on a relay that is not answering? The queue's oldest pending job says so directly. Reads counts
+// and ages only, from the worker's box-token route.
+async function checkQueue() {
+  let stats;
+  try {
+    const res = await fetch(`${CFG.workerBase}/confidential/queue`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
+    if (!res.ok) { log(`queue stats unavailable: /confidential/queue ${res.status}${res.status === 404 ? ' (worker predates the route)' : ''}`); return; }
+    stats = await res.json();
+  } catch (e) { log(`queue stats read failed: ${e?.message || e}`); return; }
+  const v = queueVerdict(stats, {
+    pendingWarnSec: CFG.queuePendingWarnSec, pendingCriticalSec: CFG.queuePendingCriticalSec,
+    provingStuckSec: CFG.settleJobTimeoutSecs + 300,
+  });
+  log(`queue: ${v.reason}`);
+  if (v.level === 'critical' || v.level === 'warning') await alert(v.level, `settle queue: ${v.reason}`, stats);
+}
+
 async function checkSnapshotCapacity() {
   let cap;
   try {
@@ -194,7 +212,7 @@ async function checkReflectionLag() {
 
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet.account.address}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkQueue()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

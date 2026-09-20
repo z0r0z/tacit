@@ -302,9 +302,24 @@ The flag now only selects a bucket: fee-paying relayed submits get their own, mo
 (`PAID_RL_BURST` / `PAID_RL_REFILL_MS`), everything else keeps the strict one, and the bucket name is part
 of the rate-limit key so the two cannot collide. Metering is no longer something the floor can turn off.
 
-**Order to switch on:** fund both wallets → deploy worker + worker-relay → resume `tacit-replenish` →
-watch `UNPAID:` fall as cETH-fee ops start pricing → set `RELAY_FEE_FLOOR=1` (now safe) →
-set `RELAY_REQUIRE_PRICED_FEE=1` last.
+**State today (2026-09-21):** `RELAY_FEE_FLOOR=1` is set and live; replenish runs inside `tacit-settle`
+(`REPLENISH_IN_SETTLE=1`); `tacit-replenish` is retired — **do not resume it**. `RELAY_REQUIRE_PRICED_FEE` is
+still off, and should only be turned on once every asset a user can pay in is priceable, since it refuses the
+rest outright. The order that got here, for a fresh deployment: fund the relayer wallet → deploy worker +
+worker-relay → set `REPLENISH_IN_SETTLE` + `FEE_ASSETS` on the settle service → watch `UNPAID:` fall as ops start
+pricing → set `RELAY_FEE_FLOOR=1` → `RELAY_REQUIRE_PRICED_FEE=1` last.
+
+### Is anyone waiting on a relay that has stopped?
+
+An empty queue says nothing — the relay may just be idle. The signature of a dead or hung `tacit-settle` is a
+queue whose **oldest pending job keeps aging**. `GET /confidential/queue` (box-token gated; counts and ages only,
+never job contents) reports `{ pending, proving, oldestPendingSec, oldestProvingSec }`, and the monitor turns it
+into an alert (`lib/queue-health.js`): a warning when the oldest pending job is `QUEUE_PENDING_WARN_SEC` (300s)
+old, critical at `QUEUE_PENDING_CRITICAL_SEC` (900s), and a warning for a job "proving" past the prove timeout.
+A relayed job is normally picked up in seconds, so any of these means a user is waiting.
+
+Transfer batches go through the same fee gate as single jobs: each member is checked individually and an
+underpaying one is refused on its own without sinking the rest. (They used to skip it.)
 
 ### Alerting without a webhook
 

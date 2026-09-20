@@ -267,6 +267,23 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       activateTx: j.activateTx || null, activateError: j.activateError || null };
   }
 
+  // A read-only picture of the queue for the operator: how many jobs are waiting, how many are being proved, and
+  // how long the oldest of each has been in that state. Ages, not job details — nothing about any op leaves here.
+  // This is what tells "the relay is idle" apart from "the relay has stopped and users are waiting": a queue whose
+  // oldest pending job keeps getting older is the signature of a dead or hung settle service.
+  async function queueStats() {
+    const pend = await storage.getPending();
+    const t = clock();
+    let pending = 0, proving = 0, oldestPendingMs = 0, oldestProvingMs = 0;
+    for (const id of pend) {
+      const j = await storage.getJob(id);
+      if (!j) continue;
+      if (j.status === 'pending') { pending++; oldestPendingMs = Math.max(oldestPendingMs, t - (j.createdAt || t)); }
+      else if (j.status === 'proving') { proving++; oldestProvingMs = Math.max(oldestProvingMs, t - (j.claimedAt || t)); }
+    }
+    return { pending, proving, oldestPendingSec: Math.round(oldestPendingMs / 1000), oldestProvingSec: Math.round(oldestProvingMs / 1000) };
+  }
+
   async function pendingCount() {
     const pend = await storage.getPending();
     let n = 0;
@@ -274,7 +291,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     return n;
   }
 
-  return { submitJob, nextJob, nextBatch, ackJob, jobStatus, pendingCount, jobIdOf };
+  return { submitJob, nextJob, nextBatch, ackJob, jobStatus, pendingCount, queueStats, jobIdOf };
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:job:<id> (job).

@@ -1763,6 +1763,14 @@ async function handleConfidentialSubmit(req, env, cors) {
     return jsonResponse({ ok: true, ...r }, 200, { ...cors, 'Cache-Control': 'no-store' });
   } catch (e) { return jsonResponse({ ok: false, error: String(e && e.message || e) }, 400, cors); }
 }
+// GET /confidential/queue — box-token gated. Counts and ages only, never job contents: it exists so the monitor can
+// tell an idle relay from a stopped one (a oldest-pending age that keeps growing).
+async function handleConfidentialQueue(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  return jsonResponse(await q.queueStats(), 200, { ...cors, 'Cache-Control': 'no-store' });
+}
 async function handleConfidentialJob(req, env, cors) {
   const q = confSettler(env);
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
@@ -24917,6 +24925,7 @@ async function _routeFetch(req, env, ctx) {
     // GPU-prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
     if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
     if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
+    if (url.pathname === '/confidential/queue' && req.method === 'GET') return handleConfidentialQueue(req, env, cors);
     if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
     if (url.pathname === '/confidential/status' && req.method === 'GET') return handleConfidentialStatus(env, url, cors);
     if (url.pathname === '/confidential/quote' && req.method === 'GET') return handleConfidentialQuote(req, env, url, cors);

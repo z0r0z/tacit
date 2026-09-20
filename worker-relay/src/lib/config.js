@@ -255,6 +255,10 @@ export const CFG = {
   // moves with the market, where a fixed wei floor does not. Critical below the first, a warning below the second.
   runwayDaysCritical: num('RUNWAY_DAYS_CRITICAL', 3),
   runwayDaysWarn: num('RUNWAY_DAYS_WARN', 7),
+  // Settle-queue health (see lib/queue-health.js). A relayed job is normally picked up in seconds, so a pending job
+  // this old means the settle service is down or stuck and a user is waiting.
+  queuePendingWarnSec: num('QUEUE_PENDING_WARN_SEC', 300),
+  queuePendingCriticalSec: num('QUEUE_PENDING_CRITICAL_SEC', 900),
   reflectionLagAlertBlocks: num('REFLECTION_LAG_ALERT_BLOCKS', 200), // above the ~144-block relay lead that is normal
   // The reflection snapshot is the protocol's one cumulative resource (see handleReflectionState). The
   // assembler has been measured peaking +58-216MB above the snapshot against a 1280MB heap, so the

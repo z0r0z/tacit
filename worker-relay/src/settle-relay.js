@@ -299,10 +299,35 @@ async function activateRelayedExit(job, settleTx) {
   }
 }
 
+// Split claimed jobs into those the fee gate admits and those it refuses. Exported so the split can be tested
+// without a chain; the gate itself is injected.
+export async function admitJobs(jobs, gate) {
+  const admitted = [], refused = [];
+  for (const job of jobs) {
+    const verdict = await gate(job);
+    (verdict.ok ? admitted : refused).push({ job, verdict });
+  }
+  return { admitted: admitted.map((a) => a.job), refused };
+}
+
 async function batchCycle() {
   if (CFG.settleBatchMax <= 1) return false;
-  const jobs = await confidentialBatch(CFG.settleBatchMax);
+  let jobs = await confidentialBatch(CFG.settleBatchMax);
   if (!jobs.length) return false;
+
+  // Gate every member exactly as the single-job path does. Batched transfers used to be claimed and proved without
+  // ever passing through feeGate, so a batch could relay a job the single path would have refused. Refused members
+  // are acked individually — one underpaying member must not sink the others — and the rest carry on. The gate
+  // holds each to its own marginal cost; a batch splits the gas, so this is conservative, never permissive.
+  const [gasGwei, ethPx] = await Promise.all([liveGasGwei(), ethUsdPrice()]);
+  const provePx = await provePriceUsd(ethPx);
+  const { admitted, refused } = await admitJobs(jobs, (j) => feeGate(j, gasGwei, provePx, ethPx));
+  for (const { job, verdict } of refused) {
+    log(`job ${job.jobId} type=${job.type} rejected by feeGate (batch): ${verdict.reason}`);
+    await confidentialAck({ jobId: job.jobId, error: `feeGate: ${verdict.publicReason || verdict.reason}` });
+  }
+  if (!admitted.length) return true; // we did work (refusing), so the loop should poll again immediately
+  jobs = admitted;
   const ids = jobs.map((j) => j.jobId);
   // These jobs are already CLAIMED, so they must be carried to a terminal state here — releasing them by
   // acking an error would fail a user's op merely for arriving alone. A lone job is proved on the ordinary

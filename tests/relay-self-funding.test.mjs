@@ -548,6 +548,37 @@ test('the relay ACKS the public reason (the job\'s submitter reads the ack), and
   ok(/rejected by feeGate: \$\{gate\.reason\}/.test(settle), 'the log must keep the full reason');
 });
 
+// ── batching cannot skip the fee gate ───────────────────────────────────────
+async function admit(jobs, gateFn) {
+  const script = `
+    const s = await import('${join(ROOT, 'worker-relay/src/settle-relay.js')}');
+    const jobs = ${JSON.stringify(jobs)};
+    const r = await s.admitJobs(jobs, async (j) => (j.feeUsd === 0.01 ? { ok: false, reason: 'low', publicReason: 'low (public)' } : { ok: true, reason: 'fine' }));
+    console.log(JSON.stringify({ admitted: r.admitted.map(j => j.jobId), refused: r.refused.map(x => ({ id: x.job.jobId, pub: x.verdict.publicReason })) }));`;
+  return new Promise((resolve, reject) => {
+    const child = spawnAsync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'worker-relay'),
+      env: { PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RPC_URL: 'http://127.0.0.1:1', RELAY_KEY: '0x' + '11'.repeat(32) },
+    });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => (out += d)); child.stderr.on('data', (d) => (err += d));
+    child.on('close', (code) => code === 0 ? resolve(JSON.parse(out.trim().split('\n').pop())) : reject(new Error(err.split('\n').slice(-3).join(' '))));
+  });
+}
+test('batch: an underpaying member is refused individually and the rest still go', async () => {
+  const r = await admit([{ jobId: 'a', feeUsd: 0.5 }, { jobId: 'b', feeUsd: 0.01 }, { jobId: 'c', feeUsd: 0.5 }]);
+  ok(JSON.stringify(r.admitted) === '["a","c"]', `the two paying members must be admitted, got ${r.admitted}`);
+  ok(r.refused.length === 1 && r.refused[0].id === 'b', 'the underpaying member must be refused');
+  ok(r.refused[0].pub === 'low (public)', 'the refusal must carry the PUBLIC reason for the ack');
+});
+test('batch: the relay gates every member before proving, and acks refusals with the public reason', () => {
+  const fn = settle.slice(settle.indexOf('async function batchCycle'), settle.indexOf("log(`batching ${jobs.length} transfers"));
+  ok(/admitJobs\(jobs, \(j\) => feeGate\(j, gasGwei, provePx, ethPx\)\)/.test(fn), 'batchCycle must run every member through feeGate');
+  ok(/error: `feeGate: \$\{verdict\.publicReason \|\| verdict\.reason\}`/.test(fn), 'refused members must be acked with the public reason');
+  const gate = fn.indexOf('admitJobs('), build = settle.indexOf("type: 'batchtransfer'");
+  ok(gate > -1 && build > -1 && gate < build, 'the gate must run before the batch is proved');
+});
+
 test('rate-limit buckets cannot collide', () => {
   // Same IP, two buckets, one KV namespace — the bucket name has to be in the key.
   ok(/cps:rl:\$\{bucket\}:\$\{ip\}/.test(worker), 'bucket name missing from the rate-limit key');
