@@ -1139,10 +1139,17 @@ async function handleReflectionState(req, env, url, cors) {
 // Public, cheap summary of where reflection stands, so an integrator does not have to download the whole
 // snapshot (/reflection/dump) just to learn whether a cross-out or a mint has been folded yet.
 //   attestedHeight  the Bitcoin height the pool has attested through
-//   tipHeight       the header relay's tip; a block folds once tipHeight - REFLECTION_CONFIRMATIONS reaches it
+//   tipHeight       the newest block the pool can attest today (header relay tip minus REFLECTION_CONFIRMATIONS);
+//                   a Bitcoin block folds once this reaches its height
 //   foldedCrossoutCount  cross-outs the reflection state has folded; compare with the pool's crossOutCount()
 // The record is large, so the parsed summary is held for a few seconds and shared by every caller.
 const REFLECTION_STATUS_TTL_MS = 10000;
+// The persisted snapshot stores counters as decimal strings (they are u64 in the guest); accept either form.
+function _statusCount(v) {
+  if (Number.isSafeInteger(v) && v >= 0) return v;
+  if (typeof v === 'string' && /^\d{1,15}$/.test(v)) return Number(v);
+  return null;
+}
 const _reflectionStatusCache = new Map();
 async function handleReflectionStatus(req, env, url, cors) {
   const authed = checkConfidentialAuth(req, env);
@@ -1170,8 +1177,8 @@ async function handleReflectionStatus(req, env, url, cors) {
     tipHeight: tip,
     lagBlocks: Number.isInteger(attested) && Number.isInteger(tip) ? tip - attested : null,
     confirmations: reflectionConf(env, network),
-    foldedCrossoutCount: Number.isInteger(snap.foldedCrossoutCount) ? snap.foldedCrossoutCount : null,
-    consumedCount: Number.isInteger(snap.consumedCount) ? snap.consumedCount : null,
+    foldedCrossoutCount: _statusCount(snap.foldedCrossoutCount),
+    consumedCount: _statusCount(snap.consumedCount),
     liveNotes: Array.isArray(snap.liveTriples) ? snap.liveTriples.length : null,
     burnDeposits: Array.isArray(snap.pendingDepositRecords) ? snap.pendingDepositRecords.length : null,
     updatedAt: new Date().toISOString(),
@@ -1860,6 +1867,78 @@ function _allUpstreamsCoolingMs(bases) {
   }
   return Number.isFinite(min) ? min : 0;
 }
+// Rolling health per upstream, so ordering reflects what each host is doing now and not only whether it is cooling.
+// A host is "degraded" after repeated failures or while its smoothed latency is far above the others; degraded hosts
+// stay in the rotation (they recover) but are tried after the healthy ones.
+const UPSTREAM_DEGRADED_MS = 4000;
+const _upstreamScore = new Map(); // base -> { ewmaMs, fails, lastFailAt }
+function _recordUpstream(base, ok, ms) {
+  const s = _upstreamScore.get(base) || { ewmaMs: 0, fails: 0, lastFailAt: 0 };
+  if (ok) {
+    s.ewmaMs = s.ewmaMs ? s.ewmaMs * 0.7 + ms * 0.3 : ms;
+    s.fails = 0;
+  } else {
+    s.fails += 1; s.lastFailAt = Date.now();
+  }
+  _upstreamScore.set(base, s);
+}
+function _upstreamDegraded(base) {
+  const s = _upstreamScore.get(base);
+  if (!s) return false;
+  if (s.fails >= 2 && Date.now() - s.lastFailAt < 60_000) return true;
+  return s.ewmaMs > UPSTREAM_DEGRADED_MS;
+}
+// Race the upstreams for one read. The first starts immediately; each next one starts either as soon as the previous
+// one fails (429 / 5xx / network) or after `hedgeMs` with no answer, whichever is first, and the first FINAL answer
+// (a 2xx or a non-retryable 4xx) wins while the losers are aborted. hedgeMs <= 0 keeps strict one-at-a-time failover.
+// Returns { r, sawRateLimit, retryAfter, lastErr, lastStatus }; r is null when every upstream failed.
+function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
+  const st = { r: null, sawRateLimit: false, retryAfter: null, lastErr: null, lastStatus: null };
+  return new Promise((resolve) => {
+    let next = 0, active = 0, done = false;
+    const attempts = [];
+    const finish = (winner) => {
+      if (done) return; done = true;
+      for (const a of attempts) { clearTimeout(a.timer); clearTimeout(a.hedge); if (a !== winner) { try { a.ctrl.abort(); } catch {} } }
+      resolve(st);
+    };
+    const launch = () => {
+      if (done) return;
+      if (next >= bases.length) { if (active === 0) finish(null); return; }
+      const base = bases[next++]; active++;
+      const ctrl = new AbortController();
+      const a = { ctrl, timer: null, hedge: null, ended: false };
+      attempts.push(a);
+      const t0 = Date.now();
+      const retry = () => { if (a.ended) return; a.ended = true; active--; clearTimeout(a.hedge); launch(); };
+      a.timer = setTimeout(() => { st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 10_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
+      if (hedgeMs > 0 && next < bases.length) a.hedge = setTimeout(launch, hedgeMs);
+      const { init } = mkInit(ctrl.signal);
+      fetch(`${base}${pathQuery}`, init).then(async (r) => {
+        clearTimeout(a.timer);
+        if (done || a.ended) { try { await r.text(); } catch {} return; }
+        if (r.status === 429 || r.status >= 500) {
+          st.lastStatus = r.status; _recordUpstream(base, false);
+          if (r.status === 429) {
+            st.sawRateLimit = true;
+            const ra = r.headers.get('retry-after'); if (ra) st.retryAfter = ra;
+            _markUpstreamCooling(base, _retryAfterMs(r.headers, 30_000), 'rate-limited');
+          } else _markUpstreamCooling(base, 15_000, String(r.status));
+          try { await r.text(); } catch {}
+          retry(); return;
+        }
+        _recordUpstream(base, true, Date.now() - t0);
+        st.r = r; a.ended = true; finish(a);
+      }, (e) => {
+        clearTimeout(a.timer);
+        if (done || a.ended) return;
+        st.lastErr = e; _recordUpstream(base, false); _markUpstreamCooling(base, 10_000, e?.name || 'network');
+        retry();
+      });
+    };
+    launch();
+  });
+}
 function _orderedUpstreams(bases, key) {
   const rotated = rotatedFor(bases, key);
   const healthy = [];
@@ -1870,8 +1949,11 @@ function _orderedUpstreams(bases, key) {
     else healthy.push(b);
   }
   cooling.sort((a, b) => a.left - b.left);
-  return healthy.length
-    ? healthy.concat(cooling.map(x => x.base))
+  const sound = healthy.filter(b => !_upstreamDegraded(b));
+  const degraded = healthy.filter(b => _upstreamDegraded(b));
+  const usable = sound.concat(degraded);
+  return usable.length
+    ? usable.concat(cooling.map(x => x.base))
     : cooling.map(x => x.base);
 }
 // One upstream request with failover across the keyless mirrors. Starts at the
@@ -9993,43 +10075,12 @@ async function _handleChainProxyUncached(req, env, network, cors) {
   // before we rotate; 15s is plenty for everything else.
   const isChainWalk = /\/address\/[^/]+\/txs\/chain/.test(path);
   const timeoutMs = isChainWalk ? 25_000 : 15_000;
-  let lastErr = null;
-  let lastStatus = null;
-  let lastRetryAfter = null;
-  let sawUpstream429 = false;
-  for (const upstreamBase of upstreams) {
-    const { init, cleanup } = _buildUpstreamInit({ cacheTtl, timeoutMs });
-    let r = null;
-    try {
-      r = await fetch(`${upstreamBase}${path}${u.search}`, init);
-    } catch (e) {
-      lastErr = e;
-      _markUpstreamCooling(upstreamBase, 10_000, e?.name || 'network');
-      if (cleanup) cleanup();
-      continue;  // network / timeout → try next upstream
-    } finally {
-      if (cleanup) cleanup();
-    }
-    // Retryable upstream statuses: 429 (rate-limited) + 5xx (server error)
-    // get rotated through. Non-retryable 4xx (e.g., 400 "too many UTXOs",
-    // 404 "tx not found") pass through to the caller as the upstream's
-    // final answer — every Esplora provider returns the same 4xx for the
-    // same query, so retrying just wastes round-trips.
-    if (r.status === 429 || r.status >= 500) {
-      lastStatus = r.status;
-      if (r.status === 429) {
-        sawUpstream429 = true;
-        const ra = r.headers.get('retry-after');
-        if (ra) lastRetryAfter = ra;
-        _markUpstreamCooling(upstreamBase, _retryAfterMs(r.headers, 30_000), 'rate-limited');
-      } else {
-        _markUpstreamCooling(upstreamBase, 15_000, String(r.status));
-      }
-      // Drain the body so the connection releases.
-      try { await r.text(); } catch {}
-      continue;
-    }
+  const hedgeMs = Number.isFinite(parseInt(env.CHAIN_HEDGE_MS, 10)) ? parseInt(env.CHAIN_HEDGE_MS, 10) : 1500;
+  const res = await _hedgedUpstreamFetch(upstreams, `${path}${u.search}`, (signal) => _buildUpstreamInit({ cacheTtl, timeoutMs: 0, signal }), hedgeMs, timeoutMs);
+  const { sawRateLimit: sawUpstream429, retryAfter: lastRetryAfter, lastErr, lastStatus } = res;
+  if (res.r) {
     // Pass-through (2xx or non-retryable 4xx).
+    const r = res.r;
     const body = await r.text();
     const respHeaders = new Headers(cors);
     respHeaders.set('Content-Type', r.headers.get('Content-Type') || 'application/json');
@@ -24318,6 +24369,7 @@ export {
   BJJ_P_FR, BJJ_N, BJJ_ORDER,
   // LP_ADD + LP_REMOVE kernel sig helpers.
   ammLpAddKernelMsg, ammLpAddKernelKey, ammLpAddKernelVerify, ammPoolInitRefunds,
+  _upstreamHealth, _upstreamScore, _orderedUpstreams,
   ammLpRemoveKernelMsg, ammLpRemoveKernelKey, ammLpRemoveKernelVerify,
   ammLpBondKernelMsg, ammLpBondKernelVerify,
   ammCollectAssetInputs,

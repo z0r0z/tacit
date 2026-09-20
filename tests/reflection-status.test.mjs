@@ -1,6 +1,6 @@
 // GET /reflection/status: a small public summary so an integrator need not download the full snapshot.
 // Offline: node tests/reflection-status.test.mjs
-const record = JSON.stringify({ attestedHeight: 967810, tipHeight: 967836, snapshot: { foldedCrossoutCount: 2, consumedCount: 1, liveTriples: [[1], [2], [3]], noteLeaves: new Array(50).fill('0x0'), pendingDepositRecords: [] } });
+const record = JSON.stringify({ attestedHeight: 967810, tipHeight: 967836, snapshot: { foldedCrossoutCount: '2', consumedCount: 1, liveTriples: [[1], [2], [3]], noteLeaves: new Array(50).fill('0x0'), pendingDepositRecords: [] } });
 let reads = 0;
 const env = { REGISTRY_KV: { get: async (k) => { reads++; return k === 'reflection:scan:mainnet' ? record : null; }, put: async () => {}, delete: async () => {} } };
 const worker = await import('../worker/src/index.js');
