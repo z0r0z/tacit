@@ -13,7 +13,7 @@ const require = createRequire(new URL('../../worker-relay/package.json', import.
 const viem = await import(require.resolve('viem'));
 const { encodeFunctionResult, decodeFunctionData, parseTransaction, keccak256, recoverTransactionAddress, toHex } = viem;
 
-export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, nonceRaceFor = [], badProveQuoteFactor = 0 }) {
+export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, nonceRaceFor = [], badProveQuoteFactor = 0, badEthOutFactor = 0 }) {
   const sent = [];
   const raced = new Set(); // addresses that have already had their one injected 'nonce too low'
   const nonces = new Map();
@@ -59,10 +59,13 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
                   if (t === '0x0000000000000000000000000000000000000000') return 1840 / 1e18;
                   if (t === '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' || t === '0xdac17f958d2ee523a2206206994597c13d831ec7') return 1e-6;
                   if (t === lc(addr.prove)) return 0.25 / 1e18;
+                  if (t === '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0') return 1.2 * 1840 / 1e18; // wstETH ~ 1.2 stETH ~ 1.2 ETH
                   return 1e-18;
                 };
                 const inU = usdPerUnit(tokenIn), outU = usdPerUnit(tokenOut);
-                const skew = lc(tokenOut) === lc(addr.prove) && badProveQuoteFactor ? badProveQuoteFactor : 1; // simulate a broken aggregator
+                // simulate a broken aggregator: dust quotes into PROVE, or into ETH (the wstETH->ETH case seen in production)
+                const skew = (lc(tokenOut) === lc(addr.prove) && badProveQuoteFactor) ? badProveQuoteFactor
+                  : (lc(tokenOut) === '0x0000000000000000000000000000000000000000' && lc(tokenIn) === '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0' && badEthOutFactor) ? badEthOutFactor : 1;
                 const amountIn = exactOut ? BigInt(Math.ceil(Number(amount) * outU / inU)) + 1n : amount;
                 const amountOut = exactOut ? amount : BigInt(Math.floor(Number(amount) * inU / outU * skew));
                 const out = encodeFunctionResult({
@@ -75,6 +78,7 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
                 const owner = '0x' + data.slice(34, 74);
                 return ok(id, '0x' + BigInt(tokenBalances[lc(to)]?.[lc(owner)] ?? 0n).toString(16).padStart(64, '0'));
               }
+              if (sel === '0x035faf82') return ok(id, '0x' + (12n * 10n ** 17n).toString(16).padStart(64, '0')); // stEthPerToken() = 1.2e18
               if (sel === '0xdd62ed3e') return ok(id, '0x' + '0'.repeat(64)); // allowance -> 0, forces an approve
               if (sel === '0x313ce567') { // decimals: the stables are 6dp, everything else 18
                 const six = ['0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', '0xdac17f958d2ee523a2206206994597c13d831ec7'].includes(lc(to));

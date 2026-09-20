@@ -199,21 +199,32 @@ async function depositProveToVApp(wallet = relayWallet) {
   log(`vApp deposit ok: tx=${h}`);
 }
 
-// Dollar value of an ERC20 fee balance, for the dust floor and the quote sanity check. Stablecoins are exact
-// (balance / 10^decimals); anything else (wstETH) is valued through its own ETH quote and the live ETH
-// price. Returns null when it cannot be valued — the caller then holds rather than guessing.
+// Dollar value of an ERC20 fee balance, for the dust floor and the quote sanity check. It must NOT come from
+// the aggregator: the check exists to catch a bad aggregator quote, so valuing the asset with one would make the
+// guard fail whenever the thing it guards against does. (It did: 0.000284 wstETH, about $0.88, was valued at
+// $135,744 through a wstETH->ETH quote — a dust quote as broken as the USDT one that motivated the guard.)
+//
+//   stablecoins — exact: balance / 10^decimals
+//   wstETH      — exact on-chain: stEthPerToken() (stETH per wstETH, 1e18), and stETH is valued as ETH
+//   anything else — unknown, so the caller holds rather than guessing
 const STABLE_FEE_ASSETS = new Set([
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC
   '0xdac17f958d2ee523a2206206994597c13d831ec7', // USDT
 ]);
+const WSTETH = '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0';
+const WSTETH_ABI = [{ type: 'function', name: 'stEthPerToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 async function usdValueOf(asset, amount, ethUsd) {
   try {
-    if (STABLE_FEE_ASSETS.has(asset.toLowerCase())) {
+    const a = asset.toLowerCase();
+    if (STABLE_FEE_ASSETS.has(a)) {
       const dec = Number(await publicClient.readContract({ address: asset, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => 6));
       return Number(amount) / 10 ** dec;
     }
-    const q = await quote(asset, ETH, amount, relayWallet.account.address);
-    return (Number(q.amountOut) / 1e18) * ethUsd;
+    if (a === WSTETH) {
+      const rate = await publicClient.readContract({ address: asset, abi: WSTETH_ABI, functionName: 'stEthPerToken' });
+      return (Number(amount) / 1e18) * (Number(rate) / 1e18) * ethUsd;
+    }
+    return null;
   } catch { return null; }
 }
 

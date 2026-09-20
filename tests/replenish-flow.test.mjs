@@ -29,7 +29,7 @@ const settle = privateKeyToAccount(SETTLE_PK).address.toLowerCase();
 const A = {
   zQuoter: '0x000000a7dfdd39f4d74c7b201501ead119f8b86c', zRouter: '0x000000000000fb114709235f1ccbffb925f600e4',
   prove: '0x6bef15d938d4e72056ac92ea4bdd0d76b1c4ad29', vApp: '0x5ad5bc4b18f7c173dce17a57682cb0dc8788951f',
-  usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', usdt: '0xdac17f958d2ee523a2206206994597c13d831ec7', eth: '0x0000000000000000000000000000000000000000',
+  usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', usdt: '0xdac17f958d2ee523a2206206994597c13d831ec7', wsteth: '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0', eth: '0x0000000000000000000000000000000000000000',
 };
 const ETH = (n) => BigInt(Math.round(n * 1e18));
 const show = (x) => JSON.stringify(x, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
@@ -40,8 +40,8 @@ const abiSrc = chainSrc.slice(chainSrc.indexOf('export const ZQUOTER_ABI'), chai
   .replace('export const ZQUOTER_ABI =', 'return');
 const zQuoterAbi = new Function(abiSrc)();
 
-async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0, fn = 'replenishOnce', fnArgs = null }) {
-  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor });
+async function run({ splitKeys = true, opts = { roles: ['settle'] }, feeAssets, balances, tokenBalances, extraEnv = {}, nonceRaceFor = [], badProveQuoteFactor = 0, badEthOutFactor = 0, fn = 'replenishOnce', fnArgs = null }) {
+  const stub = await startStub({ balances, tokenBalances, zQuoterAbi, addr: A, nonceRaceFor, badProveQuoteFactor, badEthOutFactor });
   const script = `const r = await import('${join(ROOT, 'worker-relay/src/replenish.js')}'); await r.${fn}(${JSON.stringify(fnArgs ?? opts)});`;
   const env = {
     PATH: process.env.PATH, WORKER_BASE: 'http://x', BOX_TOKEN: 't', RELAY_KEY: RELAY_PK,
@@ -159,6 +159,28 @@ await test('a sane quote on the same balance IS converted (the guard is not just
     tokenBalances: { [A.usdc]: { [settle]: 1_000_000_000n }, [A.prove]: { [relay]: 0n } },
   });
   ok(swaps(sent).some((x) => !x.exactOut && x.recipient === relay), 'a plausible $1000 USDC balance was not converted to PROVE');
+});
+
+await test('wstETH is valued from its on-chain rate, not from an aggregator quote', async () => {
+  // Production, 2026-09-20: 0.000284 wstETH (~$0.88) was valued at $135,744 through a wstETH->ETH quote, and a
+  // perfectly good PROVE swap was refused. The valuation must not depend on the aggregator it is checking.
+  const { sent, log } = await run({
+    feeAssets: A.wsteth, badEthOutFactor: 100000, // the aggregator's wstETH->ETH quote is garbage, exactly as in production
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { [A.wsteth]: { [settle]: ETH(0.5) }, [A.prove]: { [relay]: 0n } }, // ~0.6 ETH ~ $1100
+  });
+  ok(!/REFUSING/.test(log), `a sane wstETH balance was refused: ${log.split('\n').filter((l) => /REFUSING/.test(l))[0]}`);
+  ok(swaps(sent).some((x) => !x.exactOut && x.recipient === relay), 'a wstETH balance worth ~$1100 must be converted to PROVE for the sink');
+});
+
+await test('an asset with no exact valuation is held, never guessed at', async () => {
+  const { sent, log } = await run({
+    feeAssets: '0x' + 'cd'.repeat(20),
+    balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
+    tokenBalances: { ['0x' + 'cd'.repeat(20)]: { [settle]: 10n ** 20n } },
+  });
+  ok(swaps(sent).length === 0, 'swapped an asset it cannot value');
+  ok(/cannot value/.test(log), 'the hold must be logged');
 });
 
 await test('a nonce race on the sink deposit is retried, not lost', async () => {
