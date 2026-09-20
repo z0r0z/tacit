@@ -93,6 +93,7 @@ import { passesFloor, feeAssetOf, floorInFeeUnits } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
+import { validateConsumedSource } from './consumed-source.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
 import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEPLOYMENTS } from '../../dapp/confidential-crossout-consumer.js';
@@ -1206,9 +1207,29 @@ async function handleReflectionConsumedSource(req, env, url, cors) {
     || !/^[0-9a-f]{64}$/i.test(String(srcTxid || '')) || !Number.isInteger(srcVout)) {
     return jsonResponse({ ok: false, error: 'need cx, cy (0x 32-byte hex), srcTxid (32-byte hex), srcVout (int)' }, 400, cors);
   }
+  // VALIDATE BEFORE STORING. This record is load-bearing for the whole lane's liveness, not just the
+  // spender's: buildModeBBatch resolves a consumed ν by FIRST MATCH and throws when it finds none, and the
+  // guest's fold_consumed is `.expect(...)` — a wrong source panics the proof instead of being skipped, and
+  // the entire consumed set must fold for the attest's freshness gate to pass. Storing an unchecked value
+  // would therefore let a single bad entry wedge every later Mode-B proof. Re-running fold_consumed's own
+  // checks against the reflected live set means only the genuine source for a ν can ever be recorded, which
+  // is what makes first-match resolution safe.
+  const scanRaw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
+  if (!scanRaw) return jsonResponse({ ok: false, error: 'no reflected state to validate against' }, 409, cors);
+  let liveTriples;
+  try { liveTriples = (JSON.parse(scanRaw).snapshot || {}).liveTriples; }
+  catch { return jsonResponse({ ok: false, error: 'corrupt reflected state' }, 500, cors); }
+  const verdict = validateConsumedSource(
+    { nu: '0x' + nu, cx, cy, srcTxid, srcVout },
+    liveTriples,
+    makeConfidentialPool({ secp, keccak256: keccak_256, sha256 }),
+    env.REFLECTION_CHAIN_BINDING || null,
+  );
+  if (!verdict.ok) return jsonResponse({ ok: false, error: `rejected: ${verdict.reason}` }, 400, cors);
+
   const key = `reflection:consumedsrc:${network}:${nu}`;
-  await env.REGISTRY_KV.put(key, JSON.stringify({ nu: '0x' + nu, cx, cy, srcTxid, srcVout }), { expirationTtl: 30 * 86400 });
-  return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  await env.REGISTRY_KV.put(key, JSON.stringify(verdict.record), { expirationTtl: 30 * 86400 });
+  return jsonResponse({ ok: true, stored: key, validated: true }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 // Debug-only: list every stored burn-deposit bundle's txid + which of its provenance records lack
 // blockHash/blockHeight (the field enrichBurnDeposit/blockWitness require, whose absence throws and
