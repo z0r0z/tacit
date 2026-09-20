@@ -31,10 +31,10 @@ down cheaply; and nothing published that routes a newcomer to the wrong contract
 ## Verdict
 
 **Green-lit for V1 launch.** The immutable surface is sound; everything outstanding is off-chain and
-operational: a deploy to land (**L-1**, already fixed in this tree), a multisig action (**L-2**), and two
-items that gate the *Bitcoin-lane* surface specifically — **L-4** (fast-lane consumed-source registration)
-and **L-5** (the wallet cannot see generation-bound notes). If the BTC→ETH on-ramp stays non-user-facing at
-launch, L-4 and L-5 are low-exposure; if it does not, they are prerequisites.
+operational: a deploy to land (**L-1**, already fixed in this tree) and two items that gate the *Bitcoin-lane*
+surface specifically — **L-4** (fast-lane consumed-source registration) and **L-5** (the wallet cannot see
+generation-bound notes). If the BTC→ETH on-ramp stays non-user-facing at launch, L-4 and L-5 are
+low-exposure; if it does not, they are prerequisites.
 
 The immutable surface needs no change and gets none. No double-spend, inflation, theft, or brick path was
 found; the cross-out brick vector that bit earlier generations was verified *closed in the gen5 guest*, by
@@ -46,7 +46,6 @@ Every launch item is outside the proof system:
 | | Finding | Severity | Status |
 |---|---|---|---|
 | **L-1** | Unauthenticated request-body DoS on the public API | High (availability) | **Fixed here**, needs an API redeploy |
-| **L-2** | Three of five live token-list entries point at the retired gen4 suite | Medium (misrouting) | Needs a multisig refresh |
 | **L-3** | Published manifests and integration guides carried retired-generation addresses | Medium (misrouting) | **Fixed here** |
 | **L-4** | Nothing registers a fast-lane consumed source, so the next fast-lane spend stalls reflection | Medium (liveness) | Needs a decision — see below |
 | **L-5** | The wallet scanner has no branch for `T_CXFER_BOUND` (0x39), so generation-bound Bitcoin notes are not discovered | Medium (recoverability) | Pre-existing, repo-tracked — not patched here |
@@ -68,10 +67,12 @@ Every handler-side limit is post-parse and therefore too late: `/pin` checks `fi
 `req.formData()` resolves, `/pin-json` checks `json.length` only after `req.json()` resolves, and
 `/confidential/submit` — unauthenticated by design — has no size check at all.
 
-The instance is 512 MB with an armed memory guard (`server/memory-guard.mjs`) that gracefully shuts down at
-90% pressure. So a single `curl` with a few hundred MB of body, to any POST route, recycles the process; a
-loop of them keeps the public API permanently down. No authentication, no cost to the attacker, no on-chain
-footprint.
+The service runs Render's `standard` plan with `NODE_OPTIONS=--max-old-space-size=1280` (read from the live
+env during this review), and `server/memory-guard.mjs` gracefully shuts the process down at 90% of whichever
+ceiling is nearer — normally that old-space cap. So one `curl` with a body approaching a gigabyte, to any POST
+route, recycles the process; a loop of them keeps the public API permanently down. No authentication, no cost
+to the attacker, no on-chain footprint. (An earlier draft of this section said 512 MB; the instance is larger
+than that, which raises the body size an attacker needs and changes nothing else.)
 
 This is availability only. User funds are never at risk: `settle` is permissionless, the relay holds no user
 keys, and anyone can self-settle without the API at all. But "any stranger can hold the public API down with
@@ -86,7 +87,8 @@ The streaming cap counts inside a `Transform` rather than a `data` listener on t
 flip the socket into flowing mode and lose the body before `Readable.toWeb` read it. On trip, the request is
 flagged, unpiped and drained rather than destroyed, so the client receives a clean `413` instead of a bare
 connection reset. `MAX_REQUEST_BYTES` tunes it; the 32 MiB default sits above every legitimate body (the
-largest handler-side cap in the tree is the 16 MB reflection snapshot).
+largest handler-side cap in the tree is the 16 MB reflection snapshot). `MAX_REQUEST_BYTES` is unset on the
+live service, so the default is what will apply.
 
 Verified end-to-end against the real `createTacitServer` path with a stub worker that swallows its own parse
 errors, exactly as `/confidential/submit` does:
@@ -102,29 +104,31 @@ errors, exactly as `/confidential/submit` does:
 
 **Action:** redeploy `tacit-api` before the endpoint is advertised. It does not auto-deploy from git.
 
-## L-2 — The public token list points at the retired generation (Medium, misrouting)
+## L-2 — WITHDRAWN (the token list is already current)
 
-**Not fixable from this tree — `TokenList.list()/listForeign()/setArt()` are `onlyOwner`.**
+**This finding was wrong and is retracted.** It asserted that three of the five live TokenList entries still
+pointed at the retired gen4 suite. They do not — the maintainer delisted and relisted them when gen5 went
+live on 2026-09-18, and I had taken the listing addresses from a 2026-09-11 working note instead of reading
+the chain.
 
-The five Tacit entries on the on-chain TokenList (`0x0000006013dF75A31678B786061C2B54bf531524`) were listed on
-2026-09-11 against gen4. Gen5 replaced gen4 on 2026-09-18, and **three of the five are now stale**:
+Verified properly on 2026-09-20 by reading all 43 `rankedIds()` entries off the registry
+(`0x0000006013dF75A31678B786061C2B54bf531524`) and decoding each `json(uint256)`:
 
-| entry | listed | current (gen5) |
+| card | listed value | |
 |---|---|---|
-| tacBTC (ERC-20) | `0x5Fc0376DA9f1dE8dd68b50648779C83b79f7C50F` | `0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696` |
-| tacUSD (ERC-20) | `0xA70f3853D56c1fC3F5b800E44907c7AD885Ab905` | `0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564` |
-| cUSD (shielded id) | `0x4e8455a5…3dacb` | `0x8f4490dd…8a9679d` |
-| cBTC (shielded id) | `0x62a20d98…cf0679c8` | unchanged — correct |
-| tETH | `0x3cba71e1…03126f34` | unchanged — correct |
+| tacBTC (ERC-20) | `0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696` | gen5 — current |
+| tacUSD (ERC-20) | `0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564` | gen5 — current |
+| cUSD (shielded id) | `0x8f4490dd…8a9679d` | gen5 — current |
+| cBTC (shielded id) | `0x62a20d98…cf0679c8` | generation-independent — current |
+| tETH | `0x3cba71e1…03126f34` | generation-independent — current |
 
-Canonical ERC20s are minter-bound, so each generation deploys its own; the cUSD id is
-`keccak("tacit-cdp-debt-v1" ‖ engine)` and moves with the engine. Nothing here is a protocol defect — the gen4
-contracts are real and their holders can still exit — but the token list is precisely the surface a newcomer
-discovers Tacit through, and today it hands them a generation that accepts no new value.
+The gen4 values (`0x5Fc0376D…`, `0xA70f3853…`, `0x4e8455a5…`) return no owner — they are delisted. **No
+action is required.**
 
-**Action:** re-point the three stale entries at the gen5 values (same art, same ranks) before launch. The
-recipe and calldata pattern are in `ops/DESIGN-tokenlist-listing-cbtc-cusd.md`, updated here to record which
-entries are stale and why.
+The methodological lesson is the one worth keeping: this review verified the pool's own state, the vkey
+chain and the relay endpoints against live systems, and then asserted a *third* on-chain fact from a working
+note. The registry is three keyless `eth_call`s (`rankedIds()` → `json(uint256)`); there was no reason not to
+read it.
 
 ## L-3 — Published addresses pointed at retired generations (Medium, misrouting)
 
@@ -395,9 +399,9 @@ full-suite runs make tests fail spuriously by starving each other.
   `checkConfidentialAuth`-gated. Every gate is constant-time. `/pin*` is per-IP per-day quota'd and
   size-bounded. The unauthenticated `/confidential/submit` is metered whenever the fee floor is not enforced
   (the 09-19 hardening) and the queue is bounded at 512.
-- **`checkConfidentialAuth` accepts `DEBUG_TOKEN` as a fallback** for `CONFIDENTIAL_BOX_TOKEN`. That conflates
-  two roles with different blast radii. Not a defect, but worth setting both explicitly in the production
-  environment so the fallback never engages.
+- **`checkConfidentialAuth` accepts `DEBUG_TOKEN` as a fallback** for `CONFIDENTIAL_BOX_TOKEN`, which would
+  conflate two roles with different blast radii. Checked on the live service: `CONFIDENTIAL_BOX_TOKEN` is
+  set, so the fallback never engages. No action.
 - **Randomness.** All four `randomScalar`/`rand32Hex` implementations across the dapp are CSPRNG-backed and
   fail closed without one. `amm-farm-actions.js` reduces mod *n* instead of rejection-sampling — a bias of
   order 2⁻¹²⁷, cryptographically irrelevant. Every `Math.random` in the tree is a UI id, an analytics sample,
@@ -447,14 +451,19 @@ Recorded so they are not re-derived. These are *this* round's; the 09-19 review'
 
 ## Launch checklist
 
-1. **Redeploy `tacit-api`** from a commit containing `868fd143` (L-1). It does not auto-deploy from git.
-2. **Refresh the three stale token-list entries** via the owner multisig (L-2).
-3. Set `CONFIDENTIAL_BOX_TOKEN` and `DEBUG_TOKEN` to distinct values in the production environment.
-4. Confirm `RELAY_FEE_FLOOR` in the `tacit-api` environment — carried over from the 09-19 review, still
-   unread from here.
-5. Decide on `OP_SWAP_BLIND` (D-1): wire it after a real end-to-end prover run, or launch on `OP_SWAP` and
-   state the relay-visibility property plainly in user-facing material.
-6. Wire fast-lane consumed-source registration (L-4), or gate `fastlaneExit` behind an operator step until
+1. **Redeploy `tacit-api`** from a commit containing `868fd143` (L-1). `tacit-api` autodeploys from `main`
+   but only on changes inside its `server` rootDir — which this fix is, so a push to `main` triggers it.
+2. Wire fast-lane consumed-source registration (L-4), or gate `fastlaneExit` behind an operator step until
    it is wired.
-7. Add the `T_CXFER_BOUND` scan branch, or allowlist it with a reason (L-5) — required before the BTC→ETH
+3. Add the `T_CXFER_BOUND` scan branch, or allowlist it with a reason (L-5) — required before the BTC→ETH
    on-ramp is made user-facing.
+4. ~~Set `CONFIDENTIAL_BOX_TOKEN` and `DEBUG_TOKEN` to distinct values.~~ **Resolved** — both are set on
+   `tacit-api`, so `checkConfidentialAuth`'s `CONFIDENTIAL_BOX_TOKEN || DEBUG_TOKEN` fallback never engages.
+5. ~~Confirm `RELAY_FEE_FLOOR`.~~ **Resolved** — it is UNSET on `tacit-api`, which is the correct posture:
+   the relayed-submit metering is therefore active, and setting the flag to `"1"` would lift that metering
+   for *every* asset while the gate only prices a cETH fee leg, re-opening zero-fee floods for non-cETH
+   assets. Leave it unset until the metering is decoupled from the flag.
+6. Decide on `OP_SWAP_BLIND` (D-1): wire it after a real end-to-end prover run, or launch on `OP_SWAP` and
+   state the relay-visibility property plainly in user-facing material.
+
+The token list needs nothing — see L-2 above, which is withdrawn.
