@@ -198,6 +198,38 @@ Two ways out, both small:
 I did not pick one: moving an auth boundary on the live public API at launch is a decision, not a cleanup.
 Until it is wired, treat a fast-lane spend as an operator-assisted action.
 
+## L-4 addendum — the backfill is a one-note problem, and that note looks unspendable
+
+**Measured 2026-09-20, after the derivation landed.** The maintainer authorised a rescan to backfill
+`coords`; measuring the live set first showed there is nothing worth rescanning.
+
+Of **3,803** live notes, **3,802 carry a zero auth key**. `output_p2tr_xonly` returns zero for a non-P2TR
+output, so those notes sit at P2WPKH — and a zero auth key means no BIP-340 signature can verify, so
+`verify_btc_input_auths` can never pass. **None of them is fast-lane spendable.** Backfilling their coords
+would enable nothing. Exactly **one** note is fast-lane eligible (`bound = 1` and a non-zero auth key), and
+its coords entry is absent entirely.
+
+That one note does not look spendable either. Its auth key `0x9fc0fdc27d…` is a P2TR x-only key, so it
+should sit at `bc1pnlq0msnar095g8x67zylygvn3t68zv3nvgwzefnnqfpazauw263qeyhcs5` — an address Blockstream
+reports as **never funded** (`tx_count` 0, all `chain_stats` zero). The bech32m encoder used to derive it was
+validated against the BIP-350 test vector first, so the address is right. The likely explanation is that it
+is the 250k TAC recovery note folded into the gen5 genesis through the resume digest, so it never had a
+normal Bitcoin fold — put to the reflection-ops session to confirm rather than asserted here.
+
+Consequences:
+
+- **No backfill is worth running**, and the rescan was not run. The cost of finding this out was one
+  measurement; the cost of not making it would have been a multi-hour block rescan on rented hardware to
+  populate 3,802 entries that unlock nothing.
+- **The fast lane has no reachable user today**, which is why L-4 never bit in production despite being
+  real. It remains real for the first genuinely bound, P2TR-homed note that someone tries to spend.
+- The consumed-source write path stays as the fallback. That is now a posture question only: since
+  validation landed it cannot be poisoned, and nothing depends on it at present.
+
+A general lesson worth keeping: L-4, L-5 and this addendum were all found by asking what the live data
+actually contains rather than what the code path implies. The code path said 3,805 entries needed
+backfilling; the data said one, and that one is inert.
+
 ## L-5 — The wallet scanner does not recognize generation-bound Bitcoin notes (Medium, recoverability)
 
 **Pre-existing and already tracked by the repo's own guard test; not patched here.**
