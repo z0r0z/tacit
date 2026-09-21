@@ -86,7 +86,7 @@ block of its deployment config. Integrator guide: [`FARMS.md`](./FARMS.md).
 | Pool 1, cETH / cUSD (weight 30) | LP-share id `0xd608b0c3…45262571`, pool id `0x5925c0c2…4e909da7` |
 | Pool 2, cETH / cBTC (weight 20) | LP-share id `0x0a0cce17…48b68254`, pool id `0x8359cd1f…bf5cd331` |
 | Epoch 1 | 99,700 TAC over 90 days from 2026-09-21; stream end (unix) `1797712559` |
-| Governor | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` once it calls `acceptGov`; the deployer until then |
+| Governor | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` (accepted from the deployer in `0x6074f810491dff24cf130490ac55f9994c953cf1dab852f180003b7646735f39`) |
 
 Weights are governed on-chain and can change (timelocked, bounded), so read `poolInfo(pid)` for the live values.
 Full ids are in [`FARMS.md`](./FARMS.md).

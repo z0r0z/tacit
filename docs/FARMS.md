@@ -283,7 +283,7 @@ your own tooling.
 | treasury solvency | `farmTreasury(manager) < outstandingReward() + rate × remaining` | **critical**: the treasury no longer backs what the program owes. The manager only starts a schedule it can back, so this should never fire; if it does, stop showing yields and investigate |
 | days to finish | `(periodFinish − now) < 14 days` | warn: top up (section 9) before the stream ends |
 | idle pool | `poolInfo(pid).totalShares == 0` while the stream is running | warn: that pool's slice is not being earned; show the card as idle |
-| governance handover | `pendingGov() != 0` | warn: a governor change is proposed and not accepted yet. Expected at launch: the multisig is proposed and completes the handover with `acceptGov`; treat it as an alarm only if it stays pending unexpectedly |
+| governance handover | `pendingGov() != 0` | warn: a governor change is proposed and not accepted yet; the new governor completes it with `acceptGov`, so treat it as an alarm only if it stays pending unexpectedly |
 | queued config | a `ConfigQueued` event with no matching execution | info: a re-weight or a new pool is pending, with a 7-day delay |
 | relay health | `GET /health`, and the relay wallet's gas runway | warn: bonds, harvests and unbonds stop settling if the relay does |
 | reflection lag | `GET /reflection/status` `attestedHeight` vs the header relay tip | warn: farm ops do not depend on it, but the TAC redeem-to-Bitcoin path does |
@@ -293,8 +293,9 @@ Two readings that look alarming and are not: the treasury is larger than the sch
 
 ## 9. Governance and what it cannot do
 
-The manager has one governor, the **operator**: the deployer until the ops multisig `0x006C…49F2` calls
-`acceptGov`, the multisig afterwards. At launch `gov()` reads the deployer and `pendingGov()` reads the multisig; the handover completes when the multisig calls `acceptGov`. The bounds below are enforced by the contract, not by policy.
+The manager has one governor, the **operator**: the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2`, which accepted the role from the deployer in
+[`0x6074f810…5f39`](https://etherscan.io/tx/0x6074f810491dff24cf130490ac55f9994c953cf1dab852f180003b7646735f39)
+(`gov()` is the multisig and `pendingGov()` is empty). The bounds below are enforced by the contract, not by policy.
 
 | the governor can | but only |
 |---|---|
