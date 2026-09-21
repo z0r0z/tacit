@@ -1,0 +1,14 @@
+{
+  "root": "0x0e26934989bdb2ca8f5411f6a24a532ef7cadb3e82bfc9968453c3fa4fd275b6",
+  "count": 1,
+  "totalWei": "21012829350000000000",
+  "unitScale": "10000000000",
+  "claims": {
+    "0xeb2c8c410052cc53a435d20bc3c513d9e7ff9c8d": {
+      "index": 0,
+      "address": "0xEb2C8C410052Cc53A435D20BC3C513D9e7ff9c8d",
+      "amount": "21012829350000000000",
+      "proof": []
+    }
+  }
+}
