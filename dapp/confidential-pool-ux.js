@@ -746,6 +746,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const base = BigInt(await rpc('eth_gasPrice', []) || '0x3b9aca00');
     const tx = { chainId: BigInt(cfg.chainId), nonce: n, maxPriorityFeePerGas: tip, maxFeePerGas: base * 2n + tip,
       gasLimit: BigInt(gasLimit), to, value: BigInt(value), data };
+    if (send) {
+      // The node holds gasLimit x maxFeePerGas plus the value up front; a public node can accept a tx it will then drop
+      // for a shortfall, which looks like a hash that never lands. Say so before signing.
+      const need = tx.gasLimit * tx.maxFeePerGas + tx.value;
+      const have = BigInt(await rpc('eth_getBalance', [acct.address, 'latest']));
+      if (have < need) throw new Error(`insufficient ETH for gas: ${acct.address} holds ${have} wei and this transaction reserves ${need} wei up front (gas limit x max fee + value)`);
+    }
     const signed = evmTx.signEip1559(tx, acct.priv);
     const txHash = send ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
     return { txHash, nonce: n, signedRaw: signed.raw };
@@ -2085,7 +2092,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // in this module.
   async function scanStealthLocks({ walletPriv, opts } = {}) {
     const set = await scanLockSet(opts);
-    return { mine: _openReceivedLocks(walletPriv, set), lockSetRoot: set.lockSetRoot };
+    return { mine: await _flagSpentLocks(_openReceivedLocks(walletPriv, set)), lockSetRoot: set.lockSetRoot };
   }
   function _openReceivedLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
     const recipientSpendPrivHex = _bytesHex(identity(walletPriv).priv);
@@ -2101,6 +2108,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       } catch { /* a lock whose memo cannot be processed is skipped; the rest of the scan continues */ }
     }
     return mine;
+  }
+
+  // Marks each lock with the pool's lock-nullifier flag: true once a claim or refund landed, null when the read fails.
+  // The lock set is append-only, so a claimed lock stays in it; callers list only the ones that are not spent.
+  async function _flagSpentLocks(locks) {
+    const out = [];
+    for (const l of locks) {
+      let spent = null;
+      try { spent = await _mappingFlag(LOCK_SPENT_SLOT, pool.nullifier(l.leaf)); } catch { spent = null; }
+      out.push({ ...l, spent });
+    }
+    return out;
   }
 
   // The locks this wallet SENT, from the sender tail every stealthSend appends to the lock memo (sealed to the sender's own
@@ -2920,7 +2939,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       try {
         const set = await scanLockSet({ events: evs, ...(head != null ? { toBlock: head } : {}) });
         d.locks = { attempted: true, lockLeaves: set.lockLeaves.length, verifiedAgainstPool: set.verified, locksWithoutMemo: set.lockMemos.filter((m) => !m).length };
-        receivedLocks = _openReceivedLocks(walletPriv, set);
+        receivedLocks = await _flagSpentLocks(_openReceivedLocks(walletPriv, set));
         sentLocks = await _openSentLocks(walletPriv, set);
         d.locks.sent = sentLocks.length; d.locks.received = receivedLocks.length;
         d.locks.unspentSent = sentLocks.filter((l) => l.spent === false).length;

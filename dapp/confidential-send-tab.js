@@ -547,7 +547,9 @@ function wireClaimAndRefund(wallet, ux, helpers) {
     if (claimStatus) claimStatus.textContent = 'Scanning the lock set for payments addressed to you…';
     if (claimList) claimList.innerHTML = '';
     try {
-      const { mine, lockSetRoot } = await ux.scanStealthLocks({ walletPriv: wallet.priv });
+      const scanned = await ux.scanStealthLocks({ walletPriv: wallet.priv });
+      const lockSetRoot = scanned.lockSetRoot;
+      const mine = scanned.mine.filter((l) => l.spent !== true);   // a claimed lock stays in the append-only set
       if (!mine.length) {
         if (claimStatus) claimStatus.textContent = 'No unclaimed payments found right now.';
       } else {

@@ -104,7 +104,7 @@ const r = await tacit.recover({ walletPriv });
 // r.farmPositions    live farm positions, ready for farmHarvest / farmUnbond
 // r.cdpPositions     CDP position descriptors, ready for closeCdp
 // r.sentLocks        stealth locks the wallet sent: fields + refundPriv + lPath + spent (true / false / null)
-// r.receivedLocks    stealth locks the wallet can claim
+// r.receivedLocks    stealth locks the wallet can claim, each with spent (true once claimed or refunded, null if unreadable)
 // r.diagnostics      what was scanned and what could not be resolved
 ```
 
