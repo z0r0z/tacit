@@ -32,3 +32,6 @@ through the protocol's atomic asset-vs-BTC settlement primitives
 See [`WHITEPAPER.md`](../WHITEPAPER.md) §13 for TAC's role in the
 protocol; see [`SPEC.md`](../SPEC.md) §5.12–5.13 for the on-chain
 snapshot-eligibility primitive.
+
+The distribution for the Ethereum-side confidential pool and the formal v1 launch is separate from this one; its inputs and method are in
+[`v1/README.md`](./v1/README.md).

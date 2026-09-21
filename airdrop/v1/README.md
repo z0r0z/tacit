@@ -1,5 +1,8 @@
 # TAC airdrop: inputs, method and how to check the root
 
+This is the Ethereum-side distribution for the confidential pool and the formal v1 launch. It is separate from the earlier Bitcoin-side
+airdrop described in [`../README.md`](../README.md), and is not a continuation of it.
+
 A one-time distribution of 999,999 TAC (the public ERC20) to holders of seven tokens, through
 [`TacAirdrop`](../contracts/src/TacAirdrop.sol). The contract, its roles and the claim paths are described in
 [`docs/AIRDROP.md`](../docs/AIRDROP.md). This folder holds the inputs that produce the merkle root, so anyone can rebuild it.

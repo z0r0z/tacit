@@ -1,6 +1,7 @@
 # TAC airdrop
 
-A one-shot merkle distributor for the public TAC ERC20. One funded pool of TAC, one merkle root, one claim per
+The Ethereum-side distribution for the confidential pool and the formal v1 launch, separate from the earlier Bitcoin-side airdrop
+(see [`airdrop/README.md`](../airdrop/README.md)). A one-shot merkle distributor for the public TAC ERC20. One funded pool of TAC, one merkle root, one claim per
 recipient. A recipient can take the TAC as a normal ERC20, send it to another address, or shield it into the
 confidential pool in the same transaction.
 
