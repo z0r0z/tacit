@@ -1,8 +1,10 @@
 # Runbook — ETH→BTC cross-out rehearsal (gen5)
 
-One small TAC crossing from the Ethereum pool to a Bitcoin note, watched end to end. It exercises the only
-segment of the two-way TAC bridge that has not yet run on this generation: recording a cross-out, folding it
-through Mode-B, minting the Bitcoin note, and spending it on Bitcoin.
+One small TAC crossing from the Ethereum pool to a Bitcoin note, watched end to end: recording a cross-out,
+folding it through Mode-B, minting the Bitcoin note, and spending it on Bitcoin. The full TAC round trip has
+since run on gen5 (its first cross-out is
+[`0xc7bfc7ce…a8f`](https://etherscan.io/tx/0xc7bfc7cec938e59c5d256d1c44c2aea5269eb7c237ac018878f21b2a93c29a8f)),
+so this runbook is now the checklist for repeating a crossing, and its gates still apply.
 
 **Run `tools/crossout-rehearsal-preflight.mjs` first and again immediately before step 3. Do not proceed on a NO-GO.**
 
