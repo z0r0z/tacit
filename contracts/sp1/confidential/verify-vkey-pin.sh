@@ -49,7 +49,10 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   # Shared by BOTH binaries (cxfer-core plus the modules main.rs and reflect.rs both declare).
   SHARED_SRC="cxfer-core/src src/babyjubjub.rs src/groth16.rs src/swap_batch.rs src/batch_vk.bin"
   ELF_ONLY_SRC="src/main.rs src/swap_blind.rs"          # settle guest only
-  RELF_ONLY_SRC="src/reflect.rs ../eth-reflection/src"  # reflection prover only
+  # The reflection prover does not compile eth-reflection: it embeds only that guest's vkey digest
+  # (ETH_REFLECTION_VKEY in reflect.rs), and the eth guest ELF has its own sha256 pin below. So only reflect.rs
+  # belongs to the reflection prover's own source set.
+  RELF_ONLY_SRC="src/reflect.rs"                        # reflection prover only
 
   # Coverage guard: every file under src/ must be claimed by exactly one list above.
   for f in src/*; do
