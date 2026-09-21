@@ -51,18 +51,23 @@ Fingerprints of the toolchain files used (SHA-256): `cargo-prove` `c6cc580744877
 `succinct` `bin/rustc` `2e952f92635ee0388b5eac9b06f2fec7b23a620b0a7dbcceab576caeb89cb160`;
 `succinct` `lib/librustc_driver-6d6de6fbd9068a63.so` `db572b411a9458e154fcc59bd900a0280fa0b4b1b8659945efc54cec126b5136`.
 
-How to obtain it:
+How to obtain it (each step below was run from an empty machine state on 2026-09-21):
 
-1. Install the SP1 tooling (`sp1up`), which provides `cargo-prove`, and run `cargo prove install-toolchain` to
-   fetch the `succinct` Rust toolchain. Confirm `cargo prove --version` prints the string above.
-2. The `succinct` toolchain must be the `1.94.0-dev` build (`rustc +succinct -V`). A newer `sp1up` release can
-   install a later `succinct` toolchain (for example `1.96.0-dev`); that one will not reproduce these bytes. Keep
-   both installed if needed and point rustup's `succinct` name at the `1.94.0-dev` directory:
-   `rustup toolchain link succinct <path to the 1.94.0-dev toolchain>`.
-3. The `succinct` toolchain ships `rustc` only. `cargo` comes from a rustup stable toolchain on `PATH`; the
-   builds above used stable 1.98.1.
-4. The archive hash of the `1.94.0-dev` toolchain download was not retained. The file fingerprints above are the
-   available check that you have the same compiler.
+1. Install rustup with the host toolchain the builds used:
+   `curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1 --no-modify-path`.
+   The `succinct` toolchain ships `rustc` only; `cargo` comes from this stable toolchain.
+2. Install the pinned SP1 tooling and its Rust toolchain in one step. Do not run a bare `sp1up`, which installs the
+   newest release and a newer `succinct` toolchain (for example `1.96.0-dev`) that will not reproduce these bytes:
+   ```
+   curl -sSfL https://sp1up.succinct.xyz | bash
+   sp1up --version v6.2.3
+   ```
+   `v6.2.3` installs exactly `cargo-prove sp1 (4809e79 2026-06-01T14:24:14.406056341Z)` and, with it, the
+   `1.94.0-dev` toolchain, which it links into rustup as `succinct` (rustup must already be installed).
+   `cargo prove --version` and `rustc +succinct -V` must print the strings above.
+3. Check the toolchain archive. `~/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz` has SHA-256
+   `12c94435d41bfe4e20131bbcce40b35abd32270ad792befc653af4e3fabc192f`; it was identical in two downloads ten days
+   apart, and its `bin/rustc` and `lib/librustc_driver-*.so` are the fingerprinted files above.
 
 ## Build paths matter
 
@@ -81,9 +86,18 @@ Two inputs are embedded in the ELF bytes and are part of the recipe:
   the simplest rule.
 
 `/workspace` is normally not something you want to create on a development machine, so build inside a container or
-chroot in which `/workspace/tacit` and `/workspace/.cargo` exist. A private mount namespace (`unshare -m`) works
-where permitted. The 2026-09-21 rebuild used a chroot on a host where `unshare` was denied; a container that mounts
-your checkout at `/workspace/tacit` is equivalent.
+chroot in which `/workspace/tacit` and `/workspace/.cargo` exist. Any of these works:
+
+- **Container.** Mount a copy of the tree so `/workspace/tacit` exists, install the toolchain (steps 1 and 2 above)
+  inside it and run the script. Not run for this page; nothing in the script is specific to a chroot.
+- **Private mount namespace** (`unshare -m`), where permitted.
+- **Bare chroot without `/proc`** (the verified path, on a host where `unshare` and `mount` were denied). Copy the host
+  userland (`/usr`, `/etc`, an empty `/dev/null` file, empty `/root`, `/tmp`, `/workspace`) into a new directory, then
+  run rustup-init and sp1up from outside with `HOME=<root>/root RUSTUP_HOME=<root>/workspace/.rustup
+  CARGO_HOME=<root>/workspace/.cargo` (both installers refuse to run in a chroot with no `/proc`), and `chroot <root>`
+  to run the script. Without `/proc` the rustup proxies, rustc's sysroot lookup and the rust-lld wrapper cannot find
+  themselves; `build-in-chroot.sh` detects this and creates the direct toolchain shims, host-linker shim and
+  `LD_LIBRARY_PATH` it needs, and repoints the `succinct` toolchain link at the chroot's own `~/.sp1`.
 
 Rules for the tree you build from:
 
@@ -91,7 +105,8 @@ Rules for the tree you build from:
   commit: the `eth-reflection` manifest at later commits differs (it vendors a dependency), and only the manifest
   and lock file at `4a425f1d` reproduce the pinned eth ELF.
 - Always pass `--locked`. The build must not modify `Cargo.lock`.
-- Network access is needed on a fresh Cargo home (git dependencies and crates.io).
+- Network access is needed on a fresh Cargo home (git dependencies and crates.io). A completely empty Cargo home was
+  verified to resolve the locked revisions to the pinned bytes; the fetch is about 220 MB.
 
 ## The eth-reflection comment line
 
@@ -110,11 +125,18 @@ Without it the build is functionally identical but hashes differently.
 
 ## Rebuild
 
+Get the sources first. The repository is public and both pinned commits are reachable from `main`:
+
+```
+git clone https://github.com/z0r0z/tacit.git
+```
+
 [`build-in-chroot.sh`](../contracts/sp1/reproducible/build-in-chroot.sh) automates the steps below inside a
-container or chroot that already has the toolchain and the `/workspace` layout. For each ELF it wipes
-`/workspace/tacit/contracts/sp1`, extracts the pinned commit with `git archive`, applies the patch (eth only), runs
-the build with the right Cargo home, then prints the sha256 and the output of `cargo prove vkey --elf` next to the
-pinned values.
+container or chroot that already has the toolchain (see [Toolchain](#toolchain)). It creates `/workspace/tacit`
+itself. For each ELF it wipes `/workspace/tacit/contracts/sp1`, extracts the pinned commit from the clone with
+`git archive`, applies the patch (eth only), runs the build with the right Cargo home, then prints the sha256 and the
+output of `cargo prove vkey --elf` next to the pinned values. With `RPC_URL` set it also runs the on-chain check in
+step 5 of the checklist (through `cast` if installed, otherwise `curl`).
 
 ```
 REPO=/path/to/tacit-clone RPC_URL=https://ethereum-rpc.publicnode.com \
@@ -122,7 +144,8 @@ REPO=/path/to/tacit-clone RPC_URL=https://ethereum-rpc.publicnode.com \
   bash contracts/sp1/reproducible/build-in-chroot.sh settle     # or one of: settle reflection eth_reflection
 ```
 
-The output ELFs are copied to `./repro-out/<name>.elf`. The script exits non-zero if any hash or vkey differs.
+The output ELFs are copied to `./repro-out/<name>.elf`. The script exits non-zero if any hash or vkey differs. All
+three ELFs build in about 4 minutes on 16 cores from an empty Cargo home.
 
 ## Verification checklist
 
@@ -162,14 +185,15 @@ On 2026-09-21, on the build host described under [Toolchain](#toolchain):
 - The eth ELF was reproduced only with the comment-line patch and only at `/workspace/tacit`; without the patch or
   at another path the result differed.
 
+The same day the whole recipe was run again as a newcomer would: a new bare chroot (no `/proc`), rustup 1.98.1 and
+`sp1up --version v6.2.3` installed into it, a fresh `git clone` of the public repository, empty Cargo homes fetched
+online, then `bash contracts/sp1/reproducible/build-in-chroot.sh` with no arguments. All three ELFs and vkeys matched
+and the on-chain occurrence check printed 1 for both keys.
+
 Not verified:
 
 - A Docker build (`cargo prove build --docker`) was not run; it uses SP1's own container and toolchain and is
-  not the recipe here.
-- The rebuilds ran with dependency sources already present in the Cargo home (offline). A fresh fetch resolving to
-  the same locked revisions is expected but was not exercised.
-- `build-in-chroot.sh` is a generalization of the commands used on the build host and was checked for syntax and
-  its metadata parsing, not run end to end. The build host's chroot also overrode the host linker used for build
-  scripts with a small wrapper (not retained); if a host-side build script fails to link in your environment,
-  point `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` at your `gcc`.
-- No independent second machine has reproduced these hashes yet.
+  not the recipe here. A general-purpose container with the toolchain installed, in place of the bare chroot, was not
+  run either (it needs no shims).
+- Both runs used the same physical host. A machine with a different CPU, glibc or gcc should not matter (the guest is
+  compiled by the `succinct` toolchain for RISC-V, and host tools only run build scripts) but has not been tried.

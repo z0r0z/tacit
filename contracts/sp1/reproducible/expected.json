@@ -44,6 +44,8 @@
     "succinct_rustc": "rustc 1.94.0-dev (LLVM 21.1.8, commit-hash unknown), toolchain id q71d9lZtRI",
     "succinct_rustc_sha256": "2e952f92635ee0388b5eac9b06f2fec7b23a620b0a7dbcceab576caeb89cb160",
     "succinct_librustc_driver_sha256": "db572b411a9458e154fcc59bd900a0280fa0b4b1b8659945efc54cec126b5136",
+    "succinct_archive_sha256": "12c94435d41bfe4e20131bbcce40b35abd32270ad792befc653af4e3fabc192f",
+    "install": "rustup default 1.98.1 (--profile minimal), then: curl -sSfL https://sp1up.succinct.xyz | bash; sp1up --version v6.2.3",
     "host_cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05), from rustc 1.98.1 (48a229cea 2026-09-01) stable",
     "sp1_zkvm_locked": {
       "contracts/sp1/confidential": "6.2.3",

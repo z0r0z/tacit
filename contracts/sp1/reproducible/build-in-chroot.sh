@@ -27,9 +27,10 @@
 #   SP1_BIN     directory holding cargo-prove                        [$HOME/.sp1/bin]
 #   CARGO_BIN   directory holding the rustup cargo/rustc proxies     [/workspace/.cargo/bin]
 #   RUSTUP_HOME rustup home whose `succinct` toolchain is rustc 1.94.0-dev [/workspace/.rustup]
-#   RPC_URL     optional Ethereum RPC; if set (and `cast` exists) the pool bytecode is checked for the vkeys
+#   RPC_URL     optional Ethereum RPC; if set, the pool bytecode is checked for the vkeys (via `cast`, else curl)
 #
-# Network access is required the first time: the locked git/registry dependencies are fetched into CARGO_HOME.
+# Network access is required the first time: the locked git/registry dependencies are fetched into CARGO_HOME (a fresh,
+# empty CARGO_HOME was verified to reproduce the pinned bytes). No /proc (bare chroot): see the shim section below.
 # Exit status is 0 only if every requested ELF matches both its sha256 and its vkey.
 
 set -euo pipefail
@@ -52,6 +53,54 @@ case "$TREE" in
        || { echo "refusing TREE=$TREE: the eth-reflection ELF embeds /workspace/tacit (set ALLOW_OTHER_TREE=1 to override)"; exit 2; } ;;
 esac
 [ -n "$TREE" ] && [ "$TREE" != "/" ] || { echo "bad TREE"; exit 2; }
+
+# --- bare chroot without /proc -------------------------------------------------------------------------------------
+# rustup's cargo/rustc proxies, rustc's own sysroot lookup and the rust-lld linker wrapper all locate themselves through
+# /proc/self/exe. In a container (Docker) or a chroot with procfs mounted nothing below applies. In a bare chroot (no
+# /proc, and often no way to mount it) the script therefore builds a small shim directory: cargo/rustc shims that run the
+# toolchain binaries directly (honouring `+toolchain`), a host-linker shim that drops -fuse-ld=lld (only build scripts
+# and proc-macros are linked with it; the guest ELF is linked by the succinct toolchain and is unaffected), and an
+# LD_LIBRARY_PATH for every rustc (their $ORIGIN rpath cannot be resolved either).
+if [ ! -e /proc/self/exe ]; then
+  echo "note: /proc is not mounted; using direct toolchain shims instead of the rustup proxies"
+  TCDIR="$RUSTUP_HOME/toolchains"
+  if [ ! -e "$TCDIR/succinct/bin/rustc" ]; then   # `rustup toolchain link` may have recorded a path from outside the chroot
+    cands=("$(dirname "$SP1_BIN")"/toolchains/*/)
+    [ ${#cands[@]} -eq 1 ] && [ -x "${cands[0]}bin/rustc" ] && ln -sfn "${cands[0]%/}" "$TCDIR/succinct"
+  fi
+  [ -e "$TCDIR/succinct/bin/rustc" ] || { echo "no succinct toolchain under $TCDIR/succinct or $(dirname "$SP1_BIN")/toolchains"; exit 2; }
+  HOST_TC=$(sed -n 's/^default_toolchain *= *"\(.*\)"/\1/p' "$RUSTUP_HOME/settings.toml" 2>/dev/null | head -1)
+  if [ -z "$HOST_TC" ]; then
+    for d in "$TCDIR"/*/; do [ "$(basename "$d")" = succinct ] || { HOST_TC=$(basename "$d"); break; }; done
+  fi
+  [ -x "$TCDIR/$HOST_TC/bin/cargo" ] || { echo "no host cargo under $TCDIR/$HOST_TC (install a stable toolchain with rustup)"; exit 2; }
+  export TACIT_HOST_TC="$HOST_TC"
+  SHIMS="${TMPDIR:-/tmp}/tacit-repro-shims"; rm -rf "$SHIMS"; mkdir -p "$SHIMS"
+  cat > "$SHIMS/tool" <<'SHIM'
+#!/bin/sh
+name=$(basename "$0"); tc=${RUSTUP_TOOLCHAIN:-$TACIT_HOST_TC}
+case "${1:-}" in +*) tc=${1#+}; shift ;; esac
+d="$RUSTUP_HOME/toolchains"
+[ -x "$d/$tc/bin/$name" ] || tc=$TACIT_HOST_TC
+LD_LIBRARY_PATH="$d/$tc/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; export LD_LIBRARY_PATH
+exec "$d/$tc/bin/$name" "$@"
+SHIM
+  cat > "$SHIMS/hostcc" <<'SHIM'
+#!/bin/sh
+n=$#; i=0
+while [ $i -lt $n ]; do
+  a=$1; shift
+  case "$a" in -fuse-ld=lld|-B*/gcc-ld) ;; *) set -- "$@" "$a" ;; esac
+  i=$((i + 1))
+done
+exec cc "$@"
+SHIM
+  chmod +x "$SHIMS/tool" "$SHIMS/hostcc"
+  ln -s tool "$SHIMS/cargo"; ln -s tool "$SHIMS/rustc"
+  export PATH="$SHIMS:$PATH"
+  export LD_LIBRARY_PATH="$(readlink -f "$TCDIR/succinct")/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$SHIMS/hostcc"
+fi
 
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
@@ -131,15 +180,28 @@ for t in "${WANT[@]}"; do
 done
 
 # --- optional on-chain cross-check: the settle and relay vkeys are PUSH32 immutables in the pool runtime code ---
-if [ -n "${RPC_URL:-}" ] && command -v cast >/dev/null 2>&1; then
+# Uses `cast` when installed, otherwise a plain eth_getCode JSON-RPC call through curl.
+if [ -n "${RPC_URL:-}" ]; then
   POOL=$(awk -F'"' '/"pool":/ {print $4}' "$EXPECTED")
-  code=$(cast code "$POOL" --rpc-url "$RPC_URL")
-  for t in settle reflection; do
-    v=$(jget "$t" vkey)
-    n=$(printf '%s' "$code" | grep -o "7f${v#0x}" | wc -l | tr -d ' ')
-    echo "on-chain $t vkey occurrences in $POOL runtime code: $n (expected 1)"
-    [ "$n" = "1" ] || FAIL=1
-  done
+  if command -v cast >/dev/null 2>&1; then
+    code=$(cast code "$POOL" --rpc-url "$RPC_URL")
+  elif command -v curl >/dev/null 2>&1; then
+    code=$(curl -sS -m 60 -X POST -H 'content-type: application/json' \
+      --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getCode\",\"params\":[\"$POOL\",\"latest\"]}" "$RPC_URL" \
+      | sed -n 's/.*"result" *: *"\(0x[0-9a-fA-F]*\)".*/\1/p')
+  else
+    code=""
+  fi
+  if [ ${#code} -lt 100 ]; then
+    echo "on-chain check: could not read runtime code of $POOL from $RPC_URL"; FAIL=1
+  else
+    for t in settle reflection; do
+      v=$(jget "$t" vkey)
+      n=$(printf '%s' "$code" | grep -o "7f${v#0x}" | wc -l | tr -d ' ')
+      echo "on-chain $t vkey occurrences in $POOL runtime code: $n (expected 1)"
+      [ "$n" = "1" ] || FAIL=1
+    done
+  fi
   echo
 fi
 
