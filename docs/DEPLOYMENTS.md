@@ -104,6 +104,8 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 | Deploy block | 25998736 |
 | BTC anchor height (reflection seed) | 967040 |
 
+The three guest ELFs behind these keys rebuild byte for byte; see [Reproducible builds](./REPRODUCIBLE-BUILDS.md).
+
 The pool is deployed with a **fully-validated Bitcoin light relay** (full
 proof-of-work, mainnet target floor) and the **immutable** SP1 Groth16 verifier
 leaf — not the upgradeable gateway. Its reflection state resumes the shared

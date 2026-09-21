@@ -1,0 +1,61 @@
+{
+  "verified_on": "2026-09-21",
+  "elfs": {
+    "settle": {
+      "bin": "confidential-pool-prover",
+      "pinned_as": "contracts/sp1/confidential/elf/cxfer-guest",
+      "source_commit": "4a425f1d3d2e9c81bd89510e6f9d9e49f10cdf91",
+      "build_dir": "contracts/sp1/confidential",
+      "build_command": "cargo prove build --bin confidential-pool-prover --locked",
+      "cargo_home": "/workspace/.cargo",
+      "elf_sha256": "f7bc327d232ec8d1f693d5a44024c1ee732dc42196d079c5be5e3f3668b922c7",
+      "elf_bytes": 1681088,
+      "vkey": "0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3"
+    },
+    "reflection": {
+      "bin": "reflection-prover",
+      "pinned_as": "contracts/sp1/confidential/elf/reflection-prover",
+      "source_commit": "9e04307144c6ba1da6fec57decb455fc67bbf34f",
+      "build_dir": "contracts/sp1/confidential",
+      "build_command": "cargo prove build --bin reflection-prover --locked",
+      "cargo_home": "/root/.cargo",
+      "elf_sha256": "55b5ccffd4cd19e10061c4b5e70658e36bc806a365d0f5535918392e7bf12c5b",
+      "elf_bytes": 1340080,
+      "vkey": "0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5"
+    },
+    "eth_reflection": {
+      "bin": "eth_reflection",
+      "pinned_as": "contracts/sp1/eth-reflection/elf/eth_reflection",
+      "source_commit": "4a425f1d3d2e9c81bd89510e6f9d9e49f10cdf91",
+      "source_patch": "contracts/sp1/reproducible/eth-main-rs-original-build.patch",
+      "build_dir": "contracts/sp1/eth-reflection",
+      "build_command": "cargo prove build --bin eth_reflection --locked",
+      "cargo_home": "/workspace/.cargo",
+      "requires_source_path": "/workspace/tacit/contracts/sp1/eth-reflection",
+      "elf_sha256": "5fb193b5c463af186d35dfcedc21c089f21c010055e96daffff47800d8ff43ae",
+      "elf_bytes": 2327032,
+      "vkey": "0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72",
+      "recursion_digest_u32": [1698740370, 761725306, 1843717690, 1218893588, 786585592, 423901230, 1310805602, 795535986]
+    }
+  },
+  "toolchain": {
+    "cargo_prove": "cargo-prove sp1 (4809e79 2026-06-01T14:24:14.406056341Z)",
+    "cargo_prove_sha256": "c6cc58074487737be6d2b4a9ad05bfb15e1d8de1fb8e969cea39347c161efd70",
+    "succinct_rustc": "rustc 1.94.0-dev (LLVM 21.1.8, commit-hash unknown), toolchain id q71d9lZtRI",
+    "succinct_rustc_sha256": "2e952f92635ee0388b5eac9b06f2fec7b23a620b0a7dbcceab576caeb89cb160",
+    "succinct_librustc_driver_sha256": "db572b411a9458e154fcc59bd900a0280fa0b4b1b8659945efc54cec126b5136",
+    "host_cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05), from rustc 1.98.1 (48a229cea 2026-09-01) stable",
+    "sp1_zkvm_locked": {
+      "contracts/sp1/confidential": "6.2.3",
+      "contracts/sp1/eth-reflection": "6.2.4"
+    },
+    "host_os": "Ubuntu 22.04.3 x86_64, gcc 11.4.0"
+  },
+  "onchain": {
+    "pool": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
+    "settle_vkey_location": "PROGRAM_VKEY immutable in the pool runtime bytecode",
+    "relay_vkey_location": "BITCOIN_RELAY_VKEY immutable in the pool runtime bytecode",
+    "eth_vkey_location": "not in the pool; the reflection guest embeds its recursion digest as ETH_REFLECTION_VKEY (reflect.rs)"
+  },
+  "pin_file": "contracts/sp1/confidential/elf-vkey-pin.json"
+}
