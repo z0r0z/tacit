@@ -60,6 +60,24 @@ export async function reflectionEthProof(contentHash) {
   return getJson(`/reflection/eth-state/proof?network=${encodeURIComponent(CFG.network)}&contentHash=${encodeURIComponent(contentHash)}`);
 }
 
+// The same fetch, told apart by outcome: a 404 means the candidate really was replaced and is final, while a 5xx or
+// a dropped connection means the API is busy or restarting (it recycles while it builds a large job) and the blob is
+// still there, so those are retried for up to `waitSecs`. Returns {} once the wait is over, like a miss.
+export async function reflectionEthProofPatient(contentHash, {
+  waitSecs = CFG.ethProofWaitSecs, pollMs = 10000, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now,
+} = {}) {
+  const url = `${CFG.workerBase}/reflection/eth-state/proof?network=${encodeURIComponent(CFG.network)}&contentHash=${encodeURIComponent(contentHash)}`;
+  const deadline = now() + waitSecs * 1000;
+  for (;;) {
+    let res = null;
+    try { res = await fetchImpl(url, { headers: auth }); } catch { res = null; }
+    if (res && res.ok) { try { return await res.json(); } catch { /* a truncated body reads as transient */ } }
+    else if (res && res.status === 404) return {};
+    if (now() >= deadline) return {};
+    await sleep(pollMs);
+  }
+}
+
 // Register a fast-lane-consumed nullifier's real Bitcoin source note, so a later Mode-B fold can resolve
 // {cx,cy,srcTxid,srcVout} for it without the eth-state sidecar having to derive it from Ethereum data alone
 // (the settle proof only proves membership against the Bitcoin pool root, not the underlying outpoint). Call

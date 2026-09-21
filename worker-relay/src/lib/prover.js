@@ -12,7 +12,7 @@ import path from 'node:path';
 import { keccak256 } from 'viem';
 import { CFG } from './config.js';
 import { POOL } from './chain.js';
-import { reflectionEthProof } from './worker-client.js';
+import { reflectionEthProofPatient } from './worker-client.js';
 
 function proverEnv(extra = {}) {
   // Env the spawned SP1 binary reads to route to the Succinct network prover.
@@ -64,7 +64,7 @@ async function readHex(p) {
 // silently recursing a different eth-side witness set than the fixture actually committed to.
 async function writeEthProofFor(ethPv) {
   const contentHash = keccak256(ethPv.startsWith('0x') ? ethPv : `0x${ethPv}`);
-  const res = await reflectionEthProof(contentHash);
+  const res = await reflectionEthProofPatient(contentHash);
   if (!res || !res.ethCompressedProofB64) {
     throw new Error(`no eth-state proof blob for contentHash=${contentHash} — the eth-state candidate this `
       + `Mode-B job was built from is gone (republish /reflection/eth-state, or wait for a fresh job)`);

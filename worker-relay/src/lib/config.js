@@ -162,6 +162,9 @@ export const CFG = {
   // not a failure — the tx can still confirm minutes later — so the folder polls the pool's digest instead, and only
   // a genuine revert or a dropped tx ends the wait early.
   reflectionAttestWaitSecs: num('REFLECTION_ATTEST_WAIT_SECS', 1800),
+  // How long the prover keeps retrying the eth-state proof fetch when the API is answering 5xx or dropping the
+  // connection (it restarts while building a large job); a real 404 is never retried.
+  ethProofWaitSecs: num('REFLECTION_ETH_PROOF_WAIT_SECS', 240),
   reflectionAttestPollSecs: num('REFLECTION_ATTEST_POLL_SECS', 15),
   settlePollSecs: num('SETTLE_POLL_SECS', 15),
 
