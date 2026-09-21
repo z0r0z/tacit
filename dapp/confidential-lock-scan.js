@@ -152,6 +152,21 @@ export function makeConfidentialLockScan({ pool }) {
     return out;
   }
 
+  // Every settle call a transaction's calldata carries, routed by the outer selector as scanLockLeaves does: a direct
+  // settle, a relaySettle batch (either overload), or a settle nested in another contract's calldata. `direct` is true
+  // for the first two. Returns null when the input holds none. Nothing here is trusted on its own: a caller uses the
+  // decoded values only to form candidates that a hash on the chain then confirms.
+  function decodeSettleCalls(inputHex) {
+    const selector = strip0x(inputHex).slice(0, 8).toLowerCase();
+    let calls, direct = true;
+    try {
+      if (selector === SELECTOR_SETTLE) calls = [decodeSettleCalldata(inputHex)];
+      else if (selector === SELECTOR_RELAY_SETTLE || selector === SELECTOR_RELAY_SETTLE_SEEDED) calls = decodeRelaySettleCalldata(inputHex);
+      else { direct = false; calls = decodeNestedSettles(inputHex); }
+    } catch { return null; }
+    return calls && calls.length ? { calls, direct } : null;
+  }
+
   // Read a bytes32[] field given its HEAD byte offset within a tuple encoding (offset ⇒ jump to the tail).
   function readBytes32Array(data, headByteOff) {
     const arrOff = Number(u256At(data, headByteOff));
@@ -356,5 +371,5 @@ export function makeConfidentialLockScan({ pool }) {
     return { ...all, verified: false, excluded: [] };
   }
 
-  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodePublicValuesLockFields, scanLockLeaves };
+  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodeSettleCalls, decodePublicValuesLockFields, scanLockLeaves };
 }

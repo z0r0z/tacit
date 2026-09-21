@@ -20,8 +20,10 @@ node backend. A starting skeleton lives next to this file at [`dapp-template/ind
   (the ops multisig on mainnet) can, once, deploy the pool's successor generation (`createNextGen`), which
   retires this generation to exit-only (see "Generations" in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md)).
   `pool.successor()` reads zero while the generation is active.
-- A **memo** is emitted per created leaf: the note's opening, encrypted to its owner. It is the only way a
-  wallet recovers its notes from a seed. Lose the memo and lose the note.
+- A **memo** is emitted per created leaf: the note's opening, encrypted to its owner. It is the main way a
+  wallet recovers its notes from a seed. A few kinds of note carry an empty memo because their opening
+  re-derives from the wallet key instead (wrap deposits by index, bridge-mint destinations, cBTC bearer
+  notes); for any other note, lose the memo and lose the note.
 - You do not need to prove anything yourself. The **relay** proves and settles for a fee carved from the op.
   It receives the witness of the op you hand it, but never your wallet key or any note's blinding, so it can
   prove the op you authorized and cannot build a different one (exactly what it sees is in §6).
@@ -129,12 +131,26 @@ const me    = tacit.identity(walletPriv);         // { priv, pubHex, owner, secr
 const funds = await tacit.balance(scanPriv);      // notes recovered from logs + memos, grouped by asset
 ```
 
-`scanPriv` is the wallet's scan scalar as `0x`-hex or bytes. Each note carries
-`{ asset, value, blinding, secret, cx, cy, owner, leafIndex, path, root }` — `path`/`root` are the membership
+`scanPriv` is the wallet key as `0x`-hex or bytes (the same value `identity` takes). `value` is a `BigInt`.
+Each note carries `{ asset, value, blinding, secret, cx, cy, owner, leafIndex, path, root }` — `path`/`root` are the membership
 witness a spend needs. The pool accepts every root its note tree has ever had, so a witness does not expire
 when someone else settles; it stays valid for as long as the pool's tree does. Rescan before spending anyway,
 so that every input's path is taken against one root (an op carries a single `spendRoot`), notes spent since
 are dropped, and new notes are picked up.
+
+### Recover everything from the key
+
+`balance` lists spendable notes. To bring back a whole wallet from its key alone (notes made by wraps, bridge mints and
+cBTC locks, farm positions, CDP positions, stealth locks) use `recover`:
+
+```js
+const r = await tacit.recover({ walletPriv });
+// r.notes, r.cbtc, r.farmPositions, r.cdpPositions, r.sentLocks, r.receivedLocks
+// r.diagnostics.coverage says what was scanned; r.diagnostics lists what could not be resolved
+```
+
+It reads chain state and public Bitcoin history only and sends nothing. What each operation needs, the positions that need
+a saved record (`importFarmPosition`), and the cost are in [`RECOVERY.md`](./RECOVERY.md).
 
 ### Wrap ETH in (step 1 — a plain tx, no proof)
 
@@ -191,7 +207,14 @@ you avoid is the fee and having the relay's address on the transaction. Removing
 proving locally (native-gnark on CPU — no GPU, no network payment; see
 `ops/INTEGRATION-simple-wrap-send-claim-eth.md`).
 
-Each of these returns once the settle lands; pass `waitOpts` to tune the polling.
+Each of these returns once the settle lands; pass `waitOpts` to tune the polling. A `selfRelay` settle is sent
+from the wallet's derived account (`account(walletPriv)`), which must hold ETH for gas; `tacit.submitSettle` is
+the same step for a proof you fetched yourself with `mode: 'prove'`.
+
+Two checks worth keeping. After a relayed settle the client compares the memos the pool emitted with the ones
+it sealed (`verifyEmittedMemos`) and throws, keeping the sealed memos locally, if they differ. And `unwrap` with
+`wait: true` can report `settled` from the relay's acknowledgement or from the note leaving the wallet scan, so
+confirm an exit by the recipient's balance (or the settle receipt) rather than by that status alone.
 
 Which ops need a fee: an op that carries a fee leg (`transfer`, `unwrap`, LP ops, routes) must offer at least
 the floor from `GET /confidential/quote` or the relay refuses it at submit; the static cUSD floor is
@@ -251,7 +274,7 @@ redeem the reward to plain TAC. The full integrator chapter (cards, flows, monit
 ```js
 // 1. Read the program (dapp/confidential-farm-program.js; also GET /farm/program?network=mainnet)
 const farm    = makeConfidentialFarmProgram({ rpc, config: tacit.cfg });   // or tacit.farmProgram()
-const program = await farm.program();               // rate, periodFinish, treasury, per-pool weight and stakers
+const program = await farm.program();               // epoch (rate, periodFinish, treasury, outstanding) + pools[] (weight, totalShares)
 
 // 2. Bond an LP note. The receipt IS the position; its owner key signs every later harvest and unbond.
 const ownerPriv    = '0x' + hex(secp.utils.randomPrivateKey());     // fresh per position
@@ -262,17 +285,21 @@ await tacit.defiActions(walletPriv).bondFarm({ controller, nonce, lpAsset, legs:
   spendRoot: note.root, receiptOwner });
 
 // 3. Show pending, then harvest (see FARMS.md for the receipt witness); the reward lands as a wTAC note.
-const pending = await farm.pending(receiptLeaf);    // units of 1e-8 TAC
+const pending = await farm.pending(receiptLeaf);    // { units, tac }: units is a decimal string in 1e-8 TAC
 
-// 4. Unbond returns the LP note; harvest first, unharvested reward is forfeited.
+// 4. Unbond returns the LP note; harvest first, unharvested reward is forfeited. tacit.farmUnbond refuses
+//    while more than 0.001 TAC is pending unless you pass forfeitPending: true.
 // 5. Redeem: tacit.unwrap(wTAC note) -> WrappedTac.withdraw(amount, to) -> TAC ERC20.
 ```
 
 Three things to get right:
 
 - **The receipt key is the position.** A position is one LP note bonded whole, and only its receipt-owner key can
-  harvest or unbond it. Persist it before you submit (or use the SDK's deterministic `tacit.farmPositions`), and use a
-  fresh key per position. A lost key strands the shares.
+  harvest or unbond it. Persist it before you submit, and use a
+  fresh key per position. A lost key strands the shares. The SDK's own path derives the key instead:
+  `tacit.farmBond({ walletPriv, controller, lpNote })` (and `tacit.lpBond`) derive the receipt key from the wallet
+  key and the note they spend, so `tacit.farmPositions({ walletPriv })` finds the position again from the chain and
+  the key alone, and `tacit.farmHarvest` / `tacit.farmUnbond` sign with it.
 - **Bond shares and harvest amounts are public** in the manager's events. Notes, receipts and payout destinations
   stay unlinked, until you unwrap to an address.
 - **Harvest before you unbond, and claim close to `pending`.** A harvest re-stamps the position, so anything
@@ -297,9 +324,12 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 | `GET /confidential/status?id=` | `pending` → `proving` → `settled` \| `failed`; a `mode: 'prove'` job ends at `proven` and carries the proof |
 | `GET /confidential/quote?asset=cETH` | `{ ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }` — floors are in the asset's **in-system units**, not wei. `asset` takes a ticker or a `0x` asset id. |
 | `GET /confidential/index?from=&limit=` | the pool's event stream plus the stealth lock set, in chain order behind one cursor — recover a key's notes and locks without running a scanner |
+| `GET /farm/program?network=mainnet`, `GET /farm/health` | the launch farms' emission schedule and a solvency verdict, read from the manager on chain |
 | `GET /health` | liveness |
 
-Submits are rate-limited per IP and the queue is bounded; a rejected submit is backpressure, not failure.
+Submits are rate-limited per IP and the queue is bounded; a rejected submit is backpressure, not failure. Fee-less
+relayed settles share a daily free budget (`429`, code `free_budget`) and prove-only jobs a daily prove budget (`429`,
+code `prove_budget`); past either, attach a fee above the floor or prove and settle locally.
 
 **Request bodies are capped** (`MAX_REQUEST_BYTES`, 32 MiB by default). Over that you get a `413` — on the
 declared `Content-Length` before the body is read, or mid-stream for a chunked body. Every real op is far
@@ -354,6 +384,7 @@ look away entirely without touching its logic. Two conventions worth keeping:
 | `DepositNotPending` | the wrap tx is not mined yet, or the deposit was already consumed |
 | `UnknownRoot` | the `spendRoot` is not a root this pool has ever had: a witness built from another pool or network, from an incomplete log fetch, or from a block that was since reorged out — rescan |
 | `NullifierAlreadySpent` | the note was already spent |
+| `DepositExists` | this asset, amount and wrap index is already a deposit the pool holds; take the next index (`nextWrapIndex`) |
 | `MemoLeafMismatch` | memo count or order does not match `pv.leaves` |
 | settle says `failed` with a guest assert | the witness is malformed; the assert text names the field |
 | relay rejects the submit | fee below the floor, or the queue is full |
@@ -367,6 +398,7 @@ A failed proof costs the relay, not you, and moves no state. A settle either app
 
 ## 9. Further
 
+- [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md) — what a trustless integration looks like: farm zap, key-only recovery, self-settle checklist
 - [`docs/DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address and vkey
 - [`docs/FARMS.md`](./FARMS.md) — the TAC launch farms: cards, flows, monitoring and governance bounds
 - [`ops/INTEGRATION-simple-wrap-send-claim-eth.md`](../ops/INTEGRATION-simple-wrap-send-claim-eth.md) — the

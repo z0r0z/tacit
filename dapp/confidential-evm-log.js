@@ -4,7 +4,8 @@
 // subscribes to the contract, decodes with this, and serves the ordered stream;
 // the client recovers. No off-chain note storage — the chain is the source.
 //
-// Decodes: LeavesInserted, LockLeavesInserted, NullifiersSpent, CrossOutRecorded, Wrap.
+// Decodes: LeavesInserted, LockLeavesInserted, NullifiersSpent, CrossOutRecorded, Wrap, CdpPositionInserted, and the
+// FarmManager's Bonded.
 // Minimal in-module ABI reading (no ethers/web3 dep), exactly the shapes these
 // events use. keccak256 injected for the topic0 signature hashes.
 
@@ -21,6 +22,9 @@ export function makeConfidentialEvmLog({ keccak256 }) {
     NullifiersSpent: 'NullifiersSpent(bytes32[])',
     CrossOutRecorded: 'CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)',
     Wrap: 'Wrap(bytes32,bytes32,uint256)',
+    // FarmManager (a separate contract from the pool): a bonded position's receipt leaf, pool id, shares and unlock time.
+    Bonded: 'Bonded(bytes32,uint256,uint256,uint256)',
+    CdpPositionInserted: 'CdpPositionInserted(bytes32)',
   };
   const TOPIC0 = Object.fromEntries(Object.entries(SIGS).map(([k, s]) => [k, topic(s)]));
   const byTopic0 = Object.fromEntries(Object.entries(TOPIC0).map(([k, t]) => [t.toLowerCase(), k]));
@@ -103,6 +107,21 @@ export function makeConfidentialEvmLog({ keccak256 }) {
         assetId: String(topics[2]),
         amount: uintAt(data, 0),
       };
+    }
+    if (kind === 'Bonded') {
+      // indexed: receipt (topic1), pid (topic2). data: (uint256 shares, uint256 unlockAt). Emitted by the FarmManager,
+      // not the pool: the caller filters the log's address.
+      return {
+        type: 'Bonded',
+        receipt: String(topics[1]),
+        pid: Number(BigInt(topics[2])),
+        shares: uintAt(data, 0),
+        unlockAt: Number(uintAt(data, 32)),
+      };
+    }
+    if (kind === 'CdpPositionInserted') {
+      // indexed: the new position leaf (topic1). The position's fields are in the settle calldata of the same tx.
+      return { type: 'CdpPositionInserted', leaf: String(topics[1]) };
     }
     return null;
   }

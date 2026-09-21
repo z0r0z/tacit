@@ -102,4 +102,30 @@ const buyerViaMemo = idx.recover(ev4, buyer.priv);
 assert.strictEqual(buyerViaMemo.length, 0, 'buyer outputs are not memo-recoverable (seed-derived, by design)');
 ok('OP_BID seller-leg recoverable via memo; buyer-leg correctly seed-derived — both channels covered');
 
+// ── 5. the submit-time check OPENS each memo sealed to a wallet key: a mis-sealed memo is caught, a foreign-key memo is not opened ──
+const carol = identity(randomScalar());
+const privHex = (id) => '0x' + BigInt(id.priv).toString(16).padStart(64, '0');
+const keyOf = (pub) => (pub === carol.pubHex ? privHex(carol) : null);
+const strict = makeRecoveryGuard({ memo: idx._memo, openKeyFor: keyOf });
+const c1 = note(carol, 11n, randomScalar());
+const good = strict.sealMemosForOutputs({ outputs: [c1], ephRand: eph });
+strict.assertOutputsRecoverable({ leaves: [c1.leaf], outputs: [c1], memos: good });
+// well-formed length, but sealed for a different note: the length-only check would accept it
+const other = note(carol, 12n, randomScalar());
+const wrongMemo = strict.sealMemosForOutputs({ outputs: [other], ephRand: eph });
+assert.strictEqual(wrongMemo[0].length, good[0].length, 'same wire length');
+assert.throws(() => strict.assertOutputsRecoverable({ leaves: [c1.leaf], outputs: [c1], memos: wrongMemo }), /does not open to its leaf/);
+guard.assertOutputsRecoverable({ leaves: [c1.leaf], outputs: [c1], memos: wrongMemo }); // the length-only guard still passes it
+// a descriptor value that disagrees with what the memo opens to
+const c1Liar = { ...c1, value: 99n };
+assert.throws(() => strict.assertOutputsRecoverable({ leaves: [c1.leaf], outputs: [c1Liar], memos: good }), /different owner or value/);
+// seed-derived outputs are skipped; an owner pubkey the wallet does not hold is checked for length only
+strict.assertOutputsRecoverable({ leaves: ['0x' + '01'.repeat(32)], outputs: [{ seedDerived: true }], memos: ['0x'] });
+const dave = identity(randomScalar());
+const d1 = note(dave, 3n, randomScalar());
+strict.assertOutputsRecoverable({ leaves: [d1.leaf], outputs: [d1], memos: strict.sealMemosForOutputs({ outputs: [d1], ephRand: eph }) });
+// an explicit key opens regardless of the lookup
+assert.throws(() => guard.assertOutputsRecoverable({ leaves: [c1.leaf], outputs: [c1], memos: wrongMemo, openPriv: privHex(carol) }), /does not open to its leaf/);
+ok('assertOutputsRecoverable opens memos sealed to a held key (leaf, owner, value) and skips seed-derived / foreign-key outputs');
+
 console.log(`\n${n} recovery-guard checks passed.`);

@@ -28,8 +28,11 @@ import { makeConfidentialStealth } from './confidential-stealth.js';
 import { makeConfidentialAirdrop } from './confidential-airdrop.js';
 import { makeConfidentialLockScan } from './confidential-lock-scan.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
-import { randomScalar } from './bulletproofs-plus.js';
-import { hmac } from './vendor/tacit-deps.min.js';
+import { randomScalar, bppGens, G as BPP_G } from './bulletproofs-plus.js';
+import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
+import { makeConfidentialRecovery, privBytes } from './confidential-recovery.js';
+import { makeBtcHistoryProvider } from './confidential-recovery-btc.js';
+import { makeCbtcNoteRecovery } from './cbtc-note-recovery.js';
 
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
 // deploy sync patches); this module consumes a resolved record via getConfidentialDeployment(network).
@@ -46,7 +49,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // an unrecoverable leaf. Injected into the relay so EVERY box-settled op (transfer/swap/lp/otc/route/bid)
   // passes the recovery assert at submit; wrap (on-chain) uses it directly as the reference integration.
   const memo = indexer._memo;   // sealMemo / encodeMemo / decodeMemo
-  const guard = makeRecoveryGuard({ memo });
+  // The wallet keys this instance has been handed, by the pubkey memos are sealed to (filled by identity()), so the
+  // recovery guard can open a memo sealed to one of them and check it opens to its leaf. A pubkey not in the map is
+  // someone else's (a recipient output) and is checked for length only.
+  const _ownKeys = new Map();
+  const guard = makeRecoveryGuard({ memo, openKeyFor: (pub) => _ownKeys.get(String(pub).toLowerCase()) || null });
   const relay = makeConfidentialRelay({ base: cfg.relayBase, fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
   // A relay that emitted different memos than the ones sealed here leaves those notes unrecoverable from the
   // chain; the sealed memos (openable with this wallet's keys) are kept locally under the settle's tx hash.
@@ -156,24 +163,182 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return out;
   }
   async function headBlock() { return parseInt(await rpc('eth_blockNumber', []), 16); }
-  async function fetchEvents({ fromBlock = cfg.deployBlock, toBlock = 'latest' } = {}) {
+  // `include` widens the stream for key-only recovery: 'wraps' (the pool's Wrap deposits), 'cdp' (position inserts),
+  // 'crossouts' (CrossOutRecorded) and 'bonds' (the farm manager's Bonded events — a second contract, so the query
+  // names both addresses and each log is kept only if it came from the contract that owns its event). Left empty, the
+  // query is exactly the pool's three note-stream events.
+  async function fetchEvents({ fromBlock = cfg.deployBlock, toBlock = 'latest', include = [] } = {}) {
     const from = typeof fromBlock === 'number' ? fromBlock : parseInt(String(fromBlock), 16);
     const to = toBlock === 'latest' ? await headBlock() : (typeof toBlock === 'number' ? toBlock : parseInt(String(toBlock), 16));
-    const logs = await getLogsChunked(
-      { address: cfg.pool, topics: [[evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.NullifiersSpent, evmLog.TOPIC0.LockLeavesInserted]] },
-      from, to);
+    const inc = new Set(include);
+    const topics0 = [evmLog.TOPIC0.LeavesInserted, evmLog.TOPIC0.NullifiersSpent, evmLog.TOPIC0.LockLeavesInserted];
+    if (inc.has('wraps')) topics0.push(evmLog.TOPIC0.Wrap);
+    if (inc.has('cdp')) topics0.push(evmLog.TOPIC0.CdpPositionInserted);
+    if (inc.has('crossouts')) topics0.push(evmLog.TOPIC0.CrossOutRecorded);
+    const manager = inc.has('bonds') && cfg.farm && cfg.farm.manager ? String(cfg.farm.manager).toLowerCase() : null;
+    if (manager) topics0.push(evmLog.TOPIC0.Bonded);
+    let logs = await getLogsChunked({ address: manager ? [cfg.pool, cfg.farm.manager] : cfg.pool, topics: [topics0] }, from, to);
+    if (inc.size) {
+      const poolLc = String(cfg.pool).toLowerCase();
+      const bonded = String(evmLog.TOPIC0.Bonded).toLowerCase();
+      logs = logs.filter((l) => {
+        const a = String(l.address || '').toLowerCase();
+        if (String((l.topics || [])[0] || '').toLowerCase() === bonded) return !!manager && a === manager;
+        return !a || a === poolLc;
+      });
+    }
     return evmLog.decodeLogs(logs);
   }
 
+  // ── key-only recovery ──
+  // A note reaches a wallet through a memo sealed to its key (the normal channel) or, where the op derives the note from the
+  // key plus public chain data, through a walk over that data (confidential-recovery.js): wrap deposits, send-and-unwrap
+  // change, bridge-mint destinations and cBTC bearer notes. Every walk accepts a candidate only when its recomputed leaf is
+  // one the chain inserted. `_scanNotes` runs them over one event stream; balance() and recover() both build on it.
+  const lc = (h) => String(h == null ? '' : h).toLowerCase();
+  // HMAC keys the derivations below; it needs the hash the HMAC implementation was built with (the bundle's), which the
+  // injected `sha256` (any Uint8Array -> Uint8Array function) need not be.
+  const _cbtcRec = makeCbtcNoteRecovery({ hmac, sha256: vendorSha256, curveOrder: SECP_N });
+  let _rec = null;
+  const recovery = () => _rec || (_rec = makeConfidentialRecovery({
+    pool, memo, keccak256, secp, hmac, sha256: vendorSha256, curveOrder: SECP_N, lockScan: _lockScan, airdrop: _airdrop, cdp: _cdp,
+    bpp: { H: bppGens().H, G: BPP_G },
+  }));
+  const _rev = (h) => (String(h).replace(/^0x/, '').match(/../g) || []).reverse().join('');
+  const _bridgeTried = new Set();   // empty-memo leaves already searched for a bridge-mint destination (no amount hints)
+  const _btcHistoryCache = new Map();
+  const BTC_HISTORY_TTL_MS = 10 * 60 * 1000;
+  function _defaultBtcHistory(priv) {
+    const key = _hex(privBytes(priv));
+    const hit = _btcHistoryCache.get(key);
+    if (hit && Date.now() - hit.at < BTC_HISTORY_TTL_MS) return hit.promise;
+    const provider = makeBtcHistoryProvider({ fetchImpl: _fetch, sha256, hrp: Number(cfg.chainId) === 1 ? 'bc' : 'tb' });
+    const promise = provider.history(priv);
+    const entry = { at: Date.now(), promise };
+    _btcHistoryCache.set(key, entry);
+    promise.catch(() => { entry.at = Date.now() - BTC_HISTORY_TTL_MS + 60000; }); // retry a failed lookup after a minute
+    return promise;
+  }
+  const _lockVBtcCache = new Map();
+  async function _cbtcLockVBtc(txid, vout) {
+    const outpoint = pool.outpointKey('0x' + _rev(txid), vout);
+    if (_lockVBtcCache.has(outpoint)) return { outpoint, vBtc: _lockVBtcCache.get(outpoint) };
+    const r = await ethCall(cfg.pool, '0x' + _selector('cbtcLockVBtc(bytes32)') + _word(outpoint));
+    const vBtc = BigInt(r && r !== '0x' ? r : '0x0');
+    if (vBtc > 0n) _lockVBtcCache.set(outpoint, vBtc);
+    return { outpoint, vBtc };
+  }
+
+  async function _scanNotes({ walletPriv, events, deep = false, cbtc = true, btcHistory = null, bridge = true, bridgeAmounts = [] }) {
+    const R = recovery();
+    const id = identity(walletPriv);
+    const { leaves, spent } = indexer.index(events);
+    const tree = indexer.buildTree(leaves);
+    const root = tree.root();
+    const slot = new Map();
+    leaves.forEach((l, i) => { if (l) slot.set(lc(l.leaf), i); });
+    const nu = (n, leaf) => pool.nativeNu(n.owner, n.secret, leaf);
+    const all = new Map();
+    const diag = { errors: {} };
+    const addDerived = (n, source, extra = {}) => {
+      const lf = lc(n.leaf), leafIndex = slot.get(lf);
+      if (leafIndex == null || all.has(lf)) return false;
+      all.set(lf, { value: BigInt(n.value), blinding: n.blinding, secret: n.secret, asset: n.asset, owner: n.owner, cx: n.cx, cy: n.cy, leaf: n.leaf, leafIndex, nullifier: nu(n, n.leaf), source, ...extra });
+      return true;
+    };
+    const emptyLeaves = leaves.filter((l) => l && (!l.memo || l.memo === '0x'));
+    diag.leaves = leaves.filter(Boolean).length; diag.emptyMemoLeaves = emptyLeaves.length;
+
+    // (a) memo channel
+    for (const n of memo.scan(_scanKeyHex(id.priv), leaves.filter(Boolean), [], nu)) all.set(lc(n.leaf), n);
+    diag.memoNotes = all.size;
+
+    // (b) wrap deposits
+    diag.wrap = { found: 0, pending: [], scanned: [] };
+    try {
+      const w = R.walkWraps({ priv: id.priv, events, assets: _poolAssets });
+      diag.wrap.scanned = w.scanned;
+      for (const n of w.found) {
+        if (slot.has(lc(n.leaf))) { if (addDerived(n, 'wrap', { wrapIndex: n.index })) diag.wrap.found++; }
+        else if (!all.has(lc(n.leaf))) diag.wrap.pending.push({ index: n.index, asset: n.asset, value: n.value, depositId: n.depositId });
+      }
+    } catch (e) { diag.errors.wrap = String(e && e.message || e); }
+
+    const tx = R.txIndex(events);
+    const unexplained = () => emptyLeaves.filter((l) => !all.has(lc(l.leaf)));
+
+    // (c) cBTC bearer notes — the blinding comes from the wallet's Bitcoin funding prevout, so this reads public Bitcoin
+    // history (esplora, by script hash). Only attempted when some empty-memo leaf is still unexplained.
+    diag.cbtc = { attempted: false, found: 0, anchors: 0, lockOutputs: 0, locksRecorded: 0 };
+    if (cbtc && unexplained().length) {
+      diag.cbtc.attempted = true;
+      try {
+        const h = typeof btcHistory === 'function' ? await btcHistory(id.priv) : (btcHistory || await _defaultBtcHistory(id.priv));
+        const seenA = new Set(), anchors = [];
+        for (const a of h.anchors || []) { const k = `${a.txid}:${a.vout}`; if (!seenA.has(k)) { seenA.add(k); anchors.push(a); } }
+        diag.cbtc.anchors = anchors.length; diag.cbtc.lockOutputs = (h.lockOutputs || []).length;
+        const locks = [];
+        for (const o of h.lockOutputs || []) { const r = await _cbtcLockVBtc(o.txid, o.vout); if (r.vBtc > 0n) locks.push({ outpoint: r.outpoint, vBtc: r.vBtc, txid: o.txid, vout: o.vout }); }
+        diag.cbtc.locksRecorded = locks.length;
+        const cbtcNotes = R.scanCbtcNotes({ priv: id.priv, anchors, locks, cbtcAsset: pool.CBTC_ZK_ASSET_ID, slotOf: (lf) => (slot.has(lc(lf)) ? slot.get(lc(lf)) : null), rec: _cbtcRec });
+        for (const n of cbtcNotes) if (addDerived(n, 'cbtc', { lockOutpoint: n.lockOutpoint })) diag.cbtc.found++;
+      } catch (e) { diag.errors.cbtc = String(e && e.message || e); }
+    }
+
+    // (d) bridge-mint destination notes
+    diag.bridge = { attempted: false, found: 0, unexplainedLeaves: 0, candidatesTried: 0 };
+    const hints = (bridgeAmounts || []).length > 0;
+    if (bridge) {
+      const todo = new Map();
+      for (const l of unexplained()) {
+        const lf = lc(l.leaf);
+        if (!hints && _bridgeTried.has(lf)) continue;
+        const t = tx.txOfLeaf.get(lf);
+        if (!t || !(tx.nullifiersOfTx.get(t) || []).length) continue;
+        if (!todo.has(t)) todo.set(t, []);
+        todo.get(t).push(lf);
+      }
+      diag.bridge.unexplainedLeaves = [...todo.values()].reduce((sN, a) => sN + a.length, 0);
+      if (todo.size) {
+        diag.bridge.attempted = true;
+        try {
+          const r = R.walkBridgeMints({ priv: id.priv, tx, unexplained: todo, assets: [...new Map(_poolAssets.filter((a) => a.bitcoinLink).map((a) => [lc(a.assetId), { assetId: a.assetId }])).values()], values: bridgeAmounts || [] });
+          diag.bridge.candidatesTried = r.tried;
+          for (const n of r.found) if (addDerived(n, 'bridge-mint', { burnNullifier: n.burnNullifier })) diag.bridge.found++;
+          if (!hints) for (const lfs of todo.values()) for (const lf of lfs) _bridgeTried.add(lf);
+        } catch (e) { diag.errors.bridge = String(e && e.message || e); }
+      }
+    }
+
+    // (e) send-and-unwrap change: reads the settle calldata of each spent parent's transaction, so it is deep-only.
+    diag.change = { attempted: false, found: 0, skipped: [] };
+    if (deep) {
+      diag.change.attempted = true;
+      try {
+        const parents = [...all.values()].map((n) => ({ ...n, nullifier: n.nullifier }));
+        const getTxInput = async (h) => { const t = await rpc('eth_getTransactionByHash', [h]); return t && t.input; };
+        const c = await R.walkChange({ parents, tx, knownLeaves: new Set(all.keys()), getTxInput });
+        diag.change.skipped = c.skipped;
+        for (const n of c.found) if (addDerived(n, 'change', { parentLeaf: n.parentLeaf })) diag.change.found++;
+      } catch (e) { diag.errors.change = String(e && e.message || e); }
+    }
+
+    const owned = [...all.values()].sort((a, b) => a.leafIndex - b.leafIndex);
+    const notes = owned.filter((n) => !spent.has(lc(n.nullifier))).map((n) => ({ ...n, path: tree.rootAndPath(n.leafIndex).path, root }));
+    diag.unattributedEmptyLeaves = unexplained().map((l) => ({ leafIndex: l.leafIndex, leaf: l.leaf }));
+    return { notes, owned, tree, root, slot, spent, leaves, tx, diag, id };
+  }
+
   // Seed-only confidential balance: recover the wallet's unspent notes from chain + scan key, grouped by
-  // asset. No off-chain note storage — a wiped wallet recovers its whole confidential balance from here.
+  // asset. No off-chain note storage — a wiped wallet recovers its whole confidential balance from here. Notes come
+  // from the wallet's memos and from the key-derived channels (wraps, bridge-mint destinations, cBTC); the walks that
+  // need a transaction's calldata run in recover(). opts: { fromBlock, toBlock } plus { cbtc: false, bridge: false } to
+  // skip a walk, { btcHistory } (a provider fn, or { anchors, lockOutputs }) and { bridgeAmounts } (extra amounts to try).
   async function balance(scanPriv, opts) {
-    const events = withSavedMemos(await fetchEvents(opts));
-    // memo.scan needs the scan key as a 0x-hex scalar (BigInt-able); the wallet hands it as bytes.
-    const sk = scanPriv instanceof Uint8Array
-      ? '0x' + Array.from(scanPriv, (x) => x.toString(16).padStart(2, '0')).join('')
-      : (String(scanPriv).startsWith('0x') ? String(scanPriv) : '0x' + String(scanPriv));
-    const notes = indexer.recover(events, sk);
+    const o = opts || {};
+    const events = withSavedMemos(await fetchEvents({ fromBlock: o.fromBlock, toBlock: o.toBlock, include: ['wraps'] }));
+    const st = await _scanNotes({ walletPriv: scanPriv, events, cbtc: o.cbtc !== false, btcHistory: o.btcHistory || null, bridge: o.bridge !== false, bridgeAmounts: o.bridgeAmounts || [] });
+    const notes = st.notes;
     const byAsset = {};
     for (const n of notes) {
       const id = String(n.asset || '').toLowerCase();
@@ -294,6 +459,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ? walletPriv
       : Uint8Array.from((String(walletPriv).replace(/^0x/, '').match(/../g) || []).map((h) => parseInt(h, 16)));
     const pub = secp.getPublicKey(priv, true);          // compressed 33B: prefix ‖ x
+    _ownKeys.set('0x' + _hex(pub), '0x' + _hex(priv));
     // `secret` is the note's NULLIFIER KEY (nk) under the guest's secret-key ownership scheme — not a
     // vestigial field, as an earlier comment here claimed. The guest asserts nk_to_owner(nk) == owner on
     // every native spend, so `owner` MUST be keccak(nk ‖ dom); publishing the wallet pubkey (what this
@@ -1066,46 +1232,129 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...r, pid, lpAsset, shares: String(lpNote.value), anchorLeaf, receiptLeaf, receiptOwner: owner };
   }
 
-  // The wallet's live farm positions, re-derived from chain + key: every LP-share note the wallet ever held for a
-  // configured pool is a candidate anchor; a candidate counts when its derived receipt leaf is in the pool tree and
-  // the manager still holds it live. (A position opened with lpBond anchors on the spent A note instead and is
-  // listed from the position record its caller kept.)
-  async function farmPositions({ walletPriv, events } = {}) {
+  // The wallet's live farm positions, re-derived from chain + key. Two channels:
+  //  - every LP-share note the wallet ever held for a configured pool is a candidate anchor (farmBond anchors on it);
+  //  - the manager's public Bonded(receipt, pid, shares, unlockAt) events, each tried against every note the wallet has
+  //    held as an anchor (lpBond anchors on the canonical-A note it spent): a position counts when its derived receipt
+  //    leaf equals a Bonded receipt of that pool. The wallet's own spent notes are re-opened from their memos and the
+  //    wrap / change walks, so no local record is needed.
+  // Either way a candidate counts only when its receipt leaf is in the pool tree and the manager still holds it live.
+  // A position opened under a random key cannot be derived: it is listed from a record stored by importFarmPosition.
+  // opts: { walletPriv, events } — `events` may already carry the manager's Bonded events (fetchEvents include 'bonds').
+  async function farmPositions({ walletPriv, events, _scan = null, _diag = null } = {}) {
     const farm = _farmCfg();
     const lpAssets = new Set((farm.pools || []).map((p) => String(p.lpAsset).toLowerCase()));
-    const { leaves } = indexer.index(events || await fetchEvents());
-    const slot = new Map();
-    leaves.forEach((l, i) => { if (l) slot.set(String(l.leaf).toLowerCase(), i); });
-    const held = memo.scan(_scanKeyHex(walletPriv), leaves.filter(Boolean), [], (n, leaf) => pool.nativeNu(n.owner, n.secret, leaf))
-      .filter((n) => lpAssets.has(String(n.asset).toLowerCase()));
+    const evs = events || await fetchEvents({ include: ['wraps', 'bonds'] });
+    const st = _scan || await _scanNotes({ walletPriv, events: evs, cbtc: false, bridge: false });
+    const { slot } = st;
     const c32 = _farmC32(farm.manager);
-    const hits = [];
+    const hits = new Map();
+    const held = st.owned.filter((n) => lpAssets.has(String(n.asset).toLowerCase()));
     for (const n of held) {
       const lpAsset = String(n.asset).toLowerCase();
       const anchorLeaf = _noteLeaf(n);
       const { owner, nonce } = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset, anchorLeaf });
       const receiptLeaf = pool.farmReceiptLeaf(c32, lpAsset, BigInt(n.value), owner, nonce);
       const receiptIndex = slot.get(receiptLeaf.toLowerCase());
-      if (receiptIndex != null) hits.push({ lpAsset, anchorLeaf, receiptLeaf, receiptIndex });
+      if (receiptIndex != null) hits.set(receiptLeaf.toLowerCase(), { lpAsset, anchorLeaf, receiptLeaf, receiptIndex, via: 'lp-note' });
+    }
+    const bonded = evs.filter((e) => e && e.type === 'Bonded');
+    const derived = recovery().deriveFarmPositions({
+      bonded, pools: farm.pools || [], anchors: st.owned.map((n) => ({ leaf: _noteLeaf(n) })), manager: farm.manager,
+      lpBondPosition: ({ controller, lpAsset, anchorLeaf }) => lpBondPosition({ walletPriv, controller, lpAsset, anchorLeaf }),
+    });
+    for (const d of derived.found) {
+      const receiptIndex = slot.get(d.receiptLeaf);
+      if (receiptIndex != null && !hits.has(d.receiptLeaf)) hits.set(d.receiptLeaf, { lpAsset: d.lpAsset, anchorLeaf: d.anchorLeaf, receiptLeaf: d.receiptLeaf, receiptIndex, via: 'bonded-event' });
+    }
+    const imported = [];
+    for (const rec of _importedFarmRecords()) {
+      const receiptIndex = slot.get(String(rec.receiptLeaf).toLowerCase());
+      if (receiptIndex == null || hits.has(String(rec.receiptLeaf).toLowerCase())) continue;
+      hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, via: 'imported-record' });
+      imported.push(rec.receiptLeaf);
     }
     const prog = farmProgram();
-    const live = await Promise.all(hits.map((h) => prog.position(h.receiptLeaf)));
-    return hits.map((h, i) => ({ h, p: live[i] })).filter(({ p }) => p.live).map(({ h, p }) => ({
+    const list = [...hits.values()];
+    const live = await Promise.all(list.map((h) => prog.position(h.receiptLeaf)));
+    if (_diag) {
+      Object.assign(_diag, {
+        bondedEvents: bonded.length, derivedFromEvents: derived.found.length, anchorsTried: st.owned.length,
+        bondedNotDerived: derived.unresolved.length, importedRecords: imported.length, checkedLive: list.length,
+        derivedClosed: list.filter((_h, i) => !live[i].live).map((h) => h.receiptIndex),
+      });
+    }
+    return list.map((h, i) => ({ h, p: live[i] })).filter(({ p }) => p.live).map(({ h, p }) => ({
       pid: p.pid, pair: (_farmPoolOf(h.lpAsset) || {}).pair || null, controller: farm.manager, lpAsset: h.lpAsset,
       shares: p.shares, receiptLeaf: h.receiptLeaf, receiptIndex: h.receiptIndex, anchorLeaf: h.anchorLeaf,
       unlockAt: p.unlockAt, pendingUnits: p.pendingUnits, pendingTac: p.pendingTac,
+      ...(h.via === 'imported-record' ? { imported: true } : {}),
     })).sort((a, b) => a.receiptIndex - b.receiptIndex);
   }
   const _farmPoolOf = (lpAsset) => (_farmCfg().pools || []).find((p) => String(p.lpAsset).toLowerCase() === String(lpAsset).toLowerCase());
+
+  // Positions whose receipt key is not derivable from the wallet key (opened under a random key) are kept as records the
+  // holder saved: { lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }. importFarmPosition checks a record against the
+  // chain before storing it: the receipt leaf must reproduce from (manager, lpAsset, shares, owner, nonce), ownerPriv must be
+  // the private key of the x-only owner, the leaf must be in the pool tree and the manager must hold it live for that pool.
+  const FARM_RECORDS_KEY = 'tacit:farm-position-records:v1';
+  const _farmRecordsMem = new Map();
+  function _importedFarmRecords() {
+    const out = new Map(_farmRecordsMem);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const rec = JSON.parse(localStorage.getItem(FARM_RECORDS_KEY) || '{}');
+        for (const [k, v] of Object.entries(rec)) out.set(k, v);
+      }
+    } catch { /* storage unavailable: only records imported in this session apply */ }
+    return [...out.values()];
+  }
+  async function importFarmPosition(record, { events } = {}) {
+    const farm = _farmCfg();
+    const r = record || {};
+    const hex32 = (v, what) => { const h = String(v || '').toLowerCase(); if (!/^0x[0-9a-f]{64}$/.test(h)) throw new Error(`farm-import: ${what} must be a 32-byte hex value`); return h; };
+    const rec = {
+      lpAsset: hex32(r.lpAsset, 'lpAsset'), receiptLeaf: hex32(r.receiptLeaf, 'receiptLeaf'),
+      owner: hex32(r.owner, 'owner'), nonce: hex32(r.nonce, 'nonce'), ownerPriv: hex32(r.ownerPriv, 'ownerPriv'), shares: String(BigInt(r.shares)),
+    };
+    if (r.controller && String(r.controller).toLowerCase() !== farm.manager.toLowerCase()) throw new Error('farm-import: the record is for a different farm manager');
+    if (!_farmPoolOf(rec.lpAsset)) throw new Error('farm-import: the farm has no pool for this LP asset');
+    const derivedLeaf = pool.farmReceiptLeaf(_farmC32(farm.manager), rec.lpAsset, BigInt(rec.shares), rec.owner, rec.nonce);
+    if (derivedLeaf.toLowerCase() !== rec.receiptLeaf) throw new Error('farm-import: the record keys do not reproduce the receipt leaf');
+    const xOnly = '0x' + _hex(secp.getPublicKey(Uint8Array.from((rec.ownerPriv.slice(2).match(/../g)).map((h) => parseInt(h, 16))), true).subarray(1));
+    if (xOnly !== rec.owner) throw new Error('farm-import: ownerPriv is not the private key of the receipt owner');
+    const evs = events || await fetchEvents();
+    const { leaves } = indexer.index(evs);
+    if (!leaves.some((l) => l && String(l.leaf).toLowerCase() === rec.receiptLeaf)) throw new Error('farm-import: the receipt leaf is not in the pool tree');
+    const prog = farmProgram();
+    const cur = await prog.position(rec.receiptLeaf);
+    if (!cur.live) throw new Error('farm-import: the manager does not hold this position live (already unbonded?)');
+    const pid = await prog.pidOf(rec.lpAsset);
+    if (pid == null || Number(cur.pid) !== Number(pid) || String(cur.shares) !== rec.shares) throw new Error('farm-import: the record does not match the manager\'s position');
+    _farmRecordsMem.set(rec.receiptLeaf, rec);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const all = JSON.parse(localStorage.getItem(FARM_RECORDS_KEY) || '{}');
+        all[rec.receiptLeaf] = rec;
+        localStorage.setItem(FARM_RECORDS_KEY, JSON.stringify(all));
+      }
+    } catch { /* best effort: the record stays valid for this session */ }
+    return { imported: true, receiptLeaf: rec.receiptLeaf, pid: cur.pid, lpAsset: rec.lpAsset, shares: cur.shares, unlockAt: cur.unlockAt, pendingUnits: cur.pendingUnits };
+  }
 
   // Re-derive a position's receipt key from the wallet, confirm it matches the receipt the caller holds, and take
   // the membership proof + root from a fresh tree.
   const FARM_UNBOND_DUST_UNITS = 100000n; // 0.001 TAC of pending reward is not worth blocking an exit over
   async function _farmReceipt({ walletPriv, position }) {
     const farm = _farmCfg();
-    if (!position || !position.receiptLeaf || !position.anchorLeaf) throw new Error('farm: a position from farmPositions is required');
+    if (!position || !position.receiptLeaf) throw new Error('farm: a position from farmPositions is required');
     const shares = BigInt(position.shares);
-    const keys = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });
+    // A position recovered from chain re-derives its key from the anchor note; one opened under a random key uses the
+    // record importFarmPosition stored (looked up by receipt leaf, never taken from the caller's object).
+    const stored = _importedFarmRecords().find((r) => String(r.receiptLeaf).toLowerCase() === String(position.receiptLeaf).toLowerCase());
+    if (!stored && !position.anchorLeaf) throw new Error('farm: a position from farmPositions is required');
+    const keys = stored ? { owner: stored.owner, nonce: stored.nonce, ownerPriv: stored.ownerPriv }
+      : lpBondPosition({ walletPriv, controller: farm.manager, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });
     const leaf = pool.farmReceiptLeaf(_farmC32(farm.manager), position.lpAsset, shares, keys.owner, keys.nonce);
     if (leaf.toLowerCase() !== String(position.receiptLeaf).toLowerCase()) throw new Error('farm: this position does not belong to this wallet');
     const cur = await farmProgram().position(leaf);
@@ -1747,7 +1996,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const head = requested == null || requested === 'latest'
       ? await headBlock()
       : (typeof requested === 'number' ? requested : parseInt(String(requested), 16));
-    const events = await fetchEvents({ ...opts, toBlock: head });
+    const events = (opts && opts.events) || await fetchEvents({ ...opts, toBlock: head });
     const getTxInput = async (txHash) => { const tx = await rpc('eth_getTransactionByHash', [txHash]); return tx && tx.input; };
     const getLockState = async () => {
       const tag = '0x' + head.toString(16);
@@ -1769,7 +2018,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // that fails membership at settle time (safe — rescan and retry), same as a stale note witness elsewhere
   // in this module.
   async function scanStealthLocks({ walletPriv, opts } = {}) {
-    const { tree, lockLeaves, lockMemos, lockSetRoot } = await scanLockSet(opts);
+    const set = await scanLockSet(opts);
+    return { mine: _openReceivedLocks(walletPriv, set), lockSetRoot: set.lockSetRoot };
+  }
+  function _openReceivedLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
     const recipientSpendPrivHex = _bytesHex(identity(walletPriv).priv);
     const mine = [];
     for (let i = 0; i < lockLeaves.length; i++) {
@@ -1782,7 +2034,32 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         mine.push({ ...m, oneTimePriv, leaf: lockLeaves[i], lIndex: i, lPath: path });
       } catch { /* a lock whose memo cannot be processed is skipped; the rest of the scan continues */ }
     }
-    return { mine, lockSetRoot };
+    return mine;
+  }
+
+  // The locks this wallet SENT, from the sender tail every stealthSend appends to the lock memo (sealed to the sender's own
+  // key): each entry carries what stealthRefund needs — the lock's fields, its position, and `refundPriv`. `spent` reads the
+  // pool's lock-nullifier flag (true once a claim or refund landed), or null when the read fails. A lock the tail does not
+  // open (sent by a build without the tail) is not listed.
+  async function scanSentLocks({ walletPriv, opts } = {}) {
+    const set = await scanLockSet(opts);
+    return { sent: await _openSentLocks(walletPriv, set), lockSetRoot: set.lockSetRoot };
+  }
+  const LOCK_SPENT_SLOT = 119n;
+  async function _mappingFlag(slot, key) {
+    const k = _hex(keccak256(Uint8Array.from([..._b32b(key), ..._b32b('0x' + slot.toString(16))])));
+    const v = await rpc('eth_getStorageAt', [cfg.pool, '0x' + k, 'latest']);
+    return BigInt(v || '0x0') !== 0n;
+  }
+  async function _openSentLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
+    const opened = recovery().openSentLocks({ senderPriv: _bytesHex(identity(walletPriv).priv), lockLeaves, lockMemos });
+    const out = [];
+    for (const o of opened) {
+      let spent = null;
+      try { spent = await _mappingFlag(LOCK_SPENT_SLOT, pool.nullifier(o.leaf)); } catch { spent = null; }
+      out.push({ ...o, lPath: tree.rootAndPath(o.lIndex).path, spent });
+    }
+    return out;
   }
 
   // Claim a discovered lock into an ordinary note under a FRESH per-note owner (mirroring the recipient
@@ -2512,8 +2789,108 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...out, jobId: sub.jobId, status: checked.status, txHash: checked.txHash, ...(checked.memoCheck ? { memoCheck: checked.memoCheck } : {}) };
   }
 
+  // ── CDP positions from key + chain ──
+  // The position owner key is derived from the wallet key and a per-controller key nonce; the settle that opens a position
+  // publishes its owner, so the walk reads each CdpPositionInserted settle's calldata, matches the owner against the derived
+  // keys (nonces 0, 1, 2, … until a run of unused ones), and re-checks the position leaf from the published fields. Whether
+  // a position is still open is the pool's cdpPositionSpent flag (storage slot 163, keyed by the position nullifier).
+  // What the chain does not hold: the debt note's own opening (it is an ordinary memo note, recovered with the rest) and
+  // any position opened under a random key by an older build (keep its saved descriptor).
+  const CDP_SPENT_SLOT = 163n;
+  async function recoverCdpPositions({ walletPriv, events, cdpCfg = {} } = {}) {
+    const controller = cfg.collateralEngine;
+    if (!controller) return { positions: [], skipped: 'no collateral engine configured' };
+    const evs = events || await fetchEvents({ include: ['cdp'] });
+    const positionEvents = evs.filter((e) => e && e.type === 'CdpPositionInserted');
+    if (!positionEvents.length) return { positions: [], positionEvents: 0 };
+    const getTxInput = async (h) => { const t = await rpc('eth_getTransactionByHash', [h]); return t && t.input; };
+    const leafOrder = positionEvents.map((e) => lc(e.leaf));
+    const r = await recovery().walkCdpPositions({
+      priv: identity(walletPriv).priv, controller, positionEvents, getTxInput,
+      positionIndexOf: (leaf) => { const i = leafOrder.indexOf(lc(leaf)); return i < 0 ? null : i; }, ...cdpCfg,
+    });
+    const positions = [];
+    for (const p of r.positions) {
+      let spent = null;
+      try { spent = await _mappingFlag(CDP_SPENT_SLOT, _cdp.positionNullifier(p.positionLeaf)); } catch { spent = null; }
+      positions.push({ ...p, spent, live: spent == null ? null : !spent });
+    }
+    return { positions: positions.filter((p) => p.spent !== true), positionEvents: positionEvents.length, opened: r.allOpened.length, nextKeyNonce: r.nextKeyNonce };
+  }
+
+  // ── one entry point: everything recoverable from the wallet key alone ──
+  // Returns { notes, farmPositions, sentLocks, receivedLocks, cbtc, cdpPositions, diagnostics }: `notes` are the unspent
+  // notes (each with its membership path and root, ready to spend; `source` tells which channel found it), `cbtc` the subset
+  // that are cBTC bearer notes, `sentLocks` / `receivedLocks` the stealth locks the wallet sent / can claim, and
+  // `diagnostics.coverage` says per category what was scanned and what could not be resolved. Reads chain state only: no
+  // transaction is sent. opts: { events, toBlock, deep (default true: also the calldata walks), btcHistory, bridgeAmounts }.
+  async function recover({ walletPriv, events, toBlock, deep = true, btcHistory = null, bridgeAmounts = [], cbtc = true, cdp = true, farm = true, locks = true } = {}) {
+    if (!walletPriv) throw new Error('recover: walletPriv required');
+    const head = events ? null : (toBlock == null || toBlock === 'latest' ? await headBlock() : (typeof toBlock === 'number' ? toBlock : parseInt(String(toBlock), 16)));
+    const evs = events || withSavedMemos(await fetchEvents({ toBlock: head, include: ['wraps', 'cdp', 'bonds'] }));
+    const st = await _scanNotes({ walletPriv, events: evs, deep, cbtc, btcHistory, bridgeAmounts });
+    const d = { errors: { ...st.diag.errors } };
+    const notes = st.notes;
+    const cbtcNotes = notes.filter((n) => n.source === 'cbtc');
+
+    let farmList = [];
+    d.farm = { attempted: false };
+    if (farm && cfg.farm && cfg.farm.manager) {
+      d.farm = { attempted: true };
+      try { farmList = await farmPositions({ walletPriv, events: evs, _scan: st, _diag: d.farm }); }
+      catch (e) { d.errors.farm = String((e && e.message) || e); }
+    }
+
+    let sentLocks = [], receivedLocks = [];
+    d.locks = { attempted: false, lockLeaves: 0, sent: 0, received: 0, unspentSent: 0 };
+    if (locks) {
+      try {
+        const set = await scanLockSet({ events: evs, ...(head != null ? { toBlock: head } : {}) });
+        d.locks = { attempted: true, lockLeaves: set.lockLeaves.length, verifiedAgainstPool: set.verified, locksWithoutMemo: set.lockMemos.filter((m) => !m).length };
+        receivedLocks = _openReceivedLocks(walletPriv, set);
+        sentLocks = await _openSentLocks(walletPriv, set);
+        d.locks.sent = sentLocks.length; d.locks.received = receivedLocks.length;
+        d.locks.unspentSent = sentLocks.filter((l) => l.spent === false).length;
+        d.locks.sentSpentUnknown = sentLocks.filter((l) => l.spent == null).length;
+      } catch (e) { d.errors.locks = String((e && e.message) || e); }
+    }
+
+    let cdpPositions = [];
+    d.cdp = { attempted: false };
+    if (cdp && cfg.collateralEngine) {
+      d.cdp = { attempted: true };
+      try {
+        const r = await recoverCdpPositions({ walletPriv, events: evs });
+        cdpPositions = r.positions; Object.assign(d.cdp, { positionEvents: r.positionEvents || 0, found: r.positions.length, nextKeyNonce: r.nextKeyNonce ?? 0 });
+      } catch (e) { d.errors.cdp = String((e && e.message) || e); }
+    }
+
+    const src = (k) => notes.filter((n) => n.source === k).length;
+    d.notes = {
+      leaves: st.diag.leaves, unspent: notes.length, viaMemo: notes.filter((n) => !n.source).length, viaWrapWalk: src('wrap'), viaChangeWalk: src('change'),
+      viaBridgeMintWalk: src('bridge-mint'), viaCbtcScan: src('cbtc'),
+      pendingWraps: st.diag.wrap.pending.length,
+      derivedAlreadySpent: st.owned.filter((n) => n.source && st.spent.has(lc(n.nullifier))).map((n) => ({ leafIndex: n.leafIndex, source: n.source })),
+      emptyMemoLeavesNotAttributed: st.diag.unattributedEmptyLeaves.length,
+    };
+    d.wrap = st.diag.wrap; d.cbtc = st.diag.cbtc; d.bridge = st.diag.bridge; d.change = st.diag.change;
+    d.coverage = {
+      notes: { memo: true, wrapWalk: !d.errors.wrap, changeWalk: deep && !d.errors.change, bridgeMintWalk: !d.errors.bridge, cbtcScan: cbtc && d.cbtc.attempted ? !d.errors.cbtc : (cbtc ? 'not needed' : false) },
+      farmPositions: { derived: d.farm.attempted && !d.errors.farm, needsImportedRecord: 'positions opened under a random key (older builds) — importFarmPosition(record)' },
+      stealthLocks: { sent: d.locks.attempted && !d.errors.locks, received: d.locks.attempted && !d.errors.locks },
+      cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp, needsSavedRecord: 'positions opened under a random key (older builds)' },
+      complete: Object.keys(d.errors).length === 0,
+    };
+    d.unresolved = {
+      notes: 'empty-memo leaves no wallet channel explained (other holders\' seed-derived notes, or notes outside the derivation windows): ' + st.diag.unattributedEmptyLeaves.length,
+      pendingWraps: st.diag.wrap.pending, changeSkipped: st.diag.change.skipped,
+      farmBondedNotDerived: d.farm.bondedNotDerived ?? null,
+    };
+    return { notes, farmPositions: farmList, sentLocks, receivedLocks, cbtc: cbtcNotes, cdpPositions, diagnostics: d };
+  }
+
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
 }

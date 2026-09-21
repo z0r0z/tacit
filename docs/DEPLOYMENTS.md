@@ -104,6 +104,19 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 | Deploy block | 25998736 |
 | BTC anchor height (reflection seed) | 967040 |
 
+### Key-only recovery reads
+
+What [key-only recovery](./RECOVERY.md) reads from this generation besides the pool's note events.
+
+| Read | Value |
+| --- | --- |
+| `Wrap(depositId, assetId, amount)` | pool event; deposit ids matched to the wallet's derived wrap notes |
+| `CdpPositionInserted(leaf)` | pool event; the position's fields are in that settle's calldata |
+| `Bonded(receipt, pid, shares, unlockAt)` | FarmManager event; matched to receipts derived from the wallet key |
+| `cbtcLockVBtc(outpoint)` | pool view; the recorded value of a cBTC lock |
+| `lockSpent` (mapping, storage slot 119) | pool storage, keyed by the lock nullifier; set once a lock is claimed or refunded |
+| `cdpPositionSpent` (mapping, storage slot 163) | pool storage, keyed by the position nullifier; set once a position is closed |
+
 The three guest ELFs behind these keys rebuild byte for byte; see [Reproducible builds](./REPRODUCIBLE-BUILDS.md).
 
 The pool is deployed with a **fully-validated Bitcoin light relay** (full
