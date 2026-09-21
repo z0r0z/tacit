@@ -1,0 +1,4792 @@
+{
+ "n": 5,
+ "address": "0x0000000000696760e15f265e828db644a0c242eb",
+ "type": "erc721",
+ "name": "Wei Name Service",
+ "symbol": "WEI",
+ "decimals": 0,
+ "snapshotBlock": 26028062,
+ "snapshotBlockHash": "0xb88b988668823d36ebc40369591f6aad7f77116f32681a1996aad2a6b44d1bef",
+ "totalSupply": "2374",
+ "verified": true,
+ "method": "replay",
+ "holderCount": 769,
+ "holders": [
+  {
+   "address": "0xb2f560c120484271e81931a176dc03d0aacae850",
+   "balance": "285",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfbd69f8116268feb3d926fca217ab2d56acade8e",
+   "balance": "210",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xbad9895fa47616022e648ddd846119f4c9661ed8",
+   "balance": "108",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20",
+   "balance": "79",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2080699a61efa9f6947901ed2361d4d0eea0fca4",
+   "balance": "63",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x201b70cdb25ae89600c7b1e8fa121f537f9dc11b",
+   "balance": "35",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0924102292a8776066ce1980321906817cf433f5",
+   "balance": "31",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x88b9549b1cb147bc2dabc2f8511a85932ce4f641",
+   "balance": "27",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf4f7f1bd0905efe61382de895ec3c1ed321b995b",
+   "balance": "26",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa5c39a4ddb62038a58c00570519cd0e9922d4968",
+   "balance": "24",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2af2f6236e60f8476575afc9633318617ff595a5",
+   "balance": "23",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x62b9d0f8317becf055b81c6e84fcc30cb68d4e03",
+   "balance": "23",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x03a641a699a5ab4a63bf110588fbaa7e0471f2c0",
+   "balance": "20",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x357836ffcb45307fa7ff2a574f505753c961902b",
+   "balance": "19",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x714b831eb02fe854283219b2b9f1c6951f46dcb9",
+   "balance": "19",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb03f5438f9a243de5c3b830b7841ec315034cd5f",
+   "balance": "19",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb2afc5a886432beea04b015c08710f562c03ad91",
+   "balance": "19",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x56c09caf7a77d5d254dae3438bb843a1ffd06aa2",
+   "balance": "18",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xcaa186f25c26a3f53f936cefff1f94a5588a3db3",
+   "balance": "18",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4e03b18e03e73d8b25fbc389b898dc9a0ee5496f",
+   "balance": "16",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x578edd048edf1fb8287ee9653f84acd431fe32be",
+   "balance": "14",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x634f36bfb6e45fcae37c5c8ae2196956b03906f5",
+   "balance": "12",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x43e47385f6b3f8bdbe02c210bf5c74b6c34ff441",
+   "balance": "11",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcd56d84a22af53e50f42a09fb0b5746b0952f337",
+   "balance": "11",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x57ca4b27e18b117ca0a26a381a16ddd60f07e36e",
+   "balance": "10",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5aa498511dcdaf36a85833a6e2384dc93720e5f1",
+   "balance": "10",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8f6c205c308232eba00de7ad616313641cd4372a",
+   "balance": "10",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd956684f77917515976c9eddf5987a68fb3aaf07",
+   "balance": "10",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3f4a28718c82cef83ed9318f8ed8043c779050e2",
+   "balance": "9",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x67708ab7f1ec2b6d1bcb47a03d67d2c995380b6b",
+   "balance": "9",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd264532bb799a551ba8bbedd15356c496eb18954",
+   "balance": "9",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xe38848f4dcf6f68be6acc2bf8cc0fce48ee69474",
+   "balance": "9",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x259da38423a83e8685eba1c41d339b000fb53445",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x43b27614c91ac838d9e1b1353a8a9b561a1d7548",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x484ec62385e780f2460feac34864a77ba5a18134",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd24c9bd55ed078806894104df1d95e955c7419ae",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd39372b49dddd774d764764ab2dfe79e9b9ef6a3",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf8dfd987b9cdc2f213cd9a30e3af3c190190ab17",
+   "balance": "8",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x198109b0d2c786a230d18b622d3b7a1946131e09",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1d52ad18c074b8125fbcfdfcd01773c6bedbd88a",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x23400dc0cc44fb8f295fd4c73bb19528066b59f3",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x23631b12402fe1b2404fccfab01557269b0df108",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x298e2039599e6b51a84dbee945a1071846fc6e58",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x766d5c405a4cc9de51aa694fffe922bccf31c46f",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x92956b29dc0c0329b1e15a0a26beae00785cefdc",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe3dbe4473cef5e25bbb8c21ffa028333e28fac92",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xec64302e26fcfc16b194030959598f4461d7a9bb",
+   "balance": "7",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x06074fd0c42c268837323e2a399241cae743fe99",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x17254d13fb3bd85009b1b83426efeb7ff39249fa",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4538ce484db76f2d30e6f37314780e8d8d92f3ed",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x556fedf2213a31c7ab9f8bc8db5b2254261a5b0b",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7b054580aea6b6cbdf30bbbe84777bae623f4d1e",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x830da1fc68f4827606a0f92cd3c8d5676104a2b0",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdfd60a8e1e17fbb78e8ca332906a822d862f3d57",
+   "balance": "6",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00000007988a79d16cf76b5dc4cf54dc3af24936",
+   "balance": "5",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x0007001c4dcf37494e536bd8e3202e9c9fa16f9f",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1208a26faa0f4ac65b42098419eb4daa5e580ac6",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x16f66fa4623c55bf851d3462667448ffb8e3a5f4",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x193641ea463c3b9244cf9f00b77ee5220d4154e9",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5b7f2b20c21b8384403120194f577362e65e5cf8",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x73d4e8632ba37cc9bf9de5045e3e8834f78efa85",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x73e4a2b60cf48e8baf2b777e175a5b1e4d0c2d8f",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x7950ce0b82d8a0fe19d2900b216253b410068b73",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x84b148478ea9c9ec122e674c1c28d240cd2be59e",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa964b8b83290b60f27d57a8b9e07862ceb5e1bc1",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb6af7c04f67b5eb61f0dc7ac4a760888ec3e3887",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xef96925efdf59561bde3f18f300597926c4852b9",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf6aafb44bc183d3083bfae12d743d947ca376562",
+   "balance": "5",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x01851d51932c9ee38eb791611ac12234adf72ba6",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1e0f3b1e5475fc1756500493c9b9cd211284fc7f",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x39eeb9f03078f5af3484820ea45a61c9374f7f57",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x424aef7b8dc105907ac2b2e90b447811184113a0",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4a12fdaff5ef7c97c4359c49d80156e1405ee32a",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5da4989153674cf0372ccee6636585a47e4483d7",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6f0244f4647bbac130a2aad00c776eae7fbbb4ac",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x72185924ff9c68f1e02f7b7ec16a898c02d54510",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7a16ff8270133f063aab6c9977183d9e72835428",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9a1e04ffd63230a0bdc723be5870aff04af0bb02",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9bbb557e55adfe4918a09d8a88ca8915034ad168",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9c24ec6bd729317f19b7dd83074b70db8e40244c",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9f452cdea6ebf7ff6313177af18328a2765cadff",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xac7b1766ec12824a69207b3eff9104071000a661",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb14b7556cc73dbb1a608b978ee83d5f05749428a",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc304eef1023e0b6e644f8ed8f8c629fd0973c52d",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc38911f910889575c24ba57830e89d59710be7c8",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd714dd60e22bbb1cbafd0e40de5cfa7bbdd3f3c8",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe04885c3f1419c6e8495c33bdcf5f8387cd88846",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xe423b19262ea8fbc68ab9509f90080ab6aa1930b",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe4c871322c7ef14e6cb6cc45d610d18c7f3c1d22",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe5350d96fc3161bf5c385843ec5ee24e8b465b2f",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xea310c966d3ff5e09c65487f1763b21361eb71ef",
+   "balance": "4",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x08b296a897b1c8a033066a34dfde80c66a825d7b",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1341df844780b66af4ccc98ae0f34be87eabe1d5",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x135cf9b37455bd9403140b7d920319981892d9b7",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x13ebd3443fa5575f0eb173e323d8419f7452cfb1",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x156c209e0ffc03c4435713d683ae130332436716",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x19c1bb001faa97bd0a07ac75719f380787ae4759",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1ad0616798839b9d691a7281ce912cd5c0212329",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2071e23770a3a72df98f716cf926aabb536d3620",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x347ffc6db9acc54ac2019795173b9599e8b82bd9",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x36e7b4d810ce87b51c97e96d08d2f5da1754e198",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3c37dc9b5d4c60d404ec834987c106510d03442f",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3cdc87babf7b4e5d4b39375bd7bae5034b379bdb",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4501457c36ae0647cd43a1a81ea4e9e69604215f",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x50f2d8da7f0349be9de72fbbd1bf1fc87e4a2b8b",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x74992be74bc3c3a72e97df34a2c3a62c15f55970",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x758736efb338ad018e2708cc575bf863b13578ce",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x850f5367026564e64970bb4dee1674cc78061afd",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9562906fc18a0a07ba54e83f9eeb8311913d1699",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9b64ebd966c4482b1b77681c5f0c532857ee8117",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa53a6fe2d8ad977ad926c485343ba39f32d3a3f6",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbb8fb8fe5198f25d117c0e7b1b9c8260cb19c3c0",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc3149f948eb2623e8d8e679966cdc95b96424ad0",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc434c1d20b92e2e5dfa408547ad43159eb669c87",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc49b6c714feaf22b12eb02a01521dab6edd1fcbd",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc7fb6b899c39ad07aa646e5f0dc7598362aebbc2",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc8f5e193045808dbf190ac084cc1c72ae846a5d4",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xce3214768474f006c50189d2d9583f19e3791f96",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd7b7a3ab29b3282dc76419bd57776e0e90de8a41",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdd27ffc12cb4d73234c0f52d4c3269a7fc833b24",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe866ece4bbd0ac75577225ee2c464ef16dc8b1f3",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf1b42cc7c1609445620de4352cd7e58353c3fa74",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf9922a11b057668943957b618d90431139d73594",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf9dbaa670f731229292e13204f95fceb8b0137dd",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfb4eecef04f1d45ead80a7a471d60b38b14eaa9a",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfc3c962fad2c1cc77f1a0d46e7b8a2de79a21774",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfdffca1246924de90f54f867db89476d011e5ce5",
+   "balance": "3",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00000b7a7a859f1b7ab55579fd4e7b0b22064f3d",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x005228360ca6554c7728fdddca1b3e536bf00244",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x0078e03239fdd5be3997a8d19e98171fe5c19402",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00c46670598e2d578bad85f8bdf5bd2c58ef9c00",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00ea5ad3a0d9c4c963e038ef8a944fa99a5a3ac6",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00fa301af969c3643176fc15f8ef30e756c93372",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x053e6294400a9268e35df445624f58087c7f388f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x05b4ca3f7df84237d8047c24775d406f1157d2ba",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x08ceb8bba685ee708c9c4c65576837cbe19b9dea",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x09dcabf773a87ff1b1b9885576938f0dcc1075db",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0a198d528a0cae893790c0af44c3c9feb795dd86",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0ce80f5f413d2994416ebfe448a272af5441931a",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x0f371c6ef2e8d12be41b1d64358613efccc8e354",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x11a968128adb249441d9d279a4ddd8968e158a11",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x137287d5c3a2a5b0718aceba486727f201491f92",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x157fcb7ef598d53f39dca89581375f5c38dafd94",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1821bd18cbdd267ce4e389f893ddfe7beb333ab6",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x19eda8ba8ed250923a5755558aad3f85995a5abd",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c24a4b9bdb04994d18d9e8bdd46038c8002c22b",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1ce1e8d2dc83a3051ada2974d9a6c0ad1e5f4e0f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1cf82438699503567fa12d41ce80e92ca0a8aef7",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1e5a4af51c40e8772351962d85a79ecb9153c90e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1ed4a7446556ed14593e15cdba22b1bba158cf8c",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1f6856d82e3b9aa15b22ac9e56bb03886999c1aa",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x22724d12be28128f7be71dd8b0d7e5168ee4ca9d",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2468968419e10897d02f00e66822696b3c0cf9c8",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x25744247a760dd8c73eaa81307e1ff827e8bcfa3",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x26823ad506d6ec33739dfc2248dbce740eaa82b0",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x27e26b04f0850ae04074d3dbbeac98784db900e0",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x29c95d1a961fb516dbc84adb641d091609553746",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2beb8d39a604ee4365d61c8bdf36862595a924dc",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2f60d2bb84eb8df6951f7215ef035ef052ba2725",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x34109c7c5cdae98fa1095b5b0f2794740f1b059a",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3b7d25be21dbd4e51babf10e893b7affabc32550",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x41f787643c0b0db1fd1c36b268a0f666f679e866",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4943407105999e3e97efa2035f5cbc64d72581c6",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x496a5ab36f95260c670c26721087962a8bd8c850",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4a522424be20e419b856d4ea31d522b8b709fe93",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4b4b369d0d7db869cf2b6b08d8d016cd666d2e60",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4b85b8e5d4d2e3220218f69500c4804721ee4cfc",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4bb45b82da746b596e1fedf6a90bd0f8194ae7e3",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4d91838268f6d6d4e590e8fd2a001cd91c32e7a4",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x4f1797977dcd92d7fa7ef01341120225d8f7dae2",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x511fc774b16484ba2891078ae74ced1750b5fb52",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x54a1d0b29257a97064a1832beaa517d8ccd7cfd8",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5a30de56f4d345b3ab5c3759463335ba3a3ab637",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5c25687b7ea2d37b965e11e1915f8de45b968b67",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5e6cf7026754b2ac23c59ecab13786015a5a81ac",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x61cd9557d4428752e3e9241a220c6b840cb9d00e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x640de07b73d0b95233d64898229ef3b214d89c1e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x66ac38d6115a0fb8d29ccc42081cc1216bf15c2e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x696969917d14af0eccd470b0797a447087aba094",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6969ae38619d9cc3abd8fd9962e1ed13d410da3b",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x697f79b58b74e6a96333a99fe3590a7dd7c37f20",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x728026bcdc00f81fcca0cc76f716b6e4bc35e576",
+   "balance": "2",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x746bb7befd31d9052bb8eba7d5dd74c9acf54c6d",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x76c59fa37af71f0769d03e36e152a296a15cb923",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7842c0b2773ad16d0e0f00e24815c04f700a7d33",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7976c5498130004459d5612e3dfde0981692465f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7ab7e6a777696e404b53260da72c57b31551ce98",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7b8691a5add303acf49e9ff51134d501c7d012f2",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x7bfaf4c59aa4f011672b8e77789e1eb41abd654d",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7d4e2cebbf9702b000a72a8f3614addcf5389c21",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x808a023b72260170c95d831f589a1ae0dca1e43e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x84bafdd4f2c7c1accfab8b9a8d4394682a8aab78",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x899881ad8ea499299a18d1eddf84a31d0b58bcd1",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9091bb463dd206ff821d97664e64340b75b5b442",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x95f615c88f791351b414322a0a7f9cc7354ae19f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x97bab0625e995140568f5b95b24cbf8f9f33b97a",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9c4d83d302f642b528fd47559c194606b86e63b5",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9dd624194f886fdf476acb63d173a31708e02a72",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa394ac5fab69542a9f2c8e291c4770078aa12d0a",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaa7a9d80971e58641442774c373c94aafee87d66",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xae883b12d9fbc702869c13d7876a69cbbf05efad",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb073e9dfd5cc7313198920b5c85e80a8e2855646",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb1d0b2a6ee874dc04b493768504a7ce34ed75174",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb1f45c5cb3c95e9c2640eaf21054e1b7cfdd9b11",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb2fc8a723f7a0631f01857c2bcb54d8b872b402d",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb93aec1fa537c57ec77f513e6aab97c2059e4f8f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xba1479a0d033ffb29a0b5992b7a4cd5e768c47db",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xba334681a8e1f55b8f49bb8a287aa83f6fd5637f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xbac78374f87d02d3b0d6faf82d8794201d40b35b",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbe4f0cdf3834bd876813a1037137dcfad79acd99",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbeb736a0886c6bbaee84b0bb8350dacd0b7d251b",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbf1a984d641c0718a1ca48c8a5d76d569c79af17",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc5454a4796e820a1265c6d3166102d74b64a4870",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc666a112cce75a0e12116b38319cfc0d59943b56",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcc23931e3bd7cc9744803c40446aa16fe8758db9",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xced608aa29bb92185d9b6340adcbfa263dae075b",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd3948439c7709f44d005b71e4b07b941c87bdea1",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd424930ff579a1eebef5199d36ed40d77c894d61",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd9b4b074e48cff75538e6468748c0fa2c16de5f5",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdd8e0fabb632d77810cc2da1ff3bc9df3932048f",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xddc10c347291039996720c985a3ab59ba5872ab1",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe0125f6f21df7fd09647bfc633b9dbfdedbb7ebf",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe1315479b29620164bb07a973c0f9525efc3d3ef",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe87bfff3c69f58c8bf30f1b29bf11e60605780e1",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xe998dbaeb3f4fca8cc410f6960e2eb3439e6c49e",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xe9cc16b79e7ea3cbc8124afb7b547826bc3dca28",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xea056794debdb1060d187e5887f0afdd2a897c71",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xeff6dff5aa55e94ad86560a804a4062b8f7238f0",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf99ee2763ae9582e6e91f5a7fdb6d70ebeb10017",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfdc7a0924e408400255db36e2a741a3ea2c1e117",
+   "balance": "2",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x000000000000000000000000000000000000dead",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": true
+  },
+  {
+   "address": "0x000000000e8cb9ed9dc2114d79d9215eacb9cb07",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x0000005260725eee99704957218d4045a50c2051",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x0000006d936ba3653b8854490e16e782cd32a9a8",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x0000c82aa4d72871568ef3859d2b0e7cf37e45f2",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x0000ce08fa224696a819877070bf378e8b131acf",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00063ddb30be7bc2292583d5f143e9d6e6228440",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x0030026755d09ee4b809b7e968dfe1b004b16286",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0035fc5208ef989c28d47e552e92b0c507d2b318",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0040daac32d83c78546ae36da42a496b28ab09e1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x005c3cfbc5476187c09c2d862d0d95cc8e94e15e",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0068c20b863745219b6f9542e86b1263029a1c2f",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0070095ef07437ba06f16e6ae2bf2270154ccbd6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x009d13e9bec94bf16791098ce4e5c168d27a9f07",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00c07f127229fc5288670af709d279c6569070d4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00d085559e03e31397943a754a290812667045cf",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00e881cdd175b58edc9e604869ee2ed95f33e461",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00fae9105902c808cb487a9eb5ad6b611e196bf7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x01205cb08edca867c9386e85371dc109e726d572",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x012a8def817ff5d69165fd3982c141ee8c571df0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0194325bf525be0d4fbb0856894ced74da3b8356",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x01d93c1f5f5607ee7fb771e5c322cbe4505e660f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x035c84e918e9fbbded9d4cc57c91a76716fc38fc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x035ebd096afa6b98372494c7f08f3402324117d3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x047f606fd5b2baa5f5c6c4ab8958e45cb6b054b7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x04aa547d95aa6508e8827b8c1f03ab6261188bc8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0512a4cb384a6bf5f7ade5065318a080ae5ae01e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x056123dbaf3605f77a9b0f3d3aa3017f59bc8b8f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x05c66634a095a3c6216cc79adb0ccd94793ac976",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x061b8335e1d2042975c4ed849943334bd07fb504",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x0640390cfd85a14c6b84d3021b07a39902a4f65f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x06c4159344cfa59f3f44f8f3460a12e6f634fa6e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x06d49cf038eb536b83d605220861b9fa50674f3f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0709b103d46d71458a71e5d81230dd688809a53d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0732d0cf4c80d7fdd5e3a2b540d7427a42dc5e77",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x07a145dbbc7e425d0f1b3b9982f955e97abad7a2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x07bd76c8f0a6d3c5b54780f30ebd5a612527b278",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x0864ad985336f84b3ade796ee5275e816bcaf178",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x091e3a29506f611b1ec9418fc2a6b3f0977210bc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x093f4a9b5f756b753fbb94c4aa57432708fcccf0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x095aa39c8b02a4057f02191db6edb91749e7389d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0ae95c29be9ebcf5d88ff562fbee45740bc6cd05",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0b399d2667733659f4a5fdcb030f3e26d26cc0fe",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0cbf69d0aa27da52fc7b53fdc3807a85aea3df2e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0ceec6c010026d719515186881d5340fae675485",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0d389aa79159030f4c7651ea98f56193f448c3f9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0d687af94dc38ab1bf08a9ccf0ce4e5c8016acf1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0e1ca0c78c85457e04dd6f256b290f6c31b7629a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0e843ddbfe1941174a4a0ac058cd610aaa9ce016",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0f059357b88f6b5d1e906015b57bae097f2e4c92",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0f74d1f47f193147de31b07b7b5a9b1364048e52",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0fb9730c92d4f2e21346d0f712fd832b71a78290",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0fc0f78fc939606db65f5bbf2f3715262c0b2f6e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x10001192576e8079f12d6695b0948c2f41320040",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1091ad83d7fe4daf8df882bbb76985de88503afa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x10f5d45854e038071485ac9e402308cf80d2d2fe",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x11b6a5fe2906f3354145613db0d99ceb51f604c9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x120748e0ed080f94dfc90e8aca4e107c250b8c67",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1287e25df59be88c0493ca572794bab078319842",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x12c6920a4acc4dae6b3992903a48adcbffe5dc5e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x12f9e39ffeacb64d957ae9bb240915e80d006748",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x133706e951d67366f0a5dcbe133101ca27a4bd83",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x13410028a97735873ec6bff65646b4572459d435",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1433f1e1ec72acc55059ff386afc93813a3cb0d1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x145e9ee481bb885a49e1ff4c1166222587d61916",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x155fc33424a6103113aab831ac7e72c7e30a4c4b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x156249dc32d6e3ed0b7c6c611096109a9d741a83",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x15f5341a9cb3ecc5c55415fd3c3d3c25639aca73",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x166fc420366c83a385dced8be850e9320613f986",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x171b4f557c8778d0fab1764843e53f3c5b023f05",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1727e54e1ed0c6fd0b65e078cc5d94d91283731e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x17507072c2ee8bd8f6debd38d048c8a1887b39d4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x176c3c8e7f635c655935ea0fee8a5645e4dd933f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x179a862703a4adfb29896552df9e307980d19285",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x17c57bd297175e5711ee3daf045252b588f3162f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x17e738d9056cf0926ffdb0ff15da4fe64661c867",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x18716be94049c71531d54fe9b53833f83cbfafaa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x18805a4510291521b21f8bdeb62006281ac54c10",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x18acc7e09e5b4adaf4d51dce21bc2ac616ea9440",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x18e7754fa0d789241cfe2983c01ce021b10340f8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1937fc14493058c73fbaf10461c3686094418f95",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1a55a5aaa3b462e8273bee6bd813fea4744f651a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1a751188343bee997ff2132f5454e0b5da477705",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1a9ed06f17c7e0d86bcac05bc6aef3df8a0ad48d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c074436520415b077c8ec6d457fae28277b4eb9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c39d232e4ff328f844301ebea821cfe1a75fa0b",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c70319052e9cfc804e3a8f408c828768f0fe40a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c95b516ddb5e467e8798a2f44753a1be3c8db8a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1d48720d329533e91af743e80745688fcc97b957",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1dcd8763c01961c2bbb5ed58c6e51f55b1378589",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1e299dc52eb9fdab6a6849f9731a948d8d72e474",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1e66895d596089bae7e7bfa7eb59a77bb8d06f82",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1edd32175f9eb04c6d1b1cbbfdfa1a9e31803af5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1f76a6bf03429480472b3695e08689219ce15ed6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1f916bbf39ab189a9e3d9e1823a7b1a8e9e5f204",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x201763c2574cd53743f26a51b77fddb074a3c66a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x20da700ea03e9fe8bf3409d6f66105184aefb2fc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2117bf88b4cb0186eaa87500a045fc998290e42a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x215d1c9a47dd57648faf2786f4b7cdb3303d2f9a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x217b7ad2e0346ea2df731c16334253df74e9d410",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x21c756561d2bbef61ac042255236757e7295f6b9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x222eb9de3da776e25f57bbb2fbae4d9dca15164f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x225b4f0021ca674c388613c6973322928f9b621b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x24029403d13c2e0cfee4a4ee1ba998e5b0367f03",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x24cdd1615c5b40a5692f94dba40ec653b3309727",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2515926e3a14ea1f3e7fd70b35cb8d6214398fb0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x25ea0aeefea7eab97a163382c5b230e2e8df5e1e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2632dd0fe665f6068bf92f3524fc61a8c49ec811",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x27436531ffba7f751832b1262ecbd41f555ae52a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x27bb53894f8a92432360a637cf8ab65fd50199be",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x27da984fcd8bdd8249d5669bf223d57fb3678832",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x280abf0549ba27ceeb99d69b057bfcab98f74709",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x285b7eea81a5b66b62e7276a24c1e0f83f7409c1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2b6dea17f10bcfcfe07fc071c599fb13110966a9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2c20ef3fc0248fca2dc57bcb202f2cae504a9a66",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2d381d174b2a43164be466babc0fe89693ec76b3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2d9da651d75bef56f9990555d1a42bee2aea630e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2dbd1deccfd0ecbf881a3859611dd64791cd1b36",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2deed2ebe9c1f177a541744c45c500f872d3ad8a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2e1aa78254dc5f619820f96bb276121ae0afba8a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2e813e7e08ab470346ab6af82125989f678e9c91",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x2e85fc8a6d285e139f483db9b70bfbbd832211d1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x2ef1ab6019ee0dac8b8da8a42122a3080126b248",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x300b9e1b7d01ace857f9a9d77a9dc25f03efb003",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x30629c1cee22542e8e501e0607ba9df30f535a35",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3082fa00601bc7e2e0710851f239033eeff1734b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x30dce030462af266d72e4b7cbb05d6dfd94280f7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3107af70f278d3824f9bab4222b3361a545356c2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3195c3f94154364e897711e501e104f40d8e23fb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x32596df10ff2ac5acde8406e6adcc8d047921073",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x33d66941465ac776c38096cb1bc496c673ae7390",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x33d875a3b4b8d146dd080bbadf7fb28ab03f63fd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x35039902510e1a5f6e5341a4326146e22cefaee6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x357a6132243f8402ed133cd31f114aea309bac43",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x35f95ddec37a8b6faa795b143cbcf233d468f66f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x362570c3ba2fe5ebba0c948109fab8de89cf9fc6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x36f72241b7385c476a63101a74449ceb2a1df50b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x37e274fb76ca4248353c993de51a9fd1add70b73",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x380c3e7ce7cc2369755db141fd73278d66a73f68",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3863e631de5e3f18a872be087b649b57b4ac0eee",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x387a161c6b25aa854100abaed39274e51aaffffd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3939d22af089bdfbb96322744234f69db1ab52f8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x3b54621fe962ee8e5283f2429b800e2e212c9a02",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3b7f83a8859e7416a827bf49d5d3e89ff4eae0cb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3b80a38d07573496bd899fc4dcfef56d26aaf9c8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3b8e8fe28b25d696e37179af0be5778bf4f799a2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3bf6cc96d9743c9101d318c0006c5f5ada51cfae",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3c2a8ad1d2ca31c7c88131834caf5f314da80fa4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3cc03de0e587f2ff82416e5bd38505befa08c1ae",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3d87c98d0f1e28ad01222b7980ed3f377e5f8d16",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x3e0300c59d4cf579310b771687b39a0333094e71",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3e0e5c49008c6ef7cf08a7c458c50498e1455851",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3e3672b23eb22946a31263d2d178bf0fb1f4bbfd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3e5da3e1f890c94312bc21a443f06eeccbcca9f1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3ecf93a3853a3e33342f1cbf34b4f6f9ff8b8b3b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x403973200061781657806770fd03f6763d6c0243",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4060c2c0af76e0fae2c8d9fa6ae32589cdadad5f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4143ea98ce4ea7376a6b0abd53f98541b4d3ca83",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x41f7bca7b0fc728ea8d9f1365abb3ac93080eb66",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x41f9fca307e4e8d25e9f334e59650a67368b2e3a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x42764cd2751c85795623ea5ca7e859900c79d83f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x42b23965d17754e7fc1ecc3db1cdb231bc5478f4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x42f037b84b4a25f2be0f7423b84dfd58a7c8bb42",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x43db7ed667b5019cc5c9117d727eaff485d35eca",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x43e3ab994070db606042e8deffd146300cb52919",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4482eda6afec99c0d4fdeab6f924de614300f543",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x452187eea6fa05255f66015546801bc9e1496085",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x45c1f238985cbd22c10626fd26962f1f544c32e8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x45dca0746fc56b400b291f5d9657a79464e8f152",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x45e2feb81bd6630c3b136e489674c8b61170eb22",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x461337d4f089adf16455acb785415f6437da0c24",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4660661ce085d05c53d2b3194d0bcb55b1a9a678",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4689cff824d63117f9c4c42f3ec0001676f00d25",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x46d078c232894e23257c2dee4375513609faca95",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x470e762299bad91107f00efc28f40d9c2b560117",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x47828248294dc20bb580ebecd1f8d3d8be73c9af",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x47dda6d14512b1f6cc73a7b69ea6791c14cb33b7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x485b907957352d0065bad52c730fcc79cfda6562",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x48fb8b4bab194b74cb8af3f97f2df059e534bfdb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x49c6617f346d1d085005dad229b8bdb248e86458",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4a301a07e220bf6663d965bb1b4e80ab87508734",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4afbfb0a64bbe9837f78fb2b262cf105076715cf",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4b00baf57b4b20b4ed6b028b9fd9ea313856bfca",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4beabd0afbcc2f0440cdef1c3c745d43fae704ef",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4c8f3122ba07a7ad4bc06cfd0694f722b188d077",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4debe16b2cbe699bc593d52b6ec6de710928735e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4defa30195094963cfac7285d8d6e6e523c7f90d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x4dfda666cce4b0f26c49900ded45f42f705398c7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4e567057b516ad5985a9b75a23ca81dd049079b5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4f46adf6c6d76ffdab9ff63c497cc68525191417",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4f48f1f3db3a07402de35201f261b5ef8930b3dd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4f6092a5157003bea7640349d6fadccad915980b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4f8b368755edfaaf31125da5c3ee37026ca35565",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4fcb2161e087f3a4153545a25304bd4e123a0e07",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x508392b6c642323484fdc1b1f7e1261dc2974bcf",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x50cc635dc17c4867dd949365fe3e99bcc72b62ab",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x51050ec063d393217b436747617ad1c2285aeeee",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x511589616416965a462fa8802e6f5ad5ef5baf87",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x51c94fb02381b391863e65a6d71ff1587fbb23e1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x52ab58c10e9187a79da50f892ea4801aad58cb00",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x530ad91070aa7cd2bd5a7785e29a2af3fab9202f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x536beb675cc1eda10817d572b8da9fc00446bbcb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x53f54b3fc66831aff6900a92c787809d7adbe91b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x54162ed0bbb35bacfc4bc64251f1d18e11d652c3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x54e1d0dbbc2486fd3c6a69e229b897581a598547",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5531db3f21a1723e6f4d95f93bc8220c6e9cffa2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x559d2c42ecdb5bdbb5c073f377855c0514bb16da",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x55a0f254b859124bebbd4c779c06076e1018ee24",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x55affcb7b6e7f2f94584fcb4ce02ad973d8342a4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x57fae63f7c63732fc4b77247f0255b11b9458ae1",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5844615552283374dd1ba95ec54bf83fae63ff10",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x58db0ca437cf8bf1e63d23a41f88c618e420d12b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x5969c91b90cf273562c8dba5dc73f4dc8d7d175e",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x59a1748b98c8735486a185471d13b123b5054eb4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x59e99351467c4a654a5ac8e649f07b213708b597",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x59ee04cdd1810af831726e0b137e056af8ef939a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5a084aaef5eddd9195f28f6fe056785e01f210eb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x5b62ad55cea818c8b5966a65c087a74eff6eea2a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5bb73e04b810527b14b87c37eff3d62481f2d416",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5cca7f5ff7cbbee126e6984533401a0d8fd53c92",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5df4110d7a63e1dfb7de740af44e4fb6e641f7f8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5edc811ab8929e56b376a1e411a30be8ab0db205",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f28761517f3943094beea3b405e24cb236f3a24",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f350bf5fee8e254d6077f8661e9c7b83a30364e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f43cd8b5eead549de4444a644b4cb425a4ea5b2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f7a8fb8cc29e795ba19191dd74d69a90cdadb88",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f926956f6f14c4d28537d7f821a8730b5eaf3f3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5f94cea3015d03baca8d31a935a0e9ba668bd5b8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x5f96d50ecae537ee61ece457bfe6ee68e5d80342",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5fa0cc370aa5732ba4b15d380c90ebd0413e45f9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5fc3afaeef0ff1149cee3bd80c1b20de629df880",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x601cb7712f86a279d0fbd5f6bad26407ddea1c26",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x612bfee7f0ce9c430146d9fe03fe79241dbb3fe8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x61d3dd0148a38dc739191df8ca2ba100895a88bb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x61ff9cbe2d6ce98f4c8ecf3807339474f4c09630",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6230aeac714bf918be726c7f7e41e180fa222b30",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x62d495dc4a581315856007c1fa4f9065f0dfbe2f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x63a18c7bb10cfa8e22a2bff324faf56bab022d6b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x63a556c75443b176b5a4078e929e38beb37a1ff2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x6442c1aad456f29e7631398283c6e87ff24942b8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x64438aa1fc362d39a710d15dc69caf4d71a908a1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6464220731d8842bb8cc0a6b125e28a2cb61da47",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x648aa14e4424e0825a5ce739c8c68610e143fb79",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x64f3b48733b268ca9ef319b6cbdf1b00e411c39d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6526b7aadc8646233ac8ce442058e86ef048590a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x657143820ee59b5f0da0de12bd199674178777cd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x662d5d79849113a5403af776210307a7c82a5267",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x66bb6c2949b20503adf3621db9903ee52f92ffb5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6735554964e7dec44dcd6ce3538fe0e90d262365",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x68229457542533df02143f630802f2654ae3f88d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x68596ca79cfb9d5b029ca3d9c496c4b7e08cb04b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x69420c67545e5ee95d1375f93ec0da06c05c9c1f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6ab1e7a4b05324d4d0d58897f467b10c016a636e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6b1d4ebcdf7ede260e7bbd56127b7770b985392f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6b6cd99a42ff157e31759873e8107dbdf34eeb6d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6c02a6f065d1eca4af639227b60b6596ea7147ef",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6c6e7b253cf9e00ed9084cfa1df2179870d94f38",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6cb596c5b8f09b4bd1c534fbfb9389d1b5cb6986",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x6d0597691b0ecb33b18e7ab7350ee55c86574dd8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6d87c07244c663b317522831f6e1ad4cfee958d0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6dc43be93a8b5fd37dc16f24872babc6da5e5e3e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6dda99478db888ae88513dc6278b61660f7efec8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6f2a8ee9452ba7d336b3fba03cac27f7818aead6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x6fd155b9d52f80e8a73a8a2537268602978486e2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x6fd81ccfb782ef65959500ba676b5ce22744c990",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x70feeec90d37dc73d9ded8cfafd7ede3f697b70b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7178ec93284148bf581f36598ba5f40791deb002",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x72e35050c24dc5abba38f5a0d8bcaf6c74ec9d46",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x72ed1e9f15f571e2b5638245cb829e2fbee2e4c7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x74c9d38ee85faeb44851560b7ac8dccc7d23885c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x74d8967e812de34702ecd3d453a44bf37440b10b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x74eb9d00a4af3966265661470e4df05494e5184a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x754c807eb8f31b277814976f08245d5052cbeadd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x767e7fb58cd12ca44266d4883ee2b94c1479c629",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x772bd1786c427c8e08d5cf3d2cdbcc9b408255bc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7773ae67403d2e30102a84c48cc939919c4c881c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x777a48f3210709805a9fa457f7c86061e1334f89",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x77fb4fa1aba92576942ad34bc47834059b84e693",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7876d1aa2fb4311f84a9ba0a8cf816eb5223d5c2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x7af34823b2d0402493539c50fedf9489a84a73e4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7b720ff4c698ada0c8fce2086c98b7e5c1ea0d80",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7bd9947237ec581f5cde7f78e026fe007f79a909",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7bef575b9c885518715d13dfc6c32658c50327ee",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7c97fb7394200d92429e5a234d4d961721b1cdde",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7d761d8828baf244eac723f82b2ece15ef8adc4f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7ddc81cdaff687d8f3117a293a991a10413e5eee",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7e4e171b4daacacd2595086d4a843444b19587b1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7efac61c24050f88023ac19fb4aba15c48956a6b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x7f46acb709cd8df5879f84915ca431fb740989e4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8009fabd3364f57d1f6c26b4d3860b73ea048243",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x807aa4a4af16f7a354ebd52477a36aa6e55fd42f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x81afcf6dd79897cba488471ecec2f41bf3f7ca9b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x81dfd4cc20c7c37ab29484d6b3d7654c99231d11",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x832a7e343e82db0e93425b753f349f8a44f700e9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x83fe0e1435bf6d53029bf54a9477937b3fde07fc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8491021ed619c53705852474de4a72367d789210",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x853efb2823a2356cc1bcef34c1676106190f28b3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x85d1533a4aea1474d8a3b47a6265bd711897e87d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x85d5db18175055fbe6144af6c74450b44f643dfa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x85f2602e95a4490388a7fcdc0f5d83f21b310ad2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8665f7ceadfbff09e2cc572f7a6e43198d87ff88",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8697c36fb156c491a28498098d1218ab1f16e3ab",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x86d3ee9ff0983bc33b93cc8983371a500f873446",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8734dc0ac11c9c059ab55233d34a230a5b9c6be4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8744e449857c286e98aece4a6bba3b55ad991c44",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x88289ac519efb1cba5f522970e63264a969bed06",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x887b86b6b6957f7bbea88b8cefd392f39236a88c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x887c3599c4826f7b3cde82003b894430f27d5b92",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8930514b0bc31ac5663b297579ee54fc1fc5806d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x89fbe203edcc8dc1cca45b672e48f7b8ea04433a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8ad557e25766c99e28e6fe8e3e0fbf87e452b23d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x8aebbd3d3e8d027246786d2c03980d07a7d85f36",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8b58a55ae1d59515fde033609e5f34fa3530db53",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x8cf1186c00febb60d8ed571a074fd08bfaab7b7b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8d583944bce04473f1c6391a2b41358dd549d9c5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8d5e9ea833b4599c9f4253758634798579309ce3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x8dc77b145d7009752d6947b3cf6d983cafa1c0bb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8e49f27740cba1e6d5799d8562cdf580c66d666e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8e6aa49d6fcd33ce10499db322ede825152878bd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8e889fb1773732abdd0341cb683c7fa904d3ac87",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8e8db5ccef88cca9d624701db544989c996e3216",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x903ba1cf3f47383470c97f0aefe4f13a31d60f64",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x91046834d4748c17fec125f1264fc2275c51f678",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x91ab3daa9086d719ebf8c96ea6ca3d94e9df2b8a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x91c6fcf5d70caca7ead478f09e2bd49b5c1baafd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9342e2ac6dd4a907948e91e80d2734ecac1d70ec",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x938bf2b8a7e40472d846e50b8ffe763a0fc749d4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x946b8e47be5884fccbcb4cb6952f313cf8701289",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9490efb4af4c1ef9f124e6d52337c3ba0c3fd574",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x94b4779a75c81df865a650d276bb9468e08e5282",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x95057663cbfe01b1f956049d89b1229fd396d21a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x95219850ab2198088747031f0ba833577545eaf4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x95aa6cf80aa61c3433215c7b8330c065ed29ce97",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x962281a63397abb7359e6132f02eadebfc27e368",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x962bbc0946652f858b8bc0c6c7e49b0f54322d4d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x96b25bccd41c3fab88eabf7f381cdbfb21f8adb8",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0x97cf924760e86c7d2644a2b500c5f1fdd7fa1b99",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x98b1c4f6007682327bf67ddb9c3f4ad27ab92dc0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x999657a41753b8e69c66e7b1a8e37d513cb44e1c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x99fa48ccea8a38cde6b437450ff9bbddafaa4fc8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9a0ccd172ca6179928b0cd08bc79ca4a141653e5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9a0f21b00d45856bf67be52d822fa3d4f8888de8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9a34a73650396e603edb3b12d56a9ebf270a9720",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9a50a078d80f36e38edfae85affa2b8ab458e2c9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9a659894e5d115846767db0e1685744c452e7a6e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9c7b84be5d69bb41a718a4af921e44730a277f90",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9c8b692cc05d278dbe93c89bba5259bcb143fc47",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9cb59650fc64b8e0adbe9564497a99f30493b2ef",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9d152d78b05f31ea6979061d432110c8664ca1a7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9d40625f8ccf3a1c1dff3e53958abc6de45b2bf8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9d5017b9b62f423f9e69309a74c7ab4e7bf6a105",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9e496a37a8101b25ba5035aa915ae9d9fc5247e2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x9e4dc747b16b29a7814215715f419facdc9fbeec",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9e63b020ae098e73cf201ee1357edc72dfeaa518",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9e767d39cb0d1294f89d0de172484a2b2ffef667",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9fa549ff8be8e37384f1cd04afb8b945af6f78a4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x9fc6ec3d3b5913e70615edca92132899c31c932e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa058c37cf385044e642f19ed5a2f7d725c27beb0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa07f24258e8cbf0da82d0217d8a0cf8a9c78e667",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa22c9a7c425e5e1a21684bf1b2c18c4c15e8d23d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa244ef66719fec1534d4222eba39f94d9dea2ec0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa3339cb28412a02e812cfe5efc583bada649dc92",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa38445311ccd04a54183cdd347e793f4d548df3f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa4a6f641efd09c80c8c9f1592a1b842a75b539eb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa67ea52025d8531fec5c4902aeb5af80d662c24d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa6aaa74807a7c196014417d289143c8e7508843f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa6c1b4478d91c4a3e6b6ae6621524438a09b4323",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa6cab323b3780965a9b74d594e5d87ec7ea8f799",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa74f8e08594fef846678fdcce005679d370ba277",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xa7a5a2745f10d5c23d75a6fd228a408cede1cae5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa8ee3a92bdf7437485696c13f24f7b6fe1d15cd9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa960bcc07fdd90c94cbb40de105ad909f7012a9c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaa58bf08832222531cb7ec200b0e86e4b29d1cad",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaa92eea9843a6c63873b0956ce3ca61fbb85037b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaade7af6d6e96d114c3e8876f2b32335b32bc4b0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xab12253171a0d73df64b115cd43fe0a32feb9daa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xab1ef6a2bd769dce3da9cd96e8f16f00f50ee6e6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xab35d3476251c6b614dc2eb36380d7af1232d822",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xab402bf3c020c072f3895ae1c53b8ac0de909c06",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xabfe151f3f94f89381a20046706ca27af62c7279",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xac0a8e31cce23ef20d6c0483c7c042a86a5cd80e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xac469c5df1ce6983ff925d00d1866ab780d402a4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xad84333cc812510406415f315786f0673febeaf0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xadbaca84b574793de7879dd172cdecbf3d5f7656",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xade9e51c9e23d64e538a7a38656b78ab6bcc349e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xae0bb73d4d77a37cb1d782caa7476f7d14665638",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xae270b384da948a75ac74353a5c5e6609f27ae77",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xae749df800f5b08840eb18d53352fc8cf1d3178f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaead9e9190f27b757e798ed256e3193c4fb381e1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xafb3a9058dabcd2f15a39feaa35877449cecb57f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xafcc978067852c0c7c12a92a78cf5b74167b6ffb",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb0261152cf8a9bb27eecf64cec07c6e8dd23cb1c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb05cf01231cf2ff99499682e64d3780d57c80fdd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb21c33de1fab3fa15499c62b59fe0cc3250020d1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb2466968f64332ad47d804c1d5eb26370ea2d6c6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb25c5e8fa1e53eeb9be3421c59f6a66b786ed77a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb268acc3d953c6f4f7f3997f74d06e74f0bec186",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb348e87548e4d5bdf86c8d8724a123f1a607ec5f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb394f1aa30ba874df3ae6097bf4c2474b2d8f3ac",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb3a60853cffab43a0154a33ab10c498084bce8af",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb3b72ed2dad306b81c5fe77aafad5af2f880e247",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb5332593a54073a58967961df49a030448666cc6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb630abd9a5367763b7cba316e870c4a54064cc9f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb7955c9c0fcaac1165fc9141c34f1c22be9c82bd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb86af963db915f9fad378e04f8eea415c8fb4253",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xb8c2c29ee19d8307cb7255e1cd9cbde883a267d5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xb9ee36cf400548d66ef4bdcff8411ca0324d39d0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xba4c6e780af19f263b8fce68e0a4893246782dd3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xbb2fd24146d8a56da51143dab9b83cf814677573",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xbb5b712875983e59b904dc51f32e9f1d93b9ca2e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbbb38bd7c509834076d3412fb599d95871be545e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbbbbbbbbf4483b3179a61ab722acd79fc8aed22b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbcb39291ab6f69c7ecc555c1fa343bfbfab2f486",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbccf24790f85a26f448ddb59651fe5c54e884360",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbd12aa424c207e90b66402c1f0aec357e8b1ded7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbdc81e4ba06271d9b947e41ca13558bff1d0516d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbedd133f0ff6ee127cd81438c1fa3f5636845de5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xbf24d26b534a19e4f09c0b698b2cbfff820a452e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xbfc7cae0fad9b346270ae8fde24827d2d779ef07",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc001beefb9e6813d57b1a305d4c68e19f8867501",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc0065e595d8073aafabae8fadf05b9536546c12f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc0a00af31636f3426b983684fcc037d350862070",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc0b2a2f39ed1623358721e20827da630d47dbcac",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc0fe1769e63125ff277d8a8e72267791b614ffe0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc14ff56e720f79d08413ce00533256433d2ed929",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc2172a6315c1d7f6855768f843c420ebb36eda97",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc324429ac3f275d02cb4134114b55c0682dfc027",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc42705a210f082ff29e6beac80f56c41f0a54091",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc474577c601112ee1230ce0ed0f17e5cc2f5e1ab",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc480a6e8d3ba8e31cfa1e5cf4809a53a105ff1b1",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc480c3fd10d8965eb74b9b53ee65bea24b2a6a73",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc49c2900a2722c6fb0935db945d2ca8504e41028",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc6404f24db2f573f07f3a60758765caad198c0c3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc6d7208dadee4f431bd0f3f11e7d4c91ff51bfb2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xc72eb85e2af5f2d0364aacfc527d6a438a1423aa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc89f4570f64e6b02d957824b9472611af9e4976a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc94fd7882c1d5fbed3bd084d24e5d9e7826b0d0f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc97222f11c288f7db1af4b05a38d3aed132181db",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc98f2b7455f345e4ace14b94f4bb2cc27b2c64f5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc9d21be0db2d57bd06af965adb620194ecc652e8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xca0158ea52e5266c8cd4d9635977cebb2d7518f9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xcb0592589602b841be035e1e64c2a5b1ef006aa2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcbf203f2ee13702ec41404856f75357e0872484e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcc692d6e11268b40a1e3c58e3d86fc4caab9b77a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xcca9a24c13b3c84e84643cb2cfa6b2402ff870e8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xcdac2ad4b7e51e7bf53d37af34113b68ae677475",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xce8e8cc4a75a49955f58c9c98abfbbaab4c85ec9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xce9ed77764787d823244136e4d59091e49c50429",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcf16af9eea64eef084ebe94eae09e852c559c5ad",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcf2b7c6bc98bfe0d6138a25a3b6162b51f75e05d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xcf8d3063e7074b38f4548a7e2798ce2d498a8ee2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd095e0f8c72e22319846b643c4bac0cac1f67006",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd0b86deb6ede06c87d85b5be78e9a1e7b8ae8e03",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd0fd8d9df0d729fb267720252eeccb0f506c45af",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd11d005658264168ffc6441f0b68399409b497b2",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd2af9f3e3435ffdef945830fce4eab40877e0475",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd35bc4475730be606225bfa42890872d34356731",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd3f6d39e85406a4e705a285e77b018fcd8434b48",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd42c2a5cd8cb8f7c699217ed53297faafe475cd0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd42d52b709829926531c64a32f2713b4dc8ea6f6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd5dd0815c2ce8e54536d425527f1899a37796670",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd6a2a456b48836f38ace550c59c421ca24f1681a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd6a2e38df37b1301456a14a0755c4db48b876016",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd6b66609e5c05210be0a690ab3b9788ba97afa60",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd77dc14fcb46f7ab2d5986352b9dd064c692de65",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd790a1516f78e3fb52338084b5c5931a75bb19cf",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd7d6a644b6dbeb333e0613178f855a25cc7f8851",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd9a4c304e68b6b1779df9cc59b79de8cc3fd3117",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd9dfa2feead8247ee0deb4081bfdb12e00f3532e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xda1b9dfa299d655135c1ecdc4f0b4c9aed9a7f45",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdafc6853126d9bef2ce2b0d2aa5d38c84acda099",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdbad37372d6fd6c865e2e77f14a488a1f1f6b8cc",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xdd3e11523db3ca7d762691ecef6ee48aad3ac0b7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdddedf851ab4448c27b16b14368a0d3a532000e6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xddf543429e415a262e7617d76196621cb8375d20",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xde0f25e61767bc115bf67915469a1e16fd0087aa",
+   "balance": "1",
+   "isContract": true,
+   "blacklisted": false
+  },
+  {
+   "address": "0xde26dcfde2f27b917aaa61ee1ffab6dca996098b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xde64a183ff3abcd5f59a30d3ec6300f2496df6ab",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xde8ebd67013ce355a0d6f8d3c1624e04cbf4fe3a",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdfeee5d121bae747e74c230eab0905f3c655dab4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xdff8534f3ee03a94ac7d155a5beef97feb2d0182",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe11da9560b51f8918295edc5ab9c0a90e9ada20b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xe1e5072de1d9b120cc33c57ebadbcd33dbc6dd62",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe2c9844c6f7283ca9135900f5642ed30dd03ffcd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe309c6b8e5af174632ddd2afcb19b5f457c2cf6d",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe5e9ffe707ee071998340972af6fb178f5c64ba6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe635d3e82aec5049c3f28ceb09d078d38ddea06c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe6b6d216266b4a50f54cc1b266251dd602394b95",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe82d64d6b9c764083ee39c8860791f60512cc7e7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe97c29b17ed7d742e3843affa357449fa10a1855",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe9ac2626e4cb88b6e545fa0cf944fbea9285226c",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xea9db21670dc5b92cd575be0162b49c42770c6b4",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xeaec0ab1c0d0dcfa730a7fd5757043d41a5e9b94",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xeb25d917e958b74dc37ac62040a247a5b84d2cf8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xebfe0b51a7b9644379436ac5945f1f70f6039db0",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xec697fedf608bf4b9f81d490a645246c5c20e908",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xec79c743f89a84b800ef90e577ad778625fb0732",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xec8a675289beb9cbedbe5e8c91059668e2192df8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xec92832229b9887504d3205a1f67d8fba0704c00",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xecd8c70152b2a2e42ab332016890119f0cf00468",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xee0b53ac9578cbc6e0cee0ac6e18cfb7118b5cb3",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xef2cd02960bd303c000c48c6ea95f651cfb83205",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xef3a1f40e7a24633e77f87cbe9849939652da8a5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xefa65693f45af243a862e02cee51bd6f322a4b66",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf013e5f697e84c6831220a21a96556242ee9ad86",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf07562e4af6d1fc390b0d5d94a8849b11ad3723e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf083847717b91ab7ebc0505bd2524b2cd7b2093e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf2337a412942df4839f76016cc678391397ebbaf",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf251efb1d2f28204b2cd77ff30e9dc7564adfafd",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf38f5074840df1c1ae39919faeca3ffa818eccb8",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf3b06b503652a5e075d423f97056dfde0c4b066f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf3fe72b3b55b0404f2d8bac59518df924a36c3a7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf459dbaa62e3976b937ae9a4f6c31df96cd12a44",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf4cc22ba3c31d5c49965cce1927e45e4d1b9149e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf4d5209dc5164ed2d0d6f58dcf810fdc45490961",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf51bf514fcd0014bada561a026bc92c14d35743e",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf596f9420234ad8ad4486518113680fbf4054420",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf6d02f13d7bb5fc24ab6a3d662619641958a3cf6",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf7253a0e87e39d2cd6365919d4a3d56d431d0041",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf77a535ecdeb2f065f92e076cb5572e2e96644da",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf7c7c2520be6916e38ea6e2004615dc1c08e06c5",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf8dba1f8c8e2b24d4b8df10c923709cfc02effca",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf9005f6500639ade2eca93d819ee938ea1b2e3ba",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf934519c33dd037e5875deb6c3d363c3e2ebdb62",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf96efe12b4ab8fe95c884151a43e9d44a70b3f57",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf9ba514fd23bc2aa3dbcfc3d1fc3a6ff2d39a935",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfa20d0e606e3ed73dae6ce3b3744cbe4b25a4002",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfa600b867e87a93633100680eac6dbae40981c40",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfb3fa9cf7c5a05fad7dfc2c54dabb1d086147d5b",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfba206e73709f614e5a85aff27a98692d4f3c579",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfbddb719cc7c795a1d9b7ea7ac11494a19b3231f",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfc0d171a4230a82e904922523670dbbf75723f39",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfd8835df382b69b3cd498aba0d745fbf6a421d13",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfdbbfb0fe2986672af97eca0e797d76a0bbf35c9",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfe33045ef061767a5d724deac23b47db317a93c7",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xfe35e15be885750d9b2363cbb6abdd57ac9c4c40",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfef716eb6652f79bf68ad3a1e7f2e603cac3c6fa",
+   "balance": "1",
+   "isContract": false,
+   "blacklisted": false
+  }
+ ]
+}

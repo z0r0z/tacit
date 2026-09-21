@@ -1,0 +1,151 @@
+{
+ "n": 6,
+ "address": "0xf142cfa6ca3dfa4a131f12aacef4890e390d70d6",
+ "type": "erc20",
+ "name": "CELL Shares",
+ "symbol": "CELL",
+ "decimals": 18,
+ "snapshotBlock": 26028062,
+ "snapshotBlockHash": "0xb88b988668823d36ebc40369591f6aad7f77116f32681a1996aad2a6b44d1bef",
+ "totalSupply": "4968256000000000000000000",
+ "verified": true,
+ "method": "replay",
+ "holderCount": 22,
+ "holders": [
+  {
+   "address": "0x0fb9730c92d4f2e21346d0f712fd832b71a78290",
+   "balance": "1100000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe9dc9fecdd9ece9d6510e1521ede1fd350a5b32a",
+   "balance": "887313201201201201201201",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x4f46adf6c6d76ffdab9ff63c497cc68525191417",
+   "balance": "750750750750750750750750",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf10fc94e0710d19e434f0f809f4e6b0f413852c3",
+   "balance": "650750750750750750750750",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x887c3599c4826f7b3cde82003b894430f27d5b92",
+   "balance": "300300300300300300300300",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe04885c3f1419c6e8495c33bdcf5f8387cd88846",
+   "balance": "300300300300300300300300",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x00000000cc3915a0f5f98cbdc558ac1a8e85b831",
+   "balance": "250000000000000000000000",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x16f66fa4623c55bf851d3462667448ffb8e3a5f4",
+   "balance": "180000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd15031d0942634ccac10274e68945a23d2720922",
+   "balance": "150150150150150150150150",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xf142cfa6ca3dfa4a131f12aacef4890e390d70d6",
+   "balance": "150000000000000000000000",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x035c84e918e9fbbded9d4cc57c91a76716fc38fc",
+   "balance": "100000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xa2dcfc2076dc6f1260cecac459c89e54d356d632",
+   "balance": "100000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20",
+   "balance": "18013602899070631317592",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xd8ba9e5886b7000bace2c9dbdd0be98ac77d4a28",
+   "balance": "14833226906374224632698",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xaf9f2e884798e4b63abc9fc6879cd74bd21c8157",
+   "balance": "11777673198846543750088",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0xadbaca84b574793de7879dd172cdecbf3d5f7656",
+   "balance": "2140394472508108892652",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00cb8f53dafd4a3dd93d6202aa05a8d2d49c75bd",
+   "balance": "1800000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd4f2ddd7f5a2038a37504980ada43c9d350bea73",
+   "balance": "124102523200491406970",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xcae5e32941a1e03729310e62e9b625bea20e5dbf",
+   "balance": "654654654654654659",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd114230d13f61c3423cba67dd1d24ea9a6319a84",
+   "balance": "450450450450450450",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x0aee78c992eed09e589cc2efd66090dc7f09b328",
+   "balance": "240240240240240240",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc47e979d09ddc46ca3c8d55e233156c714e53aeb",
+   "balance": "201201201201201200",
+   "isContract": false,
+   "blacklisted": false
+  }
+ ]
+}

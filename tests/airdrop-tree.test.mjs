@@ -130,3 +130,17 @@ test('JSON amounts must be strings so no precision is lost', () => {
   assert.throws(() => parseInput(JSON.stringify([{ address: A, amountWei: 1000000000000 }])), /must be a string/);
   assert.equal(parseInput(JSON.stringify([{ address: A, amount: '123456789.123456789' }]))[0].amountWei, 123456789123456789000000000n);
 });
+
+test('--out-shards writes one file per leading address byte that holds every claim once', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airdrop-'));
+  writeFileSync(join(dir, 'list.csv'), `${A},10\n${B},20\n${C},30\n`);
+  const cwd = new URL('..', import.meta.url).pathname;
+  execFileSync('node', ['tools/airdrop-tree.mjs', '--input', join(dir, 'list.csv'), '--expect-total', '60', '--out-shards', join(dir, 's')], { encoding: 'utf8', cwd });
+  const man = JSON.parse(readFileSync(join(dir, 's', 'manifest.json'), 'utf8'));
+  assert.deepEqual(man.shards, ['11', '22', '33']);
+  const s = JSON.parse(readFileSync(join(dir, 's', '22.json'), 'utf8'));
+  assert.equal(s.root, man.root);
+  assert.deepEqual(Object.keys(s.claims), [B]);
+  assert.equal(s.claims[B].index, 1);
+  assert.ok(Array.isArray(s.claims[B].proof));
+});

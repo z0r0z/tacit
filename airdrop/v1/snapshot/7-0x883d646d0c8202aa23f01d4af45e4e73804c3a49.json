@@ -1,0 +1,169 @@
+{
+ "n": 7,
+ "address": "0x883d646d0c8202aa23f01d4af45e4e73804c3a49",
+ "type": "erc20",
+ "name": "FWC Shares",
+ "symbol": "FWC",
+ "decimals": 18,
+ "snapshotBlock": 26028062,
+ "snapshotBlockHash": "0xb88b988668823d36ebc40369591f6aad7f77116f32681a1996aad2a6b44d1bef",
+ "totalSupply": "3443609082021284147000000",
+ "verified": true,
+ "method": "replay",
+ "holderCount": 24,
+ "holders": [
+  {
+   "address": "0xcb8a4515e259ffeb15986c24ff087d6633e45b81",
+   "balance": "945842340337922251000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x8543c1f3cac1b6e4faa3f5abd3338ebbd7507992",
+   "balance": "549186921536335435000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x000000000000040470635eb91b7ce4d132d616ed",
+   "balance": "257029745268357521004278",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x357836ffcb45307fa7ff2a574f505753c961902b",
+   "balance": "252670169672909658000000",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20",
+   "balance": "251854384848081472075718",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xfdffca1246924de90f54f867db89476d011e5ce5",
+   "balance": "226230642874809088000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc324429ac3f275d02cb4134114b55c0682dfc027",
+   "balance": "206096674260466781000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x51fdb0f773fa55ed60d7133e37850a72eb02a66b",
+   "balance": "200000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x3fc6fccce706ce418eb51c65a042afbabf9fb3e5",
+   "balance": "125000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xe04885c3f1419c6e8495c33bdcf5f8387cd88846",
+   "balance": "100000000000000000000000",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xf4f7f1bd0905efe61382de895ec3c1ed321b995b",
+   "balance": "100000000000000000000000",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x22a676b52392591bc6c7caf51c14b38f5e0f3716",
+   "balance": "56129987036662703151979",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x887b86b6b6957f7bbea88b8cefd392f39236a88c",
+   "balance": "43399442583478625502809",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xc0fe1769e63125ff277d8a8e72267791b614ffe0",
+   "balance": "30888314338572459454086",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x4fcb2161e087f3a4153545a25304bd4e123a0e07",
+   "balance": "25000000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x5ef3709676163e00a8010dcd73fba55ad54dea73",
+   "balance": "20000000000000000000000",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0xadbaca84b574793de7879dd172cdecbf3d5f7656",
+   "balance": "12677520029879654000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x193641ea463c3b9244cf9f00b77ee5220d4154e9",
+   "balance": "11390118400542128578339",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0x00001fe2ef7b69fee2626aff8b8cba2d18a9f888",
+   "balance": "10000000000000000000000",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x002d1618d1a198f581a709837f25a88c951d515c",
+   "balance": "10000000000000000000000",
+   "isContract": true,
+   "blacklisted": true
+  },
+  {
+   "address": "0x14d04ca5c041884125ec5df0eed048d201e220da",
+   "balance": "9011587682518361000000",
+   "isContract": false,
+   "blacklisted": false
+  },
+  {
+   "address": "0xd264532bb799a551ba8bbedd15356c496eb18954",
+   "balance": "920392189964347257986",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x90f440e449c47f4caf78c62c131dfc38ab491d4a",
+   "balance": "170840960783661974805",
+   "isContract": false,
+   "blacklisted": false,
+   "delegated": true
+  },
+  {
+   "address": "0x28d424ca841f4f1d08d76d491f3a221783c85581",
+   "balance": "110000000000000000000",
+   "isContract": false,
+   "blacklisted": false
+  }
+ ]
+}

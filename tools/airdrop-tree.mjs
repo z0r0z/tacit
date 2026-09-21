@@ -230,7 +230,7 @@ async function main() {
     return;
   }
   const input = arg('--input', args);
-  if (!input || args.includes('--help')) fail('usage: --input <list.json|list.csv> --expect-total <TAC> [--unit tac|wei] [--reserve 0x..,0x..] [--out proofs.json] [--out-dir dir]');
+  if (!input || args.includes('--help')) fail('usage: --input <list.json|list.csv> --expect-total <TAC> [--unit tac|wei] [--reserve 0x..,0x..] [--out proofs.json] [--out-dir dir] [--out-shards dir]');
   const unit = arg('--unit', args) || 'tac';
   if (unit !== 'tac' && unit !== 'wei') fail('--unit must be tac or wei');
   const et = arg('--expect-total', args);
@@ -255,13 +255,24 @@ async function main() {
     for (const [a, c] of Object.entries(result.claims)) writeFileSync(`${outDir}/${a}.json`, JSON.stringify({ root: result.root, ...c }) + '\n');
     writeFileSync(`${outDir}/manifest.json`, JSON.stringify({ root: result.root, count: result.count, totalWei: result.totalWei, unitScale: result.unitScale }, null, 2) + '\n');
   }
+  const shardDir = arg('--out-shards', args);
+  if (shardDir) {
+    // One small file per leading address byte (256 at most): a claim page fetches the shard for the connected address instead of one file per
+    // recipient or the whole set. Each shard is { root, claims: { <address>: { index, amount, proof } } }.
+    mkdirSync(shardDir, { recursive: true });
+    const shards = new Map();
+    for (const [a, c] of Object.entries(result.claims)) { const k = a.slice(2, 4); if (!shards.has(k)) shards.set(k, {}); shards.get(k)[a] = { index: c.index, amount: c.amount, proof: c.proof }; }
+    for (const [k, claims] of shards) writeFileSync(`${shardDir}/${k}.json`, JSON.stringify({ root: result.root, claims }) + '\n');
+    writeFileSync(`${shardDir}/manifest.json`, JSON.stringify({ root: result.root, count: result.count, totalWei: result.totalWei, unitScale: result.unitScale, shards: [...shards.keys()].sort() }, null, 2) + '\n');
+  }
   console.log(`root        ${result.root}`);
   console.log(`recipients  ${result.count}`);
   console.log(`total       ${formatTac(result.totalWei)} TAC (${result.totalWei} wei)`);
   console.log(`verified    every proof recomputes to the root`);
   if (out) console.log(`written     ${out}`);
   if (outDir) console.log(`written     ${outDir}/ (${result.count} files + manifest.json)`);
-  if (!out && !outDir) console.log('(no --out / --out-dir: nothing written)');
+  if (shardDir) console.log(`written     ${shardDir}/ (proof shards by leading address byte + manifest.json)`);
+  if (!out && !outDir && !shardDir) console.log('(no --out / --out-dir / --out-shards: nothing written)');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();
