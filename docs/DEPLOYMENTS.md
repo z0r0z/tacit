@@ -64,6 +64,31 @@ Bitcoin-side (tETH) link id, `0x3cba71e1…03126f34`, with scale 1e10.
 The cUSD asset id is `keccak256("tacit-cdp-debt-v1" ‖ engine)`, so it too is
 specific to this suite's CollateralEngine.
 
+### TAC launch farms
+
+A reward program layered on the live pool. It is not part of the per-generation CreateX manifest above: the
+`FarmManager` is a controller of the pool (the pool calls into it during a settle), and it pays in **wTAC**, a 1:1
+ERC20 wrapper of TAC that is registered in the pool as an external escrow asset. The dapp reads it from the `farm`
+block of its deployment config. Integrator guide: [`FARMS.md`](./FARMS.md).
+
+| Contract | Address |
+| --- | --- |
+| FarmManager (CREATE3, Etherscan-verified; 3 pools, no lock) | [`0x000031C47Cb61faB1CE2790a69625FABB71EDE24`](https://etherscan.io/address/0x000031C47Cb61faB1CE2790a69625FABB71EDE24) |
+| WrappedTac (wTAC, 1:1 wrapper of the TAC ERC20) | [`0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf`](https://etherscan.io/address/0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf) |
+| TacFarmFunder (wrap TAC to wTAC and escrow it in one transaction) | [`0x7fc40b13c7a99a1d2c41f8b5382978363d18525a`](https://etherscan.io/address/0x7fc40b13c7a99a1d2c41f8b5382978363d18525a) |
+
+| Field | Value |
+| --- | --- |
+| wTAC asset id (reward) | `0x1097c9e552ae4fce2a8c416b93403953fa445a5f2cdae8ced36d9a78cfe40832` |
+| Pool 0, TAC / cETH (weight 50) | LP-share id `0x17c56713…9249ef99`, pool id `0x248497bf…11dc7c00` |
+| Pool 1, cETH / cUSD (weight 30) | LP-share id `0xd608b0c3…45262571`, pool id `0x5925c0c2…4e909da7` |
+| Pool 2, cETH / cBTC (weight 20) | LP-share id `0x0a0cce17…48b68254`, pool id `0x8359cd1f…bf5cd331` |
+| Epoch 1 | 99,700 TAC over 90 days from 2026-09-21; stream end (unix) `1797712559` |
+| Governor | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` once it calls `acceptGov`; the deployer until then |
+
+Weights are governed on-chain and can change (timelocked, bounded), so read `poolInfo(pid)` for the live values.
+Full ids are in [`FARMS.md`](./FARMS.md).
+
 ### Verification anchors
 
 | Field | Value |

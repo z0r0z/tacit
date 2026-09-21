@@ -179,7 +179,6 @@ the floor from `GET /confidential/quote` or the relay refuses it at submit; the 
 `cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed at all: it needs
 `createPairAndSettle`, so use `selfRelay: true`.
 
-
 ### Bitcoin-backed cBTC and CDPs
 
 Proven on mainnet: lock real BTC, mint a cBTC note, borrow cUSD against it, repay, and release the BTC.
@@ -216,6 +215,57 @@ Verified on mainnet against the deployed pool: open
 [`0x6da330c1…3229`](https://etherscan.io/tx/0x6da330c161f236030ef83ce5c9c77268c735a52e7f9789c7ebceaccb479b3229),
 close
 [`0x23851ea3…232e`](https://etherscan.io/tx/0x23851ea3ec4c0434940a1120505b0efe1878023e3d6faac9cea41ad14e44232e).
+
+### Earn TAC: the launch farms
+
+Proven on mainnet: bond an LP-share note into the FarmManager, harvest the reward as a wTAC note, unbond, and
+redeem the reward to plain TAC. The full integrator chapter (cards, flows, monitoring, governance bounds) is
+[`FARMS.md`](./FARMS.md); this is the smallest working loop.
+
+| | |
+|---|---|
+| FarmManager | `0x000031C47Cb61faB1CE2790a69625FABB71EDE24` |
+| Reward | wTAC `0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf` (1:1 ERC20 wrapper of TAC) |
+| Pools | TAC/cETH 50, cETH/cUSD 30, cETH/cBTC 20 (weights; stake asset = the pair's LP-share id) |
+
+```js
+// 1. Read the program (dapp/confidential-farm-program.js; also GET /farm/program?network=mainnet)
+const farm    = makeConfidentialFarmProgram({ rpc, config: tacit.cfg });   // or tacit.farmProgram()
+const program = await farm.program();               // rate, periodFinish, treasury, per-pool weight and stakers
+
+// 2. Bond an LP note. The receipt IS the position; its owner key signs every later harvest and unbond.
+const ownerPriv    = '0x' + hex(secp.utils.randomPrivateKey());     // fresh per position
+const receiptOwner = '0x' + hex(secp.getPublicKey(ownerPriv.slice(2), true).subarray(1));
+const nonce        = '0x' + hex(crypto.getRandomValues(new Uint8Array(32)));
+await store.put({ controller, lpAsset, shares: note.value, receiptOwner, ownerPriv, nonce });   // BEFORE submit
+await tacit.defiActions(walletPriv).bondFarm({ controller, nonce, lpAsset, legs: [leg(note)],   // leg(note): the {cx, cy, value, index, path, blinding, owner, nk} shape in FARMS.md
+  spendRoot: note.root, receiptOwner });
+
+// 3. Show pending, then harvest (see FARMS.md for the receipt witness); the reward lands as a wTAC note.
+const pending = await farm.pending(receiptLeaf);    // units of 1e-8 TAC
+
+// 4. Unbond returns the LP note; harvest first, unharvested reward is forfeited.
+// 5. Redeem: tacit.unwrap(wTAC note) -> WrappedTac.withdraw(amount, to) -> TAC ERC20.
+```
+
+Three things to get right:
+
+- **The receipt key is the position.** A position is one LP note bonded whole, and only its receipt-owner key can
+  harvest or unbond it. Persist it before you submit (or use the SDK's deterministic `tacit.farmPositions`), and use a
+  fresh key per position. A lost key strands the shares.
+- **Bond shares and harvest amounts are public** in the manager's events. Notes, receipts and payout destinations
+  stay unlinked, until you unwrap to an address.
+- **Harvest before you unbond, and claim close to `pending`.** A harvest re-stamps the position, so anything
+  unclaimed in it is forfeited to the treasury surplus.
+
+`tacit.lpBond` adds liquidity and bonds in one settle (enabled per pool by `farmControllers[poolId]`); it has not
+been driven live against this manager yet, so start with the two-step flow.
+
+**One key, many processes.** Every note sealed to a key shows up in that key's scan, including notes another
+process created. Two scripts sharing a wallet key will pick each other's notes as inputs. Give each process its
+own key, or keep an explicit leaf-ownership list and check a note's leaf and nullifier right before you submit.
+Sign settles from a dedicated account, never from a key the relay or a keeper uses; two senders on one nonce
+sequence make each other's transactions late or stuck.
 
 ## 6. Relay API
 
@@ -272,12 +322,17 @@ look away entirely without touching its logic. Two conventions worth keeping:
 | settle says `failed` with a guest assert | the witness is malformed; the assert text names the field |
 | relay rejects the submit | fee below the floor, or the queue is full |
 | `413 request body exceeds …` | body over `MAX_REQUEST_BYTES` (32 MiB default) |
+| farm `OverClaim` | harvest claimed more than the position's accrued reward; read `pending` at build time |
+| farm `NoLivePosition` | the receipt is not bonded (wrong nonce, shares or owner, or already unbonded) |
+| farm `WrongStakeAsset` | the note is not an LP-share asset the manager has a pool for |
+| farm `Locked` | unbond before the pool's `unlockAt` (the launch pools have no lock) |
 
 A failed proof costs the relay, not you, and moves no state. A settle either applies completely or reverts.
 
 ## 9. Further
 
 - [`docs/DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address and vkey
+- [`docs/FARMS.md`](./FARMS.md) — the TAC launch farms: cards, flows, monitoring and governance bounds
 - [`ops/INTEGRATION-simple-wrap-send-claim-eth.md`](../ops/INTEGRATION-simple-wrap-send-claim-eth.md) — the
   full ETH-only handoff, with the stealth path in depth
 - [`SPEC.md`](../SPEC.md) — canonical wire formats

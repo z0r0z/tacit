@@ -146,6 +146,23 @@
 </div>
 
 <section>
+  <h2>TAC farms</h2>
+  <div class="card">
+    <div class="row"><span class="k">emission</span><span class="v num" id="f-rate">…</span></div>
+    <div class="row"><span class="k">ends in</span><span class="v num" id="f-end">…</span></div>
+    <table style="margin-top:8px">
+      <thead><tr><th>pair</th><th style="text-align:right">weight</th><th style="text-align:right">TAC / day</th><th style="text-align:right">staked</th></tr></thead>
+      <tbody id="farms"></tbody>
+    </table>
+    <p class="note">
+      Read straight from the FarmManager, no dependencies. A pool with nothing staked earns nothing and shows
+      <code>idle</code>; its share stays in the treasury. Bonding, harvesting and unbonding need the dapp
+      modules and a per-position key &mdash; read <a href="../FARMS.md">FARMS.md</a> before wiring them.
+    </p>
+  </div>
+</section>
+
+<section>
   <h2>Assets</h2>
   <div class="card">
     <table>
@@ -214,6 +231,14 @@ const CFG = {
     'https://eth.drpc.org',
     'https://eth.merkle.io',
   ],
+  farm: {
+    manager: '0x000031C47Cb61faB1CE2790a69625FABB71EDE24',
+    pools: [                       // pid order; weights and stakers are read live below
+      { pid: 0, pair: 'TAC / cETH' },
+      { pid: 1, pair: 'cETH / cUSD' },
+      { pid: 2, pair: 'cETH / cBTC' },
+    ],
+  },
   assets: [
     { t: 'cETH', id: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', scale: 10n ** 10n },
     { t: 'cBTC', id: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', scale: 10n ** 10n },
@@ -229,6 +254,14 @@ const SEL = {
   attestedCrossOutCount:       '0xa6f8c9d6',
   attestedBitcoinConsumedCount:'0x281d8cc9',
   successor:                   '0x6ff968c3',
+};
+
+// FarmManager views (keccak of the signature, first 4 bytes).
+const FSEL = {
+  rate:            '0x2c4e722e',   // reward units per second, all pools (1 unit = 1e-8 TAC)
+  periodFinish:    '0xebe2b12b',
+  totalAllocPoint: '0x17caf6f1',
+  poolInfo:        '0x1526fe27',   // poolInfo(uint256 pid) -> 7 words
 };
 
 const $ = (id) => document.getElementById(id);
@@ -303,6 +336,37 @@ async function loadRelay() {
   } catch { $('r-quote').textContent = '—'; }
 }
 
+// ── TAC farms ────────────────────────────────────────────────────────────
+// poolInfo(pid) words: stakeAsset, totalShares, rps, totalRewardDebt, allocPoint, lastUpdate, lockDuration.
+async function loadFarms() {
+  const m = CFG.farm.manager;
+  try {
+    const [rateH, endH, totH] = await Promise.all([
+      ethCall(m, FSEL.rate), ethCall(m, FSEL.periodFinish), ethCall(m, FSEL.totalAllocPoint),
+    ]);
+    const rate = asBig(rateH), total = asBig(totH) || 1n;
+    const left = Number(asBig(endH)) - Math.floor(Date.now() / 1000);
+    $('f-rate').textContent = `${(Number(rate) * 86400 / 1e8).toLocaleString(undefined, { maximumFractionDigits: 0 })} TAC / day`;
+    $('f-end').textContent  = left > 0 ? `${(left / 86400).toFixed(1)} days` : 'stream ended';
+    const rows = await Promise.all(CFG.farm.pools.map(async (p) => {
+      const info = (await ethCall(m, FSEL.poolInfo + p.pid.toString(16).padStart(64, '0'))).slice(2);
+      const word = (i) => BigInt('0x' + info.slice(i * 64, i * 64 + 64));
+      const staked = word(1), alloc = word(4);
+      const perDay = left > 0 ? Number(rate) * 86400 * Number(alloc) / Number(total) / 1e8 : 0;
+      return `<tr>
+        <td>${p.pair}</td>
+        <td style="text-align:right">${(Number(alloc) * 100 / Number(total)).toFixed(0)}%</td>
+        <td style="text-align:right">${staked === 0n ? '<span class="pill">idle</span>' : perDay.toFixed(0)}</td>
+        <td style="text-align:right">${staked.toString()}</td>
+      </tr>`;
+    }));
+    $('farms').innerHTML = rows.join('');
+  } catch (e) {
+    $('f-rate').textContent = `rpc unreachable (${e.message})`;
+    $('f-end').textContent = '—';
+  }
+}
+
 // ── asset table ──────────────────────────────────────────────────────────
 function loadAssets() {
   $('assets').innerHTML = CFG.assets.map((a) => `
@@ -316,6 +380,7 @@ function loadAssets() {
 loadPool();
 loadRelay();
 loadAssets();
+loadFarms();
 
 // ─────────────────────────────────────────────────────────────────────────
 // WIRING POINT — everything above is live with no dependencies. To make the
