@@ -24,6 +24,7 @@
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialBatch, confidentialAck, confidentialActivateAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
+import { assertMemosMatchProof } from './lib/memo-root.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
 import { quoteRelayFee, provePriceUsd, replenishOnce, drainToSink } from './replenish.js';
@@ -110,6 +111,9 @@ async function liveGasGwei() {
 // Build, price and submit a settle. Shared by the single and batched paths so both get identical fee
 // pricing and the same endpoint fall-through. Returns the tx hash; throws if every endpoint refused.
 async function submitSettle(proof, memos, label) {
+  // The memos shipped with the settle must be the ones the proof commits to; the pool rejects any other set, so
+  // a divergence is caught here before a settle is paid for.
+  assertMemosMatchProof(proof.publicValues, memos);
   return submitCall({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [proof.publicValues, proof.proof, memos] }, label);
 }
 
