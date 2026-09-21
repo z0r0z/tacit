@@ -224,8 +224,19 @@ await tacit.stealthSend({ walletPriv, notes, recipientPubHex, amount: 5_000_000n
 
 **Paying someone else, and what the receiver needs.**
 - **Address.** `recipientPubHex` is the receiver's static spend pubkey, the confidential account's public key. A 0x address does not work:
-  it is a hash of a pubkey, so a sender cannot derive the pubkey from it. There is no on-chain registry mapping a 0x address to a pubkey, so
-  an integrator publishes the pubkey (a stable "tacit address") itself and has senders use that.
+  it is a hash of a pubkey, so a sender cannot derive the pubkey from it, and the pool has no registry from a 0x address to a pubkey.
+  The receiver's `tacit1…` address carries the key, and a name can stand in for that address (next item).
+- **Names.** A receiver can publish their `tacit1…` address as the `finance.tacit` text record of a `.wei`, `.gwei` or `.eth` name
+  (`.base.eth` is not read), and the send tab accepts the name in the recipient field. `dapp/confidential-names.js`
+  (`makeConfidentialNames({ call, send, secp, keccak256 })`) is the same code for your own dapp:
+  `resolveName(name)` returns `{ name, address, key, source, node }`, where `key` is the Ethereum-lane key to pass as `recipientPubHex`;
+  `primaryName(address)`, `planPublish` and `publish` cover the receiver's side. Behaviour to keep:
+  - Lookups read Ethereum mainnet only, whatever network the page is on, and are never cached; look the name up at send time and pin the key for that send.
+  - The record must decode strictly: bech32m prefix `tacit`, a 101-byte payload (`[0x00][flags][spend][scan][Ethereum-lane key]`, 33 bytes each after the two header bytes), the Ethereum-lane flag (`0x02`) set, and a valid secp256k1 point in the last 33 bytes. Otherwise the send is refused with the reason.
+  - A missing or invalid record, or a name whose resolver answers with an off-chain lookup (no CCIP-read), is refused; a bare 0x account address is never accepted as a private-send recipient.
+  - Show the sender `name → tacit1…` before anything is signed, so a changed record is visible.
+  - `.eth` resolvers are read directly on the name's own node, or through a parent's wildcard resolver; the record can only be written from here when the resolver sits on the name's own node.
+  - Publishing: the primary name is the first of `.wei`, `.gwei`, `.eth` whose reverse record names the wallet and whose forward record points back at it. `planPublish` returns the current and new values, `publish` skips the transaction when they are equal and otherwise simulates `setText` (`eth_call`) before asking the wallet to send. The record is public, so it links the name to the address for everyone.
 - **Recovery.** The lock's memo is sealed to the receiver's key. From the key alone, `tacit.recover({ walletPriv })` lists it under
   `receivedLocks`, and the note the claim mints is derived, so it comes back too. The receiver needs no saved record.
 - **Claim by the deadline.** A lock carries a deadline (about 90 days by default), after which the sender can refund. Show incoming locks

@@ -1496,19 +1496,9 @@ const ethWallet = {
     return { provider, address: addr };
   },
 
-  async login({ address } = {}) {
-    let provider, addr;
-    if (address) {
-      provider = _ethProvider();
-      addr = address;
-    } else {
-      const c = await this.connect();
-      provider = c.provider;
-      addr = c.address;
-    }
-    if (!provider || typeof provider.request !== 'function') {
-      throw new Error('Ethereum wallet unavailable');
-    }
+  // The identity key an account's derivation signature yields. Touches no wallet state, so a caller can
+  // re-check that an account still derives the key in use.
+  async deriveKey(provider, addr) {
     if (await _isEthContractAddr(provider, addr)) {
       throw new Error('Smart-contract wallets (Safe, Argent, Ambire) produce non-deterministic signatures and cannot derive a stable tacit identity. Use a passkey or an EOA wallet instead.');
     }
@@ -1539,6 +1529,23 @@ const ethWallet = {
     sigBytes.fill(0);
     const pub = secp.getPublicKey(priv, true);
     const pubHex = bytesToHex(pub);
+    return { priv, pub, pubHex };
+  },
+
+  async login({ address } = {}) {
+    let provider, addr;
+    if (address) {
+      provider = _ethProvider();
+      addr = address;
+    } else {
+      const c = await this.connect();
+      provider = c.provider;
+      addr = c.address;
+    }
+    if (!provider || typeof provider.request !== 'function') {
+      throw new Error('Ethereum wallet unavailable');
+    }
+    const { priv, pub, pubHex } = await this.deriveKey(provider, addr);
     // Refuse to silently swap identities. If this account enrolled before and
     // the re-derived key differs — wallet changed its signing, or the
     // derivation message changed — surface it rather than dropping the user
@@ -4914,7 +4921,7 @@ function tacitAddressForWallet(wallet, network = currentNetworkName()) {
 // diverge. Returns { pubHex } (0x-compressed) or { error }.
 function resolveEvmShieldedRecipient(raw) {
   const p = parseRecipient(raw, { chainHint: 'evm' });
-  if (p.kind === 'empty') return { error: 'Enter the recipient’s Tacit address or shielded pubkey.' };
+  if (p.kind === 'empty') return { error: 'Enter the recipient’s Tacit address, a name (name.wei, name.gwei, name.eth) or a shielded pubkey.' };
   if (p.kind === 'error') return { error: p.message };
   if (p.kind === 'tacit') {
     if (!p.lanes.evm) return { error: 'This Tacit address does not carry an Ethereum lane.' };
@@ -4927,6 +4934,36 @@ function resolveEvmShieldedRecipient(raw) {
   }
   return { error: 'Not an Ethereum shielded recipient — paste a Tacit address (tacit1…) or a compressed pubkey (02/03…).' };
 }
+
+// Publishing a Tacit address to a name record (send tab). The connected Ethereum wallet supplies the
+// account, re-proves that the unlocked identity comes from it, and sends the mainnet setText transaction.
+const ethNamesBridge = {
+  async connect() {
+    const { address } = await ethWallet.connect();
+    return { address: '0x' + address };
+  },
+  // An identity derived from an Ethereum wallet is re-derived from a fresh signature and must equal the key in
+  // use; any other kind of wallet has no such signature to check. Returns whether a check was made.
+  async verifyIdentity(address) {
+    if (wallet.mode !== 'eth') return false;
+    const provider = _ethProvider();
+    if (!provider) throw new Error('no Ethereum wallet connected');
+    const { pubHex } = await ethWallet.deriveKey(provider, String(address).replace(/^0x/, '').toLowerCase());
+    if (!wallet.pub || pubHex !== bytesToHex(wallet.pub)) {
+      throw new Error('This Ethereum account does not derive the Tacit identity that is unlocked. Switch to the account you signed in with.');
+    }
+    return true;
+  },
+  async sendTx({ from, to, data }) {
+    const provider = _ethProvider();
+    if (!provider) throw new Error('no Ethereum wallet connected');
+    if (String(await provider.request({ method: 'eth_chainId' })).toLowerCase() !== '0x1') {
+      try { await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] }); }
+      catch { throw new Error('Switch your wallet to Ethereum mainnet to publish the record.'); }
+    }
+    return provider.request({ method: 'eth_sendTransaction', params: [{ from, to, data }] });
+  },
+};
 
 // ECDH shared secret per §A.2 — NORMATIVE x-only point serialization.
 // The expensive part of stealth derivation: one scalar-point multiplication
@@ -44872,6 +44909,7 @@ function _activateTab(name) {
       renderSendTab(wallet, {
         tacitAddress: myTacit,
         resolveRecipient: resolveEvmShieldedRecipient,
+        ethNames: ethNamesBridge,
         // Bridge affordance: only surfaced when the cross-lane path is live (pool deployed + an asset
         // marked live). Stays hidden under the current staged posture; flips on with the deploy config
         // alone — no code change. Opens the existing ETH↔BTC bridge modal (cETH ⇄ tETH).

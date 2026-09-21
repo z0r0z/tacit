@@ -15,11 +15,20 @@ import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { makeConfidentialInvoice } from './confidential-invoice.js';
+import { makeConfidentialNames, makeMainnetCall, NameError } from './confidential-names.js';
 
 let _ux = null;
 let _pendingSend = null;
 function getUx() {
   return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256}));
+}
+// Name lookups always read Ethereum mainnet, whatever network the page is on. Writes go through the wallet the
+// host page hands over (helpers.ethNames.sendTx); without one the tab can read names but not publish.
+let _mainnetCall = null;
+function getNames(helpers) {
+  _mainnetCall = _mainnetCall || makeMainnetCall();
+  const bridge = (helpers && helpers.ethNames) || null;
+  return makeConfidentialNames({ call: _mainnetCall, send: bridge ? bridge.sendTx : null, secp, keccak256: keccak_256 });
 }
 const el = (id) => document.getElementById(id);
 
@@ -188,7 +197,10 @@ function wireSend(wallet, ux, notes, helpers) {
   if (!btn || !reviewBtn) return;
   const statusEl = el('csend-status');
 
+  const names = getNames(helpers);
+  let reviewSeq = 0;
   const invalidate = () => {
+    reviewSeq++;
     _pendingSend = null;
     btn.disabled = true;
     if (previewEl) { previewEl.style.display = 'none'; previewEl.innerHTML = ''; }
@@ -199,20 +211,22 @@ function wireSend(wallet, ux, notes, helpers) {
     if (x) x.addEventListener(id === 'csend-asset' || id === 'csend-forcewrap' || id === 'csend-selfrelay' ? 'change' : 'input', invalidate);
   });
 
-  function readIntent() {
+  const localRecipient = (raw) => {
+    if (helpers && typeof helpers.resolveRecipient === 'function') return helpers.resolveRecipient(raw);
+    return /^0x0[23][0-9a-fA-F]{64}$/.test(raw)
+      ? { pubHex: raw }
+      : { error: 'Enter a Tacit address (tacit1…), a name (name.wei, name.gwei, name.eth) or the recipient’s shielded pubkey (0x02…/0x03…).' };
+  };
+
+  // A name is looked up now and pinned: the key its record decodes to is what this send pays, and Review
+  // shows the address it came from so the sender can check it before anything is signed.
+  async function readIntent() {
     if (!wallet || !wallet.priv) throw new Error('Unlock your wallet first.');
     const rawRecipient = (el('csend-recipient') && el('csend-recipient').value || '').trim();
-    let recipient;
-    if (helpers && typeof helpers.resolveRecipient === 'function') {
-      const r = helpers.resolveRecipient(rawRecipient);
-      if (r.error) throw new Error(r.error);
-      recipient = r.pubHex;
-    } else {
-      if (!/^0x0[23][0-9a-fA-F]{64}$/.test(rawRecipient)) {
-        throw new Error('Enter a Tacit address (tacit1…) or the recipient’s shielded pubkey (0x02…/0x03…).');
-      }
-      recipient = rawRecipient;
-    }
+    if (names.looksLikeName(rawRecipient) && statusEl) statusEl.textContent = `Looking up ${rawRecipient}…`;
+    const resolved = await names.resolveRecipient(rawRecipient, { local: localRecipient });
+    const recipient = resolved.pubHex;
+    const recipientName = resolved.name ? { name: resolved.name, address: resolved.address, source: resolved.source } : null;
     const sel = readAssetAmount(ux, 'csend-asset', 'csend-amount');
     if (sel && sel.asset === '__btc__') throw new Error('That asset is sent on the Bitcoin lane — use the Bitcoin send.');
     if (!sel || sel.amount <= 0n) throw new Error('Enter an amount to send.');
@@ -254,12 +268,15 @@ function wireSend(wallet, ux, notes, helpers) {
     }
     const unitScale = BigInt(meta.unitScale || '1');
     const amountWei = amount * unitScale;
-    return { asset, ticker, meta, dec, amount, amountWei, fee, forceWrap, selfRelay, routerOK, picked, recipient, isSelf, source };
+    return { asset, ticker, meta, dec, amount, amountWei, fee, forceWrap, selfRelay, routerOK, picked, recipient, recipientName, isSelf, source };
   }
 
-  reviewBtn.onclick = () => {
+  reviewBtn.onclick = async () => {
+    const seq = reviewSeq;
+    reviewBtn.disabled = true;
     try {
-      const intent = readIntent();
+      const intent = await readIntent();
+      if (seq !== reviewSeq) return;
       const acct = ux.account(wallet.priv);
       _pendingSend = intent;
       if (previewEl) {
@@ -283,7 +300,10 @@ function wireSend(wallet, ux, notes, helpers) {
           <div class="tx-preview" style="margin-top:12px;">
             <h4>Review ${esc(intent.ticker)} note send</h4>
             <div class="row"><span class="label">Send</span> ${fmtUnits(intent.amount, intent.dec)} ${esc(intent.ticker)}</div>
-            <div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code> ${intent.isSelf ? '<span class="muted">(you)</span>' : ''}</div>
+            ${intent.recipientName
+              ? `<div class="row"><span class="label">To</span> <b>${esc(intent.recipientName.name)}</b> → <code class="addr">${esc(short(intent.recipientName.address, 10))}</code> ${intent.isSelf ? '<span class="muted">(you)</span>' : ''}</div>
+            <div class="row" style="color:var(--ink-mid);">Looked up just now on Ethereum (${esc(intent.recipientName.source)}); this send pays the key in that address (<code class="addr">${esc(short(intent.recipient, 8))}</code>). Check the address with the recipient if the name is new to you.</div>`
+              : `<div class="row"><span class="label">To</span> <code class="addr">${esc(short(intent.recipient, 12))}</code> ${intent.isSelf ? '<span class="muted">(you)</span>' : ''}</div>`}
             <div class="row"><span class="label">Source</span> ${intent.source === 'shielded'
               ? 'your existing shielded balance'
               : `public ${esc(publicAssetLabel(intent.ticker))} from your Ethereum account`}</div>
@@ -296,10 +316,13 @@ function wireSend(wallet, ux, notes, helpers) {
       btn.disabled = false;
       if (statusEl) statusEl.textContent = '';
     } catch (e) {
+      if (seq !== reviewSeq) return;
       _pendingSend = null;
       btn.disabled = true;
       if (previewEl) { previewEl.style.display = 'none'; previewEl.innerHTML = ''; }
       if (statusEl) statusEl.textContent = e.message || String(e);
+    } finally {
+      reviewBtn.disabled = false;
     }
   };
 
@@ -308,7 +331,7 @@ function wireSend(wallet, ux, notes, helpers) {
       if (statusEl) statusEl.textContent = 'Review the send first.';
       return;
     }
-    const { asset, ticker, dec, amount, amountWei, fee, picked, recipient, selfRelay, isSelf, routerOK } = _pendingSend;
+    const { asset, ticker, dec, amount, amountWei, fee, picked, recipient, recipientName, selfRelay, isSelf, routerOK } = _pendingSend;
 
     btn.disabled = true;
     reviewBtn.disabled = true;
@@ -340,7 +363,7 @@ function wireSend(wallet, ux, notes, helpers) {
             lockLeaf: built.lockLeaf, asset: built.asset, ticker, dec, amount: built.amount, deadline: built.deadline,
             lCx: built.lCx, lCy: built.lCy, ownerPub: built.ownerPub, lBlinding: built.lBlinding,
             refundPriv: built.refundPriv, refundPub: built.refundPub, recipientPubHex: built.recipientPubHex,
-            txHash: r && r.txHash, createdAt: Date.now(),
+            txHash: r && r.txHash, createdAt: Date.now(), recipientName: recipientName ? recipientName.name : undefined,
           });
         }
         if (statusEl) statusEl.innerHTML = `Locked ${fmtUnits(amount, dec)} ${esc(ticker)} for the recipient`
@@ -446,6 +469,63 @@ function wireAssetLane() {
   apply();
 }
 
+// "Publish my Tacit address to my name": finds the wallet's verified primary name, shows what its record holds
+// against what would be written, and only then offers the transaction. Mainnet names only.
+function wirePublishName(helpers, myTacit) {
+  const findBtn = el('csend-name-find');
+  const out = el('csend-name-out');
+  const statusEl = el('csend-name-status');
+  const bridge = helpers && helpers.ethNames;
+  if (!findBtn || !out || !bridge) return;
+  const names = getNames(helpers);
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+  const explain = (e) => {
+    if (e && (e.code === 4001 || e.code === 'ACTION_REJECTED')) return 'Cancelled in your wallet.';
+    if (e instanceof NameError) return e.message;
+    return formatErr(e, 'Publish');
+  };
+
+  findBtn.onclick = async () => {
+    findBtn.disabled = true;
+    out.innerHTML = '';
+    try {
+      say('Connecting your Ethereum wallet…');
+      const { address } = await bridge.connect();
+      say('Confirm the signature in your wallet — it proves this Tacit identity and sends nothing.');
+      const verified = await bridge.verifyIdentity(address);
+      say('Looking up your primary name…');
+      const plan = await names.planPublish({ owner: address, tacitAddress: myTacit });
+      out.innerHTML = `
+        <div class="row"><span class="label">Name</span> <b>${esc(plan.name)}</b> <span class="muted">(${esc(plan.source)}, primary for <code class="addr">${esc(short(address, 8))}</code>)</span></div>
+        <div class="row"><span class="label">Now</span> ${plan.current ? `<code class="addr">${esc(short(plan.current, 10))}</code>` : '<span class="muted">no record</span>'}</div>
+        <div class="row"><span class="label">New</span> <code class="addr">${esc(short(plan.next, 10))}</code></div>
+        <div class="muted" style="font-size:10px;margin-top:4px;">${verified ? 'Identity re-checked from your wallet signature. ' : ''}The record is public on Ethereum: anyone can read it and will see the name and this address together.</div>
+        ${plan.changed
+          ? '<button id="csend-name-go" type="button" class="primary" style="margin-top:6px;">Publish to my name</button>'
+          : '<div style="margin-top:6px;">Already published — nothing to do.</div>'}`;
+      say('');
+      const go = el('csend-name-go');
+      if (go) go.onclick = async () => {
+        go.disabled = true;
+        try {
+          say('Checking the update would succeed, then asking your wallet to send it…');
+          const r = await names.publish(plan);
+          if (r.skipped) { say('Already published — nothing to do.'); return; }
+          out.innerHTML = `<div>Sent${r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : ''}. Once it confirms, anyone can send to <b>${esc(plan.name)}</b>.</div>`;
+          say('');
+          notify(`Published your Tacit address to ${plan.name}`, 'ok');
+        } catch (e) {
+          say(explain(e));
+          go.disabled = false;
+        }
+      };
+    } catch (e) {
+      say(explain(e));
+    }
+    findBtn.disabled = false;
+  };
+}
+
 // Invoice receive (create a shareable request) + pay (wrap public funds into the recipient's note).
 function wireInvoice(wallet, ux) {
   const inv = makeConfidentialInvoice({ ux });
@@ -510,7 +590,7 @@ function wireClaimAndRefund(wallet, ux, helpers) {
       const deadlineMs = Number(rec.deadline) * 1000;
       const claimable = Date.now() >= deadlineMs;
       return `<div class="row" style="align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--ink-faint);flex-wrap:wrap;">
-        <span>${fmtUnits(rec.amount, dec)} ${esc(rec.ticker)} → <code class="addr">${esc(short(rec.recipientPubHex, 8))}</code></span>
+        <span>${fmtUnits(rec.amount, dec)} ${esc(rec.ticker)} → ${rec.recipientName ? `${esc(rec.recipientName)} ` : ''}<code class="addr">${esc(short(rec.recipientPubHex, 8))}</code></span>
         <span class="muted" style="font-size:10px;">${claimable ? 'refund available' : `refundable ${esc(new Date(deadlineMs).toLocaleDateString())}`}</span>
         <button data-i="${i}" class="csend-refund-btn" style="font-size:10px;padding:2px 8px;">Refund</button>
       </div>`;
@@ -604,6 +684,7 @@ export async function renderSendTab(wallet, helpers = {}) {
   // Show the example prefix for the active network (tacit1… mainnet / tactt1… signet / tacrt1… regtest),
   // derived from the holder's own address so it always matches what they'll receive.
   const addrPrefix = (myTacit && myTacit.split('1')[0]) || 'tacit';
+  const canPublishName = !!(myTacit && myTacit.startsWith('tacit1') && helpers.ethNames);
   const sendAssets = ux.assets.filter((a) => a.assetId && /^c[A-Za-z0-9]/.test(a.ticker || ''));
   const preferred = ['cETH', 'cUSDC', 'cUSDT', 'cwstETH', 'cBTC', 'cUSD'];
   const orderedSendAssets = [
@@ -628,7 +709,16 @@ export async function renderSendTab(wallet, helpers = {}) {
         ? `<code id="csend-myaddr" class="addr">${myTacit}</code>
            <button id="csend-copyaddr" type="button" class="btn-copy" style="font-size:10px;padding:2px 8px;margin-left:6px;">Copy</button>
            <div class="muted" style="font-size:10px;margin-top:2px;">Pays you on <span class="btc-word">Bitcoin</span> or <span class="eth-word">Ethereum</span> from a single string. <details style="display:inline;"><summary style="display:inline;cursor:pointer;list-style:none;">Ethereum-only pubkey ▾</summary> <code class="addr" style="font-size:10px;">${id.pubHex}</code></details></div>
-           <div class="muted" style="font-size:10px;margin-top:2px;">Sharing this links your own two lanes to whoever receives it (inherent to a “pay me anywhere” handle) — it doesn’t weaken anyone else’s unlinkability. Want lane isolation? Use a per-lane address instead.</div>`
+           <div class="muted" style="font-size:10px;margin-top:2px;">Sharing this links your own two lanes to whoever receives it (inherent to a “pay me anywhere” handle) — it doesn’t weaken anyone else’s unlinkability. Want lane isolation? Use a per-lane address instead.</div>
+           ${canPublishName ? `<details style="margin-top:6px;">
+             <summary class="muted" style="font-size:11px;cursor:pointer;list-style:none;">Publish my Tacit address to my name ▾</summary>
+             <div class="details-body">
+               <div class="muted" style="font-size:11px;margin-bottom:6px;">Store this address on your primary .wei, .gwei or .eth name so people can pay you by typing the name. Needs your Ethereum wallet and a small mainnet transaction.</div>
+               <button id="csend-name-find" type="button">Find my name</button>
+               <div id="csend-name-out" style="margin-top:6px;"></div>
+               <div id="csend-name-status" class="muted field-status" style="margin-top:4px;"></div>
+             </div>
+           </details>` : ''}`
         : `<code id="csend-myaddr" class="addr">${id.pubHex}</code>`}
     </div>
     <div id="csend-balance" class="muted">Scanning your notes…</div>
@@ -646,13 +736,13 @@ export async function renderSendTab(wallet, helpers = {}) {
 
       <div id="csend-evm-controls" style="margin-top:12px;">
         <label class="field-label" for="csend-recipient">To</label>
-        <input id="csend-recipient" type="text" placeholder="${addrPrefix}1… address or 0x02…/0x03… shielded pubkey">
+        <input id="csend-recipient" type="text" placeholder="${addrPrefix}1… address, name.wei / name.gwei / name.eth, or 0x02…/0x03… pubkey">
         <div class="field-row" style="margin-top:8px;">
           <input id="csend-amount" type="number" min="0" step="0.00000001" placeholder="ETH amount">
           <button id="csend-review-btn">Review</button>
           <button id="csend-btn" class="primary" disabled>Send note</button>
         </div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Your own address makes a plain private note; anyone else's address makes a stealth send (see the note above).</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Your own address makes a plain private note; anyone else's address makes a stealth send (see the note above). A name works if its owner has published a Tacit address to it; a plain Ethereum account address does not.</div>
         <div id="csend-preview" style="display:none;"></div>
         <div id="csend-status" class="muted field-status"></div>
         <details style="margin-top:8px;">
@@ -737,6 +827,7 @@ export async function renderSendTab(wallet, helpers = {}) {
 
   wireInvoice(wallet, ux);
   wireHold(wallet, ux, helpers);
+  if (canPublishName) wirePublishName(helpers, myTacit);
   wireAssetLane();
   wireClaimAndRefund(wallet, ux, helpers);
 

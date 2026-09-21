@@ -87,6 +87,9 @@ function _decode(addr) {
   const payload5 = d5.slice(0, d5.length - 6);
   return { hrp, payloadBytes: new Uint8Array(_convertBits(payload5, 5, 8, false)) };
 }
+// The raw bech32m step (case, separator, alphabet, checksum, 5→8 bit regroup), for callers that apply their
+// own payload rules over the same codec.
+export const decodeBech32m = _decode;
 
 // BIP-352 silent payment address. Same two keys the tacit1 handle already carries on its Bitcoin lane
 // (scan ‖ spend), re-encoded in the standard form so an ordinary Bitcoin wallet can pay it. bech32m with a
