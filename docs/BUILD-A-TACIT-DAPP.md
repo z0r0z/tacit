@@ -23,7 +23,9 @@ node backend. A starting skeleton lives next to this file at [`dapp-template/ind
 - A **memo** is emitted per created leaf: the note's opening, encrypted to its owner. It is the main way a
   wallet recovers its notes from a seed. A few kinds of note carry an empty memo because their opening
   re-derives from the wallet key instead (wrap deposits by index, bridge-mint destinations, cBTC bearer
-  notes); for any other note, lose the memo and lose the note.
+  notes). The notes a wallet mints for itself (change, LP shares, swap outputs, released collateral, claim and
+  refund notes, farm rewards) also re-derive from the key and a public anchor of the settle, so they are found
+  again even if a memo was lost; a note sent to someone else has only its memo.
 - You do not need to prove anything yourself. The **relay** proves and settles for a fee carved from the op.
   It receives the witness of the op you hand it, but never your wallet key or any note's blinding, so it can
   prove the op you authorized and cannot build a different one (exactly what it sees is in §6).
@@ -151,6 +153,12 @@ const r = await tacit.recover({ walletPriv });
 
 It reads chain state and public Bitcoin history only and sends nothing. What each operation needs, the positions that need
 a saved record (`importFarmPosition`), and the cost are in [`RECOVERY.md`](./RECOVERY.md).
+
+If you assemble ops yourself, mint every self-owned output from `tacit.deriveOutput(walletPriv, anchor, role, index)`
+(`{ nk, blinding, blindingHex }`) instead of fresh randomness: `anchor` is the first spent note's nullifier (or the
+consumed deposit id, receipt leaf, lock nullifier or closed position's nullifier for the ops that have no spent note),
+`role` is one of the fixed names in `OUTPUT_ROLES` (`confidential-recovery.js`), and `index` counts outputs of that role. Keep outputs meant for
+another party on fresh randomness. The anchors and roles each built-in op uses are listed in the recovery chapter.
 
 ### Wrap ETH in (step 1 — a plain tx, no proof)
 

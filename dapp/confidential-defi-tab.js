@@ -30,18 +30,6 @@ function getUx() {
 const el = (id) => document.getElementById(id);
 const ZERO32 = '0x' + '00'.repeat(32);
 
-// Requires a CSPRNG and throws without one, matching bulletproofs-plus.js `randomScalar`. These 32 bytes seed a
-// CDP position's debt-note blinding, nullifier key and released-collateral blindings, so they must come from
-// `crypto.getRandomValues`, which is only available in a secure context (HTTPS).
-function rand32Hex() {
-  if (!globalThis.crypto?.getRandomValues) {
-    throw new Error('CSPRNG unavailable — open tacit over HTTPS (a secure context) to build this op');
-  }
-  const b = new Uint8Array(32);
-  globalThis.crypto.getRandomValues(b);
-  return '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
-}
-
 // A CDP position's owner is a ONE-TIME x-only pubkey (the guest validates it + verifies a close sig). The
 // matching priv is persisted in the (already local-only) position descriptor so the close can re-sign.
 const xOnly = (priv) => '0x' + [...G.multiply(BigInt(priv)).toRawBytes(true).slice(1)].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -151,15 +139,15 @@ function wireOpen(wallet, ux, notes) {
     const keyNonce = loadPositions().filter((p) => String(p.controller).toLowerCase() === String(controller).toLowerCase()).length;
     const positionOwnerPriv = derivePositionOwnerPriv(wallet.priv, controller, keyNonce);
     const positionOwner = xOnly(positionOwnerPriv);
-    // debtBlinding/debtNk stay random-per-mint (not derived): the debt note they belong to is an ordinary
-    // OWNED note and already rides the pool's normal memo-recovery channel (owned() below seals both to the
-    // borrower's pubkey), which is the pool-wide convention for every minted note — deriving these too would
-    // be redundant with, not an improvement on, that existing mechanism.
-    const debtBlinding = rand32Hex();
-    // Fresh secret for the minted debt note's leaf owner (H(debtNk), per cxfer-core's bearer-note convention)
-    // — distinct from positionOwner, which authorizes the POSITION, not the debt note itself. Must be
-    // persisted: it is the only way to later spend/close with this debt note.
-    const debtNk = rand32Hex();
+    // The debt note's blinding and nullifier key derive from the wallet key and the first collateral note's nullifier (the
+    // settle spends it), so the note is re-derivable from the key alone as well as through its sealed memo. They are distinct
+    // from positionOwner, which authorizes the POSITION, not the debt note (H(debtNk) is the note's leaf owner, per
+    // cxfer-core's bearer-note convention). debtNk must still be kept: it is what later spends the note.
+    const c0 = collateral[0];
+    const anchor = ux.pool.nativeNu(c0.owner, c0.nk, ux.pool.leaf(c0.asset, c0.cx, c0.cy, c0.owner));
+    const debtKeys = ux.deriveOutput(wallet.priv, anchor, 'cdpDebt', 0);
+    const debtBlinding = debtKeys.blindingHex;
+    const debtNk = debtKeys.nk;
     const rateSnapshot = ZERO32; // fee-free v1 controller
     const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
     const defi = makeConfidentialDefiActions({
@@ -432,11 +420,13 @@ function wireClose(wallet, ux, positions) {
         }
         if (sum < debtValue) { if (statusEl) statusEl.textContent = `Need ${debtValue} cUSD to repay; you hold ${sum}.`; btn.disabled = false; return; }
         const root = (notes.find((x) => x.asset.toLowerCase() === debtAsset.toLowerCase()) || {}).root;
-        const releaseBlindings = sortedBasket.map(() => rand32Hex());
-        // One fresh nk per released leg — the leaf owner is H(nk), which is what the guest publishes. The
-        // opening (including this nk) rides the sealed memo, so the notes stay recoverable from the wallet
-        // key alone even if this browser's localStorage is wiped.
-        const releaseNks = sortedBasket.map(() => rand32Hex());
+        // One blinding and nk per released leg, derived from the wallet key and the closed position's nullifier — the leaf owner
+        // is H(nk), which is what the guest publishes. The opening (including this nk) also rides the sealed memo, so the notes
+        // stay recoverable from the wallet key alone even if this browser's localStorage is wiped.
+        const posNullifier = cdp.positionNullifier(positionLeaf);
+        const releaseKeys = sortedBasket.map((_leg, i) => ux.deriveOutput(wallet.priv, posNullifier, 'cdpRelease', i));
+        const releaseBlindings = releaseKeys.map((k) => k.blindingHex);
+        const releaseNks = releaseKeys.map((k) => k.nk);
         if (statusEl) statusEl.textContent = 'Building + settling the close via the relayer…';
         await defi.closeCdp({
           controller, debtValue, rateSnapshot: p.rateSnapshot, positionOwner: pOwner, positionOwnerPriv: pOwnerPriv,

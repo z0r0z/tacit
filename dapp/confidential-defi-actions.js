@@ -34,12 +34,13 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // value (the leaf owner the guest publishes for keeper liquidation) — distinct from the borrower's account
   // owner, so it's unlinkable; the debt note's memo still seals to id.pubHex so the borrower recovers it.
   // `nonce` is fixed to 0 (the guest enforces it on real positions; the fresh owner gives leaf uniqueness).
-  // `debtNk` is a FRESH secret for the minted debt note (required whenever debtValue > 0): the note's leaf
+  // `debtNk` is a per-note secret for the minted debt note (required whenever debtValue > 0): the note's leaf
   // owner is H(debtNk), matching cxfer-core's bearer-note-by-nk convention — reusing positionOwner here would
   // bind the debt note's leaf to the position's auth key, which is a DIFFERENT commitment than what the guest
   // actually publishes (debt_owner), so the assembler's own `leaves` entry would silently diverge from the
-  // real on-chain leaf. The caller must retain debtNk to spend the note later (it is NOT derivable from
-  // anything else recorded on-chain).
+  // real on-chain leaf. The CDP tab derives debtNk and debtBlinding from the wallet key and the first collateral
+  // note's nullifier (deriveOutputKeys, role 'cdpDebt'), so a restored wallet re-derives them; a caller that
+  // passes its own values must retain debtNk to spend the note later.
   const ZERO32 = '0x' + '00'.repeat(32);
   async function openCdp({ controller, debtValue, rateSnapshot, fee = 0n, collateral, spendRoot, debtBlinding, positionOwner, debtNk, acknowledgeFeeShortfall = false, waitOpts }) {
     // nonce is pinned to 0, so the fresh per-position owner is the sole source of leaf uniqueness: reusing the
@@ -63,7 +64,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
 
   // CDP close — burn the debt notes + release the basket (first leg net of fee). Each released leg is a minted
   // owned note; the burned debt notes are spent (no descriptor). nonce is 0 (matches open).
-  // `releaseNks` is one FRESH secret per released leg (basket order, asset-sorted — the SAME order
+  // `releaseNks` is one per-note secret per released leg (the CDP tab derives them, role 'cdpRelease') (basket order, asset-sorted — the SAME order
   // buildCdpCloseOp emits `legs` in): each released leg's leaf owner is H(nk), which is what the guest
   // publishes. Reusing positionOwner here would bind the released notes to the position's BIP-340 auth key —
   // a key with no nk preimage — minting collateral back as permanently unspendable notes.
@@ -135,8 +136,9 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   // `receiptOwner` is its x-only pubkey, `receiptOwnerPriv` the matching secret that signs harvest/unbond.
   // Keep it fresh per position (an account-wide key would link every position), and persist it — it is the
   // only thing that can later harvest or exit. Minted notes (reward / released LP shares) land on a SEPARATE
-  // H(nk) spend owner, so each needs its own fresh nk; that nk rides the sealed memo, keeping the note
-  // recoverable from the wallet key alone.
+  // H(nk) spend owner, so each needs its own nk; the farm assemblers derive it from the wallet key and the receipt
+  // (roles 'harvest' / 'unbond'), and it also rides the sealed memo, keeping the note recoverable from the wallet
+  // key alone.
 
   // OP_FARM_BOND — lock LP-share notes into a receipt committing (lpAsset, Σshares). Legs are spent.
   // Guest emits exactly ONE leaf: the receipt (main.rs OP_FARM_BOND).

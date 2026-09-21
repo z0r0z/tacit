@@ -17,6 +17,7 @@ A confidential note reaches its owner through one of two channels:
 | What | Channel | Needs besides the key |
 | --- | --- | --- |
 | Notes made by transfer, swap, LP, farm harvest and unbond, CDP debt and release, stealth claim and refund | memo | nothing |
+| The same notes when the wallet minted them for itself (see [Derived outputs](#derived-outputs)) | derivation: `deriveOutputKeys(key, anchor, role, index)` matched to the leaves the settle inserted, and the memo | the settle's calldata (RPC); for the two halves of a self-send, an amount of the form m × 10^k |
 | Wrap deposit notes (any wrap index) | derivation: `deriveNote(key, asset, index)` matched to the pool's `Wrap` deposit ids | nothing |
 | Change of a send-and-unwrap | memo, and a fallback derivation from the spent parent note | the settle transaction's calldata (RPC) |
 | Bridge-mint destination notes (a Bitcoin burn re-minted here) | derivation: owner from `deriveNote(key, asset, destIndex)`, blinding from the burn nullifier | the amount, if it is not m × 10^k for m below 100 |
@@ -26,6 +27,57 @@ A confidential note reaches its owner through one of two channels:
 | Stealth locks the wallet sent | a tail sealed to the sender's own key on the lock memo | nothing |
 | Stealth locks addressed to the wallet | memo | nothing |
 
+## Derived outputs
+
+A wallet's own outputs (change, a self-send's received note, LP shares, swap outputs, released collateral, claim and refund
+notes, farm reward and unbond notes) take their nullifier key and blinding from the wallet key and a public anchor of the
+settle that made them:
+
+```
+nk = HMAC(key, "tacit-out-nk-v1" ‖ anchor ‖ len(role) ‖ role ‖ index_be32)  mod n
+r  = HMAC(key, "tacit-out-r-v1"  ‖ anchor ‖ len(role) ‖ role ‖ index_be32)  mod n      (never zero)
+```
+
+`tacit.deriveOutput(walletPriv, anchor, role, index)` returns `{ nk, blinding, blindingHex }`. Only the holder of the key can
+compute either value, so nobody else can tell that two outputs, or an output and its anchor, belong together. A
+`(anchor, role, index)` triple belongs to one output: the anchor is spent (or consumed) once, so a second settle cannot
+reuse it. Outputs meant for someone else (the lock a stealth send creates, a cross-out destination) and every memo
+ephemeral stay on fresh randomness.
+
+| Operation | Anchor | Roles (index) |
+| --- | --- | --- |
+| Transfer, self-send, split | first spent note's nullifier | `send` (0), `change` (0) |
+| Wrap-and-send | consumed deposit id | `send` (0), `change` (0) |
+| LP add | first spent note's nullifier | `lpShare` (0), `change` (0 for A, 1 for B) |
+| Wrap-and-add-liquidity | consumed deposit id of the lower asset id | `lpShare` (0) |
+| LP remove | share note's nullifier | `lpOut` (0 for A, 1 for B) |
+| Route swap | spent note's nullifier | `swapOut` (0), `change` (0) |
+| Wrap-and-swap | consumed deposit id | `swapOut` (0) |
+| CDP open | first collateral note's nullifier | `cdpDebt` (0) |
+| CDP close | closed position's nullifier | `cdpRelease` (leg index, asset-sorted) |
+| Stealth claim, refund | the lock's nullifier | `claim` (0), `refund` (0) |
+| Farm harvest | receipt leaf | `harvest` (ordinal of this harvest of the receipt), `harvestNonce` (same ordinal) |
+| Farm unbond | receipt leaf | `unbond` (0) |
+| Fast-lane exit | first spent input's nullifier | `exit` (0) |
+
+A harvest does not spend the receipt, so its ordinal is the number of `Harvested` events the manager has emitted for that
+receipt; two harvests never share one.
+
+Recovery repeats this from the other side. For each settle a held note was spent in (and each fused-op deposit), it
+recomputes every role's `(nk, blinding)` and needs only the value, which it reads from what the settle made public:
+payouts, relay fees and protocol cuts, reserve and share changes, CDP debt and baskets, a note's remaining value after those.
+A candidate is accepted only when its leaf is one that settle inserted, so a value nothing supplied is not found rather than
+mis-found. The two halves of a self-send are a special case: the total is known, so once one half is found the other is
+exact, but the split itself is public nowhere. The walk tries the amounts m × 10^k (m below 100) for the received note, and
+a self-send of any other amount is found through its memo. Outputs anchored on a receipt, a lock or a closed position take
+their value from the manager's `Harvested` events, the receipt's shares, the lock's amount and the position's basket, each
+less a relay fee of the form the guest accepts. Notes found this way are followed forward: a derived note that was spent is
+the anchor of the next settle.
+
+Two limits. Swap outputs are read from the pool's reserve change, which is exact for a settle carrying one swap on that pool
+and not for a shared batch, whose per-trader amounts are hidden. And an op assembled by a caller that supplies its own output
+keys (`swapBatched`, the OTC and bid tabs) keeps whatever the caller chose.
+
 ## What needs a saved record
 
 | What | Why | What to save |
@@ -33,6 +85,8 @@ A confidential note reaches its owner through one of two channels:
 | A farm position opened under a random receipt key (older builds) | its key is not derived from anything the chain or the wallet key holds | `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }`; restore it with `importFarmPosition` |
 | A CDP position opened under a random owner key (older builds and scripts) | same | the position descriptor with `positionOwnerPriv` |
 | A stealth lock sent by a build that did not append the sender tail | the refund key was random and never published | the `onBuilt` result of `stealthSend` |
+| A self-owned output minted by a build before derived outputs, with no memo on chain | its keys were random | nothing to save if the memo exists; otherwise the note's opening |
+| A split of a self-send whose amount is not m × 10^k, with no memo on chain | the split is not public and the derivation cannot search it | the note's opening |
 | The destination note of a cross-out to Bitcoin | the note is owned by the destination key the sender chose, on Bitcoin; the wallet can recompute the blinding, but only the holder of that key can spend it | the destination key and the returned `destBlinding` |
 | A bridge-mint note of an amount that is not m × 10^k for m below 100 | the amount is hidden in the commitment | the amount, passed as `bridgeAmounts` |
 
@@ -55,12 +109,12 @@ const r = await tacit.recover({ walletPriv });
 ```
 
 `source` is absent for a note found through its memo, and otherwise names the channel: `wrap`, `change`,
-`bridge-mint` or `cbtc`.
+`bridge-mint`, `cbtc` or `derived`. A `derived` note also carries `role` and `roleIndex`.
 
 `balance(walletPriv)` returns the same `{ notes, byAsset, poolStats }` it always did, and now also lists the wrap,
 bridge-mint and cBTC notes. It skips the walks that read transaction calldata, so it stays cheap enough to poll.
 
-Options: `{ toBlock, deep: false }` skips the calldata walks (change notes), `{ cbtc: false }` skips the Bitcoin history
+Options: `{ toBlock, deep: false }` skips the calldata walks (change notes and derived outputs found from a spent note),`{ cbtc: false }` skips the Bitcoin history
 read, `{ bridgeAmounts: [units…] }` adds amounts to try for bridge-mint notes, `{ btcHistory }` supplies the wallet's
 Bitcoin history (`{ anchors: [{ txid, vout }], lockOutputs: [{ txid, vout }] }`) instead of reading esplora, and
 `{ events }` reuses an event stream you already fetched (from `fetchEvents({ include: ['wraps', 'cdp', 'bonds'] })`).
@@ -74,6 +128,8 @@ category raised an error. The detail sits beside it:
   (notes a derivation found that are already spent), and `emptyMemoLeavesNotAttributed`, the leaves with an empty memo
   that nothing explained. Other holders' seed-derived notes are in that count, so it is a ceiling on what is missing, not
   a list of it.
+- `derived`: settles whose calldata was read for derived outputs, notes found, deposits located; `derivedOutputs`: the farm,
+  lock and CDP jobs tried and the notes they found.
 - `farm`: Bonded events seen, receipts derived, derived receipts the manager no longer holds (`derivedClosed`), and
   receipts nothing derived (other holders', or random-key positions that need `importFarmPosition`).
 - `locks`, `cdp`, `cbtc`, `bridge`, `change`, `wrap`: what each walk tried and found, and `errors` for any that failed.
@@ -110,10 +166,13 @@ from 0 and stops after 24 unused in a row, so an index left far behind a gap of 
 
 - One event pass over the pool from its deploy block, in windows of 500 blocks (the tightest range cap seen on public
   nodes): one `eth_getLogs` call per window, about 60 for the first month of history. `recover` fetches the pool's note events, `Wrap`,
-  `CdpPositionInserted` and the farm manager's `Bonded` in that one pass. Pass `events` to avoid fetching twice.
+  `CdpPositionInserted` and the farm manager's `Bonded` and `Harvested` in that one pass. Pass `events` to avoid fetching twice.
 - Wrap and bridge-mint walks are local hashing over that stream. The bridge-mint walk tries the amounts m × 10^k for m
   below 100 (about 1,900 per burn nullifier and destination index, plus any `bridgeAmounts`); it runs only for leaves with an empty memo and is remembered per session.
 - The cBTC scan reads the wallet's Bitcoin history from public esplora mirrors (queried by script hash, so no address is
   sent) and one `eth_call` per candidate lock output. The result is cached for ten minutes.
-- The calldata walks (change notes, CDP positions, stealth lock memos) fetch one transaction per settle involved.
+- The calldata walks (change notes, derived outputs, CDP positions, stealth lock memos) fetch one transaction per settle
+  involved. The derived-output walk also reads the settles after a pending deposit's `Wrap` event, at most 64 in all, to find
+  the one that consumed it, and searches round amounts only for a settle where no other channel found a leaf for the wallet
+  (about 0.3 s of local hashing per spent note).
 - Positions and locks are checked for liveness with `eth_call` and `eth_getStorageAt` reads.
