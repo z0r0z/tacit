@@ -8,6 +8,10 @@
 //   * gas runway (days of this wallet's actual burn at the live gas price) < N days
 //   * reflection lag (relay tip - attested Bitcoin height) > N blocks
 //   * reflection snapshot size > warn threshold — the one cumulative resource
+//   * reflection stalled: no successful attest for REFLECTION_STALL_HOURS with blocks waiting, or the API's cursor
+//     off the pool's digest on two consecutive runs (a lost ack) — lib/reflection-stall.js
+//   * launch-farm health (treasury solvency, epoch runway, idle pools, governor handover) — lib/farm-health.js;
+//     FARM_MANAGER_ADDR overrides the manager, or set it to "off" to skip the check
 //
 // The lag alert is the "reflection is falling behind" signal that catches a stalled
 // reflection worker before the 176-block trap can form.
@@ -23,7 +27,11 @@ import { formatEther, formatUnits } from 'viem';
 import { CFG, OP_GAS, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import { burnGasPerDay, runwayDays } from './lib/runway.js';
 import { queueVerdict } from './lib/queue-health.js';
-import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { makeRpc, checkFarm, FARM_MANAGER_MAINNET } from './lib/farm-health.js';
+import { stallVerdict, driftVerdict } from './lib/reflection-stall.js';
+import { manualRecoveryHint } from './lib/reflection-reconcile.js';
+import { reflectionDriftSeen } from './lib/worker-client.js';
+import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -161,6 +169,23 @@ async function checkSnapshotCapacity() {
   }
 }
 
+// The launch farms stream one treasury across several pools; the failures worth a page are an under-funded treasury, an
+// epoch about to run dry, and weight streaming into pools nobody has staked in. The checks are shared with GET /farm/health and
+// tools/farm-monitor.mjs. An unreadable chain is a warning, not a critical: it says nothing about the farm itself.
+async function checkFarmHealth() {
+  const manager = process.env.FARM_MANAGER_ADDR || FARM_MANAGER_MAINNET;
+  if (/^(off|none|0|false)$/i.test(manager) || /^0x0{40}$/i.test(manager)) { log('farm check disabled (FARM_MANAGER_ADDR)'); return; }
+  let res;
+  try { res = await checkFarm({ rpc: makeRpc(CFG.rpcUrls), manager }); }
+  catch (e) { await alert('warning', `farm state unreadable: ${e?.message || e}`, { manager }); return; }
+  const { health } = res;
+  log(`farm ${manager} = ${health.status}`);
+  for (const c of health.checks) {
+    if (c.status === 'ok') continue;
+    await alert(c.status === 'critical' ? 'critical' : 'warning', `farm ${c.name}: ${c.detail}`, { manager, check: c.name });
+  }
+}
+
 async function checkReflectionLag() {
   // Relay tip = the worker's confirmed Bitcoin tip; we approximate via /prover-health,
   // which already reports lag fields. Prefer that over re-scanning Bitcoin here.
@@ -210,9 +235,46 @@ async function checkReflectionLag() {
   }
 }
 
+// The lane can stall with the lag alert still quiet and every service reporting healthy: an attest that lands without
+// its ack leaves the API's cursor behind the pool, and each later batch is built on a prior the pool no longer holds.
+// Two readings catch it. Time since the last ack, while there are blocks to attest, says the lane is not moving. The
+// cursor's digest against the pool's, on two runs in a row, says why.
+async function checkReflectionStall() {
+  const get = async (path) => {
+    try {
+      const res = await fetch(`${CFG.workerBase}${path}`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
+      return res.ok ? await res.json() : null;
+    } catch { return null; }
+  };
+  const net = encodeURIComponent(CFG.network);
+  const [state, att] = await Promise.all([get(`/reflection/state?network=${net}`), get(`/reflection/attest-state?network=${net}`)]);
+  if (!state || !att || !att.lastAck) { log('reflection stall check unavailable (state / attest-state unreadable — worker predates the route?)'); return; }
+
+  const stall = stallVerdict({
+    attestedHeight: Number(state.attestedHeight), tipHeight: Number(state.tipHeight),
+    lastAckAt: Number(att.lastAck.at), now: Number(att.now) || Date.now(), stallHours: CFG.reflectionStallHours,
+  });
+  log(`reflection stall: ${stall.reason}`);
+  if (stall.level === 'critical') await alert('critical', `reflection stalled: ${stall.reason}`, { attestedHeight: state.attestedHeight, tipHeight: state.tipHeight, lastAck: att.lastAck });
+
+  // The cursor's digest is what the last ack recorded, trusted only while the cursor still sits at that ack's height
+  // (a reseed moves it without one). Anything else would mean assembling the next job to read its prior digest, which
+  // the API's memory does not tolerate for a monitor probe, so that run has no drift verdict.
+  let cursorDigest = null;
+  if (!att.lastAck.seeded && Number(att.lastAck.attestedTo) === Number(state.attestedHeight)) cursorDigest = att.lastAck.jobId;
+  let onchain = null;
+  try { onchain = await readReflectionDigest(); } catch (e) { log(`pool digest read failed: ${e?.message || e}`); }
+  const probe = driftVerdict({ cursorDigest, onchainDigest: onchain, streak: 0 });
+  if (probe.level === 'unknown') { log(`reflection drift: ${probe.reason}`); return; }
+  const streak = await reflectionDriftSeen(probe.drifting);
+  const drift = driftVerdict({ cursorDigest, onchainDigest: onchain, streak: streak ?? 0 });
+  log(`reflection drift: ${drift.reason}`);
+  if (drift.level === 'critical') await alert('critical', `reflection cursor drift: ${drift.reason}. Recovery: ${manualRecoveryHint(onchain)}`, { cursorDigest, onchain, streak });
+}
+
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet.account.address}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkQueue()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkFarmHealth(), checkReflectionStall(), checkQueue()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

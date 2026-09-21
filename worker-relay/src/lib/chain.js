@@ -202,12 +202,13 @@ export async function readPool(fn, args = []) {
 // Prefer the view: it cannot drift when the pool's storage layout shifts, which is how this read silently
 // pointed at knownBitcoinBurnRoot for a generation. The slot read stays as a fallback for older pools
 // deployed before `attestedReflectionDigest()` existed.
-export async function readReflectionDigest(client = publicClient) {
+export async function readReflectionDigest(client = publicClient, blockNumber) {
+  const at = blockNumber === undefined ? {} : { blockNumber };
   try {
-    const d = await client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'attestedReflectionDigest' });
+    const d = await client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'attestedReflectionDigest', ...at });
     if (d) return d;
   } catch { /* pre-getter pool — fall through to the pinned slot */ }
-  return client.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}` });
+  return client.getStorageAt({ address: POOL, slot: `0x${POOL_SLOT_REFLECTION_DIGEST.toString(16)}`, ...at });
 }
 
 // What to WATCH, as opposed to what to sign with: fundedWallets, corrected by SETTLE_ADDRESS when this

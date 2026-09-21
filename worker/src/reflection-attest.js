@@ -201,8 +201,9 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
   // (attestedTo <= attestedHeight) is a no-op, so a retried submit can't skip or re-fold blocks.
   async function ackJob(attestedTo, newSnapshot) {
     const s = await loadState();
-    if (attestedTo > s.attestedHeight) await storage.save({ snapshot: newSnapshot, attestedHeight: attestedTo, tipHeight: s.tipHeight });
-    return { attestedHeight: Math.max(attestedTo, s.attestedHeight) };
+    const advanced = attestedTo > s.attestedHeight;
+    if (advanced) await storage.save({ snapshot: newSnapshot, attestedHeight: attestedTo, tipHeight: s.tipHeight });
+    return { attestedHeight: Math.max(attestedTo, s.attestedHeight), advanced };
   }
 
   // All-in-worker synchronous model (prove + submit via injected URLs). No-op if caught up.

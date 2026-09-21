@@ -88,6 +88,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
+import { handleFarm } from './farm-program.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
@@ -620,7 +621,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/farm/program', '/farm/health']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -806,7 +807,147 @@ function scanReflectionAttesterFor(env, network) {
 // /reflection/ack retrieves it. Ephemeral (the snapshot is reproducible by re-assembling), 1-day TTL. Also
 // carries which eth-state `contentHash` (if any) this job's ethBundleSource call folded, so ack can promote
 // that exact candidate — see handleReflectionAck.
-const reflectionPendingKey = (network, jobId) => `reflection:pending:${network}:${String(jobId).replace(/^0x/, '')}`;
+const reflectionPendingKey = (network, jobId) => `reflection:pending:${network}:${String(jobId).replace(/^0x/, '').toLowerCase()}`;
+
+const reflectionSubmittedKey = (network) => `reflection:submitted:${network}`;
+const reflectionLastAckKey = (network) => `reflection:lastack:${network}`;
+const reflectionDriftKey = (network) => `reflection:driftstreak:${network}`;
+const REFLECTION_ATTESTED_DIGEST_SELECTOR = '0xb909cdaf'; // attestedReflectionDigest()
+
+// The stashed candidate for a jobId, in the {newSnapshot, ethContentHash, attestedTo} shape. Tolerates a bare
+// snapshot (a stash that predates the eth-state promotion) and a stash that predates attestedTo, whose batch
+// height is the snapshot's own height. null when absent or expired.
+async function readReflectionStash(env, network, jobId) {
+  const raw = jobId ? await env.REGISTRY_KV.get(reflectionPendingKey(network, jobId)) : null;
+  if (!raw) return null;
+  let stashed;
+  try { stashed = JSON.parse(raw); } catch { return null; }
+  const wrapped = !!stashed && Object.prototype.hasOwnProperty.call(stashed, 'newSnapshot');
+  const newSnapshot = wrapped ? stashed.newSnapshot : stashed;
+  const attestedTo = Number(wrapped && stashed.attestedTo != null ? stashed.attestedTo : newSnapshot && newSnapshot.height);
+  return { newSnapshot, ethContentHash: wrapped ? stashed.ethContentHash : null, attestedTo: Number.isInteger(attestedTo) && attestedTo > 0 ? attestedTo : null };
+}
+
+// Advance the cursor to a stashed candidate and settle everything that hangs off a landed batch: drop the stash,
+// promote the eth-state candidate it folded, and note when the last successful attest happened.
+async function applyReflectionAck(env, network, att, jobId, stash, attestedTo, txHash = '') {
+  const r = await att.ackJob(attestedTo, stash.newSnapshot);
+  await env.REGISTRY_KV.delete(reflectionPendingKey(network, jobId));
+  // Only a real advance counts as the lane moving: a stale or duplicate ack must not restart the stall clock.
+  if (r.advanced) await env.REGISTRY_KV.put(reflectionLastAckKey(network), JSON.stringify({ at: Date.now(), attestedTo, jobId: String(jobId), txHash: txHash || '' }));
+  // Promotion: this job's newDigest is on-chain. If it folded a pending eth-state candidate, that candidate is
+  // now proven-in-use — promote it to confirmed so the NEXT batch builds on it, and free the pending slot.
+  // Match by contentHash: a newer pending may have been published in between (rare — the staleness-gated 409
+  // discourages it), in which case leave it alone and let the next GET /reflection/eth-state retry against the
+  // still-current confirmed.
+  if (stash.ethContentHash) {
+    const pendingKey = ethStatePendingKey(network);
+    const pendingRaw = await env.REGISTRY_KV.get(pendingKey);
+    if (pendingRaw) {
+      let pending = null;
+      try { pending = JSON.parse(pendingRaw); } catch { pending = null; }
+      if (pending && pending.contentHash === stash.ethContentHash) {
+        await env.REGISTRY_KV.put(ethStateConfirmedKey(network), pendingRaw);
+        await env.REGISTRY_KV.delete(pendingKey);
+      }
+    }
+  }
+  return r;
+}
+
+// The pool's attested digest as of `depth` blocks back, and only when two independent endpoints agree: this read
+// authorises an un-rewindable cursor advance, so a single endpoint's word (or a block that may still reorg) is
+// not enough. null when it cannot be established.
+async function reflectionDigestOnchain(network, pool, depth) {
+  const rpcs = _TETH_ETH_RPCS[network] || [];
+  const rpc = async (u, method, params) => {
+    try {
+      const r = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      const j = await r.json();
+      return typeof j?.result === 'string' ? j.result : null;
+    } catch { return null; }
+  };
+  let head = NaN;
+  for (const u of rpcs) { const h = await rpc(u, 'eth_blockNumber', []); if (h) { head = parseInt(h, 16); break; } }
+  if (!Number.isFinite(head)) return null;
+  const tag = '0x' + Math.max(head - depth, 0).toString(16);
+  const seen = [];
+  for (const u of rpcs) {
+    const d = await rpc(u, 'eth_call', [{ to: pool, data: REFLECTION_ATTESTED_DIGEST_SELECTOR }, tag]);
+    if (d && /^0x[0-9a-f]{64}$/i.test(d)) { seen.push(d.toLowerCase()); if (seen.length === 2) break; }
+  }
+  return seen.length === 2 && seen[0] === seen[1] ? seen[0] : null;
+}
+
+// Self-heal for a lost ack. When a batch's attest lands but the box never acks, the cursor stays behind the
+// pool and every later job (built over a longer range from the old prior) reverts as stale. The stash written
+// when that batch was served is keyed by its digest, so if the pool's digest matches a stash we still hold, that
+// batch is the one that landed: ack it. Returns the recovery, or null when there was nothing to recover.
+async function reconcileLandedReflection(env, network, att) {
+  const pool = env.REFLECTION_POOL_ADDR || (_CROSSOUT_POOL_DEPLOYMENTS[network] || {}).pool;
+  if (!pool) return null;
+  const depth = Math.max(1, parseInt(env.REFLECTION_ACK_CONFIRMATIONS || '3', 10) || 3);
+  const digest = await reflectionDigestOnchain(network, pool, depth);
+  if (!digest) return null;
+  const stash = await readReflectionStash(env, network, digest);
+  if (!stash || !stash.attestedTo) return null;
+  const r = await applyReflectionAck(env, network, att, digest, stash, stash.attestedTo);
+  console.log(`[reflection] RECOVERED lost ack: pool digest ${digest} matches a stashed batch — cursor advanced to ${r.attestedHeight}`);
+  return { jobId: digest, attestedTo: stash.attestedTo, attestedHeight: r.attestedHeight };
+}
+
+// GET /reflection/pending?network=&digest= — does the API still hold the stashed candidate for `digest`, and the
+// height an ack for it should carry. The box's own recovery path when the pool is ahead of the cursor.
+async function handleReflectionPending(req, env, url, cors) {
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const digest = String(url.searchParams.get('digest') || '');
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(digest)) return jsonResponse({ error: 'digest (32-byte hex) required' }, 400, { ...cors, 'Cache-Control': 'no-store' });
+  const stash = env.REGISTRY_KV ? await readReflectionStash(env, network, digest) : null;
+  return jsonResponse(stash && stash.attestedTo ? { found: true, attestedTo: stash.attestedTo, jobId: '0x' + digest.replace(/^0x/, '').toLowerCase() } : { found: false }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// GET|POST /reflection/attest-state — the small records the relay cron and the monitor cannot keep themselves
+// (both run as fresh containers): the attest tx last submitted, when the last ack landed, and how many
+// consecutive monitor runs have seen the cursor off the chain.
+//   GET  ?network=                         -> {submitted, lastAck, driftStreak}
+//   POST {network, submitted:{newDigest, txHash, attestedTo}}  records a submitted attest tx
+//   POST {network, driftSeen:boolean}      bumps (true) or clears (false) the drift streak
+// A first GET with no ack on record starts the stall clock at that moment, so a stall that predates this record
+// is still caught within the stall window rather than never.
+async function handleReflectionAttestState(req, env, url, cors) {
+  const h = { ...cors, 'Cache-Control': 'no-store' };
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, h);
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, h);
+  const readJson = async (key) => { const raw = await env.REGISTRY_KV.get(key); if (!raw) return null; try { return JSON.parse(raw); } catch { return null; } };
+  if (req.method === 'POST') {
+    let body;
+    try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, h); }
+    const network = body.network === 'signet' ? 'signet' : 'mainnet';
+    if (body.submitted) {
+      const { newDigest, txHash, attestedTo } = body.submitted;
+      if (!/^0x[0-9a-fA-F]{64}$/.test(String(newDigest || '')) || !/^0x[0-9a-fA-F]{64}$/.test(String(txHash || ''))) return jsonResponse({ ok: false, error: 'submitted needs 32-byte hex newDigest and txHash' }, 400, h);
+      await env.REGISTRY_KV.put(reflectionSubmittedKey(network), JSON.stringify({ newDigest: String(newDigest).toLowerCase(), txHash: String(txHash).toLowerCase(), attestedTo: Number(attestedTo) | 0, at: Date.now() }), { expirationTtl: 86400 });
+      return jsonResponse({ ok: true }, 200, h);
+    }
+    if (typeof body.driftSeen === 'boolean') {
+      const cur = (await readJson(reflectionDriftKey(network))) || { streak: 0 };
+      const streak = body.driftSeen ? (Number(cur.streak) | 0) + 1 : 0;
+      await env.REGISTRY_KV.put(reflectionDriftKey(network), JSON.stringify({ streak, at: Date.now() }));
+      return jsonResponse({ ok: true, driftStreak: streak }, 200, h);
+    }
+    return jsonResponse({ ok: false, error: 'nothing to record (submitted | driftSeen)' }, 400, h);
+  }
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  let lastAck = await readJson(reflectionLastAckKey(network));
+  if (!lastAck) {
+    lastAck = { at: Date.now(), seeded: true };
+    await env.REGISTRY_KV.put(reflectionLastAckKey(network), JSON.stringify(lastAck));
+  }
+  const drift = await readJson(reflectionDriftKey(network));
+  return jsonResponse({ network, submitted: await readJson(reflectionSubmittedKey(network)), lastAck, driftStreak: drift ? Number(drift.streak) | 0 : 0, now: Date.now() }, 200, h);
+}
 
 // Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
 // (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
@@ -828,12 +969,16 @@ async function handleReflectionJob(req, env, url, cors) {
     if (!pendingRaw) return jsonResponse({ error: 'reflection attest not configured (mode-B required, no eth-state bundle published yet)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   }
   await advanceReflectionTip(env, network, att); // track the relay's matured tip (Render has no scheduled() cron)
+  // A batch that landed on-chain whose ack never arrived leaves the cursor behind the pool, and every job built
+  // from it would revert; adopt the landed batch first so the next job builds on what the pool actually holds.
+  try { await reconcileLandedReflection(env, network, att); }
+  catch (e) { console.log(`[reflection] lost-ack reconcile failed: ${e?.message || e}`); }
   const job = await att.assembleJob();
   if (job) {
     // Stash the snapshot (+ which eth-state candidate this job used, if any) so ack (which only carries
     // jobId) can both advance the persisted state and promote that candidate once the batch lands.
     const ethContentHash = att.lastEthContentHash ? att.lastEthContentHash() : null;
-    await env.REGISTRY_KV.put(reflectionPendingKey(network, job.jobId), JSON.stringify({ newSnapshot: job.newSnapshot, ethContentHash }), { expirationTtl: 86400 });
+    await env.REGISTRY_KV.put(reflectionPendingKey(network, job.jobId), JSON.stringify({ newSnapshot: job.newSnapshot, ethContentHash, attestedTo: job.attestedTo }), { expirationTtl: 86400 });
     const { newSnapshot, ...jobForBox } = job; // the box needs input + jobId + attestedTo, not the snapshot
     return jsonResponse(jobForBox, 200, { ...cors, 'Cache-Control': 'no-store' });
   }
@@ -1369,37 +1514,9 @@ async function handleReflectionAck(req, env, cors) {
   // Retrieve the snapshot stashed at job-serve time. Missing/expired ⇒ refuse to advance with a null
   // snapshot (which would reset the canonical state) — the box should re-GET /reflection/job and retry.
   const jobId = String(body.jobId || '');
-  const snapKey = reflectionPendingKey(network, jobId);
-  const snapRaw = jobId ? await env.REGISTRY_KV.get(snapKey) : null;
-  if (!snapRaw) return jsonResponse({ ok: false, error: 'unknown or expired jobId — re-fetch /reflection/job' }, 409, cors);
-  // handleReflectionJob stashes {newSnapshot, ethContentHash}; tolerate a bare snapshot (pre-eth-state
-  // format) left over from a pending job that predates this deploy, so an in-flight ack across the
-  // rollout can't fail.
-  let stashed;
-  try { stashed = JSON.parse(snapRaw); } catch { stashed = null; }
-  const newSnapshot = stashed && Object.prototype.hasOwnProperty.call(stashed, 'newSnapshot') ? stashed.newSnapshot : stashed;
-  const ethContentHash = stashed && Object.prototype.hasOwnProperty.call(stashed, 'newSnapshot') ? stashed.ethContentHash : null;
-  const r = await att.ackJob(Number(body.attestedTo) | 0, newSnapshot);
-  await env.REGISTRY_KV.delete(snapKey);
-  // Promotion: this job's newDigest just landed on-chain (the box only POSTs /reflection/ack after
-  // ATTEST_CONFIRMATIONS blocks + an independent-RPC digest cross-check — worker-relay/src/reflection-folder.js).
-  // If it folded a pending eth-state candidate, that candidate is now proven-in-use — promote it to
-  // confirmed so the NEXT batch (whether the human recipe or, later, the sidecar) builds on it, and free
-  // the pending slot for a new candidate. Match by contentHash: a newer pending may have been published in
-  // between (rare — the staleness-gated 409 discourages it), in which case leave it alone and let the next
-  // GET /reflection/eth-state retry against the still-current confirmed.
-  if (ethContentHash) {
-    const pendingKey = ethStatePendingKey(network);
-    const pendingRaw = await env.REGISTRY_KV.get(pendingKey);
-    if (pendingRaw) {
-      let pending = null;
-      try { pending = JSON.parse(pendingRaw); } catch { pending = null; }
-      if (pending && pending.contentHash === ethContentHash) {
-        await env.REGISTRY_KV.put(ethStateConfirmedKey(network), pendingRaw);
-        await env.REGISTRY_KV.delete(pendingKey);
-      }
-    }
-  }
+  const stash = await readReflectionStash(env, network, jobId);
+  if (!stash) return jsonResponse({ ok: false, error: 'unknown or expired jobId — re-fetch /reflection/job' }, 409, cors);
+  const r = await applyReflectionAck(env, network, att, jobId, stash, Number(body.attestedTo) | 0, String(body.txHash || ''));
   return jsonResponse({ ok: true, ...r }, 200, cors);
 }
 
@@ -24902,11 +25019,15 @@ async function _routeFetch(req, env, ctx) {
     // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
     if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
+    if (url.pathname === '/reflection/pending' && req.method === 'GET') return handleReflectionPending(req, env, url, cors);
+    if (url.pathname === '/reflection/attest-state' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionAttestState(req, env, url, cors);
     if (url.pathname === '/reflection/reset' && req.method === 'POST') return handleReflectionReset(req, env, url, cors);
     if (url.pathname === '/reflection/seed' && req.method === 'POST') return handleReflectionSeed(req, env, url, cors);
     if (url.pathname === '/reflection/state' && req.method === 'GET') return handleReflectionState(req, env, url, cors);
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
     if (url.pathname === '/reflection/status' && req.method === 'GET') return handleReflectionStatus(req, env, url, cors);
+    if (url.pathname === '/farm/program' && req.method === 'GET') return handleFarm('program', url, env, cors, jsonResponse);
+    if (url.pathname === '/farm/health' && req.method === 'GET') return handleFarm('health', url, env, cors, jsonResponse);
     if (url.pathname === '/reflection/note-witness' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionNoteWitness(req, env, url, cors);
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
     if (url.pathname === '/reflection/consumed-source' && req.method === 'POST') return handleReflectionConsumedSource(req, env, url, cors);

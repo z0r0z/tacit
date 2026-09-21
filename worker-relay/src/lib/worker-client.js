@@ -28,8 +28,28 @@ export async function reflectionJob() {
 }
 export async function reflectionAck({ attestedTo, txHash, jobId }) {
   try {
-    await postJson('/reflection/ack', { network: CFG.network, attestedTo, txHash: txHash || '', jobId: jobId || '' });
-  } catch { /* worker re-serves; on-chain idempotent via digest-chain */ }
+    const res = await postJson('/reflection/ack', { network: CFG.network, attestedTo, txHash: txHash || '', jobId: jobId || '' });
+    return { ok: res.ok, status: res.status };
+  } catch { /* worker re-serves; on-chain idempotent via digest-chain */ return { ok: false, status: 0 }; }
+}
+// The API's stashed candidate for a digest the pool holds: { found, attestedTo } ({} from an API that predates the route).
+export async function reflectionPending(digest) {
+  return getJson(`/reflection/pending?network=${encodeURIComponent(CFG.network)}&digest=${encodeURIComponent(digest)}`);
+}
+// The small records the cron and the monitor cannot keep across fresh containers: { submitted, lastAck, driftStreak }.
+export async function reflectionAttestState() {
+  return getJson(`/reflection/attest-state?network=${encodeURIComponent(CFG.network)}`);
+}
+// Record an attest tx as submitted so a later run waits on it instead of proving the same batch again. Best-effort.
+export async function reflectionSubmitted({ newDigest, txHash, attestedTo }) {
+  try { await postJson('/reflection/attest-state', { network: CFG.network, submitted: { newDigest, txHash, attestedTo } }); }
+  catch { /* the tx is on-chain regardless; the digest poll still finds it */ }
+}
+export async function reflectionDriftSeen(driftSeen) {
+  try {
+    const res = await postJson('/reflection/attest-state', { network: CFG.network, driftSeen });
+    return res.ok ? (await res.json()).driftStreak : null;
+  } catch { return null; }
 }
 // The raw compressed eth-proof bytes behind a specific published eth-state candidate (identified by
 // contentHash = keccak256(ethPv), which the caller derives from the job.input.ethPv it already has). Needed

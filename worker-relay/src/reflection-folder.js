@@ -17,12 +17,16 @@
 //      un-rewindable attested cursor (persists newSnapshot keyed by jobId).
 //
 // The persisted snapshot advances only on ack, so a failed prove/submit is a safe
-// retry — the same job re-serves and completes (idempotency proven).
+// retry — the same job re-serves and completes (idempotency proven). A submitted attest is waited on by polling
+// the pool's digest rather than trusting one receipt wait, and is recorded with the API so a later run waits on
+// it instead of proving the same batch again; a pool that got ahead of the cursor is reconciled, not re-proved.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG } from './lib/config.js';
 import { isMatured } from './lib/maturity.js';
-import { reflectionJob, reflectionAck, heartbeat } from './lib/worker-client.js';
+import { reflectionJob, reflectionAck, reflectionPending, reflectionAttestState, reflectionSubmitted, heartbeat } from './lib/worker-client.js';
+import { awaitAttestLanding, digestDeepEnough } from './lib/attest-wait.js';
+import { recoverLostAck } from './lib/reflection-reconcile.js';
 import { proveReflection } from './lib/prover.js';
 import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
 
@@ -56,11 +60,43 @@ async function cycle() {
   // balance until reflection stops for lack of funds, turning a transient reorg into a funded outage.
   // Fail loud and cheap instead; recovery is a cursor rewind (re-seed /reflection/seed at the chain's height).
   if (job.priorDigest && onchain && String(job.priorDigest).toLowerCase() !== String(onchain).toLowerCase()) {
+    // Ahead-ness caused by a lost ack is recoverable: the API still holds the batch that landed. Adopt it and let
+    // the loop rebuild the job from the advanced cursor. Anything else stays a refusal.
+    const rec = await recoverLostAck({
+      onchain,
+      findPending: async (d) => reflectionPending(d),
+      ack: (a) => reflectionAck({ attestedTo: a.attestedTo, txHash: '', jobId: a.jobId }),
+      deepEnough: async () => (await confirmDigestOn(verifyClient, onchain)) && (await landedDeep(onchain)),
+    });
+    if (rec.waiting) {
+      log(`landed batch not yet deep enough, waiting — pool digest ${onchain} has fewer than ${ATTEST_CONFIRMATIONS} confirmations or is not confirmed by the independent endpoint`);
+      await heartbeat('reflection', `landed batch ${onchain} not yet deep enough`);
+      return false;
+    }
+    if (rec.recovered) {
+      log(`RECOVERED lost ack: pool digest ${onchain} was a landed batch the API still held — cursor advanced to attestedTo=${rec.attestedTo}`);
+      await heartbeat('reflection', `recovered lost ack at ${rec.attestedTo}`);
+      return true;
+    }
     log(`DRIFT: job builds on prior=${job.priorDigest} but pool is at ${onchain} — refusing to prove `
-      + `(worker cursor is out of sync with chain; re-seed it, do not let this loop burn PROVE)`);
+      + `(worker cursor is out of sync with chain; re-seed it, do not let this loop burn PROVE). ${rec.reason}. Manual recovery: ${rec.hint}`);
     await heartbeat('reflection', `drift prior=${job.priorDigest} onchain=${onchain}`);
     return false;
   }
+
+  // A previous run's attest for this same batch may still be in flight (its receipt wait ran out, not the tx).
+  // Proving it again would buy a second proof for a tx that is about to land, so wait on the first one.
+  try {
+    const sub = (await reflectionAttestState()).submitted;
+    if (sub && sub.txHash && newDigest && String(sub.newDigest).toLowerCase() === String(newDigest).toLowerCase()) {
+      const st = await txStatus(sub.txHash);
+      if (st.state === 'pending') {
+        log(`attest ${sub.txHash} for this batch was submitted earlier and is still pending — waiting on it instead of re-proving`);
+        return await settleSubmitted({ txHash: sub.txHash, newDigest, attestedTo });
+      }
+      log(`earlier attest ${sub.txHash} is ${st.state} and the digest has not moved — proving again`);
+    }
+  } catch (e) { log(`submitted-attest lookup unavailable (${e.message}) — proceeding`); }
 
   // MATURITY GUARD. The pool only accepts a batch whose tip is at or below the header relay's tip walked back
   // REFLECTION_CONFIRMATIONS. A batch above that reverts UnanchoredReflection deterministically, and the proof
@@ -92,20 +128,47 @@ async function cycle() {
   const attestCall = { address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven', args: [publicValues, proofBytes] };
   const attestGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account });
   const txHash = await relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n });
-  // Wait for CONFIRMATIONS, not just inclusion. The ack advances the worker's canonical cursor, and
-  // there is no recovery from the cursor being ahead of the chain (see the drift guard above), so acking
-  // on a one-block receipt strands it permanently the first time that block is reorged. Observed exactly
-  // that: a tx whose receipt read `success`, was acked, and then had no receipt at all minutes later.
-  const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: ATTEST_CONFIRMATIONS });
-  if (rcpt.status !== 'success') {
-    // A revert here is almost always "already attested" (digest-chain) — re-read and re-ack.
-    const now = await readReflectionDigest();
-    if (now && newDigest && now.toLowerCase() === String(newDigest).toLowerCase()) {
-      log('attest reverted but digest matches on-chain — re-acking');
-      await reflectionAck({ attestedTo, txHash, jobId: newDigest });
-      return true;
-    }
+  await reflectionSubmitted({ newDigest, txHash, attestedTo });
+  return await settleSubmitted({ txHash, newDigest, attestedTo });
+}
+
+// Where a submitted attest tx stands, from the chain alone.
+async function txStatus(hash) {
+  try {
+    const r = await publicClient.getTransactionReceipt({ hash });
+    if (r.status !== 'success') return { state: 'reverted' };
+    return { state: 'mined', confirmations: Number((await publicClient.getBlockNumber()) - r.blockNumber) + 1 };
+  } catch { /* no receipt yet */ }
+  try { await publicClient.getTransaction({ hash }); return { state: 'pending' }; }
+  catch { return { state: 'missing' }; }
+}
+
+// Wait for a submitted attest to land, then ack it. Confirmations, not just inclusion: the ack advances the worker's
+// canonical cursor and there is no recovery from the cursor being ahead of the chain (see the drift guard above), so
+// acking on a one-block receipt strands it permanently the first time that block is reorged. Observed exactly that:
+// a tx whose receipt read `success`, was acked, and then had no receipt at all minutes later.
+//
+// The wait polls the pool's digest instead of blocking on one receipt call, because a receipt wait that times out
+// tells us nothing about the tx: one landed five minutes after the wait gave up, the cycle exited without acking,
+// and the next run re-proved a batch that was already on-chain. Running out of time here is therefore not an error —
+// the tx is left alone and the next run finds it through the recorded submission.
+async function settleSubmitted({ txHash, newDigest, attestedTo }) {
+  const res = await awaitAttestLanding({
+    newDigest, txHash, readDigest: () => readReflectionDigest(), txStatus, deepEnough: () => landedDeep(newDigest),
+    windowSecs: CFG.reflectionAttestWaitSecs, pollSecs: CFG.reflectionAttestPollSecs, confirmations: ATTEST_CONFIRMATIONS,
+  });
+  if (res.outcome === 'timeout') {
+    log(`attest ${txHash} is still not landed after ${CFG.reflectionAttestWaitSecs}s — leaving it; the next run waits on it rather than re-proving`);
+    await heartbeat('reflection', `attest ${txHash} pending past ${CFG.reflectionAttestWaitSecs}s`);
+    return false;
+  }
+  if (res.outcome === 'reverted') {
+    // A revert here is almost always "already attested" (digest-chain), which the poll would have seen as landed.
     log(`attest tx reverted (${txHash}) — will retry job next cycle`);
+    return false;
+  }
+  if (res.outcome === 'dropped') {
+    log(`attest ${txHash} was dropped from the mempool without landing — will retry job next cycle`);
     return false;
   }
 
@@ -129,6 +192,12 @@ async function cycle() {
   await heartbeat('reflection', `attested ${newDigest}`);
   return true;
 }
+
+// The digest still holds ATTEST_CONFIRMATIONS blocks behind the head, on the primary endpoint.
+const landedDeep = (expected) => digestDeepEnough({
+  readDigestAt: (blockNumber) => readReflectionDigest(publicClient, blockNumber),
+  getBlockNumber: () => publicClient.getBlockNumber(), confirmations: ATTEST_CONFIRMATIONS, expected,
+});
 
 // Poll a SEPARATE client for the digest actually landing, tolerating ordinary propagation lag (a real tx
 // can legitimately reach one node before another) rather than distinguishing that from a false receipt on

@@ -158,6 +158,11 @@ export const CFG = {
 
   // Idle poll intervals (seconds).
   reflectionPollSecs: num('REFLECTION_POLL_SECS', 30),
+  // How long a submitted attest may take to land before the cron gives up waiting for it. A timed-out receipt wait is
+  // not a failure — the tx can still confirm minutes later — so the folder polls the pool's digest instead, and only
+  // a genuine revert or a dropped tx ends the wait early.
+  reflectionAttestWaitSecs: num('REFLECTION_ATTEST_WAIT_SECS', 1800),
+  reflectionAttestPollSecs: num('REFLECTION_ATTEST_POLL_SECS', 15),
   settlePollSecs: num('SETTLE_POLL_SECS', 15),
 
   // RUN_MODE=cron ⇒ drain pending work once and exit (Render Cron Job — billed per-run, cheap).
@@ -265,6 +270,8 @@ export const CFG = {
   // snapshot itself wants to stay well under a fifth of that ceiling; crossing this is the signal to
   // schedule frontier compaction, not an emergency.
   snapshotBytesWarn: num('SNAPSHOT_BYTES_WARN', 64 * 1024 * 1024),
+  // No successful attest for this long while Bitcoin has un-attested blocks in range is a stalled reflection lane.
+  reflectionStallHours: num('REFLECTION_STALL_HOURS', 3),
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't
