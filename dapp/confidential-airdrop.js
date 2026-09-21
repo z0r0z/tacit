@@ -85,26 +85,25 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   // and the pool's Pedersen commitment is a pure function of (value, blinding), so this is not a separate
   // trust assumption: a wrong lBlinding would just recompute a leaf that doesn't match the on-chain one.
   const openStealthMemo = ({ recipientSpendPriv, leaf, memoHex }) => {
-    const b = hb(memoHex);
-    // Accept 145 bytes OR MORE, decoding only the fixed 33+PLAIN_LEN prefix: a sender may append a tail
-    // sealed to their OWN key (e.g. a refund-recovery record — recipient pubkey, amount, deadline, refund
-    // key — so an unclaimed lock's refund is recoverable from the sender's key alone, not local storage).
-    // That tail is meaningless to the recipient's shared secret here, so it's never even sliced into ksXor.
-    if (b.length < 33 + PLAIN_LEN) return null;
-    const ephemeralPub = hx(b.subarray(0, 33));
-    let p;
-    try { p = ksXor(b.subarray(33, 33 + PLAIN_LEN), sha256(pt(ephemeralPub).multiply(modN(BigInt(recipientSpendPriv))).toRawBytes(true))); }
-    catch { return null; }
-    const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
-      lBlinding = hx(p.subarray(40, 72)),
-      deadline = bBig(p.subarray(72, 80)), refundPub = hx(p.subarray(80, 112));
-    let ownerPub;
-    try { ownerPub = stealth.recoverOneTimeKey({ recipientSpendPriv, ephemeralPub }).ownerPub; }
-    catch { return null; }
-    const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
-    const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
-    if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
-    return { ephemeralPub, asset, amount, lCx, lCy, lBlinding, deadline, refundPub, ownerPub };
+    // Total: a memo that cannot be parsed, or that decrypts to parameters with no commitment, is null.
+    try {
+      const b = hb(memoHex);
+      // Accept 145 bytes OR MORE, decoding only the fixed 33+PLAIN_LEN prefix: a sender may append a tail
+      // sealed to their OWN key (e.g. a refund-recovery record — recipient pubkey, amount, deadline, refund
+      // key — so an unclaimed lock's refund is recoverable from the sender's key alone, not local storage).
+      // That tail is meaningless to the recipient's shared secret here, so it's never even sliced into ksXor.
+      if (b.length < 33 + PLAIN_LEN) return null;
+      const ephemeralPub = hx(b.subarray(0, 33));
+      const p = ksXor(b.subarray(33, 33 + PLAIN_LEN), sha256(pt(ephemeralPub).multiply(modN(BigInt(recipientSpendPriv))).toRawBytes(true)));
+      const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
+        lBlinding = hx(p.subarray(40, 72)),
+        deadline = bBig(p.subarray(72, 80)), refundPub = hx(p.subarray(80, 112));
+      const { ownerPub } = stealth.recoverOneTimeKey({ recipientSpendPriv, ephemeralPub });
+      const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
+      const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
+      if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
+      return { ephemeralPub, asset, amount, lCx, lCy, lBlinding, deadline, refundPub, ownerPub };
+    } catch { return null; }
   };
 
   // SENDER-SIDE TAIL (shared convention with zSwap): a second, independent ECDH
@@ -135,22 +134,20 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   // authenticate by recomputing the lock leaf and comparing to the on-chain one — same contract as
   // openStealthMemo (null on any failure, never throws).
   const openStealthSenderTail = ({ senderPriv, ephemeralPub, leaf, tailHex }) => {
-    const t = hb(tailHex);
-    if (t.length !== SENDER_TAIL_LEN) return null;
-    let p;
-    try { p = ksXor(t, senderTailKey(senderPriv, ephemeralPub)); }
-    catch { return null; }
-    const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
-      lBlinding = hx(p.subarray(40, 72)), deadline = bBig(p.subarray(72, 80)),
-      refundPriv = hx(p.subarray(80, 112)), ownerPub = hx(p.subarray(112, 144)),
-      recipientPub = hx(p.subarray(144, 177));
-    let refundPub;
-    try { refundPub = hx(G.multiply(modN(BigInt(refundPriv))).toRawBytes(true).slice(1)); }
-    catch { return null; }
-    const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
-    const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
-    if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
-    return { asset, amount, lCx, lCy, lBlinding, deadline, refundPriv, refundPub, ownerPub, recipientPub };
+    try {
+      const t = hb(tailHex);
+      if (t.length !== SENDER_TAIL_LEN) return null;
+      const p = ksXor(t, senderTailKey(senderPriv, ephemeralPub));
+      const asset = hx(p.subarray(0, 32)), amount = bBig(p.subarray(32, 40)),
+        lBlinding = hx(p.subarray(40, 72)), deadline = bBig(p.subarray(72, 80)),
+        refundPriv = hx(p.subarray(80, 112)), ownerPub = hx(p.subarray(112, 144)),
+        recipientPub = hx(p.subarray(144, 177));
+      const refundPub = hx(G.multiply(modN(BigInt(refundPriv))).toRawBytes(true).slice(1));
+      const { cx: lCx, cy: lCy } = pool.commitXY(amount, lBlinding);
+      const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, refundPub);
+      if (lockLeaf.toLowerCase() !== String(leaf).toLowerCase()) return null;
+      return { asset, amount, lCx, lCy, lBlinding, deadline, refundPriv, refundPub, ownerPub, recipientPub };
+    } catch { return null; }
   };
 
   // SENDER. `lockerNk` is the SECRET nullifier key of the funding notes' shared H(nk) owner (`locker` is
@@ -188,10 +185,12 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   function scanAirdrop({ recipientSpendPriv, events }) {
     const mine = [];
     for (const ev of events) {
-      const m = openStealthMemo({ recipientSpendPriv, leaf: ev.leaf, memoHex: ev.memo });
-      if (!m) continue;
-      const { oneTimePriv } = stealth.recoverOneTimeKey({ recipientSpendPriv, ephemeralPub: m.ephemeralPub });
-      mine.push({ ...m, oneTimePriv, leaf: ev.leaf });
+      try {
+        const m = openStealthMemo({ recipientSpendPriv, leaf: ev && ev.leaf, memoHex: ev && ev.memo });
+        if (!m) continue;
+        const { oneTimePriv } = stealth.recoverOneTimeKey({ recipientSpendPriv, ephemeralPub: m.ephemeralPub });
+        mine.push({ ...m, oneTimePriv, leaf: ev.leaf });
+      } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
     }
     return mine;
   }

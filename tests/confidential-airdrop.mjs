@@ -114,6 +114,57 @@ const events = leaves.map((leaf, i) => ({ leaf, memo: memos[i] }));
   ok('openStealthMemo: leaf hash authenticates — tampered memo / wrong leaf rejected');
 }
 
+// (3b) stealth-lock memo parsing is total: a memo that cannot be parsed, or that decrypts to lock parameters with
+// no commitment, is skipped — the scan still returns the locks addressed to me around it.
+{
+  const N_ORDER = SECP_N;
+  const rp = recips[0];
+  const seal = (over) => airdrop.sealStealthMemo({ recipientSpendPub: rp.recipientSpendPub, ephemeralPriv: 12345n, asset, amount: 5n, lBlinding: '0x' + '07'.repeat(32), deadline, refundPub: '0x' + '09'.repeat(32), ...over });
+  const zeros = '0x' + '00'.repeat(32);
+  const good = memos[0];
+  const bad = {
+    'zero lock blinding': seal({ lBlinding: zeros }),
+    'lock blinding at the curve order': seal({ lBlinding: '0x' + N_ORDER.toString(16).padStart(64, '0') }),
+    'lock blinding above the curve order': seal({ lBlinding: '0x' + 'ff'.repeat(32) }),
+    'zero amount': seal({ amount: 0n }),
+    'ephemeral key of all zero bytes': '0x' + '00'.repeat(33) + good.slice(68),
+    'ephemeral key with an unknown prefix byte': '0x05' + good.slice(4),
+    'truncated memo': good.slice(0, 60),
+    'empty memo': '0x',
+    'non-hex characters': '0x' + 'zz'.repeat(150),
+  };
+  for (const [name, bm] of Object.entries(bad)) {
+    assert.doesNotThrow(() => airdrop.openStealthMemo({ recipientSpendPriv: rp.priv, leaf: leaves[0], memoHex: bm }), `openStealthMemo: ${name}`);
+    assert.equal(airdrop.openStealthMemo({ recipientSpendPriv: rp.priv, leaf: leaves[0], memoHex: bm }), null, `openStealthMemo: ${name}`);
+  }
+  const mixed = [
+    ...Object.values(bad).slice(0, 4).map((memo) => ({ leaf: leaves[0], memo })),
+    { leaf: leaves[0], memo: good },
+    ...Object.values(bad).slice(4).map((memo) => ({ leaf: leaves[0], memo })),
+    { leaf: undefined, memo: undefined }, null,
+  ];
+  let found;
+  assert.doesNotThrow(() => { found = airdrop.scanAirdrop({ recipientSpendPriv: rp.priv, events: mixed }); }, 'scanAirdrop does not throw on malformed memos');
+  assert.equal(found.length, 1, 'the valid lock among the malformed memos is found');
+  assert.equal(found[0].amount, rp.amount, 'and recovers its amount');
+
+  // The sender-side tail is total the same way: a tail that decrypts to parameters with no commitment is null.
+  const senderPriv = rand();
+  const eph = secp.ProjectivePoint.BASE.multiply(777n).toRawBytes(true);
+  const tailOf = (over) => airdrop.sealStealthSenderTail({
+    senderPriv, ephemeralPub: hx(eph), asset, amount: 5n, lBlinding: '0x' + '07'.repeat(32), deadline,
+    refundPriv: '0x' + '05'.repeat(32), ownerPub: '0x' + '0a'.repeat(32), recipientPub: hx(eph), ...over });
+  for (const [name, over] of Object.entries({
+    'zero lock blinding': { lBlinding: zeros }, 'zero amount': { amount: 0n }, 'zero refund key': { refundPriv: zeros },
+    'refund key above the curve order': { refundPriv: '0x' + 'ff'.repeat(32) },
+  })) {
+    assert.doesNotThrow(() => airdrop.openStealthSenderTail({ senderPriv, ephemeralPub: hx(eph), leaf: leaves[0], tailHex: tailOf(over) }), `openStealthSenderTail: ${name}`);
+    assert.equal(airdrop.openStealthSenderTail({ senderPriv, ephemeralPub: hx(eph), leaf: leaves[0], tailHex: tailOf(over) }), null, `openStealthSenderTail: ${name}`);
+  }
+  assert.equal(airdrop.openStealthSenderTail({ senderPriv, ephemeralPub: '0x' + '00'.repeat(33), leaf: leaves[0], tailHex: tailOf({}) }), null, 'a sender tail with an unusable ephemeral key is null');
+  ok('stealth-lock memos: malformed memos and tails are skipped; the scan still finds the valid lock around them');
+}
+
 // (4) FULL claim round-trip from what scanning alone recovers: a real lock-set tree (the actual airdrop
 // leaves), buildStealthClaim fed ONLY the scanned {lCx,lCy,amount,deadline,lBlinding,refundPub,ownerPub,
 // oneTimePriv} plus fresh membership/output params — then self-verified exactly as the guest re-checks it

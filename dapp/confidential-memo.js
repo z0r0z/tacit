@@ -67,24 +67,28 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   // (value, blinding, asset, owner) but not for `secret`, so an owned note (non-zero
   // owner) is also rejected unless its secret is the nk that owner commits to: a memo
   // whose nk was garbled would otherwise look recovered and never spend.
+  // Total: any memo, however malformed, yields null rather than an exception, so one unparseable memo can
+  // never abort a scan over the rest of the chain's memos.
   function openMemo(myPriv, leaf, memo) {
-    if (typeof memo === 'string') { memo = decodeMemo(memo); if (!memo) return null; }
-    let plain;
     try {
+      if (typeof memo === 'string') { memo = decodeMemo(memo); if (!memo) return null; }
+      if (!memo || typeof memo !== 'object') return null;
       const shared = pt(memo.ephemeralPub).multiply(BigInt(myPriv));
       const ss = sha256(compress(shared));
-      plain = xor(hexToBytes(memo.ciphertext), ss);
+      const plain = xor(hexToBytes(memo.ciphertext), ss);
+      if (plain.length !== MEMO_LEN) return null;
+      const value = bToBig(plain.subarray(0, 8));
+      const blinding = beHex(bToBig(plain.subarray(8, 40)));
+      const secret = '0x' + bytesToHex(plain.subarray(40, 72));
+      const asset = '0x' + bytesToHex(plain.subarray(72, 104));
+      const owner = '0x' + bytesToHex(plain.subarray(104, 136));
+      // The decrypted value/blinding are attacker-chosen for a memo sealed to my public key: a zero or
+      // out-of-range scalar has no commitment, so it is not an opening of any leaf.
+      const { cx, cy } = commitXY(value, blinding);
+      if (leafHash(asset, cx, cy, owner).toLowerCase() !== String(leaf).toLowerCase()) return null;
+      if (BigInt(owner) !== 0n && nkToOwner(secret) !== owner.toLowerCase()) return null;
+      return { value, blinding, secret, asset, owner, cx, cy };
     } catch { return null; }
-    if (plain.length !== MEMO_LEN) return null;
-    const value = bToBig(plain.subarray(0, 8));
-    const blinding = beHex(bToBig(plain.subarray(8, 40)));
-    const secret = '0x' + bytesToHex(plain.subarray(40, 72));
-    const asset = '0x' + bytesToHex(plain.subarray(72, 104));
-    const owner = '0x' + bytesToHex(plain.subarray(104, 136));
-    const { cx, cy } = commitXY(value, blinding);
-    if (leafHash(asset, cx, cy, owner).toLowerCase() !== String(leaf).toLowerCase()) return null;
-    if (BigInt(owner) !== 0n && nkToOwner(secret) !== owner.toLowerCase()) return null;
-    return { value, blinding, secret, asset, owner, cx, cy };
   }
 
   // Scan on-chain leaf+memo events; return the notes recoverable to myPriv that
@@ -99,11 +103,13 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     const spent = new Set((spentNullifiers || []).map((n) => n.toLowerCase()));
     const mine = [];
     for (const ev of events) {
-      const note = openMemo(myPriv, ev.leaf, ev.memo);
-      if (!note) continue;
-      const nullifier = nullifierOf(note, ev.leaf);
-      if (spent.has(nullifier.toLowerCase())) continue;
-      mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
+      try {
+        const note = openMemo(myPriv, ev && ev.leaf, ev && ev.memo);
+        if (!note) continue;
+        const nullifier = nullifierOf(note, ev.leaf);
+        if (spent.has(nullifier.toLowerCase())) continue;
+        mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
+      } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
     }
     return mine;
   }

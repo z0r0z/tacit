@@ -261,7 +261,7 @@ function walletMock(s, submitted) {
 const waitOpts = { intervalMs: 0, sleep: async () => {} };
 const dump = (v) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x)).toLowerCase();
 
-test('farmHarvest(): claims 99.5% of pending under the re-derived receipt key; ships one sealed reward note', async () => {
+test('farmHarvest(): claims the full pending amount under the re-derived receipt key; ships one sealed reward note', async () => {
   const s = scene(); const submitted = [];
   const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: walletMock(s, submitted) });
   const [position] = await ux.farmPositions({ walletPriv, events: s.events });
@@ -269,7 +269,7 @@ test('farmHarvest(): claims 99.5% of pending under the re-derived receipt key; s
   const sub = submitted.at(-1);
   assert.equal(sub.type, 'farmharvest');
   const pending = 1_000_000_000n;
-  assert.equal(BigInt(sub.op.reward), pending - pending / 200n);
+  assert.equal(BigInt(sub.op.reward), pending);
   assert.equal(r.net, BigInt(sub.op.reward)); assert.equal(r.fee, 0n);
   assert.equal(sub.op.owner, s.pos.owner); assert.equal(sub.op.nonce, s.pos.nonce);
   assert.equal(BigInt(sub.op.shares), 4000n); assert.equal(sub.op.oldIndex, 3);
@@ -289,7 +289,9 @@ test('farmUnbond(): releases the full shares to a fresh owned note; refuses whil
   const s = scene(); const submitted = [];
   const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: walletMock(s, submitted) });
   const [position] = await ux.farmPositions({ walletPriv, events: s.events });
-  const r = await ux.farmUnbond({ walletPriv, position, waitOpts });
+  // reward that has not been harvested is not paid out on unbond, so it is refused unless acknowledged
+  await assert.rejects(ux.farmUnbond({ walletPriv, position, waitOpts }), /still pending and would be forfeited/);
+  const r = await ux.farmUnbond({ walletPriv, position, forfeitPending: true, waitOpts });
   const sub = submitted.at(-1);
   assert.equal(sub.type, 'farmunbond');
   assert.equal(BigInt(sub.op.shares), 4000n); assert.equal(sub.op.fee, 0);
@@ -299,7 +301,7 @@ test('farmUnbond(): releases the full shares to a fresh owned note; refuses whil
   const locked = scene({ unlockAt: 4_000_000_000n });
   const ux2 = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: walletMock(locked, submitted) });
   const [lp] = await ux2.farmPositions({ walletPriv, events: locked.events });
-  await assert.rejects(ux2.farmUnbond({ walletPriv, position: lp, waitOpts }), /locked until/);
+  await assert.rejects(ux2.farmUnbond({ walletPriv, position: lp, forfeitPending: true, waitOpts }), /locked until/);
 });
 
 test('farmBond(): derives the deterministic position key from the LP note; refuses an asset the manager has no pool for', async () => {

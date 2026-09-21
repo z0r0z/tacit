@@ -92,4 +92,55 @@ ok('balance scan recovers my active notes only (stranger + spent filtered)');
   ok('owned note: sealed nk must hash to the owner; bearer notes unaffected');
 }
 
-console.log(`\n${n}/6 confidential-memo checks passed`);
+// ── memo parsing is total: a memo that cannot be parsed or opened is skipped, never thrown out of a scan ──
+{
+  const N_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const ZERO_OWNER = '0x' + '00'.repeat(32);
+  const wire = m.encodeMemo(memo);
+  const hexBytes = (h) => h.replace(/^0x/, '');
+  const flipByte = (h, at) => '0x' + hexBytes(h).slice(0, at * 2) + ((parseInt(hexBytes(h).slice(at * 2, at * 2 + 2), 16) ^ 0xff).toString(16).padStart(2, '0')) + hexBytes(h).slice(at * 2 + 2);
+  const withEphemeral = (eph) => '0x' + eph + hexBytes(wire).slice(66);
+  const offCurveX = (() => { for (let x = 5n; ; x++) { const h = '02' + x.toString(16).padStart(64, '0'); try { secp.ProjectivePoint.fromHex(h); } catch { return h; } } })();
+  const badMemos = {
+    'ephemeral key of all zero bytes': withEphemeral('00'.repeat(33)),
+    'ephemeral key that is not on the curve': withEphemeral(offCurveX),
+    'ephemeral key with an unknown prefix byte': withEphemeral('05' + hexBytes(wire).slice(2, 66)),
+    'ephemeral key at the field size': withEphemeral('02' + 'ff'.repeat(32)),
+    'truncated ciphertext': wire.slice(0, wire.length - 20),
+    'ciphertext with trailing bytes': wire + 'aabb',
+    'empty memo': '0x',
+    'ephemeral key only': '0x' + hexBytes(wire).slice(0, 66),
+    'non-hex characters': '0x' + 'zz'.repeat(169),
+    'object without fields': {},
+    'null memo': null,
+    'undefined memo': undefined,
+    'object with an odd ephemeral key': { ephemeralPub: '0x1', ciphertext: '0x' },
+  };
+  // A memo sealed to my key whose plaintext decrypts to an opening with no commitment: zero or out-of-range
+  // blinding, or a zero value. These pass every length and curve check, so they only fail at the commitment.
+  const unopenable = [['zero blinding', 5n, 0n], ['blinding at the curve order', 5n, N_ORDER], ['blinding above the curve order', 5n, (1n << 256n) - 1n], ['zero value', 0n, 7n]];
+  for (const [name, value, blinding] of unopenable) {
+    badMemos[`sealed opening with ${name}`] = m.encodeMemo(m.sealMemo(rPub, { value, blinding, secret: NK, asset: ASSET, owner: ZERO_OWNER }, randomScalar));
+  }
+  for (const [name, bm] of Object.entries(badMemos)) {
+    assert.doesNotThrow(() => m.openMemo(rPriv, leaf, bm), `openMemo: ${name}`);
+    assert.strictEqual(m.openMemo(rPriv, leaf, bm), null, `openMemo: ${name}`);
+  }
+  assert.strictEqual(m.openMemo(rPriv, leaf, flipByte(wire, 40)), null, 'a flipped ciphertext byte does not open');
+
+  // A scan with every malformed shape interleaved around valid notes still recovers the valid notes.
+  const good = mine.map((nt, i) => ({ leaf: mkLeaf(nt), leafIndex: 10 + i, memo: m.sealMemo(rPub, nt, randomScalar) }));
+  const bad = Object.values(badMemos).map((bm, i) => ({ leaf, leafIndex: 50 + i, memo: bm }));
+  const mixed = [bad[0], good[0], ...bad.slice(1, 6), good[1], ...bad.slice(6), { leaf: undefined, memo: undefined }, null];
+  let got;
+  assert.doesNotThrow(() => { got = m.scan(rPriv, mixed, [], nullifierOf); }, 'scan does not throw on malformed memos');
+  assert.deepStrictEqual(got.map((x) => x.leafIndex), [10, 11], 'valid notes around the malformed memos are recovered in order');
+  assert.strictEqual(got[0].value, 4242n, 'recovered value');
+  assert.ok(m.openMemo(rPriv, leaf, wire), 'a valid wire-form memo still opens');
+  // A callback that throws for one note skips that note only.
+  const flaky = m.scan(rPriv, good, [], (nt, lf) => { if (nt.value === 10n) throw new Error('callback failure'); return nullifierOf(nt, lf); });
+  assert.deepStrictEqual(flaky.map((x) => x.leafIndex), [10], 'a nullifier callback that throws skips that note only');
+  ok('malformed memos are skipped without aborting the scan; valid notes around them are recovered');
+}
+
+console.log(`\n${n}/7 confidential-memo checks passed`);

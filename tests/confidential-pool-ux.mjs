@@ -7,6 +7,7 @@ import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { getConfidentialDeployment } from '../dapp/confidential-deployments.js';
+import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 
 // secp.sign (RFC 6979) needs the sync HMAC set — the dapp's vendor bundle does this; do it for the test too.
 const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
@@ -47,7 +48,8 @@ test('account: deterministic, domain-separated Sepolia EVM derivation', () => {
   assert.notEqual(a1.priv.toLowerCase(), priv.toLowerCase(), 'EVM key is domain-separated, not the wallet key');
 });
 
-test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent filter from the deploy block', async () => {
+test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent/LockLeavesInserted filter from the deploy block', async () => {
+  const ev0 = makeConfidentialEvmLog({ keccak256: keccak_256 });
   // fetchEvents resolves toBlock='latest' via eth_blockNumber before eth_getLogs; a mock that returns the
   // same `{ result: [] }` for both makes parseInt(await rpc('eth_blockNumber'), 16) = NaN, so the log-window
   // loop's `start <= to` is never true and eth_getLogs is never called — `captured` then holds the
@@ -67,7 +69,7 @@ test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent filter from the de
   assert.equal(captured.method, 'eth_getLogs');
   assert.equal(captured.params[0].address, POOL);
   assert.equal(captured.params[0].fromBlock, '0x' + (DEPLOY_BLOCK).toString(16));
-  assert.equal(captured.params[0].topics[0].length, 2, 'topic0 OR-filter = [LeavesInserted, NullifiersSpent]');
+  assert.deepEqual(captured.params[0].topics[0], [ev0.TOPIC0.LeavesInserted, ev0.TOPIC0.NullifiersSpent, ev0.TOPIC0.LockLeavesInserted], 'topic0 OR-filter = [LeavesInserted, NullifiersSpent, LockLeavesInserted]');
 });
 
 test('balance: empty pool -> zero, no off-chain storage', async () => {
@@ -348,7 +350,7 @@ test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
     ...deps,
     fetchImpl: async (_url, opts) => {
       const m = JSON.parse(opts.body).method;
-      const result = m === 'eth_getTransactionCount' ? '0x0' : m === 'eth_gasPrice' ? '0x3b9aca00' : '0x';
+      const result = m === 'eth_getTransactionCount' ? '0x0' : m === 'eth_gasPrice' ? '0x3b9aca00' : m === 'eth_blockNumber' ? '0x' + Number(DEPLOY_BLOCK).toString(16) : m === 'eth_getLogs' ? [] : '0x';
       return { ok: true, json: async () => ({ result }) };
     },
   });
@@ -357,6 +359,88 @@ test('wrap: signs an EIP-1559 deposit tx (no broadcast)', async () => {
   assert.match(r.signedRaw, /^0x02/, 'EIP-1559 typed-tx envelope');
   assert.equal(r.txHash, null);
   assert.equal(r.from, ux.account(walletPriv).address);
+});
+
+// A chain that serves the pool's Wrap logs (filtered by the requested topics) and the reads a wrap needs.
+const evmLogForWrap = makeConfidentialEvmLog({ keccak256: keccak_256 });
+const wrapWord = (v) => BigInt(v).toString(16).padStart(64, '0');
+function wrapChain({ deposits = [], failLogs = false } = {}) {
+  const logs = deposits.map((d, i) => ({
+    address: POOL, blockNumber: '0x' + (Number(DEPLOY_BLOCK) + 1 + i).toString(16), logIndex: '0x0', transactionHash: '0x' + String(i + 1).padStart(64, '0'),
+    topics: [evmLogForWrap.TOPIC0.Wrap, d.depositId, d.assetId], data: '0x' + wrapWord(d.amount),
+  }));
+  const seen = { getLogs: [] };
+  const fetchImpl = async (_url, opts) => {
+    const { method, params } = JSON.parse(opts.body);
+    if (method === 'eth_getLogs') {
+      seen.getLogs.push(params[0]);
+      if (failLogs) return { ok: false, status: 500, json: async () => ({}) };
+      const t = params[0].topics;
+      const from = Number(BigInt(params[0].fromBlock)), to = Number(BigInt(params[0].toBlock));
+      const hit = logs.filter((l) => Number(BigInt(l.blockNumber)) >= from && Number(BigInt(l.blockNumber)) <= to
+        && (t[0] == null || t[0] === l.topics[0]) && (t[2] == null || t[2] === l.topics[2]));
+      return { ok: true, json: async () => ({ result: hit }) };
+    }
+    const result = method === 'eth_blockNumber' ? '0x' + (Number(DEPLOY_BLOCK) + 20).toString(16)
+      : method === 'eth_getTransactionCount' ? '0x0' : method === 'eth_gasPrice' ? '0x3b9aca00' : '0x0';
+    return { ok: true, json: async () => ({ result }) };
+  };
+  return { fetchImpl, seen };
+}
+
+test('wrap: takes the next unused derivation index, and honors an explicit one', async () => {
+  const walletPriv = '0x' + '34'.repeat(32);
+  const probe = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const assetId = probe.assetByTicker.cETH.assetId;
+  const first = probe.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  const second = probe.buildWrap({ walletPriv, amountWei: '3000000000000000', ticker: 'cETH', index: 1 });
+  assert.equal(first.index, 0);
+  assert.notEqual(first.note.secret, second.note.secret, 'each index derives its own note secret');
+  assert.notEqual(first.note.blinding, second.note.blinding, 'and its own blinding');
+
+  // No deposits yet: index 0. Another wallet's deposit at index 0 does not use this wallet's index.
+  const other = probe.buildWrap({ walletPriv: '0x' + '35'.repeat(32), amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
+  let chain = wrapChain({ deposits: [{ depositId: other.depositId, assetId, amount: 10n ** 15n }] });
+  let ux = makeConfidentialPoolUx({ ...deps, fetchImpl: chain.fetchImpl });
+  assert.equal((await ux.wrap({ walletPriv, amountWei: '1000000000000000', broadcast: false })).index, 0);
+
+  // Index 0 already holds a deposit (of another amount): the next wrap moves to 1, and 1 is used once it lands.
+  chain = wrapChain({ deposits: [{ depositId: first.depositId, assetId, amount: 10n ** 15n }] });
+  ux = makeConfidentialPoolUx({ ...deps, fetchImpl: chain.fetchImpl });
+  const w = await ux.wrap({ walletPriv, amountWei: '3000000000000000', broadcast: false });
+  assert.equal(w.index, 1);
+  assert.equal(w.depositId, second.depositId, 'the deposit is the one index 1 derives');
+  assert.ok(chain.seen.getLogs.every((f) => f.topics[2] === assetId), 'only this asset\'s deposits are read');
+  chain = wrapChain({ deposits: [{ depositId: first.depositId, assetId, amount: 10n ** 15n }, { depositId: second.depositId, assetId, amount: 3n * 10n ** 15n }] });
+  ux = makeConfidentialPoolUx({ ...deps, fetchImpl: chain.fetchImpl });
+  assert.equal((await ux.wrap({ walletPriv, amountWei: '5000000000000000', broadcast: false })).index, 2);
+
+  // An explicit index is used as given and reads no deposits.
+  chain = wrapChain({ deposits: [{ depositId: first.depositId, assetId, amount: 10n ** 15n }] });
+  ux = makeConfidentialPoolUx({ ...deps, fetchImpl: chain.fetchImpl });
+  const pinned = await ux.wrap({ walletPriv, amountWei: '1000000000000000', index: 0, broadcast: false });
+  assert.equal(pinned.index, 0);
+  assert.equal(chain.seen.getLogs.length, 0);
+});
+
+test('wrap: wraps sent back to back take different indexes before the first one lands', async () => {
+  const walletPriv = '0x' + '36'.repeat(32);
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: wrapChain().fetchImpl });
+  const a = await ux.wrap({ walletPriv, amountWei: '1000000000000000', broadcast: false });
+  const b = await ux.wrap({ walletPriv, amountWei: '1000000000000000', broadcast: false });
+  const [c, d] = await Promise.all([
+    ux.wrap({ walletPriv, amountWei: '1000000000000000', broadcast: false }),
+    ux.wrap({ walletPriv, amountWei: '1000000000000000', broadcast: false }),
+  ]);
+  assert.deepEqual([a.index, b.index].concat([c.index, d.index].sort()), [0, 1, 2, 3]);
+  assert.equal(new Set([a, b, c, d].map((w) => w.depositId)).size, 4, 'four distinct deposit ids');
+  assert.equal(new Set([a, b, c, d].map((w) => w.note.secret)).size, 4, 'four distinct note secrets');
+});
+
+test('wrap: an unreadable deposit history does not fail the wrap; it continues from index 0 on a fresh device', async () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: wrapChain({ failLogs: true }).fetchImpl });
+  const r = await ux.wrap({ walletPriv: '0x' + '37'.repeat(32), amountWei: '1000000000000000', broadcast: false });
+  assert.equal(r.index, 0);
 });
 
 test('buildWrapTransferOp: deposit consumed into hidden recipient + change, conservation self-verifies', () => {
@@ -424,6 +508,7 @@ test('wrapAndSend (native, fee 0): prove-only then user broadcasts router.wrapAn
   const recipientPubHex = ux.identity(walletPriv).pubHex; // self-send; third-party is refused (guard test below)
   const amountWei = '1000000000000000';
   const r = await ux.wrapAndSend({ walletPriv, amountWei, ticker: 'cETH', recipientPubHex, amount: 60000n });
+  assert.equal(r.index, 0, 'first wrap of the wallet and asset');
   assert.equal(seen.submitMode, 'prove', 'wrap-and-send submits a PROVE-only job (proof embedded in the user tx)');
   assert.equal(seen.broadcast, true, 'the user broadcasts the wrap-and-settle tx themselves');
   assert.equal(r.from, ux.account(walletPriv).address, 'sent from the user EVM account');
@@ -703,6 +788,97 @@ test('relayed settle: emitted memos are compared byte-for-byte with the sealed o
   const good = await run(false);
   assert.equal(good.memoCheck.ok, true, 'identical memos pass');
   await assert.rejects(run(true), (e) => /emitted memos differ/.test(e.message) && e.memoCheck.mismatched.length === 2 && Array.isArray(e.sealedMemos));
+});
+
+// A memo the relay replaced leaves the chain unable to open the note. The sealed memos are kept on the device under
+// the settle's tx hash, and the balance scan applies them, so the note stays in the balance there.
+test('relayed settle: a replaced memo is kept locally and the balance scan still recovers the note', async () => {
+  const w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const encodeLeavesInserted = (leaves, memos) => {
+    const lv = [w32(leaves.length), ...leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0'))].join('');
+    const bodies = memos.map((m) => { const h = String(m).replace(/^0x/, ''); const len = h.length / 2; return w32(len) + h.padEnd(Math.ceil(len / 32) * 64, '0'); });
+    let off = 32 * memos.length; const heads = [];
+    for (const b of bodies) { heads.push(w32(off)); off += b.length / 2; }
+    const mv = w32(memos.length) + heads.join('') + bodies.join('');
+    return '0x' + w32(64) + w32(64 + lv.length / 2) + lv + mv;
+  };
+  const store = new Map();
+  const prior = globalThis.localStorage;
+  globalThis.localStorage = {
+    get length() { return store.size; }, key: (i) => [...store.keys()][i] ?? null,
+    getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); },
+  };
+  try {
+    const state = {};
+    const topic = makeConfidentialEvmLogTopic();
+    const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      let obj;
+      if (String(url).includes('/confidential/submit')) { state.sub = body; obj = { jobId: 'j', status: 'pending' }; }
+      else if (String(url).includes('/confidential/status')) obj = { jobId: 'j', status: 'settled', txHash: '0x' + 'ab'.repeat(32) };
+      else if (body && body.method === 'eth_getTransactionReceipt') {
+        // Every memo shipped is the other output's memo.
+        const { op, memos } = state.sub;
+        const leaves = op.outputs.map((o) => ux.pool.leaf(op.asset, o.cx, o.cy, o.owner));
+        state.log = { address: ux.cfg.pool, topics: [topic, '0x' + w32(0)], data: encodeLeavesInserted(leaves, [memos[1], memos[0]]), blockNumber: '0x1', transactionHash: '0x' + 'ab'.repeat(32), logIndex: '0x0' };
+        obj = { result: { logs: [state.log] } };
+      }
+      else if (body && body.method === 'eth_blockNumber') obj = { result: '0x' + Number(DEPLOY_BLOCK).toString(16) };
+      else if (body && body.method === 'eth_getLogs') obj = { result: state.log ? [state.log] : [] };
+      else obj = { result: '0x0' };
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    } });
+    const walletPriv = '0x' + '5c'.repeat(32);
+    const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+    const scanKey = ux.identity(walletPriv).priv;
+    await assert.rejects(
+      ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, waitOpts: { intervalMs: 0, sleep: async () => {} } }),
+      (e) => /emitted memos differ/.test(e.message));
+    assert.ok([...store.keys()].some((k) => k.startsWith('tacit:unrecoverable-memos:')), 'the sealed memos are kept under the settle tx hash');
+    const withSaved = await ux.balance(scanKey);
+    assert.equal(withSaved.notes.length, 2, 'both outputs are recovered from the kept memos');
+    store.clear();
+    const without = await ux.balance(scanKey);
+    assert.equal(without.notes.length, 0, 'the chain memos alone recover neither output');
+  } finally {
+    globalThis.localStorage = prior;
+  }
+});
+
+// The change note of a send-and-unwrap is checked like every other relayed leaf: the memo the settle emitted must be
+// the one sealed here.
+test('sendUnwrap: the emitted change memo is compared with the sealed one', async () => {
+  const w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const encodeLeavesInserted = (leaves, memos) => {
+    const lv = [w32(leaves.length), ...leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0'))].join('');
+    const bodies = memos.map((m) => { const h = String(m).replace(/^0x/, ''); const len = h.length / 2; return w32(len) + h.padEnd(Math.ceil(len / 32) * 64, '0'); });
+    let off = 32 * memos.length; const heads = [];
+    for (const b of bodies) { heads.push(w32(off)); off += b.length / 2; }
+    return '0x' + w32(64) + w32(64 + lv.length / 2) + lv + w32(memos.length) + heads.join('') + bodies.join('');
+  };
+  const run = async (tamper) => {
+    const state = {};
+    const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      let obj;
+      if (String(url).includes('/confidential/submit')) { state.sub = body; obj = { jobId: 'j', status: 'pending' }; }
+      else if (String(url).includes('/confidential/status')) obj = { jobId: 'j', status: 'settled', txHash: '0x' + 'ab'.repeat(32) };
+      else if (body && body.method === 'eth_getTransactionReceipt') {
+        const { op, memos } = state.sub;
+        const leaf = state.pool.leaf(op.asset, op.change[0].cx, op.change[0].cy, op.change[0].owner);
+        const shipped = tamper ? ['0x' + 'ee'.repeat(169)] : memos;
+        obj = { result: { logs: [{ address: state.poolAddr, topics: [state.topic, '0x' + w32(1)], data: encodeLeavesInserted([leaf], shipped) }] } };
+      } else obj = { result: '0x0' };
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    } });
+    state.pool = ux.pool; state.poolAddr = ux.cfg.pool; state.topic = makeConfidentialEvmLogTopic();
+    const walletPriv = '0x' + '5d'.repeat(32);
+    const { note } = transferFixture(ux, walletPriv);
+    return ux.sendUnwrap({ note, walletPriv, recipient: '0x' + '12'.repeat(20), amount: BigInt(note.value) / 2n, feeOpts: { minFee: 1n }, waitOpts: { intervalMs: 0, sleep: async () => {} } });
+  };
+  const good = await run(false);
+  assert.equal(good.memoCheck.ok, true, 'the sealed change memo was emitted unchanged');
+  await assert.rejects(run(true), (e) => /emitted memos differ/.test(e.message) && Array.isArray(e.sealedMemos));
 });
 
 function makeConfidentialEvmLogTopic() {
