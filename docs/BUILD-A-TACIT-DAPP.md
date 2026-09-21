@@ -15,18 +15,24 @@ node backend. A starting skeleton lives next to this file at [`dapp-template/ind
 - The pool stores **leaves** — `keccak(assetId ‖ Cx ‖ Cy ‖ owner)` — in an append-only Merkle tree.
 - Spending a note publishes a **nullifier**, never the leaf. Spend twice and the second settle reverts.
 - Every spend is one **SP1 proof** against the pool's immutable `PROGRAM_VKEY`. The pool verifies it and
-  applies the effects. There is no admin, no pause, no upgrade.
+  applies the effects. The pool has no proxy, no upgrade path and no pause switch, and no key that can move
+  escrow, freeze an exit or redirect a payout. It has exactly one privileged call: its **lineage steward**
+  (the ops multisig on mainnet) can, once, deploy the pool's successor generation (`createNextGen`), which
+  retires this generation to exit-only (see "Generations" in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md)).
+  `pool.successor()` reads zero while the generation is active.
 - A **memo** is emitted per created leaf: the note's opening, encrypted to its owner. It is the only way a
   wallet recovers its notes from a seed. Lose the memo and lose the note.
-- You do not need to prove anything yourself. The **relay** proves and settles for a fee carved from the op,
-  and it never sees a spending key.
+- You do not need to prove anything yourself. The **relay** proves and settles for a fee carved from the op.
+  It receives the witness of the op you hand it, but never your wallet key or any note's blinding, so it can
+  prove the op you authorized and cannot build a different one (exactly what it sees is in §6).
 
 Everything else is detail.
 
 ## 2. Three things that surprise everyone
 
 **You cannot send a note directly to someone else.** A note's `owner` is `keccak(nk ‖ dom)` — a hash, not a
-public key. Whoever can compute an output's owner necessarily knows its `nk`, and `nk` *is* spend authority.
+public key. Whoever can compute an output's owner necessarily knows its `nk`; spending needs `nk` together
+with the note's blinding, and the sender who builds an output knows both.
 So a sender either keeps the ability to spend, or mints a note nobody can ever spend. Third-party payments go
 **stealth lock → claim**: the sender locks to a one-time pubkey derived from the recipient's static address,
 and the recipient's claim mints a note under an `nk` only they choose. `OP_TRANSFER` is for self-sends —
@@ -109,21 +115,26 @@ whose outputs nobody can ever spend, and it has caught exactly that in productio
 
 One thing to know first: **Tacit derives its own EVM account from the wallet seed** (per network, via
 `evm-account.js`). You fund that address once; after that every call below signs itself and needs no injected
-wallet. `account(walletPriv)` is synchronous and returns `{ address, priv, pubHex }`. If you would rather
-drive an injected wallet, use the `build*` variants — they return `{ to, calldata, amount }` and broadcast
+wallet. `account(walletPriv)` is synchronous and returns `{ address, priv }`: the derived EVM address and its
+key (`0x`-hex), which is a different key from the wallet's confidential identity. The confidential public key
+(`pubHex`, the value `recipientPubHex` takes) comes from `identity(walletPriv)`, which returns
+`{ priv, pubHex, owner, secret }`. If you would rather drive an injected wallet, use the `build*` variants — they return `{ to, calldata, amount }` and broadcast
 nothing.
 
 ### Read a balance
 
 ```js
-const acct  = tacit.account(walletPriv);          // { address, priv, pubHex } — sync
+const acct  = tacit.account(walletPriv);          // { address, priv } — the derived EVM account, sync
+const me    = tacit.identity(walletPriv);         // { priv, pubHex, owner, secret } — the confidential identity, sync
 const funds = await tacit.balance(scanPriv);      // notes recovered from logs + memos, grouped by asset
 ```
 
 `scanPriv` is the wallet's scan scalar as `0x`-hex or bytes. Each note carries
 `{ asset, value, blinding, secret, cx, cy, owner, leafIndex, path, root }` — `path`/`root` are the membership
-witness a spend needs. **Rescan immediately before spending**: a witness goes stale as soon as anyone else
-settles.
+witness a spend needs. The pool accepts every root its note tree has ever had, so a witness does not expire
+when someone else settles; it stays valid for as long as the pool's tree does. Rescan before spending anyway,
+so that every input's path is taken against one root (an op carries a single `spendRoot`), notes spent since
+are dropped, and new notes are picked up.
 
 ### Wrap ETH in (step 1 — a plain tx, no proof)
 
@@ -135,13 +146,22 @@ const w = await tacit.wrap({ walletPriv, amountWei: 10n ** 16n, ticker: 'cETH' }
 Injected-wallet variant:
 
 ```js
-const w = tacit.buildWrap({ walletPriv, amountWei: 10n ** 16n, ticker: 'cETH' });
+const index = await tacit.nextWrapIndex({ walletPriv, ticker: 'cETH' });   // first index no deposit has used
+const w = tacit.buildWrap({ walletPriv, amountWei: 10n ** 16n, ticker: 'cETH', index });
 await provider.request({ method: 'eth_sendTransaction', params: [{
   to: w.to, from: myAddress, value: '0x' + BigInt(w.amount).toString(16), data: w.calldata,
 }]});
 ```
 
 Only `commit = keccak(Cx ‖ Cy ‖ owner)` goes on-chain. Keep `w.note` and `w.memo` — that is the note.
+
+`index` selects which deterministic note the wrap creates: `(nk, blinding)` are derived from your key, the
+asset and `index`. The same asset, value and index produce the same deposit id, which the pool rejects
+(`DepositExists`); reusing an index with a different value reuses the note's `nk` and blinding, which makes
+the two notes linkable to anyone who can see both. `tacit.wrap`, `tacit.routerWrap` and `tacit.wrapAndSend`
+take the next unused index themselves when you leave `index` out (it comes back on the result); pass one to pin
+it. `tacit.buildWrap` and `tacit.buildWrapTransferOp` are synchronous and default to `index = 0`, so give them
+the index from `tacit.nextWrapIndex(...)` and record it with the wrap.
 
 ### Turn the deposit into a note (step 2 — one proof)
 
@@ -155,7 +175,7 @@ The guest checks the deposit is registered, so this fails until the wrap tx has 
 
 ```js
 // self-send / merge — recipientPubHex must be your own
-await tacit.transfer({ walletPriv, notes, recipientPubHex: acct.pubHex, amount: 5_000_000n, fee: 100n });
+await tacit.transfer({ walletPriv, notes, recipientPubHex: me.pubHex, amount: 5_000_000n, fee: 100n });
 
 // exit to a public address
 await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0xabc…' });
@@ -258,8 +278,8 @@ Three things to get right:
 - **Harvest before you unbond, and claim close to `pending`.** A harvest re-stamps the position, so anything
   unclaimed in it is forfeited to the treasury surplus.
 
-`tacit.lpBond` adds liquidity and bonds in one settle (enabled per pool by `farmControllers[poolId]`); it has not
-been driven live against this manager yet, so start with the two-step flow.
+`tacit.lpBond` adds liquidity and bonds in one settle (enabled per pool by `farmControllers[poolId]`) and has been
+driven live against this manager; call it with `selfRelay: true` (it carries no relay fee leg), as the Earn tab does.
 
 **One key, many processes.** Every note sealed to a key shows up in that key's scan, including notes another
 process created. Two scripts sharing a wallet key will pick each other's notes as inputs. Give each process its
@@ -274,7 +294,7 @@ Base `https://api.tacit.finance`. Everything below is public; nothing needs a ke
 | endpoint | |
 |---|---|
 | `POST /confidential/submit` | `{ type, op, memos, mode?, feeAsset? }` → `{ jobId }`. `mode: 'prove'` returns a proof for you to submit yourself; default `'settle'` has the relay submit it. |
-| `GET /confidential/status?id=` | `pending` → `proving` → `settled` \| `failed` |
+| `GET /confidential/status?id=` | `pending` → `proving` → `settled` \| `failed`; a `mode: 'prove'` job ends at `proven` and carries the proof |
 | `GET /confidential/quote?asset=cETH` | `{ ticker, assetId, relayFeeEligible, staticFloorUnits, gasAwareFloorUnits }` — floors are in the asset's **in-system units**, not wei. `asset` takes a ticker or a `0x` asset id. |
 | `GET /confidential/index?from=&limit=` | the pool's event stream plus the stealth lock set, in chain order behind one cursor — recover a key's notes and locks without running a scanner |
 | `GET /health` | liveness |
@@ -285,11 +305,27 @@ Submits are rate-limited per IP and the queue is bounded; a rejected submit is b
 declared `Content-Length` before the body is read, or mid-stream for a chunked body. Every real op is far
 below it; if you hit it, you are almost certainly sending something you did not mean to.
 
-**What the relay learns.** It never sees a spending key — only opening sigmas — and can only earn the
-proof-bound fee. But it does see your IP, and for an `OP_SWAP` it sees that swap's amounts, because the guest
-computes the clearing and therefore must read them. Everything else (who you are, your balance, your other
-notes) stays hidden. Note that `selfRelay` does **not** change this — the relay still proves, so it still
-sees the witness. If a trade size matters to you, prove locally.
+**What the relay sees.** It proves the op you hand it, so it receives that op's witness: for every spent note
+its commitment, owner, leaf index, membership path and its per-note nullifier key `nk` (which lets it compute
+that note's nullifier); the op's outputs (commitments, owners, range proof), public legs (recipient, value,
+fee, deadline) and the authorization for them, which is an opening sigma or a transfer kernel; and the sealed
+memos. It does not receive your wallet key, your seed or any note's blinding (the op builders return only the
+sigma `(R, z)`).
+
+**What the relay can do with it.** Spending a note takes `nk` and the note's blinding: the guest checks
+`owner == keccak(nk ‖ dom)`, and a Schnorr proof of knowledge of the blinding over the op's context. That proof
+commits to the exact recipient, value, fee and deadline (`OP_UNWRAP`), or to every input commitment, output
+commitment and output leaf plus the fee (`OP_TRANSFER`'s kernel). So the relay can prove the op you
+authorized, unchanged, and earn the fee you set on it; it cannot redirect an output, raise the fee or spend the
+same note some other way, and it can decline to relay. Other ops bind their own sigma or kernel in the same way; this guide
+traces `OP_TRANSFER` and `OP_UNWRAP` in detail.
+
+**What the relay learns.** Your IP, which notes an op spends and creates and how they link (inputs to
+outputs within one op), and the nullifier of each note it proves. For an `OP_SWAP` it also sees that swap's
+amounts, because the guest computes the clearing and therefore must read them. It does not see notes an op does
+not touch, and it is not given your wallet identity or balance. `selfRelay` does **not** change any of this —
+the relay still proves, so it still sees the witness. If the link between an op's inputs and outputs, or a
+trade size, matters to you, prove locally.
 
 `OP_SWAP_BLIND` is the op that removes even that: clearing is proven by an in-guest Groth16 circuit, so the
 box never reads an amount. It is **armed in the deployed guest and proven correct against it**, but not yet
@@ -316,7 +352,7 @@ look away entirely without touching its logic. Two conventions worth keeping:
 |---|---|
 | `AmountNotAligned` | amount not divisible by `unitScale` |
 | `DepositNotPending` | the wrap tx is not mined yet, or the deposit was already consumed |
-| `UnknownRoot` | stale membership witness — rescan |
+| `UnknownRoot` | the `spendRoot` is not a root this pool has ever had: a witness built from another pool or network, from an incomplete log fetch, or from a block that was since reorged out — rescan |
 | `NullifierAlreadySpent` | the note was already spent |
 | `MemoLeafMismatch` | memo count or order does not match `pv.leaves` |
 | settle says `failed` with a guest assert | the witness is malformed; the assert text names the field |

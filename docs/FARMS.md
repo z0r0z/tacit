@@ -141,9 +141,10 @@ await tacit.lpBond({ walletPriv, controller: cfg.farm.manager, aNote, bNote, fee
 ```
 
 Adds liquidity to the pair and bonds the resulting shares in one settle, so the user never holds an idle LP
-note. It is enabled per pool by `cfg.farmControllers[poolId]`. **It has not been driven live against this
-manager yet**: ship the two-step flow (add liquidity, then bond) first and treat `lpBond` as an upgrade once you
-have run it yourself. **verify** how it returns the position's receipt key, and persist it exactly as section 7 says.
+note. It is enabled per pool by `cfg.farmControllers[poolId]` and has been driven live against this manager
+(section 11). It builds with no relay fee leg, so submit it with `selfRelay: true`: the user's own account
+broadcasts the settle and pays its gas, which is what the Earn tab does. The position's receipt key re-derives from
+the wallet key and the spent A note (`lpBondPosition`); persist the position record as section 7 says.
 
 ### Bond an existing LP note
 
@@ -165,7 +166,7 @@ await tacit.defiActions(walletPriv).bondFarm({
 
 The LP note is spent; the receipt leaf is created. A position is exactly **one LP note**, bonded whole: to bond
 part of a note, **split it first** (a `transfer` to yourself); to bond several notes as one position, merge them
-first. Rescan right before you build: `note.path` and `note.root` go stale as soon as anyone else settles.
+first. Rescan right before you build so that `note.path` and `note.root` are taken together against one root (the pool keeps every root it has had, so an older witness stays valid, but a spend carries a single `spendRoot`).
 
 ### Harvest, with a claim button
 
@@ -351,7 +352,14 @@ Every flow above was driven with real proofs against the live manager.
 | `WrappedTac.withdraw` | [`0x2e4e056d…7d34`](https://etherscan.io/tx/0x2e4e056d355bf73b076ee8af67ea7ce771b531c7516275307e71ec82a7c87d34) |
 | TAC wrap settle | [`0x6137a80d…02d1`](https://etherscan.io/tx/0x6137a80d323226488463f9a2ed4606c5e2622e129bf79142c3d88b74764a02d1) |
 
-Not yet driven live: `lpBond` (one-click add and bond) against this manager.
+One-click entry (`lpBond`, add liquidity and bond in one settle, self-settled): bond
+[`0x1db736a7…414c`](https://etherscan.io/tx/0x1db736a739ffdda1f2cffb685a5caba2ebfcfb454094b66e6e9dbf2db67f414c)
+added 1,100 cETH units and 15,711,068 TAC units for 131,446 shares (the manager's total rose by exactly that);
+its harvest [`0xb9a500a2…5a85`](https://etherscan.io/tx/0xb9a500a2d49e255e3192cac65d51a7f04952049af4a7eadcadc255f8a9b75a85)
+paid 11,057,654 units, equal to the treasury debit; its unbond
+[`0xaa3f122e…5a07`](https://etherscan.io/tx/0xaa3f122ed9bce60d085af458486a10b8c229a22623e69b40fb91f6a842a45a07)
+returned the shares. Harvest before unbonding: unbond does not pay out reward that has not been harvested, and
+`farmUnbond` refuses unless you pass `forfeitPending: true`.
 
 ## 12. Privacy
 

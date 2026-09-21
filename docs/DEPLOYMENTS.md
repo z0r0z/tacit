@@ -1,7 +1,9 @@
 # Deployed contracts
 
 The `ConfidentialPool`, router, and SP1 guests are **immutable** (no proxy, no
-admin, no pause, no upgrade path). The **`CollateralEngine`** (CDP/cUSD + cBTC
+upgrade path, no pause switch, and no admin key over escrow, exits or payouts). The one privileged call on
+the pool is `createNextGen`, held by the lineage steward — see
+[Generations & lifecycle](#generations--lifecycle). The **`CollateralEngine`** (CDP/cUSD + cBTC
 escrow) is the exception: it is **DAO-governed** — its owner sets the oracle
 and CDP parameters and drives cBTC-escrow enforcement and insurance-reserve
 draws (a trusted, timelocked governance role, bounded on-chain by an immutable
@@ -98,7 +100,7 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 | Bitcoin relay vkey (reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
 | Eth reflection vkey (eth-reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
 | Reflection confirmations | 24 (gen4 uses 6) |
-| Ops multisig (engine admin, unchanged) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
+| Ops multisig (engine admin, unchanged; also the pool's lineage steward) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
 | Deploy block | 25998736 |
 | BTC anchor height (reflection seed) | 967040 |
 
@@ -131,6 +133,30 @@ Two consequences follow, and they are worth stating plainly:
   lineage at a time**: a successor accepts value only after its predecessor is drained
   to zero. This is a property of how migrations are sequenced, not a control anyone
   else can influence.
+
+### The lineage steward
+
+The gen5 pool carries one privileged entry point, `createNextGen(initCode, salt)`. Only the pool's immutable
+lineage steward (`LINEAGE_STEWARD`, the ops multisig above) can call it, and only once. It deploys the next
+generation from the pool's own address, records it as `successor`, and that is the whole of the authority:
+the steward chooses the successor's code and nothing else. `pool.successor()` reads zero while this generation
+is the lineage's active one, and the pool emits `GenerationRetired(successor)` when it is set.
+
+Once `successor` is set, this generation is **exit-only for new value**:
+
+- Refused: wraps of external assets, swaps, liquidity adds, cBTC mints, new CDP positions, farm bonds and
+  surplus draws, public-AMM entry, farm funding, and any spend of a Bitcoin-homed note.
+- Still open: every exit and every release of value already committed here — unwraps and transfers,
+  liquidity removals, position closes, top-ups and liquidations, farm harvests, stealth and adaptor
+  claims and refunds, deposits already escrowed, mints of Bitcoin burns that targeted this generation, and
+  burning this generation's own canonical token back into a note. Cross-outs open once the pool has written
+  its handoff record (its first attest after retirement). The pool's Bitcoin reflection also stays open.
+
+The steward cannot touch escrow, freeze an exit, redirect a payout, or set `successor` a second time.
+Retiring a generation therefore closes new entry to it and points to code that no user is obliged to use.
+A pool deployed with a zero steward can never be retired. The predecessor generation (gen4) was deployed
+before this entry point existed and has neither `createNextGen` nor `successor()`. The runbook is
+[`ops/RUNBOOK-generation-handoff.md`](../ops/RUNBOOK-generation-handoff.md).
 
 A future Bitcoin protocol version may commit the generation identity into the
 bridge/fast-lane records directly, making this a consensus rule rather than a
