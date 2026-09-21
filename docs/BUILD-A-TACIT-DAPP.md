@@ -173,6 +173,50 @@ proving locally (native-gnark on CPU — no GPU, no network payment; see
 
 Each of these returns once the settle lands; pass `waitOpts` to tune the polling.
 
+Which ops need a fee: an op that carries a fee leg (`transfer`, `unwrap`, LP ops, routes) must offer at least
+the floor from `GET /confidential/quote` or the relay refuses it at submit; the static cUSD floor is
+30,000,000 units. Ops that are fee-less by design (`wrap`, `cbtcmint`, `bridgemint`, adaptor and stealth locks,
+`cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed at all: it needs
+`createPairAndSettle`, so use `selfRelay: true`.
+
+
+### Bitcoin-backed cBTC and CDPs
+
+Proven on mainnet: lock real BTC, mint a cBTC note, borrow cUSD against it, repay, and release the BTC.
+
+**Lock → escrow → mint.**
+
+1. Lock BTC in a self-custody output: a Bitcoin transaction whose output 1 carries the lock envelope
+   (`dapp/cbtc-lock.js`). Keep the funding input explicit; the dapp's sats helpers pick the largest plain coin.
+2. Post the wstETH escrow that backs it: `CbtcEscrowHelper.postEscrowWithETH(outpoint)` (about 320k gas). The
+   outpoint key is `outpointKey(reverse(txid), vout)`, and the escrow must cover the lock's value.
+3. Wait for reflection to fold the lock block. Reflection only folds blocks at least 24 behind the header
+   relay's tip, so plan on roughly 3 hours from the lock's first confirmation. `GET /reflection/status` shows
+   `attestedHeight`; the mint works once `pool.cbtcLockVBtc(outpoint)` reads the locked amount.
+4. Mint: `await tacit.mintCbtc({ walletPriv, outpoint, vBtc, blinding })`. It is fee-less and relayed. The
+   note is a **bearer** note (owner 0): whoever holds its blinding can spend it, and the blinding is derived
+   from your key plus the lock's funding anchor. A lock can be minted once. A second mint reverts
+   `CbtcLockMismatch` (`0xafff2f20`).
+
+**Open and close a CDP** (`tacit.defiActions(walletPriv).openCdp / closeCdp`):
+
+- `rateSnapshot` must be `1e27` (`0x33b2e3c9fd0803ce8000000`). The UI's all-zero "fee-free" default reverts
+  `BadSnapshot` (`0x610f890f`) on the deployed engine.
+- A collateral leg is either a bearer note (`owner` and `nk` both zero) or an owned note
+  (`owner = note.owner`, `nk = note.secret`). Its membership path comes from
+  `tacit.indexer.buildTree(leaves).rootAndPath(index)`.
+- cUSD has 8 decimals. Collateral must stay above 150% of debt, and liquidation starts at 130%.
+- **Persist the position record before you submit.** The position owner key, the debt blinding and the debt
+  note's `nk` exist nowhere else. Losing them strands the position.
+- To close, burn debt notes worth at least the position's debt (an excess is burned, not refunded), pass the
+  position's index and path from `tacit.cdpPositionTree()`, and give a fresh blinding and `nk` per released
+  leg (persist them first). The released collateral comes back as an owned note.
+
+Verified on mainnet against the deployed pool: open
+[`0x6da330c1…3229`](https://etherscan.io/tx/0x6da330c161f236030ef83ce5c9c77268c735a52e7f9789c7ebceaccb479b3229),
+close
+[`0x23851ea3…232e`](https://etherscan.io/tx/0x23851ea3ec4c0434940a1120505b0efe1878023e3d6faac9cea41ad14e44232e).
+
 ## 6. Relay API
 
 Base `https://api.tacit.finance`. Everything below is public; nothing needs a key.
