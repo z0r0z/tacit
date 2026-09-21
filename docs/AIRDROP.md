@@ -10,6 +10,12 @@ Contract: [`contracts/src/TacAirdrop.sol`](../contracts/src/TacAirdrop.sol). Tre
 Deployed at `0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8` (source verified on Etherscan); the address, root and deadline are recorded in
 [`DEPLOYMENTS.md`](./DEPLOYMENTS.md), and the inputs and how to rebuild the root are in [`airdrop/v1/README.md`](../airdrop/v1/README.md).
 
+Client and proofs: the claim proofs are served at `https://tacit.finance/airdrop/v1/proofs/<xx>.json` (`xx` is the first byte of the lowercase address; the files are
+`dapp/airdrop/v1/proofs` in this repo). [`dapp/tac-airdrop.js`](../dapp/tac-airdrop.js) reads an address's allocation from them, checks it against the root, reads the
+contract's state and builds the claim calls (`tacit.tacAirdrop` on the pool ux). A page on another origin reads the same files from the CORS-enabled, commit-pinned
+copies listed in [`airdrop/v1/README.md`](../airdrop/v1/README.md), because tacit.finance sends no CORS header. The dapp chapter, with a
+no-dependency read-only snippet, is [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) section 5a; the integrator checklist is [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md) section 3b.
+
 ## 1. Who can do what
 
 Everything that defines the airdrop is fixed at deployment and cannot be changed: the token, the merkle root, the claim
@@ -70,6 +76,11 @@ const w   = tacit.buildWrap({ walletPriv, amountWei: leaf.amount, ticker: 'TAC',
 // then settle the deposit into a note:  tacit.submitWrapSettle({ built: w })
 ```
 
+`tacit.tacAirdrop.shieldPlan({ walletPriv, address, allowUnproven: true })` does this for the dapp: it reads the status, takes the next unused wrap index, builds the wrap for
+TAC, checks that the wrap's asset and the ux's pool are the ones the airdrop deposits into, and returns the transaction with a record that holds no secret.
+`claimAndShield(plan, { send })` sends it from the recipient's account, and `settleShield({ walletPriv, record })` settles the deposit once the pool reports it pending
+(`depositStatus`). `shieldPlan` refuses without `allowUnproven: true` while the settle step is unproven.
+
 The transaction is signed by the eligible account (any wallet); the note key is the Tacit wallet key and can be a different
 one. The note is recovered from the wallet key alone: the wrap walk matches the deposit ids the key derives to the pool's public
 `Wrap` events, whoever the depositor was.
@@ -123,8 +134,8 @@ Before funding, and again for anyone who wants to check:
    node tools/airdrop-verify.mjs --contract $AIRDROP --address 0x... --proofs proofs.json --root <root> [--rpc <url>]
    ```
 
-   `--proofs` also accepts a directory or an http(s) base URL holding per-recipient files (`<base>/<address>.json`) or shards by leading address
-   byte (`<base>/<xx>.json`, as in `airdrop/v1/proofs`). On chain 1 it
+   The client does the same checks in a page (local proof recomputation, then the contract's own `verify`). `--proofs` also accepts a directory or an http(s) base URL holding per-recipient files (`<base>/<address>.json`) or shards by leading address
+   byte (`<base>/<xx>.json`, as in `dapp/airdrop/v1/proofs`, published at `https://tacit.finance/airdrop/v1/proofs`). On chain 1 it
    also checks the guardian, token and pool against `contracts/deployments/1.json`.
 4. **The source.** Once deployed, the contract is verified on Etherscan from `contracts/src/TacAirdrop.sol` with the repo's Foundry profile (the
    `solc` version is the pragma in the file). Its dependencies are two Solady libraries already used elsewhere in this repo.
@@ -149,6 +160,8 @@ node tools/airdrop-tree.mjs --input recipients.csv --expect-total 1000000 \
 - `proofs.json` is one file keyed by lowercase address. For a large list use `--out-dir`, which writes
   `<dir>/<address>.json` per recipient plus `manifest.json` (`root`, `count`, `totalWei`), so a static host serves one small
   file per lookup. A 100,000-recipient tree is about 150 MB as a single file.
+- `--out-shards <dir>` writes one file per leading address byte, `<xx>.json` holding `{ root, claims }`, plus `manifest.json` (`root`, `count`, `totalWei`,
+  `unitScale`, `shards`): at most 256 files however many recipients. This is the layout published for the live airdrop (`dapp/airdrop/v1/proofs`).
 - Leaf: `keccak256(keccak256(abi.encode(index, account, amount)))`. Node: keccak of the sorted pair.
 - The Solidity tests read proof files this tool wrote (`contracts/test/fixtures/airdrop/`, regenerated with `node
   contracts/test/fixtures/airdrop/generate.mjs`) and check them against the contract's verifier and claim paths, so the two
@@ -193,7 +206,7 @@ so step 4 checks the guardian and deadline against the intended values before fu
 5. **Fund once**: the multisig transfers exactly the tree total of TAC to the airdrop address. Then check
    `balanceOf(airdrop) >= totalWei`. Do not announce before this holds. A short funding is not unsafe (a claim that cannot be paid
    reverts and leaves the leaf claimable, and topping up fixes it), but the last claimants would fail until it is.
-6. Publish the proof files and the root, and add the address to `DEPLOYMENTS.md`.
+6. Publish the proof files (`--out-shards`, served from `dapp/airdrop/v1/proofs`) and the root, and add the address to `DEPLOYMENTS.md`.
 
 TAC is minted by the pool when a shielded note is unwrapped, so funding does not depend on today's circulating supply. The
 planned route is a relayed `sendUnwrap` of the shielded 1,000,000 TAC note straight to the airdrop address, sized so the fee

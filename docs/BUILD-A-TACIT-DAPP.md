@@ -359,6 +359,202 @@ own key, or keep an explicit leaf-ownership list and check a note's leaf and nul
 Sign settles from a dedicated account, never from a key the relay or a keeper uses; two senders on one nonce
 sequence make each other's transactions late or stuck.
 
+## 5a. TAC airdrop
+
+The one-shot Ethereum-side TAC distribution, live on mainnet: a merkle distributor that holds 1,000,000 TAC and pays 8,652 recipients
+999,999 TAC between them, one leaf each. A recipient claims public TAC, sends it to another address, or shields it into the confidential
+pool in the same transaction. Roles, the guardian's powers and the runbook are in [`AIRDROP.md`](./AIRDROP.md); this chapter is how a dapp shows an
+allocation and claims it.
+
+| | |
+|---|---|
+| `TacAirdrop` | `0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8` (Etherscan-verified) |
+| Token | the public TAC ERC20 `0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`, 18 decimals |
+| Merkle root | `0x27451b320d5aa9631f7a3fd8adcfa537db8d792dd49aad9ab0951af0c2986a10` |
+| Claim deadline | `1797803449` (2026-12-20 21:50:49 UTC): the last second a claim is accepted |
+| Client | [`dapp/tac-airdrop.js`](../dapp/tac-airdrop.js); `tacit.tacAirdrop` on the pool ux (`tacit.airdrop` is the stealth airdrop, a different feature) |
+
+**Proof files.** One JSON file per leading address byte: `<xx>.json`, `xx` being the first byte of the lowercase address without `0x`. It holds
+`{ root, claims: { <lowercase address>: { index, amount, proof } } }`, with `amount` in wei as a decimal string and `proof` a list of bytes32.
+`manifest.json` sits beside them. Every entry is checked against the root, not against the host it came from, so any copy is as good as another.
+
+| Host | URL | For |
+|---|---|---|
+| the dapp's origin | `/airdrop/v1/proofs/<xx>.json` (`https://tacit.finance/airdrop/v1/proofs/<xx>.json`) | the tacit.finance dapp. It sends no CORS header, so a page on another origin cannot read it |
+| jsDelivr, pinned to a commit | `https://cdn.jsdelivr.net/gh/z0r0z/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | any page: CORS-enabled and immutable |
+| GitHub raw, same commit | `https://raw.githubusercontent.com/z0r0z/tacit/1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | fallback for the same files, CORS-enabled |
+
+The files are public and about 8.7 MB in all (18 to 64 KB each), so you can also serve your own copy from the same paths. A lookup tells the file's host one byte of the
+address; the `eth_call` that follows carries the whole address to your RPC.
+
+### Show "you can claim X TAC" without any Tacit code
+
+One `GET`, one keccak and one `eth_call`. This runs as is as an ES module in Node 20 (keccak from any library, here `@noble/hashes`; in a page, import it from wherever you bundle it):
+
+```js
+import { keccak_256 } from '@noble/hashes/sha3';
+
+const AIRDROP = '0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8';
+const ROOT    = '0x27451b320d5aa9631f7a3fd8adcfa537db8d792dd49aad9ab0951af0c2986a10';
+const PROOFS  = 'https://cdn.jsdelivr.net/gh/z0r0z/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs';
+const RPC     = 'https://ethereum-rpc.publicnode.com';
+
+const hex   = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+const bytes = (h) => Uint8Array.from(h.replace(/^0x/, '').match(/../g) || [], (x) => parseInt(x, 16));
+const word  = (n) => BigInt(n).toString(16).padStart(64, '0');
+const cat   = (a, b) => Uint8Array.from([...a, ...b]);
+
+// leaf = keccak(keccak(abi.encode(index, account, amount))); every node = keccak of its two children, smaller first
+function recompute(index, account, amount, proof) {
+  let h = keccak_256(keccak_256(bytes(word(index) + word(BigInt(account)) + word(amount))));
+  for (const p of proof) {
+    const s = bytes(p);
+    h = keccak_256(hex(h) <= hex(s) ? cat(h, s) : cat(s, h));
+  }
+  return '0x' + hex(h);
+}
+
+const ethCall = async (to, data) => {
+  const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+};
+
+const tac = (wei) => {                                            // wei -> decimal string, exactly
+  const s = BigInt(wei).toString().padStart(19, '0');
+  return `${s.slice(0, -18)}.${s.slice(-18)}`.replace(/\.?0+$/, '');
+};
+
+async function claimable(address) {
+  const account = address.toLowerCase();
+  const res = await fetch(`${PROOFS}/${account.slice(2, 4)}.json`);
+  if (!res.ok) throw new Error(`proof file: HTTP ${res.status}`); // all 256 files exist: a 404 is a broken host, not "not in the airdrop"
+  const e = (await res.json()).claims[account];                   // { index, amount, proof }
+  if (!e) return null;                                            // not in the airdrop
+  if (recompute(e.index, account, e.amount, e.proof) !== ROOT) throw new Error('the proof does not match the airdrop root');
+  const claimed = BigInt(await ethCall(AIRDROP, '0x9e34070f' + word(e.index))) !== 0n;   // isClaimed(uint256)
+  return { index: e.index, wei: e.amount, tac: tac(e.amount), claimed };
+}
+
+await claimable('0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20');
+// { index: 978, wei: '216176408192580000000000', tac: '216176.40819258', claimed: false }
+```
+
+The wire facts behind it, for any language:
+
+| | |
+|---|---|
+| Leaf | `keccak256(keccak256(abi.encode(index, account, amount)))`: three 32-byte words (`index`, `account` left-padded, `amount`), hashed twice |
+| Node | `keccak256(a ‖ b)` with the two 32-byte children in ascending order as big-endian numbers |
+| Claimed? | `isClaimed(uint256)` `0x9e34070f` ‖ index word, returns a bool word |
+| Paused? | `paused()` `0x5c975abb` |
+| Open? | the latest block's timestamp is `<= 1797803449`; `CLAIM_DEADLINE()` is `0x42f81580` |
+| Funded? | TAC `balanceOf(address)` `0x70a08231` of the airdrop is at least `amount` |
+| Contract-side check | `verify(uint256,address,uint256,bytes32[])` `0x6cc1a533` returns whether the contract accepts the proof (a view; says nothing about claimed) |
+| `claim` | `0x2e7ba6ef` ‖ `index` ‖ `account` ‖ `amount` ‖ `0x80` ‖ `proof.length` ‖ `proof…`. Anyone may send it; the TAC goes to `account` |
+| `claimTo` | `0x4f54d47c` ‖ `index` ‖ `amount` ‖ `0x80` ‖ `to` ‖ `proof.length` ‖ `proof…`. The sender must be the recipient; `to` may not be zero, the airdrop, the TAC token or the pool |
+| `claimAndShield` | `0xad8b9781` ‖ `index` ‖ `amount` ‖ `0x80` ‖ `commit` ‖ `proof.length` ‖ `proof…`. The sender must be the recipient; `amount` must be a multiple of `1e10` |
+| Claimed event | `Claimed(uint256 indexed index, address indexed account, uint256 amount)`, topic0 `0x4ec90e965519d92681267467f775ada5bd214aa92c0dc93d90a5e880ce9ed026` |
+| Errors | `Paused` `0x9e87fac8`, `ClaimWindowClosed` `0xf0f25a33`, `AlreadyClaimed` `0x646cf558`, `BadProof` `0x7ca55c77`, `BadRecipient` `0x67a2cc26`, `AmountNotAligned` `0x9c63840c`, `ZeroCommit` `0x09bf2e90` |
+
+### With the module
+
+`makeTacAirdrop` does the lookup, the local proof check, one batched state read (Multicall3, or one call per value where it is missing), the
+calldata, and simulate-then-send for the claims. It has no dependencies of its own: give it a keccak-256 and an `eth_call`.
+
+```js
+import { keccak_256 } from '@noble/hashes/sha3';
+import { makeTacAirdrop, makeRpcCall, PUBLIC_PROOF_HOSTS } from './dapp/tac-airdrop.js';
+
+const air = makeTacAirdrop({
+  call: makeRpcCall({ rpcs: ['https://ethereum-rpc.publicnode.com', 'https://1rpc.io/eth'] }),   // or any ({ to, data, from? }) => eth_call result that throws on a revert
+  keccak256: keccak_256,
+  proofsBase: PUBLIC_PROOF_HOSTS,      // a string or an ordered list; the default is the dapp's own '/airdrop/v1/proofs'
+});
+// in the dapp: const air = tacit.tacAirdrop   (from makeConfidentialPoolUx; same-origin proofs, its own RPC list)
+
+const s = await air.status(address);   // never throws
+```
+
+`status` returns the allocation and the contract's state (`amountWei` is a decimal string, so the object survives `JSON.stringify`):
+
+| field | |
+|---|---|
+| `eligible` | the airdrop lists this address, and its proof recomputed to the root and was accepted by the contract's own `verify` |
+| `index`, `amountWei`, `amountTac` | the leaf; `amountTac` is the exact decimal, e.g. `'216176.40819258'` |
+| `claimed`, `paused`, `open`, `funded` | `isClaimed`, `paused()`, the chain's clock is not past the deadline, the airdrop holds at least `amountWei` |
+| `canShield` | `amountWei` is a multiple of `1e10`, so `claimAndShield` will not revert |
+| `deadline`, `claimByISO`, `secondsLeft` | unix seconds, ISO 8601, and the time left by the chain's clock |
+| `claimable`, `reason`, `message` | `claimable` is true when a claim can go through. `reason` is `null` or the first that applies of `not-deployed`, `not-listed`, `error`, `claimed`, `paused`, `closed`, `unfunded`; `message` is a sentence for it |
+| `error` | `{ code, message }` when the read failed (`bad-address`, `shard-fetch`, `rpc`, `bad-response`, `chain-rejects-proof`). Show a retry, never "not eligible" |
+| `proof` | the verified bytes32 path |
+
+Claim it. `send` is yours: it takes `{ from?, to, data, value }` and returns the transaction hash. Each helper reads the status first, refuses a claim that cannot go
+through, simulates it with `eth_call`, and only then calls `send`:
+
+```js
+const me = (await provider.request({ method: 'eth_requestAccounts' }))[0];
+const send = ({ from, to, data, value }) => provider.request({ method: 'eth_sendTransaction', params: [{ from: from || me, to, data, value }] });
+
+const r = await air.claim(s.address, { send });                        // public TAC to the recipient; anyone may send this
+// or: await air.claimTo(s.address, '0x…', { send });                   // to another address; the wallet must be the recipient's account
+await air.waitClaimed(s.address);                                       // polls isClaimed: { claimed: true } or { claimed: false, timedOut: true }
+```
+
+The results are `{ txHash, tx, index, amountWei }`. A helper that refuses throws an `AirdropError` whose `code` is the `reason` (`claimed`, `paused`, `closed`, `unfunded`,
+`not-listed`, `not-deployed`), one of the read errors above, or one of `bad-address`, `bad-recipient`, `bad-proof`, `simulation-failed` (the contract would revert; `data` holds the revert data),
+`no-sender`, `rpc`. The `build*` variants return `{ from?, to, data, value: '0x0' }`
+and send nothing: `buildClaim(address)`, `buildClaimTo(address, to)`, `buildClaimAndShield(address, commit)`. `entryFor(address)` returns the verified
+`{ account, index, amountWei, proof }`, and `formatTac(wei)` the exact decimal string. On any network without the airdrop (Sepolia, for one) `status` returns
+`reason: 'not-deployed'` and reads nothing.
+
+### Shield it (not yet proven end to end)
+
+`claimAndShield` deposits the whole allocation into the confidential pool as a wrap deposit under a `commit`, and the note is made later by settling that deposit with a proof.
+**That last step has not been run on mainnet for this contract.** Offer `claim` and `claimTo` first; `shieldPlan` refuses unless you pass `allowUnproven: true`.
+
+```js
+const plan = await tacit.tacAirdrop.shieldPlan({ walletPriv, address: s.address, allowUnproven: true });
+localStorage.setItem('tac-shield', JSON.stringify(plan.record));                       // no secret in it; persist before sending
+await tacit.tacAirdrop.claimAndShield(plan, { send });                                  // sent from the recipient's account
+// once the transaction is mined:
+await tacit.tacAirdrop.settleShield({ walletPriv, record: plan.record });              // checks the deposit is pending on the pool, then submitWrapSettle
+```
+
+- **The commit must come from `shieldPlan`.** It is `buildWrap` for the recipient's own wallet key at the next unused wrap index (`nextWrapIndex`). A commit built any other way deposits the TAC
+  where no key can spend it, and the pool has no cancel or refund for a pending deposit. Never write one by hand.
+- **Keep `plan.record`, never `plan.built`.** `record` re-derives everything from the wallet key. `built` holds the note's secrets: keep it in memory only. Losing the wallet key loses the note.
+- **Two keys.** The transaction is sent by the recipient's account (any wallet); the note belongs to the Tacit wallet key, which can be a different one.
+- **It can lose a race.** Anyone may `claim` for the recipient at any time. If that lands first, `claimAndShield` refuses (`claimed`) and the recipient already holds plain TAC at their own address; they can wrap it themselves.
+- **Only while the dapp's pool is the airdrop's pool.** The airdrop deposits into the pool it was deployed with. `shieldPlan` and `settleShield` refuse (`pool-mismatch`) if the ux is configured for another generation.
+- **Dust cannot be shielded.** An amount that is not a multiple of `1e10` wei (`canShield: false`) can still be claimed.
+- **Refusals** carry a `code`: `shield-unproven`, `no-ux`, `pool-mismatch`, `asset-mismatch`, `not-aligned`, `bad-commit`, `zero-commit`, `bad-plan`, `bad-record`,
+  `wrong-key` (this wallet key does not derive the recorded commit) and `deposit-not-found` (the deposit is not pending on the pool yet; a deposit already consumed returns `{ alreadySettled: true }`).
+
+### Cases to handle
+
+| Case | What you see | Show |
+|---|---|---|
+| Not in the airdrop | `reason: 'not-listed'` | "This address has no allocation." |
+| Already claimed | `claimed: true`, `reason: 'claimed'` | "Claimed." If the user did not do it, someone sent `claim` for them and the TAC is at their own address; if they did, it went to `to` (`claimTo`) or into the pool (`claimAndShield`). The transaction that emitted the `Claimed` event says which |
+| Paused | `paused: true` | "Claims are paused." The guardian can pause; try again later |
+| Closed | `open: false` | "The claim window closed on `claimByISO`." Nothing can be claimed from the next second |
+| Unfunded | `funded: false` | The airdrop holds less than the allocation (the guardian swept it, or funding is short); a claim would revert. Do not offer it |
+| Front-run | `claim` or `claimAndShield` refuses with `claimed`, or the wallet's transaction reverts `AlreadyClaimed` | The user has the TAC already. Show their balance |
+| A tiny allocation | `amountWei` close to `1e10` | A claim costs the same gas whatever it pays. The smallest allocation is 0.00000001 TAC, 1,097 of the 8,652 are under 0.01 TAC and 4,089 under 1 TAC, so for the smallest ones the gas can exceed the value. Tell the user; a sponsor should set a minimum |
+| Could not read | `error` | Retry; try another proof host or RPC. Never show "not eligible" for an `error`. A host that answers 404 for a proof file is not saying the address is unlisted (all 256 files exist), so that is an `error` too |
+| Wrong network | `reason: 'not-deployed'`, or `error.code: 'bad-response'` | The airdrop is on Ethereum mainnet only |
+
+- **Gas.** `eth_estimateGas` against the live contract for the largest allocation (13 proof words), where the claim is the first in its 256-index bitmap word and pays the 20k storage set:
+  `claim` and `claimTo` about 91k, `claimAndShield` about 112k. Later claims in the same word cost about 17k less. Every claim costs about the same whatever its amount.
+- **Deadline.** `CLAIM_DEADLINE` is the last second at which a claim is accepted; from the next second every path reverts. Show `claimByISO` and `secondsLeft`, and prompt well before it: a transaction still pending at the deadline reverts.
+- **Confirm from the chain.** A claim has landed when `isClaimed(index)` reads true (`waitClaimed` polls it) and the `Claimed` event is in the transaction's receipt or `eth_getLogs` (`address` the airdrop, `topics: [topic0, '0x' + indexWord]`).
+  A wallet's "sent" and a relay's "settled" are not that.
+- **Check a proof yourself.** `node tools/airdrop-verify.mjs --contract 0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8 --address 0x… --proofs https://tacit.finance/airdrop/v1/proofs` recomputes the proof
+  locally, asks the contract to verify it, and reports whether it is claimable. It sends nothing. `--proofs` also takes a directory (`dapp/airdrop/v1/proofs`) or any host in the table above.
+
 ## 6. Relay API
 
 Base `https://api.tacit.finance`. Everything below is public; nothing needs a key.

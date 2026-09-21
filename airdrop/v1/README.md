@@ -4,8 +4,8 @@ This is the Ethereum-side distribution for the confidential pool and the formal 
 airdrop described in [`../README.md`](../README.md), and is not a continuation of it.
 
 A one-time distribution of 999,999 TAC (the public ERC20) to holders of seven tokens, through
-[`TacAirdrop`](../contracts/src/TacAirdrop.sol). The contract, its roles and the claim paths are described in
-[`docs/AIRDROP.md`](../docs/AIRDROP.md). This folder holds the inputs that produce the merkle root, so anyone can rebuild it.
+[`TacAirdrop`](../../contracts/src/TacAirdrop.sol). The contract, its roles and the claim paths are described in
+[`docs/AIRDROP.md`](../../docs/AIRDROP.md). This folder holds the inputs that produce the merkle root, so anyone can rebuild it.
 
 | | |
 |---|---|
@@ -32,7 +32,7 @@ and an ERC721 count are both reduced to a fraction before they are added. An add
 | 6 | `0xf142CfA6Ca3DFa4A131f12aACEF4890e390d70D6` | ERC20 | 7.14% |
 | 7 | `0x883d646d0C8202Aa23F01d4aF45E4E73804c3a49` | ERC20 | 3.57% |
 
-Addresses in [`tools/airdrop-blacklist.json`](../tools/airdrop-blacklist.json) are removed from every token's supply before shares
+Addresses in [`tools/airdrop-blacklist.json`](../../tools/airdrop-blacklist.json) are removed from every token's supply before shares
 are computed, so their balances neither receive an allocation nor dilute anyone else. The list holds pool, router, vault,
 exchange and token contracts and burn addresses. There is no minimum allocation and no per-address cap. Amounts are rounded down to
 the pool's unit (1e10 wei) and the remainder is handed out one unit at a time by largest fractional remainder, so the list adds up
@@ -54,10 +54,24 @@ to the total exactly.
 node tools/airdrop-weights.mjs --snapshot airdrop/v1/snapshot --total 999999 --weights linear --out list.json
 cmp list.json airdrop/v1/list.json                                   # same list, byte for byte
 node tools/airdrop-tree.mjs --input list.json --unit wei --expect-total 999999000000000000000000 --out-shards proofs
+diff -r proofs dapp/airdrop/v1/proofs                                # same proof files, byte for byte
 # the printed root must equal the contract's MERKLE_ROOT
 cast call 0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8 'MERKLE_ROOT()(bytes32)' --rpc-url $RPC
 ```
 
-`proofs/` holds the claim proofs, one file per leading address byte: `{ root, claims: { <address>: { index, amount, proof } } }`.
-`node tools/airdrop-verify.mjs --contract <address> --address <recipient> --proofs airdrop/v1/proofs` checks one recipient against the
-deployed contract without sending a transaction.
+## Claim proofs
+
+The claim proofs are one file per leading address byte: `<xx>.json`, where `xx` is the first byte of the lowercase address without `0x`,
+holding `{ root, claims: { <lowercase address>: { index, amount, proof } } }` with `amount` in wei as a decimal string, and a `manifest.json`
+(`root`, `count`, `totalWei`, `unitScale`, `shards`). The published copy lives in this repo at `dapp/airdrop/v1/proofs` and is served from:
+
+| Host | URL | Use |
+|---|---|---|
+| tacit.finance | `https://tacit.finance/airdrop/v1/proofs/<xx>.json` (`/airdrop/v1/proofs/<xx>.json` from the dapp) | The dapp's own origin. It sends no CORS header, so a page on another origin cannot read it. |
+| jsDelivr, pinned to a commit | `https://cdn.jsdelivr.net/gh/z0r0z/tacit@1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | Third-party pages: CORS-enabled and immutable. |
+| GitHub raw, same commit | `https://raw.githubusercontent.com/z0r0z/tacit/1b2eedde8490801c9ef4406020530059162e6d47/dapp/airdrop/v1/proofs/<xx>.json` | Fallback for the same files, CORS-enabled. |
+
+A proof is checked against the root, not against the host it came from (section 3 of [`docs/AIRDROP.md`](../../docs/AIRDROP.md)), so any copy of these
+files is as good as another. `node tools/airdrop-verify.mjs --contract <address> --address <recipient> --proofs <directory or base URL>`
+checks one recipient against the deployed contract without sending a transaction; for example `--proofs dapp/airdrop/v1/proofs` or
+`--proofs https://tacit.finance/airdrop/v1/proofs`.

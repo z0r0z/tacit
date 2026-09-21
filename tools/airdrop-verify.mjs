@@ -5,7 +5,8 @@
 //
 // --proofs is any of: a proofs file from airdrop-tree.mjs (`claims` map), a per-recipient file, a directory holding
 // <address>.json files (the --out-dir layout) or <xx>.json shards by leading address byte (the --out-shards layout), or an http(s) URL of
-// either a file or such a directory.
+// either a file or such a directory. The published shards are the directory dapp/airdrop/v1/proofs in this repo, served at
+// https://tacit.finance/airdrop/v1/proofs.
 // Checks, in order: the entry's proof recomputes to its root locally; that root equals --root (when given) and the contract's
 // MERKLE_ROOT; the contract's own `verify` accepts the proof; the leaf is not claimed; claims are not paused and the window is open;
 // whether the amount can be shielded. On chain 1 the guardian is also compared with the ops multisig in contracts/deployments/1.json.
@@ -22,7 +23,7 @@ const die = (m) => { console.error('airdrop-verify: ' + m); process.exit(2); };
 
 const contract = arg('--contract'), addrArg = arg('--address'), proofsArg = arg('--proofs'), wantRoot = arg('--root');
 const RPC = arg('--rpc') || process.env.RPC || 'https://ethereum-rpc.publicnode.com';
-if (!contract || !addrArg || !proofsArg) die('usage: --contract 0x.. --address 0x.. --proofs <file|dir|url> [--root 0x..] [--rpc url]');
+if (!contract || !addrArg || !proofsArg) die('usage: --contract 0x.. --address 0x.. --proofs <file|dir|url> [--root 0x..] [--rpc url]\n  published shards: dapp/airdrop/v1/proofs or https://tacit.finance/airdrop/v1/proofs');
 const to = normalizeAddress(contract);
 const who = normalizeAddress(addrArg);
 

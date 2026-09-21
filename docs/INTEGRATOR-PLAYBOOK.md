@@ -147,6 +147,28 @@ Recommended UX:
 
 ---
 
+## 3b. The TAC airdrop
+
+For a wallet, an aggregator or a swap front-end that wants to show a user's TAC airdrop and deliver it. The contract, the proof files and the client API are in
+[`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) section 5a; the roles and the guardian's powers are in [`AIRDROP.md`](./AIRDROP.md).
+
+- **Show the balance first, with no wallet.** `status(address)` (`tacit.tacAirdrop.status` in the dapp) needs only an address. It fetches one proof file, recomputes the proof against the pinned root, and reads the contract in one `eth_call`.
+  Show `amountTac` and `claimByISO`, and switch on `reason`. An `error` means "could not check", never "not eligible".
+- **Offer `claim` and `claimTo`. Do not offer shield yet.** The shield route's last step, settling the deposit into a note with a proof, has not been run on mainnet for this contract. The client refuses to plan it
+  unless you pass `allowUnproven: true`; build no shield control until that step is confirmed.
+- **A sponsor can claim for the user.** `claim` can be submitted by anyone, needs no signature from the recipient, and always pays the recipient's own address, so a wallet or a relayer can cover the gas without being able to
+  redirect the TAC. `claimTo` and `claimAndShield` need the recipient's own account. A sponsored `claim` uses up the allocation, so it takes away the user's choice to send it elsewhere or shield it: ask first, or sponsor only
+  users who asked for it. Skip allocations too small to be worth the gas (a claim costs about 91k whatever it pays; the smallest is 0.00000001 TAC).
+- **Never construct a `commit` by hand.** It has to be `buildWrap` for the recipient's own wallet key at an unused wrap index; any other value deposits the TAC where no key can spend it, and the pool cannot cancel a deposit. Use `shieldPlan`.
+- **Confirm from the chain.** A claim has landed when `isClaimed(index)` reads true and the `Claimed` event is in the receipt. A wallet's "sent", your own sponsor's log or a relay's "settled" are not that. `waitClaimed` polls the chain.
+- **Expect a race.** Anyone can `claim` for a recipient at any time, so a claim you send can find the allocation already claimed. It is refused before sending (`claimed`) or reverts `AlreadyClaimed`. Either way the recipient has the TAC at their own address
+  (or where they sent it, if they claimed it themselves): show their balance, not an error.
+- **Proof hosts are not trusted.** A proof is checked against the root, so a proof host can withhold a file but cannot forge an allocation. tacit.finance sends no CORS header; from another origin use the pinned CDN and GitHub URLs
+  (`PUBLIC_PROOF_HOSTS`, tried in order) or serve your own copy of the files.
+- **Do not promise the window.** The guardian can pause claims or sweep the balance at any time, and the window ends at unix `1797803449`. `status` reports `paused`, `funded` and `secondsLeft`; show them.
+
+---
+
 ## 4. Trustless checklist
 
 | check | how |
@@ -183,3 +205,5 @@ Recommended UX:
 | Two processes, one key | A scan of a key returns every note sealed to it, including another process's. | Give each process its own key, or keep an explicit leaf list. |
 | Amount or asset id looks wrong | ETH is registered under its linked id, values are 8-decimal units, and a wrap amount must divide by `unitScale`. | Use the ids in [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) section 3. |
 | Lock scan throws | The lock set rebuilt from events does not match the pool's count and root. | Retry or use another RPC. Do not build a claim or refund from a set the pool does not confirm. |
+| Airdrop `status` says `error` | A proof host or the RPC did not answer, or a served entry did not verify against the root. | Retry, or add a second host to `proofsBase`. Do not show "not eligible". |
+| A claim reverts `AlreadyClaimed` | The recipient, or another sponsor, claimed first. | Read `status` just before sending and treat `claimed` as done: the TAC is with the recipient. |

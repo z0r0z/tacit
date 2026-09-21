@@ -134,6 +134,8 @@ height above.
 | Root | `0x27451b320d5aa9631f7a3fd8adcfa537db8d792dd49aad9ab0951af0c2986a10` (8,652 recipients, 999,999 TAC) |
 | Guardian | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
 | Claim deadline | 1797803449 (2026-12-20 21:50 UTC) |
+| Proof files | `dapp/airdrop/v1/proofs`, served at `https://tacit.finance/airdrop/v1/proofs/<xx>.json` (`<xx>` is the first byte of the lowercase address) |
+| Client | [`dapp/tac-airdrop.js`](../dapp/tac-airdrop.js), `tacit.tacAirdrop` on the pool ux |
 
 Roles, claim paths, the emergency sweep and the runbook are in [`AIRDROP.md`](./AIRDROP.md); the inputs and how to rebuild the root are in
 [`airdrop/v1/README.md`](../airdrop/v1/README.md).

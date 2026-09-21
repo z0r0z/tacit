@@ -26,6 +26,7 @@ import { makeConfidentialFarmProgram } from './confidential-farm-program.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
 import { makeConfidentialStealth } from './confidential-stealth.js';
 import { makeConfidentialAirdrop } from './confidential-airdrop.js';
+import { makeTacAirdrop, makeRpcCall as makeAirdropRpcCall } from './tac-airdrop.js';
 import { makeConfidentialLockScan } from './confidential-lock-scan.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar, bppGens, G as BPP_G } from './bulletproofs-plus.js';
@@ -3034,8 +3035,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { notes, farmPositions: farmList, sentLocks, receivedLocks, cbtc: cbtcNotes, cdpPositions, diagnostics: d };
   }
 
+  // The TAC merkle distributor (docs/AIRDROP.md): what an address can claim, the claim calls and the shielded-claim plan.
+  // Mainnet only; on any other network its status reads "not deployed". `airdrop` above is the stealth airdrop, a different feature.
+  const _tacAirdrop = makeTacAirdrop({
+    chainId: cfg.chainId, keccak256, fetchImpl: _fetch,
+    call: makeAirdropRpcCall({ rpcs: cfg.rpcs, fetchImpl: _fetch }),
+    ux: { cfg, assetByTicker, buildWrap, nextWrapIndex, submitWrapSettle },
+  });
+
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
-    relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
+    relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }
