@@ -195,6 +195,20 @@ const res = await tacit.submitWrapSettle({ built: w });   // once the wrap tx is
 
 The guest checks the deposit is registered, so this fails until the wrap tx has landed.
 
+### Wrap and split in one transaction (`wrapAndSend`)
+
+`tacit.wrapAndSend` does steps 1 and 2 together for your own wallet. The wrap and the settle land in one transaction, the
+deposit is consumed instead of ever becoming a note, and the proof splits it into the amount you choose plus change. Each output has its own
+derived key, so the two are not linkable to each other. You skip the second proof and the separate transfer a plain wrap needs to split.
+
+```js
+const r = await tacit.wrapAndSend({ walletPriv, amountWei: 10n ** 16n, ticker: 'cETH', recipientPubHex: me.pubHex, amount: 500_000n });
+```
+
+`recipientPubHex` must be your own. The call refuses any other recipient: a native note's owner is `keccak(nk ‖ dom)`, so a note owned
+by someone else's pubkey could never be spent, and the deposit would be lost. To pay another person, use the stealth path below. The name
+describes the one-transaction shape, not a way to pay a third party.
+
 ### Spend
 
 ```js
@@ -207,6 +221,18 @@ await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0xabc…' });
 // pay someone else (stealth lock; they claim it)
 await tacit.stealthSend({ walletPriv, notes, recipientPubHex, amount: 5_000_000n });
 ```
+
+**Paying someone else, and what the receiver needs.**
+- **Address.** `recipientPubHex` is the receiver's static spend pubkey, the confidential account's public key. A 0x address does not work:
+  it is a hash of a pubkey, so a sender cannot derive the pubkey from it. There is no on-chain registry mapping a 0x address to a pubkey, so
+  an integrator publishes the pubkey (a stable "tacit address") itself and has senders use that.
+- **Recovery.** The lock's memo is sealed to the receiver's key. From the key alone, `tacit.recover({ walletPriv })` lists it under
+  `receivedLocks`, and the note the claim mints is derived, so it comes back too. The receiver needs no saved record.
+- **Claim by the deadline.** A lock carries a deadline (about 90 days by default), after which the sender can refund. Show incoming locks
+  with their claim-by date, and prompt the receiver to claim well before it.
+- **Memos must open.** A lock whose memo cannot be opened cannot be found by the receiver. Run the memo check on the sender side before sending.
+- **Sender side.** The refund key of a lock is fresh randomness. Keep what `onBuilt` returns; locks sent by a build without the sender tail cannot be refunded from the key alone.
+- **Discovery cost.** A fresh restore walks the lock events from the pool's deploy block. `/confidential/index` speeds it up, and is not required.
 
 Fees: by default the relay proves *and* submits, and the fee must clear its gas-priced floor
 (`tacit.quoteOpFee(...)`, or `GET /confidential/quote?asset=cETH`). `selfRelay: true` with `fee: 0n` has the

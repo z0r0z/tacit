@@ -136,6 +136,17 @@ Recommended UX:
 
 ---
 
+## 3a. Private payments to another person
+
+- **Address them by pubkey, not a 0x address.** The receiver's confidential spend pubkey is the address. A 0x address is a hash and does not reveal it; there is no on-chain registry, so publish the pubkey yourself (a profile field, a name-service text record, or a link) and show it as the user's receive address.
+- **`wrapAndSend` is for your own wallet.** It wraps and settles in one transaction and splits the deposit into an amount plus change. It refuses a third-party recipient, because that note could never be spent. Use `stealthSend` to pay someone else.
+- **The receiver recovers from the key alone.** `tacit.recover({ walletPriv })` returns the lock under `receivedLocks`, and the note its claim mints is derived, so it comes back too.
+- **Show a claim-by date.** After a lock's deadline (about 90 days by default) the sender can refund. Warn the receiver as it nears.
+- **Run the memo check before sending.** A lock with an unopenable memo cannot be found by the receiver.
+- **Keep the sender record.** Store what `onBuilt` returns so a refund never depends on rediscovering the lock.
+
+---
+
 ## 4. Trustless checklist
 
 | check | how |

@@ -31,6 +31,17 @@ ETH to any EVM address. Every proving step (lock, claim, unwrap) requires an SP1
 those proofs can be generated locally on CPU (native-gnark, no GPU, no Succinct network payment) or
 requested from Tacit's relay API, which proves and/or submits on the caller's behalf.
 
+Two points integrators often get wrong:
+
+- **The recipient is a static spend pubkey, not a 0x address.** A 0x address is a hash of a pubkey, so a sender cannot derive the pubkey
+  from it, and there is no on-chain registry. Publish the receiver's confidential pubkey yourself and let senders use it.
+- **`ux.wrapAndSend` is for your own wallet.** It wraps and settles in one transaction and splits the deposit into an amount plus change,
+  saving the second proof a plain wrap needs. It refuses a third-party recipient, because a note owned by someone else's pubkey could never be
+  spent. Paying another person is this stealth path.
+
+A receiver restores everything from the key alone: `ux.recover({ walletPriv })` lists the lock under `receivedLocks`, and the note the claim
+mints is derived. The lock has a deadline (about 90 days by default), after which the sender can refund, so show a claim-by date.
+
 ## 2. Contracts in use (mainnet)
 
 The **gen5** suite (live since 2026-09-18). Canonical source is the manifest
