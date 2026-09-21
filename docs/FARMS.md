@@ -75,9 +75,9 @@ The live numbers come from one of three places, all equivalent:
 // the SDK: reads the manager over your RPC
 import { makeConfidentialFarmProgram } from './dapp/confidential-farm-program.js';
 const farm = makeConfidentialFarmProgram({ rpc, config: tacit.cfg });   // or tacit.farmProgram()
-const program = await farm.program();          // rate, periodFinish, treasury, per-pool weights and shares
-const owed    = await farm.pending(receiptLeaf);
-const pos     = await farm.position(receiptLeaf);
+const program = await farm.program();          // { manager, rewardAsset, gov, pendingGov, epoch, pools[] }
+const owed    = await farm.pending(receiptLeaf);   // { units, tac }: decimal strings, units in 1e-8 TAC
+const pos     = await farm.position(receiptLeaf);  // { live, shares, pid, unlockAt, pendingUnits, pendingTac, ... }
 const inputs  = await farm.aprInputs();        // the numbers an APR figure needs — the price is yours
 ```
 
@@ -85,9 +85,11 @@ const inputs  = await farm.aprInputs();        // the numbers an APR figure need
 GET https://api.tacit.finance/farm/program?network=mainnet
 ```
 
-A cached JSON summary: `manager`, `reward`, `epoch { rate, ratePerDayTac, periodFinish, remainingSeconds,
-treasuryTac, outstandingTac }`, `pools[] { pid, pair, poolId, lpAsset, allocPoint, sharePct, totalShares,
-idleEmission, tacPerDayForPool }`, `governance { gov, pendingGov }`. **verify** against the live response.
+A cached JSON summary: `network`, `manager`, `rewardAsset`, `rewardToken`, `gov`, `pendingGov`, `epoch { active,
+ratePerSecUnits, ratePerDayTac, periodFinish, remainingSeconds, treasuryTac, outstandingTac, requiredTac,
+fundedRunwaySeconds }`, `pools[] { pid, pair, lpAsset, allocPoint, sharePct, totalShares, idle,
+tacPerDayForPool, lockSeconds }`, `block`, `stale`, `updatedAt`. The SDK's `farm.program()` returns the same
+groups (its `epoch` adds `rate`, `treasuryUnits`, `outstandingUnits`, and its pools carry `poolId`).
 
 Or the contract directly. These are the views the two above are built from:
 
@@ -137,7 +139,7 @@ section 11.
 ### One-click add and farm (OP_LP_BOND)
 
 ```js
-await tacit.lpBond({ walletPriv, controller: cfg.farm.manager, aNote, bNote, feeBps: 30 });
+await tacit.lpBond({ walletPriv, controller: cfg.farm.manager, aNote, bNote, feeBps: 30, selfRelay: true });
 ```
 
 Adds liquidity to the pair and bonds the resulting shares in one settle, so the user never holds an idle LP
@@ -180,7 +182,7 @@ const idx     = leaves.findIndex((l) => l && String(l.leaf).toLowerCase() === St
 const tree    = tacit.indexer.buildTree(leaves);
 const { path } = tree.rootAndPath(idx);
 
-const pend    = await farm.pending(leaf);               // units, read at build time
+const pend    = BigInt((await farm.pending(leaf)).units);   // units, read at build time
 const reward  = pend - pend / 200n;                     // accrual only grows while proving; keep a small margin
 import { randomScalar } from './dapp/bulletproofs-plus.js';
 const rb = BigInt(randomScalar()) % secp.CURVE.n || 1n, nk = randomScalar();   // persist BOTH: they open the reward note
@@ -258,9 +260,11 @@ ERC20 to arrive (poll `balanceOf`, do not trust a scan), then `withdraw`. Poll t
 The receipt owner's key is the only authority over a position. If it is lost, the bonded shares cannot be
 unbonded and any pending reward cannot be claimed. Nothing in the protocol, and no operator, can recover it.
 
-- **Use the SDK's deterministic path where you can**: `tacit.farmPositions({ walletPriv })` restores each
-  position's key from the wallet key and its spent LP notes, so a restored wallet finds its positions
-  without a stored file.
+- **Use the SDK's deterministic path where you can**: a position opened with `tacit.farmBond` or `tacit.lpBond`
+  derives its receipt key from the wallet key and the note it spent, and `tacit.farmPositions({ walletPriv })`
+  finds it again from the chain and the key, so a restored wallet needs no stored file. A position opened
+  under a random key (the explicit bond above) is not derivable; keep its record (or, once saved,
+  `tacit.importFarmPosition(record)` checks it against the chain and stores it).
 - **If you hold keys yourself, persist before you submit.** Write `{ controller, lpAsset, shares, receiptOwner,
   ownerPriv, nonce }` durably first, then bond. The reference run writes the file mode `0600` and refuses to
   overwrite an existing one.
