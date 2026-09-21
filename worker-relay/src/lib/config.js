@@ -75,6 +75,12 @@ export const CFG = {
   headerLead: num('HEADER_RELAY_LEAD', 144),
   // Headers per advanceTip tx (gas-bounded batch).
   headerMaxBatch: num('HEADER_RELAY_MAX_BATCH', 40),
+  // Submit only once this many headers are pending, so a quiet lane pays one transaction for a batch instead of one per
+  // block. 1 (default) is the original behaviour: submit as soon as any block exists.
+  headerMinBatch: num('HEADER_RELAY_MIN_BATCH', 1),
+  // The bound on how far behind the relay is left. When > 0, a pending count at or above it is submitted even while
+  // MAX_GAS_GWEI would hold it and even if it is below the minimum batch. 0 (default) disables the override.
+  headerMaxStaleBlocks: num('HEADER_RELAY_MAX_STALE_BLOCKS', 0),
   // Opt-in spend guard for long catch-ups: when > 0, the header feeder and the reflection folder wait instead of
   // submitting while the live gas price is above this many gwei. 0 (default) disables it.
   maxGasGwei: num('MAX_GAS_GWEI', 0),

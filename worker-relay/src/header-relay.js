@@ -15,6 +15,7 @@
 
 import { CFG } from './lib/config.js';
 import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, gasAboveCap } from './lib/chain.js';
+import { planHeaderAdvance } from './lib/header-plan.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -148,18 +149,25 @@ async function cycle() {
   // advanceTip derives each header's difficulty target from its OWN branch (blockTarget[prev] +
   // epochStartTs[prev]), not a single global per-epoch value set by a separate call — so it crosses a
   // difficulty-epoch boundary transparently within one submission. No special-casing needed here.
-  const from = base + 1;
-  if (to - from + 1 > CFG.headerMaxBatch) to = from + CFG.headerMaxBatch - 1;
   const dear = await gasAboveCap();
-  if (dear) { log(`gas ${dear.toFixed(3)} gwei is above MAX_GAS_GWEI=${CFG.maxGasGwei} — waiting`); return false; }
-  log(`advancing relay ${from}..${to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
-  const tx = await submitAdvance(from, to);
-  log(`relay advanced to ${to} tx=${tx}`);
+  const plan = planHeaderAdvance({
+    base, to, minBatch: CFG.headerMinBatch, maxStale: CFG.headerMaxStaleBlocks, maxBatch: CFG.headerMaxBatch,
+    gasDear: !!dear, restore: depth > 0,
+  });
+  if (plan.action === 'wait') {
+    if (plan.reason === 'gas') log(`gas ${dear.toFixed(3)} gwei is above MAX_GAS_GWEI=${CFG.maxGasGwei} — waiting`);
+    else log(`batching: ${plan.pending} of ${CFG.headerMinBatch} headers pending — waiting (tip=${rtip} btc=${btip})`);
+    return false;
+  }
+  if (plan.forced && dear) log(`gas ${dear.toFixed(3)} gwei is above MAX_GAS_GWEI=${CFG.maxGasGwei} but the relay is at its staleness bound — advancing`);
+  log(`advancing relay ${plan.from}..${plan.to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
+  const tx = await submitAdvance(plan.from, plan.to);
+  log(`relay advanced to ${plan.to} tx=${tx}`);
   return true;
 }
 
 async function main() {
-  log(`starting — relay=${HEADER_RELAY} lead=${CFG.headerLead} maxBatch=${CFG.headerMaxBatch} esploras=${ESPLORAS.length}`);
+  log(`starting — relay=${HEADER_RELAY} lead=${CFG.headerLead} maxBatch=${CFG.headerMaxBatch} minBatch=${CFG.headerMinBatch} maxStale=${CFG.headerMaxStaleBlocks || 'off'} esploras=${ESPLORAS.length}`);
   if (CFG.runMode === 'cron') {
     const t0 = Date.now();
     for (let i = 0; i < CFG.cronMaxCycles; i++) {

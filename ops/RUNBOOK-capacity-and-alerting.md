@@ -329,6 +329,54 @@ critical — which exits non-zero — fails the run and Render emails the owner 
 webhook only if you want a second channel (Slack/Discord); it needs a URL from you. (Settings verified via the
 API; delivery of an actual failure email has not been exercised.)
 
+## 3b. Running the maintenance lane lean (available, not active)
+
+The maintenance lane is the header feeder plus the reflection attests. Nobody pays a fee for it, and the bridge stops
+without it, so it is the fixed daily cost of keeping the Bitcoin side current. Measured on-chain from the relay
+wallet over 24 hours ending 2026-09-22 (gas averaged about 0.35 gwei that day, well above the 0.05 to 0.15 the
+earlier tables assumed):
+
+| lane | txs/day | avg gas | ETH/day |
+|---|---|---|---|
+| header feeder (`advanceTip`) | 136 | 286k | 0.0135 |
+| reflection attests | 54 | 409k | 0.0065 |
+| user settles (relayed, fee-earning) | 24 | 583k | 0.0060 |
+
+The header feeder sends about one header per transaction, at roughly 250k gas each. Multi-header transactions in the
+same sample cost about 106k to 124k gas per header, so batching roughly halves that lane. The attests fire about every
+27 minutes; each is dominated by a fixed proof-verification cost, so going from about 54 a day to 4 to 6 cuts that
+lane's gas by close to 90%, provided per-attest gas stays near today's.
+What cannot be cut is one header per Bitcoin block: about 144 a day at the batched rate.
+
+Two knobs, both off by default (the feeder behaves exactly as before until they are set):
+
+| env (tacit-header) | default | lean value | effect |
+|---|---|---|---|
+| `HEADER_RELAY_MIN_BATCH` | 1 | 24 | wait for this many pending headers, then send them in one transaction (about every 4 hours) |
+| `HEADER_RELAY_MAX_STALE_BLOCKS` | 0 (off) | 48 | at this many pending headers, send even while `MAX_GAS_GWEI` would hold it, and even below the minimum batch |
+| `MAX_GAS_GWEI` | 0 (off) | 0.2 | otherwise wait for cheap gas; the bound above stops this from leaving the relay far behind |
+
+`tacit-header` can keep its `*/3` schedule: a run that finds fewer than the minimum pending headers sends nothing, so
+the cadence comes from the batch size, not the cron. Fork recovery is unaffected: restoring the canonical chain skips
+the batching wait. Keep the bound small. The pool measures its confirmation depth from the relay's tip, so the relay
+should stay close to the real tip; 48 blocks is the largest bound worth running with, and it should shrink as the
+value held through the bridge grows.
+
+On the reflection side (owned with the reflection files, not changed here): raise `REFLECTION_BATCH_SIZE` on tacit-api
+to about 36 and run `tacit-reflection` every few hours instead of every 5 minutes, keeping batches well under the
+sizes that have needed extra memory. Set `REFLECTION_STALL_HOURS` on the monitor above the new cadence (for a 4-hour
+schedule, 9), or the stall check will page on a healthy lane. `REFLECTION_LAG_ALERT_BLOCKS` (200) already sits above the
+lag this produces.
+
+Expected effect at the measured gas: header lane 0.0135 to about 0.003 to 0.007 ETH/day, attests 0.0065 to about
+0.0006, so maintenance falls from roughly 0.020 to 0.004 to 0.008 ETH/day; at 0.1 gwei, divide by about 3.5. PROVE
+spend is separate and is read from the Succinct account; proving cost follows the number of blocks folded, so it
+falls by less than the gas does.
+
+Switch on in this order, and only when no bridge burn is waiting on the fold, because the fold needs the relay to
+follow the tip: set the two header knobs (one env write, then redeploy `tacit-header`); watch `batching:` lines for a
+day; then change the reflection schedule and monitor threshold together. To revert, unset the knobs.
+
 ## 4. Responding
 
 **Settle runway low** — fund the relay wallet. Read the current address from a recent pool settle rather
