@@ -7,8 +7,8 @@ confidential pool in the same transaction.
 
 Contract: [`contracts/src/TacAirdrop.sol`](../contracts/src/TacAirdrop.sol). Tree tooling:
 [`tools/airdrop-tree.mjs`](../tools/airdrop-tree.mjs), [`tools/airdrop-verify.mjs`](../tools/airdrop-verify.mjs).
-Nothing here is deployed yet; the deployed address and root will be added to this page and to
-[`DEPLOYMENTS.md`](./DEPLOYMENTS.md) once they exist.
+Deployed at `0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8` (source verified on Etherscan); the address, root and deadline are recorded in
+[`DEPLOYMENTS.md`](./DEPLOYMENTS.md), and the inputs and how to rebuild the root are in [`airdrop/v1/README.md`](../airdrop/v1/README.md).
 
 ## 1. Who can do what
 
@@ -19,7 +19,7 @@ deadline, the guardian, the pool and the pool asset id. There is no owner, no pr
 | --- | --- | --- |
 | Anyone | Submit `claim` for any recipient; the TAC always goes to the recipient's own address. Read every view. | Redirect a claim, claim twice, claim after the deadline. |
 | A recipient | `claim`, `claimTo` (send to another address), `claimAndShield` (deposit into the confidential pool). Each leaf once. | Claim more or less than the leaf amount. |
-| Guardian: the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` | `pause` / `unpause` claims. `sweep(to, amount)`: move any amount of TAC out, **at any time, before or after the deadline**. `sweepToken(token, to, amount)`: move any other token, or ETH with `token = 0x0`. | Change the root, token, deadline, guardian or pool. Claim on a recipient's behalf. Extend the deadline. |
+| Guardian: the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` | `pause` / `unpause` claims. `sweep(to, amount)`: move any amount of TAC out, **at any time, before or after the deadline**, subject to the multisig's own delay described below. `sweepToken(token, to, amount)`: move any other token, or ETH with `token = 0x0`. | Change the root, token, deadline, guardian or pool. Claim on a recipient's behalf. Extend the deadline. |
 
 The emergency sweep means recipients trust the multisig until the deadline: it can take the unclaimed balance at any
 moment, and can pause claims for the whole window. That is deliberate. It is the recovery route if the contract, the tree
@@ -31,6 +31,11 @@ The guardian is the ops multisig at the address recorded as `engineAdmin` in
 [`contracts/deployments/1.json`](../contracts/deployments/1.json). Confirm it with `node tools/verify-roles.mjs`, and
 copy it from that file rather than retyping it (see the runbook).
 
+The multisig is a two-of-four with a built-in one-hour delay: two owner signatures queue a call, anyone can execute it after the delay, and
+a call signed by all four owners runs immediately. So the emergency brake takes at least an hour on the standard path. The guardian is also
+fixed at deployment: if fewer than two of the four owner keys remain available there is no pause and no sweep, and claims still work.
+Keep at least two owner keys, and ideally all four, reachable for the whole claim window.
+
 ## 2. Claim paths
 
 All three share the same checks, in this order: not paused, at or before the deadline, leaf not already claimed, proof valid
@@ -39,8 +44,11 @@ against the root. The claimed bit is set before any tokens move, and a failed tr
 | Function | Caller | Result |
 | --- | --- | --- |
 | `claim(index, account, amount, proof)` | anyone | `amount` TAC to `account`. |
-| `claimTo(index, amount, proof, to)` | must be the eligible account | `amount` TAC to `to`. `to` may not be zero, the airdrop contract or the TAC token itself. |
+| `claimTo(index, amount, proof, to)` | must be the eligible account | `amount` TAC to `to`. `to` may not be zero, the airdrop contract, the TAC token or the confidential pool. |
 | `claimAndShield(index, amount, proof, commit)` | must be the eligible account | The whole amount is deposited into the confidential pool as a wrap deposit under `commit`. |
+
+Settling a shielded deposit into a spendable note needs a proof, and that last step has not been exercised on mainnet for this contract yet. Until it
+has, offer `claim` and `claimTo` first, and treat the shield option as unproven.
 
 Views: `isClaimed(index)`, `verify(index, account, amount, proof)` (proof check only), `paused()`, and the immutables
 `TOKEN`, `MERKLE_ROOT`, `GUARDIAN`, `CLAIM_DEADLINE`, `POOL`, `ASSET_ID`, `UNIT_SCALE`.
@@ -115,7 +123,8 @@ Before funding, and again for anyone who wants to check:
    node tools/airdrop-verify.mjs --contract $AIRDROP --address 0x... --proofs proofs.json --root <root> [--rpc <url>]
    ```
 
-   `--proofs` also accepts a directory or an http(s) base URL of per-recipient files (`<base>/<address>.json`). On chain 1 it
+   `--proofs` also accepts a directory or an http(s) base URL holding per-recipient files (`<base>/<address>.json`) or shards by leading address
+   byte (`<base>/<xx>.json`, as in `airdrop/v1/proofs`). On chain 1 it
    also checks the guardian, token and pool against `contracts/deployments/1.json`.
 4. **The source.** Once deployed, the contract is verified on Etherscan from `contracts/src/TacAirdrop.sol` with the repo's Foundry profile (the
    `solc` version is the pragma in the file). Its dependencies are two Solady libraries already used elsewhere in this repo.
@@ -182,7 +191,7 @@ so step 4 checks the guardian and deadline against the intended values before fu
    the largest and the last index. Before funding, the guardian must equal `engineAdmin`, the deadline must be the intended date, and
    the root must equal the one printed by the tree tool; `airdrop-verify` fails any of those that does not hold.
 5. **Fund once**: the multisig transfers exactly the tree total of TAC to the airdrop address. Then check
-   `balanceOf(airdrop) == totalWei`. Do not announce before this holds. A short funding is not unsafe (a claim that cannot be paid
+   `balanceOf(airdrop) >= totalWei`. Do not announce before this holds. A short funding is not unsafe (a claim that cannot be paid
    reverts and leaves the leaf claimable, and topping up fixes it), but the last claimants would fail until it is.
 6. Publish the proof files and the root, and add the address to `DEPLOYMENTS.md`.
 
@@ -281,7 +290,10 @@ the ordinary wrap flows for each part.
 ## 7. Known properties
 
 - The public proofs let anyone deliver a recipient's claim, always to the recipient (section 2).
-- The guardian can sweep at any time (section 1). There is no on-chain timelock.
+- The guardian can sweep at any time (section 1). The airdrop contract has no timelock of its own, but the guardian is the ops multisig, whose own
+  rules apply: two of its four owners queue a call and it can be executed after a one-hour delay, and only a call signed by all four owners runs
+  immediately. A pause or a sweep therefore takes at least an hour on the standard path, and the queued transaction is visible on-chain for that hour.
+  When abandoning the airdrop, queue the pause and the sweep together; they do not need to be serialised.
 - A token or pool that behaves unlike TAC and the live pool is refused at deployment; the airdrop contract is only meant for this
   pair.
 - Sending ETH to the contract reverts; ETH that arrives by other means can be swept with `sweepToken(0x0, ...)`.

@@ -4,7 +4,8 @@
 //   node tools/airdrop-verify.mjs --contract 0x.. --address 0x.. --proofs <file | dir | url> [--root 0x..] [--rpc <url>]
 //
 // --proofs is any of: a proofs file from airdrop-tree.mjs (`claims` map), a per-recipient file, a directory holding
-// <address>.json files (the --out-dir layout), or an http(s) URL of either a file or such a directory.
+// <address>.json files (the --out-dir layout) or <xx>.json shards by leading address byte (the --out-shards layout), or an http(s) URL of
+// either a file or such a directory.
 // Checks, in order: the entry's proof recomputes to its root locally; that root equals --root (when given) and the contract's
 // MERKLE_ROOT; the contract's own `verify` accepts the proof; the leaf is not claimed; claims are not paused and the window is open;
 // whether the amount can be shielded. On chain 1 the guardian is also compared with the ops multisig in contracts/deployments/1.json.
@@ -40,21 +41,32 @@ const asAddr = (h) => '0x' + word(h).slice(24);
 // ── proof entry ──
 async function loadEntry() {
   const pick = (j) => {
-    if (j.claims) { const c = j.claims[who]; return c ? { root: j.root, ...c } : null; }
+    if (j.claims) { const c = j.claims[who]; return c ? { root: j.root, address: who, ...c } : null; }
     return j.address && normalizeAddress(j.address) === who ? j : null;
   };
   if (/^https?:\/\//.test(proofsArg)) {
     const isFile = /\.json(\?|$)/.test(proofsArg);
-    const url = isFile ? proofsArg : `${proofsArg.replace(/\/$/, '')}/${who}.json`;
-    const res = await fetch(url);
-    if (res.status === 404 && !isFile) return null;
-    if (!res.ok) die(`fetch ${url}: ${res.status}`);
-    return pick(await res.json());
+    const base = proofsArg.replace(/\/$/, '');
+    // a directory is either one file per recipient (<address>.json) or shards by leading address byte (<xx>.json)
+    for (const url of isFile ? [proofsArg] : [`${base}/${who}.json`, `${base}/${who.slice(2, 4)}.json`]) {
+      const res = await fetch(url);
+      if (res.status === 404 && !isFile) continue;
+      if (!res.ok) die(`fetch ${url}: ${res.status}`);
+      const e = pick(await res.json());
+      if (e) return e;
+      if (isFile) return null;
+    }
+    return null;
   }
   if (!existsSync(proofsArg)) die(`no such path: ${proofsArg}`);
   if (statSync(proofsArg).isDirectory()) {
-    const f = `${proofsArg.replace(/\/$/, '')}/${who}.json`;
-    return existsSync(f) ? pick(JSON.parse(readFileSync(f, 'utf8'))) : null;
+    const base = proofsArg.replace(/\/$/, '');
+    for (const f of [`${base}/${who}.json`, `${base}/${who.slice(2, 4)}.json`]) {
+      if (!existsSync(f)) continue;
+      const e = pick(JSON.parse(readFileSync(f, 'utf8')));
+      if (e) return e;
+    }
+    return null;
   }
   return pick(JSON.parse(readFileSync(proofsArg, 'utf8')));
 }

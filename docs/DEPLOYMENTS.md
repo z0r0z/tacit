@@ -129,7 +129,7 @@ height above.
 
 | | |
 |---|---|
-| `TacAirdrop` | `0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8` (Etherscan-verified, deployed 2026-09-22, block 26028383) |
+| `TacAirdrop` | `0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8` (Etherscan-verified, deployed 2026-09-21 20:52 UTC, block 26028383) |
 | Token | the public TAC, `0xA1313eb9f3A445606D9583bcAc3ebeB56a858279` |
 | Root | `0x27451b320d5aa9631f7a3fd8adcfa537db8d792dd49aad9ab0951af0c2986a10` (8,652 recipients, 999,999 TAC) |
 | Guardian | the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
