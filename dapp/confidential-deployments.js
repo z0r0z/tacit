@@ -166,6 +166,26 @@ function registeredExternalPoolAssets(d) {
   return out;
 }
 
+// Launch farm program (mainnet): the FarmManager singleton streams one wTAC reward across the three launch LP
+// pools by allocation weight. Rewards pay in value units of the wTAC pool asset (unitScale base units each, so
+// 1e-8 TAC); `tac` is the plain TAC ERC20 that wTAC unwraps 1:1 into, and `funder` tops up the treasury in one tx.
+// farmControllers maps each pool to the manager so the Earn tab's one-click bond targets it.
+const MAINNET_FARM = {
+  manager: '0x000031C47Cb61faB1CE2790a69625FABB71EDE24',
+  rewardAsset: '0x1097c9e552ae4fce2a8c416b93403953fa445a5f2cdae8ced36d9a78cfe40832',
+  rewardToken: '0x2018139a8FDd3666855BE3315C7683b4D6aB7AEf',
+  tac: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279',
+  funder: '0x7fc40b13c7a99a1d2c41f8b5382978363d18525a',
+  unitScale: '10000000000',
+  rewardDecimals: 18,
+  pools: [
+    { pid: 0, pair: 'TAC/cETH', poolId: '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00', lpAsset: '0x17c56713a7e4a5d679a71def3ff9fa186f1556ef757b0ee6b7a3ed8c9249ef99', feeBps: 30, allocPoint: 50, lockSeconds: 0 },
+    { pid: 1, pair: 'cETH/cUSD', poolId: '0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7', lpAsset: '0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571', feeBps: 30, allocPoint: 30, lockSeconds: 0 },
+    { pid: 2, pair: 'cETH/cBTC', poolId: '0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331', lpAsset: '0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254', feeBps: 30, allocPoint: 20, lockSeconds: 0 },
+  ],
+};
+const MAINNET_FARM_CONTROLLERS = Object.fromEntries(MAINNET_FARM.pools.map((p) => [p.poolId, MAINNET_FARM.manager]));
+
 // Cross-lane / confidential-pool deployment registry. FLIP-ON CHECKLIST for going live per network
 // (all config-only — the dapp surfaces gate off `_crosslaneConfigured` = pool set + an asset live:true):
 //   1. Deploy the ConfidentialPool + ConfidentialRouter; set `pool` (+ `router`) here via the
@@ -188,6 +208,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     router: '0x0000000000000000000000000000000000000Ace',
     collateralEngine: null, // CollateralEngine (CDP controller / sole cUSD minter). null ⇒ CDP disabled.
     farmControllers: {},     // poolId → FarmController (OP_LP_BOND bond target), per pool. {} ⇒ Earn bonding disabled.
+    farm: null,              // launch farm program (FarmManager + reward asset + pools). null ⇒ no program on this network.
     assetFactory: null,      // CanonicalAssetFactory (EVM-etch new tacit-compatible assets). null ⇒ Create→Asset disabled.
     permit2: PERMIT2,
     zRouter: ZROUTER,
@@ -206,7 +227,8 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     pool: null,
     router: null,
     collateralEngine: null,
-    farmControllers: {},
+    farmControllers: MAINNET_FARM_CONTROLLERS,
+    farm: MAINNET_FARM,
     assetFactory: null,
     permit2: PERMIT2,
     zRouter: ZROUTER,
@@ -233,6 +255,7 @@ for (const [net, o] of Object.entries(DEPLOY_OVERRIDES || {})) {
   if (o.router) d.router = o.router;
   if (o.collateralEngine) d.collateralEngine = o.collateralEngine;
   if (o.farmControllers) d.farmControllers = o.farmControllers;
+  if (o.farm) d.farm = o.farm;
   if (o.assetFactory) d.assetFactory = o.assetFactory;
   if (o.deployBlock != null) d.deployBlock = o.deployBlock;
   const ids = o.assetIds || {};

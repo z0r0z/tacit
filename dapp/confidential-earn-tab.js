@@ -38,6 +38,13 @@ function dayOnePairs(ux) {
   ].filter((p) => p.a && p.b);
 }
 
+// The launch farm's pools come straight from the deployment config: each carries its poolId and fee tier, and the
+// pair's assets are read back from the pool itself, so a re-weighted or added pool needs no code change here.
+function farmPairs(ux) {
+  const farm = ux.cfg && ux.cfg.farm;
+  return farm ? (farm.pools || []).map((p) => ({ label: String(p.pair).replace('/', ' / '), poolId: p.poolId, feeBps: p.feeBps })) : [];
+}
+
 export async function renderEarnTab(wallet) {
   const body = el('earn-body');
   if (!body) return;
@@ -55,7 +62,8 @@ export async function renderEarnTab(wallet) {
     <div id="earn-pools" class="muted" style="font-size:12px;">Reading pools…</div>
     <div id="earn-status" class="muted" style="font-size:11px;margin-top:10px;"></div>`;
 
-  const pairs = dayOnePairs(ux);
+  const launch = farmPairs(ux);
+  const pairs = launch.length ? launch : dayOnePairs(ux);
   const wrap = el('earn-pools');
   if (!pairs.length) {
     if (wrap) wrap.innerHTML = `<div class="muted" style="font-size:12px;line-height:1.6;">
@@ -67,6 +75,15 @@ export async function renderEarnTab(wallet) {
   const farms = (ux.cfg && ux.cfg.farmControllers) || {};
   const controllerFor = (a, b, feeBps) => farms[String(ux.routePoolId(a, b, feeBps)).toLowerCase()] || null;
 
+  let prog = null;
+  if (launch.length) { try { prog = await ux.farmProgram().program(); } catch {} }
+  const emissionLine = (p) => {
+    const q = prog && p.poolId && prog.pools.find((x) => x.poolId && x.poolId.toLowerCase() === p.poolId.toLowerCase());
+    if (!q) return 'APR — derived once the farm emission rate is published for this pool.';
+    return q.idle ? 'No one is farming this pool yet — its whole share of the emission is unclaimed.'
+      : `${q.tacPerDayForPool} TAC per day, shared by everyone farming this pool.`;
+  };
+
   let notes = [];
   try { notes = (await ux.balance(wallet.priv)).notes || []; } catch {}
   const noteFor = (assetId) => notes.find((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase());
@@ -75,8 +92,15 @@ export async function renderEarnTab(wallet) {
     // The day-1 pools are no-skim (fee 0); fall back to the 30-bps tier if a fee pool was added. The reserves
     // read returns the live fee tier so the bond targets the same poolId.
     let reserves = null, feeBps = 0;
-    for (const tier of [0, 30]) {
-      try { const r = await ux.poolReserves(ux.routePoolId(p.a, p.b, tier)); if (r) { reserves = r; feeBps = r.feeBps ?? tier; break; } } catch {}
+    if (p.poolId) {
+      try {
+        reserves = await ux.poolReserves(p.poolId);
+        if (reserves) { feeBps = reserves.feeBps ?? p.feeBps; p.a = reserves.assetA; p.b = reserves.assetB; p.ta = ux.tickerOf(p.a) || 'asset A'; p.tb = ux.tickerOf(p.b) || 'asset B'; }
+      } catch {}
+    } else {
+      for (const tier of [0, 30]) {
+        try { const r = await ux.poolReserves(ux.routePoolId(p.a, p.b, tier)); if (r) { reserves = r; feeBps = r.feeBps ?? tier; break; } } catch {}
+      }
     }
     const controller = reserves ? controllerFor(p.a, p.b, feeBps) : null;
     const init = !!(reserves && reserves.totalShares > 0n);
@@ -95,7 +119,7 @@ export async function renderEarnTab(wallet) {
           <strong>${p.label}</strong>
           <span class="muted" style="font-size:11px;">${init ? 'reserves ' + tvl : 'not yet initialized'}</span>
         </div>
-        <div class="muted" style="font-size:11px;margin:6px 0;">APR — derived once the farm emission rate is published for this pool.</div>
+        <div class="muted" style="font-size:11px;margin:6px 0;">${emissionLine(p)}</div>
         <button class="earn-bond-btn" data-i="${i}" ${canBond ? '' : 'disabled'} title="${why}"
           style="padding:6px 12px;font-size:13px;cursor:${canBond ? 'pointer' : 'not-allowed'};">Add liquidity &amp; farm</button>
         ${canBond ? '' : `<span class="muted" style="font-size:10px;margin-left:8px;">${why}</span>`}

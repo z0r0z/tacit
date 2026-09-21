@@ -22,6 +22,7 @@ import { makeConfidentialSwapCoordinator } from './confidential-swap-coordinator
 import { makeConfidentialLp } from './confidential-lp.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
+import { makeConfidentialFarmProgram } from './confidential-farm-program.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
 import { makeConfidentialStealth } from './confidential-stealth.js';
 import { makeConfidentialAirdrop } from './confidential-airdrop.js';
@@ -943,6 +944,141 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
     const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, walletPriv, waitOpts });
     return { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB };
+  }
+
+  // ── launch farm program (FarmManager) ──
+  // The manager keys a position by its RECEIPT leaf. The receipt key + nonce of a bonded LP-share note derive from the
+  // wallet key, the manager, the LP asset and that note's leaf (lpBondPosition), so a wallet restored from its seed
+  // finds every position again from chain state alone. Nothing here returns a receipt key.
+  const _farmCfg = () => {
+    if (!cfg.farm || !cfg.farm.manager) throw new Error('farm: no farm program on this network');
+    return cfg.farm;
+  };
+  const _farmC32 = (manager) => '0x' + '00'.repeat(12) + String(manager).replace(/^0x/, '').toLowerCase();
+  const _scanKeyHex = (p) => (p instanceof Uint8Array ? '0x' + _hex(p) : (String(p).startsWith('0x') ? String(p) : '0x' + String(p)));
+  const _noteLeaf = (n) => pool.leaf(n.asset, n.cx, n.cy, n.owner);
+  function farmProgram() {
+    return makeConfidentialFarmProgram({ rpc, config: { pool: cfg.pool, ..._farmCfg() } });
+  }
+
+  // Bond one whole LP-share note into the manager. The receipt key + nonce are the deterministic position key
+  // for (manager, lpAsset, this note's leaf); the note is spent by the bond, so the position is unique.
+  async function farmBond({ walletPriv, controller, lpNote, waitOpts } = {}) {
+    const farm = _farmCfg();
+    if (!lpNote) throw new Error('farm-bond: an LP-share note is required');
+    if (controller && String(controller).toLowerCase() !== farm.manager.toLowerCase()) throw new Error('farm-bond: controller is not the configured farm manager');
+    const lpAsset = String(lpNote.asset).toLowerCase();
+    const pid = await farmProgram().pidOf(lpAsset);
+    if (pid == null) throw new Error('farm-bond: the farm has no pool for this LP asset');
+    const anchorLeaf = _noteLeaf(lpNote);
+    const { owner, nonce } = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset, anchorLeaf });
+    const leg = { cx: lpNote.cx, cy: lpNote.cy, value: String(lpNote.value), index: Number(lpNote.leafIndex), path: lpNote.path, blinding: lpNote.blinding, owner: lpNote.owner, nk: lpNote.secret };
+    const r = await defiActions(walletPriv).bondFarm({ controller: farm.manager, nonce, lpAsset, legs: [leg], spendRoot: lpNote.root, receiptOwner: owner, waitOpts });
+    const receiptLeaf = pool.farmReceiptLeaf(_farmC32(farm.manager), lpAsset, BigInt(lpNote.value), owner, nonce);
+    return { ...r, pid, lpAsset, shares: String(lpNote.value), anchorLeaf, receiptLeaf, receiptOwner: owner };
+  }
+
+  // The wallet's live farm positions, re-derived from chain + key: every LP-share note the wallet ever held for a
+  // configured pool is a candidate anchor; a candidate counts when its derived receipt leaf is in the pool tree and
+  // the manager still holds it live. (A position opened with lpBond anchors on the spent A note instead and is
+  // listed from the position record its caller kept.)
+  async function farmPositions({ walletPriv, events } = {}) {
+    const farm = _farmCfg();
+    const lpAssets = new Set((farm.pools || []).map((p) => String(p.lpAsset).toLowerCase()));
+    const { leaves } = indexer.index(events || await fetchEvents());
+    const slot = new Map();
+    leaves.forEach((l, i) => { if (l) slot.set(String(l.leaf).toLowerCase(), i); });
+    const held = memo.scan(_scanKeyHex(walletPriv), leaves.filter(Boolean), [], (n, leaf) => pool.nativeNu(n.owner, n.secret, leaf))
+      .filter((n) => lpAssets.has(String(n.asset).toLowerCase()));
+    const c32 = _farmC32(farm.manager);
+    const hits = [];
+    for (const n of held) {
+      const lpAsset = String(n.asset).toLowerCase();
+      const anchorLeaf = _noteLeaf(n);
+      const { owner, nonce } = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset, anchorLeaf });
+      const receiptLeaf = pool.farmReceiptLeaf(c32, lpAsset, BigInt(n.value), owner, nonce);
+      const receiptIndex = slot.get(receiptLeaf.toLowerCase());
+      if (receiptIndex != null) hits.push({ lpAsset, anchorLeaf, receiptLeaf, receiptIndex });
+    }
+    const prog = farmProgram();
+    const live = await Promise.all(hits.map((h) => prog.position(h.receiptLeaf)));
+    return hits.map((h, i) => ({ h, p: live[i] })).filter(({ p }) => p.live).map(({ h, p }) => ({
+      pid: p.pid, pair: (_farmPoolOf(h.lpAsset) || {}).pair || null, controller: farm.manager, lpAsset: h.lpAsset,
+      shares: p.shares, receiptLeaf: h.receiptLeaf, receiptIndex: h.receiptIndex, anchorLeaf: h.anchorLeaf,
+      unlockAt: p.unlockAt, pendingUnits: p.pendingUnits, pendingTac: p.pendingTac,
+    })).sort((a, b) => a.receiptIndex - b.receiptIndex);
+  }
+  const _farmPoolOf = (lpAsset) => (_farmCfg().pools || []).find((p) => String(p.lpAsset).toLowerCase() === String(lpAsset).toLowerCase());
+
+  // Re-derive a position's receipt key from the wallet, confirm it matches the receipt the caller holds, and take
+  // the membership proof + root from a fresh tree.
+  async function _farmReceipt({ walletPriv, position }) {
+    const farm = _farmCfg();
+    if (!position || !position.receiptLeaf || !position.anchorLeaf) throw new Error('farm: a position from farmPositions is required');
+    const shares = BigInt(position.shares);
+    const keys = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });
+    const leaf = pool.farmReceiptLeaf(_farmC32(farm.manager), position.lpAsset, shares, keys.owner, keys.nonce);
+    if (leaf.toLowerCase() !== String(position.receiptLeaf).toLowerCase()) throw new Error('farm: this position does not belong to this wallet');
+    const cur = await farmProgram().position(leaf);
+    if (!cur.live) throw new Error('farm: position is not live (already unbonded?)');
+    const { leaves } = indexer.index(await fetchEvents());
+    const idx = leaves.findIndex((l) => l && String(l.leaf).toLowerCase() === leaf.toLowerCase());
+    if (idx < 0) throw new Error('farm: receipt leaf not in the pool tree yet');
+    const tree = indexer.buildTree(leaves);
+    return { keys, shares, idx, path: tree.rootAndPath(idx).path, root: tree.root(), cur };
+  }
+
+  // Claim yield without unstaking. The reward note opens to (claim − fee); the claim is `claimBps` of what is
+  // pending now, since accrual only grows while the proof is built.
+  async function farmHarvest({ walletPriv, position, fee = 0n, claimBps = 9950n, waitOpts } = {}) {
+    const farm = _farmCfg();
+    fee = BigInt(fee);
+    const rc = await _farmReceipt({ walletPriv, position });
+    const reward = (BigInt(rc.cur.pendingUnits) * BigInt(claimBps)) / 10000n;
+    if (reward <= fee) throw new Error('farm-harvest: nothing to claim beyond the relay fee yet');
+    const rb = randomScalar(), rewardNk = randomScalar();
+    const rewardNote = { ...pool.commitXY(reward - fee, rb), blinding: rb };
+    const r = await defiActions(walletPriv).harvestFarm({
+      controller: farm.manager, shares: rc.shares, nonce: rc.keys.nonce, harvestNonce: '0x' + randomScalar().toString(16).padStart(64, '0'),
+      reward, oldIndex: rc.idx, oldPath: rc.path, lpAsset: position.lpAsset, rewardAsset: farm.rewardAsset, rewardNote, rewardNk,
+      fee, spendRoot: rc.root, receiptOwner: rc.keys.owner, receiptOwnerPriv: rc.keys.ownerPriv, waitOpts,
+    });
+    return { ...r, reward, fee, net: reward - fee };
+  }
+
+  // Exit: the receipt is spent and the LP shares come back as a fresh owned note. Self-settled (fee 0): an AMM
+  // LP-share id is not a pool-registered asset, so it cannot pay a relay fee.
+  async function farmUnbond({ walletPriv, position, waitOpts } = {}) {
+    const farm = _farmCfg();
+    const rc = await _farmReceipt({ walletPriv, position });
+    if (rc.cur.unlockAt > Math.floor(Date.now() / 1000)) throw new Error(`farm-unbond: locked until ${rc.cur.unlockAt}`);
+    const ub = randomScalar(), lpNk = randomScalar();
+    const releaseNote = { ...pool.commitXY(rc.shares, ub), blinding: ub };
+    const r = await defiActions(walletPriv).unbondFarm({
+      controller: farm.manager, shares: rc.shares, nonce: rc.keys.nonce, lpAsset: position.lpAsset, oldIndex: rc.idx, oldPath: rc.path,
+      releaseNote, lpNk, fee: 0n, spendRoot: rc.root, receiptOwner: rc.keys.owner, receiptOwnerPriv: rc.keys.ownerPriv, waitOpts,
+    });
+    return { ...r, shares: rc.shares };
+  }
+
+  // Farmed reward note → TAC. Step one is the pool's relayed unwrap of the wTAC note to `to` (default: this wallet's
+  // derived EVM account); the steps still to do come back as data for a UI to drive: WrappedTac.withdraw turns the
+  // wTAC ERC20 into the TAC ERC20 1:1, and a wrap puts that TAC back into the pool as a TAC note.
+  async function farmRedeem({ walletPriv, note, to, feeOpts, wait = false, waitOpts } = {}) {
+    const farm = _farmCfg();
+    if (!note || String(note.asset).toLowerCase() !== String(farm.rewardAsset).toLowerCase()) throw new Error('farm-redeem: a farm reward (wTAC) note is required');
+    const recipient = _evmAddr(to || account(walletPriv).address, 'farm-redeem: recipient');
+    const u = await unwrap({ note, walletPriv, recipient, feeOpts, wait, waitOpts });
+    const wei = BigInt(u.net) * BigInt(farm.unitScale || 10n ** 10n);
+    const withdrawData = '0x' + _selector('withdraw(uint256,address)') + _word(wei) + _word(recipient);
+    return {
+      unwrap: { jobId: u.jobId, status: u.status, txHash: u.txHash || null, fee: u.fee, net: u.net },
+      recipient,
+      next: [
+        { step: 'withdraw', to: farm.rewardToken, data: withdrawData, amountWei: wei.toString(), note: 'once the wTAC ERC20 has landed; withdraw the balance actually received' },
+        { step: 'wrap', ticker: 'TAC', token: farm.tac, amountWei: wei.toString(), note: 'optional: buildWrap/wrap the TAC ERC20 back into a TAC note' },
+      ],
+    };
   }
 
   // Plain confidential LP add / pool init (OP_LP_ADD) — the DEFAULT liquidity path (farm bonding via lpBond is
@@ -2164,16 +2300,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   async function waitForExit({ walletPriv, note, jobId, waitOpts }) {
     let stop = false;
     const relayP = relay.waitForSettle(jobId, waitOpts).then((st) => ({ status: st.status, txHash: st.txHash }));
+    // The chain signal only counts once the note has been SEEN in the scan and is then gone on two consecutive
+    // polls. A note the scan never shows (a hand-built note object, a transient scan miss) can't fake a settle;
+    // the relay's ack stays the authority for those.
+    const sameNote = (n) => { try { return BigInt(n.cx) === BigInt(note.cx) && BigInt(n.cy) === BigInt(note.cy); } catch { return false; } };
     const chainP = new Promise((resolve) => {
       (async () => {
+        let seen = false, misses = 0;
         for (let i = 0; i < 80 && !stop; i++) {
           await new Promise((r) => setTimeout(r, 6000));
           if (stop) return;
           try {
             const { byAsset } = await balance(walletPriv);
             const held = byAsset[String(note.asset).toLowerCase()];
-            const still = held?.notes?.some((n) => String(n.cx) === String(note.cx) && String(n.cy) === String(note.cy));
-            if (!still) return resolve({ status: 'settled', txHash: null });
+            if (held?.notes?.some(sameNote)) { seen = true; misses = 0; continue; }
+            if (seen && ++misses >= 2) return resolve({ status: 'settled', txHash: null });
           } catch { /* keep polling; relay is the authority on failure */ }
         }
       })();
@@ -2248,6 +2389,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     buildWrap, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
-    erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, lockScan: _lockScan };
 }

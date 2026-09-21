@@ -5,7 +5,7 @@
 //   1. dapp/confidential-crossout-consumer.js  CONFIDENTIAL_POOL_DEPLOYMENTS[net] = { pool, deployBlock }
 //      (regex patch — the worker imports this module, so one edit wires the indexer scan too)
 //   2. dapp/confidential-deployments.generated.js  DEPLOY_OVERRIDES[net] = { pool, router,
-//      collateralEngine, farmController, assetFactory, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac,
+//      collateralEngine, farmControllers, farm, assetFactory, deployBlock, assetIds:{cEth,cTac,cBtc,cUsd}, tac,
 //      cBtcToken, cUsdToken } —
 //      the single source merged by
 //      confidential-deployments.js into the whole confidential dapp (pool/DeFi/OTC/send/swap + cross-lane
@@ -15,13 +15,16 @@
 // conscious gate (CHECKLIST stop-conditions, playbook §7). The opt-in `--live <tickers>` flag (default OFF)
 // flips the named tickers for the target network (via the override + the merge loop in
 // confidential-deployments.js), making §4's flip scriptable + reviewable instead of a hand-edit.
+// The launch farm program (FarmManager + reward asset + pools) is not part of the pool manifest: pass it as a JSON
+// block with `--farm <file>` (or a `farm` key in the manifest). A run that carries neither KEEPS the farm block and
+// farmControllers already in the generated file, so re-syncing a pool manifest never drops a live farm.
 // Dry-run by default; pass --write to apply.
 //
 // --network defaults from the manifest chainId (11155111 → 'signet' testnet / Sepolia EVM; 1 → 'mainnet').
 // --deploy-block defaults to manifest.deployBlock (the indexer scan-from height) so it's never silently stale.
 //
 // Usage:
-//   node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--write]
+//   node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--farm farm.json] [--write]
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -50,11 +53,13 @@ const externalTickers = typeof externalFlag === 'string'
   : [];
 
 if (!manifestPath) {
-  console.error('usage: node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--write]');
+  console.error('usage: node tools/sync-deployment-config.mjs <manifest.json> [--network signet|mainnet] [--deploy-block N] [--live cETH,cTAC] [--external USDC,USDT,wstETH] [--farm farm.json] [--write]');
   process.exit(2);
 }
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+const farmFlag = flag('farm', false);
+const farmInput = typeof farmFlag === 'string' ? JSON.parse(readFileSync(farmFlag, 'utf8')) : manifest.farm;
 
 // --network defaults from the manifest's chainId so the wrapper can hand us a bare Sepolia (11155111) json.
 // Sepolia is the dapp's 'signet' testnet network (Bitcoin-side name; EVM side is Sepolia — see
@@ -99,6 +104,18 @@ const cur = (() => {
 })();
 const opt = (v) => (/^0x[0-9a-fA-F]{40}$/.test(v || '') ? v : undefined);
 const id32 = (v) => (/^0x[0-9a-fA-F]{64}$/.test(v || '') ? v : undefined);
+// Validate a farm block strictly: a bad address here would point every bond at the wrong controller.
+const farmBlock = (f) => {
+  if (!f) return undefined;
+  const need = (ok, what) => { if (!ok) { console.error(`bad farm block: ${what}`); process.exit(1); } };
+  need(opt(f.manager), 'manager');
+  need(id32(f.rewardAsset), 'rewardAsset');
+  need(opt(f.rewardToken), 'rewardToken');
+  need(Array.isArray(f.pools) && f.pools.length > 0, 'pools');
+  for (const p of f.pools) need(Number.isInteger(p.pid) && id32(p.poolId) && id32(p.lpAsset), `pool ${JSON.stringify(p.pid)} (pid, poolId, lpAsset)`);
+  return f;
+};
+const farm = farmBlock(farmInput) || (cur[network] && cur[network].farm);
 cur[network] = {
   pool,
   router: opt(manifest.router),
@@ -110,8 +127,11 @@ cur[network] = {
     const farms = manifest.farms || [];
     const map = {};
     ids.forEach((pid, i) => { if (opt(farms[i]) && /^0x[0-9a-fA-F]{64}$/.test(pid || '')) map[pid.toLowerCase()] = farms[i]; });
+    if (!Object.keys(map).length && farmInput) for (const p of farm.pools) map[p.poolId.toLowerCase()] = farm.manager;
+    if (!Object.keys(map).length && cur[network]) return cur[network].farmControllers;
     return Object.keys(map).length ? map : undefined;
   })(),
+  farm,
   assetFactory: opt(manifest.assetFactory || manifest.factory),
   deployBlock: deployBlock != null ? Number(deployBlock) : (cur[network] && cur[network].deployBlock) || undefined,
   tac: opt(manifest.tac),
