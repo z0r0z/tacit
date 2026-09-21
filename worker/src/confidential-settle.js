@@ -55,7 +55,17 @@ function normalizeExit(e) {
   };
 }
 
-export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep }) {
+// Promise-chain mutex: each fn starts after the previous one settles, whether it resolved or threw.
+export function makeLock() {
+  let tail = Promise.resolve();
+  return (fn) => {
+    const run = tail.then(fn);
+    tail = run.then(() => {}, () => {});
+    return run;
+  };
+}
+
+export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
   //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
@@ -63,7 +73,12 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // sleep(ms) -> Promise : OPTIONAL, for the claim-verify wait in nextJob/nextBatch. Real callers get a
   // real setTimeout; tests inject an instant resolver so the suite doesn't pay CLAIM_VERIFY_DELAY_MS
   // (real wall-clock time) on every claim.
+  // lock(fn) -> Promise : OPTIONAL, runs fn exclusively with respect to every other lock(fn) call sharing the
+  //   same lock. The pending list is one shared value that every mutation reads, edits and writes back across
+  //   awaits, so overlapping requests would otherwise overwrite each other's edit. Callers that build a fresh
+  //   settler per request must pass one lock shared by all of them (buildConfidentialSettler does).
   const clock = now || (() => Date.now());
+  const exclusive = lock || makeLock();
   const wait = sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
@@ -100,15 +115,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       throw new Error('submitJob: relay fee below the current floor — re-quote higher or self-settle');
     }
     const id = jobIdOf(type, op, mode);
-    const existing = await storage.getJob(id);
-    if (existing && existing.status !== 'failed') {
-      return { jobId: id, status: existing.status, deduped: true };
-    }
-    const pend = await storage.getPending();
-    // Backpressure: bound the unauthenticated queue (a new, non-deduped op only).
-    if (!pend.includes(id) && pend.length >= MAX_PENDING_JOBS) {
-      throw new Error('submitJob: queue full, retry later');
-    }
+    // A live duplicate needs no pricing; the authoritative dedupe below runs under the lock.
+    const seen = await storage.getJob(id);
+    const skipPricing = !!seen && seen.status !== 'failed';
     // What this op actually pays us, DERIVED from the op's own fee legs — never taken from the caller.
     //
     // `op` is client JSON, so any field on it is attacker-controlled. The relay's fee gate used to read
@@ -117,7 +126,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     // producer is exactly what would have made it reachable, so the value is derived here instead and the
     // client's copy is dropped before the op is stored.
     let priced = null;
-    if (mode === 'settle' && priceFee) {
+    if (mode === 'settle' && priceFee && !skipPricing) {
       try { priced = await priceFee({ type, op }); }
       catch { priced = null; } // pricing is advisory; never fail a submit because an oracle blinked
     }
@@ -136,9 +145,38 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       publicValues: null, proof: null,
     };
-    await storage.putJob(id, job);
-    if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
-    return { jobId: id, status: 'pending' };
+    // Dedupe, backpressure, record and queue entry are one step: the record is what makes a later submit
+    // read as a duplicate, so it is only ever left behind together with its queue entry.
+    return exclusive(async () => {
+      const existing = await storage.getJob(id);
+      const pend = await storage.getPending();
+      if (existing && existing.status !== 'failed') {
+        // A live job that is missing from the queue can never be claimed; queue it again so the duplicate
+        // resolves to a job that will actually run.
+        const live = existing.status === 'pending' || existing.status === 'proving';
+        if (live && !pend.includes(id)) {
+          if (pend.length >= MAX_PENDING_JOBS) throw new Error('submitJob: queue full, retry later');
+          pend.push(id);
+          await storage.putPending(pend);
+        }
+        return { jobId: id, status: existing.status, deduped: true };
+      }
+      // Backpressure: bound the unauthenticated queue (a new, non-deduped op only).
+      if (!pend.includes(id) && pend.length >= MAX_PENDING_JOBS) {
+        throw new Error('submitJob: queue full, retry later');
+      }
+      await storage.putJob(id, job);
+      if (!pend.includes(id)) {
+        pend.push(id);
+        try { await storage.putPending(pend); }
+        catch (e) {
+          // Not queued, so not accepted: mark the record failed (resubmittable) rather than leave it as a duplicate.
+          try { await storage.putJob(id, { ...job, status: 'failed', error: 'could not be queued' }); } catch { /* the retry path re-queues it */ }
+          throw e;
+        }
+      }
+      return { jobId: id, status: 'pending' };
+    });
   }
 
   // The box claims the oldest provable job (FIFO). Claiming flips it to 'proving' so a second poller
@@ -155,13 +193,19 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   async function nextJob() {
     const pend = await storage.getPending();
     for (const id of pend) {
-      const j = await storage.getJob(id);
-      if (!j) continue;
-      const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
-      if (!claimable) continue;
-      const nonce = crypto.randomUUID();
-      j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
-      await storage.putJob(id, j);
+      // Read-check-write of the job record is one step, so an ack or another claim cannot land between them.
+      const claim = await exclusive(async () => {
+        const j = await storage.getJob(id);
+        if (!j) return null;
+        const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
+        if (!claimable) return null;
+        const nonce = crypto.randomUUID();
+        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
+        await storage.putJob(id, j);
+        return { j, nonce };
+      });
+      if (!claim) continue;
+      const { j, nonce } = claim;
       await wait(CLAIM_VERIFY_DELAY_MS);
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race — another poller's write landed after ours
@@ -191,20 +235,23 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     let root = null, binding = null;
     for (const id of pend) {
       if (claimed.length >= max) break;
-      const j = await storage.getJob(id);
-      if (!j) continue;
-      const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
-      if (!claimable) continue;
-      if ((j.mode || 'settle') !== 'settle') continue; // prove-only jobs are user-sent, never batched
-      if (!types.includes(j.type)) continue;
-      const r = j.op && j.op.spendRoot, b = j.op && j.op.chainBinding;
-      if (!r || !b) continue;
-      if (root === null) { root = r; binding = b; }
-      else if (r !== root || b !== binding) continue;
-      const nonce = crypto.randomUUID();
-      j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
-      await storage.putJob(id, j);
-      claimed.push({ id, j, nonce });
+      const c = await exclusive(async () => {
+        const j = await storage.getJob(id);
+        if (!j) return null;
+        const claimable = j.status === 'pending' || (j.status === 'proving' && clock() - (j.claimedAt || 0) > CLAIM_TTL_MS);
+        if (!claimable) return null;
+        if ((j.mode || 'settle') !== 'settle') return null; // prove-only jobs are user-sent, never batched
+        if (!types.includes(j.type)) return null;
+        const r = j.op && j.op.spendRoot, b = j.op && j.op.chainBinding;
+        if (!r || !b) return null;
+        if (root === null) { root = r; binding = b; }
+        else if (r !== root || b !== binding) return null;
+        const nonce = crypto.randomUUID();
+        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
+        await storage.putJob(id, j);
+        return { id, j, nonce };
+      });
+      if (c) claimed.push(c);
     }
     if (!claimed.length) return [];
     // Same claim-nonce race-narrowing as nextJob() (see its comment) — one shared wait for the whole
@@ -231,7 +278,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   }
   const ackView = (j) => ({ ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof, activateTx: j.activateTx || null });
 
-  async function ackJob(jobId, { txHash, error, publicValues, proof, activateTx, activateError } = {}) {
+  function ackJob(jobId, ack = {}) { return exclusive(() => ackJobLocked(jobId, ack)); }
+
+  async function ackJobLocked(jobId, { txHash, error, publicValues, proof, activateTx, activateError }) {
     const j = await storage.getJob(jobId);
     if (!j) return { ok: false, reason: 'unknown job' };
     if (j.status === 'settled' || j.status === 'proven') {
@@ -295,13 +344,16 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:job:<id> (job).
+// The worker builds a settler per request, so the queue lock lives per KV namespace, not per settler.
+const kvLocks = new WeakMap();
 export function buildConfidentialSettler(env, { hash, feeGate, priceFee }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (KV && !kvLocks.has(KV)) kvLocks.set(KV, makeLock());
   const storage = {
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('cps:pending', JSON.stringify(ids)),
     getJob: async (id) => { const s = await KV.get('cps:job:' + id); return s ? JSON.parse(s) : null; },
     putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job)),
   };
-  return makeConfidentialSettler({ storage, hash, feeGate, priceFee });
+  return makeConfidentialSettler({ storage, hash, feeGate, priceFee, lock: kvLocks.get(KV) });
 }
