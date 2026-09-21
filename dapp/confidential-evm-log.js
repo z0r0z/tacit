@@ -4,7 +4,7 @@
 // subscribes to the contract, decodes with this, and serves the ordered stream;
 // the client recovers. No off-chain note storage — the chain is the source.
 //
-// Decodes: LeavesInserted, NullifiersSpent, CrossOutRecorded, Wrap.
+// Decodes: LeavesInserted, LockLeavesInserted, NullifiersSpent, CrossOutRecorded, Wrap.
 // Minimal in-module ABI reading (no ethers/web3 dep), exactly the shapes these
 // events use. keccak256 injected for the topic0 signature hashes.
 
@@ -17,6 +17,7 @@ export function makeConfidentialEvmLog({ keccak256 }) {
 
   const SIGS = {
     LeavesInserted: 'LeavesInserted(uint256,bytes32[],bytes[])',
+    LockLeavesInserted: 'LockLeavesInserted(uint256,bytes32[])',
     NullifiersSpent: 'NullifiersSpent(bytes32[])',
     CrossOutRecorded: 'CrossOutRecorded(bytes32,uint16,bytes32,bytes32,bytes32)',
     Wrap: 'Wrap(bytes32,bytes32,uint256)',
@@ -69,6 +70,14 @@ export function makeConfidentialEvmLog({ keccak256 }) {
         memos: readBytesArray(data, offMemos),
       };
     }
+    if (kind === 'LockLeavesInserted') {
+      // indexed: firstLockIndex (topic1). data: (bytes32[] lockLeaves). Lock-set tree order; no memos here.
+      return {
+        type: 'LockLeavesInserted',
+        firstLockIndex: Number(BigInt(topics[1])),
+        lockLeaves: readBytes32Array(data, Number(uintAt(data, 0))),
+      };
+    }
     if (kind === 'NullifiersSpent') {
       // data: (bytes32[] nullifiers)
       return { type: 'NullifiersSpent', nullifiers: readBytes32Array(data, Number(uintAt(data, 0))) };
@@ -101,9 +110,9 @@ export function makeConfidentialEvmLog({ keccak256 }) {
   // Decode a batch of raw logs (in chain order) into the structured stream the
   // client indexer consumes; non-pool logs are dropped.
   // Carry each log's provenance onto the decoded event. The note indexer ignores the extra fields, but a
-  // stealth-lock scan cannot work without them: lock leaves are never emitted (LeavesInserted carries only
-  // pv.leaves), so the only on-chain source for them is the settle transaction's `publicValues` calldata —
-  // which needs the tx hash to fetch, and the block/log index to order locks as the tree appended them.
+  // stealth-lock scan needs the tx hash: lock leaves come from LockLeavesInserted, while their memos (which
+  // LeavesInserted carries only when the settle also minted notes) are read from the settle transaction's
+  // calldata; the block/log index orders events as the chain emitted them.
   function decodeLogs(logs) {
     return (logs || []).map((log) => {
       const ev = decodeLog(log);

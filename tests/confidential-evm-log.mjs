@@ -42,6 +42,14 @@ assert.deepStrictEqual(li.leaves.map((x) => x.toLowerCase()), [L0, L1], 'leaves 
 assert.deepStrictEqual(li.memos, ['0xdeadbeef', '0xcafe'], 'memos array (dynamic bytes[])');
 ok('LeavesInserted decodes firstLeafIndex (topic) + bytes32[] leaves + bytes[] memos');
 
+// ── LockLeavesInserted ──
+const lkData = cast(`abi-encode "x(bytes32[])" "[${L1},${L0}]"`);
+const lk = dec.decodeLog({ topics: [dec.TOPIC0.LockLeavesInserted, padTopic(7)], data: lkData });
+assert.strictEqual(lk.type, 'LockLeavesInserted');
+assert.strictEqual(lk.firstLockIndex, 7, 'firstLockIndex from indexed topic');
+assert.deepStrictEqual(lk.lockLeaves.map((x) => x.toLowerCase()), [L1, L0], 'lock leaves in emitted order');
+ok('LockLeavesInserted decodes firstLockIndex (topic) + bytes32[] lockLeaves');
+
 // ── NullifiersSpent ──
 const NU = kc('nu');
 const nsData = cast(`abi-encode "x(bytes32[])" "[${NU}]"`);
@@ -87,4 +95,4 @@ assert.strictEqual(folded.leaves.filter(Boolean).length, 2, 'indexer folds decod
 assert.strictEqual(folded.spent.size, 1, 'indexer folds decoded nullifier');
 ok('decodeLogs drops foreign logs and the stream feeds the client indexer (worker→client handoff)');
 
-console.log(`\n${n}/6 confidential-evm-log checks passed`);
+console.log(`\n${n}/7 confidential-evm-log checks passed`);

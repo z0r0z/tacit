@@ -165,7 +165,7 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
     // "late" (a caller merging streams), plus a garbled tx and a tx the RPC fetcher can't find (→ null).
     { type: 'NullifiersSpent', txHash: '0xlate', blockNumber: 200, logIndex: 0, nullifiers: NULL_B },
     { type: 'NullifiersSpent', txHash: '0xlate', blockNumber: 200, logIndex: 0, nullifiers: NULL_B }, // duplicate — must not double-count
-    { type: 'LeavesInserted', txHash: '0xearly', blockNumber: 100, logIndex: 3, leaves: LEAVES_E, memos: MEMOS_E },
+    { type: 'LeavesInserted', txHash: '0xearly', blockNumber: 100, logIndex: 3, leaves: LEAVES_E, memos: memosEarly }, // the pool emits the whole memo array, lock memos included
     { type: 'LeavesInserted', txHash: '0xnolock', blockNumber: 150, logIndex: 1, leaves: ['0x' + 'ff'.repeat(32)], memos: ['0x' + '77'.repeat(5)] },
     { type: 'LeavesInserted', txHash: '0xgarbage', blockNumber: 160, logIndex: 0, leaves: [], memos: [] },
     { type: 'NullifiersSpent', txHash: '0xmissing', blockNumber: 170, logIndex: 0, nullifiers: [] },
@@ -258,8 +258,8 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
 // ── 6. scanLockLeaves against the pool's own lockNextLeafIndex/lockRoot: a decoy ahead of a wrapper's real call
 // wins corroboration, and the chain's root sets it aside ──
 {
-  const POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
-  const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+  const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+  const RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
   const WRAPPER = '0x' + '77'.repeat(20);
   const zero = '0x' + '00'.repeat(32);
   const LOCK_D = ['0x' + 'd7'.repeat(32)], NULL_D = ['0x' + 'd8'.repeat(32)];
@@ -320,6 +320,128 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
   assert.strictEqual(res.verified, null, 'an unreadable lock state leaves the scan unverified');
   assert.deepStrictEqual(res.lockLeaves, [...onChain, ...FAKE]);
   ok('scanLockLeaves: checked against the pool\'s lock count and root, untrusted (nested or wrapper-sent) calls set aside only when that reproduces them');
+}
+
+// ── 7. Lock leaves read from LockLeavesInserted: pure notes, pure locks, a settle with both, several settles in one
+// block, and a stream that does not add up ──
+{
+  const zero = '0x' + '00'.repeat(32);
+  const h = (b, i) => '0x' + b.repeat(62) + i.toString(16).padStart(2, '0');
+  const rootOf = (leaves) => { const t = new pool.Tree(); for (const l of leaves) t.insert(l); return t.root(); };
+  const memo = (b) => '0x' + b.repeat(6);
+  const stateOf = (leaves) => async () => ({ count: '0x' + word(leaves.length), root: rootOf(leaves) });
+  const lockEv = (txHash, blockNumber, logIndex, firstLockIndex, lockLeaves) => ({ type: 'LockLeavesInserted', txHash, blockNumber, logIndex, firstLockIndex, lockLeaves });
+  const leavesEv = (txHash, blockNumber, logIndex, firstLeafIndex, leaves, memos) => ({ type: 'LeavesInserted', txHash, blockNumber, logIndex, firstLeafIndex, leaves, memos });
+  const call = (leaves, lockLeaves, memos, nullifiers = []) => ({ publicValues: encodePublicValuesPrefix({ leaves, lockSetRoot: zero, lockLeaves, nullifiers }), proof: '0x01', memos });
+  const inputsOf = (map) => async (tx) => map[tx] || null;
+
+  // pure notes: nothing to index
+  {
+    const N = [h('a', 1)];
+    const txs = { '0xn': encodeSettleCall(call(N, [], [memo('1')])) };
+    const events = [leavesEv('0xn', 5, 0, 0, N, [memo('1')])];
+    const r = await scan.scanLockLeaves({ events, getTxInput: inputsOf(txs), getLockState: stateOf([]) });
+    assert.deepStrictEqual(r.lockLeaves, []);
+    assert.deepStrictEqual(r.lockMemos, []);
+    assert.strictEqual(r.verified, true);
+    const withEvents = await scan.scanLockLeaves({ events: [...events, lockEv('0xother', 6, 0, 0, [h('b', 1)])], getTxInput: inputsOf(txs) });
+    assert.deepStrictEqual(withEvents.lockLeaves, [h('b', 1)], 'a stream that only carries an unrelated tx still lists the announced lock');
+  }
+
+  // pure locks (one spends a note, so it also emits NullifiersSpent; one spends nothing and emits only the lock event)
+  {
+    const L1 = [h('c', 1)], L2 = [h('c', 2), h('c', 3)];
+    const txs = {
+      '0xl1': encodeSettleCall(call([], L1, [memo('2')], [h('d', 1)])),
+      '0xl2': encodeSettleCall(call([], L2, [memo('3'), memo('4')])),
+    };
+    const events = [
+      { type: 'NullifiersSpent', txHash: '0xl1', blockNumber: 10, logIndex: 0, nullifiers: [h('d', 1)] },
+      lockEv('0xl1', 10, 1, 0, L1),
+      lockEv('0xl2', 11, 0, 1, L2),
+    ];
+    const r = await scan.scanLockLeaves({ events, getTxInput: inputsOf(txs), getLockState: stateOf([...L1, ...L2]) });
+    assert.deepStrictEqual(r.lockLeaves, [...L1, ...L2]);
+    assert.deepStrictEqual(r.lockMemos, [memo('2'), memo('3'), memo('4')]);
+    assert.strictEqual(r.verified, true);
+    assert.strictEqual(r.lockSetRoot, rootOf([...L1, ...L2]));
+  }
+
+  // a settle that mints notes AND appends locks: LeavesInserted carries note memos then lock memos
+  {
+    const N = [h('e', 1), h('e', 2)], L = [h('f', 1), h('f', 2)];
+    const memos = [memo('5'), memo('6'), memo('7'), memo('8')];
+    const txs = { '0xmix': encodeSettleCall(call(N, L, memos, [h('d', 2)])) };
+    const events = [
+      { type: 'NullifiersSpent', txHash: '0xmix', blockNumber: 20, logIndex: 0, nullifiers: [h('d', 2)] },
+      lockEv('0xmix', 20, 1, 0, L),
+      leavesEv('0xmix', 20, 2, 0, N, memos),
+    ];
+    const viaEvents = await scan.scanLockLeaves({ events, getTxInput: inputsOf(txs), getLockState: stateOf(L) });
+    assert.deepStrictEqual(viaEvents.lockLeaves, L);
+    assert.deepStrictEqual(viaEvents.lockMemos, [memo('7'), memo('8')], 'the lock memos are the tail after the note memos');
+    assert.strictEqual(viaEvents.verified, true);
+    // the same settle read without a LockLeavesInserted event: corroborated by the full memo array LeavesInserted carries
+    const viaCalldata = await scan.scanLockLeaves({ events: events.filter((e) => e.type !== 'LockLeavesInserted'), getTxInput: inputsOf(txs), getLockState: stateOf(L) });
+    assert.deepStrictEqual(viaCalldata.lockLeaves, L);
+    assert.deepStrictEqual(viaCalldata.lockMemos, [memo('7'), memo('8')]);
+    assert.strictEqual(viaCalldata.verified, true);
+  }
+
+  // several settles in one block, one of them a relaySettle batch, events out of order
+  {
+    const A = [h('1', 1)], B = [h('2', 1), h('2', 2)], C = [h('3', 1)];
+    const NB = [h('4', 1)], NC = [h('4', 2)];
+    const mA = [memo('a')], mB = [memo('b'), memo('c'), memo('d')], mC = [memo('e')];
+    const batch = encodeRelaySettleCall([call(NB, B, mB, [h('5', 1)]), call([], C, mC, [h('5', 2)])]);
+    const txs = { '0xa': encodeSettleCall(call([], A, mA, [h('5', 0)])), '0xbatch': batch };
+    const events = [
+      lockEv('0xbatch', 30, 9, 3, C),
+      leavesEv('0xbatch', 30, 8, 0, NB, mB),
+      lockEv('0xbatch', 30, 7, 1, B),
+      lockEv('0xa', 30, 1, 0, A),
+    ];
+    const r = await scan.scanLockLeaves({ events, getTxInput: inputsOf(txs), getLockState: stateOf([...A, ...B, ...C]) });
+    assert.deepStrictEqual(r.lockLeaves, [...A, ...B, ...C], 'append order follows firstLockIndex, whatever order the events arrive in');
+    assert.deepStrictEqual(r.lockMemos, [memo('a'), memo('c'), memo('d'), memo('e')]);
+    assert.strictEqual(r.verified, true);
+    void NC;
+  }
+
+  // a lock whose transaction cannot be read keeps its position
+  {
+    const L = [h('6', 1), h('6', 2)];
+    const r = await scan.scanLockLeaves({ events: [lockEv('0xgone', 40, 0, 0, L)], getTxInput: async () => null, getLockState: stateOf(L) });
+    assert.deepStrictEqual(r.lockLeaves, L);
+    assert.deepStrictEqual(r.lockMemos, [null, null]);
+    assert.strictEqual(r.verified, true);
+  }
+
+  // a stream that does not add up is an error, not a shorter set
+  {
+    const L1 = [h('7', 1)], L2 = [h('7', 2)];
+    const txs = { '0xg1': encodeSettleCall(call([], L1, [memo('f')], [h('8', 1)])), '0xg2': encodeSettleCall(call([], L2, [memo('g')], [h('8', 2)])) };
+    const both = [lockEv('0xg1', 50, 0, 0, L1), lockEv('0xg2', 51, 0, 1, L2)];
+    await assert.rejects(scan.scanLockLeaves({ events: [both[1]], getTxInput: inputsOf(txs) }), /not contiguous/);
+    await assert.rejects(scan.scanLockLeaves({ events: [both[0], lockEv('0xg2', 51, 0, 2, L2)], getTxInput: inputsOf(txs) }), /not contiguous/);
+    await assert.rejects(scan.scanLockLeaves({ events: [both[0], lockEv('0xg2', 51, 0, 0, L2)], getTxInput: inputsOf(txs) }), /disagree/);
+    // the events add up, but the pool holds one lock more: verified false, and an error under strict
+    const short = stateOf([...L1, ...L2, h('7', 3)]);
+    const soft = await scan.scanLockLeaves({ events: both, getTxInput: inputsOf(txs), getLockState: short });
+    assert.strictEqual(soft.verified, false);
+    await assert.rejects(scan.scanLockLeaves({ events: both, getTxInput: inputsOf(txs), getLockState: short, strict: true }), /does not match the pool/);
+    // same count, different root
+    const other = async () => ({ count: '0x' + word(2), root: rootOf([L1[0], h('7', 9)]) });
+    await assert.rejects(scan.scanLockLeaves({ events: both, getTxInput: inputsOf(txs), getLockState: other, strict: true }), /does not match the pool/);
+    // an unreadable pool state degrades to unverified, even under strict
+    const down = await scan.scanLockLeaves({ events: both, getTxInput: inputsOf(txs), getLockState: async () => { throw new Error('rpc down'); }, strict: true });
+    assert.strictEqual(down.verified, null);
+    assert.deepStrictEqual(down.lockLeaves, [...L1, ...L2]);
+    // a duplicate of the same event (merged streams) is not double-counted
+    const dup = await scan.scanLockLeaves({ events: [...both, both[0]], getTxInput: inputsOf(txs), getLockState: stateOf([...L1, ...L2]), strict: true });
+    assert.deepStrictEqual(dup.lockLeaves, [...L1, ...L2]);
+  }
+  ok('scanLockLeaves: lock leaves come from LockLeavesInserted (pure notes, pure locks, mixed settles, one-block batches); a count/root/contiguity mismatch is an error');
 }
 
 console.log(`\n${n}/${n} confidential-lock-scan checks passed`);

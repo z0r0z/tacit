@@ -1,9 +1,13 @@
-// Calldata-based stealth lock-set scanner (ops/INTEGRATION-simple-wrap-send-claim-eth.md §5). Lock leaves
-// are NEVER emitted in an event — LeavesInserted carries only the ordinary note tree's `pv.leaves`, and a
-// pure OP_STEALTH_LOCK settle mints no note leaf at all. The only on-chain source for `pv.lockLeaves` /
-// `pv.lockSetRoot` is a settle() call's own `publicValues` CALLDATA, decoded per
-// contracts/src/ConfidentialPool.sol's `PublicValues` struct. This module is pure decoding (no I/O, no
-// RPC) plus one small driver that walks a caller-supplied stream of settle-tx refs.
+// Stealth lock-set scanner (ops/INTEGRATION-simple-wrap-send-claim-eth.md §5). The pool announces every batch of
+// new lock leaves in `LockLeavesInserted(firstLockIndex, lockLeaves)`, so the lock set is read straight from that
+// event stream: contiguous from index 0, in tree-append order. The recipient memos are the part an event does not
+// carry for every settle — `LeavesInserted` holds the memo array (note memos followed by lock memos) only when the
+// settle also minted notes — so each lock's memo is read from the settle call's own calldata, `publicValues` decoded
+// per contracts/src/ConfidentialPool.sol's `PublicValues` struct. This module is pure decoding (no I/O, no RPC)
+// plus one small driver that walks a caller-supplied stream of events and settle-tx refs.
+//
+// A stream without any LockLeavesInserted event (an older pool generation, or a caller that did not subscribe to
+// it) falls back to rebuilding the set from settle calldata corroborated by the other events of the same tx.
 //
 // A settle can reach the pool through more than one outer transaction shape: a direct `pool.settle(...)`
 // call, OR a batched `TacitRelayer.relaySettle(...)` call (either overload — see worker/src/
@@ -176,126 +180,158 @@ export function makeConfidentialLockScan({ pool }) {
     return { leaves, leavesCount: leaves.length, lockSetRoot, lockLeaves, nullifiers };
   }
 
-  // Walk a stream of settle-tx refs — `{ txHash, blockNumber, logIndex }`, exactly what
-  // confidential-evm-log.js's decodeLogs already attaches to every decoded LeavesInserted/NullifiersSpent
-  // event — and reconstruct the lock-set tree + the memo tail, in on-chain append order.
+  // Walk a stream of decoded pool events and reconstruct the lock-set tree + the memo tail, in on-chain append
+  // order. `events` is what confidential-evm-log.js's decodeLogs returns for LockLeavesInserted, LeavesInserted and
+  // NullifiersSpent logs (each carrying txHash / blockNumber / logIndex). `getTxInput(txHash)` is an injected
+  // `eth_getTransactionByHash(...).input` fetcher (RPC belongs to the caller, not this module); a tx that fails
+  // to decode is skipped for memo purposes and never crashes the scan.
   //
-  // LeavesInserted does NOT fire on every settle: ConfidentialPool.sol emits it only inside
-  // `if (pv.leaves.length != 0)`. A lock-only settle that spends no note (no ordinary leaves, no
-  // nullifiers — the pure OP_BRIDGE_STEALTH_MINT case) emits NO pool event at all, so no log-driven scan
-  // can discover it; a lock-only settle that DOES spend a note still emits NullifiersSpent. So the tx
-  // stream this function needs is "every LeavesInserted OR NullifiersSpent," not "every LeavesInserted" —
-  // a caller's existing note scan already fetches both for the ordinary note flow, so in practice this
-  // still needs no separate log filter, but do not assume LeavesInserted alone is sufficient.
-  // `getTxInput(txHash)` is an injected `eth_getTransactionByHash(...).input` fetcher (RPC belongs to the
-  // caller, not this module). A tx that fails to decode (not actually a settle-shaped call, or from a
-  // different contract entirely if the caller merged streams) is skipped — a bad decode here must never
-  // crash the scan, only skip a candidate.
+  // FROM LockLeavesInserted. Each event carries its own firstLockIndex, so the lock leaves and their positions
+  // come from the events alone: they must run contiguously from index 0, and a gap, overlap or two events
+  // disagreeing about one index throws (a missed log is a clear error, not a silently shorter set). The memos
+  // are then attached from the settle calls of the event's transaction — a call whose lockLeaves equal the
+  // event's and whose memo count is leaves + lockLeaves (the contract's own invariant); the memo tail after the
+  // note memos belongs to the locks. A settle that also minted notes (a swap that skims a protocol-fee lock
+  // beside its output notes, or a batch carrying a transfer and a lock) emits LeavesInserted with that full
+  // note-plus-lock memo array; the lock leaves never depend on it. A lock whose transaction cannot be fetched or
+  // decoded keeps its position and gets a null memo.
   //
-  // A relaySettle batch fires LeavesInserted once PER inner settle call, so several event rows can share
-  // one txHash — group by txHash (fetching its input once) rather than keeping only the first row per tx,
-  // then decode EVERY settle call the tx's calldata carries (one for a direct settle(), N for a relaySettle
-  // batch) in their native array order, which is also their real execution/append order within that tx.
+  // FROM CALLDATA (no LockLeavesInserted in the stream). Each decoded call must be corroborated against an event this
+  // exact tx emitted, because TacitRelayer._relay wraps each inner POOL.settle() in try/catch and silently skips a
+  // failed one, so a relaySettle batch's calldata can carry a call that never executed: a LeavesInserted with the
+  // same leaves and memos (the emitted array is the full note-plus-lock memo array), or, for a call with no note
+  // leaves, a NullifiersSpent with the same nullifiers. A lock-only call that spends nothing emits nothing to
+  // corroborate it there. A relaySettle batch fires its events once PER inner call, so several rows can share one
+  // txHash; they are grouped per tx and the calls decoded in their native array order.
   //
-  // CALLDATA ALONE IS NOT PROOF A CALL LANDED. TacitRelayer._relay wraps each inner POOL.settle() in
-  // try/catch and silently skips a failed one ("a failed/late settle — its FeePayment simply never lands"),
-  // so a relaySettle batch's calldata can carry a call that never actually executed. Trusting it anyway
-  // would insert a phantom lock leaf, diverge the rebuilt lockSetRoot from the real one, and break every
-  // later claim's membership proof. So each decoded call must be corroborated against an event this exact
-  // tx actually emitted: a LeavesInserted with the SAME leaves+memos (pv.leaves.length != 0 — the contract
-  // only emits it then), or, for a lock-only call (no ordinary leaves), a NullifiersSpent with the SAME
-  // nullifiers. `events` already carries the full LeavesInserted/NullifiersSpent payloads (not just txHash),
-  // since the caller's log decoder (confidential-evm-log.js) attaches them — group those per tx too.
-  //
-  // ONE GENUINE GAP THIS CANNOT CLOSE: a lock-only call that ALSO spends no note (e.g. a pure
-  // OP_BRIDGE_STEALTH_MINT) emits NO pool event at all. Such a call is simply never corroborated here —
-  // and in fact the transaction carrying it would not even appear in a log-driven `events` stream to begin
-  // with, since there is nothing to filter on. Discovering that case needs scanning every tx to the pool
-  // address directly, not a log-driven approach; this function does not attempt it (see the integration
-  // guide's own note on this).
-  //
-  // PROVENANCE, AND THE POOL'S OWN LOCK ROOT. Corroboration shows a landed call had the note-tree effects its
-  // calldata claims, not the lock-set ones: a contract can carry, ahead of the settle it actually makes, a second
-  // settle blob with the same leaves, memos and nullifiers but different lockLeaves, and that blob wins the match.
-  // What a transaction sent straight to the pool (settle) or to TacitRelayer (relaySettle) carries is exactly what
-  // that contract tried, so those calls are TRUSTED; a call decoded out of any other contract's calldata is
-  // UNTRUSTED. `getTx(txHash) -> { input, to }` (optional; used instead of getTxInput) classifies by where the
-  // transaction was sent, against `poolAddress` / `relayerAddress` (mainnet by default); without it only the
-  // selector is known, so a top-level settle or relaySettle counts as trusted and a nested one does not.
-  // `getLockState() -> { count, root }` (optional) is the pool's lockNextLeafIndex and lockRoot at the head the
-  // caller scanned to. With it the rebuilt set is checked against the pool: a match returns `verified: true`; on a
-  // mismatch the set is rebuilt from the trusted calls alone, and if THAT matches it is returned `verified: true`
-  // with what was dropped in `excluded` ([{ txHash, lockLeaves }]); otherwise the full rebuilt set comes back with
-  // `verified: false`. Without getLockState, or if it fails, `verified` is null.
-  async function scanLockLeaves({ events, getTxInput, getTx, getLockState, poolAddress = MAINNET_POOL, relayerAddress = MAINNET_RELAYER }) {
-    const groups = new Map(); // txHash -> { blockNumber, logIndex (min), leavesEvents, nullifierEvents }
-    for (const e of events || []) {
-      if (!e || !e.txHash) continue;
-      let g = groups.get(e.txHash);
-      if (!g) {
-        g = { txHash: e.txHash, blockNumber: e.blockNumber, logIndex: e.logIndex, leavesEvents: [], nullifierEvents: [] };
-        groups.set(e.txHash, g);
-      } else {
-        g.blockNumber = Math.min(g.blockNumber, e.blockNumber);
-        g.logIndex = Math.min(g.logIndex, e.logIndex);
-      }
-      if (e.type === 'LeavesInserted') g.leavesEvents.push({ leaves: e.leaves || [], memos: e.memos || [] });
-      else if (e.type === 'NullifiersSpent') g.nullifierEvents.push({ nullifiers: e.nullifiers || [] });
-    }
+  // PROVENANCE, AND THE POOL'S OWN LOCK ROOT. What a transaction sent straight to the pool (settle) or to
+  // TacitRelayer (relaySettle) carries is exactly what that contract tried, so those calls are TRUSTED; a call
+  // decoded out of any other contract's calldata is UNTRUSTED. `getTx(txHash) -> { input, to }` (optional; used
+  // instead of getTxInput) classifies by where the transaction was sent, against `poolAddress` / `relayerAddress`
+  // (mainnet by default); without it only the selector is known, so a top-level settle or relaySettle counts as
+  // trusted and a nested one does not. `getLockState() -> { count, root }` (optional) is the pool's
+  // lockNextLeafIndex and lockRoot at the head the caller scanned to. With it the rebuilt set is checked against
+  // the pool: a match returns `verified: true`; on a mismatch the calldata path rebuilds from the trusted calls
+  // alone, and if THAT matches it is returned `verified: true` with what was dropped in `excluded`
+  // ([{ txHash, lockLeaves }]); otherwise the full rebuilt set comes back with `verified: false`. Without
+  // getLockState, or if it fails, `verified` is null. With `strict: true` a `verified: false` result throws
+  // instead of returning, so a caller cannot use a set the pool does not confirm.
+  async function scanLockLeaves({ events, getTxInput, getTx, getLockState, strict = false, poolAddress = MAINNET_POOL, relayerAddress = MAINNET_RELAYER }) {
     const sameArray = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
-    const rows = [...groups.values()].sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
     const poolTo = String(poolAddress).toLowerCase();
     const relayerTo = String(relayerAddress).toLowerCase();
-    const found = []; // corroborated calls with lock leaves, in append order: { txHash, trusted, lockLeaves, lockMemos }
-    for (const g of rows) {
+
+    // A transaction's settle calls and whether their provenance is trusted; null when it cannot be read or holds none.
+    async function callsOf(txHash) {
       let input, to;
       try {
-        if (getTx) { const tx = await getTx(g.txHash); input = tx && tx.input; to = tx && tx.to; }
-        else input = await getTxInput(g.txHash);
-      } catch { continue; }
-      if (!input) continue;
+        if (getTx) { const tx = await getTx(txHash); input = tx && tx.input; to = tx && tx.to; }
+        else input = await getTxInput(txHash);
+      } catch { return null; }
+      if (!input) return null;
       const selector = strip0x(input).slice(0, 8).toLowerCase();
       let calls, direct = true;
       if (selector === SELECTOR_SETTLE) {
-        try { calls = [decodeSettleCalldata(input)]; } catch { continue; }
+        try { calls = [decodeSettleCalldata(input)]; } catch { return null; }
       } else if (selector === SELECTOR_RELAY_SETTLE || selector === SELECTOR_RELAY_SETTLE_SEEDED) {
-        try { calls = decodeRelaySettleCalldata(input); } catch { continue; }
+        try { calls = decodeRelaySettleCalldata(input); } catch { return null; }
       } else {
         direct = false;
         calls = decodeNestedSettles(input); // a settle reached through another contract, or none at all
-        if (!calls.length) continue;
+        if (!calls.length) return null;
       }
       const trusted = direct && (!getTx || String(to || '').toLowerCase() === (selector === SELECTOR_SETTLE ? poolTo : relayerTo));
-      // Each candidate event can corroborate at most one call — track which are already claimed so two
-      // calls with coincidentally-identical effects can't both match the same landed event.
-      const usedLeavesEvent = new Set();
-      const usedNullifierEvent = new Set();
-      for (const decoded of calls) {
-        let fields;
-        try { fields = decodePublicValuesLockFields(decoded.publicValues); } catch { continue; }
-        if (!fields.lockLeaves.length) continue;
-        // Memo tail: settle() requires memos.length == pv.leaves.length + pv.lockLeaves.length, so the
-        // first `leavesCount` memos are ordinary note memos (irrelevant here) and the remainder are lock
-        // memos, in lockLeaves order.
-        const ordinaryMemos = decoded.memos.slice(0, fields.leavesCount);
-        const tail = decoded.memos.slice(fields.leavesCount);
-        let landed = false;
-        if (fields.leaves.length) {
-          for (let i = 0; i < g.leavesEvents.length && !landed; i++) {
-            if (usedLeavesEvent.has(i)) continue;
-            const ev = g.leavesEvents[i];
-            if (sameArray(ev.leaves, fields.leaves) && sameArray(ev.memos, ordinaryMemos)) { landed = true; usedLeavesEvent.add(i); }
+      return { calls, trusted };
+    }
+
+    let found; // corroborated lock batches in append order: { txHash, trusted, lockLeaves, lockMemos }
+    if ((events || []).some((e) => e && e.type === 'LockLeavesInserted')) {
+      const byFirst = new Map();
+      for (const e of events) {
+        if (!e || e.type !== 'LockLeavesInserted' || !Array.isArray(e.lockLeaves) || !e.lockLeaves.length) continue;
+        const first = Number(e.firstLockIndex);
+        const prior = byFirst.get(first);
+        if (prior) {
+          if (!sameArray(prior.lockLeaves, e.lockLeaves)) throw new Error(`stealth lock stream: two LockLeavesInserted events disagree at lock index ${first}`);
+          continue; // the same event seen twice (merged streams)
+        }
+        byFirst.set(first, e);
+      }
+      found = [];
+      const cache = new Map(); // txHash -> callsOf
+      let next = 0;
+      for (const first of [...byFirst.keys()].sort((a, b) => a - b)) {
+        const e = byFirst.get(first);
+        if (first !== next) throw new Error(`stealth lock stream is not contiguous: expected lock index ${next}, found ${first} (tx ${e.txHash}) — a LockLeavesInserted log was missed`);
+        next += e.lockLeaves.length;
+        let lockMemos = e.lockLeaves.map(() => null);
+        if (e.txHash) {
+          if (!cache.has(e.txHash)) cache.set(e.txHash, await callsOf(e.txHash));
+          const info = cache.get(e.txHash);
+          for (const decoded of (info && info.calls) || []) {
+            let fields;
+            try { fields = decodePublicValuesLockFields(decoded.publicValues); } catch { continue; }
+            if (!sameArray(fields.lockLeaves, e.lockLeaves) || decoded.memos.length !== fields.leavesCount + fields.lockLeaves.length) continue;
+            const tail = decoded.memos.slice(fields.leavesCount);
+            lockMemos = e.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null));
+            break;
           }
-        } else if (fields.nullifiers.length) {
-          for (let i = 0; i < g.nullifierEvents.length && !landed; i++) {
-            if (usedNullifierEvent.has(i)) continue;
-            if (sameArray(g.nullifierEvents[i].nullifiers, fields.nullifiers)) { landed = true; usedNullifierEvent.add(i); }
-          }
-        } // else: a lock-only, spend-nothing call — no event exists to corroborate it (see header comment).
-        if (!landed) continue;
-        found.push({ txHash: g.txHash, trusted, lockLeaves: fields.lockLeaves, lockMemos: fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null)) });
+        }
+        found.push({ txHash: e.txHash, trusted: true, lockLeaves: e.lockLeaves, lockMemos });
+      }
+    } else {
+      const groups = new Map(); // txHash -> { blockNumber, logIndex (min), leavesEvents, nullifierEvents }
+      for (const e of events || []) {
+        if (!e || !e.txHash) continue;
+        let g = groups.get(e.txHash);
+        if (!g) {
+          g = { txHash: e.txHash, blockNumber: e.blockNumber, logIndex: e.logIndex, leavesEvents: [], nullifierEvents: [] };
+          groups.set(e.txHash, g);
+        } else {
+          g.blockNumber = Math.min(g.blockNumber, e.blockNumber);
+          g.logIndex = Math.min(g.logIndex, e.logIndex);
+        }
+        if (e.type === 'LeavesInserted') g.leavesEvents.push({ leaves: e.leaves || [], memos: e.memos || [] });
+        else if (e.type === 'NullifiersSpent') g.nullifierEvents.push({ nullifiers: e.nullifiers || [] });
+      }
+      const rows = [...groups.values()].sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
+      found = [];
+      for (const g of rows) {
+        const info = await callsOf(g.txHash);
+        if (!info) continue;
+        // Each candidate event can corroborate at most one call — track which are already claimed so two
+        // calls with coincidentally-identical effects can't both match the same landed event.
+        const usedLeavesEvent = new Set();
+        const usedNullifierEvent = new Set();
+        for (const decoded of info.calls) {
+          let fields;
+          try { fields = decodePublicValuesLockFields(decoded.publicValues); } catch { continue; }
+          if (!fields.lockLeaves.length) continue;
+          // settle() requires memos.length == pv.leaves.length + pv.lockLeaves.length: the first `leavesCount`
+          // memos are ordinary note memos and the remainder are lock memos, in lockLeaves order. The pool emits
+          // the whole array in LeavesInserted, so an event matches on the full array (the note-memo prefix alone
+          // is accepted too, for a stream that carries only that).
+          const ordinaryMemos = decoded.memos.slice(0, fields.leavesCount);
+          const tail = decoded.memos.slice(fields.leavesCount);
+          let landed = false;
+          if (fields.leaves.length) {
+            for (let i = 0; i < g.leavesEvents.length && !landed; i++) {
+              if (usedLeavesEvent.has(i)) continue;
+              const ev = g.leavesEvents[i];
+              if (sameArray(ev.leaves, fields.leaves) && (sameArray(ev.memos, decoded.memos) || sameArray(ev.memos, ordinaryMemos))) { landed = true; usedLeavesEvent.add(i); }
+            }
+          } else if (fields.nullifiers.length) {
+            for (let i = 0; i < g.nullifierEvents.length && !landed; i++) {
+              if (usedNullifierEvent.has(i)) continue;
+              if (sameArray(g.nullifierEvents[i].nullifiers, fields.nullifiers)) { landed = true; usedNullifierEvent.add(i); }
+            }
+          } // else: a lock-only, spend-nothing call — no event exists to corroborate it here.
+          if (!landed) continue;
+          found.push({ txHash: g.txHash, trusted: info.trusted, lockLeaves: fields.lockLeaves, lockMemos: fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null)) });
+        }
       }
     }
+
     const build = (list) => {
       const tree = new pool.Tree();
       for (const c of list) for (const leaf of c.lockLeaves) tree.insert(leaf);
@@ -316,6 +352,7 @@ export function makeConfidentialLockScan({ pool }) {
       const kept = build(found.filter((c) => c.trusted));
       if (matches(kept)) return { ...kept, verified: true, excluded: untrusted.map(({ txHash, lockLeaves }) => ({ txHash, lockLeaves })) };
     }
+    if (strict) throw new Error(`stealth lock set does not match the pool: rebuilt ${all.lockLeaves.length} lock leaves, the pool holds ${chain.count} (root ${chain.root}); the event stream is incomplete or the RPC served a different head — retry, or use another RPC`);
     return { ...all, verified: false, excluded: [] };
   }
 

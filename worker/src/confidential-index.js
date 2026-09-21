@@ -4,15 +4,19 @@
 // recover a key's notes and locks without running its own scanner; a client that wants no trust in this service
 // rebuilds the identical stream from the pool's logs and settle calldata.
 //
-// The lock set is in no event (see dapp/confidential-lock-scan.js): lock leaves, their memos and lock nullifiers
-// come from each settle call's publicValues, and a call counts only once an event the same transaction emitted
-// corroborates it, because TacitRelayer skips a failed inner settle without reverting the batch. A lock-only call
-// that spends nothing emits no event at all, so a log-driven index cannot see it.
+// Lock leaves come from the pool's LockLeavesInserted events (see dapp/confidential-lock-scan.js), whether or not the
+// same settle also minted notes; their memos and the lock nullifiers a call spends come from each settle call's
+// publicValues. A call that appends lock leaves counts once a LockLeavesInserted event of the same transaction
+// carries exactly its lock leaves — TacitRelayer skips a failed inner settle without reverting the batch, so calldata
+// alone is no proof a call ran. A call that only spends lock nullifiers (a claim or refund) is corroborated by the
+// note leaves or nullifiers its transaction emitted. A lock event no call explains still gets its row, with null
+// memos, so the tree never loses a leaf. For a transaction whose logs carry no LockLeavesInserted at all, the call's
+// lock leaves are corroborated by the note leaves or nullifiers instead.
 //
-// Corroboration cannot tell which of several settle blobs in another contract's calldata the pool ran: a contract
-// can carry, ahead of its real call, a blob with the same leaves, memos and nullifiers but other lock leaves. So
-// each lock row names where its transaction went (`via`: 'pool' for a settle sent straight to the pool, 'relayer'
-// for TacitRelayer.relaySettle, whose calldata is exactly what it tried, 'nested' for a call decoded out of any
+// Which memos and lock nullifiers a row carries is still read from a settle blob, and another contract's calldata can
+// hold a blob ahead of its real call with the same lock leaves and other memos. So each lock row names where its
+// transaction went (`via`: 'pool' for a settle sent straight to the pool, 'relayer' for TacitRelayer.relaySettle,
+// whose calldata is exactly what it tried, 'nested' for a call decoded out of any
 // other contract's calldata), and once a refresh reaches its target the lock tree rebuilt from the rows is checked
 // against the pool's own lockNextLeafIndex and lockRoot (storage slots 84 and 85) at that block. If they differ,
 // the nested rows no earlier match covered are set aside; if the tree then matches, those rows are marked
@@ -57,7 +61,7 @@ export function makeConfidentialIndex({
   const evm = makeConfidentialEvmLog({ keccak256 });
   const calldata = makeConfidentialLockScan({ pool: null }); // its calldata decoders need no tree
   const key = `cpix:v1:${String(pool).toLowerCase()}`;
-  const topics = [[evm.TOPIC0.LeavesInserted, evm.TOPIC0.NullifiersSpent, evm.TOPIC0.Wrap, evm.TOPIC0.CrossOutRecorded]];
+  const topics = [[evm.TOPIC0.LeavesInserted, evm.TOPIC0.NullifiersSpent, evm.TOPIC0.LockLeavesInserted, evm.TOPIC0.Wrap, evm.TOPIC0.CrossOutRecorded]];
   const hex = (n) => '0x' + n.toString(16);
   const word32 = (h) => '0x' + BigInt(h).toString(16).padStart(64, '0');
   const same = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
@@ -114,13 +118,13 @@ export function makeConfidentialIndex({
     return 'nested';
   }
 
-  // One window of pool logs → index rows in chain order. A corroborated call's lock changes follow the event
-  // that corroborated it, in the call order of its transaction (which is the lock tree's append order).
+  // One window of pool logs → index rows in chain order. A call's lock changes follow the event that corroborated it,
+  // in the call order of its transaction (which is the lock tree's append order).
   async function rowsOf(rpc, logs) {
     const evs = evm.decodeLogs(logs).sort((a, b) => (a.blockNumber - b.blockNumber) || (a.logIndex - b.logIndex));
     const settles = new Map();
     for (const ev of evs) {
-      if (ev.type !== 'LeavesInserted' && ev.type !== 'NullifiersSpent') continue;
+      if (ev.type !== 'LeavesInserted' && ev.type !== 'NullifiersSpent' && ev.type !== 'LockLeavesInserted') continue;
       if (!settles.has(ev.txHash)) settles.set(ev.txHash, []);
       settles.get(ev.txHash).push(ev);
     }
@@ -131,22 +135,33 @@ export function makeConfidentialIndex({
       let calls;
       try { calls = settleCalls(tx.input); } catch { calls = []; }
       const used = new Set();
+      const lockEvents = group.filter((ev) => ev.type === 'LockLeavesInserted');
+      const push = (hit, lock) => { (hit.locks || (hit.locks = [])).push({ ...lock, via }); };
       for (const call of calls) {
         let f;
         try { f = pvFields(call.publicValues); } catch { continue; }
         if (!f.lockLeaves.length && !f.lockNullifiers.length) continue;
-        const ordinary = call.memos.slice(0, f.leaves.length);
-        const hit = group.find((ev) => !used.has(ev) && (f.leaves.length
-          ? ev.type === 'LeavesInserted' && same(ev.leaves, f.leaves) && same(ev.memos, ordinary)
-          : f.nullifiers.length > 0 && ev.type === 'NullifiersSpent' && same(ev.nullifiers, f.nullifiers)));
+        let hit;
+        if (f.lockLeaves.length && lockEvents.length) {
+          hit = lockEvents.find((ev) => !used.has(ev) && same(ev.lockLeaves, f.lockLeaves));
+        } else {
+          // The pool emits the whole memo array (note memos, then lock memos) in LeavesInserted.
+          const ordinary = call.memos.slice(0, f.leaves.length);
+          hit = group.find((ev) => !used.has(ev) && (f.leaves.length
+            ? ev.type === 'LeavesInserted' && same(ev.leaves, f.leaves) && (same(ev.memos, call.memos) || same(ev.memos, ordinary))
+            : f.nullifiers.length > 0 && ev.type === 'NullifiersSpent' && same(ev.nullifiers, f.nullifiers)));
+        }
         if (!hit) continue;
         used.add(hit);
-        (hit.locks || (hit.locks = [])).push({
+        push(hit, {
           lockLeaves: f.lockLeaves,
           lockMemos: f.lockLeaves.map((_, i) => call.memos[f.leaves.length + i] ?? null),
           lockNullifiers: f.lockNullifiers,
-          via,
         });
+      }
+      // A lock event no readable call accounts for still adds its leaves, so positions stay right.
+      for (const ev of lockEvents) {
+        if (!used.has(ev)) push(ev, { lockLeaves: ev.lockLeaves, lockMemos: ev.lockLeaves.map(() => null), lockNullifiers: [] });
       }
     }
     const rows = [];

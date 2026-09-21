@@ -84,6 +84,17 @@ function encodeNullifiersSpentLog(nullifiers) {
   const data = '0x' + word(32) + encBytes32Array(nullifiers);
   return { topics: [NULLIFIERS_SPENT_TOPIC0], data };
 }
+// LockLeavesInserted(uint256 indexed firstLockIndex, bytes32[] lockLeaves) — emitted whenever a settle appends lock leaves.
+const LOCK_LEAVES_INSERTED_TOPIC0 = '0x' + Array.from(keccak_256(new TextEncoder().encode('LockLeavesInserted(uint256,bytes32[])')), (x) => x.toString(16).padStart(2, '0')).join('');
+function encodeLockLeavesInsertedLog({ firstLockIndex, lockLeaves }) {
+  return { topics: [LOCK_LEAVES_INSERTED_TOPIC0, '0x' + word(firstLockIndex)], data: '0x' + word(32) + encBytes32Array(lockLeaves) };
+}
+// The pool's lock count and root after these lock leaves, as the storage read at slots 0x54 / 0x55 answers.
+function lockStateOf(lockLeaves) {
+  const t = new scanPool.Tree();
+  for (const l of lockLeaves) t.insert(l);
+  return { count: '0x' + word(lockLeaves.length), root: t.root() };
+}
 
 // A wallet's own REAL wrapped note, in a real 1-leaf tree — mirrors tests/confidential-pool-ux.mjs's
 // (now-fixed) transferFixture pattern.
@@ -107,7 +118,7 @@ const OUTSIDER = '0x' + '53'.repeat(32);
 const AMOUNT_WEI = '1000000000000000'; // 0.001 ETH
 
 let capturedSubmit = null;
-function mockFetch(txByHash) {
+function mockFetch(txByHash, lockState = null) {
   return async (urlStr, opts = {}) => {
     const reply = (obj) => ({ ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) });
     if (String(urlStr).includes('/confidential/submit')) {
@@ -129,8 +140,13 @@ function mockFetch(txByHash) {
       // by txHash — but slow and not representative of the real RPC contract this exercises).
       const params = body.params[0];
       const from = parseInt(params.fromBlock, 16), to = parseInt(params.toBlock, 16);
-      const logs = Object.values(txByHash).map((tx) => tx.log).filter((l) => l && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to);
+      const logs = Object.values(txByHash).flatMap((tx) => [].concat(tx.log || [])).filter((l) => l && parseInt(l.blockNumber, 16) >= from && parseInt(l.blockNumber, 16) <= to);
       return reply({ result: logs });
+    }
+    if (m === 'eth_getStorageAt') {
+      // Without a lockState the node serves no such read (the scan then runs unchecked).
+      if (!lockState) return reply({ error: { message: 'storage not served' } });
+      return reply({ result: body.params[1] === '0x54' ? lockState.count : lockState.root });
     }
     if (m === 'eth_getTransactionByHash') {
       const tx = txByHash[body.params[0]];
@@ -183,12 +199,14 @@ let scanned, txByHash;
     memos: [sendResult.memo], // leavesCount=0 for a pure lock ⇒ the WHOLE memos array is the lock-memo tail
   });
   const log = encodeNullifiersSpentLog([spentNullifier]);
+  const lockLog = encodeLockLeavesInsertedLog({ firstLockIndex: 0, lockLeaves: [sendResult.lockLeaf] });
+  const at = { transactionHash: '0xsettletx1', blockNumber: '0x' + (DEPLOY_BLOCK + 5).toString(16), address: '0x' + '00'.repeat(20) };
   txByHash = { '0xsettletx1': {
     input: settleCalldata,
-    log: { ...log, transactionHash: '0xsettletx1', blockNumber: '0x' + (DEPLOY_BLOCK + 5).toString(16), logIndex: '0x0', address: '0x' + '00'.repeat(20) },
+    log: [{ ...log, ...at, logIndex: '0x0' }, { ...lockLog, ...at, logIndex: '0x1' }],
   } };
 
-  const uxR = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash) });
+  const uxR = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash, lockStateOf([sendResult.lockLeaf])) });
   const { mine, lockSetRoot } = await uxR.scanStealthLocks({ walletPriv: RECIPIENT });
   assert.strictEqual(mine.length, 1, 'the recipient finds exactly the one lock addressed to them');
   assert.strictEqual(mine[0].leaf.toLowerCase(), sendResult.lockLeaf.toLowerCase());
@@ -198,10 +216,18 @@ let scanned, txByHash;
   assert.ok(mine[0].oneTimePriv, 'the recipient recovers the one-time spending key');
   scanned = { record: mine[0], lockSetRoot };
 
-  const uxOutsider = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash) });
+  const uxOutsider = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash, lockStateOf([sendResult.lockLeaf])) });
   const outsiderScan = await uxOutsider.scanStealthLocks({ walletPriv: OUTSIDER });
   assert.strictEqual(outsiderScan.mine.length, 0, 'a third party\'s key does not open the memo');
   ok('scanStealthLocks: finds the lock purely from simulated chain data (calldata decode + memo decrypt), for the recipient only');
+
+  // A pool that holds more locks than the stream explains is an error, not a silently shorter set; a node that
+  // serves no storage read leaves the scan unchecked but working.
+  const uxBehind = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash, lockStateOf([sendResult.lockLeaf, '0x' + '99'.repeat(32)])) });
+  await assert.rejects(() => uxBehind.scanStealthLocks({ walletPriv: RECIPIENT }), /does not match the pool/);
+  const uxNoState = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash) });
+  assert.strictEqual((await uxNoState.scanStealthLocks({ walletPriv: RECIPIENT })).mine.length, 1);
+  ok('scanStealthLocks: a lock set the pool does not confirm throws; an unreadable pool state degrades to unchecked');
 }
 
 // ───────────────── 3. stealthClaim: the recipient spends the discovered lock into their own note,
@@ -255,11 +281,13 @@ let scanned, txByHash;
     memos: [secondSend.memo],
   });
   const log2 = encodeNullifiersSpentLog([secondNullifier]);
+  const lockLog2 = encodeLockLeavesInsertedLog({ firstLockIndex: 1, lockLeaves: [secondSend.lockLeaf] });
+  const at2 = { transactionHash: '0xsettletx2', blockNumber: '0x' + (DEPLOY_BLOCK + 6).toString(16), address: '0x' + '00'.repeat(20) };
   const txByHash2 = { ...txByHash, '0xsettletx2': {
     input: settleCalldata2,
-    log: { ...log2, transactionHash: '0xsettletx2', blockNumber: '0x' + (DEPLOY_BLOCK + 6).toString(16), logIndex: '0x0', address: '0x' + '00'.repeat(20) },
+    log: [{ ...log2, ...at2, logIndex: '0x0' }, { ...lockLog2, ...at2, logIndex: '0x1' }],
   } };
-  const uxS2 = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash2) });
+  const uxS2 = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash2, lockStateOf([sendResult.lockLeaf, secondSend.lockLeaf])) });
   const pos = await uxS2.stealthLockPosition({ lockLeaf: secondSend.lockLeaf });
   assert.ok(pos, 'the sender\'s own lock is found in the reconstructed lock-set tree');
   assert.strictEqual(pos.lIndex, 1, 'this lock is the SECOND leaf in the tree (index 1), after the first test\'s lock');

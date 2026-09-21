@@ -76,8 +76,8 @@ const relayInput = (calls) => withHeads(selector(SIG.relay), [callsArray(calls),
 const seededInput = (calls) => withHeads(selector(SIG.seeded), [word(0), callsArray(calls), ...FEE_TAIL]);
 
 // ── the chain ──
-const POOL = '0x0000000098A73197B3255aD9db1ed8544410f5Ba';
-const RELAYER = '0x00000000705D345449950e900271F27E7fEEABc5';
+const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+const RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 const WRAPPER = '0x' + '22'.repeat(20);
 // Who a transaction was sent to: settle → the pool, relaySettle → the relayer, anything else → a wrapper contract.
 const toOf = (input) => {
@@ -93,6 +93,7 @@ const DEPLOY = 100;
 const T = {
   leaves: kh('LeavesInserted(uint256,bytes32[],bytes[])'),
   spent: kh('NullifiersSpent(bytes32[])'),
+  lock: kh('LockLeavesInserted(uint256,bytes32[])'),
   wrap: kh('Wrap(bytes32,bytes32,uint256)'),
 };
 const log = (block, logIndex, tx, topics, data) => ({ address: POOL, blockNumber: hx(block), logIndex: hx(logIndex), transactionHash: tx, topics, data: '0x' + data });
@@ -101,6 +102,7 @@ const leavesLog = (block, li, tx, first, leaves, memos) => {
   return log(block, li, tx, [T.leaves, '0x' + word(first)], word(64) + word(64 + a.length / 2) + a + encBytesArr(memos));
 };
 const spentLog = (block, li, tx, nus) => log(block, li, tx, [T.spent], word(32) + encB32s(nus));
+const lockLog = (block, li, tx, first, leaves) => log(block, li, tx, [T.lock, '0x' + word(first)], word(32) + encB32s(leaves));
 const wrapLog = (block, li, tx, id, asset, amount) => log(block, li, tx, [T.wrap, id, asset], word(amount));
 
 const txh = (s) => kh('tx:' + s);
@@ -125,11 +127,14 @@ const LOGS = [
   wrapLog(120, 0, TW, b32('dep1'), ETH_ID, 123456),
   leavesLog(120, 1, TW, 0, [b32('w1')], [memo('w1')]),
   spentLog(150, 0, T1, [b32('n1')]),
+  lockLog(150, 1, T1, 0, [b32('L1')]),
   spentLog(160, 2, T2, [b32('na')]),
   leavesLog(160, 3, T2, 1, [b32('a1'), b32('a2')], [memo('a1'), memo('a2')]),
   leavesLog(160, 5, T2, 3, [b32('c1')], [memo('c1')]),
   spentLog(700, 0, T3, [b32('ne')]),
-  leavesLog(700, 1, T3, 4, [b32('e1')], [memo('e1')]),
+  lockLog(700, 1, T3, 1, [b32('L3'), b32('L4')]),
+  // a settle that mints a note AND appends locks: the pool emits the whole memo array, lock memos included
+  leavesLog(700, 2, T3, 4, [b32('e1')], [memo('e1'), memo('L3'), memo('L4')]),
   leavesLog(1098, 0, T4, 5, [b32('f1')], [memo('f1')]),
 ];
 // The leaves the pool actually appended to its lock tree, by block, in append order: what slots 84/85 answer.
@@ -190,7 +195,7 @@ let FULL;
   assert.strictEqual(r.headBlock, 1100);
   assert.strictEqual(r.synced, true);
   assert.deepStrictEqual(r.entries.map((e) => e.type),
-    ['wrap', 'leaves', 'nullifiers', 'locks', 'nullifiers', 'leaves', 'leaves', 'locks', 'nullifiers', 'leaves', 'locks']);
+    ['wrap', 'leaves', 'nullifiers', 'locks', 'nullifiers', 'leaves', 'leaves', 'locks', 'nullifiers', 'locks', 'leaves']);
   assert.deepStrictEqual(r.entries.map((e) => e.seq), [...Array(11).keys()]);
   const locks = r.entries.filter((e) => e.type === 'locks')
     .map(({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }) => ({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }));
@@ -498,6 +503,38 @@ const keptLeaves = (r) => lockRows(r).filter((e) => !e.excluded).flatMap((e) => 
   assert.deepStrictEqual(after.counts, before.counts);
   assert.deepStrictEqual(after.lockSet, before.lockSet);
   ok('an older stored state is brought up once: lock record rebuilt from its rows, `via` read back, check rerun');
+}
+
+// ───────────────── 13. lock leaves come from LockLeavesInserted: a settle that mints notes too, a skipped call, an unreadable call ─────────────────
+{
+  const TM = txh('mixed'), TU = txh('unreadable');
+  const extraTxs = {
+    // one relayer batch: a call that mints a note and appends a lock (landed), and a call whose settle was skipped
+    [TM]: relayInput([
+      { publicValues: encPv({ nullifiers: [b32('nm')], leaves: [b32('m1')], lockLeaves: [b32('LM')] }), memos: [memo('m1'), memo('LM')] },
+      { publicValues: encPv({ nullifiers: [b32('np')], leaves: [b32('p1')], lockLeaves: [b32('LP')] }), memos: [memo('p1'), memo('LP')] },
+    ]),
+    [TU]: '0x' + '00'.repeat(40),
+  };
+  const extraLogs = [
+    spentLog(900, 0, TM, [b32('nm')]),
+    lockLog(900, 1, TM, 3, [b32('LM')]),
+    leavesLog(900, 2, TM, 5, [b32('m1')], [memo('m1'), memo('LM')]),
+    lockLog(950, 0, TU, 4, [b32('LU')]),
+  ];
+  const c = chain({ extraTxs, extraLogs, extraLocks: [{ block: 900, leaf: b32('LM') }, { block: 950, leaf: b32('LU') }] });
+  const idx = mk({ rpcs: [c.rpc] });
+  await idx.refresh();
+  const r = await idx.read({});
+  const rows = lockRows(r).filter((e) => e.tx === TM || e.tx === TU)
+    .map(({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }) => ({ first, lockLeaves, lockMemos, lockNullifiers, tx, via }));
+  assert.deepStrictEqual(rows, [
+    { first: 3, lockLeaves: [b32('LM')], lockMemos: [memo('LM')], lockNullifiers: [], tx: TM, via: 'relayer' },
+    { first: 4, lockLeaves: [b32('LU')], lockMemos: [null], lockNullifiers: [], tx: TU, via: 'nested' },
+  ], 'the lock beside a minted note is indexed, a lock whose calldata cannot be read keeps its position with a null memo');
+  assert.ok(!JSON.stringify(r.entries).includes(strip(b32('LP'))), 'the skipped call adds no lock');
+  assert.deepStrictEqual(r.lockSet, { count: 5, root: lockRoot([...BASE, b32('LM'), b32('LU')]), verified: true, block: 1094 });
+  ok('lock leaves come from LockLeavesInserted: a settle that also mints notes is indexed, a skipped call is not, an unreadable call keeps its position');
 }
 
 console.log(`\n${n} confidential-index checks passed.`);
