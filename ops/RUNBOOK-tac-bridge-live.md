@@ -1,5 +1,10 @@
 # TAC BTC→ETH bridge — live runbook
 
+> **Historical record.** This runbook was written against an earlier pool generation, and the pool addresses below
+> are superseded. The current addresses and verification keys are in [`docs/DEPLOYMENTS.md`](../docs/DEPLOYMENTS.md).
+> For the current sequences, see the integration guide, [`RUNBOOK-crossout-rehearsal.md`](./RUNBOOK-crossout-rehearsal.md)
+> for Ethereum to Bitcoin, and [`dapp/burn-deposit-bitcoin.js`](../dapp/burn-deposit-bitcoin.js) for the Bitcoin-side builders.
+
 Protocol + tooling + reflection data-plane are proven live. This documents the exact live burn→mint→reverse
 sequence and the two integration pieces that gate it.
 
