@@ -137,6 +137,9 @@ import * as ammEnvelopeMod from './amm-envelope.js';
 import * as ammReplayMod from './amm-replay.js';
 import { makeFarmRecovery } from './amm-farm-recovery.js';
 
+// The wallet only runs as a top-level page (preboot.js hides a framed one).
+if (typeof window !== 'undefined' && window.top !== window.self) throw new Error('tacit: refusing to run inside a frame');
+
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
 // Hide broken images globally instead of inlining `onerror="..."` in every

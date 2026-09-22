@@ -86,7 +86,9 @@ export async function renderEarnTab(wallet) {
 
   let notes = [];
   try { notes = (await ux.balance(wallet.priv)).notes || []; } catch {}
-  const noteFor = (assetId) => notes.find((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase());
+  // The largest note of each asset: the bond spends both notes whole, so the smaller side sets the size.
+  const noteFor = (assetId) => notes.filter((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase())
+    .sort((x, y) => (BigInt(y.value) > BigInt(x.value) ? 1 : -1))[0];
 
   const rows = await Promise.all(pairs.map(async (p, i) => {
     // The day-1 pools are no-skim (fee 0); fall back to the 30-bps tier if a fee pool was added. The reserves
@@ -111,7 +113,7 @@ export async function renderEarnTab(wallet) {
       : !init ? 'pool not initialized'
       : (!aNote || !bNote) ? `need a ${p.ta} note and a ${p.tb} note (wrap into the pool first)`
       : 'add liquidity & bond into the farm in one transaction';
-    p._feeBps = feeBps; p._controller = controller;
+    p._feeBps = feeBps; p._controller = controller; p._reserves = reserves;
     const tvl = init ? `${reserves.reserveA} / ${reserves.reserveB}` : '—';
     return `
       <div style="border:1px solid var(--hairline,#eee);border-radius:6px;padding:12px;margin-bottom:10px;">
@@ -134,12 +136,27 @@ export async function renderEarnTab(wallet) {
       const p = pairs[Number(btn.dataset.i)];
       const aNote = noteFor(p.a), bNote = noteFor(p.b);
       const st = el('earn-status');
-      if (!aNote || !bNote || !p._controller) { if (st) st.textContent = 'Notes/farm changed — reopen Earn and retry.'; return; }
+      if (!aNote || !bNote || !p._controller || !p._reserves) { if (st) st.textContent = 'Notes/farm changed — reopen Earn and retry.'; return; }
       btn.disabled = true;
-      if (st) st.textContent = `Adding liquidity + bonding ${p.label} into the farm…`;
       try {
+        // OP_LP_BOND spends both notes whole and the pool keeps anything off-ratio, so size the larger side down to
+        // the pool ratio first (a split transfer) and show both amounts before anything is spent.
+        const rA = BigInt(p._reserves.reserveA), rB = BigInt(p._reserves.reserveB);
+        const a = BigInt(aNote.value), b = BigInt(bNote.value);
+        const aLimited = a * rB <= b * rA;
+        const wantA = aLimited ? a : (b * rA + rB - 1n) / rB;
+        const wantB = aLimited ? (a * rB + rA - 1n) / rA : b;
+        const dec = (t) => Number((ux.assetByTicker[t] || {}).tacitDecimals ?? 8);
+        const ok = window.confirm(`Add ${fmtUnits(wantA, dec(p.ta))} ${p.ta} + ${fmtUnits(wantB, dec(p.tb))} ${p.tb} to ${p.label} and bond the shares into the farm?`
+          + ((aLimited ? wantB !== b : wantA !== a) ? `\n\nYour ${aLimited ? p.tb : p.ta} note is split first so only the in-ratio amount is added; the rest stays in your wallet.` : ''));
+        if (!ok) { btn.disabled = false; return; }
+        let sizedA = aNote, sizedB = bNote;
+        if (st) st.textContent = 'Sizing your notes to the pool ratio…';
+        if (wantA !== a) sizedA = (await ux.ensureExactNote({ walletPriv: wallet.priv, asset: p.a, amount: wantA, notes })).note;
+        if (wantB !== b) sizedB = (await ux.ensureExactNote({ walletPriv: wallet.priv, asset: p.b, amount: wantB, notes })).note;
+        if (st) st.textContent = `Adding liquidity + bonding ${p.label} into the farm…`;
         const r = await ux.lpBond({
-          walletPriv: wallet.priv, controller: p._controller, aNote, bNote, feeBps: p._feeBps ?? 0,
+          walletPriv: wallet.priv, controller: p._controller, aNote: sizedA, bNote: sizedB, feeBps: p._feeBps ?? 0,
           // Fee-free bond: the box proves (prove-only) and the user broadcasts settle() from their own EVM
           // account, so there's no relay fee to carve from the bonded liquidity (the relayed path's fee-gate
           // would reject a zero-fee job). The account is already on-chain from the wrap deposits.

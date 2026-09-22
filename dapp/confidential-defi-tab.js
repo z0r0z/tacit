@@ -75,6 +75,19 @@ function savePosition(p) {
   all.push(p);
   try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
 }
+// The next position key index for a controller. It only ever grows: counting the saved positions would hand a
+// new position the key of a still-open one as soon as an earlier one was closed and its descriptor dropped.
+const KEY_NONCE_PREFIX = 'tacit-cdp-next-key-nonce:';
+function nextKeyNonce(controller) {
+  const c = String(controller).toLowerCase();
+  let n = 0;
+  try { n = Math.max(0, parseInt(localStorage.getItem(KEY_NONCE_PREFIX + c), 10) || 0); } catch {}
+  for (const p of loadPositions()) {
+    if (String(p.controller).toLowerCase() === c && Number.isInteger(p.keyNonce)) n = Math.max(n, p.keyNonce + 1);
+  }
+  try { localStorage.setItem(KEY_NONCE_PREFIX + c, String(n + 1)); } catch {}
+  return n;
+}
 
 // Persist a broadcast-but-not-yet-minted cBTC lock, keyed with the exact blinding the lock committed to —
 // cbtcLockCommitment[outpoint] is fixed at lock time (ConfidentialPool.sol's OP_CBTC_MINT gate), so the mint
@@ -136,7 +149,7 @@ function wireOpen(wallet, ux, notes) {
     // guest's own position-tree nonce is fixed to 0 (unrelated to keyNonce below). Deterministically derived
     // (see derivePositionOwnerPriv) so this position stays recoverable from the identity key alone; keyNonce
     // is simply "the Nth position opened against this controller" so far, per the local descriptor cache.
-    const keyNonce = loadPositions().filter((p) => String(p.controller).toLowerCase() === String(controller).toLowerCase()).length;
+    const keyNonce = nextKeyNonce(controller);
     const positionOwnerPriv = derivePositionOwnerPriv(wallet.priv, controller, keyNonce);
     const positionOwner = xOnly(positionOwnerPriv);
     // The debt note's blinding and nullifier key derive from the wallet key and the first collateral note's nullifier (the
@@ -148,7 +161,14 @@ function wireOpen(wallet, ux, notes) {
     const debtKeys = ux.deriveOutput(wallet.priv, anchor, 'cdpDebt', 0);
     const debtBlinding = debtKeys.blindingHex;
     const debtNk = debtKeys.nk;
-    const rateSnapshot = ZERO32; // fee-free v1 controller
+    // The engine accepts a snapshot in [RAY, rate()] and charges interest from it, so the live rate is the only
+    // value that is both accepted and free of back-interest (RAY while the stability fee is dormant).
+    const rateWord = await ux.ethCall(controller, '0x2c4e722e'); // rate()
+    if (!/^0x[0-9a-f]{64}$/i.test(String(rateWord || '')) || BigInt(rateWord) < 10n ** 27n) {
+      if (statusEl) statusEl.textContent = 'Could not read the engine rate; retry in a moment.';
+      return;
+    }
+    const rateSnapshot = String(rateWord).toLowerCase();
     const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
     const defi = makeConfidentialDefiActions({
       pool: ux.pool, cdp, farm: makeConfidentialFarm({ keccak256: keccak_256, pool: ux.pool }), relay: ux.relay,
@@ -408,16 +428,22 @@ function wireClose(wallet, ux, positions) {
         const positionIndex = posTree.indexOf(positionLeaf);
         if (positionIndex < 0) { if (statusEl) statusEl.textContent = 'Position not found on-chain yet (still settling?).'; btn.disabled = false; return; }
         const positionPath = posTree.pathFor(positionIndex).path;
-        // Repay: pick cUSD notes summing to the gross debt.
+        // Repay: every burned debt note is consumed whole and anything above the debt is not returned, so take the
+        // smallest single note that covers it, or else the largest notes first (fewest notes, least overshoot).
         const { notes } = await ux.balance(wallet.priv);
-        const debtNotes = [];
+        const own = (notes || []).filter((x) => x.asset.toLowerCase() === debtAsset.toLowerCase());
+        const byValue = (x, y) => (BigInt(x.value) < BigInt(y.value) ? -1 : BigInt(x.value) > BigInt(y.value) ? 1 : 0);
+        const single = own.filter((n) => BigInt(n.value) >= debtValue).sort(byValue)[0];
+        const picked = [];
         let sum = 0n;
-        for (const n of (notes || []).filter((x) => x.asset.toLowerCase() === debtAsset.toLowerCase())) {
-          // The burned debt note is spent under its own secret nullifier key (the harness reads `nk`).
-          debtNotes.push({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret });
+        for (const n of (single ? [single] : own.sort(byValue).reverse())) {
+          picked.push(n);
           sum += BigInt(n.value);
           if (sum >= debtValue) break;
         }
+        // The burned debt note is spent under its own secret nullifier key (the harness reads `nk`).
+        const debtNotes = picked.map((n) => ({ cx: n.cx, cy: n.cy, value: n.value, blinding: n.blinding, leafIndex: n.leafIndex, path: n.path, owner: n.owner, nk: n.secret }));
+        if (sum > debtValue && !window.confirm(`Repaying ${debtValue} cUSD uses notes worth ${sum}; the extra ${sum - debtValue} is not returned. Split a note to the exact amount first to avoid that. Continue anyway?`)) { btn.disabled = false; return; }
         if (sum < debtValue) { if (statusEl) statusEl.textContent = `Need ${debtValue} cUSD to repay; you hold ${sum}.`; btn.disabled = false; return; }
         const root = (notes.find((x) => x.asset.toLowerCase() === debtAsset.toLowerCase()) || {}).root;
         // One blinding and nk per released leg, derived from the wallet key and the closed position's nullifier — the leaf owner
@@ -435,7 +461,8 @@ function wireClose(wallet, ux, positions) {
           waitOpts: { onUpdate: proveUpdater(statusEl, 'Closing') },
         });
         // Drop the local descriptor on success.
-        const all = loadPositions().filter((x) => !(x.nonce === p.nonce && x.controller === p.controller));
+        // Every position's tree nonce is 0, so the per-position owner is what identifies this one.
+        const all = loadPositions().filter((x) => !(x.controller === p.controller && (x.positionOwner || '') === (p.positionOwner || '') && x.debtValue === p.debtValue));
         try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
         if (statusEl) statusEl.textContent = 'Position closed — collateral released to your notes.';
         notify('Position closed — collateral released', 'ok');

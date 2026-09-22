@@ -589,8 +589,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // indexes this call chose earlier count too, so wraps sent back to back do not collide before the first one
   // lands. The first index scanned resumes from the last one this device chose (localStorage when available, else
   // 0): a hint only ever skips indexes, never re-offers one, and the chain scan checks every index it does offer.
-  // Reading the events can fail (a public node refusing the log range): the wrap then continues from the device
-  // hint, or index 0 when there is none, rather than failing; pass an explicit `index` to pin one.
+  // Reading the events can fail (a public node refusing the log range). The wrap then fails rather than guessing,
+  // since the device hint cannot see indexes another device or an earlier install used. Retry, or pass an explicit
+  // `index` to pin one.
   const _reservedWrapIndex = new Map();
   const WRAP_INDEX_HINT_PREFIX = 'tacit:next-wrap-index:';
   async function nextWrapIndex({ walletPriv, ticker = 'cETH' } = {}) {
@@ -599,17 +600,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const id = identity(walletPriv);
     const assetId = String(meta.assetId).toLowerCase();
     const unitScale = BigInt(meta.unitScale);
-    let events = [];
+    let events;
     try {
       const head = await headBlock();
       if (!Number.isFinite(head)) throw new Error('no head block');
       const logs = await getLogsChunked({ address: cfg.pool, topics: [evmLog.TOPIC0.Wrap, null, assetId] }, Number(cfg.deployBlock || 0), head);
       events = evmLog.decodeLogs(logs).filter((e) => e.type === 'Wrap');
     } catch (e) {
-      // Most public nodes refuse a long log range. A wrap must not fail because of that: continue from this device's
-      // own hint (the index after the last one it chose), or 0 on a device that has never wrapped, which is where
-      // the wrap functions started before the scan existed.
-      events = [];
+      throw new Error(`nextWrapIndex: could not read this asset's wrap deposits (${e && e.message ? e.message : e}); retry, or pass an explicit index`);
     }
     const known = new Set(events.map((e) => String(e.depositId).toLowerCase()));
     const values = [...new Set(events.filter((e) => e.amount % unitScale === 0n).map((e) => e.amount / unitScale))];
@@ -932,7 +930,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // OP_WRAP_LP — add liquidity straight from two pending deposits.
-  async function wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps = 30, fee = 0n, deadline = 0n, aIndex = 0, bIndex = 0, selfRelay = false, waitOpts } = {}) {
+  async function wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps = 30, fee = 0n, deadline = 0n, aIndex = 0, bIndex = 0, selfRelay = false, maxDonationBps, waitOpts } = {}) {
     const id = identity(walletPriv);
     let A = _depositLeg({ id, ticker: aTicker, amountWei: aAmountWei, index: aIndex });
     let B = _depositLeg({ id, ticker: bTicker, amountWei: bAmountWei, index: bIndex });
@@ -944,6 +942,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const sharesPre = res ? BigInt(res.totalShares) : 0n;
     if (BigInt(fee) >= A.value) throw new Error('wrap-lp: fee >= A contribution');
     const addA = A.value - BigInt(fee);
+    assertLpInRatio('wrap-lp', { addA, addB: B.value, reserveA: rA, reserveB: rB, sharesPre, maxDonationBps });
     const dShares = sharesPre === 0n
       ? _lp.isqrt(addA * B.value) - _lp.MINIMUM_LIQUIDITY
       : _lp.lpAddShares(sharesPre, addA, B.value, rA, rB);
@@ -1180,7 +1179,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { owner, ownerPriv, nonce };
   }
 
-  function buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps = 30, reserveAPre, reserveBPre, sharesPre, opDeadline = 0n, fee = 0n } = {}) {
+  function buildLpBondOp({ walletPriv, controller, aNote, bNote, feeBps = 30, reserveAPre, reserveBPre, sharesPre, opDeadline = 0n, fee = 0n, maxDonationBps } = {}) {
     if (!aNote || !bNote) throw new Error('lp-bond: need an A note and a B note');
     if (!controller) throw new Error('lp-bond: farm controller address required');
     const id = identity(walletPriv);
@@ -1192,6 +1191,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const dA = BigInt(nA.value), dB = BigInt(nB.value);
     if (fee >= dA) throw new Error('lp-bond: fee >= A contribution');
     const S = BigInt(sharesPre);
+    // OP_LP_BOND spends both notes whole and has no change leg, so the notes themselves must be in ratio.
+    assertLpInRatio('lp-bond', { addA: dA - fee, addB: dB, reserveA: rA, reserveB: rB, sharesPre: S, maxDonationBps });
     const dShares = pool.lpAddShares(S, dA - fee, dB, rA, rB);
     if (dShares <= 0n) throw new Error('lp-bond: zero derived shares (check the add ratio / reserves)');
 
@@ -1234,13 +1235,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // OP_LP_BOND witness through the relay. The guest emits one leaf (the receipt), so the settle carries one memo
   // for it: the empty seed-derived memo, since the receipt key and nonce re-derive from the wallet key and the
   // spent A note (lpBondPosition) and the shares are public in the bond's CdpMint.
-  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, selfRelay = false, waitOpts } = {}) {
+  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, selfRelay = false, maxDonationBps, waitOpts } = {}) {
     if (!controller) throw new Error('lp-bond: farm controller not configured for this network');
     const res = await poolReserves(routePoolId(aNote.asset, bNote.asset, feeBps));
     if (!res) throw new Error('lp-bond: pool not initialized for this pair / fee tier');
     const b = buildLpBondOp({
       walletPriv, controller, aNote, bNote, feeBps,
-      reserveAPre: res.reserveA, reserveBPre: res.reserveB, sharesPre: res.totalShares,
+      reserveAPre: res.reserveA, reserveBPre: res.reserveB, sharesPre: res.totalShares, maxDonationBps,
     });
     const leaves = [b.receiptLeaf];
     const outputs = [{ seedDerived: true }];
@@ -1513,7 +1514,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     wire.fee = Number(op.fee ?? 0n);
     return wire;
   }
-  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, contributeA = null, contributeB = null, waitOpts } = {}) {
+  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, contributeA = null, contributeB = null, maxDonationBps, waitOpts } = {}) {
     if (!aNote || !bNote) throw new Error('lp-add: need an A note and a B note');
     if (BigInt(aNote.asset) === BigInt(bNote.asset)) throw new Error('lp-add: A and B must be different assets');
     const id = identity(walletPriv);
@@ -1548,6 +1549,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const reserveAPre = res ? BigInt(res.reserveA) : 0n;
     const reserveBPre = res ? BigInt(res.reserveB) : 0n;
     const sharesPre = res ? BigInt(res.totalShares) : 0n;
+    if (BigInt(fee) >= dA) throw new Error('lp-add: fee >= A contribution');
+    assertLpInRatio('lp-add', { addA: dA - BigInt(fee), addB: dB, reserveA: reserveAPre, reserveB: reserveBPre, sharesPre, maxDonationBps });
     const shareKeys = deriveOutput(walletPriv, anchor, 'lpShare', 0);
     const rShares = shareKeys.blinding;
     const shareNk = shareKeys.nk;
@@ -1594,6 +1597,24 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const opWire = toLpAddWire(op);
     const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, walletPriv, waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
+  }
+
+  // The pool mints min(S·addA/rA, S·addB/rB) shares and keeps BOTH contributions, so whatever one leg adds beyond
+  // the other's ratio goes to the existing LPs. Refuse an add that would give away more than `maxDonationBps` of
+  // either leg (default 0.5%) beyond one share's worth of rounding; size the legs with quoteLpAdd + ensureExactNote
+  // instead. A first mint (sharesPre == 0) sets the price, so it has nothing to check against.
+  const LP_MAX_DONATION_BPS = 50n;
+  function assertLpInRatio(tag, { addA, addB, reserveA, reserveB, sharesPre, maxDonationBps = LP_MAX_DONATION_BPS }) {
+    const S = BigInt(sharesPre);
+    if (S === 0n) return;
+    const a = BigInt(addA), b = BigInt(addB), rA = BigInt(reserveA), rB = BigInt(reserveB);
+    const minted = pool.lpAddShares(S, a, b, rA, rB);
+    const ceilDiv = (x, y) => (x + y - 1n) / y;
+    const lostA = a - ceilDiv(minted * rA, S), lostB = b - ceilDiv(minted * rB, S);
+    const over = (lost, add, r) => lost > ceilDiv(r, S) && lost * 10000n > add * BigInt(maxDonationBps);
+    if (over(lostA, a, rA) || over(lostB, b, rB)) {
+      throw new Error(`${tag}: off-ratio contribution (${lostA > 0n ? lostA : 0n} A, ${lostB > 0n ? lostB : 0n} B would go to the existing LPs); size both legs to the pool ratio with quoteLpAdd first`);
+    }
   }
 
   // Quote an in-ratio LP add for a chosen A amount: how much B it needs, the shares it mints, and the relay

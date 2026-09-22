@@ -25,6 +25,18 @@
 //      / `.tab-panel.active` sees the deep-linked tab as the
 //      source of truth. Then remove the stage-1 override style so
 //      future tab clicks aren't visually clamped by !important.
+// The wallet only renders as a top-level page. A <meta> CSP cannot carry
+// frame-ancestors, so the check lives here: the page is hidden during head
+// parse and tacit.js does not boot on the same check. Comparing WindowProxy
+// objects never throws cross-origin.
+(function refuseFraming() {
+  if (window.top === window.self) return;
+  var s = document.createElement('style');
+  s.textContent = 'html{display:none!important}';
+  document.head.appendChild(s);
+  try { window.top.location.replace(window.self.location.href); } catch (_) { /* sandboxed frame: stay hidden */ }
+})();
+
 // Filter the "Cannot redefine property: ethereum" noise that fires when
 // two wallet browser extensions (MetaMask + Phantom, Phantom + Coinbase
 // Wallet, etc.) both try to define window.ethereum and the second one
