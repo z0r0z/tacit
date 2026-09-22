@@ -20,6 +20,8 @@
 //
 // Deps: { pool, memo, keccak256, secp, hmac, sha256, curveOrder, lockScan, airdrop, cdp, bpp: { H, G } }.
 
+import { makeBridgeMintRecovery } from './bridge-mint-recovery.js';
+
 const lc = (h) => String(h == null ? '' : h).toLowerCase();
 const strip0x = (h) => String(h == null ? '' : h).replace(/^0x/, '');
 const hexToBytes = (h) => Uint8Array.from((strip0x(h).match(/../g) || []).map((x) => parseInt(x, 16)));
@@ -290,13 +292,10 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     }
     return { found, tried };
   }
-  function deriveBridgeMintBlinding(privKey, nullifier) {
-    const domain = new TextEncoder().encode('tacit-bridgemint-blinding-v1');
-    const raw = hmac(sha256, privKey, cat([domain, hexToBytes(nullifier)]));
-    let b = 0n; for (const x of raw) b = (b << 8n) | BigInt(x);
-    b %= N;
-    return b === 0n ? 1n : b;
-  }
+  // Shared with whatever builds the burn envelope's own destination blinding (bridge-mint-recovery.js) —
+  // was reimplemented inline here, which is exactly the kind of drift risk a shared helper exists to avoid.
+  const _bridgeMintRecovery = makeBridgeMintRecovery({ hmac, sha256, curveOrder });
+  const deriveBridgeMintBlinding = (privKey, nullifier) => _bridgeMintRecovery.deriveBridgeMintBlinding({ privkey: privKey, nullifier });
 
   // ── cBTC bearer notes ──
   // Blinding = HMAC(key, "tacit-cbtc-note-blinding-v1" ‖ funding prevout ‖ 0) (cbtc-note-recovery.js). `anchors` are the

@@ -152,14 +152,25 @@ export function executeOrderbookRoute({
     const f = quote.plan.fills[i];
     const dl = Array.isArray(deadlines) ? deadlines[i] : deadlines;
     if (!dl) throw new Error('route: deadlines required');
-    out.push(orderbook.fill(f.offerId, {
-      taker,
-      takeGive: f.receiveAmount,
-      t: tSecrets[i],
-      nearDeadline: dl.nearDeadline,
-      farDeadline: dl.farDeadline,
-      nowTs,
-    }));
+    try {
+      out.push(orderbook.fill(f.offerId, {
+        taker,
+        takeGive: f.receiveAmount,
+        t: tSecrets[i],
+        nearDeadline: dl.nearDeadline,
+        farDeadline: dl.farDeadline,
+        nowTs,
+      }));
+    } catch (e) {
+      // Legs 0..i-1 already committed — each fill() reveals the taker's adaptor secret to that leg's
+      // maker, so those legs are real and possibly need a compensating action. A bare rejection here
+      // would discard that record; attach it to the thrown error so the caller can reconcile instead
+      // of just seeing "the sweep failed" with no idea which legs actually executed.
+      const err = e instanceof Error ? e : new Error(String(e));
+      err.partialFills = out;
+      err.failedLegIndex = i;
+      throw err;
+    }
   }
   return { fills: out, fresh };
 }
@@ -249,6 +260,12 @@ export function buildPublicEvmSwapRouteTx({
   const minSystemOut = minOut == null
     ? (routeIntent?.minOut == null ? quote.amountOut : routeIntent.minOut)
     : minOut;
+  // An explicit minOut is only ever a valid TIGHTENING of the taker's Schnorr-signed intent, never a
+  // replacement of it — otherwise whoever calls this builder could broadcast with a weaker slippage
+  // floor than what the taker actually signed, silently defeating assertRouteIntent's guarantee.
+  if (routeIntent?.minOut != null && _big(minSystemOut) < _big(routeIntent.minOut)) {
+    throw new Error('route: minOut is weaker than the signed route intent');
+  }
   const tx = routerClient.buildSwapPublicWithPermit2({
     priv,
     tokenIn: aIn.token,
@@ -307,6 +324,11 @@ export function buildBitcoinAmmRouteRequest({
     ? (routeIntent?.minOut == null ? quote.amountOut : routeIntent.minOut)
     : minOut;
   if (_big(minSystemOut) > _big(quote.amountOut)) throw new Error('route: minOut exceeds quote');
+  // Same guard as buildPublicEvmSwapRouteTx: an explicit minOut may only tighten the taker's signed
+  // intent, never weaken it.
+  if (routeIntent?.minOut != null && _big(minSystemOut) < _big(routeIntent.minOut)) {
+    throw new Error('route: minOut is weaker than the signed route intent');
+  }
   const hops = constantProductHops(quote).map(bitcoinHop);
   if (!hops.length) throw new Error('route: Bitcoin AMM quote has no hops');
   const first = hops[0];

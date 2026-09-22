@@ -226,8 +226,9 @@ function extractTaprootEnvelope(txHex) {
   if (sp >= script.length || script[sp] !== 0xac) return null; sp += 1; // OP_CHECKSIG
   if (sp + 1 >= script.length || script[sp] !== 0x00 || script[sp + 1] !== 0x63) return null; sp += 2; // OP_FALSE OP_IF
   const chunks = [];
+  let endif = false;
   while (sp < script.length) {
-    if (script[sp] === 0x68) break; // OP_ENDIF
+    if (script[sp] === 0x68) { endif = true; break; } // OP_ENDIF
     const op = script[sp]; sp += 1;
     if (op >= 1 && op <= 75) {
       if (sp + op > script.length) return null;
@@ -251,6 +252,7 @@ function extractTaprootEnvelope(txHex) {
       return null;
     }
   }
+  if (!endif) return null; // data pushes ran out the script without ever closing the OP_IF branch
   const payload = cat(chunks);
   const FRAME = [0x54, 0x41, 0x43, 0x49, 0x54, 0x01]; // "TACIT" ‖ v1
   if (payload.length <= 6 || !FRAME.every((b, i) => payload[i] === b)) return null;
@@ -733,7 +735,7 @@ function parseCbtcLockEnvelope(envHex) {
   if (e[0] !== 0x66 || e.length !== 197) return null;
   return {
     type: 'cbtc_lock', asset: _h(e, 1, 33),
-    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    lockVout: (e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000)) >>> 0,
     cx: _h(e, 37, 69), cy: _h(e, 69, 101),
     sigRx: _h(e, 101, 133), sigRy: _h(e, 133, 165), sigZ: _h(e, 165, 197),
   };
@@ -750,7 +752,7 @@ function parseCbtcRedeemEnvelope(envHex) {
   return {
     type: 'cbtc_redeem',
     lockTxid: _h(e, 1, 33),
-    lockVout: e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000),
+    lockVout: (e[33] | (e[34] << 8) | (e[35] << 16) | (e[36] * 0x1000000)) >>> 0,
     vBtc: v.toString(),
     kernelSig: _h(e, 45, 109),
   };
@@ -1027,6 +1029,7 @@ export function makeBurnDepositKit({ secp, keccak256, sha256 }) {
     const t = new Uint8Array(32);
     const be4 = (v) => Uint8Array.of((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
     if (exp <= 3) t.set(be4(mant >>> (8 * (3 - exp))), 28);
+    else if (exp === 32) t.set(be4(mant).subarray(1), 0); // be4(mant)'s top byte is always 0 (mant < 2^24); its 3 real bytes exactly fill the target's leading edge here, where the general offset (31 - exp) would be -1
     else if (exp - 3 + 4 <= 32) t.set(be4(mant), 32 - (exp - 3) - 4);
     return t;
   };
