@@ -2029,7 +2029,7 @@ function networkApis(env, network) {
   // Extra keyless Esplora mirrors (mainnet only) — the same independent hosts the
   // prover trusts. More failover legs so a blocked/rate-limited source self-heals.
   const extra = network === 'mainnet'
-    ? ['https://btcscan.org/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']
+    ? ['https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']
     : [];
   for (const fb of [mp, bs, ...extra]) if (!list.includes(fb)) list.push(fb);
   // Maestro first when configured (mainnet only — no signet endpoint). The

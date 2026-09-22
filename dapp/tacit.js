@@ -2454,10 +2454,10 @@ function setCustomApiBase(netName, urlOrNull) {
 // CORS fails. No code change needed when a new mirror appears.
 const _CANDIDATE_BASES = {
   mainnet: [
-    // btcscan.org is the mempool.space team's neutral-brand instance — full
-    // Esplora REST + open CORS on every path the scan uses (tx, outspend,
-    // address/utxo), so it's as reliable as the primary.
-    'https://btcscan.org/api',
+    // Removed btcscan.org — its backend now bare-502s on every path (no
+    // Access-Control-Allow-Origin either, so the browser reports it as a CORS
+    // failure), so it cost a wasted probe and a console error on every fresh
+    // session for no benefit.
     'https://mempool.emzy.de/api',
     'https://mempool.bitaroo.net/api',
     'https://mempool.fra.mempool.space/api',

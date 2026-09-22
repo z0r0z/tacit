@@ -13,7 +13,6 @@ import { privBytes } from './confidential-recovery.js';
 export const ESPLORA_BASES = [
   'https://mempool.space/api',
   'https://blockstream.info/api',
-  'https://btcscan.org/api',
   'https://mempool.emzy.de/api',
 ];
 

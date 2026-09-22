@@ -20,7 +20,6 @@ const SECP_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD036414
 function makeEsplora(bases = [
   'https://mempool.space/api',
   'https://blockstream.info/api',
-  'https://btcscan.org/api',
   'https://mempool.emzy.de/api',
   'https://mempool.bitaroo.net/api',
 ]) {

@@ -23,7 +23,7 @@ async function test(name, fn) {
 }
 
 const WORKER_BASE = process.env.TACIT_WORKER_BASE || process.env.WORKER_BASE || 'https://api.tacit.finance';
-const ESPLORA = ['https://mempool.space/api', 'https://btcscan.org/api', 'https://blockstream.info/api'];
+const ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api'];
 
 const TETH_ASSET = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const TETH_DENOM = '100000';
