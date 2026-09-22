@@ -25,6 +25,8 @@ const SATSCONNECT_OUT = join(VENDOR_DIR, 'tacit-satsconnect.min.js'); // separat
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
 const PREBOOT    = join(DAPP_DIR, 'preboot.js');             // head-loaded, SW-cached like tacit.js
+const PRF_WALLET = join(DAPP_DIR, 'prf-wallet.js');          // passkey/PRF key derivation, SW-cached like tacit.js
+const SW_JS      = join(DAPP_DIR, 'sw.js');
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -123,6 +125,29 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
   return { changed: true, token, prebootToken };
 }
 
+// Unlike tacit.js/preboot.js (fingerprinted via their own `?cb=` URL param),
+// vendor/tacit-deps.min.js (the crypto bundle) and prf-wallet.js (passkey/PRF
+// key derivation) are imported by dozens of dapp/*.js files at their bare
+// path with no query string, so sw.js's cache-first STATIC_CACHE would keep
+// serving an already-cached copy of either file indefinitely — the only
+// refresh path is a best-effort background revalidate that can be killed
+// before it completes. Folding a hash of both files' bytes into
+// CACHE_VERSION forces the SW's activate handler (which purges every cache
+// name not matching the current CACHE_VERSION) to invalidate STATIC_CACHE
+// the moment either file's content changes, the same "impossible to forget"
+// guarantee updateCacheBust gives tacit.js.
+function updateCacheVersion(swBytes, vendorBundle, prfWalletBytes) {
+  const token = createHash('sha256').update(Buffer.concat([vendorBundle, prfWalletBytes])).digest('hex').slice(0, 8);
+  const before = swBytes.toString('utf8');
+  const after = before.replace(
+    /(const CACHE_VERSION = ')([^']*?)(?:-[0-9a-f]{8})?(')/,
+    (_, pre, label, post) => `${pre}${label}-${token}${post}`
+  );
+  if (before === after) return { changed: false, token };
+  writeFileSync(SW_JS, after);
+  return { changed: true, token };
+}
+
 async function main() {
   mkdirSync(VENDOR_DIR, { recursive: true });
 
@@ -144,9 +169,12 @@ async function main() {
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);
   if (!existsSync(PREBOOT)) throw new Error(`source not found: ${PREBOOT}`);
+  if (!existsSync(PRF_WALLET)) throw new Error(`source not found: ${PRF_WALLET}`);
+  if (!existsSync(SW_JS)) throw new Error(`source not found: ${SW_JS}`);
   let html = readFileSync(HTML);
   const appJs = readFileSync(APP_JS);
   const preboot = readFileSync(PREBOOT);
+  const prfWallet = readFileSync(PRF_WALLET);
 
   let cb = null;
   let brBytes = null;
@@ -154,6 +182,9 @@ async function main() {
     cb = updateCacheBust(html, appJs, preboot);
     console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'} · preboot ?cb=${cb.prebootToken}`);
     if (cb.changed) html = readFileSync(HTML);
+
+    const swVer = updateCacheVersion(readFileSync(SW_JS), bundle, prfWallet);
+    console.log(`• SW cache version: ${swVer.token}${swVer.changed ? ' (updated — will bust STATIC_CACHE)' : ' (unchanged)'}`);
     // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).
     // The static origin's on-the-fly brotli lands ~40% above q11 on these
     // bytes; precompressing here and uploading to KV captures the gap.

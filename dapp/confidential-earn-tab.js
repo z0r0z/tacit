@@ -10,7 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -173,7 +173,7 @@ export async function renderEarnTab(wallet) {
           localStorage.setItem(k, JSON.stringify(list));
         } catch { /* storage unavailable: the position is still recoverable from chain + key */ }
         if (st) st.innerHTML = `Bonded into ${p.label}`
-          + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${r.txHash}</code>)` : '')
+          + (r && r.txHash ? ` (<code style="font-size:10px;word-break:break-all;">${esc(r.txHash)}</code>)` : '')
           + ` — ${r.dShares} LP shares earning TAC.`;
         setTimeout(() => renderEarnTab(wallet), 1500);
       } catch (e) {

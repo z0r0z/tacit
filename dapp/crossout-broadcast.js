@@ -19,7 +19,12 @@ export function makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, postHint })
     const txid = res.txid;
     const vout = res.vout ?? 0;
     if (!txid) throw new Error('crossout-broadcast: no txid from broadcast');
-    if (postHint) await postHint(txid, vout);
-    return { txid, vout, claimId, payloadLen: payload.length, status: 'broadcast' };
+    // The Bitcoin broadcast above already happened and can't be undone — a postHint failure (e.g. a
+    // transient fetch error to the worker) must not make this function throw away that txid, or a caller
+    // that treats the rejection as "nothing happened" would retry and double-broadcast. The worker's own
+    // scan picks the envelope up regardless, so postHint is a fast-track only, not required for correctness.
+    let hinted = true;
+    if (postHint) { try { await postHint(txid, vout); } catch { hinted = false; } }
+    return { txid, vout, claimId, payloadLen: payload.length, status: 'broadcast', hinted };
   };
 }

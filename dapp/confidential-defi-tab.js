@@ -136,7 +136,7 @@ function wireOpen(wallet, ux, notes) {
     });
     if (!collateral.length) { if (statusEl) statusEl.textContent = 'Select at least one collateral note.'; return; }
     const debtStr = (el('cdp-debt-amount') && el('cdp-debt-amount').value || '').trim();
-    const debtValue = BigInt(Math.max(0, Math.floor(Number(debtStr) || 0)));
+    const debtValue = /^[0-9]+$/.test(debtStr) ? BigInt(debtStr) : 0n; // BigInt(string) directly — a round-trip through Number loses precision above 2^53-1
     if (debtValue <= 0n) { if (statusEl) statusEl.textContent = 'Enter a cUSD amount to borrow.'; return; }
     const root = byLeaf.get(checked[0]).root;
     // Fresh per-position owner (the unlinkable leaf owner the guest publishes for keeper liquidation); the
@@ -252,7 +252,7 @@ function wireCbtc(wallet, ux) {
     lockBtn.onclick = async () => {
       if (!wallet || !wallet.priv) { if (statusEl) statusEl.textContent = 'Unlock your wallet first.'; return; }
       const satsStr = (el('cdp-cbtc-sats') && el('cdp-cbtc-sats').value || '').trim();
-      const amountSats = BigInt(Math.max(0, Math.floor(Number(satsStr) || 0)));
+      const amountSats = /^[0-9]+$/.test(satsStr) ? BigInt(satsStr) : 0n;
       if (amountSats <= 0n) { if (statusEl) statusEl.textContent = 'Enter the sats amount to lock.'; return; }
       lockBtn.disabled = true;
       if (statusEl) statusEl.textContent = 'Broadcasting your self-custody Bitcoin lock…';

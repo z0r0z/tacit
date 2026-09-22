@@ -90,6 +90,7 @@ const fromHex = h => Uint8Array.from(h.match(/.{2}/g).map(x => parseInt(x, 16)))
 const sha256 = async b => new Uint8Array(await crypto.subtle.digest('SHA-256', b));
 const cat = (...a) => { const n = a.reduce((s, x) => s + x.length, 0), o = new Uint8Array(n); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
 const u32le = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ───────────── inline secp256k1 (affine, BigInt) ─────────────
 const Pp = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
@@ -198,7 +199,7 @@ function row(label) {
 function settle(el, pass, extra = '') {
   const b = el.querySelector('.badge');
   b.className = 'badge ' + (pass ? 'b-pass' : 'b-fail'); b.textContent = pass ? 'PASS' : 'FAIL';
-  if (extra) el.querySelector('.label').insertAdjacentHTML('beforeend', `<span class="extra">${extra}</span>`);
+  if (extra) el.querySelector('.label').insertAdjacentHTML('beforeend', `<span class="extra">${escHtml(extra)}</span>`);
   if (!pass) anyFail = true;
 }
 

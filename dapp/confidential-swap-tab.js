@@ -96,7 +96,8 @@ export async function renderSwapTab(wallet) {
       const out = el('cswap-quoteout');
       const n = byLeaf.get((el('cswap-from') || {}).value);
       const toAsset = ((el('cswap-toasset') || {}).value || '').trim();
-      const amountIn = BigInt(Math.max(0, Math.floor(Number((el('cswap-amount') || {}).value || 0))));
+      const amtStr = ((el('cswap-amount') || {}).value || '').trim();
+      const amountIn = /^[0-9]+$/.test(amtStr) ? BigInt(amtStr) : 0n; // BigInt(string) directly — a round-trip through Number loses precision above 2^53-1
       el('cswap-btn').disabled = true;
       lastQuote = null;
       if (!n || !/^0x[0-9a-fA-F]{64}$/.test(toAsset) || amountIn <= 0n) { if (out) out.textContent = 'Pick a note, a destination asset, and an amount.'; return; }

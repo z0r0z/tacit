@@ -64,12 +64,12 @@ export function makeConfidentialSwap({ keccak256, pool }) {
   const { leaf, nullifier, nkToOwner, nativeNu, commitXY, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext } = pool;
 
   // The nullifier the guest records for a spent native note: leaf-bound for a bearer note (owner 0), otherwise
-  // native_nu, which binds the spender's nk. It cannot be derived from public data, so this returns null when no nk
-  // is supplied, and throws when a supplied nk does not hash to the note's owner (the guest rejects that witness).
+  // native_nu, which binds the spender's nk. It cannot be derived from public data, so this throws when no nk
+  // is supplied, and also throws when a supplied nk does not hash to the note's owner (the guest rejects that witness).
   function spentNullifier(asset, note, fail) {
     const lf = leaf(asset, note.cx, note.cy, note.owner);
     if (BigInt(note.owner ?? 0) === 0n) return nullifier(lf);
-    if (note.nk == null) return null;
+    if (note.nk == null) fail('input note requires nk to derive its nullifier');
     if (String(nkToOwner(note.nk)).toLowerCase() !== String(note.owner).toLowerCase()) fail('input nk does not commit to the note owner');
     return nativeNu(note.owner, note.nk, lf);
   }

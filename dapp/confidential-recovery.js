@@ -162,12 +162,17 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
   // dynamic tuple, so the encoding opens with an offset word to it; the array heads at these indexes are offsets into it.
   const hexWord = (data, byteOff) => (data.slice(byteOff * 2, byteOff * 2 + 64) || '').padEnd(64, '0');
   const u256At = (data, byteOff) => BigInt('0x' + hexWord(data, byteOff));
+  // Shared bound for every settle-field array decoder below: `n` is a length word read from
+  // getTxInput-sourced calldata (an RPC-supplied historical tx input), so an unbounded loop here
+  // would let a lying/faulty RPC hang the wallet's recovery scan on a huge decoded length.
+  const OUTPUT_FIELD_CAP = 4096;
   function decodeExitFields(publicValuesHex) {
     const outer = strip0x(publicValuesHex);
     const data = outer.slice(Number(u256At(outer, 0)) * 2);
     const arrayAt = (field, width, take) => {
       const off = Number(u256At(data, field * 32));
       const n = Number(u256At(data, off));
+      if (n > OUTPUT_FIELD_CAP) throw new Error('settle array out of range');
       const out = [];
       for (let i = 0; i < n; i++) out.push(take((k) => '0x' + hexWord(data, off + 32 + (i * width + k) * 32)));
       return out;
@@ -359,6 +364,7 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     const legsAt = (base, headOff) => {
       const off = base + Number(u256At(data, base + headOff * 32));
       const n = Number(u256At(data, off));
+      if (n > OUTPUT_FIELD_CAP) throw new Error('settle array out of range');
       const out = [];
       for (let i = 0; i < n; i++) out.push({ asset: '0x' + hexWord(data, off + 32 + i * 64), value: u256At(data, off + 32 + i * 64 + 32) });
       return out;
@@ -366,6 +372,7 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     const dynArray = (field, take) => {
       const arr = Number(u256At(data, field * 32));
       const n = Number(u256At(data, arr));
+      if (n > OUTPUT_FIELD_CAP) throw new Error('settle array out of range');
       const out = [];
       for (let i = 0; i < n; i++) out.push(take(arr + 32 + Number(u256At(data, arr + 32 + i * 32))));
       return out;
@@ -512,7 +519,6 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
 
   // Fields of a settle's PublicValues these walks read (indexes in the struct): nullifiers 3, depositsConsumed 5, withdrawals 6,
   // fees 7, swaps 13, liquidity 14, lockNullifiers 18, and the CDP arrays 22 / 23 / 25.
-  const OUTPUT_FIELD_CAP = 4096;
   function decodeOutputFields(publicValuesHex) {
     const outer = strip0x(publicValuesHex);
     const data = outer.slice(Number(u256At(outer, 0)) * 2);

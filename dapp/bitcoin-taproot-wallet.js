@@ -395,7 +395,7 @@ export function makeBtcWallet({ priv, hrp = 'bc', fetchUtxos, broadcastTx, fetch
     }));
     for (let i = 0; i < commitTx.inputs.length; i++) {
       if (picked[i].scriptpubkey && picked[i].scriptpubkey.startsWith('5120')) {
-        commitTx.inputs[i].witness = signTaprootKeypathInput(commitTx, i, prevouts);
+        commitTx.inputs[i].witness = signTaprootKeypathInput(commitTx, i, prevouts, picked[i]._spPriv || wallet.priv);
       } else {
         commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
       }

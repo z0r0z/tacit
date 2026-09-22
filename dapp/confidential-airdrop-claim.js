@@ -186,13 +186,23 @@ async function detectSilentAddress() {
     return (Array.isArray(accounts) && accounts[0]) ? lc(accounts[0]) : null;
   } catch { return null; }
 }
+// The raw provider listener is attached at most once (`_tacitAirdropClaimBound`), but the wallet's
+// active network can change AFTER that first bind (e.g. the documented signet→mainnet boot correction),
+// and each re-mount calls bindAccountsChanged again with a closure over the now-current `air`/`ux`. If
+// that later call were a no-op (as it used to be), the live listener would keep calling the FIRST
+// closure forever, wiring account switches to a stale network config. So the listener itself is
+// registered once, but always dispatches through this module-level indirection, which every
+// bindAccountsChanged call refreshes — the live handler is always the most recently mounted one.
+let _latestAccountsChangedHandler = null;
 function bindAccountsChanged(onChange) {
+  _latestAccountsChangedHandler = onChange;
   try {
     const provider = (typeof window !== 'undefined') ? window.ethereum : null;
     if (!provider || typeof provider.on !== 'function' || provider._tacitAirdropClaimBound) return;
     provider._tacitAirdropClaimBound = true;
     provider.on('accountsChanged', (accounts) => {
-      onChange((Array.isArray(accounts) && accounts[0]) ? lc(accounts[0]) : null);
+      const addr = (Array.isArray(accounts) && accounts[0]) ? lc(accounts[0]) : null;
+      if (_latestAccountsChangedHandler) _latestAccountsChangedHandler(addr);
     });
   } catch {}
 }

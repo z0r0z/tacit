@@ -708,7 +708,7 @@ export async function renderSendTab(wallet, helpers = {}) {
       first, and wraps public funds only if it needs to.</div>
     <div>Your Tacit address <span class="muted">(one handle, both chains — share to receive)</span>:
       ${myTacit
-        ? `<code id="csend-myaddr" class="addr">${myTacit}</code>
+        ? `<code id="csend-myaddr" class="addr">${esc(myTacit)}</code>
            <button id="csend-copyaddr" type="button" class="btn-copy" style="font-size:10px;padding:2px 8px;margin-left:6px;">Copy</button>
            <div class="muted" style="font-size:10px;margin-top:2px;">Pays you on <span class="btc-word">Bitcoin</span> or <span class="eth-word">Ethereum</span> from a single string. <details style="display:inline;"><summary style="display:inline;cursor:pointer;list-style:none;">Ethereum-only pubkey ▾</summary> <code class="addr" style="font-size:10px;">${id.pubHex}</code></details></div>
            <div class="muted" style="font-size:10px;margin-top:2px;">Sharing this links your own two lanes to whoever receives it (inherent to a “pay me anywhere” handle) — it doesn’t weaken anyone else’s unlinkability. Want lane isolation? Use a per-lane address instead.</div>

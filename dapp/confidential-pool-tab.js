@@ -86,7 +86,7 @@ function wireExit(wallet, ux, notes) {
         : '→ too small for a fee exit — tick “No fee”';
     } catch { /* leave preview blank */ }
     return `<div class="list-row">`
-      + `<span>${fmtUnits(n.value, dec)} ${ticker} <span class="muted">${preview}</span></span>`
+      + `<span>${fmtUnits(n.value, dec)} ${esc(ticker)} <span class="muted">${esc(preview)}</span></span>`
       + `<button data-leaf="${n.leafIndex}" class="cpool-exit-one" style="padding:4px 10px;font-size:10px;flex:0 0 auto;">Exit</button></div>`;
   }).join('');
 

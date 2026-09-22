@@ -1,5 +1,11 @@
 # Static-host header config (Cloudflare Pages / Netlify format).
 #
+# NOT LIVE ON THE CURRENT HOST: tacit.finance serves from Render, and Render's
+# static-site product does not read a _headers file — custom headers there are
+# set via the Render Dashboard only (https://render.com/docs/static-site-headers).
+# Keep this file as the canonical header set to copy into that dashboard, and
+# update it there when this file changes, until Render ships file-based config.
+#
 # CSP frame-ancestors is the one directive browsers IGNORE when delivered via
 # <meta> tag — it must come from an HTTP header. The dapp's <meta http-equiv>
 # CSP at the top of index.html covers everything else; this file adds the

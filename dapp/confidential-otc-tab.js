@@ -29,6 +29,36 @@ function hydrateLeg(leg) {
 }
 const OTC_DRAFT_KEY = 'tacit-otc-maker-draft-v1';
 
+// The maker draft below carries the raw blinding `_r` of the input/recv/change legs — under this
+// protocol's bearer-note model that IS spend authority over the maker's traded note, so it must not sit
+// in localStorage as cleartext (any same-origin script bug elsewhere, or a browser extension with a
+// storage-read permission, could read it and later spend the note). It still has to survive a reload —
+// the maker may close the tab while waiting on the taker's countersignature — so it's encrypted at rest
+// with a key derived from the wallet's own private key (never itself written to storage), which raises
+// the bar from "any localStorage reader" to "present with this wallet unlocked."
+const _concatBytes = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a, 0); o.set(b, a.length); return o; };
+async function _otcDraftKey(walletPriv) {
+  const km = sha256(_concatBytes(new TextEncoder().encode('tacit-otc-draft-v1'), walletPriv));
+  return crypto.subtle.importKey('raw', km, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+async function saveOtcDraft(walletPriv, draft) {
+  const key = await _otcDraftKey(walletPriv);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const pt = new TextEncoder().encode(JSON.stringify(draft, (k, v) => typeof v === 'bigint' ? v.toString() : v));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt));
+  localStorage.setItem(OTC_DRAFT_KEY, JSON.stringify({ iv: Array.from(iv), ct: Array.from(ct) }));
+}
+async function loadOtcDraft(walletPriv) {
+  let parsed;
+  try { parsed = JSON.parse(localStorage.getItem(OTC_DRAFT_KEY) || 'null'); } catch { return null; }
+  if (!parsed || !parsed.iv || !parsed.ct) return null;
+  try {
+    const key = await _otcDraftKey(walletPriv);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Uint8Array.from(parsed.iv) }, key, Uint8Array.from(parsed.ct));
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch { return null; } // wrong wallet unlocked, or corrupted — treat as no draft
+}
+
 let _ux = null;
 function getUx() {
   return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256}));
@@ -97,7 +127,7 @@ function wireComposer(wallet, ux, notes) {
   });
 
   const mkBtn = document.getElementById('otc-mk-btn');
-  if (mkBtn) mkBtn.onclick = () => {
+  if (mkBtn) mkBtn.onclick = async () => {
     const st = document.getElementById('otc-compose-status');
     try {
       const n = byLeaf.get((document.getElementById('otc-mk-note') || {}).value);
@@ -115,7 +145,7 @@ function wireComposer(wallet, ux, notes) {
       // requires this exact nk to authorize the spend (input_leaf_authed's native branch).
       const leg = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: inVal, inR: BigInt(n.blinding), inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
       const draft = { assetA: n.asset, assetB, vA: vA.toString(), vB: vB.toString(), chainBinding: ux.chainBindingHex(), spendRoot: n.root, deadline: 0, makerLeg: { ...leg, in: { ...leg.in, _r: leg.in._r.toString() }, recv: { ...leg.recv, _r: leg.recv._r.toString() }, change: leg.change ? { ...leg.change, _r: leg.change._r.toString() } : null } };
-      localStorage.setItem(OTC_DRAFT_KEY, JSON.stringify(draft, (k, v) => typeof v === 'bigint' ? v.toString() : v));
+      await saveOtcDraft(wallet.priv, draft);
       const offer = { assetA: n.asset, assetB, vA: vA.toString(), vB: vB.toString(), chainBinding: draft.chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(leg) };
       const out = document.getElementById('otc-mk-out');
       if (out) out.value = JSON.stringify(offer, (k, v) => typeof v === 'bigint' ? v.toString() : v);
@@ -150,11 +180,11 @@ function wireComposer(wallet, ux, notes) {
   };
 
   const fnBtn = document.getElementById('otc-fn-btn');
-  if (fnBtn) fnBtn.onclick = () => {
+  if (fnBtn) fnBtn.onclick = async () => {
     const st = document.getElementById('otc-compose-status');
     try {
       const cs = JSON.parse((document.getElementById('otc-fn-in') || {}).value || '{}');
-      const draft = JSON.parse(localStorage.getItem(OTC_DRAFT_KEY) || '{}');
+      const draft = (await loadOtcDraft(wallet.priv)) || {};
       if (!draft.makerLeg) { if (st) st.textContent = 'No local maker draft — create the offer in step 1 first.'; return; }
       const reBig = (p) => p && { ...p, amount: BigInt(p.amount), _r: BigInt(p._r) };
       const maker = { owner: draft.makerLeg.owner, nk: draft.makerLeg.nk, in: reBig(draft.makerLeg.in), recv: reBig(draft.makerLeg.recv), change: draft.makerLeg.change ? reBig(draft.makerLeg.change) : null };

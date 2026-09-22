@@ -23,7 +23,7 @@
 //   activate → delete old cache versions
 //   fetch → route by URL pattern, fall back to network on any error
 
-const CACHE_VERSION = 'v1-stealth-cache-ttl-activity-fallback';
+const CACHE_VERSION = 'v1-stealth-cache-ttl-activity-fallback-66f1ccf5';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
 

@@ -278,6 +278,11 @@ export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = n
     };
   }
 
+  // NOT an authentication check: `maker` is compared against `o.maker`, but `o.maker` is public (visible
+  // to anyone via book()/get(), and broadcast in the offer itself) — a caller supplying it back proves
+  // nothing about key possession. Safe only when the caller already authenticated the maker some other
+  // way (e.g. a trusted server-side session); never expose this to an untrusted/public entry point.
+  // `cancelSigned` below verifies a real signature and is the only safe choice for that.
   function cancel(offerId, maker) {
     const o = offers.get(lc(offerId));
     if (!o) return false;
@@ -301,6 +306,16 @@ export function makeCrossChainOrderbook({ swap = makeAdaptorSwap(), resolver = n
     for (const o of offers.values()) if (o.status === 'open' && o.expiry != null && nowTs >= o.expiry) { o.status = 'expired'; n++; }
     return n;
   }
+  // `offers` otherwise grows without bound for the life of the instance — nothing else ever deletes a
+  // terminal (filled/cancelled/expired) entry. A caller running this instance long-lived should call this
+  // periodically (e.g. alongside expireSweep) once entries are old enough that no one still needs `get()`.
+  function prune(nowTs, maxAgeMs) {
+    let n = 0;
+    for (const [id, o] of offers) {
+      if (o.status !== 'open' && (o.expiry == null || nowTs - o.expiry >= maxAgeMs)) { offers.delete(id); n++; }
+    }
+    return n;
+  }
 
-  return { post, postSigned, book, get, quote, quoteExactIn, fill, cancel, cancelSigned, expireSweep };
+  return { post, postSigned, book, get, quote, quoteExactIn, fill, cancel, cancelSigned, expireSweep, prune };
 }

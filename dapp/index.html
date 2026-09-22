@@ -46,11 +46,13 @@
   object-src 'none' and base-uri 'self' are defense-in-depth.
 
   `frame-ancestors` is intentionally absent here — browsers ignore that
-  directive when delivered via <meta>. It's set as an HTTP header by the
-  static host instead; see ./_headers for the Cloudflare Pages / Netlify
-  config that adds frame-ancestors 'self' (clickjacking defense).
+  directive when delivered via <meta>. It must be set as an HTTP header
+  instead; see ./_headers for the canonical set (including frame-ancestors
+  'self' for clickjacking defense) — Render (the current static host) does
+  not read that file, so these headers must be mirrored into the Render
+  Dashboard's static-site header config for them to actually take effect.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co; img-src 'self' data: https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co; img-src 'self' data: https://ipfs.filebase.io https://content.wrappr.wtf https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, borrow against, and bridge. Mint cBTC/tacBTC from SP1-reflected Bitcoin locks and borrow cUSD against it.">
 <meta name="theme-color" content="#f7931a">
@@ -8630,7 +8632,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <div class="tabs tabs-primary">
   <button class="tab active" data-tab="wallet" data-group="wallet" title="Your unified balances across Bitcoin and Ethereum — plain coins, select tokens, and shielded notes">Wallet</button>
   <button class="tab" data-tab="transfer" data-group="send" title="Send privately on Bitcoin or Ethereum — tacit assets, plain sats, or shielded ETH/USDC/tacBTC/tacUSD">Send</button>
-  <button class="tab" data-tab="market" data-group="trade" title="Trade on the Bitcoin order book — atomic, non-custodial settlement on Bitcoin L1">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
+  <button class="tab" data-tab="market" data-group="trade" title="Trade on the Bitcoin order book — instant and atomic-intent listings settle non-custodially in one Bitcoin tx; some OTC listings require counterparty trust instead">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="discover" data-group="discover" title="Browse Bitcoin-native assets and public mints">Discover</button>
   <button class="tab" data-tab="etch" data-group="create" title="Create Bitcoin-native confidential assets and drops">Create</button>
   <button class="tab" data-tab="about" data-group="advanced" title="Protocol docs, security notes, and advanced references">Docs</button>
@@ -8654,7 +8656,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      direct-link-only; OTC's UI verifies+settles an already-assembled offer rather than letting a
      user create/match one. -->
 <div class="tabs subtabs" data-group="trade" style="display:none;">
-  <button class="tab active" data-tab="market" title="Bitcoin order book — trade for real sats. Atomic, non-custodial settlement on Bitcoin L1; limit orders and price discovery. You walk away holding actual BTC.">Order book</button>
+  <button class="tab active" data-tab="market" title="Bitcoin order book — trade for real sats. Instant and atomic-intent listings settle non-custodially in one Bitcoin tx; some OTC listings require counterparty trust instead. Limit orders and price discovery. You walk away holding actual BTC.">Order book</button>
   <button class="tab" data-tab="cdp" title="Borrow cUSD against cBTC, or mint cBTC from a Bitcoin lock — in the confidential pool on Ethereum">CDP</button>
 </div>
 

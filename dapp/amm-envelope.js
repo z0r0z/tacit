@@ -338,27 +338,37 @@ export function decodeLpAdd(payload) {
       if (off + 2 > payload.length) return null;
       result.feeBps = _readU16LE(payload, off); off += 2;
       if (result.feeBps > FEE_BPS_MAX) return null;
+      if (off + 1 > payload.length) return null;
       const vkLen = payload[off++];
       if (vkLen < 1 || vkLen > 64) return null;
+      if (off + vkLen > payload.length) return null;
       result.vkCid = _utf8.decode(payload.slice(off, off + vkLen)); off += vkLen;
+      if (off + 1 > payload.length) return null;
       const cerLen = payload[off++];
       if (cerLen < 1 || cerLen > 64) return null;
+      if (off + cerLen > payload.length) return null;
       result.ceremonyCid = _utf8.decode(payload.slice(off, off + cerLen)); off += cerLen;
+      if (off + 2 > payload.length) return null;
       const arbCount = payload[off++];
       if (arbCount > 16) return null;
       result.arbiterThresholdM = payload[off++];
       result.arbiterPubkeys = [];
+      if (off + arbCount * 33 > payload.length) return null;
       for (let i = 0; i < arbCount; i++) { result.arbiterPubkeys.push(payload.slice(off, off + 33)); off += 33; }
+      if (off + 1 > payload.length) return null;
       const lsigCount = payload[off++];
       if (lsigCount > 2) return null;
+      if (off + lsigCount * 64 > payload.length) return null;
       result.launcherSigs = [];
       for (let i = 0; i < lsigCount; i++) { result.launcherSigs.push(payload.slice(off, off + 64)); off += 64; }
+      if (off + 33 > payload.length) return null;
       result.protocolFeeAddress = payload.slice(off, off + 33); off += 33;
       if (off + 2 > payload.length) return null;
       result.protocolFeeBps = _readU16LE(payload, off); off += 2;
       if (result.protocolFeeBps > PROTOCOL_FEE_BPS_MAX) return null; // the same bound the encoder enforces
       if (off + 1 > payload.length) return null;
       const metaLen = payload[off++];
+      if (off + metaLen > payload.length) return null;
       result.poolMetaUri = _utf8.decode(payload.slice(off, off + metaLen)); off += metaLen;
       if (off + 1 > payload.length) return null;
       result.poolCapabilityFlags = payload[off++];

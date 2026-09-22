@@ -44,7 +44,8 @@ export function makeCrossoutConsumer({ ethGetLogs, kvGet, kvPut, evmLog, confirm
     }
     let recorded = 0;
     for (const log of logs) {
-      const ev = evmLog.decodeLog(log);
+      let ev;
+      try { ev = evmLog.decodeLog(log); } catch { continue; } // a single malformed log can't stall the cursor forever
       if (!ev || ev.type !== 'CrossOutRecorded' || ev.destChain !== DEST_BITCOIN) continue;
       const key = recKey(network, ev.claimId);
       if (await kvGet(key)) continue; // dedup — already recorded

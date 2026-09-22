@@ -10,7 +10,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { getConfidentialDeployment } from './confidential-deployments.js';
+import { getConfidentialDeployment, esc } from './confidential-deployments.js';
 
 let _ux = null;
 function getUx() {
@@ -92,8 +92,8 @@ export async function renderFactoryTab(wallet) {
       };
       const signed = ux.evmTx.signEip1559(tx, acct.priv);
       const txHash = await ux.rpc('eth_sendRawTransaction', [signed.raw]);
-      if (st) st.innerHTML = `Deployed <strong>${symbol}</strong> (${decimals} dec)`
-        + (txHash ? ` — <code style="font-size:10px;word-break:break-all;">${txHash}</code>` : '')
+      if (st) st.innerHTML = `Deployed <strong>${esc(symbol)}</strong> (${decimals} dec)`
+        + (txHash ? ` — <code style="font-size:10px;word-break:break-all;">${esc(txHash)}</code>` : '')
         + '. Wrap it into the pool from the Send / Pool surface once the tx confirms.';
     } catch (e) {
       if (st) st.textContent = 'Deploy failed: ' + (e && e.message || e);

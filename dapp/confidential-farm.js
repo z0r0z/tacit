@@ -111,6 +111,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // rewardOwner so no settler can redirect the yield.
   const buildHarvestOp = ({ chainBinding, spendRoot, controller, owner, ownerPriv, rewardOwner, shares, nonce, harvestNonce, reward, oldIndex, oldPath, lpAsset, rewardAsset, rewardNote, fee = 0n }) => {
     const f = BigInt(fee); // pay the relay out of yield: the reward note opens to reward − fee, the relay gets fee
+    if (f > BigInt(reward)) throw new Error('farm-harvest: fee exceeds reward');
     const note = { cx: rewardNote.cx, cy: rewardNote.cy, owner: rewardOwner, value: BigInt(reward) - f, blinding: rewardNote.blinding };
     const sig = farmHarvestRewardSigma({ chainBinding, rewardAsset, harvestNonce, note, reward, fee: f });
     // Receipt-owner authorization (main.rs OP_FARM_HARVEST): without it a delegated box could re-mint the
@@ -140,6 +141,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
       throw new Error('farm-unbond: a relay fee is payable only for a pool-registered stake asset (an AMM LP-share id is not registered — self-settle with fee = 0, or pass stakeAssetRegistered after checking assets(lpAsset).registered)');
     }
     const f = BigInt(fee); // the released note opens to shares − fee; the relay is paid `fee` in the stake asset
+    if (f > BigInt(shares)) throw new Error('farm-unbond: fee exceeds shares');
     const note = { cx: releaseNote.cx, cy: releaseNote.cy, owner: lpOwner, value: BigInt(shares) - f, blinding: releaseNote.blinding };
     const sig = farmUnbondReleaseSigma({ chainBinding, lpAsset, nonce, note, shares, fee: f });
     // Receipt-owner authorization (main.rs OP_FARM_UNBOND): bind the released note's commitment + owner + shares;

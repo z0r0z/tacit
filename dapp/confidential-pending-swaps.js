@@ -67,9 +67,13 @@ export function makeConfidentialPendingSwaps({ storage, relay = null, now = () =
     const set = spent instanceof Set ? spent : new Set([...(spent || [])].map(lc));
     const m = load(); const settled = [], failed = [];
     for (const [id, r] of Object.entries(m)) {
+      // Check the spent set BEFORE the 'failed' short-circuit: a swap already marked failed (timed out)
+      // can still land late (SP1 proving latency), and the input nullifier landing on-chain is always
+      // authoritative over a client-side timeout guess — otherwise it stays mislabeled failed forever and
+      // its already-spent input note incorrectly reappears as spendable in overlay().
+      if (set.has(lc(r.in.nullifier))) { delete m[id]; settled.push(id); continue; }      // input consumed ⇒ landed
       if (r.status === 'failed') continue;                   // already rolled back; awaits dismiss()
-      if (set.has(lc(r.in.nullifier))) { delete m[id]; settled.push(id); }      // input consumed ⇒ landed
-      else if (now() - r.createdAt > SETTLE_TIMEOUT_MS) { m[id] = { ...r, status: 'failed', error: 'timed out — price may have moved' }; failed.push(id); }
+      if (now() - r.createdAt > SETTLE_TIMEOUT_MS) { m[id] = { ...r, status: 'failed', error: 'timed out — price may have moved' }; failed.push(id); }
     }
     save(m);
     return { settled, failed };
