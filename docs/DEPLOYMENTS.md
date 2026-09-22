@@ -83,6 +83,22 @@ config. Integrator guide: [`FARMS.md`](./FARMS.md).
 Weights are governed on-chain and can change (timelocked, bounded), so read `poolInfo(pid)` for the live values.
 Full ids are in [`FARMS.md`](./FARMS.md).
 
+### Bitcoin-native AMM pool
+
+A pool founded directly on Bitcoin via `T_LP_ADD` variant 1 (`POOL_INIT`, [SPEC §5.5](../SPEC.md#55-amm)) — no
+Ethereum contract, no CreateX manifest. Reserves and LP shares are ordinary Tacit assets the indexer tracks
+from the chain alone, the same as any other Bitcoin-side pool.
+
+| Field | Value |
+| --- | --- |
+| Pool, tETH / TAC | pool id `0xaa3eab26…33eb79`, LP-share id `0x1f117528…d8dd8c3` |
+| Founding reserves | 10,376 tETH / 146,911,924 TAC |
+| Founder LP shares | 1,233,648 (of 1,234,648 total; 1,000 locked as `MINIMUM_LIQUIDITY`) |
+| Commit / reveal | [`29bdef28…c0a9ad`](https://mempool.space/tx/29bdef28e932f75bd4b22cc6573ab8a31e20499ad96ad1a0bf3eea8acac0a9ad) / [`84552c02…583d8eb`](https://mempool.space/tx/84552c02c6e5b84eba39316e794f848b49d50a8607fffca42949cc754583d8eb) |
+
+Founded once the funding notes' own bridge hops matured; the pool is live once Bitcoin confirms the reveal
+and reflection folds it into the pool's tracked state, same as any other Bitcoin-side spend.
+
 ### Verification anchors
 
 | Field | Value |
