@@ -2,7 +2,7 @@
 // Offline: node tests/farm-program-api.test.mjs
 import http from 'node:http';
 import { spawnSync, spawn } from 'node:child_process';
-import { fmtUnits, buildProgram, farmHealth, publicProgram, FARM_SELECTORS as S, FARM_MANAGER_MAINNET, LAUNCH_POOLS, DAY } from '../worker-relay/src/lib/farm-health.js';
+import { fmtUnits, buildProgram, farmHealth, publicProgram, FARM_SELECTORS as S, FARM_MANAGER_MAINNET, LAUNCH_POOLS, LAUNCH_POOL_IDS, DAY } from '../worker-relay/src/lib/farm-health.js';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
 
@@ -44,6 +44,14 @@ function answerCall(to, data) {
   if (sel === S.POOL) return '0x' + addrW(st.pool);
   if (sel === S.REWARD_ASSET) return '0x' + st.rewardAsset.slice(2);
   if (sel === S.REWARD_TOKEN) return '0x' + addrW(st.rewardToken);
+  if (sel === S.pools) {
+    // The confidential pool's pools(poolId) struct: init, assetA, assetB, reserveA, reserveB, feeBps, totalShares.
+    const id = '0x' + data.slice(10);
+    if (to.toLowerCase() !== st.pool.toLowerCase()) throw new Error('pools() read from the wrong contract');
+    if (st.ammDown === id) throw new Error('pool read failed');
+    const i = Object.values(LAUNCH_POOL_IDS).indexOf(id);
+    return '0x' + w(1n) + '0a'.repeat(32) + '0b'.repeat(32) + w(1000n + BigInt(i)) + w(2000n + BigInt(i)) + w(30n) + w(500n + BigInt(i));
+  }
   if (sel === S.poolInfo) {
     const p = st.pools[Number(BigInt('0x' + data.slice(10)))];
     return '0x' + p.stake.slice(2) + w(p.shares) + w(p.rps) + w(p.debt) + w(p.alloc) + w(p.last) + w(p.lock);
@@ -79,7 +87,7 @@ const byName = (h, n) => h.checks.find((c) => c.name === n);
 const fresh = () => { _resetFarmCache(); calls = 0; down = false; };
 
 console.log('\nselectors match the contract signatures:');
-for (const [name, sig] of Object.entries({ gov: 'gov()', pendingGov: 'pendingGov()', rate: 'rate()', periodFinish: 'periodFinish()', totalAllocPoint: 'totalAllocPoint()', poolLength: 'poolLength()', poolInfo: 'poolInfo(uint256)', POOL: 'POOL()', REWARD_ASSET: 'REWARD_ASSET()', REWARD_TOKEN: 'REWARD_TOKEN()', farmTreasury: 'farmTreasury(address)' })) {
+for (const [name, sig] of Object.entries({ gov: 'gov()', pendingGov: 'pendingGov()', rate: 'rate()', periodFinish: 'periodFinish()', totalAllocPoint: 'totalAllocPoint()', poolLength: 'poolLength()', poolInfo: 'poolInfo(uint256)', POOL: 'POOL()', REWARD_ASSET: 'REWARD_ASSET()', REWARD_TOKEN: 'REWARD_TOKEN()', farmTreasury: 'farmTreasury(address)', pools: 'pools(bytes32)' })) {
   ok(sig, S[name] === '0x' + bytesToHex(keccak_256(new TextEncoder().encode(sig))).slice(0, 8));
 }
 
@@ -101,6 +109,11 @@ console.log('\nnormal state:');
   ok('share percent and per-pool TAC/day', b.pools[0].sharePct === '50' && b.pools[1].sharePct === '30' && b.pools[2].tacPerDayForPool === fmtUnits((RATE * 86400n * 20n) / 100n));
   ok('lock seconds and shares reported', b.pools[1].lockSeconds === 604800 && b.pools[0].totalShares === '5000000' && b.pools.every((p) => p.idle === false));
   ok('no internal fields leak', !('_n' in b) && typeof b.updatedAt === 'string' && b.stale === false);
+  ok('each launch pool carries its pool id, fee tier and reserves', b.pools.every((p, i) => p.poolId === LAUNCH_POOL_IDS[p.lpAsset]
+    && p.feeBps === 30 && p.reserves && p.reserves.reserveA === String(1000 + i) && p.reserves.reserveB === String(2000 + i)
+    && p.reserves.lpTotalShares === String(500 + i) && p.reserves.assetA === '0x' + '0a'.repeat(32)), JSON.stringify(b.pools[0]));
+  ok('every launch pool id derives its LP asset', Object.entries(LAUNCH_POOL_IDS).every(([lp, id]) =>
+    '0x' + bytesToHex(keccak_256(new Uint8Array([...Buffer.from(id.slice(2), 'hex'), ...Buffer.from('lp')]))) === lp));
   const before = calls;
   await get('/farm/program?network=mainnet'); await get('/farm/health?network=mainnet');
   ok('repeat calls inside the window reuse one read', calls === before);
@@ -110,11 +123,23 @@ console.log('\nnormal state:');
   ok('signet is a clean 404', s.status === 404);
 }
 
+console.log('\nan unreadable pool reports no reserves and the program still answers:');
+{
+  fresh();
+  st.ammDown = Object.values(LAUNCH_POOL_IDS)[1];
+  const r = await get('/farm/program');
+  const b = await r.json();
+  ok('200 with the other pools intact', r.status === 200 && b.pools[0].reserves && b.pools[2].reserves);
+  ok('the unreadable pool keeps its id but has no reserves', b.pools[1].poolId === Object.values(LAUNCH_POOL_IDS)[1] && b.pools[1].reserves === null && b.pools[1].feeBps === null);
+  st.ammDown = null;
+}
+
 console.log('\nunknown pool falls back to pid N:');
 {
   fresh();
   st.pools[2].stake = '0x' + 'ab'.repeat(32);
   const b = await (await get('/farm/program')).json();
+  ok('an unknown LP asset has no pool id or reserves', b.pools[2].poolId === null && b.pools[2].reserves === null);
   ok('label', b.pools[2].pair === 'pid 2');
   st = base(); st.treasury = RATE * 90n * BigInt(DAY) + 10n * TAC;
 }

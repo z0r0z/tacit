@@ -23,12 +23,19 @@ export const LAUNCH_POOLS = {
   '0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571': 'cETH/cUSD',
   '0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254': 'cETH/cBTC',
 };
+// The confidential pool each launch LP asset belongs to (lpAsset = keccak(poolId ‖ "lp")); the manager stores only the
+// LP asset, so the pool id that its reserves are read under comes from here.
+export const LAUNCH_POOL_IDS = {
+  '0x17c56713a7e4a5d679a71def3ff9fa186f1556ef757b0ee6b7a3ed8c9249ef99': '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00',
+  '0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571': '0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7',
+  '0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254': '0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331',
+};
 
 const SEL = {
   gov: '0x12d43a51', pendingGov: '0x25240810', rate: '0x2c4e722e', periodFinish: '0xebe2b12b',
   totalAllocPoint: '0x17caf6f1', poolLength: '0x081e3eda', poolInfo: '0x1526fe27',
   POOL: '0x7535d246', REWARD_ASSET: '0xf7b87410', REWARD_TOKEN: '0x99248ea7',
-  farmTreasury: '0x48aa7283',
+  farmTreasury: '0x48aa7283', pools: '0xb5217bb4',
 };
 export const FARM_SELECTORS = SEL;
 
@@ -104,15 +111,27 @@ export async function readFarmRaw(rpc, manager = FARM_MANAGER_MAINNET) {
     c(SEL.farmTreasury + pad32(BigInt(manager)), poolAddr),
     ...Array.from({ length: n }, (_, pid) => c(SEL.poolInfo + pad32(BigInt(pid)))),
   ]);
+  // Reserves of each known launch pool, at the same block. Best effort: a pool that cannot be read reports none.
+  const amms = await Promise.all(infos.map(async (h) => {
+    const poolId = LAUNCH_POOL_IDS[bytes32Of(h)];
+    if (!poolId) return null;
+    try {
+      const r = await c(SEL.pools + poolId.slice(2), poolAddr);
+      if (String(r || '').length < 2 + 64 * 7 || uintOf(r, 0) === 0n) return { poolId, reserves: null };
+      return { poolId, feeBps: Number(uintOf(r, 5)), reserves: {
+        assetA: '0x' + wordOf(r, 1), assetB: '0x' + wordOf(r, 2), reserveA: uintOf(r, 3), reserveB: uintOf(r, 4), lpTotalShares: uintOf(r, 6),
+      } };
+    } catch { return { poolId, reserves: null }; }
+  }));
   return {
     manager, blockNumber: blk.number, timestamp: blk.timestamp, codeMissing: false,
     gov: addrOf(gov), pendingGov: addrOf(pendingGov),
     rate: uintOf(rate), periodFinish: uintOf(periodFinish), totalAllocPoint: uintOf(totalAllocPoint),
     pool: poolAddr, rewardAsset: bytes32Of(rewardAsset), rewardToken: addrOf(rewardToken),
     treasury: uintOf(treasury),
-    pools: infos.map((h) => ({
+    pools: infos.map((h, i) => ({
       stakeAsset: bytes32Of(h), totalShares: uintOf(h, 1), rps: uintOf(h, 2), totalRewardDebt: uintOf(h, 3),
-      allocPoint: uintOf(h, 4), lastUpdate: uintOf(h, 5), lockDuration: uintOf(h, 6),
+      allocPoint: uintOf(h, 4), lastUpdate: uintOf(h, 5), lockDuration: uintOf(h, 6), amm: amms[i],
     })),
   };
 }
@@ -173,6 +192,14 @@ export function buildProgram(raw, { network = 'mainnet' } = {}) {
       idle: p.totalShares === 0n,
       tacPerDayForPool: fmtUnits(poolDayUnits(p)),
       lockSeconds: Number(p.lockDuration),
+      // The confidential pool behind the LP asset. Reserves are in pool units (8 decimals), read at `block`.
+      poolId: p.amm ? p.amm.poolId : null,
+      feeBps: p.amm && p.amm.reserves ? p.amm.feeBps : null,
+      reserves: p.amm && p.amm.reserves ? {
+        assetA: p.amm.reserves.assetA, assetB: p.amm.reserves.assetB,
+        reserveA: p.amm.reserves.reserveA.toString(), reserveB: p.amm.reserves.reserveB.toString(),
+        lpTotalShares: p.amm.reserves.lpTotalShares.toString(),
+      } : null,
     })),
     block: Number(raw.blockNumber),
     // Internal, stripped before serving: exact integers the health checks compare.
