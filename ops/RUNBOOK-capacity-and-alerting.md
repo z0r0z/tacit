@@ -377,6 +377,13 @@ Switch on in this order, and only when no bridge burn is waiting on the fold, be
 follow the tip: set the two header knobs (one env write, then redeploy `tacit-header`); watch `batching:` lines for a
 day; then change the reflection schedule and monitor threshold together. To revert, unset the knobs.
 
+**Live since 2026-09-22** (after burn 2 minted and reflection caught up to `lagBlocks: 0`): `tacit-header` runs
+`HEADER_RELAY_MIN_BATCH=24`, `HEADER_RELAY_MAX_STALE_BLOCKS=48`, `MAX_GAS_GWEI=0.2` (still `*/3 * * * *`, but most
+runs now log `batching:` and wait); `tacit-api` runs `REFLECTION_BATCH_SIZE=36`; `tacit-reflection`'s schedule is
+`11 */4 * * *`; `tacit-monitor`'s `REFLECTION_STALL_HOURS` is 9. A cBTC lock's mint now waits for the next reflection
+batch (up to ~4h) rather than the next 5-minute cron (~25min). Revert any of these by unsetting the var or restoring
+the old schedule.
+
 ## 4. Responding
 
 **Settle runway low** — fund the relay wallet. Read the current address from a recent pool settle rather
