@@ -1,10 +1,10 @@
 // evm-wallet — external Ethereum wallet onboarding for the V1 dapp. Two roles from one connected EOA:
-//   1. IDENTITY: personal_sign the fixed tacit.finance sign-in message → deterministic tacit1 priv (RFC-6979 ⇒ the same EOA
+//   1. IDENTITY: personal_sign the fixed Tacit identity message → deterministic tacit1 priv (RFC-6979 ⇒ the same EOA
 //      always derives the same identity, so recovery = reconnect the wallet anywhere → same holdings).
 //   2. FUNDER: the same provider sends pool.wrap() txs (msg.value = ETH), whose note owner is the tacit1
 //      identity baked into the wrap commit — so an external wallet can top up a tacit1 note it doesn't hold.
 // Faithful port of tacit.js's ethWallet connect/derive (EIP-6963 discovery + EIP-191 recovery guard).
-import { ethIdentityMessage } from './identity-message.js';
+import { identityMessage } from './identity-message.js';
 
 const ETH_SIGNED_PREFIX = '\x19Ethereum Signed Message:\n';
 
@@ -29,7 +29,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   function selectProvider(uuid) { const p = providers.find((x) => x.info.uuid === uuid); if (p) selected = p.provider; return !!p; }
   function providerLabel() { const a = providers.find((p) => p.provider === currentProvider()); return a?.info?.name || 'Ethereum wallet'; }
 
-  function derivationMsg(address) { return ethIdentityMessage({ address, netName, keccak256 }); }
+  function derivationMsg() { return identityMessage({ netName }); }
   function eip191Hash(msg) { const m = enc(msg); return keccak256(concat(enc(`${ETH_SIGNED_PREFIX}${m.length}`), m)); }
   function recoverAddr(msg, sigHex) {
     const clean = String(sigHex).toLowerCase().replace(/^0x/, '');
@@ -91,7 +91,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     const { provider, address } = await connect({ pick });
     let code = '0x'; try { code = await provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }); } catch { /* treat as EOA */ }
     if (isContractCode(code)) throw new Error('Smart-contract wallets produce non-deterministic signatures and cannot derive a stable tacit identity — use a passkey, seed, or an EOA wallet.');
-    const msg = derivationMsg(address);
+    const msg = derivationMsg();
     const sig = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
     if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('wallet returned invalid signature');
     const sigBytes = hexToBytes(sig.slice(2));

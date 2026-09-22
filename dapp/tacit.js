@@ -136,7 +136,7 @@ import * as ammMinLiqMod from './amm-min-liq.js';
 import * as ammEnvelopeMod from './amm-envelope.js';
 import * as ammReplayMod from './amm-replay.js';
 import { makeFarmRecovery } from './amm-farm-recovery.js';
-import { ethIdentityMessage, btcIdentityMessage } from './identity-message.js';
+import { identityMessage } from './identity-message.js';
 
 // The wallet only runs as a top-level page (preboot.js hides a framed one).
 if (typeof window !== 'undefined' && window.top !== window.self) throw new Error('tacit: refusing to run inside a frame');
@@ -1428,8 +1428,8 @@ const prfWallet = {
 
 // ============== ETHEREUM WALLET DERIVATION ==============
 // Deterministic tacit identity from an Ethereum wallet signature. The user
-// signs a fixed Sign-In with Ethereum message bound to tacit.finance via
-// personal_sign (identity-message.js); the 65-byte ECDSA signature is
+// signs the fixed identity message (identity-message.js, the same in every
+// Tacit app) via personal_sign (EIP-191); the 65-byte ECDSA signature is
 // deterministic (RFC 6979), so the same ETH key always produces the same
 // tacit privkey. Recovery = reconnect the same ETH
 // wallet on any device → sign the same message → identical tacit identity →
@@ -1438,8 +1438,8 @@ const prfWallet = {
 // Reuses the existing EIP-6963 multi-provider discovery and _ethProvider()
 // infrastructure from the claim flow.
 const ETH_WALLET_KEY = 'tacit-eth-identity';
-function _ethDerivationMsg(addrHex) {
-  return ethIdentityMessage({ address: addrHex, netName: NET.name, keccak256: keccak_256 });
+function _ethDerivationMsg() {
+  return identityMessage({ netName: NET.name });
 }
 // True when eth_getCode bytecode is a genuine contract wallet, NOT an EIP-7702
 // delegation designator (0xef0100 ++ 20-byte impl address). A 7702 account is
@@ -1461,8 +1461,8 @@ const ethWallet = {
   state: null, // null | { address, pubkey }
 
   // Exposed so an integrator building their own derivation (rather than driving this wallet
-  // object) can pin the exact bytes signed for an account — the derived identity depends on hashing
-  // this precise string, so any deviation (whitespace, address case, network) derives a different key.
+  // object) can pin the exact bytes signed — the derived identity depends on hashing this precise
+  // string, so any deviation (whitespace, network label, version) derives a different key.
   derivationMsg: _ethDerivationMsg,
 
   available() {
@@ -1500,7 +1500,7 @@ const ethWallet = {
     if (await _isEthContractAddr(provider, addr)) {
       throw new Error('Smart-contract wallets (Safe, Argent, Ambire) produce non-deterministic signatures and cannot derive a stable tacit identity. Use a passkey or an EOA wallet instead.');
     }
-    const msg = _ethDerivationMsg(addr);
+    const msg = _ethDerivationMsg();
     const msgHex = '0x' + bytesToHex(new TextEncoder().encode(msg));
     const sig = await provider.request({
       method: 'personal_sign',
@@ -1624,7 +1624,7 @@ const ethWallet = {
 // the existing funding-only burner path (see _runFirstLoadChoice).
 const BTC_WALLET_KEY = 'tacit-btc-identity'; // {address, provider, btcPubkey, tacitPubkey}
 function _btcDerivationMsg() {
-  return btcIdentityMessage({ netName: NET.name });
+  return identityMessage({ netName: NET.name });
 }
 function _newBtcNonDeterministicError(provider) {
   const e = new Error(

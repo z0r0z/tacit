@@ -33,17 +33,16 @@ ETH key ──personal_sign──▶ 65-byte ECDSA sig ──sha256──▶ toV
                                                          hash160 + bech32 ──▶ bc1q…/tb1q… P2WPKH address
 ```
 
-1. **Fixed message.** `_ethDerivationMsg(address)` returns the Sign-In with
-   Ethereum (EIP-4361) message built by `dapp/identity-message.js`: domain
-   `tacit.finance`, URI `https://tacit.finance`, the signing account (EIP-55),
-   a statement naming the network and saying to sign only on tacit.finance,
-   and a fixed chain id, nonce and issue time so the bytes never vary for an
-   account. Wallets that check sign-in domains present it normally on
-   tacit.finance and warn on any other origin. The chain id and statement bind
-   the network, so signet and mainnet derive *different* identities from the
-   same ETH key — intentional isolation, matching the per-network wallet
-   model everywhere else in the dapp. `tests/identity-message.test.mjs` pins
-   the exact bytes.
+1. **Fixed message.** `_ethDerivationMsg()` returns the Tacit identity
+   message built by `dapp/identity-message.js`. It is the same in every Tacit
+   app and on every origin, so one wallet recovers the same notes wherever it
+   signs in; integrators sign exactly these bytes. It states that the
+   signature creates the Tacit private key and that anyone holding it
+   controls the funds, pins `network: ${NET.name}` and `version: 1`, and is
+   signed by Bitcoin wallets too. Network binding means signet and mainnet
+   derive *different* identities from the same ETH key — intentional
+   isolation, matching the per-network wallet model everywhere else in the
+   dapp. `tests/identity-message.test.mjs` pins the exact bytes.
 2. **Deterministic signature.** The wallet signs the message via
    `personal_sign` (EIP-191). EOA wallets sign with RFC 6979 deterministic
    nonces, so the same key + same message produces the byte-identical 65-byte
@@ -209,14 +208,15 @@ Coverage (10/10 passing as of 2026-06-04):
   a brand-new device can't compare against the enrolled pubkey. A signer that
   drifted would land in an empty wallet there — funds remain on-chain,
   recoverable by whatever produces the original signature.
-- **Per-network identity.** The message embeds the network and chain id; the
-  same ETH key yields distinct signet and mainnet tacit wallets.
-- **The signature is as powerful as the key it derives.** The message is a
-  sign-in bound to tacit.finance, so wallets that check sign-in domains warn
-  when any other origin asks for it, and its text says to sign it only on
-  tacit.finance. Wallets without that check show it as plain text. The
-  Bitcoin-wallet message (`btcIdentityMessage`) carries the same instruction
-  as text; Bitcoin wallets have no domain check.
+- **Per-network identity.** The message embeds the network name; the same ETH
+  key yields distinct signet and mainnet tacit wallets.
+- **The signature is as powerful as the key it derives.** Because the message
+  is shared across apps and origins, no wallet can tie the request to a site:
+  any page that shows these exact bytes and gets them signed holds the user's
+  Tacit key, including its Bitcoin key. That is the price of one identity
+  across every Tacit app. The text says so plainly and asks the user to sign
+  only in a Tacit app they trust; a domain-bound sign-in would warn on other
+  origins but would give each origin a different key.
 - **Contract wallets route elsewhere.** Safe/Argent users are pointed to the
   passkey path, which has the same no-stored-secret recovery story via
   WebAuthn PRF.
