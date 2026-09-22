@@ -41,8 +41,8 @@ or attestor set signs a bridge message.
 - **Transfer confidentially.** Amounts are hidden, conservation is proven by a kernel signature, and
   range proofs are Bulletproofs+. Recipients recover credits from their key alone.
 - **Trade atomically.**
-  - OTC swaps of an asset against BTC in one transaction.
-  - Bids that a watchtower fills while the buyer is offline.
+  - Bids that a watchtower fills while the buyer is offline. The decoder, validator and reflection fold
+    are live; no wallet exposes building one yet.
   - A native AMM: per-trade swaps, routes over up to four pools, and batch clearing at a uniform price.
   - LP farms.
 - **Lock BTC for cBTC.** A self-custody lock on Bitcoin backs fungible cBTC in the pool.
@@ -51,9 +51,10 @@ or attestor set signs a bridge message.
 
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
-- Trade on a confidential AMM: swaps, routes and liquidity. OTC and bids also run here.
+- Trade on a confidential AMM: swaps, routes and liquidity. Bids run here too; OTC is pool-only.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
-- Use adaptor locks for atomic cross-chain swaps.
+- Use adaptor locks for atomic cross-chain swaps — the primitives are guest-verified; no dapp module
+  assembles the op yet.
 - Borrow **cUSD** against cBTC collateral. Mint **cBTC** against reflected BTC locks.
 - Earn farm rewards on LP positions, paid in wTAC (a 1:1 TAC wrapper).
 - Relay any op without gas, with the relayer's fee bound inside the proof. Anyone can also prove and
