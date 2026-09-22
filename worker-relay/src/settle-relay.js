@@ -314,6 +314,20 @@ export async function admitJobs(jobs, gate) {
   return { admitted: admitted.map((a) => a.job), refused };
 }
 
+// Prove and settle one claimed job on the ordinary single-op path, carrying it to a terminal ack either way.
+async function settleOne(j) {
+  try {
+    const proof = await proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
+    const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
+    await confidentialAck({ jobId: j.jobId, txHash });
+    log(`settled: job=${j.jobId} tx=${txHash}`);
+    await activateRelayedExit(j, txHash);
+  } catch (e) {
+    log(`job ${j.jobId} failed: ${e.message}`);
+    await confidentialAck({ jobId: j.jobId, error: e.message.slice(0, 200) });
+  }
+}
+
 async function batchCycle() {
   if (CFG.settleBatchMax <= 1) return false;
   let jobs = await confidentialBatch(CFG.settleBatchMax);
@@ -337,17 +351,7 @@ async function batchCycle() {
   // acking an error would fail a user's op merely for arriving alone. A lone job is proved on the ordinary
   // single-op path, which keeps the common case off the batch binary entirely.
   if (jobs.length === 1) {
-    const j = jobs[0];
-    try {
-      const proof = await proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
-      const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
-      await confidentialAck({ jobId: j.jobId, txHash });
-      log(`settled: job=${j.jobId} tx=${txHash}`);
-      await activateRelayedExit(j, txHash);
-    } catch (e) {
-      log(`job ${j.jobId} failed: ${e.message}`);
-      await confidentialAck({ jobId: j.jobId, error: e.message.slice(0, 200) });
-    }
+    await settleOne(jobs[0]);
     return true;
   }
   // The batch is proved as `batchtransfer`, which is a TRANSFER-specific guest op — it folds transfer
@@ -376,9 +380,10 @@ async function batchCycle() {
   try {
     proof = await proveSettle({ type: 'batchtransfer', op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
   } catch (e) {
-    log(`batch prove failed: ${e.message}`);
-    // Fail each member individually so the queue drains and one poison witness can't wedge the rest.
-    for (const id of ids) await confidentialAck({ jobId: id, error: `batch prove failed: ${e.message.slice(0, 160)}` });
+    // A batch proof covers every member, so one member that cannot prove fails it; settle each member alone
+    // instead, so only that member fails.
+    log(`batch prove failed, settling members one by one: ${e.message}`);
+    for (const j of jobs) await settleOne(j);
     return true;
   }
   try {
@@ -386,8 +391,8 @@ async function batchCycle() {
     for (const id of ids) await confidentialAck({ jobId: id, txHash });
     log(`batch settled: n=${jobs.length} tx=${txHash}`);
   } catch (e) {
-    log(`batch settle failed: ${e.message}`);
-    for (const id of ids) await confidentialAck({ jobId: id, error: `batch settle: ${e.message.slice(0, 160)}` });
+    log(`batch settle failed, settling members one by one: ${e.message}`);
+    for (const j of jobs) await settleOne(j);
   }
   return true;
 }
