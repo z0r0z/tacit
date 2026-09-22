@@ -136,6 +136,7 @@ import * as ammMinLiqMod from './amm-min-liq.js';
 import * as ammEnvelopeMod from './amm-envelope.js';
 import * as ammReplayMod from './amm-replay.js';
 import { makeFarmRecovery } from './amm-farm-recovery.js';
+import { ethIdentityMessage, btcIdentityMessage } from './identity-message.js';
 
 // The wallet only runs as a top-level page (preboot.js hides a framed one).
 if (typeof window !== 'undefined' && window.top !== window.self) throw new Error('tacit: refusing to run inside a frame');
@@ -1427,24 +1428,18 @@ const prfWallet = {
 
 // ============== ETHEREUM WALLET DERIVATION ==============
 // Deterministic tacit identity from an Ethereum wallet signature. The user
-// signs a fixed domain-separated message via personal_sign (EIP-191); the
-// 65-byte ECDSA signature is deterministic (RFC 6979), so the same ETH key
-// always produces the same tacit privkey. Recovery = reconnect the same ETH
+// signs a fixed Sign-In with Ethereum message bound to tacit.finance via
+// personal_sign (identity-message.js); the 65-byte ECDSA signature is
+// deterministic (RFC 6979), so the same ETH key always produces the same
+// tacit privkey. Recovery = reconnect the same ETH
 // wallet on any device → sign the same message → identical tacit identity →
 // chain scan restores all holdings. No passphrase, no localStorage blob.
 //
 // Reuses the existing EIP-6963 multi-provider discovery and _ethProvider()
 // infrastructure from the claim flow.
-const ETH_WALLET_KEY = 'tacit-eth-wallet-v1';
-function _ethDerivationMsg() {
-  return [
-    'Sign this message to derive your tacit.finance identity.',
-    '',
-    `network: ${NET.name}`,
-    'version: 1',
-    '',
-    'This signature will not send any transaction or spend any funds.',
-  ].join('\n');
+const ETH_WALLET_KEY = 'tacit-eth-identity';
+function _ethDerivationMsg(addrHex) {
+  return ethIdentityMessage({ address: addrHex, netName: NET.name, keccak256: keccak_256 });
 }
 // True when eth_getCode bytecode is a genuine contract wallet, NOT an EIP-7702
 // delegation designator (0xef0100 ++ 20-byte impl address). A 7702 account is
@@ -1466,8 +1461,8 @@ const ethWallet = {
   state: null, // null | { address, pubkey }
 
   // Exposed so an integrator building their own derivation (rather than driving this wallet
-  // object) can pin the exact bytes signed — the derived identity depends on hashing this precise
-  // string, so any deviation (whitespace, network label, version bump) derives a different key.
+  // object) can pin the exact bytes signed for an account — the derived identity depends on hashing
+  // this precise string, so any deviation (whitespace, address case, network) derives a different key.
   derivationMsg: _ethDerivationMsg,
 
   available() {
@@ -1505,7 +1500,7 @@ const ethWallet = {
     if (await _isEthContractAddr(provider, addr)) {
       throw new Error('Smart-contract wallets (Safe, Argent, Ambire) produce non-deterministic signatures and cannot derive a stable tacit identity. Use a passkey or an EOA wallet instead.');
     }
-    const msg = _ethDerivationMsg();
+    const msg = _ethDerivationMsg(addr);
     const msgHex = '0x' + bytesToHex(new TextEncoder().encode(msg));
     const sig = await provider.request({
       method: 'personal_sign',
@@ -1627,16 +1622,9 @@ const ethWallet = {
 // tacit pubkey as an anchor so any later drift is caught and surfaced rather than
 // silently re-deriving a wrong identity. Wallets that fail the guard fall back to
 // the existing funding-only burner path (see _runFirstLoadChoice).
-const BTC_WALLET_KEY = 'tacit-btc-wallet-v1'; // {address, provider, btcPubkey, tacitPubkey}
+const BTC_WALLET_KEY = 'tacit-btc-identity'; // {address, provider, btcPubkey, tacitPubkey}
 function _btcDerivationMsg() {
-  return [
-    'Sign this message to derive your tacit.finance identity.',
-    '',
-    `network: ${NET.name}`,
-    'version: 1',
-    '',
-    'This signature will not send any transaction or spend any funds.',
-  ].join('\n');
+  return btcIdentityMessage({ netName: NET.name });
 }
 function _newBtcNonDeterministicError(provider) {
   const e = new Error(

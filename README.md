@@ -316,7 +316,8 @@ See `build/README.md` for details.
 
 1. **Sign in / set up a wallet.** Connect an Ethereum wallet
    (MetaMask / Rabby / Rainbow — identity derived from one deterministic
-   `personal_sign`, recover by reconnecting), a passkey (WebAuthn PRF), a
+   sign-in message bound to tacit.finance, recover by reconnecting; only sign
+   it on tacit.finance), a passkey (WebAuthn PRF), a
    Bitcoin wallet (Xverse / UniSat / Leather), import a 64-hex privkey, or
    let the dApp auto-generate one (handy for signet). On local-key paths the
    privkey is AES-GCM-encrypted at rest; **export it** via Wallet → Export

@@ -44,7 +44,7 @@ const {
   getActiveWalletMode, NET, hexToBytes, bytesToHex,
 } = await import('../dapp/tacit.js');
 
-const BTC_WALLET_KEY = 'tacit-btc-wallet-v1';
+const BTC_WALLET_KEY = 'tacit-btc-identity';
 const ONBOARDED_KEY = 'tacit-onboarded-v1';
 const ENROLLED_ADDR = 'tb1qenrolledtestaddrxxxxxxxxxxxxxxxxxxxx';
 

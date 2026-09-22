@@ -33,13 +33,17 @@ ETH key ──personal_sign──▶ 65-byte ECDSA sig ──sha256──▶ toV
                                                          hash160 + bech32 ──▶ bc1q…/tb1q… P2WPKH address
 ```
 
-1. **Fixed message.** `_ethDerivationMsg()` returns a constant,
-   domain-separated string: it names tacit.finance, pins
-   `network: ${NET.name}` and `version: 1`, and states the signature sends no
-   transaction and spends no funds. Network binding means signet and mainnet
-   derive *different* identities from the same ETH key — intentional
-   isolation, matching the per-network wallet model everywhere else in the
-   dapp.
+1. **Fixed message.** `_ethDerivationMsg(address)` returns the Sign-In with
+   Ethereum (EIP-4361) message built by `dapp/identity-message.js`: domain
+   `tacit.finance`, URI `https://tacit.finance`, the signing account (EIP-55),
+   a statement naming the network and saying to sign only on tacit.finance,
+   and a fixed chain id, nonce and issue time so the bytes never vary for an
+   account. Wallets that check sign-in domains present it normally on
+   tacit.finance and warn on any other origin. The chain id and statement bind
+   the network, so signet and mainnet derive *different* identities from the
+   same ETH key — intentional isolation, matching the per-network wallet
+   model everywhere else in the dapp. `tests/identity-message.test.mjs` pins
+   the exact bytes.
 2. **Deterministic signature.** The wallet signs the message via
    `personal_sign` (EIP-191). EOA wallets sign with RFC 6979 deterministic
    nonces, so the same key + same message produces the byte-identical 65-byte
@@ -63,7 +67,7 @@ The derivation alone is deterministic; these checks make it safe to *trust*:
 | Signer authentication | `recoverEthAddrFromSig(msg, sig)` — full EIP-191 keccak + ecrecover in-page; login hard-fails unless the recovered address equals the connected account | A malicious or buggy provider substituting another account's signature, silently binding the user to a wallet they don't control |
 | Contract-wallet rejection | `eth_getCode` checked before signing; non-empty runtime code (Safe / Argent / Ambire, ERC-1271) is refused with an explicit error | Non-deterministic signers: a contract wallet's signature can change across sessions → each login would derive a different, empty wallet |
 | EIP-7702 acceptance | The `0xef0100‖impl-address` delegation designator is explicitly *not* treated as contract code (`_ethCodeIsContractWallet`) | False-positive lockout of 7702-delegated EOAs (MetaMask "smart accounts"), whose `personal_sign` is still their own deterministic ECDSA |
-| Identity-drift anchor | The derived pubkey is cached (non-secret) under `tacit-eth-wallet-v1`; if a later login re-derives a different key, login throws and locks rather than proceeding | A wallet that changes its signing behavior (or a tampered derivation message) silently dropping the user into a different, empty wallet — assets stay safe on-chain, error is surfaced |
+| Identity-drift anchor | The derived pubkey is cached (non-secret) under `tacit-eth-identity`; if a later login re-derives a different key, login throws and locks rather than proceeding | A wallet that changes its signing behavior (or a tampered derivation message) silently dropping the user into a different, empty wallet — assets stay safe on-chain, error is surfaced |
 | Account-switch lock | `accountsChanged` handler locks and disconnects the tacit identity the moment the active ETH account differs from the bound one | Operating a tacit wallet derived from account A while the user believes account B is active |
 | Secret hygiene | Signature bytes are zeroized immediately after hashing; localStorage holds only `{address, pubkey}`; the tacit privkey lives in page memory for the session and is never persisted | localStorage exfiltration yields nothing secret — there is no encrypted blob because there is no blob |
 
@@ -205,13 +209,14 @@ Coverage (10/10 passing as of 2026-06-04):
   a brand-new device can't compare against the enrolled pubkey. A signer that
   drifted would land in an empty wallet there — funds remain on-chain,
   recoverable by whatever produces the original signature.
-- **Per-network identity.** The message embeds the network name; the same ETH
-  key yields distinct signet and mainnet tacit wallets.
-- **Phishing surface is the message itself.** The signature is as powerful as
-  the key it derives. The message is fixed, versioned, human-readable, and
-  origin-presented by the wallet; any dapp asking for this exact string is
-  asking for the user's tacit wallet. (Same trust shape as every
-  sign-in-with-Ethereum-derived-key scheme.)
+- **Per-network identity.** The message embeds the network and chain id; the
+  same ETH key yields distinct signet and mainnet tacit wallets.
+- **The signature is as powerful as the key it derives.** The message is a
+  sign-in bound to tacit.finance, so wallets that check sign-in domains warn
+  when any other origin asks for it, and its text says to sign it only on
+  tacit.finance. Wallets without that check show it as plain text. The
+  Bitcoin-wallet message (`btcIdentityMessage`) carries the same instruction
+  as text; Bitcoin wallets have no domain check.
 - **Contract wallets route elsewhere.** Safe/Argent users are pointed to the
   passkey path, which has the same no-stored-secret recovery story via
   WebAuthn PRF.
