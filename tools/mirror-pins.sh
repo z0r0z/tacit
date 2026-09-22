@@ -64,7 +64,7 @@ IPFS_API="${IPFS_API:-http://127.0.0.1:5001}"
 # (dapp/tacit.js CANONICAL_*, dapp/circuits/ceremony-genesis-amm/*_cid.txt,
 # TETH_ASSET / TETH_DEPLOYMENTS image URIs) plus the TAC etch's on-chain
 # image_uri chain (metadata JSON carrying the tacit_attest supply opening,
-# and the image it points to).
+# and the image it points to), and every ceremony artifact in docs/CEREMONY.md.
 CANONICAL_PINS="
 bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u tacit-mixer-ceremony-bundle
 bafkreidwbautgstcnl54oszez7yqlc7mr5lrj6ac65h3p5sjw2rgz2jtv4 tacit-mixer-verification-key
@@ -73,6 +73,13 @@ bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam tacit-amm-ceremony-b
 bafybeigb43fb66kxs4wlxwsgasr22g7itd6yzotgtu2dosjt7zcegsizri tacit-pot18-ptau
 bafybeico2tziscjb2k3pknvyo5tqx652xcby2mcibnmgivav25fnsv72w4 tacit-amm-swap-batch-r1cs
 bafybeih4gm7vkrmegm2uxsuoc254bv7cnicpin3in46d6wki7m34grqnsy tacit-amm-swap-batch-zkey0
+bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm tacit-amm-swap-batch-final-zkey
+bafkreidc35fn7w3pxa4u7phjulzgrgm3js5ifmgqil7liedkqb2bdgdtp4 tacit-amm-swap-batch-vk
+bafybeif7ov6xsch246wg24ve2lzn5mmqzkrherlwzp6yxovahwo4u4yony tacit-amm-swap-batch-wasm
+bafybeifrj5wkuxpoa22o7rh7cu5mhnfvjoo77jhhdtouqbkut6rmms3e5q tacit-amm-lp-add-final-zkey
+bafybeid6j7prcptds2yidi2ksyceldo2zkq4lscp77swfkgsixh7igbdpy tacit-amm-lp-remove-final-zkey
+bafybeidjhs2eapagz2g57ckx5hlbclzkfnvnzxwrckghvuzrlvwlbyjmru tacit-amm-lp-add-r1cs
+bafybeiagfba7dwmlnylqoep6cqffvtobvxlwpbiiudcpmtshaz6hptvcii tacit-amm-lp-remove-r1cs
 bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai tacit-tac-metadata
 bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m tacit-tac-image
 bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i tacit-teth-image
