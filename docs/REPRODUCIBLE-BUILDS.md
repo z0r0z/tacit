@@ -166,7 +166,9 @@ three ELFs build in about 4 minutes on 16 cores from an empty Cargo home.
    ```
    The eth key is not in the pool bytecode; it is bound through the reflection ELF (step 3 for `reflection`) and
    the `ETH_REFLECTION_VKEY` digest, which the `eth_vkey` binary in `contracts/sp1/eth-reflection/prover-host`
-   prints for a given ELF as `hash_u32`.
+   prints as `hash_u32`. The ELF it reads is baked in at compile time (a fixed, box-relative
+   `include_bytes!` path), so checking a different ELF means rebuilding the binary against that path, not
+   passing it as an argument.
 6. **Repository gate.** From the repo root, `VERIFY_VKEY_STRICT=1 bash contracts/sp1/confidential/verify-vkey-pin.sh`
    checks the committed ELF hashes, fixture bindings and source coherence against the pin.
 

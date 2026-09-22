@@ -35,7 +35,9 @@ the dapp's deployment config, which the API also imports.
 | EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the Bitcoin reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
 | CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
 
-These match `contracts/deployments/1-createx.json` exactly.
+Every row but CbtcEscrowHelper matches `contracts/deployments/1-createx.json` exactly. CbtcEscrowHelper is
+deployed by a separate script, `DeployCbtcEscrowHelperCreateX.s.sol`, and its address lives in
+`contracts/deployments/1.json` instead.
 
 Shared infrastructure outside the CreateX manifest:
 

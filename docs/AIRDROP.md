@@ -149,9 +149,10 @@ node tools/airdrop-tree.mjs --input recipients.csv --expect-total 1000000 \
 
 - `--expect-total` is required and must equal the funding exactly (in TAC, or in wei with `--unit wei`).
 - Rejected before any root is produced, all problems listed together: a malformed address (a mixed-case address must carry a valid
-  checksum), the zero address, a duplicate in any letter case, the TAC token or pool address (add more with `--reserve`, for
-  instance the airdrop's own address once known), a zero amount, an amount that is not a multiple of `1e10` wei, a pool value
-  above `u64`, and a total that differs from `--expect-total`.
+  checksum), the zero address, a duplicate in any letter case, any protocol contract, token, pool, ops multisig or burn address
+  (every address in the deployment manifest is reserved automatically; add more with `--reserve`, for instance the airdrop's
+  own address once known), a zero amount, an amount that is not a multiple of `1e10` wei, a pool value above `u64`, and a total
+  that differs from `--expect-total`.
 - Index assignment is deterministic: addresses sorted ascending, index = position. The root does not depend on input order.
 - Every proof is recomputed against the root before the files are written.
 - `proofs.json` is one file keyed by lowercase address. For a large list use `--out-dir`, which writes
@@ -207,7 +208,7 @@ Unclaimed allocations are not claimable after that.
 | `claimAndShield` | 108.8k | 91.7k | |
 
 A 100,000-leaf tree needs 16 or 17 proof words and adds about 4k gas per claim (claim 92.7k, `claimAndShield` 112.6k). A word
-covers 256 indexes; the first claim in a word pays the 20k storage set. The live tree's largest proof is 13 words.
+covers 256 indexes; the first claim in a word pays the 20k storage set. The live tree's largest proof is 14 words.
 
 ## 6. Claiming into a farm
 

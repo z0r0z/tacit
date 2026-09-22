@@ -582,10 +582,10 @@ const IPFS_GATEWAYS_FALLBACK = [
 // so contributors see progress + concrete momentum-crossings (each pill
 // flips from grey to green as its count is reached).
 const CEREMONY_MILESTONES = [
-  { count: 5,    label: 'floor',   desc: 'minimum sound — SPEC §5.11.3 disjoint-trust-roots threshold' },
+  { count: 5,    label: 'floor',   desc: 'minimum sound — SPEC §2.8, one honest contributor needed' },
   { count: 30,   label: 'comfort', desc: 'cryptographer-comfort range for credible Phase 2 ceremonies' },
   { count: 100,  label: 'strong',  desc: 'production-ready (hundreds of deposits)' },
-  { count: 1100, label: 'gold',    desc: 'Tornado Cash reference scale' },
+  { count: 1100, label: 'gold',    desc: 'large public-ceremony reference scale' },
 ];
 // Floor milestone — kept as a named alias for the soundness gate. Below
 // this count the ceremony's vk_cid SHOULD be treated as testnet-only.
@@ -5063,7 +5063,7 @@ function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
     return { safe: false, reason: 'no inputs' };
   }
   const eligible = inputs.filter(inp => isStealthEligibleKind(inp.kind));
-  if (eligible.length === 0) return { safe: false, reason: 'no eligible inputs under §A.2.5' };
+  if (eligible.length === 0) return { safe: false, reason: 'no eligible stealth-input kinds' };
   for (let i = 0; i < eligible.length; i++) {
     if (!eachInputIsOurs(eligible[i])) {
       return {
@@ -8531,7 +8531,7 @@ function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, 
   if (leafHash.length !== 32) throw new Error('leaf_hash 32 bytes');
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
   if (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32) {
-    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key per §5.24.0)');
+    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key, SPEC §3.8)');
   }
   const denomLE = new Uint8Array(8);
   {
@@ -8602,7 +8602,7 @@ function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHas
   if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
   if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
-    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key)');
+    throw new Error('new_k_btc_xonly must be 32 bytes (SPEC §3.8, two-key)');
   }
   const denomLE = new Uint8Array(8);
   {
@@ -8638,7 +8638,7 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
   if (minterPubkey.length !== 33) throw new Error('minter_pubkey 33 bytes');
   if (minterSig.length !== 64) throw new Error('minter_sig 64 bytes');
   if (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32) {
-    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key per §5.24.0)');
+    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key, SPEC §3.8)');
   }
   const d = BigInt(denomination);
   if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
@@ -8802,7 +8802,7 @@ function encodeTSlotRotatePayload({
   if (newRecipientCommit.length !== 33) throw new Error('new_recipient_commit 33 bytes');
   if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
   if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
-    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key — explicit BTC spending key for new slot)');
+    throw new Error('new_k_btc_xonly must be 32 bytes (SPEC §3.8, two-key — explicit BTC spending key for new slot)');
   }
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
   if (oldOwnerPubkey.length !== 33) throw new Error('old_owner_pubkey 33 bytes');
@@ -9565,7 +9565,7 @@ async function buildSlotSplitEnvelope({
     const assetIdNew = out.assetIdHex ? hexToBytes(out.assetIdHex) : hexToBytes(ctacVariantAssetId(denomNew));
     if (assetIdNew.length !== 32) throw new Error(`outputs[${i}].assetIdHex must be 64 hex chars`);
     if (bytesToHex(assetIdNew) !== ctacVariantAssetId(denomNew)) {
-      throw new Error(`outputs[${i}].assetIdHex must equal ctacVariantAssetId(denomNew) per §5.24.6`);
+      throw new Error(`outputs[${i}].assetIdHex must equal ctacVariantAssetId(denomNew) (SPEC §3.8)`);
     }
     const secret = out.secret
       || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
@@ -9605,7 +9605,7 @@ async function buildSlotSplitEnvelope({
   }
   if (sumDenomNew > oldDenom) {
     throw new Error(
-      `Σ denom_new (${sumDenomNew}) > denom_old (${oldDenom}) — §5.24.3 conservation`,
+      `Σ denom_new (${sumDenomNew}) > denom_old (${oldDenom}) — SPEC §3.8 conservation`,
     );
   }
 
@@ -9718,7 +9718,7 @@ async function buildSlotMergeEnvelope({
     : hexToBytes(ctacVariantAssetId(dNew));
   if (aidNew.length !== 32) throw new Error('assetIdNewHex must be 64 hex chars');
   if (bytesToHex(aidNew) !== ctacVariantAssetId(dNew)) {
-    throw new Error('assetIdNewHex must equal ctacVariantAssetId(denomNew) per §5.24.6');
+    throw new Error('assetIdNewHex must equal ctacVariantAssetId(denomNew) (SPEC §3.8)');
   }
   const newSec = newSecret
     || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
@@ -27333,7 +27333,7 @@ async function buildAndBroadcastTDropReclaim({
   }
   const expiryHeight = Number(drop.expiry_height) || 0;
   if (expiryHeight === 0) {
-    throw new Error('drop has no expiry — not reclaimable per SPEC §5.12.1');
+    throw new Error('drop has no expiry — not reclaimable (SPEC §3.8)');
   }
   const tip = await getTip();
   if (!(tip > expiryHeight)) {
@@ -39155,7 +39155,7 @@ async function renderMixer() {
     if (poolRegistry.size === 0 && pendingInits.length === 0 && pendingDeposits.length === 0 && pendingWithdraws.length === 0) {
       list.innerHTML = `<div style="padding:14px 16px;border:1px dashed var(--ink-faint);border-radius:6px;text-align:center;">
         <div style="font-size:13px;font-weight:bold;margin-bottom:6px;">No pools indexed yet</div>
-        <div class="muted" style="font-size:12px;line-height:1.6;">Be the first to initialize a pool for an asset. Scroll down to <strong>"Initialize a new pool"</strong> — pick an asset from your registry, type a denomination in whole tokens, and broadcast. The pool becomes live for everyone once Bitcoin confirms (~5–15 min). First-confirmed-wins per SPEC §5.10.1.</div>
+        <div class="muted" style="font-size:12px;line-height:1.6;">Be the first to initialize a pool for an asset. Scroll down to <strong>"Initialize a new pool"</strong> — pick an asset from your registry, type a denomination in whole tokens, and broadcast. The pool becomes live for everyone once Bitcoin confirms (~5–15 min). First-confirmed-wins (SPEC §3.8).</div>
       </div>`;
     } else if (poolRegistry.size === 0) {
       list.innerHTML = pendingHtml + '<div class="muted" style="font-size:12px;">No registered pools yet.</div>';
@@ -39193,7 +39193,7 @@ async function renderMixer() {
         html += `<div style="margin-top:14px;padding:8px 10px;border:1px solid var(--amber);border-radius:6px;background:var(--bg-warm);">
           <div style="font-size:12px;font-weight:bold;color:var(--amber);">Unverified pools (${unverifiedRows.length}) — DO NOT DEPOSIT</div>
           <div class="muted" style="font-size:11px;margin:4px 0 8px 0;line-height:1.5;">These pools declare a non-canonical vk_cid or ceremony_cid. Whoever initialized them may have kept the trusted-setup trapdoor and could drain any deposit. The dapp blocks deposits + withdraws against them.
-          <br><br><strong>The (asset_id, denomination) slot is permanently bricked</strong> (POOL_INIT is first-confirmed-wins per SPEC §5.10.1, no re-init). To use the mixer for this asset, initialize a fresh pool at a <em>different denomination</em> below — the griefer would have to brick that slot too, which costs them more BTC fees each time. Common workarounds: pick an unusual denomination (e.g. 17, 1234, etc.) that's unlikely to be pre-griefed.</div>
+          <br><br><strong>The (asset_id, denomination) slot is permanently bricked</strong> (POOL_INIT is first-confirmed-wins, SPEC §3.8 — no re-init). To use the mixer for this asset, initialize a fresh pool at a <em>different denomination</em> below — the griefer would have to brick that slot too, which costs them more BTC fees each time. Common workarounds: pick an unusual denomination (e.g. 17, 1234, etc.) that's unlikely to be pre-griefed.</div>
           ${unverifiedRows.join('')}
         </div>`;
       }
@@ -39979,7 +39979,7 @@ function setupMixerHandlers() {
             `<button type="button" id="btn-mixer-dep-copy-record" style="font-size:11px;padding:4px 10px;">📋 Copy record</button>` +
             `<button type="button" id="btn-mixer-dep-download-record" style="font-size:11px;padding:4px 10px;">💾 Download JSON</button>` +
             `<button type="button" id="btn-mixer-dep-copy-sharelink" style="font-size:11px;padding:4px 10px;">🔗 Copy share-link</button>` +
-            (compactNote ? `<button type="button" id="btn-mixer-dep-copy-compact" style="font-size:11px;padding:4px 10px;" title="Single-line note like Tornado Cash's format — tweet-friendly. Requires recipient to have the asset's ticker registered.">✍ Copy compact note</button>` : '') +
+            (compactNote ? `<button type="button" id="btn-mixer-dep-copy-compact" style="font-size:11px;padding:4px 10px;" title="Single-line note in a compact mixer-note format — tweet-friendly. Requires recipient to have the asset's ticker registered.">✍ Copy compact note</button>` : '') +
             `<span id="mixer-dep-action-status" class="muted" style="font-size:11px;align-self:center;"></span>` +
             `</div>` +
             `<pre style="font-size:11px;background:rgba(0,0,0,0.04);padding:6px;border-radius:4px;margin:0;overflow:auto;max-height:240px;">${escapeHtml(recJson)}</pre>` +
@@ -40271,7 +40271,7 @@ function setupMixerHandlers() {
       if (!/^[0-9a-fA-F]{64}$/.test(assetIdHex)) { alert('Asset ID must be 32 bytes (64 hex).'); return; }
       // CIDs are loosely checked: must be ≥ 6 chars, ASCII printable.
       if (vkCid.length < 6 || ceCid.length < 6) { alert('CIDs look too short.'); return; }
-      if (!confirm(`Initialize a new mixer pool?\n\n  asset_id:    ${assetIdHex.slice(0, 16)}…\n  ticker:       ${ticker}\n  denomination: ${fmtAssetAmount(poolDenom, decimals)} ${ticker}\n  (on-chain u64: ${poolDenom.toString()})\n  vk CID:       ${vkCid}\n  ceremony CID: ${ceCid}\n\nThis broadcasts a POOL_INIT envelope (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nFirst-confirmed-wins per SPEC §5.10.1 — only the first canonical POOL_INIT for this (asset_id, denomination) becomes the pool of record.`)) return;
+      if (!confirm(`Initialize a new mixer pool?\n\n  asset_id:    ${assetIdHex.slice(0, 16)}…\n  ticker:       ${ticker}\n  denomination: ${fmtAssetAmount(poolDenom, decimals)} ${ticker}\n  (on-chain u64: ${poolDenom.toString()})\n  vk CID:       ${vkCid}\n  ceremony CID: ${ceCid}\n\nThis broadcasts a POOL_INIT envelope (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nFirst-confirmed-wins (SPEC §3.8) — only the first canonical POOL_INIT for this (asset_id, denomination) becomes the pool of record.`)) return;
       initBtn.disabled = true;
       const origText = initBtn.textContent;
       initBtn.textContent = 'Initializing pool…';
@@ -54006,7 +54006,7 @@ function setupDropsForm() {
         // so stranding is bounded. Without expiry, an under-claimed pool
         // remains locked forever.
         if (!(expiryHeight > 0)) {
-          throw new Error('open-FCFS drops require a non-zero expiry_height so the unclaimed remainder can be reclaimed (SPEC §5.12.1). Set an expiry or paste a merkle root.');
+          throw new Error('open-FCFS drops require a non-zero expiry_height so the unclaimed remainder can be reclaimed (SPEC §3.8). Set an expiry or paste a merkle root.');
         }
       } else if (!/^[0-9a-f]{64}$/.test(merkleRootRaw)) {
         throw new Error('merkle_root must be 64 hex chars');
@@ -54063,7 +54063,7 @@ function setupDropsForm() {
           `  per claim: ${perClaim.toString()} ${meta.ticker || ''}\n` +
           `  max claims: ${(capAmount / perClaim).toString()}\n` +
           `  expiry: block ${expiryHeight}\n\n` +
-          `Anyone may claim. Unclaimed remainder can be reclaimed by you after expiry (SPEC §5.12.1). Confirm?`
+          `Anyone may claim. Unclaimed remainder can be reclaimed by you after expiry (SPEC §3.8). Confirm?`
         )) {
           throw new Error('cancelled');
         }
@@ -58683,7 +58683,7 @@ async function renderHoldings() {
       // metadataOut path in validateOutpoint's T_PMINT branch).
       const isPetchRooted = meta?.kind === 'petch';
       const petchBadgeHTML = isPetchRooted
-        ? `<span style="display:inline-block;padding:1px 6px;background:var(--purple);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Permissionless fair-launch (SPEC §5.8 / §5.9). Cumulative supply is publicly observable; per-mint amount is fixed at deploy. No mint authority — anyone can mint until the cap fills.">⚡ public mint</span>`
+        ? `<span style="display:inline-block;padding:1px 6px;background:var(--purple);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Permissionless fair-launch (SPEC §3.4). Cumulative supply is publicly observable; per-mint amount is fixed at deploy. No mint authority — anyone can mint until the cap fills.">⚡ public mint</span>`
         : '';
       // Per-asset action grouping. Primary actions (Send / Receive) sit on top
       // for the everyday holder. Disclosure (reveal supply / mints, publish
@@ -58793,10 +58793,10 @@ async function renderHoldings() {
                 : `confirmed · ${depthStr} confs · credit at block ${creditAt} (~${blocksLeft * 10} min)`;
               detail = tail;
             } else {
-              detail = `confirmed · awaiting ≥${REQ} confs for cap credit (SPEC §5.9)`;
+              detail = `confirmed · awaiting ≥${REQ} confs for cap credit (SPEC §3.4)`;
             }
           } else {
-            detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥${REQ} confs (SPEC §5.9)`;
+            detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥${REQ} confs (SPEC §3.4)`;
           }
           return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed var(--purple);background:var(--bg-warm);color:var(--purple);"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; refreshes automatically while this tab is open.</div>`;
         })() : ''}
@@ -58868,7 +58868,7 @@ async function renderHoldings() {
             </div>`;
           }
           const reason = isPetchRooted
-            ? `failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)`
+            ? `failed cap-credit or SPEC §3.4 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)`
             : `failed rangeproof / kernel-sig / conservation check. If the same UTXO stays here across multiple retries, the on-chain envelope is malformed`;
           return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);">
             <strong>⚠ ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} failed validation:</strong> ${reason}. Not counted in your balance.
@@ -60243,16 +60243,16 @@ async function renderHoldings() {
                   <input type="number" min="1" max="7" data-field="days" value="1">
                 </div>
               </div>
-              <!-- Variable-fills toggle (SPEC §5.7.6.1 / T_AXFER_VAR). When
-                   checked, the lot becomes partial-fillable: buyers pick how
-                   much to take, like a DEX. When unchecked, whole-UTXO take
-                   only (legacy §5.7.6 / T_AXFER). Default ON — variable
-                   fills is the modern atomic-intent default. Operator can
-                   flip the localStorage kill switch (tacit-disable-tav=1)
-                   if they need to roll back without redeploying. -->
+              <!-- Variable-fills toggle (T_AXFER_VAR). When checked, the lot
+                   becomes partial-fillable: buyers pick how much to take,
+                   like a DEX. When unchecked, whole-UTXO take only
+                   (T_AXFER). Default OFF: publishAxferVarIntent is gated on
+                   ENABLE_T_AXFER_VARIABLE, which this build ships false with
+                   no runtime way to flip it on — checking this box before
+                   that lands throws on submit. -->
               <div style="margin-top:10px;padding:8px 10px;background:var(--bg-warm);border:1px solid var(--ink-faint);border-radius:2px;">
                 <label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer;font-size:11px;font-weight:500;">
-                  <input type="checkbox" data-field="variable" checked style="margin:0;">
+                  <input type="checkbox" data-field="variable" style="margin:0;">
                   <span>Variable fills <span class="muted" style="font-weight:400;">(buyers can take any amount ≥ floor — DEX-like)</span></span>
                 </label>
                 <div data-field="min-take-block" style="margin-top:8px;">
@@ -61764,7 +61764,7 @@ function renderActivity() {
     return `
       <div class="activity-row">
         <span class="activity-kind activity-${escapeHtml(e.kind)}">${escapeHtml(verb)}</span>
-        <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}${e.extra?.shielded ? ' <span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:1px 5px;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;" title="SPEC-BLINDED-PUBKEY §A.2 — recipient hidden on chain via per-tx unique address">SHIELDED</span>' : ''}</span>
+        <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}${e.extra?.shielded ? ' <span class="badge" style="background:var(--bg-warm);border:1px dashed var(--ink-faint);padding:1px 5px;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;" title="SPEC §2.6 — recipient hidden on chain via per-tx unique address">SHIELDED</span>' : ''}</span>
         <span class="activity-time muted">${escapeHtml(relTime(e.ts))}</span>
         <span class="activity-tx">${txLink}</span>
         ${extraLine}
@@ -64034,7 +64034,7 @@ function openDiscoverBidForm(card, assetIdHex, ticker, decimals) {
   host.innerHTML = `
     <div style="border:1px solid var(--ink-mid);padding:8px;background:var(--bg);">
       <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">Place a bid on ${tickerSafe}</div>
-      <div class="muted" style="font-size:10px;margin-bottom:8px;">Off-chain bid book (SPEC §5.7.7). When a holder claims your bid, they spin up an atomic intent targeted at your wallet — settlement is a single Bitcoin tx, zero fee.</div>
+      <div class="muted" style="font-size:10px;margin-bottom:8px;">Off-chain bid book. When a holder claims your bid, they spin up an atomic intent targeted at your wallet — settlement is a single Bitcoin tx, zero fee.</div>
       <div class="flex" style="gap:6px;flex-wrap:wrap;">
         <label style="font-size:10px;flex:1;min-width:120px;">Amount (${tickerSafe})
           <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="0.0" style="width:100%;font-family:var(--mono);">
@@ -72394,7 +72394,7 @@ function renderMarketBrowseTable(rows) {
             <th class="col-vol24" title="Strict rolling 24h trade volume — sums every settled trade (atomic-take, preauth-take, bid claim, range fill) with a timestamp in the last 24 hours. Plain transfers and airdrops aren't trades and aren't counted; OTC settlements carry no protocol-enforced price so they can't be priced either.">24h Volume</th>
             ${_showTotalVolumeColumn ? `<th class="col-voltotal" title="Lifetime trade volume — every settled trade since the worker started indexing this asset. Built from the worker's cumulative counter with the recent-trades ring as a floor for assets that traded before the counter was deployed. Plain transfers, airdrops and OTC settlements aren't counted (no protocol-enforced price).">Total Volume</th>` : ''}
             <th class="col-wallets" title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
-            <th class="col-activity" title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
+            <th class="col-activity" title="Live listings on the orderbook — instant, atomic intent and OTC combined (left) — and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
@@ -73121,13 +73121,13 @@ function renderMarketAssetHeader(assetId, rows) {
   // Refresh logic: invalidate every per-asset cache + the bid cache,
   // then force a fresh fetchMarketDataDeduped → renderMarket.
   // Visually muted ("↻ refresh" link styling) — the page auto-refreshes
-  // on a 5s tick, so this is for users who want to skip the wait
+  // periodically (with idle/failure backoff), so this is for users who want to skip the wait
   // (e.g., right after posting an order from a different tab, or after
   // a settlement they're tracking).
   const breadcrumb = `
     <div style="font-size:11px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
       <a href="#" data-act="market-back-browse" title="Back to all markets (press Esc)" style="text-decoration:none;color:var(--ink-mid);font-size:11px;display:inline-flex;align-items:center;gap:4px;">&larr; All markets</a>
-      <button type="button" data-act="market-refresh" title="Re-fetch orderbook + bids + your open orders from the worker. Auto-refresh ticks every 5s; this is for when you want it now." style="background:transparent;border:0.5px solid var(--ink-faint);color:var(--ink-mid);font:inherit;font-size:11px;padding:3px 10px;cursor:pointer;letter-spacing:0.04em;display:inline-flex;align-items:center;gap:5px;">↻ refresh</button>
+      <button type="button" data-act="market-refresh" title="Re-fetch orderbook + bids + your open orders from the worker. Auto-refresh runs periodically in the background; this is for when you want it now." style="background:transparent;border:0.5px solid var(--ink-faint);color:var(--ink-mid);font:inherit;font-size:11px;padding:3px 10px;cursor:pointer;letter-spacing:0.04em;display:inline-flex;align-items:center;gap:5px;">↻ refresh</button>
     </div>`;
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -73556,7 +73556,7 @@ function renderMarketAssetStatsHTML(asset) {
            data-market-stat-last at click time so the dialog can echo
            "current mark: X sats/TOK" for context. -->
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
-        <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" class="price-alert-btn">🔔 Set price alert</button>
+        <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold — needs this tab open and in the foreground to fire" class="price-alert-btn">🔔 Set price alert</button>
       </div>
       </details>
       <!-- Price history chart — collapsed by default so the trade form
@@ -75827,7 +75827,7 @@ function _renderAtomicOffersTilesHtml(aid, asset, myPubHex) {
     const _actionLabel = _needsFunds ? '+ fund' : 'claim →';
     const _title = _needsFunds
       ? `Wallet holds ${_satBalRaw.toLocaleString('en-US')} sats but this offer needs ${o.ps.toLocaleString('en-US')} sats. Click to top up via Onramper / bitcoin: URI / P2P — once funded, click the row again to buy.`
-      : `Buy ${amtCompact} ${ticker} for ${o.ps.toLocaleString('en-US')} sats (unit ${unitStr} sats/${ticker}). Dapp signs a claim, worker reserves the intent for ~30s while the maker fulfils — if the maker is offline the claim auto-cancels and your sats stay put. No Bitcoin tx broadcast unless settlement is signed by both sides. Posted ${ageStr} ago — fresher = maker more likely online.`;
+      : `Buy ${amtCompact} ${ticker} for ${o.ps.toLocaleString('en-US')} sats (unit ${unitStr} sats/${ticker}). Dapp signs a claim, worker reserves the intent for 5 min while the maker fulfils — if the maker is offline the claim auto-cancels and your sats stay put. No Bitcoin tx broadcast unless settlement is signed by both sides. Posted ${ageStr} ago — fresher = maker more likely online.`;
     // Row content kept terse per column so the 3-col grid doesn't
     // overflow on desktop widths. Direction is conveyed by the section
     // header ("Atomic offers — buy TAC with sats"), so the row can drop
@@ -76054,7 +76054,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td class="orders-actions-cell"><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" class="orders-action">cancel</button></td>
+      <td class="orders-actions-cell"><button data-act="your-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.fulfilment_pending ? '; a fulfilment is pending, so you will be prompted to self-spend the asset UTXO to invalidate it' : ''}" class="orders-action">cancel</button></td>
     </tr>`;
   }).join('');
 
@@ -76152,7 +76152,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
         })()
       : '';
     const _takeBtn = _matchable.length > 0
-      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="Atomic: cancel this bid AND broadcast a take of ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid, in one click. One confirm with full route preview, no second submit step." class="orders-action orders-action--take">take →</button>`
+      ? `<button data-act="your-orders-bid-take-instead" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-cap-unit="${_matchable[0].askUnit}" data-bid-sats="${sats}" data-bid-amt-base="${amt.toString()}" title="One click, two sequential steps: cancel this bid, then broadcast a take of ${_matchable.length} affordable ask${_matchable.length === 1 ? '' : 's'} priced at-or-below your bid. One confirm with full route preview — if the take fails after the cancel lands, your sats are intact but the bid is gone." class="orders-action orders-action--take">take →</button>`
       : '';
     // ▲ Improve: jumps to #1 in the bid ladder by cancelling + re-posting
     // at top + 1%. Skipped if already #1 (nothing to improve) OR if the
@@ -76175,7 +76175,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
         const _targetUnitStr = fmtUnitPriceSats(_targetUnit);
         const _newPriceSats = Math.max(DUST, Math.ceil(_targetUnit * Number(amt) / Math.pow(10, decimals)));
         const _diffSats = _newPriceSats - sats;
-        _improveBtn = `<button data-act="your-orders-improve-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-target-unit="${_targetUnit}" data-bid-amt-base="${amt.toString()}" data-current-sats="${sats}" title="Atomic: cancel this bid and re-post it at ${_targetUnitStr} sats/${ticker} (top bid is ${_topUnitStr}, this is +1%). New total ${_newPriceSats.toLocaleString()} sats (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current). Jumps you to #1 in the ladder. Same amount of ${ticker}, slightly higher price." class="orders-action orders-action--improve">▲ improve</button>`;
+        _improveBtn = `<button data-act="your-orders-improve-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-target-unit="${_targetUnit}" data-bid-amt-base="${amt.toString()}" data-current-sats="${sats}" title="One click, two sequential steps: cancel this bid, then re-post it at ${_targetUnitStr} sats/${ticker} (top bid is ${_topUnitStr}, this is +1%). New total ${_newPriceSats.toLocaleString()} sats (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current). Jumps you to #1 in the ladder. If the repost fails after the cancel lands, your sats are intact but the bid is gone." class="orders-action orders-action--improve">▲ improve</button>`;
       }
     }
     return `<tr>
@@ -79073,7 +79073,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       <td>${unitStr}</td>
       <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
-      <td><button data-act="holdings-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.claim ? '; if a taker has claimed, you will be prompted to self-spend the asset UTXO to invalidate their pending tx' : ''}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+      <td><button data-act="holdings-orders-cancel-intent" data-aid="${escapeHtml(aid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Cancel this intent — removes from the marketplace${l.fulfilment_pending ? '; a fulfilment is pending, so you will be prompted to self-spend the asset UTXO to invalidate it' : ''}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
     </tr>`;
   }).join('');
   // Per-bid row builder. Mirrors the ask-row layout so both kinds slot
@@ -85842,7 +85842,7 @@ function _wireMarketBidPlace(section, asset) {
             <input data-bid-field="expiry-hours" type="number" min="1" max="720" step="1" value="24" style="width:100%;font-family:var(--mono);">
           </label>
         </div>
-        <!-- Variable-fill toggle (§5.7.7). Default ON: matches the swap-
+        <!-- Variable-fill toggle (T_PREAUTH_BID_VAR, SPEC §3.5). Default ON: matches the swap-
              tile residual-bid path; multiple sellers can each contribute
              a chunk in [min_fill, remaining_amount] so the bid attracts
              multi-seller liquidity instead of waiting on one whole-fill
@@ -85857,12 +85857,12 @@ function _wireMarketBidPlace(section, asset) {
              forget" limit-order UX. The dapp pre-funds a P2WPKH UTXO,
              pre-signs SIGHASH_SINGLE_ACP, and posts the record. Buyer can
              close the tab; sellers fill alone.
-               • Walk-away + Partial-fillable ON → T_PREAUTH_BID_VAR (§5.7.12)
+               • Walk-away + Partial-fillable ON → T_PREAUTH_BID_VAR (SPEC §3.5)
                  K pre-sigs (one per allowed fill ratio), partial fills with
                  indexer-enforced refund of the unfilled portion.
-               • Walk-away + Partial-fillable OFF → T_PREAUTH_BID (§5.7.11)
+               • Walk-away + Partial-fillable OFF → T_PREAUTH_BID (SPEC §3.5)
                  single pre-sig, exact-fill only.
-             Untick to use the legacy §5.7.7 bid-intent (online-required). -->
+             Untick to use the legacy bid-intent (online-required). -->
         <label style="display:flex;align-items:flex-start;gap:8px;margin-top:6px;font-size:11px;cursor:pointer;font-weight:500;line-height:1.45;" title="Limit bid (default). The dapp pre-funds + signs your bid up-front; you can close the tab. Any seller fills it while you're away. Cancel anytime via Your Open Orders.">
           <input type="checkbox" data-bid-field="walk-away" checked style="margin:0;flex:0 0 auto;margin-top:3px;">
           <span><strong style="font-weight:600;">Limit bid</strong> <span class="muted" style="font-weight:400;">— close the tab; settles while you're away${ENABLE_T_PREAUTH_BID_VAR ? ' (with Partial-fillable: sellers fill any allowed ratio)' : ''}</span></span>
@@ -86417,7 +86417,7 @@ function _renderMarketAskForm(formHost, aid) {
   const _freeBal = target.balance ?? target.utxos.reduce((s, u) => s + u.amount, 0n);
   formHost.innerHTML = `
     <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
-      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;" title="Instant listing · preauth (SPEC §5.7.8). Sale is authorized in a single signature now; buyer completes settlement alone via ECDH-derived recipient blinding. The lot's (amount, blinding factor) are revealed on listing so buyers can verify the offer.">⚡ List ${escapeHtml(target.ticker || 'token')} for sale</div>
+      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;" title="Instant listing · preauth (SPEC §3.5, T_AXFER). Sale is authorized in a single signature now; buyer completes settlement alone via ECDH-derived recipient blinding. The lot's (amount, blinding factor) are revealed on listing so buyers can verify the offer.">⚡ List ${escapeHtml(target.ticker || 'token')} for sale</div>
       <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once now. Any buyer completes the trade alone in one Bitcoin tx — no follow-up step from you. The lot's amount is disclosed on listing so buyers can verify what they're buying.</div>
       <div class="form-row two">
         <div>

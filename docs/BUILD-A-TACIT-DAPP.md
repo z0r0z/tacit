@@ -319,7 +319,7 @@ is the smallest working loop.
 
 ```js
 // 1. Read the program (dapp/confidential-farm-program.js; also GET /farm/program?network=mainnet)
-const farm    = makeConfidentialFarmProgram({ rpc, config: tacit.cfg });   // or tacit.farmProgram()
+const farm    = tacit.farmProgram();   // wraps makeConfidentialFarmProgram with the pool+farm config merged
 const program = await farm.program();               // epoch (rate, periodFinish, treasury, outstanding) + pools[] (weight, totalShares)
 
 // 2. Bond an LP note. The receipt IS the position; its owner key signs every later harvest and unbond.
@@ -645,10 +645,12 @@ drives it as a three-message handshake, with no coordinator:
 
 ```js
 // 1. Maker proposes, from their own note
-const leg = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
-                           inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
-const offer = { assetA: n.asset, assetB, vA, vB, chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(leg) };
-// publicLeg strips _r (the note blinding) and nk before this leaves the browser — never share either.
+const maker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
+                             inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
+const offer = { assetA: n.asset, assetB, vA, vB, chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(maker) };
+// publicLeg strips _r (the note blinding) and nk before this leaves the browser — never share either. The
+// real tab persists this `maker` object (with its secret _r/nk) between steps 1 and 3 — e.g. localStorage —
+// since a maker's own browser is what finalizes in step 3, not a value that survives as a JS variable alone.
 
 // 2. Taker countersigns, from their own note
 const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
@@ -690,12 +692,12 @@ import { makeConfidentialBid } from './dapp/confidential-bid.js';
 const bid = makeConfidentialBid({ keccak256, pool: tacit.pool });
 
 // buyer, once, then offline
-const built = bid.buildBid({ assetA, assetB, minFill, maxFill, price, increment, buyerOwner, nk,
-                             fundRSecp, fundLeafIndex, fundPath, bidSecret });
+const built = bid.buildBid({ assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot,
+                             buyerOwner, nk, fundRSecp, fundLeafIndex, fundPath, bidSecret });
 
-// any seller, any time before the buyer cancels
-const filled = bid.fillBid({ chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp, sellerInLeafIndex, sellerInPath, nonces, fee });
-const result = bid.verifyBid(filled);
+// any seller, any time before the buyer cancels — fillBid takes the built bid first, fill options second
+const filled = bid.fillBid(built, { chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp, sellerInLeafIndex, sellerInPath, nonces, fee });
+const result = bid.verifyBid(filled, { merkleRootFrom: tacit.pool.merkleRootFrom });
 // one { seedDerived: true } descriptor per emitted leaf — a bid's outputs recover from bidSecret, not a sealed memo
 await tacit.relay.settle({ type: 'bid', op: bid.toWireOp(filled), leaves: result.leaves, outputs: result.leaves.map(() => ({ seedDerived: true })), ephRand: () => 1n });
 ```

@@ -84,9 +84,11 @@ GET https://api.tacit.finance/farm/program?network=mainnet
 
 A cached JSON summary: `network`, `manager`, `rewardAsset`, `rewardToken`, `gov`, `pendingGov`, `epoch { active,
 ratePerSecUnits, ratePerDayTac, periodFinish, remainingSeconds, treasuryTac, outstandingTac, requiredTac,
-fundedRunwaySeconds }`, `pools[] { pid, pair, lpAsset, allocPoint, sharePct, totalShares, idle,
-tacPerDayForPool, lockSeconds }`, `block`, `stale`, `updatedAt`. The SDK's `farm.program()` returns the same
-groups (its `epoch` adds `rate`, `treasuryUnits`, `outstandingUnits`, and its pools carry `poolId`).
+fundedRunwaySeconds }`, `pools[] { pid, poolId, pair, lpAsset, allocPoint, sharePct, totalShares, idle,
+tacPerDayForPool, lockSeconds, feeBps, reserves { assetA, assetB, reserveA, reserveB, lpTotalShares } }`,
+`block`, `stale`, `updatedAt`. Each pool's reserves are already in this response — sizing an LP share (§4)
+needs no extra call. The SDK's `farm.program()` returns the same groups; its `epoch` additionally carries
+`rate`, `treasuryUnits` and `outstandingUnits` in raw units alongside the TAC-denominated fields above.
 
 Or the contract directly. These are the views the two above are built from:
 
@@ -120,9 +122,10 @@ A farm card is four numbers and a warning. Everything below comes from section 3
 emitted; it stays in the treasury. Say so on the card ("no stakers, the first LP earns the whole slice"). The
 same fact is why per-share yield swings hard on a thin pool: show TAC per day for the pool, then per share.
 
-**APR.** The program gives you the reward side (TAC per day, per pool) and the pool's `totalShares`. Turning that
-into a percentage needs a TAC price and a value for one LP share, both of which are yours to source. Do not
-present a fixed APR: it moves with every bond and unbond.
+**APR.** The program gives you the reward side (TAC per day, per pool), `totalShares`, and each pool's
+`reserves` — enough to price one LP share against the pair's two assets. Turning that into a percentage still
+needs a TAC price (and a price for whichever asset the pair isn't TAC-denominated in), which is yours to
+source. Do not present a fixed APR: it moves with every bond and unbond.
 
 **Position row.** For a wallet, list each position with `shares`, `pending` (in TAC, `units / 1e8`), `pid`, and
 `unlockAt` (the launch pools have no lock, so this is just the bond time and the position is always unbondable).
