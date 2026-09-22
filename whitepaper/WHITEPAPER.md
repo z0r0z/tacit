@@ -292,8 +292,8 @@ deployed by anyone else is an isolated system that cannot touch the lineage.
 | Relay | your key, seed and blindings | the witness of the ops it proves |
 
 The pool's anonymity set is every owned note of an asset, not one denomination. `OP_SWAP_BLIND` would
-also hide trade sizes from the SP1 prover, but no client emits it yet. A user who wants no one to see a
-witness proves locally.
+also hide trade sizes from the SP1 prover, but no client emits it yet. Proving locally keeps a witness on
+one device end to end.
 
 ## 10. Trust and limits
 

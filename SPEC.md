@@ -851,7 +851,7 @@ Other extension points are live today:
 - burn amounts.
 
 Whoever proves a batch sees its witness. `OP_SWAP_BLIND` keeps trade sizes out of that witness, though
-its batcher sees them. A user who needs a witness kept private proves locally.
+its batcher sees them. Proving locally keeps a witness on one device end to end.
 
 **Trusted:**
 - Bitcoin and Ethereum consensus;

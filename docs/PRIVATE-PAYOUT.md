@@ -2,7 +2,7 @@
 
 Pay a plain 0x address an exact amount out of your own confidential balance: deposit into the pool, find your notes from your key, and have the pool pay the address through a relayed send-and-unwrap. The recipient needs no Tacit key and no setup.
 
-**This hides the sender only, and weakly.** The address and the amount are public on-chain, the pool is small, and anyone who can match the payout to a recent deposit can tie it to the address that made the deposit. Section 5 says what to tell a user.
+**What this hides is the link between the deposit and the payout, inside the pool.** The payout address and amount are public, like the deposit's address, amount and time — and the two can be matched by timing while the pool is small. Section 5 says what to tell a user.
 
 Names below are the SDK object from `makeConfidentialPoolUx` (`tacit`), as in [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md). Amounts are in-system units (ETH has 8 decimals: 1 unit is 1e-8 ETH, `unitScale` 1e10) unless a name says Wei. The dapp's send tab does all of this when the recipient field holds a 0x address (section 3). The arithmetic, note selection and confirmation poll are in [`dapp/confidential-payout.js`](../dapp/confidential-payout.js); use them rather than rewriting them.
 

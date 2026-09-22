@@ -556,6 +556,183 @@ await tacit.tacAirdrop.settleShield({ walletPriv, record: plan.record });       
 - **Check a proof yourself.** `node tools/airdrop-verify.mjs --contract 0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8 --address 0x… --proofs https://tacit.finance/airdrop/v1/proofs` recomputes the proof
   locally, asks the contract to verify it, and reports whether it is claimable. It sends nothing. `--proofs` also takes a directory (`dapp/airdrop/v1/proofs`) or any host in the table above.
 
+## 5b. Trading: swap, route and liquidity
+
+The AMM is [SPEC §5.5](../SPEC.md#55-amm); the op table (`OP_SWAP`, `OP_LP_ADD`, `OP_LP_REMOVE`,
+`OP_SWAP_ROUTE`, `OP_WRAP_LP`, `OP_WRAP_SWAP`) is [SPEC §5.3](../SPEC.md#53-op-table). A pool is identified
+by `(assetA, assetB, feeBps)` with `assetA < assetB` as a `BigInt` comparison — every function below
+canonicalizes the order itself, so pass either side first.
+
+**Read reserves and quote before you build anything:**
+
+```js
+const poolId = tacit.routePoolId(assetA, assetB, feeBps);
+const res    = await tacit.poolReserves(poolId);   // null if the pool has never been founded
+// { init: true, assetA, assetB, reserveA, reserveB, feeBps, totalShares } — reserveA is the LOW asset's reserve
+```
+
+`quoteRoute` and `quoteLpAdd` size a trade or a deposit against those live reserves before you spend
+anything:
+
+```js
+const q = await tacit.quoteRoute({ asset0: assetA, amountIn, path: [{ assetNext: assetB, feeBps }] });
+// { amountOut, assetFinal, hops } — null if a hop's pool is uninitialized
+```
+
+**Swap.** There is one swap op, `route()`, walked over a `path` of one or more hops — a single-hop path
+is a plain swap. This is what the dapp's own swap tab calls:
+
+```js
+const r = await tacit.route({
+  walletPriv, inNote, amountIn, path: [{ assetNext: assetB, feeBps }], minOut, selfRelay: false,
+});
+```
+
+`inNote` must be spent whole: `route`'s change path is not implemented yet, so a partial amount
+throws (`partial-spend change is not yet implemented`) rather than returning change. Pre-split the note
+with `transfer` first if you need to route less than its full value. A route composes up to four hops in
+one settle (`MAX_ROUTE_HOPS = 4`), and its relay type is `'route'`.
+
+**Swap straight from a deposit.** `wrapSwap` skips the note entirely — it consumes a *pending* deposit
+(same two-step wrap you already know) and mints the swapped output directly:
+
+```js
+await tacit.wrapSwap({ walletPriv, fromTicker: 'cETH', toTicker: 'cUSD', amountWei, feeBps, minOut, fee });
+```
+
+There is no membership proof to build (the deposit's value is already public and exact), so `fee` and
+`minOut` are the only things worth sizing carefully. `amountWei`/`index` must match whatever the deposit
+was actually wrapped with — this recomputes the deposit id, it does not read the deposit back from chain.
+Fee-switch pools (a nonzero protocol fee) are not supported here; use `route` against a no-skim pool
+instead.
+
+**Add and remove liquidity.**
+
+```js
+const quote = await tacit.quoteLpAdd({ assetA, assetB, feeBps, amountA });   // { addA, amountB, fee, init }
+await tacit.lpAdd({ walletPriv, aNote, bNote, feeBps, fee: quote.fee });
+// or straight from two deposits, no note needed:
+await tacit.wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps, fee });
+// exit:
+await tacit.lpRemove({ walletPriv, assetA, assetB, feeBps, shareNote, fee: null });   // null auto-quotes
+```
+
+- **Founding a pool** (the first add) needs `selfRelay: true` — the ordinary relay path has no
+  `createPairAndSettle` handling, so a relayed first add reverts `PoolNotInit`. Anyone can found a pool;
+  there is no permission gate. The first add locks `MINIMUM_LIQUIDITY = 1000` shares forever (SPEC §5.3)
+  and must mint more than that or it reverts; `lpRemove` enforces the same floor on the way out, so a
+  pool can never be fully drained.
+- **Match the ratio.** After the first add, contributing off the pool's current price donates to existing
+  LPs; `assertLpInRatio` refuses a contribution beyond a 0.5% donation. `quoteLpAdd`'s `amountB` is already
+  rounded to match — use it rather than computing your own.
+- **`lpRemove` burns the whole share note.** A partial withdrawal needs the share note split first; there
+  is no change-share output for a partial burn. The share note needs its membership witness (`.path`,
+  `.root`) — rescan before removing.
+- **Size notes to the quote with `ensureExactNote`** rather than rounding by hand: it finds (or splits, via
+  a relayed self-send) a note of exactly the amount `quoteLpAdd` asked for.
+
+**Prover-blind batch swaps.** `swapBatched(intent)` queues an intent into `OP_SWAP` and settles it against
+others at one uniform clearing price once enough intents arrive (or a short timeout passes) — hiding an
+individual trade's size inside the batch. It is real, tested code (`swapBatched`, `swapBatchPending`,
+`swapBatchFlush`), available to call, but the dapp's own swap tab does not use it yet; `route` is what
+ships today.
+
+## 5c. OTC: a direct two-party trade
+
+`OP_OTC` ([SPEC §5.3](../SPEC.md#53-op-table)) settles a fixed, agreed trade between two parties in one
+proof — no pool, no slippage. `dapp/confidential-otc.js` is the real assembler; `dapp/confidential-otc-tab.js`
+drives it as a three-message handshake, with no coordinator:
+
+```js
+// 1. Maker proposes, from their own note
+const leg = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
+                           inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
+const offer = { assetA: n.asset, assetB, vA, vB, chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(leg) };
+// publicLeg strips _r (the note blinding) and nk before this leaves the browser — never share either.
+
+// 2. Taker countersigns, from their own note
+const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
+                             inLeafIndex: n.leafIndex, inPath: n.path, give: vB, recvValue: vA, recvR, changeR });
+const ctx = otc.composeCtx({ assetA: offer.assetA, assetB: offer.assetB, chainBinding: offer.chainBinding,
+                             vA, vB, maker: hydrateLeg(offer.maker), taker, deadline: offer.deadline });
+otc.signLegs(taker, ctx, 'taker');
+const countersign = { ...offer, taker: publicLeg(taker) };
+
+// 3. Maker finalizes and submits (needs the taker's nk — see below)
+const ctx2 = otc.composeCtx({ ...countersign, maker, taker: hydrateLeg(countersign.taker) });
+otc.signLegs(maker, ctx2, 'maker');
+const assembled = otc.assembleOtc({ ...countersign, maker, taker });
+const result = otc.verifyOtc(assembled, { merkleRootFrom: tacit.pool.merkleRootFrom });   // same checks the guest re-runs
+await tacit.relay.settle({ type: 'otc', op: otc.toWireOp(assembled), leaves: result.leaves, outputs: [], ephRand: () => 1n });
+```
+
+(`publicLeg`/`hydrateLeg` are the two small helpers at the top of `confidential-otc-tab.js` — strip/restore
+`amount`'s BigInt-vs-string shape and the secret fields on the way in and out of a shared message.) Each
+side may carve its own relay fee out of what it receives (`feeA`/`feeB`), fixed once both legs sign.
+
+**Step 3 needs the taker's `nk` (their spent note's nullifier key), which step 2's public countersignature
+never carries — `publicLeg` strips it on the way out, same as the blinding.** Finalizing genuinely
+peer-to-peer needs that `nk` routed from the taker's own client directly, out of band, not through the
+maker; the shipped tab has no such channel and only finalizes when maker and taker are the same operator
+holding both legs (a matcher). Build that channel yourself if you need two independent strangers to close
+a trade end to end.
+
+## 5d. Buyer-offline bids
+
+`OP_BID` ([SPEC §5.3](../SPEC.md#53-op-table)) lets a buyer pre-fund an order and go offline: `buildBid`
+locks `maxFill · price` of the quote asset against a grid (`minFill`, `maxFill`, `increment`), and any
+seller can fill part or all of it later with `fillBid`, no buyer action required at fill time.
+`dapp/confidential-bid.js` has both sides, with no shipped UI tab; import it directly as in
+[§4](#4-reuse-the-dapp-modules--do-not-reimplement-the-crypto):
+
+```js
+import { makeConfidentialBid } from './dapp/confidential-bid.js';
+const bid = makeConfidentialBid({ keccak256, pool: tacit.pool });
+
+// buyer, once, then offline
+const built = bid.buildBid({ assetA, assetB, minFill, maxFill, price, increment, buyerOwner, nk,
+                             fundRSecp, fundLeafIndex, fundPath, bidSecret });
+
+// any seller, any time before the buyer cancels
+const filled = bid.fillBid({ chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp, sellerInLeafIndex, sellerInPath, nonces, fee });
+const result = bid.verifyBid(filled);
+// one { seedDerived: true } descriptor per emitted leaf — a bid's outputs recover from bidSecret, not a sealed memo
+await tacit.relay.settle({ type: 'bid', op: bid.toWireOp(filled), leaves: result.leaves, outputs: result.leaves.map(() => ({ seedDerived: true })), ephRand: () => 1n });
+```
+
+`bidSecret` is a dedicated 32-byte secret (not the wallet seed) that derives every per-fill output
+blinding; keep it, or re-derive it from the seed and the funding note's commitment
+(`tacit.pool.deriveBidSecret(seed, fund.cx, fund.cy)`). A partial fill mints the buyer a refund note for
+the unfilled remainder in the same settle; a full fill mints none.
+
+**Hand the bid to a seller yourself — there is no on-chain listing or discovery for it.** The dapp gives
+you the cryptography to build, fill and verify a bid; publishing one so a seller can find it is the same
+off-band exchange an OTC offer needs. **Recovering a filled bid's outputs also needs its own path**: the
+seller never learns the buyer's output blindings, so the ordinary memo scan can't find them —
+`recoverBidOutputs({ seed, bid, leafSet })` walks the grid and matches leaves directly. A multi-fill
+resting order is the same primitive repeated (`buildRestingBid` / `fillRestingLot` /
+`recoverRestingBidOutputs`), cancellable by spending its current head note.
+
+## 5e. Adaptor swaps
+
+`OP_ADAPTOR_LOCK` / `_CLAIM` / `_REFUND` ([SPEC §5.3](../SPEC.md#53-op-table)) lock a note under a
+Schnorr adaptor point `T`, so claiming it reveals the discrete log the other leg of a cross-chain swap
+needs — the mechanism behind cBTC redemption. `dapp/adaptor-signature.js` has the presign, complete and
+extract primitives for both an EVM-side kernel adaptor and a Bitcoin-side BIP-340 adaptor, and
+`dapp/adaptor-swap.js` sequences a full two-leg swap on top of them — role assignment, the
+initiator-claims-first ordering, and the `farDeadline > nearDeadline` timeout safety margin that keeps the
+second claimant from getting stuck holding an unclaimed leg. `dapp/cbtc-redemption.js` and
+`dapp/cross-chain-orderbook.js` build cBTC's redemption market on that same state machine.
+
+**None of these assemble the actual on-chain op.** Every one of them takes leg construction as an
+injected `(dPriv, msg32, nonce)` (Bitcoin lane) or `(excess, inC, outC, nonce)` (EVM lane) and returns a
+signature or kernel response — real, tested cryptography, but not a witness with the concrete
+`spendRoot`/note commitments/leaves a settle needs. That builder, for either chain, does not exist yet in
+`dapp/`. If you need it: `contracts/sp1/confidential/harnesses/exec-adaptorlock.rs` /
+`exec-adaptorclaim.rs` / `exec-adaptorrefund.rs` give the exact stdin field order the guest reads — for a
+lock, `asset ‖ locker ‖ recipient ‖ refundPub ‖ amount ‖ Tx ‖ Ty ‖ deadline` followed by the spent note's
+membership witness and opening, then the locked output's commitment and opening.
+
 ## 6. Relay API
 
 Base `https://api.tacit.finance`. Everything below is public; nothing needs a key.
@@ -596,8 +773,8 @@ traces `OP_TRANSFER` and `OP_UNWRAP` in detail.
 outputs within one op), and the nullifier of each note it proves. For an `OP_SWAP` it also sees that swap's
 amounts, because the guest computes the clearing and therefore must read them. It does not see notes an op does
 not touch, and it is not given your wallet identity or balance. `selfRelay` does **not** change any of this —
-the relay still proves, so it still sees the witness. If the link between an op's inputs and outputs, or a
-trade size, matters to you, prove locally.
+the relay still proves, so it still sees the witness. Proving locally keeps the witness — the link between an
+op's inputs and outputs, and any trade size — on your own device end to end.
 
 `OP_SWAP_BLIND` keeps amounts out of the SP1 witness: clearing is proven by a Groth16 circuit that the
 batch's coordinator produces and the guest verifies. It is enabled in the deployed guest but the relay

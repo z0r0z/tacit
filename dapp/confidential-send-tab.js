@@ -701,10 +701,11 @@ export async function renderSendTab(wallet, helpers = {}) {
     <div class="tab-form">
     <div class="note-concept"><b>EVM pool send.</b> Paste your own Tacit address to turn public ETH, USDC,
       tacBTC, or tacUSD into a private note only you hold. Paste <i>someone else's</i> address and it's a stealth
-      send instead: the amount locks to a one-time address only they can claim, so no one — not even the relay —
-      learns who received it or how much. They don't need to be online now, and you can refund it to yourself if
-      they never claim it. The composer spends matching shielded notes first; if needed, it wraps public wallet
-      funds first.</div>
+      send instead: the amount locks to a one-time address only they can claim, so the recipient is never public
+      — not even to the relay. Sending from your shielded balance keeps the amount private too; wrapping public
+      wallet funds first makes that wrap amount public on-chain, same as any wrap. They don't need to be online
+      now, and you can refund it to yourself if they never claim it. The composer spends matching shielded notes
+      first, and wraps public funds only if it needs to.</div>
     <div>Your Tacit address <span class="muted">(one handle, both chains — share to receive)</span>:
       ${myTacit
         ? `<code id="csend-myaddr" class="addr">${myTacit}</code>
