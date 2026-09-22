@@ -103,7 +103,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=fd2900cb">
+<link rel="modulepreload" href="./tacit.js?cb=b7a390ea">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -4851,7 +4851,7 @@ body[data-market-mode="asset"] [data-market-asset-pane="activity"]:not(.active) 
    the full body width (~1056px) and looked like a separate, wider strip
    floating above the page card. */
 body > header,
-body > #zfi-airdrop-banner,
+body > #tac-airdrop-claim-banner,
 body > #global-tape,
 body > #mainnet-banner,
 body > #bpp-signet-banner,
@@ -8614,16 +8614,12 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 </div>
 
 <!--
-  zFi-community TAC airdrop banner. Mainnet-only, dismissible via × (sticky
-  per browser via tacit-zfi-airdrop-banner-dismissed-v1). Recipient claim
-  routing is parked for now, so this does not deep-link into the Claim tab.
+  TAC merkle airdrop claim banner (dapp/confidential-airdrop-claim.js): the recipient portal the banner
+  above promises. Visible on every tab, independent of the Bitcoin-native nav. Silent by default; a
+  connected wallet that turns out ineligible or already claimed never sees it. Content + dismissal are
+  entirely JS-driven (mountAirdropAnnouncement, called once at boot) — this is just the mount point.
 -->
-<a id="zfi-airdrop-banner"
-   href="#tab=wallet"
-   style="display:none;position:relative;background:var(--bg-warm);border:1px solid var(--orange);padding:8px 40px 8px 14px;font-size:11px;color:var(--ink);text-align:center;margin-bottom:10px;text-decoration:none;line-height:1.4;">
-  <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" class="tacit-warn-banner__close">×</button>
-  <strong style="color:var(--orange);">TAC airdrop</strong> for the zFi community (ZAMM + ZORG holders) — recipient portal soon
-</a>
+<div id="tac-airdrop-claim-banner" style="display:none;position:relative;"></div>
 
 <!-- "One note, two chains": the top-level IA is organized around what you
      DO with a confidential note (hold / trade / send / pool / create), not
@@ -8645,6 +8641,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <div class="tabs subtabs" data-group="wallet">
   <button class="tab active" data-tab="wallet">Overview</button>
   <button class="tab" data-tab="holdings">Holdings</button>
+  <button class="tab" data-tab="airdrop" title="Check and claim the one-shot TAC merkle airdrop">Airdrop</button>
 </div>
 
 <!-- Send: Bitcoin-native send is the default landing surface (first live child wins in
@@ -9675,6 +9672,18 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         Local-only history of broadcasts you've signed on this device (etch / transfer / mint / burn / received). Cleared if you wipe browser storage; the chain is the source of truth.
       </div>
       <div id="activity-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- AIRDROP TAB — one-shot TAC merkle distributor claim. Rendered by renderAirdropTab() on show;
+     always present (like Docs), never a dead end: it explains its own state (not connected / not
+     eligible / claimed / paused / claimable) instead of assuming the visitor came from the banner. -->
+<div class="tab-panel" id="tab-airdrop">
+  <div class="section" style="max-width:560px;margin:0 auto;">
+    <div class="section-header">TAC airdrop <span class="chain-badge eth" style="vertical-align:middle;"><span class="dot"></span>Ethereum</span></div>
+    <div class="section-body" style="font-size:13px;" id="airdrop-body">
+      <div class="muted">Loading…</div>
     </div>
   </div>
 </div>
@@ -11154,7 +11163,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=fd2900cb"></script>
+<script type="module" src="./tacit.js?cb=b7a390ea"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

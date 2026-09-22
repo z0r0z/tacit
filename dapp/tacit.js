@@ -80,6 +80,7 @@ import { renderOtcTab } from './confidential-otc-tab.js';
 import { renderSendTab } from './confidential-send-tab.js';
 import { renderSwapTab } from './confidential-swap-tab.js';
 import { renderEarnTab } from './confidential-earn-tab.js';
+import { renderAirdropTab, mountAirdropAnnouncement } from './confidential-airdrop-claim.js';
 import { renderGovernTab } from './confidential-govern-tab.js';
 import { renderFactoryTab } from './confidential-factory-tab.js';
 import { CONFIDENTIAL_DEPLOYMENTS as CROSSLANE_DEPLOYMENTS, setActiveNetwork as _setConfidentialNet, isProtectedOutpoint as _isProtectedOutpoint } from './confidential-deployments.js';
@@ -44732,7 +44733,7 @@ function setupCeremonyHandlers() {
 // active group. Single-child groups (send, discover, protocol) have no
 // visible sub-row.
 const TAB_GROUP_OF = {
-  wallet: 'wallet', holdings: 'wallet',
+  wallet: 'wallet', holdings: 'wallet', airdrop: 'wallet',
   csend: 'send', transfer: 'send',
   market: 'trade', cswap: 'trade', otc: 'trade', cdp: 'trade',
   earn: 'earn',
@@ -44870,13 +44871,6 @@ function _activateTab(name) {
   if (name === 'drops') refreshDropsTab();
   if (name === 'claim') { refreshClaimTab(); startClaimAutoRefresh(); }
   else stopClaimAutoRefresh();
-  {
-    const zfiB = $('#zfi-airdrop-banner');
-    if (zfiB) {
-      const dismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
-      zfiB.style.display = (NET.name === 'mainnet' && !dismissed && _claimPortalActive() && name !== 'claim') ? 'block' : 'none';
-    }
-  }
   if (name === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
   else stopPetchAutoRefresh();
   if (name === 'market') {
@@ -44911,6 +44905,7 @@ function _activateTab(name) {
   }
   if (name === 'cswap') { try { renderSwapTab(wallet); } catch (e) { console.error('cswap tab', e); } }
   if (name === 'earn') { try { renderEarnTab(wallet); } catch (e) { console.error('earn tab', e); } }
+  if (name === 'airdrop') { try { renderAirdropTab(wallet, { eth: ethNamesBridge }); } catch (e) { console.error('airdrop tab', e); } }
   if (name === 'factory') { try { renderFactoryTab(wallet); } catch (e) { console.error('factory tab', e); } }
   if (name === 'govern') { try { renderGovernTab(wallet, governanceApi()); } catch (e) { console.error('govern tab', e); } }
   try { _renderOtcClaimBanner(); } catch {}
@@ -56518,7 +56513,7 @@ function _consumeClaimUrlHash() {
 // via URL but back/forward isn't polluted with every casual tab click.
 const _DEEPLINK_TABS = new Set([
   'wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim', 'about', 'mixer',
-  'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn',
+  'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'airdrop',
 ]);
 // Whitelist of allowed `section=` values per tab. A free-form section name
 // would let any URL scroll to any element id (including form inputs that
@@ -90511,27 +90506,6 @@ function setupNetworkSelect() {
       const b = $('#mainnet-banner'); if (b) b.style.display = 'none';
     };
   }
-  // zFi-community TAC airdrop banner: mainnet-only and only shown while the
-  // recipient portal is live; dismissible via × with a per-browser sticky flag.
-  // Same render cadence as the mainnet banner, so visibility tracks tab/network
-  // changes without dedicated event wiring.
-  const zfiBanner = $('#zfi-airdrop-banner');
-  const zfiDismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
-  const onClaimTab = !!document.querySelector('.tab.active[data-tab="claim"]');
-  if (zfiBanner) {
-    zfiBanner.style.display = (NET.name === 'mainnet' && !zfiDismissed && _claimPortalActive() && !onClaimTab) ? 'block' : 'none';
-  }
-  const zfiClose = $('#zfi-airdrop-banner-close');
-  if (zfiClose && !zfiClose._wired) {
-    zfiClose._wired = true;
-    zfiClose.onclick = (e) => {
-      // Stop the click from also triggering the parent banner navigation.
-      e.preventDefault();
-      e.stopPropagation();
-      localStorage.setItem('tacit-zfi-airdrop-banner-dismissed-v1', '1');
-      if (zfiBanner) zfiBanner.style.display = 'none';
-    };
-  }
   // When an external wallet is connected, the wallet drives the network
   // (reconcileWalletNetwork would bounce any local override). Lock the
   // selector and surface an inline hint with a one-click disconnect — the
@@ -91524,6 +91498,10 @@ async function init() {
   _deferIdle(() => { _runCandidateProbe().catch(() => {}); });
   setupExtWalletButtons();
   setupEthWalletButtons();
+  // TAC merkle airdrop: site-wide banner, checked once against whatever Ethereum wallet is already
+  // authorized (no popup) and again on an explicit connect. eth reuses ethNamesBridge's own connect/
+  // sendTx so this doesn't open a second wallet-selection path.
+  try { mountAirdropAnnouncement({ eth: ethNamesBridge }); } catch (e) { console.error('airdrop banner', e); }
   setupBtcWalletButtons();
   setupPasskeyButtons();
   setupUnisatEvents();
