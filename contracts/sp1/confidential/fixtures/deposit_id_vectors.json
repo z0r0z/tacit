@@ -1,0 +1,55 @@
+{
+  "_comment": "depositCommit/depositId KAT: keccak256(cx‖cy‖owner), then keccak256(assetId‖value(BE32)‖depositCommit). Reference: dapp/confidential-pool.js. Regenerate: node tests/gen-depositid-vectors.mjs",
+  "vectors": [
+    {
+      "assetId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      "value": "1",
+      "blinding": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "owner": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "cx": "0xe9cfdfa944f2ec5a5afb85f2b18171b55f060fd1ef5c0eb15c015105c89b4d4d",
+      "cy": "0xe0131f714071b531092a80715ff706bf0cfb947b52df6779a0e025253728ff97",
+      "depositCommit": "0x4bbef715fdcf009e97a3bc1727bd2e8d82e635c65d6987a9999d21eb898bceaf",
+      "depositId": "0xa05019fe4d5e1426a19a3aaaae73ee6b1d46039f5327e63ce47c9ecbfa7bfe0c"
+    },
+    {
+      "assetId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+      "value": "1000000",
+      "blinding": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "owner": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "cx": "0x5852e3ed63e757be839b2cbb78b06dfe2d000cd443b8b962ffdca8629178b570",
+      "cy": "0xa2feafc8c4375832eafdc80481e795c45b9739dfa6c27f3130f6e42c28ed769f",
+      "depositCommit": "0xd1b01015d9092e5f6dec9361412eae14b88143583fbe0a86d746a8cfdb46dc61",
+      "depositId": "0x63e18c67a5d04514348d20f13d5a1542a81e93a2834a7485d2131dafcb92697b"
+    },
+    {
+      "assetId": "0xabababababababababababababababababababababababababababababababab",
+      "value": "123456789",
+      "blinding": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "owner": "0x6666666666666666666666666666666666666666666666666666666666666666",
+      "cx": "0x31680609a1c29d5be37b6dfb7c8bb7560786b94b1acf66bd70c24d06c9df34c6",
+      "cy": "0x17326c657b57acd9ed3afc0bd153736fd16bdf5482b1020491451c6411086810",
+      "depositCommit": "0x0b4253cbf5333c722fc96ad9fe2ff943b5845d22ddde62b86d8ed5addc9de1c6",
+      "depositId": "0x2e4346f4771a5cace7cb2abba6595bdbed41fccc17c677f8ca918369962c1cec"
+    },
+    {
+      "assetId": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "value": "18446744073709551615",
+      "blinding": "0x7777777777777777777777777777777777777777777777777777777777777777",
+      "owner": "0x8888888888888888888888888888888888888888888888888888888888888888",
+      "cx": "0xbd836de560652d16d672c2085aec3c5d1faaea1598caf4f371d051ff155ece31",
+      "cy": "0xd1a311cead0cfb48946bcdcb5cc47c1cca602abc73614279d84b5f4987f1097b",
+      "depositCommit": "0x0fb4ac901d1070a3262a760f42036cf4b3961ebe941f2c5a773edea735dbacd5",
+      "depositId": "0xb6f4094b395cddd79ff024d2a8eed3bb1a8edb740d98284344c24a5e80575a2b"
+    },
+    {
+      "assetId": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "value": "0",
+      "blinding": "0x9999999999999999999999999999999999999999999999999999999999999999",
+      "owner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "cx": "0x8985087b1818714f67e494a076ca0284c060fabc5d2ba66885b4ac60f801d3f5",
+      "cy": "0xc77741ca2c90dc3586398ca83acfb204571ff2a6cd58a9e94f54ec0b694397ea",
+      "depositCommit": "0x09e69f12e5e51bb1ee18392da63db0a6d9f644b94b1157e66484f3cb6ca50b44",
+      "depositId": "0x7ab3646f63e36f038db24442cec1e1e517105f975668d1f3f1bc26a6ba316b67"
+    }
+  ]
+}
