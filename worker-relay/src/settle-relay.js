@@ -25,6 +25,7 @@ import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialBatch, confidentialAck, confidentialActivateAck, heartbeat } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
+import { consumedInputs } from './lib/spent-precheck.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
 import { quoteRelayFee, provePriceUsd, replenishOnce, drainToSink } from './replenish.js';
@@ -314,8 +315,18 @@ export async function admitJobs(jobs, gate) {
   return { admitted: admitted.map((a) => a.job), refused };
 }
 
+// A job whose inputs are already consumed on chain can only revert, so it is acked failed without paying for a proof.
+async function skipConsumed(job) {
+  const gone = await consumedInputs(job, { client: publicClient, pool: POOL });
+  if (!gone) return false;
+  log(`job ${job.jobId} type=${job.type} not proved: ${gone}`);
+  await confidentialAck({ jobId: job.jobId, error: `inputs already spent on chain (${gone}); the op may already have settled` });
+  return true;
+}
+
 // Prove and settle one claimed job on the ordinary single-op path, carrying it to a terminal ack either way.
 async function settleOne(j) {
+  if (await skipConsumed(j)) return;
   try {
     const proof = await proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
     const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
@@ -345,7 +356,9 @@ async function batchCycle() {
     await confidentialAck({ jobId: job.jobId, error: `feeGate: ${verdict.publicReason || verdict.reason}` });
   }
   if (!admitted.length) return true; // we did work (refusing), so the loop should poll again immediately
-  jobs = admitted;
+  jobs = [];
+  for (const j of admitted) if (!(await skipConsumed(j))) jobs.push(j);
+  if (!jobs.length) return true;
   const ids = jobs.map((j) => j.jobId);
   // These jobs are already CLAIMED, so they must be carried to a terminal state here — releasing them by
   // acking an error would fail a user's op merely for arriving alone. A lone job is proved on the ordinary
@@ -418,6 +431,8 @@ async function cycle() {
     await confidentialAck({ jobId, error: `feeGate: ${gate.publicReason || gate.reason}` });
     return true;
   }
+
+  if (mode !== 'preproven' && await skipConsumed(job)) return true;
 
   log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason} [gas ${gasGwei.toFixed(4)} gwei, ETH $${Number(ethPx).toFixed(2)}, PROVE $${Number(provePx).toFixed(4)}]`);
   await heartbeat('settle', `proving ${jobId} ${type}`);
