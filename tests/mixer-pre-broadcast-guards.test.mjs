@@ -1,5 +1,5 @@
 // Mixer pre-broadcast safety guards — regression coverage for the audit
-// findings that prompted SPEC §5.11.4 tightenings.
+// findings that prompted the spec tightenings.
 //
 // What this validates that no other test does:
 //
@@ -12,14 +12,14 @@
 //   2. Canonical-pool gate (mixerIsPoolCanonical) returns true only when
 //      BOTH vk_cid AND ceremony_cid match the dapp's CANONICAL_* constants.
 //      Mismatch on either side returns false. A regression here re-opens
-//      the "POOL_INIT with backdoored vk" attack documented in SPEC §5.11.3.
+//      the "POOL_INIT with backdoored vk" attack documented in the spec.
 //
 //   3. bind_hash recompute rejects per-field tampering across ALL covered
 //      fields (asset_id, denomination, nullifier_hash, recipient_commitment,
 //      r_leaf). The existing mixer-envelope test flips only one byte; this
-//      one walks each covered region. SPEC §5.11.4 invariant 4.
+//      one walks each covered region. Spec invariant 4.
 //
-//   4. POOL_RECENT_ROOTS_WINDOW constant exposed and matches §5.11.4 = 32.
+//   4. POOL_RECENT_ROOTS_WINDOW constant exposed and matches the spec (32).
 //
 // Run: `node --test tests/mixer-pre-broadcast-guards.test.mjs`
 
@@ -217,7 +217,7 @@ await test(`decoder ACCEPTS tampered merkle_root (NOT covered by bind_hash)`, ()
   // merkle_root is bound by the Groth16 circuit's membership constraint
   // (NOT by bind_hash). The decoder must still accept structurally — only
   // the proof verifier catches a mismatched root. This confirms the bind_hash
-  // field set in computeWithdrawBindHash matches SPEC §5.11 exactly.
+  // field set in computeWithdrawBindHash matches the spec exactly.
   const valid = makeValidWithdrawPayload();
   const tampered = new Uint8Array(valid);
   tampered[41 + 16] ^= 0x01;

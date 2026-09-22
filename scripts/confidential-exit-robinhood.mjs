@@ -1,4 +1,4 @@
-// Privacy-preserving ETH -> Robinhood Chain exit, ops tooling. See ops/DESIGN-confidential-robinhood-exit.md.
+// Privacy-preserving ETH -> Robinhood Chain exit, ops tooling.
 //
 // Same flow as scripts/confidential-exit-base.mjs (wrap into the shielded pool -> dwell -> unwrap to a
 // recipe-bound escrow -> the escrow atomically bridges out), but Robinhood Chain is an Arbitrum Orbit

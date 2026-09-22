@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 const ARGV = process.argv.slice(2);
 const TAC_ASSET_ID = (ARGV[0] || 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b').toLowerCase();
 const ETCH_TXID    = (ARGV[1] || 'e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e').toLowerCase();
-const EXPECT_H     = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // KAT, SPEC §3.1
+const EXPECT_H     = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56'; // KAT, SPEC.md §2
 const BTC_APIS     = (process.env.TACIT_BTC_API || 'https://mempool.space/api,https://blockstream.info/api').split(',');
 const IPFS_GATEWAYS = (process.env.TACIT_IPFS_GATEWAYS || [
   'https://ipfs.io/ipfs/{cid}',

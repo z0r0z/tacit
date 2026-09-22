@@ -13,7 +13,7 @@
 # SCOPE: this covers the SETTLE + REFLECTION guests (the 33 ops + 2 reflection fixtures). The eth-reflection
 # (Mode-B) guest is a THIRD ELF — the ETHR-1/2 chain-bind + weak-subjectivity fixes rotate ETH_REFLECTION_VKEY,
 # so re-derive it (contracts/sp1/eth-reflection eth_vkey.rs) + re-pin in reflect.rs SEPARATELY, and re-anchor
-# the 3 eth chain values for mainnet IN LOCKSTEP (ops/CHECKLIST-mainnet-reprove.md). Not done here (its proof
+# the 3 eth chain values for mainnet IN LOCKSTEP. Not done here (its proof
 # needs live ETH beacon data).
 #
 # PARITY GATE (run FIRST): bash contracts/sp1/confidential/verify-reflection-fixtures.sh — builds a fresh
@@ -30,7 +30,7 @@
 #   (a) build eth-reflection ELF (contracts/sp1/eth-reflection) → derive ETH_REFLECTION_VKEY (eth_vkey.rs,
 #       a [u32;8] array) → re-pin it in reflect.rs:~301. SEPOLIA REHEARSAL: do NOT re-anchor the ETH genesis/
 #       checkpoint/sync-committee constants — they are already the correct Sepolia anchor (re-anchor is a
-#       MAINNET-only step, ops/CHECKLIST-mainnet-reprove.md H-1/2/3).
+#       MAINNET-only step).
 #   (b) build reflection ELF → BITCOIN_RELAY_VKEY    (c) build settle ELF → PROGRAM_VKEY
 #   NOTE: confidential-reprove-apply.sh reconciles (b)+(c) [program_vkey/DEFAULT_VKEY + FROZEN_REFLECTION_*]
 #   but NOT the eth [u32;8] re-pin — that's the manual pre-step in (a) above.

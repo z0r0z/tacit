@@ -1,4 +1,4 @@
-// 8-decimal end-to-end signet harness for T_PREAUTH_BID_VAR (SPEC §5.7.12).
+// 8-decimal end-to-end signet harness for T_PREAUTH_BID_VAR.
 //
 // Mirror of tests/preauth-bid-var-onchain-e2e-signet.mjs (0-decimal flow)
 // with decimals_scale = 8 — the canonical TAC scenario the protocol

@@ -1,5 +1,5 @@
 // End-to-end signet test for the blinded-pubkey stealth-address scheme
-// (SPEC-BLINDED-PUBKEY-AMENDMENT.md, ECDH-derived variant).
+// (ECDH-derived variant).
 //
 // Resumable harness — state persisted at .local/stealth-signet-state.json.
 //

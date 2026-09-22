@@ -1,6 +1,6 @@
 // Trustless AMM pool-state replay.
 //
-// SPEC AMM.md: "Public reserves and supply are how the protocol stays purely
+// The spec: "Public reserves and supply are how the protocol stays purely
 // indexer-validated — anyone can reconstruct exactly what every reserve is at
 // every height by replaying confirmed envelopes." This is that reconstruction,
 // moved into the client so the dapp never trusts the worker for pool state.
@@ -70,7 +70,7 @@ export function computeProtocolShares(S_pre, k_pre, k_now, protocolFeeBps) {
 //   fee_claim  : {}                                         crystallizes protocol fee
 //   swap_batch : requires Groth16 verification — not yet wired (throws).
 //
-// Protocol-fee crystallization (AMM.md §"Accrual model: Uniswap V2 lazy mintFee"):
+// Protocol-fee crystallization:
 // k_last = reserveA·reserveB AT THE LAST CRYSTALLIZATION. It is set at pool_init
 // and at every LP event (lp_add / lp_remove / fee_claim) — NEVER at a swap. The
 // fee accrues virtually in k-growth between LP events; at each LP event the
@@ -150,7 +150,7 @@ export function replayAmmPoolState(ops, deps) {
     }
 
     if (op.kind === 'swap_var') {
-      // SPEC §5.20 outcome taxonomy: re-price the cleartext delta_in at the
+      // Outcome taxonomy: re-price the cleartext delta_in at the
       // ACTUAL (replayed) reserves and the pool's fee — the swap's own declared
       // R_A_pre/R_B_pre/delta_out are ADVISORY quote context, never trusted.
       // EXECUTE (advance reserves) iff delta_out_actual >= max(1, min_out);
@@ -178,7 +178,7 @@ export function replayAmmPoolState(ops, deps) {
     }
 
     if (op.kind === 'swap_route') {
-      // SPEC §5.22 (SPEC-SWAP-ROUTE-AMENDMENT). A multi-hop route is ONE Bitcoin
+      // A multi-hop route is ONE Bitcoin
       // tx touching several pools; op.hops is the subsequence of its hops on THIS
       // pool, in route order. Each hop is applied under the SAME constraints the
       // worker's T_SWAP_ROUTE handler enforces:
@@ -238,10 +238,10 @@ export function replayAmmPoolState(ops, deps) {
     }
 
     if (op.kind === 'swap_batch') {
-      // SPEC §5.16 (drafted / not yet emitted). The batch hides per-trader
+      // Drafted / not yet emitted. The batch hides per-trader
       // amounts and carries ONE Groth16. Trustless replay verifies that proof
       // against the replayed reserves_before (a public input) and advances to
-      // reserves_after — see spec/design/TRUST-TIERS-AND-CONVERGENCE.md. Until
+      // reserves_after. Until
       // that proof verification is wired, refuse to advance (fail closed) rather
       // than trust an unverified net flow.
       throw new Error(`replay[${i}]: swap_batch requires Groth16 verification against reserves_before (not yet wired)`);

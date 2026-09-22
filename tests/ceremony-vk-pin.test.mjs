@@ -27,8 +27,8 @@ import { bytesToHex } from '@noble/hashes/utils';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLE_DIR = path.join(__dirname, '..', 'dapp', 'circuits', 'ceremony-bundle');
 
-// Canonical hashes — match dapp/circuits/ceremony-bundle/README.md +
-// MIXER.md §Trusted setup. TACIT_DEFAULT_CEREMONY_HASH in dapp/tacit.js
+// Canonical hashes — match dapp/circuits/ceremony-bundle/README.md.
+// TACIT_DEFAULT_CEREMONY_HASH in dapp/tacit.js
 // derives from r1cs sha256 and is also pinned below for symmetry.
 const EXPECTED = {
   'verification_key.json': '760829334a626afbc74b24cff1058bec8f5714f802f74fb7f649b6a26ce933af',

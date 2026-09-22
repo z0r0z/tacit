@@ -8,7 +8,7 @@
 # An already-deployed predecessor is immutable and cannot be retired on-chain, so this is an OPERATIONAL gate:
 # run it at a pinned block immediately before deploy/funding and publish the block hash. Any withdrawable balance
 # above DUST, or any reflection advancement over the window, is a NO-GO for that predecessor.
-# POOLS defaults to the resumed lineage; set it to the full superseded set (see ops/DESIGN-multigen-safe.md).
+# POOLS defaults to the resumed lineage; set it to the full superseded set.
 #
 # Usage: RPC=<mainnet-rpc> [BLOCK=<n>] [WINDOW=<blocks>] [DUST=...] bash ops/verify-predecessor-inert.sh
 set -euo pipefail

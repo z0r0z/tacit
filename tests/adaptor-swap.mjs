@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Confidential cross-chain adaptor swap orchestration (ops/PLAN-confidential-adaptor-swap.md phase 4).
+// Confidential cross-chain adaptor swap orchestration.
 // Drives the full protocol over the BIP-340-faithful adaptor primitive and checks both completed legs
 // against the REAL kernel verifier (verifySchnorr): the happy path (lock → verify → claim reveals t →
 // counterclaim), the refund path (initiator never claims), and the safety rejections (deadline

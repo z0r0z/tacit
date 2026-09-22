@@ -91,15 +91,6 @@ out/
 contracts/sp1/confidential/harnesses/target/
 contracts/sp1/confidential/dist/
 
-# Audit-response working docs + private auditor bundle — kept local, never published (vector detail)
-ops/audit-bundle/
-ops/DESIGN-c01-generational-retirement.md
-ops/DESIGN-h02-authenticated-resume.md
-ops/DESIGN-multigen-safe.md
-ops/DESIGN-solvent-stability-fee.md
-ops/DESIGN-fee-per-position-redesign.md
-ops/DESIGN-round5-fold-fixes.md
-
 # One-off local scratch (never part of the repo)
 scratch-*
 _scan-receipts.mjs

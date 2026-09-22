@@ -20,9 +20,9 @@ group('Generator derivation');
   ok('Gvec has BPP_MAX_NM=512 generators', Gvec.length === 512);
   ok('Hvec has BPP_MAX_NM=512 generators', Hvec.length === 512);
   ok('H is a non-zero point', !H.equals(bpp.ZERO));
-  // Gvec[0] / Hvec[0] should match the pinned values in SPEC.md §3.1 since
+  // Gvec[0] / Hvec[0] should match the pinned values in the spec since
   // the domain tags + derivation procedure are identical to standard BP.
-  // SPEC.md §3.1 pins:
+  // The spec pins:
   //   G_vec[0] = 025cfa02a4913b0b122c4f275ae566e6ba52627d80036e25a43a3fd5d2062f28d4
   //   H_vec[0] = 02b78ed462f5c137b05d1e99daeb2619eb890ec4781acf098018628ca0ec0d20e2
   //   H        = 02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56

@@ -9,7 +9,7 @@
 //   • `expected.consumed` = BOTH input ν the contract records in bitcoinConsumed (spendRoot-bound).
 // The LP guest reads BOTH nonMembers at the END (after op_deadline), A then B — it defers its membership
 // + cross-lane checks until after deriving d_shares (main.rs:621 A / :626 B). No guest change is needed;
-// this validates that path against the box re-prove. See ops/PLAN-fast-lane-trading.md.
+// this validates that path against the box re-prove.
 //
 // Run: node tests/gen-cxfer-crosslane-lp-fixture.mjs
 

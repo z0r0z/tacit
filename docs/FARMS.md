@@ -234,8 +234,8 @@ A wTAC note becomes plain TAC in three hops, each a mainnet-proven step:
 3. Optional: **wrap the TAC** back into a confidential TAC note (`buildWrap`, ticker `TAC`) if the user wants to
    stay in the pool.
 
-TAC notes then reach Bitcoin over the pool's existing cross-out / bridge-mint round trip; see
-[`ops/RUNBOOK-crossout-rehearsal.md`](../ops/RUNBOOK-crossout-rehearsal.md). That path is for TAC notes, not wTAC
+TAC notes then reach Bitcoin over the pool's cross-out round trip; see
+[SPEC §6.4](../SPEC.md#64-ethereum--bitcoin). That path is for TAC notes, not wTAC
 notes: redeem first.
 
 The SDK wraps all four in one entry: `tacit.farmBond`, `farmHarvest`, `farmUnbond`, `farmRedeem`, plus
@@ -380,6 +380,6 @@ returned the shares. Harvest before unbonding: unbond does not pay out reward th
 
 - [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) — the base guide, with a minimal farms example
 - [`DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address
-- [`ops/RUNBOOK-crossout-rehearsal.md`](../ops/RUNBOOK-crossout-rehearsal.md) — TAC notes to Bitcoin
+- [SPEC §6.4](../SPEC.md#64-ethereum--bitcoin) — TAC notes to Bitcoin
 - [`contracts/src/FarmManager.sol`](../contracts/src/FarmManager.sol) — the program contract; the governance bounds
   above are constants there

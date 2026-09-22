@@ -7,7 +7,7 @@
 // Phase 1 (this file): the PROOF-FREE flows — the router call needs no SP1 proof. Wrap on-ramp (EIP-2612 /
 // Permit2 / native ETH; the note is minted by a later settle), public swap, public LP add. The atomic-settle
 // flows (wrapAndSettle* / zapETHToPayment / farm bonds — which embed a box proof) and the zRouter zaps layer
-// on in later phases. See ops/PLAN-confidential-router-dapp-wiring.md.
+// on in later phases.
 //
 // The caller supplies on-chain-read inputs the router needs (the token's EIP-2612 name/version + permit nonce,
 // or the Permit2 nonce) — fetched via RPC by the UX layer; this module is pure assembly + signing so it stays

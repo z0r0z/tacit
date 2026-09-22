@@ -1,5 +1,4 @@
-// End-to-end signet harness for SPEC-CXFER-BPP-AMENDMENT §5.47
-// (now merged as SPEC.md §5.21).
+// End-to-end signet harness for T_CXFER_BPP.
 //
 // Exercises T_CXFER_BPP on real signet chain, including the mixed-ancestry
 // walk that the offline tests cover only at the dispatch layer:

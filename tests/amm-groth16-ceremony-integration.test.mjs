@@ -125,8 +125,7 @@ if (!CEREMONY_FIXTURES_AVAILABLE) {
 
   // Cross-pool replay defense: a proof produced against pool_A's vk MUST NOT
   // verify when handed pool_B's vk (which has a different vk_cid_fr pinned
-  // as a public signal). This is the structural defense documented in
-  // AMM.md §"Security properties" table.
+  // as a public signal). This is the structural defense.
   // Implementation note: requires two distinct vks. Post-ceremony, this
   // becomes meaningful when there are ≥2 confirmed pools with different vks
   // (different ceremonies); for V1 with a single canonical vk, the test

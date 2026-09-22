@@ -1,6 +1,6 @@
 // AMM asset identity primitives.
 //
-// Three-origin asset-id resolution per AMM.md §"Pool state":
+// Three-origin asset-id resolution per the spec:
 //   (1) CETCH                — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (2) T_PETCH               — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (3) AMM POOL_INIT (LP)    — asset_id = SHA256("tacit-amm-lp-v1" || pool_id)
@@ -33,8 +33,8 @@ import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
 const DOMAIN_POOL_ID = new TextEncoder().encode('tacit-amm-pool-v1');
 const DOMAIN_LP_ASSET = new TextEncoder().encode('tacit-amm-lp-v1');
 
-// Validation bounds. fee_bps is u16 capped at 1000 (10%) per AMM.md
-// §"SOLVE_CLEARING". capability_flags is a u8 bitmap (AMM.md §"Pool state").
+// Validation bounds. fee_bps is u16 capped at 1000 (10%) per the spec.
+// capability_flags is a u8 bitmap.
 const FEE_BPS_MAX = 1000;
 const CAPABILITY_FLAGS_MAX = 255;
 const PROTOCOL_FEE_ADDRESS_LEN = 33;
@@ -53,7 +53,7 @@ function reverseBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
 
 // CETCH and T_PETCH share the same asset-id formula.
 //   asset_id = SHA256(reveal_txid_BE || reveal_vout_LE)
-// where reveal_vout is 0 by convention (SPEC §4).
+// where reveal_vout is 0 by convention.
 export function deriveAssetIdFromReveal(revealTxidHex, revealVout = 0) {
   const txidBE = reverseBytes(hexToBytes(revealTxidHex));
   const voutLE = new Uint8Array(4);

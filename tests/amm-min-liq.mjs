@@ -1,5 +1,4 @@
-// MINIMUM_LIQUIDITY locked LP-share construction per AMM.md §"MINIMUM_LIQUIDITY
-// burn-output construction".
+// MINIMUM_LIQUIDITY locked LP-share construction per the spec.
 //
 // At POOL_INIT, the founder receives `isqrt(Δa·Δb) − MINIMUM_LIQUIDITY` shares
 // and the protocol locks the remaining MINIMUM_LIQUIDITY in a provably
@@ -117,7 +116,7 @@ export function decryptMinLiqAmount(amountCt, poolId) {
   return amt;
 }
 
-// NUMS recipient pubkey via try-and-increment, same pattern as SPEC §3.1's H.
+// NUMS recipient pubkey via try-and-increment, same pattern as the H generator.
 //   digest = SHA256("tacit-amm-min-liq-pubkey-v1" || pool_id || counter_u8)
 //   candidate = 0x02 || digest    (x-only with implicit even-y prefix)
 //   accept if it parses as a valid secp256k1 point ≠ identity

@@ -1,5 +1,5 @@
-// Preconfirmation layer for tacit — T_INTENT_ATTEST (opcode 0x30,
-// SPEC.md §5.17). Scope-generic: AMM pools, orderbook pairs, and any
+// Preconfirmation layer for tacit — T_INTENT_ATTEST (opcode 0x30).
+// Scope-generic: AMM pools, orderbook pairs, and any
 // future intent surface share this opcode via a 32-byte `scope_id`
 // discriminator the indexer treats as opaque.
 //
@@ -14,8 +14,7 @@
 // at depth-1).
 //
 // For AMM scope, scope_id == pool_id. For orderbook scope, scope_id =
-// SHA256("tacit-orderbook-pair-v1" || asset_id_min || asset_id_max)
-// (see SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md).
+// SHA256("tacit-orderbook-pair-v1" || asset_id_min || asset_id_max).
 //
 // Two layers, fully independent:
 //
@@ -72,7 +71,7 @@ export const SMT_DEPTH = 256;                                // intent_id is 32 
 export const ATTEST_DOMAIN = new TextEncoder().encode('tacit-intent-attest-v1');
 export const EMPTY_LEAF = sha256(new TextEncoder().encode('tacit-amm-empty-leaf-v1'));
 
-// ---- Canonical on-chain intent_pool_hash (AMM.md §"Intent-pool hash") ----
+// ---- Canonical on-chain intent_pool_hash ----
 //
 // The on-chain T_INTENT_ATTEST envelope commits to a LINEAR SHA256 over the
 // worker's sorted open-intent set:
@@ -367,7 +366,7 @@ export function decodeAttest(payload) {
   const timestamp = readU64LE(payload, off); off += 8;
   const intentCount = readU16LE(payload, off); off += 2;
   const uriLen = payload[off++];
-  // snapshot_uri_len: 0..255 per spec; 0 = no URI (informational field only).
+  // snapshot_uri_len: 0..255 per the spec; 0 = no URI (informational field only).
   if (off + uriLen + 33 + 64 > payload.length) throw new Error('truncated: snapshot_uri/pubkey/sig');
   const snapshotUri = new TextDecoder('utf-8').decode(payload.slice(off, off + uriLen)); off += uriLen;
   const workerPubkey = payload.slice(off, off + 33); off += 33;

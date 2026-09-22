@@ -1,4 +1,4 @@
-# Cutover step 5 ONLY (ops/PLAN-render-migration.md). Deploying this config
+# Cutover step 5 ONLY. Deploying this config
 # REPLACES the full tacit-pin worker in place — the classic workers.dev URL
 # becomes a pass-through to the Render origin. Until that step, deploy from
 # worker/wrangler.toml as usual.

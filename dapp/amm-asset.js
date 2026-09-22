@@ -1,7 +1,7 @@
 // AMM asset identity primitives — dapp-side port of tests/amm-asset.mjs.
 // Byte-for-byte identical math; imports adjusted for dapp vendor bundle.
 //
-// Three-origin asset-id resolution per AMM.md §"Pool state":
+// Three-origin asset-id resolution per the spec:
 //   (1) CETCH                — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (2) T_PETCH              — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (3) AMM POOL_INIT (LP)   — asset_id = SHA256("tacit-amm-lp-v1" || pool_id)

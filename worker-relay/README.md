@@ -5,7 +5,7 @@ runs on a self-hosted GPU box (`ops/scripts/*-loop.sh`) — as **Render** servic
 prove on the **Succinct network prover** instead of a local GPU. The GPU box remains a
 **fallback only** (see below).
 
-This mirrors the existing architecture exactly (`ops/runbooks/PRODUCTION-RELAY-BACKBONE.md`):
+This mirrors the existing architecture exactly:
 the **control plane** stays the Cloudflare Worker (`worker/`) — it never proves and never
 holds funds; it queues opaque witnesses and hands back proofs the contract independently
 verifies against its pinned vkeys. All safety lives in the contract's vkey verification, so

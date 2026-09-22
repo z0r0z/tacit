@@ -16,7 +16,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 ///
 /// FIXTURE-GATED: until the box drops the fixture, this is a documented no-op so it
 /// never blocks the suite; the on-chain verification lands automatically the instant
-/// the proof exists. See ops/RUNBOOK-confidential-pool-deploy.md (cross-lane activation).
+/// the proof exists.
 contract ConfidentialCrossLaneProofRealTest is Test {
     function _path() internal view returns (string memory) {
         return string.concat(vm.projectRoot(), "/test/fixtures/crosslane_groth16.json");

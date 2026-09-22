@@ -145,7 +145,7 @@ async function waitForPoolInit(maxMin = 15) {
   return null;
 }
 
-// SPEC §5.10 depth gate: only `status==='included'` (depth ≥ 3) leaves
+// Depth gate: only `status==='included'` (depth ≥ 3) leaves
 // get applied to the dapp's local tree, so phases 3-4 won't see the leaf
 // until it crosses that threshold. Wait here instead of letting Phase 4
 // surface a misleading "null proof" warning that looks like the pre-fix

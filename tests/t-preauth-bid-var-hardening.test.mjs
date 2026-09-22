@@ -1,4 +1,4 @@
-// Hardening tests for T_PREAUTH_BID_VAR (SPEC §5.7.12) closing the
+// Hardening tests for T_PREAUTH_BID_VAR closing the
 // audit-flagged gaps in t-preauth-bid-var-* unit coverage:
 //
 //   #1  Real ECDSA K-sig batch verify (single bad sig rejects bundle)

@@ -1,4 +1,4 @@
-// Correctness suite for the sigma cross-curve binding (AMM.md §3.10).
+// Correctness suite for the sigma cross-curve binding.
 //
 // Asserts:
 //   • Honest prover ⇒ verifier accepts (round-trip)

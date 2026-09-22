@@ -113,7 +113,7 @@ describe('solveClearing property fuzz', () => {
         assert.ok(kPost > kPre || kPost === kPre,
           `seed ${seed}: fee>0 with trade allowed k_post ≥ k_pre, got equality`);
         // (Note: floor rounding can produce kPost === kPre if delta is tiny.
-        // We only assert ≥; tightness is documented in AMM.md §"Rounding".)
+        // We only assert ≥; tightness is documented in the spec.)
       }
     }
 

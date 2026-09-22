@@ -1,4 +1,4 @@
-// Correctness suite for the deterministic clearing-solve algorithm (AMM.md §4).
+// Correctness suite for the deterministic clearing-solve algorithm.
 //
 // Asserts:
 //   • Direction discrimination is correct (A-dom, B-dom, spot, empty)

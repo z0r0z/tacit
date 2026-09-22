@@ -6,7 +6,7 @@
 // the live TAC token on mainnet. Specifically protects:
 //
 //   1. ASSET IDENTITY — sha256(reverse(etch_txid) || vout_le32) === asset_id.
-//      Any change in the SPEC's asset_id derivation (domain prefix added,
+//      Any change in the spec's asset_id derivation (domain prefix added,
 //      byte ordering flipped, hash function swapped) would break this and
 //      retroactively orphan every existing UTXO of this asset. Highest
 //      severity check; offline; can never blip.
@@ -446,12 +446,12 @@ await test('pinned historical trade txs still confirmed on mainnet', async () =>
 //     N ∈ {1, 2, 4, 8}, output commitments (33B each + 8B amount
 //     ct), and rangeproof bytes match the declared rp_len exactly.
 //   - The asset_id in every replayed payload matches TAC's pinned
-//     asset_id (no asset-id collision, no SPEC drift in asset_id
+//     asset_id (no asset-id collision, no spec drift in asset_id
 //     placement within the payload).
 //   - Every output commitment parses as a valid compressed
 //     secp256k1 curve point.
 //   - The aggregated bulletproof rangeproof re-verifies under the
-//     SPEC §3 generators and `tacit-bp-v1` Fiat-Shamir transcript.
+//     spec generators and `tacit-bp-v1` Fiat-Shamir transcript.
 //     A failure here means a historical TAC transfer is no longer
 //     cryptographically valid under current code — load-bearing
 //     protection against any validator regression that perturbs
@@ -464,7 +464,7 @@ await test('pinned historical trade txs still confirmed on mainnet', async () =>
 //
 // HISTORICAL NOTE: prior to commit landing the v1/v2 BP transcript
 // alignment, `tests/bulletproofs.mjs` used `tacit-bp-v2` while the
-// dapp + SPEC.md §3 normatively pinned `tacit-bp-v1`. The drift was
+// dapp + the spec normatively pinned `tacit-bp-v1`. The drift was
 // surfaced when this canary's cryptographic-replay test failed
 // against live mainnet proofs. Alignment landed in the same PR as
 // this canary's rangeproof step; the full test suite (BP + composition
@@ -509,7 +509,7 @@ await test('pinned trades: structural decode + asset_id match + rangeproof re-ve
         console.log(`     ${pinned.txid.slice(0, 12)}…: asset_id in payload (${bytesToHex(pay.asset_id).slice(0, 12)}…) doesn't match TAC`);
         return false;
       }
-      // Every commitment must parse as a curve point. Fails if a SPEC
+      // Every commitment must parse as a curve point. Fails if a spec
       // change accidentally changes commitment encoding from
       // compressed-secp256k1 to something else.
       let V_pts;
@@ -520,7 +520,7 @@ await test('pinned trades: structural decode + asset_id match + rangeproof re-ve
         return false;
       }
       // Aggregated bulletproof rangeproof must verify under the
-      // SPEC §3 generators + `tacit-bp-v1` Fiat-Shamir transcript.
+      // spec generators + `tacit-bp-v1` Fiat-Shamir transcript.
       // This catches any regression in BP generators, transcript
       // domain, n_bits parameter, or aggregation rules that would
       // retroactively invalidate this confirmed mainnet trade.

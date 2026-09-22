@@ -1,7 +1,7 @@
 // Kernel-message + kernel-signature construction for AMM LP envelopes —
 // dapp-side port of tests/amm-kernel.mjs. Byte-for-byte identical math.
 //
-// Per AMM.md §"Kernel-msg construction":
+// Per the spec:
 //   T_LP_ADD: two kernel sigs (one per asset side, A and B). Each proves:
 //     • The LP knows Σᵢ r_in_secp,X,i (sum of input blindings on asset X side).
 //     • The consumed inputs on asset X net to EXACTLY delta_X · H of asset value.

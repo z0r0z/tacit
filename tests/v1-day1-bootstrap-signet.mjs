@@ -8,8 +8,7 @@
 //     catches a misconfigured manifest BEFORE spending testnet funds.
 //   live (MODE=live) — drive the actual seeding through the dapp confidential-DeFi action layer + the
 //     box: wrap/mint the seed balances, open a cUSD CDP for the cUSD legs, add LP per pool, fund each
-//     farm (farmEscrow → notifyRewardAmount). Validated on Sepolia+Signet per
-//     ops/runbooks/V1-TESTNET-LAUNCH-PLAYBOOK.md §4.
+//     farm (farmEscrow → notifyRewardAmount). Validated on Sepolia+Signet.
 //
 // Run (validate):  node tests/v1-day1-bootstrap-signet.mjs contracts/deployments/11155111.json
 // Run (live):      MODE=live node tests/v1-day1-bootstrap-signet.mjs contracts/deployments/11155111.json
@@ -17,7 +16,7 @@
 import { keccak_256 } from '@noble/hashes/sha3';
 import { readFileSync } from 'node:fs';
 
-// Day-1 plan — keep in sync with ops/PLAN-day1-assets-and-incentives.md (launch parameters, tweakable).
+// Day-1 plan (launch parameters, tweakable).
 const FEE_BPS = Number(process.env.DAY1_FEE_BPS || 30);
 const BUDGET_TAC = 1_000_000n; // ~1M TAC LP/farm incentive
 const AIRDROP_TAC = 2_000_000n; // first airdrop tranche

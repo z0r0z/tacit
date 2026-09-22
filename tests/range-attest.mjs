@@ -32,7 +32,7 @@
 //   holder_sig(64)             — BIP-340 over SHA256("tacit-range-attest-v1"
 //                                || all preceding fields)
 //
-// Indexer behaviour (extends SPEC.md §5):
+// Indexer behaviour (extends the spec):
 //
 //   1. Decode envelope. Reject on structural error.
 //   2. Verify holder_sig against the preceding bytes.

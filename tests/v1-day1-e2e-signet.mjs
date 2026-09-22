@@ -2,7 +2,7 @@
 //
 // Consolidates the gap flows the launch depends on into one phase-sequenced rehearsal (the shape of
 // tests/amm-full-e2e-signet.mjs). Each phase maps to a dapp confidential-DeFi entrypoint; the live run
-// broadcasts on Sepolia+Signet via the box (ops/runbooks/V1-TESTNET-LAUNCH-PLAYBOOK.md §5).
+// broadcasts on Sepolia+Signet via the box.
 //
 // Two modes:
 //   preflight (default) — load the manifest, and for each phase assert its required contracts/asset ids

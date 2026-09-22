@@ -1,5 +1,5 @@
 // Adaptor signatures (PTLC) that lock Tacit's EXACT kernel signature (BIP-340 Schnorr) — the
-// cryptographic core of the confidential cross-chain swap (ops/PLAN-confidential-adaptor-swap.md).
+// cryptographic core of the confidential cross-chain swap.
 // The swap's secret t is revealed by ADAPTING a signature, not by an on-chain hash preimage: a
 // pre-signature s̃ is "the signature minus t"; completing it (with the parity below) yields a
 // signature that the REAL kernel verifier (`verifySchnorr`, dapp/bulletproofs.js) accepts, and that

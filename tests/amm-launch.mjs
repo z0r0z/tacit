@@ -33,7 +33,7 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-// Tacit V1 normative caps (mirror SPEC.md §5.14 POOL_INIT wire format).
+// Tacit V1 normative caps (mirror the spec POOL_INIT wire format).
 const FEE_BPS_MAX = 1000;          // 10% cap on pool fee
 const PROTOCOL_FEE_BPS_MAX = 1000; // 10% cap on protocol fee
 
@@ -156,7 +156,7 @@ export function previewLaunch({
   }
 
   // -- pool_id / lp_asset_id (require both asset_ids; predict if not known) --
-  // pool_id includes fee_bps + capability_flags per AMM.md §"Pool state".
+  // pool_id includes fee_bps + capability_flags per the spec.
   // amm-launch creates a default-capabilities pool (flags=0); founders who
   // want POOL_CAP_SOLO_INTENT_ALLOWED must use the lower-level path.
   const poolCapabilityFlagsAtLaunch = 0;

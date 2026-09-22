@@ -305,7 +305,7 @@ const kSigB = kernel.lpAddKernelSign({
 console.log(`  ✓ kernel sigs (A + B) generated`);
 
 // Envelope payload — placeholder Groth16 proof (worker doesn't verify it
-// in v1; SPEC §5.11.4 three-verifier model offloads Groth16 to dapp on read).
+// in v1; the spec three-verifier model offloads Groth16 to dapp on read).
 const payload = env_mod.encodeLpAdd({
   variant: 1,
   assetA: canonA, assetB: canonB,
@@ -337,11 +337,11 @@ const { Q_xonly, parity } = dapp.tweakedOutputKey(TAP_NUMS, tapLeaf);
 const commitSpk = dapp.p2trScript(Q_xonly);
 const cb = dapp.controlBlock(TAP_NUMS, parity);
 
-// MIN_LIQ locked output (per SPEC §"MINIMUM_LIQUIDITY burn-output construction")
+// MIN_LIQ locked output
 const { p2wpkh: minLiqP2wpkh } = minliq.deriveMinLiqNumsRecipient(poolId);
 const minLiqSpk = concatBytes(new Uint8Array([0x00, 0x14]), minLiqP2wpkh);
 
-// Reveal vout layout (SPEC §"Bitcoin tx layout for T_LP_ADD"):
+// Reveal vout layout:
 //   vout[0] = founder LP share UTXO at trader P2WPKH (DUST, blinded = founder_shares)
 //   vout[1] = MIN_LIQ locked LP share UTXO at NUMS P2WPKH (DUST, blinded = MIN_LIQ)
 const founderSpk = concatBytes(new Uint8Array([0x00, 0x14]), dapp.hash160(PUB));

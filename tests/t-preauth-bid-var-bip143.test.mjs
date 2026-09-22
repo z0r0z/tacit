@@ -1,4 +1,4 @@
-// Unit tests for the dapp-side helpers in publishPreauthBidVar (SPEC §5.7.12):
+// Unit tests for the dapp-side helpers in publishPreauthBidVar:
 //   _preauthBidVarNonceFromOutpoint, _preauthBidVarIdHex,
 //   _preauthBidVarAuthMsg, _preauthBidVarCancelMsg, plus the per-ratio
 //   bid_context_hash + sighash-preimage construction (reuses the §5.7.11

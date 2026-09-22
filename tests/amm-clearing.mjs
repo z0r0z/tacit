@@ -1,6 +1,6 @@
 // Deterministic clearing solve for tacit AMM uniform-price batches.
 //
-// Mirrors AMM.md §4 "Deterministic clearing-solve algorithm" byte-for-byte.
+// Mirrors the spec byte-for-byte.
 // Indexer determinism is normative: every indexer must compute the same
 // (Δa_net, Δb_net, P_clear) for the same (X, Y, R_A, R_B, fee_bps).
 //
@@ -175,7 +175,7 @@ export function applyBatch(R_A, R_B, result) {
   return { R_A: Ra, R_B: Rb };
 }
 
-// LP-share formulas (AMM.md §"Indexer determinism rules: Rounding").
+// LP-share formulas.
 export function lpAddShares(delta_a, delta_b, R_A, R_B, S) {
   const da = BigInt(delta_a), db = BigInt(delta_b);
   const ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
@@ -215,12 +215,12 @@ export function isqrt(n) {
   return x;
 }
 
-// Qualifying-intent fixed-point computation (AMM.md §5).
+// Qualifying-intent fixed-point computation.
 //
 // Each intent is { intent_id (hex string), direction ('A→B' | 'B→A'), amount_in_swap (bigint), min_out (bigint) }.
 // Returns the converged qualifying subset (array; preserves intent_id sort order).
 //
-// Loop cap exactly matches AMM.md §5's `for iter in 0..len(candidate_set)`:
+// Loop cap exactly matches the spec's `for iter in 0..len(candidate_set)`:
 // each iter strictly shrinks `set` by ≥ 1 element or converges, so `len`
 // iterations is an upper bound on progress.
 export function qualifyingFixedPoint(candidate_set, R_A, R_B, fee_bps) {

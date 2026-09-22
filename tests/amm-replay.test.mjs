@@ -1,6 +1,6 @@
 // Trustless AMM pool-state replay (dapp/amm-replay.js). Verifies that a client
 // can reconstruct {reserveA, reserveB, totalShares} from the pool's confirmed
-// ops alone (SPEC AMM.md: "anyone can reconstruct exactly what every reserve is
+// ops alone (the spec: "anyone can reconstruct exactly what every reserve is
 // at every height by replaying confirmed envelopes"), and — the soundness
 // property — that a forged/tampered op (a declared derived value that doesn't
 // match the formula recomputed from the replayed reserves) is REJECTED, so a

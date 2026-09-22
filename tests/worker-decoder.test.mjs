@@ -45,7 +45,7 @@ const keysSorted = (obj) => JSON.stringify(Object.keys(obj).sort());
 console.log('Worker decoder return-shape contract:');
 
 // ---------------------------------------------------------------------------
-// T_AXFER — the regression case. Wire format (SPEC §5.7):
+// T_AXFER — the regression case. Wire format:
 //   opcode(1) || asset_id(32) || asset_input_count(1) || kernel_sig(64) ||
 //   N(1) || N*[commitment(33) || amount_ct(8)] || rp_len(2 LE) || rp(rp_len)
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ test('decodeCEtchPayload uses snake_case image_uri (regression sentinel for mixe
 });
 
 // ---------------------------------------------------------------------------
-// T_PETCH (SPEC §5.8) — opcode(1) || tlen(1) || ticker(tlen) || decimals(1) ||
+// T_PETCH — opcode(1) || tlen(1) || ticker(tlen) || decimals(1) ||
 //   cap(8 LE) || limit(8 LE) || start_h(4 LE) || end_h(4 LE) ||
 //   img_len(2 LE) || image_uri(img_len)
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ test('decodeCPetchPayload rejects opcode != T_PETCH', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T_PMINT (SPEC §5.9) — opcode(1) || asset_id(32) || etch_txid(32) ||
+// T_PMINT — opcode(1) || asset_id(32) || etch_txid(32) ||
 //   commitment(33) || amount(8 LE) || blinding(32). Total 138 bytes exactly.
 // ---------------------------------------------------------------------------
 const minPmint = ({ amount = 100n, blinding = null, commitment = null } = {}) => {

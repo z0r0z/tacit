@@ -1,6 +1,6 @@
 // Reference indexer validator for AMM envelopes (T_LP_ADD, T_LP_REMOVE,
-// T_SWAP_BATCH). Mirrors AMM.md §"SPEC.md integration plan: §5.5" extension
-// branches and §"Indexer determinism rules". Pure JS, no Bitcoin layer —
+// T_SWAP_BATCH). Mirrors the spec's validator
+// branches and indexer determinism rules. Pure JS, no Bitcoin layer —
 // callers must pre-extract the on-chain context (vout[0] OP_RETURN data,
 // input Pedersen commitments, vin/vout layout).
 //
@@ -46,8 +46,7 @@ import {
 // CXFER N=2 cryptography (Pedersen + bulletproof + kernel sig) rather than
 // the batched Groth16 path of T_SWAP_BATCH. No ceremony coupling: ships
 // alongside the AMM v1 surface without depending on the Phase 2 setup. See
-// SPEC.md §5.16.3 (or spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md until
-// merged) for the wire format and validator obligations.
+// the spec for the wire format and validator obligations.
 //
 // Re-exported here so integrators have a single canonical import path for
 // every AMM-opcode validator. The implementation lives in swap-var.mjs to
@@ -73,8 +72,7 @@ export {
 // T_SWAP_ROUTE (opcode 0x33) — atomic multi-hop AMM routing. Reuses the
 // T_SWAP_VAR cryptography stack (Pedersen + BP+ aggregated rangeproof +
 // kernel sig under `tacit-kernel-v1`) extended over N hops; no Groth16,
-// no ceremony coupling. See SPEC-SWAP-ROUTE-AMENDMENT.md for wire format
-// + validator algorithm.
+// no ceremony coupling.
 export {
   validateSwapRoute,
   decodeSwapRoute,
@@ -92,7 +90,6 @@ export {
 // treasury bookkeeping, per-bond worker-indexed records, lazy Q.96
 // mintFee-style accrual. Reuses the kernel-sig + Pedersen + m=1
 // bulletproof stack from T_SWAP_VAR; no Groth16, no new ceremony.
-// See SPEC-AMM-FARM-AMENDMENT.md for wire format + validator algorithm.
 export {
   // Validators
   validateFarmInit, verifyFarmInitKernelSig,
@@ -143,7 +140,7 @@ function pointFromCompressed(bytes) {
   return secp.ProjectivePoint.fromHex(bytesToHex(bytes));
 }
 
-// Reserves are u64 per AMM.md §"Pool state". Mirrors Uniswap V2's uint112
+// Reserves are u64 per the spec. Mirrors Uniswap V2's uint112
 // cap (lower because tacit assets are u64). Without this check a pool could
 // be driven past u64 by repeated LP_ADDs or a giant swap; subsequent
 // envelopes' R_pre fields (u64-encoded) would silently truncate on the
@@ -158,7 +155,7 @@ function checkReserveU64(R_A, R_B) {
 }
 
 // Canonical (asset_A, asset_B) ordering check used by all three core
-// validators. AMM.md §"Pool state" requires strict byte inequality plus
+// validators. The spec requires strict byte inequality plus
 // asset_A < asset_B lexicographically. Returns a reason string on failure
 // or null on pass. Avoids letting derivePoolId throw on same-asset
 // envelopes (which would break the {valid,reason} contract).
@@ -280,7 +277,7 @@ function resolveMinLiqOutput(arg, fnName) {
 }
 
 // Sentinel a caller passes to skip the on-chain OP_RETURN(envelope_hash)
-// binding check. AMM.md §"Per-vin Bitcoin-layer signature" makes the
+// binding check. The spec makes the
 // vout[0] = OP_RETURN(sha256(payload)) binding mandatory for every AMM op
 // envelope — it's what binds trader SIGHASH_ALL sigs to the envelope
 // content and blocks settler envelope-swap. Production indexers MUST pass
@@ -431,8 +428,8 @@ export function verifyVkCidBinding(vkBytes, vkCidString) {
 // MUST produce byte-identical publicSignals arrays from the same `(env,
 // pool)` inputs, otherwise their proof verifications diverge silently.
 //
-// This helper is the canonical serialization. AMM.md §6 ("Groth16 public-
-// input vector") is the spec-side authority; this function is its byte-
+// This helper is the canonical serialization. The spec's Groth16 public-
+// input vector is the spec-side authority; this function is its byte-
 // for-byte reference impl. Dapp provers, worker indexers, and third-party
 // re-implementations MUST agree with this output exactly.
 //
@@ -683,7 +680,7 @@ export const AMM_MIN_BATCH_SIZE = 2;
 // confidentiality-preserving defaults. Adding flags is additive; flag bits
 // are immutable after POOL_INIT.
 //
-// Bit 0 (0x01) is reserved by AMM.md §"POOL_INIT" for the LP_ADD
+// Bit 0 (0x01) is reserved by the spec for the LP_ADD
 // T_RANGE_ATTEST gating mode (gated pools require an attestation under
 // scope=pool_id for LP_ADD). The validator side of that gate is not yet
 // shipped; the bit is reserved here so the two flag spaces don't collide.
@@ -727,7 +724,7 @@ export function validateLpAdd({
   groth16Verify,
   currentHeight,
   opReturnData,                   // 32 bytes from tx.vout[0]'s OP_RETURN, or SKIP_OP_RETURN_VERIFY_UNSAFE.
-                                  // AMM.md §"Per-vin Bitcoin-layer signature" makes this binding mandatory.
+                                  // The spec makes this binding mandatory.
   vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
   minLiqOutput,                   // {commitBytes(33), amtCt(8), p2wpkh(20)} from on-chain vout[k_min_liq];
                                   // REQUIRED for POOL_INIT (variant=1). Pass SKIP_MIN_LIQ_VERIFY_UNSAFE
@@ -751,7 +748,7 @@ export function validateLpAdd({
   }
 
   // Canonical asset ordering: assetA MUST be strictly less than assetB.
-  // AMM.md §"Pool state" requires byte inequality at POOL_INIT — a same-
+  // The spec requires byte inequality at POOL_INIT — a same-
   // asset pool is degenerate (swap directions collapse, the curve has no
   // meaning, kernel sigs lose disambiguation between A/B closures).
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
@@ -770,14 +767,14 @@ export function validateLpAdd({
   if (env.variant === 1) {
     if (pool) return { valid: false, reason: 'POOL_INIT but pool already exists' };
 
-    // v1 hard-disable of arbiter mechanism (AMM.md §"Mandatory inclusion of
-    // qualifying intents" — DISABLED AT V1 note). Trust-quorum opt-in is
+    // v1 hard-disable of arbiter mechanism (mandatory inclusion of
+    // qualifying intents is DISABLED AT V1). Trust-quorum opt-in is
     // deferred to a follow-up amendment; wire-format positions stay reserved.
     if ((env.arbiterPubkeys?.length ?? 0) !== 0 || (env.arbiterThresholdM ?? 0) !== 0) {
       return { valid: false, reason: 'arbiter feature disabled at v1 — deferred to follow-up amendment' };
     }
 
-    // Launcher gate (AMM.md §"Optional launcher gate").
+    // Launcher gate.
     const gateA = metadataA ? extractLauncherPubkey(metadataA) : null;
     const gateB = metadataB ? extractLauncherPubkey(metadataB) : null;
     const gates = [gateA, gateB].filter(g => g !== null);
@@ -830,8 +827,8 @@ export function validateLpAdd({
       return { valid: false, reason: 'Groth16 proof failed (POOL_INIT)' };
     }
 
-    // MINIMUM_LIQUIDITY locked-output check (AMM.md §"MINIMUM_LIQUIDITY
-    // burn-output construction"). Without this, a founder can bypass the
+    // MINIMUM_LIQUIDITY locked-output check (MINIMUM_LIQUIDITY
+    // burn-output construction). Without this, a founder can bypass the
     // first-LP-drain defense by sending vout[k_min_liq] to themselves
     // instead of the NUMS-derived recipient — they'd then control 100%
     // of shares including the "locked" 1000 and could withdraw all
@@ -1297,7 +1294,7 @@ export function validateSwapBatch({
         cInSecp: it.cInSecp, cInBjj: it.cInBjj, xcurveSigma: it.inXcurveSigma,
         receiveScriptPubKey: receiveScripts[i],
         minOut: it.minOut, tipAmount: it.tipAmount,
-        // Tip-asset substitution: AMM.md §"Tip mechanics" §3 makes tip_asset
+        // Tip-asset substitution: the spec makes tip_asset
         // structurally equal to direction (tip on input side). buildIntentMsg
         // asserts this invariant; we pass direction as the
         // single source of truth. Any divergent value would fail sig-verify
@@ -1328,7 +1325,7 @@ export function validateSwapBatch({
     prevIid = iid;
     intentIds.push(iid);
 
-    // BIP-340 intent_sig verification (out-of-circuit per AMM.md).
+    // BIP-340 intent_sig verification (out-of-circuit per the spec).
     if (!verifyIntent(intentMsg, it.intentSig, it.traderPubkey)) {
       return { valid: false, reason: `intent[${i}] intent_sig failed` };
     }
@@ -1386,7 +1383,7 @@ export function validateSwapBatch({
     }
   }
 
-  // Tip-output opening check (AMM.md §"Tip mechanics" — normative).
+  // Tip-output opening check (normative).
   // Verify pedersenCommit(tip_X_amount, r_tip_X) == tip_X_C_secp for each
   // tip output. The chain identity below would force tip_X_C_secp's
   // H-coefficient via the Pedersen sum balance, so this is redundant *if*
@@ -1515,7 +1512,7 @@ export function validateSwapBatch({
   // All inputs are public: pool reserves, declared deltas, fee_bps. No private
   // witness needed. Closes the "narrow settler pricing freedom" gap so the
   // spec's "no settler freedom in pricing, only in subset selection" claim
-  // (AMM.md §"Uniform clearing") becomes operationally true.
+  // becomes operationally true.
   if (dA !== 0n || dB !== 0n) {
     const gNum = 10000n - BigInt(pool.fee_bps);
     const gDen = 10000n;

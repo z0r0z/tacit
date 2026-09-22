@@ -1,4 +1,4 @@
-// End-to-end signet harness for the Tacit mixer (SPEC §5.10 / §5.11).
+// End-to-end signet harness for the Tacit mixer.
 //
 // Drives the REAL dapp code path — buildAndBroadcastCEtch → buildAndBroadcast-
 // PoolInit → buildAndBroadcastDeposit → buildAndBroadcastWithdraw — against

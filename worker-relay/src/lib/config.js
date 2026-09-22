@@ -245,7 +245,7 @@ export const CFG = {
   // Mainnet/auction endpoint (binaries build in Mainnet mode; Reserved endpoint → auction calls Unimplemented).
   networkRpcUrl: opt('NETWORK_RPC_URL', 'https://rpc.mainnet.succinct.xyz'),
 
-  // ── Fee economics (see ops/PRICING-RELAY-ECONOMICS.md) ──
+  // ── Fee economics ──
   minFloorUsd: num('MIN_FLOOR_USD', 0.5), // absolute floor so tiny trades cover their gas
   opsMargin: num('OPS_MARGIN', 0.12), // ~12% over cost
   bpsCap: num('BPS_CAP', 30), // displayed bps ceiling for mid/large trades

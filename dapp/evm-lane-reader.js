@@ -1,5 +1,5 @@
-// EVM-lane balance reader — the Ethereum-side holdings for the unified surface (task #6 of
-// ops/CHECKLIST-v1-multi-asset-readiness.md; feeds dapp/unified-holdings.js scanHoldingsUnified).
+// EVM-lane balance reader — the Ethereum-side holdings for the unified surface (task #6;
+// feeds dapp/unified-holdings.js scanHoldingsUnified).
 // For each asset the resolver knows on the Ethereum lane, it reads the user's canonical-ERC20 balance
 // (`canonicalTokenFor(assetId)` → `balanceOf(evmAddress)`) and normalizes the 18-dec amount to the
 // asset's in-system base units (the unified-holdings UNIT CONTRACT). Confidential-pool notes + tETH

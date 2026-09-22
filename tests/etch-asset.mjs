@@ -62,7 +62,7 @@ async function pinMetadata(supplyStr, blindingHex, commitmentHex) {
     name: process.env.ASSET_NAME || TICKER,
     description: process.env.ASSET_DESC || 'Trustless wrapped ETH on Tacit. Bridge-mixer with SP1 ZK proofs.',
     image: `ipfs://${LOGO_CID}`,
-    external_url: process.env.ASSET_EXT_URL || 'https://github.com/z0r0z/tacit/blob/main/BRIDGE.md',
+    external_url: process.env.ASSET_EXT_URL || 'https://github.com/z0r0z/tacit/blob/main/SPEC.md',
     decimals: DECIMALS,
     tacit_attest: { supply: supplyStr, blinding: blindingHex, commitment: commitmentHex },
   };

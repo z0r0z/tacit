@@ -1,4 +1,4 @@
-// SPEC-CBTC-ZK-AMENDMENT round-trip tests for T_SLOT_MINT / T_SLOT_BURN / T_SLOT_ROTATE.
+// Round-trip tests for T_SLOT_MINT / T_SLOT_BURN / T_SLOT_ROTATE.
 //
 // Coverage:
 //   - Wire format encode/decode round-trip for all three opcodes
@@ -311,7 +311,7 @@ function buildSlotBurnPayload({ networkTag, assetId, denom, merkleRoot, nullifie
 }
 
 {
-  // bind_hash mismatch must reject (indexer determinism — SPEC §5.11 invariant)
+  // bind_hash mismatch must reject (indexer determinism — the spec invariant)
   const { r_leaf_bytes, recipient_commit_bytes } = synthLeafFor('burn-bind-1');
   const nullifierHash = sha256(new TextEncoder().encode('mock-nullifier-2'));
   const wrongBindHash = sha256(new TextEncoder().encode('wrong-bind-hash'));

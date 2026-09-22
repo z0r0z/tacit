@@ -287,11 +287,10 @@ fn main() {
     // the verifier's currently-committed state, the host feeds the full prev
     // state (pool frontiers/next_indices, null set entries, UTXO set) instead
     // of the empty-pools fallback. This is what makes cycle N+1 possible after
-    // any activity advanced the verifier past genesis/empty. See
-    // ops/prover-incremental-state.md for the full design — the SAVE half
+    // any activity advanced the verifier past genesis/empty. The SAVE half
     // (deriving the new ProverState after a successful cycle) lives in either
     // a guest state-emission tail (Option B) or a host-side replay (Option A),
-    // both planned in that doc; load is wired here.
+    // both planned; load is wired here.
     let saved_state = env::var("STATE_FILE").ok().and_then(|p| {
         if std::path::Path::new(&p).exists() {
             println!("  state file: {p}");
@@ -523,8 +522,7 @@ fn main() {
         // the verifier and brick every subsequent cycle on stale-state
         // panic. The SP1 proof authenticates the entire public_values blob,
         // so this tail is trustworthy; the staging step exists purely so
-        // the on-chain accept gates the local commit. See
-        // ops/prover-incremental-state.md.
+        // the on-chain accept gates the local commit.
         if let Ok(state_file) = env::var("STATE_FILE") {
             match parse_state_tail(pv, nd, &denominations) {
                 Ok((roots, indices, frontiers, null_hash, height, nulls, utxos, last_bh)) => {

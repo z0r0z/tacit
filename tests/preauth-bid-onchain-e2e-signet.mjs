@@ -1,4 +1,4 @@
-// End-to-end signet harness for T_PREAUTH_BID (SPEC §5.7.11).
+// End-to-end signet harness for T_PREAUTH_BID.
 //
 // Phases:
 //   1. Verify both wallets are funded

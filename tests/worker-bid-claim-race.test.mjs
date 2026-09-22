@@ -1,6 +1,6 @@
 // CAS overshoot resolution for variable-fill bid claims.
 //
-// SPEC §5.7.7 acknowledges Cloudflare KV is not linearizable: two
+// The spec acknowledges Cloudflare KV is not linearizable: two
 // concurrent seller POSTs against the same variable-fill bid can both
 // pass the pre-write `fill_amount ≤ remaining_amount` bound check and
 // both write their partial-claim records, over-committing the bid by

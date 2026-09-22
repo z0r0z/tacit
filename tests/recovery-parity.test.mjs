@@ -142,7 +142,7 @@ const ALLOWLIST = {
   //       only sats + commit P2TR.
   // Proper scanner integration requires either teaching validateOutpoint to
   // recognize farm-decree outputs, or routing them through a new h.farm
-  // bucket. Tracked as follow-up to SPEC-AMM-FARM-AMENDMENT §5.45 once the
+  // bucket. Tracked as follow-up to the spec once the
   // farm code lands (dapp/amm-farm-actions.js is currently uncommitted).
   T_FARM_INIT:    'SPEC-AMM-FARM-AMENDMENT §5.40 (category a). Launcher burns reward-asset UTXO into VIRTUAL treasury (worker KV). Sentinel-case builder produces no change vout — no tacit UTXO recoverable. Refund path (T_FARM_REFUND) handles unspent treasury return.',
   T_LP_BOND:      'SPEC-AMM-FARM-AMENDMENT §5.41 (category a). Bonder burns LP-share UTXO into virtual bond pool; vout[1] P2WPKH(bonder) DUST is a chain-discovery marker, not a tacit-asset UTXO. Bond identity = (revealTxid, 1). LP shares recovered at unbond.',
@@ -187,7 +187,7 @@ const ALLOWLIST = {
   T_SLOT_SPLIT:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24. Recovered by scanSlotsFromPrivkey descendant walk: each output i has (secret_i, ν_i) HMAC-derived from priv + parent K_btc outpoint, outputIndex=i.',
   T_SLOT_MERGE:   'SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25. Recovered by scanSlotsFromPrivkey descendant walk: child (secret, ν) HMAC-derived from priv + lex-smallest input K_btc outpoint (canonical sort), outputIndex=0.',
 
-  // Bridge / cross-out opcodes (SPEC-TETH-BRIDGE-AMENDMENT + the confidential
+  // Bridge / cross-out opcodes (the tETH bridge + the confidential
   // cross-out path). These do NOT produce a tacit-asset UTXO at wallet.address:
   // the deposit/import/rotate ops move value into the bridge mixer as a NOTE
   // whose (secret, ν) are HMAC-derived from priv + a chain anchor (deposit

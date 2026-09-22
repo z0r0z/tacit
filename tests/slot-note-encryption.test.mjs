@@ -1,4 +1,4 @@
-// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.26 — slot-note encryption primitives.
+// Slot-note encryption primitives.
 //
 // Standalone test of the ECDH + AES-GCM encrypted-note construction that
 // powers recipient detection for T_SLOT_ROTATE (and eventually cBTC.tac

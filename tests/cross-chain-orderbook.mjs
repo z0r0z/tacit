@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Cross-chain confidential orderbook (ops/PLAN-confidential-adaptor-swap.md). Locks: posting +
+// Cross-chain confidential orderbook. Locks: posting +
 // best-price matching across the two lanes; partial fills at exact price multiples; the lifecycle
 // (cancel maker-only, expiry); resolver-gated asset recognition; and — end-to-end — that a FILL yields
 // a drivable adaptor swap whose completed legs are accepted by the REAL kernel verifier (verifySchnorr).

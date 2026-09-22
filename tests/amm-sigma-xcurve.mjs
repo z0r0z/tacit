@@ -1,7 +1,7 @@
 // Camenisch-Stadler-style sigma protocol binding a secp256k1 Pedersen commitment
 // to a BabyJubJub Pedersen commitment under the SAME hidden amount `a`.
 //
-// Per AMM.md §"Hybrid commitments (secp256k1 + BabyJubJub)" — proves knowledge of
+// Proves knowledge of
 //   (a, r_secp, r_BJJ) such that
 //     C_in_secp = a·H_secp + r_secp·G_secp  (on secp256k1)
 //     C_in_BJJ  = a·H_BJJ  + r_BJJ ·G_BJJ   (on BabyJubJub)
@@ -10,7 +10,7 @@
 // Wire format (169 bytes total):
 //     A_secp (33)  || A_BJJ (32) || z_a (40) || z_r_secp (32) || z_r_BJJ (32)
 //
-// Parameters (AMM.md §3.10):
+// Parameters:
 //     e < 2^128  (challenge — last 16 bytes of SHA256 transcript)
 //     α < 2^320 - 2^192   (mask — rejection-sampled so z_a < 2^320 fits in 40 bytes)
 //     z_a = α + e·a       (over the integers)

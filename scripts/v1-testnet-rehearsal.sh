@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One entrypoint for the Tacit V1 Sepolia + Signet rehearsal.
 #
-# Sequences the full bring-up that ops/runbooks/V1-TESTNET-LAUNCH-PLAYBOOK.md spells out as separate steps:
+# Sequences the full bring-up, otherwise run as separate steps:
 #   1. deploy the suite            contracts/deploy-v1-suite-testnet.sh        (§1)
 #   2. wire dapp + worker config   tools/sync-deployment-config.mjs            (§2)
 #   3. fund the run wallets        tests/v1-fund-wallets.mjs                    (§4 prereq)

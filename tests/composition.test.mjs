@@ -884,7 +884,7 @@ test('mint sig is bound to (asset_id, commit_anchor, commitment, ct) — replay 
 });
 
 test('mint sig is bound to commit_anchor — envelope-replay into different commit/reveal pair rejected', () => {
-  // SPEC §5.3: an attacker rewrapping a published mint envelope into their own
+  // An attacker rewrapping a published mint envelope into their own
   // commit/reveal at their own address must fail. The anchor binding is what
   // catches it: same (asset_id, commitment, ct), different commit_anchor →
   // different msg → original sig doesn't verify.

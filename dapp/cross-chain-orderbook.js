@@ -1,5 +1,5 @@
-// Cross-chain confidential orderbook (ops/PLAN-confidential-adaptor-swap.md, the second product of the
-// adaptor primitive; ops/ARCH-tacit-chain-abstraction.md §"Confidential trading"). A resting offer is
+// Cross-chain confidential orderbook (the second product of the
+// adaptor primitive). A resting offer is
 // a maker's willingness to swap one asset's lane for another's; a taker discovers + fills it, and the
 // FILL is executed as an adaptor swap (dapp/adaptor-swap.js) — so a cross-chain order is a posted
 // adaptor offer a taker completes. Same-chain fills stay native (OP_OTC/OP_BID); this module is the

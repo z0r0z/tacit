@@ -1,4 +1,4 @@
-// Bitcoin-side broadcaster for Mode B value-free calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4). Imports the
+// Bitcoin-side broadcaster for Mode B value-free calls. Imports the
 // wallet/network from tacit.js; the pure 0x68 codec is in confidential-btc-call.js. Mirrors
 // amm-farm-actions.js's commit+reveal envelope tx, value-free (no asset input, no value output).
 

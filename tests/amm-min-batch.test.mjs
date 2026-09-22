@@ -24,7 +24,7 @@ describe('AMM_MIN_BATCH_SIZE — confidentiality default', () => {
   });
 
   test('POOL_CAP_SOLO_INTENT_ALLOWED bit is 0x02', () => {
-    // Bit 0 (0x01) is reserved by AMM.md for LP_ADD T_RANGE_ATTEST gating.
+    // Bit 0 (0x01) is reserved by the spec for LP_ADD T_RANGE_ATTEST gating.
     // POOL_CAP_SOLO_INTENT_ALLOWED occupies bit 1 (0x02).
     assert.strictEqual(POOL_CAP_SOLO_INTENT_ALLOWED, 0x02);
   });

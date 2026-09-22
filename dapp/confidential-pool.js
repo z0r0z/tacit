@@ -897,7 +897,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       notes.insert(noteLeaf);
       return w;
     }
-    // ── Fair-farm folds (SPEC-CONTROLLER-VAULT-AMENDMENT §4) — mirror cxfer-core fold_farm_init_rewards /
+    // ── Fair-farm folds — mirror cxfer-core fold_farm_init_rewards /
     // fold_lp_bond / fold_lp_harvest / fold_lp_unbond. The receipt is an owner-blinded note in the note tree;
     // its nullifier rides the spent set; the global accumulator is `farmRewards`. ──
     function foldFarmInitRewards(farmId, rate, launcherPubkey, poolId, startHeight = 0n, endHeight = 0n, rewardTotal = 0n) {
@@ -2291,7 +2291,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // consumed-ν set into the spent set BEFORE the block scan (Ethereum-senior void), emitting the witnesses
     // in the guest's read position (after the headers, before the per-tx scan). The crossout MINTS onboard
     // in the block scan below. A forward batch leaves modeBIn null → mode_b=0, no eth_pv, no consumed/crossout
-    // fold (every 0x65 skips against crossoutSetRoot=0). See ops/PLAN-eth-reflection-modeB.md.
+    // fold (every 0x65 skips against crossoutSetRoot=0).
     const modeBIn = batch.modeB || null;
     const consumedOut = [];
     let ethPvHex = null;
@@ -2345,7 +2345,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Value-entry envelopes (T_MINT/cmint) the full-scan model does NOT yet reflect: the model is
     // conservation-CLOSED (no free-output deposit path — that was the REFLECT-1 risk), so a mint's
     // output does not enter bitcoinPoolRoot and is not bridge-mintable until the cmint-deposit effect
-    // ships (SPEC-BITCOIN-REFLECTION-AMENDMENT §6.1). Surface them LOUD so a value-entering envelope is
+    // ships. Surface them LOUD so a value-entering envelope is
     // never silently dropped (the guest skips it identically — an unrecognized envelope folds nothing).
     const unreflectedValueEntry = [];
     // Tacit envelopes the guest FOLDS but this scan does not yet mirror — surfaced so the attester
@@ -3118,7 +3118,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     });
 
     // ETH->BTC messages: the eth guest appends eth_message_leaf into a keccak append-tree, in ITS OWN
-    // fold order (never the outbox index — see ops/DESIGN-eth-call-outbox.md), so rebuild in bundle order and
+    // fold order (never the outbox index), so rebuild in bundle order and
     // pin against word 12. Membership-only: a message absent from the set simply does not apply, so a 0x69
     // referencing one folds nothing rather than failing the batch.
     const msgLeaves = (ethBundle.messages || []).map((m) => ethMessageLeaf(m.msgId, m.record));

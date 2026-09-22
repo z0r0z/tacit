@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Replenish — the self-subsidizing flywheel (ops/PRICING-RELAY-ECONOMICS.md).
+// Replenish — the self-subsidizing flywheel.
 //
 // Render service type: Cron Job (e.g. every 30-60 min). Runs once and exits.
 //

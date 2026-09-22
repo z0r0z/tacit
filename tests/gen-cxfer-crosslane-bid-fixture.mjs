@@ -9,7 +9,7 @@
 //   • `expected.consumed` = BOTH input ν the contract records in bitcoinConsumed (spendRoot-bound).
 // The BID guest reads each nonMember INTERLEAVED — funding right after its membership path and before its
 // sigma (main.rs:874), seller right after its membership path and before its amount (main.rs:914). No
-// guest change is needed; this validates that path against the box re-prove. See ops/PLAN-fast-lane-trading.md (Flow A).
+// guest change is needed; this validates that path against the box re-prove (Flow A).
 //
 // Run: node tests/gen-cxfer-crosslane-bid-fixture.mjs
 

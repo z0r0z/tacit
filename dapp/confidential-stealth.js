@@ -1,4 +1,4 @@
-// JS mirror of the cxfer-core stealth-receive primitives (ops/DESIGN-confidential-stealth-receive.md):
+// JS mirror of the cxfer-core stealth-receive primitives:
 // non-interactive send-to-address over the shared lock-set. Byte-identical to cxfer-core `stealth_lock_leaf` /
 // `stealth_claim_msg`, and the one-time-key derivation is dapp-only (the guest never sees the ECDH — it only
 // verifies a BIP-340 sig under the one-time pubkey, so `signSchnorr` here produces a signature the guest's

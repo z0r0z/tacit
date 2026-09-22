@@ -5,9 +5,6 @@
 // drop-in placement next to the existing cBTC.tac variant-1
 // helpers around dapp/tacit.js:7845.
 //
-// Reference: spec/design/STEALTH-DAPP-INTEGRATION-PLAN.md
-// Spec: spec/amendments/SPEC-BLINDED-PUBKEY-AMENDMENT.md
-//
 // Functions exported here are byte-identical to what tests/stealth-
 // primitives.mjs provides, plus a few wrappers tailored to how
 // dapp/tacit.js's existing CXFER builder + scanHoldings will call

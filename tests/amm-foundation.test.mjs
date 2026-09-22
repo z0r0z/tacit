@@ -219,7 +219,7 @@ group('ammPoolGet/ammPoolPut round-trip (in-memory KV stub)');
   ok('missing pool → null', (await worker.ammPoolGet(env, 'signet', '22'.repeat(32))) === null);
 }
 
-// ============== T_SWAP_VAR outcome records (SPEC §5.20 outcome taxonomy) ==============
+// ============== T_SWAP_VAR outcome records (outcome taxonomy) ==============
 group('ammSwapAccepted outcome-record round-trip');
 {
   function makeKvStub() {

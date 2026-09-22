@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage the SP1 prover binaries into worker-relay/prover/bin/ for the Render Docker build.
 # Source order: (1) local backup if present, else (2) fetch from a running box over SSH.
-# These binaries embed the guest ELFs (vkey-pinned) — build once (ops/runbooks/PROVER-BOX-SETUP.md),
+# These binaries embed the guest ELFs (vkey-pinned) — build once,
 # reuse forever. Gitignored: ship as a CI/release artifact, never commit.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"

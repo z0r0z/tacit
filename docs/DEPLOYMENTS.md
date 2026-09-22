@@ -1,16 +1,16 @@
 # Deployed contracts
 
-The `ConfidentialPool`, router, and SP1 guests are **immutable** (no proxy, no
-upgrade path, no pause switch, and no admin key over escrow, exits or payouts). The one privileged call on
-the pool is `createNextGen`, held by the lineage steward — see
-[Generations & lifecycle](#generations--lifecycle). The **`CollateralEngine`** (CDP/cUSD + cBTC
-escrow) is the exception: it is **DAO-governed** — its owner sets the oracle
-and CDP parameters and drives cBTC-escrow enforcement and insurance-reserve
-draws (a trusted, timelocked governance role, bounded on-chain by an immutable
-minimum escrow grace window so lockers always get a public window to exit
-before any slash). All are deployed at deterministic CREATE3 vanity addresses
-via [CreateX](https://github.com/pcaversaccio/createx) — so the same address is
-reproducible across chains.
+The `ConfidentialPool`, router, and SP1 guests are **immutable**: no proxy, no upgrade path, no pause switch,
+and no admin key over escrow, exits or payouts. The one privileged call on the pool is `createNextGen`, held by
+the lineage steward; see [Lineage](#lineage).
+
+The **`CollateralEngine`** (CDP/cUSD and cBTC escrow) is governed. Its owner is the ops multisig, which can
+set the oracle and CDP parameters, drive cBTC-escrow enforcement and draw on the insurance reserve. Its
+bounds are on-chain: capped ratios and fee, notice before borrower-adverse changes, and an immutable minimum
+escrow grace window.
+
+Every contract here is deployed at a deterministic CREATE3 address via
+[CreateX](https://github.com/pcaversaccio/createx), so the same address is reproducible across chains.
 
 The machine-readable source of truth is
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json)
@@ -20,34 +20,29 @@ human-readable mirror. The dapp and relay read that manifest through
 
 ## Ethereum mainnet (chainId 1)
 
-> **gen5 — live on mainnet 2026-09-18.** Deploy block 25998736. Resumes gen4's shared Bitcoin
-> reflection state exactly (no catch-up gap); the previous generation's addresses are retained in
-> git history for reference.
+> **Live on mainnet since 2026-09-18.** Deploy block 25998736.
 
 | Contract | Address |
 | --- | --- |
 | ConfidentialPool | [`0x000000000Ed1eabD231Be41d93b719056F7febFC`](https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC) |
 | CollateralEngine | [`0x000000003f608BDdF0ca45934003ffb9DbDF70DB`](https://etherscan.io/address/0x000000003f608BDdF0ca45934003ffb9DbDF70DB) |
-| CanonicalAssetFactory (reused from gen4, unchanged) | [`0x0000000042c2D57499Df64BAF81bfA2C6E100535`](https://etherscan.io/address/0x0000000042c2D57499Df64BAF81bfA2C6E100535) |
+| CanonicalAssetFactory | [`0x0000000042c2D57499Df64BAF81bfA2C6E100535`](https://etherscan.io/address/0x0000000042c2D57499Df64BAF81bfA2C6E100535) |
 | TacitPublicAmm | [`0x00000000E36C7EC997CC59DCda9E03673B448119`](https://etherscan.io/address/0x00000000E36C7EC997CC59DCda9E03673B448119) |
 | ConfidentialRouter | [`0x000000005dA3E3B73726af3c774Deeb9472D4992`](https://etherscan.io/address/0x000000005dA3E3B73726af3c774Deeb9472D4992) |
 | TacitRelayer | [`0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3`](https://etherscan.io/address/0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3) |
 | BtcCallExecutor | [`0x00000000Df8263Ac5810C53B31AaE20ee53C247f`](https://etherscan.io/address/0x00000000Df8263Ac5810C53B31AaE20ee53C247f) |
-| Adapter (zRouter/zap integration) | [`0x000000005010E4A43e83a658D36BF3ADb38ed62c`](https://etherscan.io/address/0x000000005010E4A43e83a658D36BF3ADb38ed62c) |
-| EthCallOutbox (BTC-authorized call outbox, reverse ETH→BTC lane; guest-pinned per generation) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
-| CbtcEscrowHelper (one-tx escrow convenience; deployed separately, after CollateralEngine — its constructor binds to the engine's address, so as of gen5 it's per-generation, not shared infra) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
+| WstEthUsdFeed (the engine's BTC-per-wstETH price feed) | [`0x000000005010E4A43e83a658D36BF3ADb38ed62c`](https://etherscan.io/address/0x000000005010E4A43e83a658D36BF3ADb38ed62c) |
+| EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
+| CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
 
-These match `contracts/deployments/1-createx.json` exactly (deploy block 25998736) — that
-manifest is the actual source of truth; re-run `tools/sync-deployment-config.mjs` and refresh
-this table from it after any redeploy rather than hand-editing addresses here.
+These match `contracts/deployments/1-createx.json` exactly. The manifest is the source of truth: refresh this
+table from it with `tools/sync-deployment-config.mjs`, rather than editing addresses here by hand.
 
-One more contract is live but generation-independent — shared infra the manifest above
-doesn't track because it isn't part of the per-generation CreateX redeploy:
+Shared infrastructure outside the CreateX manifest:
 
 | Contract | Address |
 | --- | --- |
-| WstEthUsdFeed (BTC-per-wstETH adapter) | [`0x0000000000BfA0573fA22DaEd427545baa9b18cF`](https://etherscan.io/address/0x0000000000BfA0573fA22DaEd427545baa9b18cF) |
-| BitcoinLightRelay (header relay, reused from gen4, unchanged) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
+| BitcoinLightRelay (header relay) | [`0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0`](https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0) |
 
 ### Canonical bridged / pool-minted ERC20s
 
@@ -68,7 +63,7 @@ specific to this suite's CollateralEngine.
 
 ### TAC launch farms
 
-A reward program layered on the live pool. It is not part of the per-generation CreateX manifest above: the
+A reward program layered on the live pool. It is not part of the CreateX manifest above: the
 `FarmManager` is a controller of the pool (the pool calls into it during a settle), and it pays in **wTAC**, a 1:1
 ERC20 wrapper of TAC that is registered in the pool as an external escrow asset. The dapp reads it from the `farm`
 block of its deployment config. Integrator guide: [`FARMS.md`](./FARMS.md).
@@ -95,18 +90,18 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 
 | Field | Value |
 | --- | --- |
-| SP1 verifier (immutable Groth16 leaf, reused from gen4) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
+| SP1 verifier (immutable Groth16 leaf) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
 | Program vkey (settle guest) | `0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3` |
 | Bitcoin relay vkey (reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
 | Eth reflection vkey (eth-reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
-| Reflection confirmations | 24 (gen4 uses 6) |
+| Reflection confirmations | 24 |
 | Ops multisig (engine admin, unchanged; also the pool's lineage steward) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
 | Deploy block | 25998736 |
 | BTC anchor height (reflection seed) | 967040 |
 
 ### Key-only recovery reads
 
-What [key-only recovery](./RECOVERY.md) reads from this generation besides the pool's note events.
+What [key-only recovery](./RECOVERY.md) reads besides the pool's note events.
 
 | Read | Value |
 | --- | --- |
@@ -121,9 +116,8 @@ The three guest ELFs behind these keys rebuild byte for byte; see [Reproducible 
 
 The pool is deployed with a **fully-validated Bitcoin light relay** (full
 proof-of-work, mainnet target floor) and the **immutable** SP1 Groth16 verifier
-leaf — not the upgradeable gateway. Its reflection state resumes the shared
-Bitcoin lane from the predecessor generation's attested digest at the anchor
-height above.
+leaf, not the upgradeable gateway. Its reflection state starts from an attested
+Bitcoin digest at the anchor height above.
 
 ## TAC airdrop (merkle distributor)
 
@@ -140,54 +134,36 @@ height above.
 Roles, claim paths, the emergency sweep and the runbook are in [`AIRDROP.md`](./AIRDROP.md); the inputs and how to rebuild the root are in
 [`airdrop/v1/README.md`](../airdrop/v1/README.md).
 
-## Generations & lifecycle
+## Lineage
 
-A `ConfidentialPool` is immutable and cannot be upgraded; the protocol evolves by
-deploying a **new generation** that resumes from its predecessor's Bitcoin-reflection
-digest. Each pool's single-use claim state — spent nullifiers, recorded bridge mints,
-fast-lane consumes, cBTC locks, and known roots — is **local to that contract**, and
-every proof is bound to its own pool (`chainId ‖ pool address`). Canonical tokens are
-addressed by their minter, so a token minted by one pool is a distinct contract from
-one minted by another.
+A `ConfidentialPool` cannot be upgraded. The protocol evolves by deploying a successor that users opt into by
+exiting one pool and entering the next ([SPEC §8](../SPEC.md#8-deployment-lineage)). The current pool is the
+root of its lineage.
 
-Two consequences follow, and they are worth stating plainly:
-
-- **No external party can affect a live pool by deploying its own.** Because state,
-  backing, and proof-binding are all per-contract, anyone can deploy a look-alike or
-  a shared-lineage pool, but it is an isolated island: it cannot spend this pool's
-  escrow, mint this pool's tokens, or write this pool's state. Its only risk is the
-  ordinary one of any imitation — users should transact only with the canonical
-  addresses listed above.
-- **Migration is drain-first.** Because a Bitcoin source is checked for single use
-  *per pool*, the operational rule is that **at most one funded generation is live per
-  lineage at a time**: a successor accepts value only after its predecessor is drained
-  to zero. This is a property of how migrations are sequenced, not a control anyone
-  else can influence.
+- **Isolation.** Each pool's claim state (nullifiers, bridge mints, fast-lane consumes, cBTC locks and roots)
+  is local to that contract. Every proof is bound to `chainId ‖ pool address`, and canonical tokens are
+  addressed by their minter. A look-alike pool deployed by anyone else cannot spend this pool's escrow, mint
+  its tokens or write its state; users should transact only with the addresses above.
+- **One funded pool at a time.** A successor accepts value only after its predecessor has drained, so at
+  most one pool per lineage takes new value.
 
 ### The lineage steward
 
-The gen5 pool carries one privileged entry point, `createNextGen(initCode, salt)`. Only the pool's immutable
-lineage steward (`LINEAGE_STEWARD`, the ops multisig above) can call it, and only once. It deploys the next
-generation from the pool's own address, records it as `successor`, and that is the whole of the authority:
-the steward chooses the successor's code and nothing else. `pool.successor()` reads zero while this generation
-is the lineage's active one, and the pool emits `GenerationRetired(successor)` when it is set.
+The pool has one privileged entry point, `createNextGen(initCode, salt)`. Only the pool's immutable
+`LINEAGE_STEWARD` (the ops multisig above) can call it, and only once. It deploys the successor from the
+pool's own address and records it as `successor`, and that is the whole of its authority: the steward
+chooses the successor's code and nothing else. `pool.successor()` reads zero while this pool is active. When
+it is set, the pool emits `GenerationRetired(successor)`.
 
-Once `successor` is set, this generation is **exit-only for new value**:
+Once `successor` is set, the pool closes to new value:
 
-- Refused: wraps of external assets, swaps, liquidity adds, cBTC mints, new CDP positions, farm bonds and
-  surplus draws, public-AMM entry, farm funding, and any spend of a Bitcoin-homed note.
-- Still open: every exit and every release of value already committed here — unwraps and transfers,
-  liquidity removals, position closes, top-ups and liquidations, farm harvests, stealth and adaptor
-  claims and refunds, deposits already escrowed, mints of Bitcoin burns that targeted this generation, and
-  burning this generation's own canonical token back into a note. Cross-outs open once the pool has written
-  its handoff record (its first attest after retirement). The pool's Bitcoin reflection also stays open.
+- **Refused:** wraps of external assets, swaps, liquidity adds, cBTC mints, new CDP positions, farm bonds
+  and surplus draws, public-AMM entry, farm funding, and any spend of a Bitcoin-homed note.
+- **Still open:** every exit and every release of value already committed. That covers unwraps and
+  transfers, liquidity removals, position closes, top-ups and liquidations, farm harvests, stealth and
+  adaptor claims and refunds, deposits already escrowed, mints of Bitcoin burns that targeted this pool,
+  and burning its own canonical token back into a note.
+- **Cross-outs** reopen once the pool has written its handoff record, at its first attest after
+  retirement. Its Bitcoin reflection stays open throughout.
 
-The steward cannot touch escrow, freeze an exit, redirect a payout, or set `successor` a second time.
-Retiring a generation therefore closes new entry to it and points to code that no user is obliged to use.
-A pool deployed with a zero steward can never be retired. The predecessor generation (gen4) was deployed
-before this entry point existed and has neither `createNextGen` nor `successor()`. The runbook is
-[`ops/RUNBOOK-generation-handoff.md`](../ops/RUNBOOK-generation-handoff.md).
-
-A future Bitcoin protocol version may commit the generation identity into the
-bridge/fast-lane records directly, making this a consensus rule rather than a
-sequencing property; until then it is handled at migration time.
+The steward cannot touch escrow, freeze an exit, redirect a payout or set `successor` a second time.

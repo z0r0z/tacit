@@ -1,6 +1,6 @@
 #!/bin/bash
-# Verify the TAC Sepolia public round-trip on-chain, phase by phase (companion to
-# ops/CHECKLIST-tac-sepolia-roundtrip.md). Read-only assertions against the live pool: the
+# Verify the TAC Sepolia public round-trip on-chain, phase by phase.
+# Read-only assertions against the live pool: the
 # proof-gated submissions (attestBitcoinStateProven / settle) are driven out-of-band by the
 # prover + settler; this confirms each resulting state transition. `submit-wrap` is the one
 # user-side tx that needs no proof (gated behind PRIVATE_KEY).

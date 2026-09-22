@@ -1,4 +1,4 @@
-// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24 + §5.25 high-level dapp builder tests.
+// High-level dapp builder tests.
 //
 // Exercises the dapp's `buildSlotSplitEnvelope` and `buildSlotMergeEnvelope`
 // functions — the layer that takes wallet-level slot records (with secrets)

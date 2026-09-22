@@ -1,5 +1,5 @@
 // Unified cross-chain holdings — the merge that realizes "one Tacit balance per asset" across both
-// settlement lanes (ops/ARCH-tacit-chain-abstraction.md, the unified-surface contract). A Tacit asset's
+// settlement lanes (the unified-surface contract). A Tacit asset's
 // Bitcoin-lane balance and Ethereum-lane balance (confidential-pool notes, tETH, canonical ERC20) merge
 // into ONE row keyed by the shared asset_id; the per-lane breakdown is auditable but secondary.
 //

@@ -61,7 +61,7 @@ async function main() {
 }
 
 function buildTestDepositEnvelope() {
-  // T_BRIDGE_DEPOSIT format per spec §5.60.1
+  // T_BRIDGE_DEPOSIT format per the spec
   const buf = new Uint8Array(517); // 261 header + 256 mock proof
   let o = 0;
   buf[o++] = 0x60; // opcode

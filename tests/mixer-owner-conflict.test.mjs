@@ -1,4 +1,4 @@
-// Audit fix coverage — nullifier owner-conflict re-verification (SPEC §5.11.4
+// Audit fix coverage — nullifier owner-conflict re-verification (the spec
 // invariant 3, Non-double-spend; griefing/availability hardening).
 //
 // Background: scanPools mirrors worker-supplied nullifier records INCLUDING the

@@ -110,7 +110,7 @@ await test('atomicIntentFulfilmentMsg', () => {
   );
 });
 
-// Preauth-sale message hashes (SPEC §5.7.8). Same byte-parity discipline as
+// Preauth-sale message hashes. Same byte-parity discipline as
 // the atomic-intent block: the worker reconstructs sale_auth_msg /
 // sale_cancel_msg / sale_id and the BIP-143 sighash for the seller's
 // pre-signed input. Drift between worker and dapp here causes every POST to

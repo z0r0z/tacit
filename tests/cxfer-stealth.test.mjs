@@ -153,7 +153,7 @@ test('locked-vector: ECDH x-only serialization (audit 1.2)', () => {
 // §C from low-level primitives (noble secp256k1 + sha256 + hmac) alongside
 // explicit spec-section refs, then asserts each dapp helper produces
 // byte-identical output. Stronger than the parity-against-ref-module tests
-// — if both the dapp and the ref module ever drift from spec in the same
+// — if both the dapp and the ref module ever drift from the spec in the same
 // way (parity passes but spec violated), this test still catches it because
 // the hand-trace is open-coded against spec text.
 test('end-to-end §A.2/§A.2.5/§C: dapp helpers match a hand-traced spec walkthrough', () => {

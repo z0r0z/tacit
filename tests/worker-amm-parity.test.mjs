@@ -72,7 +72,7 @@ function hexToBytes(h) {
 }
 
 // =========================================================================
-// 1. Constants pinned to spec
+// 1. Constants pinned to the spec
 // =========================================================================
 console.log('\nConstants pinned to spec');
 test('AMM_INITIAL_LP_LOCK_BLOCKS = 6', () => AMM_INITIAL_LP_LOCK_BLOCKS === 6);

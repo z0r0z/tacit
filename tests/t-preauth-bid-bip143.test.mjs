@@ -3,7 +3,7 @@
 // _preauthBidContextOpReturnScript, _preauthBidAuthMsg,
 // _preauthBidCancelMsg, _preauthBidSighashPreimage.
 //
-// Each helper has a clean, deterministic spec (SPEC §5.7.11 + round-2);
+// Each helper has a clean, deterministic spec (round-2);
 // these tests pin field ordering, domain tags, and byte-level details
 // the worker will reproduce when verifying bid records.
 

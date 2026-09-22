@@ -1,8 +1,8 @@
 // T_SWAP_VAR (opcode 0x32) reference implementation.
 //
-// Per-trade variable-amount AMM swap. Spec: SPEC-SWAP-VAR-AMENDMENT.md.
+// Per-trade variable-amount AMM swap.
 //
-// Cryptographic reuse with T_AXFER_VAR (§5.7.9):
+// Cryptographic reuse with T_AXFER_VAR:
 //   - Same `tacit-kernel-v1` domain tag.
 //   - Same single-asset excess-scalar kernel-sig closure shape:
 //       P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp
@@ -16,7 +16,7 @@
 //   - delta_in_total occupies the slot T_AXFER_VAR uses for burned_amount.
 //   - The receipt commit's binding to delta_out is INSIDE the validator,
 //     via r_receipt — this closes the inflation gap surfaced in the
-//     same-day P0 crypto fix (AMENDMENTS.md 2026-05-15 changelog entry).
+//     same-day P0 crypto fix (2026-05-15).
 //
 // NO Groth16 in this opcode; curve recompute is pure indexer arithmetic.
 //
@@ -243,7 +243,7 @@ export function curveDeltaOut({ direction, R_A_pre, R_B_pre, delta_in, fee_bps }
 // Tick-fan schedule
 // =========================================================================
 //
-// Per §"Tick-fan coordination layer" (AMENDMENTS.md 2026-05-15 entry).
+// Tick-fan coordination layer.
 // K ∈ {2, 4, 8, 16} log-spaced ticks across [delta_in_min, delta_in_max].
 // On-chain wire format is byte-identical to a single-Δ broadcast; the
 // fan is purely off-chain coordination. Tick-independent fields
@@ -252,7 +252,7 @@ export function curveDeltaOut({ direction, R_A_pre, R_B_pre, delta_in, fee_bps }
 // (delta_in_k, delta_out_k, C_change_k, C_receipt_k, bulletproof_k,
 //  intent_sig_k).
 //
-// Tick spacing formula matches AMENDMENTS.md changelog: each k is
+// Tick spacing formula: each k is
 //   tick[k] = floor(Δmin · (Δmax/Δmin)^(k/(K-1)))
 // for k ∈ [0, K). K = 1 collapses to a single-Δ self-broadcast.
 export function buildTickFan({ deltaInMin, deltaInMax, K }) {
@@ -495,7 +495,7 @@ export function computeSwapVarEnvelopeHash(payload) {
 }
 
 // =========================================================================
-// Validator — mirrors SPEC.md §5.20 "Validator algorithm (outcome taxonomy)"
+// Validator (outcome taxonomy)
 // =========================================================================
 //
 // Every confirmed T_SWAP_VAR resolves to exactly one outcome:
@@ -524,7 +524,7 @@ export function computeSwapVarEnvelopeHash(payload) {
 // credited receipt commitment is DERIVED (amount · H + r_receipt · G);
 // env.cReceiptSecp is the trader's signed quote and is never the credit
 // source. The derivation is the inflation defense: no trader-declared
-// receipt value is trusted anywhere (SPEC §5.20 steps 8–10).
+// receipt value is trusted anywhere.
 //
 // Inputs:
 //   payload             : envelope bytes
@@ -801,8 +801,8 @@ export function validateSwapVar({
     reserve_B: curve.rbPost,
     // LP fee accrual: pool's k grows naturally because the fee-adjusted
     // curve product is ≥ k_pre. The lazy-mintFee crystallization fires
-    // at the next LP_ADD / LP_REMOVE event — see AMM.md §"Protocol fee
-    // mechanism" — not here.
+    // at the next LP_ADD / LP_REMOVE event (protocol fee
+    // mechanism), not here.
   };
   const receiptCommitment = pointToBytes(pedersenCommit(curve.deltaOut, rReceiptScalar));
   return {

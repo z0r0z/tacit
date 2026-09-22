@@ -1,4 +1,4 @@
-// BabyJubJub curve primitives for the tacit AMM (SPEC §3.9 planned).
+// BabyJubJub curve primitives for the tacit AMM (planned).
 // Dapp-side port of tests/amm-bjj.mjs — kept byte-for-byte equivalent so
 // the dapp's Pedersen-BJJ commitments match the worker's verify path.
 //

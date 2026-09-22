@@ -1,7 +1,6 @@
 // Derive an Ethereum account from a Tacit wallet — the reverse of the
 // ETH→Tacit identity path. Because the Tacit wallet already holds its own
 // secp256k1 key, the EVM account derives directly (no signature round-trip).
-// Spec: ops/DESIGN-eth-wallet-identity.md "Reverse direction".
 //
 // A *dedicated, domain-separated* key (not the same scalar on both chains): for
 // unlinkability (a privacy product must not link the user's ETH address to

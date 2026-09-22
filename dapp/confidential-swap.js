@@ -26,7 +26,7 @@ export function clearingPriceBperA(sol) {
   return { priceNum: BigInt(sol.P_clear_den), priceDen: BigInt(sol.P_clear_num) };
 }
 
-// Deterministic uniform-price clearing solve (AMM.md §4) — the SAME algorithm the guest enforces
+// Deterministic uniform-price clearing solve — the SAME algorithm the guest enforces
 // (cxfer-core solve_clearing) and the canonical JS (tests/amm-clearing.mjs). Kept self-contained here
 // so the shipped dapp can pre-derive the fee-correct price (and verifyBatch can reject under-charged
 // batches before the box does). The node swap/clearing tests cross-check this against amm-clearing.mjs.

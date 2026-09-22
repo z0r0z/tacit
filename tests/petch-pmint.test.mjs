@@ -1,4 +1,4 @@
-// SPEC §5.8 / §5.9 — permissionless mint (T_PETCH / T_PMINT) end-to-end
+// Permissionless mint (T_PETCH / T_PMINT) end-to-end
 // simulation against the worker's actual cap-counting logic.
 //
 // What this validates that other tests don't:
@@ -10,7 +10,7 @@
 //   - Cap-overflow loser is the canonically-later mint, not an earlier one.
 //   - Reorg simulation: removing a credited mint from the KV stub and
 //     re-running loadCanonicalPmints promotes the next-eligible mint into
-//     the freed slot (covers the SPEC §10 *T_PMINT reorg sensitivity* path).
+//     the freed slot (covers the spec *T_PMINT reorg sensitivity* path).
 //   - Worker-side cumulative_minted matches dapp-side (count × mint_limit).
 //   - A wrong tip → "unknown_depth" status (worker degrades gracefully when
 //     mempool.space is unreachable).
@@ -81,7 +81,7 @@ function makeKvStub(initial = {}) {
 const ASSET = 'a'.repeat(64);
 // Build a synthetic pmint event matching the cron's record shape (see the
 // T_PMINT branch in scanRecentBlocks). Key embeds zero-padded
-// (height, tx_index, txid) — SPEC §5.9 *Cap-overflow ordering* mandates
+// (height, tx_index, txid) — the spec *Cap-overflow ordering* mandates
 // (height, tx_index) as the canonical sort. txid is a tiebreaker only used
 // if a malformed indexer somehow produces duplicate (height, tx_index).
 // signet uses the un-namespaced legacy prefix `pmint:{aid}:`.
@@ -106,7 +106,7 @@ console.log('SPEC §5.8 / §5.9 — T_PETCH / T_PMINT end-to-end:');
 
 // ---------------------------------------------------------------------------
 // CONFIRMATION DEPTH — the depth-≥3 gate is the load-bearing v1 mitigation
-// for the reorg-sensitivity issue called out in SPEC §10. Verify the partition.
+// for the reorg-sensitivity issue called out in the spec. Verify the partition.
 // ---------------------------------------------------------------------------
 await test(`PMINT_CONFIRMATION_DEPTH is the SPEC §5.9 default (3)`, () => {
   return PMINT_CONFIRMATION_DEPTH === 3;
@@ -152,7 +152,7 @@ await test('mixed pending + credited produces correct cumulative', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// CAP-OVERFLOW — SPEC §5.9 step 5. Canonically-later mints are rejected once
+// CAP-OVERFLOW — canonically-later mints are rejected once
 // the cap is reached; earlier mints keep their credit. Test that the loser
 // is in fact the LATER mint, not an arbitrary one.
 // ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ await test('cap-overflow rejects canonically-later mints, keeps earlier ones', a
 });
 
 // ---------------------------------------------------------------------------
-// SAME-BLOCK ORDERING — SPEC §5.9 *Cap-overflow ordering* mandates
+// SAME-BLOCK ORDERING — the spec *Cap-overflow ordering* mandates
 // (height, tx_index), NOT (height, txid). Audit fix #2: the v1 implementation
 // embedded txid as the tiebreaker, which differs from block tx-position
 // order. The two scenarios below exercise the corrected behavior:
@@ -190,7 +190,7 @@ await test('same-block ordering uses tx_index even when txid order disagrees', a
   env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'f'.repeat(64)), mintEvent(100, 0, 'f'.repeat(64))); // earlier in block, higher txid
   env.REGISTRY_KV.set(pmintKey(ASSET, 100, 1, '0'.repeat(64)), mintEvent(100, 1, '0'.repeat(64))); // later in block, lower txid
   const r = await loadCanonicalPmints(env, 'signet', ASSET, 200, '100', '100');
-  // SPEC §5.9: tx_index = 0 wins, regardless of txid lex order.
+  // tx_index = 0 wins, regardless of txid lex order.
   return r.events.length === 2
     && r.events[0].mint_txid === 'f'.repeat(64) && r.events[0].status === 'credited'
     && r.events[1].mint_txid === '0'.repeat(64) && r.events[1].status === 'cap_overflow';
@@ -211,7 +211,7 @@ await test('same-block ordering preserves tx_index even with same txid prefix', 
 });
 
 // ---------------------------------------------------------------------------
-// REORG SIMULATION — SPEC §10 *T_PMINT reorg sensitivity*. Removing a
+// REORG SIMULATION — the spec *T_PMINT reorg sensitivity*. Removing a
 // credited mint from the KV (simulating reorg-evicted block) must promote
 // the next eligible mint into the freed cap slot.
 // ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ await test('credited events carry mint_txid in canonical hex form', async () => 
 });
 
 // ---------------------------------------------------------------------------
-// CROSS-MODE GUARDRAIL — SPEC §4 says T_MINT and T_PMINT envelopes are
+// CROSS-MODE GUARDRAIL — the spec says T_MINT and T_PMINT envelopes are
 // non-substitutable. Verify the decoders reject opcode swaps so a forged
 // "T_PMINT" claiming a CETCH parent (or vice versa) fails decoding before
 // reaching the cap check.
@@ -411,7 +411,7 @@ await test('snapshot: empty asset yields zero counts + scan-complete', async () 
 });
 
 await test('snapshot: null tip refuses to refresh (returns null)', async () => {
-  // SPEC §5.9 depth-3 credit gate needs a tip. Without it, refreshing would
+  // Depth-3 credit gate needs a tip. Without it, refreshing would
   // either over-credit (count every confirmed mint regardless of depth) or
   // silently misclassify. Better to keep the existing snapshot.
   const env = { REGISTRY_KV: makeKvStub() };
@@ -517,7 +517,7 @@ await test('snapshot: orphan entries excluded from credited count', async () => 
 
 await test('snapshot: last_credited advances past cap_overflow gaps', async () => {
   // Cap-overflow doesn't advance last_credited_* — the next-credited mint
-  // does. SPEC §5.9 *Cap-overflow ordering*: overflow mints occupy a
+  // does. Per the spec *Cap-overflow ordering*: overflow mints occupy a
   // canonical slot but don't get credit, so position-based lookups must
   // treat them as gaps rather than as the new frontier.
   const env = { REGISTRY_KV: makeKvStub() };
@@ -534,7 +534,7 @@ await test('snapshot: last_credited advances past cap_overflow gaps', async () =
 });
 
 // ---------------------------------------------------------------------------
-// COMMITMENT OPENING — SPEC §5.9 step 5. T_PMINT envelopes ship public
+// COMMITMENT OPENING — T_PMINT envelopes ship public
 // (amount, blinding) so any indexer can verify pedersenCommit(amount, blinding)
 // equals the declared commitment. Issue #31 Problem #3: the cron + hint paths
 // previously skipped this check, so structurally-valid envelopes with forged
@@ -634,7 +634,7 @@ await test('snapshot: open-window mid-mint asset is bootstrapped=false', async (
 });
 
 await test('snapshot: window-closed but tip too shallow stays bootstrapped=false', async () => {
-  // tip = mint_end_height + 1 — the SPEC §5.9 confirmation-depth gate (3) means
+  // tip = mint_end_height + 1 — the spec confirmation-depth gate (3) means
   // a pmint mined AT the end height isn't yet considered final until tip
   // advances past end+confDepth. Helper guards against premature finality.
   const env = { REGISTRY_KV: makeKvStub() };

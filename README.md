@@ -4,472 +4,161 @@
 
 # tacit
 
-**A confidential DeFi layer rooted on Bitcoin.** Tacit scales the
-Runes/Ordinals indexer-validated pattern past plain tokens — to
-confidential value, anonymous spend, a native AMM, an atomic marketplace,
-and trustless wrapped BTC. Token rules are enforced by indexers anyone can
-run, each reaching the same verdict from the chain alone; cryptography does
-the work a smart-contract VM does elsewhere.
+**Tokenization and confidential DeFi on Bitcoin, with a zero-knowledge bridge to a confidential zone on
+Ethereum.**
 
-**v1 extends the same confidential note onto an Ethereum lane** by
-trustless zero-knowledge reflection: one note across both chains, a
-confidential pool, a confidential dollar (cUSD), and gasless settlement —
-with no federation, sidechain, or multisig bridge.
+Tacit is a Bitcoin metaprotocol. Assets are issued and transferred in Taproot envelopes. Amounts are
+hidden by Pedersen commitments and range proofs, and any indexer running the spec reaches the same state
+from the chain alone.
 
-> **Status:** signet + mainnet. Sign in with an Ethereum wallet, a passkey,
-> Xverse / UniSat / Leather, import a privkey, or — on signet — let the
-> dApp generate one and grab faucet sats. The Bitcoin↔Ethereum bridge is
-> live as a gated pilot (small fixed deposits) while limits widen.
->
-> **Live demo:** [tacit.finance](https://tacit.finance)
->
-> **Security:** multiple independent reviews (GPT-5.5 Pro · Claude Opus 4.8
-> Max), no fund-critical findings — reports + responses in [`audit/`](./audit/AUDITS.md).
->
-> **Protocol specs:**
-> [`SPEC.md`](./SPEC.md) — canonical wire-format authority ·
-> [`AMM.md`](./AMM.md) — confidential AMM architecture ·
-> [`MIXER.md`](./MIXER.md) — Bitcoin mixer (secondary privacy option) ·
-> [`BRIDGE.md`](./BRIDGE.md) — legacy tETH bridge (sunset; recovery only) ·
-> [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) — how the ZK stack composes ·
-> [`spec/GLOSSARY.md`](./spec/GLOSSARY.md) — cross-surface terms ·
-> [`spec/amendments/`](./spec/amendments/) — cBTC, cUSD, pool, reflection, farms, governance ·
-> [`whitepaper/`](./whitepaper/WHITEPAPER.pdf) — the technical whitepaper.
->
-> **Deployed contracts:**
-> [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md) — immutable mainnet addresses
-> (Etherscan-verified) · [`contracts/deployments/1-createx.json`](./contracts/deployments/1-createx.json)
-> — machine-readable manifest written by the deploy script (addresses, source of truth) ·
-> [`contracts/deployments/1.json`](./contracts/deployments/1.json) — the same suite plus vkeys, asset
-> ids and reflection/beacon genesis parameters.
+The same confidential note also lives in an immutable pool on Ethereum. There it can be:
+- swapped, lent against, farmed or paid privately;
+- relayed without gas;
+- moved back to Bitcoin.
+
+SP1 zero-knowledge proofs carry state between the two chains in both directions. No multisig, federation
+or attestor set signs a bridge message.
+
+- **App:** [tacit.finance](https://tacit.finance)
+- **Spec:** [`SPEC.md`](./SPEC.md), the normative protocol
+- **Whitepaper:** [`whitepaper/`](./whitepaper/WHITEPAPER.md), design and rationale
+- **Contracts:** [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md), mainnet addresses and verifying keys
+- **Build on it:** [`docs/BUILD-A-TACIT-DAPP.md`](./docs/BUILD-A-TACIT-DAPP.md)
+- **Security:** [`audit/AUDITS.md`](./audit/AUDITS.md)
 
 ---
 
-## What it is
+## What it does
 
-The trick is the same one Runes and Ordinals use: token rules aren't
-enforced by Bitcoin nodes, they're enforced by open-source indexers, and
-because the rules are deterministic every indexer reaches the same verdict
-from chain data alone. No federation, no consensus change. Tacit applies
-that to a much wider surface — and v1 carries the resulting confidential
-note onto a second chain. The two parts:
+**On Bitcoin**
+- **Issue assets** with hidden or fair-launch supply (`T_CETCH`, `T_PETCH`/`T_PMINT`). The issuer can
+  publish its supply opening so anyone can audit it.
+- **Transfer confidentially.** Amounts are hidden, conservation is proven by a kernel signature, and
+  range proofs are Bulletproofs+. Recipients recover credits from their key alone.
+- **Trade atomically.**
+  - OTC swaps of an asset against BTC in one transaction.
+  - Pre-signed bids from buyers who are offline.
+  - A native AMM with batch clearing at a uniform price.
+  - LP farms.
+- **Lock BTC for cBTC.** A self-custody lock on Bitcoin backs fungible cBTC in the pool.
+- **Send value-free calls.** A Bitcoin-signed message can authorize an Ethereum call, and Ethereum can
+  send messages back.
 
-**The Bitcoin core:**
+**In the confidential pool (Ethereum)**
+- Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
+- Trade on a confidential AMM: swaps, routes and liquidity. OTC and bids also run here.
+- Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
+- Use adaptor locks for atomic cross-chain swaps.
+- Borrow **cUSD** against cBTC collateral. Mint **cBTC** against reflected BTC locks.
+- Earn TAC farm rewards on LP positions.
+- Relay any op without gas, with the relayer's fee bound inside the proof. Anyone can also prove and
+  settle their own ops.
 
-- **Confidential value.** Amounts are hidden on every transfer, yet supply
-  still provably balances — via Pedersen commitments, aggregated
-  bulletproofs, and a Mimblewimble-style kernel signature.
-- **Anonymous spend.** Break the link between two of your own UTXOs: deposit
-  into a fixed-denomination mixer pool and withdraw to a fresh address, with
-  no on-chain edge connecting them (Groth16 + Poseidon-Merkle + nullifiers).
-  This is the *secondary*, Bitcoin-only privacy option; the cross-chain
-  confidential pool below is the primary, amount-flexible one.
-- **Native AMM + farms.** A uniform-clearing-price, block-batched AMM
-  between any two tacit assets, with confidential per-trader amounts and
-  LP-staking farms. Pool reserves are public numbers the indexer tracks;
-  no UTXO holds any pool's funds. The trusted-setup ceremony is sealed and
-  its artifacts are published.
-- **Trustless wrapped BTC.** `cBTC.zk` locks real BTC at a Taproot output
-  whose spending key is derived from a mixer leaf's own secret — one leaf,
-  two locks, no federation and no co-signer.
-- **Atomic marketplace.** Atomic OTC settlement of a confidential token
-  against a BTC payment in one Bitcoin tx (`T_AXFER`), variable-amount
-  partial fills (`T_AXFER_VAR`), and buyer-offline preauthorized bids
-  (`T_PREAUTH_BID_VAR`) for walk-away flow. No MEV by construction.
-- **Fair-launches + drops.** `T_PETCH` / `T_PMINT` for permissionless-mint
-  assets with publicly auditable caps; `T_DROP` / `T_DCLAIM` for ETH-gated
-  claim pools; batched confidential CXFER airdrops for issuer distributions.
+**Between the chains**
+- **Bitcoin → Ethereum.** A full-proof-of-work header relay feeds an SP1 guest. The guest folds every
+  Tacit envelope into roots that the pool accepts after 24 confirmations.
+- **Ethereum → Bitcoin.** An SP1 light-client guest proves pool storage. The Bitcoin guest verifies that
+  proof recursively, so crossed-out notes are re-minted on Bitcoin.
+- **One note, two chains.** The note commitment is the same secp256k1 Pedersen commitment on both sides.
 
-**The v1 Ethereum lane:**
-
-- **One note, two chains.** A wrap on Bitcoin, or a wrap through the
-  Ethereum-side `ConfidentialRouter`, produces the same shielded note — a
-  secp256k1 Pedersen note spendable by knowledge of its blinding. From
-  there it transfers, trades, borrows, or exits on either side. The
-  Ethereum-lane pool is setup-free (Bulletproofs+ and SP1, no ceremony).
-- **Trustless cross-chain reflection.** Value crosses by burn→mint under
-  conservation: an SP1 proof reflects a burn on one chain as exactly one
-  matching mint on the other, with a one-time nullifier, full provenance
-  to a real supply leaf, and a reorg-finality gate. No multisig, no
-  attestor set, no wrapped-asset IOU.
-- **Fungible wrapped BTC (`cBTC.tac`).** A fungible claim on real BTC held
-  in `cBTC.zk` locks — a **trustless, oracle-free conservation peg** (total
-  cBTC.tac ≤ total live locked sats, by construction; no price in the mint
-  path). `tacBTC` is its ERC-20 form. The only residual trust is BTC
-  custody, covenant-upgradeable to fully trustless (a covenant vault is the
-  endgame; a protocol/MPC vault plus an Ethereum insurance backstop is the
-  launch posture).
-- **cUSD — a confidential dollar.** Borrow the protocol's own
-  over-collateralized stablecoin against a shielded note, with both the
-  collateral and the debt hidden (Pedersen-committed positions, proven
-  healthy in zero knowledge, MakerDAO-style rate accumulator + liquidation
-  ratio; stability fee shipped dormant). This is the oracle-priced CDP that
-  cBTC.tac deliberately is *not*.
-- **Gasless by relay.** Any op can be settled by a relayer, with the fee
-  bound inside the conservation kernel — the relayer can pay gas and take
-  its fee but cannot redirect a payout or pad the fee. You never need the
-  settlement chain's gas token to move value.
-- **One unified address.** A single `tacit1…` address resolves to your
-  Bitcoin or shielded-Ethereum endpoint, so a sender doesn't need to know
-  which lane you're on.
-
-See [`spec/CIRCUITS.md`](./spec/CIRCUITS.md) for how the Groth16 circuit
-families (Bitcoin side) and the Bulletproofs+/SP1 stack (Ethereum lane)
-compose across these surfaces.
-
-**What tacit doesn't do:**
-
-- Hide the address graph (sender/recipient Bitcoin addresses are visible —
-  same as every Bitcoin-substrate protocol).
-- Hide the asset ID (which token is moving is public; surjection proofs are
-  a follow-up).
-- Run general-purpose code. There is no Turing-complete VM: the protocol
-  grows by adding opcodes and circuits, and the Ethereum lane is a
-  verifier-gated reflection surface, not a runtime for arbitrary contracts.
-- Eliminate issuer trust for confidential-supply assets unless the issuer
-  publishes `(supply, blinding)`. The dApp publishes by default; opt-out is
-  explicit.
-
----
-
-## How tacit compares
-
-| | Substrate | Validity | Amounts | AMM | Trustless wBTC | Federation |
-|---|---|---|---|---|---|---|
-| Ordinals / BRC-20 | Bitcoin | Indexer | Public | — | — | None |
-| Runes | Bitcoin | Indexer | Public | — | — | None |
-| RGB / Taproot Assets | Bitcoin (anchor) | Off-chain client-side proofs | Hidden / partial | — | — | None |
-| Liquid CT + AMM | **Federated sidechain** | Sidechain consensus | Hidden | Yes | — | **15-of-N** |
-| Citrea / Botanix / rollups | Bitcoin (rollup) | Operator / fraud proofs | Varies | Yes | Varies | Operator set |
-| **tacit** | **Bitcoin (+ ETH lane)** | **Indexer + ZK proofs** | **Hidden** | **Native** | **Yes (cBTC)** | **None** |
-
-What tacit does that nothing else does in one stack:
-
-- **Confidential fungibles on Bitcoin proper.** Liquid CT uses the same
-  Pedersen + Bulletproof primitives but lives on a federated sidechain.
-  Every tacit CXFER is a Bitcoin tx, every UTXO a Bitcoin UTXO.
-- **Native AMM on Bitcoin L1.** Uniform-clearing-price, block-batched, with
-  confidential per-trader amounts — no L2, rollup, or smart-contract
-  runtime. Sidechain/rollup AMMs inherit federation or operator trust;
-  tacit has neither.
-- **Trustless wrapped BTC.** `cBTC.zk` locks BTC at a key derived from a
-  mixer note's own secret (no federation, co-signer, or oracle); `cBTC.tac`
-  makes it fungible as an oracle-free conservation peg on real locked BTC.
-  WBTC/tBTC/RBTC are federated or threshold-bonded.
-- **Trustless cross-chain without a bridge multisig.** Bitcoin↔Ethereum
-  value moves by SP1 reflection (burn→mint, one-time, provenance-checked),
-  not a signing committee.
-- **No off-chain proof exchange.** RGB / Taproot Assets push validity
-  off-chain (lose the proof, lose the balance). Tacit keeps everything
-  on-chain; a wallet recovers full state from privkey + chain alone.
-
-Not in scope: on-chain inscriptions (tacit pins media to IPFS and carries
-only a URI on-chain) and Lightning-native assets (tacit is on-chain only).
-
----
-
-## Architecture in one screen
-
-Two Groth16 circuit families and a uniform out-of-circuit toolkit do the
-Bitcoin-side cryptographic work; the indexer does the accounting; Bitcoin
-holds the data. The Ethereum lane reaches the same note format through a
-setup-free Bulletproofs+/SP1 stack.
+## How it is built
 
 ```
-                  Bitcoin L1 (substrate)
-                          │
-       ┌──────────────────┴───────────────────┐
-       │      indexer-validated rules          │
-       │   (same trust model as Runes; any     │
-       │    party reaches the same verdict      │
-       │    from chain data alone)              │
-       └──────────────────┬───────────────────┘
-                          │
-       ┌──────────────────┴───────────────────┐
-       │  out-of-circuit cryptographic stack   │
-       │   secp256k1 Pedersen · bulletproofs   │
-       │   BIP-340 Schnorr · 169-byte sigma    │
-       │   cross-curve binding (secp ↔ BJJ)    │
-       └─────┬─────────────────────────┬───────┘
-             │                         │
-       ┌─────┴─────┐             ┌─────┴─────┐
-       │ withdraw  │             │    AMM    │
-       │ .circom   │             │ circuits  │
-       │ Poseidon  │             │ BabyJubJub│
-       │ leaf +    │             │ Pedersen +│
-       │ Merkle +  │             │ range +   │
-       │ nullifier │             │ AMM logic │
-       └─────┬─────┘             └─────┬─────┘
-   anonymous-spend                amount-confidentiality
-       │                                │
-   ┌───┴────┐                   ┌───────┴────────┐
-   │ mixer  │                   │ T_LP_ADD/REMOVE│
-   │ pool   │                   │ T_SWAP_BATCH   │
-   │ cBTC.zk│                   │ T_SWAP_VAR (*) │
-   │ slots  │                   │ T_SWAP_ROUTE   │
-   └────────┘                   └────────────────┘
-                          │
-       ┌──────────────────┴───────────────────┐
-       │  Ethereum lane (setup-free)           │
-       │   secp256k1 note · Bulletproofs+ ·    │
-       │   SP1 reflection · ConfidentialPool   │
-       │   → cBTC.tac · cUSD · gasless relay   │
-       └───────────────────────────────────────┘
-
-(*) T_SWAP_VAR uses no Groth16 — Pedersen + bulletproof + kernel sig only.
-    Circuits are used where confidentiality is load-bearing and skipped
-    where amounts can be public.
+            Bitcoin L1                                  Ethereum L1
+  ┌───────────────────────────┐              ┌────────────────────────────────┐
+  │ Taproot envelopes         │  headers +   │ BitcoinLightRelay (full PoW)   │
+  │  issue · transfer · trade │  SP1 proof   │ ConfidentialPool (immutable)   │
+  │  AMM · farms · cBTC locks │ ───────────▶ │  note tree · nullifiers        │
+  │  bridge burns · calls     │              │  settle(SP1 proof)             │
+  │                           │  SP1 light-  │  AMM · CDP · farms · stealth   │
+  │ indexers (dapp, worker)   │ ◀─────────── │ CollateralEngine · FarmManager │
+  └───────────────────────────┘ client proof └────────────────────────────────┘
+        secp256k1 Pedersen · BP+ range proofs · Schnorr kernels · keccak IMTs
 ```
 
-Full primitive-by-primitive walkthrough: [`spec/CIRCUITS.md`](./spec/CIRCUITS.md)
-(single-image version: [`tacit-circuits.svg`](./assets/tacit-circuits.svg)).
+**Three SP1 programs:**
+- the **settle guest**, which proves pool ops;
+- the **Bitcoin reflection guest**, which proves Bitcoin blocks;
+- the **Ethereum reflection guest**, which proves pool storage via sp1-helios.
 
----
+Each is pinned by ELF hash to an immutable verifying key, and each
+[rebuilds byte for byte](./docs/REPRODUCIBLE-BUILDS.md).
 
-## Privacy & trust
+**Ceremonies.** The transparent stack needs no trusted setup. Two finalized ceremonies supply Groth16
+keys for circuits that are expensive to express otherwise:
+- the **AMM ceremony**, whose `amm_swap_batch` key is compiled into both guests for prover-blind batch
+  swaps;
+- the **mixer ceremony**, for denominated anonymity pools.
 
-Tacit hides **amounts**. It does not hide the address graph (Bitcoin
-addresses are visible), the asset ID (the 32-byte `asset_id` is in every
-non-pool envelope), the sender pubkey (needed for ECDH blinding recovery),
-the tx graph, or `T_BURN`'s public `burned_amount`. Same scope as Liquid CT
-without surjection proofs, plus opt-in unlinkability.
+Details are in [SPEC §2.8](./SPEC.md#28-circuits-and-ceremonies).
 
-Two unlinkability surfaces, in order of generality:
+**Room for Bitcoin covenants.** Some op codes and opcode bytes are held for constructions Bitcoin cannot
+yet enforce. The main one is covenant-locked cBTC with no escrow. The others are on-chain bid escrow and
+fractional BTC slots. See [SPEC §10](./SPEC.md#10-extensions-and-covenant-placeholders).
 
-- **Confidential pool (primary).** The cross-chain shielded pool holds any
-  amount as one note, needs no trusted setup, and is where DeFi lives
-  (transfer, swap, borrow, bridge).
-- **Bitcoin mixer (secondary).** Bitcoin-only, fixed-denomination, with its
-  own trusted setup — for value that never leaves Bitcoin. Deposit a
-  fixed-denomination UTXO, withdraw to a fresh pubkey; pool participation is
-  public, but which deposit maps to which withdrawal is not. Phase 2
-  ceremony finalized with 2,227 contributions and a Bitcoin-block beacon
-  (details in [`MIXER.md`](./MIXER.md)).
+## Privacy and trust
 
-The code has had multiple independent security reviews (GPT-5.5 Pro and
-Claude Opus 4.8 Max) with **no fund-critical findings**; every report and
-maintainer response is committed in [`audit/`](./audit/AUDITS.md).
+- **Hidden:** amounts, which note a pool spend consumes, stealth recipients, and trade sizes in blind
+  batches.
+- **Public:** Bitcoin addresses and the transaction graph, asset ids on Bitcoin, the pool's deposit and
+  withdrawal boundary, AMM reserves, and CDP position amounts. A position's owner stays unlinkable.
+- **You trust:** Bitcoin and Ethereum consensus, SP1 and Groth16 soundness, and the ceremonies (only for
+  the circuits that use them).
+  - cUSD relies on its oracle.
+  - cBTC is secured economically, by the locker's wstETH escrow.
+  - The periphery (CollateralEngine, FarmManager) is governed by a multisig within on-chain bounds.
+- **You don't trust:** relayers, the hosted API or IPFS gateways. The pool, its guests and their keys
+  cannot be changed, and every balance recovers from your key plus chain data.
 
-| What you trust | For what | Mitigation if compromised |
-| --- | --- | --- |
-| Bitcoin (signet / mainnet) | Tx ordering, no double-spends, witness integrity | None — it's the bottom layer |
-| Ethereum (for the lane) | Settlement + finality of Ethereum-side ops; SP1 verifier soundness | The reflection bridge acts only on source blocks past a reorg-finality depth; an SP1 proof, not a committee, authorizes each mint |
-| `mempool.space` (primary) + `blockstream.info` (watchdog) | Returning real chain data | A 5-min divergence watchdog cross-checks tip heights; ≥3-block disagreement surfaces a banner. Swap either for any Esplora-compatible API in `NETWORKS` |
-| The dApp source you loaded | Implementing the validation rules correctly | Re-host / pin by IPFS CID; the runtime KAT in `runStartupKAT()` is independent defense |
-| `dapp/vendor/tacit-deps.min.js` | Crypto code matching what was published | Bundle is pinned alongside `index.html` + `tacit.js` under one IPFS CID; rebuild + re-pin if upstream npm changes |
-| The asset's etcher | *Confidential-supply assets only:* the announced supply; *(mintable):* their mint_authority key | The dApp publishes `(supply, blinding)` by default → attested supply is verifiable from chain + IPFS alone; opt-out is explicit |
-| cBTC.tac BTC custody (launch) | That locked sats aren't moved out of redemption | Bounded, insured by the (TAC, tETH) backstop, and covenant-upgradeable to no-trust; the peg itself is conservation, so a custody failure can't mint unbacked cBTC.tac |
-| The in-page tacit privkey | Signing every tacit op | AES-GCM encrypted at rest (PBKDF2-SHA256, 600k iters), unlocked per session. Export the raw privkey via Wallet → Export key. Signature-derived modes (ETH wallet / passkey / deterministic BTC wallet) persist no key — re-derived each session |
+The protocol evolves by deploying successor pools that users opt into by exiting one pool and entering
+the next. A retired pool keeps every exit open ([SPEC §8](./SPEC.md#8-deployment-lineage)).
 
-The Worker is a **convenience cache**, not a trust target. Setting
-`WORKER_BASE = ''` disables it; the protocol still validates and transfers.
+## Run the dapp
 
----
-
-## Running the dApp
-
-The dApp is a single HTML file plus its vendored bundle.
-
-### Locally (fastest path)
+The dapp is static files: `dapp/index.html`, `tacit.js` and a vendored crypto bundle.
 
 ```sh
-# any static file server works
-cd tacit/dapp
-python3 -m http.server 8000
-# open http://localhost:8000/  (serves dapp/index.html)
+cd dapp && python3 -m http.server 8000     # http://localhost:8000
 ```
 
-CORS is allowlisted for `http://localhost:8000`, `:3000`, `127.0.0.1:8000`,
-and `null` (`file://`) in the deployed Worker, so local dev hits the live
-endpoints out of the box.
+Pin `dapp/` to IPFS or any static host. To rebuild the vendored bundle and print its SRI hashes:
+`cd build && npm install && npm run build`.
 
-### Hosted
+Sign in with an Ethereum wallet, a passkey, a Bitcoin wallet or an imported key. A wallet identity comes
+from one deterministic signature over the Tacit identity message, the same in every Tacit app, so
+reconnecting anywhere restores it. Anyone holding that signature controls the funds, so sign it only in a
+Tacit app you trust.
 
-Pin the `dapp/` directory to IPFS, or drop it on Cloudflare Pages, GitHub
-Pages, Vercel, or any static host. No env vars or build flags — the Worker
-URL and IPFS gateway are set at the top of the script:
+To check recovery, import your key in a fresh browser and rescan: every balance and position should
+return from chain data alone.
 
-```js
-const WORKER_BASE  = 'https://tacit-pin.rosscampbell9.workers.dev';
-const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
-```
-
-Once you know your hosted origin, narrow `ALLOWED_ORIGINS` in
-`worker/wrangler.toml` to it, then `wrangler deploy`.
-
-### Refreshing the vendor bundle
-
-Run only when bumping crypto dep versions or wanting fresh SRI hashes.
-
-```sh
-cd tacit/build
-npm install
-npm run build
-# prints SHA-384 of dapp/vendor/tacit-deps.min.js, dapp/tacit.js, and dapp/index.html
-```
-
-See `build/README.md` for details.
-
----
-
-## Using the dApp
-
-1. **Sign in / set up a wallet.** Connect an Ethereum wallet
-   (MetaMask / Rabby / Rainbow — identity derived from one deterministic
-   signature over the Tacit identity message, the same in every Tacit app;
-   recover by reconnecting anywhere; anyone holding that signature controls
-   the funds, so sign it only in a Tacit app you trust), a passkey (WebAuthn PRF), a
-   Bitcoin wallet (Xverse / UniSat / Leather), import a 64-hex privkey, or
-   let the dApp auto-generate one (handy for signet). On local-key paths the
-   privkey is AES-GCM-encrypted at rest; **export it** via Wallet → Export
-   key — that's the recovery path. See `ops/DESIGN-eth-wallet-identity.md`.
-2. **Get funds.** On signet, click ⚡ Demo drip. On mainnet, **Top up tacit**
-   funds from your external wallet, or send sats to your tacit address.
-3. **Etch / mint.** Pick ticker, supply, decimals (0–8), optional image/metadata
-   (pinned to IPFS). Mark **Mintable** to allow later issuance under the
-   etcher key. Two txs (commit + reveal). Burn destroys supply with a public
-   `burned_amount` for auditability.
-4. **Fair-launch (`T_PETCH` / `T_PMINT`).** Deploy a capped, permissionless-mint
-   asset (the deploy creates zero tokens); anyone mints a tranche later.
-   Cumulative supply and per-mint status are public; mints credit at depth ≥ 3.
-5. **Transfer.** Pick an asset, paste the recipient's pubkey (or a `tacit1…`
-   unified address), enter an amount. The recipient auto-discovers the balance
-   via the on-chain encrypted-amount field.
-6. **Confidential pool (primary).** Wrap value from Bitcoin or Ethereum into
-   one shielded note, then transfer, swap, borrow against it, or exit on
-   either side. Cross-chain moves settle by trustless SP1 reflection, and any
-   op can be relayed **gaslessly**.
-7. **DeFi — cUSD & cBTC.** Borrow cUSD against a shielded note (collateral and
-   debt both hidden), or mint cBTC.tac against a self-custody Bitcoin lock at
-   the oracle-free 1:1 peg.
-8. **Trade.** A confidential AMM (swap + multi-hop route + LP), an atomic
-   marketplace (OTC `T_AXFER`, variable-amount `T_AXFER_VAR`, buyer-offline
-   `T_PREAUTH_BID_VAR`), and LP-staking **farms** (`T_FARM_INIT` /
-   `T_LP_BOND` / `T_LP_HARVEST`). Take + Verify run full client-side
-   validation before any commitment. The AMM ceremony is sealed; artifacts
-   are published (Docs → Ceremony artifacts).
-9. **Bitcoin mixer (secondary).** For value that stays on Bitcoin: deposit a
-   fixed-denomination UTXO, back up the deposit record, then withdraw to a
-   fresh pubkey under a Groth16 unspent-leaf proof. SPEC §5.10–§5.11.
-10. **Drops / Claim.** Issuers run batched 1:N confidential CXFER airdrops
-    from snapshot CSVs (Merkle-committed, ETH-sig-gated); recipients load the
-    root + CID, sign a claim, and the UTXO lands via ECDH recovery.
-
-### Recovery sanity check
-
-Open the dApp in a fresh incognito window, Import your privkey, ↻ Rescan
-UTXOs. Your full balance — received transfers, your etches, your mints, your
-change, and your shielded-pool notes — should reappear from chain data alone.
-
----
-
-## Repository layout
+## Repository
 
 ```
-tacit/
-├── dapp/                  # THE dApp — pin this directory to IPFS
-│   ├── index.html         # markup, meta-CSP, script tags
-│   ├── tacit.js           # core: Pedersen, bulletproofs, kernel sigs,
-│   │                      #  BIP-340/341, envelope encode/decode,
-│   │                      #  recursive validator, wallet, UI, marketplace
-│   ├── bulletproofs.js / bulletproofs-plus.js   # rangeproof provers/verifiers
-│   ├── amm-*.js           # AMM envelopes, BabyJubJub ops, kernel, sigma, farms
-│   ├── confidential-*.js  # Ethereum-lane pool, router, transfers, cross-chain
-│   ├── prf-wallet.js      # WebAuthn PRF key derivation
-│   ├── sw.js / preboot.js # service worker, pre-init
-│   └── vendor/tacit-deps.min.js   # @noble/secp256k1 + hashes + @scure/base + sats-connect
-├── contracts/             # Solidity: ConfidentialPool (bridge/DeFi) + legacy tETH mixer
-│   ├── src/               # ConfidentialPool.sol, CollateralEngine, routers, factory
-│   ├── sp1/               # SP1 guest programs (settle + reflection)
-│   ├── test/ · script/    # Forge tests · deployment scripts
-├── worker/                # optional Cloudflare Worker (faucet, registry, IPFS pin)
-├── fulfiller/             # auto-fulfilment service for atomic intents
-├── verify-service/        # remote Groth16 proof verification server (Docker)
-├── tests/                 # offline test harness (160+ test files)
-├── spec/                  # protocol specs + amendments
-│   ├── CIRCUITS.md · GLOSSARY.md · amm/ · design/ · amendments/
-├── audit/                 # independent security reviews + maintainer responses
-├── whitepaper/            # technical whitepaper (.md + .tex + .pdf)
-├── build/ · assets/ · discord/ · airdrop/ · ops/ · scripts/
-├── SPEC.md · AMM.md · MIXER.md · BRIDGE.md · AMENDMENTS.md
-├── README.md              # you are here
-└── LICENSE
+dapp/            the app: protocol core (tacit.js), pool client (confidential-*.js), circuits, ceremony bundle
+contracts/       Solidity (src/, script/, test/) and SP1 guests (sp1/confidential, sp1/eth-reflection)
+worker/          indexer + API (served by server/ on Node); never proves, never holds funds
+worker-relay/    hosted relay: settle, reflection, header relay, monitoring
+tests/           cross-implementation vectors and test suites
+tools/ scripts/  operational and verification tools
+docs/            integrator guides: build a dapp, deployments, farms, airdrop, recovery, reproducible builds
+audit/           security reviews
+whitepaper/      whitepaper (.md, .tex, .pdf)
 ```
 
-`dapp/` loads `index.html` (markup + meta-CSP), `tacit.js` (core protocol +
-wallet + UI), and `vendor/tacit-deps.min.js` (bundled noble + scure +
-sats-connect). The meta-CSP locks `script-src 'self' 'wasm-unsafe-eval'`
-(no `'unsafe-inline'`, no `'unsafe-eval'`, no third-party origins);
-`'wasm-unsafe-eval'` permits the snarkjs Groth16 prover without reopening
-the broader eval surface. Pinning `dapp/` yields one CID covering every byte
-of trust-bearing code.
+## Credits
 
-`contracts/` holds the active `ConfidentialPool` bridge/DeFi system and its
-SP1 guest programs; `TacitBridgeMixer.sol` is sunset infrastructure for
-existing-note recovery. `build/` is dev-time only. The `worker/` directory
-holds no trust-bearing logic — `WORKER_BASE = ''` disables it entirely.
-
----
-
-## Protocol details
-
-The wire format is the canonical authority for everything on-chain: every
-opcode's envelope layout, validation rules, recovery derivation, and the
-indexer's recursive-validation algorithm live in [`SPEC.md`](./SPEC.md),
-with the confidential AMM in [`AMM.md`](./AMM.md) and the feature
-amendments (cBTC, cUSD, pool, cross-chain reflection, farms, governance) in
-[`spec/amendments/`](./spec/amendments/). The [whitepaper](./whitepaper/WHITEPAPER.pdf)
-covers the design and trust model end to end.
-
-In one paragraph: every op is a commit/reveal Bitcoin transaction pair (or,
-on the Ethereum lane, a proof verified by `ConfidentialPool`). Amounts are
-Pedersen commitments bounded by aggregated bulletproofs; conservation is a
-kernel signature over the excess. Anonymous spend and the confidential AMM
-are Groth16 circuits on the Bitcoin side; the Ethereum lane uses the same
-secp256k1 note with Bulletproofs+ and SP1 reflection. Any indexer running
-the open spec reaches the same verdict from chain data alone, and a wallet
-rebuilds its full balance from its private key plus the chain.
-
----
-
-## Follow-ups
-
-Post-launch directions, none required for v1:
-
-- **Asset-graph privacy** via Asset Surjection Proofs — hide `asset_id`, not
-  just amounts (design sketch in `spec/amendments/`).
-- **Funding-leg privacy** via BIP-352 silent-payment composition for the
-  plain-sats side, complementing the shielded address.
-- **Trustless cBTC custody** — a covenant vault (CTV / OP_VAULT) retires the
-  launch-phase MPC custody entirely, making the cBTC.tac peg fully trustless.
-- **Bitcoin covenant primitives** — on-chain bid escrow, fractional cBTC.zk,
-  and covenant-restricted swap inputs as Bitcoin gains the script support.
-
----
-
-## Cryptography credits
-
-- Pedersen commitments + Mimblewimble kernel sigs — Maxwell, Poelstra, Jedusor.
-- Aggregated Bulletproofs — Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell (2017);
-  Bulletproofs+ — Chung et al. (2020).
-- BIP-340 Schnorr / BIP-341 Taproot — Wuille, Nick, Towns.
-- Tornado-style Poseidon-Merkle anonymity set + nullifier scheme — Pertsev,
-  Storm, Semenov; Tornado.cash team (2019). Tacit's `withdraw.circom` adapts theirs.
-- Groth16 zk-SNARK over BN254 — Groth (2016); Phase 1 from the Polygon Hermez ceremony.
-- BabyJubJub (embedded curve over BN254 Fr) + Camenisch–Stadler sigma cross-curve
-  binding — for the AMM's amount-confidentiality circuits.
-- SP1 zkVM (Succinct) — the proof system behind the cross-chain reflection bridge.
-- Uniform-clearing-price batch auctions — Walras (1874); Gnosis Protocol (2019);
-  Penumbra ZSwap (2023). Constant-product AMM curve — Bancor (2017), and the
-  V2-style design space.
-- The "indexer-validated meta-protocol" framing comes from Runes / Ordinals.
-- Primitives from [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1)
-  and [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), with
-  [snarkjs](https://github.com/iden3/snarkjs) + [circomlib](https://github.com/iden3/circomlib)
-  for the Groth16 path.
-
----
+- Pedersen commitments and Mimblewimble kernels: Pedersen; Jedusor; Poelstra.
+- Bulletproofs: Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell. Bulletproofs+: Chung et al.
+- BIP-340/341: Wuille, Nick, Ruffing, Towns.
+- SP1 and sp1-helios: Succinct. Groth16: Groth.
+- The Tornado-style mixer circuit is adapted from Tornado Cash.
+- Uniform-price batch clearing follows Walras, Gnosis Protocol and Penumbra.
+- The indexer-validated metaprotocol pattern comes from Ordinals and Runes.
+- Libraries: [`@noble/secp256k1`](https://github.com/paulmillr/noble-secp256k1),
+  [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), [snarkjs](https://github.com/iden3/snarkjs),
+  [circomlib](https://github.com/iden3/circomlib), [Solady](https://github.com/Vectorized/solady).
 
 ## License
 
-See `LICENSE`.
+See [`LICENSE`](./LICENSE).

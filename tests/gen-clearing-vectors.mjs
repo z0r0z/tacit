@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generate reference vectors for the §11.1 deterministic clearing-solve (AMM.md §4) from the
+// Generate reference vectors for the deterministic clearing-solve from the
 // normative JS implementation (tests/amm-clearing.mjs), so the Rust guest port
 // (cxfer-core solve_clearing) can be asserted byte-for-byte identical. The guest ENFORCES the AMM
 // fee by re-deriving P_clear and rejecting any batch whose declared price differs; if the port

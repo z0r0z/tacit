@@ -1,4 +1,4 @@
-// Codec for Mode B — value-free Bitcoin-authorized Ethereum calls (SPEC-BITCOIN-HOOK-AMENDMENT §1.4).
+// Codec for Mode B — value-free Bitcoin-authorized Ethereum calls.
 // PURE (vendor-only imports, no tacit.js) so it is node-importable + unit-testable; the Bitcoin tx
 // commit+reveal broadcaster lives in confidential-btc-call-actions.js (which imports the wallet/network).
 //

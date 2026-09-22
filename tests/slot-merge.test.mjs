@@ -1,4 +1,4 @@
-// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25 wire-format round-trip tests for
+// Wire-format round-trip tests for
 // T_SLOT_MERGE. Inverse of slot-split.test.mjs: 4 input slots → 1 new slot,
 // with conservation Σ denom_old ≥ denom_new and Bitcoin paying its fee from
 // the difference.

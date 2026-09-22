@@ -1,5 +1,5 @@
-// cBTC self-custody lock driver — the one new piece for the "Get cBTC" guided flow (ops/PLAN-cbtc-cusd-easy.md
-// Part A, item 1). Builds + broadcasts the Model-B lock tx whose reflection fold (fold_cbtc_lock) records a
+// cBTC self-custody lock driver — the one new piece for the "Get cBTC" guided flow.
+// Builds + broadcasts the Model-B lock tx whose reflection fold (fold_cbtc_lock) records a
 // self-custody Bitcoin lock that OP_CBTC_MINT later opens 1:1 into a bearer cBTC.zk note.
 //
 // Dependency-injected like crossout-broadcast.js so it is unit-testable and keeps the wallet/tx specifics in

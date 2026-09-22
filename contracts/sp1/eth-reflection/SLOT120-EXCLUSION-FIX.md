@@ -123,4 +123,3 @@ compatible.
   `get_updates` can return a set that doesn't bridge the store to the finality period (seen live: updates
   to period 1279, finality 1281). Re-pin `GENESIS_SLOT` / `ETH_GENESIS_SYNC_COMMITTEE` to a recent
   finalized checkpoint at re-prove time, and use a consensus RPC that serves the full update chain.
-- See `ops/PLAN-fast-lane-shared-nullifier.md` ("Live Mode-B drive") and memory `project_modeb_live_drive`.

@@ -1,4 +1,4 @@
-// JS builder for the fair-farm SETTLE ops (SPEC-CONTROLLER-VAULT-AMENDMENT §4): the dapp assembles the
+// JS builder for the fair-farm SETTLE ops: the dapp assembles the
 // OP_FARM_BOND / OP_FARM_HARVEST / OP_FARM_UNBOND witnesses the EVM settle guest reads. Byte-identical to the
 // guest's farm_receipt_leaf / farm_receipt_nullifier / farm_harvest_new_entry (cxfer-core) and to the
 // opening-sigma contexts main.rs binds: `tacit-farm-bond-leg-v1`, `tacit-farm-harvest-reward-v1`,

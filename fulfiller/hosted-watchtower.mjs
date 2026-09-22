@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Hosted multi-bid watchtower orchestrator (ops/PLAN-hosted-watchtower-render.md).
+// Hosted multi-bid watchtower orchestrator.
 //
 // Runs as a Render Background Worker. Reads the bids buyers registered via
 // POST /watchtower/bids (stored in REGISTRY_KV, shared with tacit-api over the

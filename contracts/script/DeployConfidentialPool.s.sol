@@ -120,7 +120,7 @@ contract DeployConfidentialPool is Script {
         // GENERATIONAL deploys: the reflection-resume digest. 0 (default) = a genesis-anchored gen-1 (the
         // first cycle continues the protocol genesis digest). For a later generation that JOINS the shared
         // Bitcoin reflection mid-stream, set this to the CURRENT reflected digest (paired with a near-tip
-        // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history. See ops/PLAN-pool-generations.md.
+        // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history.
         bytes32 reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
         // The resume digest and the genesis anchor describe ONE reflected state: the digest is that state's
         // hash, the anchor is the Bitcoin block its tip sits at. The pool cannot check the pairing itself
@@ -134,7 +134,7 @@ contract DeployConfidentialPool is Script {
                 "REFLECTION_RESUME_DIGEST set without GENESIS_REFLECTION_ANCHOR: a generational resume needs the anchor its digest was read at"
             );
         }
-        // tETH (shielded ETH, ops/PLAN-teth-subsumption.md): the canonical Bitcoin-side tETH asset id, bound
+        // tETH (shielded ETH): the canonical Bitcoin-side tETH asset id, bound
         // to native ETH at CONSTRUCTION so the single native-ETH slot's link is fixed at deploy and identical
         // across generations (registerWrapped can't set a native-ETH link). 0 = this deploy doesn't host tETH.
         bytes32 tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
@@ -194,7 +194,7 @@ contract DeployConfidentialPool is Script {
         // (day-1 cBTC, confirmed below). 0 ⇒ cBTC mint is inert (the lock-fold + CDP ops stay in the immutable
         // surface, dormant); turn cBTC on later by deploying the engine and a fresh pool that points at it
         // (engine↔pool circular dep: deploy the engine first with pool=0, then the pool with the engine
-        // address, then engine.setPool(pool)). See ops/DESIGN-confidential-defi-v1.md §6.
+        // address, then engine.setPool(pool)).
         address collateralEngine = vm.envOr("COLLATERAL_ENGINE", address(0));
         // Pin the engine codehash like the verifier/factory/relay: once bound (setPool is one-shot), the
         // pool trusts it forever for escrow sizing and release. Required on mainnet when wired, enforced

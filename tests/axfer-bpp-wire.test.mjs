@@ -1,5 +1,5 @@
 // Wire-format tests for T_AXFER_BPP (0x3C) and T_AXFER_VAR_BPP (0x3D)
-// per SPEC-AXFER-BPP-AMENDMENT.
+// per the spec.
 //
 // These opcodes are byte-for-byte parallels of T_AXFER (0x26) and
 // T_AXFER_VAR (0x37) respectively, with two changes:

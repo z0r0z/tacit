@@ -18,7 +18,7 @@ One relayed settle (`OP_SEND_AND_UNWRAP`, relay type `sendunwrap`) spends **one*
 | Hidden from people reading the chain | which deposit funded the payment; the value of the note that was spent; the change amount and its owner |
 | Told to the relay | which note it spends (it holds that note's nullifier key), the recipient, the payout and the fee. With change it is not given the note's value or the change amount. It is never given your key |
 
-A relayed send-and-unwrap has settled on the gen5 pool for cETH ([`0xa08346db…6ad8`](https://etherscan.io/tx/0xa08346db67a1c9af16e86017b5521d0c3b9c43564d610a6512273986f9a06ad8)) and for cUSDT ([`0xabd3d77f…a01f`](https://etherscan.io/tx/0xabd3d77f99771e811145ea447d85c1297cb5a82694d05887414d8f1f6fbca01f)). The second paid 0.56 USDT to the recipient and 0.44 USDT to the relay out of one 1.00 USDT amount.
+A relayed send-and-unwrap has settled on the mainnet pool for cETH ([`0xa08346db…6ad8`](https://etherscan.io/tx/0xa08346db67a1c9af16e86017b5521d0c3b9c43564d610a6512273986f9a06ad8)) and for cUSDT ([`0xabd3d77f…a01f`](https://etherscan.io/tx/0xabd3d77f99771e811145ea447d85c1297cb5a82694d05887414d8f1f6fbca01f)). The second paid 0.56 USDT to the recipient and 0.44 USDT to the relay out of one 1.00 USDT amount.
 
 ## 2. The four steps
 

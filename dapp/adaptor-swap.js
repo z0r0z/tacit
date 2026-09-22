@@ -1,5 +1,5 @@
-// Confidential cross-chain adaptor swap — the protocol orchestration (ops/PLAN-confidential-adaptor-swap.md
-// phase 4) over the adaptor primitives in dapp/adaptor-signature.js. Each leg has a lane: 'bitcoin' (default) locks
+// Confidential cross-chain adaptor swap — the protocol orchestration
+// over the adaptor primitives in dapp/adaptor-signature.js. Each leg has a lane: 'bitcoin' (default) locks
 // a BIP-340 kernel signature; 'evm' locks the OP_ADAPTOR_CLAIM conservation kernel over (L → O), which the settle
 // guest verifies with its keccak kernel transcript, not BIP-340. Both lanes share T = t·G, so either can be the
 // leg that reveals t. A state machine that

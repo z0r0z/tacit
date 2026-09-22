@@ -25,7 +25,7 @@ function assertEq(a, b, msg) { if (a !== b) throw new Error(`${msg || 'assertEq'
 
 // --- Shape mirror -----------------------------------------------------------
 // Mirrors the dapp's recordStealthCredit / getStealthCredit semantics. Per
-// SPEC §H.2 the on-disk record carries `b` (stealthBlindingHex) and never
+// The on-disk record carries `b` (stealthBlindingHex) and never
 // caches tweaked_sk — the dapp re-derives tweaked_sk = (wallet.priv + b) mod n
 // at unlock time so an attacker with localStorage but no password cannot spend.
 function makeShape({ amount, amountBlinding, stealthBlinding, commitmentHex, senderPubHex, assetIdHex, blockTime }) {

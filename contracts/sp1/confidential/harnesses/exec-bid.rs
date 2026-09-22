@@ -38,7 +38,7 @@ sol! {
     struct CrossOut { uint16 destChain; bytes32 destCommitment; bytes32 nullifier; bytes32 assetId; bytes32 claimId; }
     struct SwapSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 reserveAPost; uint256 reserveBPost; }
     struct LpSettlement { bytes32 poolId; uint256 reserveAPre; uint256 reserveBPre; uint256 sharesPre; uint256 reserveAPost; uint256 reserveBPost; uint256 sharesPost; }
-    // Generic CDP (ops/DESIGN-confidential-defi-v1.md §4). A leg = one basket collateral (asset, public value).
+    // Generic CDP. A leg = one basket collateral (asset, public value).
     struct CdpLeg { bytes32 asset; uint256 value; }
     // OP_CDP_MINT: the contract appends `positionLeaf` to its position set + calls
     // controller.onCdpMint(legs, debtValue); it MUST check debtAsset == cdp_debt_asset_id(controller).
@@ -70,7 +70,7 @@ sol! {
         CdpLeg[] oldLegs;
         CdpLeg[] newLegs;
     }
-    // OP_CBTC_MINT (ops/DESIGN-confidential-defi-v1.md §3.2): mint cBTC against a reflection-recorded
+    // OP_CBTC_MINT: mint cBTC against a reflection-recorded
     // self-custody lock. The guest verified the note opens to EXACTLY `vBtc` (the conservation peg); the
     // contract checks cbtcLock[outpoint].vBtc == vBtc + commitment match + !cbtcMinted + the CollateralEngine
     // escrow, then inserts the cBTC leaf (which rides `leaves`). bridge_mint-shaped.

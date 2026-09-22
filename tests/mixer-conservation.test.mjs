@@ -1,4 +1,4 @@
-// SPEC §5.10 / §5.11.4 invariant 1 — Conservation.
+// Invariant 1 — Conservation.
 //
 // Negative-test coverage for the T_DEPOSIT kernel-sig gate. This is the
 // invariant that says "every leaf in a pool's merkle tree was backed by a
@@ -272,7 +272,7 @@ await test('returns null (transient) when fetchTx returns null — distinct from
   return ok === null;
 });
 
-// Height-pin: SPEC §5.10 canonical leaf order is (height, tx_index, txid).
+// Height-pin: the spec canonical leaf order is (height, tx_index, txid).
 // A worker that lies about deposited_at_height to re-order a pool's leaves
 // would push the dapp to compute a tree whose root no honest indexer's
 // recent-roots window contains. The dapp closes that vector by passing

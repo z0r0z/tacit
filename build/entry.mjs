@@ -24,5 +24,5 @@ export { bech32, base58, base32 } from '@scure/base';
 // capacity=1, the Grassi 2020 round counts). poseidon-lite is a slim pure-JS
 // implementation that ships ~30 KB minified — much smaller than full
 // circomlibjs (which carries a WASM BN254 field implementation we don't
-// need at runtime). SPEC §3.6.
+// need at runtime).
 export { poseidon1, poseidon2, poseidon3 } from 'poseidon-lite';

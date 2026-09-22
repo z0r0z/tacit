@@ -1,4 +1,4 @@
-// T_SWAP_VAR outcome-taxonomy race rehearsal (SPEC §5.20, 2026-06-05 revision).
+// T_SWAP_VAR outcome-taxonomy race rehearsal.
 //
 // Proves on signet that concurrent same-pool swaps in one inter-block window
 // all settle — never burn — under the amended validator:

@@ -2,7 +2,7 @@
 //
 // Exercises the full pipeline of {encode → validate} for each opcode, with
 // canned witness data + injected proof stubs. Validates the validator
-// catches the categories of cheat AMM.md flags.
+// catches the categories of cheat the spec flags.
 
 import * as secp from '@noble/secp256k1';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
@@ -57,7 +57,7 @@ const [assetA, assetB] = ASSET_A[0] < ASSET_B[0]
       throw new Error('same');
     })());
 // Canonical test pool: fee_bps=30 (standard tier). pool_id derivation now
-// includes fee_bps + capability_flags per AMM.md §"Pool state", so we keep
+// includes fee_bps + capability_flags per the spec, so we keep
 // two pool_ids handy:
 //
 //   POOL_ID       — capability_flags = 0 (default V1 pool, no opt-ins).
@@ -76,8 +76,8 @@ const POOL_ID_SOLO = derivePoolId(assetA, assetB, FEE_BPS, CAPABILITY_FLAGS_SOLO
 const LP_ASSET_ID = deriveLpAssetId(POOL_ID);
 
 // Canonical MINIMUM_LIQUIDITY locked-output bytes for POOL_ID. Mirrors what an
-// honest POOL_INIT broadcaster puts at vout[k_min_liq] (AMM.md §"MINIMUM_LIQUIDITY
-// burn-output construction"). The indexer recomputes the same bytes from
+// honest POOL_INIT broadcaster puts at vout[k_min_liq] (MINIMUM_LIQUIDITY
+// burn-output construction). The indexer recomputes the same bytes from
 // pool_id alone and rejects POOL_INIT if vout[k_min_liq] does not match.
 function buildCanonicalMinLiqOutput(poolId = POOL_ID) {
   const commitBytes = pointToBytes(deriveMinLiqCommitment(poolId));
@@ -205,7 +205,7 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
     return !r2.valid && /lexicographically/.test(r2.reason);
   });
   test('POOL_INIT with assetA == assetB ⇒ rejected (not silent acceptance / throw)', () => {
-    // Same-asset pool is forbidden by AMM.md §"Pool state". Earlier the
+    // Same-asset pool is forbidden by the spec. Earlier the
     // validator's inline byte-comparison loop bailed on equality without
     // rejecting, leaving derivePoolId to throw — which broke the
     // {valid, reason} contract. This test pins the explicit rejection.
@@ -445,7 +445,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     // Solo-intent test: opt this pool into POOL_CAP_SOLO_INTENT_ALLOWED so
     // the N=1 smoke tests below exercise the swap path. Default V1 pools
     // reject N=1 batches for amount confidentiality. capability_flags is in
-    // pool_id's preimage (AMM.md §"Pool state"), so this pool's pool_id is
+    // pool_id's preimage, so this pool's pool_id is
     // POOL_ID_SOLO — distinct from POOL_ID (the default-flags pool).
     capability_flags: CAPABILITY_FLAGS_SOLO,
   };
@@ -589,7 +589,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
   });
 
   // Expiry-height boundary. Intent's expiry_height is 999999;
-  // canonical semantics (AMM.md "Expiry semantics"): the intent
+  // canonical semantics: the intent
   // is valid at currentHeight ≤ expiry_height, expired at currentHeight ==
   // expiry_height + 1. Test both sides of the boundary.
   test('expiry boundary: currentHeight == expiry_height is VALID', () => {
@@ -669,7 +669,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
   });
   // N=1 batch against a default-flags pool ⇒ rejected.
   //
-  // With capability_flags now in pool_id's preimage (AMM.md §"Pool state"),
+  // With capability_flags now in pool_id's preimage,
   // a default-flags pool and a SOLO-flags pool over the same pair are
   // *different* canonical pools with different pool_ids. So submitting an
   // N=1 envelope (which was signed against the SOLO pool's pool_id) to a
@@ -691,7 +691,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     return !r2.valid && /pool_id mismatch|MIN_BATCH_SIZE|POOL_CAP_SOLO_INTENT_ALLOWED/.test(r2.reason);
   });
 
-  // Tip-opening adversarial tests (AMM.md §"Tip mechanics", normative).
+  // Tip-opening adversarial tests (normative).
   // Without the explicit opening check the chain identity forces tip_X_C_secp's
   // H-coefficient via the aggregate Pedersen sum, BUT only if Groth16 binds
   // per-trader tips correctly. As defense-in-depth against Groth16 brokenness,
@@ -1509,7 +1509,7 @@ console.log('\nvk_cid integrity self-check');
 
 console.log('\nGroth16 publicSignals canonical serialization');
 {
-  // Pins the exact 123-element BN254-Fr-decimal-string array per AMM.md §6.
+  // Pins the exact 123-element BN254-Fr-decimal-string array per the spec.
   // Two independent indexers MUST produce byte-identical output from the
   // same (env, pool) input, otherwise their proof verifications diverge.
   // These tests catch any drift in field order, padding convention, or
@@ -1703,7 +1703,7 @@ console.log('\nGroth16 publicSignals canonical serialization — LP_ADD + LP_REM
 // T_LP_ADD / T_LP_REMOVE OP_RETURN binding (envelope-swap defense)
 // =========================================================================
 //
-// AMM.md §"Per-vin Bitcoin-layer signature" makes vout[0] OP_RETURN(SHA256(
+// The spec makes vout[0] OP_RETURN(SHA256(
 // payload)) binding mandatory for every AMM op. validateLpAdd /
 // validateLpRemove require an opReturnData arg; SKIP_OP_RETURN_VERIFY_UNSAFE
 // is reserved for unit tests that don't model the on-chain tx layout.

@@ -203,7 +203,7 @@ function axintentCancelMsg(assetIdBytes, intentIdBytes) {
   ));
 }
 
-// ---- Preauth-sale messages (SPEC §5.7.8) ----
+// ---- Preauth-sale messages ----
 // Independent reference implementation; parity tests cross-check this
 // against the dApp and worker copies to catch silent drift.
 
@@ -400,7 +400,7 @@ function computeKernelMsg(assetId, inputOutpoints, outputCommitments, burnedAmou
   return sha256(concatBytes(...parts));
 }
 
-// ---- Mint authorisation message (SPEC §5.3) ----
+// ---- Mint authorisation message ----
 // commitAnchor = commit_tx.vin[0].txid_BE || commit_tx.vin[0].vout_LE (36 bytes).
 // Binding the issuer sig to commit_anchor stops envelope-replay into a different
 // commit/reveal pair: without it, an attacker who reads any past T_MINT can
@@ -509,8 +509,8 @@ const T_CETCH = 0x21;
 const T_CXFER = 0x23;
 const T_MINT  = 0x24;
 const T_BURN  = 0x25;
-const T_DROP   = 0x2B;   // public-claim pool over existing supply (SPEC §5.12)
-const T_DCLAIM = 0x2C;   // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
+const T_DROP   = 0x2B;   // public-claim pool over existing supply
+const T_DCLAIM = 0x2C;   // permissionless claim event against a T_DROP ancestor
 
 const MINT_AUTH_NONE = new Uint8Array(32);
 const _isZeroAuth = b => { for (let i = 0; i < 32; i++) if (b[i] !== 0) return false; return true; };
@@ -691,7 +691,7 @@ function decodeCXferPayload(payload) {
   return { kind: 'cxfer', assetId, kernelSig, outputs, rangeproof };
 }
 
-// ============== T_DROP / T_DCLAIM (SPEC §5.12 / §5.13) ==============
+// ============== T_DROP / T_DCLAIM ==============
 // Wire-format mirror of dapp/tacit.js — kept in sync via a dedicated parity
 // test. Any change to the byte layout below MUST also update the dapp side
 // and the test vectors in tests/airdrop.test.mjs.
@@ -701,7 +701,7 @@ function decodeCXferPayload(payload) {
 //   merkle_root(32) || expiry_height_LE(4) || ticker_len(1) || ticker(tlen) ||
 //   decimals(1) || asset_input_count(1) || kernel_sig(64)
 //
-// Reclaim shape (per_claim = 0 sentinel; SPEC §5.12.1):
+// Reclaim shape (per_claim = 0 sentinel):
 //   T_DROP(1) || asset_id(32) || cap_amount_LE(8) || per_claim_LE(8) = 0 ||
 //   reclaim_drop_id(32) || reclaim_sig(64) || cap_blinding(32)
 function encodeCDropPayload({ assetId, capAmount, perClaim, merkleRoot, expiryHeight, ticker, decimals, assetInputCount, kernelSig }) {
@@ -1297,7 +1297,7 @@ function verifyAirdropClaimSig(msg, sigHex, expectedEthAddrHex) {
 // Used by the issuer-side worker-mediated fulfilment to authenticate smart-
 // contract wallet recipients. The dapp implementation pipes through the user's
 // connected EIP-1193 provider; tests substitute a mock provider that returns
-// the contract's expected response. SPEC §5.13 calls out that this path is
+// the contract's expected response. The spec calls out that this path is
 // REQUIRED for smart-wallet recipients and unavailable on the on-chain T_DCLAIM
 // path (the Bitcoin-context validator can't run eth_call).
 const ERC1271_MAGIC = '0x1626ba7e';
@@ -1365,7 +1365,7 @@ export {
   encodeCXferPayload, decodeCXferPayload,
   encodeCMintPayload, decodeCMintPayload,
   encodeCBurnPayload, decodeCBurnPayload,
-  // T_DROP / T_DCLAIM (SPEC §5.12 / §5.13). Mirror of dapp/tacit.js.
+  // T_DROP / T_DCLAIM. Mirror of dapp/tacit.js.
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
   dropIdFromRevealTxid, dropKernelMsg, dropReclaimMsg,

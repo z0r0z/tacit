@@ -1,6 +1,6 @@
 // T_SWAP_ROUTE recovery: privkey-only restoration of the trader's receipt
 // UTXO from chain alone. The receipt opening (amount, blinding) is FULLY
-// PUBLIC in the envelope per SPEC-SWAP-ROUTE-AMENDMENT — no localStorage,
+// PUBLIC in the envelope per the spec — no localStorage,
 // no worker, no priv-derived secret. This test asserts that the scanner
 // extracts the right (amount, blinding) pair from a valid envelope and that
 // it Pedersen-commits to the on-chain `c_receipt_secp`.

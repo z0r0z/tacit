@@ -1,6 +1,5 @@
 // Unit tests for the T_PREAUTH_BID (0x5B) payload encoder/decoder shipped
-// in dapp/tacit.js + worker/src/index.js (SPEC §5.7.11 / SPEC-PREAUTH-BID-
-// AMENDMENT.md round-2).
+// in dapp/tacit.js + worker/src/index.js (round-2).
 //
 // What this protects:
 //   1. Wire-format byte layout (opcode + asset_id + asset_input_count +

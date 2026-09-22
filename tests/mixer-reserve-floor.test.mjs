@@ -1,4 +1,4 @@
-// SPEC §5.10 / §5.11.4 invariant 1 — Conservation, pool-reserve floor.
+// Invariant 1 — Conservation, pool-reserve floor.
 //
 // The reserve `(# included leaves − # spent nullifiers)` is a hard floor: an
 // indexer MUST refuse a T_WITHDRAW whose acceptance would drive it negative.

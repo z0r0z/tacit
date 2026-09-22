@@ -12,7 +12,7 @@
 //      bound by the envelope). We compute its txid so a downstream spend tx can
 //      reference it.
 //
-//   3. A slot-spend tx (the burn-side / SPEC §5.22 redeem) that consumes the
+//   3. A slot-spend tx (the burn-side / the spec redeem) that consumes the
 //      mint vout[0]. We sign its input under r_leaf using
 //        tapSighashKeyPath(tx, idx, prevouts, hashType)
 //        signTaprootKeyPathInputWithKey(tx, idx, prevouts, r_leaf, hashType)
@@ -35,7 +35,7 @@
 //
 //   5. T_SLOT_BURN end-to-end with a stub merkle root + proof, so the bind_hash
 //      recompute path inside encodeTSlotBurnPayload runs against canonical
-//      inputs. The worker is dapp-authoritative on Groth16 verify (SPEC §5.11.4
+//      inputs. The worker is dapp-authoritative on Groth16 verify (the spec
 //      three-verifier model), so the proof bytes are arbitrary here; the
 //      rehearsal validates everything *up to* the proof boundary.
 //

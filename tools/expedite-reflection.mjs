@@ -1,5 +1,5 @@
-// Run tacit-reflection's Render cron right now instead of waiting for its next scheduled tick (see
-// ops/RUNBOOK-capacity-and-alerting.md §3b) — for when a specific lock, escrow or cross-out needs to fold
+// Run tacit-reflection's Render cron right now instead of waiting for its next scheduled tick
+// — for when a specific lock, escrow or cross-out needs to fold
 // sooner than the lean hourly cadence would get to it.
 //
 // This is an OPERATOR tool, not a public self-serve one: it needs a Render API key with access to the

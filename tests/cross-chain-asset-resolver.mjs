@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Cross-chain asset resolver (ops/ARCH-tacit-chain-abstraction.md primitive 3). Locks:
+// Cross-chain asset resolver. Locks:
 //  - the EVM derivations are byte-identical to the on-chain rules (etch parity vs the canonical-asset-id
 //    KAT; token-namespace explicit layout vs ConfidentialPool.sol:526) — so a crossed note's asset_id
 //    matches and is recognizable;

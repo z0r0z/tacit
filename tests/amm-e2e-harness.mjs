@@ -307,7 +307,7 @@ export function buildAndSubmitPoolInit({
   // This harness used to default to POOL_CAP_SOLO_INTENT_ALLOWED (0x02) to let single-trader
   // scenarios exercise the swap path, which meant the lifecycle ran against a pool shape V1 cannot
   // actually launch. Scenarios that need a solo intent must instead use a second trader.
-  // poolCapabilityFlags is part of the pool_id preimage (AMM.md §"Pool state"), so it MUST stay
+  // poolCapabilityFlags is part of the pool_id preimage, so it MUST stay
   // consistent across derivePoolId, kernel-sig construction, and the envelope encoder.
   poolCapabilityFlags = 0x00,
 }) {
@@ -696,8 +696,8 @@ export function settlerBuildAndSubmit({ chain, indexer, settler, pool, intents }
   });
 
   // Deterministic clearing iteration: solve, drop min_out failures, re-solve
-  // until stable. This is the qualifying-fixed-point algorithm from AMM.md
-  // §5 of Implementation specification. The chain-side aggregate Pedersen
+  // until stable. This is the qualifying-fixed-point algorithm from the spec.
+  // The chain-side aggregate Pedersen
   // identity only balances exactly when the solve corresponds to the actual
   // included intent set.
   let working = intents.slice();

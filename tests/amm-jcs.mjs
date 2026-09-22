@@ -11,8 +11,7 @@
 // metadata blobs SHOULD encode large integers (e.g., asset supply) as strings.
 // Encountering a non-integer or out-of-range number throws.
 //
-// For the launcher-gate use case (AMM.md §"Indexer-determinism for the metadata
-// blob"), the indexer flow is:
+// For the launcher-gate use case, the indexer flow is:
 //
 //   1. Fetch the blob bytes by CID.
 //   2. JSON.parse to a JS value.
@@ -103,7 +102,7 @@ function serializeObject(obj) {
 
 // ---- Launcher-gate extraction ----
 //
-// Indexer rule per AMM.md §"Indexer-determinism for the metadata blob":
+// Indexer rule per the spec:
 //   • If the blob is byte-identical to its canonical form, AND it has a top-level
 //     `tacit_amm_launcher` field that is a 66-char lowercase hex string, the
 //     gate is set to that pubkey.

@@ -12,8 +12,8 @@
 //   - cBTC.tac AMM swap (TAC → cBTC.tac)
 //   - T_PROTOCOL_FEE_CLAIM by founder against fees trader paid
 //   - cBTC.zk lifecycle (slot mint → slot burn) — proves the asset works
-//     for mainnet (no AMM pool by SPEC-CBTC-ZK-AMENDMENT §"No native
-//     AMM-pool integration in v1")
+//     for mainnet (no native
+//     AMM-pool integration in v1)
 //
 // Pre-req:
 //   .local/amm-e2e-signet-wallets.json (gen-amm-e2e-signet-wallets.mjs)

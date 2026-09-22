@@ -1,4 +1,4 @@
-// SPEC §5.11 — end-to-end Groth16 prove/verify check.
+// End-to-end Groth16 prove/verify check.
 //
 // Wraps dapp/circuits/prove-sample.mjs (which generates a real proof against
 // a 4-leaf in-memory pool tree using circomlibjs's Poseidon, then verifies

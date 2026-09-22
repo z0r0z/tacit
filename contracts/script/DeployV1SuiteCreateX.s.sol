@@ -20,8 +20,8 @@ interface IFeed {
 }
 
 /// @notice CreateX CREATE3 deploy of the Tacit V1 core contracts at CROSS-CHAIN-IDENTICAL vanity
-///         addresses (4 leading zero bytes). See ops/CREATEX-VANITY-DEPLOY.md for the salt-scheme
-///         analysis. The key facts this script relies on:
+///         addresses (4 leading zero bytes).
+///         The key facts this script relies on:
 ///
 ///         1. CREATE3 address = f(CreateX, guardedSalt) — independent of initCode. So the same salt
 ///            yields the same address on Sepolia / mainnet / every L2, even though our per-chain
@@ -201,8 +201,8 @@ contract DeployV1SuiteCreateX is Script {
         if (c.deployRelayer) a.relayer = predict(s.relayer);
         if (c.deployBtcCallExecutor) a.btcCallExecutor = predict(s.btcCallExecutor);
         // The reverse lane's message anchor. Its address is PINNED IN BOTH GUESTS, so it must be
-        // predicted (and the salt frozen) BEFORE the eth-reflection ELF is built — see
-        // ops/DESIGN-eth-call-outbox.md. CREATE3 is what makes that possible: the address is a pure
+        // predicted (and the salt frozen) BEFORE the eth-reflection ELF is built.
+        // CREATE3 is what makes that possible: the address is a pure
         // function of the salt, independent of init code.
         bool deployEthCallOutbox = vm.envOr("DEPLOY_ETH_CALL_OUTBOX", true);
         if (deployEthCallOutbox) a.ethCallOutbox = predict(s.ethCallOutbox);

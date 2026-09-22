@@ -1,4 +1,4 @@
-// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24 wire-format round-trip tests for
+// Wire-format round-trip tests for
 // T_SLOT_SPLIT. Mirrors slot-wrapper.test.mjs pattern: synthesize fixtures
 // from deterministic seeds via pedersenCommit, validate dapp↔worker parity,
 // exercise decoder boundary cases.

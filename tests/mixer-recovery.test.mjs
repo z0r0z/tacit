@@ -1,4 +1,4 @@
-// SPEC §5.11 + §6 path 7 — dapp's mixer-side recovery + Groth16 verify-glue.
+// Path 7 — dapp's mixer-side recovery + Groth16 verify-glue.
 //
 // Two surfaces this covers that mixer-envelope.test.mjs / mixer-e2e.test.mjs
 // don't:
@@ -59,7 +59,7 @@ async function test(label, fn) {
 
 // ============== A. Withdraw recovery math ==============
 //
-// SPEC §6 path 7: a fresh wallet that owns a T_WITHDRAW output recovers
+// Path 7: a fresh wallet that owns a T_WITHDRAW output recovers
 // (denomination, r_leaf) from the public envelope and verifies
 //   pedersenCommit(denomination, r_leaf) == recipient_commitment
 // — same shape as T_PMINT's (amount, blinding) pattern. The test below
@@ -69,7 +69,7 @@ async function test(label, fn) {
 
 console.log('Withdraw recovery math (T_WITHDRAW → spendable holdings):');
 
-// Pick a small denomination + r_leaf, derive recipient_commitment. SPEC §3.2:
+// Pick a small denomination + r_leaf, derive recipient_commitment. Per the spec:
 // commitment = denomination · H + r_leaf · G.
 const DENOM = 100000000n;
 const R_LEAF_BIGINT = 0x123456789abcdef0n;     // arbitrary nonzero scalar

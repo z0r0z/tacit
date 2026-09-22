@@ -1,7 +1,7 @@
 // Test suite for T_SWAP_ROUTE (opcode 0x33) reference impl.
 //
 // Covers wire roundtrip + honest 2-hop and 3-hop validation + adversarial
-// cases that mirror SPEC-SWAP-ROUTE-AMENDMENT.md §"Test plan".
+// cases that mirror the spec.
 //
 // Run: `node swap-route.test.mjs`
 
@@ -631,7 +631,7 @@ test('hop[0].fee_bps != pool.fee_bps rejected', () => {
 });
 
 // =========================================================================
-// Section 5: OP_RETURN binding + input-commit binding (SPEC §5.22 step 1
+// Section 5: OP_RETURN binding + input-commit binding (the spec
 // and the input-side inflation defense that mirrors validateSwapVar's
 // 2026-05-15 receipt-side fix). Both gates are caller-supplied REQUIRED
 // inputs; the validator throws on missing args and returns invalid on

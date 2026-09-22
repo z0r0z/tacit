@@ -182,7 +182,7 @@ group('Phase 2: T_SLOT_ROTATE — trader rotates slot to LP, LP pays TAC at vout
 const rotateOut = await dapp.buildSlotRotateEnvelope({
   networkTag: NETWORK_TAG_SIGNET,
   oldSlotRecord: traderNote.slotRecord,
-  oldMerkleRoot: new Uint8Array(32),         // stub — proof side of mixer is dapp-authoritative per SPEC §5.11.4
+  oldMerkleRoot: new Uint8Array(32),         // stub — proof side of mixer is dapp-authoritative per the spec
   oldProof: new Uint8Array(8 + 256),         // stub Groth16 proof bytes; the indexer is structural-only
   newSecret: lpSecret,                       // LP's freshly-generated secrets
   newNullifierPreimage: lpNullPre,

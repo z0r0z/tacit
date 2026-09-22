@@ -2016,7 +2016,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // new recipient-identification scheme), the recipient does not need to be online, and the sender cannot
   // spend it back out even though they built it. The recipient later discovers + claims it by scanning;
   // an unclaimed lock can be reclaimed by the sender after `deadline`. See dapp/confidential-stealth.js
-  // and ops/INTEGRATION-simple-wrap-send-claim-eth.md for the underlying scheme.
+  // for the underlying scheme.
   const _airdrop = makeConfidentialAirdrop({ stealth: _stealth, secp, sha256, keccak256, curveOrder: SECP_N, pool, transfer: _ct });
   const _lockScan = makeConfidentialLockScan({ pool });
   const _bytesHex = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); // byte array (e.g. a raw pubkey) → hex

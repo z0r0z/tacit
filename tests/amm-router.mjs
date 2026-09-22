@@ -10,7 +10,7 @@
 // Bitcoin tx (`T_SWAP_VAR`). Between hops, other traders can shift the
 // intermediate pool's spot, so multi-hop is "best effort" with per-hop
 // `min_out` slippage protection. Atomic multi-hop is the
-// `SPEC-TRADE-BATCH-AMENDMENT.md` scope (V1.x / V2 deliverable).
+// follow-up scope (V1.x / V2 deliverable).
 
 import { bytesToHex } from '@noble/hashes/utils';
 import { solveClearing, amountOutForTrader } from './amm-clearing.mjs';
@@ -22,7 +22,7 @@ import { solveClearing, amountOutForTrader } from './amm-clearing.mjs';
 // Canonical pair key for a (asset_A, asset_B) pool. Sort lex-smaller first so
 // any two callers compute the same key for the same unordered pair.
 //
-// NOTE on multi-fee-tier support: AMM.md §"Pool state" now allows multiple
+// NOTE on multi-fee-tier support: the spec now allows multiple
 // canonical pools per (asset_A, asset_B), discriminated by fee_bps and
 // capability_flags inside pool_id. The router below currently assumes one
 // pool per pair and uses `pairKey` as the registry index, so it only sees

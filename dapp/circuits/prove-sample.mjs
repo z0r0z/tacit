@@ -97,7 +97,7 @@ async function main() {
 
   // r_leaf = poseidon2(secret, nullifier_preimage). The circuit constrains
   // it to this exact value; the validator uses it for the external Pedersen
-  // check. SPEC §3.8 constraint 4.
+  // check (constraint 4).
   const r_leaf = F.toObject(poseidon([rec.secret, rec.nullifierPreimage]));
 
   // bind_hash placeholder for the demo — production wires to the dApp's

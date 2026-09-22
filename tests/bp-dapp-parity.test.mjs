@@ -7,7 +7,7 @@
 //
 // Prior to this test landing:
 //   - tests/bulletproofs.mjs used transcript domain `tacit-bp-v2` while
-//     dapp/tacit.js + SPEC.md §3 normatively pinned `tacit-bp-v1`.
+//     dapp/tacit.js + the spec normatively pinned `tacit-bp-v1`.
 //   - tests/bulletproofs.mjs used unprefixed transcript appends while
 //     dapp/tacit.js used length-prefixed (4-byte LE u32) appends.
 //   - Both divergences were silent because the test suite only round-tripped
@@ -21,7 +21,7 @@
 // it fails, someone changed BP generators / transcript / serialization
 // in a way incompatible with the SPEC-normative on-chain protocol —
 // fix tests/bulletproofs.mjs to match the dapp, OR formally bump the
-// SPEC + dapp + on-chain envelope version (with the existing TAC asset's
+// spec + dapp + on-chain envelope version (with the existing TAC asset's
 // historical rangeproofs grandfathered).
 //
 // FIXTURE: one confirmed TAC mainnet trade (tx

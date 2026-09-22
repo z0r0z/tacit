@@ -1,6 +1,6 @@
 // End-to-end signet broadcast test for the preauth-sale flow.
 //
-// Exercises the buyer-completable T_AXFER pipeline (SPEC §5.7.8) against
+// Exercises the buyer-completable T_AXFER pipeline against
 // real signet Bitcoin and the live worker. What the offline tests can't
 // catch:
 //   - Bitcoin consensus accepts the reveal tx (vin[1] seller sig, vin[0]

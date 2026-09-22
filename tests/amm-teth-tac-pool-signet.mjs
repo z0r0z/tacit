@@ -2,7 +2,7 @@
 //
 // Pairs the real bridge-minted signet tETH (d903de2d…, decimals 8) with the
 // mainnet-shape dec8-tac test asset (879cf8e6…, decimals 8, founder-held)
-// in a fresh AMM pool, then proves a swap settles under the SPEC §5.20
+// in a fresh AMM pool, then proves a swap settles under the spec
 // outcome taxonomy (worker resolves EXECUTE with a derived receipt).
 //
 //   Phase 1: bridge wallet CXFERs tETH to the founder

@@ -1,5 +1,5 @@
 // T_FARM_INIT / T_LP_BOND / T_LP_HARVEST / T_LP_UNBOND / T_FARM_REFUND
-// on-chain end-to-end signet harness (SPEC-AMM-FARM-AMENDMENT.md).
+// on-chain end-to-end signet harness.
 //
 // This is the integration-test gap surfaced in the design review:
 // the worker chain-scan branches, KV state persistence, emit-resolver

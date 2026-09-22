@@ -1,5 +1,5 @@
-// LOCAL execute-mode validator for the OP_FARM_BOND / OP_FARM_HARVEST / OP_FARM_UNBOND settle guest arms
-// (SPEC-CONTROLLER-VAULT-AMENDMENT §4). Runs the locally-built cxfer-guest ELF (RISC-V emulator on the host —
+// LOCAL execute-mode validator for the OP_FARM_BOND / OP_FARM_HARVEST / OP_FARM_UNBOND settle guest arms.
+// Runs the locally-built cxfer-guest ELF (RISC-V emulator on the host,
 // no GPU) against fixtures/farm_{bond,harvest,unbond}_op.json, in the SAME io::read order as main.rs's farm
 // arms. A clean execute (PublicValues committed without a panic) proves the guest ACCEPTS each farm witness —
 // leg/receipt membership against spendRoot + the opening sigma (tacit-farm-bond-leg-v1 / -harvest-reward-v1 /

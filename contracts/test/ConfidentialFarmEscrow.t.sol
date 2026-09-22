@@ -36,7 +36,7 @@ contract MockERC20 {
     }
 }
 
-/// The escrow-mode farm treasury accounting (ops/PLAN-evm-farm-rewards.md): farmEscrow fund → the _settle
+/// The escrow-mode farm treasury accounting: farmEscrow fund → the _settle
 /// harvest bound debits the budget by debtValue → farmEscrow recover returns the leftover. The invariant
 /// escrow == Σ outstanding reward notes + Σ farmTreasury holds with equality.
 contract ConfidentialFarmEscrowTest is Test {

@@ -10,7 +10,7 @@ import { sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 // It does NOT touch any asset's `live` flag — advertising a DeFi/cross-lane route is a separate, conscious
 // gate (the sync's opt-in `--live <tickers>` writes it, default OFF; otherwise it stays a hand-edit here).
 // It NEVER invents asset economics — `decimals` / `unitScale` / `native` / `underlying` are launch
-// parameters maintained here (ops/PLAN-day1-assets-and-incentives.md); the manifest only supplies addresses
+// parameters maintained here; the manifest only supplies addresses
 // + the keccak asset ids. An asset with `assetId: null` is "declared but not yet deployed" — the
 // confidential UX filters those out, and the resolver ignores them.
 //
@@ -92,7 +92,7 @@ const EXTERNAL_ERC20_SEPOLIA = [
   { ticker: 'USDC', address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', decimals: 6 }, // Circle Sepolia test USDC
 ];
 
-// Day-1 confidential asset templates (ops/PLAN-day1-assets-and-incentives.md). assetId is filled by the
+// Day-1 confidential asset templates. assetId is filled by the
 // deploy sync; everything else is the launch economics the wrap/scale math depends on.
 //   cETH  — native ETH slot, in-system 8-dec (18→scale 1e10 once re-pinned; pilot used scale 1).
 //   cTAC  — escrow-wrapped TAC (underlying = the TAC ERC20, set by sync), 8-dec.

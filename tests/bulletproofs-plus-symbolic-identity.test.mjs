@@ -34,7 +34,7 @@
 //
 // What this does NOT catch:
 //   - Bugs in modN/modInv/point arithmetic (verified by @noble + tests)
-//   - Bugs in generator derivation (verified by KAT against SPEC §3.1)
+//   - Bugs in generator derivation (verified by KAT against the spec)
 //
 // This is one rung above empirical testing toward formal verification.
 // Mechanical equation-identity checking is not the same as a Coq proof,

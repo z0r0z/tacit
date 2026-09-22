@@ -1,5 +1,5 @@
 // Tests for tests/indexer.mjs::verifyDisclosure (mirrors dapp/tacit.js::verifyDisclosure).
-// Covers SPEC §5.6 verifier requirements 1–4: K bound, per-UTXO ownership +
+// Covers the spec verifier requirements 1–4: K bound, per-UTXO ownership +
 // envelope-decode + asset-id consistency, BIP-340 sig, bulletproof on
 // C' = ΣC_i − K·H.
 //

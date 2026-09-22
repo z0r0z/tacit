@@ -1,4 +1,4 @@
-// SPEC §5.13 — T_DCLAIM canonical credited-set computation against the
+// T_DCLAIM canonical credited-set computation against the
 // worker's actual loadCreditedDclaims logic. This is the load-bearing
 // supply-correctness gate for public-claim pools: the dapp validator treats
 // the credited set as authoritative and REJECTS any claim absent from it, so

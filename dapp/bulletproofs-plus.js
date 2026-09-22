@@ -22,10 +22,10 @@
 //        this is intentional. tacit's BP+ is a parallel ZK protocol
 //        with the same algorithmic structure but tacit's hash conventions.
 //
-//   3. Generator reuse per SPEC-CXFER-BPP-AMENDMENT §5.47.4:
+//   3. Generator reuse per the spec:
 //      → G_vec[i] = same construction as standard BP: try-and-increment
 //        under domain tag "tacit-bp-G-v1" + 4-byte LE index. Reuses
-//        SPEC.md §3.1 generators.
+//        the standard BP generators.
 //      → H_vec[i] = same, with "tacit-bp-H-v1".
 //      → G = secp256k1 base point.
 //      → H = NUMS via "tacit-generator-H-v1".
@@ -42,7 +42,7 @@
 //   - The reflection guest length-dispatches verify_range, so legacy classic-BP
 //     (T_CXFER) notes stay valid alongside new BP+ (T_CXFER_BPP) sends.
 //   - Validation chain: tests/bulletproofs-plus-prover-smoke.test.mjs
-//     (KAT vs SPEC §3.1 pinned hex) + tests/bulletproofs-plus-roundtrip
+//     (KAT vs pinned hex) + tests/bulletproofs-plus-roundtrip
 //     (prove/verify self-consistency) + tests/bulletproofs-plus-adversarial
 //     (bit-flip survey across every structural field, commitment swap,
 //     cross-proof substitution, aggregation-factor mismatch, length
@@ -326,11 +326,11 @@ export function hadamardFold(v, a, b) {
   return out;
 }
 
-// ---- Generator vectors (reused from SPEC §3.1, amendment §5.47.4) -------
+// ---- Generator vectors (reused from standard BP) -------
 
 // Try-and-increment hash-to-curve for secp256k1. MUST match dapp/tacit.js's
-// `_bpHashToCurve` byte-for-byte so the generators reused per amendment
-// §5.47.4 produce the exact pinned hex from SPEC §3.1. The derivation hashes
+// `_bpHashToCurve` byte-for-byte so the reused generators
+// produce the exact pinned hex. The derivation hashes
 // (domain || idx_LE || counter) in a single SHA-256, takes the result as
 // the x-coordinate with 0x02 prefix (even Y), and increments the counter
 // until a valid curve point lands.
@@ -976,7 +976,7 @@ export function bppRangeVerify(commitments, proofBytes) {
   // Single Pippenger multi-exp over every (scalar, point) pair contributing
   // to the verifier identity. Replaces the prior per-point .multiply() loop
   // (which was O(MN · 256) point-ops; Pippenger collapses to O(MN + 2^c)
-  // per c-bit window). Closes SPEC.md §3.3 "Verifier optimizations" parity
+  // per c-bit window). Closes the verifier-optimization parity
   // for Bulletproofs+ — without this, m=8 verify is ~10× slower than the
   // BP equivalent; with this, BP+ verify lands in the same wall-time class
   // as BP verify (see tests/bulletproofs-plus.bench.mjs).

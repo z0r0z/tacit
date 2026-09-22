@@ -1,6 +1,5 @@
 // Cross-validates the Mode B dapp codec (dapp/confidential-btc-call.js) against the byte formats the SP1
 // guest (cxfer-core fold_btc_call / parse_btc_call_envelope) and the Solidity BtcCallExecutor expect.
-// SPEC-BITCOIN-HOOK-AMENDMENT §1.4.
 import assert from 'node:assert';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { concatBytes, hexToBytes, bytesToHex } from '../node_modules/@noble/hashes/utils.js';

@@ -1,6 +1,6 @@
 // Receipt-blinding derivation for AMM receipts.
 //
-// Per AMM.md §"Receipt recovery":
+// Per the spec:
 //
 //   seed_secp = HMAC-SHA256(recipient_privkey,
 //                            "tacit-amm-receipt-secp-v1"

@@ -1,4 +1,4 @@
-// SPEC §5.10 / §5.11 — T_DEPOSIT / T_WITHDRAW envelope cross-impl test.
+// T_DEPOSIT / T_WITHDRAW envelope cross-impl test.
 //
 // Mirrors the petch-pmint cross-impl pattern: dapp encodes a payload, worker
 // decodes it, byte-for-byte field equality. Without this, a silent drift
@@ -204,7 +204,7 @@ await test('dapp.decode REJECTS payload with wrong bind_hash (replay defense)', 
   // Mutate one byte in the bind_hash region — it sits at offset
   //   1 + 32 + 8 + 32 + 32 + 33 + 32 = 170 (start of bind_hash)
   // The dapp re-derives bind_hash from the surrounding fields and rejects on
-  // mismatch — this is the relayer-replay defense from SPEC §5.11.
+  // mismatch — this is the relayer-replay defense from the spec.
   const tampered = new Uint8Array(payload);
   tampered[170] ^= 0x01;
   return dapp.decodeTWithdrawPayload(tampered) === null;
@@ -214,8 +214,8 @@ await test('worker.decode REJECTS payload with wrong bind_hash (indexer rejectio
   // Critical for indexer-determinism: worker + dapp + any third-party
   // indexer must reject the same envelopes byte-for-byte. Without this
   // check the worker would index a nullifier for an envelope the dapp
-  // wouldn't credit, breaking the spent-set's consensus property. SPEC
-  // §5.11; see _computeWithdrawBindHash in worker/src/index.js.
+  // wouldn't credit, breaking the spent-set's consensus property. See
+  // _computeWithdrawBindHash in worker/src/index.js.
   const payload = await makeWithdrawPayload();
   const tampered = new Uint8Array(payload);
   tampered[170] ^= 0x01;

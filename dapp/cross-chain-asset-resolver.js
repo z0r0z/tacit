@@ -1,6 +1,6 @@
 // Cross-chain asset resolver — the single source of truth for "what is asset X across both chains",
 // so a Tacit asset is recognizable on Bitcoin AND Ethereum regardless of which chain issued it
-// (ops/ARCH-tacit-chain-abstraction.md, primitive 3 "one asset"). Multi-asset bidirectional movement
+// (primitive 3 "one asset"). Multi-asset bidirectional movement
 // needs this: a Bitcoin-etched asset (TAC, tETH) crossing to Ethereum keeps its shared asset_id (the
 // canonical ERC20 deploys at f(asset_id)); an EVM-issued ERC20 crossing to Bitcoin carries its
 // EVM-namespace asset_id, which the Bitcoin side must then recognize. The registry merges asset

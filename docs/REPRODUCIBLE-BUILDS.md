@@ -1,6 +1,6 @@
 # Reproducible builds
 
-The three SP1 guest programs behind the gen5 pool are pinned by ELF sha256 and verifying key. This page explains
+The three SP1 guest programs behind the mainnet pool are pinned by ELF sha256 and verifying key. This page explains
 what is pinned, how to rebuild each ELF byte for byte, and how to check the result against the chain. The pin file
 is [`contracts/sp1/confidential/elf-vkey-pin.json`](../contracts/sp1/confidential/elf-vkey-pin.json); the recipe
 files are in [`contracts/sp1/reproducible/`](../contracts/sp1/reproducible/).

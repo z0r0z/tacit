@@ -5,7 +5,7 @@
 #   We deploy via CreateX.deployCreate3(salt, initCode). The final address = f(CreateX, guardedSalt),
 #   INDEPENDENT of initCode, where for our portable "Random" salt form
 #       guardedSalt = keccak256(abi.encode(salt))
-#   (no msg.sender, no chainid mixed in — see ops/CREATEX-VANITY-DEPLOY.md). Because the address is
+#   (no msg.sender, no chainid mixed in). Because the address is
 #   independent of initCode and the guard is sender/chainid-free, the SAME salt yields the SAME address
 #   on Sepolia, mainnet, and every L2.
 #

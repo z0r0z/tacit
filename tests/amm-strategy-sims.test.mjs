@@ -8,7 +8,7 @@
 //      profiles × 3 time horizons × 100 trials each = 900 sims)
 //   2. High-volume saturation (10K random events; pool invariants hold)
 //   3. Concurrent-batch-same-block race (deterministic; documents the
-//      AMM.md "Open caveats" disjoint-batches edge case in test form)
+//      disjoint-batches edge case in test form)
 //
 // Built entirely on the math layer (solveClearing, lpAddShares,
 // lpRemoveOutputs, lpInitShares). No Bitcoin txs, no envelopes, no
@@ -349,7 +349,7 @@ console.log('\nHigh-volume saturation (10K random events)');
 // 3. Concurrent-batch-same-block race
 // =========================================================================
 //
-// Documents the AMM.md "Open caveats" disjoint-batches edge case in test
+// Documents the disjoint-batches edge case in test
 // form: two settlers race the same pool with disjoint intent subsets;
 // both Bitcoin-confirm in the same block; indexer applies them in
 // tx_index order; the second batch's declared R_A_pre / R_B_pre no

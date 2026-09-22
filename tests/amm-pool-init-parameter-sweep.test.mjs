@@ -311,7 +311,7 @@ group('negative sweep — invalid configurations REJECTED');
     r.error && r.error.includes('init:'));
 }
 
-// fee_bps = 0 (free pool) — explicitly allowed per AMM.md
+// fee_bps = 0 (free pool) — explicitly allowed per the spec
 {
   const r = simulatePoolInit({
     assetA: mkAssetId(61), assetB: mkAssetId(62),

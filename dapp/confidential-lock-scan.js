@@ -1,4 +1,4 @@
-// Stealth lock-set scanner (ops/INTEGRATION-simple-wrap-send-claim-eth.md §5). The pool announces every batch of
+// Stealth lock-set scanner. The pool announces every batch of
 // new lock leaves in `LockLeavesInserted(firstLockIndex, lockLeaves)`, so the lock set is read straight from that
 // event stream: contiguous from index 0, in tree-append order. The recipient memos are the part an event does not
 // carry for every settle — `LeavesInserted` holds the memo array (note memos followed by lock memos) only when the

@@ -1,5 +1,5 @@
-// Confidential airdrop: one sender → many recipients, non-interactive, over the stealth lock-set
-// (ops/DESIGN-confidential-stealth-receive.md). Each recipient needs only a published static spend
+// Confidential airdrop: one sender → many recipients, non-interactive, over the stealth lock-set.
+// Each recipient needs only a published static spend
 // pubkey; the sender derives a one-time address per recipient and locks value under it, with a memo
 // that lets the recipient discover + reconstruct the lock by scanning alone. Built entirely on the
 // already-proven stealth primitives (dapp/confidential-stealth.js) — no guest or contract change.

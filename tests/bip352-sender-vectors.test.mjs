@@ -14,7 +14,7 @@
 //
 // Eligibility filter implemented per the BIP: P2WPKH, P2PKH, P2SH-P2WPKH,
 // P2TR keypath (rejecting NUMS-tag script-path). Uncompressed-key P2PKH and
-// P2WPKH inputs are skipped per spec. The op_L (lex-smallest outpoint) is
+// P2WPKH inputs are skipped per the spec. The op_L (lex-smallest outpoint) is
 // computed over ALL transaction inputs even when some are ineligible —
 // passed via the optional `allInputOutpoints` parameter.
 //

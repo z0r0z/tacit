@@ -587,7 +587,7 @@ await test('dapp.encryptPrivkey blob decrypts via tests/storage.mjs decryptPrivk
   return bytesToHex(recovered) === bytesToHex(PRIV);
 });
 
-// SPEC §5.8 / §5.9 — permissionless mint (T_PETCH / T_PMINT). Pin the dapp
+// Permissionless mint (T_PETCH / T_PMINT). Pin the dapp
 // encoder against the worker decoder so wire-format drift between the two
 // halves shows up as a test failure rather than as a silently-rejected
 // envelope at indexing time. Same purpose as the existing CETCH/MINT/BURN
@@ -656,7 +656,7 @@ await test('dapp.encodeCPmintPayload bytes decode via worker.decodeCPmintPayload
   const bytes = dapp.encodeCPmintPayload({
     assetId, etchTxid, commitment, amount: 1000_00n, blinding,
   });
-  // SPEC §5.9: total length must be exactly 138 bytes
+  // Total length must be exactly 138 bytes
   if (bytes.length !== 138) return false;
   const dec = worker.decodeCPmintPayload(bytes);
   if (!dec) return false;

@@ -258,8 +258,8 @@ export function encodeLpAdd(args) {
     if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
     // V1 pools fix capability_flags to 0x00. The byte is reserved in
     // the pool_id preimage so future opcodes (e.g. range-LP) can extend
-    // the pool taxonomy without colliding with V1 pool_ids — see AMM.md
-    // §"Forward compatibility". Any non-zero value would derive a pool_id
+    // the pool taxonomy without colliding with V1 pool_ids.
+    // Any non-zero value would derive a pool_id
     // no V1 validator can interpret, so we reject at the encoder.
     if (capFlags !== 0) {
       throw new Error(`poolCapabilityFlags must be 0x00 for V1 pools (the byte is reserved in pool_id derivation for forward extensions)`);
@@ -424,7 +424,7 @@ export function decodeLpRemove(payload) {
   } catch { return null; }
 }
 
-// ===== LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) =====
+// ===== LP-bond yield farms =====
 //
 // T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36). Mirrors
 // the byte layouts of tests/amm-farm.mjs encodeFarmInit / encodeLpBond /
@@ -433,9 +433,9 @@ export function decodeLpRemove(payload) {
 export const OPCODE_T_FARM_INIT  = 0x34;
 export const OPCODE_T_LP_BOND    = 0x35;
 export const OPCODE_T_LP_UNBOND  = 0x36;
-export const OPCODE_T_LP_HARVEST = 0x3B;  // claim reward without unbonding (SPEC §5.43)
-export const OPCODE_T_FARM_REFUND = 0x3E; // launcher reclaims unspent treasury (SPEC §5.44)
-// Farm-state attestation reuses T_INTENT_ATTEST (0x30) per SPEC §5.45
+export const OPCODE_T_LP_HARVEST = 0x3B;  // claim reward without unbonding
+export const OPCODE_T_FARM_REFUND = 0x3E; // launcher reclaims unspent treasury
+// Farm-state attestation reuses T_INTENT_ATTEST (0x30) per the spec
 // (scope_id = farm_id, intent_pool_hash = buildFarmStateHash output).
 export const FARM_NO_CHANGE_SENTINEL = new Uint8Array(33);
 
@@ -578,7 +578,7 @@ export function buildFarmRefundMsg({ farmId, refundAmount, refundViewHeight, ref
   ));
 }
 
-// Canonical farm-state hash for T_INTENT_ATTEST attestations (SPEC §5.45).
+// Canonical farm-state hash for T_INTENT_ATTEST attestations.
 // Attesters publish this 32B value as the `intent_pool_hash` of a
 // T_INTENT_ATTEST envelope with scope_id = farm_id.
 export function buildFarmStateHash({ treasuryRemaining, totalBonded, accRewardPerShare }) {

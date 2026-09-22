@@ -1,5 +1,5 @@
 // Mixer state primitives — tests for the in-memory data structures the
-// dapp uses to enforce SPEC §5.11.4 invariants 2 (Membership) and 3
+// dapp uses to enforce the spec invariants 2 (Membership) and 3
 // (Non-double-spend).
 //
 // What this validates that no other test does:
@@ -22,7 +22,7 @@
 //     (asset_id A denom 100, asset_id A denom 200) are independent —
 //     a withdraw from one doesn't influence the other's spent-set.
 //   - Tree depth cap: appending the (2^20 + 1)-th leaf returns false
-//     and doesn't grow the tree — SPEC §3.6 fixed-depth invariant.
+//     and doesn't grow the tree — the spec fixed-depth invariant.
 //   - Pool root determinism: same leaves produce byte-identical roots.
 //
 // Run: `node mixer-state.test.mjs`

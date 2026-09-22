@@ -2,9 +2,8 @@
 
 A checklist for a team building a trading or earning UI on the confidential pool. It assumes the basics from
 [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) and links out for depth: farms in [`FARMS.md`](./FARMS.md),
-addresses and lifecycle in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md), the wrap, stealth-send and unwrap flow in
-[`ops/INTEGRATION-simple-wrap-send-claim-eth.md`](../ops/INTEGRATION-simple-wrap-send-claim-eth.md), and key-only
-recovery in the [recovery chapter](./RECOVERY.md).
+addresses and lifecycle in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md), op semantics in [`SPEC.md`](../SPEC.md), and
+key-only recovery in the [recovery chapter](./RECOVERY.md).
 
 The goal has two halves that reinforce each other. **The user's key is the whole account**: connecting it should
 bring back every balance and position. **The integration adds no trust**: anything the user can do through your

@@ -1,4 +1,4 @@
-// SPEC §5.10 / §5.11 — worker mixer indexing simulation.
+// Worker mixer indexing simulation.
 //
 // Mirrors the cron's `scanForEtches` switch-branches for T_DEPOSIT (POOL_INIT
 // + standard deposit) and T_WITHDRAW against an in-memory KV stub. Same
@@ -387,7 +387,7 @@ await test('withdraw against a different pool denom does NOT collide', async () 
     kv, 'mainnet', 300, 'w200',
   );
   // Same nullifier in TWO different pools — both should land. Reusing a
-  // nullifier across pools is allowed by SPEC §5.11 because the pool index
+  // nullifier across pools is allowed by the spec because the pool index
   // is part of the spent-set key.
   return ok
       && (await kv.get(poolNullifierKey('mainnet', ASSET_HEX, '100', NH), 'json')) !== null

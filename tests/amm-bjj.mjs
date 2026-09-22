@@ -1,4 +1,4 @@
-// BabyJubJub curve primitives for the tacit AMM (SPEC §3.9 planned).
+// BabyJubJub curve primitives for the tacit AMM.
 // Pure-JS implementation over BigInt; no ffjavascript dependency.
 //
 // Twisted Edwards form per circomlib: a*u^2 + v^2 = 1 + d*u^2*v^2 over BN254 Fr.
@@ -175,7 +175,7 @@ export function unpackPoint(buf) {
   return P;
 }
 
-// ---- NUMS generator derivation (AMM.md §"BabyJubJub NUMS try-and-increment") ----
+// ---- NUMS generator derivation ----
 //
 //   counter = 0
 //   loop:
@@ -195,8 +195,8 @@ export function unpackPoint(buf) {
 //       return Q
 //
 // Note: digest is interpreted big-endian (network order) before reducing mod p_Fr;
-// the counter is encoded little-endian as 4 bytes (matches the SPEC's u32_LE convention
-// elsewhere — see SPEC §3.1's H-generator derivation pattern).
+// the counter is encoded little-endian as 4 bytes (matches the u32_LE convention
+// of the H-generator derivation).
 const SEED_H = new TextEncoder().encode('tacit-amm-bjj-H-v1');
 const SEED_G = new TextEncoder().encode('tacit-amm-bjj-G-v1');
 

@@ -1,6 +1,6 @@
 // Envelope encoders/decoders for the three AMM opcodes.
 //
-// Per AMM.md §"Envelope byte layouts" (Implementation specification §1).
+// Per the spec.
 // Layouts are normative; indexers reject any deviation.
 //
 // Opcodes:

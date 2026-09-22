@@ -78,8 +78,8 @@ fi
 # PRODUCTION OUTBOX PIN. ETH_CALL_OUTBOX is the EthCallOutbox address the reflection guest requires an
 # ETH->BTC message set to come from. It ships as all-zero, which is fail-closed but permanently INERT: no real
 # deployment matches it, so every Mode-B proof carrying a message set fails the equality. The address must be
-# filled with the CREATE3-predicted outbox BEFORE the deploy ELF is built (the ordering gate in
-# ops/RUNBOOK-launch-deploy-READY.md), and the only thing that can catch a forgotten fill is a gate like this
+# filled with the CREATE3-predicted outbox BEFORE the deploy ELF is built,
+# and the only thing that can catch a forgotten fill is a gate like this
 # one — a rebuild + vkey rotation does not replace a source constant. Set ALLOW_UNPINNED_OUTBOX=1 for a
 # pre-cutover/dev build; a production build must not.
 outbox=$(extract "$REFLECT" "ETH_CALL_OUTBOX")

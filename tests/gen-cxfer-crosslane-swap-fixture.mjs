@@ -15,7 +15,7 @@
 // freshness set-anchoring (the eth-accumulator prior; a separate reflection-guest item). The swap guest
 // already READS the per-intent nonMember in the swap loop (right after the input's membership + nullifier,
 // before amount_in — main.rs:455, op-agnostic), so no settle-guest change is needed; this fixture just
-// validates that path against the box re-prove. See ops/PLAN-fast-lane-trading.md.
+// validates that path against the box re-prove.
 //
 // Run: node tests/gen-cxfer-crosslane-swap-fixture.mjs
 

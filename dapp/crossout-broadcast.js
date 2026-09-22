@@ -1,4 +1,4 @@
-// Dapp-side T_CROSSOUT_MINT broadcast seam (task #5; ops/PLAN-crossout-consumer.md phase 3). After a
+// Dapp-side T_CROSSOUT_MINT broadcast seam (task #5). After a
 // confidential-pool bridge_burn (ETH→BTC) the wallet knows the destination note (cx, cy, owner) and the
 // claimId, and broadcasts the Bitcoin T_CROSSOUT_MINT (0x65) envelope so the reflection prover folds it
 // (and the worker's /hint dispatch indexes it). Dependency-injected on the existing Taproot commit/reveal

@@ -2,11 +2,11 @@
 // an independently-derived Python port at .local/bpp-python-port/bpp.py.
 //
 // The Python port was hand-written by a separate agent that NEVER saw our
-// JS code — only the Monero C++ reference + SPEC amendment. Both
+// JS code — only the Monero C++ reference + the spec. Both
 // implementations:
 //
 //   1. Use the same secp256k1 curve and SHA-256 transcript
-//   2. Derive generators from the same SPEC §3.1 domain tags
+//   2. Derive generators from the same spec domain tags
 //   3. Implement BP+ §4.4 (Aggregated Range Proof) per the same paper
 //
 // If they produce byte-identical proofs given the same (values, blindings,

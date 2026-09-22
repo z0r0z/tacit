@@ -1,4 +1,4 @@
-// SPEC §5.10 reorg-safety gate, nullifier symmetry — regression test.
+// Reorg-safety gate, nullifier symmetry — regression test.
 //
 // What this guards against:
 //   Pre-fix the worker annotated leaves with depth+status (so the dapp's

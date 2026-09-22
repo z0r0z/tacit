@@ -1,4 +1,4 @@
-// Unit tests for the SPEC §5.7.12 refund-vout enforcement rule
+// Unit tests for the refund-vout enforcement rule
 // (validator rule 7). Mirrors the parallel-impl pattern of the other
 // t-preauth-bid* tests — the production implementations are in:
 //

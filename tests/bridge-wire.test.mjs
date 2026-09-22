@@ -1,4 +1,4 @@
-// tETH bridge wire-format parity test (SPEC-TETH-BRIDGE-AMENDMENT §5.60–§5.61).
+// tETH bridge wire-format parity test.
 //
 // Validates:
 //   1. T_BRIDGE_DEPOSIT encode/decode round-trip

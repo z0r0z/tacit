@@ -1,6 +1,6 @@
 // Protocol-fee mechanics for tacit AMM (founder-set, immutable).
 //
-// Mirrors AMM.md §"Protocol fee mechanism". The pool optionally pins a
+// Mirrors the spec. The pool optionally pins a
 // `protocol_fee_address` (33-byte compressed pubkey) and `protocol_fee_bps`
 // (u16, 0..1000 = 0..10% of LP-fee growth) at POOL_INIT.
 //

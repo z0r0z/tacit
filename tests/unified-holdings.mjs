@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified cross-chain holdings merge (ops/ARCH-tacit-chain-abstraction.md, the unified-surface
+// Unified cross-chain holdings merge (the unified-surface
 // contract). Locks: the SAME asset_id on both lanes merges into ONE row with total = btc + eth and an
 // auditable per-lane split; distinct ids stay separate; label fields propagate; balances coerce from
 // bigint/number/string; the DI scan merges scanHoldings() + EVM readers; an EVM-read failure degrades

@@ -1,13 +1,11 @@
 // T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36)
 // reference implementation.
 //
-// Spec: SPEC-AMM-FARM-AMENDMENT.md (round-1, post-sanity-check).
-//
 // MasterChef-style staked-LP rewards on tacit AMM pools.
 //
 // Design properties:
 //   - Virtual treasury bookkeeping (no on-chain treasury UTXO; mirrors
-//     AMM virtual pool reserves at AMM.md:1845 and cBTC.tac insurance).
+//     AMM virtual pool reserves and cBTC.tac insurance).
 //   - Per-bond worker-indexed records keyed by vout[1].outpoint of the
 //     bond tx. Receipts are plain P2WPKH dust markers — NOT a tacit
 //     asset class.
@@ -75,7 +73,7 @@ export const OPCODE_T_FARM_REFUND = 0x3E;
 //   intent_pool_hash  = buildFarmStateHash({treasury_remaining, total_bonded,
 //                                            acc_reward_per_share})
 //   snapshot_uri      = "/farm/<farm_id>?height=<H>" (optional)
-// See SPEC-AMM-FARM-AMENDMENT.md §5.44 + the buildFarmStateHash helper
+// See the buildFarmStateHash helper
 // below. No dedicated T_FARM_ATTEST opcode — reuse keeps the spec smaller
 // and the validator surface unchanged.
 export const ENVELOPE_VERSION    = 0x01;
@@ -206,8 +204,7 @@ export function deriveFarmId({ poolId, launcherPubkey, rewardAssetId, farmNonce 
   ));
 }
 
-// lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id) per AMM.md
-// §"LP shares as a confidential tacit asset".
+// lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id) per the spec.
 export function deriveLpAssetIdFromPoolId(poolId) {
   return sha256(concatBytes(DOMAIN_LP_ASSET, asBytes(poolId, 32, 'poolId')));
 }
@@ -819,7 +816,7 @@ export function validateFarmInit({
 
   // Initial-LP lock window — no farms over a pool still inside it.
   const initHeight = pool.init_height || 0;
-  const initLock = pool.amm_initial_lp_lock_blocks ?? 6;   // default per AMM.md
+  const initLock = pool.amm_initial_lp_lock_blocks ?? 6;   // default per the spec
   if (env.startHeight < initHeight + initLock) {
     return {
       valid: false,
@@ -1624,7 +1621,7 @@ export class FarmState {
     this.checkInvariants(newFarm);
   }
 
-  // Conservation invariants 1, 2, 5 from SPEC-AMM-FARM-AMENDMENT §"Conservation invariants".
+  // Conservation invariants 1, 2, 5 from the spec.
   // Invariants 3 (LP-asset cross-cycle) and 4 (no-accrual-without-depth)
   // are enforced by the validator itself; the state machine checks the
   // state-level invariants here.

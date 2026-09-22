@@ -1,4 +1,4 @@
-// Mixer parity test (SPEC §3.6 / §3.8 / §5.10 / §5.11).
+// Mixer parity test.
 //
 // Validates Poseidon-side primitives the dApp and circuit must agree on:
 //   1. poseidon-lite produces known reference values (regression guard against
@@ -72,7 +72,7 @@ test('poseidon arities are distinct functions', () => {
 
 console.log('\nLeaf + nullifier shape parity:');
 
-// SPEC §3.6 / §5.10: leaf = poseidon3(secret, ν, denom). The 32-byte BE
+// leaf = poseidon3(secret, ν, denom). The 32-byte BE
 // encoding is what goes on the wire as leaf_commitment.
 test('leaf commitment encoding is 32 bytes BE', () => {
   const secret = 0x1111111111111111111111111111111111111111111111111111111111111111n;
@@ -87,7 +87,7 @@ test('leaf commitment encoding is 32 bytes BE', () => {
   assert.equal(bytes32ToBigint(bytes), leafFr);
 });
 
-// SPEC §5.11: nullifier_hash = poseidon1(nullifier_preimage).
+// nullifier_hash = poseidon1(nullifier_preimage).
 test('nullifier hash is poseidon1 of preimage', () => {
   const nu = 0x3333333333333333333333333333333333333333333333333333333333333333n;
   const nh = poseidon1([nu]);
@@ -194,7 +194,7 @@ test('r_leaf is independent of denomination', () => {
 });
 
 test('r_leaf and leaf are independent functions of (secret, ν)', () => {
-  // SPEC §3.8: leaf = poseidon3(secret, ν, denom); r_leaf = poseidon2(secret, ν).
+  // leaf = poseidon3(secret, ν, denom); r_leaf = poseidon2(secret, ν).
   // They MUST hash differently — otherwise an observer could correlate a
   // r_leaf to a specific leaf trivially. Poseidon arity isolation handles this.
   const secret = 7n;

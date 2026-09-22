@@ -1,6 +1,6 @@
 // Push the on-chain Bitcoin header relay's tip forward yourself, instead of waiting for Tacit's own
-// header-relay cron to get there on its own lean, gas-batched schedule (see
-// ops/RUNBOOK-capacity-and-alerting.md §3b). BitcoinLightRelay.advanceTip is permissionless — anyone can
+// header-relay cron to get there on its own lean, gas-batched schedule.
+// BitcoinLightRelay.advanceTip is permissionless — anyone can
 // submit real headers and pay their own gas — so this needs no Tacit credentials at all, only your own key.
 //
 // This only advances the HEADER RELAY. A block being past the relay's tip is necessary but not sufficient

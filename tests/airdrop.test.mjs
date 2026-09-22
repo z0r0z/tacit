@@ -19,7 +19,7 @@ import {
   buildAirdropClaimMsg, eip191Hash, recoverEthAddrFromSig, verifyAirdropClaimSig,
   ERC1271_MAGIC, verifyEthSigViaErc1271,
   _signEip191WithPriv, _ethAddrFromPriv,
-  // T_DROP / T_DCLAIM codec (SPEC §5.12 / §5.13)
+  // T_DROP / T_DCLAIM codec
   T_DROP, T_DCLAIM,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
@@ -1432,8 +1432,8 @@ test('domain separation: T_DROP kernel msg uses tacit-drop-v1 tag, T_DROP reclai
 console.log('\nT_DROP / T_DCLAIM end-to-end synthetic chain (Phase 5):');
 
 // Exercise the full pipeline: build T_DROP → derive drop_id → build N
-// T_DCLAIMs against it → verify every cap/nullifier/witness invariant SPEC
-// §5.13 enumerates. No live chain; we construct envelopes and run the
+// T_DCLAIMs against it → verify every cap/nullifier/witness invariant the spec
+// enumerates. No live chain; we construct envelopes and run the
 // invariants the worker indexer enforces. Catches drift between the
 // broadcaster, the codec, the validator, and the indexer's state model.
 
@@ -1681,7 +1681,7 @@ test('rewrap supply-inflation gate: cron writes one canonical claim per leaf, da
 });
 
 test('open-FCFS drop is protocol-valid (all-zero merkle root sentinel decodes as open FCFS)', () => {
-  // SPEC §5.12 permits both merkle-gated and open-FCFS drops. The all-zero
+  // The protocol permits both merkle-gated and open-FCFS drops. The all-zero
   // merkle_root is the canonical sentinel for "no eligibility gate." This
   // test pins that the codec round-trips the sentinel; the v1 dapp UI now
   // permits broadcasting both shapes (open FCFS additionally requires a
@@ -1703,7 +1703,7 @@ test('open-FCFS drop is protocol-valid (all-zero merkle root sentinel decodes as
 });
 
 test('reclaim soundness: declared cap_amount must equal drop.cap_amount - claims × per_claim', () => {
-  // Pins the validator's rejection-on-mismatch rule (SPEC §5.12.1 step 3).
+  // Pins the validator's rejection-on-mismatch rule.
   // Simulate the canonical-remainder check the dapp validator runs against
   // the worker's drop snapshot.
   const dropCap = 1_000_000n;
@@ -1727,7 +1727,7 @@ test('reclaim soundness: declared cap_amount must equal drop.cap_amount - claims
 });
 
 test('reclaim sig binds (reclaim_drop_id, asset_id, cap_amount) — rebinding any field changes the msg', () => {
-  // Pins SPEC §5.12.1 reclaim_msg construction. A reclaim sig produced for
+  // Pins the reclaim_msg construction. A reclaim sig produced for
   // (drop1, asset1, 500) MUST NOT verify against (drop1, asset1, 400) or
   // any other variation — the msg hash differs, so the canonical sig is
   // for one specific (drop, asset, cap) tuple.
@@ -1748,7 +1748,7 @@ test('reclaim sig binds (reclaim_drop_id, asset_id, cap_amount) — rebinding an
 });
 
 test('reclaim shape: cap_blinding opens the synthesized output commitment', () => {
-  // SPEC §5.12.1: validator computes pedersenCommit(cap_amount, cap_blinding)
+  // Validator computes pedersenCommit(cap_amount, cap_blinding)
   // and that's the commitment the downstream tacit UTXO at vout[0] holds.
   // Pin that (a) zero blinding is rejected by the encoder (avoids a degenerate
   // single-base commitment that anyone could open) and (b) any non-zero
@@ -1895,7 +1895,7 @@ test('T_DROP codec round-trip preserves expiry_height for the validator', () => 
 // G1: ERC-1271 (smart-wallet) sig verification via mocked eth_call provider
 // ============================================================================
 // Verifies the issuer-side worker-mediated fulfilment's smart-wallet fallback
-// path. SPEC §5.13 calls this out as REQUIRED for smart-wallet recipients,
+// path. The spec calls this out as REQUIRED for smart-wallet recipients,
 // and unavailable on on-chain T_DCLAIM (which the dapp now gates via
 // _claimEthIsContract — fix C1). Three scenarios: valid contract response,
 // rejection (returns 0x00…), and provider failure (RPC error).

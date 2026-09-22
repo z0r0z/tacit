@@ -119,7 +119,7 @@ stables are not).
 
 **Shipped this cycle**
 - Relay-for-every-op (gasless privacy across swap/LP/OTC/bid/route/transfer/CDP/farm/bridge); see
-  [DESIGN-confidential-relay-fees.md](../ops/DESIGN-confidential-relay-fees.md).
+  [SPEC §5.4](../SPEC.md#54-fees-and-relaying).
 - Gas-priced quote + profitability guard (`worker/src/relay-quote.js`) — the undercut lever.
 - `TacitRelayer.sol` — permissionless batching, atomic `minOut` profitability guard, and **native
   affiliate fee-split** (`recipients`/`bps`) so a wallet/front-end earns a share for routing flow.
@@ -191,7 +191,7 @@ gadget to under-constrain:
    32-byte `mint_authority`. For TAC it is all-zero (the protocol's non-mintable value);
    a `T_MINT` requires a Schnorr sig under that key, and the zero key signs nothing.
    `mint_authority` is permanent — no rotate/transfer short of a protocol hard fork
-   (SPEC.md §5.1, line ~750).
+   ([SPEC §3.4](../SPEC.md#34-core-ops)).
 2. **The one issuance is provably 21M.** The etch commits to supply as a Pedersen
    commitment `C = supply·H + blinding·G`. The `(supply, blinding)` opening is published
    to IPFS, content-addressed by the same `image_uri` the on-chain etch points to. Anyone

@@ -3,8 +3,7 @@
 // Intent-first From→To: pick a note to spend and a destination asset, and the tile finds the best route
 // against the confidential pool — automatically selecting the fee tier that returns the most output — then
 // settles gasless through the relay. Every outcome is a shielded note; the tile never routes into the
-// real-sats order book or the bridge (those are explicit, linked, cross-world moves). See
-// ops/PLAN-shielded-swap-tile.md.
+// real-sats order book or the bridge (those are explicit, linked, cross-world moves).
 //
 // A swap is a 1-hop confidential route (confidential-route.js, OP_SWAP_ROUTE): the input note + final output
 // stay notes, the trade clears against the pool's live on-chain reserves (read via ux.quoteRoute), gasless

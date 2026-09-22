@@ -1,6 +1,6 @@
 # Reproducible guest builds
 
-Recipe material for rebuilding the three pinned gen5 SP1 guest ELFs byte for byte. The full procedure,
+Recipe material for rebuilding the three pinned SP1 guest ELFs byte for byte. The full procedure,
 toolchain details and verification checklist are in [`docs/REPRODUCIBLE-BUILDS.md`](../../../docs/REPRODUCIBLE-BUILDS.md).
 
 | File | Purpose |

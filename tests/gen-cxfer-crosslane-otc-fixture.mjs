@@ -13,7 +13,7 @@
 // The OTC math + opening sigmas are IDENTICAL to the value-conserving OTC fixture; only the cross-lane
 // bits are added. The OTC guest already reads each leg's nonMember right after that leg's membership +
 // nullifier and before its amount (main.rs:750 maker / :774 taker, op-agnostic), so no guest change is
-// needed; this validates that path against the box re-prove. See ops/PLAN-fast-lane-trading.md (Flow A).
+// needed; this validates that path against the box re-prove (Flow A).
 //
 // Run: node tests/gen-cxfer-crosslane-otc-fixture.mjs
 

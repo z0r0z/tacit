@@ -275,13 +275,13 @@ elif [ "$BUNDLE_ONLY" = "1" ]; then
   exit 1
 fi
 
-# Hard floor on contribution count. SPEC §5.11.3 minimum is ≥5 disjoint
-# trust roots; production target per MIXER.md is "ideally 100s"; gold-tier
+# Hard floor on contribution count. The spec minimum is ≥5 disjoint
+# trust roots; production target is "ideally 100s"; gold-tier
 # (Tornado-class) is 1100. Default 2000 = comfortably past gold to give
 # the headline claim more margin and to match the coordinator's stated
 # target for this specific ceremony. Override via MIN_CONTRIBUTIONS=N
 # in env (e.g., MIN_CONTRIBUTIONS=1100 for a stricter Tornado-only
-# threshold, or MIN_CONTRIBUTIONS=5 for the SPEC absolute minimum on
+# threshold, or MIN_CONTRIBUTIONS=5 for the spec absolute minimum on
 # a low-volume asset). Skipped in BUNDLE_ONLY since chain is already
 # finalized.
 MIN_CONTRIBUTIONS="${MIN_CONTRIBUTIONS:-2000}"

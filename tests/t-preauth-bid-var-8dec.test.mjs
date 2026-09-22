@@ -1,4 +1,4 @@
-// 8-decimal coverage tests for T_PREAUTH_BID_VAR (SPEC §5.7.12).
+// 8-decimal coverage tests for T_PREAUTH_BID_VAR.
 //
 // The amendment that added decimals_scale to the inline section makes
 // the primitive usable for typical high-decimal tokens (TAC at 8 decs,

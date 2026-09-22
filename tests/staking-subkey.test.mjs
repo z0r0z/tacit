@@ -1,4 +1,4 @@
-// SPEC-CBTC-TAC-AMENDMENT §5.36 + dapp privacy hardening — staking-subkey
+// Dapp privacy hardening — staking-subkey
 // derivation for cBTC.tac mint privacy.
 //
 // Test the HMAC-derived child secp256k1 keys that supply the

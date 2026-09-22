@@ -10,8 +10,7 @@
 // relayer's submission toolkit — it does NOT mint trust; it relays a proof anyone
 // can produce. The reflection prover (a sibling of the bridge_mint guest, reusing
 // cxfer-core::bitcoin + the IMT) emits the publicValues + proof; this builds and
-// signs the attest tx from a Tacit seed (no MetaMask). See
-// ops/PLAN-confidential-btc-relay.md and ops/PLAN-confidential-cross-chain.md §9.
+// signs the attest tx from a Tacit seed (no MetaMask).
 //
 // SAFETY INVARIANT (matches the contract): the reflected spent-set root is NEVER
 // zero. An empty Bitcoin spent set has a non-zero empty-IMT sentinel root; a zero

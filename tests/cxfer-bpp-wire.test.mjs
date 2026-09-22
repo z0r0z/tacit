@@ -1,4 +1,4 @@
-// SPEC-CXFER-BPP-AMENDMENT wire-format tests for T_CXFER_BPP (0x22).
+// Wire-format tests for T_CXFER_BPP (0x22).
 //
 // Verifies:
 //   - dapp encode → dapp decode and dapp encode → worker decode round-trip

@@ -37,7 +37,7 @@ const DRY_RUN = process.env.DRY_RUN === '1';
 const RPC = process.env.SEPOLIA_RPC || process.env.RPC_URL;
 const PK = process.env.DEPLOYER_PK || process.env.SEPOLIA_PK;
 
-// Day-1 parameters — keep in sync with ops/PLAN-day1-assets-and-incentives.md (launch numbers, tweakable).
+// Day-1 parameters (launch numbers, tweakable).
 const TAC_DEC = 8n;                       // TAC decimals on Ethereum (per the asset register)
 const FIXED_SUPPLY = 21_000_000n;         // fixed-supply TAC etch (no further mint)
 const AIRDROP_TAC = 2_000_000n;           // first airdrop tranche (public TAC)

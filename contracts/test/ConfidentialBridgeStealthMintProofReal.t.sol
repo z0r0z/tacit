@@ -14,7 +14,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 ///
 /// SELF-SKIPS until the coordinated re-prove produces the fixture (contracts/test/fixtures/
 /// bridgestealthmint_groth16.json, GPU-proven via harnesses/exec-bridgestealthmint.rs MODE=groth16) — the
-/// stealth family has no on-chain fixture pre-re-prove (see ops/runbooks/V1-TESTNET-LAUNCH-PLAYBOOK.md §8).
+/// stealth family has no on-chain fixture pre-re-prove.
 /// Once the fixture lands, this verifies the real proof + pins the fixture vkey to the deployed guest, the
 /// exact coherence check that catches a stale fixture. The off-chain op coverage is
 /// tests/confidential-bridge-stealth-op.mjs (in the readiness gate node_suite).

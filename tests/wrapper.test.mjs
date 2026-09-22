@@ -1,4 +1,4 @@
-// Tacit wrapper convention (SPEC §4.2 / §5.19) — worker-side correctness.
+// Tacit wrapper convention — worker-side correctness.
 //
 // Pins down:
 //   - T_WRAPPER_ATTEST envelope wire format (159 bytes, no envelope_version)
@@ -161,7 +161,7 @@ test('decoder accepts max u64 reserves + supply (boundary)', () => {
 });
 
 // =============================================================================
-// attestation_msg construction (SPEC §4.2.4)
+// attestation_msg construction
 // =============================================================================
 
 test('attestation_msg is SHA256 of canonical preimage', () => {
@@ -174,7 +174,7 @@ test('attestation_msg is SHA256 of canonical preimage', () => {
     100,
     '1700000000',
   );
-  // Recompute independently per SPEC §4.2.4:
+  // Recompute independently per the spec:
   //   SHA256("tacit-wrapper-attest-v1" || network_tag(1) || asset_id(32)
   //          || issuer_pubkey(33) || reserves_LE(8) || supply_LE(8)
   //          || as_of_height_LE(4) || timestamp_LE(8))

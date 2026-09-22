@@ -9,7 +9,7 @@
 //   1. POOL_INIT WITH a non-zero `protocol_fee_bps` + founder fee
 //      address, so every swap routes 1% (or whatever bps) of LP-fee
 //      growth toward the founder via the lazy crystallization
-//      mechanism (AMM.md §"Protocol fee mechanism").
+//      mechanism.
 //
 //   2. Swap volume × N — k_now grows above k_last; protocol_fee_accrued
 //      stays at 0 (lazy: no crystallization until next LP event).

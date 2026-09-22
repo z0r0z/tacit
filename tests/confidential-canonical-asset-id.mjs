@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Cross-language derivation of the canonical EVM-etch asset id, matching
-// CanonicalAssetFactory.sol (deriveAssetId / metaHash) and the spec amendment
-// (SPEC-EVM-CONFIDENTIAL-TOKEN-AMENDMENT §"Asset identity"). Locks the byte layout so
+// CanonicalAssetFactory.sol (deriveAssetId / metaHash) and the spec.
+// Locks the byte layout so
 // the asset id — and the (symbol, decimals) bound into it — is identical on Bitcoin, JS,
 // Solidity. The ERC20 `name` is the constant brand "Tacit Token" and is NOT part of the
 // commitment; the only per-asset metadata is (symbol, decimals), deterministic to the

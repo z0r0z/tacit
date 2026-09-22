@@ -9,7 +9,7 @@
 # This script:
 #   1. compiles amm_lp_add.circom, amm_lp_remove.circom, amm_swap_batch.circom
 #      → r1cs + wasm + sym, output in build/
-#   2. prints constraint counts and validates against AMM.md targets:
+#   2. prints constraint counts and validates against the constraint targets:
 #        • amm_lp_add      ≤ 30K   (current: 5,153)
 #        • amm_lp_remove   ≤ 30K   (current: 10,369)
 #        • amm_swap_batch  ≤ 300K  (current: 171,162)

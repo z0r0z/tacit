@@ -16,7 +16,7 @@
 // (`T_SWAP_VAR` per hop). Between hop 1's settlement and hop 2's posting
 // another trader can shift the intermediate-asset pool's spot, so multi-
 // hop in V1 is "best effort" with slippage protection per hop. The
-// `SPEC-TRADE-BATCH-AMENDMENT.md` work (V1.x / V2) introduces atomic
+// Follow-up work (V1.x / V2) introduces atomic
 // cross-surface settlement where N hops settle in a single Bitcoin tx
 // or none do. The router algorithm below works for both regimes; only
 // the settlement-atomicity guarantee differs.
@@ -356,7 +356,7 @@ console.log('\nMulti-hop router (reference algorithm)');
   // Honest note: the V1 protocol settles each hop in a separate Bitcoin tx
   // (T_SWAP_VAR per hop). Between hops, other traders can move the intermediate
   // pool's spot, so multi-hop is "best effort" with per-hop slippage protection.
-  // Atomic multi-hop is the SPEC-TRADE-BATCH-AMENDMENT.md scope.
+  // Atomic multi-hop is follow-up scope.
   test('V1 multi-hop is non-atomic: documented in test as per-hop, sequential T_SWAP_VAR',
        () => true);
 }

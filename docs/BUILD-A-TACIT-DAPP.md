@@ -59,7 +59,7 @@ first step works with nothing but an RPC; the second needs the relay.
 
 ## 3. What you are building against
 
-Ethereum mainnet, gen5 (live 2026-09-18). Source of truth is
+Ethereum mainnet (live since 2026-09-18). Source of truth is
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json) — read it, don't trust this
 table, and re-read it after any redeploy.
 
@@ -252,7 +252,7 @@ Fees: by default the relay proves *and* submits, and the fee must clear its gas-
 relay prove but **you** submit and pay gas — note that the relay still receives the witness either way; what
 you avoid is the fee and having the relay's address on the transaction. Removing the relay entirely means
 proving locally (native-gnark on CPU — no GPU, no network payment; see
-`ops/INTEGRATION-simple-wrap-send-claim-eth.md`).
+[`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md)).
 
 Each of these returns once the settle lands; pass `waitOpts` to tune the polling. A `selfRelay` settle is sent
 from the wallet's derived account (`account(walletPriv)`), which must hold ETH for gas; `tacit.submitSettle` is
@@ -603,8 +603,7 @@ trade size, matters to you, prove locally.
 `OP_SWAP_BLIND` is the op that removes even that: clearing is proven by an in-guest Groth16 circuit, so the
 box never reads an amount. It is **armed in the deployed guest and proven correct against it**, but not yet
 reachable through the relay — enabling it is a batching and pricing exercise, since the pairing is a fixed
-cost amortised across a batch's intents. See
-[`ops/DESIGN-swap-batch-queue.md`](../ops/DESIGN-swap-batch-queue.md). Until then, relayed swaps are
+cost amortised across a batch's intents (see [SPEC §5.6](../SPEC.md#56-prover-blind-swaps)). Until then, relayed swaps are
 `OP_SWAP` and the paragraph above is the honest description.
 
 ## 7. Iterating on the design
@@ -644,9 +643,5 @@ A failed proof costs the relay, not you, and moves no state. A settle either app
 - [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md) — what a trustless integration looks like: farm zap, key-only recovery, self-settle checklist
 - [`docs/DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address and vkey
 - [`docs/FARMS.md`](./FARMS.md) — the TAC launch farms: cards, flows, monitoring and governance bounds
-- [`ops/INTEGRATION-simple-wrap-send-claim-eth.md`](../ops/INTEGRATION-simple-wrap-send-claim-eth.md) — the
-  full ETH-only handoff, with the stealth path in depth
-- [`SPEC.md`](../SPEC.md) — canonical wire formats
-- [`ops/DESIGN-swap-batch-queue.md`](../ops/DESIGN-swap-batch-queue.md) — how swap batching and
-  `OP_SWAP_BLIND` reach production across the API, relayer and dapp
+- [`SPEC.md`](../SPEC.md) — the protocol specification: envelopes, pool ops, reflection
 - [`audit/AUDITS.md`](../audit/AUDITS.md) — the review history

@@ -1,7 +1,7 @@
-// Settlement-tx-shape unit test for takePreauthBid (SPEC §5.7.11).
+// Settlement-tx-shape unit test for takePreauthBid.
 //
 // What this protects:
-//   1. The exact tx layout the SPEC §5.7.11 settlement section names —
+//   1. The exact tx layout the spec settlement section names —
 //      vout[0] = recipient DUST, vout[1] = seller payout (P2WPKH),
 //      vout[2] = OP_RETURN(bid_context_hash) 34-byte scriptPubKey,
 //      optional vout[3] = seller's asset change DUST.

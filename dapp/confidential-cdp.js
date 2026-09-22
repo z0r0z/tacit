@@ -1,5 +1,5 @@
-// JS mirror of the cxfer-core generic-CDP + cBTC-mint derivations (ops/DESIGN-confidential-defi-v1.md
-// §§3,4). Byte-identical to cxfer-core (lib.rs `cdp_*` / `commitment_hash`) AND to ConfidentialPool's
+// JS mirror of the cxfer-core generic-CDP + cBTC-mint derivations.
+// Byte-identical to cxfer-core (lib.rs `cdp_*` / `commitment_hash`) AND to ConfidentialPool's
 // on-chain checks (`keccak256(abi.encodePacked("tacit-cdp-debt-v1", controller))` etc.), so the dapp can
 // build OP_CDP_MINT/CLOSE/LIQUIDATE/TOPUP + OP_CBTC_MINT witnesses, and a CollateralEngine is addressed by its
 // derived cUSD asset id. Inject `keccak256` (Uint8Array → 32-byte Uint8Array), e.g. @noble/hashes keccak_256.

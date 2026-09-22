@@ -260,7 +260,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // earlier iteration of pass 2; read its result here (mirrors dapp).
     const etchValid = validatedSet.get(`${etchTxidHex}:0`) === true;
     if (!etchValid) { validatedSet.set(key, false); return false; }
-    // SPEC §5.3 anchor binding: re-derive commit_anchor from the mint reveal's
+    // Anchor binding: re-derive commit_anchor from the mint reveal's
     // parent commit tx so the issuer sig can't be replayed into a different
     // (commit, reveal) pair.
     const mintCommitTx = await fetchTx(tx.vin[0].txid);
@@ -361,7 +361,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
   return false;
 }
 
-// Consumer-side disclosure verifier (SPEC §5.6 verifier requirements 1–4).
+// Consumer-side disclosure verifier (the spec verifier requirements 1–4).
 // Mirror of dapp/tacit.js::verifyDisclosure. Tested in disclosure.test.mjs.
 //
 // Returns { ok: true } or { ok: false, reason }. fail-closed on internal throw.

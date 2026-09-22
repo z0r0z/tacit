@@ -12,7 +12,7 @@
 // (out/eth_set_state.pending.json) that the submit loop commits only after the outer Bitcoin reflection
 // attest succeeds. It builds one witness per new entry (the slot proof + the frontier append_path). It
 // ALSO proves the bitcoinConsumedCount slot (120) every cycle — the guest
-// asserts its folded consumed_count equals it (ops/PLAN-fast-lane-shared-nullifier.md). The cumulative set
+// asserts its folded consumed_count equals it. The cumulative set
 // + the proof PV are emitted as out/eth_set.json — the bundle the Bitcoin fixture builder consumes
 // (buildModeBBatch: { ethPv, crossouts:[{claimId,destCommitment,asset}], consumeds:[{nu,spendRoot}] }).
 //   SOURCE_CONSENSUS_RPC=https://ethereum-sepolia-beacon-api.publicnode.com SOURCE_CHAIN_ID=11155111 \
@@ -592,8 +592,7 @@ fn main() -> anyhow::Result<()> {
             // human/indexing convenience. Must happen BEFORE the accumulator below is built (its leaves and
             // append_path witnesses are a function of this value) -- using the event's raw value here (and
             // building the accumulator from it) would desync the eth-reflection guest's own witness from
-            // the real storage proof, making every consumed-fold batch unprovable. See
-            // contracts/sp1/confidential/DESIGN-unified-source-identity.md.
+            // the real storage proof, making every consumed-fold batch unprovable.
             for r in new_cn.iter_mut() {
                 let key = B256::from(mapping_slot_key(&r.nullifier.0, CONSUMED_SLOT_INDEX));
                 let slot = cs.storage_slots.iter().find(|s| s.key == key)

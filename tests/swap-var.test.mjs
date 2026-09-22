@@ -1,7 +1,7 @@
 // Test suite for T_SWAP_VAR (opcode 0x32) reference impl.
 //
-// Covers the unit-testable subset of SPEC-SWAP-VAR-AMENDMENT.md
-// §"Test plan" (items 1–16) plus the critical inflation defense
+// Covers the unit-testable subset of the spec
+// test plan (items 1–16) plus the critical inflation defense
 // surfaced in the same-day P0 crypto fix.
 //
 // Items requiring signet (reorg, real wallet recovery, multi-block
@@ -43,7 +43,7 @@ function test(label, fn) {
 const ASSET_A = hexToBytes('aa' + '11'.repeat(31));
 const ASSET_B = hexToBytes('bb' + '22'.repeat(31));
 // pool_id = SHA256("tacit-amm-pool-v1" || A || B || fee_bps_LE || capability_flags)
-// per AMM.md §"Pool state" (V3/V4 fee-tier parity). This fixture uses
+// per the spec (V3/V4 fee-tier parity). This fixture uses
 // fee_bps=30, capability_flags=0.
 const POOL_FEE_BPS = 30;
 const POOL_CAPABILITY_FLAGS = 0;
@@ -883,7 +883,7 @@ test('whole-input case: validator accepts NO_CHANGE_SENTINEL', () => {
 // Section 8: Outcome taxonomy — market-order + pass-through
 // ============================================================
 //
-// Test-plan items 9b–9f (SPEC-SWAP-VAR-AMENDMENT §"Test plan"): the
+// Test-plan items 9b–9f: the
 // same-block race resolves without burns, refunds conserve, and the
 // zero-output guard holds.
 

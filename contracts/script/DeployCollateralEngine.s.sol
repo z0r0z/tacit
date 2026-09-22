@@ -106,8 +106,8 @@ contract DeployCollateralEngine is Script {
         engine.setFeeds(address(adapter), c.btcUsd, address(0), address(0));
         engine.setParams(c.maxStaleness, ESCROW_RATIO_BPS, CDP_RATIO_BPS, LIQ_RATIO_BPS);
         // The cBTC escrow margin call (escrowMaintenanceBps / escrowEnforcementModule) is left at its DORMANT
-        // zero default on purpose — it activates post-launch once the deviation guard + pools are live. See
-        // ops/DESIGN-cbtc-escrow-health-module.md. Deliberately NOT set here.
+        // zero default on purpose — it activates post-launch once the deviation guard + pools are live.
+        // Deliberately NOT set here.
         if (admin != msg.sender) engine.transferOwnership(admin); // hand to the DAO/multisig
         vm.stopBroadcast();
 

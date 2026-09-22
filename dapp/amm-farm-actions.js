@@ -186,7 +186,7 @@ export async function buildAndBroadcastFarmInit({
   const inputBlind = BigInt(carved.blinding);
   const cChangeOrSentinel = FARM_NO_CHANGE_SENTINEL;
   // Sentinel-case bulletproof: structural placeholder. Worker accepts
-  // non-empty bytes when V_pt is ZERO (per spec's identity-sentinel rule).
+  // non-empty bytes when V_pt is ZERO (per the spec's identity-sentinel rule).
   const rangeProof = new Uint8Array([0x01]);
 
   // Kernel sig closes the reward-asset side: excess = −r_in.

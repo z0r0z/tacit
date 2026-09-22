@@ -2145,7 +2145,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(address(off) != address(0), "off: unvalidated, unused");
     }
 
-    /// GENERATIONAL anchoring (ops/PLAN-pool-generations.md): a gen deployed with `reflectionResumeDigest`
+    /// GENERATIONAL anchoring: a gen deployed with `reflectionResumeDigest`
     /// = 0 seeds `knownReflectionDigest` to the protocol genesis (gen-1, continues genesis); a NON-ZERO
     /// resume digest seeds it there — a gen-N joining the SHARED Bitcoin reflection mid-stream at near-tip,
     /// so it never replays Bitcoin history. The block-anchor + this digest are the matched resume pair.
@@ -2183,7 +2183,7 @@ contract ConfidentialPoolTest is Test {
         assertTrue(genN.knownReflectionDigest() != REFLECTION_GENESIS_DIGEST, "gen-N is not genesis-anchored");
     }
 
-    /// STAGE 1 — tETH subsumption (ops/PLAN-teth-subsumption.md): NATIVE ETH carries a cross-chain link
+    /// STAGE 1 — tETH subsumption: NATIVE ETH carries a cross-chain link
     /// PINNED AT CONSTRUCTION (tETH = shielded ETH); the permissionless registerWrapped can't set a
     /// native-ETH link, and a FOREIGN ERC20 escrow + a link stays barred. The escrow==supply invariant:
     /// wrap ETH → escrow tracks it; an unwrap draws EXACTLY the value released; and the contract is
@@ -2797,7 +2797,7 @@ contract ConfidentialPoolTest is Test {
     /// spendRoot can't be both a Bitcoin and an EVM root — and is the two-settle on-ramp instead
     /// (test_stage2_swap_via_two_settle is the same shape). The op emits only leaves + nullifiers, so it rides
     /// the relaxed leaves bar; both spent ν are recorded in bitcoinConsumed for the reverse reflection (the
-    /// guest runs check_btc_nonmembership per input — main.rs:750/774). ops/PLAN-fast-lane-trading.md (Flow A).
+    /// guest runs check_btc_nonmembership per input — main.rs:750/774).
     function test_btc_homed_otc_records_consumed() public {
         bytes32 btcRoot = keccak256("btc-pool-otc");
         bytes32 spent = keccak256("btc-spent-otc");
@@ -2832,7 +2832,6 @@ contract ConfidentialPoolTest is Test {
     /// the relaxed leaves bar; both spent ν (funding + seller) are recorded in bitcoinConsumed for the
     /// reverse reflection (the guest runs check_btc_nonmembership per input — main.rs:874/914). A partial
     /// fill emits 4 leaves (buyer fill + seller pay + buyer refund + seller change).
-    /// ops/PLAN-fast-lane-trading.md (Flow A).
     function test_btc_homed_bid_records_consumed() public {
         bytes32 btcRoot = keccak256("btc-pool-bid");
         bytes32 spent = keccak256("btc-spent-bid");
@@ -2866,7 +2865,7 @@ contract ConfidentialPoolTest is Test {
     /// TWO-SETTLE SWAP (still supported alongside the one-settle path): a Bitcoin holder can also swap via
     /// (1) a btcHomed fast-spend that produces an Ethereum LEAF (the on-ramp), then (2) a NORMAL
     /// non-btcHomed swap of that note. This path touches no bar and stays valid; the one-settle atomic
-    /// version (test_btc_homed_swap_records_consumed) is the contract-relaxed shortcut. ops/PLAN-fast-lane-trading.md.
+    /// version (test_btc_homed_swap_records_consumed) is the contract-relaxed shortcut.
     function test_stage2_swap_via_two_settle_no_bar_change() public {
         // A funded pool over (assetId, a fresh assetB).
         MockERC20 tokenB = new MockERC20();
@@ -3196,7 +3195,7 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
-    /// SPEC-BITCOIN-HOOK-AMENDMENT §1.4: attestBitcoinStateProven records each flat (callId, recordHash) pair
+    /// attestBitcoinStateProven records each flat (callId, recordHash) pair
     /// from the reflection's `btcCallsFolded` into `pendingBtcCall` — the guest→contract round-trip the
     /// off-pool BtcCallExecutor reads. Exercises the 15-field relay-PV decode with a NON-empty calls array.
     function test_attest_records_btc_calls() public {

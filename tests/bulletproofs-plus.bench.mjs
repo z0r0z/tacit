@@ -1,4 +1,4 @@
-// Microbenchmarks for the Bulletproofs+ prover and verifier (SPEC.md §5.21).
+// Microbenchmarks for the Bulletproofs+ prover and verifier.
 //
 // Validates the indexer-side claim that BP+ verification is in the same
 // performance class as standard Bulletproofs — i.e. swapping the rangeproof
@@ -10,7 +10,7 @@
 // What this measures, per m ∈ {1, 2, 4, 8}:
 //   - Prover wall time (5 iterations)
 //   - Verifier wall time (20 iterations — verify is fast; want stable mean)
-//   - Proof bytes (sanity check vs the size table in SPEC.md §5.21)
+//   - Proof bytes (sanity check vs the size table in the spec)
 //   - Side-by-side comparison against the standard-Bulletproofs verifier
 //     at the same m, to make the parity statement concrete.
 //

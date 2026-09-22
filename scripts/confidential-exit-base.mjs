@@ -1,4 +1,4 @@
-// Privacy-preserving ETH -> Base L2 exit, ops tooling. See ops/DESIGN-confidential-base-exit.md.
+// Privacy-preserving ETH -> Base L2 exit, ops tooling.
 //
 // Flow: wrap ETH into the shielded pool (join the anonymity set) -> dwell -> unwrap straight to a
 // recipe-bound escrow -> the escrow atomically deposits into Base's own (already-trustless)

@@ -184,7 +184,7 @@ export function makeBurnDepositProvenance({
 
   // Verify a T_MINT (0x24) reveal is an AUTHORIZED supply leaf for a MINTABLE asset → [leafOutpoint,
   // leafCommitmentHash] (a validLeaves entry), or null (admit nothing). Mirror of
-  // burn_deposit::verify_cmint_authorized — see ops/DESIGN-trustless-asset-onboarding.md §6.1. Checks:
+  // burn_deposit::verify_cmint_authorized. Checks:
   //   - mintable: mintAuthority != 0 (a fixed-supply asset has none);
   //   - asset-bound: the reveal's cmint envelope declares THIS asset;
   //   - commit/reveal pair: the reveal's first input spends the commit tx;

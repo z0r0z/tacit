@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Confidential OP_SWAP driven by the CANONICAL AMM clearing solve (tests/amm-clearing.mjs, which
-// mirrors AMM.md §4 byte-for-byte). Instead of hand-picking a price, this derives the uniform
+// mirrors the spec byte-for-byte). Instead of hand-picking a price, this derives the uniform
 // batch price from the pool reserves + the intents exactly as the Bitcoin AMM does, normalizes it
 // to the guest's B-per-A orientation, and confirms the resulting confidential batch satisfies
 // every OP_SWAP guest assertion — crucially the constant-product non-decrease, which is what

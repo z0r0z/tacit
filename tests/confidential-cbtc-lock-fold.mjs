@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // cBTC.zk self-custody lock fold — JS mirror of cxfer-core fold_cbtc_lock / fold_cbtc_lock_spends, in the
-// TRACK-NOT-MINT model (ops/DESIGN-confidential-defi-v1.md §3): the fold TRACKS the lock + accrues backing
+// TRACK-NOT-MINT model: the fold TRACKS the lock + accrues backing
 // and returns the per-cycle {outpoint, vBtc, commitment} delta; it does NOT mint a note (the cBTC note is
 // minted later by ConfidentialPool.mintCbtc/OP_CBTC_MINT, gated on the lock + a native-ETH escrow, where the
 // value-opening is checked). Validates the gates (wrong-asset / vout-0 / non-curve commitment / duplicate

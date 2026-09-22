@@ -1,5 +1,5 @@
 // Reference implementation of the blinded-pubkey commit construction
-// from SPEC-BLINDED-PUBKEY-AMENDMENT.md, for use in unit + signet tests.
+// from the spec, for use in unit + signet tests.
 //
 // Standalone module — does NOT modify dapp/tacit.js. Once these
 // primitives are validated by the test suite + signet round-trip,
@@ -366,8 +366,8 @@ export function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
   if (!prevoutTx || !Array.isArray(prevoutTx.outputs) || prevoutTx.outputs.length === 0) {
     return false;
   }
-  // The envelope opcode for tacit txs lives in the OP_RETURN at vout[0]
-  // (per SPEC.md §5.5). Locate it.
+  // The envelope opcode for tacit txs lives in the OP_RETURN at vout[0].
+  // Locate it.
   const vout0 = prevoutTx.outputs[0];
   if (!vout0 || !vout0.script || vout0.script.length === 0) return false;
   // OP_RETURN scripts start with 0x6a (OP_RETURN); the payload follows
@@ -386,7 +386,7 @@ export function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
   const opcode = script[opcodeIndex];
   if (!MIXER_EMITTING_OPCODES.has(opcode)) return false;
   // Additional check: only the recipient marker outputs are mixer-derived.
-  // For T_WITHDRAW per SPEC.md §5.11, the recipient marker is vout[0]'s
+  // For T_WITHDRAW per the spec, the recipient marker is vout[0]'s
   // OP_RETURN-companion; for v1 we conservatively classify ALL outputs
   // of a mixer-emitting tx as mixer-derived, since the dust outputs at
   // any vout are protocol-emitted under the withdrawer's chosen recipient.

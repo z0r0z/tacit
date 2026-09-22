@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// BIP-340-faithful adaptor signatures (ops/PLAN-confidential-adaptor-swap.md phase 1). THE decisive
+// BIP-340-faithful adaptor signatures. THE decisive
 // property: a completed adaptor signature is accepted by the REAL kernel verifier `verifySchnorr`
 // (dapp/bulletproofs.js) — so it locks an actual Tacit kernel/opening Schnorr sig, not a toy one.
 // Locks: completing reveals t = σ·(s − s̃); the R'=R+T even-y parity is handled for BOTH parities;

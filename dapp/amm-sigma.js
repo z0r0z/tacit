@@ -3,14 +3,14 @@
 // tests/amm-sigma-xcurve.mjs — math identical, imports adjusted for the
 // dapp bundle.
 //
-// Per AMM.md §"Hybrid commitments (secp256k1 + BabyJubJub)" — proves
+// Proves
 // knowledge of (a, r_secp, r_BJJ) with shared 320-bit integer `z_a` so
 // neither side can claim a different hidden amount.
 //
 // Wire format (169 bytes): A_secp(33) || A_BJJ(32) || z_a(40) || z_r_secp(32) || z_r_BJJ(32)
 // Soundness: the FS challenge is 128-bit, but z_a is reduced modulo two DIFFERENT group orders (secp256k1
 // and BabyJubJub), so a cheating prover's residue-gap slack narrows the actual bound to ≈2^-125 (not 2^-128).
-// Still adequate; see ops/AUDIT-FLAG-swapbatch-value-bound.md for the residue-gap analysis.
+// Still adequate.
 
 import { secp, sha256, concatBytes, hmac } from './vendor/tacit-deps.min.js';
 import {

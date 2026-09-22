@@ -1,6 +1,6 @@
 // Asset-id + pool-id derivation correctness suite.
 //
-// Verifies SPEC §4 (CETCH/T_PETCH) and AMM.md §"Pool state" (POOL_INIT LP)
+// Verifies the CETCH/T_PETCH and POOL_INIT LP
 // asset-id origins and the three-origin resolution rule.
 
 import { sha256 } from '@noble/hashes/sha256';

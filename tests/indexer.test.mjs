@@ -87,7 +87,7 @@ class TxStore {
 //
 // `commitTxRef`: optional { txid, vout } that overrides vin[0]'s outpoint —
 // needed for T_MINT validation, which fetches that outpoint's tx and reads
-// its vin[0] to derive commit_anchor (SPEC §5.3). Defaults to a random
+// its vin[0] to derive commit_anchor. Defaults to a random
 // outpoint when not provided (CETCH/CXFER/BURN don't fetch commit-tx).
 function makeEnvelopeTx(envelopeBytes, assetInputs = [], commitTxRef = null) {
   const vin = [{
@@ -187,7 +187,7 @@ function synthCXFER(store, { assetIdHex, inputs, outputs }) {
 }
 
 // ---- Synthesize CMINT ----
-// Includes a commit-stub tx so the validator's anchor lookup (SPEC §5.3)
+// Includes a commit-stub tx so the validator's anchor lookup
 // resolves. The mint reveal's vin[0].txid points at the commit stub.
 function synthMINT(store, { assetIdHex, etchTxid, amount, blinding, mintAuthorityPriv, fundingOutpoint = null }) {
   const { proof, commitments } = bpRangeAggProve([amount], [blinding]);

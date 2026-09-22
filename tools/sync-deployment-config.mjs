@@ -1,5 +1,4 @@
-// Wire a DeployV1Suite manifest (contracts/deployments/<chainid>.json) into the dapp + worker config,
-// closing the manual step in ops/CHECKLIST-sepolia-full-suite.md §4.
+// Wire a DeployV1Suite manifest (contracts/deployments/<chainid>.json) into the dapp + worker config.
 //
 // Writes/patches two locations:
 //   1. dapp/confidential-crossout-consumer.js  CONFIDENTIAL_POOL_DEPLOYMENTS[net] = { pool, deployBlock }

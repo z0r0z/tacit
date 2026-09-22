@@ -1,6 +1,6 @@
 // Test suite for T_FARM_INIT / T_LP_BOND / T_LP_UNBOND reference impl.
 //
-// Covers SPEC-AMM-FARM-AMENDMENT.md round-1 merge criteria:
+// Covers the round-1 merge criteria:
 //   - Wire-format roundtrip (encode → decode → re-encode byte-identity)
 //   - Validator happy paths (single-bond, multi-bond, multi-farm,
 //     pre-start, post-end, treasury drain)
@@ -723,7 +723,7 @@ test('crystallize: farm with bonded delegates emit correctly across 3 events', (
 // binding for launcher/bonder/unbonder sigs (the OP_RETURN(SHA256(payload))
 // gate alone provides replay protection).
 //
-// In the merge to SPEC.md, we'll either:
+// In the merge to the spec, we'll either:
 //   (a) Drop envelope_hash from the domain msgs (recommended), OR
 //   (b) Add a sign-twice convention (signature 1 → envelope_hash →
 //       signature 2 binds envelope_hash; verifier checks signature 2).

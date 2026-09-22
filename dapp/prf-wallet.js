@@ -57,7 +57,7 @@ export async function prfRegister(label) {
   const rpId = window.location.hostname;
   // user.id MUST be opaque per WebAuthn — deriving it from the label means
   // two registrations with the same label collide on user.id and the second
-  // overwrites the first per spec. Use random bytes; the label is purely a
+  // overwrites the first per the spec. Use random bytes; the label is purely a
   // human-readable display name.
   const userId = crypto.getRandomValues(new Uint8Array(16));
   const publicKey = {

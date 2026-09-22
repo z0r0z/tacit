@@ -9,8 +9,7 @@
 #
 # A FAIL is a regression and fails the exit code. A BLOCKED gate is an
 # expected-pending milestone (an off-box prove, an unbuilt subsystem); it does
-# NOT fail the exit, but its layer is not "ready" until the block clears. This is
-# the operational companion to ops/RUNBOOK-confidential-pool-readiness.md.
+# NOT fail the exit, but its layer is not "ready" until the block clears.
 #
 # Usage:  bash contracts/sp1/confidential/readiness-gate.sh
 #   READINESS_FAST=1   skip the slow stateful invariant fuzzing (quick iteration)

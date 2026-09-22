@@ -1,8 +1,8 @@
 // T_SWAP_ROUTE (opcode 0x33) reference implementation.
 //
-// Atomic multi-hop AMM routing. Spec: SPEC-SWAP-ROUTE-AMENDMENT.md.
+// Atomic multi-hop AMM routing.
 //
-// Cryptographic reuse with T_SWAP_VAR (§5.20):
+// Cryptographic reuse with T_SWAP_VAR:
 //   - Same `tacit-kernel-v1` domain tag for kernel sig (composition.mjs
 //     computeKernelMsg).
 //   - Same m=2 aggregated bulletproof wire format over the trader's
@@ -161,7 +161,7 @@ function decodeHop(payload, o) {
 // Intent-msg construction
 // =========================================================================
 
-// Per SPEC-SWAP-ROUTE-AMENDMENT §"Intent message + signature". Returns the
+// Per the spec. Returns the
 // 32-byte SHA-256 hash the trader signs with BIP-340.
 export function buildSwapRouteIntentMsg({
   traderPubkey,
@@ -415,8 +415,8 @@ export function computeSwapRouteEnvelopeHash(payload) {
 //   delta_out * (R_in * 10000 + (10000 − fee_bps) * delta_in)
 //      ≤ R_out * (10000 − fee_bps) * delta_in
 //
-// Identical to the per-pool floor used in T_SWAP_BATCH (AMM.md
-// §"CFMM curve floor identity") and T_SWAP_VAR. Per-trader floor dust
+// Identical to the per-pool floor used in T_SWAP_BATCH (the spec's
+// CFMM curve floor identity) and T_SWAP_VAR. Per-trader floor dust
 // can only push the actual delta_out DOWN from the curve (toward pool's
 // favor), so the indexer enforces the upper-bound inequality.
 
@@ -444,7 +444,7 @@ export function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
 //                        reserve_A, reserve_B, tradable }.
 //   currentHeight      : block height at confirmation
 //   opReturnData       : REQUIRED — 32-byte data from vout[0]'s OP_RETURN.
-//                        Checked against SHA256(payload) per SPEC §5.22 step 1.
+//                        Checked against SHA256(payload) per the spec.
 //   inputCommitment    : REQUIRED — 33-byte compressed Pedersen commit or a
 //                        ProjectivePoint; the on-chain commitment at vin[1].
 //                        Without binding env.cInSecp to the actual UTXO, the

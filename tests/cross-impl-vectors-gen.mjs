@@ -62,8 +62,8 @@ emit('worker_pubkey_W2', '0x' + bytesToHex(pubkeyOf(CANONICAL.worker_privkey_W2)
 
 // ===== Pool & LP asset IDs =====
 // Canonical pair: TAC + cBTC, lex-ascending → TAC (0xaa…) < cBTC (0xbb…).
-// pool_id discriminators now include fee_bps + capability_flags per
-// AMM.md §"Pool state" (V3/V4 fee-tier parity). Canonical test vectors
+// pool_id discriminators now include fee_bps + capability_flags
+// (V3/V4 fee-tier parity). Canonical test vectors
 // use fee_bps=30 (standard 3 bps tier), capability_flags=0 (default).
 const CANONICAL_FEE_BPS = 30;
 const CANONICAL_CAPABILITY_FLAGS = 0;

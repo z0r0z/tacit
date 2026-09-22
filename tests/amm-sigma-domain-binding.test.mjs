@@ -2,7 +2,7 @@
 //
 // The Fiat-Shamir challenge of the sigma cross-curve proof is
 //   e = SHA256(domain || C_secp || C_BJJ || A_secp || A_BJJ)[-16:]
-// where `domain` is "tacit-amm-xcurve-v1" (AMM.md §3.10 + amm-sigma-xcurve.mjs:45).
+// where `domain` is "tacit-amm-xcurve-v1" (amm-sigma-xcurve.mjs:45).
 //
 // Soundness REQUIRES that any change to inputs feeding the challenge — domain,
 // commitments, announce points — yields a different e with overwhelming

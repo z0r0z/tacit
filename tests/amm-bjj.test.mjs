@@ -3,7 +3,7 @@
 // Pins the canonical H_BJJ / G_BJJ coordinates so any future drift in the
 // derivation algorithm (typo in domain tag, wrong endianness, wrong sqrt sign
 // rule) is caught immediately. The vectors here are the normative spec values
-// once AMM ships; SPEC §3.9 will reference them.
+// once AMM ships; the spec will reference them.
 
 import {
   P_FR, A_BJJ, D_BJJ, ORDER_BJJ, N_BJJ, COFACTOR_BJJ,
@@ -78,7 +78,7 @@ test('n_BJJ · P == identity for any prime-subgroup P', () => {
 console.log('\nNUMS generator pinned vectors (any change = breaking spec change)');
 //
 // Canonical BabyJubJub NUMS generators for the tacit AMM, derived by
-// try-and-increment per AMM.md §"BabyJubJub NUMS try-and-increment" with
+// try-and-increment per the spec with
 // seeds "tacit-amm-bjj-H-v1" / "tacit-amm-bjj-G-v1" (UTF-8) and counter_LE(u32).
 //
 //   H_BJJ: counter = 2

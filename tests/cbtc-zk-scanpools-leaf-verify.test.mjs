@@ -1,4 +1,4 @@
-// SPEC §5.11.4 three-verifier model — defence-in-depth re-verify of
+// Three-verifier model — defence-in-depth re-verify of
 // cBTC.zk slot leaves during the dapp's scanPools sweep.
 //
 // What this guards against:

@@ -1,4 +1,4 @@
-// cBTC redemption — a trustless atomic cBTC<->BTC swap (ops/DESIGN-cbtc-redemption.md).
+// cBTC redemption — a trustless atomic cBTC<->BTC swap.
 //
 // A fungible cBTC holder can't unlock a stranger's self-custody lock, so redemption pairs a redeeming
 // HOLDER (cBTC -> BTC) with an EXITING LOCKER (their lock's BTC -> cBTC, to close out) and binds the

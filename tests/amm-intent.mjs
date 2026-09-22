@@ -1,6 +1,6 @@
 // Intent message construction + signing + cancel + envelope_hash + qualifying_set_hash.
 //
-// Per AMM.md §"Cross-asset authorization for swaps" — canonical intent_msg
+// The canonical intent_msg
 // commits to all settler-substitutable fields so the trader's BIP-340 sig
 // binds the intent to a single pool, direction, input set, commitment pair,
 // and tip/min_out/expiry parameters.
@@ -73,7 +73,7 @@ export function buildIntentMsg({
   const pid = asBytes(poolId, 32, 'poolId');
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0 or 1');
   if (tipAsset !== 0 && tipAsset !== 1) throw new Error('tipAsset must be 0 or 1');
-  // AMM.md §"Tip mechanics" §3 normatively requires tip_asset to equal
+  // The spec normatively requires tip_asset to equal
   // direction (tip is paid on the input side). The validator
   // hardcodes this when reconstructing intent_msg for sig verification, so a
   // trader who signs with a divergent tip_asset cannot have their intent
@@ -170,7 +170,7 @@ export function buildCanonicalListBytes(intentIds) {
                             return 0;
                           });
   if (sorted.length > 0xff) throw new Error('canonical list too large (> 255 intents)');
-  // u8 count prefix per AMM.md §"On-chain commitment to the canonical list"
+  // u8 count prefix per the spec
   // — matches the validator's computeQualifyingSetHash. N_MAX=16 fits in u8.
   const parts = [new Uint8Array([sorted.length])];
   for (const id of sorted) parts.push(id);

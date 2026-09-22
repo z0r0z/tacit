@@ -183,7 +183,7 @@ describe('LP shares are byte-compatible with mixer T_DEPOSIT (mixer-ability)', (
 
 describe('Holdings-display metadata gap (mainnet-launch concern)', () => {
   test('there is no _lpSyntheticMeta in the dapp — LP UTXOs would show untickered in Holdings tab', () => {
-    // This test documents the gap, not the fix. SPEC and dapp have:
+    // This test documents the gap, not the fix. The spec and dapp have:
     //   - _cbtcTacSyntheticMeta(assetIdHex) → { ticker: 'cBTC.tac.<denom>', decimals }
     //   - getAssetMeta(assetIdHex) → registry lookup, or falls through
     // What's MISSING:
@@ -370,7 +370,7 @@ describe('Cross-protocol invariants (LP share ↔ standard asset machinery)', ()
   });
 
   test('LP shares from a fee-claim flow share asset_id with LP_ADD-minted shares', () => {
-    // SPEC: T_PROTOCOL_FEE_CLAIM mints `claimAmount` of lp_asset_id at the
+    // T_PROTOCOL_FEE_CLAIM mints `claimAmount` of lp_asset_id at the
     // founder. This is the SAME asset_id as the LP shares minted at POOL_INIT
     // and LP_ADD (deriveLpAssetId(poolId)). That means:
     //   - The founder's fee-claim UTXO is fungible with LP shares.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// REAL amm_swap_batch Groth16 proofs for the box POSITIVE batch vector (ops/REPROVE-amm-box-vectors.md #10):
+// REAL amm_swap_batch Groth16 proofs for the box POSITIVE batch vector:
 // n=1, n=2 and a full n=16 batch, each proven under the FINALIZED AMM ceremony zkey so the artifacts verify
 // against the guest's baked batch_vk() (contracts/sp1/confidential/fixtures/swap_batch_vk.json).
 //

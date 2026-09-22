@@ -1,4 +1,4 @@
-// SPEC §5.11.3 — Phase 2 ceremony coordinator endpoints.
+// Phase 2 ceremony coordinator endpoints.
 //
 // Coordinator state lives behind /ceremony/init, /ceremony/:hash/contribute,
 // /ceremony/:hash/finalize, /ceremony/:hash/reset, /ceremony/:hash (state),
