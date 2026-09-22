@@ -735,6 +735,38 @@ signature or kernel response — real, tested cryptography, but not a witness wi
 lock, `asset ‖ locker ‖ recipient ‖ refundPub ‖ amount ‖ Tx ‖ Ty ‖ deadline` followed by the spent note's
 membership witness and opening, then the locked output's commitment and opening.
 
+## 5f. Bridging between chains
+
+The normative description is [SPEC §6](../SPEC.md#6-reflection-and-the-bridge); this is the practical
+shape of each direction, with a real, fully-settled TAC round trip
+([`DEPLOYMENTS.md#tac`](./DEPLOYMENTS.md#tac)) as proof both directions actually work end to end.
+
+**Ethereum → Bitcoin** is one call:
+
+```js
+const r = await tacit.crossOut({
+  walletPriv, notes, amount, destOwner, destChain: 1,   // destOwner: the recipient's x-only Taproot key
+});
+```
+
+`notes` must be one asset and sum to exactly `amount + fee` — a bridge burn has no change output, so
+pre-split first if you're not sending a note's full value. `destOwner` has to be a real, non-zero x-only
+key: an owner label here would mint a note nothing can spend. This settles `OP_BRIDGE_BURN` on the pool;
+reflection later proves it to Bitcoin and `T_CROSSOUT_MINT` re-mints the note there — no separate action
+needed once the crossOut itself settles.
+
+**Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
+(`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
+confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id — a
+relayer or the reflection cron completes this side, not the sender. TAC is the one asset whose Bitcoin-side
+transfers reflect unbound already ([SPEC §6.2](../SPEC.md#62-bitcoin--ethereum)), so a plain Bitcoin-side
+send needs no separate onboarding step before it can bridge; other assets onboard through
+`T_CXFER_BOUND`, a bridge burn, or as AMM/farm/bid outputs first.
+
+The TAC round trip linked above is a real, fully independent-verified example of exactly this: an Ethereum
+crossOut, its Bitcoin-side re-mint, a Bitcoin-side return burn, and the mint back on Ethereum — four
+separate settled transactions, each hash checked against live chain state before being written down here.
+
 ## 6. Relay API
 
 Base `https://api.tacit.finance`. Everything below is public; nothing needs a key.

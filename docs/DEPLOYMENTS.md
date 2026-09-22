@@ -68,10 +68,11 @@ untouched since.
 
 | Field | Value |
 | --- | --- |
+| Asset id (the canonical Tacit protocol id, both chains) | `0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b` |
 | Genesis (`T_CETCH` reveal) | [`e2d10be1…ee2ca481e`](https://mempool.space/tx/e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e), height 948242 (2026-05-07) |
 | Total supply | 21,000,000 TAC — the on-chain commitment opens to this exactly; the `(supply, blinding)` is disclosed and pinned at [its metadata CID](https://ipfs.filebase.io/ipfs/bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai), so anyone can re-derive and check it against the chain alone |
-| Logo | [pinned on IPFS](https://ipfs.filebase.io/ipfs/bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m) (PNG; also `dapp/tac-logo.png` in this repo) |
-| Ethereum ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279), asset id `0xf0bbe868…3f94762b` |
+| Logo | [PNG, pinned on IPFS](https://ipfs.filebase.io/ipfs/bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m) alongside the CETCH metadata (also `dapp/tac-logo.png` in this repo); the SVG mark inlined on-chain in [TAC's token.list.wei listing](https://token.list.wei.limo) is mirrored at [`assets/tac-onchain.svg`](../assets/tac-onchain.svg) |
+| Ethereum ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) |
 | Bridged supply | the ERC-20's live `totalSupply()` — currently ~2.5M TAC, all of it minted only against a proven Bitcoin-side burn |
 | Bitcoin activity | ~1,957 holders; 4,166 confidential transfers; 229 orderbook trades against real BTC since 2026-05-24 |
 
