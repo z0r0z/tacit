@@ -60,6 +60,31 @@ under its Bitcoin-side (tETH) link id, `0x3cba71e1…03126f34`, with scale 1e10.
 
 The cUSD asset id is `keccak256("tacit-cdp-debt-v1" ‖ engine)`, so it is specific to this CollateralEngine.
 
+### TAC
+
+TAC is the protocol's native asset ([SPEC §7.3](../SPEC.md#73-tac)): "Tacit Coin" on Bitcoin, "Tacit Token" as
+its Ethereum ERC-20 name. Issued once via `T_CETCH` with a zero mint authority, so its supply is fixed and
+untouched since.
+
+| Field | Value |
+| --- | --- |
+| Genesis (`T_CETCH` reveal) | [`e2d10be1…ee2ca481e`](https://mempool.space/tx/e2d10be19c2b73b86e14be99dc237a3d999ba3dfbe6f3e3714590acee2ca481e), height 948242 (2026-05-07) |
+| Total supply | 21,000,000 TAC — the on-chain commitment opens to this exactly; the `(supply, blinding)` is disclosed and pinned at [its metadata CID](https://ipfs.filebase.io/ipfs/bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai), so anyone can re-derive and check it against the chain alone |
+| Logo | [pinned on IPFS](https://ipfs.filebase.io/ipfs/bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m) (PNG; also `dapp/tac-logo.png` in this repo) |
+| Ethereum ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279), asset id `0xf0bbe868…3f94762b` |
+| Bridged supply | the ERC-20's live `totalSupply()` — currently ~2.5M TAC, all of it minted only against a proven Bitcoin-side burn |
+| Bitcoin activity | ~1,957 holders; 4,166 confidential transfers; 229 orderbook trades against real BTC since 2026-05-24 |
+
+**A full round trip, ETH → BTC → ETH**, each leg a real settled transaction: a pool crossOut
+([`0xc7bfc7ce…3c29a8f`](https://etherscan.io/tx/0xc7bfc7cec938e59c5d256d1c44c2aea5269eb7c237ac018878f21b2a93c29a8f)),
+its Bitcoin-side re-mint (commit [`285bea41…60c10b`](https://mempool.space/tx/285bea41d08e51233a73b3b33630ce6053878a78f217f1c9f58e0b616e60c10b)
+/ reveal [`aaa68792…97bcf2`](https://mempool.space/tx/aaa687924435ef64f056aa83beb7fabef4f57087f315655b52c596f83897bcf2)),
+a return burn on Bitcoin (commit [`2d98a89e…3117944`](https://mempool.space/tx/2d98a89e53c9266ab4fd8bfac1b93e3ae43410b5721eb08ca85ff36c73117944)
+/ reveal [`7320b6b6…36b0fbb`](https://mempool.space/tx/7320b6b654726ba99489bcf47f3d31dcf8a87040241def827b5fccd8836b0fbb)),
+and the mint back on Ethereum
+([`0f0793f6…006465bb`](https://etherscan.io/tx/0x0f0793f61e57a0eb40ef551ef516e9a33ba0f270343abedf4ea014aa006465bb)) —
+the same note, both chains, proven twice.
+
 ### TAC launch farms
 
 A reward program on the pool, outside the CreateX manifest. The `FarmManager` is a pool controller (the pool

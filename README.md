@@ -37,7 +37,8 @@ or attestor set signs a bridge message.
 **On Bitcoin**
 - **Issue assets** with hidden or fair-launch supply (`T_CETCH`, `T_PETCH`/`T_PMINT`). The issuer can
   publish its supply opening so anyone can audit it. TAC, the native asset, was issued with `T_CETCH`
-  and a zero mint authority, so its supply is fixed.
+  and a zero mint authority, so its supply is fixed ([genesis, supply and its Ethereum
+  ERC-20](./docs/DEPLOYMENTS.md#tac)).
 - **Transfer confidentially.** Amounts are hidden, conservation is proven by a kernel signature, and
   range proofs are Bulletproofs+. Recipients recover credits from their key alone.
 - **Trade atomically.**

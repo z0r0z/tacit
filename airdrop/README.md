@@ -14,6 +14,10 @@ Bitcoin claim-pool ops `T_DROP` / `T_DCLAIM` read for snapshot verification (leg
 
 zOrg eligibility was earned through ETH spending (share purchases, protocol fees or LP farming on Ethereum), and
 fulfillment paid Bitcoin fees to broadcast the envelopes, so both sides of the distribution carried real cost.
+Fulfillment itself ran through one treasury wallet
+([`bc1qcpxqqry2k3lt9j8nmmuwxhf0k3hp8h64xwlckq`](https://mempool.space/address/bc1qcpxqqry2k3lt9j8nmmuwxhf0k3hp8h64xwlckq)),
+which took in 1,977 claim payments and answered them across 728 Bitcoin transactions — each covering several
+claimants at once, the same batching principle `T_AXFER`'s batched takes formalize today.
 
 TAC is the protocol's native asset ([SPEC §7.3](../SPEC.md#73-tac)); the [whitepaper](../whitepaper/WHITEPAPER.md)
 describes its role.
