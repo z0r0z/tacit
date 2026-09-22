@@ -36,7 +36,7 @@ function ok(name, cond, detail) {
 }
 function group(t) { console.log(`\n${t}:`); }
 
-// ============== Reference implementation (mirror of dapp/tacit.js §5.26) ==============
+// ============== Reference implementation (mirrors dapp/tacit.js's slot-note encryption) ==============
 
 const SLOT_NOTE_VERSION_TAG = new TextEncoder().encode('tacit-slot-note-v1');
 const SLOT_NOTE_KIND_ROTATE = 0x01;
@@ -280,9 +280,8 @@ for (const amt of [1n, 100_000n, 1_000_000n, 21_000_000_00000000n, (1n << 63n) -
 // ============== group 7: domain separation ==============
 group('Domain separation (negative test)');
 
-// A "v2" domain that an attacker might attempt to substitute. Different
-// derived key → decryption fails. This is implicit AEAD behavior but worth
-// pinning so a future code change to the domain tag is caught.
+// A different domain tag produces a different derived key, so decryption fails. This is implicit AEAD
+// behavior but worth pinning so a future change to the domain tag is caught.
 async function _wrongDomainSymKey(sharedX32) {
   const wrongDomain = new TextEncoder().encode('tacit-slot-note-v2-attacker');
   const keyMaterial = sha256(concatBytes(wrongDomain, sharedX32));

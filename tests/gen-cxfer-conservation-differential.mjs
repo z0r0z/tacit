@@ -97,10 +97,10 @@ vectors.push(vec('zero_output_point', ASSET, ins2, [0x77n, 0x88n], [600n, 400n],
 //     that does NOT cover a non-zero value — must reject both (mint-from-nothing class).
 vectors.push((() => {
   // Zero inputs (Σin = 0), one real output to value 50 / blinding 0x11. The kernel verify key is
-  // P = −C_out = −(50·H + 0x11·G); the attacker cannot sign under it (needs dlog(H)), so they sign
-  // with the dlog-known key −0x11 (as if value were 0). The kernel message is built over the REAL
-  // (value-50) wire commitment, so the challenge e is honest, but the sig was made for the wrong key
-  // → reject on both sides. This is the mint-from-nothing class.
+  // P = −C_out = −(50·H + 0x11·G), whose discrete log is unknown; the vector instead signs under
+  // the dlog-known key −0x11 (as if value were 0). The kernel message is built over the REAL
+  // (value-50) wire commitment, so the challenge e is honest, but the sig is for the wrong key
+  // → reject on both sides.
   const asset = ASSET;
   const realPt = prover.commit(50n, 0x11n);
   const realComp = compress(realPt);

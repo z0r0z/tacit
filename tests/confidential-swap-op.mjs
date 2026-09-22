@@ -31,10 +31,10 @@ const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const FEE_BPS = 30; // 0.3% fee tier (one pool per (canonical pair, fee))
 const ZEROS = pool.zeros; // 32 sibling-zeros for a placeholder path
 
-// Build a batch from intent specs at the DETERMINISTIC fee-clearing price (the guest now enforces it,
-// so an arbitrary price no longer settles): sum the gross flows, solve the price for FEE_BPS, derive
-// each input note, place every input leaf in one tree, patch the paths, and verify. An explicit
-// `feeBps` override builds at a DIFFERENT tier's price (to exercise the fee-enforcement rejection).
+// Build a batch from intent specs at the deterministic fee-clearing price (the guest enforces it, so
+// only that price settles): sum the gross flows, solve the price for FEE_BPS, derive each input note,
+// place every input leaf in one tree, patch the paths, and verify. An explicit `feeBps` override builds
+// at a different tier's price (to exercise the fee-enforcement rejection).
 function assemble({ reserveAPre, reserveBPre, specs, priceFeeBps }) {
   let X = 0n, Y = 0n;
   for (const s of specs) { if (s.direction === 'A->B') X += BigInt(s.amountIn); else Y += BigInt(s.amountIn); }
@@ -95,10 +95,10 @@ function assemble({ reserveAPre, reserveBPre, specs, priceFeeBps }) {
   ok('two-sided batch clears at one uniform fee-correct price (A-dominant cross), k holds');
 }
 
-// ───────────────── 3. clearing a fee pool at the ZERO-fee price is rejected ─────────────────
-// The fee-enforcement attack: in a 30bps pool, clear the batch at the (more generous) ZERO-fee price.
-// Per-intent clearing is self-consistent and k still holds (zero-fee is the floor), so the OLD guest
-// would accept it and starve LPs of the fee. The new guest re-derives the 30bps price and rejects.
+// ───────────────── 3. clearing a fee pool at the zero-fee price is rejected ─────────────────
+// In a 30bps pool, clearing the batch at the (more generous) zero-fee price is per-intent
+// self-consistent and k still holds (zero-fee is the floor), so the guest re-derives the 30bps
+// price itself rather than trust the batch, or LPs would be starved of the fee.
 // Large reserves so the fee actually moves the floored price (at 1000/1000 the dust swallows it).
 {
   const RA = 1_000_000n, RB = 1_000_000n, IN = 100_000n;

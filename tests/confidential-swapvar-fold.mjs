@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// swap_var (T_SWAP_VAR 0x32) fold — JS mirror of cxfer-core fold_swap_var (C-01 current-price + refund floor).
+// swap_var (T_SWAP_VAR 0x32) fold — JS mirror of cxfer-core fold_swap_var (current-price + refund floor).
 // Validates: a FRESH swap clears at the current price and onboards the guest-FORMED receipt; a STALE swap (the
 // reserves moved past the declared snapshot) still clears at the MOVED price rather than skipping; an
 // over-slipped swap (min_out above what the pool clears) REFUNDS the exact input at vout 3 without touching the
@@ -126,7 +126,7 @@ const doFold = (ctx, o = {}) => {
 // ── STALE (reserves moved past the declared snapshot, min_out still met) → clears at the MOVED price ──
 {
   // Declared snapshot is the fresh reserves, but the pool has ADVANCED (a concurrent swap). The fold prices
-  // against the current reserves and still onboards a receipt (closes C-01: no skip-and-strand).
+  // against the current reserves and still onboards a receipt (no skip-and-strand).
   const movedA = reserveA + 500000n, movedB = reserveB - 900000n;
   const ctx = build({ rA: movedA, rB: movedB, minOut: 0n });
   const noteBefore = ctx.st.counts().note;

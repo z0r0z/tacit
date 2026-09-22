@@ -6,7 +6,7 @@
 //   - Same `tacit-kernel-v1` domain tag.
 //   - Same single-asset excess-scalar kernel-sig closure shape:
 //       P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp
-//   - Same aggregated bulletproof wire format, now m=1 over (C_change_or_sentinel) alone: the receipt is
+//   - Same aggregated bulletproof wire format, m=1 over (C_change_or_sentinel) alone: the receipt is
 //     formed by the consumer from the recomputed clearing amount, so its range holds by arithmetic.
 //
 // Differences from T_AXFER_VAR worth calling out:
@@ -14,9 +14,8 @@
 //     cross-asset receipt is bound out-of-kernel via intent_sig +
 //     a directly-published r_receipt opening check.
 //   - delta_in_total occupies the slot T_AXFER_VAR uses for burned_amount.
-//   - The receipt commit's binding to delta_out is INSIDE the validator,
-//     via r_receipt — this closes the inflation gap surfaced in the
-//     same-day P0 crypto fix (2026-05-15).
+//   - The receipt commit's binding to delta_out is INSIDE the validator, via r_receipt — an unbound
+//     receipt commit would otherwise let a coordinator inflate delta_out past what the curve clears.
 //
 // NO Groth16 in this opcode; curve recompute is pure indexer arithmetic.
 //
@@ -27,7 +26,7 @@
 //                       deriveSwapVarTipScalar / deriveSwapVarReceiptPubkey
 //   - Curve: curveDeltaOut (single-trade against-curve recompute, u256)
 //   - Tick-fan: buildTickFan (K log-spaced ticks ∈ [Δmin, Δmax])
-//   - Validator: validateSwapVar (mirrors §"Indexer validation algorithm")
+//   - Validator: validateSwapVar
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
@@ -118,11 +117,10 @@ function canonicalOutpoint(txidHex, vout) {
 // HMAC derivations
 // =========================================================================
 
-// Per §"Receipt-address blinding". r_receipt is published on chain
-// alongside the envelope so the indexer can directly verify
+// r_receipt is published on chain alongside the envelope so the indexer can directly verify
 // C_receipt_secp opens to delta_out.
 //
-// Note: derivation is tick-INDEPENDENT — the trader anchors on
+// Derivation is tick-INDEPENDENT — the trader anchors on
 // (pool_id, asset_input_outpoint), which are fixed across a tick-fan.
 // The same r_receipt scalar works for every K candidate Δ.
 export function deriveSwapVarReceiptScalar({ traderPrivkey, poolId, assetInputOutpoint }) {
@@ -135,8 +133,7 @@ export function deriveSwapVarReceiptScalar({ traderPrivkey, poolId, assetInputOu
   return modN(bytesToBigintBE(seed));
 }
 
-// Per §"Receipt-address blinding". Used to derive the P2WPKH that
-// receives the asset-B receipt UTXO. The trader recovers the pubkey
+// Used to derive the P2WPKH that receives the asset-B receipt UTXO. The trader recovers the pubkey
 // via the same seed at wallet restore time.
 export function deriveSwapVarReceiptPubkey({ traderPrivkey, poolId, assetInputOutpoint }) {
   const sk = asBytes(traderPrivkey, 32, 'traderPrivkey');
@@ -193,8 +190,7 @@ function numberToBytes32(n) {
 // AMM curve — single-trade against-curve recompute
 // =========================================================================
 //
-// Per §"Indexer validation algorithm" curve recompute. Uses BigInt
-// (u256 equivalent) to avoid overflow when (R · γ · Δ) products are
+// Curve recompute. Uses BigInt (u256 equivalent) to avoid overflow when (R · γ · Δ) products are
 // computed. Returns u64 delta_out (floor division).
 //
 // Throws if any reserve or delta is out of u64 range. Throws if the
@@ -231,9 +227,8 @@ export function curveDeltaOut({ direction, R_A_pre, R_B_pre, delta_in, fee_bps }
   }
   if (deltaOut >= 1n << 64n) throw new Error('delta_out overflows u64');
   if (raPost <= 0n || rbPost <= 0n) throw new Error('post-reserve non-positive');
-  // Reserve overflow check — Uniswap V2 caps at uint112, tacit spec says
-  // u64. After many swaps + LP_ADDs, post-reserves could exceed u64;
-  // future swaps' R_pre would then fail decode and the pool gets stuck.
+  // Reserve overflow check — reserves are u64 by spec. After many swaps + LP_ADDs, post-reserves could
+  // exceed u64; future swaps' R_pre would then fail decode and the pool gets stuck.
   if (raPost >= 1n << 64n) throw new Error('post-reserve_A overflows u64');
   if (rbPost >= 1n << 64n) throw new Error('post-reserve_B overflows u64');
   return { deltaOut, raPost, rbPost };
@@ -291,8 +286,7 @@ export function buildTickFan({ deltaInMin, deltaInMax, K }) {
 // Intent-msg construction
 // =========================================================================
 
-// Per §"Intent-msg construction". Returns the 32-byte SHA-256 hash
-// the trader signs with BIP-340.
+// Returns the 32-byte SHA-256 hash the trader signs with BIP-340.
 export function buildSwapVarIntentMsg({
   poolId, direction, deltaIn, deltaInMin, deltaInMax,
   minOut, tipAmount, tipAsset, expiryHeight, traderPubkey,
@@ -354,8 +348,7 @@ export function buildSwapVarIntentMsg({
 // Kernel-msg construction
 // =========================================================================
 
-// Per §"Kernel-msg construction" — single-asset closure over the
-// trader's asset-A side. Reuses composition.mjs `computeKernelMsg`
+// Single-asset closure over the trader's asset-A side. Reuses composition.mjs `computeKernelMsg`
 // helper (same `tacit-kernel-v1` domain tag, same byte layout) so this
 // shares production code paths with CXFER + T_AXFER_VAR.
 //
@@ -561,7 +554,7 @@ export function validateSwapVar({
                                   // input UTXO at (assetInputOutpointTxid, Vout).
                                   // Validator checks env.cInSecp matches this.
                                   // Closes the input-side inflation gap (analogous
-                                  // to the 2026-05-15 receipt-side fix): without
+                                  // to the receipt-side binding): without
                                   // this check the kernel-sig closure only binds
                                   // env.cInSecp's H-coefficient relative to
                                   // env.cChange, not to the actual on-chain UTXO
@@ -711,7 +704,7 @@ export function validateSwapVar({
     try { cChangeForBP = secp.ProjectivePoint.fromHex(bytesToHex(env.cChangeOrSentinel)); }
     catch (e) { return { outcome: 'invalid', valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
   }
-  // m=1 over the change ALONE. The receipt is no longer a subject: the consumer recomputes the clearing amount
+  // m=1 over the change ALONE. The receipt is not a subject: the consumer recomputes the clearing amount
   // against the current reserves and forms C_receipt from it, so its range holds by arithmetic (the payout is
   // strictly below the out-side reserve). The change is trader-supplied and still needs proving, because the
   // kernel conserves only modulo the group order.

@@ -1,18 +1,17 @@
 #!/usr/bin/env node
-// BPP-A: emit a RANDOMIZED-but-DETERMINISTIC JS<->Rust differential corpus for the BP+ range proof.
+// Emits a randomized-but-deterministic JS<->Rust differential corpus for the BP+ range proof.
 //
 // The on-chain authority is the Rust verify_range (cxfer-core/src/lib.rs); dapp/bulletproofs-plus.js
-// is the attester mirror. Before this, the only Rust-side cross-checks of JS-produced proofs were a
-// handful of pinned m=1/m=2 fixtures (range_accepts_js_proof_and_rejects_tamper, BPP-1). A port or
-// @noble dependency drift that only manifested at m=4/m=8, or on a challenge-dependent path, could
-// pass the green suite while diverging the two verifiers: attester-blesses-but-guest-rejects bricks
-// settle; the reverse is a soundness gap. This corpus drives BOTH verifiers, across every m and a
-// mix of honest / out-of-range / tampered / wrong-commitment cases, and pins each one's verdict.
+// is the attester mirror. A port or @noble dependency drift that only manifests at m=4/m=8, or on a
+// challenge-dependent path, could pass a suite pinned only at m=1/m=2 while the two verifiers diverge:
+// attester-blesses-but-guest-rejects bricks settle; the reverse is a soundness gap. This corpus drives
+// both verifiers, across every m and a mix of honest / out-of-range / tampered / wrong-commitment
+// cases, and pins each one's verdict.
 //
-// DETERMINISM: BP+ proving draws internal blindings from globalThis.crypto.getRandomValues
-// (bulletproofs-plus.js randomScalar -> 524/605-606/660-663). We replace it with a seeded SHA256
-// keystream so the whole proof is reproducible and the fixture is byte-stable -> committable and
-// git-diffable. Re-running this generator and diffing the output is the drift alarm BPP-A asked for.
+// Determinism: BP+ proving draws internal blindings from globalThis.crypto.getRandomValues
+// (bulletproofs-plus.js randomScalar). This replaces it with a seeded SHA256 keystream so the whole
+// proof is reproducible and the fixture is byte-stable — committable and git-diffable. Re-running this
+// generator and diffing the output is the drift alarm.
 //
 // Regenerate:  node tests/gen-bpp-differential-fixture.mjs > contracts/sp1/confidential/fixtures/bpp_differential.json
 // Consumed by: tests/bulletproofs-plus-rust-differential.test.mjs (JS half)

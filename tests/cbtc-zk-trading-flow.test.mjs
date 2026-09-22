@@ -1,40 +1,30 @@
-// SPEC-CBTC-ZK §5.21–§5.23 — end-to-end protocol-layer composition for the
-// virtual-AMM trading flow (sats → cBTC.zk → TAC and reverse).
+// End-to-end composition test for the cBTC.zk virtual-AMM trading flow
+// (sats → cBTC.zk → TAC and reverse).
 //
-// What this validates (and why):
+// cBTC.zk circulates via T_SLOT_MINT (entry), T_SLOT_ROTATE (atomic OTC /
+// virtual-AMM trade with a payment leg at vout[1]), and T_SLOT_BURN (exit).
+// The "virtual AMM" is a dapp-side UI aggregation over standing
+// T_SLOT_ROTATE offers, not an on-chain pool with custodied reserves.
 //
-//   The cBTC.zk amendment specifies a v1 trading model where cBTC.zk circulates
-//   via T_SLOT_MINT (entry), T_SLOT_ROTATE (atomic OTC / virtual-AMM trade with
-//   payment leg at vout[1]), and T_SLOT_BURN (exit). The "virtual AMM" is a
-//   dapp-side UI aggregation over standing T_SLOT_ROTATE offers — not a real
-//   on-chain AMM pool with custodied reserves (which the amendment explicitly
-//   rejects as reintroducing trust).
+// slot-wrapper.test.mjs proves each opcode encodes/decodes correctly in
+// isolation, and slot-rehearsal-signet.mjs proves the BIP-341 key-path
+// signing path. Neither proves the three opcodes compose into a coherent
+// trading flow — specifically that:
 //
-//   The slot-wrapper.test.mjs unit tests prove each opcode encodes/decodes
-//   correctly in isolation. slot-rehearsal-signet.mjs proves the BIP-341
-//   key-path signing path. NEITHER test validates that the three opcodes
-//   COMPOSE into a coherent trading flow — specifically that:
-//
-//     1. The cBTC.zk note from T_SLOT_MINT is the same note that T_SLOT_ROTATE
-//        consumes (asset_id + denomination + nullifier alignment).
-//     2. The new slot produced by T_SLOT_ROTATE is spendable by the new owner
-//        with their fresh r_leaf — i.e., the K_btc transition K_btc_old →
-//        K_btc_new follows the spec's recipient_commit − denom·H rule.
-//     3. The payment leg (vout[1] = TAC payment to old owner) actually moves
-//        TAC value from LP to trader — Pedersen-conserved.
-//     4. The full forward flow conserves sats (initial trader BTC =
-//        final BTC across both parties + miner fees) and TAC (LP initial =
-//        LP final + trader final).
-//     5. The reverse flow (LP burns the slot they acquired in step 2)
-//        produces a valid Schnorr key-path spend signature under the NEW
-//        slot's x-only key, using the NEW r_leaf — confirming that slot
-//        rotation rotates the *spending key* correctly.
-//
-//   These invariants together are the "ensure this will work" question that
-//   the trading-UX work depends on: if rotation didn't actually transfer
-//   spending control, the LP would never accept cBTC.zk for TAC. If
-//   conservation failed, free TAC could be minted. If the payment-leg
-//   binding were weak, the LP could rotate without paying.
+//   1. The cBTC.zk note from T_SLOT_MINT is the same note that T_SLOT_ROTATE
+//      consumes (asset_id + denomination + nullifier alignment).
+//   2. The new slot produced by T_SLOT_ROTATE is spendable by the new owner
+//      with their fresh r_leaf — the K_btc transition K_btc_old →
+//      K_btc_new follows the recipient_commit − denom·H rule.
+//   3. The payment leg (vout[1] = TAC payment to old owner) moves TAC value
+//      from LP to trader — Pedersen-conserved.
+//   4. The full forward flow conserves sats (initial trader BTC = final BTC
+//      across both parties + miner fees) and TAC (LP initial = LP final +
+//      trader final).
+//   5. The reverse flow (LP burns the slot it acquired in step 2) produces
+//      a valid Schnorr key-path spend signature under the new slot's
+//      x-only key, using the new r_leaf — rotation actually rotates the
+//      spending key.
 //
 // Run: `node cbtc-zk-trading-flow.test.mjs`
 
@@ -77,7 +67,7 @@ const CBTC_ZK_ASSET_ID = hexToBytes('1111111111111111111111111111111111111111111
 const TAC_ASSET_ID     = hexToBytes('2222222222222222222222222222222222222222222222222222222222222222');
 const DENOMINATION     = 100_000n;          // 100k sats per slot (1mBTC tier)
 const TAC_PAYMENT      = 50_000_000n;       // 50M base units of TAC for the slot
-const MINER_FEE_SATS   = 600n;              // representative; per AMENDMENT §"fees" table
+const MINER_FEE_SATS   = 600n;              // representative Bitcoin miner fee for a small tx
 
 // Deterministic key derivation so reruns hit the same identities.
 function deriveBytes32(label) {
@@ -142,7 +132,7 @@ ok('worker sees the slot\'s denomination', decMint && String(decMint.denominatio
 
 // Independently re-derive K_btc from the envelope's recipient_commit and confirm
 // it matches the slot scriptpubkey the dapp builder produced. This is the
-// canonical check the worker performs at scan time (§5.24.0 two-key):
+// canonical check the worker performs at scan time:
 //   K_btc = r_btc · G (explicit in mint envelope's k_btc_xonly field)
 //   slot_spk == OP_1 || OP_PUSHBYTES_32 || x-only(K_btc)
 const rBtcBig = BigInt('0x' + bytesToHex(mintOut.rBtc)) % dapp.SECP_N;
@@ -161,7 +151,7 @@ const traderNote = {
   recipientCommit: mintOut.recipientCommit,
   slotScriptPubKey: mintOut.slotScriptPubKey,
   rLeaf: mintOut.rLeaf,         // = r_pedersen (Pedersen blinding)
-  rBtc: mintOut.rBtc,           // §5.24.0 — separate BTC spending key
+  rBtc: mintOut.rBtc,           // separate BTC spending key
   slotRecord: mintOut.slotRecord,
 };
 
@@ -171,13 +161,10 @@ ok('trader now holds a cBTC.zk note backed by an on-chain slot',
 // ============== group 2: T_SLOT_ROTATE — trader sells the slot to LP for TAC ==============
 group('Phase 2: T_SLOT_ROTATE — trader rotates slot to LP, LP pays TAC at vout[1]');
 
-// The amendment §5.23.5 names this exact use case ("AMM-side trade"): when
-// cBTC.zk is sold into the virtual-AMM orderbook, the maker-taker pair
-// composes T_SLOT_ROTATE rather than T_AXFER_VAR. The rotation cost (the
-// Bitcoin tx + slot-burn-equivalent indexer cost) is borne in the trade
-// price. payment_asset_id binds the rotation's price leg to the TAC asset_id;
-// payment_amount declares how much TAC the LP commits to pay the trader at
-// vout[1] of the same Bitcoin tx.
+// When cBTC.zk is sold into the virtual-AMM orderbook, the maker-taker pair
+// composes T_SLOT_ROTATE rather than T_AXFER_VAR. payment_asset_id binds
+// the rotation's price leg to the TAC asset_id; payment_amount declares how
+// much TAC the LP commits to pay the trader at vout[1] of the same tx.
 
 const rotateOut = await dapp.buildSlotRotateEnvelope({
   networkTag: NETWORK_TAG_SIGNET,
@@ -213,9 +200,9 @@ ok('rotate payment_asset_id matches TAC', decRot && decRot.payment_asset_id === 
 ok('rotate payment_amount matches declared trade price',
   decRot && String(decRot.payment_amount) === TAC_PAYMENT.toString());
 
-// The old owner's signature over rotate_msg is what binds the rotation's
-// downstream parameters — without this, the LP could rewrite the new
-// recipient_commit / leaf_hash / payment terms after the fact.
+// The old owner's signature over rotate_msg binds the rotation's downstream
+// parameters (new recipient_commit / leaf_hash / payment terms) to the old
+// owner's approval.
 ok('trader\'s rotate-msg signature verifies (binds the rotation\'s price + new note)',
   (() => {
     let msg; try { msg = decRot._msg(); } catch { return false; }
@@ -223,14 +210,13 @@ ok('trader\'s rotate-msg signature verifies (binds the rotation\'s price + new n
     return dapp.verifySchnorr(hexToBytes(decRot.old_owner_sig), msg, ownerXOnly);
   })());
 
-// The new K_btc transition (§5.24.0 two-key): K_btc is computed as r_btc · G
-// where r_btc is independently derived from (newSecret, newNullPre) via the
-// "btc" domain tag — NOT from recipient_commit. The new slot's scriptpubkey
-// uses this explicit K_btc.
+// The new K_btc is computed as r_btc · G, where r_btc is independently
+// derived from (newSecret, newNullPre) via the "btc" domain tag — not from
+// recipient_commit. The new slot's scriptpubkey uses this explicit K_btc.
 const newRBtcBig = BigInt('0x' + bytesToHex(hexToBytes(rotateOut.newSlotRecord.rBtcHex))) % dapp.SECP_N;
 const reKbtcNew = dapp.G.multiply(newRBtcBig === 0n ? 1n : newRBtcBig);
 const reSpkNew  = dapp.slotScriptPubKeyFromKbtc(reKbtcNew);
-ok('new slot K_btc re-derives correctly from envelope (§5.24.0)',
+ok('new slot K_btc re-derives correctly from envelope',
   bytesToHex(reSpkNew) === bytesToHex(rotateOut.newSlotScriptPubKey));
 ok('new slot K_btc differs from old slot K_btc (spending key actually rotated)',
   bytesToHex(reSpkNew) !== bytesToHex(traderNote.slotScriptPubKey));
@@ -287,9 +273,9 @@ const newKbtcXOnly = dapp.slotXOnly(reKbtcNew);
 ok('trader\'s old-slot spend sig FAILS against new slot\'s x-only(K_btc)',
   !dapp.verifySchnorr(rotateSpendWit[0], rotateSpendSighash, newKbtcXOnly));
 
-// LP now holds a cBTC.zk note. §5.24.0 two-key: r_btc is the BTC spending
-// key; r_pedersen is the mixer Pedersen blinding. Both derived from (lpSecret,
-// lpNullPre) via distinct domain tags.
+// LP now holds a cBTC.zk note. r_btc is the BTC spending key; r_pedersen is
+// the mixer Pedersen blinding. Both derived from (lpSecret, lpNullPre) via
+// distinct domain tags.
 const lpNote = {
   assetIdHex: bytesToHex(CBTC_ZK_ASSET_ID),
   denomination: DENOMINATION,
@@ -358,9 +344,8 @@ const burnSpendSighash = dapp.tapSighashKeyPath(synthBurnTx, 0, synthBurnPrevout
 ok('LP\'s burn-spend sig verifies under new slot\'s x-only(K_btc)',
   dapp.verifySchnorr(burnSpendWit[0], burnSpendSighash, newKbtcXOnly));
 
-// Critical: the TRADER's old r_leaf must NOT spend the new slot (the slot's
-// spending key was actually rotated by phase 2's T_SLOT_ROTATE; if this check
-// failed, the trader could double-dip after sale).
+// The trader's old r_leaf must not spend the new slot: rotation transfers
+// spending control, so only the new r_leaf can.
 const fraudulentWit = dapp.signTaprootKeyPathInputWithKey(
   synthBurnTx, 0, synthBurnPrevouts, traderNote.rBtc, 0x00,
 );
@@ -385,9 +370,9 @@ ok(`TAC conservation: trader ${traderTac} + LP ${lpTac} = initial LP ${LP_INITIA
 
 // cBTC.zk supply at end of forward flow: minted (phase 1), then burned in
 // phase 3. The pool's leaf count and nullifier set are both incremented by
-// one (rotation doesn't change supply per §5.23.4 conservation); burn adds
-// a second nullifier. Net circulating cBTC.zk supply = leaves − nullifiers
-// = 2 − 2 = 0 (the rotation appends a NEW leaf; the burn consumes it).
+// one (rotation does not change supply); burn adds a second nullifier. Net
+// circulating cBTC.zk supply = leaves − nullifiers = 2 − 2 = 0 (rotation
+// appends a new leaf; the burn consumes it).
 //
 // The trader received TAC, the LP received sats — both ended up exactly
 // where the user-visible "buy TAC with sats" abstraction promises.
@@ -432,12 +417,12 @@ ok('original old_owner_sig FAILS to verify against the tampered envelope',
 // ============== group 6: TRUE one-Bitcoin-tx atomic — sats → TAC ==============
 group('Phase 6: one-tx atomic sats → TAC via T_SLOT_MINT with payment_amount > 0');
 
-// The amendment §5.21.1 wire format has payment_asset_id + payment_amount
-// baked into T_SLOT_MINT itself. §5.21.2 specifies vout[0] = slot, vout[1] =
-// tacit asset UTXO opening to (payment_asset_id, payment_amount, *). The
-// validator (§5.21.3) requires both to be present and well-formed.
+// T_SLOT_MINT's wire format has payment_asset_id + payment_amount baked in
+// directly, with vout[0] = slot and vout[1] = the tacit-asset UTXO opening
+// to (payment_asset_id, payment_amount, *); the validator requires both to
+// be present and well-formed.
 //
-// This means a one-click "sats → TAC" trade is a SINGLE Bitcoin transaction:
+// This means a one-click "sats → TAC" trade is a single Bitcoin transaction:
 //   vin[0]: trader's BTC funding (D + LP-fee sats)
 //   vin[1]: LP's TAC input (X TAC + change)
 //   vout[0]: slot at K_btc derived from LP's secrets (LP gets the cBTC.zk note)
@@ -470,16 +455,15 @@ const oneClickMint = await dapp.buildSlotMintEnvelope({
 ok('one-click mint envelope produced with payment leg',
   !!oneClickMint.payload && oneClickMint.slotScriptPubKey);
 
-// Worker decodes and re-derives K_btc. The trader can independently verify
-// that the LP's declared K_btc matches recipient_commit − denom·H BEFORE
-// signing their BTC input — this is the trader's defense against being
-// tricked into funding a slot whose backing they can't audit.
+// Worker decodes and re-derives K_btc, so the trader can independently
+// verify the LP's declared K_btc matches recipient_commit − denom·H before
+// signing their BTC input and confirm the slot's backing.
 const decOneClickMint = worker.decodeTSlotMintPayload(oneClickMint.payload);
 ok('worker decodes one-click mint with payment_asset_id=TAC',
   decOneClickMint && decOneClickMint.payment_asset_id === bytesToHex(TAC_ASSET_ID));
 ok('worker decodes one-click mint with the declared payment_amount',
   decOneClickMint && String(decOneClickMint.payment_amount) === ONE_CLICK_PAYMENT.toString());
-ok('one-click K_btc re-derives from LP\'s r_btc (§5.24.0 two-key)',
+ok('one-click K_btc re-derives from LP\'s r_btc',
   (() => {
     const rb = BigInt('0x' + bytesToHex(oneClickMint.rBtc)) % dapp.SECP_N;
     const k = dapp.G.multiply(rb === 0n ? 1n : rb);
@@ -487,9 +471,8 @@ ok('one-click K_btc re-derives from LP\'s r_btc (§5.24.0 two-key)',
   })());
 
 // LP's minter_sig binds the trade terms (asset_id, denom, recipient_commit,
-// leaf_hash, payment_asset_id, payment_amount). The trader verifies this
-// before signing — if LP later tries to renegotiate, the sig won't verify
-// against the new bytes.
+// leaf_hash, payment_asset_id, payment_amount), and the trader verifies it
+// before signing: changing any bound field invalidates the signature.
 ok('LP\'s minter_sig over slot_mint_msg verifies',
   (() => {
     let msg; try { msg = decOneClickMint._msg(); } catch { return false; }
@@ -522,19 +505,18 @@ ok('one-click sats→TAC: SPEC §5.21 supports this in one Bitcoin tx', true);
 // ============== group 7: TRUE one-Bitcoin-tx atomic — TAC → sats ==============
 group('Phase 7: one-tx atomic TAC → sats via T_SLOT_BURN with embedded TAC payment');
 
-// T_SLOT_BURN's wire format does NOT include a payment field (§5.22.1). The
-// atomic TAC → sats trade is still ONE Bitcoin tx, but the binding mechanism
-// is different: Schnorr SIGHASH_ALL on the slot input commits to all outputs,
-// so the LP's r_leaf-signed witness on vin[0] cryptographically binds:
+// T_SLOT_BURN's wire format has no payment field. The atomic TAC → sats
+// trade is still one Bitcoin tx, but the binding mechanism is different:
+// Schnorr SIGHASH_ALL on the slot input commits to all outputs, so the LP's
+// r_leaf-signed witness on vin[0] cryptographically binds:
 //   - vin[0]: slot UTXO at K_btc (LP signs with r_leaf)
 //   - vin[1]: trader's TAC UTXO (trader signs)
 //   - vout[0]: sats payout to trader (D − fees)
 //   - vout[1]: TAC output to LP (the trader's payment)
 //
-// If anyone rewrites vout[1] (e.g. redirect TAC to attacker), the LP's
-// r_leaf-Schnorr sig on vin[0] no longer matches the tx's sighash — Bitcoin
-// consensus rejects. So the trade is atomic by the same Bitcoin-native
-// mechanism that protects every other PSBT-style joint-tx flow.
+// Rewriting vout[1] changes the sighash, so the LP's r_leaf-Schnorr sig on
+// vin[0] no longer matches it and Bitcoin consensus rejects the tx — the
+// trade is atomic by the same mechanism that protects any joint-tx flow.
 
 // Re-use the LP that owns a slot from Phase 2 (lpNote). Construct a single
 // atomic Bitcoin tx representing the TAC → sats trade.
@@ -590,10 +572,9 @@ const reverseSighash = dapp.tapSighashKeyPath(reverseTx, 0, reversePrevouts, 0x0
 ok('reverse trade: LP\'s SIGHASH_ALL sig verifies against slot\'s x-only(K_btc)',
   dapp.verifySchnorr(reverseLpWit[0].slice(0, 64), reverseSighash, newKbtcXOnly));
 
-// CRITICAL atomicity test: rewrite vout[1] (would redirect TAC away from LP).
-// LP's existing signature MUST fail under the rewritten tx — otherwise the
-// trader could broadcast a modified version that pays themselves both sats
-// AND keeps the TAC.
+// Tamper test: rewriting vout[1] (the TAC payment to LP) must invalidate the
+// LP's existing signature, so a modified broadcast cannot pay out both sats
+// and TAC to the trader.
 const reverseRewritten = JSON.parse(JSON.stringify(reverseTx, (k, v) =>
   v instanceof Uint8Array ? Array.from(v) : v
 ));
@@ -604,14 +585,14 @@ const rewrittenSighash = dapp.tapSighashKeyPath(reverseRewritten, 0, reversePrev
 ok('reverse trade: LP\'s sig FAILS after vout[1] (TAC-to-LP) is tampered — atomicity holds',
   !dapp.verifySchnorr(reverseLpWit[0].slice(0, 64), rewrittenSighash, newKbtcXOnly));
 
-// Same atomicity guarantee in the OTHER direction: if anyone changes vout[0]
-// (BTC payout) the sig also fails.
+// Same atomicity guarantee in the other direction: changing vout[0] (BTC
+// payout) also invalidates the sig.
 const reverseRewritten2 = JSON.parse(JSON.stringify(reverseTx, (k, v) =>
   v instanceof Uint8Array ? Array.from(v) : v
 ));
 reverseRewritten2.outputs[0].script = new Uint8Array(reverseRewritten2.outputs[0].script);
 reverseRewritten2.outputs[1].script = new Uint8Array(reverseRewritten2.outputs[1].script);
-reverseRewritten2.outputs[0].value -= 5_000;          // attacker tries to siphon 5k sats
+reverseRewritten2.outputs[0].value -= 5_000;          // reduce the BTC payout by 5k sats
 const rewrittenSighash2 = dapp.tapSighashKeyPath(reverseRewritten2, 0, reversePrevouts, 0x01);
 ok('reverse trade: LP\'s sig FAILS after vout[0] (BTC payout) is reduced — value-binding works',
   !dapp.verifySchnorr(reverseLpWit[0].slice(0, 64), rewrittenSighash2, newKbtcXOnly));

@@ -1,38 +1,18 @@
-// T_SWAP_ROUTE (opcode 0x33) reference implementation.
+// T_SWAP_ROUTE (opcode 0x33) reference implementation: atomic multi-hop AMM routing.
 //
-// Atomic multi-hop AMM routing.
+// One envelope spans 2..N_HOPS_MAX hops. The trader's single input note flows through each pool in order
+// and lands as one receipt note of the final hop's output asset; intermediate amounts flow pool-to-pool
+// and never become notes. A route has no change output: the whole input is consumed.
 //
-// Cryptographic reuse with T_SWAP_VAR:
-//   - Same `tacit-kernel-v1` domain tag for kernel sig (composition.mjs
-//     computeKernelMsg).
-//   - Same m=2 aggregated bulletproof wire format over the trader's
-//     output commit (with the additive-identity sentinel in slot 0 —
-//     T_SWAP_ROUTE has no change UTXO in V1).
-//   - Cleartext per-hop CFMM deltas (no zero-knowledge over intermediate
-//     amounts; identical privacy posture to N sequential T_SWAP_VAR calls
-//     in the same Bitcoin tx).
-//
-// Differences from T_SWAP_VAR:
-//   - One envelope spans N hops (2..N_HOPS_MAX); each hop has its own
-//     (pool_id, direction, R_A_pre, R_B_pre, delta_a_net_mag,
-//     delta_b_net_mag, fee_bps).
-//   - Validator advances pool state hop-by-hop in the declared order,
-//     re-checking the with-fee CFMM curve floor per hop.
-//   - No change UTXO: trader's full input is consumed (use T_AXFER_VAR
-//     beforehand to pre-split if needed). V1 keeps this simple; settler-
-//     driven follow-up can add change handling.
-//   - No bridge Pedersen commitments: intermediate amounts are public
-//     cleartext per-hop deltas; hop_k.delta_out_amount must equal
-//     hop_{k+1}.delta_in_amount, and the trader's chain-side balance
-//     closes via one kernel sig over (input → final receipt).
-//
-// NO Groth16 in this opcode; CFMM math is pure indexer arithmetic.
+// validateSwapRoute mirrors the Bitcoin reflection guest's fold (see its header). The wire still carries
+// every hop's declared fee tier, pre-reserves and magnitudes, plus cReceiptSecp and an m=2 range proof
+// (sentinel + receipt) for format parity with T_SWAP_VAR; the fold reads only hop 0's input magnitude.
 //
 // Public surface:
 //   - Constants: OPCODE_T_SWAP_ROUTE, ENVELOPE_VERSION, N_HOPS_MAX
 //   - Wire encoder/decoder: encodeSwapRoute / decodeSwapRoute
-//   - Message builders: buildSwapRouteIntentMsg / buildSwapRouteKernelMsg
-//   - Validator: validateSwapRoute (mirrors §"Validator algorithm")
+//   - Message builders: buildSwapRouteIntentMsg, buildSwapRouteHop0KernelMsg, buildSwapRouteKernelMsg
+//   - Validator: validateSwapRoute
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
@@ -52,11 +32,8 @@ import {
 export const OPCODE_T_SWAP_ROUTE = 0x33;
 export const ENVELOPE_VERSION = 0x01;
 
-// Maximum hops per route. Chosen to match typical DEX path lengths (Uni V2
-// router defaults to 3-4 hops). At N=4 the per-route envelope is ~1.3 KB —
-// comfortably under tap-leaf size limits and under the 2-RTT settlement
-// budget. Raising this is a follow-up amendment (changes the route_msg
-// preimage shape; not soft-fork compatible at the validator level).
+// Maximum hops per route. At N=4 the envelope is ~1.3 KB, well under tap-leaf limits. The hop count is
+// part of the route_msg preimage, so changing it changes the signed message.
 export const N_HOPS_MAX = 4;
 
 // Domain tags
@@ -195,8 +172,8 @@ export function buildSwapRouteIntentMsg({
   const aid_out = asBytes(traderOutputAssetId, 32, 'traderOutputAssetId');
   const cin = asBytes(cInSecp, 33, 'cInSecp');
   const rrc = asBytes(rReceipt, 32, 'rReceipt');
-  // The route input amount: hop 0's in-side magnitude, selected by hop 0's direction. The one declared
-  // magnitude still used — it is what the kernel binds to the trader's real spent note.
+  // The route input amount: hop 0's in-side magnitude, selected by hop 0's direction. It is the only
+  // declared magnitude the fold reads; the kernel binds it to the trader's real spent note.
   const hop0 = hops[0];
   const deltaIn = Number(hop0.direction) === 0 ? hop0.deltaANetMag : hop0.deltaBNetMag;
 
@@ -210,8 +187,7 @@ export function buildSwapRouteIntentMsg({
     u32LE(expiryHeight),
     new Uint8Array([hops.length & 0xff]),
     // Each hop binds only pool_id ‖ direction — the route's SHAPE. Its fee tier, pre-reserves and output
-    // magnitudes are recomputed by the consumer, so authorizing a snapshot of them would only recreate the
-    // staleness that stranded routes when a pool moved between signing and reflection.
+    // magnitudes are recomputed at fold time, so a pool moving after signing leaves the signature valid.
     ...hops.map((h) => concatBytes(asBytes(h.poolId, 32, 'hop.poolId'), new Uint8Array([Number(h.direction) & 0xff]))),
     cin,
     rrc,
@@ -224,33 +200,9 @@ export function buildSwapRouteIntentMsg({
 // Kernel-msg construction
 // =========================================================================
 
-// The kernel sig closes the trader's net asset flow across the whole
-// route. Signature semantics:
-//   P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
-// Signed by excess_route = r_receipt − r_in.
-//
-// The "single-asset" closure model from CXFER + T_AXFER_VAR + T_SWAP_VAR
-// is generalized to "input asset → output asset" because the trader
-// pays delta_in_0 of one asset and receives delta_out_last of another.
-// Both deltas are public; intermediate hop deltas are also public but
-// don't appear in the kernel closure (they're balanced internally per
-// hop via the CFMM check).
-//
-// Reuses composition.mjs computeKernelMsg with assetId = trader's input
-// asset, single inputOutpoint = the trader's tacit input, single output
-// commit = C_receipt_secp, and the burned_amount slot encoding
-// `delta_in_0 - delta_out_last_inUnitsOfInputAsset`. Since the output is
-// a different asset, that representation isn't directly meaningful;
-// instead we use a dedicated route-specific message that binds:
-//   - input asset_id
-//   - output asset_id
-//   - delta_in_0, delta_out_last (public)
-//   - trader_input_outpoint
-//   - C_receipt_secp
-//   - route hash (SHA256 of the hop block array — already covered by
-//     intent_sig, but binding here closes a "settler swaps hops" attack
-//     where the kernel sig from one route is reused under a different
-//     hop sequence)
+// Net-flow route kernel message (input asset → output asset over the whole route), kept byte-identical to
+// the worker's ammSwapRouteKernelMsg parity vectors. The guest does not verify it: the route's kernel sig
+// is checked against buildSwapRouteHop0KernelMsg (see the validator section).
 const DOMAIN_KERNEL = new TextEncoder().encode('tacit-kernel-v1');
 
 export function buildSwapRouteKernelMsg({
@@ -276,14 +228,7 @@ export function buildSwapRouteKernelMsg({
   ));
 }
 
-// Compute the BIP-340 verification key for the kernel sig:
-//   P = C_receipt_secp − C_in_secp − (delta_out_last − delta_in_0) · H_secp
-// then take its x-only form.
-//
-// (delta_out_last − delta_in_0) is signed in the field of u64 scalars on
-// secp256k1's curve. Since we work mod secp256k1 group order which is
-// much larger than 2^64, this is just `(d_out − d_in) mod n` in scalar
-// arithmetic.
+// Verify key for the net-flow message: P = C_receipt − C_in − (delta_out_last − delta_in_0)·H, taken mod n.
 export function kernelVerifyPoint({ cInSecp, cReceiptSecp, deltaIn0, deltaOutLast }) {
   const cIn  = secp.ProjectivePoint.fromHex(bytesToHex(asBytes(cInSecp,      33, 'cInSecp')));
   const cOut = secp.ProjectivePoint.fromHex(bytesToHex(asBytes(cReceiptSecp, 33, 'cReceiptSecp')));
@@ -432,52 +377,87 @@ export function cfmmFloorOk({ delta_in, delta_out, R_in, R_out, fee_bps }) {
 // Validator
 // =========================================================================
 //
+// Mirrors the Bitcoin reflection guest's fold_swap_route. The trader signs the route's SHAPE (each hop's
+// pool + direction), its input amount, min_out, the receipt blinding and both destinations. Each hop is
+// re-cleared at the pool's CURRENT reserves and registry fee tier, chained from the amount the previous
+// hop actually produced; declared per-hop fee tiers, pre-reserves and later-hop magnitudes are never read.
+// A route that has expired, clears to nothing, or misses min_out is refunded (the exact input returns at
+// the refund destination) and no pool moves. The receipt is formed from the final cleared amount under the
+// public rReceipt; the envelope's cReceiptSecp and range proof take no part.
+//
 // Result shape:
-//   { valid: true,  newPoolStates: Map<pool_id_hex, newPoolState>, receipt }
+//   { valid: true, outcome: 'receipt', newPoolStates: Map<pool_id_hex, {reserve_A, reserve_B}>, receipt }
+//   { valid: true, outcome: 'refund',  newPoolStates: empty Map, refund: { asset_id, commitment }, reason }
 //   { valid: false, reason: string }
 //
 // Inputs:
-//   payload            : envelope bytes
-//   pools              : Map<pool_id_hex, pool_state> — one entry per
-//                        distinct pool_id touched by the route. Each pool
-//                        carries { pool_id, asset_A, asset_B, fee_bps,
-//                        reserve_A, reserve_B, tradable }.
-//   currentHeight      : block height at confirmation
-//   opReturnData       : REQUIRED — 32-byte data from vout[0]'s OP_RETURN.
-//                        Checked against SHA256(payload) per the spec.
-//   inputCommitment    : REQUIRED — 33-byte compressed Pedersen commit or a
-//                        ProjectivePoint; the on-chain commitment at vin[1].
-//                        Without binding env.cInSecp to the actual UTXO, the
-//                        trader can pick any (a_in_claimed, r_in) consistent
-//                        with the kernel sig and inflate asset_in.
-//   bulletproofVerify  : injected (V_pts, proofBytes) -> bool. Pass the
-//                        real bpRangeAggVerify from bulletproofs.mjs in
-//                        production; tests pass a stub.
+//   payload             : envelope bytes
+//   pools               : Map<pool_id_hex, { pool_id, asset_A, asset_B, fee_bps, reserve_A, reserve_B, tradable }>
+//   currentHeight       : confirmed Bitcoin height carrying the route
+//   opReturnData        : REQUIRED — 32-byte data from vout[0]'s OP_RETURN; must equal SHA256(payload)
+//   inputCommitment     : REQUIRED — the on-chain commitment at the trader's input (33 bytes or a point)
+//   receiveScriptPubKey : REQUIRED — the receipt output's scriptPubKey (tx.vout[1]), as confirmed
+//   refundScriptPubKey  : REQUIRED — the refund output's scriptPubKey (tx.vout[2]), as confirmed
 
+// Constant-product exact-in hop output: floor(R_out·in·(10000−fee) / (R_in·10000 + in·(10000−fee))),
+// always strictly below R_out.
 const U64_MAX = (1n << 64n) - 1n;
+
+export function getAmountOut(amountIn, reserveIn, reserveOut, feeBps) {
+  const g = 10000n - BigInt(feeBps);
+  const ainG = BigInt(amountIn) * g;
+  return (BigInt(reserveOut) * ainG) / (BigInt(reserveIn) * 10000n + ainG);
+}
+
+// The hop-0 kernel message the guest verifies: the plain tacit-kernel-v1 closure over the trader's input
+// outpoint → one all-zero sentinel output, with delta_in_0 as the net. The outpoint txid is in the byte
+// order the envelope carries it. Verified under P = C_in − delta_in_0·H.
+export function buildSwapRouteHop0KernelMsg({ traderInputAssetId, traderInputOutpointTxid, traderInputOutpointVout, deltaIn0 }) {
+  const txid = asBytes(traderInputOutpointTxid, 32, 'traderInputOutpointTxid');
+  return computeKernelMsg(
+    asBytes(traderInputAssetId, 32, 'traderInputAssetId'),
+    [{ txid: bytesToHex(reverseBytes(txid)), vout: traderInputOutpointVout }],
+    [new Uint8Array(33)],
+    BigInt(deltaIn0),
+  );
+}
+
+export function hop0KernelVerifyPoint({ cInSecp, deltaIn0 }) {
+  const cIn = secp.ProjectivePoint.fromHex(bytesToHex(asBytes(cInSecp, 33, 'cInSecp')));
+  const d = BigInt(deltaIn0) % SECP_N;
+  return d === 0n ? cIn : cIn.add(H.multiply(d).negate());
+}
+
+function asCommitBytes(c) {
+  if (c instanceof Uint8Array) return c.length === 33 ? c : null;
+  if (c && typeof c.toRawBytes === 'function') return c.toRawBytes(true);
+  return undefined;
+}
 
 export function validateSwapRoute({
   payload, pools, currentHeight,
   opReturnData,
   inputCommitment,
   receiveScriptPubKey,
-  bulletproofVerify,
+  refundScriptPubKey,
 }) {
-  if (typeof bulletproofVerify !== 'function') {
-    throw new Error('validateSwapRoute: bulletproofVerify is required');
-  }
-  if (receiveScriptPubKey === undefined) {
-    throw new Error(
-      'validateSwapRoute: receiveScriptPubKey is required — pass the scriptPubKey of the receipt ' +
-      "output (tx.vout[1]) so the validator can rebuild the destination the trader's intent_sig binds. " +
-      'Take it from the confirmed tx, never reconstruct it from an assumed output type.',
-    );
+  for (const [name, v, where] of [
+    ['receiveScriptPubKey', receiveScriptPubKey, 'the receipt output (tx.vout[1])'],
+    ['refundScriptPubKey', refundScriptPubKey, 'the refund output (tx.vout[2])'],
+  ]) {
+    if (v === undefined) {
+      throw new Error(
+        `validateSwapRoute: ${name} is required — pass the scriptPubKey of ${where} ` +
+        "so the validator can rebuild the destination the trader's intent_sig binds. " +
+        'Take it from the confirmed tx, never reconstruct it from an assumed output type.',
+      );
+    }
   }
   if (opReturnData === undefined) {
     throw new Error(
       'validateSwapRoute: opReturnData is required — pass the 32-byte ' +
       "data from tx.vout[0]'s OP_RETURN so the validator can verify " +
-      'SHA256(envelope_payload) == opReturnData per SPEC §5.22 step 1.',
+      'SHA256(envelope_payload) == opReturnData.',
     );
   }
   if (inputCommitment === undefined) {
@@ -495,247 +475,138 @@ export function validateSwapRoute({
   if (!(opReturnData instanceof Uint8Array) || opReturnData.length !== 32) {
     return { valid: false, reason: 'opReturnData must be 32-byte Uint8Array' };
   }
-  const expectedHash = computeSwapRouteEnvelopeHash(payload);
-  if (!bytesEqual(opReturnData, expectedHash)) {
+  if (!bytesEqual(opReturnData, computeSwapRouteEnvelopeHash(payload))) {
     return { valid: false, reason: 'OP_RETURN data != SHA256(envelope_payload)' };
   }
 
-  let inputCommitmentBytes;
-  if (inputCommitment instanceof Uint8Array) {
-    if (inputCommitment.length !== 33) {
-      return { valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
-    }
-    inputCommitmentBytes = inputCommitment;
-  } else if (inputCommitment && typeof inputCommitment.toRawBytes === 'function') {
-    inputCommitmentBytes = inputCommitment.toRawBytes(true);
-  } else {
+  const inputCommitmentBytes = asCommitBytes(inputCommitment);
+  if (inputCommitmentBytes === null) {
+    return { valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
+  }
+  if (inputCommitmentBytes === undefined) {
     return { valid: false, reason: 'inputCommitment must be ProjectivePoint or Uint8Array(33)' };
   }
   if (!bytesEqual(env.cInSecp, inputCommitmentBytes)) {
-    return {
-      valid: false,
-      reason: 'env.cInSecp does not match on-chain input UTXO commit at outpoint',
-    };
+    return { valid: false, reason: 'env.cInSecp does not match on-chain input UTXO commit at outpoint' };
   }
 
-  if (env.expiryHeight !== 0 && currentHeight > env.expiryHeight) {
-    return { valid: false, reason: `route expired (currentHeight ${currentHeight} > expiry ${env.expiryHeight})` };
-  }
-
-  // ----- intent sig verification (binds the whole route) -----
-  const hopsHash = hashHops(env.hops);
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: env.traderPubkey,
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    minOut: env.minOut,
-    expiryHeight: env.expiryHeight,
-    hops: env.hops,
-    cInSecp: env.cInSecp,
-    cReceiptSecp: env.cReceiptSecp,
-    receiveScriptPubKey,
-  });
-  const traderXOnly = env.traderPubkey.subarray(1);
+  // ----- intent authorization (route shape, input amount, min_out, rReceipt, both destinations) -----
+  let intentMsg;
+  try {
+    intentMsg = buildSwapRouteIntentMsg({
+      traderPubkey: env.traderPubkey,
+      traderInputAssetId: env.traderInputAssetId,
+      traderOutputAssetId: env.traderOutputAssetId,
+      minOut: env.minOut,
+      expiryHeight: env.expiryHeight,
+      hops: env.hops,
+      cInSecp: env.cInSecp,
+      rReceipt: env.rReceipt,
+      receiveScriptPubKey,
+      refundScriptPubKey,
+    });
+  } catch (e) { return { valid: false, reason: `intent_msg: ${e.message}` }; }
   let intentOk;
-  try { intentOk = verifySchnorr(env.intentSig, intentMsg, traderXOnly); }
+  try { intentOk = verifySchnorr(env.intentSig, intentMsg, env.traderPubkey.subarray(1)); }
   catch { intentOk = false; }
-  if (!intentOk) {
-    return { valid: false, reason: 'intent_sig verification failed' };
+  if (!intentOk) return { valid: false, reason: 'intent_sig verification failed' };
+
+  const refund = (reason) => ({
+    valid: true,
+    outcome: 'refund',
+    reason,
+    newPoolStates: new Map(),
+    refund: { asset_id: env.traderInputAssetId, commitment: env.cInSecp },
+  });
+
+  // Expiry refunds rather than skips: the input is already spent by the confirmed tx.
+  if (env.expiryHeight === 0 || env.expiryHeight < currentHeight) {
+    return refund(`route expired (currentHeight ${currentHeight} > expiry ${env.expiryHeight})`);
   }
 
-  // ----- per-hop chain: asset + amount continuity + CFMM floor -----
-  // Snapshot pool reserves so multi-touch routes (same pool twice in a
-  // row, e.g. arbitrage cycle) advance state correctly per hop.
-  const poolSnapshot = new Map();
-  for (const hop of env.hops) {
-    const k = bytesToHex(hop.poolId);
-    if (poolSnapshot.has(k)) continue;
-    const pool = pools.get(k);
-    if (!pool) return { valid: false, reason: `pool not registered: ${k}` };
-    if (pool.tradable === false) return { valid: false, reason: `pool ${k} not tradable` };
-    poolSnapshot.set(k, {
-      asset_A: pool.asset_A,
-      asset_B: pool.asset_B,
-      reserve_A: BigInt(pool.reserve_A),
-      reserve_B: BigInt(pool.reserve_B),
-      fee_bps: pool.fee_bps,
-    });
-  }
-
-  let hop_input_asset = env.traderInputAssetId;
-  let prev_delta_out = null;
-  let delta_in_0 = null;
-  let delta_out_last = null;
-
+  // ----- stage every hop before committing any pool state (all-or-nothing) -----
+  const staged = new Map();
+  let curAsset = env.traderInputAssetId;
+  let curAmount = 0n;
+  let clearedToNothing = false;
   for (let k = 0; k < env.hops.length; k++) {
-    const H_k = env.hops[k];
-    const pid_hex = bytesToHex(H_k.poolId);
-    const snap = poolSnapshot.get(pid_hex);
-
-    if (H_k.feeBps !== snap.fee_bps) {
-      return { valid: false, reason: `hop[${k}] fee_bps ${H_k.feeBps} != pool.fee_bps ${snap.fee_bps}` };
-    }
-    if (BigInt(H_k.R_A_pre) !== snap.reserve_A) {
-      return { valid: false, reason: `hop[${k}] R_A_pre ${H_k.R_A_pre} != pool.reserve_A ${snap.reserve_A}` };
-    }
-    if (BigInt(H_k.R_B_pre) !== snap.reserve_B) {
-      return { valid: false, reason: `hop[${k}] R_B_pre ${H_k.R_B_pre} != pool.reserve_B ${snap.reserve_B}` };
-    }
-
-    // direction → (asset_in, asset_out, R_in, R_out, delta_in, delta_out)
-    let asset_in, asset_out, R_in, R_out, delta_in, delta_out;
-    if (H_k.direction === 0) {                       // pool's asset_A is input
-      asset_in  = snap.asset_A;
-      asset_out = snap.asset_B;
-      R_in      = snap.reserve_A;
-      R_out     = snap.reserve_B;
-      delta_in  = H_k.deltaANetMag;
-      delta_out = H_k.deltaBNetMag;
-    } else {                                          // pool's asset_B is input
-      asset_in  = snap.asset_B;
-      asset_out = snap.asset_A;
-      R_in      = snap.reserve_B;
-      R_out     = snap.reserve_A;
-      delta_in  = H_k.deltaBNetMag;
-      delta_out = H_k.deltaANetMag;
-    }
-    if (delta_in <= 0n) return { valid: false, reason: `hop[${k}] delta_in == 0 (degenerate)` };
-    if (delta_out <= 0n) return { valid: false, reason: `hop[${k}] delta_out == 0 (degenerate)` };
-
-    // Asset continuity: hop_k.asset_in == previous-hop's asset_out (or
-    // trader_input_asset for k == 0).
-    if (!bytesEqual(asset_in, hop_input_asset)) {
+    const hop = env.hops[k];
+    const pid = bytesToHex(hop.poolId);
+    if (staged.has(pid)) return { valid: false, reason: `hop[${k}] pool repeated in route` };
+    const pool = pools.get(pid);
+    if (!pool) return { valid: false, reason: `pool not registered: ${pid}` };
+    if (pool.tradable === false) return { valid: false, reason: `pool ${pid} not tradable` };
+    let reserveA = BigInt(pool.reserve_A);
+    let reserveB = BigInt(pool.reserve_B);
+    const dir = hop.direction;
+    const [assetIn, assetOut, rIn, rOut] = dir === 0
+      ? [pool.asset_A, pool.asset_B, reserveA, reserveB]
+      : [pool.asset_B, pool.asset_A, reserveB, reserveA];
+    if (!bytesEqual(assetIn, curAsset)) {
       return {
         valid: false,
-        reason: `hop[${k}] asset_in mismatch: expected ${bytesToHex(hop_input_asset)}, got ${bytesToHex(asset_in)}`,
+        reason: `hop[${k}] asset_in mismatch: expected ${bytesToHex(curAsset)}, got ${bytesToHex(assetIn)}`,
       };
     }
-
-    // Amount continuity: hop_k.delta_in == previous-hop's delta_out (for k ≥ 1).
-    if (k > 0 && delta_in !== prev_delta_out) {
-      return {
-        valid: false,
-        reason: `hop[${k}] delta_in ${delta_in} != prev hop delta_out ${prev_delta_out}`,
-      };
-    }
-
-    // Reserve-overflow guard.
-    if (R_in + delta_in > U64_MAX) {
-      return { valid: false, reason: `hop[${k}] reserve_in + delta_in overflows u64` };
-    }
-    if (R_out < delta_out) {
-      return { valid: false, reason: `hop[${k}] reserve_out < delta_out (drains pool)` };
-    }
-
-    // CFMM curve floor identity (with-fee, upper bound).
-    if (!cfmmFloorOk({
-      delta_in, delta_out,
-      R_in, R_out,
-      fee_bps: snap.fee_bps,
-    })) {
-      return { valid: false, reason: `hop[${k}] CFMM curve floor identity violated (delta_out exceeds with-fee curve)` };
-    }
-
-    // Advance pool snapshot for the next hop's check.
-    if (H_k.direction === 0) {
-      snap.reserve_A = R_in  + delta_in;
-      snap.reserve_B = R_out - delta_out;
+    let inMag;
+    if (k === 0) {
+      inMag = dir === 0 ? hop.deltaANetMag : hop.deltaBNetMag;
+      if (inMag === 0n) return { valid: false, reason: 'zero route input' };
+      const kernelMsg = buildSwapRouteHop0KernelMsg({
+        traderInputAssetId: curAsset,
+        traderInputOutpointTxid: env.traderInputOutpointTxid,
+        traderInputOutpointVout: env.traderInputOutpointVout,
+        deltaIn0: inMag,
+      });
+      let kernelOk = false;
+      try {
+        const P = hop0KernelVerifyPoint({ cInSecp: env.cInSecp, deltaIn0: inMag });
+        if (!P.equals(ZERO)) kernelOk = verifySchnorr(env.kernelSig, kernelMsg, pointToBytes(P).subarray(1));
+      } catch { kernelOk = false; }
+      if (!kernelOk) return { valid: false, reason: 'kernel_sig verification failed (hop 0 input)' };
     } else {
-      snap.reserve_B = R_in  + delta_in;
-      snap.reserve_A = R_out - delta_out;
+      inMag = curAmount;
     }
-
-    if (k === 0) delta_in_0 = delta_in;
-    delta_out_last = delta_out;
-    prev_delta_out = delta_out;
-    hop_input_asset = asset_out;
+    if (rIn === 0n || rOut === 0n) return { valid: false, reason: `hop[${k}] pool has an empty side` };
+    const outMag = getAmountOut(inMag, rIn, rOut, pool.fee_bps);
+    if (outMag === 0n) { clearedToNothing = true; break; }
+    const rInPost = rIn + inMag;
+    if (rInPost > U64_MAX) return { valid: false, reason: `hop[${k}] reserve_in + delta_in overflows u64` };
+    const rOutPost = rOut - outMag;
+    if (rInPost * rOutPost < rIn * rOut) {
+      return { valid: false, reason: `hop[${k}] constant-product floor (k decreased)` };
+    }
+    if (dir === 0) { reserveA = rInPost; reserveB = rOutPost; } else { reserveB = rInPost; reserveA = rOutPost; }
+    staged.set(pid, { reserve_A: reserveA, reserve_B: reserveB, delta_in: inMag, delta_out: outMag });
+    curAsset = assetOut;
+    curAmount = outMag;
   }
 
-  if (!bytesEqual(hop_input_asset, env.traderOutputAssetId)) {
+  if (clearedToNothing) return refund('a hop cleared to nothing');
+  if (curAmount < env.minOut) {
+    return refund(`min_out not met: cleared ${curAmount} < min_out ${env.minOut}`);
+  }
+  if (!bytesEqual(curAsset, env.traderOutputAssetId)) {
     return {
       valid: false,
-      reason: `final hop asset_out mismatch: expected ${bytesToHex(env.traderOutputAssetId)}, got ${bytesToHex(hop_input_asset)}`,
+      reason: `final hop asset_out mismatch: expected ${bytesToHex(env.traderOutputAssetId)}, got ${bytesToHex(curAsset)}`,
     };
   }
 
-  // ----- min_out gate (terminal-only; Uni V2 router semantics) -----
-  if (delta_out_last < env.minOut) {
-    return { valid: false, reason: `min_out violated: delta_out_last ${delta_out_last} < min_out ${env.minOut}` };
-  }
-
-  // ----- Receipt opening: cReceiptSecp opens to (delta_out_last, rReceipt) -----
-  let rReceiptN;
-  try { rReceiptN = modN(BigInt('0x' + bytesToHex(env.rReceipt))); }
-  catch (e) { return { valid: false, reason: `rReceipt parse: ${e.message}` }; }
-  if (rReceiptN === 0n) {
-    return { valid: false, reason: 'rReceipt is zero — would leak deltaOut via C_receipt = delta_out · H' };
-  }
-  const expectedReceipt = pedersenCommit(delta_out_last, rReceiptN);
-  const expectedReceiptBytes = pointToBytes(expectedReceipt);
-  if (!bytesEqual(expectedReceiptBytes, env.cReceiptSecp)) {
-    return { valid: false, reason: 'cReceiptSecp does not open to (delta_out_last, rReceipt)' };
-  }
-
-  // ----- Kernel sig verification -----
-  const kernelMsg = buildSwapRouteKernelMsg({
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    traderInputOutpointTxid: env.traderInputOutpointTxid,
-    traderInputOutpointVout: env.traderInputOutpointVout,
-    deltaIn0: delta_in_0,
-    deltaOutLast: delta_out_last,
-    cReceiptSecp: env.cReceiptSecp,
-    hopsHash,
-  });
-  const P = kernelVerifyPoint({
-    cInSecp: env.cInSecp,
-    cReceiptSecp: env.cReceiptSecp,
-    deltaIn0: delta_in_0,
-    deltaOutLast: delta_out_last,
-  });
-  if (P.equals(ZERO)) {
-    return { valid: false, reason: 'kernel verifier key is point at infinity (would accept any sig)' };
-  }
-  const PBytes = pointToBytes(P);
-  const PxOnly = PBytes.subarray(1);
-  let kernelOk;
-  try { kernelOk = verifySchnorr(env.kernelSig, kernelMsg, PxOnly); }
-  catch { kernelOk = false; }
-  if (!kernelOk) {
-    return { valid: false, reason: 'kernel_sig verification failed' };
-  }
-
-  // ----- Bulletproof m=2 over (sentinel, C_receipt_secp) -----
-  // Slot 0 is the additive identity (ZERO) — sentinel for the "no
-  // change" case (T_SWAP_ROUTE never produces a change UTXO in V1).
-  // Wire-format parity with T_SWAP_VAR / T_AXFER_VAR keeps the
-  // bulletproof verifier hot-path identical across opcodes.
-  let cReceiptOnChain;
-  try { cReceiptOnChain = secp.ProjectivePoint.fromHex(bytesToHex(env.cReceiptSecp)); }
-  catch (e) { return { valid: false, reason: `cReceiptSecp decode: ${e.message}` }; }
-  if (!bulletproofVerify([ZERO, cReceiptOnChain], env.rangeProof)) {
-    return { valid: false, reason: 'bulletproof verification failed' };
-  }
-
-  // ----- All checks passed; emit per-pool state transitions -----
+  const rReceiptN = modN(BigInt('0x' + bytesToHex(env.rReceipt)));
+  const commitment = pointToBytes(pedersenCommit(curAmount, rReceiptN));
   const newPoolStates = new Map();
-  for (const [k, snap] of poolSnapshot) {
-    newPoolStates.set(k, {
-      reserve_A: snap.reserve_A,
-      reserve_B: snap.reserve_B,
-      // LP-fee accrual: pool's k grows naturally because the with-fee
-      // curve product is ≥ k_pre. Lazy mintFee crystallization fires
-      // at the next LP_ADD / LP_REMOVE — not here.
-    });
-  }
+  for (const [pid, s] of staged) newPoolStates.set(pid, { reserve_A: s.reserve_A, reserve_B: s.reserve_B });
   return {
     valid: true,
+    outcome: 'receipt',
     newPoolStates,
+    hops: [...staged.values()].map(({ delta_in, delta_out }) => ({ delta_in, delta_out })),
     receipt: {
       asset_id: env.traderOutputAssetId,
-      commitment: env.cReceiptSecp,
+      commitment,
       r_receipt: env.rReceipt,
-      amount: delta_out_last,
+      amount: curAmount,
     },
   };
 }

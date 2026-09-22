@@ -37,7 +37,7 @@ const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const det = (tag) => BigInt('0x' + keccak256(new TextEncoder().encode('clp-fixture-' + tag)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''));
 
 const FEE_BPS = 30; // 0.3% fee tier — binds the pool id (one pool per (canonical pair, fee))
-const PF_BPS = Number(process.env.PF_BPS || 0);                  // optional Uniswap fee-switch (0 ⇒ canonical 3-arg id)
+const PF_BPS = Number(process.env.PF_BPS || 0);                  // optional protocol fee-switch (0 ⇒ canonical 3-arg id)
 // recipient pubkey bound into the 6-arg id. For pfBps!=0 the guest decompresses it (must be a valid on-curve
 // compressed key), so default to a deterministic valid pubkey — not the zero placeholder (zero is acceptable
 // only on the pfBps==0 path, where the recipient is ignored and the id collapses to the 3-arg pool id).
@@ -78,7 +78,7 @@ const fixture = {
   a: { inputs: op.a.inputs.map((n) => ({ ...n, nk: A_NK })) },
   b: { inputs: op.b.inputs.map((n) => ({ ...n, nk: B_NK })) },
   dA: Number(op.dA), dB: Number(op.dB),
-  // d_shares is DERIVED in-guest (the V2 min rule) — not streamed in the witness. The SHARE note still opens
+  // d_shares is derived in-guest (the min rule) — not streamed in the witness. The SHARE note still opens
   // exactly to it, so it keeps a value-revealing sigma while the A/B legs moved to a blind PoK. The opening
   // sigma is a TOP-LEVEL sSig (siblings of share), not share.sigR/sigZ — same box-harness contract.
   share: { cx: op.share.cx, cy: op.share.cy, owner: op.share.owner },

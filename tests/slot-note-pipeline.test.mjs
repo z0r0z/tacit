@@ -1,5 +1,4 @@
-// End-to-end pipeline test for slot-note recipient detection
-// (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
+// End-to-end pipeline test for slot-note recipient detection (cBTC.zk slots).
 //
 // Covers the full chain:
 //   sender encrypts (secret, ν, denom) for recipient's viewing pubkey →
@@ -9,9 +8,8 @@
 //   recipient scanner attempts decrypt with their viewing privkey →
 //   reconstructs slotRecord, materializes into local storage
 //
-// The field-name match between worker write (`encrypted_note`) and dapp
-// read (used to silently look for `encrypted_note_hex` only) is verified
-// in particular — that mismatch was the root-cause gap before fixing.
+// The field-name match between worker write (`encrypted_note`) and dapp read is verified in particular:
+// a silent mismatch here would leave the scanner reading the wrong field.
 
 import * as worker from '../worker/src/index.js';
 import * as secp from '@noble/secp256k1';

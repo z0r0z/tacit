@@ -113,7 +113,7 @@ const FOUNDER = {
   addr: WALLETS.founder.address,
 };
 // Single-wallet simplification: FOUNDER does everything. POOL_INIT mints
-// the founder LP shares (Uniswap V2 initial-share convention), so the
+// the founder LP shares (constant-product-AMM initial-share convention), so the
 // founder has lp_asset_id UTXOs to bond directly — no cross-wallet
 // LP_ADD prerequisite. Keeps the harness self-contained and runnable
 // in one shot. A separate cross-party test is covered by

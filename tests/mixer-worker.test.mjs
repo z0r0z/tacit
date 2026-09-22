@@ -16,13 +16,10 @@
 //     and stamp a stale `withdrawn_at_height`).
 //   - /pools list aggregation reflects per-pool leaf + nullifier counts.
 //
-// Why mirror the worker logic inline rather than import its key helpers:
-// the helpers are NOT exported from worker/src/index.js, and the user has
-// pending edits in that file (Groth16 ceremony coordination). Touching
-// worker exports would conflict; mirroring the protocol-pinned key shapes
-// keeps the test independent. The shapes themselves are part of the wire
-// contract — if they ever drift in the worker, this test catches it via
-// its own tightly-pinned key format.
+// Why mirror the worker logic inline rather than import its key helpers: the helpers are NOT exported
+// from worker/src/index.js, and mirroring the protocol-pinned key shapes keeps this test independent of
+// that file's internals. The shapes themselves are part of the wire contract — if they ever drift in the
+// worker, this test catches it via its own tightly-pinned key format.
 //
 // Run: `node mixer-worker.test.mjs`
 
@@ -343,8 +340,7 @@ await test('duplicate-nullifier write preserves first metadata (idempotent)', as
   // The worker's logic: if the nullifier key exists, the new write no-ops.
   // This means first-write-wins on the metadata (withdrawn_at_height,
   // withdraw_txid). A re-scan can't stamp a fresher height + later txid
-  // onto a previously-seen nullifier, which would otherwise let an attacker
-  // who controlled re-scan timing rewrite the apparent canonical history.
+  // onto a previously-seen nullifier, so re-scan timing can't rewrite the apparent canonical history.
   const kv = makeKvStub();
   await indexDeposit(
     { kind: 'pool_init', asset_id: ASSET_HEX, pool_denom: DENOM,

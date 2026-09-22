@@ -272,13 +272,13 @@ await (async () => {
     });
   });
 
-  // ---- bug-3 path: PRF result delivered via resultsByCredential[gotId] ----
+  // ---- PRF result delivered via resultsByCredential[gotId] ----
   await withMockedCredentials({
     create: async () => null,
     get: async () => makeFakeCred({
       rawIdStr: 'cred-discover',
-      // No `results`. Result is keyed by the actually-used credential ID.
-      // Discoverable login (no credentialId arg) used to silently drop this.
+      // No `results`. Result is keyed by the actually-used credential ID; a discoverable
+      // login (no credentialId arg) must still read it from resultsByCredential.
       prfShape: { resultsByCredential: { [strToB64Url('cred-discover')]: { first: FIXED_PRF } } },
     }),
   }, async () => {
@@ -290,7 +290,7 @@ await (async () => {
     });
   });
 
-  // ---- bug-3 path: explicit credentialId, result keyed by gotId only ----
+  // ---- explicit credentialId, result keyed by gotId only ----
   // Browser may normalize credentialId encoding; keying by gotId protects us.
   await withMockedCredentials({
     create: async () => null,

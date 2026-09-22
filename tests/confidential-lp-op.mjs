@@ -64,7 +64,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 
 // ───────────────── 1b. protocol-fee (6-arg) pool: confidential LP funds the SAME slot OP_SWAP skims ─────────────────
 {
-  const PF_BPS = 1667;                          // ~1/6 of the LP fee accrues to the recipient (Uniswap fee-switch)
+  const PF_BPS = 1667;                          // ~1/6 of the LP fee accrues to the recipient (protocol-fee switch)
   const PF_RCPT = '0x02' + 'cc'.repeat(32);     // recipient pubkey bound into the 6-arg id
   const pfPid = lp.poolIdWithProtocolFee(ASSET_A, ASSET_B, FEE_BPS, PF_RCPT, PF_BPS);
   assert.notStrictEqual(pfPid, POOL_ID, 'a non-zero protocol fee yields a DISTINCT pool id from the no-skim pool');
@@ -91,7 +91,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
 // ───────────────── 2. an off-ratio add mints the LIMITING leg's shares (min rule) ─────────────────
 {
   // 100 A : 199 B against a 1:2 pool. B leg limits: min(1000·100/1000, 1000·199/2000) = min(100,99) = 99.
-  // The add SUCCEEDS (no exact-ratio gate); the ~1 excess A accrues to the pool. The old gate rejected this.
+  // The add succeeds (no exact-ratio gate); the ~1 excess A accrues to the pool.
   const op = lp.buildAdd({
     assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: 1000, reserveBPre: 2000, sharesPre: 1000,
     aNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, dA: 100, rA: randomScalar(),
@@ -112,10 +112,10 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('off-ratio add (100 A : 199 B) mints the limiting-leg shares (99); excess accrues to the pool');
 }
 
-// ───────────────── 2b. F1 REGRESSION: incremental add on a COPRIME, traded pool now works ─────────────────
+// ───────────────── 2b. incremental add on a coprime, traded pool ─────────────────
 {
-  // After trading, reserves go coprime; the old exact-ratio gate then forced dA to be a multiple of R_A,
-  // so incremental LP was impossible. The min rule accepts an arbitrary near-ratio (dA, dB).
+  // After trading, reserves go coprime, so dA is never an exact multiple of R_A. The min rule still
+  // accepts an arbitrary near-ratio (dA, dB), limited by whichever leg is scarcer.
   const RA = 1000003, RB = 1999991, S = 1000003; // gcd(RA, RB) = 1
   const op = lp.buildAdd({
     assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, feeBps: FEE_BPS, reserveAPre: RA, reserveBPre: RB, sharesPre: S,
@@ -136,11 +136,10 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('incremental add on a coprime/traded pool earns shares (499) — the exact-ratio gate would have rejected it');
 }
 
-// ───────────────── 2c. PROPERTY: a confidential add never dilutes existing LPs ─────────────────
-// The confidential path uses the DONATE model (full deposit → reserves, floored min-rule shares, excess
-// accrues to the pool), so it is already conservative — value per existing share can only rise. This pins
-// that direction, so a future "harmonize to the public refund model" can't silently reintroduce the
-// floor-after-floor dilution the public path had before its ceil fix. (GPT AMM review #3; no guest change.)
+// ───────────────── 2c. property: a confidential add never dilutes existing LPs ─────────────────
+// The confidential path uses the donate model (full deposit → reserves, floored min-rule shares, excess
+// accrues to the pool), so it is conservative — value per existing share can only rise. This pins that
+// direction so the floor-after-floor dilution a refund-style add is prone to can't be reintroduced here.
 {
   const cases = [
     [1000, 2000, 1000, 100, 199],          // B leg limits
@@ -230,7 +229,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('removing 10001 of 10000 shares is rejected (shares in range)');
 }
 
-// ───────────────── 5b. F6: a remove that would breach the MINIMUM_LIQUIDITY floor is rejected ─────────────────
+// ───────────────── 5b. a remove that would breach the MINIMUM_LIQUIDITY floor is rejected ─────────────────
 {
   // pool 10000 shares; a (fabricated) 9500-share note would leave 500 < MINIMUM_LIQUIDITY (1000). The
   // locked floor can never be removed — the guest + contract + this mirror all reject it.
@@ -283,7 +282,7 @@ const LP_ASSET = lp.lpShareId(POOL_ID);
   ok('withdrawing 150 A for a 100-proportional share (floor is 100) is rejected (dA proportional)');
 }
 
-// ───────────────── 7. ZAMM first mint: empty pool → isqrt(dA·dB) − MIN_LIQUIDITY ─────────────────
+// ───────────────── 7. first mint: empty pool → isqrt(dA·dB) − MIN_LIQUIDITY ─────────────────
 {
   const dA = 1_000_000n, dB = 4_000_000n; // isqrt(4e12) = 2_000_000; founder note = 1_999_000, 1000 locked
   const op = lp.buildAdd({

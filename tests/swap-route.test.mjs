@@ -1,51 +1,46 @@
-// Test suite for T_SWAP_ROUTE (opcode 0x33) reference impl.
+// Test suite for the T_SWAP_ROUTE (opcode 0x33) reference impl.
 //
-// Covers wire roundtrip + honest 2-hop and 3-hop validation + adversarial
-// cases that mirror the spec.
+// Covers the wire roundtrip, the intent/kernel message builders, and the validator's mirror of the
+// Bitcoin reflection guest's fold: hops re-cleared at current reserves and registry fee tiers, the
+// refund branch (expiry, min_out miss, a hop clearing to nothing), and the destination/input bindings.
 //
 // Run: `node swap-route.test.mjs`
 
-import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha256';
 import * as secp from '@noble/secp256k1';
 
 import {
-  G, H, SECP_N, modN, pedersenCommit, pointToBytes,
-  bpRangeAggProve, bpRangeAggVerify, ZERO,
+  modN, pedersenCommit, pointToBytes, bpRangeAggProve,
 } from './bulletproofs.mjs';
-import { signSchnorr, verifySchnorr } from './composition.mjs';
+import { signSchnorr } from './composition.mjs';
 import { curveDeltaOut } from './swap-var.mjs';
 import {
   OPCODE_T_SWAP_ROUTE, N_HOPS_MAX,
   encodeSwapRoute, decodeSwapRoute, computeSwapRouteEnvelopeHash,
-  buildSwapRouteIntentMsg as _buildSwapRouteIntentMsg, buildSwapRouteKernelMsg, kernelVerifyPoint,
+  buildSwapRouteIntentMsg as _buildSwapRouteIntentMsg, buildSwapRouteKernelMsg,
+  buildSwapRouteHop0KernelMsg, getAmountOut,
   hashHops, validateSwapRoute as _validateSwapRoute,
 } from './swap-route.mjs';
 
-// The receipt output's scriptPubKey at reveal-tx vout 1 — the intent's anti-redirection binding. P2WPKH,
-// the shape the dapp emitter really pays route receipts to. Defaulted here (overridable per test) so the
-// existing cases don't restate it; `tests/swap-route-dapp-worker-parity.test.mjs` covers the binding itself.
+// Receipt (vout 1) and refund (vout 2) scriptPubKeys the intent binds. Defaulted here (overridable per
+// test); `tests/swap-route-dapp-worker-parity.test.mjs` covers the byte-level binding against the worker.
 export const RECEIPT_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd7)]);
+export const REFUND_SPK = new Uint8Array([0x51, 0x20, ...new Uint8Array(32).fill(0xe3)]);
 function buildSwapRouteIntentMsg(args) {
-  return _buildSwapRouteIntentMsg({ receiveScriptPubKey: RECEIPT_SPK, ...args });
+  return _buildSwapRouteIntentMsg({ receiveScriptPubKey: RECEIPT_SPK, refundScriptPubKey: REFUND_SPK, ...args });
 }
 
-// Test wrapper that defaults the three REQUIRED contextual params —
-// opReturnData (= SHA256(payload)), inputCommitment (= C_IN_BYTES from the
-// shared trader-input fixture), and receiveScriptPubKey (= the receipt
-// output's script) — so individual tests can override any of them to
-// exercise the gates without restating the boilerplate.
+// Defaults the REQUIRED contextual params (opReturnData = SHA256(payload), inputCommitment = the trader's
+// real input commit, both destination scripts) so a test overrides only the gate it exercises.
 function validateSwapRoute(args) {
-  const opReturnData = args.opReturnData !== undefined
-    ? args.opReturnData
-    : computeSwapRouteEnvelopeHash(args.payload);
-  const inputCommitment = args.inputCommitment !== undefined
-    ? args.inputCommitment
-    : C_IN_BYTES;
-  const receiveScriptPubKey = args.receiveScriptPubKey !== undefined
-    ? args.receiveScriptPubKey
-    : RECEIPT_SPK;
-  return _validateSwapRoute({ ...args, opReturnData, inputCommitment, receiveScriptPubKey });
+  return _validateSwapRoute({
+    ...args,
+    opReturnData: args.opReturnData !== undefined ? args.opReturnData : computeSwapRouteEnvelopeHash(args.payload),
+    inputCommitment: args.inputCommitment !== undefined ? args.inputCommitment : C_IN_BYTES,
+    receiveScriptPubKey: args.receiveScriptPubKey !== undefined ? args.receiveScriptPubKey : RECEIPT_SPK,
+    refundScriptPubKey: args.refundScriptPubKey !== undefined ? args.refundScriptPubKey : REFUND_SPK,
+  });
 }
 
 let pass = 0, fail = 0;
@@ -53,7 +48,7 @@ function test(label, fn) {
   try {
     const ok = fn();
     if (ok === true) { console.log(`  PASS  ${label}`); pass++; }
-    else { console.log(`  FAIL  ${label}  (returned ${typeof ok === 'object' ? JSON.stringify(ok) : ok})`); fail++; }
+    else { console.log(`  FAIL  ${label}  (returned ${typeof ok === 'object' ? JSON.stringify(ok, (k, v) => typeof v === 'bigint' ? v.toString() : v) : ok})`); fail++; }
   } catch (e) { console.log(`  THROW ${label}: ${e.message}`); fail++; }
 }
 
@@ -61,7 +56,6 @@ function test(label, fn) {
 const ASSET_A = hexToBytes('aa' + '11'.repeat(31));
 const ASSET_B = hexToBytes('bb' + '22'.repeat(31));
 const ASSET_C = hexToBytes('cc' + '33'.repeat(31));
-// Always order canonically: A < B < C byte-wise (matches our pin).
 
 const FEE_AB_BPS = 30;
 const FEE_BC_BPS = 30;
@@ -91,111 +85,94 @@ const TRADER_PUBKEY = secp.getPublicKey(TRADER_PRIVKEY, true);
 const INPUT_TXID = 'de'.repeat(32);
 const INPUT_VOUT = 0;
 
-// Trader's input UTXO: a Pedersen commit to 100_000 of asset A with
-// blinding r_in. Both are known to the trader.
+// Trader's input UTXO: a Pedersen commit to 100_000 of asset A with blinding r_in.
 const TRADER_IN_AMOUNT = 100_000n;
 const TRADER_IN_R = modN(BigInt('0x' + 'aa'.repeat(32)));
 const C_IN = pedersenCommit(TRADER_IN_AMOUNT, TRADER_IN_R);
 const C_IN_BYTES = pointToBytes(C_IN);
 
+const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
+const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
+
+function buildPools(overrides = {}) {
+  return new Map([
+    [bytesToHex(POOL_AB_ID), { ...POOL_AB, ...(overrides.ab || {}) }],
+    [bytesToHex(POOL_BC_ID), { ...POOL_BC, ...(overrides.bc || {}) }],
+  ]);
+}
+
 // =========================================================================
 // Honest-path builders
 // =========================================================================
 
-function buildHonestTwoHopRoute({
-  amountIn = TRADER_IN_AMOUNT,
-  minOut = 0n,
-  expiryHeight = 1_000_000,
-} = {}) {
-  // Hop 0: A → B via POOL_AB (direction = 0, asset_A is input side)
-  const hop0Curve = curveDeltaOut({
-    direction: 0,
-    R_A_pre: POOL_AB.reserve_A, R_B_pre: POOL_AB.reserve_B,
-    delta_in: amountIn, fee_bps: POOL_AB.fee_bps,
+// Declared hops as the dapp emitter builds them: each hop's magnitudes quoted against the given reserves.
+function quoteHops(amountIn, ab = POOL_AB, bc = POOL_BC) {
+  const h0 = curveDeltaOut({
+    direction: 0, R_A_pre: ab.reserve_A, R_B_pre: ab.reserve_B, delta_in: amountIn, fee_bps: ab.fee_bps,
   });
-  // Hop 1: B → C via POOL_BC (POOL_BC.asset_A = B, so direction = 0)
-  const hop1Curve = curveDeltaOut({
-    direction: 0,
-    R_A_pre: POOL_BC.reserve_A, R_B_pre: POOL_BC.reserve_B,
-    delta_in: hop0Curve.deltaOut, fee_bps: POOL_BC.fee_bps,
+  const h1 = curveDeltaOut({
+    direction: 0, R_A_pre: bc.reserve_A, R_B_pre: bc.reserve_B, delta_in: h0.deltaOut, fee_bps: bc.fee_bps,
   });
-
-  const hops = [
-    {
-      poolId: POOL_AB_ID, direction: 0, feeBps: POOL_AB.fee_bps,
-      R_A_pre: POOL_AB.reserve_A, R_B_pre: POOL_AB.reserve_B,
-      deltaANetMag: amountIn,            // A flows in
-      deltaBNetMag: hop0Curve.deltaOut,  // B flows out
-    },
-    {
-      poolId: POOL_BC_ID, direction: 0, feeBps: POOL_BC.fee_bps,
-      R_A_pre: POOL_BC.reserve_A, R_B_pre: POOL_BC.reserve_B,
-      deltaANetMag: hop0Curve.deltaOut,  // B flows in
-      deltaBNetMag: hop1Curve.deltaOut,  // C flows out
-    },
-  ];
-
-  const delta_out_last = hop1Curve.deltaOut;
-
-  // Receipt: fresh blinding r_receipt, commits to delta_out_last
-  const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
-  const C_RECEIPT = pedersenCommit(delta_out_last, R_RECEIPT);
-  const C_RECEIPT_BYTES = pointToBytes(C_RECEIPT);
-  const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
-
-  // BP+ range proof over (sentinel, receipt) for V_pts = (ZERO, C_RECEIPT)
-  // bpRangeAggProve takes (values, blindings) — slot 0 trivially opens to
-  // (0, 0) → ZERO; slot 1 opens to (delta_out_last, r_receipt).
-  const { proof: rangeProof } = bpRangeAggProve([0n, delta_out_last], [0n, R_RECEIPT]);
-
-  // intent_sig: trader's BIP-340 over route_msg
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: TRADER_PUBKEY,
-    traderInputAssetId: ASSET_A,
-    traderOutputAssetId: ASSET_C,
-    minOut, expiryHeight, hops,
-    cInSecp: C_IN_BYTES,
-    cReceiptSecp: C_RECEIPT_BYTES,
-  });
-  const intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-
-  // kernel_sig: closes (r_receipt − r_in) · G against kernelVerifyPoint
-  // We need a private key whose public is the kernelVerifyPoint. The key
-  // is (r_receipt − r_in) mod n. BIP-340 signs with even-Y form; the lib
-  // negates internally if needed.
-  const excess = modN(R_RECEIPT - TRADER_IN_R);
-  if (excess === 0n) throw new Error('excess == 0 (degenerate fixture)');
-  const excessKey = hexToBytes(excess.toString(16).padStart(64, '0'));
-  const hopsHash = hashHops(hops);
-  const kernelMsg = buildSwapRouteKernelMsg({
-    traderInputAssetId: ASSET_A,
-    traderOutputAssetId: ASSET_C,
-    traderInputOutpointTxid: INPUT_TXID,
-    traderInputOutpointVout: INPUT_VOUT,
-    deltaIn0: amountIn,
-    deltaOutLast: delta_out_last,
-    cReceiptSecp: C_RECEIPT_BYTES,
-    hopsHash,
-  });
-  const kernelSig = signSchnorr(kernelMsg, excessKey);
-
   return {
-    env: {
-      traderInputAssetId: ASSET_A,
-      traderOutputAssetId: ASSET_C,
-      minOut, expiryHeight,
-      traderPubkey: TRADER_PUBKEY,
-      hops,
-      traderInputOutpointTxid: INPUT_TXID,
-      traderInputOutpointVout: INPUT_VOUT,
-      cInSecp: C_IN_BYTES,
-      cReceiptSecp: C_RECEIPT_BYTES,
-      rReceipt: R_RECEIPT_BYTES,
-      rangeProof, kernelSig, intentSig,
-    },
-    delta_out_last,
+    hops: [
+      {
+        poolId: POOL_AB_ID, direction: 0, feeBps: ab.fee_bps,
+        R_A_pre: ab.reserve_A, R_B_pre: ab.reserve_B,
+        deltaANetMag: amountIn, deltaBNetMag: h0.deltaOut,
+      },
+      {
+        poolId: POOL_BC_ID, direction: 0, feeBps: bc.fee_bps,
+        R_A_pre: bc.reserve_A, R_B_pre: bc.reserve_B,
+        deltaANetMag: h0.deltaOut, deltaBNetMag: h1.deltaOut,
+      },
+    ],
+    deltaOutLast: h1.deltaOut,
   };
 }
+
+// The validator does not read the range proof, so one proof per receipt amount is enough.
+const _proofs = new Map();
+function receiptRangeProof(v) {
+  if (!_proofs.has(v)) _proofs.set(v, bpRangeAggProve([0n, v], [0n, R_RECEIPT]).proof);
+  return _proofs.get(v);
+}
+
+// Sign + assemble an envelope over the given hops. The intent binds the route shape, hop 0's input,
+// min_out, rReceipt and both destinations; the kernel binds hop 0's input to the real input note.
+function signRoute({ hops, deltaOutLast, minOut = 0n, expiryHeight = 1_000_000, cInSecp = C_IN_BYTES, rIn = TRADER_IN_R }) {
+  const cReceiptSecp = pointToBytes(pedersenCommit(deltaOutLast, R_RECEIPT));
+  const rangeProof = receiptRangeProof(deltaOutLast);
+  const intentSig = signSchnorr(buildSwapRouteIntentMsg({
+    traderPubkey: TRADER_PUBKEY,
+    traderInputAssetId: ASSET_A, traderOutputAssetId: ASSET_C,
+    minOut, expiryHeight, hops,
+    cInSecp, rReceipt: R_RECEIPT_BYTES,
+  }), TRADER_PRIVKEY);
+  const deltaIn0 = hops[0].direction === 0 ? hops[0].deltaANetMag : hops[0].deltaBNetMag;
+  const kernelSig = signSchnorr(buildSwapRouteHop0KernelMsg({
+    traderInputAssetId: ASSET_A,
+    traderInputOutpointTxid: INPUT_TXID, traderInputOutpointVout: INPUT_VOUT,
+    deltaIn0,
+  }), hexToBytes(rIn.toString(16).padStart(64, '0')));
+  return {
+    traderInputAssetId: ASSET_A, traderOutputAssetId: ASSET_C,
+    minOut, expiryHeight, traderPubkey: TRADER_PUBKEY,
+    hops,
+    traderInputOutpointTxid: INPUT_TXID, traderInputOutpointVout: INPUT_VOUT,
+    cInSecp, cReceiptSecp, rReceipt: R_RECEIPT_BYTES,
+    rangeProof, kernelSig, intentSig,
+  };
+}
+
+function buildHonestTwoHopRoute({ amountIn = TRADER_IN_AMOUNT, minOut = 0n, expiryHeight = 1_000_000 } = {}) {
+  const { hops, deltaOutLast } = quoteHops(amountIn);
+  return { env: signRoute({ hops, deltaOutLast, minOut, expiryHeight }), delta_out_last: deltaOutLast };
+}
+
+const run = (env, extra = {}) => {
+  const payload = encodeSwapRoute(env);
+  return validateSwapRoute({ payload, pools: buildPools(), currentHeight: 100, ...extra });
+};
 
 // =========================================================================
 // Section 1: Wire roundtrip
@@ -204,8 +181,7 @@ console.log('Wire roundtrip');
 
 test('encode+decode 2-hop route roundtrip', () => {
   const { env } = buildHonestTwoHopRoute();
-  const bytes = encodeSwapRoute(env);
-  const dec = decodeSwapRoute(bytes);
+  const dec = decodeSwapRoute(encodeSwapRoute(env));
   return dec.opcode === OPCODE_T_SWAP_ROUTE
     && dec.nHops === 2
     && bytesEq(dec.traderInputAssetId, ASSET_A)
@@ -228,31 +204,23 @@ test('encode+decode 2-hop route roundtrip', () => {
 });
 
 test('decode rejects opcode mismatch', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[0] = 0x32;
+  const bad = new Uint8Array(encodeSwapRoute(buildHonestTwoHopRoute().env)); bad[0] = 0x32;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 
 test('decode rejects nHops < 2', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[1] = 1;
+  const bad = new Uint8Array(encodeSwapRoute(buildHonestTwoHopRoute().env)); bad[1] = 1;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 
 test('decode rejects nHops > N_HOPS_MAX', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const bytes = encodeSwapRoute(env);
-  const bad = new Uint8Array(bytes); bad[1] = N_HOPS_MAX + 1;
+  const bad = new Uint8Array(encodeSwapRoute(buildHonestTwoHopRoute().env)); bad[1] = N_HOPS_MAX + 1;
   try { decodeSwapRoute(bad); return false; } catch { return true; }
 });
 
 test('decode rejects degenerate same-asset I/O', () => {
   const { env } = buildHonestTwoHopRoute();
-  const sameAssetEnv = { ...env, traderOutputAssetId: ASSET_A };
-  const bytes = encodeSwapRoute(sameAssetEnv);
-  try { decodeSwapRoute(bytes); return false; } catch { return true; }
+  try { decodeSwapRoute(encodeSwapRoute({ ...env, traderOutputAssetId: ASSET_A })); return false; } catch { return true; }
 });
 
 test('encode rejects nHops out of range', () => {
@@ -265,43 +233,68 @@ test('encode rejects nHops out of range', () => {
 // =========================================================================
 console.log('\nMessage builders');
 
-test('intent_msg includes route domain tag', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const msg = buildSwapRouteIntentMsg({
-    traderPubkey: env.traderPubkey,
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    minOut: env.minOut, expiryHeight: env.expiryHeight,
-    hops: env.hops,
-    cInSecp: env.cInSecp, cReceiptSecp: env.cReceiptSecp,
-  });
-  return msg.length === 32;
+const intentArgs = (env) => ({
+  traderPubkey: env.traderPubkey,
+  traderInputAssetId: env.traderInputAssetId,
+  traderOutputAssetId: env.traderOutputAssetId,
+  minOut: env.minOut, expiryHeight: env.expiryHeight,
+  hops: env.hops,
+  cInSecp: env.cInSecp, rReceipt: env.rReceipt,
 });
 
-test('intent_msg differs if any hop mutated', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const args0 = {
-    traderPubkey: env.traderPubkey,
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    minOut: env.minOut, expiryHeight: env.expiryHeight,
-    hops: env.hops,
-    cInSecp: env.cInSecp, cReceiptSecp: env.cReceiptSecp,
-  };
-  const msg0 = buildSwapRouteIntentMsg(args0);
-  const mutatedHops = env.hops.map((h, i) =>
-    i === 0 ? { ...h, deltaANetMag: h.deltaANetMag + 1n } : h);
-  const msg1 = buildSwapRouteIntentMsg({ ...args0, hops: mutatedHops });
-  return !bytesEq(msg0, msg1);
+test('intent_msg is a 32-byte digest', () => {
+  return buildSwapRouteIntentMsg(intentArgs(buildHonestTwoHopRoute().env)).length === 32;
 });
 
-test('kernel_msg binds hopsHash (settler swap-hops attack defense)', () => {
+test('intent_msg requires refundScriptPubKey', () => {
+  try {
+    _buildSwapRouteIntentMsg({ ...intentArgs(buildHonestTwoHopRoute().env), receiveScriptPubKey: RECEIPT_SPK });
+    return false;
+  } catch (e) { return /refundScriptPubKey/.test(e.message); }
+});
+
+test('intent_msg binds each hop\'s pool and direction', () => {
+  const args0 = intentArgs(buildHonestTwoHopRoute().env);
+  const m0 = buildSwapRouteIntentMsg(args0);
+  const mPool = buildSwapRouteIntentMsg({ ...args0, hops: args0.hops.map((h, i) => i === 1 ? { ...h, poolId: POOL_AB_ID } : h) });
+  const mDir = buildSwapRouteIntentMsg({ ...args0, hops: args0.hops.map((h, i) => i === 1 ? { ...h, direction: 1 } : h) });
+  return !bytesEq(m0, mPool) && !bytesEq(m0, mDir);
+});
+
+test('intent_msg binds hop 0\'s input amount', () => {
+  const args0 = intentArgs(buildHonestTwoHopRoute().env);
+  const m1 = buildSwapRouteIntentMsg({ ...args0, hops: args0.hops.map((h, i) => i === 0 ? { ...h, deltaANetMag: h.deltaANetMag + 1n } : h) });
+  return !bytesEq(buildSwapRouteIntentMsg(args0), m1);
+});
+
+test('intent_msg does NOT bind fee tiers, pre-reserves or output magnitudes', () => {
+  const args0 = intentArgs(buildHonestTwoHopRoute().env);
+  const moved = args0.hops.map((h) => ({
+    ...h, feeBps: 0, R_A_pre: h.R_A_pre + 7n, R_B_pre: h.R_B_pre - 7n, deltaBNetMag: h.deltaBNetMag + 1n,
+  }));
+  moved[1] = { ...moved[1], deltaANetMag: moved[1].deltaANetMag + 3n };
+  return bytesEq(buildSwapRouteIntentMsg(args0), buildSwapRouteIntentMsg({ ...args0, hops: moved }));
+});
+
+test('intent_msg binds both destinations', () => {
+  const args0 = intentArgs(buildHonestTwoHopRoute().env);
+  const other = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0x99)]);
+  const m0 = buildSwapRouteIntentMsg(args0);
+  return !bytesEq(m0, buildSwapRouteIntentMsg({ ...args0, receiveScriptPubKey: other }))
+    && !bytesEq(m0, buildSwapRouteIntentMsg({ ...args0, refundScriptPubKey: other }));
+});
+
+test('hop-0 kernel msg binds the input outpoint and amount', () => {
+  const base = { traderInputAssetId: ASSET_A, traderInputOutpointTxid: INPUT_TXID, traderInputOutpointVout: 0, deltaIn0: 5n };
+  const m0 = buildSwapRouteHop0KernelMsg(base);
+  return !bytesEq(m0, buildSwapRouteHop0KernelMsg({ ...base, traderInputOutpointVout: 1 }))
+    && !bytesEq(m0, buildSwapRouteHop0KernelMsg({ ...base, deltaIn0: 6n }))
+    && !bytesEq(m0, buildSwapRouteHop0KernelMsg({ ...base, traderInputAssetId: ASSET_B }));
+});
+
+test('net-flow kernel_msg binds hopsHash', () => {
   const { env } = buildHonestTwoHopRoute();
-  const h0 = hashHops(env.hops);
-  const altHops = env.hops.map((h, i) =>
-    i === 1 ? { ...h, deltaBNetMag: h.deltaBNetMag - 1n } : h);
-  const h1 = hashHops(altHops);
-  const m0 = buildSwapRouteKernelMsg({
+  const mk = (hops) => buildSwapRouteKernelMsg({
     traderInputAssetId: env.traderInputAssetId,
     traderOutputAssetId: env.traderOutputAssetId,
     traderInputOutpointTxid: env.traderInputOutpointTxid,
@@ -309,19 +302,9 @@ test('kernel_msg binds hopsHash (settler swap-hops attack defense)', () => {
     deltaIn0: env.hops[0].deltaANetMag,
     deltaOutLast: env.hops[1].deltaBNetMag,
     cReceiptSecp: env.cReceiptSecp,
-    hopsHash: h0,
+    hopsHash: hashHops(hops),
   });
-  const m1 = buildSwapRouteKernelMsg({
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    traderInputOutpointTxid: env.traderInputOutpointTxid,
-    traderInputOutpointVout: env.traderInputOutpointVout,
-    deltaIn0: env.hops[0].deltaANetMag,
-    deltaOutLast: env.hops[1].deltaBNetMag,
-    cReceiptSecp: env.cReceiptSecp,
-    hopsHash: h1,
-  });
-  return !bytesEq(m0, m1);
+  return !bytesEq(mk(env.hops), mk(env.hops.map((h, i) => i === 1 ? { ...h, deltaBNetMag: h.deltaBNetMag - 1n } : h)));
 });
 
 // =========================================================================
@@ -329,485 +312,274 @@ test('kernel_msg binds hopsHash (settler swap-hops attack defense)', () => {
 // =========================================================================
 console.log('\nHonest validation');
 
-function buildPools() {
-  return new Map([
-    [bytesToHex(POOL_AB_ID), { ...POOL_AB }],
-    [bytesToHex(POOL_BC_ID), { ...POOL_BC }],
-  ]);
-}
-
-test('honest 2-hop A→B→C validates', () => {
+test('honest 2-hop A→B→C executes with the receipt formed from the cleared amount', () => {
   const { env, delta_out_last } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
+  const res = run(env);
   if (!res.valid) console.log(`     reason: ${res.reason}`);
-  return res.valid === true
+  return res.valid === true && res.outcome === 'receipt'
     && res.receipt.amount === delta_out_last
-    && bytesEq(res.receipt.asset_id, ASSET_C);
+    && bytesEq(res.receipt.asset_id, ASSET_C)
+    && bytesEq(res.receipt.commitment, pointToBytes(pedersenCommit(delta_out_last, R_RECEIPT)));
+});
+
+test('getAmountOut matches the emitter quote (curveDeltaOut)', () => {
+  const q = curveDeltaOut({ direction: 0, R_A_pre: 10_000_000n, R_B_pre: 5_000_000n, delta_in: 12_345n, fee_bps: 30 });
+  return getAmountOut(12_345n, 10_000_000n, 5_000_000n, 30) === q.deltaOut;
 });
 
 test('honest 2-hop state transitions apply per pool', () => {
   const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
+  const res = run(env);
   const newAB = res.newPoolStates.get(bytesToHex(POOL_AB_ID));
   const newBC = res.newPoolStates.get(bytesToHex(POOL_BC_ID));
-  // POOL_AB: A goes IN, B goes OUT
-  // POOL_BC: B (as POOL_BC.asset_A) goes IN, C (as POOL_BC.asset_B) goes OUT
   return newAB.reserve_A === POOL_AB.reserve_A + env.hops[0].deltaANetMag
       && newAB.reserve_B === POOL_AB.reserve_B - env.hops[0].deltaBNetMag
       && newBC.reserve_A === POOL_BC.reserve_A + env.hops[1].deltaANetMag
       && newBC.reserve_B === POOL_BC.reserve_B - env.hops[1].deltaBNetMag;
 });
 
-// =========================================================================
-// Section 4: Adversarial cases
-// =========================================================================
-console.log('\nAdversarial');
-
-test('expired route rejected', () => {
-  const { env } = buildHonestTwoHopRoute({ expiryHeight: 100 });
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 200,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /expired/.test(res.reason);
+test('a pool that moved after signing re-clears at its current reserves', () => {
+  const { env } = buildHonestTwoHopRoute();
+  const movedAB = { reserve_A: POOL_AB.reserve_A + 500_000n, reserve_B: POOL_AB.reserve_B - 200_000n };
+  const res = validateSwapRoute({ payload: encodeSwapRoute(env), pools: buildPools({ ab: movedAB }), currentHeight: 100 });
+  const expect = quoteHops(TRADER_IN_AMOUNT, { ...POOL_AB, ...movedAB }).deltaOutLast;
+  return res.valid === true && res.outcome === 'receipt' && res.receipt.amount === expect
+    && expect !== env.hops[1].deltaBNetMag;
 });
+
+test('declared hop fee tier is ignored; the registry fee tier clears', () => {
+  const { hops, deltaOutLast } = quoteHops(TRADER_IN_AMOUNT);
+  const env = signRoute({ hops: hops.map((h) => ({ ...h, feeBps: 0 })), deltaOutLast });
+  const res = run(env);
+  return res.valid === true && res.receipt.amount === deltaOutLast;
+});
+
+test('declared later-hop and output magnitudes are ignored', () => {
+  const { hops, deltaOutLast } = quoteHops(TRADER_IN_AMOUNT);
+  const inflated = hops.map((h, i) => i === 0 ? { ...h, deltaBNetMag: h.deltaBNetMag * 2n }
+    : { ...h, deltaANetMag: h.deltaANetMag * 2n, deltaBNetMag: h.deltaBNetMag * 2n });
+  const res = run(signRoute({ hops: inflated, deltaOutLast }));
+  return res.valid === true && res.receipt.amount === deltaOutLast;
+});
+
+test('envelope cReceiptSecp takes no part (receipt is formed by the validator)', () => {
+  const { env, delta_out_last } = buildHonestTwoHopRoute();
+  const alt = pointToBytes(pedersenCommit(1n, modN(BigInt('0x' + 'cc'.repeat(32)))));
+  const res = run({ ...env, cReceiptSecp: alt });
+  return res.valid === true
+    && bytesEq(res.receipt.commitment, pointToBytes(pedersenCommit(delta_out_last, R_RECEIPT)));
+});
+
+test('an oversized input never drains a pool (output strictly below the reserve)', () => {
+  const tiny = { reserve_A: 100n, reserve_B: 100n };
+  const bigIn = 10_000_000n;
+  const { hops, deltaOutLast } = quoteHops(bigIn, { ...POOL_AB, ...tiny });
+  const res = validateSwapRoute({
+    payload: encodeSwapRoute(signRoute({ hops, deltaOutLast, cInSecp: pointToBytes(pedersenCommit(bigIn, TRADER_IN_R)) })),
+    pools: buildPools({ ab: tiny }), currentHeight: 100,
+    inputCommitment: pointToBytes(pedersenCommit(bigIn, TRADER_IN_R)),
+  });
+  const ab = res.newPoolStates?.get(bytesToHex(POOL_AB_ID));
+  return res.valid === true && res.outcome === 'receipt' && ab.reserve_B > 0n;
+});
+
+// =========================================================================
+// Section 4: Refund branch
+// =========================================================================
+console.log('\nRefund branch');
+
+const isRefund = (res) => res.valid === true && res.outcome === 'refund'
+  && res.newPoolStates.size === 0
+  && bytesEq(res.refund.asset_id, ASSET_A)
+  && bytesEq(res.refund.commitment, C_IN_BYTES);
+
+test('expired route refunds the exact input', () => {
+  const { env } = buildHonestTwoHopRoute({ expiryHeight: 100 });
+  const res = run(env, { currentHeight: 200 });
+  return isRefund(res) && /expired/.test(res.reason);
+});
+
+test('expiry_height 0 refunds', () => {
+  return isRefund(run(buildHonestTwoHopRoute({ expiryHeight: 0 }).env));
+});
+
+test('min_out above the cleared amount refunds and moves no pool', () => {
+  const { delta_out_last } = buildHonestTwoHopRoute();
+  const res = run(buildHonestTwoHopRoute({ minOut: delta_out_last + 1n }).env);
+  return isRefund(res) && /min_out/.test(res.reason);
+});
+
+test('a pool moving against the trader past min_out refunds', () => {
+  const { delta_out_last } = buildHonestTwoHopRoute();
+  const { env } = buildHonestTwoHopRoute({ minOut: delta_out_last });
+  const res = validateSwapRoute({
+    payload: encodeSwapRoute(env), currentHeight: 100,
+    pools: buildPools({ ab: { reserve_A: POOL_AB.reserve_A * 2n } }),
+  });
+  return isRefund(res);
+});
+
+test('a hop that clears to nothing refunds', () => {
+  const amountIn = 1n;
+  const cIn = pointToBytes(pedersenCommit(amountIn, TRADER_IN_R));
+  const hops = quoteHops(TRADER_IN_AMOUNT).hops.map((h, i) => i === 0 ? { ...h, deltaANetMag: amountIn } : h);
+  const res = validateSwapRoute({
+    payload: encodeSwapRoute(signRoute({ hops, deltaOutLast: 1n, cInSecp: cIn })),
+    pools: buildPools(), currentHeight: 100, inputCommitment: cIn,
+  });
+  return res.valid === true && res.outcome === 'refund' && /nothing/.test(res.reason);
+});
+
+// =========================================================================
+// Section 5: Rejections
+// =========================================================================
+console.log('\nRejections');
 
 test('unregistered pool_id rejected', () => {
   const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const pools = new Map([[bytesToHex(POOL_AB_ID), POOL_AB]]);  // missing POOL_BC
   const res = validateSwapRoute({
-    payload, pools, currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
+    payload: encodeSwapRoute(env), currentHeight: 100,
+    pools: new Map([[bytesToHex(POOL_AB_ID), POOL_AB]]),
   });
   return res.valid === false && /not registered/.test(res.reason);
 });
 
-test('stale reserves rejected (R_A_pre differs from pool state)', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const stalePools = buildPools();
-  // Shift pool's reserve_A AFTER trader assembled the route — mimics
-  // another swap landing between assembly + confirmation.
-  const stale = stalePools.get(bytesToHex(POOL_AB_ID));
-  stalePools.set(bytesToHex(POOL_AB_ID), { ...stale, reserve_A: stale.reserve_A + 1n });
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: stalePools, currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /R_A_pre/.test(res.reason);
-});
-
-test('over-claimed delta_out rejected (CFMM curve floor)', () => {
-  const { env } = buildHonestTwoHopRoute();
-  // Inflate hop[0].delta_out by 1 — breaks CFMM floor identity. But we
-  // also need to mutate intent_sig + kernel_sig to NOT trip those guards
-  // first. Instead, rebuild from scratch with the inflated curve.
-  const inflatedHops = env.hops.map((h, i) =>
-    i === 0 ? { ...h, deltaBNetMag: h.deltaBNetMag * 2n } : h);
-  const inflatedEnv = { ...env, hops: inflatedHops };
-  // Re-sign intent under trader to make it past intent_sig check (the
-  // settler is the attacker here; trader signed under the inflated hops
-  // intentionally to test the validator's CFMM gate).
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: inflatedEnv.traderPubkey,
-    traderInputAssetId: inflatedEnv.traderInputAssetId,
-    traderOutputAssetId: inflatedEnv.traderOutputAssetId,
-    minOut: inflatedEnv.minOut, expiryHeight: inflatedEnv.expiryHeight,
-    hops: inflatedEnv.hops,
-    cInSecp: inflatedEnv.cInSecp, cReceiptSecp: inflatedEnv.cReceiptSecp,
-  });
-  inflatedEnv.intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-  const payload = encodeSwapRoute(inflatedEnv);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /CFMM curve floor|delta_in|delta_out/.test(res.reason);
+test('pool repeated within one route rejected', () => {
+  const { hops, deltaOutLast } = quoteHops(TRADER_IN_AMOUNT);
+  const res = run(signRoute({ hops: [hops[0], { ...hops[0], direction: 1 }], deltaOutLast }));
+  return res.valid === false && /repeated/.test(res.reason);
 });
 
 test('broken asset chain rejected (hop[1].asset_in != hop[0].asset_out)', () => {
-  // Build a route where hop[1] uses POOL_BC with direction=1 (asset_B
-  // is OUTPUT, asset_A is INPUT). POOL_BC.asset_A = B but the direction
-  // flip means hop[1].asset_in == C, which doesn't match hop[0]'s
-  // asset_out = B. (Using POOL_AB for hop[1] would also work, but the
-  // freshness check on the post-hop[0] snapshot trips first and yields
-  // an R_A_pre reason rather than the asset chain reason we want here.)
-  const { env } = buildHonestTwoHopRoute();
-  const brokenHops = env.hops.map((h, i) =>
-    i === 1 ? {
-      ...h,
-      direction: 1,                             // flip: now asset_in = pool.asset_B = C
-      deltaANetMag: 1n,                         // arbitrary; placeholder
-      deltaBNetMag: 1n,
-    } : h);
-  const brokenEnv = { ...env, hops: brokenHops };
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: brokenEnv.traderPubkey,
-    traderInputAssetId: brokenEnv.traderInputAssetId,
-    traderOutputAssetId: brokenEnv.traderOutputAssetId,
-    minOut: brokenEnv.minOut, expiryHeight: brokenEnv.expiryHeight,
-    hops: brokenEnv.hops,
-    cInSecp: brokenEnv.cInSecp, cReceiptSecp: brokenEnv.cReceiptSecp,
-  });
-  brokenEnv.intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-  const payload = encodeSwapRoute(brokenEnv);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
+  const { hops, deltaOutLast } = quoteHops(TRADER_IN_AMOUNT);
+  const res = run(signRoute({ hops: hops.map((h, i) => i === 1 ? { ...h, direction: 1 } : h), deltaOutLast }));
   return res.valid === false && /asset_in mismatch/.test(res.reason);
 });
 
-test('hop[1].delta_in != hop[0].delta_out rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  // Mismatch the chained amount on hop[1]'s input side.
-  const mismatchedHops = env.hops.map((h, i) =>
-    i === 1 ? { ...h, deltaANetMag: h.deltaANetMag + 1n } : h);
-  const mismatchedEnv = { ...env, hops: mismatchedHops };
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: mismatchedEnv.traderPubkey,
-    traderInputAssetId: mismatchedEnv.traderInputAssetId,
-    traderOutputAssetId: mismatchedEnv.traderOutputAssetId,
-    minOut: mismatchedEnv.minOut, expiryHeight: mismatchedEnv.expiryHeight,
-    hops: mismatchedEnv.hops,
-    cInSecp: mismatchedEnv.cInSecp, cReceiptSecp: mismatchedEnv.cReceiptSecp,
-  });
-  mismatchedEnv.intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-  const payload = encodeSwapRoute(mismatchedEnv);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /delta_in.*prev hop delta_out|prev hop delta_out/.test(res.reason);
-});
-
-test('min_out violation rejected', () => {
-  const { delta_out_last } = buildHonestTwoHopRoute();
-  const { env } = buildHonestTwoHopRoute({ minOut: delta_out_last + 1n });
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /min_out violated/.test(res.reason);
-});
-
 test('tampered intent_sig rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const tampered = { ...env, intentSig: new Uint8Array(64) };
-  // signSchnorr accepts; we just zero out the sig.
-  const payload = encodeSwapRoute(tampered);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
+  const res = run({ ...buildHonestTwoHopRoute().env, intentSig: new Uint8Array(64) });
   return res.valid === false && /intent_sig/.test(res.reason);
 });
 
 test('tampered kernel_sig rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const tampered = { ...env, kernelSig: new Uint8Array(64) };
-  const payload = encodeSwapRoute(tampered);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
+  const res = run({ ...buildHonestTwoHopRoute().env, kernelSig: new Uint8Array(64) });
   return res.valid === false && /kernel_sig/.test(res.reason);
 });
 
-test('rReceipt = 0 rejected (would leak delta_out)', () => {
-  const { env } = buildHonestTwoHopRoute();
-  // Recompute commit, receipt with r_receipt = 0 → C = delta_out_last · H
-  // (a trivially-openable commit that leaks the amount). The validator
-  // refuses this regardless of all other gates.
-  // We mutate just the rReceipt byte field; the commit will then no
-  // longer open to (delta_out_last, r_receipt=0). The "receipt opens"
-  // gate will fire first; defensively the rReceipt=0 explicit check
-  // would catch it too. Either rejection is acceptable.
-  const tampered = { ...env, rReceipt: new Uint8Array(32) };
-  const payload = encodeSwapRoute(tampered);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /rReceipt.*zero|cReceiptSecp does not open/.test(res.reason);
+test('hop-0 input larger than the input note fails the kernel', () => {
+  // The intent is re-signed over the larger amount; the kernel key C_in − delta_in_0·H then has no known
+  // discrete log for the trader's blinding, so the hop-0 kernel cannot verify.
+  const { hops } = quoteHops(TRADER_IN_AMOUNT + 1n);
+  const res = run(signRoute({ hops, deltaOutLast: 1n }));
+  return res.valid === false && /kernel_sig/.test(res.reason);
 });
 
-test('cReceiptSecp does not open to (delta_out_last, rReceipt) rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  // Mutate cReceiptSecp to a different valid point.
-  const alt = pedersenCommit(1n, modN(BigInt('0x' + 'cc'.repeat(32))));
-  const tampered = { ...env, cReceiptSecp: pointToBytes(alt) };
-  const payload = encodeSwapRoute(tampered);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /(does not open|intent_sig|kernel_sig)/.test(res.reason);
-});
-
-test('drained pool (delta_out > reserve_out) rejected', () => {
-  // Build a route where hop[0].delta_out claims more than the pool's
-  // reserve_B. Set reserves to a tiny pool first.
-  const tinyPool = {
-    pool_id: POOL_AB_ID, asset_A: ASSET_A, asset_B: ASSET_B,
-    reserve_A: 100n, reserve_B: 100n, fee_bps: FEE_AB_BPS, tradable: true,
-  };
-  const pools = new Map([
-    [bytesToHex(POOL_AB_ID), tinyPool],
-    [bytesToHex(POOL_BC_ID), POOL_BC],
-  ]);
-  const hops = [
-    {
-      poolId: POOL_AB_ID, direction: 0, feeBps: FEE_AB_BPS,
-      R_A_pre: tinyPool.reserve_A, R_B_pre: tinyPool.reserve_B,
-      deltaANetMag: 50n,
-      deltaBNetMag: 200n,                        // exceeds reserve_B = 100
-    },
-    {
-      poolId: POOL_BC_ID, direction: 0, feeBps: FEE_BC_BPS,
-      R_A_pre: POOL_BC.reserve_A, R_B_pre: POOL_BC.reserve_B,
-      deltaANetMag: 200n, deltaBNetMag: 1n,
-    },
-  ];
-  const r_receipt = modN(BigInt('0x' + 'bb'.repeat(32)));
-  const c_recv = pointToBytes(pedersenCommit(1n, r_receipt));
-  const { proof: rangeProof } = bpRangeAggProve([0n, 1n], [0n, r_receipt]);
-  const env = {
-    traderInputAssetId: ASSET_A, traderOutputAssetId: ASSET_C,
-    minOut: 0n, expiryHeight: 1_000_000, traderPubkey: TRADER_PUBKEY,
-    hops,
-    traderInputOutpointTxid: INPUT_TXID, traderInputOutpointVout: INPUT_VOUT,
-    cInSecp: C_IN_BYTES, cReceiptSecp: c_recv,
-    rReceipt: hexToBytes(r_receipt.toString(16).padStart(64, '0')),
-    rangeProof,
-    intentSig: signSchnorr(buildSwapRouteIntentMsg({
-      traderPubkey: TRADER_PUBKEY,
-      traderInputAssetId: ASSET_A, traderOutputAssetId: ASSET_C,
-      minOut: 0n, expiryHeight: 1_000_000, hops,
-      cInSecp: C_IN_BYTES, cReceiptSecp: c_recv,
-    }), TRADER_PRIVKEY),
-    kernelSig: new Uint8Array(64),  // CFMM check trips before kernel_sig
-  };
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools, currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false
-    && /reserve_out < delta_out|CFMM curve floor/.test(res.reason);
-});
-
-test('hop[0].fee_bps != pool.fee_bps rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const wrongFeeHops = env.hops.map((h, i) =>
-    i === 0 ? { ...h, feeBps: 100 } : h);    // pool is 30, claim 100
-  const wrongFeeEnv = { ...env, hops: wrongFeeHops };
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: wrongFeeEnv.traderPubkey,
-    traderInputAssetId: wrongFeeEnv.traderInputAssetId,
-    traderOutputAssetId: wrongFeeEnv.traderOutputAssetId,
-    minOut: wrongFeeEnv.minOut, expiryHeight: wrongFeeEnv.expiryHeight,
-    hops: wrongFeeEnv.hops,
-    cInSecp: wrongFeeEnv.cInSecp, cReceiptSecp: wrongFeeEnv.cReceiptSecp,
-  });
-  wrongFeeEnv.intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-  const payload = encodeSwapRoute(wrongFeeEnv);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-  });
-  return res.valid === false && /fee_bps/.test(res.reason);
+test('rReceipt swapped after signing rejected (rReceipt is bound)', () => {
+  const res = run({ ...buildHonestTwoHopRoute().env, rReceipt: new Uint8Array(32).fill(0x01) });
+  return res.valid === false && /intent_sig/.test(res.reason);
 });
 
 // =========================================================================
-// Section 5: OP_RETURN binding + input-commit binding (the spec
-// and the input-side inflation defense that mirrors validateSwapVar's
-// 2026-05-15 receipt-side fix). Both gates are caller-supplied REQUIRED
-// inputs; the validator throws on missing args and returns invalid on
-// shape/value mismatch.
+// Section 6: OP_RETURN, destination and input-commit bindings
 // =========================================================================
-console.log('\nOP_RETURN + input-commit gates');
+console.log('\nOP_RETURN + destination + input-commit gates');
 
 test('missing opReturnData throws', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
+  const payload = encodeSwapRoute(buildHonestTwoHopRoute().env);
   try {
     _validateSwapRoute({
       payload, pools: buildPools(), currentHeight: 100,
-      bulletproofVerify: bpRangeAggVerify,
-      inputCommitment: C_IN_BYTES,
-      receiveScriptPubKey: RECEIPT_SPK,
-      // opReturnData omitted
+      inputCommitment: C_IN_BYTES, receiveScriptPubKey: RECEIPT_SPK, refundScriptPubKey: REFUND_SPK,
     });
     return false;
   } catch (e) { return /opReturnData is required/.test(e.message); }
 });
 
+test('missing refundScriptPubKey throws', () => {
+  const payload = encodeSwapRoute(buildHonestTwoHopRoute().env);
+  try {
+    _validateSwapRoute({
+      payload, pools: buildPools(), currentHeight: 100,
+      opReturnData: computeSwapRouteEnvelopeHash(payload),
+      inputCommitment: C_IN_BYTES, receiveScriptPubKey: RECEIPT_SPK,
+    });
+    return false;
+  } catch (e) { return /refundScriptPubKey is required/.test(e.message); }
+});
+
 test('opReturnData wrong length rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    opReturnData: new Uint8Array(31),  // off-by-one
-  });
+  const res = run(buildHonestTwoHopRoute().env, { opReturnData: new Uint8Array(31) });
   return res.valid === false && /32-byte Uint8Array/.test(res.reason);
 });
 
-test('redirected receipt rejected (destination-binding defense)', () => {
-  // The trader signed RECEIPT_SPK; a coordinator delivers the routed output to its own script instead.
-  // r_receipt is PUBLIC, so whoever holds that output holds the note — the intent must bind the script.
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
+test('redirected receipt rejected (destination binding)', () => {
   const elsewhere = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0x99)]);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    receiveScriptPubKey: elsewhere,
-  });
+  const res = run(buildHonestTwoHopRoute().env, { receiveScriptPubKey: elsewhere });
   return res.valid === false && /intent_sig/.test(res.reason);
 });
 
-test('opReturnData mismatch rejected (envelope-swap defense)', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  // 32 bytes of garbage; nothing the settler could fabricate would match
-  // SHA256(payload) without also re-running the payload encoder.
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    opReturnData: new Uint8Array(32).fill(0xab),
-  });
+test('redirected refund rejected (destination binding)', () => {
+  const elsewhere = new Uint8Array([0x51, 0x20, ...new Uint8Array(32).fill(0x99)]);
+  const res = run(buildHonestTwoHopRoute().env, { refundScriptPubKey: elsewhere });
+  return res.valid === false && /intent_sig/.test(res.reason);
+});
+
+test('opReturnData mismatch rejected', () => {
+  const res = run(buildHonestTwoHopRoute().env, { opReturnData: new Uint8Array(32).fill(0xab) });
   return res.valid === false && /OP_RETURN data != SHA256/.test(res.reason);
 });
 
 test('opReturnData honest match passes through', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
+  const payload = encodeSwapRoute(buildHonestTwoHopRoute().env);
   const res = _validateSwapRoute({
     payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
     opReturnData: computeSwapRouteEnvelopeHash(payload),
-    inputCommitment: C_IN_BYTES,
-    receiveScriptPubKey: RECEIPT_SPK,
+    inputCommitment: C_IN_BYTES, receiveScriptPubKey: RECEIPT_SPK, refundScriptPubKey: REFUND_SPK,
   });
   return res.valid === true;
 });
 
 test('missing inputCommitment throws', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
+  const payload = encodeSwapRoute(buildHonestTwoHopRoute().env);
   try {
     _validateSwapRoute({
       payload, pools: buildPools(), currentHeight: 100,
-      bulletproofVerify: bpRangeAggVerify,
       opReturnData: computeSwapRouteEnvelopeHash(payload),
-      receiveScriptPubKey: RECEIPT_SPK,
-      // inputCommitment omitted
+      receiveScriptPubKey: RECEIPT_SPK, refundScriptPubKey: REFUND_SPK,
     });
     return false;
   } catch (e) { return /inputCommitment is required/.test(e.message); }
 });
 
 test('inputCommitment wrong length rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    inputCommitment: new Uint8Array(32),  // should be 33 (compressed point)
-  });
+  const res = run(buildHonestTwoHopRoute().env, { inputCommitment: new Uint8Array(32) });
   return res.valid === false && /33-byte compressed point/.test(res.reason);
 });
 
 test('inputCommitment wrong type rejected', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    inputCommitment: 'aa'.repeat(33),  // hex string, not bytes or point
-  });
+  const res = run(buildHonestTwoHopRoute().env, { inputCommitment: 'aa'.repeat(33) });
   return res.valid === false && /ProjectivePoint or Uint8Array/.test(res.reason);
 });
 
-test('inputCommitment mismatch rejected (claim r_in = 0 inflation defense)', () => {
-  // Trader claims env.cInSecp commits to TRADER_IN_AMOUNT with r_in = 0
-  // (so the on-chain UTXO of value TRADER_IN_AMOUNT with the real r_in
-  // doesn't match) — without the input-commit binding the kernel sig
-  // would still verify, but the trader would be lying about r_in and
-  // could inflate the input side. The new gate catches this directly.
-  const { env, delta_out_last } = buildHonestTwoHopRoute();
-  const fakeRIn = 0n;  // attacker uses r_in = 0 in their claim
-  const fakeCIn = pedersenCommit(TRADER_IN_AMOUNT, fakeRIn);
-  const fakeCInBytes = pointToBytes(fakeCIn);
-  // Recompute receipt + sigs under the lie. The receipt opens honestly
-  // (so we don't trip the receipt-binding check) but cInSecp diverges
-  // from C_IN_BYTES.
-  const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
-  const C_RECEIPT = pedersenCommit(delta_out_last, R_RECEIPT);
-  const C_RECEIPT_BYTES = pointToBytes(C_RECEIPT);
-  const intentMsg = buildSwapRouteIntentMsg({
-    traderPubkey: env.traderPubkey,
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    minOut: env.minOut, expiryHeight: env.expiryHeight,
-    hops: env.hops,
-    cInSecp: fakeCInBytes, cReceiptSecp: C_RECEIPT_BYTES,
-  });
-  const intentSig = signSchnorr(intentMsg, TRADER_PRIVKEY);
-  const excess = modN(R_RECEIPT - fakeRIn);
-  const excessKey = hexToBytes(excess.toString(16).padStart(64, '0'));
-  const kernelMsg = buildSwapRouteKernelMsg({
-    traderInputAssetId: env.traderInputAssetId,
-    traderOutputAssetId: env.traderOutputAssetId,
-    traderInputOutpointTxid: env.traderInputOutpointTxid,
-    traderInputOutpointVout: env.traderInputOutpointVout,
-    deltaIn0: env.hops[0].deltaANetMag,
-    deltaOutLast: delta_out_last,
-    cReceiptSecp: C_RECEIPT_BYTES,
-    hopsHash: hashHops(env.hops),
-  });
-  const kernelSig = signSchnorr(kernelMsg, excessKey);
-  const tamperedEnv = { ...env, cInSecp: fakeCInBytes, intentSig, kernelSig };
-  const payload = encodeSwapRoute(tamperedEnv);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    // wrapper defaults inputCommitment = C_IN_BYTES (the REAL on-chain commit)
-  });
-  return res.valid === false
-    && /cInSecp does not match on-chain input UTXO/.test(res.reason);
+test('cInSecp that differs from the on-chain input commit rejected', () => {
+  // A route signed over a commitment to the same amount under r_in = 1 instead of the note's real
+  // blinding: every signature verifies, but cInSecp is not the confirmed input's commitment.
+  const fakeR = 1n;
+  const fakeCIn = pointToBytes(pedersenCommit(TRADER_IN_AMOUNT, fakeR));
+  const { hops, deltaOutLast } = quoteHops(TRADER_IN_AMOUNT);
+  const res = run(signRoute({ hops, deltaOutLast, cInSecp: fakeCIn, rIn: fakeR }));
+  return res.valid === false && /cInSecp does not match on-chain input UTXO/.test(res.reason);
 });
 
 test('inputCommitment accepted as ProjectivePoint (parity with bytes form)', () => {
-  const { env } = buildHonestTwoHopRoute();
-  const payload = encodeSwapRoute(env);
-  const res = validateSwapRoute({
-    payload, pools: buildPools(), currentHeight: 100,
-    bulletproofVerify: bpRangeAggVerify,
-    inputCommitment: C_IN,  // ProjectivePoint, not bytes
-  });
-  return res.valid === true;
+  return run(buildHonestTwoHopRoute().env, { inputCommitment: C_IN }).valid === true;
 });
 
 // =========================================================================
 // Summary
 // =========================================================================
 console.log(`\n${pass}/${pass + fail} passed`);
-// Exit on the computed verdict rather than only on failure: imported browser modules can leave the
-// event loop alive, and a run that passes every assertion then never exits reads as a hang.
+// Exit on the computed verdict: imported browser modules can leave the event loop alive.
 process.exit(fail > 0 ? 1 : 0);
 
 // ---- helpers ----

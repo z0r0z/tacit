@@ -103,7 +103,7 @@ const OPTS = { verify: async () => true, receiptSpks: [RECEIPT_SPK], refundSpks:
 }
 
 // ── REFUND floor: a stale batch (Groth16 fails against the current reserves) refunds ALL intents to their
-//    own vout n+1+i, reserves untouched (closes C-01 for batches). ──
+//    own vout n+1+i, reserves untouched. ──
 const refunds = async (label, run) => {
   const st = seed();
   const w = await run(st);

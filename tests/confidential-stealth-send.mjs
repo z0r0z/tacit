@@ -26,7 +26,7 @@ const _cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const
 secp.etc.hmacSha256Sync = (key, ...m) => hmac(nobleSha256, key, _cat(m));
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const deps = { secp, keccak256: keccak_256, sha256 };
-const scanPool = makeConfidentialPool(deps); // used to compute a spent note's real nullifier for fixtures
+const scanPool = makeConfidentialPool(deps); // computes a spent note's real nullifier for fixtures
 let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 // ── minimal, independent ABI helpers (deliberately not shared with the modules under test) ──
@@ -96,8 +96,8 @@ function lockStateOf(lockLeaves) {
   return { count: '0x' + word(lockLeaves.length), root: t.root() };
 }
 
-// A wallet's own REAL wrapped note, in a real 1-leaf tree — mirrors tests/confidential-pool-ux.mjs's
-// (now-fixed) transferFixture pattern.
+// A wallet's own real wrapped note, in a real 1-leaf tree — mirrors tests/confidential-pool-ux.mjs's
+// transferFixture pattern.
 function wrapFixture(ux, walletPriv, amountWei) {
   const w = ux.buildWrap({ walletPriv, amountWei, ticker: 'cETH', index: 0 });
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
@@ -272,8 +272,8 @@ let scanned, txByHash;
   });
   assert.ok(built.lCx && built.lCy && built.ownerPub && built.lBlinding, 'onBuilt exposes everything stealthRefund needs except position — lCx/lCy/ownerPub/lBlinding');
 
-  // Same chain-lookup mock as block 2, now carrying BOTH locks (this one appended after the first) — and
-  // the same real-nullifier/NullifiersSpent fix (a pure lock spends its funding note, emits no LeavesInserted).
+  // Same chain-lookup mock as block 2, now carrying both locks (this one appended after the first) — and
+  // the same real-nullifier/NullifiersSpent handling (a pure lock spends its funding note, emits no LeavesInserted).
   const secondNullifier = scanPool.nullifier(scanPool.leaf(secondNote.asset, secondNote.cx, secondNote.cy, secondNote.owner));
   const settleCalldata2 = encodeSettleCalldata({
     publicValues: encodePublicValuesForLock([secondSend.lockLeaf], [secondNullifier]),

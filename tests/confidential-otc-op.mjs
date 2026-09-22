@@ -95,10 +95,10 @@ function assemble({ vA, vB, makerIn, takerIn }) {
   ok('a spent input not in the pool tree (tampered owner) fails membership');
 }
 
-// ───────────────── 4. box swaps in its own output note → opening rejected ─────────────────
-// The settle prover tries to replace the taker's received-A note with a commitment IT controls
-// (a fresh r) while keeping the signed sigma. The sigma is bound to the original commitment, so it
-// no longer verifies — the box cannot redirect the output to a note it can spend.
+// ───────────────── 4. a substituted output note fails the opening bind ─────────────────
+// Replacing the taker's received-A note with a different commitment (a fresh r) keeps the signed
+// sigma, but the sigma is bound to the original commitment, so it no longer verifies against the
+// substitute.
 {
   const { otc } = assemble({ vA: 100, vB: 50, makerIn: 100, takerIn: 50 });
   const evil = pool.commitXY(100n, randomScalar()); // 100 A, but a blinding the box knows

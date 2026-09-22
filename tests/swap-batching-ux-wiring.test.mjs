@@ -2,10 +2,10 @@
 //
 // tests/confidential-swap-coordinator.mjs already proves the coordinator itself: two intents collapse into
 // one OP_SWAP, the assembled op passes the guest-mirror verifyBatch, each trader gets their own slice. What
-// that test cannot catch is the mount — the coordinator was written months ago and never constructed, so
-// `makeConfidentialSwap` appeared nowhere in ux and `ux.swapBatched` did not exist. This test pins the
-// wiring so it cannot silently come undone: the export is present, the deps it needs are the ones ux
-// actually has, and the pool's live root read that feeds `reservesFor` uses the right selector.
+// that test cannot catch is the mount: a coordinator that exists but is never constructed in ux leaves
+// `ux.swapBatched` silently absent. This test pins the wiring so it cannot come undone: the export is
+// present, the deps it needs are the ones ux actually has, and the pool's live root read that feeds
+// `reservesFor` uses the right selector.
 //
 // Most checks are source-level, but the important one is not: mounting the coordinator means CONSTRUCTING it
 // at ux init, so a dependency declared later in the module body would be in its temporal dead zone and throw

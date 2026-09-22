@@ -1,9 +1,9 @@
-// Offline validation of the take-path kernel-conservation check (the logic added
-// to takeAxferOffer) against a REAL settled T_AXFER offer recorded in a prior
-// run's state (.local/axintent-signet-state.json.bak-prerun). Fetches the input
-// commitment from mempool.space directly (NOT the rate-limited worker), so it
-// runs even while the worker's Blockstream quota is exhausted. Asserts: ACCEPT
-// the genuine offer, REJECT a tampered output. Run: node tests/_validate-take-kernel-offline.mjs
+// Offline validation of the take-path kernel-conservation check in
+// takeAxferOffer against a real settled T_AXFER offer captured in
+// .local/axintent-signet-state.json.bak-prerun. Fetches the input commitment
+// from mempool.space directly (not the worker), so it runs even while the
+// worker's Blockstream quota is exhausted. Asserts: ACCEPT the genuine offer,
+// REJECT a tampered output. Run: node tests/_validate-take-kernel-offline.mjs
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

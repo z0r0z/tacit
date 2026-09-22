@@ -2,24 +2,23 @@
 //
 // Two test groups built on the math layer (no envelopes, no Groth16):
 //
-//   1. **Uniswap V2-style token-launch lifecycle.** Walks a freshly-etched
-//      tacit asset from POOL_INIT through founder partial exit, second-LP
-//      entry, multi-trader swap sequence, second-LP full exit, and protocol
-//      fee claim — checking state consistency at every step.
+//   1. **Token-launch lifecycle.** Walks a freshly-etched tacit asset from
+//      POOL_INIT through founder partial exit, second-LP entry, multi-trader
+//      swap sequence, second-LP full exit, and protocol fee claim — checking
+//      state consistency at every step.
 //
-//   2. **Multi-hop router.** Reference implementation of V2-router-style
-//      best-path selection (1-hop direct vs 2-hop via intermediate asset)
-//      against a pool registry. Triangular-arbitrage convergence test
-//      across three pools sharing a bridge asset.
+//   2. **Multi-hop router.** Reference implementation of best-path selection
+//      (1-hop direct vs 2-hop via intermediate asset) against a pool
+//      registry. Triangular-arbitrage convergence test across three pools
+//      sharing a bridge asset.
 //
-// V1 note on multi-hop atomicity: each hop is a separate Bitcoin tx
-// (`T_SWAP_VAR` per hop). Between hop 1's settlement and hop 2's posting
-// another trader can shift the intermediate-asset pool's spot, so multi-
-// hop in V1 is "best effort" with slippage protection per hop. The
-// Follow-up work (V1.x / V2) introduces atomic
-// cross-surface settlement where N hops settle in a single Bitcoin tx
-// or none do. The router algorithm below works for both regimes; only
-// the settlement-atomicity guarantee differs.
+// Multi-hop atomicity: each hop is a separate Bitcoin tx (`T_SWAP_VAR` per
+// hop). Between hop 1's settlement and hop 2's posting another trader can
+// shift the intermediate-asset pool's spot, so multi-hop is "best effort"
+// with slippage protection per hop. Follow-up work introduces atomic
+// cross-surface settlement where N hops settle in a single Bitcoin tx or
+// none do. The router algorithm below works for both regimes; only the
+// settlement-atomicity guarantee differs.
 
 import {
   solveClearing, amountOutForTrader, applyBatch,
@@ -44,15 +43,15 @@ function mockAssetId(label) {
 }
 
 // =========================================================================
-// 1. Token-launch lifecycle (Uniswap V2-style end-to-end)
+// 1. Token-launch lifecycle (end-to-end)
 // =========================================================================
 //
 // Story: a founder etches a new tacit asset T1, opens a cBTC↔T1 pool with
 // an initial seed, the AMM_INITIAL_LP_LOCK_BLOCKS window passes, a second
 // LP joins, traders swap, the founder partially exits, more trading
 // happens, the second LP fully exits, the founder claims accrued
-// protocol fee. At each step we assert the pool state matches the V2
-// formula's expected output.
+// protocol fee. At each step we assert the pool state matches the
+// constant-product-AMM formula's expected output.
 
 console.log('Token-launch lifecycle (POOL_INIT → trading → LP rotation → fee claim)');
 {
@@ -168,7 +167,7 @@ console.log('Token-launch lifecycle (POOL_INIT → trading → LP rotation → f
        () => lpB_out.delta_a > 0n && lpB_out.delta_b > 0n);
 
   // === Event 7: protocol fee crystallizes implicitly on LP events.
-  // The actual fee accrual is via the Uniswap V2 lazy mintFee model:
+  // The actual fee accrual is via the lazy mintFee model:
   //   protocol_fee_shares_accrued ≈ protocol_fee_bps · (sqrt(k_now) − sqrt(k_last)) · S
   //                                                      / ((10000 − bps) · sqrt(k_now) + bps · sqrt(k_last))
   // We don't replicate the full formula here (covered in amm-protocol-fee.test.mjs);

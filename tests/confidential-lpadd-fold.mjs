@@ -171,7 +171,7 @@ const v0RefundArgs = (txidHex) => [REFUND_A_XONLY, REFUND_B_XONLY, pool.outpoint
 }
 eq(seedInit().foldLpAdd({ ...initEnv(), variant: 0 }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs('0x' + '5e'.repeat(32))), null, 'variant-0 LP-add to an unknown pool → skip');
 eq(seedInit().foldLpAdd({ ...initEnv(), kernelSigA: '0x' + 'de'.repeat(64) }, spendsInit(), beHex(shareR), SHARE_OUT, SHARE_AUTH, 100, ...initRefundArgs('0x' + '5e'.repeat(32))), null, 'bad asset_a kernel → skip');
-// The share note is FORMED from the reflection-computed lp_shares under the envelope's PUBLIC share_r (C-01):
+// The share note is FORMED from the reflection-computed lp_shares under the envelope's PUBLIC share_r:
 // there is no declared-share-opening gate to fail. A different share_r simply forms a different (still-valid)
 // note committing the SAME lp_shares — the pool always mints, never strands the LP for a lost race.
 {

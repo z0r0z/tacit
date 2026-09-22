@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 /**
- * Audit T3-03 — pin two invariants in CI:
+ * Pins two invariants in CI:
  *
- *  (A) Every NEW deposit-record creation site in the dapp + tests generates
+ *  (A) Every new deposit-record creation site in the dapp + tests generates
  *      `nullifierPreimage` from a fresh CSPRNG call (crypto.getRandomValues
  *      or randomBytes(32)) or a documented deterministic-unique derivation
  *      (_derive*NullifierPreimage). Reusing a preimage across notes would
  *      collide their nullifier_hash (= poseidon(preimage), no denom binding
- *      pre-ceremony-2) → second note becomes permanently unspendable (user
- *      self-lock; not a drain).
+ *      until the circuit is upgraded) → the second note becomes permanently
+ *      unspendable (user self-lock; not a drain).
  *
- *  (B) The SP1 guest uses a SINGLE GLOBAL null_set across all denoms — not
- *      per-denom. If anyone ever refactors to per-denom sets, the same
- *      preimage used across two denoms would NOT conflict per-denom → could
- *      be burned twice → double-withdraw → real drain. The global set is
- *      THE backstop until the circuit is upgraded to bind denom into the
- *      nullifier (deferred — needs new ceremony).
+ *  (B) The SP1 guest must use a single global null_set across all denoms,
+ *      not per-denom. If it were ever refactored to per-denom sets, the same
+ *      preimage used across two denoms would not conflict per-denom → could
+ *      be burned twice → double-withdraw → real drain. The global set is the
+ *      backstop until the circuit is upgraded to bind denom into the
+ *      nullifier (needs a new ceremony).
  *
  * Fails CI loudly if either invariant slips.
  */
@@ -86,7 +86,7 @@ if (failed === 0) {
 // ─── (B) single-global nullifier set in guest ──────────────────────
 const GUEST_MAIN = `${REPO}contracts/sp1/program/src/main.rs`;
 const guestSrc = fs.readFileSync(GUEST_MAIN, 'utf8');
-// The guest should declare exactly ONE null_set binding (mut or otherwise).
+// The guest should declare exactly one null_set binding (mut or otherwise).
 // Count production code only — strip the #[cfg(test)] module, whose unit
 // tests legitimately construct their own NullifierSet instances.
 const prodSrc = guestSrc.split(/\n\s*#\[cfg\(test\)\]/)[0];

@@ -32,7 +32,7 @@ const claimBlinding = 0xABCDn;
 const CLAIMER_PRIV = be('0x2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40', 32);
 const CLAIMER_PUB = hx(G.multiply(BigInt(hx(CLAIMER_PRIV))).toRawBytes(true)); // compressed (33B)
 // pool_id binds (pair, LP fee tier, recipient, protocol-fee tier) — re-derived in-fold from the claim's claimer
-// + fee_bps to prove the claimer IS the recipient (an attacker can't supply the recipient's key to sign).
+// + fee_bps to prove the claimer IS the recipient, so only the recipient's key can sign a valid claim.
 const POOL_ID = pool.ammDerivePoolIdFull(ASSET_A, ASSET_B, feeBps, capabilityFlags, CLAIMER_PUB, pfBps);
 
 // The accrued protocol-fee shares from k-growth (k_last 1e6 → k_now 4e6); the claim must equal them exactly.
@@ -40,8 +40,8 @@ const accrued = pool.protocolFeeShares(sPre, kLast, reserveA * reserveB, pfBps);
 const { cx, cy } = pool.commitXY(accrued, claimBlinding);
 const claimCSecp = pool.compressXY(cx, cy);
 
-// vout[0] = the claim note destination scriptPubKey (P2WPKH-shaped) the recipient sig binds — stops a
-// front-runner replaying the public envelope into their own vout-0 note.
+// vout[0] = the claim note destination scriptPubKey (P2WPKH-shaped) the recipient sig binds, so the public
+// envelope cannot be replayed into a different vout-0 note.
 // P2TR (0x51 0x20 ‖ x-only key): the guest derives the reflected note's spend authority from the
 // destination output's Taproot key, so a non-P2TR destination is a fail-closed reject there.
 const CLAIM_SPK = cat([[0x51, 0x20], Buffer.alloc(32, 0x7c)]);

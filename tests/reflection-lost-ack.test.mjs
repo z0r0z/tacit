@@ -1,4 +1,4 @@
-// A lost acknowledgement can no longer stall reflection: a slow receipt is waited out by polling the pool, a batch
+// A lost acknowledgement cannot stall reflection: a slow receipt is waited out by polling the pool, a batch
 // that landed without its ack is adopted from the API's stash, and a stalled lane or drifted cursor is detectable.
 // Offline (mocked RPC, KV and API): node tests/reflection-lost-ack.test.mjs
 import { readFileSync } from 'node:fs';
@@ -24,7 +24,7 @@ function chain({ digestAt = Infinity, digest = D1, tx = () => ({ state: 'pending
 const wait = (c, o = {}) => awaitAttestLanding({ newDigest: D1, txHash: TX, readDigest: c.readDigest, txStatus: c.txStatus, sleep: c.sleep, now: c.now, windowSecs: 1800, pollSecs: 15, confirmations: 3, ...o });
 
 {
-  // The observed failure: the tx lands ~5 minutes in, long after a default receipt wait would have given up.
+  // A tx can land minutes in, long after a default receipt wait would have given up.
   const c = chain({ digestAt: 300, tx: (t) => (t >= 300_000 ? { state: 'mined', confirmations: 9 } : { state: 'pending' }) });
   const r = await wait(c);
   ok('a tx that lands minutes late is seen as landed, not as a failure', r.outcome === 'landed');

@@ -3,12 +3,11 @@
 // exec-farmharvest harness: prove a farm receipt, bound the reward against the rps checkpoint, nullify the
 // old receipt and append the advanced one plus the reward note.
 //
-// RECEIPT v2 (FARM-01): `farm_receipt_leaf` now commits the STAKED asset, so harvest witnesses `lpAsset`
-// (between `fee` and `oldIndex`). It is forced to equal the bonded asset by receipt membership — which is
-// what closes the cross-asset re-labelling v1 allowed: with the asset absent from the leaf, OP_FARM_UNBOND
-// could re-witness it, bond a worthless token and unbond as cETH, draining pool-wide escrow. The owner
-// BIP-340 signature does bind lpAsset, but the attacker IS the owner, so a signature over a prover-chosen
-// field binds nothing — the leaf commitment is what fixes it.
+// `farm_receipt_leaf` commits the staked asset, so harvest witnesses `lpAsset` (between `fee` and
+// `oldIndex`), forced to equal the bonded asset by receipt membership: with the asset absent from the
+// leaf, OP_FARM_UNBOND could be re-witnessed with a different token, bonding a worthless asset and
+// unbonding cETH, draining pool-wide escrow. A BIP-340 signature over lpAsset doesn't bind this on its
+// own, since the position owner controls the signed fields — the leaf commitment is what fixes it.
 //
 // Run: node tests/gen-confidential-farmharvest-fixture.mjs
 
@@ -30,7 +29,7 @@ const pool = makeConfidentialPool({ secp, keccak256, sha256 });
 const farm = makeConfidentialFarm({ keccak256, pool });
 
 const CONTROLLER = '0x' + '11'.repeat(20);
-const LP_ASSET = '0x' + 'dd'.repeat(32);     // the STAKED asset — now committed in the receipt (v2)
+const LP_ASSET = '0x' + 'dd'.repeat(32);     // the staked asset — committed in the receipt
 const REWARD_ASSET = '0x' + 'ee'.repeat(32);
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const ZERO32 = '0x' + '00'.repeat(32);
@@ -54,7 +53,7 @@ const HARVEST_NONCE = '0x' + '00'.repeat(31) + '01'; // per-harvest freshness fo
 const rewardBlind = det('reward');
 const rewardNote = { ...pool.commitXY(REWARD - FEE, rewardBlind), blinding: rewardBlind };
 
-// The receipt lives in the note tree — v3, a stable position id committing LP_ASSET + shares + owner + nonce.
+// The receipt lives in the note tree as a stable position id committing LP_ASSET + shares + owner + nonce.
 // It is NOT consumed by the harvest; the controller re-stamps its entry instead.
 const controller32 = '0x' + '00'.repeat(12) + CONTROLLER.replace(/^0x/, '');
 const oldReceipt = pool.farmReceiptLeaf(controller32, LP_ASSET, SHARES, OWNER, NONCE);
@@ -75,7 +74,7 @@ const op = farm.buildHarvestOp({
   reward: REWARD,
   oldIndex,
   oldPath,
-  lpAsset: LP_ASSET,      // receipt v3
+  lpAsset: LP_ASSET,      // committed in the receipt leaf
   rewardAsset: REWARD_ASSET,
   rewardNote,
   fee: FEE,
@@ -92,7 +91,7 @@ const fixture = {
   harvestNonce: HARVEST_NONCE,
   reward: Number(REWARD),
   fee: Number(FEE),
-  lpAsset: LP_ASSET,       // read between fee and oldIndex (receipt v3)
+  lpAsset: LP_ASSET,       // read between fee and oldIndex
   oldIndex,
   oldPath,
   rewardAsset: REWARD_ASSET,

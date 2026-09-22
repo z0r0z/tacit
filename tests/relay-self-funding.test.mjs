@@ -1,15 +1,13 @@
 // The relay funds the wallets that actually spend, and charges for the work it actually does.
 //
-// Four independent things were broken at once on 2026-09-20, and each was individually invisible:
-//   1. the replenish cron was suspended, so the flywheel had never run;
-//   2. SETTLE_KEY is split from RELAY_KEY, and both the monitor and replenish looked only at RELAY_KEY —
-//      so the wallet that earns the fees and burns the settle gas was neither watched nor funded;
-//   3. the fee gate accepted any op without `op.feeUsd` for free, which was every op;
-//   4. the maintenance lane (Bitcoin header attestation) was absent from the cost model, so every op was
-//      priced below its true cost.
-//
-// (1) is an operator action. The other three are pinned here, because all three failed silently and the
-// only symptom was a wallet quietly reaching zero.
+// This pins properties that fail silently when broken, with no symptom beyond a wallet quietly reaching
+// zero:
+//   1. the replenish cron actually runs;
+//   2. SETTLE_KEY is split from RELAY_KEY, so the monitor and replenish must watch and fund both — the
+//      wallet that earns the fees and burns the settle gas must never go unwatched or unfunded;
+//   3. the fee gate must refuse an op with no `op.feeUsd`, not pass it for free;
+//   4. the maintenance lane (Bitcoin header attestation) must be priced into the cost model, or every op
+//      is priced below its true cost.
 //
 // Run: node tests/relay-self-funding.test.mjs
 
@@ -204,9 +202,9 @@ test('pricing failure never fails a submit', () => {
   ok(/catch \{ priced = null; \}/.test(settler), 'a blinking oracle must not reject a user op');
 });
 
-test('metering is no longer something the fee floor can switch off', () => {
-  // The old coupling: RELAY_FEE_FLOOR=1 skipped metering entirely, but the gate only prices cETH — so it
-  // re-opened zero-fee floods for every other asset. That is why the floor could never be turned on.
+test('the fee floor cannot switch off metering', () => {
+  // RELAY_FEE_FLOOR=1 must not skip metering entirely: the gate only prices cETH, so skipping metering
+  // would reopen zero-fee floods for every other asset.
   ok(!/submitMode === 'prove' \|\| env\.RELAY_FEE_FLOOR !== '1'/.test(worker),
     'metering is still gated on RELAY_FEE_FLOOR');
   ok(/const paying = submitMode !== 'prove' && env\.RELAY_FEE_FLOOR === '1' && hasVerifiableFee\(body\.type, body\.op, env\)/.test(worker),
@@ -220,7 +218,7 @@ test('metering is no longer something the fee floor can switch off', () => {
 // cannot tell you whether a fee that is too low is actually rejected.
 const rq = await import(join(ROOT, 'worker/src/relay-quote.js'));
 const { CONFIDENTIAL_DEPLOYMENTS: DEPLOY } = await import(join(ROOT, 'dapp/confidential-deployments.js'));
-const gateSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf("// Price an op's OWN fee legs"));
+const gateSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf('function buildFeePricer('));
 function loadGate({ gasWei = 60_000_000n, ethUsd = 2570, btcUsd = 80000, env = {} } = {}) {
   const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'ENV',
     gateSrc + '; return { feeAssetRow, hasVerifiableFee, usdPerUnitOf, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1", ...ENV }) };');
@@ -239,7 +237,7 @@ test('cETH: a fee under the gas-aware floor is rejected, one over it is accepted
   ok(await gate({ type: 'transfer', op: transfer(cEth, floorUnits / 2n) }) === false, 'a fee at half the floor must be rejected');
 });
 
-test('cUSD: the same floor now applies to a USD-pegged fee (used to pass ungated)', async () => {
+test('cUSD: the same floor applies to a USD-pegged fee', async () => {
   const { gate } = loadGate();
   // dollars -> cUSD units: units = usd / usdPerUnit; usdPerUnit = unitScale / 10^decimals
   const usdPerUnit = Number(BigInt(cUsd.unitScale)) / 10 ** Number(cUsd.decimals);
@@ -300,8 +298,8 @@ test('with no cTAC reference configured, cTAC is unpriced — never guessed', as
 });
 
 test('a configured cTAC reference makes cTAC verifiable (env must reach hasVerifiableFee)', () => {
-  // Regression: hasVerifiableFee was called without env, so a CONFIGURED cTAC still looked unverifiable and
-  // its submits were metered on the strict bucket.
+  // hasVerifiableFee must receive env, or a configured cTAC still looks unverifiable and its submits are
+  // metered on the strict bucket.
   const { hasVerifiableFee } = loadGate({ btcUsd: 80000 });
   ok(hasVerifiableFee('transfer', transfer(cTac, 1_000_000), TAC_ENV) === true, 'a configured cTAC fee must be verifiable');
   ok(/hasVerifiableFee\(body\.type, body\.op, env\)/.test(worker), 'the submit handler must pass env to hasVerifiableFee');
@@ -585,9 +583,9 @@ test('rate-limit buckets cannot collide', () => {
 });
 
 // ── behaviour, not just source: which wallets does each service actually see? ──
-// The first version of fundedWallets passed every string check and was still wrong in production: the
-// monitor cron has no SETTLE_KEY, so the settle wallet silently collapsed into the relay wallet and the
-// one paying for settles went unwatched. That is a property of ENV, so test it under env.
+// Which wallets a service watches and funds is a property of ENV, not just of the source text: with no
+// SETTLE_KEY, the settle wallet must not silently collapse into the relay wallet and go unwatched. Test
+// it under real env, not by matching strings against fundedWallets.
 import { spawnSync } from 'node:child_process';
 const RELAY_PK = '0x' + '11'.repeat(32);
 const SETTLE_PK = '0x' + '22'.repeat(32);
@@ -622,7 +620,7 @@ test('split keys: two wallets, each with its own role', () => {
 });
 
 test('the MONITOR case: no SETTLE_KEY, SETTLE_ADDRESS names the settle wallet', () => {
-  // Exactly the production shape that was broken: RELAY_KEY only, plus a public address for the settle wallet.
+  // RELAY_KEY only, plus a public address for the settle wallet.
   const w = wallets({ SETTLE_ADDRESS: SETTLE_ADDR });
   ok(w.watched.length === 2, `the monitor must watch TWO wallets, saw ${w.watched.length}`);
   const settle = w.watched.find((x) => x.r.includes('settle'));

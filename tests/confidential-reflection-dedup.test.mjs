@@ -1,15 +1,13 @@
-// Parity guard for the membership-gated reflection dedup (commitment-collision DoS class).
+// Parity guard for the membership-gated reflection dedup.
 //
-// An attacker can mint two notes that share a commitment (equal value+blinding) → they share a single
-// nullifier ν. Spending or bridging-out BOTH in one batch makes the reflection fold ν twice. A naive IMT
-// re-insert has no straddling low node → returns None → the guest `.expect()` PANICS → the forward-only
-// reflection bricks permanently (a fund-strand DoS). The guest folds a duplicate as a membership-GATED
-// no-op (sentinel: low_key/low_value == ν, impossible for a real insert), and the JS producer MUST emit
-// that exact sentinel — else a dup block can't be produced and the DoS still stands end-to-end.
+// Two notes can share a commitment (equal value+blinding) and therefore a single nullifier ν. Folding both
+// in one batch would fold ν twice, and a naive IMT re-insert has no straddling low node for a repeat key.
+// The guest instead folds a duplicate as a membership-gated no-op (sentinel: low_key/low_value == ν,
+// impossible for a real insert), and the JS producer must emit that exact sentinel.
 //
 // This asserts the producer (makeScanReflectionState, the engine worker/reflection-attest.js runs) emits
-// the sentinel for a duplicate, doesn't throw, and is a no-op — for BOTH the burn set (gap A) and the
-// spent set (the 44216b3 fix), using the pool's own ν primitive so there is no mirror drift.
+// the sentinel for a duplicate, doesn't throw, and is a no-op — for both the burn set and the spent set,
+// using the pool's own ν primitive so there is no mirror drift.
 //
 // Run: node tests/confidential-reflection-dedup.test.mjs
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
@@ -26,13 +24,13 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 const { nullifier, commitXY, makeScanReflectionState } = pool;
 
-// Two equal-commitment notes → one shared ν (the collision an attacker crafts).
+// Two equal-commitment notes share one ν.
 const { cx, cy } = commitXY(1000n, 0x9e3779b97f4a7c15n);
 const nu = nullifier(cx, cy);
 const dest1 = '0x' + '22'.repeat(32);
 const dest2 = '0x' + '33'.repeat(32); // a different dest on the second bridge-out — must be IGNORED (first wins)
 
-// ── burn set (gap A: fold_burn membership-gated dedup) ──
+// ── burn set (fold_burn membership-gated dedup) ──
 {
   const st = makeScanReflectionState();
   const w1 = st.foldBurn(nu, dest1);
@@ -45,7 +43,7 @@ const dest2 = '0x' + '33'.repeat(32); // a different dest on the second bridge-o
   assert.strictEqual(st.digest(), digAfter1, 'duplicate bridge-out is a no-op (burn root / digest unchanged)');
 }
 
-// ── spent set (44216b3: fold_spent membership-gated dedup) — same shape, regression guard ──
+// ── spent set (fold_spent membership-gated dedup) — same shape, regression guard ──
 {
   const st = makeScanReflectionState();
   const w1 = st.foldSpent(nu);

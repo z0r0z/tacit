@@ -107,7 +107,12 @@ const buyerUtxos = []; // populated per-scenario
 const hintPosts = []; // captured POST bodies to /assets/hint — see worker dedup logic
 const parentTxByTxid = new Map();
 
-function setBuyerUtxos(utxos) { buyerUtxos.length = 0; buyerUtxos.push(...utxos); }
+// A new buyer UTXO set is a new chain state. The dapp serves /address/X/utxo from a 10s read cache that a
+// broadcast does not clear, so step the clock a minute past it; the sale expiry leaves an hour of room.
+const _realNow = Date.now;
+let _clockSkewMs = 0;
+Date.now = () => _realNow() + _clockSkewMs;
+function setBuyerUtxos(utxos) { buyerUtxos.length = 0; buyerUtxos.push(...utxos); _clockSkewMs += 60_000; }
 function registerAssetParent(txid, vout, amount, blinding, assetIdHex = ASSET_ID) {
   const n = vout < 1 ? 1 : vout < 2 ? 2 : vout < 4 ? 4 : vout < 8 ? 8 : 0;
   if (!n) throw new Error(`test parent vout ${vout} exceeds CXFER fixture output width`);
@@ -137,18 +142,9 @@ function registerAssetParent(txid, vout, amount, blinding, assetIdHex = ASSET_ID
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   const method = (opts.method || 'GET').toUpperCase();
-  const json = (obj, status = 200) => ({
-    ok: status >= 200 && status < 300,
-    status,
-    text: async () => JSON.stringify(obj),
-    json: async () => obj,
-  });
-  const text = (body, status = 200) => ({
-    ok: status >= 200 && status < 300,
-    status,
-    text: async () => body,
-    json: async () => { throw new Error('not json'); },
-  });
+  // Real Response objects: the dapp's chain-read cache copies headers and the body buffer.
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+  const text = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/plain' } });
   // mempool.space recommended fees
   if (u.endsWith('/v1/fees/recommended')) return json({ fastestFee: 10, halfHourFee: 5, hourFee: 2, economyFee: 1, minimumFee: 1 });
   // address/X/utxo — buyer's address only
@@ -156,9 +152,10 @@ globalThis.fetch = async (url, opts = {}) => {
   // tx broadcast (POST /tx with body = hex). The mock doesn't recompute the
   // txid (that requires stripping witnesses for segwit txs); the caller's
   // return value carries the dapp's-computed txid and we match by index.
+  // Each signed tx is sent to every esplora base; one broadcast is one distinct hex.
   if (method === 'POST' && u.endsWith('/tx')) {
     const hex = opts.body;
-    broadcasts.push({ hex });
+    if (!broadcasts.some(b => b.hex === hex)) broadcasts.push({ hex });
     // Return a placeholder — the dapp's broadcast() reads response.text()
     // but uses its OWN locally-computed txid downstream. The mock's return
     // value here is irrelevant for control flow.
@@ -207,12 +204,7 @@ globalThis.fetch = async (url, opts = {}) => {
   // Intercept the outspend check for the asset outpoint and report spent
   // when assetSpent === true. Other URLs fall through to the main handler.
   if (assetSpent && /\/tx\/[0-9a-f]{64}\/outspend\/\d+$/.test(u)) {
-    return {
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ spent: true }),
-      json: async () => ({ spent: true }),
-    };
+    return new Response(JSON.stringify({ spent: true }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   return _origFetch(url, opts);
 };

@@ -27,6 +27,7 @@ import * as secp from '@noble/secp256k1';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { hmac } from '@noble/hashes/hmac';
 import { sha256 } from '@noble/hashes/sha256';
+import { TEST_LP_ADD_REFUND_TAIL, TEST_LP_ADD_KERNEL_TAIL_A as LP_ADD_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B as LP_ADD_TAIL_B } from './helpers/amm-refund-tail.mjs';
 
 const worker = await import('../worker/src/index.js');
 const dappBp = await import('../dapp/bulletproofs.js');
@@ -111,13 +112,13 @@ function _simulatePoolInitImpl({ assetA, assetB, deltaA, deltaB, feeBps, capabil
 
   // Kernel sigs A + B
   const kernelSigA = dappKernel.lpAddKernelSign({
-    variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
     shareAmount: init.founder_shares, shareCSecpBytes,
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [commitA], excessX: blindA,
   });
   const kernelSigB = dappKernel.lpAddKernelSign({
-    variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+    ...LP_ADD_TAIL_B, variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
     shareAmount: init.founder_shares, shareCSecpBytes,
     inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
     inputCommitments: [commitB], excessX: blindB,
@@ -132,11 +133,12 @@ function _simulatePoolInitImpl({ assetA, assetB, deltaA, deltaB, feeBps, capabil
       shareCSecp: shareCSecpBytes, shareCBJJ: shareCBJJBytes,
       shareXcurveSigma: xcurveSigma,
       kernelSigA, kernelSigB,
+      shareR: hexToBytes(r_secp.toString(16).padStart(64, '0')),
       feeBps, vkCid: 'bafyTestVk', ceremonyCid: 'bafyTestCe',
       arbiterPubkeys: [], launcherSigs: [],
       protocolFeeAddress: new Uint8Array(33), protocolFeeBps: 0,
       poolMetaUri: '', poolCapabilityFlags: capabilityFlags,
-      proof: new Uint8Array(256),
+      ...TEST_LP_ADD_REFUND_TAIL,
     });
   } catch (e) {
     return { encoderRejected: e.message };
@@ -153,14 +155,14 @@ function _simulatePoolInitImpl({ assetA, assetB, deltaA, deltaB, feeBps, capabil
     hexToBytes(decoded.share_c_bjj),
   );
   const kernelOkA = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
     shareAmount: init.founder_shares, shareCSecpBytes,
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [commitA.toRawBytes(true)],
     sig64: kernelSigA,
   });
   const kernelOkB = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+    ...LP_ADD_TAIL_B, variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
     shareAmount: init.founder_shares, shareCSecpBytes,
     inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
     inputCommitments: [commitB.toRawBytes(true)],

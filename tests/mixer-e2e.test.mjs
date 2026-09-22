@@ -30,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CIRCUITS = path.resolve(__dirname, '..', 'dapp', 'circuits');
@@ -72,7 +73,14 @@ if (!artifactsReady) {
 
 console.log('\nGroth16 prove/verify pipeline:');
 
-await test('prove-sample.mjs generates + verifies a real Groth16 proof', () => {
+// prove-sample.mjs needs dapp/circuits' own dependencies (circomlibjs).
+let circuitDepsReady = true;
+try { createRequire(path.join(CIRCUITS, 'package.json')).resolve('circomlibjs'); }
+catch { circuitDepsReady = false; }
+
+if (!circuitDepsReady) {
+  console.log('  SKIP  prove-sample.mjs (run `cd dapp/circuits && npm install` first)');
+} else await test('prove-sample.mjs generates + verifies a real Groth16 proof', () => {
   const result = spawnSync('node', ['prove-sample.mjs'], {
     cwd: CIRCUITS,
     encoding: 'utf8',

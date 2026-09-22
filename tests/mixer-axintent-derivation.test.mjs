@@ -10,8 +10,8 @@
 //     Replaces randomScalar() in publishAxferIntent so the maker can
 //     recover their commit's Pedersen opening from priv + chain alone.
 //
-// Phase-1-style coverage: determinism, per-input independence, domain
-// separation, input validation, canonical-HMAC cross-check.
+// Coverage: determinism, per-input independence, domain separation,
+// input validation, canonical-HMAC cross-check.
 
 import { JSDOM } from 'jsdom';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';

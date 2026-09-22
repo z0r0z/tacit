@@ -68,7 +68,7 @@ const JOBS = [
   // every attestBitcoinStateProven (the whole cross-chain lane) until the relay tip walked back
   // REFLECTION_CONFIRMATIONS reaches GENESIS_REFLECTION_ANCHOR. So advance the tip BEFORE any cross-chain flow
   // runs (the deploy script does the initial maturity; this keeps it live during the long confirmation
-  // windows). Distinct from the attest loop (reflection-relay-loop.sh), which never advances headers.
+  // windows). Distinct from the reflection attest service, which never advances headers.
   // Requires RELAY_ADDRESS (the freshly-deployed relay — not in the manifest) + RELAY_PK/SEPOLIA_PK in env.
   { id: 'relay-advance', features: ['relay-advance'], chain: 'cross', wallets: ['ops'], deps: ['deploy', 'bootstrap'], etaSec: 300,
     cmd: 'scripts/advance-relay.sh --count 20' },

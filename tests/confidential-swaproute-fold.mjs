@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// swap_route (T_SWAP_ROUTE 0x33) fold — JS mirror of cxfer-core fold_swap_route (C-01 current-price + refund
+// swap_route (T_SWAP_ROUTE 0x33) fold — JS mirror of cxfer-core fold_swap_route (current-price + refund
 // floor). The trader's single input note flows through 2–4 pools and lands as ONE receipt note. Validates: a
 // FRESH route clears each hop at the current price and onboards the FORMED receipt; a STALE route (a spanned
 // pool moved) re-clears at the moved price rather than stranding the whole route; an over-slipped route REFUNDS

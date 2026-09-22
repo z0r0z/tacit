@@ -1,9 +1,7 @@
-// Cross-pool replay attack tests.
+// Cross-pool replay tests.
 //
 // Verifies that an LP_ADD or LP_REMOVE envelope built and signed for pool A
 // cannot be replayed against pool B (different asset pair, different pool_id).
-// This is a class of attack where an attacker observes a valid envelope on the
-// mempool and attempts to re-target it at a different pool's state.
 //
 // Replay protections in tacit AMM:
 //   1. kernel_msg includes pool_id (amm-kernel.mjs DOMAIN_LP_ADD), so a kernel
@@ -12,7 +10,7 @@
 //      against pool.pool_id; mismatch → "pool_id mismatch" rejection
 //      (amm-validator.mjs:221).
 //   3. POOL_INIT (variant=1) rejects if `pool` argument is non-null
-//      (amm-validator.mjs:128), so an attacker can't re-init an existing pool.
+//      (amm-validator.mjs:128), so an existing pool cannot be re-initialized.
 //   4. Groth16 circuit includes pool_id_fr as a public signal — a proof bound
 //      to pool_id_A's public-signal vector will not verify against pool_id_B.
 //
@@ -29,8 +27,15 @@ import { lpAddKernelSign } from './amm-kernel.mjs';
 import { proveXCurve } from './amm-sigma-xcurve.mjs';
 import { validateLpAdd as _validateLpAdd, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, SKIP_OP_RETURN_VERIFY_UNSAFE } from './amm-validator.mjs';
 
+import { TEST_LP_ADD_KERNEL_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B } from './helpers/amm-refund-tail.mjs';
+
 function validateLpAdd(args) {
-  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+  return _validateLpAdd({
+    opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE,
+    refundDestXonlyA: TEST_LP_ADD_KERNEL_TAIL_A.refundDestXonly,
+    refundDestXonlyB: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly,
+    ...args,
+  });
 }
 import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 import {
@@ -103,12 +108,12 @@ function buildPoolInit(pool, deltaA, deltaB) {
   const kSigA = lpAddKernelSign({
     variant: 1, poolId: pool.pool_id, assetX: pool.assetA, deltaX: deltaA,
     shareAmount: founderShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA,
+    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA, ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const kSigB = lpAddKernelSign({
     variant: 1, poolId: pool.pool_id, assetX: pool.assetB, deltaX: deltaB,
     shareAmount: founderShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB,
+    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB, ...TEST_LP_ADD_KERNEL_TAIL_B,
   });
 
   const args = {
@@ -197,10 +202,10 @@ describe('cross-pool replay attack tests', () => {
     const { poolA, poolB } = buildTwoPools();
     const initA = buildPoolInit(poolA, 1_000_000n, 2_000_000n);
 
-    // Attacker rebuilds the LP_ADD envelope claiming pool B's assets — but
-    // keeps the kernel sigs unchanged (those were signed under pool A's
-    // pool_id). re-derived poolId from B's assets will not match what
-    // kernel_msg was computed against → kernel sig rejects.
+    // Rebuilds the LP_ADD envelope claiming pool B's assets, but keeps the
+    // kernel sigs unchanged (those were signed under pool A's pool_id): the
+    // re-derived poolId from B's assets will not match what kernel_msg was
+    // computed against, so the kernel sig rejects.
     const attacker = {
       ...initA.args,
       assetA: poolB.assetA, assetB: poolB.assetB,

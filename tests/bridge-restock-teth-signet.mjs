@@ -1,7 +1,7 @@
 // Restock signet tETH for the TETH/TAC pilot pool (fast-settlement Phase 0).
 //
-// The 2026-05-31 round-trip burned its own mint, leaving signet tETH
-// circulation at ~0. This harness re-mints headlessly:
+// Signet tETH circulation runs low because round-trip harnesses burn their
+// own mint. This harness re-mints headlessly:
 //
 //   Phase A: batch-deposit 2 × 0.001 ETH into the signet-bridge Sepolia
 //            mixer (deployer key from .env via `cast send`)

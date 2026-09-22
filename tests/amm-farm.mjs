@@ -1,7 +1,7 @@
 // T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36)
 // reference implementation.
 //
-// MasterChef-style staked-LP rewards on tacit AMM pools.
+// Reward-per-share-accumulator staked-LP rewards on tacit AMM pools.
 //
 // Design properties:
 //   - Virtual treasury bookkeeping (no on-chain treasury UTXO; mirrors
@@ -55,7 +55,7 @@ export const OPCODE_T_LP_UNBOND  = 0x36;
 // T_LP_HARVEST claims accrued reward without unbonding the underlying LP
 // shares. Updates the bond's entry_acc_per_share to the canonical exit
 // value; does NOT touch farm.total_bonded or delete the bond record.
-// MasterChef-equivalent of the `harvest()` / `deposit(0)` pattern.
+// Same harvest()-without-unbonding shape common to reward-per-share accumulators.
 // Wire is ~227 bytes (no bulletproof, no lp_return UTXO).
 export const OPCODE_T_LP_HARVEST = 0x3B;
 // T_FARM_REFUND lets the launcher reclaim unspent `treasury_remaining`
@@ -273,10 +273,10 @@ export function buildFarmInitKernelMsg({
 // bond_msg — signed by bonder_pubkey (BIP-340). Domain msg binds the
 // structural fields directly (envelope_hash binding via OP_RETURN, not
 // in-msg, to avoid self-reference; same convention as buildFarmInitMsg).
-// STALE REFERENCE (C-01): the authoritative bond message now also binds the receipt owner_commit + nonce
-// (see dapp/amm-envelope.js buildLpBondMsg + the cxfer-core lp_bond_msg_kat). This self-contained simulation
-// predates owner-binding and is NOT fed to the guest; refresh it to the owner-bound layout when this reference
-// is next exercised against real vectors.
+// This reference simulation predates owner-binding: the authoritative bond message also binds the
+// receipt owner_commit + nonce (see dapp/amm-envelope.js buildLpBondMsg + the cxfer-core
+// lp_bond_msg_kat). Not fed to the guest; update to the owner-bound layout before exercising this
+// against real vectors.
 export function buildLpBondMsg({
   farmId, bonderPubkey, bondAmount,
   entryAccPerShare, bondViewHeight,

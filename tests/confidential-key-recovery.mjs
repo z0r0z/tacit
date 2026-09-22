@@ -257,7 +257,7 @@ function farmScene({ liveShares = 4000n } = {}) {
   const aNote = derivedNote(ux0, walletPriv, '0x' + '0a'.repeat(32), 0, 5000);
   const pos = ux0.lpBondPosition({ walletPriv, controller: FARM.manager, lpAsset: P0.lpAsset, anchorLeaf: aNote.leaf });
   const derivedReceipt = pool.farmReceiptLeaf(c32, P0.lpAsset, liveShares, pos.owner, pos.nonce);
-  // A position under a random key (older build): the wallet key cannot derive it.
+  // A position under an unrelated key: the wallet key cannot derive it.
   const randomPriv = '0x' + '5c'.repeat(32);
   const randomOwner = '0x' + Buffer.from(secp.getPublicKey(randomPriv.slice(2), true).subarray(1)).toString('hex');
   const randomNonce = '0x' + '9e'.repeat(32);

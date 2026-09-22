@@ -37,7 +37,7 @@ const pin = (label, guest, actual) => {
   else { console.log(`  FAIL  ${label}\n        guest: ${guest}\n        got:   ${actual}`); fail++; }
 };
 
-// BURN_SOURCE_REFLECTED = 1 over the note's full btc_note_leaf(asset,Cx,Cy,auth_key), target-scoped (C-01).
+// BURN_SOURCE_REFLECTED = 1 over the note's full btc_note_leaf(asset,Cx,Cy,auth_key), target-scoped.
 pin('reflected burn_id == guest', guestReflected, pool.bridgeBurnId(1, txid, 0, pool.btcNoteLeaf(x, cx, cy, kv), tgt).replace(/^0x/, ''));
 // BURN_SOURCE_DEPOSIT = 2 over the native leaf(asset,Cx,Cy,0), target-scoped.
 pin('deposit burn_id == guest', guestDeposit, pool.bridgeBurnId(2, txid, 0, pool.leaf(x, cx, cy, ZERO), tgt).replace(/^0x/, ''));

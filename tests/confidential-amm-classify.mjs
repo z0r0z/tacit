@@ -3,11 +3,12 @@
 // (taken from the reflect-exec-DIGEST_MATCH-validated gens' txData) to the fold-critical fields the assembler
 // reads. We run the light gens, classify their txData, and assert the type + the public scalars/assets/
 // commitments the gen used (the commitments/sigs themselves are exercised by the gens' folds). Confirms the
-// classifier routes swap_var / swap_route / harvest / protocol_fee_claim / farm_init (+ inline farm_refund),
-// no longer 'unsupported'. Run: node tests/confidential-amm-classify.mjs
+// classifier routes swap_var / swap_route / harvest / protocol_fee_claim / farm_init (+ inline farm_refund)
+// to their real types rather than 'unsupported'. Run: node tests/confidential-amm-classify.mjs
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { createHash } from 'node:crypto';
@@ -22,7 +23,8 @@ const norm = (x) => (typeof x === 'string' ? x.replace(/^0x/, '').toLowerCase() 
 const numEq = (a, b) => { try { return BigInt(a) === BigInt(b); } catch { return false; } };
 // txs[0] is the block coinbase (the gens prepend it so the guest extracts the envelope, which it does only
 // for ti != 0); the envelope tx the classifier reads is txs[1].
-const txData = (gen, env) => JSON.parse(execFileSync('node', [`tests/${gen}`], { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...(env || {}) } })).blocks[0].txs[1].txData;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const txData = (gen, env) => JSON.parse(execFileSync('node', [`tests/${gen}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...(env || {}) } })).blocks[0].txs[1].txData;
 const ZERO33 = '0x' + '00'.repeat(33);
 const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.repeat(32);
 
@@ -109,18 +111,18 @@ const A = '0x' + 'a1'.repeat(32), B = '0x' + 'b2'.repeat(32), C = '0x' + 'c3'.re
     'crossout_mint (0x65): type/asset/claimId/cx/cy');
 }
 // ── swap_batch (0x2F): its gen fullProves a real 1-intent A→B batch (snarkjs + the ~95MB head zkey), which is
-// heavy enough to deadlock a memory-constrained machine — so it is OPT-IN (RUN_SWAPBATCH_GEN=1, set on the box)
-// and time-bounded. When off/absent/timed-out, SKIP LOUD (never a silent pass) — the box's reflect-exec
+// heavy enough to deadlock a memory-constrained machine — so it is opt-in (RUN_SWAPBATCH_GEN=1, set on the box)
+// and time-bounded. When off/absent/timed-out, skip loud (never a silent pass) — the box's reflect-exec
 // DIGEST_MATCH is the authority for the fold; here we only assert a real 0x2F classifies to swap_batch. ──
 {
   const ZKEY = process.env.REFLECT_SWAPBATCH_ZKEY || '/tmp/head-swapbatch.zkey';
   const VK = process.env.SWAPBATCH_VK || '/tmp/swapbatch-inline-vk.json';
-  const WASM = 'dapp/circuits/amm/build/amm_swap_batch_js/amm_swap_batch.wasm';
+  const WASM = ROOT + 'dapp/circuits/amm/build/amm_swap_batch_js/amm_swap_batch.wasm';
   let raw = null;
   if (process.env.RUN_SWAPBATCH_GEN === '1' && existsSync(ZKEY) && existsSync(VK) && existsSync(WASM)) {
     try {
       raw = JSON.parse(execFileSync('node', ['tests/gen-reflection-swapbatch-synth.mjs'],
-        { encoding: 'utf8', maxBuffer: 64 << 20, timeout: 180000, stdio: ['ignore', 'pipe', 'ignore'] })).blocks[0].txs[0].txData;
+        { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, timeout: 180000, stdio: ['ignore', 'pipe', 'ignore'] })).blocks[0].txs[0].txData;
     } catch (e) { console.error(`SKIP swap_batch classify: gen failed/timed out (${e.code || e.message}) — validated on the box`); }
   } else {
     console.error('SKIP swap_batch classify: set RUN_SWAPBATCH_GEN=1 with the head zkey to run (validated on the box)');

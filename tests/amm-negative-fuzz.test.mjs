@@ -24,6 +24,7 @@ import * as secp from '@noble/secp256k1';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { hmac } from '@noble/hashes/hmac';
 import { sha256 } from '@noble/hashes/sha256';
+import { TEST_LP_ADD_KERNEL_TAIL_A as LP_ADD_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B as LP_ADD_TAIL_B } from './helpers/amm-refund-tail.mjs';
 
 const worker = await import('../worker/src/index.js');
 const dappBp = await import('../dapp/bulletproofs.js');
@@ -72,13 +73,13 @@ function buildGoodSetup() {
   });
 
   const sigA = dappKernel.lpAddKernelSign({
-    variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
     shareAmount: init.founder_shares, shareCSecpBytes: shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [cinA], excessX: blindA,
   });
   const sigB = dappKernel.lpAddKernelSign({
-    variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+    ...LP_ADD_TAIL_B, variant: 1, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
     shareAmount: init.founder_shares, shareCSecpBytes: shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
     inputCommitments: [cinB], excessX: blindB,
@@ -98,13 +99,13 @@ group('baseline — good setup validates');
 {
   const xOk = worker.verifyXCurve(g.xcurveSigma, g.shareCSecpPt.toRawBytes(true), dappBjj.packPoint(g.shareCBJJPt));
   const kA = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
   });
   const kB = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonB, deltaX: g.dB,
+    ...LP_ADD_TAIL_B, variant: 1, poolId: g.poolIdBytes, assetX: g.canonB, deltaX: g.dB,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinB.toRawBytes(true)], sig64: g.sigB,
@@ -151,7 +152,7 @@ group('attack 3 — kernel sig side-swap rejected');
 {
   // Try to use sigA against assetX=canonB params (sig was signed under (canonA, dA, cinA))
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonB, deltaX: g.dB,
+    ...LP_ADD_TAIL_B, variant: 1, poolId: g.poolIdBytes, assetX: g.canonB, deltaX: g.dB,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinB.toRawBytes(true)], sig64: g.sigA,  // sigA instead of sigB
@@ -164,7 +165,7 @@ group('attack 4 — shareAmount inflation rejected');
 {
   // Signer signed for shareAmount = founder_shares. Try verify with 2x.
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares * 2n,  // INFLATED
     shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
@@ -179,7 +180,7 @@ group('attack 5 — deltaX tampering rejected');
   // Signer signed for deltaX = dA. Try verify with dA/2 (claim half input
   // but still trying to mint full founder_shares).
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA / 2n,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA / 2n,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
@@ -193,7 +194,7 @@ group('attack 6 — cross-asset sig replay rejected');
   // Sign for canonA but try verify with a third asset (canonA' = canonA bit-flipped)
   const evilAsset = new Uint8Array(g.canonA); evilAsset[0] ^= 0xff;
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: evilAsset, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: evilAsset, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
@@ -207,7 +208,7 @@ group('attack 7 — cross-pool sig replay rejected');
   // Signed for our pool; try verify with a different pool
   const evilPool = new Uint8Array(g.poolIdBytes); evilPool[31] ^= 0x01;
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: evilPool, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: evilPool, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
@@ -220,7 +221,7 @@ group('attack 8 — input outpoint substitution rejected');
 {
   // Same asset + delta but different input txid
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'cc'.repeat(32), vout: 0 }],  // different txid
     inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
@@ -234,7 +235,7 @@ group('attack 9 — input commit substitution rejected');
   // Same outpoint but different commit (alt blinding)
   const altCin = dappBp.pedersenCommit(g.dA, g.blindA + 1n).toRawBytes(true);
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [altCin],  // wrong commit
@@ -247,13 +248,32 @@ group('attack 9 — input commit substitution rejected');
 group('attack 10 — malformed sig rejected');
 {
   const ok2 = worker.ammLpAddKernelVerify({
-    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    ...LP_ADD_TAIL_A, variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
     shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
     inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
     inputCommitments: [g.cinA.toRawBytes(true)],
     sig64: new Uint8Array(64),  // all zeros
   });
   ok('all-zero sig rejected', ok2 === false);
+}
+
+// ============== Attack 11: refund tail substitution ==============
+group('attack 11 — refund tail substitution rejected');
+{
+  const base = {
+    variant: 1, poolId: g.poolIdBytes, assetX: g.canonA, deltaX: g.dA,
+    shareAmount: g.init.founder_shares, shareCSecpBytes: g.shareCSecpPt.toRawBytes(true),
+    inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
+    inputCommitments: [g.cinA.toRawBytes(true)], sig64: g.sigA,
+  };
+  const evilDest = new Uint8Array(LP_ADD_TAIL_A.refundDestXonly); evilDest[0] ^= 0x01;
+  const evilBlinding = new Uint8Array(LP_ADD_TAIL_A.refundBlinding); evilBlinding[31] ^= 0x01;
+  ok('sig against substituted refund destination rejected',
+    worker.ammLpAddKernelVerify({ ...base, ...LP_ADD_TAIL_A, refundDestXonly: evilDest }) === false);
+  ok('sig against substituted refund blinding rejected',
+    worker.ammLpAddKernelVerify({ ...base, ...LP_ADD_TAIL_A, refundBlinding: evilBlinding }) === false);
+  ok('sig against altered expiry rejected',
+    worker.ammLpAddKernelVerify({ ...base, ...LP_ADD_TAIL_A, expiryHeight: LP_ADD_TAIL_A.expiryHeight + 1 }) === false);
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

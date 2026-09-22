@@ -29,53 +29,52 @@ const lpReturnR = rand32();
 const rewardR = rand32b();
 const unbonderPub = secp.getPublicKey(new Uint8Array(32).fill(9), true); // 33B
 
-// ── 1. UNBOND: reconstruct lp_return (vout1) + reward (vout2) and match the validator's commits ──
-const unbondEnv = encodeLpUnbond({
-  farmId: new Uint8Array(32).fill(1), bondId: new Uint8Array(36).fill(2), unbonderPubkey: unbonderPub,
-  exitAccPerShare: 0n, exitViewHeight: 0, rewardAmount, lpReturnR, rewardR, unbonderSig: new Uint8Array(64),
-});
-const got = farm.recoverUnbond(unbondEnv, { poolId, rewardAssetIdHex, bondAmount });
-assert.strictEqual(got.length, 2, 'unbond recovers lp_return + reward');
+const ownerCommit = new Uint8Array(32).fill(3);
+const receiptNonce = new Uint8Array(32).fill(4);
 
-const lp = got.find((o) => o.kind === 'lp_return');
-const rw = got.find((o) => o.kind === 'farm_reward');
+// ── 1. UNBOND: reconstruct lp_return (vout 1) and match the validator's commit; no reward is minted ──
+const unbondEnv = encodeLpUnbond({
+  farmId: new Uint8Array(32).fill(1), ownerCommit, nonce: receiptNonce, shares: bondAmount,
+  lpReturnR, unbonderSig: new Uint8Array(64),
+});
+const got = farm.recoverUnbond(unbondEnv, { poolId });
+assert.strictEqual(got.length, 1, 'unbond recovers only lp_return (harvest pays the reward)');
+
+const lp = got[0];
+assert.strictEqual(lp.kind, 'lp_return', 'only lp_return');
 // The validator decrees these EXACT commitments — recovery must reproduce them byte-for-byte.
 const cLp = hex(pointToBytes(pedersenCommit(bondAmount, beBig(lpReturnR) % SECP_N)));
 const cRw = hex(pointToBytes(pedersenCommit(rewardAmount, beBig(rewardR) % SECP_N)));
 assert.strictEqual(lp.commitmentHex, cLp, 'lp_return commitment matches the validator decree');
-assert.strictEqual(rw.commitmentHex, cRw, 'reward commitment matches the validator decree');
 assert.strictEqual(lp.vout, 1, 'lp_return at vout 1');
-assert.strictEqual(rw.vout, 2, 'reward at vout 2');
 assert.strictEqual(lp.amount, bondAmount, 'lp_return amount = bonded shares');
-assert.strictEqual(rw.amount, rewardAmount, 'reward amount from envelope');
 assert.strictEqual(lp.assetIdHex, hex(deriveLpAssetIdFromPoolId(poolId)), 'lp_return asset = deriveLpAssetId(pool_id)');
-assert.strictEqual(rw.assetIdHex, rewardAssetIdHex, 'reward asset = farm.reward_asset_id');
-ok('unbond reconstructs lp_return + reward openings byte-identical to the validator commitments');
+ok('unbond reconstructs the lp_return opening byte-identical to the validator commitment');
 
-// ── 2. The recovered (amount, blinding) reproduce the stored commitment (self-consistent + spendable) ──
+// ── 2. HARVEST: reward only (vout 1) ──
+const harvestArgs = {
+  farmId: new Uint8Array(32).fill(1), bondId: new Uint8Array(36).fill(2), harvesterPubkey: unbonderPub,
+  exitAccPerShare: 0n, exitViewHeight: 0, rewardAmount, rewardR,
+  ownerCommit, oldNonce: receiptNonce, shares: bondAmount, harvesterSig: new Uint8Array(64),
+};
+const h = farm.recoverHarvest(encodeLpHarvest(harvestArgs), { rewardAssetIdHex });
+assert.strictEqual(h.length, 1, 'harvest recovers the reward');
+const rw = h[0];
+assert.strictEqual(rw.kind, 'farm_reward', 'reward kind');
+assert.strictEqual(rw.vout, 1, 'harvest reward at vout 1');
+assert.strictEqual(rw.commitmentHex, cRw, 'harvest reward commitment matches the validator decree');
+assert.strictEqual(rw.amount, rewardAmount, 'reward amount from envelope');
+assert.strictEqual(rw.assetIdHex, rewardAssetIdHex, 'reward asset = farm.reward_asset_id');
+ok('harvest reconstructs the reward opening at vout 1');
+
+// ── 3. The recovered (amount, blinding) reproduce the stored commitment (self-consistent + spendable) ──
 assert.strictEqual(hex(pointToBytes(pedersenCommit(lp.amount, lp.blinding))), lp.commitmentHex, 'lp_return opening reopens its commitment');
 assert.strictEqual(hex(pointToBytes(pedersenCommit(rw.amount, rw.blinding))), rw.commitmentHex, 'reward opening reopens its commitment');
 ok('recovered openings reopen their on-chain commitments (spendable)');
 
-// ── 3. HARVEST: reward only (vout 1) ──
-const harvestEnv = encodeLpHarvest({
-  farmId: new Uint8Array(32).fill(1), bondId: new Uint8Array(36).fill(2), harvesterPubkey: unbonderPub,
-  exitAccPerShare: 0n, exitViewHeight: 0, rewardAmount, rewardR, harvesterSig: new Uint8Array(64),
-});
-const h = farm.recoverHarvest(harvestEnv, { rewardAssetIdHex });
-assert.strictEqual(h.length, 1, 'harvest recovers the reward');
-assert.strictEqual(h[0].vout, 1, 'harvest reward at vout 1');
-assert.strictEqual(h[0].commitmentHex, cRw, 'harvest reward commitment matches the validator decree');
-ok('harvest reconstructs the reward opening at vout 1');
-
-// ── 4. A zero-reward unbond/harvest mints no reward note (skip it) ──
-const zeroEnv = encodeLpUnbond({
-  farmId: new Uint8Array(32).fill(1), bondId: new Uint8Array(36).fill(2), unbonderPubkey: unbonderPub,
-  exitAccPerShare: 0n, exitViewHeight: 0, rewardAmount: 0n, lpReturnR, rewardR: new Uint8Array(32), unbonderSig: new Uint8Array(64),
-});
-const z = farm.recoverUnbond(zeroEnv, { poolId, rewardAssetIdHex, bondAmount });
-assert.strictEqual(z.length, 1, 'zero-reward unbond recovers only lp_return (no reward note minted)');
-assert.strictEqual(z[0].kind, 'lp_return', 'only lp_return');
-ok('a zero-reward unbond recovers only the lp_return note (no phantom reward)');
+// ── 4. A zero-reward harvest mints no reward note (skip it) ──
+const z = farm.recoverHarvest(encodeLpHarvest({ ...harvestArgs, rewardAmount: 0n }), { rewardAssetIdHex });
+assert.strictEqual(z.length, 0, 'zero-reward harvest recovers nothing (no reward note minted)');
+ok('a zero-reward harvest recovers no phantom reward note');
 
 console.log(`\n${n} farm-recovery checks passed.`);

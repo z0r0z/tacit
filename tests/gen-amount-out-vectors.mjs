@@ -2,8 +2,9 @@
 // Generate reference vectors for the constant-product exact-in HOP primitive (get_amount_out) that
 // OP_SWAP_ROUTE chains, so the Rust guest port (cxfer-core get_amount_out) can be asserted byte-for-byte
 // identical AND the Bitcoin route validator's floor (swap-route.mjs cfmmFloorOk) is pinned to the same
-// value. Closes the dual-implementation drift gap: previously only the BATCH clearing solve had a
-// JS↔Rust KAT (clearing_vectors.json) — the per-hop curve was asserted-equal by comment only.
+// value. Extends JS↔Rust KAT coverage (already used for the BATCH clearing solve in
+// clearing_vectors.json) to the per-hop curve, so it is pinned by a vector rather than asserted-equal
+// by comment only.
 //
 // get_amount_out(a_in, R_in, R_out, fee) = ⌊R_out·γ·a_in / (R_in·10000 + γ·a_in)⌋,  γ = 10000 − fee_bps.
 // This is exactly the MAX delta_out cfmmFloorOk accepts, so for each vector:

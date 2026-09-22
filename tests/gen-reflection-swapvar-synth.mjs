@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Build a full-scan reflection input around a SYNTHETIC swap_var (T_SWAP_VAR 0x32) against a SEEDED C0-backed
 // pool, so the reflection guest folds it and MUST land on the JS assembler's newDigest — the reflect-exec
-// guest<->JS digest-parity check for the C-01 current-price + refund-floor swap_var fold.
+// guest<->JS digest-parity check for the current-price + refund-floor swap_var fold.
 //
 // The confirmed tx now carries P2TR outputs at vout 1 (receipt), vout 2 (change) and vout 3 (refund); the fold
 // reads each destination's x-only key from the tx (like the guest) and FORMS the receipt from delta_out'
 // recomputed against the CURRENT reserves. SWAPVAR_SCENARIO selects the branch:
 //   fresh    (default) — reserves == the declared snapshot, min_out met → receipt onboards, reserves advance.
 //   stale              — the pool has ADVANCED past the declared snapshot; the swap still clears at the MOVED
-//                        price (closes C-01: no skip-and-strand). Expected outcome: DIGEST_MATCH-with-receipt.
+//                        price instead of skipping and stranding the input. Expected outcome: DIGEST_MATCH-with-receipt.
 //   overslip           — min_out above what the pool clears → REFUND at vout 3. DIGEST_MATCH-with-refund.
 //   expired            — expiry_height < block height → REFUND at vout 3. DIGEST_MATCH-with-refund.
 //   unknown-pool       — an expired swap naming a pool_id that is NOT registered. The guest only enters the fold for a

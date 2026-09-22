@@ -93,8 +93,8 @@ const MONOTONIC_FLOORS = Object.freeze({
 // would create false-positive failures. Each entry below was verified
 // confirmed on mainnet via mempool.space at the time of pin.
 const PINNED_TRADES = Object.freeze([
-  // Re-pinned 2026-05-27. Verified live in worker's `/assets/{tac}` trades
-  // array + confirmed on mempool.space.
+  // Verified live in worker's `/assets/{tac}` trades array + confirmed
+  // on mempool.space.
   Object.freeze({ txid: 'b8cb32dc79dc31fce0cfc77879a79206bb038b3b0663d6b4e80b9876360c3b75', price_sats: 33872, amount: '12057512727', ts: 1779818068 }),
   Object.freeze({ txid: '9f8bbcc44d287f710f5612d1f1d15dd8ce21438773d708188d612aa9d8087657', price_sats: 34072, amount: '12128710064', ts: 1779816536 }),
   Object.freeze({ txid: '3340f16c5e7eb7961a1c3dbf2c6cade4b6f459ff5468ac0048f7c4698580069a', price_sats: 627, amount: '19', ts: 1779805415 }),
@@ -461,15 +461,6 @@ await test('pinned historical trade txs still confirmed on mainnet', async () =>
 //   - The kernel signature against (Σ C_out − Σ C_in).x_only —
 //     requires walking back to parent UTXOs for input commitments.
 //     Ancestry walk is ~10× heavier; warrants its own canary file.
-//
-// HISTORICAL NOTE: prior to commit landing the v1/v2 BP transcript
-// alignment, `tests/bulletproofs.mjs` used `tacit-bp-v2` while the
-// dapp + the spec normatively pinned `tacit-bp-v1`. The drift was
-// surfaced when this canary's cryptographic-replay test failed
-// against live mainnet proofs. Alignment landed in the same PR as
-// this canary's rangeproof step; the full test suite (BP + composition
-// + adversarial + vectors + mixer + indexer) was re-run under v1 and
-// produced zero regressions.
 // ------------------------------------------------------------
 await test('pinned trades: structural decode + asset_id match + rangeproof re-verifies (T_AXFER 0x26)', async () => {
   try {

@@ -9,7 +9,7 @@
 // This test sweeps a small parameter matrix and asserts the two
 // implementations produce byte-equivalent output for every combination.
 // One-bit-flip differentiation (publish_msg changes when any field
-// changes) is already covered by tests/worker-axintent-var.test.mjs PR1;
+// changes) is already covered by tests/worker-axintent-var.test.mjs;
 // this file is the cross-implementation parity check.
 
 import { JSDOM } from 'jsdom';

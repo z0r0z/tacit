@@ -1,16 +1,15 @@
-// AMM Router — reference implementation of Uniswap-V2-router-style
-// best-path selection across tacit AMM pools.
+// AMM Router — reference implementation of best-path selection across
+// tacit AMM pools.
 //
 // Pure dapp-side orchestration: no envelopes, no signing, no Bitcoin txs.
 // Composes the math layer (`amm-clearing.mjs`) to pick the best 1-hop or
 // 2-hop route between two tacit assets. Dapps wire this into their swap
 // tile alongside the orderbook-DEX router.
 //
-// V1 atomicity: each hop in a multi-hop route settles as an independent
+// Atomicity: each hop in a multi-hop route settles as an independent
 // Bitcoin tx (`T_SWAP_VAR`). Between hops, other traders can shift the
 // intermediate pool's spot, so multi-hop is "best effort" with per-hop
-// `min_out` slippage protection. Atomic multi-hop is the
-// follow-up scope (V1.x / V2 deliverable).
+// `min_out` slippage protection. Atomic multi-hop is follow-up scope.
 
 import { bytesToHex } from '@noble/hashes/utils';
 import { solveClearing, amountOutForTrader } from './amm-clearing.mjs';

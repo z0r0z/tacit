@@ -7,15 +7,23 @@
 //     the consumed Pedersen value
 //   • Mimblewimble balance check: wrong delta ⇒ verification key differs ⇒ rejection
 //   • Domain separation: LP_ADD and LP_REMOVE kernel_msgs are distinguishable
+//   • The refund tail is required and signed; the mirror is byte-identical to dapp/amm-kernel.js and the worker
 
 import {
   lpAddKernelMsg, lpAddKernelKey, lpAddKernelSign, lpAddKernelVerify,
   lpRemoveKernelMsg, lpRemoveKernelKey, lpRemoveKernelSign, lpRemoveKernelVerify,
+  lpBondKernelMsg, lpBondKernelSign, lpBondKernelVerify,
 } from './amm-kernel.mjs';
+import * as dappKernel from '../dapp/amm-kernel.js';
+import { sha256 } from '@noble/hashes/sha256';
+import { concatBytes, hexToBytes } from '@noble/hashes/utils';
 import {
   G, H, SECP_N, modN,
   pedersenCommit, pointToBytes, randomScalar, bigintToBytes32,
 } from './bulletproofs.mjs';
+import {
+  TEST_LP_ADD_KERNEL_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B, TEST_REFUND_TAIL,
+} from './helpers/amm-refund-tail.mjs';
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -60,7 +68,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
     variant: 0,
     poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
     shareCSecpBytes: shareC,
-    inputsX: sideA.inputs,
+    inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
     inputCommitments: sideA.commitments,
     excessX: sideA.excess,
   });
@@ -68,7 +76,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
     variant: 0,
     poolId: POOL_ID, assetX: ASSET_B, deltaX: deltaB, shareAmount,
     shareCSecpBytes: shareC,
-    inputsX: sideB.inputs,
+    inputsX: sideB.inputs, ...TEST_LP_ADD_KERNEL_TAIL_B,
     inputCommitments: sideB.commitments,
     excessX: sideB.excess,
   });
@@ -78,7 +86,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -88,7 +96,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_B, deltaX: deltaB, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideB.inputs,
+      inputsX: sideB.inputs, ...TEST_LP_ADD_KERNEL_TAIL_B,
       inputCommitments: sideB.commitments,
       sig64: sigB,
     });
@@ -100,7 +108,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA + 1n, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -111,7 +119,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: wrong, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -121,7 +129,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount: shareAmount + 1n,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -131,7 +139,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 1,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -141,7 +149,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs.slice().reverse(),
+      inputsX: sideA.inputs.slice().reverse(), ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: sigA,
     });
@@ -151,7 +159,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       excessX: modN(sideA.excess + 1n), // wrong
     });
@@ -159,7 +167,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: forgedSig,
     });
@@ -174,7 +182,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA + 1n, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       excessX: sideA.excess,
     });
@@ -186,7 +194,7 @@ console.log('LP_ADD kernel sig — honest round-trip');
       variant: 0,
       poolId: POOL_ID, assetX: ASSET_A, deltaX: deltaA + 1n, shareAmount,
       shareCSecpBytes: shareC,
-      inputsX: sideA.inputs,
+      inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
       inputCommitments: sideA.commitments,
       sig64: forgedSig,
     });
@@ -206,7 +214,7 @@ console.log('\nLP_REMOVE kernel sig — honest round-trip');
   const sig = lpRemoveKernelSign({
     poolId: POOL_ID, shareAmount, deltaA, deltaB,
     recvACSecpBytes: recvA_C, recvBCSecpBytes: recvB_C,
-    lpInputs: setup.inputs,
+    lpInputs: setup.inputs, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
     lpInputCommitments: setup.commitments,
     excessLP: setup.excess,
   });
@@ -215,7 +223,7 @@ console.log('\nLP_REMOVE kernel sig — honest round-trip');
     return lpRemoveKernelVerify({
       poolId: POOL_ID, shareAmount, deltaA, deltaB,
       recvACSecpBytes: recvA_C, recvBCSecpBytes: recvB_C,
-      lpInputs: setup.inputs,
+      lpInputs: setup.inputs, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
       lpInputCommitments: setup.commitments,
       sig64: sig,
     });
@@ -224,7 +232,7 @@ console.log('\nLP_REMOVE kernel sig — honest round-trip');
     return !lpRemoveKernelVerify({
       poolId: POOL_ID, shareAmount: shareAmount + 1n, deltaA, deltaB,
       recvACSecpBytes: recvA_C, recvBCSecpBytes: recvB_C,
-      lpInputs: setup.inputs,
+      lpInputs: setup.inputs, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
       lpInputCommitments: setup.commitments,
       sig64: sig,
     });
@@ -234,7 +242,7 @@ console.log('\nLP_REMOVE kernel sig — honest round-trip');
     return !lpRemoveKernelVerify({
       poolId: POOL_ID, shareAmount, deltaA, deltaB,
       recvACSecpBytes: wrong, recvBCSecpBytes: recvB_C,
-      lpInputs: setup.inputs,
+      lpInputs: setup.inputs, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
       lpInputCommitments: setup.commitments,
       sig64: sig,
     });
@@ -248,10 +256,12 @@ test('LP_ADD and LP_REMOVE kernel msgs are distinguishable for identical inputs'
   const addMsg = lpAddKernelMsg({
     variant: 0, poolId: POOL_ID, assetX: ASSET_A,
     deltaX: 10n, shareAmount: 1n, shareCSecpBytes: cs, inputsX: setup.inputs,
+    ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const removeMsg = lpRemoveKernelMsg({
     poolId: POOL_ID, shareAmount: 1n, deltaA: 10n, deltaB: 10n,
     recvACSecpBytes: cs, recvBCSecpBytes: cs, lpInputs: setup.inputs,
+    refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
   });
   // Different domain tags ⇒ different SHA256.
   for (let i = 0; i < 32; i++) if (addMsg[i] !== removeMsg[i]) return true;
@@ -265,7 +275,7 @@ test('empty inputsX rejected', () => {
       variant: 0, poolId: POOL_ID, assetX: ASSET_A,
       deltaX: 1n, shareAmount: 1n,
       shareCSecpBytes: pointToBytes(pedersenCommit(1n, randomScalar())),
-      inputsX: [],
+      inputsX: [], ...TEST_LP_ADD_KERNEL_TAIL_A,
     });
     return false;
   } catch (e) { return /non-empty/.test(e.message); }
@@ -276,11 +286,133 @@ test('rejects invalid variant', () => {
       variant: 2, poolId: POOL_ID, assetX: ASSET_A,
       deltaX: 1n, shareAmount: 1n,
       shareCSecpBytes: pointToBytes(pedersenCommit(1n, randomScalar())),
-      inputsX: [{ txid: TXID1, vout: 0 }],
+      inputsX: [{ txid: TXID1, vout: 0 }], ...TEST_LP_ADD_KERNEL_TAIL_A,
     });
     return false;
   } catch (e) { return /variant/.test(e.message); }
 });
+
+console.log('\nRefund tail — required and signed');
+{
+  const sideA = buildSideX({ amounts: [7_000n, 3_000n], prefix: 'a' });
+  const shareC = pointToBytes(pedersenCommit(5_000n, randomScalar()));
+  const addArgs = {
+    variant: 0, poolId: POOL_ID, assetX: ASSET_A, deltaX: 10_000n, shareAmount: 5_000n,
+    shareCSecpBytes: shareC, inputsX: sideA.inputs, inputCommitments: sideA.commitments,
+    ...TEST_LP_ADD_KERNEL_TAIL_A,
+  };
+  const sig = lpAddKernelSign({ ...addArgs, excessX: sideA.excess });
+  test('LP_ADD verifies under the signed tail', () => lpAddKernelVerify({ ...addArgs, sig64: sig }));
+  test('LP_ADD — different expiry ⇒ reject', () =>
+    !lpAddKernelVerify({ ...addArgs, expiryHeight: addArgs.expiryHeight + 1, sig64: sig }));
+  test('LP_ADD — different refund dest ⇒ reject', () =>
+    !lpAddKernelVerify({ ...addArgs, refundDestXonly: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly, sig64: sig }));
+  test('LP_ADD — different refund blinding ⇒ reject', () =>
+    !lpAddKernelVerify({ ...addArgs, refundBlinding: TEST_LP_ADD_KERNEL_TAIL_B.refundBlinding, sig64: sig }));
+  for (const field of ['refundDestXonly', 'refundBlinding']) {
+    test(`lpAddKernelMsg without ${field} throws`, () => {
+      try { lpAddKernelMsg({ ...addArgs, [field]: undefined }); return false; }
+      catch { return true; }
+    });
+    test(`lpAddKernelMsg with a 31-byte ${field} throws`, () => {
+      try { lpAddKernelMsg({ ...addArgs, [field]: new Uint8Array(31) }); return false; }
+      catch (e) { return new RegExp(`${field} must be 32 bytes`).test(e.message); }
+    });
+  }
+
+  const recvA = pointToBytes(pedersenCommit(4_000n, randomScalar()));
+  const recvB = pointToBytes(pedersenCommit(6_000n, randomScalar()));
+  const rmArgs = {
+    poolId: POOL_ID, shareAmount: 10_000n, deltaA: 4_000n, deltaB: 6_000n,
+    recvACSecpBytes: recvA, recvBCSecpBytes: recvB, lpInputs: sideA.inputs,
+    lpInputCommitments: sideA.commitments, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
+  };
+  const rmSig = lpRemoveKernelSign({ ...rmArgs, excessLP: sideA.excess });
+  test('LP_REMOVE verifies under the signed refund dest', () => lpRemoveKernelVerify({ ...rmArgs, sig64: rmSig }));
+  test('LP_REMOVE — different refund dest ⇒ reject', () =>
+    !lpRemoveKernelVerify({ ...rmArgs, refundDestXonly: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly, sig64: rmSig }));
+  test('lpRemoveKernelMsg without refundDestXonly throws', () => {
+    try { lpRemoveKernelMsg({ ...rmArgs, refundDestXonly: undefined }); return false; }
+    catch { return true; }
+  });
+}
+
+console.log('\nLP_BOND kernel sig');
+{
+  const FARM_ID = new Uint8Array(32).fill(0x33);
+  const LP_ASSET = new Uint8Array(32).fill(0x44);
+  const setup = buildSideX({ amounts: [800n, 200n], prefix: 'b' });
+  const args = { farmId: FARM_ID, lpAsset: LP_ASSET, bondAmount: 1_000n, lpInputs: setup.inputs, lpInputCommitments: setup.commitments };
+  const sig = lpBondKernelSign({ ...args, excessLP: setup.excess });
+  test('LP_BOND kernel sig verifies (honest)', () => lpBondKernelVerify({ ...args, sig64: sig }));
+  test('LP_BOND — wrong bond amount ⇒ reject', () => !lpBondKernelVerify({ ...args, bondAmount: 1_001n, sig64: sig }));
+  test('LP_BOND — wrong farm id ⇒ reject', () => !lpBondKernelVerify({ ...args, farmId: POOL_ID, sig64: sig }));
+}
+
+console.log('\nParity with dapp/amm-kernel.js and the worker');
+{
+  const worker = await import('../worker/src/index.js');
+  const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+  const u64 = (n) => { const b = new Uint8Array(8); let x = BigInt(n); for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; } return b; };
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const op = ({ txid, vout }) => concatBytes(hexToBytes(txid).reverse(), u32(vout));
+
+  const sideA = buildSideX({ amounts: [123_456n, 654_321n], prefix: 'a' });
+  const commitBytes = sideA.commitments.map(pointToBytes);
+  const shareC = pointToBytes(pedersenCommit(42_000n, randomScalar()));
+  for (const variant of [0, 1]) {
+    const args = {
+      variant, poolId: POOL_ID, assetX: ASSET_A, deltaX: 777_777n, shareAmount: 42_000n,
+      shareCSecpBytes: shareC, inputsX: sideA.inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
+    };
+    const m = lpAddKernelMsg(args);
+    const layout = sha256(concatBytes(
+      new TextEncoder().encode('tacit-amm-lp-add-v1'), new Uint8Array([variant]), POOL_ID, ASSET_A,
+      u64(777_777n), u64(42_000n), shareC, new Uint8Array([sideA.inputs.length]), ...sideA.inputs.map(op),
+      u32(TEST_LP_ADD_KERNEL_TAIL_A.expiryHeight), TEST_LP_ADD_KERNEL_TAIL_A.refundDestXonly,
+      TEST_LP_ADD_KERNEL_TAIL_A.refundBlinding,
+    ));
+    test(`lpAddKernelMsg v${variant} matches the guest layout`, () => eq(m, layout));
+    test(`lpAddKernelMsg v${variant} mirror == dapp`, () => eq(m, dappKernel.lpAddKernelMsg(args)));
+    test(`lpAddKernelMsg v${variant} mirror == worker`, () => eq(m, worker.ammLpAddKernelMsg(args)));
+    const sig = lpAddKernelSign({ ...args, inputCommitments: sideA.commitments, excessX: sideA.excess });
+    test(`lpAddKernelSign v${variant} verifies under dapp + worker`, () =>
+      dappKernel.lpAddKernelVerify({ ...args, inputCommitments: commitBytes, sig64: sig })
+      && worker.ammLpAddKernelVerify({ ...args, inputCommitments: commitBytes, sig64: sig }));
+  }
+
+  const recvA = pointToBytes(pedersenCommit(11n, randomScalar()));
+  const recvB = pointToBytes(pedersenCommit(22n, randomScalar()));
+  const rmArgs = {
+    poolId: POOL_ID, shareAmount: sideA.totalAmount, deltaA: 11n, deltaB: 22n,
+    recvACSecpBytes: recvA, recvBCSecpBytes: recvB, lpInputs: sideA.inputs,
+    refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
+  };
+  const rm = lpRemoveKernelMsg(rmArgs);
+  test('lpRemoveKernelMsg mirror == dapp', () => eq(rm, dappKernel.lpRemoveKernelMsg(rmArgs)));
+  test('lpRemoveKernelMsg mirror == worker', () => eq(rm, worker.ammLpRemoveKernelMsg(rmArgs)));
+  const rmSig = lpRemoveKernelSign({ ...rmArgs, lpInputCommitments: sideA.commitments, excessLP: sideA.excess });
+  test('lpRemoveKernelSign verifies under dapp + worker', () =>
+    dappKernel.lpRemoveKernelVerify({ ...rmArgs, lpInputCommitments: commitBytes, sig64: rmSig })
+    && worker.ammLpRemoveKernelVerify({ ...rmArgs, lpInputCommitments: commitBytes, sig64: rmSig }));
+
+  const bondArgs = { farmId: POOL_ID, lpAsset: ASSET_B, bondAmount: 777_777n, lpInputs: sideA.inputs };
+  const bm = lpBondKernelMsg(bondArgs);
+  test('lpBondKernelMsg mirror == dapp', () => eq(bm, dappKernel.lpBondKernelMsg(bondArgs)));
+  test('lpBondKernelMsg mirror == worker', () => eq(bm, worker.ammLpBondKernelMsg(bondArgs)));
+  const bondSig = lpBondKernelSign({ ...bondArgs, lpInputCommitments: sideA.commitments, excessLP: sideA.excess });
+  test('lpBondKernelSign verifies under dapp + worker', () =>
+    dappKernel.lpBondKernelVerify({ ...bondArgs, lpInputCommitments: commitBytes, sig64: bondSig })
+    && worker.ammLpBondKernelVerify({ ...bondArgs, lpInputCommitments: commitBytes, sig64: bondSig }));
+
+  test('dapp rejects a tail-less LP_ADD message the same way', () => {
+    let mirrorThrew = false, dappThrew = false;
+    const bare = { variant: 0, poolId: POOL_ID, assetX: ASSET_A, deltaX: 1n, shareAmount: 1n, shareCSecpBytes: shareC, inputsX: sideA.inputs };
+    try { lpAddKernelMsg(bare); } catch { mirrorThrew = true; }
+    try { dappKernel.lpAddKernelMsg(bare); } catch { dappThrew = true; }
+    return mirrorThrew && dappThrew;
+  });
+}
 
 console.log(`\n${pass}/${pass + fail} passed`);
 // Exit on the computed verdict rather than only on failure: imported browser modules can leave the

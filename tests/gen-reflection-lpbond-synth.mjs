@@ -55,7 +55,7 @@ const shareXY = pool.commitXY(BigInt(SHARES), BOND_R);
 const kernelParts = [new TextEncoder().encode('tacit-amm-lp-bond-v1'), hb(FARM_ID), hb(LP_ASSET), u64le(SHARES), Uint8Array.of(1), seedTxid, u32le(seedVout)];
 const kernelSig = bip340Sign(sha256(cat(kernelParts)), BOND_R % N);
 
-// The bonder authorizes the bond with a BIP-340 sig over lp_bond_msg (H-04: a zero sig is correctly rejected).
+// The bonder authorizes the bond with a BIP-340 sig over lp_bond_msg (a zero sig is correctly rejected).
 const BONDER_PRIV = be('0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20', 32);
 const BONDER_PUB = G.multiply(BigInt(hx(BONDER_PRIV))).toRawBytes(true); // compressed (33)
 const BOND_VIEW_H = 0, ENTRY_ACC = 0n;

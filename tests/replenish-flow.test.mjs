@@ -141,8 +141,8 @@ await test('dust is held, not swapped (the 0.81 USDT case)', async () => {
 });
 
 await test('a quote that is 100x off is refused, not sent', async () => {
-  // This is what the aggregator actually did on 2026-09-20: 417 PROVE for $0.81 of USDT. It reverted at
-  // simulation that time; the point is that the code must not depend on being lucky.
+  // An aggregator quote can be wildly off for a small amount (e.g. many multiples of fair value); the code
+  // must catch an implausible quote itself, not depend on the transaction reverting at simulation.
   const { sent, log } = await run({
     feeAssets: A.usdc, badProveQuoteFactor: 100,
     balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
@@ -162,10 +162,10 @@ await test('a sane quote on the same balance IS converted (the guard is not just
 });
 
 await test('wstETH is valued from its on-chain rate, not from an aggregator quote', async () => {
-  // Production, 2026-09-20: 0.000284 wstETH (~$0.88) was valued at $135,744 through a wstETH->ETH quote, and a
-  // perfectly good PROVE swap was refused. The valuation must not depend on the aggregator it is checking.
+  // The valuation must not depend on the aggregator it is checking: a bad wstETH->ETH quote for a small
+  // amount can appear worth orders of magnitude more than it is, wrongly refusing a good PROVE swap.
   const { sent, log } = await run({
-    feeAssets: A.wsteth, badEthOutFactor: 100000, // the aggregator's wstETH->ETH quote is garbage, exactly as in production
+    feeAssets: A.wsteth, badEthOutFactor: 100000, // the aggregator's wstETH->ETH quote is garbage
     balances: { [settle]: ETH(0.05), [relay]: ETH(0.05) },
     tokenBalances: { [A.wsteth]: { [settle]: ETH(0.5) }, [A.prove]: { [relay]: 0n } }, // ~0.6 ETH ~ $1100
   });

@@ -1,9 +1,8 @@
 // Cross-implementation byte-equality check between our JS BP+ port and
 // an independently-derived Python port at .local/bpp-python-port/bpp.py.
 //
-// The Python port was hand-written by a separate agent that NEVER saw our
-// JS code — only the Monero C++ reference + the spec. Both
-// implementations:
+// The Python port was written independently, without ever seeing the JS
+// code — only the Monero C++ reference + the spec. Both implementations:
 //
 //   1. Use the same secp256k1 curve and SHA-256 transcript
 //   2. Derive generators from the same spec domain tags
@@ -20,10 +19,10 @@
 // strongest static-analysis evidence available — comparable to Monero's
 // cross-impl test corpus on ed25519, but for our specific secp256k1 port.
 //
-// What's pinned: the Python port produced these exact proof bytes when
-// run on 2026-05-18 with RNG bytes = sha256("bpp-test-rng-v1" + counter_BE_u16)
-// concatenated for 64 counters. The same RNG sequence is replicated below
-// in the JS test by overriding crypto.getRandomValues.
+// What's pinned: the Python port produces these exact proof bytes with
+// RNG bytes = sha256("bpp-test-rng-v1" + counter_BE_u16) concatenated for
+// 64 counters. The same RNG sequence is replicated below in the JS test
+// by overriding crypto.getRandomValues.
 
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';

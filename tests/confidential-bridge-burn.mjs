@@ -95,8 +95,13 @@ const fx = {
   crossOuts: burn.crossOuts.map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner, destCommitment: c.destCommitment, claimId: c.claimId })),
 };
 const fxJson = JSON.stringify(fx, null, 2) + '\n';
-writeFileSync(join(here, '..', 'contracts', 'test', 'fixtures', 'bridge_burn.json'), fxJson);       // Solidity KAT
-writeFileSync(join(here, '..', 'contracts', 'sp1', 'confidential', 'fixtures', 'bridge_burn.json'), fxJson); // cxfer-core native test
-ok('wrote bridge_burn.json fixtures for the Solidity + Rust cross-impl KATs');
+// The blindings are random, so the fixtures are rewritten only on request.
+if (process.env.WRITE_FIXTURES) {
+  writeFileSync(join(here, '..', 'contracts', 'test', 'fixtures', 'bridge_burn.json'), fxJson);       // Solidity KAT
+  writeFileSync(join(here, '..', 'contracts', 'sp1', 'confidential', 'fixtures', 'bridge_burn.json'), fxJson); // cxfer-core native test
+  ok('wrote bridge_burn.json fixtures for the Solidity + Rust cross-impl KATs');
+} else {
+  ok('bridge_burn.json fixtures left as committed (set WRITE_FIXTURES=1 to regenerate)');
+}
 
 console.log(`\n${n}/6 confidential-bridge-burn checks passed`);

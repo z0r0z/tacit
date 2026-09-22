@@ -51,7 +51,7 @@ const EXPECTED_OPCODES = {
 //
 // These are the canonical UTF-8 byte sequences. The impl MUST produce
 // signatures and hashes against these exact strings. A renamed tag breaks
-// cross-implementation interop silently — the original attest-domain bug.
+// cross-implementation interop silently.
 const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-pool-v1',
   'tacit-amm-lp-v1',
@@ -87,6 +87,7 @@ const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-farm-unbond-v1',   // unbond_msg
   'tacit-amm-farm-harvest-v1',  // harvest_msg (claim reward without unbonding)
   'tacit-amm-farm-refund-v1',   // refund_msg (launcher reclaims unspent treasury)
+  'tacit-amm-lp-bond-v1',       // T_LP_BOND share-lock kernel msg (cxfer-core LP_BOND_KERNEL_DOMAIN)
   'tacit-farm-state-v1',        // buildFarmStateHash domain (T_INTENT_ATTEST payload)
   // Deterministic-nonce derivation tags for proveXCurveDeterministic
   // Internal-only — never appear in on-chain bytes, so
@@ -114,8 +115,7 @@ const EXPECTED_CONSTS = {
   // Recomputed from the T_LP_ADD / T_LP_REMOVE wire-format tables.
   // LP_ADD:    1+1+32+32+8+8+8+33+32+169+64+64+2 = 454
   // LP_REMOVE: 1+32+32+8+8+8+33+32+169+33+32+169+64+2 = 623
-  // These pin the spec ↔ impl agreement and prevent
-  // any recurrence of the stale-157-byte-table drift.
+  // These pin the spec ↔ impl agreement for the fixed-prefix byte counts.
   LP_ADD_FIXED_PREFIX:           454,
   LP_REMOVE_FIXED_PREFIX:        623,
 };
@@ -265,9 +265,9 @@ console.log('\nWire-format byte counts (spec-literal pinning)');
   test(`PER_INTENT_BYTES == 352`,     () => ENVELOPE_PER_INTENT_BYTES === EXPECTED_CONSTS.PER_INTENT_BYTES);
   test(`PER_RECEIPT_BYTES == 234`,    () => ENVELOPE_PER_RECEIPT_BYTES === EXPECTED_CONSTS.PER_RECEIPT_BYTES);
 
-  // LP envelope fixed-prefix totals derived from arithmetic; pinned so the
-  // Stale-157 drift can't recur silently. We compute these from the
-  // module-level constants and assert against the canonical spec values.
+  // LP envelope fixed-prefix totals derived from arithmetic; pinned so
+  // byte-count drift can't recur silently. Computed from the module-level
+  // constants and asserted against the canonical spec values.
   const LP_ADD_FIXED_PREFIX_COMPUTED =
     1 /*opcode*/ + 1 /*variant*/ + 32 /*assetA*/ + 32 /*assetB*/ +
     8 /*deltaA*/ + 8 /*deltaB*/ + 8 /*shareAmount*/ +
@@ -373,8 +373,7 @@ console.log('\nCanonical preimage → digest vectors');
     return bytesToHex(got) === bytesToHex(expectedLpAssetId);
   });
 
-  // Qualifying-set hash construction: u8 count, NOT u16 (the H3 drift this
-  // pinning catches).
+  // Qualifying-set hash construction: u8 count, NOT u16.
   const { computeQualifyingSetHash } = await import('./amm-validator.mjs');
   const intentId = new Uint8Array(32).fill(0xab);
   const heightLE = new Uint8Array(4); new DataView(heightLE.buffer).setUint32(0, 800_000, true);
@@ -391,8 +390,8 @@ console.log('\nCanonical preimage → digest vectors');
     });
     return bytesToHex(got) === bytesToHex(expectedQsetHash);
   });
-  // Same vector exercised through the amm-intent.mjs module (which used to
-  // disagree with the validator — the H3 split-brain bug).
+  // Same vector exercised through the amm-intent.mjs module, which must
+  // agree with the validator on the qualifying-set hash.
   const { computeQualifyingSetHash: computeQsetIntent } = await import('./amm-intent.mjs');
   test(`amm-intent.computeQualifyingSetHash matches validator (u8 count)`, () => {
     const got = computeQsetIntent({
@@ -401,12 +400,11 @@ console.log('\nCanonical preimage → digest vectors');
     return bytesToHex(got) === bytesToHex(expectedQsetHash);
   });
 
-  // claim_msg preimage for T_PROTOCOL_FEE_CLAIM (H4 was: spec didn't
-  // document this preimage at all — we just added it. Pin it here.)
-  // Fixed 2026-09-16: mirrors guest cxfer-core::lib::protocol_fee_claim_msg
-  // exactly — keccak256 (not SHA-256), the amount hashed BIG-endian (unlike
-  // the little-endian amount field in the envelope itself), and dest_spk (the
-  // claim note's vout-0 destination) bound in against front-running.
+  // claim_msg preimage for T_PROTOCOL_FEE_CLAIM mirrors the guest's
+  // cxfer-core::lib::protocol_fee_claim_msg exactly — keccak256 (not SHA-256),
+  // the amount hashed BIG-endian (unlike the little-endian amount field in the
+  // envelope itself), and dest_spk (the claim note's vout-0 destination) bound
+  // in to fix the claim to its intended recipient.
   const { buildProtocolFeeClaimMsgWith } = await import('./amm-protocol-fee.mjs');
   const { keccak_256 } = await import('@noble/hashes/sha3');
   const claimAmount = 12345n;
@@ -524,8 +522,8 @@ console.log('\nDomain tag whitelist');
     let match;
     while ((match = regex.exec(content)) !== null) foundDomains.add(match[1]);
   }
-  // Tags accepted only when used by SWAP_VAR module (not loaded by V1 impl
-  // but listed in the spec so future-friendly).
+  // Tags accepted even when not loaded by the impl modules above but
+  // listed in the spec for forward compatibility.
   const ALLOWED = new Set([
     ...EXPECTED_DOMAIN_TAGS,
     // Off-chain helpers / scope-generic / cross-surface tags

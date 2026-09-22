@@ -1,28 +1,29 @@
-// Malicious-prover attempt suite for the BP+ port.
+// Malicious-prover soundness suite for the BP+ port.
 //
-// These are CONCRETE soundness attacks an adversary would try:
+// Concrete soundness properties the verifier must enforce:
 //
-//   1. Bit-decomposition forgery: prove v but commit a different value v'.
-//   2. Out-of-range smuggling: prove v ≥ 2^64 by lying about the high bits.
-//   3. Aggregation cross-contamination: forge a m=2 proof where only the
-//      first commitment is in-range.
-//   4. Wrong commitment opening: prove v under commitment C, then claim
-//      the same proof opens a different commitment.
-//   5. Transcript challenge mismatch: substitute computed challenges
-//      (verifier must reject when proof bytes were generated against
-//      different challenges).
-//   6. Forged final scalars: r1, s1, d1 with wrong relationship to A1, B.
-//   7. NUMS H/G swap: prove against a commitment computed with H and G
-//      swapped (should produce a structurally-valid but wrong proof).
-//   8. Repeated commitment in aggregation (an m=2 proof where both
-//      commitments are the same value should still bind index ordering).
+//   1. Bit-decomposition binding: a proof for v must not verify against a
+//      commitment to a different value v'.
+//   2. Out-of-range rejection: a proof claiming v ≥ 2^64 by misrepresenting
+//      the high bits must be rejected.
+//   3. Aggregation binding: in an m=2 proof, both commitments are bound —
+//      substituting one while keeping the other must reject.
+//   4. Opening binding: a proof for (v, C) must not verify against a
+//      different commitment C' (same value, different blinding).
+//   5. Transcript binding: challenges are derived from the commitments and
+//      proof order, so reordering or substituting either must reject.
+//   6. Final-scalar binding: r1, s1, d1 must hold their exact relationship
+//      to A1, B — swapping or zeroing any of them must reject.
+//   7. Base binding: a commitment computed with H and G swapped must not
+//      verify under the honest proof.
+//   8. Index binding: in an m=2 proof with equal-value commitments, the
+//      proof is still specific to (j=0, j=1) ordering.
 //
-// Every attempt MUST be rejected by `bppRangeVerify`. If any attempt
-// produces a proof that verifies, that's an inflation vulnerability.
+// Every case MUST be rejected by `bppRangeVerify`. If any case produces a
+// proof that verifies, that's an inflation vulnerability.
 //
-// This is the actual attack surface, made concrete. Tests that flip
-// random bytes are necessary but not sufficient; these tests model
-// SHAPED attacks against algorithmic structure.
+// Tests that flip random bytes are necessary but not sufficient; these
+// tests target the algorithmic structure directly.
 
 import { sha256 } from '@noble/hashes/sha256';
 import * as bpp from '../dapp/bulletproofs-plus.js';
@@ -36,10 +37,9 @@ function ok(name, cond, detail) {
 function group(title) { console.log(`\n${title}:`); }
 
 // ============== Attack 1: bit-decomposition forgery ==============
-// Adversary commits to v but tries to produce a proof for a different
-// value v'. The proof bytes embed the bit decomposition of v through
-// A = aL·Gvec + aR·Hvec + α·G. If the verifier honors the relationship,
-// committing to v but proving v' must fail.
+// A proof's bytes embed the bit decomposition of v through
+// A = aL·Gvec + aR·Hvec + α·G. Verifying that proof against a commitment
+// to a different value v' must fail.
 group('Attack 1: prove for value, verify against wrong commitment');
 {
   const v_honest = 12345n;
@@ -47,11 +47,11 @@ group('Attack 1: prove for value, verify against wrong commitment');
   const r = bpp.bppRangeProve([v_honest], [g]);
   ok('honest proof verifies', bpp.bppRangeVerify(r.commitments, r.proof) === true);
 
-  // Adversary swaps in a commitment to v' = 99999 (different value, same
+  // Verify against a commitment to v' = 99999 (different value, same
   // blinding shape). The proof bytes were built for v_honest's bit
   // decomposition; the verifier reconstructs E using the supplied V[j]
-  // scalar (which is -e²·z^(2(j+1))·y^(MN+1) · V[j]); supplying a wrong
-  // V means E ≠ identity in the MSM check.
+  // scalar (which is -e²·z^(2(j+1))·y^(MN+1) · V[j]), so a mismatched V
+  // means E ≠ identity in the MSM check.
   const C_wrong = bpp.pedersenCommit(99999n, g);
   ok('proof for v=12345 against commit(v=99999) REJECTS',
     bpp.bppRangeVerify([C_wrong], r.proof) === false);
@@ -63,13 +63,14 @@ group('Attack 1: prove for value, verify against wrong commitment');
 
 // ============== Attack 2: out-of-range value smuggling ==============
 // The prover hard-codes range [0, 2^64) by enforcing bit decomposition
-// across N=64 bits. An adversary attempting to prove v ≥ 2^64 by lying
-// about the high bits hits a contradiction: aL[63] = bit_63(v); for
-// v=2^64, bit_63=0 (lower 64 bits all zero), but the actual value
-// includes the 65th bit which the proof has no slot for.
+// across N=64 bits. Proving v ≥ 2^64 by misrepresenting the high bits
+// hits a contradiction: aL[63] = bit_63(v); for v=2^64, bit_63=0 (lower
+// 64 bits all zero), but the actual value includes the 65th bit, which
+// the proof has no slot for.
 //
-// The prover's input-validation (`v < 2^64`) catches this case before
-// proving. Let's verify a CRAFTED proof claiming a 65+ bit value rejects.
+// The prover's input validation (`v < 2^64`) catches this case before
+// proving. This verifies that a crafted proof claiming a 65+ bit value
+// is rejected by the verifier itself.
 group('Attack 2: out-of-range value rejected at prover');
 {
   let threw = false;
@@ -86,10 +87,11 @@ group('Attack 2: out-of-range value rejected at prover');
   catch { threw3 = true; }
   ok('v ≈ -1 mod n rejected at prover', threw3);
 
-  // VERIFIER soundness (BPP-1): even when an adversary BYPASSES the prover's input guard and forges a
-  // structurally-valid proof that COMMITS an out-of-range value (V = v·H + γ·G with v ≥ 2^64, while the
-  // bit decomposition is of v mod 2^64), the VERIFIER must REJECT — this exercises the V-scalar /
-  // range-binding term, not merely the prover's gate (the no-inflation root property).
+  // Verifier soundness: even bypassing the prover's input guard, a
+  // structurally-valid proof that commits an out-of-range value
+  // (V = v·H + γ·G with v ≥ 2^64, while the bit decomposition is of
+  // v mod 2^64) must be REJECTED by the verifier — this exercises the
+  // V-scalar / range-binding term directly, not merely the prover's gate.
   {
     const oor = bpp.bppRangeProve([1n << 64n], [bpp.randomScalar()], true);
     ok('forged out-of-range proof (v=2^64) REJECTED by the verifier', bpp.bppRangeVerify(oor.commitments, oor.proof) === false);
@@ -103,10 +105,9 @@ group('Attack 2: out-of-range value rejected at prover');
 }
 
 // ============== Attack 3: aggregation cross-contamination ==============
-// In m=2, adversary tries to use a valid m=1 proof for value v alongside
-// a malicious second commitment. The aggregated proof binds BOTH
-// commitments through the per-j z^(2(j+1)) factor; substituting a single
-// proof for two commitments breaks the MSM check.
+// The aggregated m=2 proof binds BOTH commitments through the per-j
+// z^(2(j+1)) factor; substituting either commitment after the fact
+// breaks the MSM check.
 group('Attack 3: aggregation cross-contamination');
 {
   const g1 = bpp.randomScalar();
@@ -125,11 +126,10 @@ group('Attack 3: aggregation cross-contamination');
 }
 
 // ============== Attack 4: wrong commitment opening ==============
-// Adversary publishes commitment C = v·H + γ·G but tries to prove
-// the same proof bytes open a different commitment C' = v·H + γ'·G
-// (same value, different blinding). The blinding γ is bound into
-// the proof through alpha + z²·γ·y^(MN+1), so γ' produces wrong A1
-// scalar at verification.
+// A proof for commitment C = v·H + γ·G must not verify against a
+// different commitment C' = v·H + γ'·G (same value, different blinding).
+// The blinding γ is bound into the proof through alpha + z²·γ·y^(MN+1),
+// so γ' produces the wrong A1 scalar at verification.
 group('Attack 4: blinding-factor substitution');
 {
   const v = 4242n;
@@ -145,10 +145,10 @@ group('Attack 4: blinding-factor substitution');
 }
 
 // ============== Attack 5: transcript challenge mismatch ==============
-// Adversary produces a proof against transcript T1, then substitutes
-// proof bytes in a context that builds transcript T2 (e.g. different
-// commitments). All challenges (y, z, u_k, e) recomputed by verifier
-// will differ from those used by prover; MSM check fails.
+// A proof built against transcript T1 must not verify in a context that
+// builds a different transcript T2 (e.g. reordered commitments). All
+// challenges (y, z, u_k, e) the verifier recomputes will differ from
+// those the prover used, so the MSM check fails.
 group('Attack 5: transcript bind through V append order');
 {
   const v1 = 100n, v2 = 200n;
@@ -165,8 +165,7 @@ group('Attack 5: transcript bind through V append order');
 // Final scalars (r1, s1, d1) must satisfy:
 //   r1·y·s1 = (e²·H_inner + r·y·s + r·y·s1·e + r1·y·s·e + ...)
 // after the H_term1 = r1·y·s1 collapses. Tampering r1 or s1 directly
-// breaks this. Adversarial proof: swap r1 ↔ s1 (a structurally-typed
-// swap an attacker might try).
+// breaks this — including a structurally-typed swap of r1 ↔ s1.
 group('Attack 6: swapped final scalars r1 ↔ s1');
 {
   const v = 555n;
@@ -189,11 +188,11 @@ group('Attack 6: swapped final scalars r1 ↔ s1');
 }
 
 // ============== Attack 7: NUMS H/G swap simulation ==============
-// What if an adversary's commitment was computed with G and H swapped
-// (i.e. C = γ·H + v·G)? The verifier expects C = v·H + γ·G, so the
-// MSM accumulates V[j] under -e²·z^(2(j+1))·y^(MN+1), which only equals
-// identity if V[j] truly opens as v·H + γ·G with the values matching
-// the bit decomposition in the proof.
+// A commitment computed with G and H swapped (C = γ·H + v·G) must not
+// verify under a proof for the honest form C = v·H + γ·G. The MSM
+// accumulates V[j] under -e²·z^(2(j+1))·y^(MN+1), which equals identity
+// only if V[j] truly opens as v·H + γ·G matching the proof's bit
+// decomposition.
 group('Attack 7: G/H swapped commitment opens correctly?');
 {
   const v = 7n;
@@ -202,7 +201,7 @@ group('Attack 7: G/H swapped commitment opens correctly?');
   const r = bpp.bppRangeProve([v], [g]);
   ok('real C = v·H + g·G verifies', bpp.bppRangeVerify(r.commitments, r.proof) === true);
 
-  // Adversarial: build C' = g·H + v·G (i.e. "open as v under wrong base")
+  // Build C' = g·H + v·G (i.e. "open as v under wrong base")
   const { H } = bpp.bppGens();
   const C_swapped = bpp.safeMult(H, BigInt(g)).add(bpp.safeMult(bpp.G, BigInt(v)));
   ok('G/H-swapped commitment with proof REJECTS',
@@ -218,7 +217,7 @@ group('Attack 8: repeated commitment slots');
 {
   const v = 50n;
   const g = bpp.randomScalar();
-  // Adversary creates a "duplicate" m=2 proof
+  // Build a "duplicate" m=2 proof
   const r2 = bpp.bppRangeProve([v, v], [g, bpp.randomScalar()]);
   ok('real m=2 [v, v] (different blindings) verifies',
     bpp.bppRangeVerify(r2.commitments, r2.proof) === true);

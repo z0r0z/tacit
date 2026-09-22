@@ -1,13 +1,11 @@
-// Audit fix (vk-pinning coherence): bind the RUNTIME-authoritative inline
-// verifying key to the pinned ceremony artifact.
+// vk-pinning coherence: binds the RUNTIME-authoritative inline verifying key to the pinned ceremony
+// artifact.
 //
-// _fetchMixerVk short-circuits CANONICAL_VK_CID to the inlined
-// _CANONICAL_VK_INLINE literal with NO content-hash check, so that literal —
-// not the IPFS CID — is the live trust root for every mixer-proof verification.
-// Nothing previously bound that literal to the pinned CID / sha256, so a
-// hand-edit or merge corruption of the ~1-line JSON could silently ship a
-// wrong vk while every other test (bundle file + on-chain Verifier still agree
-// with each other) stayed green. This test closes that gap.
+// _fetchMixerVk short-circuits CANONICAL_VK_CID to the inlined _CANONICAL_VK_INLINE literal with NO
+// content-hash check, so that literal — not the IPFS CID — is the live trust root for every mixer-proof
+// verification. This test binds that literal to the pinned CID / sha256, so a hand-edit or merge
+// corruption of the ~1-line JSON cannot silently ship a wrong vk while every other check (bundle file +
+// on-chain Verifier still agree with each other) stays green.
 //
 // Source-level extraction (no jsdom / no tacit.js import) so it runs fast and
 // asserts on the exact bytes shipped in dapp/tacit.js.

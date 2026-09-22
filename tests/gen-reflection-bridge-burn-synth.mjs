@@ -3,9 +3,9 @@
 // pool note, so the reflection guest folds it into the burn set under the SOURCE-SPECIFIC bridge_burn_id and
 // MUST land on the JS assembler's newDigest — the reflect-exec guest<->JS parity check for the burn-set fold.
 //
-// The bug this closes: the assembler used to fold the burn under the bare ν, but the guest keys the burn
-// accumulator by bridge_burn_id(BURN_SOURCE_REFLECTED, spent_outpoint, btc_note_leaf) — so the insert witness
-// targeted the wrong key and the first live bridge-out halted reflection. BRIDGEBURN_SCENARIO selects:
+// The guest keys the burn accumulator by bridge_burn_id(BURN_SOURCE_REFLECTED, spent_outpoint,
+// btc_note_leaf), not the bare ν, so the assembler's insert witness must target that same key or
+// reflection halts on the first live bridge-out. BRIDGEBURN_SCENARIO selects:
 //   reflected      (default) — envelope asset == the spent note's asset → the burn records (burn set grows).
 //                              Expected: DIGEST_MATCH-with-burn.
 //   asset-mismatch          — envelope declares a DIFFERENT asset than the note actually spent → the guest
@@ -39,7 +39,7 @@ const nu = pool.nullifier(noteLeaf);
 // The burn envelope declares the asset it claims to burn: A for a real burn, B for the hostile-asset-mismatch.
 const envAsset = SCENARIO === 'asset-mismatch' ? ASSET_B : ASSET_A;
 // The target CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment this burn is redeemable in — folded
-// into the burn_id so a successor generation cannot pay it. 'wrong-target' models a burn that targeted a
+// into the burn_id so a successor deployment cannot pay it. 'wrong-target' models a burn that targeted a
 // DIFFERENT deployment: the reflection folds THAT target, so this pool records a burn_id a mint here can't
 // reconstruct (settle would reject) — the id is simply a different set member, folded here for parity.
 const TARGET = '0x' + '7c'.repeat(32), WRONG_TARGET = '0x' + '7d'.repeat(32);
@@ -86,7 +86,7 @@ if (SCENARIO === 'asset-mismatch') {
   // The burn is keyed by the TARGET-SCOPED bridge_burn_id(REFLECTED, outpoint, leaf, target) — assert that key.
   const burnId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, envTarget);
   if (!state.burnContains(burnId)) { console.error('FATAL: burn set does not contain the target-scoped bridge_burn_id'); process.exit(1); }
-  // A mint that reconstructed with a DIFFERENT target must NOT find this burn (the C-01 property).
+  // A mint that reconstructed with a DIFFERENT target must NOT find this burn.
   const wrongId = pool.bridgeBurnId(1, '0x' + seedTxid.toString('hex'), seedVout, noteLeaf, WRONG_TARGET);
   if (envTarget === TARGET && state.burnContains(wrongId)) { console.error('FATAL: a different-target burn_id is unexpectedly a member'); process.exit(1); }
 }

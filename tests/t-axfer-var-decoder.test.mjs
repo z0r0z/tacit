@@ -270,17 +270,14 @@ test('encoder rejects rangeproof > 65535 bytes', () => {
   } catch { return true; }
 });
 
-// =========== OP_RETURN(80) recovery-payload wire format (regression for the
-// "OP_PUSHBYTES_80 doesn't exist" signet-relay bug) ===========
+// =========== OP_RETURN(80) recovery-payload wire format ===========
 //
 // Bitcoin's standard relay policy ONLY recognises OP_PUSHBYTES_N for N=1..75
-// (opcodes 0x01..0x4b). For pushes > 75 bytes you MUST use OP_PUSHDATA1 +
-// length byte. The original encoder emitted `6a 50 <80 bytes>` thinking
-// `0x50` was a push opcode — it's actually OP_RESERVED, which makes the
-// scriptpubkey non-standard. bitcoind rejected the reveal with code -26
-// ("scriptpubkey"). Caught on the first signet harness run.
+// (opcodes 0x01..0x4b). For pushes > 75 bytes the encoding MUST use OP_PUSHDATA1 +
+// a length byte — 0x50 alone is OP_RESERVED, not a push opcode, and makes the
+// scriptpubkey non-standard.
 //
-// These tests pin the wire format so the bug can't slip back.
+// These tests pin the wire format so a non-standard encoding can't slip back.
 
 import { JSDOM } from 'jsdom';
 const _dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
@@ -309,9 +306,8 @@ test('encoded OP_RETURN(80) starts with 6a 4c 50 (OP_RETURN / OP_PUSHDATA1 / len
 });
 
 test('encoded OP_RETURN(80) does NOT use 0x50 as a standalone opcode (the original bug)', () => {
-  // The buggy encoding was `6a 50 <80 bytes>` which parses as OP_RETURN ||
-  // OP_RESERVED || <data>. Standard relay rejects this. Confirm the second
-  // byte is OP_PUSHDATA1, never the raw length.
+  // `6a 50 <80 bytes>` parses as OP_RETURN || OP_RESERVED || <data>, which standard relay rejects.
+  // Confirm the second byte is OP_PUSHDATA1, never the raw length.
   const payload = new Uint8Array(AXFER_VAR_OPRETURN_PAYLOAD_BYTES).fill(0xEF);
   const spk = encodeAxferVarOnchainOpReturn(payload);
   return spk[1] !== 0x50;
@@ -327,9 +323,8 @@ test('encoded OP_RETURN(80) round-trips through tryExtractAxferVarOnchainOpRetur
 });
 
 test('tryExtractAxferVarOnchainOpReturn rejects the buggy 82-byte legacy form', () => {
-  // What the buggy encoder used to emit: 6a 50 <80 bytes>. Standard relay
-  // wouldn't accept it, but a malformed implementation might still produce it
-  // — the decoder must NOT silently accept it.
+  // `6a 50 <80 bytes>` — standard relay wouldn't accept it, but a malformed implementation might
+  // still produce it; the decoder must NOT silently accept it.
   const buggy = new Uint8Array(82);
   buggy[0] = 0x6a; buggy[1] = 0x50;
   for (let i = 2; i < 82; i++) buggy[i] = 0xAA;

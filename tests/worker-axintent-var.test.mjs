@@ -1,5 +1,5 @@
 // PR1: pure-function message helpers + intent_id derivation for the
-// T_AXFER_VAR variable-amount atomic-intent flow (§5.7.6.1).
+// T_AXFER_VAR variable-amount atomic-intent flow.
 //
 // Pins down the wire-byte contracts so PR2 / PR3 (record schema + sequential
 // broadcast handlers) can call into a stable surface. None of the helpers

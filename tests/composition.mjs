@@ -1,8 +1,8 @@
-// Higher-level crypto from tacit.html, mirrored for offline testing.
+// Higher-level crypto from dapp/tacit.js, mirrored for offline testing.
 // BP primitives are imported from ./bulletproofs.mjs (single source of truth).
 //
 // What's mirrored here:
-//   - BIP-340 Schnorr (in-house impl; same one tacit.html ships)
+//   - BIP-340 Schnorr (in-house impl; same one dapp/tacit.js ships)
 //   - ECDH-derived blinding factors and amount-encryption keystreams
 //   - Self-derived (etcher / change) blindings + keystreams
 //   - Pedersen amount encryption (XOR-OTP over HMAC keystream)
@@ -108,7 +108,7 @@ function xor32(a, b) {
   return out;
 }
 
-// ---- §5.7.6 on-chain recovery: encrypted amount + blinding for OP_RETURN ----
+// ---- On-chain recovery: encrypted amount + blinding for OP_RETURN ----
 // Mirror of dapp/tacit.js helpers. Maker derives at fulfilment time using
 // (maker.priv, taker.pub); taker (or any wallet restoring from seed) derives
 // using (taker.priv, maker.pub) — symmetric ECDH. Domain-separated and bound
@@ -326,7 +326,7 @@ function decryptAmount(ciphertext8, keystream8) {
   return n;
 }
 
-// ---- BIP-340 Schnorr (in-house impl mirrored from tacit.html) ----
+// ---- BIP-340 Schnorr (in-house impl mirrored from dapp/tacit.js) ----
 function _taggedHash(tag, ...msgs) {
   const tagHash = sha256(new TextEncoder().encode(tag));
   return sha256(concatBytes(tagHash, tagHash, ...msgs));
@@ -403,9 +403,9 @@ function computeKernelMsg(assetId, inputOutpoints, outputCommitments, burnedAmou
 // ---- Mint authorisation message ----
 // commitAnchor = commit_tx.vin[0].txid_BE || commit_tx.vin[0].vout_LE (36 bytes).
 // Binding the issuer sig to commit_anchor stops envelope-replay into a different
-// commit/reveal pair: without it, an attacker who reads any past T_MINT can
-// rewrap the on-chain payload into their own commit/reveal at their own address
-// and the validator would still accept it.
+// commit/reveal pair: rewrapping the same on-chain payload into a different
+// commit/reveal changes commit_anchor, so the original signature no longer
+// verifies against the recomputed message.
 function computeMintMsg(assetId, commitAnchor, commitment, encryptedAmount) {
   if (!commitAnchor || commitAnchor.length !== 36) throw new Error('commit_anchor must be 36 bytes');
   return sha256(concatBytes(
@@ -1297,9 +1297,9 @@ function verifyAirdropClaimSig(msg, sigHex, expectedEthAddrHex) {
 // Used by the issuer-side worker-mediated fulfilment to authenticate smart-
 // contract wallet recipients. The dapp implementation pipes through the user's
 // connected EIP-1193 provider; tests substitute a mock provider that returns
-// the contract's expected response. The spec calls out that this path is
-// REQUIRED for smart-wallet recipients and unavailable on the on-chain T_DCLAIM
-// path (the Bitcoin-context validator can't run eth_call).
+// the contract's expected response. This path is required for smart-wallet
+// recipients and unavailable on the on-chain T_DCLAIM path (the
+// Bitcoin-context validator can't run eth_call).
 const ERC1271_MAGIC = '0x1626ba7e';
 async function verifyEthSigViaErc1271(msg, sigHex, expectedEthAddrHex, provider) {
   if (!provider || typeof provider.request !== 'function') return false;

@@ -5,24 +5,17 @@
 // dapp-generated, mainnet-confirmed bulletproof rangeproof against the
 // test suite's BP machinery.
 //
-// Prior to this test landing:
-//   - tests/bulletproofs.mjs used transcript domain `tacit-bp-v2` while
-//     dapp/tacit.js + the spec normatively pinned `tacit-bp-v1`.
-//   - tests/bulletproofs.mjs used unprefixed transcript appends while
-//     dapp/tacit.js used length-prefixed (4-byte LE u32) appends.
-//   - Both divergences were silent because the test suite only round-tripped
-//     self-generated proofs and never cross-verified against on-chain dapp
-//     artifacts. The drift was surfaced when the TAC mainnet canary
-//     (tests/canary-asset-tac-mainnet.test.mjs) tried to verify a real
-//     on-chain rangeproof and failed.
-//
-// This test is the cheap, offline, deterministic guard against either
-// divergence sneaking back in. It runs in milliseconds, no network. If
-// it fails, someone changed BP generators / transcript / serialization
-// in a way incompatible with the SPEC-normative on-chain protocol —
-// fix tests/bulletproofs.mjs to match the dapp, OR formally bump the
-// spec + dapp + on-chain envelope version (with the existing TAC asset's
-// historical rangeproofs grandfathered).
+// A test suite that only round-trips self-generated proofs can silently
+// drift from the dapp's transcript domain, append encoding, or generator
+// derivation without ever failing — nothing cross-verifies against a real
+// on-chain artifact. This test is the cheap, offline, deterministic guard
+// against that: it pins one real on-chain rangeproof and checks it verifies
+// under the SPEC-normative crypto stack. It runs in milliseconds, no
+// network. If it fails, someone changed BP generators / transcript /
+// serialization in a way incompatible with the SPEC-normative on-chain
+// protocol — fix tests/bulletproofs.mjs to match the dapp, or formally
+// bump the spec + dapp + on-chain envelope version (with the existing TAC
+// asset's rangeproofs grandfathered).
 //
 // FIXTURE: one confirmed TAC mainnet trade (tx
 // 1a9c4fec86b651287daeda409a5f9fdceb9fa2062ef429eb62d9867496b394dc),

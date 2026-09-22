@@ -1,7 +1,7 @@
 // T_SWAP_VAR outcome-taxonomy race rehearsal.
 //
 // Proves on signet that concurrent same-pool swaps in one inter-block window
-// all settle — never burn — under the amended validator:
+// all settle — never burn — under the outcome-taxonomy validator:
 //
 //   Phase R (test-plan item 9b): two swaps quote the same pre-state with
 //     loose floors, broadcast back-to-back. Both must EXECUTE — the earlier
@@ -352,14 +352,10 @@ if (state.raceR?.verified) {
 
 // ---- Phase T: deterministic floor miss (item 9c / 8) — PASS-THROUGH ----
 //
-// The mixed-floor same-block ordering bet was already exercised live: a
-// 2026-06-05 run had the pinned-floor swap win first canonical position
-// and fill AT its exact quote while the loose swap executed behind it at
-// the moved price — both settled, nothing burned. To pin the refund path
-// itself, this phase makes the floor miss deterministic: confirm a loose
-// fill first, THEN broadcast a swap quoting the stale pre-fill state with
-// its floor pinned at the stale quote. It must resolve PASS-THROUGH and
-// the refund must credit back in holdings.
+// Makes the floor miss deterministic: confirm a loose fill first, THEN
+// broadcast a swap quoting the stale pre-fill state with its floor pinned
+// at the stale quote. It must resolve PASS-THROUGH and the refund must
+// credit back in holdings.
 step('T', 'deterministic stale-floor swap — must PASS-THROUGH and refund');
 if (state.raceT?.verified) {
   ok(`phase T already verified`);

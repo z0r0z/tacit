@@ -446,7 +446,7 @@ if (state.lpAddCrystallize?.completed) {
     return num / den;
   })();
   const sAfterCrystallize = S + expectedCrystallizeShares;
-  // Uniswap V2 LP_ADD: shares = floor(min(Δa·S / R_A, Δb·S / R_B))
+  // Constant-product AMM LP_ADD: shares = floor(min(Δa·S / R_A, Δb·S / R_B))
   const sa = (lpAddDeltaA * sAfterCrystallize) / R_A;
   const sb = (lpAddDeltaB * sAfterCrystallize) / R_B;
   const shareAmount = sa < sb ? sa : sb;

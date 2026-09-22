@@ -5,7 +5,7 @@
 //
 //   Phase 1: pre-flight (wallets funded, asset prerequisites)
 //   Phase 2: CETCH a throwaway tacit asset (CXFER ancestor — standard BP)
-//   Phase 3: SEND via T_CXFER_BPP m=1 (the new opcode, BP+ rangeproof)
+//   Phase 3: SEND via T_CXFER_BPP m=1 (BP+ rangeproof)
 //   Phase 4: recipient scans holdings; confirms the BPP UTXO is credited
 //            via the mixed-ancestry path (CETCH → CXFER_BPP)
 //   Phase 5: recipient sends back via standard T_CXFER m=1 (reverse path:
@@ -15,9 +15,9 @@
 //            sender's input traces CETCH → BPP_3 → CXFER_5; output adds
 //            another BPP hop (4-deep ancestry from CETCH).
 //   Phase 8: recipient → sender via T_CXFER_BPP (5th envelope) —
-//            **BPP spending BPP-ancestor** is the new coverage gap closed
-//            here; the recipient's input is the BPP UTXO from Phase 7,
-//            so validateOutpoint walks BPP → BPP at depth ≥ 2.
+//            BPP spending a BPP ancestor: the recipient's input is the
+//            BPP UTXO from Phase 7, so validateOutpoint walks BPP → BPP
+//            at depth ≥ 2.
 //   Phase 9: sender re-scans; confirms balance restored after full
 //            5-envelope chain (CETCH → BPP → CXFER → BPP → BPP); all
 //            mixed BPP↔CXFER dispatch paths exercised on real chain.
@@ -161,7 +161,7 @@ if (!bppRevealTxid) {
     assetIdHex,
     recipientPubHex: W.recipient.pub_hex,
     amount: sendAmt,
-    useBpp: true,                  // <-- THE NEW PATH
+    useBpp: true,                  // T_CXFER_BPP path
   });
   ok(`BPP send commit ${r.commitTxid.slice(0, 12)}… reveal ${r.revealTxid.slice(0, 12)}…`);
   await waitConfirmed(r.revealTxid, 'BPP-send reveal');

@@ -32,11 +32,10 @@ const deadline = 5_000_000_000;
 const lockerBig = randomScalar();
 const lockerPriv = '0x' + lockerBig.toString(16).padStart(64, '0');
 const locker = '0x' + [...secp.ProjectivePoint.BASE.multiply(lockerBig).toRawBytes(true).slice(1)].map((b) => b.toString(16).padStart(2, '0')).join('');
-// N's real secret nk — nOwner = H(nk) is what the lock spends against (native_nu). A prior version of this
-// file passed the refund pubkey `locker` into the note-owner slot too and never gave buildStealthLock a
-// refundPub at all, so the leaf it actually bound (computed with refundPub=undefined) never matched what
-// this test independently recomputed — the lock-kernel assertion failed outright (confirmed: this file was
-// already failing before this fix, for exactly the bug this whole pass is about).
+// N's real secret nk — nOwner = H(nk) is what the lock spends against (native_nu).
+// The refund pubkey `locker` is passed separately as refundPub: the lock leaf
+// binds refundPub, so it must be supplied for the leaf this test independently
+// recomputes to match what buildStealthLock actually bound.
 const nOwnerNk = '0x' + randomScalar().toString(16).padStart(64, '0');
 const nOwner = pool.nkToOwner(nOwnerNk);
 // A separate refund-output spend owner (H(nk')) — the refund's reclaimed note owner, per main.rs `refund_owner`.
@@ -75,35 +74,40 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
   ok('blind lock: kernel conserves + binds the blind lock leaf + input spend-authority PoK');
 }
 
-// ── ADVERSARIAL (High): k-offset freeze forge is REJECTED by the input PoK ──
-// An attacker who does NOT know the victim note N's blinding r_N reads N's public leaf/commitment, then picks
-// the lock output l_pt = n_pt − k·G for a KNOWN k, so the kernel excess = n_pt − l_pt = k·G whose dlog they
-// know → they can forge the value-conservation kernel. This used to nullify ANY note into an unopenable lock.
-// The added per-input opening PoK closes it: it requires knowledge of r_N, which the attacker lacks.
+// ── Adversarial: k-offset lock forgery is rejected by the input PoK ──
+// Without a per-input opening PoK on the input note N, the kernel's
+// value-conservation check alone doesn't prove knowledge of N's blinding
+// r_N: a lock output offset by a known excess k·G still balances the
+// kernel identity regardless of r_N. The opening PoK closes this — it
+// requires knowledge of r_N, so only the note's actual owner can produce
+// a valid lock.
 {
-  const victimBlinding = randomScalar();               // the victim's r_N — SECRET, unknown to the attacker
+  const victimBlinding = randomScalar();               // r_N for the note being locked — secret
   const vAmount = 4242n;
   const { cx: vCx, cy: vCy } = xyOf(C(vAmount, victimBlinding));
   const vPt = C(vAmount, victimBlinding);              // public: readable from the note tree
-  const attackerOwner = ownerPub;                       // attacker sets the lock owner to a key THEY hold
-  // Attacker picks l_pt = n_pt − k·G (excess = k·G, dlog k known). k = 1 would bypass an identity-only guard;
-  // use k = 7 to make explicit that ANY known offset works — so the identity-excess check is NOT the fix.
+  const attackerOwner = ownerPub;                       // lock owner key used for this forgery attempt
+  // l_pt = n_pt − k·G for a known k (excess = k·G, dlog known). k = 7 (not 1)
+  // makes explicit that any known offset works, so an identity-only excess
+  // check on its own is not sufficient.
   const k = 7n;
   const lPtA = vPt.add(bpG.multiply(k).negate());
   const { cx: lCxA, cy: lCyA } = xyOf(lPtA);
-  // With the known excess k the attacker CAN forge the value-conservation kernel (excess·G = n_pt − l_pt is a
-  // point whose dlog they know). That check therefore proves NOTHING about knowledge of r_N. The guest now
-  // ALSO demands a per-input opening PoK on N — and the attacker, not knowing r_N, cannot produce a valid one.
+  // With a known excess k, the value-conservation kernel check is satisfied
+  // (excess·G = n_pt − l_pt is a point whose dlog is known) without proving
+  // knowledge of r_N. The per-input opening PoK on N closes this: producing
+  // a valid PoK requires r_N.
   const pokCtxA = pool.intentContext('tacit-stealth-lock-input-v1', chainBinding, asset, asset,
     [[vCx, vCy, locker], [lCxA, lCyA, attackerOwner]], [BigInt(deadline)]);
-  // The attacker's best shot is a fabricated (R, z_v, z_r) — rejected (a valid PoK requires r_N).
+  // A fabricated (R, z_v, z_r) is rejected — a valid PoK requires r_N.
   const junkR = bpG.multiply(randomScalar());
   const junkRHex = '0x' + [...junkR.toRawBytes(true)].map((b) => b.toString(16).padStart(2, '0')).join('');
   const junkZ = '0x' + randomScalar().toString(16).padStart(64, '0');
   assert(!pool.verifyOpeningPokBlind(vCx, vCy, junkRHex, junkZ, junkZ, pokCtxA), 'attacker cannot forge the input PoK without r_N (k-offset freeze REJECTED)');
-  // Even reusing a PoK the attacker DID make for a note they own (n_pt) cannot help: the ctx binds n_pt, and
-  // they still don't hold the victim's r_N — the only opening that satisfies the transcript over the victim's
-  // n_pt. The legitimate owner, who knows r_N, produces an accepted PoK:
+  // Reusing a PoK made for a different, owned note doesn't help either: the
+  // ctx binds n_pt, and only the opening for THIS n_pt (which requires r_N)
+  // satisfies the transcript. The note's actual owner, who knows r_N,
+  // produces an accepted PoK:
   const nV = pool.deriveOpeningNonce(victimBlinding, pokCtxA, 'stealth-lock-v');
   const nR = pool.deriveOpeningNonce(victimBlinding, pokCtxA, 'stealth-lock-r');
   const legitPok = pool.openingPokBlind(vAmount, victimBlinding, pokCtxA, nV, nR);
@@ -135,7 +139,7 @@ const { cx: nCx, cy: nCy } = xyOf(C(amount, rN));
     refundOwner: refundOutOwner, lockSetRoot: '0x' + '00'.repeat(32), lIndex: 0, lPath: [], lBlinding: rL, fee, oBlinding: rO });
   const oLeaf = transfer.destLeaf(asset, w.oCx, w.oCy, refundOutOwner);
   assert(transfer.verifyTransfer({ inC: [C(amount, rL)], outC: [C(amount - fee, rO)], rangeProof: w.oRange, kernel: kern(w), fee, outLeaves: [oLeaf] }), 'refund kernel + O range verify');
-  // F-02 fix: the refund must be locker-authorized (a claimant holding r_L can't forge this).
+  // The refund must be locker-authorized: a claimant holding r_L alone cannot produce a valid refund signature.
   const fromHex = (h) => Uint8Array.from(String(h).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
   const b32b = (h) => Uint8Array.from(String(h).replace(/^0x/, '').padStart(64, '0').match(/../g).map((x) => parseInt(x, 16)));
   const lockLeaf = stealth.stealthLockLeafBlind(asset, lCx, lCy, ownerPub, deadline, locker);

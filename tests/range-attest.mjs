@@ -125,11 +125,9 @@ export function encodeRangeAttest(args) {
   else if (args.holderPrivkey) holderPubkey = secp.ProjectivePoint.fromPrivateKey(args.holderPrivkey).toRawBytes(true);
   else throw new Error('holderPubkey or holderPrivkey required');
 
-  // asset_id binding (audit H2): holder signs the asset_id their
-  // commitments live under, so consumers don't have to do a separate
-  // resolver lookup to ensure the attestation isn't being replayed
-  // across asset contexts. All commitment_outpoints MUST resolve to
-  // UTXOs of this asset (enforced by validator).
+  // asset_id binding: holder signs the asset_id their commitments live under, so consumers don't
+  // have to do a separate resolver lookup to ensure the attestation isn't being replayed across
+  // asset contexts. All commitment_outpoints MUST resolve to UTXOs of this asset (enforced by validator).
   const assetId = asBytes(args.assetId, 32, 'assetId');
 
   const parts = [

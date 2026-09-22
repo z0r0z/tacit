@@ -1,22 +1,21 @@
-// Uniswap V2 canonical swap-output test vectors.
+// Canonical constant-product-AMM swap-output test vectors.
 //
-// Cross-implementation parity baseline against the well-known
-// `swapTestCases` table from Uniswap/v2-core (test/UniswapV2Pair.spec.ts).
-// Any reimplementation of tacit's AMM curve MUST reproduce these numbers
-// byte-identically — otherwise a swap routed through one implementation
-// would produce a different receipt amount than the same swap routed
-// through another.
+// Cross-implementation parity baseline against a well-known
+// constant-product-AMM swap-output test table. Any reimplementation of
+// tacit's AMM curve MUST reproduce these numbers byte-identically —
+// otherwise a swap routed through one implementation would produce a
+// different receipt amount than the same swap routed through another.
 //
-// The original Uniswap V2 vectors are at 18-decimal scale (`1e18` per
-// unit). tacit assets are u64-bounded with 8-decimal max precision, so
-// reserves at `1000` units in 18-decimal scale (= 1e21 base) exceed u64.
-// We scale the same vectors down to 8-decimal scale — the curve math is
+// The original vectors are at 18-decimal scale (`1e18` per unit). tacit
+// assets are u64-bounded with 8-decimal max precision, so reserves at
+// `1000` units in 18-decimal scale (= 1e21 base) exceed u64. The same
+// vectors are scaled down to 8-decimal scale — the curve math is
 // homogeneous of degree 1 (scaling all inputs by k scales the output
-// by k modulo floor rounding), so the leading digits match the upstream
+// by k modulo floor rounding), so the leading digits match the
 // 18-decimal expected values.
 //
-// The fee is 30 bps (Uniswap V2's 0.3%), matching tacit's default
-// `fee_bps = 30` recommendation.
+// The fee is 30 bps (a common 0.3% AMM fee tier), matching tacit's
+// default `fee_bps = 30` recommendation.
 //
 // Run: `node amm-uniswap-v2-parity.test.mjs`
 
@@ -41,7 +40,7 @@ const at8 = (n) => BigInt(n) * 100000000n;          // 1 unit at 8-decimal scale
 //
 // Format: [delta_in_units, R_A_units, R_B_units, expected_delta_out_at_8_decimal_scale]
 //
-// Original 18-decimal vectors from Uniswap V2:
+// Original 18-decimal vectors:
 //   [1, 5, 10]      → 1_662497915624478906
 //   [1, 10, 5]      →   453305446940074565
 //   [2, 5, 10]      → 2_851015155847869602
@@ -111,7 +110,7 @@ for (const [din, ra, rb, expectedOut] of SWAP_VECTORS_AB) {
 }
 
 // --------------------------------------------------------------------
-// 3. Zero-fee curve (Uniswap V2 with feeOff or test scenarios)
+// 3. Zero-fee curve (fee-off test scenarios)
 // --------------------------------------------------------------------
 //
 // At fee_bps=0, the curve degenerates to pure constant-product:
@@ -202,8 +201,8 @@ test('[Δ=10000·R_A, R_A=1000, R_B=1000, fee=30bps] → asymptote approaches R_
 });
 
 // --------------------------------------------------------------------
-// 6. Tiny input → floor rounds to zero (Uniswap V2 doesn't reject this
-//    at curve level, only at swap() if amountOut == 0)
+// 6. Tiny input → floor rounds to zero (not rejected at curve level,
+//    only where the caller checks output != 0)
 // --------------------------------------------------------------------
 //
 // At extreme imbalance R_A=1e18, R_B=1, a single sat input rounds to 0:
@@ -275,14 +274,14 @@ test('k_pre == k_post for every nontrivial swap at fee=0bps (no fee)', () => {
 });
 
 // --------------------------------------------------------------------
-// 9. isqrt canonical vectors (Uniswap V2 Math.sqrt parity)
+// 9. isqrt canonical vectors (integer sqrt parity)
 // --------------------------------------------------------------------
 //
 // Newton's method on BigInt. Pinning these ensures any reimplementation
-// (Rust, Go, Python) agrees on edge cases — particularly the (y+1)/2
-// initial-value bug from dapp.org.uk #3 that broke Uniswap V2's sqrt
-// for y = uint(-1). tacit's BigInt arithmetic makes overflow impossible,
-// but reimplementations on fixed-width types must reproduce these.
+// (Rust, Go, Python) agrees on edge cases at the u64/u128 boundary,
+// where a naive (y+1)/2 initial value can misbehave. tacit's BigInt
+// arithmetic makes overflow impossible, but reimplementations on
+// fixed-width types must reproduce these.
 
 console.log('\nisqrt canonical vectors (Math.sqrt parity)');
 
@@ -292,10 +291,10 @@ const ISQRT_VECTORS = [
   [1000000n, 1000n],
   [999999n, 999n],
   [1_000_000_000_000n, 1_000_000n],
-  // The famous Uniswap V2 fuzz target — large value that broke the original sqrt
+  // Boundary fuzz targets at the u64/u128 max.
   [(1n << 64n) - 1n, 4294967295n],                  // sqrt(u64.max) = u32.max
   [(1n << 128n) - 1n, (1n << 64n) - 1n],            // sqrt(u128.max) = u64.max
-  [1_000_000_000_000_000_000n, 1_000_000_000n],     // 1e18 (Uniswap V2 default scale)
+  [1_000_000_000_000_000_000n, 1_000_000_000n],     // 1e18 (18-decimal scale)
 ];
 
 for (const [n, expected] of ISQRT_VECTORS) {
@@ -306,8 +305,8 @@ for (const [n, expected] of ISQRT_VECTORS) {
 // 10. lpInitShares (POOL_INIT) canonical vectors
 // --------------------------------------------------------------------
 //
-// Initial total = isqrt(Δa · Δb), founder = total - MINIMUM_LIQUIDITY = total - 1000.
-// Uniswap V2's `mint` first-call path matches this exactly.
+// Initial total = isqrt(Δa · Δb), founder = total - MINIMUM_LIQUIDITY = total - 1000,
+// matching the standard constant-product-AMM first-mint path exactly.
 
 console.log('\nlpInitShares canonical vectors');
 
@@ -338,9 +337,8 @@ for (const [da, db, expectedTotal, expectedFounder] of POOL_INIT_VECTORS) {
 // --------------------------------------------------------------------
 //
 // shares = floor(min(Δa · S / R_A, Δb · S / R_B)). The min takes the
-// tighter side, so off-ratio deposits get only the limiting fraction —
-// matching Uniswap V2's `mint` for non-initial calls. The excess flows
-// donate to remaining LPs (same as Uniswap V2).
+// tighter side, so off-ratio deposits get only the limiting fraction.
+// The excess flows donate to remaining LPs.
 
 console.log('\nlpAddShares canonical vectors');
 
@@ -371,7 +369,7 @@ for (const [da, db, ra, rb, s, expected] of LP_ADD_VECTORS) {
 // --------------------------------------------------------------------
 //
 // delta_X = floor(R_X · share / S). Always floor toward the pool —
-// remaining LPs absorb the dust. Same direction as Uniswap V2's burn().
+// remaining LPs absorb the dust.
 
 console.log('\nlpRemoveOutputs canonical vectors');
 
@@ -419,16 +417,14 @@ test('LP_ADD then LP_REMOVE same shares: returns ≤ deposit (dust to remaining 
 });
 
 // --------------------------------------------------------------------
-// 13. mintFee (Uniswap V2 lazy protocol fee crystallization) vectors
+// 13. Lazy protocol-fee crystallization vectors
 // --------------------------------------------------------------------
 //
 // Formula: new_shares = S · bps · (rootK_now - rootK_pre) /
 //                      ((BPS_DEN - bps) · rootK_now + bps · rootK_pre)
 //
-// Floor-divides; dilutes existing LPs; matches Uniswap V2's `_mintFee`
-// for `feeOn` mode. tacit additionally caps bps at 1000 (= 10%) which
-// covers Uniswap V2's hardcoded 1/6 ≈ 16.67% IF the fee policy ever
-// raised the cap. Default V1 pools have bps=0 (no protocol fee).
+// Floor-divides; dilutes existing LPs. tacit caps bps at 1000 (= 10%).
+// Default pools have bps=0 (no protocol fee).
 
 console.log('\ncomputeProtocolShares canonical vectors');
 

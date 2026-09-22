@@ -17,6 +17,10 @@ import * as secp from '@noble/secp256k1';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { hmac } from '@noble/hashes/hmac';
 import { sha256 } from '@noble/hashes/sha256';
+import {
+  TEST_REFUND_TAIL, TEST_LP_ADD_REFUND_TAIL,
+  TEST_LP_ADD_KERNEL_TAIL_A as LP_ADD_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B as LP_ADD_TAIL_B,
+} from './helpers/amm-refund-tail.mjs';
 
 const worker = await import('../worker/src/index.js');
 const dappBp = await import('../dapp/bulletproofs.js');
@@ -84,13 +88,13 @@ function simulateLpAddV0({ assetA, assetB, feeBps, capabilityFlags,
     });
 
     const sigA = dappKernel.lpAddKernelSign({
-      variant: 0, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+      ...LP_ADD_TAIL_A, variant: 0, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
       shareAmount, shareCSecpBytes,
       inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
       inputCommitments: [cinA], excessX: blindA,
     });
     const sigB = dappKernel.lpAddKernelSign({
-      variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+      ...LP_ADD_TAIL_B, variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
       shareAmount, shareCSecpBytes,
       inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
       inputCommitments: [cinB], excessX: blindB,
@@ -102,7 +106,7 @@ function simulateLpAddV0({ assetA, assetB, feeBps, capabilityFlags,
       shareCSecp: shareCSecpBytes, shareCBJJ: shareCBJJBytes, shareXcurveSigma: xcurveSigma,
       kernelSigA: sigA, kernelSigB: sigB,
       shareR: new Uint8Array(32).fill(0x5a), // option-a reflection opening blinding (required by the encoder)
-      proof: new Uint8Array(256),
+      ...TEST_LP_ADD_REFUND_TAIL,
     });
 
     const decoded = worker.decodeTLpAddPayload(payload);
@@ -113,13 +117,13 @@ function simulateLpAddV0({ assetA, assetB, feeBps, capabilityFlags,
       hexToBytes(decoded.share_c_bjj),
     );
     const kA = worker.ammLpAddKernelVerify({
-      variant: 0, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+      ...LP_ADD_TAIL_A, variant: 0, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
       shareAmount, shareCSecpBytes,
       inputsX: [{ txid: 'aa'.repeat(32), vout: 0 }],
       inputCommitments: [cinA.toRawBytes(true)], sig64: sigA,
     });
     const kB = worker.ammLpAddKernelVerify({
-      variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+      ...LP_ADD_TAIL_B, variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
       shareAmount, shareCSecpBytes,
       inputsX: [{ txid: 'bb'.repeat(32), vout: 0 }],
       inputCommitments: [cinB.toRawBytes(true)], sig64: sigB,
@@ -226,6 +230,7 @@ function simulateLpRemove({ assetA, assetB, feeBps, capabilityFlags,
       recvACSecpBytes: recvACSecpPt.toRawBytes(true),
       recvBCSecpBytes: recvBCSecpPt.toRawBytes(true),
       lpInputs: [{ txid: 'cc'.repeat(32), vout: 0 }],
+      refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
       lpInputCommitments: [lpCommit],
       excessLP: lpBlinding,
     });
@@ -262,6 +267,7 @@ function simulateLpRemove({ assetA, assetB, feeBps, capabilityFlags,
       recvACSecpBytes: recvACSecpPt.toRawBytes(true),
       recvBCSecpBytes: recvBCSecpPt.toRawBytes(true),
       lpInputs: [{ txid: 'cc'.repeat(32), vout: 0 }],
+      refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
       lpInputCommitments: [lpCommit.toRawBytes(true)],
       sig64: sigLP,
     });

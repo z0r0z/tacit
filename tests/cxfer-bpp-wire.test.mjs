@@ -7,26 +7,27 @@
 //     opcode byte (and only the opcode byte + the rangeproof bytes) changed
 //   - kernel-msg byte parity: computeKernelMsg produces byte-identical output
 //     for matching (asset_id, inputs, outputs, burned=0) regardless of which
-//     opcode wraps the envelope (this is the soundness argument that lets
-//     §5.47.2 reuse "tacit-kernel-v1" unchanged)
+//     opcode wraps the envelope (the soundness argument for reusing
+//     "tacit-kernel-v1" unchanged)
 //   - CXFER encoder non-regression: encoding a known CXFER fixture produces
-//     byte-identical output after the BPP additions land (proves the BPP
-//     code path doesn't drift CXFER encoder)
+//     byte-identical output (proves the BPP code path doesn't drift the
+//     CXFER encoder)
 //   - forward-compat: existing decodeCXferPayload rejects a BPP envelope
 //     (opcode mismatch), which is the correct soft-fork behavior — a
-//     pre-amendment indexer sees BPP as unknown and treats it as a no-op
+//     decoder that doesn't know T_CXFER_BPP sees it as unknown and treats
+//     it as a no-op
 //   - mixed-ancestry decoding: alternating CXFER ↔ BPP envelopes decode
 //     correctly under opcode dispatch
 //   - rejection: wrong opcode, truncated, padded, bad N, off-curve commitment,
 //     wrong commitment length, wrong amount_ct length, wrong rp_len
 //
 // Scope. Wire format only. BP+ prover/verifier crypto is a separate
-// engineering track and is NOT exercised here — the rangeproof field is
+// engineering track and is not exercised here — the rangeproof field is
 // treated as opaque bytes (filled with deterministic placeholder bytes
-// for fixtures). The point of this test is to prove that adding T_CXFER_BPP
-// to the protocol introduces zero observable change to existing T_CXFER
-// behavior, and that the new opcode round-trips cleanly through both the
-// dapp encoder and the worker decoder.
+// for fixtures). The point of this test is to prove that T_CXFER_BPP
+// introduces zero observable change to existing T_CXFER behavior, and
+// that it round-trips cleanly through both the dapp encoder and the
+// worker decoder.
 
 import * as worker from '../worker/src/index.js';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
@@ -198,14 +199,14 @@ group('Byte-level delta: BPP envelope == CXFER envelope with only opcode + range
     `expected ${expectedSizeDelta}, got ${actualSizeDelta}`);
 }
 
-// ============== Kernel-msg byte parity (§5.47.2 soundness claim) ==============
+// ============== Kernel-msg byte parity ==============
 group('Kernel-msg byte parity: computeKernelMsg is opcode-agnostic');
 
 {
-  // The amendment's claim: "tacit-kernel-v1" is reused for T_CXFER_BPP
-  // because the kernel msg binds (asset_id, input outpoints, output
-  // commitments, burned=0), all of which are byte-identical between
-  // T_CXFER and T_CXFER_BPP. This test pins that property.
+  // "tacit-kernel-v1" is reused for T_CXFER_BPP because the kernel msg binds
+  // (asset_id, input outpoints, output commitments, burned=0), all of which
+  // are byte-identical between T_CXFER and T_CXFER_BPP. This test pins that
+  // property.
   const assetId = fakeAssetId(50);
   const inputOutpoints = [
     { txid: bytesToHex(bytes(60, 32)), vout: 0 },
@@ -230,10 +231,10 @@ group('Kernel-msg byte parity: computeKernelMsg is opcode-agnostic');
 group('CXFER encoder non-regression: BPP additions did not drift CXFER bytes');
 
 {
-  // Pinned fixture: encode a deterministic CXFER envelope and assert the
-  // bytes match a hex fixture captured BEFORE the BPP additions. The fixture
-  // is generated from the same deterministic seeds used elsewhere in this
-  // file so it's reproducible from the test source alone.
+  // Pinned canary: encode a deterministic CXFER envelope and assert its
+  // opcode byte and length are unchanged, so BPP additions can't have
+  // silently altered the CXFER wire format. Uses the same deterministic
+  // seeds as the rest of this file, so it's reproducible from source alone.
   const params = {
     assetId:    fakeAssetId(0),
     kernelSig:  fakeKernelSig(0),
@@ -242,8 +243,7 @@ group('CXFER encoder non-regression: BPP additions did not drift CXFER bytes');
   };
   const env = dapp.encodeCXferPayload(params);
 
-  // First byte must be 0x23 (T_CXFER). This is the primary "did we
-  // accidentally swap opcodes during the BPP refactor" canary.
+  // First byte must be 0x23 (T_CXFER) — the primary opcode-swap canary.
   ok('CXFER envelope still opcode 0x23',
     env[0] === T_CXFER);
 
@@ -261,7 +261,7 @@ group('CXFER encoder non-regression: BPP additions did not drift CXFER bytes');
     dec && bytesToHex(dec.rangeproof) === bytesToHex(params.rangeproof));
 }
 
-// ============== Forward-compat: pre-amendment decoders reject the new opcode ==============
+// ============== Forward-compat: decoders that don't know T_CXFER_BPP reject it ==============
 group('Forward-compat: decodeCXferPayload rejects a BPP envelope (correct soft-fork no-op)');
 
 {
@@ -279,7 +279,7 @@ group('Forward-compat: decodeCXferPayload rejects a BPP envelope (correct soft-f
   ok('pre-amendment worker decodeCXferPayload returns null on a BPP envelope',
     worker.decodeCXferPayload(bppEnv) === null);
 
-  // And the inverse: post-amendment BPP decoder rejects a CXFER envelope.
+  // And the inverse: the BPP decoder rejects a CXFER envelope.
   const cxferEnv = dapp.encodeCXferPayload({
     ...params,
     rangeproof: fakeRangeproof(204, 754),
@@ -294,7 +294,7 @@ group('Forward-compat: decodeCXferPayload rejects a BPP envelope (correct soft-f
 group('Mixed-ancestry: alternating CXFER ↔ BPP envelopes dispatch correctly by opcode');
 
 {
-  // Simulate a 5-hop ancestry as described in §5.47.5 mixed-ancestry rule.
+  // Simulate a 5-hop ancestry mixing CXFER and BPP envelopes.
   const ancestry = [
     { opcode: T_CXFER,     env: dapp.encodeCXferPayload({
         assetId: fakeAssetId(300), kernelSig: fakeKernelSig(300),
@@ -437,15 +437,14 @@ group('Worker decoder parity with dapp decoder');
 }
 
 // ============== Chain-decode integration ==============
-// Exercises the FULL path the worker uses when scanning chain:
+// Exercises the full path the worker uses when scanning chain:
 //   Bitcoin vin[0].witness[1] (envelope script bytes)
 //     → decodeEnvelopeScript (unwrap OP_FALSE OP_IF tapscript)
 //     → opcode dispatch on env.payload[0]
 //     → decodeCXferBppPayload
-// This is the integration point that previously broke when slot-mint and
-// axfer-var shipped; verifying it offline gives the same confidence that
-// an on-chain signet broadcast would, minus chain-acceptance (which is
-// trivially true — Bitcoin doesn't inspect witness contents).
+// Verifying this offline gives the same confidence an on-chain signet
+// broadcast would, minus chain-acceptance (which is trivially true —
+// Bitcoin doesn't inspect witness contents).
 group('Chain-decode integration: envelope-script wrap → unwrap → opcode dispatch → payload decode');
 
 {
@@ -494,11 +493,10 @@ group('Chain-decode integration: envelope-script wrap → unwrap → opcode disp
 group('Chain-decode forward-compat: an old worker (no BPP opcode dispatch) silently ignores');
 
 {
-  // Simulate the worker's scan loop BEFORE the BPP additions: it
-  // unwraps the envelope, then switches only on T_CXFER / T_AXFER /
-  // T_BURN / etc. A BPP envelope falls through every branch and gets
-  // logged as "unknown opcode" — which is the correct no-op per
-  // §"Unknown-opcode forward-compatibility rule".
+  // Simulate a worker whose opcode dispatch table doesn't yet include
+  // T_CXFER_BPP: it unwraps the envelope, then switches only on
+  // T_CXFER / T_AXFER / T_BURN / etc. A BPP envelope falls through every
+  // branch and gets logged as "unknown opcode" — the correct no-op.
   const signingPubXonly = bytes(950, 32);
   const params = {
     assetId:    fakeAssetId(951),

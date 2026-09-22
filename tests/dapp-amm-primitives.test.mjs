@@ -15,6 +15,9 @@
 
 import { JSDOM } from 'jsdom';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import {
+  TEST_LP_ADD_REFUND_TAIL, TEST_LP_ADD_KERNEL_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B,
+} from './helpers/amm-refund-tail.mjs';
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
 globalThis.window = dom.window;
@@ -36,7 +39,6 @@ const refBJJ = await import('./amm-bjj.mjs');
 const refSigma = await import('./amm-sigma-xcurve.mjs');
 const refAsset = await import('./amm-asset.mjs');
 const refReceipt = await import('./amm-receipt.mjs');
-const refKernel = await import('./amm-kernel.mjs');
 const refMinLiq = await import('./amm-min-liq.mjs');
 const refEnvelope = await import('./amm-envelope.mjs');
 
@@ -159,15 +161,16 @@ group('amm-kernel: lpAddKernelMsg + lpAddKernelSign');
   const aid = new Uint8Array(32); for (let i = 0; i < 32; i++) aid[i] = 100 + i;
   const cscBytes = new Uint8Array(33); cscBytes[0] = 0x02; for (let i = 1; i < 33; i++) cscBytes[i] = i;
   const inputs = [{ txid: 'c'.repeat(64), vout: 0 }, { txid: 'd'.repeat(64), vout: 1 }];
-  const dMsg = dappKernel.lpAddKernelMsg({
+  // The signed message ends with the refund tail (expiry ‖ refund_dest_xonly ‖ refund_blinding).
+  const args = {
     variant: 1, poolId: pid, assetX: aid, deltaX: 1_000n, shareAmount: 500n,
-    shareCSecpBytes: cscBytes, inputsX: inputs,
-  });
-  const rMsg = refKernel.lpAddKernelMsg({
-    variant: 1, poolId: pid, assetX: aid, deltaX: 1_000n, shareAmount: 500n,
-    shareCSecpBytes: cscBytes, inputsX: inputs,
-  });
-  ok('lpAddKernelMsg byte-parity', bytesEq(dMsg, rMsg));
+    shareCSecpBytes: cscBytes, inputsX: inputs, ...TEST_LP_ADD_KERNEL_TAIL_A,
+  };
+  const dMsg = dappKernel.lpAddKernelMsg(args);
+  const wMsg = worker.ammLpAddKernelMsg(args);
+  ok('lpAddKernelMsg byte-parity dapp ↔ worker', bytesEq(dMsg, wMsg));
+  const dMsgB = dappKernel.lpAddKernelMsg({ ...args, ...TEST_LP_ADD_KERNEL_TAIL_B });
+  ok('lpAddKernelMsg binds the refund tail', !bytesEq(dMsg, dMsgB));
 }
 
 // ============== amm-min-liq parity ==============
@@ -257,11 +260,11 @@ group('amm-envelope: encodeLpAdd (variant 0 + variant 1)');
   const sigma = new Uint8Array(169);
   const kernelSigA = new Uint8Array(64); kernelSigA.fill(0xaa);
   const kernelSigB = new Uint8Array(64); kernelSigB.fill(0xbb);
-  const proof = new Uint8Array(8); proof.fill(0xcc);
+  const shareR = new Uint8Array(32); shareR.fill(0xcc);
   const args0 = {
     variant: 0, assetA, assetB, deltaA: 1_000n, deltaB: 2_000n, shareAmount: 1414n,
     shareCSecp, shareCBJJ, shareXcurveSigma: sigma,
-    kernelSigA, kernelSigB, proof,
+    kernelSigA, kernelSigB, shareR, ...TEST_LP_ADD_REFUND_TAIL,
   };
   ok('encodeLpAdd(variant 0) byte-parity', bytesEq(dappEnvelope.encodeLpAdd(args0), refEnvelope.encodeLpAdd(args0)));
   const args1 = {

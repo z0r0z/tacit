@@ -190,8 +190,7 @@ test('Reconstructed Pedersen commitment matches recipient commitment', () => {
 // === verifyAxferOffer integration check ===
 // Build an offer object that mimics what takeAxferIntent would pass to
 // takeAxferOffer, with the 3-vout partial. The dapp's verifyAxferOffer
-// must accept it (previously rejected 3-vout partials with "must have
-// exactly 2 outputs").
+// must accept a 3-vout partial reveal.
 
 console.log('\nverifyAxferOffer accepts 3-vout partial');
 
@@ -220,14 +219,10 @@ const offer = {
 
 test('verifyAxferOffer accepts a 3-vout partial reveal (was previously rejected)', () => {
   try {
-    // This is expected to fail later in the verifier (envelope decode, commit
-    // tx fetch etc.) but it must NOT fail at the "exactly 2 outputs" gate.
-    // We're specifically testing that the 3-vout check passes.
-    // The dapp doesn't export verifyAxferOffer directly, so we test indirectly:
-    // structural check is reached only if outputs.length passes its gate.
-    // Force the gate by reading the dapp's verifyAxferOffer through takeAxferOffer's
-    // first verification step... but easier: just check the offer structure shape
-    // is what the dapp's verifyAxferOffer accepts at the structural level.
+    // Exercises only the "exactly N outputs" structural gate — deeper
+    // verification (envelope decode, commit-tx fetch) is expected to fail
+    // and is out of scope here. The dapp doesn't export verifyAxferOffer
+    // directly, so this checks the offer shape it would accept at this gate.
     return offer.partial_reveal.outputs.length === 3 &&
            offer.partial_reveal.outputs[2].value === 0 &&
            dapp.tryExtractAxintentOnchainOpReturn(hexToBytes(offer.partial_reveal.outputs[2].script_hex)) !== null;

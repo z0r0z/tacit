@@ -47,7 +47,7 @@ const genuine = kernelOk([cRecip, cChange]);
 const tRecip = Uint8Array.from(cRecip); tRecip[tRecip.length - 1] ^= 0x01;
 let tamperRecip; try { tamperRecip = kernelOk([tRecip, cChange]); } catch { tamperRecip = false; }
 
-// Wrong input commitment (attacker claims a different/under-valued input).
+// Wrong input commitment: does not match the on-chain C_in.
 const wrongIn = d.pointToBytes(d.pedersenCommit(amount, randScalar()));
 let wrongInput; try { wrongInput = kernelOk([cRecip, cChange], wrongIn); } catch { wrongInput = false; }
 

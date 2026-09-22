@@ -101,7 +101,7 @@ throws('pool_init with inflated founder shares → reject', () =>
 throws('lp_add over-claiming shares → reject', () =>
   replayAmmPoolState([SEQ[0], { ...SEQ[1], shareAmount: addShares + 1n }], DEPS), /share mismatch/);
 
-// 6. §5.20 pass-through: a swap whose re-priced output is below min_out leaves
+// 6. Pass-through: a swap whose re-priced output is below min_out leaves
 //    the pool state UNCHANGED (the trader is refunded). The replay must model
 //    this, not unconditionally execute.
 {

@@ -34,14 +34,14 @@ const collBlind = randomScalar();
 const debtBlind = randomScalar();
 
 // Collateral leg = a pending deposit. The opening sigma MUST be op- and CDP-intent-specific (NOT the plain
-// `tacit-wrap-intent-v1`, or a depositor's plain-wrap sigma could be replayed to lock their deposit into an
-// attacker-chosen CDP). Bind controller + position nonce + debt_value, matching the guest.
+// `tacit-wrap-intent-v1`, or a depositor's plain-wrap sigma could be replayed to lock their deposit into a
+// different CDP). Bind controller + position nonce + debt_value, matching the guest.
 const coll = pool.commitXY(COLL_VALUE, beHex(collBlind));
 const depId = pool.depositId(COLL_ASSET, COLL_VALUE, coll.cx, coll.cy, OWNER);
-// SECURITY (F-2): the collateral authorization now BINDS the exact debt destination and the fee. Without
-// them a relayer could honour every value the depositor signed, substitute a debt commitment whose blinding
-// it knows, and take almost the whole loan as "fee" — the debt note's own sigma is produced by whoever CHOSE
-// that commitment, so it is consistency, not consent. Derive the debt commitment first.
+// The collateral authorization binds the exact debt destination and the fee, so a relayer cannot
+// substitute a debt commitment whose blinding it knows and redirect loan value as "fee" — the debt
+// note's own sigma is produced by whoever chose that commitment, so it is consistency, not consent.
+// Derive the debt commitment first.
 const debtAsset = hx(keccak_256(Uint8Array.from([...new TextEncoder().encode('tacit-cdp-debt-v1'), ...hexToBytes('0x' + CONTROLLER)])));
 const debt = pool.commitXY(DEBT_VALUE - FEE, beHex(debtBlind));
 // Debt note SPEND owner = H(nk), distinct from the position auth key OWNER; the guest binds it in both sigmas.

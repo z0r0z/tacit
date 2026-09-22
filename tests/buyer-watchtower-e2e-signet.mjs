@@ -226,8 +226,8 @@ if (state.fill?.axintent_id) {
 }
 
 // Cancel stale seller intents from prior runs on this asset so the daemon (which
-// now takes any matching public ask) doesn't burn claim cycles on orphans whose
-// fulfilment secrets this run no longer holds.
+// takes any matching public ask) doesn't burn claim cycles on orphans whose
+// fulfilment secrets this run doesn't hold.
 setWallet(SELLER_SK, SELLER_PUB);
 {
   const allList = await fetch(`${WORKER}/assets/${assetId}/atomic-intents?network=signet`).then((r) => r.json()).catch(() => ({}));

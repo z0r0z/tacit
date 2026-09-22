@@ -1,15 +1,13 @@
-// Audit fix coverage — nullifier owner-conflict re-verification (the spec
-// invariant 3, Non-double-spend; griefing/availability hardening).
+// Nullifier owner-conflict re-verification (spec invariant 3, Non-double-spend;
+// griefing/availability hardening).
 //
-// Background: scanPools mirrors worker-supplied nullifier records INCLUDING the
-// recorded canonical owner (withdraw txid), with no on-chain re-verification
-// (unlike leaves, which are kernel-re-verified). A stale (reorged-out) or
-// forged owner-txid would then trip mixerIsNullifierSpentByOther and brick the
+// scanPools mirrors worker-supplied nullifier records INCLUDING the recorded canonical owner
+// (withdraw txid), with no on-chain re-verification (unlike leaves, which are kernel-re-verified). A
+// stale (reorged-out) or forged owner-txid would trip mixerIsNullifierSpentByOther and brick the
 // legitimate owner's withdraw forever (first-write-wins owner sticks).
 //
-// The fix: the validator routes the double-spend gate through
-// mixerWithdrawConflictBlocks, which re-verifies the conflicting owner on chain
-// (verifyWithdrawOwnerOnChain) and:
+// The validator routes the double-spend gate through mixerWithdrawConflictBlocks, which re-verifies the
+// conflicting owner on chain (verifyWithdrawOwnerOnChain) and:
 //   - keeps blocking iff the owner is a genuine confirmed matching T_WITHDRAW,
 //   - FAILS CLOSED (keeps blocking) on any transient/unverifiable result,
 //   - resolves in our favor (re-points ownership) only when the recorded owner

@@ -19,13 +19,14 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
 import * as ref from './stealth-dapp-patch.mjs';
+import { makeTacitAddress } from '../dapp/tacit-address.js';
 
-const src = fs.readFileSync('dapp/tacit.js', 'utf8');
+const src = fs.readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
 
-// Slice from the start-marker to the AXINTENT_BLINDING_DOMAIN marker
-// (the first thing after the stealth block).
-const startMarker = '// Blinded-pubkey commits (SPEC-BLINDED-PUBKEY-AMENDMENT §A — class-2 stealth)';
-const endMarker = '// 32-byte ECDH keystream used to encrypt the maker\'s recipient_blinding to the';
+// Slice from the first stealth declaration to AXINTENT_BLINDING_DOMAIN (the
+// first thing after the stealth block). Anchored on code, not comments.
+const startMarker = 'const STEALTH_HRP_BY_NETWORK = {';
+const endMarker = 'const AXINTENT_BLINDING_DOMAIN = ';
 const startIdx = src.indexOf(startMarker);
 const endIdx = src.indexOf(endMarker);
 if (startIdx === -1) throw new Error('start marker not found in dapp/tacit.js');
@@ -59,11 +60,11 @@ const wrapped = `${block}\nreturn { ${exposed.join(', ')} };`;
 const dapp = new Function(
   'secp', 'sha256', 'hmac', 'hexToBytes', 'bytesToHex', 'concatBytes',
   'SECP_N', 'G', 'ZERO', 'reverseBytes', 'bytesToPoint',
-  'p2wpkhScript', 'p2trScript', 'hash160',
+  'p2wpkhScript', 'p2trScript', 'hash160', 'makeTacitAddress',
   wrapped,
 )(secp, sha256, hmac, hexToBytes, bytesToHex, concatBytes,
   SECP_N, G, ZERO, reverseBytes, bytesToPoint,
-  p2wpkhScript, p2trScript, hash160);
+  p2wpkhScript, p2trScript, hash160, makeTacitAddress);
 
 // ===== tests =====
 let pass = 0, fail = 0;

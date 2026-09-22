@@ -204,7 +204,7 @@ const lpAssetIdHex = bytesToHex(lpAssetId);
 console.log(`\n  → pool_id: ${poolIdHex}`);
 console.log(`  → lp_asset_id: ${lpAssetIdHex}`);
 
-// Founder + locked shares from Uniswap V2 init formula
+// Founder + locked shares from the constant-product-AMM init formula
 let initShares;
 try {
   initShares = clearing.lpInitShares(canonDeltaA, canonDeltaB, minliq.MINIMUM_LIQUIDITY);

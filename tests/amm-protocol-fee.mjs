@@ -7,7 +7,7 @@
 // If `protocol_fee_address` is all-zeros, the pool has no protocol fee and
 // `protocol_fee_bps` must also be zero (rejected at envelope decode).
 //
-// Accrual model is **Uniswap V2 lazy**: protocol fee is crystallized into
+// Accrual model is lazy: protocol fee is crystallized into
 // `protocol_fee_accrued` (an LP-share counter held by the pool's internal
 // state — NO chain-side UTXO until claimed) at every LP event (LP_ADD,
 // LP_REMOVE) and at PROTOCOL_FEE_CLAIM time. T_SWAP_BATCH does NOT
@@ -38,7 +38,7 @@ export function isZeroAddress(addr) {
 // Compute the protocol's share-mint amount for the period since k_last,
 // given current pool product k_now = R_A · R_B.
 //
-// Formula (Uniswap V2 mintFee, integerized):
+// Formula (lazy mintFee, integerized):
 //   if k_now <= k_last: return 0
 //   rootK_pre  = isqrt(k_last)
 //   rootK_now  = isqrt(k_now)

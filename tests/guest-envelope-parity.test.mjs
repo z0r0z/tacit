@@ -2,13 +2,12 @@
 //
 // The guest is the consensus authority for envelope bytes: cxfer-core's parse_* functions decide what
 // a confirmed transaction means. The JS layers (dapp encoders, worker decoders) have to agree with it
-// exactly, and nothing in the repo asserted that. Two envelopes had already drifted apart unnoticed —
-// each layer self-consistent, the pair impossible to satisfy — and the tests kept passing because they
-// only ever compared JS against JS.
+// exactly. Existing unit tests only ever compare JS against JS, so two self-consistent layers can drift
+// apart from each other without either side noticing.
 //
 // This gate reads the guest source and pins the length rule of every fixed-size envelope. It fails if
-// the guest changes a length without the JS side being revisited, and it fails on the divergences that
-// exist today rather than recording them as acceptable.
+// the guest changes a length without the JS side being revisited, and it fails on any divergence that
+// exists rather than treating it as accepted.
 //
 // Run: node tests/guest-envelope-parity.test.mjs
 import { readFileSync } from 'node:fs';
@@ -91,13 +90,10 @@ group('T_LP_ADD (0x2D) — dapp encoder vs guest');
      `even an empty proof overshoots by the 2-byte prefix. The worker requires that same tail, so no envelope satisfies both.`);
 }
 
-// Fixed 2026-09-16: the dapp used to write a 32-byte x-only claimer with no fee_bps field (202 bytes,
-// SHA-256 claim_msg) while the guest reads a 33-byte COMPRESSED claimer pubkey + a 4-byte fee_bps (207
-// bytes) and signs a keccak256 claim_msg that also binds dest_spk. No real claim built by the old dapp
-// code could ever have validated against the guest. This block now pins the FIXED shape byte-for-byte —
-// both the envelope layout and the signed message — against independently reconstructed reference values
-// (not merely re-calling the dapp's own hasher), plus the guest source strings that define them, so a
-// future re-divergence on either side fails loudly instead of silently.
+// Pins the T_PROTOCOL_FEE_CLAIM shape byte-for-byte — both the envelope layout and the signed message —
+// against independently reconstructed reference values (not merely re-calling the dapp's own hasher), plus
+// the guest source strings that define them, so a re-divergence on either side fails loudly instead of
+// silently.
 group('T_PROTOCOL_FEE_CLAIM (0x31) — dapp encoder/msg vs guest (byte-for-byte KAT)');
 {
   const { encodeProtocolFeeClaim, decodeProtocolFeeClaim, buildProtocolFeeClaimMsg } = await import('../dapp/amm-envelope.js');

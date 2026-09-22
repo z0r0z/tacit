@@ -1,7 +1,7 @@
 // Pin the Bitcoin-AMM intent-authorization message builders across every implementation of them.
 //
 // The reflection guest re-derives each trader's signed intent_msg from the confirmed tx and BIP-340-verifies
-// it (H-01). If the guest's byte layout drifts from the emitter's by even one field, every honest swap fails
+// it. If the guest's byte layout drifts from the emitter's by even one field, every honest swap fails
 // auth in-guest AFTER the vin scan has already nullified the trader's input note — the receipt is never
 // onboarded and the principal is stranded. So the three builders must agree byte-for-byte, always.
 //

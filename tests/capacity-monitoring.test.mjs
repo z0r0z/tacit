@@ -41,9 +41,8 @@ const APPEND_ONLY = ['noteLeaves', 'spentLinks'];
 const TRANSIENT = ['liveTriples', 'coords'];
 const ALL = [...APPEND_ONLY, ...TRANSIENT];
 
-// The handler ends at the next top-level function, whatever that is. This used to end at a NAMED neighbour
-// (handleReflectionDump), which broke the moment another handler was added between them and its own KV read
-// was counted against this one.
+// The handler ends at the next top-level function, whatever that is, so this stays correct
+// regardless of which function happens to sit next to it in the file.
 const stateStart = worker.indexOf('async function handleReflectionState');
 const nextFn = worker.slice(stateStart + 1).search(/\n(async )?function \w+/);
 const stateHandler = worker.slice(stateStart, stateStart + 1 + nextFn);
@@ -88,8 +87,8 @@ test('runway is measured in DAYS of the wallet\'s real burn, not in settles', ()
   ok(/getGasPrice\(\)/.test(monitor), 'runway must read the live gas price');
 });
 
-// The arithmetic itself, with real numbers. The production case: the merged relayer wallet held 0.02014 ETH at
-// 0.053 gwei; the monitor called that "635 settles" and the truth was ~6 days.
+// The arithmetic itself, with real numbers: a merged relayer wallet holding 0.02014 ETH at 0.053 gwei
+// has about 6 days of runway, not the misleading "635 settles" a per-op count would suggest.
 const { runwayDays, burnGasPerDay } = await import(join(ROOT, 'worker-relay/src/lib/runway.js'));
 const GAS = { maintenance: 264_000n, transfer: 600_000n };
 const mk = (o) => runwayDays({ maintenanceRunsPerDay: 111, expectedOpsPerDay: 50, gas: GAS, ...o });
@@ -143,9 +142,9 @@ test('the capacity report needs no credentials', () => {
   for (const f of ALL) ok(report.includes(`'${f}'`), `report does not model ${f}`);
 });
 
-// The string checks above pin names, not behaviour — and that is how the first version shipped reading the
-// arrays one level too high (`s.noteLeaves` instead of `s.snapshot.noteLeaves`), reporting zero for every
-// count while `bytes` looked fine. So run the real handler, against the record shape the live KV holds.
+// The string checks above pin names, not behaviour, so also run the real handler against the record
+// shape the live KV holds — nesting the counts one level too high (`s.noteLeaves` vs
+// `s.snapshot.noteLeaves`) would still pass a names-only check while reporting zero for every count.
 await asyncTest('capacity counts are read from the nested snapshot, not the record root', async () => {
   const src = stateHandler.replace(/^async function handleReflectionState/, 'return async function handleReflectionState');
   const record = {

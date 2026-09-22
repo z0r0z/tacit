@@ -82,11 +82,20 @@ const opFix = (name) => JSON.parse(readFileSync(new URL(`../contracts/sp1/confid
   const { nullifiers } = lp.verifyAdd(op, { merkleRootFrom: pool.merkleRootFrom, spendRoot: tree.rootAndPath(0).root });
   const pv = pvNullifiers(g16('lp_groth16.json').publicValues);
   assert.deepStrictEqual(nullifiers.map(lc), pv.map(lc), 'verifyAdd nullifiers == the proven LP PublicValues');
-  for (const f of ['lp_op.json', 'lp_protofee_op.json', 'swapbatch_op.json']) {
+  for (const f of ['lp_op.json', 'lp_protofee_op.json']) {
     const g = f.replace('_op.json', '_groth16.json');
     assert.deepStrictEqual(opFix(f).expected.nullifiers.map(lc), pvNullifiers(g16(g).publicValues).map(lc), `${f} expected.nullifiers == proven PV`);
   }
-  ok('OP_LP_ADD: verifyAdd reports every input\'s guest-recorded native_nu (== lp_groth16 PV); lp/protofee/swapbatch fixtures agree');
+  // swapbatch_groth16.json proves the OP_SWAP_BLIND witness (swapblind_op.json), not swapbatch_op.json.
+  const blind = opFix('swapblind_op.json');
+  const bpv = g16('swapbatch_groth16.json').publicValues.replace(/^0x/, '');
+  const bw = (o) => BigInt('0x' + bpv.slice(o * 2, o * 2 + 64));
+  const bbase = Number(bw(0)), bswaps = bbase + Number(bw(bbase + 13 * 32));
+  assert.strictEqual(lc(blind.chainBinding), lc('0x' + bw(bbase + 32).toString(16).padStart(64, '0')), 'swapbatch_groth16 chainBinding == swapblind_op.json');
+  assert.strictEqual(lc(blind.expected.poolId), lc('0x' + bw(bswaps + 32).toString(16).padStart(64, '0')), 'swapbatch_groth16 poolId == swapblind_op.json');
+  assert.strictEqual(bw(bswaps + 128), BigInt(blind.expected.reserveAPost), 'swapbatch_groth16 reserveAPost == swapblind_op.json');
+  assert.strictEqual(bw(bswaps + 160), BigInt(blind.expected.reserveBPost), 'swapbatch_groth16 reserveBPost == swapblind_op.json');
+  ok('OP_LP_ADD: verifyAdd reports every input\'s guest-recorded native_nu (== lp_groth16 PV); lp/protofee fixtures agree, swapbatch_groth16 settles swapblind_op.json');
 }
 
 // ───────── 3. change leaves are reported in the guest's order ─────────

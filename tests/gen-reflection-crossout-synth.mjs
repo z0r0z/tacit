@@ -4,8 +4,8 @@
 // at the forward sentinel (crossout_set_root=0), onboarding nothing. The JS assembler mirrors that — emits the
 // witnesses + skips — so
 // newDigest is unchanged (only height advances) and MUST equal the guest's: the reflect-exec parity check for
-// the forward crossout skip (so a confirmed reverse-mint, or a crafted 0x65, no longer makes the forward
-// attester refuse the block). The mode_b=1 ONBOARDING is the separate reverse-prove path.
+// the forward crossout skip, so a confirmed reverse-mint, or a crafted 0x65, does not make the forward
+// attester refuse the block. The mode_b=1 ONBOARDING is the separate reverse-prove path.
 //   node tests/gen-reflection-crossout-synth.mjs > /tmp/crossout-reflect-input.json
 
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';

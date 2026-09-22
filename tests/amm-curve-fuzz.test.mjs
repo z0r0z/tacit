@@ -138,9 +138,8 @@ test('direction swap with swapped reserves: 1000 random cases', () => {
 // 3. curveDeltaOut — output strictly less than output reserve
 // ============================================================
 //
-// Uniswap V2's INSUFFICIENT_LIQUIDITY check: a swap cannot drain the
-// pool. tacit's curve formula structurally bounds delta_out < R_out
-// for any finite Δ at fee_bps > 0 (and ≤ R_out at fee_bps = 0).
+// A swap cannot drain the pool: tacit's curve formula structurally bounds
+// delta_out < R_out for any finite Δ at fee_bps > 0 (and ≤ R_out at fee_bps = 0).
 
 console.log('\ncurveDeltaOut — output bounded by reserve');
 

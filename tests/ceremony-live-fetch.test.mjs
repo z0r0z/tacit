@@ -1,13 +1,12 @@
 // Live integration test for the ceremony's IPFS fetch path.
 //
 // Why this test exists:
-//   The dag-pb-rejects-chunked-files bug shipped because every other test
-//   in this suite uses mock fetch with synthetic bytes — the validator was
-//   never exercised against the actual r1cs/ptau bytes a real IPFS gateway
-//   serves for our pinned CIDs. This test closes that gap by hitting the
-//   live worker for ceremony state, fetching the live r1cs + ptau bytes
-//   from the live gateway, and re-running the same sha256-anchored
-//   validation strategy the dapp uses in production.
+//   Every other test in this suite uses mock fetch with synthetic bytes, so
+//   the validator is never exercised against the actual r1cs/ptau bytes a
+//   real IPFS gateway serves for the pinned CIDs. This test closes that gap
+//   by hitting the live worker for ceremony state, fetching the live r1cs +
+//   ptau bytes from the live gateway, and re-running the same
+//   sha256-anchored validation strategy the dapp uses in production.
 //
 // What this proves end-to-end:
 //   - Worker's ceremony state still resolves to a circuit_hash that matches
@@ -16,8 +15,8 @@
 //     trust anchor for r1cs).
 //   - Gateway-served ptau bytes hash to TACIT_DEFAULT_PTAU_SHA256 (the
 //     dapp's trust anchor for ptau).
-//   Any drift between worker state, IPFS pin, and dapp constants — the
-//   class of failure that took the contributor down — fails this test.
+//   Any drift between worker state, IPFS pin, and dapp constants fails
+//   this test.
 //
 // Network policy:
 //   Skips gracefully (with a clear "skipped: <reason>" line) if the worker

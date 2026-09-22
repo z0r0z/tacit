@@ -21,7 +21,6 @@ import { createHash } from 'node:crypto';
 import assert from 'node:assert';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { parseEthCallEnvelope } from '../dapp/burn-deposit-bitcoin.js';
-import { encodeEthCall, decodeEthCall } from '../dapp/confidential-crossout-consumer.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
@@ -32,10 +31,22 @@ const bytes = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''), '
 let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log('  ok -', msg); pass++; };
 
-// The envelope under test is built by the REAL wallet encoder (dapp/confidential-crossout-consumer.js),
-// not a local re-implementation — so this closes the loop the wallet actually walks:
-// encodeEthCall -> the scan parser -> the fold. A local encoder would happily agree with a broken pair.
-const enc = (o) => hx(encodeEthCall({ ...o, keccak256: keccak_256 }));
+// The dapp has no 0x69 encoder (messages originate in EthCallOutbox), so the envelope is built here from
+// the layout cxfer_core::bitcoin::parse_eth_call_envelope accepts: opcode ‖ msg_id(32) ‖ ns(32) ‖
+// sender(20) ‖ dest_chain(2 BE) ‖ payload_hash(32) ‖ payload_len(2 LE) ‖ payload(N).
+const enc = ({ msgId, ns, sender, destChain, payload }) => {
+  const p = bytes(payload);
+  const e = new Uint8Array(121 + p.length);
+  e[0] = 0x69;
+  e.set(bytes(msgId), 1);
+  e.set(bytes(ns), 33);
+  e.set(bytes(sender), 65);
+  e[85] = (destChain >> 8) & 0xff; e[86] = destChain & 0xff;
+  e.set(keccak_256(p), 87);
+  e[119] = p.length & 0xff; e[120] = (p.length >> 8) & 0xff;
+  e.set(p, 121);
+  return hx(e);
+};
 
 const NS_ATTEST = hx(keccak_256(Buffer.from('tacit-ns-attest-v1')));
 const MSG_ID = hx(keccak_256(Buffer.from('msg-one')));
@@ -55,13 +66,7 @@ ok(dec.payloadHash === hx(keccak_256(bytes('0xdeadbeef'))), 'payloadHash is the 
 // ── 2. Malformed envelopes are rejected by the decoder, never fatal ─────────────────────────────
 const trailing = envHex + 'ff';
 ok(parseEthCallEnvelope(trailing) === null, 'a trailing byte is rejected (two envelopes must not carry one message)');
-// The encoder refuses an over-cap payload outright (the wallet should never broadcast one)...
-let encThrew = false;
-try { enc({ msgId: MSG_ID, ns: NS_ATTEST, sender: SENDER, destChain: 1, payload: '0x' + '00'.repeat(1025) }); }
-catch { encThrew = true; }
-ok(encThrew, 'the wallet encoder refuses an over-cap payload');
-// ...but the PARSER must reject one independently: it is the fold's bound, so it cannot assume the sender
-// was well-behaved. Hand-build the envelope the encoder would not.
+// The parser is the fold's bound on payload size, so it rejects an over-cap payload on its own.
 const bigPayload = '00'.repeat(1025);
 const overCap = envHex.slice(0, 2 + 119 * 2) + '0104' + bigPayload;
 ok(parseEthCallEnvelope(overCap) === null, 'the parser independently rejects an over-cap payload');

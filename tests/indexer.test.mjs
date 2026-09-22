@@ -365,14 +365,9 @@ await test('CETCH → CXFER → BURN (full burn, no change)', async () => {
     outputs: [],
     burnedAmount: 300n,
   });
-  // Burn tx itself: there's no UTXO at burn.txid:0 since N=0. Validate via spending
-  // it as input (won't work since burn has no outputs to spend) — instead, validate
-  // by querying the burn tx directly. We need to validate "is the burn tx itself sound".
-  // The way to check: walk an outpoint pointing INTO the burn — but burn has no outputs.
-  // So we test the burn by validating its own kernel: validateOutpoint(burn.txid, 0)
-  // Since N=0, no output outpoint exists; validator returns false on vout >= N when N>0.
-  // For N=0 the check is `if (isBurn && N > 0 && vout >= N)` — N=0 lets vout=0 pass.
-  // The validator runs the full check (kernel sig + asset_id), then markAll(max(N,1)=1).
+  // N=0 means the burn tx has no output UTXO to spend, so validate it directly via
+  // validateOutpoint(burn.txid, 0). The vout>=N guard only applies when N>0, so vout=0 passes here;
+  // the validator still runs the full kernel-sig + asset_id check, then markAll(max(N,1)=1).
   const set = new Map();
   return await validateOutpoint(burn.txid, 0, set, store.fetch);
 });
@@ -618,10 +613,9 @@ await test('MINT claiming wrong etch_txid REJECTS (asset_id mismatch)', async ()
 });
 
 await test('MINT envelope replay into different commit/reveal pair REJECTS (SPEC §5.3 anchor binding)', async () => {
-  // The attacker reads an honest issuer's on-chain T_MINT envelope and rewraps
-  // its bytes (asset_id, commitment, ct, rangeproof, issuer_sig) into a fresh
-  // commit/reveal pair at the attacker's own address. The validator must
-  // reject because the new commit_anchor differs from what the issuer signed.
+  // A replay reuses an honest issuer's on-chain T_MINT envelope bytes (asset_id, commitment, ct,
+  // rangeproof, issuer_sig) inside a fresh commit/reveal pair at a different address. The validator
+  // must reject because the new commit_anchor differs from what the issuer signed.
   const store = new TxStore();
   const mintPriv = secp.utils.randomPrivateKey();
   const mintAuth = secp.getPublicKey(mintPriv, true).slice(1);
@@ -642,12 +636,11 @@ await test('MINT envelope replay into different commit/reveal pair REJECTS (SPEC
   const honestRevealTx = await store.fetch(honestMint.txid);
   const honestEnvelopeHex = honestRevealTx.vin[0].witness[1];
 
-  // Attacker builds a fresh commit-stub at a different funding outpoint.
+  // Build a fresh commit-stub at a different funding outpoint, then a reveal that points at it
+  // but reuses the honest envelope bytes (same issuer_sig, same commitment, same ct). The validator
+  // derives an anchor from this commit-stub's vin[0] — different from honestMint.anchor — so the
+  // issuer_sig doesn't verify.
   const attackerStub = synthCommitStub(store);
-  // …and a reveal that points at THAT commit-stub but reuses the honest
-  // envelope bytes (same issuer_sig, same commitment, same ct). The validator
-  // will derive an anchor from the attacker's commit-stub vin[0] — different
-  // from honestMint.anchor — and the issuer_sig won't verify.
   const replayRevealTx = {
     vin: [{
       txid: attackerStub.commitTxid, vout: 0,
@@ -866,13 +859,10 @@ await test('metadataOut populated via MINT path (ticker comes from CETCH)', asyn
 console.log('\nDeep chain (no depth bound):');
 
 await test('Deep chain validates (300-hop CXFER chain accepts)', async () => {
-  // The old recursive validateOutpoint had a hard depth cap (>200 hops
-  // rejected). Issuer wallets fulfilling large airdrops accumulate ancestry
-  // hop-counts equal to the batch count, so the cap was silently routing
-  // deep change UTXOs into `h.inflated` and under-counting holdings.
-  // The iterative refactor drops the cap; this test pins that behaviour.
-  // 300 hops is comfortably past the old 200 cap (the old code would have
-  // rejected this) without paying for stress-test runtime.
+  // validateOutpoint has no depth cap on ancestry: issuer wallets fulfilling large airdrops
+  // accumulate hop-counts equal to the batch count, and a cap would silently route deep change
+  // UTXOs into `h.inflated`, under-counting holdings. 300 hops pins that behavior well past any
+  // depth a cap would allow, without paying for excessive stress-test runtime.
   const store = new TxStore();
   const etch = synthCETCH(store, { supply: 1000n });
   let prev = { txid: etch.txid, vout: 0, amount: 1000n, blinding: etch.blinding };

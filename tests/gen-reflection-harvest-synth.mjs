@@ -3,11 +3,10 @@
 // materialization in isolation (the farm-lifecycle fixture covers harvest+unbond together; this pins harvest
 // alone). The bond receipt R0 is pre-seeded in the prior note tree; the SPEND is gated by a BIP-340 sig under
 // the receipt's one-time owner pubkey over the materialized reward note's blinding (reward_r) AND its vout[1]
-// destination scriptPubKey (the front-run-resistant dest binding). fold_lp_harvest verifies the receipt +
-// bounds reward ≤ shares·(rps−rps_entry); fold_harvest materializes the reward note (vout 1) + DEBITS the
-// C0-backed treasury. The guest must land on the JS assembler's newDigest — the reflect-exec guest↔JS
-// digest-parity check for the harvest fold. Replaces the prior stale 226-byte (worker-protocol) envelope,
-// which the current guest (parse_lp_harvest_envelope requires 346) + dapp classifier no longer accept.
+// destination scriptPubKey. fold_lp_harvest verifies the receipt + bounds reward ≤ shares·(rps−rps_entry);
+// fold_harvest materializes the reward note (vout 1) + DEBITS the C0-backed treasury. The guest must land on
+// the JS assembler's newDigest — the reflect-exec guest↔JS digest-parity check for the harvest fold
+// (parse_lp_harvest_envelope requires the 346-byte layout).
 //   node tests/gen-reflection-harvest-synth.mjs > /tmp/harvest-reflect-input.json
 // HARVEST_SCENARIO=zero-reward claims a zero reward: fold_harvest declines it after fold_lp_harvest has already
 // accrued the farm and re-stamped the receipt, and the guest restores both, so nothing about the farm changes.

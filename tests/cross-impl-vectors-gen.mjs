@@ -62,9 +62,9 @@ emit('worker_pubkey_W2', '0x' + bytesToHex(pubkeyOf(CANONICAL.worker_privkey_W2)
 
 // ===== Pool & LP asset IDs =====
 // Canonical pair: TAC + cBTC, lex-ascending → TAC (0xaa…) < cBTC (0xbb…).
-// pool_id discriminators now include fee_bps + capability_flags
-// (V3/V4 fee-tier parity). Canonical test vectors
-// use fee_bps=30 (standard 3 bps tier), capability_flags=0 (default).
+// pool_id discriminators include fee_bps + capability_flags (multiple fee
+// tiers per pair). Canonical test vectors use fee_bps=30 (the standard
+// tier), capability_flags=0 (default).
 const CANONICAL_FEE_BPS = 30;
 const CANONICAL_CAPABILITY_FLAGS = 0;
 const assetA = fromHex(CANONICAL.asset_id_TAC);   // smaller
@@ -133,8 +133,7 @@ emit('intent_pool_hash ([0x11×32, 0x22×32, 0x33×32], sorted ascending)',
 
 // ===== T_PROTOCOL_FEE_CLAIM claim_msg =====
 // Mirrors guest cxfer-core::lib::protocol_fee_claim_msg: keccak256, BIG-endian
-// amount, dest_spk bound in (fixed 2026-09-16 — this used to be SHA-256 with no
-// dest_spk, matching the JS side's now-corrected bug rather than the guest).
+// amount, dest_spk bound in.
 {
   const claimAmount = 12345n;
   const claimCSecp = new Uint8Array(33); claimCSecp[0] = 0x02; claimCSecp.fill(0xcd, 1);

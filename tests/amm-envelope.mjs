@@ -88,18 +88,16 @@ function assertOpcode(buf, expected, name) {
 // ── Canonical encoders: delegated, never re-implemented ──────────────────────────────────────────
 // T_LP_ADD, T_LP_REMOVE and T_PROTOCOL_FEE_CLAIM are produced by dapp/amm-envelope.js, which is the
 // single source these bytes are defined by (the worker decoder and the guest parser are held byte-exact
-// against it). This module used to carry its own copy of them; that copy silently fell behind the real
-// layout twice — once missing the share opening blinding, once the two lp-remove blindings — and each
-// time the tests kept passing against their own wrong bytes. Delegating removes the drift surface.
+// against it). Delegating to it here removes the drift surface a local copy would create.
 //
-// The wrappers below only supply test-ergonomic defaults for fields these older tests predate, so a
-// test that does not care about a field still emits a CURRENT, valid payload rather than a stale one:
+// The wrappers below only supply test-ergonomic defaults for fields a test may not care about, so a
+// test that omits a field still emits a CURRENT, valid payload rather than a stale one:
 //   - shareR / rRecvA / rRecvB : the option-a reflection opening blindings, zero unless given.
 //   - the refund tail          : a losing or expired add returns delta_a / delta_b to owner-bound refund
 //                                notes instead of self-burning; defaults to TEST_LP_ADD_REFUND_TAIL.
 // A test that exercises any of those passes them explicitly and the default is not used. Legacy arg
-// spellings are mapped to the canonical ones so call sites did not have to be rewritten en masse.
-// T_SWAP_BATCH stays implemented below: it has no dapp encoder (the op is disabled this generation).
+// spellings are mapped to the canonical ones so call sites don't need rewriting.
+// T_SWAP_BATCH stays implemented below: it has no dapp encoder.
 import {
   encodeLpAdd as _encodeLpAdd,
   encodeLpRemove as _encodeLpRemove,
@@ -114,9 +112,9 @@ import {
 } from '../dapp/amm-envelope.js';
 
 // The canonical decoders report a malformed payload by returning null (an indexer skips it rather
-// than dying on attacker-supplied bytes). These tests were written against a decoder that threw and
-// assert on WHY it rejected, so the wrappers re-derive the reason from the payload and throw with it.
-// The accepted bytes are the canonical decoder's — only the shape of the rejection differs.
+// than throwing on untrusted bytes). These tests assert on WHY a payload was rejected, so the
+// wrappers re-derive the reason from the payload and throw with it. The accepted bytes are the
+// canonical decoder's — only the shape of the rejection differs.
 function _rejectReason(payload, opcode, name, { variantByte = false } = {}) {
   if (!(payload instanceof Uint8Array)) return `${name}: payload must be Uint8Array`;
   if (payload.length === 0) return `${name}: truncated payload`;

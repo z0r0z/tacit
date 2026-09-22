@@ -11,11 +11,10 @@
 //   - Auth gate distinguishes "no token configured on worker" (503) from
 //     "wrong/missing token" (401). A misconfiguration must not silently
 //     open the init path; a request with wrong creds must not 503 (which
-//     would mask the brute-force attempt as misconfig).
+//     would mask wrong credentials as misconfig).
 //   - First-write-wins on /ceremony/init: a second init on the same
-//     circuit_hash returns 409 with the existing state, never overwrites.
-//     This is the gate that prevents an attacker from racing the legitimate
-//     coordinator with a poisoned ptau.
+//     circuit_hash returns 409 with the existing state, never overwrites,
+//     so a circuit_hash's ptau can't be replaced by a later submission.
 //   - CAS on prev_cid in /contribute: two contributors holding the same
 //     prev_cid both pin to IPFS, but only the first to KV-write lands.
 //     The loser gets 409 with a stale-prev_cid error.
@@ -94,18 +93,31 @@ function makeKv() {
 }
 
 // ---- Pinata fetch stub ----
-// Each call increments a counter so we can hand out distinct CIDs; lets
-// CAS-race tests confirm the loser's pin still happened (we don't hide the
-// wasted-pin cost — see worker handleCeremonyContribute comment) but didn't
-// land in KV state.
+// Returns the CIDv1 raw sha2-256 of the uploaded bytes, which the worker
+// recomputes and requires to match. Every pin is logged so CAS-race tests
+// can confirm the loser's pin still happened (we don't hide the wasted-pin
+// cost — see worker handleCeremonyContribute comment) but didn't land in KV
+// state.
 let _pinCount = 0;
 const _pinLog = [];
+const _B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+async function rawCidV1(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  const cidBytes = new Uint8Array([0x01, 0x55, 0x12, 0x20, ...digest]);
+  let bits = 0, value = 0, out = '';
+  for (const b of cidBytes) {
+    value = (value << 8) | b; bits += 8;
+    while (bits >= 5) { out += _B32[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += _B32[(value << (5 - bits)) & 31];
+  return 'b' + out;
+}
 function mockPinataFetch() {
-  globalThis.fetch = async (urlOrReq /*, init */) => {
+  globalThis.fetch = async (urlOrReq, init = {}) => {
     const url = typeof urlOrReq === 'string' ? urlOrReq : urlOrReq.url;
     if (url.includes('api.pinata.cloud/pinning/pinFileToIPFS')) {
       _pinCount += 1;
-      const cid = `bafkreitestcid${String(_pinCount).padStart(48, '0')}`;
+      const cid = await rawCidV1(await init.body.get('file').arrayBuffer());
       _pinLog.push(cid);
       return new Response(JSON.stringify({ IpfsHash: cid }), { status: 200 });
     }
@@ -344,8 +356,7 @@ await test('contribute: 404 when ceremony not initialized', async () => {
   return res.status === 404;
 });
 
-// The four tests below all require a successful /contribute. As of the
-// ceremony-eligibility-gate change (PR #45 / commit dbaa8fd), every
+// The four tests below all require a successful /contribute. Every
 // /contribute requires a bulletproof envelope proving the contributor
 // wallet holds ≥ 1 TAC on mainnet, which the worker verifies by hitting
 // commitmentForUtxo + apiJson(/tx/...) + chainOutspendProbe + fetchTipHeight.
@@ -353,10 +364,10 @@ await test('contribute: 404 when ceremony not initialized', async () => {
 // fail and the worker rejects with 403 before reaching the success path.
 //
 // Wire-format + crypto-path parity is covered by
-// tests/ceremony-eligibility-envelope-parity.test.mjs (12/12 pass).
-// Follow-up: extend this file's fetch/KV stubs to serve synthetic tacit
+// tests/ceremony-eligibility-envelope-parity.test.mjs.
+// TODO: extend this file's fetch/KV stubs to serve synthetic tacit
 // envelope txs + chain-probe responses so the contribute success path is
-// covered here again.
+// covered here too.
 skip('contribute: is publicly reachable (no token gate)',
   'pending: chain-probe mocks for eligibility envelope verify');
 skip('contribute: 400 when zkey lacks the snarkjs "zkey" magic-byte tag',
@@ -480,14 +491,11 @@ await test('reset: a fresh init on the same circuit_hash succeeds after reset', 
 });
 
 // ============================================================
-// /reserve DoS hardening (NFTDADE23 botted-queue report)
+// /reserve DoS hardening
 //
-// The /reserve endpoint used to accept anonymous queue joins, letting
-// one bot fill the FIFO queue with thousands of random UUIDs from a
-// single IP and push honest contributors to the back of a fake queue.
-// The fix layers three gates: (1) Schnorr sig binds each entry to a
-// pubkey; (2) one queue slot per pubkey at a time; (3) per-IP cap of
-// 20 fresh joins/day. Tests below exercise each gate.
+// /reserve gates queue joins with three controls: (1) a Schnorr sig binds
+// each entry to a pubkey; (2) one queue slot per pubkey at a time; (3) a
+// per-IP cap of 20 fresh joins/day. Tests below exercise each gate.
 // ============================================================
 
 import * as _secp from '@noble/secp256k1';
@@ -664,14 +672,12 @@ await test('reserve: per-IP cap does NOT count existing-token polls toward the l
 });
 
 // ============================================================
-// /reserve head-residency deadline (indefinite-poll DoS fix)
+// /reserve head-residency deadline
 //
-// Pre-fix: handleCeremonyReserve refreshed the queue entry's 15-min
-// KV TTL on every poll, so a contributor at position 0 could keep
-// the head slot forever without calling /contribute. Blocked the
-// AMM swap_batch / lp_add / lp_remove ceremonies. Fix: stamp
-// head_started_at on first observation at position 0, and evict on
-// any later poll where NOW - head_started_at > CEREMONY_MAX_HEAD_MS.
+// A contributor at position 0 stamps head_started_at on first observation
+// there, and is evicted on any later poll where NOW - head_started_at >
+// CEREMONY_MAX_HEAD_MS — so holding the head slot without calling
+// /contribute has a hard ceiling instead of refreshing indefinitely.
 // Tests use a Date.now mock so the 10-min deadline elapses in milliseconds.
 // ============================================================
 

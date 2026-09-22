@@ -528,10 +528,9 @@ const FIXED_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f9
 const FIXED_TACIT = '02' + 'b'.repeat(64);
 
 test('buildAirdropClaimMsg: pinned canonical format (with Asset binding)', () => {
-  // Pre-deployment: format is still v1; we updated v1 in place to include the
-  // Asset: line (closes MED#4 — same root + same recipient list across drops
-  // could otherwise share signatures). If this test ever fails AFTER mainnet
-  // deploy, treat it as a wire-format break requiring a deliberate v2.
+  // Pins the canonical claim-message format, including the Asset: line, which
+  // binds a signature to one asset (otherwise the same root + recipient list
+  // across drops of different assets could share signatures).
   const msg = buildAirdropClaimMsg({
     rootHex: FIXED_ROOT,
     network: 'mainnet',
@@ -782,9 +781,9 @@ test('end-to-end claim: portal builds msg, signs; issuer verifies', () => {
 });
 
 test('claim sig binds to tacit pubkey: cannot redirect to a different tacit identity', () => {
-  // The whole point of binding tacit pubkey into the signed msg: a relay /
-  // worker / man-in-the-middle who intercepts a valid signed claim CAN'T
-  // change the destination tacit pubkey without invalidating the sig.
+  // Binding the tacit pubkey into the signed msg means a relay or worker
+  // forwarding the claim cannot redirect it to a different tacit identity
+  // without invalidating the signature.
   const priv = new Uint8Array(32); priv[31] = 7;
   const addr = _ethAddrFromPriv(priv);
   const tacitA = '02' + 'a'.repeat(64);
@@ -794,7 +793,7 @@ test('claim sig binds to tacit pubkey: cannot redirect to a different tacit iden
     leafIndex: 0, amount: 1000n, ticker: 'T', decimals: 0, tacitPubHex: tacitA,
   });
   const sigA = _signEip191WithPriv(msgA, priv);
-  // Attacker swaps tacitA → tacitB in the message they relay.
+  // msgB carries the same fields but a different tacit pubkey.
   const msgB = buildAirdropClaimMsg({
     rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: FIXED_ASSET, ethAddrHex: addr,
     leafIndex: 0, amount: 1000n, ticker: 'T', decimals: 0, tacitPubHex: tacitB,
@@ -954,15 +953,15 @@ test('discovery: duplicate eth_address is REJECTED (consistency with manual-load
 
 console.log('\nAnnouncement-vs-snapshot cross-checks (audit fix H1):');
 
-// Audit H1: a hostile announcer could pin a valid-looking snapshot for asset
-// B and announce it as asset A. The discovery card shows A's
-// ticker/decimals (from announcement-derived metadata), but the canonical
-// claim message binds to the snapshot's asset_id (B). The recipient signs a
-// claim authorising B even though they thought they were claiming A. Same
-// shape for network mismatches. The discovery flow must reject any snapshot
-// whose declared asset_id or network disagrees with the announcement before
-// surfacing eligibility. Test mirrors the dapp guard at the point where the
-// snapshot blob is first matched against announcement metadata.
+// An announcement's asset/network metadata and the pinned snapshot blob's own
+// asset_id/network must agree: the discovery card shows the announcement's
+// ticker/decimals, but the canonical claim message binds to the snapshot's
+// own asset_id, so a mismatch would have the recipient sign a claim for a
+// different asset (or network) than the one displayed. The discovery flow
+// rejects any snapshot whose declared asset_id or network disagrees with the
+// announcement before surfacing eligibility. Test mirrors the dapp guard at
+// the point where the snapshot blob is first matched against announcement
+// metadata.
 function _discoveryAnnouncementCrosscheck(announcement, blob) {
   if (String(blob.merkle_root || '').toLowerCase() !== announcement.merkle_root) {
     throw new Error('snapshot root does not match announcement');
@@ -1406,8 +1405,8 @@ test('dropReclaimMsg: deterministic + binds reclaim_drop_id + cap_amount', () =>
   const m1 = dropReclaimMsg(args);
   const m2 = dropReclaimMsg(args);
   if (!bytesEq(m1, m2)) return false;
-  // Different cap_amount → different msg (prevents an attacker from claiming
-  // a different reclaim amount with the same sig)
+  // Different cap_amount → different msg, so a reclaim sig is valid for
+  // exactly one amount
   const m3 = dropReclaimMsg({ ...args, capAmount: 100_001n });
   return !bytesEq(m1, m3);
 });
@@ -1495,14 +1494,14 @@ test('synthetic chain: T_DROP locks supply → many T_DCLAIMs drain it, cap enfo
 
   // Helper: simulate worker indexer accepting a T_DCLAIM
   const indexClaim = (cdcDecoded, txid, height, txIndex) => {
-    // §5.13 step 3: amount == drop.per_claim
+    // amount must equal drop.per_claim
     const d = indexerState.drops.get(dropIdHex);
     if (BigInt(cdcDecoded.amount) !== BigInt(d.per_claim)) return { ok: false, reason: 'amount' };
-    // §5.13 step 5: cap_overflow ordering
+    // cap_overflow ordering
     const claims = indexerState.claims.get(dropIdHex);
     const projected = (BigInt(claims.length) + 1n) * BigInt(d.per_claim);
     if (projected > BigInt(d.cap_amount)) return { ok: false, reason: 'cap_overflow' };
-    // §5.13 step 6 (merkle-gated only): not applicable here (open drop)
+    // merkle-gated check: not applicable here (open drop)
     // Record
     claims.push({ txid, height, txIndex, amount: cdcDecoded.amount });
     return { ok: true };
@@ -1641,25 +1640,24 @@ test('synthetic chain: drop_id is deterministic and one-to-one with reveal tx', 
 });
 
 test('rewrap supply-inflation gate: cron writes one canonical claim per leaf, dapp validator queries worker', () => {
-  // The rewrap attack: Eve copies Alice's confirmed T_DCLAIM envelope and
-  // re-broadcasts in her own commit/reveal pair. If she reuses Alice's
-  // recipient_pub in vout[0] (the only choice that passes the
-  // hash160(recipient_pub) == vout[0] binding), Alice gets a second UTXO.
-  // The cron's nullifier check on (drop_id, leaf_index) drops the rewrap
+  // Copying a confirmed T_DCLAIM envelope into a new commit/reveal pair keeps
+  // the same recipient_pub in vout[0] (the only choice that passes the
+  // hash160(recipient_pub) == vout[0] binding) and the same leaf_index, so
+  // the cron's nullifier check on (drop_id, leaf_index) drops the rebroadcast
   // from the canonical dclaim:* KV namespace. The slim
   // /drops-onchain/:drop_id/claims?credited=1&include_txids=1 endpoint
-  // returns ONLY canonical claim txids. The dapp's validator queries this
-  // and refuses to credit non-canonical txids — closing the inflation gap.
+  // returns ONLY canonical claim txids, and the dapp's validator queries this
+  // and refuses to credit non-canonical txids.
   //
   // This test simulates the indexer-side invariant: a Set<canonical_txid>
   // built from the cron's nullifier-checked writes, and a check that the
-  // rewrap's txid is excluded.
+  // rebroadcast's txid is excluded.
   const dropId = bytesToHex(dropIdFromRevealTxid('aa'.repeat(32)));
   const aliceTxid = 'a1'.repeat(32);
   const eveRewrapTxid = 'ee'.repeat(32);
   const leafIndex = 5;
 
-  // Indexer simulation: cron processes Alice's claim first.
+  // Indexer simulation: cron processes the first claim, then the rebroadcast.
   const claimedLeaves = new Set();
   const canonicalClaims = new Set();
   const processClaim = (txid, leaf) => {
@@ -1668,9 +1666,9 @@ test('rewrap supply-inflation gate: cron writes one canonical claim per leaf, da
     canonicalClaims.add(txid);
     return { ok: true };
   };
-  // Alice's claim: accepted.
+  // First claim: accepted.
   if (!processClaim(aliceTxid, leafIndex).ok) return false;
-  // Eve's rewrap: same leaf_index, nullifier collision → rejected.
+  // Rebroadcast: same leaf_index, nullifier collision → rejected.
   if (processClaim(eveRewrapTxid, leafIndex).ok) return false;
 
   // Worker's /drops-onchain/:drop_id/claims?credited=1 endpoint returns
@@ -1895,9 +1893,9 @@ test('T_DROP codec round-trip preserves expiry_height for the validator', () => 
 // G1: ERC-1271 (smart-wallet) sig verification via mocked eth_call provider
 // ============================================================================
 // Verifies the issuer-side worker-mediated fulfilment's smart-wallet fallback
-// path. The spec calls this out as REQUIRED for smart-wallet recipients,
-// and unavailable on on-chain T_DCLAIM (which the dapp now gates via
-// _claimEthIsContract — fix C1). Three scenarios: valid contract response,
+// path. The spec requires this for smart-wallet recipients, since it is
+// unavailable on on-chain T_DCLAIM (which the dapp gates via
+// _claimEthIsContract). Three scenarios: valid contract response,
 // rejection (returns 0x00…), and provider failure (RPC error).
 console.log('\nERC-1271 (smart-wallet) sig verification:');
 

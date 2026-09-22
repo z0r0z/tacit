@@ -1232,7 +1232,7 @@ test('LP_UNBOND: rejects unbonder_pubkey != bond.bonder_pubkey', () => {
   const farm = mkFarm({ total_bonded: 1000n });
   const bondRecord = { farm_id: farm.farm_id, bond_amount: 1000n, entry_acc_per_share: 0n, bonder_pubkey: BONDER_A_PUB, bond_height: 100 };
   const bondId = encodeBondId(mkTxid('bond-impostor'), 1);
-  // Sign as attacker, but bond record says bonder_A.
+  // Signed with a different key than bond.bonder_pubkey (bond record says bonder_A).
   const u = buildSignedLpUnbond({
     farm, bondRecord, bondId,
     unbonderPriv: ATTACKER_PRIV, unbonderPub: ATTACKER_PUB,
@@ -1790,10 +1790,9 @@ test('FARM_REFUND: rejects wrong launcher pubkey', () => {
     launcher_pubkey: LAUNCHER_PUB,
   });
   const confHeight = 200 + AMM_FARM_REFUND_GRACE_BLOCKS + 10;
-  // Sign with attacker, but envelope sets launcher_pubkey=LAUNCHER_PUB.
-  // Re-sign the message under attacker's privkey but leave the
-  // launcher_pubkey field as LAUNCHER_PUB → sig verification will fail
-  // because the message was signed by a different key.
+  // Signed under a different privkey while the envelope's launcher_pubkey
+  // field stays LAUNCHER_PUB → sig verification fails because the message
+  // was signed by a different key.
   const r = buildSignedFarmRefund({
     farm, currentConfirmationHeight: confHeight,
     launcherPriv: ATTACKER_PRIV, launcherPub: LAUNCHER_PUB,

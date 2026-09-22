@@ -75,7 +75,7 @@ function arbSwapToTarget({ R_A, R_B, P_target, fee_bps }) {
   const P_spot = Number(R_A) / Number(R_B);
   if (Math.abs(P_spot - P_target) / P_target < 0.0001) return null; // negligible drift
 
-  // Compute exact arb amount via Uniswap V2 formula (with fee γ).
+  // Compute exact arb amount via the constant-product AMM formula (with fee γ).
   // Target reserves: R_A' = sqrt(k_target * P_target),
   //                  R_B' = sqrt(k_target / P_target)
   // where k_target is the post-arb k. The fee makes k strictly increase.

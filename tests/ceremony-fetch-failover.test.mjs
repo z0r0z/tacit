@@ -17,7 +17,7 @@
 //     gateway and the error is recorded under the gateway name.
 //   - Sync validator path keeps working (head-zkey caller stays unaffected).
 //   - HTML content-type triggers fall-through without invoking the validator.
-//   - Total failure across all 4 gateways throws with concatenated reasons.
+//   - Total failure across all 5 gateways throws with concatenated reasons.
 //
 // Run: `node ceremony-fetch-failover.test.mjs`
 
@@ -220,7 +220,7 @@ await test('chunked-dag-pb regression: legacy sha256(rawBytes)===cidDigest rejec
   let legacyCaught;
   try {
     await withFetchStub(
-      [() => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled)],
+      [() => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled)],
       async () => ceremonyFetchIpfsWithFailover(FAKE_CID, legacyValidator),
     );
   } catch (e) { legacyCaught = e; }
@@ -263,6 +263,7 @@ await test('sha256-anchored validator: rejects substituted bytes (gateway-substi
       () => { throw new Error('Load failed'); },
       () => { throw new Error('Load failed'); },
       () => { throw new Error('Load failed'); },
+      () => { throw new Error('Load failed'); },
     ],
     async (calls) => {
       const validate = (b) => {
@@ -277,15 +278,16 @@ await test('sha256-anchored validator: rejects substituted bytes (gateway-substi
       // message; subsequent gateways then fail with network errors.
       if (!/sha256\(.*\) does not match expected/.test(caught.message)) return false;
       if (!/Load failed/.test(caught.message)) return false;
-      if (calls.length !== 4) return false;
+      if (calls.length !== 5) return false;
       return true;
     },
   );
 });
 
-await test('all 4 gateways failing throws a concatenated error', async () => {
+await test('all 5 gateways failing throws a concatenated error', async () => {
   return withFetchStub(
     [
+      () => { throw new Error('Load failed'); },
       () => { throw new Error('Load failed'); },
       () => { throw new Error('Load failed'); },
       () => { throw new Error('Load failed'); },
@@ -297,9 +299,9 @@ await test('all 4 gateways failing throws a concatenated error', async () => {
         await ceremonyFetchIpfsWithFailover(FAKE_CID, async () => null);
       } catch (e) { caught = e; }
       if (!caught) return false;
-      if (calls.length !== 4) return false;
+      if (calls.length !== 5) return false;
       // Sanity-check the format the dapp's UI surfaces to contributors.
-      if (!/all 4 IPFS gateways failed/.test(caught.message)) return false;
+      if (!/all 5 IPFS gateways failed/.test(caught.message)) return false;
       if (!/Load failed/.test(caught.message)) return false;
       // Regression assertion: a Promise must never be stringified into the
       // error message. Pre-fix, this was the entire failure mode.

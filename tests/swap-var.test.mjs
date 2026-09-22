@@ -2,7 +2,7 @@
 //
 // Covers the unit-testable subset of the spec
 // test plan (items 1–16) plus the critical inflation defense
-// surfaced in the same-day P0 crypto fix.
+// in the derived-credit design.
 //
 // Items requiring signet (reorg, real wallet recovery, multi-block
 // running-state, cross-impl parity vs the worker code path) are
@@ -43,7 +43,7 @@ function test(label, fn) {
 const ASSET_A = hexToBytes('aa' + '11'.repeat(31));
 const ASSET_B = hexToBytes('bb' + '22'.repeat(31));
 // pool_id = SHA256("tacit-amm-pool-v1" || A || B || fee_bps_LE || capability_flags)
-// per the spec (V3/V4 fee-tier parity). This fixture uses
+// per the spec (fee-tier parity). This fixture uses
 // fee_bps=30, capability_flags=0.
 const POOL_FEE_BPS = 30;
 const POOL_CAPABILITY_FLAGS = 0;
@@ -355,7 +355,7 @@ function makeRealEnv({
     return out;
   })();
 
-  // Bulletproof m=1 over (C_change_or_sentinel) ALONE. The receipt no longer rides the aggregate: the guest
+  // Bulletproof m=1 over (C_change_or_sentinel) ALONE. The receipt does not ride the aggregate: the guest
   // recomputes deltaOut' against the current reserves and forms the receipt itself, so its value is bounded by
   // r_out_pre < 2^64 by arithmetic and proving it again would be redundant. Only the trader-supplied change
   // still needs a proof (the kernel conserves only modulo the group order).
@@ -663,12 +663,11 @@ test('inflation: fully-consistent forged C_receipt (X ≠ delta_out) credits the
       && bytesToHex(r.receipt.commitment) !== bytesToHex(forgedCReceipt);
 });
 
-// r_receipt is now IN intent_msg, and that is load-bearing rather than incidental. The receipt commitment is no
-// longer supplied by the trader: the consumer recomputes the clearing amount against the current reserves and
-// forms C_receipt = delta_out'·H + r_receipt·G from the PUBLISHED scalar. So whoever picks r_receipt picks the
-// onboarded receipt's blinding. Before it was signed, tampering it was merely "value-inert" (the credit still
-// derived, just under a different opening); with the guest forming the commitment, an unsigned r_receipt would
-// let a coordinator swap in its own blinding. Tampering must therefore break the signature outright.
+// r_receipt is IN intent_msg, and that binding is load-bearing rather than incidental. The receipt
+// commitment is not supplied by the trader: the consumer recomputes the clearing amount against the
+// current reserves and forms C_receipt = delta_out'·H + r_receipt·G from the PUBLISHED scalar. So
+// whoever picks r_receipt picks the onboarded receipt's blinding — an unsigned r_receipt would let a
+// coordinator swap in its own blinding, so tampering it must break the signature outright.
 test('inflation: a tampered r_receipt breaks intent_sig (the blinding is signed)', () => {
   const e = makeRealEnv();
   const bad = { ...e, rReceipt: new Uint8Array(32) }; // publish r_receipt = 0
@@ -695,7 +694,7 @@ test('inflation: validator rejects r_receipt >= n_secp', () => {
   return r.valid === false && r.reason.includes('r_receipt');
 });
 
-// Input-side inflation defense (analogous to receipt-side fix, both on
+// Input-side inflation defense (analogous to the receipt-side binding, both on
 // the cross-asset boundary). If the trader's published env.cInSecp does
 // NOT match the on-chain Pedersen commit at the cited outpoint, the
 // kernel-sig closure still verifies (it only binds the algebraic

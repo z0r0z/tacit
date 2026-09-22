@@ -97,10 +97,10 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('off-grid (45) and out-of-range (110) fills are rejected');
 }
 
-// ───────────────── 4. box shorts the buyer's refund → refund opening fails ─────────────────
-// The buyer is owed (100−40)·5 = 300 B refund. The box/seller tries to substitute a smaller refund
-// note to pocket the difference; the refund is opening-bound to 300, so it fails (the analog of
-// Bitcoin's consensus-enforced refund vout).
+// ───────────────── 4. a substituted refund note fails the opening bind ─────────────────
+// The buyer is owed (100−40)·5 = 300 B refund. The refund note is opening-bound to exactly 300,
+// so a substituted note of a different value fails (the analog of Bitcoin's consensus-enforced
+// refund vout).
 {
   const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 40, sellerIn: 40 });
   const evil = pool.commitXY(100n, randomScalar()); // 100 B instead of the owed 300
@@ -109,7 +109,7 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('shorting the buyer refund (100 vs owed 300) breaks the refund opening — refund is enforced');
 }
 
-// ───────────────── 5. box-substituted seller pay note → seller opening fails ─────────────────
+// ───────────────── 5. a substituted seller-pay note fails the opening bind ─────────────────
 {
   const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 40, sellerIn: 40 });
   const evil = pool.commitXY(200n, randomScalar()); // 200 B, but a blinding the box controls
@@ -118,11 +118,10 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('box-substituted seller pay note (its own blinding) breaks the opening sigma');
 }
 
-// ───────────────── 6. seller pockets surplus asset_a (omits the change leg) ─────────────────
-// Seller has a 150 A note, fills 100, but drops the 50 A change note to keep it off-tree (so the
-// surplus 50 A is never re-committed and effectively burned/retained off-protocol). The guest's
-// no-change branch forces s_in_amount == chosen_f, so omitting change with input > fill is rejected
-// (asset_a conservation cannot silently lose the surplus).
+// ───────────────── 6. omitting the change leg is rejected ─────────────────
+// A 150 A seller note filling 100 must emit a 50 A change note, or the surplus is never
+// re-committed. The guest's no-change branch forces s_in_amount == chosen_f, so omitting change
+// with input > fill is rejected (asset_a conservation cannot silently lose the surplus).
 {
   const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 100, sellerIn: 150 });
   const bad = { ...filled, sellerChange: null }; // drop the change leg while input (150) > fill (100)
@@ -131,10 +130,10 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('seller omitting the change leg while input(150) > fill(100) is rejected (asset_a conservation)');
 }
 
-// ───────────────── 7. spurious refund leaf on a FULL fill ─────────────────
-// Full fill (chosenF == maxFill) ⇒ refund == 0 ⇒ no refund note. A seller that injects a refund leaf
-// (e.g. to mint an unbacked asset_b note to itself, breaking asset_b conservation) is rejected: the
-// guest only reads a refund note when chosen_f < max_fill and asserts refund == 0 otherwise.
+// ───────────────── 7. a refund leaf on a full fill is rejected ─────────────────
+// A full fill (chosenF == maxFill) implies refund == 0, so no refund note should exist. The guest
+// only reads a refund note when chosen_f < max_fill and asserts refund == 0 otherwise, so an extra
+// refund leaf (which would mint an unbacked asset_b note) is rejected.
 {
   const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 100, sellerIn: 100 });
   const evil = pool.commitXY(50n, randomScalar());
@@ -145,11 +144,10 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('injecting a refund leaf on a full fill is rejected (no unbacked asset_b mint)');
 }
 
-// ───────────────── 8. seller under-delivers the buyer's fill (shorts buyer-recv-A) ─────────────────
+// ───────────────── 8. a substituted buyer-recv-A note fails the pre-signed context ─────────────────
 // The buyer is owed chosenF (40) of asset_a, with the buyer-recv-A commitment bound into the buyer's
-// pre-signed context. A seller that substitutes a smaller buyer-recv-A note (to keep more asset_a)
-// shifts the buyer context, so the buyer's pre-signed openings no longer verify — the buyer's fill
-// cannot be shorted or redirected (the seller cannot re-sign the buyer's offline context).
+// pre-signed context. Substituting a different buyer-recv-A note shifts that context, so the
+// buyer's pre-signed openings no longer verify: the fill's value is fixed by the offline signature.
 {
   const { filled } = assemble({ minFill: 10, maxFill: 100, price: 5, increment: 10, chosenF: 40, sellerIn: 40 });
   const evil = pool.commitXY(10n, randomScalar()); // 10 A instead of the owed 40

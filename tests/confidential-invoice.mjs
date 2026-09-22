@@ -17,9 +17,8 @@ const deps = { secp, keccak256: keccak_256, sha256 };
 const BOB = '0x' + 'b0'.repeat(32); // recipient (holds the seed → the spend key)
 const ALICE = '0x' + 'a1'.repeat(32); // payer (only ever sees the public invoice)
 const AMOUNT = '1000000000000000'; // 0.001 ETH (wei) — the payer's public wrap amount
-// cETH's unitScale is 1e10 (18-dec ETH → 8-dec in-system units) on the live pool; a retired pilot pool used
-// scale 1, which is what this test's AMOUNT/value assertions were written against and never updated for —
-// compute the expected in-system value from the deployment config instead of assuming AMOUNT == value.
+// cETH's unitScale is 1e10 (18-dec ETH → 8-dec in-system units) on the live pool, so compute the
+// expected in-system value from the deployment config rather than assuming AMOUNT == value.
 function cEthUnitScale(ux) { return BigInt(ux.assetByTicker.cETH.unitScale); }
 
 function setup() {
@@ -45,8 +44,8 @@ test('createInvoice: well-formed, verifies, and re-derives the canonical buildWr
   assert.equal(invoice.leaf, pool.leaf(invoice.assetId, invoice.cx, invoice.cy, invoice.owner));
   assert.equal(invoice.depositId, pool.depositId(invoice.assetId, BigInt(invoice.value), invoice.cx, invoice.cy, invoice.owner));
   // owner is the PER-NOTE derived owner buildWrap mints (pool.deriveNote(priv, assetId, index) → H(nk)) —
-  // NOT the wallet-constant id.owner (a stale expectation this test used to carry: buildWrap uses per-note
-  // derivation precisely so a wallet's notes are unlinkable, so invoice.owner must differ from id.owner).
+  // NOT the wallet-constant id.owner: buildWrap uses per-note derivation precisely so a wallet's
+  // notes are unlinkable, so invoice.owner must differ from id.owner.
   const id = ux.identity(BOB);
   const meta = ux.assetByTicker.cETH;
   const { secret: perNoteSecret } = pool.deriveNote(id.priv, meta.assetId, 0);

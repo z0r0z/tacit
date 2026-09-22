@@ -31,3 +31,20 @@ export const TEST_LP_ADD_REFUND_TAIL = Object.freeze({
   refundABlinding: blinding,
   refundBBlinding: blindingB,
 });
+
+// Per-side lp-add kernel tails, consistent with TEST_LP_ADD_REFUND_TAIL: each side's kernel signs the
+// shared expiry, its own refund destination and the envelope's blinding for that side.
+const destB = new Uint8Array(32);
+for (let i = 0; i < 32; i++) destB[i] = 0xc0 + i;
+
+export const TEST_LP_ADD_KERNEL_TAIL_A = Object.freeze({
+  expiryHeight: TEST_REFUND_EXPIRY,
+  refundDestXonly: dest,
+  refundBlinding: blinding,
+});
+
+export const TEST_LP_ADD_KERNEL_TAIL_B = Object.freeze({
+  expiryHeight: TEST_REFUND_EXPIRY,
+  refundDestXonly: destB,
+  refundBlinding: blindingB,
+});

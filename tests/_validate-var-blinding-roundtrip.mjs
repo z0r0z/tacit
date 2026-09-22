@@ -1,10 +1,11 @@
-// Offline round-trip test of the var-take recipient-blinding fix.
+// Round-trip test of the var-take recipient-blinding transport.
 // Mirrors fulfilAxferVarIntent (maker) → finalizeAxferVarTake Step 6b (taker):
-// the maker derives rRecip with the AXINTENT_BLINDING_DOMAIN keystream and now
-// transports it encrypted with the independent ONCHAIN blinding keystream; the
-// taker recovers it with the same onchain keystream. Asserts: FIXED recovery
-// opens C_recip, the OLD (derivation-keystream) recovery does NOT, and enc is
-// not rRecip in the clear (no leak). Run: node tests/_validate-var-blinding-roundtrip.mjs
+// the maker derives rRecip with the AXINTENT_BLINDING_DOMAIN keystream, then
+// transports it encrypted under the independent ONCHAIN blinding keystream;
+// the taker recovers it with that same onchain keystream. Asserts: recovery
+// with the onchain keystream opens C_recip, recovery with the derivation
+// keystream does not, and enc is not rRecip in the clear (no leak).
+// Run: node tests/_validate-var-blinding-roundtrip.mjs
 import { JSDOM } from 'jsdom';
 import * as secp from '@noble/secp256k1';
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
@@ -30,14 +31,14 @@ const rRecipBytes = d.xor32(rBytes, blindingKs);                 // rRecip indep
 const rRecip      = b2big(rRecipBytes) % d.SECP_N;
 const cRecip      = d.pedersenCommit(requested, rRecip);
 const takerKs     = d.deriveAxintentOnchainKeystreams(makerPriv, takerPub, intentId, assetId, 0);
-const enc         = d.xor32(rRecipBytes, takerKs.blindingKs);   // NEW transport (independent keystream)
+const enc         = d.xor32(rRecipBytes, takerKs.blindingKs);   // transport keystream, independent of the derivation keystream
 
-// --- Taker FIXED recovery (Step 6b) ---
+// --- Taker recovery via the onchain keystream (Step 6b) ---
 const onKs        = d.deriveAxintentOnchainKeystreams(takerPriv, makerPub, intentId, assetId, 0).blindingKs;
 const recovered   = b2big(d.xor32(enc, onKs));
 const fixedOpens  = d.pedersenCommit(requested, recovered).equals(cRecip);
 
-// --- Taker OLD recovery (the bug: derivation keystream) ---
+// --- Taker recovery via the derivation keystream (must not open C_recip) ---
 const oldKs       = d.deriveAxintentBlindingKeystream(takerPriv, makerPub, intentId, assetId);
 const oldRec      = b2big(d.xor32(enc, oldKs));
 let oldOpens; try { oldOpens = d.pedersenCommit(requested, oldRec).equals(cRecip); } catch { oldOpens = false; }

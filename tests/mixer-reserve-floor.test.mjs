@@ -5,8 +5,7 @@
 // One deposit appends one leaf, one withdraw burns one note, so on an honest
 // pool the reserve never goes negative — only a forged proof (a retained
 // per-pool ceremony trapdoor) can produce that. The floor bounds such a
-// forgery to the pool's real deposits (Tornado's blast radius) instead of
-// letting it mint unbounded supply.
+// forgery to the pool's real deposits instead of letting it mint unbounded supply.
 //
 // The dapp's T_WITHDRAW validator enforces this via mixerReserveWouldBreach,
 // after the Groth16 + Pedersen + bind_hash + recent-root checks. Those upper

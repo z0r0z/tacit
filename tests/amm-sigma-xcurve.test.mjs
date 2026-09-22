@@ -31,6 +31,7 @@ import {
   N_BJJ, mod, packPoint, unpackPoint,
   H_BJJ, G_BJJ, pedersenBJJ, addPoint, mulScalar,
 } from './amm-bjj.mjs';
+import { TEST_LP_ADD_REFUND_TAIL } from './helpers/amm-refund-tail.mjs';
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -334,7 +335,7 @@ console.log('\nDecode→verify wiring (LP_ADD value-binding gate)');
   const env = encodeLpAdd({
     variant: 0, assetA: z32, assetB: z32, deltaA: 1000n, deltaB: 2000n,
     shareAmount: v.a, shareCSecp: v.C_secp_bytes, shareCBJJ: v.C_BJJ_bytes,
-    shareXcurveSigma: v.proof, kernelSigA: k, kernelSigB: k, proof: new Uint8Array(256),
+    shareXcurveSigma: v.proof, kernelSigA: k, kernelSigB: k, shareR: z32, ...TEST_LP_ADD_REFUND_TAIL,
   });
   const dec = decodeLpAdd(env);
   test('decodeLpAdd captures the 169-byte share xcurve sigma', () =>

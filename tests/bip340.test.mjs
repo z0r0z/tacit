@@ -115,7 +115,7 @@ for (const v of VECTORS) {
 
 // Regression for the BIP-340 R = ∞ rejection. noble's toRawBytes(true) for the
 // identity point returns 02 || 00…00, which slips past the parity + Rx-equality
-// checks if the attacker chose Rx = 32 zeros. Build a sig that reconstructs
+// checks when Rx = 32 zeros. Build a sig that reconstructs
 // R = sG − eP = edG − edG = identity using d=3 (BIP-340 vector 0's privkey)
 // and confirm the verifier rejects it.
 console.log('\nBIP-340 R = ∞ rejection (regression):');
@@ -130,7 +130,7 @@ test('verifier rejects sig forcing R = identity', () => {
   const Pbytes = secp.ProjectivePoint.BASE.multiply(d).toRawBytes(true);
   if (Pbytes[0] !== 0x02) throw new Error('test setup: d=3 should produce even-Y P');
   const Px = Pbytes.slice(1);
-  const Rx = new Uint8Array(32);  // attacker picks Rx = 32 zeros
+  const Rx = new Uint8Array(32);  // forces R = identity
   const msg = new Uint8Array(32); // any msg
   const e = BigInt('0x' + bytesToHex(taggedHash('BIP0340/challenge', Rx, Px, msg))) % N;
   const s = (e * d) % N;
@@ -140,9 +140,6 @@ test('verifier rejects sig forcing R = identity', () => {
   const sig = concatBytes(Rx, sBytes);
   return verifySchnorr(sig, msg, Px) === false;
 });
-
-console.log(`\n${pass} passed, ${fail} failed.`);
-process.exit(fail === 0 ? 0 : 1);
 
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

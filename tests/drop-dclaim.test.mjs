@@ -1,13 +1,13 @@
 // T_DCLAIM canonical credited-set computation against the
 // worker's actual loadCreditedDclaims logic. This is the load-bearing
 // supply-correctness gate for public-claim pools: the dapp validator treats
-// the credited set as authoritative and REJECTS any claim absent from it, so
+// the credited set as authoritative and rejects any claim absent from it, so
 // the set MUST apply (in canonical (height, tx_index, txid) order):
 //   - confirmation depth ≥ 3 (tip-state claims are pending, not credited),
 //   - the cap (only the first cap_amount/per_claim claims credit), and
 //   - txid de-dup (a reorg re-confirm leaves two keys for one claim).
-// For OPEN drops (merkle_root == 0) there is no per-claim gate, so these are
-// the only thing standing between an attacker and over-claiming the pool.
+// For OPEN drops (merkle_root == 0) there is no per-claim gate, so this
+// credited-set computation is what prevents over-claiming the pool.
 //
 // Run: `node drop-dclaim.test.mjs`
 

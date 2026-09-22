@@ -24,6 +24,7 @@ import { signSchnorr, verifySchnorr } from './composition.mjs';
 
 const DOMAIN_LP_ADD    = new TextEncoder().encode('tacit-amm-lp-add-v1');
 const DOMAIN_LP_REMOVE = new TextEncoder().encode('tacit-amm-lp-remove-v1');
+const DOMAIN_LP_BOND   = new TextEncoder().encode('tacit-amm-lp-bond-v1');
 
 function asBytes(x, len, name) {
   const b = x instanceof Uint8Array ? x : hexToBytes(x);
@@ -56,7 +57,9 @@ function outpointBytes(op) {
 //   "tacit-amm-lp-add-v1" || variant(1) || pool_id(32) || asset_X(32)
 //   || delta_X_LE(8) || share_amount_LE(8) || share_C_secp(33)
 //   || in_count_X(1) || (in_txid_BE(32) || in_vout_LE(4))*in_count_X
+//   || expiry_height_LE(4) || refund_dest_xonly(32) || refund_blinding(32)
 // )
+// Both variants sign the refund tail (see cxfer-core lp_add_kernel_verify); it is required.
 export function lpAddKernelMsg({
   variant,            // 0 = standard, 1 = POOL_INIT
   poolId,             // 32 bytes
@@ -65,6 +68,7 @@ export function lpAddKernelMsg({
   shareAmount,        // bigint, > 0
   shareCSecpBytes,    // 33-byte compressed Pedersen commitment of share_amount
   inputsX,            // [{ txid: hex, vout: number }, ...]  asset-X side input UTXOs
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
   if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
   const pid = asBytes(poolId, 32, 'poolId');
@@ -83,6 +87,11 @@ export function lpAddKernelMsg({
     new Uint8Array([inputsX.length]),
   ];
   for (const op of inputsX) parts.push(outpointBytes(op));
+  const exp = new Uint8Array(4);
+  new DataView(exp.buffer).setUint32(0, (expiryHeight >>> 0), true);
+  parts.push(exp);
+  parts.push(asBytes(refundDestXonly, 32, 'refundDestXonly'));
+  parts.push(asBytes(refundBlinding, 32, 'refundBlinding'));
   return sha256(concatBytes(...parts));
 }
 
@@ -113,8 +122,12 @@ export function lpAddKernelKey({ inputCommitments, deltaX }) {
 export function lpAddKernelSign({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   inputCommitments, excessX, // sum of input blindings on side X (bigint)
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
-  const msg = lpAddKernelMsg({ variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX });
+  const msg = lpAddKernelMsg({
+    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+    expiryHeight, refundDestXonly, refundBlinding,
+  });
   const { prefix } = lpAddKernelKey({ inputCommitments, deltaX });
   let d = modN(excessX);
   // BIP-340 requires the signing privkey corresponds to an even-y pubkey.
@@ -127,8 +140,12 @@ export function lpAddKernelSign({
 export function lpAddKernelVerify({
   variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
   inputCommitments, sig64,
+  expiryHeight = 0, refundDestXonly = null, refundBlinding = null,
 }) {
-  const msg = lpAddKernelMsg({ variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX });
+  const msg = lpAddKernelMsg({
+    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+    expiryHeight, refundDestXonly, refundBlinding,
+  });
   let key;
   try { key = lpAddKernelKey({ inputCommitments, deltaX }); }
   catch { return false; }
@@ -141,7 +158,9 @@ export function lpAddKernelVerify({
 //   "tacit-amm-lp-remove-v1" || pool_id(32) || share_amount_LE(8)
 //   || delta_A_LE(8) || delta_B_LE(8) || recv_A_C_secp(33) || recv_B_C_secp(33)
 //   || lp_in_count(1) || (lp_in_txid_BE(32) || lp_in_vout_LE(4))*lp_in_count
+//   || refund_dest_xonly(32)
 // )
+// refund_dest_xonly is the vout-2 share-refund destination (cxfer-core lp_remove_kernel_verify); required.
 export function lpRemoveKernelMsg({
   poolId,
   shareAmount,
@@ -150,10 +169,12 @@ export function lpRemoveKernelMsg({
   recvACSecpBytes,
   recvBCSecpBytes,
   lpInputs,
+  refundDestXonly,
 }) {
   const pid = asBytes(poolId, 32, 'poolId');
   const csA = asBytes(recvACSecpBytes, 33, 'recvACSecpBytes');
   const csB = asBytes(recvBCSecpBytes, 33, 'recvBCSecpBytes');
+  const rd = asBytes(refundDestXonly, 32, 'refundDestXonly');
   if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
   if (lpInputs.length > 255) throw new Error('too many lp inputs');
   const parts = [
@@ -166,6 +187,7 @@ export function lpRemoveKernelMsg({
     new Uint8Array([lpInputs.length]),
   ];
   for (const op of lpInputs) parts.push(outpointBytes(op));
+  parts.push(rd);
   return sha256(concatBytes(...parts));
 }
 
@@ -187,10 +209,10 @@ export function lpRemoveKernelKey({ lpInputCommitments, shareAmount }) {
 }
 
 export function lpRemoveKernelSign({
-  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   lpInputCommitments, excessLP,
 }) {
-  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs });
+  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly });
   const { prefix } = lpRemoveKernelKey({ lpInputCommitments, shareAmount });
   let d = modN(excessLP);
   if (prefix === 0x03) d = modN(SECP_N - d);
@@ -198,12 +220,60 @@ export function lpRemoveKernelSign({
 }
 
 export function lpRemoveKernelVerify({
-  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly,
   lpInputCommitments, sig64,
 }) {
-  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs });
+  const msg = lpRemoveKernelMsg({ poolId, shareAmount, deltaA, deltaB, recvACSecpBytes, recvBCSecpBytes, lpInputs, refundDestXonly });
   let key;
   try { key = lpRemoveKernelKey({ lpInputCommitments, shareAmount }); }
+  catch { return false; }
+  return verifySchnorr(sig64, msg, key.xOnly);
+}
+
+// ---- T_LP_BOND share-lock kernel-msg ----
+//
+// kernel_msg_BOND = SHA256(
+//   "tacit-amm-lp-bond-v1" || farm_id(32) || lp_asset(32) || bond_amount_LE(8)
+//   || lp_in_count(1) || (lp_in_txid_BE(32) || lp_in_vout_LE(4))*lp_in_count
+// )
+// Key: (Σᵢ C_in_secp,LP,i − bond_amount · H_secp).x_only()  (cxfer-core lp_bond_kernel_verify)
+export function lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs }) {
+  const fid = asBytes(farmId, 32, 'farmId');
+  const la = asBytes(lpAsset, 32, 'lpAsset');
+  if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
+  if (lpInputs.length > 255) throw new Error('too many lp inputs');
+  const parts = [DOMAIN_LP_BOND, fid, la, u64LE(bondAmount), new Uint8Array([lpInputs.length])];
+  for (const op of lpInputs) parts.push(outpointBytes(op));
+  return sha256(concatBytes(...parts));
+}
+
+export function lpBondKernelKey({ lpInputCommitments, bondAmount }) {
+  if (!Array.isArray(lpInputCommitments) || lpInputCommitments.length === 0) {
+    throw new Error('lpInputCommitments must be non-empty');
+  }
+  let sum = ZERO;
+  for (const C of lpInputCommitments) {
+    const Cp = C instanceof secp.ProjectivePoint ? C : secp.ProjectivePoint.fromHex(C instanceof Uint8Array ? bytesToHex(C) : C);
+    sum = sum.add(Cp);
+  }
+  const E = sum.add(H.multiply(BigInt(bondAmount)).negate());
+  if (E.equals(ZERO)) throw new Error('kernel key collapsed to identity');
+  const Ebytes = E.toRawBytes(true);
+  return { xOnly: Ebytes.slice(1), point: E, prefix: Ebytes[0] };
+}
+
+export function lpBondKernelSign({ farmId, lpAsset, bondAmount, lpInputs, lpInputCommitments, excessLP }) {
+  const msg = lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs });
+  const { prefix } = lpBondKernelKey({ lpInputCommitments, bondAmount });
+  let d = modN(excessLP);
+  if (prefix === 0x03) d = modN(SECP_N - d);
+  return signSchnorr(msg, bigintToBytes32(d));
+}
+
+export function lpBondKernelVerify({ farmId, lpAsset, bondAmount, lpInputs, lpInputCommitments, sig64 }) {
+  const msg = lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs });
+  let key;
+  try { key = lpBondKernelKey({ lpInputCommitments, bondAmount }); }
   catch { return false; }
   return verifySchnorr(sig64, msg, key.xOnly);
 }

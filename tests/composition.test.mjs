@@ -437,7 +437,7 @@ test('m=8 proof size matches formula (33·4 + 32·3 + log2(512)·33·2 + 32·2)'
 // async + does network I/O, so we re-derive the same crypto here in a pure
 // function to pin the on-chain shape it produces and to prove that every
 // recipient (and the sender) can independently recover their amount from
-// chain bytes via the §3.5 derivations.
+// chain bytes via the shared derivations.
 console.log('\nMulti-recipient CXFER (airdrop):');
 
 function buildMultiCXfer({ K, inAmt, recipientAmounts, senderPriv, recipientPubs }) {
@@ -884,10 +884,10 @@ test('mint sig is bound to (asset_id, commit_anchor, commitment, ct) — replay 
 });
 
 test('mint sig is bound to commit_anchor — envelope-replay into different commit/reveal pair rejected', () => {
-  // An attacker rewrapping a published mint envelope into their own
-  // commit/reveal at their own address must fail. The anchor binding is what
-  // catches it: same (asset_id, commitment, ct), different commit_anchor →
-  // different msg → original sig doesn't verify.
+  // Rewrapping a published mint envelope into a different commit/reveal
+  // must fail. The anchor binding is what catches it: same (asset_id,
+  // commitment, ct), different commit_anchor → different msg → original
+  // sig doesn't verify.
   const issuer = newWallet();
   const aid = sha256(new TextEncoder().encode('anchor-replay'));
   const C = makeRandomCommitment();
@@ -896,8 +896,8 @@ test('mint sig is bound to commit_anchor — envelope-replay into different comm
   const attackerAnchor = anchorOf(fakeOutpoint());
   const honestMsg = computeMintMsg(aid, honestAnchor, C, ct);
   const sig = signSchnorr(honestMsg, issuer.priv);
-  // Attacker keeps the on-chain payload (asset_id, commitment, ct, sig) but
-  // wraps it in their own commit/reveal — their commit_anchor differs.
+  // The on-chain payload (asset_id, commitment, ct, sig) is kept, but wrapped
+  // in a different commit/reveal whose commit_anchor differs.
   const attackerMsg = computeMintMsg(aid, attackerAnchor, C, ct);
   return verifySchnorr(sig, honestMsg, issuer.xonly)
       && !verifySchnorr(sig, attackerMsg, issuer.xonly);
@@ -1227,9 +1227,9 @@ test('full pipeline: mintable etch, mint, burn-with-change', () => {
 
 test('non-mintable etch rejects mint attempt at validator gate', () => {
   // Build a non-mintable CETCH; verify decode reports mintable=false. The
-  // validator (in tacit.html) refuses to accept any T_MINT pointing at this
-  // asset_id — we exercise the mintable-flag plumbing here; full validator
-  // coverage lives in the dApp itself.
+  // validator (in dapp/tacit.js) refuses to accept any T_MINT pointing at
+  // this asset_id — this test exercises the mintable-flag plumbing; full
+  // validator coverage lives in the dapp itself.
   const w = newWallet();
   const fakeC = makeRandomCommitment();
   const payload = encodeCEtchPayload({

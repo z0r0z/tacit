@@ -172,14 +172,11 @@ await test('cap-overflow rejects canonically-later mints, keeps earlier ones', a
 });
 
 // ---------------------------------------------------------------------------
-// SAME-BLOCK ORDERING — the spec *Cap-overflow ordering* mandates
-// (height, tx_index), NOT (height, txid). Audit fix #2: the v1 implementation
-// embedded txid as the tiebreaker, which differs from block tx-position
-// order. The two scenarios below exercise the corrected behavior:
+// SAME-BLOCK ORDERING — the spec *Cap-overflow ordering* mandates (height, tx_index), NOT (height,
+// txid), since txid order can differ from block tx-position order. The two scenarios below exercise that:
 //   1. ascending tx_index with ASCENDING txid → lower-index mint wins
-//   2. ascending tx_index with DESCENDING txid → still the lower-INDEX mint
-//      wins (this is the assertion that catches the audit bug — pre-fix it
-//      would pick by txid lex order and prefer the wrong winner).
+//   2. ascending tx_index with DESCENDING txid → still the lower-INDEX mint wins (a txid-only sort
+//      would pick the wrong winner here).
 // ---------------------------------------------------------------------------
 await test('same-block ordering uses tx_index even when txid order disagrees', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
@@ -291,17 +288,15 @@ await test('tipHeight=null marks every event as unknown_depth (no credit)', asyn
 });
 
 // ---------------------------------------------------------------------------
-// PENDING-GUARD — defense for an old worker bug where handleAssetHint wrote
-// unconfirmed PMINTs into the canonical pmint:* namespace with
-// minted_at_height=null. The pre-fix `Number(null) || 0 = 0` then computed
-// depth = tip + 1 and credited those orphans toward the cap. Both the
-// `pending: true` flag and a non-integer height must short-circuit the
-// depth math.
+// PENDING-GUARD — handleAssetHint can write an unconfirmed PMINT into the canonical pmint:*
+// namespace with minted_at_height=null before it confirms. Number(null) || 0 would otherwise compute
+// depth = tip + 1 and credit that orphan toward the cap. Both the `pending: true` flag and a
+// non-integer height must short-circuit the depth math.
 // ---------------------------------------------------------------------------
 await test('pending: true entries are never credited, even at canonically-early position', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
   // Stale orphan at height 0 (lex-sorts ahead of every real mint), with the
-  // exact shape an old handleAssetHint hint-write produced.
+  // exact shape a handleAssetHint hint-write produces.
   env.REGISTRY_KV.set(pmintKey(ASSET, 0, 0, 'a'.repeat(64)), {
     ...mintEvent(0, 0, 'a'.repeat(64)),
     minted_at_height: null,
@@ -390,8 +385,7 @@ const PETCH = {
 };
 
 await test('snapshot: empty asset yields zero counts + scan-complete', async () => {
-  // Under the tightened bootstrapped semantic (issue #31), an empty asset
-  // with an open mint window and an unmet cap is NOT bootstrapped — the cap
+  // An empty asset with an open mint window and an unmet cap is NOT bootstrapped — the cap
   // counter can still change with the next block. Only snapshot_scan_complete
   // is true (the KV scan itself terminated cleanly).
   const env = { REGISTRY_KV: makeKvStub() };
@@ -534,13 +528,10 @@ await test('snapshot: last_credited advances past cap_overflow gaps', async () =
 });
 
 // ---------------------------------------------------------------------------
-// COMMITMENT OPENING — T_PMINT envelopes ship public
-// (amount, blinding) so any indexer can verify pedersenCommit(amount, blinding)
-// equals the declared commitment. Issue #31 Problem #3: the cron + hint paths
-// previously skipped this check, so structurally-valid envelopes with forged
-// commitments would land in canonical KV and credit toward the cap. The dapp
-// always re-checked client-side, so a worker that skipped it was silently more
-// permissive than every wallet.
+// COMMITMENT OPENING — T_PMINT envelopes ship public (amount, blinding) so any indexer can verify
+// pedersenCommit(amount, blinding) equals the declared commitment. Without this check, a
+// structurally-valid envelope with a forged commitment would land in canonical KV and credit toward
+// the cap even though the dapp always re-checks the opening client-side.
 // ---------------------------------------------------------------------------
 await test('pmintCommitmentOpens accepts a matching (amount, blinding) opening', () => {
   const amount = 100n;
@@ -591,9 +582,8 @@ await test('pmintCommitmentOpens rejects oversized / undersized hex', () => {
 });
 
 // ---------------------------------------------------------------------------
-// BOOTSTRAPPED SEMANTIC — issue #31 acceptance criterion #3. `bootstrapped`
-// now means "cap counter is authoritative", not just "scan completed".
-// Sufficient conditions: capFull OR window-closed at tip.
+// BOOTSTRAPPED SEMANTIC — `bootstrapped` means "cap counter is authoritative", not just "scan
+// completed". Sufficient conditions: capFull OR window-closed at tip.
 // ---------------------------------------------------------------------------
 await test('snapshot: capFull asset is bootstrapped=true', async () => {
   // Cap = 200, limit = 100 → 2 mints fill the cap exactly. Both credit at
@@ -623,7 +613,7 @@ await test('snapshot: window-closed asset is bootstrapped=true even if cap not f
 await test('snapshot: open-window mid-mint asset is bootstrapped=false', async () => {
   // The FAIR-shape scenario — cap not yet filled, mint_end_height=0 (open).
   // Even though the scan completed cleanly, the counter is NOT authoritative
-  // because the next block can credit more mints. Issue #31 motivating case.
+  // because the next block can credit more mints.
   const env = { REGISTRY_KV: makeKvStub() };
   env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
   const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, PETCH);

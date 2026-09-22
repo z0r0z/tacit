@@ -99,7 +99,7 @@ const R_RECEIPT = modN(BigInt('0x' + 'bb'.repeat(32)));
 const C_RECEIPT = pointToBytes(pedersenCommit(DELTA_OUT_LAST, R_RECEIPT));
 const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
 
-// m=1: the receipt is no longer a bulletproof subject (the consumer forms it from the recomputed clearing).
+// m=1: the receipt is not a bulletproof subject — the consumer forms it from the recomputed clearing.
 const { proof: rangeProof } = bpRangeAggProve([0n], [0n]);
 
 // The receipt output's scriptPubKey at reveal-tx vout 1. P2WPKH — the shape the dapp emitter really pays

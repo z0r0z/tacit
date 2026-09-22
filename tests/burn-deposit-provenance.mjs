@@ -76,10 +76,10 @@ test('multi-leaf admits a cmint-rooted note', () => {
   assert.equal(dag(C0_OP, C0_CH, opk('0a', 0), 'AA', [a]), false);
 });
 
-// SECURITY: a burned outpoint that is ONLY a valid_leaf (never a PRODUCED DAG output) must be rejected.
-// This is the self-inflation shape: a pool-membership (or cmint) leaf carries an unbound outpoint field,
-// and if the burned note could resolve directly against that leaf, an attacker could burn an unrelated dust
-// outpoint while naming another note's commitment. verifyProvenanceDagLeaves requires producedBurned — the
+// Invariant: a burned outpoint that is only a valid_leaf (never a produced DAG output) must be rejected.
+// This is the self-inflation shape: a pool-membership (or cmint) leaf carries an unbound outpoint field.
+// If a burned note could resolve directly against that leaf, a burn could name another note's commitment
+// while spending an unrelated dust outpoint. verifyProvenanceDagLeaves requires producedBurned — the
 // burned outpoint must be an output of an accepted, conserving CXFER — so the bare-leaf shape folds nothing.
 test('burned outpoint that is a bare leaf (not produced) is rejected', () => {
   const bd = makeBurnDepositProvenance({ outpointKey: opk });
@@ -162,7 +162,7 @@ test('cmint: out-of-range minted commitment rejected', () => {
 test('cmint: signed message binds the commit anchor (anti-re-wrap)', () => {
   // The signature must cover domain ‖ asset ‖ commitment ‖ commit-anchor; capture the message the verifier
   // sees and assert the commit tx's first-input outpoint (the anchor) is in it — so a re-broadcast of the
-  // same mint envelope in a FRESH commit/reveal pair (different anchor) signs a different message → rejected.
+  // same mint envelope in a fresh commit/reveal pair (different anchor) signs a different message → rejected.
   const ANCHOR_TXID = '5a'.repeat(32);
   const ASSET = 'aa'.repeat(32);
   const COMMIT = '02' + '11'.repeat(32);

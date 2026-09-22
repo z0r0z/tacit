@@ -232,7 +232,7 @@ const ADD_DELTA_B = BigInt(process.env.ADD_DELTA_B || 50_000);
 if (state.lpAddVariant0Result) {
   ok(`reusing prior LP_ADD result: ${state.lpAddVariant0Result.revealTxid}`);
 } else {
-  // Compute expected shareAmount via Uniswap V2 mint formula:
+  // Compute expected shareAmount via the constant-product-AMM mint formula:
   //   shares = min(Δa·S/R_a, Δb·S/R_b)
   const Ra = BigInt(poolRecord.reserve_a);
   const Rb = BigInt(poolRecord.reserve_b);

@@ -39,7 +39,7 @@ globalThis.location = dom.window.location;
 globalThis.navigator = dom.window.navigator;
 globalThis.prompt = () => null;
 globalThis.alert = () => {};
-globalThis.confirm = () => true;  // greenlight any synchronous confirm() that does sneak through
+globalThis.confirm = () => true;  // approve any synchronous confirm() that does sneak through
 globalThis.__TACIT_NO_INIT__ = true;
 globalThis.localStorage.setItem('tacit-network-v1', 'signet');
 
@@ -188,16 +188,16 @@ const hintPosts = [];
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   const method = (opts.method || 'GET').toUpperCase();
-  const json = (obj, status = 200) => ({
-    ok: status >= 200 && status < 300, status,
-    text: async () => JSON.stringify(obj),
-    json: async () => obj,
-  });
-  const text = (body, status = 200) => ({
-    ok: status >= 200 && status < 300, status,
-    text: async () => body,
-    json: async () => { throw new Error('not json'); },
-  });
+  // Real Response objects: the dapp's chain-read cache copies headers and the body buffer.
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+  const text = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/plain' } });
+
+  // Ethereum JSON-RPC for the cross-lane spend guard: every nullifier slot reads zero (unspent on Ethereum).
+  if (method === 'POST' && typeof opts.body === 'string' && opts.body.includes('"jsonrpc"')) {
+    const rpc = JSON.parse(opts.body);
+    if (rpc.method === 'eth_getStorageAt') return json({ jsonrpc: '2.0', id: rpc.id, result: '0x' + '00'.repeat(32) });
+    return json({ jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'mock: ' + rpc.method } });
+  }
 
   if (u.endsWith('/v1/fees/recommended')) return json({ fastestFee: 10, halfHourFee: 5, hourFee: 2, economyFee: 1, minimumFee: 1 });
 
@@ -208,9 +208,10 @@ globalThis.fetch = async (url, opts = {}) => {
 
   // Broadcast capture. The second POST /tx is the CXFER reveal — flip
   // scanPhase to 'after' so the next scanHoldings call sees the split
-  // child UTXOs.
+  // child UTXOs. The dapp sends each signed tx to every esplora base, so
+  // one broadcast is one distinct hex, not one POST.
   if (method === 'POST' && u.endsWith('/tx')) {
-    broadcasts.push({ hex: opts.body });
+    if (!broadcasts.some(b => b.hex === opts.body)) broadcasts.push({ hex: opts.body });
     return text('0'.repeat(64));
   }
 

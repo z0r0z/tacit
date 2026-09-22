@@ -1,8 +1,8 @@
 // Worker farm decoders + owner-msg helpers ↔ dapp/amm-envelope.js (source of truth).
 //
-// The worker's AMM-farm decoders/handlers were re-aligned to the reflection receipt
+// The worker's AMM-farm decoders/handlers must match the reflection receipt
 // envelope layouts (bond +owner_commit/nonce, harvest 346B, unbond 217B receipt-only)
-// and to the owner-key keccak auth. Drift here means the worker can't parse or
+// and the owner-key keccak auth. Drift here means the worker can't parse or
 // authenticate the harvest/unbond/bond envelopes the dapp actually broadcasts, so
 // /farm state + positions silently stop indexing. This pins byte-for-byte parity.
 //
@@ -32,10 +32,10 @@ const bonderPub = hexToBytes('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d9
 const rewardR = b(32), lpReturnR = b(32), rp = new Uint8Array([0x01]);
 const z33 = new Uint8Array(33), z64 = new Uint8Array(64), z36 = b(36);
 const shares = 1234567n, rpsEntry = 99887766554433n, reward = 4242n, entryAcc = 7777n;
-// The receipt leaf commits the STAKED asset (v2) and no longer carries rps_entry (v3 — the entry
-// checkpoint is stamped at execution). Distinct from the other b(32) constants so the leaf is
-// actually sensitive to it. rps_entry still rides the harvest/unbond ENVELOPES as a vestigial field,
-// so it stays in those round-trips below.
+// The receipt leaf commits the STAKED asset and does not carry rps_entry — the entry checkpoint is
+// stamped at execution. Distinct from the other b(32) constants so the leaf is actually sensitive to
+// it. rps_entry still rides the harvest/unbond ENVELOPES as a vestigial field, so it stays in those
+// round-trips below.
 const lpAsset = (() => { const u = b(32); u[0] ^= 0xff; return u; })();
 
 // ---- decoder roundtrips: dapp encode → worker decode ----

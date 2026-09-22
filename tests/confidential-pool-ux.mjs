@@ -53,7 +53,7 @@ test('fetchEvents: pool-scoped LeavesInserted/NullifiersSpent/LockLeavesInserted
   // fetchEvents resolves toBlock='latest' via eth_blockNumber before eth_getLogs; a mock that returns the
   // same `{ result: [] }` for both makes parseInt(await rpc('eth_blockNumber'), 16) = NaN, so the log-window
   // loop's `start <= to` is never true and eth_getLogs is never called — `captured` then holds the
-  // eth_blockNumber call instead, which is what this test used to (silently) assert against.
+  // eth_blockNumber call instead of a log-window request.
   let captured = null;
   const ux = makeConfidentialPoolUx({
     ...deps,
@@ -250,8 +250,8 @@ test('buildUnwrap selfSettle: no-fee exit preserved — full value to recipient,
 
 // A note + recipient pubkey suitable for driving ux.transfer with a mocked relay/RPC. Builds a REAL
 // single-leaf Merkle tree so buildTransferOp's local membership self-check (input i must reconstruct
-// spendRoot from leafIndex/path) passes — an arbitrary placeholder root/path used to be accepted here
-// before that check existed, but now throws "note witness is stale" for every caller of this fixture.
+// spendRoot from leafIndex/path) passes — an arbitrary placeholder root/path throws "note witness is
+// stale" for every caller of this fixture.
 function transferFixture(ux, walletPriv) {
   const w = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 0 });
   const events = [{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }];
@@ -437,9 +437,14 @@ test('wrap: wraps sent back to back take different indexes before the first one 
   assert.equal(new Set([a, b, c, d].map((w) => w.note.secret)).size, 4, 'four distinct note secrets');
 });
 
-test('wrap: an unreadable deposit history does not fail the wrap; it continues from index 0 on a fresh device', async () => {
+test('wrap: an unreadable deposit history fails the wrap instead of guessing an index; an explicit index still wraps', async () => {
+  // The device hint cannot see indexes another device used, so without the chain scan no index is known safe.
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: wrapChain({ failLogs: true }).fetchImpl });
-  const r = await ux.wrap({ walletPriv: '0x' + '37'.repeat(32), amountWei: '1000000000000000', broadcast: false });
+  await assert.rejects(
+    ux.wrap({ walletPriv: '0x' + '37'.repeat(32), amountWei: '1000000000000000', broadcast: false }),
+    /could not read this asset's wrap deposits.*pass an explicit index/,
+  );
+  const r = await ux.wrap({ walletPriv: '0x' + '37'.repeat(32), amountWei: '1000000000000000', broadcast: false, index: 0 });
   assert.equal(r.index, 0);
 });
 
@@ -465,7 +470,7 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   assert.ok(b.op.deposit.sigR && b.op.deposit.sigZ, 'deposit opening sigma present');
   // The received output is owned by keccak(nk ‖ dom) for a FRESH per-note nk — never the raw pubkey, which
   // is the shape the guest rejects (and which would strand the note forever). Asserting "not the pubkey"
-  // is the point: this assertion previously pinned the broken scheme.
+  // is the point.
   const pubkeyOwner = '0x' + recipientPubHex.replace(/^0x/, '').slice(2, 66);
   assert.notEqual(b.op.outputs[0].owner, pubkeyOwner, 'received note must NOT be bound to a raw pubkey');
   assert.match(b.op.outputs[0].owner, /^0x[0-9a-f]{64}$/, 'owner is a 32-byte nk-derived digest');
@@ -476,9 +481,9 @@ test('buildWrapTransferOp: deposit consumed into hidden recipient + change, cons
   // SPENDABILITY, not just presence: the memo's sealed `secret` must be the nk that actually hashes to the
   // leaf's own `owner` — confidential-memo.js's leaf-hash authenticator checks (asset, cx, cy, owner) only,
   // never `secret`, so a wrong secret here would still decrypt and pass recovery, then be permanently
-  // unspendable (nk_to_owner mismatch in the guest) only once someone tried to actually spend it. A prior
-  // version sealed the WALLET-CONSTANT id.secret against this freshly-nk-owned output — recoverable, never
-  // spendable.
+  // unspendable (nk_to_owner mismatch in the guest) only once someone tried to actually spend it. Sealing
+  // the wallet-constant id.secret against this freshly-nk-owned output would be exactly that: recoverable,
+  // never spendable.
   for (const o of b.outputs) {
     assert.equal(ux.pool.nkToOwner(o.secret).toLowerCase(), String(o.owner).toLowerCase(),
       `output owned by ${o.owner} must be spendable with the nk sealed into its own memo`);

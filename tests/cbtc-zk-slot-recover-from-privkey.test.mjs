@@ -1,13 +1,13 @@
-// SPEC-CBTC-ZK §5.21 — Phase 2A: scanSlotsFromPrivkey
+// cBTC.zk slot recovery from privkey alone: scanSlotsFromPrivkey (SPEC §3.8).
 //
 // What this guards against:
 //   A wallet wiped to bare privkey on a new device (no localStorage)
-//   would have lost its slot records before this path landed. The
-//   Phase 1 helpers (_deriveSlotSecret / _deriveSlotNullifierPreimage)
-//   make (secret, ν) deterministic from (priv, anchor, outputIndex);
-//   Phase 2A walks the address's outgoing-spend history, treats each
-//   spent outpoint as a candidate MINT anchor, derives K_btc, and
-//   confirms a match against a real on-chain T_SLOT_MINT envelope.
+//   has no slot records without this path. The Phase 1 helpers
+//   (_deriveSlotSecret / _deriveSlotNullifierPreimage) make (secret, ν)
+//   deterministic from (priv, anchor, outputIndex); this scan walks the
+//   address's outgoing-spend history, treats each spent outpoint as a
+//   candidate MINT anchor, derives K_btc, and confirms a match against
+//   a real on-chain T_SLOT_MINT envelope.
 //
 // What this proves:
 //   - A privkey that previously minted a slot can re-discover the slot

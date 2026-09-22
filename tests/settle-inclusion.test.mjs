@@ -1,11 +1,10 @@
-// awaitInclusion: waiting for a settle to land, without sitting out a timeout on a transaction that can no
-// longer land.
+// awaitInclusion: waiting for a settle to land, without sitting out a timeout on a transaction that can never
+// land.
 //
-// Production, 2026-09-20: a relayed wrap was signed at nonce 2715 on the relayer key. Another sender's
-// transaction took 2715 before it landed, so nothing the relay broadcast under that nonce could ever be
-// included — but it waited a full receipt timeout, escalated at the SAME nonce, waited again, and only on the
-// third round noticed. 6.5 minutes for a settle that then landed in 13 seconds. The wait must notice that the
-// nonce is gone, and must never mistake its OWN landed transaction for someone else's.
+// If another sender's transaction consumes the nonce a relayed broadcast used, nothing under that nonce can
+// ever be included. The wait must notice the nonce is gone quickly, rather than sitting out a full receipt
+// timeout and re-escalating at the same doomed nonce, and it must never mistake its OWN landed transaction
+// for someone else's.
 //
 // Time and the chain are faked, so the timings below are logical, not wall-clock.
 //
@@ -49,7 +48,7 @@ await test('our broadcast lands: returns it immediately', async () => {
 });
 
 await test('another sender consumes our nonce: reports TAKEN within seconds, not after the full timeout', async () => {
-  // The production case. Nonce 2715 is consumed at t=20s by someone else's tx; none of ours ever lands.
+  // Nonce 2715 is consumed at t=20s by someone else's tx; none of ours ever lands.
   const w = world({ events: [{ at: 20_000, fn: (c) => c.setNonce(2716) }] });
   const r = await awaitInclusion({ hashes: H, nonce: 2715, waitMs: 90_000, ...w });
   assert.strictEqual(r.state, 'taken');

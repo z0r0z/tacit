@@ -1,18 +1,11 @@
-// Regression test for the low-rate overpay bug: when mempool.hourFee was
-// e.g. 1.4 sat/vB, the old getFeeRate would ceil the API value to 2 and
-// then apply a 5%/10% margin on top, returning 3 sat/vB — ~2× the actual
-// clearing rate. mempool.space's audit flagged these as "Overpaid 2x"
-// (see e.g. mempool.space tx ebc322a8b611f95f9723ec4ffc961d38e3812b72cb7bc34dba1dc44c9e6df15e).
+// Fee-rate selection at low mempool depth: getFeeRate holds the base rate as a float (no early ceil),
+// applies tier margins only when base ≥ 5 sat/vB (no spike to hedge against at low depth), and still
+// enforces the 1 sat/vB min-relay floor. This keeps the effective rate close to the API quote instead
+// of compounding a ceil + margin into roughly double the actual clearing rate when the API returns
+// sub-integer values (e.g. hourFee = 1.4).
 //
-// New behavior:
-//   1. base is held as a float (no early ceil)
-//   2. tier margins only apply when base ≥ 5 sat/vB (no spike to hedge
-//      against at low mempool depth)
-//   3. min-relay floor of 1 sat/vB still enforced
-//
-// This file uses a fresh module load so the per-(net,tier) rate cache
-// inside getFeeRate is empty; bundling these cases into fee-tier.test.mjs
-// would hit cached values from the prior MOCK_FEES.
+// This file uses a fresh module load so the per-(net,tier) rate cache inside getFeeRate is empty;
+// bundling these cases into fee-tier.test.mjs would hit cached values from the prior MOCK_FEES.
 
 import { JSDOM } from 'jsdom';
 const dom = new JSDOM('<!doctype html><html></html>', { url: 'http://localhost/' });
@@ -26,8 +19,7 @@ globalThis.alert = () => {};
 globalThis.confirm = () => false;
 globalThis.__TACIT_NO_INIT__ = true;
 
-// Low-rate mempool (post-halving, post-Ordinals-cooldown): hourFee in
-// fractional territory. Reproduces the mainnet conditions on 2026-05-18.
+// Low-rate mempool: hourFee in fractional territory.
 const MOCK_FEES = {
   fastestFee: 2,
   halfHourFee: 1.5,
@@ -68,8 +60,8 @@ group('Low-rate mempool: no compounded overpay');
   ok(`priority at fastestFee=2 → ${r_pri} sat/vB (expected 2, margin skipped <5)`,
     r_pri === 2);
 
-  // The whole point: at low base rates we no longer pay ~2× the API quote.
-  // Old code would have returned 3 sat/vB here (ceil(1.4)=2 → ceil(2×1.05)=3).
+  // At low base rates the rate stays close to the API quote rather than compounding a ceil + margin
+  // into roughly double the actual clearing rate.
   ok(`standard rate is not ≥ 2× hourFee (got ${r_std} vs API 1.4)`,
     r_std < 1.4 * 2);
 }
@@ -77,7 +69,7 @@ group('Low-rate mempool: no compounded overpay');
 group('feeFor effective rate matches quoted rate');
 {
   const rate = await dapp.getFeeRate('standard'); // 1.4
-  // Typical reveal tx ~526 vbytes (matches the overpay tx in the bug report)
+  // Typical reveal tx ~526 vbytes
   const fee = dapp.feeFor(526, rate);
   // 526 * 1.4 = 736.4 → ceil = 737. Effective rate = 737/526 ≈ 1.401.
   // The 500-sat min floor in feeFor doesn't kick in here.

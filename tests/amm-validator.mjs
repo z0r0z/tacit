@@ -26,6 +26,8 @@ import {
 import { decodeLpAdd, decodeLpRemove, decodeSwapBatch, decodeProtocolFeeClaim } from './amm-envelope.mjs';
 import { derivePoolId, deriveLpAssetId, canonicalAssetPair } from './amm-asset.mjs';
 import { verifyXCurve } from './amm-sigma-xcurve.mjs';
+import { bpRangeVerify, bpClassicProofLen } from '../dapp/bulletproofs.js';
+import { bppRangeVerify, bytesToPoint as bppPoint } from '../dapp/bulletproofs-plus.js';
 import { lpAddKernelVerify, lpRemoveKernelVerify } from './amm-kernel.mjs';
 import {
   solveClearing, applyBatch, amountOutForTrader,
@@ -86,9 +88,9 @@ export {
 } from './swap-route.mjs';
 
 // T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36) —
-// MasterChef-style staked-LP rewards on tacit AMM pools. Virtual-
-// treasury bookkeeping, per-bond worker-indexed records, lazy Q.96
-// mintFee-style accrual. Reuses the kernel-sig + Pedersen + m=1
+// staked-LP rewards on tacit AMM pools via a reward-per-share
+// accumulator. Virtual-treasury bookkeeping, per-bond worker-indexed
+// records, lazy Q.96 accrual. Reuses the kernel-sig + Pedersen + m=1
 // bulletproof stack from T_SWAP_VAR; no Groth16, no new ceremony.
 export {
   // Validators
@@ -140,8 +142,8 @@ function pointFromCompressed(bytes) {
   return secp.ProjectivePoint.fromHex(bytesToHex(bytes));
 }
 
-// Reserves are u64 per the spec. Mirrors Uniswap V2's uint112
-// cap (lower because tacit assets are u64). Without this check a pool could
+// Reserves are u64 per the spec. Mirrors a common constant-product-AMM
+// uint112 reserve cap (lower here because tacit assets are u64). Without this check a pool could
 // be driven past u64 by repeated LP_ADDs or a giant swap; subsequent
 // envelopes' R_pre fields (u64-encoded) would silently truncate on the
 // way into snarkjs/sigma checks, leaving the pool stuck for swap paths
@@ -350,7 +352,7 @@ function resolveOpReturnData(arg, fnName) {
 // any envelope whose Groth16 verification would otherwise have run against
 // bytes the pinned CID doesn't authenticate.
 //
-// V1 canonical format for `vk_cid` is **CIDv1 with raw codec + sha2-256
+// The canonical format for `vk_cid` is **CIDv1 with raw codec + sha2-256
 // multihash, multibase-base32 lowercase no-padding**:
 //
 // Construction (canonical, byte-for-byte reproducible by every indexer):
@@ -378,7 +380,7 @@ function base32EncodeLowercase(bytes) {
   return out;
 }
 
-// Returns the canonical V1 vk_cid string for the given vk bytes. Exported so
+// Returns the canonical vk_cid string for the given vk bytes. Exported so
 // that ceremony coordinators + indexers + the dapp all derive identical
 // CIDs from identical vk bytes — no implementation drift on this layer.
 export function deriveVkCid(vkBytes) {
@@ -396,9 +398,9 @@ export function deriveVkCid(vkBytes) {
 }
 
 // Returns true iff the SHA-256 of `vkBytes` matches the content-hash encoded
-// inside `vkCidString` (V1 canonical CIDv1 raw sha2-256 multibase-base32).
+// inside `vkCidString` (canonical CIDv1 raw sha2-256 multibase-base32).
 //
-// V1 indexers MUST call this before passing vk bytes to snarkjs:
+// Indexers MUST call this before passing vk bytes to snarkjs:
 //
 //   const vkBytes = await ipfsGateway.fetchByCid(pool.vk_cid);
 //   if (!verifyVkCidBinding(vkBytes, pool.vk_cid)) {
@@ -730,6 +732,8 @@ export function validateLpAdd({
                                   // REQUIRED for POOL_INIT (variant=1). Pass SKIP_MIN_LIQ_VERIFY_UNSAFE
                                   // for pre-integration test harnesses that don't model the locked vout.
                                   // Ignored on variant=0.
+  refundDestXonlyA, refundDestXonlyB, // 32-byte x-only keys of the tx's asset-A / asset-B refund outputs
+                                  // (canonical order); each side's kernel sig binds its refund tail.
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpAdd');
   const opReturnBytes = resolveOpReturnData(opReturnData, 'validateLpAdd');
@@ -755,7 +759,7 @@ export function validateLpAdd({
   if (orderErr) return { valid: false, reason: orderErr };
 
   // Verify pool_id matches. pool_id derivation now includes fee_bps and
-  // capability_flags (V3/V4 fee-tier parity), so the discriminators are
+  // capability_flags for multi-fee-tier pools, so the discriminators are
   // sourced differently per variant:
   //   variant=1 (POOL_INIT): pool doesn't exist yet — read from envelope.
   //   variant=0 (LP join):   pool record is authoritative — read from state.
@@ -767,8 +771,8 @@ export function validateLpAdd({
   if (env.variant === 1) {
     if (pool) return { valid: false, reason: 'POOL_INIT but pool already exists' };
 
-    // v1 hard-disable of arbiter mechanism (mandatory inclusion of
-    // qualifying intents is DISABLED AT V1). Trust-quorum opt-in is
+    // Hard-disable of the arbiter mechanism (mandatory inclusion of
+    // qualifying intents is disabled at v1). Trust-quorum opt-in is
     // deferred to a follow-up amendment; wire-format positions stay reserved.
     if ((env.arbiterPubkeys?.length ?? 0) !== 0 || (env.arbiterThresholdM ?? 0) !== 0) {
       return { valid: false, reason: 'arbiter feature disabled at v1 — deferred to follow-up amendment' };
@@ -808,7 +812,7 @@ export function validateLpAdd({
       }
     }
 
-    // Initial shares (Uniswap V2 convention): total = isqrt(deltaA · deltaB).
+    // Initial shares (constant-product-AMM convention): total = isqrt(deltaA · deltaB).
     let initShares;
     try { initShares = lpInitShares(env.deltaA, env.deltaB, 1000n); }
     catch (e) { return { valid: false, reason: `lpInitShares: ${e.message}` }; }
@@ -817,7 +821,7 @@ export function validateLpAdd({
     }
 
     // Per-asset kernel sigs.
-    if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
+    if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant, refundDestXonlyA, refundDestXonlyB)) {
       return { valid: false, reason: 'kernel sig verification failed' };
     }
     if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
@@ -827,14 +831,12 @@ export function validateLpAdd({
       return { valid: false, reason: 'Groth16 proof failed (POOL_INIT)' };
     }
 
-    // MINIMUM_LIQUIDITY locked-output check (MINIMUM_LIQUIDITY
-    // burn-output construction). Without this, a founder can bypass the
-    // first-LP-drain defense by sending vout[k_min_liq] to themselves
-    // instead of the NUMS-derived recipient — they'd then control 100%
-    // of shares including the "locked" 1000 and could withdraw all
-    // liquidity. The verifier recomputes (C_min_liq, amt_ct, NUMS_P2WPKH)
-    // from pool_id alone and checks byte-equality with the on-chain
-    // vout[k_min_liq] bytes the caller wires up.
+    // MINIMUM_LIQUIDITY locked-output check: binds the locked 1000 shares
+    // to a NUMS-derived recipient with no known private key, so the
+    // locked shares are never controlled by any party. The verifier
+    // recomputes (C_min_liq, amt_ct, NUMS_P2WPKH) from pool_id alone and
+    // checks byte-equality with the on-chain vout[k_min_liq] bytes the
+    // caller wires up.
     const resolvedMinLiq = resolveMinLiqOutput(minLiqOutput, 'validateLpAdd');
     if (resolvedMinLiq !== null) {
       const ok = verifyMinLiqOutput({
@@ -894,7 +896,7 @@ export function validateLpAdd({
 
   // First-LP misprice mitigation: variant-0 LP_ADD is locked for the first
   // AMM_INITIAL_LP_LOCK_BLOCKS confirmations after POOL_INIT. During this
-  // window only swaps are accepted; arbitrage corrects any malicious seed
+  // window only swaps are accepted; arbitrage corrects any mispriced seed
   // ratio before naive LPs can be exposed.
   if (typeof pool.init_height === 'number') {
     const unlockHeight = pool.init_height + AMM_INITIAL_LP_LOCK_BLOCKS;
@@ -931,7 +933,7 @@ export function validateLpAdd({
     return { valid: false, reason: `shareAmount: expected ${expectedShares}, got ${env.shareAmount}` };
   }
 
-  if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
+  if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant, refundDestXonlyA, refundDestXonlyB)) {
     return { valid: false, reason: 'kernel sig verification failed' };
   }
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
@@ -972,28 +974,33 @@ export function validateLpAdd({
 // fee_bps + capability_flags discriminators for the variant). The kernel
 // sig commits to the full pool_id, so a mismatched poolId here would
 // fail verification — defense-in-depth even if the caller miscomputes.
-function verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, variant) {
-  return lpAddKernelVerify({
-    variant,
-    poolId,
-    assetX: env.assetA,
-    deltaX: env.deltaA,
-    shareAmount: env.shareAmount,
-    shareCSecpBytes: env.shareCSecp,
-    inputsX: inputsA,
-    inputCommitments: inputCommitmentsA,
-    sig64: env.kernelSigA,
-  }) && lpAddKernelVerify({
-    variant,
-    poolId,
-    assetX: env.assetB,
-    deltaX: env.deltaB,
-    shareAmount: env.shareAmount,
-    shareCSecpBytes: env.shareCSecp,
-    inputsX: inputsB,
-    inputCommitments: inputCommitmentsB,
-    sig64: env.kernelSigB,
-  });
+function verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, variant,
+  refundDestXonlyA, refundDestXonlyB) {
+  try {
+    return lpAddKernelVerify({
+      variant,
+      poolId,
+      assetX: env.assetA,
+      deltaX: env.deltaA,
+      shareAmount: env.shareAmount,
+      shareCSecpBytes: env.shareCSecp,
+      inputsX: inputsA,
+      inputCommitments: inputCommitmentsA,
+      sig64: env.kernelSigA,
+      expiryHeight: env.expiryHeight, refundDestXonly: refundDestXonlyA, refundBlinding: env.refundABlinding,
+    }) && lpAddKernelVerify({
+      variant,
+      poolId,
+      assetX: env.assetB,
+      deltaX: env.deltaB,
+      shareAmount: env.shareAmount,
+      shareCSecpBytes: env.shareCSecp,
+      inputsX: inputsB,
+      inputCommitments: inputCommitmentsB,
+      sig64: env.kernelSigB,
+      expiryHeight: env.expiryHeight, refundDestXonly: refundDestXonlyB, refundBlinding: env.refundBBlinding,
+    });
+  } catch { return false; }
 }
 
 // =========================================================================
@@ -1005,6 +1012,7 @@ export function validateLpRemove({
   groth16Verify,
   opReturnData,                   // 32 bytes from tx.vout[0]'s OP_RETURN, or SKIP_OP_RETURN_VERIFY_UNSAFE.
   vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
+  refundDestXonly,                // 32-byte x-only key of the tx's vout-2 share-refund output; the kernel sig binds it
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpRemove');
   const opReturnBytes = resolveOpReturnData(opReturnData, 'validateLpRemove');
@@ -1023,26 +1031,20 @@ export function validateLpRemove({
   const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0, pool.protocol_fee_address, pool.protocol_fee_bps);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
-  // Crystallize protocol fee before applying the remove. Same V2-lazy
+  // Crystallize protocol fee before applying the remove. Same lazy-accrual
   // pattern as LP_ADD — diluting existing LPs by accrued fee before they
   // withdraw, so the burning LP gets only their non-fee proportion of
   // pool value.
   const xPool = crystallizeProtocolFee(pool);
 
   // Over-burn defense: shareAmount cannot exceed the crystallized LP
-  // supply. Without this, lpRemoveOutputs would happily compute
-  // delta_X = floor(R_X · shareAmount / S) with shareAmount > S, which
-  // can exceed R_X by floor-rounding (delta_B in the test case below
-  // ends up = R_B + 1 with shareAmount = S + 1). The subsequent
-  // newReserve_X = R_X - delta_X then goes negative under BigInt
-  // (silently — there's no u64 underflow guard). The validator would
-  // return { valid: true, newPoolState: { reserve_B: -1n } }, breaking
-  // every subsequent operation that touches this pool. The validator
-  // SHOULD return { valid: false } instead. Caller-contract argument
-  // says this is structurally impossible (Bitcoin's UTXO model bounds
-  // total lp_asset_id supply to S), but defensive rejection is cheap
-  // and closes the analogous "caller passes fake inputCommitments"
-  // inflation gap.
+  // supply. Without this, lpRemoveOutputs could compute delta_X > R_X by
+  // floor-rounding (e.g. delta_B = R_B + 1 with shareAmount = S + 1), and
+  // the subsequent newReserve_X = R_X - delta_X would go negative under
+  // BigInt with no u64 underflow guard, breaking every later op on this
+  // pool. Structurally this can't happen given Bitcoin's UTXO-bounded
+  // lp_asset_id supply, but the check is cheap and closes the analogous
+  // fake-inputCommitments inflation gap.
   if (env.shareAmount > xPool.lp_total_shares) {
     return {
       valid: false,
@@ -1061,13 +1063,12 @@ export function validateLpRemove({
     return { valid: false, reason: `deltaB: expected ${expected.delta_b}, got ${env.deltaB}` };
   }
 
-  // Uniswap V2's INSUFFICIENT_LIQUIDITY_BURNED guard. In extremely
-  // imbalanced pools (e.g., R_A << S) a small shareAmount floor-rounds
-  // delta_A to 0 while delta_B > 0. The LP burns shares and gets nothing
-  // back on the zero side — a silent self-grief, and the pool ends up
-  // with skewed value-per-share for remaining LPs (they implicitly gain
-  // the donated A-side value). Reject upfront, matching Uniswap V2
-  // pair.sol's `require(amount0 > 0 && amount1 > 0)` at burn time.
+  // INSUFFICIENT_LIQUIDITY_BURNED guard. In extremely imbalanced pools
+  // (e.g., R_A << S) a small shareAmount floor-rounds delta_A to 0 while
+  // delta_B > 0. The LP burns shares and gets nothing back on the zero
+  // side, and the pool ends up with skewed value-per-share for remaining
+  // LPs (they implicitly gain the donated A-side value). Reject upfront:
+  // both deltas must be > 0.
   if (env.deltaA === 0n || env.deltaB === 0n) {
     return {
       valid: false,
@@ -1076,16 +1077,20 @@ export function validateLpRemove({
   }
 
   // Kernel sig over lp-share input(s).
-  const kernelOk = lpRemoveKernelVerify({
-    poolId,
-    shareAmount: env.shareAmount,
-    deltaA: env.deltaA, deltaB: env.deltaB,
-    recvACSecpBytes: env.recvACSecp,
-    recvBCSecpBytes: env.recvBCSecp,
-    lpInputs,
-    lpInputCommitments,
-    sig64: env.kernelSigLP,
-  });
+  let kernelOk = false;
+  try {
+    kernelOk = lpRemoveKernelVerify({
+      poolId,
+      shareAmount: env.shareAmount,
+      deltaA: env.deltaA, deltaB: env.deltaB,
+      recvACSecpBytes: env.recvACSecp,
+      recvBCSecpBytes: env.recvBCSecp,
+      lpInputs,
+      lpInputCommitments,
+      refundDestXonly,
+      sig64: env.kernelSigLP,
+    });
+  } catch { kernelOk = false; }
   if (!kernelOk) return { valid: false, reason: 'kernel sig verification failed' };
 
   // Sigma cross-curve bindings on both receipts.
@@ -1381,6 +1386,16 @@ export function validateSwapBatch({
     if (!verifyXCurve(r.outXcurveSigma, r.cOutSecp, r.cOutBjj)) {
       return { valid: false, reason: `receipt[${i}] sigma cross-curve failed` };
     }
+    // The sigma binds C_out_secp to C_out_BJJ only modulo each curve's order; the receipt's own
+    // m=1 range proof (classic or BP+, dispatched on length like the guest's verify_range) bounds
+    // its integer value.
+    let rangeOk = false;
+    try {
+      rangeOk = r.rangeProof.length === bpClassicProofLen(1)
+        ? bpRangeVerify([r.cOutSecp], r.rangeProof)
+        : bppRangeVerify([bppPoint(r.cOutSecp)], r.rangeProof);
+    } catch { rangeOk = false; }
+    if (!rangeOk) return { valid: false, reason: `receipt[${i}] range proof failed` };
   }
 
   // Tip-output opening check (normative).
@@ -1493,8 +1508,8 @@ export function validateSwapBatch({
   // The constant-product check above only enforces non-decrease (no-fee curve
   // upper bound on |Δb|). On its own it admits any (|Δa|, |Δb|) along the
   // 1-parameter family between the with-fee and no-fee curves — leaving the
-  // settler up to `fee_bps` of pricing freedom (cf. settler-trader collusion
-  // redirecting fee revenue from LPs).
+  // settler up to `fee_bps` of pricing freedom. The check below removes
+  // that freedom, so fee revenue always accrues to LPs.
   //
   // The deterministic solve pins |Δb| = floor(R_B · γ_num · |Δa| /
   // (R_A · γ_den + γ_num · |Δa|)). Per-trader floor dust can only push the
@@ -1509,10 +1524,9 @@ export function validateSwapBatch({
   //
   //   Spot (dA = dB = 0): reserves unchanged (handled above).
   //
-  // All inputs are public: pool reserves, declared deltas, fee_bps. No private
-  // witness needed. Closes the "narrow settler pricing freedom" gap so the
-  // spec's "no settler freedom in pricing, only in subset selection" claim
-  // becomes operationally true.
+  // All inputs are public: pool reserves, declared deltas, fee_bps. No
+  // private witness needed. This makes the spec's "no settler freedom in
+  // pricing, only in subset selection" claim operationally true.
   if (dA !== 0n || dB !== 0n) {
     const gNum = 10000n - BigInt(pool.fee_bps);
     const gDen = 10000n;
@@ -1693,8 +1707,8 @@ function checkAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, delt
 //      wire-shape parity with the guest parser only — the guest does not consult
 //      it for auth.
 //   4. Verify BIP-340 claim_sig over claim_msg (see amm-protocol-fee.mjs) — binds
-//      dest_spk (the claim note's vout-0 destination) against front-running.
-//   5. Crystallize protocol fee on pool (V2-lazy mintFee).
+//      dest_spk (the claim note's vout-0 destination) to its intended recipient.
+//   5. Crystallize protocol fee on pool (lazy accrual).
 //   6. Verify claim_amount == pool.protocol_fee_accrued post-crystallization.
 //   7. Verify claim_C_secp == amount·H + blinding·G (public opening).
 //   8. Emit lp_asset_id UTXO at vout[0] for protocol_fee_address.

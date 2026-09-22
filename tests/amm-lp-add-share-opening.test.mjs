@@ -1,6 +1,6 @@
 // LP-add share opening: the envelope has no proof tail, so the mint is bound by the kernel signatures plus a DIRECT
-// opening of the share commitment (shareCSecp == share_amount*H + shareR*G). The dapp validator used to demand a
-// Groth16 proof the encoder never emits, marking every founder's LP-share invalid; it now checks this opening.
+// opening of the share commitment (shareCSecp == share_amount*H + shareR*G). The dapp validator checks this opening
+// rather than requiring a Groth16 proof, since the encoder never emits one.
 //
 // Runs offline, no DOM: node tests/amm-lp-add-share-opening.test.mjs
 

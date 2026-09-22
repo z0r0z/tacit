@@ -27,7 +27,7 @@
 //         amount_ct = u64_LE(MINIMUM_LIQUIDITY) XOR HMAC-SHA256(
 //                       keystream_seed, envelope_anchor)[:8]
 //
-// MINIMUM_LIQUIDITY is fixed at 1000 base units (Uniswap V2 convention).
+// MINIMUM_LIQUIDITY is fixed at 1000 base units (constant-product-AMM convention).
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';

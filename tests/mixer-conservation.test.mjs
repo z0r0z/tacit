@@ -7,14 +7,9 @@
 // (secret, ν) and garbage kernel_sig, then later withdraw against their
 // own bogus leaf to inflate the pool.
 //
-// The bug this file is meant to catch:
-//   - The dapp's validateOutpoint short-circuited T_DEPOSIT to a no-op.
-//   - The worker's cron skipped kernel-sig verification on indexing.
-//   - Every prior mixer test used kernel_sig = '00'.repeat(64) (garbage),
-//     which is exactly what the gate is supposed to reject. Existing tests
-//     therefore can't distinguish "gate is enforced and rejects garbage"
-//     from "gate is missing and admits garbage" — both produce the same
-//     pass on encoder/decoder/round-trip checks.
+// Other mixer tests all use kernel_sig = '00'.repeat(64) (garbage), which is exactly what this gate is
+// supposed to reject. They can't distinguish "the gate is enforced and rejects garbage" from "the gate
+// is missing and admits garbage" — both produce the same pass on encoder/decoder/round-trip checks.
 //
 // What this validates:
 //   - dapp.verifyMixerDepositKernelOnChain accepts a valid kernel sig
@@ -243,9 +238,8 @@ await test('rejects deposit whose kernel_sig was made under a wrong blinding (fo
 });
 
 await test('rejects deposit when claimed denomination differs from the kernel sig\'s denom', async () => {
-  // The verifier is told the denom from the worker leaf record. If a malicious
-  // worker mis-records the denom, the validator should not be fooled — the
-  // kernel msg includes denom, so any mismatch makes the sig fail.
+  // The verifier is told the denom from the worker leaf record. A mis-recorded denom must not
+  // pass — the kernel msg includes denom, so any mismatch makes the sig fail.
   const ok = await dapp.verifyMixerDepositKernelOnChain(
     honest.txid, parent.assetIdHex, DENOM + 1n, honest.leaf, store.fetchTx,
   );
@@ -273,13 +267,11 @@ await test('returns null (transient) when fetchTx returns null — distinct from
 });
 
 // Height-pin: the spec canonical leaf order is (height, tx_index, txid).
-// A worker that lies about deposited_at_height to re-order a pool's leaves
-// would push the dapp to compute a tree whose root no honest indexer's
-// recent-roots window contains. The dapp closes that vector by passing
-// the worker-claimed height into verifyMixerDepositKernelOnChain and
-// rejecting on mismatch. Below we re-stub fetchTx with an annotated
-// status object (mempool.space includes status.block_height + confirmed
-// on confirmed txs) and exercise the gate.
+// The canonical leaf order is (height, tx_index, txid), so a worker-claimed deposited_at_height that
+// diverges from the confirmed block would compute a tree root outside any honest indexer's recent-roots
+// window. verifyMixerDepositKernelOnChain takes the worker-claimed height and rejects on mismatch. Below
+// we re-stub fetchTx with an annotated status object (mempool.space includes status.block_height +
+// confirmed on confirmed txs) and exercise the gate.
 console.log('\nDapp side — height pin (canonical-order defense):');
 
 const honestTxAtHeight = (h) => async (id) => {
@@ -323,11 +315,9 @@ await test('skips height check when expectedHeight is omitted (back-compat)', as
   return ok === true;
 });
 
-// tx_index-against-block: closes the residual canonical-position gap. Even
-// if the worker tells the truth about deposited_at_height, it could lie
-// about tx_index to swap the order of two same-block deposits. The dapp
-// fetches the block's ordered txid list and checks that depositTxid is at
-// the claimed position.
+// verifyTxIndexInBlock pins the remaining canonical-position case: a correct deposited_at_height alone
+// doesn't fix the order of two same-block deposits, so the dapp also fetches the block's ordered txid
+// list and checks that depositTxid is at the claimed tx_index.
 console.log('\nDapp side — verifyTxIndexInBlock (canonical-position pin):');
 
 const FAKE_BLOCK_HASH = 'a'.repeat(64);
@@ -442,16 +432,14 @@ console.log(`\n${pass} passed, ${fail} failed.`);
 // event loop alive, and a run that passes every assertion then never exits reads as a hang.
 process.exit(fail > 0 ? 1 : 0);
 
-// ---- Helper: pull the on-chain kernel_sig out of a deposit tx envelope.
-// This mirrors what the cron does: decode the envelope at vin[0].witness[1]
-// and read the kernel_sig field. Used so the worker test exercises the same
-// bytes the cron would observe.
+// ---- Helper: pull the on-chain kernel_sig out of a deposit tx envelope
+// (vin[0].witness[1]), so the worker test sees the bytes that went on chain.
 function getKernelSigFromTx(tx) {
   const wit = tx?.vin?.[0]?.witness;
   if (!Array.isArray(wit) || wit.length < 3) throw new Error('witness shape');
   const env = worker.decodeEnvelopeScript(hexToBytes(wit[1]));
   if (!env) throw new Error('envelope decode');
-  const dec = worker.decodeTDepositPayload(env.payload);
+  const dec = dapp.decodeTDepositPayload(env.payload);
   if (!dec || dec.kind !== 'deposit') throw new Error('not a deposit');
-  return hexToBytes(dec.kernel_sig);
+  return dec.kernelSig;
 }

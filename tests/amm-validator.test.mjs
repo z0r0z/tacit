@@ -17,19 +17,41 @@ import { signSchnorr } from './composition.mjs';
 import { encodeLpAdd, encodeLpRemove, encodeSwapBatch } from './amm-envelope.mjs';
 import { derivePoolId, deriveAssetIdFromReveal, deriveLpAssetId } from './amm-asset.mjs';
 import { proveXCurve } from './amm-sigma-xcurve.mjs';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { lpAddKernelSign, lpRemoveKernelSign } from './amm-kernel.mjs';
 import { buildIntentMsg, signIntent, deriveIntentId, computeEnvelopeHash } from './amm-intent.mjs';
 import { solveClearing, lpInitShares } from './amm-clearing.mjs';
 import { validateLpAdd as _validateLpAdd, validateLpRemove as _validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, SKIP_OP_RETURN_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, buildPublicSignalsLpAdd, buildPublicSignalsLpRemove, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH, PUBLIC_SIGNALS_LP_ADD_LENGTH, PUBLIC_SIGNALS_LP_REMOVE_LENGTH } from './amm-validator.mjs';
 
+import {
+  TEST_LP_ADD_KERNEL_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B, TEST_REFUND_TAIL,
+} from './helpers/amm-refund-tail.mjs';
+
+// encodeLpAdd carries TEST_LP_ADD_REFUND_TAIL; the refund destinations are tx outputs, so the validator takes them
+// as arguments. Each side's kernel sig is signed over the matching TEST_LP_ADD_KERNEL_TAIL_A / _B.
+const LP_ADD_REFUND_DESTS = {
+  refundDestXonlyA: TEST_LP_ADD_KERNEL_TAIL_A.refundDestXonly,
+  refundDestXonlyB: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly,
+};
 function validateLpAdd(args) {
-  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...LP_ADD_REFUND_DESTS, ...args });
 }
 function validateLpRemove(args) {
-  return _validateLpRemove({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+  return _validateLpRemove({
+    opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly, ...args,
+  });
 }
 import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
+
+// m=1 BP+ range proof over a receipt's C_out_secp, cached so a payload rebuilt with other overrides
+// reuses the proof instead of re-proving.
+const _receiptRangeCache = new Map();
+function receiptRangeProof(amount, blinding) {
+  const key = `${amount}:${blinding}`;
+  if (!_receiptRangeCache.has(key)) _receiptRangeCache.set(key, bppRangeProve([amount], [blinding]).proof);
+  return _receiptRangeCache.get(key);
+}
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -123,12 +145,12 @@ function buildPoolInitArgs(deltaA, deltaB) {
   const kSigA = lpAddKernelSign({
     variant: 1, poolId: POOL_ID, assetX: assetA, deltaX: deltaA,
     shareAmount: founderShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA,
+    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA, ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const kSigB = lpAddKernelSign({
     variant: 1, poolId: POOL_ID, assetX: assetB, deltaX: deltaB,
     shareAmount: founderShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB,
+    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB, ...TEST_LP_ADD_KERNEL_TAIL_B,
   });
 
   return {
@@ -355,12 +377,12 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
   const kSigA = lpAddKernelSign({
     variant: 0, poolId: POOL_ID, assetX: assetA, deltaX: deltaA,
     shareAmount: expShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA,
+    inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA, ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const kSigB = lpAddKernelSign({
     variant: 0, poolId: POOL_ID, assetX: assetB, deltaX: deltaB,
     shareAmount: expShares, shareCSecpBytes: shareCSecp,
-    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB,
+    inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB, ...TEST_LP_ADD_KERNEL_TAIL_B,
   });
   const args = {
     variant: 0, assetA, assetB, deltaA, deltaB, shareAmount: expShares,
@@ -378,6 +400,17 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
   });
 
   test('valid LP_ADD validates', () => r.valid === true);
+  test('LP_ADD with a refund destination the kernel did not sign ⇒ rejected', () => {
+    const r2 = validateLpAdd({
+      payload, pool,
+      inputCommitmentsA: [C_inA], inputCommitmentsB: [C_inB],
+      inputsA, inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: pool.init_height + 10,
+      refundDestXonlyA: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly,
+    });
+    return !r2.valid && /kernel/.test(r2.reason);
+  });
 
   test('LP_ADD inside initial-LP lock window ⇒ rejected', () => {
     const r2 = validateLpAdd({
@@ -408,12 +441,12 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
     const badKSigA = lpAddKernelSign({
       variant: 0, poolId: POOL_ID, assetX: assetA, deltaX: deltaA,
       shareAmount: expShares + 1n, shareCSecpBytes: badShareCSecp,
-      inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA,
+      inputsX: inputsA, inputCommitments: [C_inA], excessX: r_inA, ...TEST_LP_ADD_KERNEL_TAIL_A,
     });
     const badKSigB = lpAddKernelSign({
       variant: 0, poolId: POOL_ID, assetX: assetB, deltaX: deltaB,
       shareAmount: expShares + 1n, shareCSecpBytes: badShareCSecp,
-      inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB,
+      inputsX: inputsB, inputCommitments: [C_inB], excessX: r_inB, ...TEST_LP_ADD_KERNEL_TAIL_B,
     });
     const badArgs = {
       ...args, shareAmount: expShares + 1n,
@@ -532,6 +565,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
       cOutSecp: pointToBytes(C_out_secp),
       cOutBjj: packPoint(C_out_BJJ),
       outXcurveSigma: xresOut.proof,
+      rangeProof: receiptRangeProof(amountOut, r_out_secp),
     }],
     proof: new Uint8Array(256),
   };
@@ -726,6 +760,22 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     });
     return !r2.valid && /tip_A_C_secp does not open/.test(r2.reason);
   });
+  const receiptRangeCase = (label, rangeProof) => test(label, () => {
+    const mutatedPayload = encodeSwapBatch({ ...args, receipts: [{ ...args.receipts[0], rangeProof }] });
+    const r2 = validateSwapBatch({
+      payload: mutatedPayload, pool, opReturnData: computeEnvelopeHash(mutatedPayload),
+      inputCommitmentsByIntent: [[C_in_secp]],
+      intentInputUtxos: [inputUtxos],
+      receiveScripts: [recvSpk],
+      currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    });
+    return !r2.valid && /receipt\[0\] range proof failed/.test(r2.reason);
+  });
+  const tamperedRange = new Uint8Array(args.receipts[0].rangeProof); tamperedRange[40] ^= 0x01;
+  receiptRangeCase('tampered receipt range proof ⇒ rejected', tamperedRange);
+  receiptRangeCase('empty receipt range proof ⇒ rejected', new Uint8Array(0));
+  receiptRangeCase('range proof for a different commitment ⇒ rejected', receiptRangeProof(amountOut, 12345n));
 }
 
 console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity');
@@ -814,6 +864,7 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity');
       cOutSecp: pointToBytes(C_out_secp),
       cOutBjj: packPoint(C_out_BJJ),
       outXcurveSigma: xresOut.proof,
+      rangeProof: receiptRangeProof(adversarialAmountOut, r_out_secp),
     }],
     proof: new Uint8Array(256),
   };
@@ -946,6 +997,7 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity (B-dom branc
       cOutSecp: pointToBytes(C_out_secp),
       cOutBjj: packPoint(C_out_BJJ),
       outXcurveSigma: xresOut.proof,
+      rangeProof: receiptRangeProof(adversarialAmountOut, r_out_secp),
     }],
     proof: new Uint8Array(256),
   };
@@ -1028,7 +1080,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
     poolId: POOL_ID, shareAmount, deltaA: expectedDeltaA, deltaB: expectedDeltaB,
     recvACSecpBytes: pointToBytes(C_recvA_secp),
     recvBCSecpBytes: pointToBytes(C_recvB_secp),
-    lpInputs, lpInputCommitments, excessLP: r_share_in,
+    lpInputs, lpInputCommitments, excessLP: r_share_in, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
   });
 
   function buildPayload(overrides = {}) {
@@ -1070,6 +1122,14 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
         && happy.newPoolState.reserve_B === pool.reserve_B - expectedDeltaB
         && happy.newPoolState.lp_total_shares === pool.lp_total_shares - shareAmount;
   });
+  test('LP_REMOVE with a refund destination the kernel did not sign ⇒ rejected', () => {
+    const r = validateLpRemove({
+      payload: buildPayload(), pool, lpInputCommitments, lpInputs,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      refundDestXonly: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly,
+    });
+    return !r.valid && /kernel sig/.test(r.reason);
+  });
 
   // Over-burn: shareAmount > pool.lp_total_shares MUST be cleanly
   // rejected. Earlier the validator returned { valid: true } with
@@ -1084,7 +1144,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
       deltaB: (pool.reserve_B * huge) / pool.lp_total_shares,
       recvACSecpBytes: pointToBytes(C_recvA_secp),
       recvBCSecpBytes: pointToBytes(C_recvB_secp),
-      lpInputs, lpInputCommitments, excessLP: r_share_in,
+      lpInputs, lpInputCommitments, excessLP: r_share_in, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
     });
     const overPayload = buildPayload({
       shareAmount: huge,
@@ -1105,7 +1165,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
       deltaA: expectedDeltaA + 1n, deltaB: expectedDeltaB,
       recvACSecpBytes: pointToBytes(C_recvA_secp),
       recvBCSecpBytes: pointToBytes(C_recvB_secp),
-      lpInputs, lpInputCommitments, excessLP: r_share_in,
+      lpInputs, lpInputCommitments, excessLP: r_share_in, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
     });
     const r = runValidate(buildPayload({ deltaA: expectedDeltaA + 1n, kernelSigLP: wrongSig }));
     return !r.valid && /deltaA/.test(r.reason);
@@ -1118,7 +1178,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
       deltaA: expectedDeltaA, deltaB: expectedDeltaB + 1n,
       recvACSecpBytes: pointToBytes(C_recvA_secp),
       recvBCSecpBytes: pointToBytes(C_recvB_secp),
-      lpInputs, lpInputCommitments, excessLP: r_share_in,
+      lpInputs, lpInputCommitments, excessLP: r_share_in, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
     });
     const r = runValidate(buildPayload({ deltaB: expectedDeltaB + 1n, kernelSigLP: wrongSig }));
     return !r.valid && /deltaB/.test(r.reason);
@@ -1295,6 +1355,7 @@ console.log('\nT_SWAP_BATCH validator — arbiter-pinned pool adversarial covera
         cOutSecp: pointToBytes(C_out_secp),
         cOutBjj: packPoint(C_out_BJJ),
         outXcurveSigma: xresOut.proof,
+        rangeProof: receiptRangeProof(amountOut, r_out_secp),
       }],
       proof: new Uint8Array(256),
     });
@@ -1642,9 +1703,8 @@ console.log('\nGroth16 publicSignals canonical serialization');
 console.log('\nGroth16 publicSignals canonical serialization — LP_ADD + LP_REMOVE');
 {
   // The LP circuits are scalar-only (no signal arrays). circom emits public
-  // inputs in `public [...]` declaration order; the validator helpers
-  // (added 2026-05-18) pin that order so dapp + worker + tests share one
-  // canonical builder.
+  // inputs in `public [...]` declaration order; the validator helpers pin
+  // that order so dapp + worker + tests share one canonical builder.
   const POOL_ID = fill(32, 0x42);
   const pool = { pool_id: POOL_ID, reserve_A: 1_000_000n, reserve_B: 2_000_000n };
 
@@ -1716,6 +1776,7 @@ console.log('\nT_LP_ADD / T_LP_REMOVE OP_RETURN binding');
 
   test('validateLpAdd: honest opReturnData = SHA256(payload) accepted', () => {
     const r = _validateLpAdd({
+      ...LP_ADD_REFUND_DESTS,
       payload, pool: null,
       inputCommitmentsA: args._ctx.inputCommitmentsA,
       inputCommitmentsB: args._ctx.inputCommitmentsB,
@@ -1761,6 +1822,7 @@ console.log('\nT_LP_ADD / T_LP_REMOVE OP_RETURN binding');
 
   test('validateLpAdd: mismatched opReturnData rejected (envelope-swap defense)', () => {
     const r = _validateLpAdd({
+      ...LP_ADD_REFUND_DESTS,
       payload, pool: null,
       inputCommitmentsA: args._ctx.inputCommitmentsA,
       inputCommitmentsB: args._ctx.inputCommitmentsB,

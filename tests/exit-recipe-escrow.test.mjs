@@ -59,8 +59,8 @@ test('encodeExitRecipe round-trips through the salt (deterministic)', () => {
 });
 
 // Selectors below are keccak256(signature)[0:4] for the router's exit-recipe entrypoints — cross-checked
-// independently via `cast sig` against the exact ABI signature strings (2026-09-05). A drift here means the
-// router's function signatures changed and the hand-rolled encoders below are stale.
+// independently via `cast sig` against the exact ABI signature strings. A drift here means the router's
+// function signatures changed and the hand-rolled encoders below are stale.
 const SEL_ESCROW_ADDRESS_FOR = '0x2bf0cda2';
 const SEL_ACTIVATE_EXIT = '0x1699fd5b';
 const SEL_RECLAIM_EXIT = '0x02edf635';
@@ -104,7 +104,7 @@ test('reclaimExitCalldata: correct selector, decodes back to the same extraToken
 
 // createRetryableTicket(address,uint256,uint256,address,address,uint256,uint256,bytes) — cross-checked
 // via `cast sig` and against the live Robinhood Chain Inbox (0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D),
-// which responded correctly to this exact selector on 2026-09-05.
+// which responds correctly to this exact selector.
 const SEL_CREATE_RETRYABLE_TICKET = '0x679b6ded';
 
 test('createRetryableTicketCalldata: correct selector, static fields decode back exactly', () => {

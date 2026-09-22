@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // Adversarial coverage for the auto-fulfil funding verifier.
 //
-// Locks in C1+H1 from the audit:
-//   - C1: dapp's auto-fulfil must verify funding_txid actually paid the
-//     treasury, not just check the field's format.
-//   - H1: the verifier must reject unconfirmed (RBF-able) funding txs, with
-//     `transient: true` caching so a later confirmation isn't missed.
+// The verifier must:
+//   - confirm funding_txid actually paid the treasury, not just check the field's format;
+//   - reject unconfirmed (RBF-able) funding txs, with `transient: true` caching so a later
+//     confirmation isn't missed.
 //
 // Three test vectors against the live signet API:
 //   1. Junk txid (64 hex but not a real tx) → expect ok:false, transient
@@ -118,13 +117,11 @@ console.log('\nVector 3: previous run\'s real funding txid (if provided)');
       // Tip confirmed AND ≥ min sats — full happy path.
       expect('happy path: ok:true with sats ≥ min', result, r => r.ok === true && r.sats >= MIN_SATS, 'expected ok:true');
     } else if (result.transient) {
-      // Mempool-only — H1 confirmation gate is firing (correct rejection).
+      // Mempool-only — the confirmation gate is firing (correct rejection).
       expect('still unconfirmed: rejected with transient:true (H1 conf gate)', result, r => r.ok === false && r.transient === true, 'expected transient rejection');
     } else if (/paid \d+ sats, need ≥ \d+/.test(result.err || '')) {
-      // Permanent rejection for paying < MIN_SATS — also correct.
-      // This is what fires when the dryrun's 1000-sat tips are checked
-      // against the dapp's 3000-sat min. Security positive: verifier
-      // refuses underfunded tips regardless of who broadcast them.
+      // Permanent rejection for paying < MIN_SATS — also correct: the dryrun's 1000-sat tips fail the
+      // dapp's 3000-sat floor, and the verifier refuses underfunded tips regardless of who broadcast them.
       expect('underfunded tip: permanent rejection (M6 floor)', result, r => r.ok === false && r.transient !== true, 'expected permanent under-min rejection');
     } else {
       expect('unexpected outcome shape', result, () => false, 'unrecognized rejection reason — investigate');

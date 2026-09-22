@@ -332,6 +332,7 @@ const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
   assert.equal(job.route.hops.length, 2);
 
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
   const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
   const owner = '0x' + '00'.repeat(31) + '03';
   const outOwner = '0x' + '00'.repeat(31) + '04';

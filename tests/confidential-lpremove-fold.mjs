@@ -86,7 +86,7 @@ rejects('unknown pool for the pair', seed({ withPool: false }), canonEnv());
 rejects('pool not c0-backed', seed({ c0: false }), canonEnv());
 rejects('bad share-burn kernel', seed(), { ...canonEnv(), kernelSig: '0x' + 'de'.repeat(64) });
 
-// ── STALE (reserves moved by a concurrent swap) → pays the NEW proportion, not a skip (closes C-01) ──
+// ── STALE (reserves moved by a concurrent swap) → pays the NEW proportion, not a skip ──
 // The declared delta_a/delta_b no longer have to equal the recomputed payout; the withdrawn notes are FORMED
 // from the payout against the CURRENT reserves under the envelope's public blindings.
 {
@@ -102,7 +102,7 @@ rejects('bad share-burn kernel', seed(), { ...canonEnv(), kernelSig: '0x' + 'de'
   ok(st._acc.notes.leaves.some((l) => pool.hx(l).toLowerCase() === expLeaf.toLowerCase()), 'stale: recvA leaf FORMED from the recomputed payout at the vout-0 key');
 }
 
-// ── ZERO-PAYOUT LEG: a leg rounding to zero re-mints the burned shares (H-03) instead of stranding them ──
+// ── ZERO-PAYOUT LEG: a leg rounding to zero re-mints the burned shares instead of stranding them ──
 {
   const st = seed({ rA: 1n }); // reserve_a = 1 ⇒ payA = floor(1·share/total) = 0
   const before = st.counts().note;

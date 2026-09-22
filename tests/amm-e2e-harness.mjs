@@ -60,6 +60,7 @@ import {
 import {
   proveXCurve,
 } from './amm-sigma-xcurve.mjs';
+import { bppRangeProve } from '../dapp/bulletproofs-plus.js';
 import {
   encodeLpAdd, encodeLpRemove, encodeSwapBatch,
 } from './amm-envelope.mjs';
@@ -69,11 +70,24 @@ import {
   SKIP_OP_RETURN_VERIFY_UNSAFE,
 } from './amm-validator.mjs';
 
+import {
+  TEST_LP_ADD_KERNEL_TAIL_A, TEST_LP_ADD_KERNEL_TAIL_B, TEST_REFUND_TAIL,
+} from './helpers/amm-refund-tail.mjs';
+
+// The refund destinations are tx outputs the synthetic chain does not model, so the kernels sign the shared test
+// tails and the validator is handed the same destinations.
 function validateLpAdd(args) {
-  return _validateLpAdd({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+  return _validateLpAdd({
+    opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE,
+    refundDestXonlyA: TEST_LP_ADD_KERNEL_TAIL_A.refundDestXonly,
+    refundDestXonlyB: TEST_LP_ADD_KERNEL_TAIL_B.refundDestXonly,
+    ...args,
+  });
 }
 function validateLpRemove(args) {
-  return _validateLpRemove({ opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, ...args });
+  return _validateLpRemove({
+    opReturnData: SKIP_OP_RETURN_VERIFY_UNSAFE, refundDestXonly: TEST_REFUND_TAIL.refundDestXonly, ...args,
+  });
 }
 import {
   solveClearing, amountOutForTrader, lpInitShares, lpAddShares, lpRemoveOutputs,
@@ -304,9 +318,8 @@ export function buildAndSubmitPoolInit({
   chain, indexer, lp, assetA_info, assetB_info, deltaA, deltaB, feeBps, vkCid, ceremonyCid,
   // V1 pools carry a zero capability byte: the encoder rejects anything else, because the byte is
   // reserved in the pool_id preimage for forward extensions and no V1 validator can interpret it.
-  // This harness used to default to POOL_CAP_SOLO_INTENT_ALLOWED (0x02) to let single-trader
-  // scenarios exercise the swap path, which meant the lifecycle ran against a pool shape V1 cannot
-  // actually launch. Scenarios that need a solo intent must instead use a second trader.
+  // Scenarios that need a solo intent use a second trader rather than
+  // POOL_CAP_SOLO_INTENT_ALLOWED (0x02), which V1 cannot launch.
   // poolCapabilityFlags is part of the pool_id preimage, so it MUST stay
   // consistent across derivePoolId, kernel-sig construction, and the envelope encoder.
   poolCapabilityFlags = 0x00,
@@ -362,13 +375,13 @@ export function buildAndSubmitPoolInit({
     variant: 1, poolId, assetX: assetA, deltaX: deltaA, shareAmount: founder_shares,
     shareCSecpBytes: pointToBytes(C_share_secp),
     inputsX: [{ txid: inputA.txid, vout: inputA.vout }],
-    inputCommitments: [inputA.commitment], excessX: inputA.blinding,
+    inputCommitments: [inputA.commitment], excessX: inputA.blinding, ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const kSigB = lpAddKernelSign({
     variant: 1, poolId, assetX: assetB, deltaX: deltaB, shareAmount: founder_shares,
     shareCSecpBytes: pointToBytes(C_share_secp),
     inputsX: [{ txid: inputB.txid, vout: inputB.vout }],
-    inputCommitments: [inputB.commitment], excessX: inputB.blinding,
+    inputCommitments: [inputB.commitment], excessX: inputB.blinding, ...TEST_LP_ADD_KERNEL_TAIL_B,
   });
 
   // MINIMUM_LIQUIDITY locked output info.
@@ -488,13 +501,13 @@ export function buildAndSubmitLpAdd({
     variant: 0, poolId: pool.pool_id, assetX: assetA, deltaX: deltaA, shareAmount: expectedShares,
     shareCSecpBytes: pointToBytes(C_share_secp),
     inputsX: [{ txid: inputA.txid, vout: inputA.vout }],
-    inputCommitments: [inputA.commitment], excessX: inputA.blinding,
+    inputCommitments: [inputA.commitment], excessX: inputA.blinding, ...TEST_LP_ADD_KERNEL_TAIL_A,
   });
   const kSigB = lpAddKernelSign({
     variant: 0, poolId: pool.pool_id, assetX: assetB, deltaX: deltaB, shareAmount: expectedShares,
     shareCSecpBytes: pointToBytes(C_share_secp),
     inputsX: [{ txid: inputB.txid, vout: inputB.vout }],
-    inputCommitments: [inputB.commitment], excessX: inputB.blinding,
+    inputCommitments: [inputB.commitment], excessX: inputB.blinding, ...TEST_LP_ADD_KERNEL_TAIL_B,
   });
   const payload = encodeLpAdd({
     variant: 0, assetA, assetB, deltaA, deltaB, shareAmount: expectedShares,
@@ -574,6 +587,7 @@ export function buildAndSubmitLpRemove({
     recvBCSecpBytes: pointToBytes(C_recvB_secp),
     lpInputs: [{ txid: lpShareUtxo.txid, vout: lpShareUtxo.vout }],
     lpInputCommitments: [lpShareUtxo.commitment], excessLP: lpShareUtxo.blinding,
+    refundDestXonly: TEST_REFUND_TAIL.refundDestXonly,
   });
   const payload = encodeLpRemove({
     assetA: pool.asset_A, assetB: pool.asset_B,
@@ -823,6 +837,7 @@ export function settlerBuildAndSubmit({ chain, indexer, settler, pool, intents }
     receipts: filled.map(it => ({
       cOutSecp: pointToBytes(it.C_out_secp), cOutBjj: packPoint(it.C_out_BJJ),
       outXcurveSigma: it.xcurveSigmaOut,
+      rangeProof: bppRangeProve([it.amountOut], [it.r_out_secp]).proof,
     })),
     proof: new Uint8Array(256),                            // Groth16 stub
   };

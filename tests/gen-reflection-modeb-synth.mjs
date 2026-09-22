@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mode-B reverse-reflection reflect-exec (ETH→BTC). Drives the guest's mode_b=1 path end-to-end AND tests
-// the production fixture-assembly helper `buildModeBBatch` (the G3 indexer→fixture handoff). A SYNTHETIC
+// the production fixture-assembly helper `buildModeBBatch` (the worker's indexer→fixture handoff). A SYNTHETIC
 // eth-reflection PV (`buildEthPv`: the genesis sync-committee anchor + a crossOutSetRoot + a
 // consumedNuSetRoot) stands in for the real eth proof — verify_sp1_proof is a DEFERRED claim in the SP1
 // executor (records (vkey, sha256(pv)) but does NOT need the inner Compressed proof at exec time), so the
@@ -97,7 +97,7 @@ const cbTxid = computeTxid(coinbase);
 const coinbaseSpec = { txData: '0x' + Buffer.from(coinbase).toString('hex'), txid: '0x' + Buffer.from(cbTxid).toString('hex'), vins: [], env: null };
 const header = mineHeader(computeMerkleRoot([cbTxid, txid]));
 
-// ── (G3) The eth proof bundle eth_prove emits alongside eth_pv.hex → the mode_b witnesses ──
+// ── The eth proof bundle eth_prove emits alongside eth_pv.hex → the mode_b witnesses ──
 const ethBundle = {
   // The guest PINS the EthCallOutbox (reflect.rs): word 11 must carry it, so the message set a fold sees can
   // only have come from that outbox. An all-zero word is a hard reject, so the PV must name the pinned address.

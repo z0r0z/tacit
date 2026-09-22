@@ -1,9 +1,7 @@
-// The settle queue is observable, and a stopped relay is distinguishable from an idle one.
-//
-// Nothing used to detect a hung or dead settle service: the settler had a pendingCount() that no endpoint exposed,
-// and the settle service only heartbeats on job events. So relayed jobs could sit indefinitely and nothing would
-// notice until a user complained. The signature of a dead relay is a queue whose OLDEST pending job keeps aging;
-// an empty queue means nothing (it may simply be idle).
+// The settle queue is observable via /confidential/queue, and a stopped relay is distinguishable from an
+// idle one. The settle service only heartbeats on job events, so a stalled queue would otherwise go
+// unnoticed until pending jobs pile up. The signature of a dead relay is a queue whose OLDEST pending job
+// keeps aging; an empty queue means nothing (it may simply be idle).
 //
 // Run: node tests/queue-health.test.mjs
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';

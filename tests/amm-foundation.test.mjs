@@ -175,8 +175,8 @@ group('decodeTLpAddPayload — rejection cases');
   // Truncated before the refund tail finishes
   const truncated = fullPayload.slice(0, fullPayload.length - 1);
   ok('truncated refund tail → null', worker.decodeTLpAddPayload(truncated) === null);
-  // Trailing garbage past the refund tail (e.g. a stale proof tail from an
-  // older builder) is no longer a valid T_LP_ADD envelope — reject it.
+  // Trailing garbage past the refund tail (e.g. a stale proof tail from
+  // another encoder) makes this an invalid T_LP_ADD envelope — reject it.
   const padded = new Uint8Array(fullPayload.length + 3);
   padded.set(fullPayload);
   ok('trailing bytes past the refund tail → null', worker.decodeTLpAddPayload(padded) === null);

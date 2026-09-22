@@ -2,9 +2,8 @@
 // Runs against live signet + the production worker. Single burner wallet:
 //
 //   1. Etches a fresh test asset with supply == 23 (small, innocuous)
-//   2. Self-CXFERs supply into 4 UTXOs of amounts {3, 5, 7, 8} (the user's
-//      reported example)
-//   3. Drives the exact code path the new listing flow uses:
+//   2. Self-CXFERs supply into 4 UTXOs of amounts {3, 5, 7, 8}
+//   3. Drives the exact code path the listing flow uses:
 //        coverUtxos = greedy descending pick (all 4)
 //        buildAndBroadcastCXferMulti({ recipients: [{ self, 23 }], forceUtxos: coverUtxos })
 //      Produces one 23-amount UTXO + 0-change UTXO (Σinputs == listAmount).

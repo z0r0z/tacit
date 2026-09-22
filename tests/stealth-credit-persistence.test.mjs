@@ -4,7 +4,7 @@
 // getStealthCredit / loadStealthCredits (defined in dapp/tacit.js). The
 // persistence layer is what enables recovery-from-seed for stealth-received
 // UTXOs: without it, a page reload silently drops stealth credits from the
-// user's balance (same class as the AMM-recovery gap fixed 2026-05-18).
+// user's balance.
 //
 // We can't import dapp/tacit.js directly in node (DOM + localStorage), so
 // this test mirrors the JSON shape and exercises the round-trip semantics
@@ -13,7 +13,7 @@
 import * as fs from 'node:fs';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 
-const src = fs.readFileSync('dapp/tacit.js', 'utf8');
+const src = fs.readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -24,10 +24,9 @@ function assert(cond, msg) { if (!cond) throw new Error(msg || 'assert'); }
 function assertEq(a, b, msg) { if (a !== b) throw new Error(`${msg || 'assertEq'}: ${a} !== ${b}`); }
 
 // --- Shape mirror -----------------------------------------------------------
-// Mirrors the dapp's recordStealthCredit / getStealthCredit semantics. Per
-// The on-disk record carries `b` (stealthBlindingHex) and never
-// caches tweaked_sk — the dapp re-derives tweaked_sk = (wallet.priv + b) mod n
-// at unlock time so an attacker with localStorage but no password cannot spend.
+// Mirrors the dapp's recordStealthCredit / getStealthCredit semantics.
+// The on-disk record carries `b` (stealthBlindingHex) and never caches tweaked_sk — the dapp re-derives
+// tweaked_sk = (wallet.priv + b) mod n at unlock time, so localStorage alone, without the password, cannot spend.
 function makeShape({ amount, amountBlinding, stealthBlinding, commitmentHex, senderPubHex, assetIdHex, blockTime }) {
   return {
     assetIdHex,
@@ -141,16 +140,14 @@ test('integration: dapp/tacit.js exports the new persistence helpers', () => {
 });
 
 test('integration: scanHoldings rehydrates stealth credits before returning', () => {
-  // The rehydration block is bounded by two distinctive comments. Failing
-  // this test means the block was deleted or moved out of scope and reload
-  // recovery is silently broken — same class of bug as the AMM-UTXO gap
-  // fixed 2026-05-18.
-  const rehydrateStart = '// SPEC-BLINDED-PUBKEY §A.2 recovery: rehydrate persisted stealth credits.';
-  const rehydrateEnd = '// Merge confirmed-true entries into the session-persistent cache so the';
+  // The rehydration block runs from its loadStealthCredits() call to its catch. Failing this test means the
+  // block was deleted or moved out of scope and reload recovery is silently broken.
+  const rehydrateStart = 'const credits = loadStealthCredits();';
+  const rehydrateEnd = "console.warn('stealth-credit rehydration failed:'";
   const startIdx = src.indexOf(rehydrateStart);
-  const endIdx = src.indexOf(rehydrateEnd);
-  assert(startIdx > 0, 'rehydration header comment missing');
-  assert(endIdx > startIdx, 'rehydration footer comment missing or out of order');
+  const endIdx = src.indexOf(rehydrateEnd, startIdx);
+  assert(startIdx > 0, 'rehydration block missing');
+  assert(endIdx > startIdx, 'rehydration block end missing or out of order');
   const block = src.slice(startIdx, endIdx);
   assert(block.includes('loadStealthCredits('), 'rehydration block does not load credits');
   assert(block.includes('getOutspend('), 'rehydration block does not check liveness');
@@ -158,8 +155,8 @@ test('integration: scanHoldings rehydrates stealth credits before returning', ()
 });
 
 test('integration: CXFER sender accepts stealthAddress recipient', () => {
-  // The build-and-broadcast-CXfer single-recipient wrapper now accepts
-  // stealthAddress alongside the legacy recipientPubHex. Without this,
+  // The build-and-broadcast-CXfer single-recipient wrapper accepts
+  // stealthAddress alongside recipientPubHex. Without this,
   // the send-form's stealth-detected path would have no plumbing.
   assert(src.includes('async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddress'),
     'buildAndBroadcastCXfer wrapper missing stealthAddress parameter');
@@ -207,11 +204,10 @@ test('integration: self-shielded send auto-persists credit at broadcast time', (
   // When the user sends to their own shielded address, the sender knows the
   // recipient priv (== wallet.priv) and the blinding. Persisting the credit
   // at broadcast time prevents the UTXO from silently vanishing in the
-  // holdings UI until the user runs a manual rescan. Same fix as the AMM-
-  // UTXO recovery gap (2026-05-18) but for self-shielded CXFER.
+  // holdings UI until the user runs a manual rescan.
   assert(src.includes('selfStealthBlinding'),
     'self-stealth detection field missing from CXFER sender');
-  assert(src.includes('Self-shielded send: when the sender used their own shielded address'),
+  assert(src.includes('if (!parsed[i].isStealth || parsed[i].selfStealthBlinding == null) continue;'),
     'self-shielded post-broadcast persistence block missing');
   assert(src.includes("extra: { shielded: true, self: true"),
     'self-shielded transfer-in activity entry missing');

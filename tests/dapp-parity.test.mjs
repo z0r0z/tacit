@@ -1,15 +1,11 @@
 // Differential parity test: dApp source vs test-side mirror in composition.mjs.
 //
-// This is the F6 closure. Earlier audit work caught two silent drifts (F1 BP
-// generator domain strings; T7 mint anchor binding) where the test-side
-// reference diverged from the canonical dApp implementation but every
-// internally-consistent test still passed. This file imports the actual
-// dapp/tacit.js under a jsdom shim and asserts byte-equal output for every
-// shared protocol function. Future drift fails this test on the next CI run.
+// The test-side reference mirror can diverge from the canonical dApp implementation while every
+// internally-consistent test still passes. This file imports the actual dapp/tacit.js under a jsdom
+// shim and asserts byte-equal output for every shared protocol function, so drift fails this test.
 //
-// jsdom lets the dApp's top-level DOM access (document.addEventListener,
-// localStorage init) succeed; __TACIT_NO_INIT__ prevents init() from running
-// (no DOM/network/extension dependencies needed).
+// jsdom lets the dApp's top-level DOM access (document.addEventListener, localStorage init) succeed;
+// __TACIT_NO_INIT__ prevents init() from running (no DOM/network/extension dependencies needed).
 //
 // Run: `node dapp-parity.test.mjs`
 
@@ -261,8 +257,8 @@ await test('preauthSaleAuthMsg dapp ↔ comp', () => eqBytes(
 
 // Sanity: changing any signed field flips the hash. Catches accidental
 // missing-binding regressions (e.g., forgetting to include `expiry` in the
-// preimage would leave this passing for unrelated fields but would let an
-// attacker rebind a captured signature to a different expiry).
+// preimage would leave this passing for unrelated fields while letting a
+// captured signature be rebound to a different expiry).
 await test('preauthSaleAuthMsg binds min_price_sats', () => {
   const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
   const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, minPriceSats: PREAUTH_MIN_PRICE + 1 });
@@ -319,13 +315,10 @@ await test('preauthSellerSpendSkeletonTx pins shape', () => {
       && bytesToHex(skel.outputs[1].script) === PREAUTH_PAYOUT_SCRIPT_HEX;
 });
 
-// CRITICAL: the bytes the seller signs (dapp's sighashV0WithType applied to
-// the canonical skeleton) MUST byte-equal what the worker reconstructs from
-// the sale-auth fields. Without this test, a silent divergence in either
-// the skeleton layout or the BIP-143 sighash formula would let every dapp-
-// signed listing POST get rejected by the worker with "seller_asset_spend
-// invalid" — and only an end-to-end run would catch it. This test pins the
-// two implementations together at the byte level so any drift fails CI.
+// The bytes the seller signs (dapp's sighashV0WithType applied to the canonical skeleton) MUST
+// byte-equal what the worker reconstructs from the sale-auth fields — a silent divergence in either
+// the skeleton layout or the BIP-143 sighash formula would get every dapp-signed listing rejected by
+// the worker, and only an end-to-end run would catch it.
 await test('dapp sighashV0WithType ↔ comp preauthSellerSpendSighash byte equality', () => {
   const skel = dapp.preauthSellerSpendSkeletonTx({
     assetOutpoint: { txid: PREAUTH_OUTPOINT_TXID, vout: PREAUTH_OUTPOINT_VOUT },
@@ -457,7 +450,7 @@ await test('outsider cannot decrypt onchain payload (wrong privkey)', () => {
   const blinding = hexToBytes('5a'.repeat(32));
   const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
   const cipher = dapp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
-  // Attacker with SK_C tries to decrypt against the maker's pubkey.
+  // Outsider with SK_C tries to decrypt against the maker's pubkey.
   const SK_C = hexToBytes('07'.repeat(32));
   const ksOut = dapp.deriveAxintentOnchainKeystreams(SK_C, PK_A, INTENT_ID, ASSET_ID, 0);
   const decBad = dapp.decodeAxintentOnchainPayload(cipher, ksOut);
@@ -468,7 +461,7 @@ await test('replay protection: ciphertext bound to (intent_id, asset_id, vout)',
   const blinding = hexToBytes('aa'.repeat(32));
   const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
   const cipher = dapp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
-  // Try to decrypt the same ciphertext under a DIFFERENT intent_id.
+  // Try to decrypt the same ciphertext under a different intent_id.
   const otherIntent = hexToBytes('ab'.repeat(16));
   const ksWrong = dapp.deriveAxintentOnchainKeystreams(SK_B, PK_A, otherIntent, ASSET_ID, 0);
   const decBad = dapp.decodeAxintentOnchainPayload(cipher, ksWrong);
@@ -705,10 +698,8 @@ await test('dapp.decodeCPmintPayload accepts dapp-encoded bytes (round-trip)', (
 // =============== T_DROP / T_DCLAIM dapp ↔ composition parity ===============
 // composition.mjs is the Node-friendly mirror of dapp/tacit.js. Byte-for-byte
 // parity is enforced by encoding the same args via both and comparing.
-// Worker-side decoders for T_DROP/T_DCLAIM are added in Phase 2 (validator
-// branches); when they land, additional dapp.encode → worker.decode tests
-// should be added next to the existing T_PMINT parity blocks above.
-// (`comp` is already imported at module top — `import * as comp` line 35.)
+// Worker-side dapp.encode → worker.decode parity is covered further below.
+// (`comp` is already imported at module top.)
 
 await test('T_DROP dapp.encode == composition.encode (standard shape)', () => {
   const args = {
@@ -857,7 +848,7 @@ await test('dropReclaimMsg parity (dapp == composition)', () => {
 });
 
 // =============== T_DROP / T_DCLAIM dapp ↔ worker parity ===============
-// Phase 3 closes the byte-level contract between the dapp and the worker.
+// Closes the byte-level contract between the dapp and the worker.
 // Drift here silently breaks indexing — the worker decoder would return null
 // on dapp-encoded bytes, and the cron would skip every T_DROP/T_DCLAIM the
 // dapp broadcasts.

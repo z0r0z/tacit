@@ -45,9 +45,9 @@ const ENTRY0 = 0n;
 const R0 = pool.farmReceiptLeaf(FARM_ID, LP_ASSET, SHARES, OWNER, NONCE0);
 
 const SALT_H = 0xd1, SALT_U = 0xd2;
-// The materialized note's vout[1] DESTINATION scriptPubKey (P2WPKH-shaped). The owner sig binds it so a
-// front-runner can't replay the public envelope into their own vout[1] (the dest-binding fix). The guest +
-// attester re-parse output[1]'s scriptPubKey from the real tx and require it equals the signed value.
+// The materialized note's vout[1] DESTINATION scriptPubKey (P2WPKH-shaped). The owner sig binds it, so the
+// public envelope cannot be replayed into a different vout[1]. The guest + attester re-parse output[1]'s
+// scriptPubKey from the real tx and require it equals the signed value.
 // P2TR (0x51 0x20 ‖ x-only key): the guest derives each reflected note's spend authority from the
 // destination output's Taproot key (fold_harvest / fold_lp_unbond), so a non-P2TR destination is a
 // fail-closed reject there — these must be real Taproot programs for the lifecycle to fold at all.
@@ -70,8 +70,8 @@ const mkTx = (env, salt, destSpk) => {
   return { tx, txid: computeTxid(tx), dummyTxid };
 };
 // Owner BIP-340 auth binds the materialized note's blinding (reward_r / lp_return_r) AND its vout[1]
-// DESTINATION scriptPubKey (REWARD_SPK / RETURN_SPK) — the destination is what stops a front-run redirect of
-// the bearer note (the txid can't be signed; the scriptPubKey can). Mirror the guest msgs + the JS builders.
+// DESTINATION scriptPubKey (REWARD_SPK / RETURN_SPK) — binding the destination is what fixes where the
+// bearer note lands (the txid can't be signed; the scriptPubKey can). Mirror the guest msgs + the JS builders.
 const harvestMsg = keccak_256(cat([HARVEST_DOM, hb(FARM_ID), hb(R0), be(REWARD, 8), be(REWARD_R, 32), REWARD_SPK]));
 const unbondMsg = keccak_256(cat([UNBOND_DOM, hb(FARM_ID), hb(R0), be(SHARES, 8), be(LP_RETURN_R, 32), RETURN_SPK]));
 const harvesterSig = signSchnorr(harvestMsg, OWNER_PRIV);
@@ -107,8 +107,8 @@ const header = mineHeader(computeMerkleRoot([cbTxid, h.txid, u.txid]));
 // ── prior: resume a registered farm (WITH launcher_pubkey + lp_asset) + the bond receipt R0 in the note tree ──
 const state = pool.makeScanReflectionState();
 state.setHeight(BLOCK_HEIGHT - 1);
-// Finite campaign window (end far above the test tip, so accrual is identical to the old perpetual default:
-// rps = RATE·GAP·2^64/SHARES = 10·2^64). No reflection farm may be perpetual.
+// Finite campaign window (end far above the test tip, so accrual is unaffected: rps = RATE·GAP·2^64/SHARES
+// = 10·2^64). No reflection farm may be perpetual.
 state.farmRewards.load([{ farmId: FARM_ID, rate: String(RATE), totalShares: String(SHARES), rps: '0', totalRewardDebt: '0', lastHeight: String(BLOCK_HEIGHT - GAP), launcherPubkey: LAUNCHER_PUB, lpAsset: LP_ASSET, startHeight: '0', endHeight: String(BLOCK_HEIGHT + 10_000_000) }]);
 state.farmEntries.load([{ leaf: R0, entryRps: ENTRY0.toString() }]); // the bond's execution-stamped checkpoint
 state.pools.load([{ poolId: FARM_ID, assetA: REWARD_ASSET, assetB: '0x' + '00'.repeat(32), reserveA: TREASURY.toString(), reserveB: '0', totalShares: '0', c0Backed: true, protocolFeeBps: 0, kLast: '0', protocolFeeAccrued: '0' }]);

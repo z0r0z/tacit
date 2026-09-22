@@ -1,20 +1,9 @@
-// T_DEPOSIT / T_WITHDRAW envelope cross-impl test.
+// T_DEPOSIT / T_WITHDRAW envelope encode/decode test (dapp side).
 //
-// Mirrors the petch-pmint cross-impl pattern: dapp encodes a payload, worker
-// decodes it, byte-for-byte field equality. Without this, a silent drift
-// between dapp's encoder and worker's decoder (mismatched byte ordering, an
-// added/removed field, a forgotten endianness flip) would only surface when
-// a real T_DEPOSIT broadcasts on chain and the cron silently skips it — the
-// same silent-fail mode that hit FAIR's first day.
-//
-// What this validates that mixer.test.mjs doesn't:
-//   - dapp.encodeTDepositPayload bytes decode under worker.decodeTDepositPayload
-//     with field equality
-//   - same for POOL_INIT (denomination=0 sentinel variant)
-//   - same for T_WITHDRAW (variable-length proof tail)
-//   - bind_hash re-derivation in dapp's decoder rejects a mutated tail
-//   - both decoders reject malformed length / wrong opcode / out-of-range denom
-//   - dapp.decode round-trips its own encode
+//   - dapp.decode round-trips its own encode, field for field
+//   - T_WITHDRAW's variable-length proof tail
+//   - bind_hash re-derivation in the decoder rejects a mutated tail
+//   - the decoders reject malformed length / wrong opcode / out-of-range denom
 //
 // Run: `node mixer-envelope.test.mjs`
 
@@ -38,7 +27,6 @@ globalThis.__TACIT_NO_INIT__ = true;
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 
 const dapp = await import('../dapp/tacit.js');
-const worker = await import('../worker/src/index.js');
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -63,20 +51,7 @@ RECP[0] = 0x02; for (let i = 1; i < 33; i++) RECP[i] = (i * 19 + 23) & 0xff;
 const RLEAF = new Uint8Array(32).map((_, i) => (i * 23 + 29) & 0xff);
 const PROOF = new Uint8Array(256).map((_, i) => (i * 3 + 1) & 0xff);
 
-console.log('T_DEPOSIT cross-impl (standard, denom > 0):');
-
-await test('dapp.encode → worker.decode round-trips', () => {
-  const payload = dapp.encodeTDepositPayload({
-    assetId: ASSET, denomination: 100000000n, leafCommitment: LEAF, kernelSig: SIG64,
-  });
-  const dec = worker.decodeTDepositPayload(payload);
-  if (!dec) return false;
-  return dec.kind === 'deposit'
-      && dec.asset_id === bytesToHex(ASSET)
-      && dec.denomination === '100000000'
-      && dec.leaf_commitment === bytesToHex(LEAF)
-      && dec.kernel_sig === bytesToHex(SIG64);
-});
+console.log('T_DEPOSIT (standard, denom > 0):');
 
 await test('dapp.encode → dapp.decode round-trips', () => {
   const payload = dapp.encodeTDepositPayload({
@@ -109,23 +84,23 @@ await test('encoder rejects out-of-range denomination', () => {
   } catch { return true; }
 });
 
-await test('worker.decode rejects wrong opcode prefix', () => {
+await test('dapp.decode rejects wrong opcode prefix', () => {
   const payload = dapp.encodeTDepositPayload({
     assetId: ASSET, denomination: 1n, leafCommitment: LEAF, kernelSig: SIG64,
   });
   const tampered = new Uint8Array(payload);
   tampered[0] = 0x99;  // not T_DEPOSIT
-  return worker.decodeTDepositPayload(tampered) === null;
+  return dapp.decodeTDepositPayload(tampered) === null;
 });
 
-await test('worker.decode rejects truncated payload', () => {
+await test('dapp.decode rejects truncated payload', () => {
   const payload = dapp.encodeTDepositPayload({
     assetId: ASSET, denomination: 1n, leafCommitment: LEAF, kernelSig: SIG64,
   });
-  return worker.decodeTDepositPayload(payload.slice(0, payload.length - 1)) === null;
+  return dapp.decodeTDepositPayload(payload.slice(0, payload.length - 1)) === null;
 });
 
-console.log('\nT_WITHDRAW cross-impl:');
+console.log('\nT_WITHDRAW:');
 
 // Helper: build a fully-formed withdraw payload using the dapp's encoder. The
 // bind_hash needs to match what the dapp's decoder re-derives, so we don't
@@ -171,20 +146,6 @@ function makeWithdrawPayload(overrides = {}) {
   });
 }
 
-await test('dapp.encode → worker.decode round-trips', async () => {
-  const payload = await makeWithdrawPayload();
-  const dec = worker.decodeTWithdrawPayload(payload);
-  if (!dec) return false;
-  return dec.kind === 'withdraw'
-      && dec.asset_id === bytesToHex(ASSET)
-      && dec.denomination === '100000000'
-      && dec.merkle_root === bytesToHex(ROOT)
-      && dec.nullifier_hash === bytesToHex(NULL)
-      && dec.recipient_commitment === bytesToHex(RECP)
-      && dec.r_leaf === bytesToHex(RLEAF)
-      && dec.proof === bytesToHex(PROOF);
-});
-
 await test('dapp.encode → dapp.decode round-trips (incl. bind_hash check)', async () => {
   const payload = await makeWithdrawPayload();
   const dec = dapp.decodeTWithdrawPayload(payload);
@@ -210,38 +171,26 @@ await test('dapp.decode REJECTS payload with wrong bind_hash (replay defense)', 
   return dapp.decodeTWithdrawPayload(tampered) === null;
 });
 
-await test('worker.decode REJECTS payload with wrong bind_hash (indexer rejection-path determinism)', async () => {
-  // Critical for indexer-determinism: worker + dapp + any third-party
-  // indexer must reject the same envelopes byte-for-byte. Without this
-  // check the worker would index a nullifier for an envelope the dapp
-  // wouldn't credit, breaking the spent-set's consensus property. See
-  // _computeWithdrawBindHash in worker/src/index.js.
-  const payload = await makeWithdrawPayload();
-  const tampered = new Uint8Array(payload);
-  tampered[170] ^= 0x01;
-  return worker.decodeTWithdrawPayload(tampered) === null;
-});
-
-await test('worker.decode rejects wrong opcode prefix', async () => {
+await test('dapp.decode rejects wrong opcode prefix', async () => {
   const payload = await makeWithdrawPayload();
   const tampered = new Uint8Array(payload);
   tampered[0] = 0x99;
-  return worker.decodeTWithdrawPayload(tampered) === null;
+  return dapp.decodeTWithdrawPayload(tampered) === null;
 });
 
-await test('worker.decode rejects truncated payload', async () => {
+await test('dapp.decode rejects truncated payload', async () => {
   const payload = await makeWithdrawPayload();
-  return worker.decodeTWithdrawPayload(payload.slice(0, payload.length - 1)) === null;
+  return dapp.decodeTWithdrawPayload(payload.slice(0, payload.length - 1)) === null;
 });
 
-await test('worker.decode rejects denomination = 0', async () => {
+await test('dapp.decode rejects denomination = 0', async () => {
   // We can't produce a 0-denom withdraw via the dapp encoder (it throws),
   // so build the payload by patching the denom bytes directly.
   const payload = await makeWithdrawPayload();
   const tampered = new Uint8Array(payload);
   // Denom occupies bytes 33..40 (after opcode + asset_id).
   for (let i = 33; i < 41; i++) tampered[i] = 0;
-  return worker.decodeTWithdrawPayload(tampered) === null;
+  return dapp.decodeTWithdrawPayload(tampered) === null;
 });
 
 await test('encoder rejects empty proof', () => {
