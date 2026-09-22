@@ -204,6 +204,14 @@ function currentNetworkName() {
   return v === 'signet' ? 'signet' : 'mainnet';
 }
 let NET = NETWORKS[currentNetworkName()];
+// confidential-deployments.js defaults its own active network to 'signet' until
+// something corrects it (normally _activateTab, on the first tab click). A cold
+// load with no `#tab=` hash never calls _activateTab at all — _consumeTabUrlHash
+// returns immediately when the hash doesn't parse — so anything that reads the
+// confidential network before the user's first click (the airdrop banner's boot-
+// time mount, for one) would otherwise see the wrong network. Set it here too, at
+// the earliest possible synchronous point, so it's never wrong even absent a click.
+try { _setConfidentialNet(currentNetworkName()); } catch {}
 // Network-aware "how to get funds" hint for insufficient-sats errors — the faucet only
 // exists on signet, so mainnet users get a neutral funding nudge instead.
 function fundHint() { return currentNetworkName() === 'signet' ? 'Use the faucet.' : 'Fund the wallet first.'; }
