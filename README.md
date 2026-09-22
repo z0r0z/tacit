@@ -7,6 +7,10 @@
 **Tokenization and confidential DeFi on Bitcoin, with a zero-knowledge bridge to a confidential zone on
 Ethereum.**
 
+Live on Ethereum mainnet since 2026-09-18 ([contracts and addresses](./docs/DEPLOYMENTS.md)). The first
+Bitcoin-native AMM pool, founded directly on Bitcoin with no Ethereum contract, went live 2026-09-22
+([pool and reserves](./docs/DEPLOYMENTS.md#bitcoin-native-amm-pool)).
+
 Tacit is a Bitcoin metaprotocol. Assets are issued and transferred in Taproot envelopes. Amounts are
 hidden by Pedersen commitments and range proofs, and any indexer running the spec reaches the same state
 from the chain alone.
@@ -47,8 +51,7 @@ or attestor set signs a bridge message.
 
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
-- Trade on a confidential AMM: swaps, routes and liquidity. The dapp settles swaps as routes
-  (`OP_SWAP_ROUTE`). OTC and bids also run here.
+- Trade on a confidential AMM: swaps, routes and liquidity. OTC and bids also run here.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
 - Use adaptor locks for atomic cross-chain swaps.
 - Borrow **cUSD** against cBTC collateral. Mint **cBTC** against reflected BTC locks.
