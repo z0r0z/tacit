@@ -98,6 +98,11 @@ export function makeAirdropState() {
     get lastResult() { return lastResult; },
     setInflight(v) { inflight = !!v; notify_(); },
     setLastResult(r) { lastResult = r; notify_(); },
+    // Drops every cached status. Needed when the air/config a cached answer was computed against
+    // turns out to have been stale (see getUx()'s network-change handling below) -- an address doesn't
+    // change, so setAddress's own "next === address" shortcut would otherwise keep returning the old
+    // (wrong-network) answer forever.
+    resetStatusCache() { statusCache.clear(); inFlightFetch.clear(); notify_(); },
     async setAddress(addr, air) {
       const next = addr ? lc(addr) : null;
       if (next === address) { if (next) await self.refresh(air); return; }
@@ -149,7 +154,12 @@ function sharedState() { return _sharedState || (_sharedState = makeAirdropState
 let _ux = null, _uxNet = null;
 function getUx() {
   const net = activeNetwork();
-  if (!_ux || _uxNet !== net) { _ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: net }); _uxNet = net; }
+  if (!_ux || _uxNet !== net) {
+    const hadPrior = _uxNet !== null;
+    _ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: net });
+    _uxNet = net;
+    if (hadPrior) sharedState().resetStatusCache();
+  }
   return _ux;
 }
 function safeUx() {
@@ -412,7 +422,9 @@ export function wireAirdropAnnouncement({ ux, eth, state = sharedState(), el = (
   bindAccountsChanged((addr) => state.setAddress(addr, air));
 }
 
-// Call once at boot. Never throws — a misconfigured network just means no banner.
+// Called at boot, and safe to call again later (e.g. once the page's active network is corrected
+// after boot — see tacit.js's _activateTab) since wireAirdropAnnouncement re-wires idempotently.
+// Never throws — a misconfigured network just means no banner.
 export function mountAirdropAnnouncement(helpers = {}) {
   try {
     const ux = safeUx();

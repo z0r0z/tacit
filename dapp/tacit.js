@@ -44909,6 +44909,7 @@ function _activateTab(name) {
   if (name === 'factory') { try { renderFactoryTab(wallet); } catch (e) { console.error('factory tab', e); } }
   if (name === 'govern') { try { renderGovernTab(wallet, governanceApi()); } catch (e) { console.error('govern tab', e); } }
   try { _renderOtcClaimBanner(); } catch {}
+  try { mountAirdropAnnouncement({ eth: ethNamesBridge }); } catch (e) { console.error('airdrop banner', e); }
   try { _updateNavOpenOrdersBadge(); } catch {}
   try { _wireNavOpenOrdersBadge(); } catch {}
   try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
