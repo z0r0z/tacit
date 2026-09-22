@@ -101,6 +101,47 @@ function randScalar(mod) {
   }
 }
 
+// ---- Multi-party kernel co-signing (2-of-2, or 2-of-2-plus-tip) ----
+//
+// A kernel's excess is additive across contributors: an input trader's +r_in_secp, an output
+// trader's -r_out_secp, the settler's -r_tip. No contributor needs another's secret share — only
+// the combined public aggregate point X (built from already-public commitments, see aggregatePoint)
+// and, once every contributor's nonce commitment R_i is known, the shared challenge
+// e = H(chainBinding, poolId, side, X, ΣR_i). Standard additive Schnorr: (ΣR_i, Σz_i) verifies
+// against X exactly like a single-signer signAggregateKernel/verifyAggregateKernel pair.
+//
+// X is single-use per batch (built from that batch's own one-time commitments, never reused across
+// batches), so this plain 2-round scheme needs none of MuSig2's extra nonce-binding — that defends a
+// long-lived shared key signing many messages, not a fresh aggregate key used exactly once.
+export { aggregatePoint as aggregateKernelPoint };
+
+export function kernelNonceCommit() {
+  const k = randScalar(SECP_N);
+  return { k, R: bytesToHex(G.multiply(k).toRawBytes(true)) };
+}
+
+// Once every co-signer's R is public, anyone derives the shared (R, e) from the public X.
+export function kernelChallenge({ chainBinding, poolId, assetXIsA, X, partialRs }) {
+  let R = ZERO;
+  for (const r of partialRs) R = R.add(G.constructor.fromHex(String(r).replace(/^0x/, '')));
+  const e = aggregateKernelChallenge(chainBinding, poolId, assetXIsA, X, R);
+  return { R: bytesToHex(R.toRawBytes(true)), e: be32hex(e) };
+}
+
+// A co-signer's response for its own secret share, given the shared (e) from kernelChallenge.
+// `share` is this contributor's signed term (+r_in_secp for an input leg, −r_out_secp for an output
+// leg, −r_tip for the settler) — z reveals nothing about it beyond what a full signature already does.
+export function kernelPartialResponse({ k, share, e }) {
+  return be32hex(modN(BigInt(k) + modN(BigInt(e)) * modN(BigInt(share))));
+}
+
+// Sum every partial response into the final kernel signature.
+export function combineKernelResponses({ R, partialZs }) {
+  let z = 0n;
+  for (const pz of partialZs) z = modN(z + BigInt(pz));
+  return { R, z: be32hex(z) };
+}
+
 // amount_out for one trader under the uniform clearing price (B per A), floored, with the remainder.
 // Mirror of buildSwapInput's per-trader fill (demo_swap_batch.mjs) + the guest's clearing_price check.
 function fillTrader(direction, amountIn, P_clear_num, P_clear_den) {
@@ -143,8 +184,10 @@ export function buildSwapInput({ poolIdFr, R_A, R_B, fee_bps, traders }) {
     // clears against the curve, the tip is paid to the settler. C_in commits to inTotal.
     const tip = BigInt(t.tip ?? 0);
     const inTotal = BigInt(t.amountIn) + tip;
-    const rInBJJ = randScalar(N_BJJ);
-    const rOutBJJ = randScalar(N_BJJ);
+    // A 2-party leg (prepareInputLeg/prepareOutputLeg) already picked these; a self-batch caller
+    // (buildSwapBlindOp) leaves them unset and gets fresh randomness, as before.
+    const rInBJJ = t.rInBJJ != null ? modField(BigInt(t.rInBJJ), N_BJJ) : randScalar(N_BJJ);
+    const rOutBJJ = t.rOutBJJ != null ? modField(BigInt(t.rOutBJJ), N_BJJ) : randScalar(N_BJJ);
     const Cin = pedersenBJJ(inTotal, rInBJJ);
     const Cout = pedersenBJJ(amountOut, rOutBJJ);
 
@@ -202,6 +245,27 @@ export function buildSwapInput({ poolIdFr, R_A, R_B, fee_bps, traders }) {
     deltaBNetSign: deltaB_sign, deltaBNetMag: deltaB_mag,
   };
   return { input, filled, deltas };
+}
+
+// Coordinator step, before any leg exists: the clearing price and each trader's amountOut depend
+// only on directions/amounts (not on any blinding), so this can run before the traders build their
+// output legs. `traders` here is just [{ direction, amountIn, tip }] — no notes, no blindings.
+export function solveBatchClearing({ reserveAPre, reserveBPre, feeBps, traders }) {
+  const { filled, deltas } = buildSwapInput({
+    poolIdFr: 0n, R_A: reserveAPre, R_B: reserveBPre, fee_bps: feeBps,
+    traders: traders.map((t) => ({ ...t, minOut: 0, deadline: 0 })),
+  });
+  return { amountOuts: filled.map((f) => f.amountOut), deltas };
+}
+
+// Coordinator step, once every trader's real legs exist: build the per-asset aggregate point X from
+// the batch's own public commitments (no secret needed) so the kernel round's challenge can be
+// derived. `tipCSecp` is this asset's Pedersen commitment to its total tip, from a settler-chosen
+// rTip the settler keeps for its own kernel partial (kernelPartialResponse({..., share: -rTip})).
+export function kernelAggregatePointFromLegs({ legs, assetXIsA, deltaSign, deltaMag, tipCSecp }) {
+  const intents = legs.map((l) => ({ direction: l.input.direction, cInSecp: l.input.cInSecp }));
+  const receipts = legs.map((l) => ({ cOutSecp: l.output.cOutSecp }));
+  return aggregatePoint({ intents, receipts, assetXIsA, deltaSign, deltaMag, tipCSecp });
 }
 
 // pool_id_fr = SHA256(pool_id) mod P_FR (BN254 scalar field) — the exact value swap_batch.rs
@@ -424,7 +488,181 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
     return { envelope, fixture };
   }
 
-  return { buildSwapBlindOp, buildSwapInput };
+  // ---- Per-trader leg builders (2-party path) ----
+  //
+  // A trader's own wallet runs these, never a coordinator. `prepareInputLeg` needs only the
+  // trader's own real spent note and produces its public commitments plus the r_in_BJJ circuit
+  // witness (a throwaway scalar with no note-spending power — never the note's own blinding, which
+  // stays in the returned `_rInSecp` field for that same trader's later kernel partial and is never
+  // sent anywhere). `prepareOutputLeg` needs the trader's own amountOut, told by the coordinator
+  // after it solves the batch's clearing price; the coordinator needs no secret to compute that.
+  //
+  // Sending a leg's returned object to the coordinator is safe except for its `_`-prefixed fields,
+  // which the trader keeps for its own kernel partial (kernelPartialResponse) and never transmits.
+  function prepareInputLeg({ chainBinding, direction, amountIn, tip, inNote }) {
+    const rInSecp = modN(BigInt(inNote.rSecp));
+    const inTotal = BigInt(amountIn) + BigInt(tip ?? 0);
+    const rInBJJ = randScalar(N_BJJ);
+    const CinSecp = pedersenCommit(inTotal, rInSecp);
+    const inXY = commitXY(inTotal, rInSecp);
+    const CinBjj = pedersenBJJ(inTotal, rInBJJ);
+    const inXcurve = proveXCurveDeterministic({
+      a: inTotal, r_secp: rInSecp, r_BJJ: rInBJJ,
+      C_secp: CinSecp, C_BJJ: CinBjj, seedKey: hexToBytes(chainBinding),
+    }).proof;
+    // Byte fields are hex strings, like every other wire shape in this module (fixtureIntents) —
+    // this leg is meant to travel as JSON between a trader and the coordinator.
+    return {
+      direction, amountIn: BigInt(amountIn), tip: BigInt(tip ?? 0), inTotal, rInBJJ,
+      cInSecp: bytesToHex(pointToBytes(CinSecp)), cInBjj: bytesToHex(packPoint(CinBjj)),
+      inXcurveSigma: bytesToHex(inXcurve),
+      inCx: inXY.cx, inCy: inXY.cy, inOwner: inNote.owner, inNk: inNote.nk,
+      inLeafIndex: Number(inNote.leafIndex), inPath: inNote.path,
+      _rInSecp: rInSecp, // kept by this same trader for its kernel partial; never sent
+    };
+  }
+
+  // `inputLeg` is this same trader's own prepareInputLeg() result (its PoK binds both legs).
+  // `amountOut` is the coordinator's clearing-price result for this trader; `rOutSecp` is optional
+  // (self-chosen or wallet-derived) — omit to get a fresh random one.
+  function prepareOutputLeg({ chainBinding, assetA, assetB, inputLeg, amountOut, minOut, deadline, outOwner, rOutSecp = null }) {
+    rOutSecp = rOutSecp != null ? modN(BigInt(rOutSecp)) : randScalar(SECP_N);
+    const rOutBJJ = randScalar(N_BJJ);
+    const CoutSecp = pedersenCommit(amountOut, rOutSecp);
+    const outXY = commitXY(amountOut, rOutSecp);
+    const CoutBjj = pedersenBJJ(amountOut, rOutBJJ);
+    const outXcurve = proveXCurveDeterministic({
+      a: amountOut, r_secp: rOutSecp, r_BJJ: rOutBJJ,
+      C_secp: CoutSecp, C_BJJ: CoutBjj, seedKey: hexToBytes(chainBinding),
+    }).proof;
+    const outRangeProof = bppRangeProve([BigInt(amountOut)], [rOutSecp]).proof;
+    // Same context shape as buildSwapBlindOp's per-intent loop: binds both legs' owners/commitments
+    // plus direction/minOut/deadline/tip, so neither leg can be relabeled or redirected after signing.
+    const ctx = intentContext(
+      SWAP_BLIND_INTENT_TAG, chainBinding, assetA, assetB,
+      [[inputLeg.inCx, inputLeg.inCy, inputLeg.inOwner], [outXY.cx, outXY.cy, outOwner]],
+      [BigInt(inputLeg.direction), BigInt(minOut), BigInt(deadline ?? 0), inputLeg.tip],
+    );
+    const pok = openingPokBlind(
+      inputLeg.inTotal, inputLeg._rInSecp, ctx,
+      deriveOpeningNonce(inputLeg._rInSecp, ctx, 'swapblind-leg-v'),
+      deriveOpeningNonce(inputLeg._rInSecp, ctx, 'swapblind-leg-r'),
+    );
+    return {
+      amountOut: BigInt(amountOut), minOut: BigInt(minOut), deadline: BigInt(deadline ?? 0), rOutBJJ,
+      cOutSecp: bytesToHex(pointToBytes(CoutSecp)), cOutBjj: bytesToHex(packPoint(CoutBjj)),
+      outXcurveSigma: bytesToHex(outXcurve), outRangeProof: bytesToHex(outRangeProof),
+      outCx: outXY.cx, outCy: outXY.cy, outOwner,
+      pokR: pok.R, pokZv: pok.zV, pokZr: pok.zR,
+      _rOutSecp: rOutSecp, // kept by this same trader for its kernel partial; never sent
+    };
+  }
+
+  // The coordinator's assembly step: combine every trader's already-computed legs plus the two
+  // kernels' already-combined signatures (combineKernelResponses, run over the 2-round exchange
+  // described above) into the settle envelope. The coordinator needs each leg's amounts and BJJ
+  // witness scalars to build the joint Groth16 witness (this is what "prover-blind" blinds from the
+  // chain and the SP1 prover, not from the coordinator that assembles the batch) but never touches
+  // any trader's `_`-prefixed secp blinding — those only ever produce that trader's own kernel partial.
+  async function assembleSwapBlindFromLegs({ chainBinding, assetA, assetB, feeBps, reserveAPre, reserveBPre, spendRoot = null, legs, kernelA, kernelB, rTipA, rTipB }) {
+    if (legs.length < 1 || legs.length > N_MAX) throw new Error('swap-blind: 1..16 intents');
+    if (!(BigInt(assetA) < BigInt(assetB))) throw new Error('swap-blind: assets must be canonically ordered A<B');
+
+    const circuitPoolId = ammDerivePoolIdV1(assetA, assetB, feeBps);
+    const traders = legs.map((l) => ({
+      direction: l.input.direction, amountIn: l.input.amountIn, tip: l.input.tip,
+      minOut: l.output.minOut, deadline: l.output.deadline,
+      rInBJJ: l.input.rInBJJ, rOutBJJ: l.output.rOutBJJ,
+    }));
+    const { input, filled, deltas } = buildSwapInput({
+      poolIdFr: poolIdFr(circuitPoolId), R_A: reserveAPre, R_B: reserveBPre, fee_bps: feeBps, traders,
+    });
+    for (let i = 0; i < filled.length; i++) {
+      if (filled[i].amountOut !== BigInt(legs[i].output.amountOut)) {
+        throw new Error(`swap-blind: leg ${i} amountOut disagrees with the batch clearing price`);
+      }
+    }
+
+    const proof = await proveGroth16({ input });
+    if (!(proof instanceof Uint8Array) || proof.length !== 256) throw new Error('swap-blind: proof must be 256 bytes');
+
+    // Every leg field crossed the wire as hex (prepareInputLeg/prepareOutputLeg), like fixtureIntents
+    // below; decode back to bytes only where the envelope shape needs it (matching buildSwapBlindOp's
+    // envelope.intents[i].cInSecp etc., which downstream code expects as Uint8Array).
+    const intents = legs.map((l) => ({
+      direction: l.input.direction, cInSecp: hexToBytes(l.input.cInSecp), cInBjj: hexToBytes(l.input.cInBjj),
+      minOut: BigInt(l.output.minOut), tipAmount: BigInt(l.input.tip),
+    }));
+    const receipts = legs.map((l) => ({
+      cOutSecp: hexToBytes(l.output.cOutSecp), cOutBjj: hexToBytes(l.output.cOutBjj),
+      outXcurveSigma: hexToBytes(l.output.outXcurveSigma), rangeProof: hexToBytes(l.output.outRangeProof),
+    }));
+    const fixtureIntents = legs.map((l) => ({
+      direction: l.input.direction,
+      inCx: l.input.inCx, inCy: l.input.inCy, inOwner: l.input.inOwner, inNk: l.input.inNk,
+      inLeafIndex: l.input.inLeafIndex, inPath: l.input.inPath,
+      cInBjj: l.input.cInBjj, inXcurveSigma: l.input.inXcurveSigma,
+      minOut: Number(l.output.minOut), deadline: Number(l.output.deadline), tip: Number(l.input.tip),
+      outCx: l.output.outCx, outCy: l.output.outCy, outOwner: l.output.outOwner,
+      cOutBjj: l.output.cOutBjj, outXcurveSigma: l.output.outXcurveSigma,
+      outRangeProof: l.output.outRangeProof,
+      pokR: l.output.pokR, pokZv: l.output.pokZv, pokZr: l.output.pokZr,
+    }));
+
+    const tipAAmount = legs.filter((l) => l.input.direction === SWAP_DIR_A_TO_B).reduce((s, l) => s + BigInt(l.input.tip), 0n);
+    const tipBAmount = legs.filter((l) => l.input.direction === SWAP_DIR_B_TO_A).reduce((s, l) => s + BigInt(l.input.tip), 0n);
+    const rTipA_ = modN(BigInt(rTipA)), rTipB_ = modN(BigInt(rTipB));
+    const tipACSecp = pointToBytes(pedersenCommit(tipAAmount, rTipA_));
+    const tipBCSecp = pointToBytes(pedersenCommit(tipBAmount, rTipB_));
+
+    const envelope = {
+      assetA, assetB, feeBps,
+      protocolFeeBps: 0,
+      protocolFeeRecipient: '0x' + '00'.repeat(33),
+      reserveAPre: BigInt(reserveAPre), reserveBPre: BigInt(reserveBPre),
+      ...deltas,
+      kernelA, kernelB,
+      tipAAmount, tipACSecp: bytesToHex(tipACSecp), rTipA: be32hex(rTipA_),
+      tipBAmount, tipBCSecp: bytesToHex(tipBCSecp), rTipB: be32hex(rTipB_),
+      nIntents: legs.length,
+      proof: bytesToHex(proof),
+      intents, receipts,
+    };
+    const reserveAPost = applySigned(reserveAPre, deltas.deltaANetSign, deltas.deltaANetMag);
+    const reserveBPost = applySigned(reserveBPre, deltas.deltaBNetSign, deltas.deltaBNetMag);
+    const evmPoolId = poolIdWithProtocolFee
+      ? poolIdWithProtocolFee(assetA, assetB, feeBps, envelope.protocolFeeRecipient, 0)
+      : null;
+
+    // Same shape as buildSwapBlindOp's fixture — fixtures/swapblind_op.json / exec-swapblind.rs read
+    // either path's output identically.
+    const fixture = {
+      note: 'OP_SWAP_BLIND prover-blind confidential AMM batch (2-party leg path). Fields in exec-swapblind.rs read order.',
+      chainBinding, spendRoot,
+      assetA, assetB, feeBps,
+      protocolFeeBps: 0,
+      protocolFeeRecipient: envelope.protocolFeeRecipient,
+      reserveAPre: Number(reserveAPre), reserveBPre: Number(reserveBPre),
+      deltaANetSign: deltas.deltaANetSign, deltaANetMag: Number(deltas.deltaANetMag),
+      deltaBNetSign: deltas.deltaBNetSign, deltaBNetMag: Number(deltas.deltaBNetMag),
+      kernelA: envelope.kernelA, kernelB: envelope.kernelB,
+      tipAAmount: Number(tipAAmount), tipACSecp: envelope.tipACSecp, rTipA: envelope.rTipA,
+      tipBAmount: Number(tipBAmount), tipBCSecp: envelope.tipBCSecp, rTipB: envelope.rTipB,
+      proof: envelope.proof,
+      intents: fixtureIntents,
+      expected: { poolId: evmPoolId, reserveAPost: Number(reserveAPost), reserveBPost: Number(reserveBPost) },
+    };
+
+    return {
+      envelope, fixture, deltas, tipAAmount, tipBAmount, circuitPoolId,
+      fixtureIntents, evmPoolId, reserveAPost, reserveBPost,
+    };
+  }
+
+  return {
+    buildSwapBlindOp, buildSwapInput,
+    prepareInputLeg, prepareOutputLeg, assembleSwapBlindFromLegs,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
