@@ -10,7 +10,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// Verifies a REAL SP1 Groth16 proof of the confidential transfer guest ON-CHAIN,
 /// through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. The proof was
 /// CPU-proven on the prover box (contracts/sp1/confidential/exec-prove.rs) for the
-/// gen-1 guest (vkey 0x00c35e09…, which includes bridge_burn). This closes the
+/// committed guest. This closes the
 /// loop: JS prover → SP1 guest (zkVM) → Groth16 wrap → EVM bn254 verify. Proof
 /// fixture: contracts/test/fixtures/confidential_groth16.json.
 contract ConfidentialProofRealTest is Test {
@@ -27,7 +27,7 @@ contract ConfidentialProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real proof verifies on-chain against the gen-1 vkey (reverts on failure).
+    /// The real proof verifies on-chain against the pinned vkey (reverts on failure).
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -56,7 +56,7 @@ contract ConfidentialProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

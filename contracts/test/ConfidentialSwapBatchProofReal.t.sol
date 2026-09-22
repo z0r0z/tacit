@@ -7,13 +7,8 @@ pragma solidity 0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
-/// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_SWAP with MULTIPLE intents
-/// in one batch ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. The proof
-/// is GPU-proven on the prover box (harnesses/exec-swap.rs over fixtures/swapbatch_op.json) for
-/// the gen-1 guest. This exercises the N-intents→1-aggregate-delta path (the core privacy win):
-/// the guest nets gross A/B flows, enforces the per-intent opening sigmas + min_out + deadline,
-/// and the constant-product non-decrease on the aggregate post-reserves.
-/// Proof fixture: contracts/test/fixtures/swapbatch_groth16.json (the box produces it).
+/// Verifies a real SP1 Groth16 proof of a multi-intent OP_SWAP batch through the genuine
+/// SP1VerifierGroth16 (v6.1.0), with no mock. Fixture: contracts/test/fixtures/swapbatch_groth16.json.
 contract ConfidentialSwapBatchProofRealTest is Test {
     SP1Verifier verifier;
     bytes32 vkey;
@@ -28,7 +23,7 @@ contract ConfidentialSwapBatchProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real multi-intent OP_SWAP proof verifies on-chain against the gen-1 vkey.
+    /// The real multi-intent OP_SWAP proof verifies on-chain against the pinned vkey.
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -57,7 +52,7 @@ contract ConfidentialSwapBatchProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

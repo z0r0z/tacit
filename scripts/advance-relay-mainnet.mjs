@@ -1,19 +1,12 @@
 #!/usr/bin/env node
-// Cast-free BitcoinLightRelay advancer, for the CURRENT mainnet relay (contracts/src/lib/
-// BitcoinLightRelay.sol). Forked from scripts/advance-relay-raw.mjs (which targets an OLDER relay
-// generation with a separate on-chain currentEpoch()/epoch-boundary getter) because this contract
-// derives each block's difficulty target from its OWN branch's blockTarget/epochStartTs per
-// advanceTip call and has no such getter at all — it retargets internally and can cross a 2016-block
-// epoch boundary within a single advanceTip call, so the old script's boundary-capping logic just
-// reverts here (`eth_call: execution reverted` on a currentEpoch() call the contract doesn't have).
-// Do not merge this back into advance-relay-raw.mjs — that script may still be pointed at a relay
-// generation that DOES need the epoch-boundary cap (e.g. an older Sepolia/signet deployment); keep
-// them separate rather than risk silently dropping a real guard for that other lineage.
+// Cast-free BitcoinLightRelay advancer for the mainnet relay (contracts/src/lib/BitcoinLightRelay.sol).
+// This relay derives each block's difficulty target from its OWN branch's blockTarget/epochStartTs and
+// can cross a 2016-block epoch boundary within a single advanceTip call, so there is no boundary cap here.
+// scripts/advance-relay-raw.mjs targets relays with a currentEpoch()/epoch-boundary getter that do need the
+// cap; keep the two separate.
 //
-// Also swaps the esplora fetch helper to shell out via curl instead of node's fetch (undici): in at
-// least one sandboxed environment, node's fetch could not complete a TLS handshake to blockstream.info
-// even though curl against the identical URL succeeded immediately — never diagnosed further since
-// the workaround is harmless and local to this script.
+// Esplora fetches shell out via curl rather than node's fetch (undici), which fails the TLS handshake to
+// blockstream.info in some sandboxed environments.
 //
 // Usage:
 //   ETH_RPC=https://ethereum-rpc.publicnode.com \

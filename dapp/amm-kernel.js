@@ -191,7 +191,7 @@ export function lpRemoveKernelVerify({
 
 // ── T_LP_BOND share-lock kernel — mirrors cxfer-core lp_bond_kernel_verify (in = LP-share notes, out = [],
 // net = bond_amount). Binds the claimed bond weight to the bonder's REAL spent LP-share notes of the farm's
-// lp_asset, so an attacker can't credit unbacked shares and drain the treasury at harvest.
+// lp_asset, so a bond's weight is always backed by real shares.
 export function lpBondKernelMsg({ farmId, lpAsset, bondAmount, lpInputs }) {
   const fid = asBytes(farmId, 32, 'farmId');
   const la = asBytes(lpAsset, 32, 'lpAsset');

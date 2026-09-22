@@ -1,7 +1,6 @@
-# Cutover step 5 ONLY. Deploying this config
-# REPLACES the full tacit-pin worker in place — the classic workers.dev URL
-# becomes a pass-through to the Render origin. Until that step, deploy from
-# worker/wrangler.toml as usual.
+# Pass-through for the tacit-pin workers.dev URL. Deploying this config
+# replaces the full tacit-pin worker in place, so the workers.dev URL
+# forwards to the API origin.
 #
 #   cd worker/proxy
 #   npx wrangler secret put PROXY_TRUST_KEY   # same value as the Render env var
@@ -11,12 +10,12 @@ name = "tacit-pin"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
 
-# The dapp's legacy API origin — same lesson as worker/wrangler.toml: this
-# must stay true or old clients lose the endpoint.
+# The workers.dev API origin older dapp builds call — see worker/wrangler.toml:
+# this must stay true or those clients lose the endpoint.
 workers_dev = true
 
-# Explicitly empty: the Render service owns scanning after cutover. Leaving
-# the section out would not remove the existing 5-minute trigger.
+# Explicitly empty: the Render service owns scanning. Leaving the section out
+# would not remove an existing 5-minute trigger.
 [triggers]
 crons = []
 

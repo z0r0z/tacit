@@ -38,7 +38,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     // Purge old cache versions so a bumped CACHE_VERSION doesn't leave
-    // the previous generation taking up quota indefinitely.
+    // stale caches taking up quota.
     const names = await caches.keys();
     await Promise.all(
       names

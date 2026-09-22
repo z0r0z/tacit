@@ -1,5 +1,5 @@
 #!/bin/bash
-# X-4 lockstep gate: the production cutover rotates four pinned constants together, and a partial
+# Lockstep gate: a production cutover rotates four pinned constants together, and a partial
 # rotation must never reach a deploy.
 #
 #   ETH_REFLECTION_VKEY        reflect.rs   the eth-reflection recursion digest the reflection guest verifies

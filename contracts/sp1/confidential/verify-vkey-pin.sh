@@ -190,7 +190,7 @@ for FX in ../../test/fixtures/*_groth16.json; do
 done
 echo "PASS: all committed Groth16 fixtures bind to a pinned vkey ($ns settle / $nr reflection)"
 
-# ── Reflection leg pinned (mainnet-anchored, 2026-07-12: Change B count==0 bootstrap) ───────────────────────────────
+# ── Reflection leg pinned ───────────────────────────────
 # The reflection vkey is an explicit coordination point: its Groth16 proofs verify on-chain
 # (ConfidentialReflectionProofReal + ConfidentialReflectionBurnDepositProofReal) and readiness-gate
 # layer 9 must separately allowlist the exact vkey after a REFLECT-1 conservation negative test.

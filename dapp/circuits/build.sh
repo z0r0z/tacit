@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the tacit mixer withdrawal circuit.
+# Build the legacy mixer withdrawal circuit.
 #
 # Prereqs (install once):
 #   - circom 2.1.6+: https://docs.circom.io/getting-started/installation/

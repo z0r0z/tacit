@@ -35,7 +35,7 @@ contract MockRelayW {
 
 /// End-to-end TAC on Ethereum, the asset-hub lifecycle:
 ///   Bitcoin TAC burn ─bridge_mint→ confidential note ─unwrap→ public TAC.erc20
-///   ─transfer→ tradeable (Uniswap) ─wrap→ back to a confidential note.
+///   ─transfer→ tradeable ─wrap→ back to a confidential note.
 /// The pool is TAC.erc20's sole minter (mint on exit, burn on entry) — single supply
 /// authority; the backing is the Tacit record (the bridge_mint), no Ethereum escrow.
 contract ConfidentialTacWalkthroughTest is Test {
@@ -177,7 +177,7 @@ contract ConfidentialTacWalkthroughTest is Test {
         assertEq(tac.totalSupply(), amount, "public supply = exited amount (single authority)");
         assertEq(pool.escrow(tacAsset), 0, "no escrow - the pool minted, it didn't release");
 
-        // ── 3. tradeable: TAC.erc20 is a plain ERC20 (Uniswap, transfers, …) ──
+        // ── 3. tradeable: TAC.erc20 is a plain ERC20 (AMMs, transfers, …) ──
         vm.prank(USER);
         tac.transfer(BOB, 20e8);
         assertEq(tac.balanceOf(USER), 30e8, "user keeps 30");

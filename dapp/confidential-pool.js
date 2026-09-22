@@ -17,7 +17,7 @@ import { txOutputScript, noteSpendsBindOutputs } from './burn-deposit-bitcoin.js
 
 export const TREE_DEPTH = 32;
 
-// Asset ids admissible under the legacy generation-unbound note format; every other asset is born bound.
+// Asset ids admissible under the legacy unbound note format; every other asset is born bound.
 // Sole entry: production TAC (f0bbe868…762b). Mirrors cxfer-core LEGACY_BRIDGE_ASSETS. Hoisted to a module
 // export so the migration builder and the factory share one source of truth.
 export const LEGACY_BRIDGE_ASSETS = ['0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'];
@@ -71,7 +71,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // wipe: the buyer re-finds its funding leaf on-chain, recomputes this secret, and re-derives the
   // filled notes (the seller can't seal a memo for them — it never learns these blindings). The guest
   // is agnostic to how the buyer produced the blindings (it only re-checks commitments), so this is a
-  // client-only binding (no re-prove).
+  // client-only binding.
   function deriveBidSecret(seed, fundCx, fundCy) {
     return hx(sha256(concat([b32(seed), new TextEncoder().encode('tacit-evm-bid-secret-v1'), b32(fundCx), b32(fundCy)])));
   }
@@ -91,14 +91,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const BTC_NOTE_DOM = new TextEncoder().encode('tacit-btc-note-v1');
   const btcNoteLeaf = (assetId, cx, cy, authKey) =>
     hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), BTC_NOTE_DOM])));
-  // Generation-bound Bitcoin-homed note leaf = keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ target_chain_binding ‖
+  // Deployment-bound Bitcoin-homed note leaf = keccak(asset ‖ Cx ‖ Cy ‖ auth_key ‖ target_chain_binding ‖
   // "tacit-btc-note-bound"). `targetChainBinding` = keccak(chainid, poolAddress) of the deployment the note is
   // homed to, so the leaf (and its nullifier) is reproducible in exactly one deployment. Distinct "bound" domain
   // keeps it disjoint from the native leaf and the unbound btcNoteLeaf. Mirrors cxfer-core btc_note_leaf_bound.
   const BTC_NOTE_DOM_BOUND = new TextEncoder().encode('tacit-btc-note-bound');
   const btcNoteLeafBound = (assetId, cx, cy, authKey, targetChainBinding) =>
     hx(keccak256(concat([b32(assetId), b32(cx), b32(cy), b32(authKey), b32(targetChainBinding), BTC_NOTE_DOM_BOUND])));
-  // Admissibility for the legacy generation-unbound note format shares the module-level source of truth.
+  // Admissibility for the legacy unbound note format shares the module-level source of truth.
   // A reflected-note spend authority is "zero" (non-P2TR output → no spendable key) when absent or all-zero;
   // the AMM folds fail closed on it exactly as the guest does (output_p2tr_xonly → [0u8;32]). Mirrors the guest.
   const ZERO_AUTH_HEX = '0x' + '00'.repeat(32);
@@ -170,7 +170,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // 32-byte words, so value is its big-endian 32-byte form.
   const depositId = (assetId, value, cx, cy, owner) => hx(keccak256(concat([b32(assetId), beBytes(value, 32), b32(depositCommit(cx, cy, owner))])));
 
-  // ── Fair-farm receipt primitives (SPEC-masterchef-farm-stake-anytime §4) — byte-identical to cxfer-core
+  // ── Fair-farm receipt primitives (SPEC §5.8) — byte-identical to cxfer-core
   // farm_receipt_leaf / farm_receipt_nullifier. The leaf is a RAW concat (kn): domain ‖ farm ‖ lpAsset ‖
   // shares(8 LE) ‖ owner ‖ nonce — NOT 32-byte-padded words, so it can't use the `keccak(...)` helper.
   const FARM_RPS_PRECISION = 1n << 64n;
@@ -199,7 +199,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const FARM_REFUND_DOM = new TextEncoder().encode('tacit-amm-farm-refund-v1');
   const PFEE_CLAIM_DOM = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
   const leBytes = (n, len) => { const b = new Uint8Array(len); let v = BigInt(n); for (let i = 0; i < len; i++) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; };
-  // v3 is a STABLE position id: it commits the STAKED asset (so bond and unbond must agree by construction)
+  // The receipt is a STABLE position id: it commits the STAKED asset (so bond and unbond must agree by construction)
   // but NOT the entry checkpoint — that is stamped in reflection state at fold time, keyed by this leaf,
   // because the live rps is unknowable when the op is built.
   const farmReceiptLeaf = (farm, lpAsset, shares, owner, nonce) =>
@@ -392,15 +392,11 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // once, then resolves every confirmed tx's vins against. Committed as the depth-32 keccak tree
   // over keccak(key ‖ value) leaves in ascending key order — so the root is O(live) to rebuild
   // (unlike the insertion-order UtxoAccumulator, O(history)). Lives only in the reflection digest.
-  // Leaf = keccak(key ‖ asset ‖ value): the asset is committed so the reflection digest pins each
-  // note's asset (a wrong handoff fails the digest), which is what lets the CXFER fold re-impose
-  // asset preservation on resume. Mirrors cxfer-core LiveUtxoSet::root (kn(&[k, a, v])).
-  // Leaf = keccak(key ‖ asset ‖ value ‖ auth_key): the asset AND the note's Bitcoin auth_key are committed
-  // so the reflection digest pins each note's asset and spend authority (a wrong handoff fails the digest),
-  // which is what lets the CXFER fold re-impose asset preservation and the fast-lane consume re-impose the
-  // full-source-leaf retirement on resume. Mirrors cxfer-core LiveUtxoSet::root (kn(&[k, a, v, ak])).
-  // Leaf = keccak(key ‖ asset ‖ value ‖ authKey ‖ bound), bound a single byte. Mirrors cxfer-core
-  // LiveUtxoSet::root (kn(&[k, a, v, ak, &[bound]])) — the bound tag selects the note's leaf domain on spend.
+  // Leaf = keccak(key ‖ asset ‖ value ‖ authKey ‖ bound), bound a single byte. The asset and the note's
+  // Bitcoin auth_key are committed so the reflection digest pins each note's asset and spend authority,
+  // which lets the CXFER fold re-impose asset preservation and the fast-lane consume re-impose the
+  // full-source-leaf retirement on resume; the bound tag selects the note's leaf domain on spend.
+  // Mirrors cxfer-core LiveUtxoSet::root (kn(&[k, a, v, ak, &[bound]])).
   const liveLeaf = (key, value, asset, authKey, bound) =>
     hx(keccak256(concat([b32(key), b32(asset), b32(value), b32(authKey), Uint8Array.of(bound & 1)])));
   function makeLiveUtxoSet() {
@@ -416,7 +412,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     // Resolve → [value=commitment_hash, asset, authKey]; the asset is what the CXFER fold checks vs the
     // envelope, the auth_key is the note's Bitcoin spend authority (feeds the leaf-bound ν + fast-lane retire).
     function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : [entries[i][1], entries[i][2], entries[i][3]]; }
-    // The note's generation tag (0/1), or null if absent — selects the leaf domain the spend scan reconstructs.
+    // The note's bound tag (0/1), or null if absent — selects the leaf domain the spend scan reconstructs.
     function boundTag(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : entries[i][4]; }
     function insert(keyIn, valueIn, assetIn, authKeyIn, boundIn) {
       const key = norm(keyIn), value = norm(valueIn), asset = norm(assetIn), authKey = norm(authKeyIn || ZERO32);
@@ -477,9 +473,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   ));
   // The Track-B per-pool reserve registry mirror (cxfer-core PoolReserveSet). Sorted by pool_id; the
   // root rides ScanReflection.digest() so a resumed cycle can't forge a pool's reserves, its c0_backed
-  // flag, or its accrued protocol fee. The worker does not yet FOLD Bitcoin AMM envelopes into it (the
-  // same deferred step as the cBTC-lock fold), so it is empty today — but the resume handoff serializes
-  // whatever it holds, and digest() commits it, so JS == Rust == the contract's REFLECTION_GENESIS_DIGEST.
+  // flag, or its accrued protocol fee. The worker does not fold Bitcoin AMM envelopes into it (as with the
+  // cBTC-lock fold), so it is empty; the resume state serializes whatever it holds, and digest() commits it, so JS == Rust == the contract's REFLECTION_GENESIS_DIGEST.
   function makePoolReserveSet() {
     const norm = (x) => hx(b32(x));
     let map = new Map(); // pool_id(hex) -> { assetA, assetB, reserveA, reserveB, totalShares, c0Backed, feeBps, protocolFeeBps, kLast, protocolFeeAccrued }
@@ -797,7 +792,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const consumedOutpoints = makeImtAccumulator();
     // Mode-B light-client anchor (cxfer-core ScanReflection.eth_sync_committee): the Ethereum sync committee the
     // last Mode-B cycle ended on (eth proof word 7). The next Mode-B proof must start from it (word 8); zero means
-    // the pinned genesis committee. Rides digest() and survives a generational rebase.
+    // the pinned genesis committee. Rides digest() and survives a rebase onto a successor.
     let ethSyncCommittee = '0x' + '00'.repeat(32);
     // Pending burn-deposits (cxfer-core ScanReflection.pending_deposit_*): a burn whose provenance did not verify
     // when its block was scanned, keyed by the burn tx's first input outpoint → pendingDepositValue(asset, ν, dest,
@@ -855,7 +850,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
 
     // A detected spend's ν → the spent-set IMT insert witness (low + new slot), then advance. The
     // live-set removal is the caller's (it mirrors scan_tx_spends). Commitment-collision duplicate: if ν
-    // is ALREADY spent (an attacker minted two notes sharing a commitment, spent across txs/blocks/proofs),
+    // is ALREADY spent (two notes sharing a commitment, spent across txs/blocks/proofs),
     // a re-insert has no straddling low leaf and would throw here / PANIC the guest IMT. Mirror the guest's
     // membership-gated no-op: emit ν's OWN leaf as the "low" witness (sLowValue === ν, impossible for a real
     // insert which needs sLowValue < ν), which the guest reads as a proof that ν is already a member, and do
@@ -880,7 +875,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       live.insert(outpoint, commitmentHash, asset, authKey || ZERO32);
       return w;
     }
-    // A generation-bound output note (mirror ScanReflection::fold_output_bound): append + add the outpoint
+    // A deployment-bound output note (mirror ScanReflection::fold_output_bound): append + add the outpoint
     // live tagged bound, so a later spend reconstructs the btc_note_leaf_bound domain. The leaf is already the
     // bound-domain leaf; only the live tag differs from foldOutput.
     function foldOutputBound(noteLeaf, outpoint, commitmentHash, asset, authKey) {
@@ -1083,7 +1078,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (hit == null || hx(b32(hit[0])) !== commitmentHash(cx, cy)) return null; // source must be a live UTXO bound to (Cx,Cy)
       const bound = live.boundTag(key) === 1 ? 1 : 0;
       // Reconstruct the retired source's FULL authenticated leaf from the live outpoint's OWN asset AND
-      // Bitcoin auth key, over its own generation domain (mirror the guest's fold_consumed): ν is leaf-bound,
+      // Bitcoin auth key, over its own leaf domain (mirror the guest's fold_consumed): ν is leaf-bound,
       // so it must equal the Ethereum-recorded ν under the source's exact leaf — not a same-commitment clone.
       const srcLeaf = bound === 1
         ? btcNoteLeafBound(hit[1], cx, cy, hit[2], chainBinding || ZERO32)
@@ -1226,8 +1221,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     }
     function getFoldedCrossoutCount() { return foldedCrossoutCount; }
     function setFoldedCrossoutCount(c) { foldedCrossoutCount = BigInt(c); }
-    // Generational rebase (mirror cxfer-core ScanReflection::rebase). A successor generation resumes a drained
-    // predecessor: every global accumulator is preserved and only the generation-local liveness fields reset,
+    // Rebase onto a successor (mirror cxfer-core ScanReflection::rebase). A successor deployment resumes a drained
+    // predecessor: every global accumulator is preserved and only the deployment-local liveness fields reset,
     // re-anchored to the successor. consumed_count → 0 and folded_crossout_count → 0 restart against the
     // successor's own on-chain counters (seeded 0); eth_refl_digest → 0x00..00 is the "no Mode-B yet" sentinel
     // so the successor's first Mode-B cycle re-derives eth genesis for its OWN address. Call on the predecessor's
@@ -1404,7 +1399,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Empty side has no price (formula degenerates to the whole out-side reserve) — skip rather than price.
       if (rInPre === 0n || rOutPre === 0n) return null;
       // CLEAR AT THE CURRENT PRICE with the pool's REGISTRY fee tier: the declared rAPre/rBPre/
-      // deltaOut are ignored for pricing; a concurrent op that moved the pool no longer strands the input.
+      // deltaOut are ignored for pricing, so a concurrent op that moved the pool does not strand the input.
       const deltaOut = getAmountOut(sv.deltaIn, rInPre, rOutPre, pool.feeBps || 0);
       if (deltaOut >= (1n << 64n)) return null;
       // SLIPPAGE FLOOR: over-slipped or cleared-to-nothing → REFUND the exact input (never skip-and-strand).
@@ -1633,14 +1628,14 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         // The refund destination must be P2TR (spendable) — unconditional, before the accept-vs-refund branch,
         // since the branch is a function of pool state the LP could not know when signing (mirror the guest).
         if (hx(b32(refundAuth)) === hx(ZERO32)) return null;
-        crystallizeProtocolFee(pool); // crystallize BEFORE the withdrawal (Uniswap-V2 _mintFee)
+        crystallizeProtocolFee(pool); // crystallize BEFORE the withdrawal
         const S = BigInt(pool.totalShares), sa = BigInt(lr.shareAmount);
         if (S === 0n || sa === 0n || sa > S) return null;
         if (S - sa < AMM_MINIMUM_LIQUIDITY) return null; // minimum-liquidity floor (mirror guest)
         // The PAID payout is recomputed from the reserves as they stand NOW (a concurrent swap /
         // fee-crystallization moved the reserves or total_shares, but the burn still pays the new proportion
         // rather than skipping and burning the shares for nothing). The declared delta_a/delta_b are NOT
-        // required to equal these — requiring that was the stale check.
+        // required to equal these.
         const payA = (BigInt(pool.reserveA) * sa) / S, payB = (BigInt(pool.reserveB) * sa) / S;
         if (payA === 0n || payB === 0n) {
           // ZERO-PAYOUT LEG: onboarding recvA/recvB would strand the already-nullified LP-share inputs. Re-mint
@@ -1710,8 +1705,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       if (!lpAddKernelVerify(la.variant, pid, ca, daC, la.shareAmount, la.shareCsecp, aOps, aPts, kaC, la.expiryHeight, rxonlyAC, rblindAC)) return null;
       if (!lpAddKernelVerify(la.variant, pid, cb, dbC, la.shareAmount, la.shareCsecp, bOps, bPts, kbC, la.expiryHeight, rxonlyBC, rblindBC)) return null;
       // lp_shares the pool actually minted for THIS op — the value the share note is FORMED to carry. The LP's
-      // declared share_csecp is no longer required to open to it, so a concurrent swap / fee-crystallization
-      // that moved the reserves or total_shares no longer strands the deposit.
+      // declared share_csecp is not required to open to it, so a concurrent swap / fee-crystallization
+      // that moved the reserves or total_shares does not strand the deposit.
       let lpShares;
       if (la.variant === 1) {                            // POOL_INIT: a fresh pool
         // Both refund outputs must be P2TR (spendable) — checked UNCONDITIONALLY (mirror the guest's variant-1
@@ -1889,7 +1884,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return C.equals(prover.commit(BigInt(amount), mod(BigInt(rHex), N)));
   }
   // ── Track-B protocol-fee crystallization (mirror cxfer-core PoolReserveState::crystallize_protocol_fee +
-  // protocol_fee_shares — the Uniswap-V2 lazy mintFee skim from SWAP-driven k-growth). isqrt / shares are the
+  // protocol_fee_shares — the lazy protocol-fee skim from SWAP-driven k-growth). isqrt / shares are the
   // byte-for-byte BigInt port of the worker's ammIsqrt / ammComputeProtocolShares the protocol cites. ──
   const U64_MAX = (1n << 64n) - 1n;
   // Exact-in constant-product clearing with the pool's fee applied (mirror cxfer-core get_amount_out): a
@@ -2177,8 +2172,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // proof for its burned outpoint, not a zero placeholder: the forward-only scan never fast-lane-consumes an
       // outpoint, so co_is_member is always 0 here, but the guest's imt_non_membership check still verifies the
       // witness cryptographically against the live consumed_outpoints_root, and a zero-sentinel path is not a
-      // valid witness for a non-empty tree. BD_ZERO_CO was wrong (found live: it makes every unbundled burn's
-      // batch unexecutable on the real guest, not just skip the fold).
+      // valid witness for a non-empty tree (a BD_ZERO_CO placeholder would make the batch unexecutable).
       const co = state.burnDepositCoWitness(outpointKey(ctx.burnedTxid, ctx.burnedVout));
       return { ...base, spentInsert: BD_ZERO_SPENT, notePath: BD_ZERO_PATH, burnInsert: BD_ZERO_BURN, ...co, outcome: ctx.valid ? 'consumed' : 'skipped' };
     }
@@ -2226,7 +2220,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // for a no-farm chain, populated when a resumed cycle continues a chain with live farms.
       farmRewards: state.farmRewards.list(),
       // Per-position entry stamps (read right after farmRewards): receipt leaf → entry rps, the checkpoint the
-      // receipt leaf no longer carries. Empty until the first bond.
+      // receipt leaf does not carry. Empty until the first bond.
       farmEntries: state.farmEntries.list(),
       // ETH→BTC cross-out replay gate resume (read LAST in read_scan_prior_state, after the farm stamps):
       // the consumed claim_id IMT root + count. Genesis (empty, count 1) for a chain with no cross-out mints.
@@ -2248,8 +2242,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       pendingDepositRoot: state.pendingDepositRoot(),
       pendingDepositCount: state.pendingDepositCount(),
     };
-    // GENERATIONAL RESUME: a successor generation's FIRST cycle. `prior` above snapshots the DRAINED
-    // PREDECESSOR (exactly what the guest reads then rebases); we now rebase the working state so priorDigest
+    // SUCCESSOR RESUME: a successor deployment's FIRST cycle. `prior` above snapshots the DRAINED
+    // PREDECESSOR (exactly what the guest reads then rebases); this rebases the working state so priorDigest
     // (the successor genesis the contract pins as reflectionResumeDigest_) and newDigest below are computed
     // post-rebase. The drain counters default to the predecessor's folded counts (a drained predecessor —
     // on-chain == folded); a real migration passes the predecessor's on-chain counters. The guest requires the
@@ -2303,7 +2297,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const srcKey = outpointKey(cons.srcTxid, cons.srcVout);
         const srcHit = state.live.get(srcKey);
         const srcBound = state.live.boundTag(srcKey) === 1 ? 1 : 0;
-        // ν over the source note's own generation domain (bound vs legacy), mirroring the guest's fold_consumed.
+        // ν over the source note's own leaf domain (bound vs legacy), mirroring the guest's fold_consumed.
         const nu = srcHit
           ? nullifier(srcBound === 1 ? btcNoteLeafBound(srcHit[1], cons.cx, cons.cy, srcHit[2], chainBinding) : btcNoteLeaf(srcHit[1], cons.cx, cons.cy, srcHit[2]))
           : hx(ZERO32);
@@ -2343,9 +2337,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     const blocksOut = [];
     const nonConserving = [];
     // Value-entry envelopes (T_MINT/cmint) the full-scan model does NOT yet reflect: the model is
-    // conservation-CLOSED (no free-output deposit path — that was the REFLECT-1 risk), so a mint's
-    // output does not enter bitcoinPoolRoot and is not bridge-mintable until the cmint-deposit effect
-    // ships. Surface them LOUD so a value-entering envelope is
+    // conservation-CLOSED (no free-output deposit path), so a mint's output does not enter
+    // bitcoinPoolRoot and is not bridge-mintable. Surface them LOUD so a value-entering envelope is
     // never silently dropped (the guest skips it identically — an unrecognized envelope folds nothing).
     const unreflectedValueEntry = [];
     // Tacit envelopes the guest FOLDS but this scan does not yet mirror — surfaced so the attester
@@ -2379,7 +2372,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
         const inOutpoints = [];
         const inAssets = []; // each detected spend's asset (from the live set) — for the cxfer gate
         const inAuthKeys = []; // each detected spend's Bitcoin auth key (from the live set) — for the leaf-bound ν
-        const inBounds = []; // each detected spend's generation tag (from the live set) — for the leaf domain
+        const inBounds = []; // each detected spend's bound tag (from the live set) — for the leaf domain
         const spentInserts = [];
         for (const { prevTxid, vout } of (tx.vins || [])) {
           const key = outpointKey(prevTxid, vout);
@@ -2396,8 +2389,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           inOutpoints.push([prevTxid, vout]);
           inAssets.push(norm(hit[1])); // the spent note's asset, carried by the live set
           inAuthKeys.push(norm(hit[2])); // the spent note's Bitcoin auth key, carried by the live set
-          inBounds.push(bound); // the spent note's generation tag — selects the leaf domain (burn id + ν)
-          // ν is over the note's FULL leaf under its own generation domain — mirror scan_tx_spends' bind_spent_note.
+          inBounds.push(bound); // the spent note's bound tag — selects the leaf domain (burn id + ν)
+          // ν is over the note's FULL leaf under its own leaf domain — mirror scan_tx_spends' bind_spent_note.
           const spentLeaf = bound === 1 ? btcNoteLeafBound(hit[1], co.cx, co.cy, hit[2], chainBinding) : btcNoteLeaf(hit[1], co.cx, co.cy, hit[2]);
           spentInserts.push(state.foldSpent(nullifier(spentLeaf)));
           state.live.remove(key);
@@ -2486,8 +2479,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // AND every spent note is of the envelope's declared asset, mirroring the guest (which
           // gates on the SAME predicate before it reads output witnesses, then skips). A
           // non-conserving OR asset-relabeling cxfer injects nothing and carries no output witnesses
-          // in the stream; its detected spends are still nullified above (the relabel burns the
-          // attacker's input for nothing).
+          // in the stream; its detected spends are still nullified above (the relabeled input is
+          // burned).
           const envAsset = norm(tx.env.assetId);
           // The kernel's inputs (mirror reflect.rs kernel_spends). A CXFER spends only pool notes, so they are all of
           // this tx's live spends. An atomic settlement (T_AXFER / T_AXFER_BPP) names its asset inputs by position,
@@ -2518,7 +2511,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const destBound = !(tx.env.opcode === 0x22 || tx.env.opcode === 0x23)
             || noteSpendsBindOutputs(tx.txData, kOutpoints);
           // Legacy-format allowlist (mirror the guest): a v1 CXFER onboards only for an allowlisted legacy
-          // asset; every other asset is generation-bound and admissible only via the bound opcode (0x39). A
+          // asset; every other asset is deployment-bound and admissible only via the bound opcode (0x39). A
           // non-legacy v1 CXFER injects nothing and reads no output witnesses — skipped like a non-conserving one.
           // The guest's bid branch (0x5B/0x5C) carries NO legacy gate — only its v1-CXFER branch does — so a
           // conserving bid fill of any asset folds there; gating it here would desync the digest.
@@ -2550,7 +2543,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
             nonConserving.push({ txid: tx.txid, outputs: tx.env.outputs.length, reason: !hasSpends ? 'no-live-spends' : !destBound ? 'unbound-destination' : (!legacyAdmissible ? 'non-legacy-asset' : (assetPreserving ? 'non-conserving' : 'non-asset-preserving')) });
           }
         } else if (tx.env && tx.env.type === 'cxfer_bound') {
-          // A generation-bound CXFER (0x39): onboard BOUND output notes iff the tx conserves value, preserves
+          // A deployment-bound CXFER (0x39): onboard BOUND output notes iff the tx conserves value, preserves
           // asset, AND the envelope target_chain_binding == this deployment's chainBinding (else the note is
           // homed elsewhere and is skipped). Mirrors the guest's fold_cxfer_bound. No legacy allowlist: the
           // bound path is how non-legacy assets onboard.
@@ -2803,8 +2796,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           // Track-B lp_remove (0x2E): the LP's detected LP-share spends are burned; onboard the two withdrawn
           // notes + draw down reserves/shares. 0x2E carries its envelope in the Taproot WITNESS (no OP_RETURN
           // at vout 0), so recvA is at vout 0 and recvB at vout 1 — matching the guest (canonical_amm_output_
-          // vout) + getParentEnvelopeData. (Keying them at vout 1/2 left later spends undetected = double-spend.)
-          // The two recv blindings r_recv_a/b are now ON-CHAIN (the guest parses them) — so the only witnesses
+          // vout) + getParentEnvelopeData.
+          // The two recv blindings r_recv_a/b are ON-CHAIN (the guest parses them) — so the only witnesses
           // per 0x2E are the append paths: THREE, read UNCONDITIONALLY (branch-independent, mirror the guest) —
           // recvA @path0, recvB @path1, and the vout-2 share-refund @path2 (used only on the zero-payout leg).
           // Destination binding (mirror the guest): the burned LP-share inputs are the LP's own note
@@ -2942,7 +2935,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       // Mode-B reverse reflection: mode_b + the eth-reflection PV (the guest verify_sp1_proof-binds it) + the
       // consumed-ν witness stream. A forward batch is mode_b=0 with no eth_pv/consumed (the harness/guest skip).
       modeB: modeBIn ? 1 : 0, ...(modeBIn ? { ethPv: ethPvHex, consumed: consumedOut } : {}),
-      // Generational resume: rebaseMode + the predecessor's drained on-chain counters (the stdin writer emits
+      // Successor resume: rebaseMode + the predecessor's drained on-chain counters (the stdin writer emits
       // them in the guest's read position) + the expected rebasedFromDigest the guest commits and the successor
       // contract re-derives. Absent for an ordinary cycle. priorDigest (== state.digest() below is the
       // successor genesis; the caller pins it as reflectionResumeDigest_).
@@ -3023,7 +3016,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   function ethReflGenesisDigest(pool20) {
     return ethReflDigest(pool20, imtEmptyRoot(), 0, EMPTY_ETH_SET_ROOT, 0, EMPTY_ETH_SET_ROOT, 0);
   }
-  // Generational-resume authentication anchor (mirror cxfer_core::generational_rebase_anchor): keccak(
+  // Successor-resume authentication anchor (mirror cxfer_core::generational_rebase_anchor): keccak(
   // predDigest ‖ consumedCount_be32 ‖ crossOutCount_be32) — matching the successor contract's keccak256(
   // abi.encodePacked(bytes32 predDigest, uint256 predConsumed, uint256 predCrossOut)). The guest commits this
   // as rebasedFromDigest on the migration cycle; the contract re-derives it from the predecessor's exposed
@@ -3040,7 +3033,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   // word7 = syncCommitteeRoot (the committee the proof ends on), word8 = prevSyncCommitteeRoot (the committee it starts
   // from: the pinned genesis committee on a chain's first Mode-B cycle, else the one the last cycle ended on), word9 = consumedNuSetRoot, word10 low-8 = consumedNuCount,
   // word11 = ethOutbox (guest-pinned), word12 = ethMsgSetRoot, word13 low-8 = ethMsgCount. The
-  // Bitcoin guest now ANCHORS words 0/1 (the cross-cycle chain) in addition to reading 3/9/10, so a synthetic
+  // Bitcoin guest ANCHORS words 0/1 (the cross-cycle chain) in addition to reading 3/9/10, so a synthetic
   // PV must carry a coherent genesis prior + new digest. This synth stands for the FIRST Mode-B cycle from a
   // given pool (priorDigest = eth genesis for that pool); the real eth proof carries the chained values.
   function buildEthPv(
@@ -3070,7 +3063,7 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   }
 
   // Assemble the `batch.modeB` witness bundle for a reverse-reflection (mode_b=1) fixture from the eth
-  // proof's attested sets — the indexer→fixture handoff (G3). The eth-reflection prover (eth_prove) emits
+  // proof's attested sets (indexer → fixture). The eth-reflection prover (eth_prove) emits
   // its set alongside eth_pv.hex; given that bundle + the batch's 0x65 txs + the resolved Bitcoin source
   // notes, this rebuilds the SAME append-only keccak sets the eth guest committed and derives each leaf's
   // FINAL membership path (NOT the append-time frontier — later appends fill higher siblings). Used by both

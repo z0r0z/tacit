@@ -1,8 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Header feeder — keeps the on-chain BitcoinLightRelay current so reflection can attest.
 //
-// Render service type: Cron Job. Ports ops/box-artifacts/auto-relay.sh (which died with the
-// box) to run box-free. NO proving — just: read the relay tip + BTC tip, fetch the raw 80-byte
+// Render service type: Cron Job. NO proving — just: read the relay tip + BTC tip, fetch the raw 80-byte
 // headers for the gap, and submit advanceTip(bytes) on-chain (RELAY_KEY pays gas, ~cheap).
 //
 // PACING (the one subtlety): reflection's attest tip must sit at or below relayTip-CONFIRMATIONS, and

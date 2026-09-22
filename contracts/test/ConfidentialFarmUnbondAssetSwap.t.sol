@@ -31,8 +31,7 @@ contract EvilController {
 ///   OP_FARM_HARVEST but not the bond/unbond pair, and the cdpCloses loop checks only `code.length != 0`
 ///   before forwarding to the controller. So with a MOCK verifier standing in for the guest, an
 ///   unbond-shaped close carries an arbitrary leg asset unchallenged by the pool. This is a boundary
-///   statement, not an exploit: on mainnet a real SP1 proof is required, and the guest above forbids the
-///   relabel. The honest FarmController (`_stakeWeight` → `WrongStakeAsset`) enforces the same invariant a
+///   statement: a real SP1 proof is required, and the guest above forbids the relabel. The honest FarmController (`_stakeWeight` → `WrongStakeAsset`) enforces the same invariant a
 ///   second time on the controller side; the positive control below shows it.
 contract ConfidentialFarmUnbondAssetSwapTest is Test {
     ConfidentialPool pool;
@@ -91,7 +90,7 @@ contract ConfidentialFarmUnbondAssetSwapTest is Test {
     }
 
     /// Positive control: the HONEST controller does enforce the invariant — so it exists, it is simply located
-    /// in a contract the attacker replaces. Same legs, real FarmController, reverts WrongStakeAsset.
+    /// in the controller contract rather than the pool. Same legs, real FarmController, reverts WrongStakeAsset.
     function test_honest_controller_rejects_mismatched_asset() public {
         bytes32 stakeAsset = keccak256("the-real-LP-share-asset");
         bytes32 rewardAsset = keccak256("the-real-reward-asset");

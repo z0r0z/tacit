@@ -1,17 +1,11 @@
 // Confidential DeFi tab — borrow against a shielded note. Renders over the LIVE pool's seed-only note scan
 // (confidential-pool-ux.js) and drives the REAL CDP/cBTC builders (confidential-cdp.js) through the gasless
-// relay (confidential-defi-actions.js). Kept OUT of tacit.js (a thin hook calls renderCdpTab) to keep the
-// giant file thin, mirroring confidential-pool-tab.js.
+// relay (confidential-defi-actions.js). Kept out of tacit.js (a thin hook calls renderCdpTab), mirroring
+// confidential-pool-tab.js.
 //
-// VERIFICATION STATUS: OPEN (mint cUSD), cBTC-mint and CLOSE assemble the exact guest witnesses and submit to
-// the relay, and every prerequisite is now live — the CollateralEngine is configured and the gen5 redeploy +
-// re-prove have landed, with the exec-cdpmint/cdpclose/cdpliquidate/cbtcmint prover binaries deployed. CLOSE
-// rebuilds the CDP position tree from the CdpPositionInserted event to prove membership. (Top-up is the same
-// machinery; not surfaced yet.)
-//
-// NOT YET EXERCISED ON MAINNET: as of the 2026-09-19 review, outstandingCusd == 0 and both tacBTC and tacUSD
-// have zero supply — no CDP has ever been opened on gen5 and no cBTC has been minted. Treat the first real
-// use as a rehearsal. See audit/AUDIT-2026-09-19-cbtc-cusd-cdp-review.md for the launch gates.
+// OPEN (mint cUSD), cBTC-mint and CLOSE assemble the exact guest witnesses and submit to the relay. CLOSE
+// rebuilds the CDP position tree from the CdpPositionInserted event to prove membership. Top-up uses the
+// same machinery and is not surfaced in the UI.
 
 import { secp, sha256, keccak_256, hmac } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';

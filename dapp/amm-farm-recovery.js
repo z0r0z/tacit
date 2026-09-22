@@ -31,23 +31,14 @@ export function makeFarmRecovery() {
     return { kind, vout, assetIdHex: String(assetIdHex).replace(/^0x/, '').toLowerCase(), amount: BigInt(amount), blinding, commitmentHex };
   }
 
-  // T_LP_UNBOND → lp_return note (vout 1) + reward note (vout 2, only when rewardAmount > 0).
-  // records = { poolId, rewardAssetIdHex, bondAmount } resolved from the worker farm + bond records
-  // (poolId → lp_asset_id; bondAmount = the LP shares originally bonded).
-  function recoverUnbond(payload, { poolId, rewardAssetIdHex, bondAmount } = {}) {
+  // T_LP_UNBOND → lp_return note (vout 1) of the bonded shares, which the envelope carries.
+  // poolId (→ lp_asset_id) comes from the worker farm record.
+  function recoverUnbond(payload, { poolId } = {}) {
     const dec = decodeLpUnbond(_toBytes(payload));
-    if (!dec) return [];
-    const out = [];
-    if (poolId != null && bondAmount != null) {
-      const lpAssetIdHex = _hex(deriveLpAssetIdFromPoolId(_toBytes(poolId)));
-      const lp = _opening('lp_return', 1, lpAssetIdHex, bondAmount, dec.lpReturnR);
-      if (lp) out.push(lp);
-    }
-    if (dec.rewardAmount > 0n && rewardAssetIdHex != null) {
-      const rw = _opening('farm_reward', 2, rewardAssetIdHex, dec.rewardAmount, dec.rewardR);
-      if (rw) out.push(rw);
-    }
-    return out;
+    if (!dec || poolId == null) return [];
+    const lpAssetIdHex = _hex(deriveLpAssetIdFromPoolId(_toBytes(poolId)));
+    const lp = _opening('lp_return', 1, lpAssetIdHex, dec.shares, dec.lpReturnR);
+    return lp ? [lp] : [];
   }
 
   // T_LP_HARVEST → reward note (vout 1, only when rewardAmount > 0). The reward amount + blinding are

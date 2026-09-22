@@ -27,12 +27,9 @@ contract LpPropVerifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
 }
 
-/// Pins the M-03 on-chain LP-add proportionality bound (`_ckProp`) against the shapes the guest can now
-/// produce after the change-output work.
-///
-/// WHY: the guest gained per-leg CHANGE outputs (and, next, multi-note inputs). Change notes append LEAVES
-/// but must NOT perturb the reserve deltas the contract bounds. That was an ASSUMPTION when M-03 landed —
-/// these tests make it a fact. If a future guest change starts folding change into the reserve move, the
+/// Pins the on-chain LP-add proportionality bound (`_ckProp`) against the shapes the guest produces,
+/// including per-leg CHANGE outputs. Change notes append LEAVES but must NOT perturb the reserve deltas the
+/// contract bounds. If a future guest change starts folding change into the reserve move, the
 /// honest-shape cases below flip to reverting and say so loudly.
 ///
 /// The bound (ConfidentialPool._settle, LP-add branch) is, per side:

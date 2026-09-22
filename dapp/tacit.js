@@ -189,12 +189,10 @@ const CHAIN_DIVERGE_TOLERANCE = 3;
 const CHAIN_DIVERGE_INTERVAL_MS = 5 * 60 * 1000;
 const NET_KEY = 'tacit-network-v1';
 // Persisted one-time mainnet consent flag. Defined here (rather than inside a
-// handler) so every reader uses the same constant rather than re-typing the
-// literal string — the latter is what created the 4× drift across this file
-// before this refactor.
+// handler) so every reader uses the same constant.
 const MAINNET_OK_KEY = 'tacit-mainnet-consented-v1';
-// Default to mainnet for new visitors. Existing users who previously chose
-// signet keep their preference via localStorage. The persistent mainnet
+// Default to mainnet for new visitors. A stored signet choice is kept via
+// localStorage. The persistent mainnet
 // banner + backup-acknowledgement gates (ensureBurnerBackedUp, the export
 // flow on first value-creating op) are the safety nets — there is no
 // consent dialog on first load since landing on mainnet is the expected
@@ -578,8 +576,8 @@ const IPFS_GATEWAYS_FALLBACK = [
 //   - 30   comfort:  cryptographer-comfort range for credible Phase 2
 //                    ceremonies (small but non-trivial trust-root spread).
 //   - 100  strong:   the "ideally 100s" target — production-ready.
-//   - 1100 gold:     Tornado Cash's reference ceremony scale; over-spec
-//                    for v1 but sets the upper bar.
+//   - 1100 gold:     large public-ceremony scale; over-spec, sets the
+//                    upper bar.
 // Surfaced in the ceremony state display as colour-coded milestone pills
 // so contributors see progress + concrete momentum-crossings (each pill
 // flips from grey to green as its count is reached).
@@ -777,11 +775,8 @@ const EXT_MODE_KEY = 'tacit-ext-mode-v1';   // 'sats-connect' | 'unisat' | null
 // a "reconnect?" popup on some wallets (Xverse most reliably) even when the
 // origin is already authorized.
 //
-// We previously used sessionStorage to be conservative (a brand-new tab
-// would re-auth through the wallet's official flow). For a dapp the user
-// opens daily, the conservative path produces a popup on every new tab and
-// reads as user-hostile noise. The data isn't sensitive, so localStorage
-// is strictly safer-UX-without-security-loss.
+// localStorage rather than sessionStorage: a per-tab cache produces a popup
+// on every new tab, and the data isn't sensitive.
 //
 // Stale-cache failure modes:
 //   • User revokes wallet permission externally → cache thinks we're still
@@ -806,12 +801,7 @@ function _readCachedExtState() {
   try {
     let raw = localStorage.getItem(EXT_STATE_KEY);
     if (!raw) {
-      // One-shot migration from the previous sessionStorage-only cache: if
-      // the user reloaded their existing same-tab session after this build
-      // landed, lift the sessionStorage entry to localStorage so the
-      // transition is invisible. (For users opening a new tab post-deploy,
-      // sessionStorage is empty too — those see one provider round-trip
-      // before localStorage gets seeded.)
+      // Lift a same-tab sessionStorage entry into localStorage when present.
       const legacy = sessionStorage.getItem(EXT_STATE_KEY);
       if (legacy) {
         raw = legacy;
@@ -850,10 +840,7 @@ function _readCachedExtState() {
 }
 function _clearCachedExtState() {
   try { localStorage.removeItem(EXT_STATE_KEY); } catch {}
-  // Defense-in-depth: clear any sessionStorage entry from the old per-tab
-  // cache scheme so users migrating from the previous build don't end up
-  // with two diverging caches across reloads. Drop after a couple of
-  // releases when no one's running pre-localStorage clients anymore.
+  // Clear any per-tab sessionStorage entry too, so two caches can't diverge.
   try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
 }
 
@@ -942,10 +929,9 @@ function _storageShape(raw) {
   return 'unknown';
 }
 
-// 12-char minimum follows OWASP/NIST guidance for password-derived keys subject
-// to offline attack — 8 chars at 600k PBKDF2 is brute-forceable in hours on a
-// GPU farm if the localStorage blob is exfiltrated. A password manager is
-// recommended; this is the floor.
+// 12-char minimum follows OWASP/NIST guidance for password-derived keys
+// stored at rest (600k PBKDF2). A password manager is recommended; this is
+// the floor.
 const PASSPHRASE_MIN_LEN = 12;
 
 // DOM-based passphrase modal — replaces native prompt() for two reasons:
@@ -1258,8 +1244,7 @@ const wallet = {
         try { localStorage.setItem(key, await encryptPrivkey(priv, usedPassphrase)); }
         catch (migrationErr) {
           // Quota / localStorage unavailable. User can still sign this session
-          // — only the next-reload smoothing is lost. Warn once so the
-          // failure is debuggable; previously this was swallowed.
+          // — only the next-reload smoothing is lost. Warn once.
           console.warn('[tacit] lazy-unlock migration write failed; next reload will eager-unlock:', migrationErr?.message || migrationErr);
         }
       }
@@ -1378,14 +1363,9 @@ const prfWallet = {
     return this._setupSession({ ...result, label });
   },
 
-  // Hand the PRF-derived priv directly to wallet.priv. The previous
-  // implementation wrote the priv into a localStorage blob keyed by a
-  // throw-away random "session password" and immediately re-decrypted it —
-  // the password was never persisted, so the blob was unreadable next
-  // session and contributed nothing but a stale entry under WALLET_KEY_BASE.
-  // Skipping the round-trip eliminates that orphan and the failure modes it
-  // created (e.g. a later password-mode unlock seeing the blob via the
-  // first-load existence check and prompting for an unguessable passphrase).
+  // Hand the PRF-derived priv directly to wallet.priv. Nothing is written
+  // under WALLET_KEY_BASE, so a later password-mode unlock never sees a blob
+  // it can't decrypt.
   async _setupSession({ credentialId, priv, pub, pubHex, label }) {
     // Welcome-flow exclusivity: ext / passkey / local are alternative auth
     // paths, never combined. If the caller is mid-session in ext mode (e.g.
@@ -1843,8 +1823,7 @@ async function ensurePrivkey() {
 // Tracks which wallet path was last used so init() can prefer it on reload
 // instead of always running the passkey path first. Without this, a user
 // with both an external wallet AND a passkey gets a passkey OS prompt every
-// reload, and the only way back to ext-wallet flow is to cancel — which
-// previously also wiped their passkey map.
+// reload, and the only way back to ext-wallet flow is to cancel.
 const ACTIVE_MODE_KEY = 'tacit-active-mode-v1';
 function getActiveWalletMode() {
   const v = localStorage.getItem(ACTIVE_MODE_KEY);
@@ -2446,7 +2425,7 @@ function setCustomApiBase(netName, urlOrNull) {
   else delete m[netName];
   localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(m));
   // Wipe health state — a config change deserves a clean slate on the
-  // affected bases (the cooldown was about the old config).
+  // affected bases.
   _apiHealth.clear();
   _apiReadCache.clear();
 }
@@ -3068,14 +3047,9 @@ async function getBtcUsdPrice() {
   if (_btcUsdInFlight) return _btcUsdInFlight;
   _btcUsdInFlight = (async () => {
     // Race all five oracles in parallel — first source that returns a valid
-    // USD wins. Sequential previously meant a slow mempool.space (CDN hiccup,
-    // rate-limit) stalled all four faster fallbacks; parallel cuts typical
-    // cold-load from ~1s to ~200-300ms (slowest healthy source). Each fetch
-    // has a 3s timeout so a hung provider can't extend the overall wait
-    // beyond 3s. Promise.any rejects only when ALL sources fail (network
-    // partition, etc.), at which point we return whatever localStorage had.
-    // Race all five oracles in parallel — first valid response wins. After
-    // a winner resolves, abort the losing fetches so their 429s / errors
+    // USD wins, so one slow provider can't stall the rest. Each fetch has a
+    // 3s timeout. Promise.any rejects only when ALL sources fail, at which
+    // point we return whatever localStorage had. After a winner resolves, abort the losing fetches so their 429s / errors
     // don't end up in the console (every public oracle rate-limits eventually
     // and the browser logs every failed fetch regardless of whether we use
     // the result). AbortController per attempt + a shared "winner found"
@@ -3486,6 +3460,7 @@ const _UTXO_LIGHT_STALE_TTL_MS = 5 * 60_000;
 function invalidateUtxoCache() {
   _utxoCacheByTxCount.clear();
   _utxoLightCache.clear();
+  for (const k of [..._apiReadCache.keys()]) if (/:\/address\//.test(k)) _apiReadCache.delete(k);
   // DON'T clear _heavyAddresses: a single broadcast won't take a 1500-UTXO
   // wallet down to <500. Clearing forces the next refresh to fire a /utxo
   // call which 400s, just to re-discover the address is heavy. Once flagged,
@@ -3593,7 +3568,7 @@ const getTip = () => apiText('/blocks/tip/height').then(t => parseInt(t, 10) || 
 //
 // This does NOT block transactions — the dApp's crypto checks (Pedersen,
 // kernel sig, range proofs) already prevent acceptance of fabricated data.
-// What this catches is the class of attacks the crypto can't see: txs
+// What this catches is what the crypto can't see: txs
 // hidden by the primary endpoint, stale tips, infrastructure outage. Two
 // independent Esplora-compatible endpoints make those visible at near-zero
 // cost (one extra HTTP request per network per 5 min).
@@ -3784,8 +3759,8 @@ async function renderSatsFragmentationBanner() {
 
 // mempool.space /tx/:txid/outspend/:vout returns { spent: bool, txid?, vin? }.
 // Fails closed: errors propagate so callers can surface "couldn't verify
-// liveness" rather than silently treating an unreachable API as "not spent"
-// — that default made stale listings exploitable during mempool downtime.
+// liveness" rather than silently treating an unreachable API as "not spent",
+// so a stale listing never reads as live during an API outage.
 // Outspend cache: only stores SPENT results (once spent, always spent; the
 // answer never changes). Unspent results vary over time and aren't cached so
 // fresh checks (e.g., before broadcast) still hit the chain. In-flight Map
@@ -4227,14 +4202,10 @@ function _txIsRecentlyNotFound(id) {
 // Batch tx fetcher. Coalesces concurrent getTx() callers in a small
 // time window (8ms) and issues a single POST /chain/txs/batch to the
 // worker, which fans out server-side. Cold ancestry walks fire dozens
-// of getTx() in quick succession; previously each was its own round-
-// trip, so a 50-UTXO wallet incurred 200-500 sequential trips. Now
-// they collapse into ~4-10 batched calls.
+// of getTx() in quick succession; batching collapses them into a few calls.
 //
-// Fallback: if the worker is unconfigured or the batch endpoint fails
-// (older worker version, transient outage), the per-txid path falls
-// back to the single-tx fetch via apiJson — same behaviour as before
-// the batch layer existed.
+// Fallback: if the worker is unconfigured or the batch endpoint fails,
+// the per-txid path falls back to the single-tx fetch via apiJson.
 const TX_BATCH_WINDOW_MS = 8;
 const TX_BATCH_MAX_SIZE = 64;
 let _txBatchQueue = new Map();  // txid → { resolvers: [(tx|null) => void] }
@@ -4492,10 +4463,8 @@ async function getFeeRate(tier = null, opts = {}) {
     // well above it). Signet relay strictly enforces 1 sat/vB
     // (bitcoind's `minrelaytxfee` default = 1000 sat/kvB), and some
     // per-opcode vbytes estimators in this dapp underestimate by up to
-    // ~2.5× on long-payload reveals — the AMM POOL_INIT path with a
-    // ~1 KB envelope + 3 inputs was caught at 0.4 sat/vB actual during
-    // the 2026-05-18 FEE_CLAIM signet rehearsal, leaving its
-    // commit+reveal pair stuck below relay. A 2 sat/vB signet floor
+    // ~2.5× on long-payload reveals (e.g. the AMM POOL_INIT path with a
+    // ~1 KB envelope + 3 inputs). A 2 sat/vB signet floor
     // gives 2× headroom against estimator slop so even worst-case
     // drift produces ≥1 sat/vB actual on chain.
     const minFloor = net === 'signet' ? 2 : 1;
@@ -4731,7 +4700,7 @@ function deriveAmountKeystreamSelf(myPriv, anchorBytes, voutIdx) {
 // Sender computes commit = recipientPub + b·G where b is HMAC-bound to
 // ECDH(senderInputPrivSum, recipientPub) + network_tag + domain + tx_anchor.
 // Recipient scans tx for outputs whose script is P2WPKH(commit) or P2TR(commit)
-// using the aggregated sender pubkey from §A.2.5-eligible inputs and the same
+// using the aggregated sender pubkey from eligible inputs and the same
 // HMAC binding. The matching UTXO is spent with tweaked_sk = (sk + b) mod N —
 // same custody, different on-chain identity. Pedersen amount-commit channel
 // is orthogonal, so a stealth recipient is *doubly private* under our model.
@@ -4755,7 +4724,7 @@ const STEALTH_DOMAIN_BY_OPCODE = new Map([
   [0x3D, DOMAIN_AXFER_VAR_STEALTH], // T_AXFER_VAR_BPP
 ]);
 
-// §A.2.5 rule 6 — prevouts whose vout[0] OP_RETURN carries one of these
+// Prevouts whose vout[0] OP_RETURN carries one of these
 // opcodes are mixer-derived and MUST NOT contribute to P_sender.
 const MIXER_EMITTING_OPCODES = new Set([
   0x2A,  // T_WITHDRAW
@@ -4915,8 +4884,8 @@ function tacitAddressForWallet(wallet, network = currentNetworkName()) {
   return encodeTacitAddress({ network, btcSpendPub, btcScanPub: scanPub, evmOwnerPub: btcSpendPub });
 }
 
-// Resolve a Send-tab recipient string to an Ethereum-lane shielded pubkey. Accepts a unified
-// Tacit address (tacit1…, using its EVM lane), a raw compressed pubkey (02/03…), or the 0x-prefixed
+// Resolve a Send-tab recipient string to a confidential-pool pubkey. Accepts a unified
+// Tacit address (tacit1…, using its Ethereum-side key), a raw compressed pubkey (02/03…), or the 0x-prefixed
 // form. Keeps parse rules identical to the merged Send surface (parseRecipient) so the two never
 // diverge. Returns { pubHex } (0x-compressed) or { error }.
 function resolveEvmShieldedRecipient(raw) {
@@ -4965,10 +4934,10 @@ const ethNamesBridge = {
   },
 };
 
-// ECDH shared secret per §A.2 — NORMATIVE x-only point serialization.
+// ECDH shared secret — NORMATIVE x-only point serialization.
 // The expensive part of stealth derivation: one scalar-point multiplication
 // + one SHA256. Split out so recipientScanTxForStealth can amortize a single
-// call across every output of a tx (per §H.1: "ONE ECDH per tx").
+// call across every output of a tx ("ONE ECDH per tx").
 function deriveStealthEcdhSharedSecret({ ourPriv, theirPub }) {
   if (ourPriv.length !== 32) throw new Error('ourPriv must be 32 bytes');
   if (theirPub.length !== 33) throw new Error('theirPub must be 33 bytes compressed');
@@ -5017,17 +4986,14 @@ function computeStealthTweakedSk({ underlyingPriv, blinding }) {
   return hexToBytes(hex);
 }
 
-// Per-input descriptor for §A.2.5 aggregation.
+// Per-input descriptor for aggregation.
 //
 // `prevoutOpReturn` (optional): opcode byte from vout[0] of the prevout's
 // parent tx when that vout is an OP_RETURN-shaped tacit envelope. Caller
-// supplies it when they have the parent tx in hand. Checked FIRST (per
-// §A.2.5 precedence) so a mixer-payout prevout that happens to be
+// supplies it when they have the parent tx in hand. Checked FIRST so a mixer-payout prevout that happens to be
 // P2WPKH-shaped is correctly excluded before any script-shape branch fires.
-// Reserved for future class-1 stealth-withdraw amendments where mixer-
-// derived asset UTXOs could flow into a class-2 reveal tx; no shipped
-// opcode currently emits such inputs, so existing callers leave it
-// undefined and the branch no-ops.
+// No opcode emits mixer-derived inputs into a class-2 reveal tx, so
+// existing callers leave it undefined and the branch no-ops.
 function classifyStealthInput({ witness, prevoutScript, prevoutOpReturn }) {
   if (prevoutOpReturn != null && MIXER_EMITTING_OPCODES.has(prevoutOpReturn)) {
     return { kind: 'mixer-derived', pub: null };
@@ -5071,7 +5037,7 @@ function aggregateStealthEligibleInputPubkeys(inputs) {
   return { aggregatePub: acc.toRawBytes(true), eligibleCount: count };
 }
 
-// §A.2.5 mixer-derived rule. Caller supplies prevoutTx; we read vout[0]'s
+// mixer-derived rule. Caller supplies prevoutTx; we read vout[0]'s
 // OP_RETURN opcode byte and check against MIXER_EMITTING_OPCODES. The
 // resulting opcode byte (or undefined) is what callers pass as
 // `prevoutOpReturn` into `classifyStealthInput` to short-circuit ahead of
@@ -5089,7 +5055,7 @@ function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
   return MIXER_EMITTING_OPCODES.has(vout0.script[opcodeIndex]);
 }
 
-// §F.7 NORMATIVE refusal rule (audit 2.1) — EVERY eligible input must be
+// Refusal rule — EVERY eligible input must be
 // wallet-owned. eachInputIsOurs() is supplied by the caller (validator
 // ledger lookup, or — in dapp single-signer context — a constant true).
 function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
@@ -5109,10 +5075,9 @@ function checkStealthEmissionSafety({ inputs, eachInputIsOurs }) {
   return { safe: true, reason: 'all eligible inputs wallet-owned' };
 }
 
-// Compose tx_anchor head per §C: first-asset-input outpoint = txid_LE(32)
+// Compose tx_anchor head: first-asset-input outpoint = txid_LE(32)
 // || vout_LE(4). For tacit envelope transfer opcodes (CXFER/AXFER family),
-// vin[0] is the commit-reveal P2TR script-path input (ineligible per
-// §A.2.5 rule 5); the canonical anchor uses vin[1].outpoint — the first
+// vin[0] is the commit-reveal P2TR script-path input (ineligible); the canonical anchor uses vin[1].outpoint — the first
 // asset input. Matches the existing amount-channel anchor convention so
 // one outpoint binds both privacy planes.
 function stealthTxAnchorHead(firstAssetInTxidHex, firstAssetInVout) {
@@ -5155,7 +5120,7 @@ function senderComputeStealthCommit({
 
 // Recipient: scan a tx for stealth-shaped outputs paying us.
 //
-// Per §H.1: one ECDH per tx. The shared secret depends only on
+// One ECDH per tx. The shared secret depends only on
 // (walletPriv, aggregatePub), so we compute it once outside the per-vout
 // loop and let each vout pay only the HMAC + EC scalar mul + script
 // compares. Cost: ~100µs ECDH + ~22µs per output (vs ~120µs per output
@@ -5216,8 +5181,8 @@ function recipientScanTxForStealth({
 // sp1… lands at a fresh, unlinkable P2TR.
 //
 // Receive-side: manual txid discovery via discoverSilentPaymentFromTxid.
-// Passive detection (worker pre-filter or SP light-client poll) is a
-// follow-up; the math + credits store are ready below.
+// Passive detection (worker pre-filter or SP light-client poll) is not
+// implemented.
 
 const BIP352_HRP_BY_NETWORK = {
   mainnet: 'sp',
@@ -5597,12 +5562,11 @@ async function discoverSilentPaymentFromTxid(txidHex) {
   return discovered;
 }
 
-// On-chain encrypted recipient amount + blinding for §5.7.6 atomic intents.
+// On-chain encrypted recipient amount + blinding for atomic intents.
 // At fulfilment time the maker MAY include a 0-sat OP_RETURN(40 bytes) at
 // the reveal tx so the taker can recover both the amount and `r` from
-// chain + privkey alone — closing the recovery-model exception that
-// previously required either local cache or a worker fetch within the 24h
-// fulfilment TTL.
+// chain + privkey alone, without local cache or a worker fetch within the
+// 24h fulfilment TTL.
 //
 // 40-byte payload layout: amount_ct(8 LE) || blinding_ct(32)
 // Both fields XOR'd against domain-separated HMAC keystreams over the same
@@ -5667,11 +5631,11 @@ function tryExtractAxintentOnchainOpReturn(scriptBytes) {
 }
 
 // ============================================================================
-// §5.7.6.1 Variable-amount atomic settlement (T_AXFER_VAR / opcode 0x37)
+// Variable-amount atomic settlement (T_AXFER_VAR / opcode 0x37)
 // crypto helpers. This block is the dapp's matching encoder + key
 // derivations.
 //
-// New domain tags (added to §3 by the amendment):
+// Domain tags:
 //   - tacit-axintent-change-v1            (off-chain maker-change blinding)
 //   - tacit-axintent-onchain-maker-amount-v1   (on-chain maker recovery amount keystream)
 //   - tacit-axintent-onchain-maker-blinding-v1 (on-chain maker recovery blinding keystream)
@@ -5711,7 +5675,7 @@ function deriveAxintentMakerOnchainKeystreams(makerPriv, intentIdBytes, assetIdB
 
 // Build the 80-byte dual-recovery payload. The two halves are independently
 // encrypted: bytes[0..40] decrypt to the recipient's (amount, blinding) using
-// the taker's ECDH-derived keystream (§5.7.6 model, reused verbatim); bytes
+// the taker's ECDH-derived keystream (the atomic-intent model, verbatim); bytes
 // [40..80] decrypt to the maker's change (amount, blinding) using the maker's
 // self-keystream above. External observers can't decrypt either half without
 // the corresponding privkey.
@@ -5744,9 +5708,8 @@ function encodeAxferVarOnchainPayload({
 // pushes > 75 bytes: OP_PUSHBYTES_N only exists for N=1..75 (opcodes
 // 0x01..0x4b). 0x50 alone is OP_RESERVED, NOT a push opcode — emitting
 // `6a 50 <80 bytes>` parses as OP_RETURN followed by OP_RESERVED and bitcoind's
-// IsStandard() rejects with "scriptpubkey" (code -26). Surfaced on signet
-// e2e harness in commit before this fix; rangeproof + kernel sig are
-// unaffected, but the reveal couldn't relay.
+// IsStandard() rejects with "scriptpubkey" (code -26), so the reveal
+// wouldn't relay.
 function encodeAxferVarOnchainOpReturn(payload80) {
   if (!(payload80 instanceof Uint8Array) || payload80.length !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) {
     throw new Error(`axfer_var on-chain payload must be ${AXFER_VAR_OPRETURN_PAYLOAD_BYTES} bytes`);
@@ -6815,17 +6778,14 @@ const T_CXFER_BPP = 0x22; // BP+ variant of T_CXFER, identical wire shape, small
 
 // ============== T_CXFER_BPP ACTIVATION GATING ==============
 // The BP+ prover/verifier in dapp/bulletproofs-plus.js is a hand-port of
-// Monero's bulletproofs_plus.cc with secp256k1 + SHA-256 substitutions. It
-// is gated to signet by default while the on-chain signet harness exercises
-// the proof system end-to-end before mainnet activation.
+// Monero's bulletproofs_plus.cc with secp256k1 + SHA-256 substitutions.
 //
 // `bppEnabled()` drives both validator-side acceptance AND the send-path
 // builder default. buildAndBroadcastCXfer{,Multi} use `useBpp = bppEnabled()`
-// as the default. BP+ is now on by default on ALL networks — its smaller
-// aggregated rangeproof is cheaper to fold and has been exercised end-to-end
-// on the signet harness. The reflection guest accepts BOTH schemes (length-
-// dispatched verify_range), so legacy classic-BP (T_CXFER) notes remain fully
-// valid; only new sends route through T_CXFER_BPP. Callers can override.
+// as the default. BP+ is on by default on every network — its smaller
+// aggregated rangeproof is cheaper to fold. The reflection guest accepts BOTH
+// schemes (length-dispatched verify_range), so classic-BP (T_CXFER) notes stay
+// valid; new sends route through T_CXFER_BPP. Callers can override.
 //
 // Override via localStorage:
 //   localStorage['tacit-bpp-disable-mainnet-v1'] = '1'  // fall back to classic on mainnet
@@ -6859,14 +6819,12 @@ const T_SLOT_SPLIT         = 0x46; // atomic 1→N slot split, ΣD_new = D_old
 const T_SLOT_MERGE         = 0x47; // atomic N→1 slot merge, ΣD_old ≥ D_new
 // 0x48 reserved for T_SLOT_NOTE.
 // 0x5B–0x5E: preauth/offline-trading family.
-// 0x5D–0x5E reserved for the named follow-ups (batched-fill, both-sides match).
+// 0x5D–0x5E reserved (batched-fill, both-sides match).
 const T_PREAUTH_BID             = 0x5B; // buyer-offline preauth bid, exact-fill
 const T_PREAUTH_BID_VAR         = 0x5C; // buyer-offline preauth bid, partial-fill
 // 0x4D–0x4E reserved (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
-// machinery, activated via cBTC.tac envelopes; the unbonded standalone path is
-// not shipped on mainnet).
-// 0x2D–0x32: AMM opcodes. v1 dapp side has wire-format primitives;
-// full buildAndBroadcast wrappers stage in over follow-up sessions.
+// machinery, activated via cBTC.tac envelopes; no standalone builder).
+// 0x2D–0x33: AMM opcodes (SPEC §3.5).
 const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
 const T_PROTOCOL_FEE_CLAIM = 0x31; // founder mints accrued LP-fee skim as lp_asset_id UTXO
@@ -6876,22 +6834,17 @@ const SWAP_ROUTE_N_HOPS_MAX = 4;       // matches worker + tests/swap-route.mjs
 const SWAP_ROUTE_HOP_BYTES = 32 + 1 + 2 + 8 + 8 + 8 + 8;
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement.
                           // N=2 partial reveal (recipient + maker change), single asset input,
-                          // interleaved BTC-payment vout. Read-only as of this commit: validator
-                          // recognizes the envelope on-chain but the builder is gated on
-                          // ENABLE_T_AXFER_VARIABLE (default off) until the rollout phases complete.
-                          // 0x32–0x36 are reserved for V2-AMM range-LP opcodes.
+                          // interleaved BTC-payment vout. The validator always recognizes the
+                          // envelope; the builder is gated on ENABLE_T_AXFER_VARIABLE (default off).
+                          // 0x34–0x36 are the farm/LP-bond opcodes (SPEC §3.9).
 // Feature flag for variable-amount atomic settlement.
-// Default ON now that the worker has shipped PR1-3, the dapp builder pieces
-// (publish/claim/fulfil/finalize) are in main, and the signet e2e harness
-// has surfaced + closed both wire-format bugs (OP_RETURN(80) opcode +
-// reveal-broadcast race). Read-side support (decoder, BFS walker, validator
-// branch) has been on since the SPEC-amendment commit and never depended on
-// this flag; flipping ENABLE only governs whether the BUILDER will emit
+// Default OFF. Read-side support (decoder, BFS walker, validator branch) does
+// not depend on this flag; it only governs whether the BUILDER will emit
 // T_AXFER_VAR envelopes when the maker opts in per-listing via the UI's
 // "Variable fills" toggle on the publish form.
 //
 // Production safety: legacy whole-UTXO intents (no min_take_amount) continue
-// to use the §5.7.6 T_AXFER (0x26) path byte-identically. No existing TAC
+// to use the T_AXFER (0x26) path byte-identically. No existing TAC
 // transaction reinterprets under this flag. The maker must explicitly tick
 // "Variable fills" to publish under 0x37.
 //
@@ -7159,8 +7112,8 @@ function decodeCXferBoundPayload(payload) {
 // the opcode is 0x22 and the rangeproof is a Bulletproofs+ aggregated proof
 // instead of standard Bulletproofs. Kernel sig, asset_id, commitment, and
 // encrypted_amount encodings are unchanged. The wire-level encoder/decoder
-// treat the rangeproof field as opaque bytes; BP+ prover/verifier are
-// separate concerns landed alongside the amendment.
+// treat the rangeproof field as opaque bytes; the BP+ prover/verifier live in
+// dapp/bulletproofs-plus.js.
 function encodeCXferBppPayload({ assetId, kernelSig, outputs, rangeproof }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
@@ -7337,7 +7290,7 @@ function axferVarOutputIndexForVout(vout) {
 // except the opcode is 0x3C and the rangeproof is a Bulletproofs+ aggregated
 // proof verified via bppRangeVerify rather than bpRangeAggVerify. Every other
 // field (asset_input_count, kernel_sig, commitments, amount_ct, kernel_msg
-// construction) is unchanged from §5.7. Soundness reduction is identical
+// construction) is unchanged from T_AXFER. Soundness reduction is identical
 // modulo the rangeproof verifier swap.
 function encodeAxferBppPayload({ assetId, assetInputCount, kernelSig, outputs, rangeproof }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
@@ -7387,7 +7340,7 @@ function decodeAxferBppPayload(payload) {
 // T_AXFER_VAR except the opcode is 0x3D and the rangeproof
 // is Bulletproofs+. The N=2 tightening, vout interleaving rule, and the
 // mandatory OP_RETURN(80) recovery output are preserved verbatim — only
-// the rangeproof bytes change. Indexers reject deviations from the §5.7.9
+// the rangeproof bytes change. Indexers reject deviations from the T_AXFER_VAR
 // tx layout identically.
 function encodeAxferVarBppPayload({ assetId, kernelSig, outputs, rangeproof }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
@@ -7397,9 +7350,9 @@ function encodeAxferVarBppPayload({ assetId, kernelSig, outputs, rangeproof }) {
   const parts = [
     new Uint8Array([T_AXFER_VAR_BPP]),
     assetId,
-    new Uint8Array([1]),  // asset_input_count: exactly 1, mirrors §5.7.9
+    new Uint8Array([1]),  // asset_input_count: exactly 1, as T_AXFER_VAR
     kernelSig,
-    new Uint8Array([2]),  // N: exactly 2, mirrors §5.7.9
+    new Uint8Array([2]),  // N: exactly 2, as T_AXFER_VAR
   ];
   for (const o of outputs) {
     if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
@@ -7444,7 +7397,7 @@ function decodeAxferVarBppPayload(payload) {
 // bid record ingestion. output[0] carries only the Pedersen commitment
 // (no encryptedAmount — the amount is in cleartext above); seller's
 // change output[1] (when present) keeps the standard self-keystream
-// encryptedAmount per §5.7.6 self-blinding.
+// encryptedAmount self-blinding.
 const PREAUTH_BID_INLINE_BYTES = 16 + 33 + 8 + 32 + 8;  // 97
 function encodePreauthBidPayload({
   assetId, assetInputCount, bidId, recipientPubkey,
@@ -7548,12 +7501,12 @@ function computePreauthBidContextHash({
 }
 
 // T_PREAUTH_BID_VAR — buyer-offline partial-fill preauth bid.
-// Extends §5.7.11 inline section with the variable-fill parameters
+// Extends the T_PREAUTH_BID inline section with the variable-fill parameters
 // (price_per_unit, max_fill, fill_increment, fill_amount) and replaces the
 // fixed (amount, blinding, price_sats) trio. refund_script_hash is the
 // hash160 of the buyer's reclaim P2WPKH, pinning where the unfilled
-// portion's sats go. recipient_blinding stays in cleartext for the same
-// reason §5.7.11 keeps blinding in cleartext: chain-only recovery via
+// portion's sats go. recipient_blinding stays in cleartext, as in
+// T_PREAUTH_BID, for chain-only recovery via
 // Pedersen opening of output[0].commitment.
 //
 // Inline layout: bid_id(16) + recipient_pubkey(33) + price_per_unit_LE(8) +
@@ -7697,7 +7650,7 @@ function decodePreauthBidVarPayload(payload) {
 // Per-ratio bid_context_hash binding for T_PREAUTH_BID_VAR. The buyer's
 // K SIGHASH_SINGLE_ACP pre-signatures each pin a different output of this
 // shape (one per allowed fill_amount_i ∈ {min_fill, min_fill + increment,
-// …, max_fill}). Domain tag is distinct from §5.7.11 to keep the per-ratio
+// …, max_fill}). Domain tag is distinct from T_PREAUTH_BID's to keep the per-ratio
 // binding cleanly separated from the exact-fill version.
 //
 // recipient_blinding deliberately is NOT in this hash — the inline-section
@@ -7777,9 +7730,8 @@ function computeKernelMsg(assetId, inputOutpoints, outputCommitments, burnedAmou
 //   sha256("tacit-mint-v1" || asset_id || commit_anchor(36B) || mint_commitment || mint_amount_ct)
 // signed by the mint_authority private key. New mint output goes to vout=0 of
 // the reveal tx (P2WPKH to issuer wallet), holding mint_commitment. The
-// commit_anchor field binds the signature to a specific commit/reveal pair —
-// without it, an attacker could rewrap the on-chain envelope into their own
-// commit/reveal flow at their own address (see computeMintMsg below).
+// commit_anchor field binds the signature to a specific commit/reveal pair,
+// so the envelope is valid in that pair only (see computeMintMsg below).
 function encodeCMintPayload({ assetId, etchTxid, commitment, encryptedAmount, rangeproof, issuerSig }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (etchTxid.length !== 32) throw new Error('etch_txid 32 bytes');
@@ -7813,11 +7765,9 @@ function decodeCMintPayload(payload) {
 
 // Mint message must bind the *transaction-specific* commit-input anchor so a
 // witnessed mint envelope can't be replayed into a different commit/reveal pair
-// at an attacker's address. Without anchor binding, the validator only checks
-// (asset_id, commitment, amount_ct) — all observable on chain — and an attacker
-// who reads any past T_MINT can clone the envelope into their own UTXO. With
-// anchor binding the issuer's signature is tied to the specific commit_tx.vin[0]
-// outpoint that funds the reveal, which the attacker cannot reproduce.
+// at another address. (asset_id, commitment, amount_ct) are all observable on
+// chain, so the issuer's signature is also tied to the specific commit_tx.vin[0]
+// outpoint that funds the reveal; that outpoint can be spent only once.
 //
 // commit_anchor = commit_tx.vin[0].txid_BE(32) || commit_tx.vin[0].vout_LE(4)
 // (same anchor the issuer already uses for the mint blinding/keystream HMAC).
@@ -8049,7 +7999,7 @@ function decodeCPmintPayload(payload) {
 //     enforced by indexer counting prior valid T_DCLAIMs at depth ≥ 3 (same
 //     posture as T_PMINT). For merkle-gated drops, the witness carries
 //     (recipient_pub, leaf_index, eth_address, eth_sig, merkle_proof) and
-//     the canonical claim msg is byte-for-byte the existing §8 airdrop msg
+//     the canonical claim msg is byte-for-byte the worker airdrop claim msg
 //     (using merkle_root, not drop_id, so sigs are portable between the
 //     on-chain flow and the worker-mediated airdrop).
 
@@ -8190,7 +8140,7 @@ function decodeCDropPayload(payload) {
 //
 // drop_reveal_txid is the raw txid of the originating T_DROP reveal tx —
 // validators fetch the parent envelope by this txid, matching T_PMINT's
-// etch_txid pattern (§5.9). The "drop_id" KV-key concept (the SHA256 hash
+// etch_txid pattern. The "drop_id" KV-key concept (the SHA256 hash
 // used for indexer state) is derived locally via dropIdFromRevealTxid;
 // the wire format does NOT carry the hashed form.
 //
@@ -8306,10 +8256,8 @@ function dropIdFromRevealTxid(revealTxidHex) {
 
 // Kernel msg for T_DROP. Binds asset_id, cap/per_claim/merkle_root/expiry,
 // asset_input_count, AND each asset input's outpoint — so two T_DROPs
-// spending different inputs produce different kernel msgs, preventing a
-// rewrap attack (the rewrapped tx would have to spend the same already-
-// consumed inputs as the original, which is impossible after the original
-// confirms).
+// spending different inputs produce different kernel msgs: the envelope is
+// valid only in a tx spending exactly those inputs.
 function dropKernelMsg({ assetId, capAmount, perClaim, merkleRoot, expiryHeight, assetInputCount, assetInputs }) {
   if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
   if (!(merkleRoot instanceof Uint8Array) || merkleRoot.length !== 32) throw new Error('merkle_root 32');
@@ -8368,8 +8316,8 @@ function dropReclaimMsg({ reclaimDropId, assetId, capAmount }) {
 }
 
 // ============== MIXER POOL (T_DEPOSIT / T_WITHDRAW) ==============
-// Two new opcodes implement a Tornado-Cash-style
-// shielded pool over any tacit asset:
+// Two opcodes implement a fixed-denomination mixer pool over any tacit
+// asset:
 //
 //   T_DEPOSIT  — consume a UTXO of denomination `D` into pool `(asset_id, D)`.
 //                The depositor's leaf is poseidon(secret, nullifier_preimage, D).
@@ -8483,8 +8431,7 @@ function decodeTDepositPayload(payload) {
 // r_leaf is a public Pedersen blinding scalar deterministically
 // derived in-circuit from (secret, nullifier_preimage). Validator does an
 // external secp256k1 Pedersen check: pedersenCommit(denomination, r_leaf)
-// == recipient_commitment. Closes the inflation-attack vector documented
-// in the spec.
+// == recipient_commitment, which binds the withdrawn value.
 function encodeTWithdrawPayload({ assetId, denomination, merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash, proof }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
@@ -8553,7 +8500,7 @@ const SLOT_MINT_DOMAIN    = new TextEncoder().encode('tacit-slot-mint-v1');
 const SLOT_ROTATE_DOMAIN  = new TextEncoder().encode('tacit-slot-rotate-v1');
 const SLOT_SPLIT_DOMAIN   = new TextEncoder().encode('tacit-slot-split-v1');
 const SLOT_MERGE_DOMAIN   = new TextEncoder().encode('tacit-slot-merge-v1');
-// Domain tag for the v2 BTC-spending-key derivation. r_btc = Poseidon₂(
+// Domain tag for the BTC-spending-key derivation. r_btc = Poseidon₂(
 // secret, ν || "btc"), separate from r_pedersen = Poseidon₂(secret, ν). The
 // two scalars are computationally independent (inverting Poseidon is hard),
 // so revealing r_pedersen at fractionalize does NOT compromise r_btc. The
@@ -8576,12 +8523,8 @@ function slotScriptPubKeyFromKbtc(kBtcPoint) {
   return p2trScript(slotXOnly(kBtcPoint));
 }
 
-// Canonical slot_mint_msg per SPEC-CBTC-ZK §5.21 (revised: §5.24.0 amount-
-// amendment two-key fix folded in). Single shape, single domain tag —
-// k_btc_xonly is always part of the signed preimage. cBTC.zk hasn't shipped
-// to mainnet yet, so there's no v1 single-key envelope to maintain
-// backward-compat with; the original single-key derivation was flagged
-// fractionalize-unsafe and never made it past test fixtures.
+// Canonical slot_mint_msg. Single shape, single domain tag — k_btc_xonly is
+// always part of the signed preimage.
 function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, kBtcXOnly) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
@@ -8649,7 +8592,7 @@ function ctacVariantAssetId(denomSats) {
   return bytesToHex(sha256(concatBytes(CTAC_VARIANT_DOMAIN, denomLE)));
 }
 
-// §5.24.0 + §5.23: rotate_msg binds the NEW slot's k_btc_xonly so the old
+// rotate_msg binds the NEW slot's k_btc_xonly so the old
 // owner attests to the new BTC spending key. Two-key: K_btc is independent
 // from recipient_commit, so we must publish + sign it explicitly.
 function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHash, newRecipientCommit, newLeafHash, paymentAssetId, paymentAmount, newKBtcXOnly) {
@@ -8683,16 +8626,9 @@ function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHas
   ));
 }
 
-// SPEC-CBTC-ZK §5.21 (with §5.24.0 two-key foundation folded in). Canonical
-// 276-byte payload — k_btc_xonly is mandatory. cBTC.zk hasn't shipped to
-// mainnet yet, so there's no legacy single-key variant to maintain back-
-// compat with. The original recipient_commit-derived K_btc scheme was
-// flagged fractionalize-unsafe and never made it past test fixtures.
-//
-// Reviewer-noted alternative: a `mixer_fractionalize` circuit that keeps the
-// single-key derivation but treats r_leaf as a private witness. Academically
-// cleaner crypto but requires a new trusted-setup ceremony. Deferred as a
-// future v1.x amendment.
+// T_SLOT_MINT payload: canonical 276 bytes, k_btc_xonly mandatory. K_btc is
+// an independent key, not derived from recipient_commit, so a slot stays
+// safe to fractionalize.
 function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly, encryptedNote = null }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
@@ -8728,7 +8664,7 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
     minterPubkey, minterSig,
     kBtcXOnly,
   ];
-  // §5.26.4 optional encrypted-note tail (mint paid distribution: minter
+  // optional encrypted-note tail (mint paid distribution: minter
   // encrypts (secret, ν) to the recipient's viewing key so the recipient's
   // dapp can scan-and-claim without out-of-band coordination).
   if (encryptedNote !== null) {
@@ -8748,7 +8684,7 @@ function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
   // Canonical 276-byte payload — k_btc_xonly is mandatory.
-  // §5.26.4 optional note tail allows 277 (has_note=0) or 399 (has_note=1+122).
+  // optional note tail allows 277 (has_note=0) or 399 (has_note=1+122).
   if (payload.length !== 276 && payload.length !== 277 && payload.length !== 399) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
@@ -8769,7 +8705,7 @@ function decodeTSlotMintPayload(payload) {
   const minterPubkey = payload.slice(p, p + 33); p += 33;
   const minterSig = payload.slice(p, p + 64); p += 64;
   const kBtcXOnly = payload.slice(p, p + 32); p += 32;
-  // §5.26.4 optional note tail.
+  // optional note tail.
   let encryptedNote = null;
   if (payload.length === 277) {
     if (payload[p] !== 0x00) return null;
@@ -8922,10 +8858,10 @@ function decodeTSlotRotatePayload(payload) {
   const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (oldProofLen === 0) return null;
-  // SPEC-CBTC-ZK-FUNGIBILITY §5.26: payload MAY carry an optional encrypted-
+  // payload MAY carry an optional encrypted-
   // note tail: 1-byte `has_note` (0x00 or 0x01) + 122-byte note if 0x01.
   // Accept all three lengths; reject any other.
-  // Wire layout (§5.24.0 two-key): host payload now includes a 32-byte
+  // Wire layout (two-key): host payload now includes a 32-byte
   // new_k_btc_xonly field right after new_leaf_hash. hostEnd factors in
   // that extra 32.
   const hostEnd = p + oldProofLen + 33 + 32 + 32 + 32 + 8 + 33 + 64;
@@ -8969,7 +8905,7 @@ function decodeTSlotRotatePayload(payload) {
 // whose denominations sum to D_old (Bitcoin pays its own miner fee from
 // the difference). Each new slot has fresh (secret_i, ν_i) generated by
 // the splitter; the splitter holds them if self-fungibility, or encrypts
-// to recipient viewing keys via §5.26 notes for paid distribution. The
+// to recipient viewing keys via notes for paid distribution. The
 // old r_leaf becomes public (revealed on chain) — the old slot is
 // REDEEMED and can never be reused.
 function computeSlotSplitMsg(networkTag, assetIdOld, denomOld, oldNullifierHash, outputs) {
@@ -9054,7 +8990,7 @@ function encodeTSlotSplitPayload({
     oldProofLen, oldProof,
     new Uint8Array([outputs.length & 0xff]),
   ];
-  // §5.24.6 cross-asset-id rule: caller must ensure all new asset_ids declare
+  // cross-asset-id rule: caller must ensure all new asset_ids declare
   // the same underlying + peg as the old. Encoder does not check metadata
   // (that's a wrapper-registry lookup at validation time); it only emits the
   // bytes the validator will verify.
@@ -9079,7 +9015,7 @@ function encodeTSlotSplitPayload({
     parts.push(o.assetIdNew, denomNewLE, o.newRecipientCommit, o.newLeafHash);
   }
   parts.push(oldOwnerPubkey, oldOwnerSig);
-  // §5.26.4 optional encrypted-notes tail. Layout when present:
+  // optional encrypted-notes tail. Layout when present:
   //   has_note_per_output:  ⌈n/8⌉ bytes  (LSB first; bit i = note for output i)
   //   encrypted_note[k]:    122 bytes per output with has_note bit set
   if (encryptedNotes !== null) {
@@ -9132,13 +9068,13 @@ function decodeTSlotSplitPayload(payload) {
   if (oldProofLen === 0) return null;
   if (p + oldProofLen + 1 + 2 * 105 + 33 + 64 > payload.length) return null;
   const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
-  // Bind-hash check: reuses tacit-withdraw-bind-v1 domain per §5.24.3 (full
+  // Bind-hash check: reuses tacit-withdraw-bind-v1 domain (full
   // T_SLOT_BURN-equivalent validation of old leaf, minus the BTC payout step).
   const expectedOldBind = computeWithdrawBindHash(assetIdOld, denomOld, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
   for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHash[i]) return null;
   const nOutputs = payload[p]; p += 1;
   if (nOutputs < 2 || nOutputs > 16) return null;
-  // Validate length tolerating optional §5.26.4 notes tail.
+  // Validate length tolerating optional notes tail.
   const hostEnd = p + nOutputs * 105 + 33 + 64;
   if (hostEnd > payload.length) return null;
   let sumDenomNew = 0n;
@@ -9149,7 +9085,7 @@ function decodeTSlotSplitPayload(payload) {
     const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
     p += 8;
     if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
-    // §5.24.6 cross-asset rule: each output wrapper MUST be the canonical
+    // cross-asset rule: each output wrapper MUST be the canonical
     // self-custody variant for its own denomination. This permits re-tiering
     // within the family (1M → 10×100k, each a valid variant) but rejects
     // relabeling the slot's BTC-backed value onto a foreign or wrong-denom
@@ -9162,14 +9098,14 @@ function decodeTSlotSplitPayload(payload) {
     sumDenomNew += denomNew;
     outputs.push({ assetIdNew, denomNew, newRecipientCommit, newLeafHash });
   }
-  // §5.24.3 conservation check: denom_old ≥ Σ denom_new (Bitcoin pays its own
+  // conservation check: denom_old ≥ Σ denom_new (Bitcoin pays its own
   // fee from the difference). Equality means user funded the Bitcoin fee from
   // a separate vin[1+]; strict inequality means the fee comes from the slot's
   // own value.
   if (sumDenomNew > denomOld) return null;
   const oldOwnerPubkey = payload.slice(p, p + 33); p += 33;
   const oldOwnerSig = payload.slice(p, p + 64); p += 64;
-  // §5.26.4 optional encrypted-notes tail:
+  // optional encrypted-notes tail:
   //   has_note_per_output: ⌈n/8⌉ bytes (LSB-first bitmap)
   //   encrypted_note[k]:   122 bytes per output with has_note bit set
   let encryptedNotes = null;
@@ -9211,7 +9147,7 @@ function decodeTSlotSplitPayload(payload) {
 // Structural inverse of SPLIT: atomically consumes N (2..16) old slots
 // and produces one new slot. Each old r_leaf revealed on chain. The
 // new slot's (secret_new, ν_new) is generated by whoever constructs
-// the envelope (the receiving owner). Multi-owner merges (§5.25.4)
+// the envelope (the receiving owner). Multi-owner merges
 // require each contributor to sign vin[i] under SIGHASH_ALL; the
 // new_owner_sig binds the destination terms collectively.
 function computeSlotMergeMsg(networkTag, inputs, assetIdNew, denomNew, newRecipientCommit, newLeafHash) {
@@ -9258,7 +9194,7 @@ function encodeTSlotMergePayload({
   inputs,                              // array of { assetIdOld, denomOld, oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof }
   assetIdNew, denomNew, newRecipientCommit, newLeafHash,
   newOwnerPubkey, newOwnerSig,
-  encryptedNote = null,                // optional 122-byte SPEC-CBTC-ZK-FUNGIBILITY §5.26 note
+  encryptedNote = null,                // optional 122-byte encrypted slot note
 }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (!Array.isArray(inputs) || inputs.length < 2 || inputs.length > 16) {
@@ -9323,7 +9259,7 @@ function encodeTSlotMergePayload({
   }
   parts.push(assetIdNew, denomNewLE, newRecipientCommit, newLeafHash);
   parts.push(newOwnerPubkey, newOwnerSig);
-  // §5.26.4 optional encrypted-note tail. Three valid post-host layouts:
+  // optional encrypted-note tail. Three valid post-host layouts:
   //   (a) no tail               — historical / no recipient detection wanted
   //   (b) has_note=0 (1 byte)   — explicit "no note" marker
   //   (c) has_note=1 (1+122)    — note for the new slot
@@ -9374,7 +9310,7 @@ function decodeTSlotMergePayload(payload) {
     if (proofLen === 0) return null;
     if (p + proofLen + POST_INPUTS > payload.length) return null;
     const oldProof = payload.slice(p, p + proofLen); p += proofLen;
-    // Bind-hash recompute per §5.25.3 (each input is full T_SLOT_BURN-equivalent).
+    // Bind-hash recompute (each input is full T_SLOT_BURN-equivalent).
     const expectedBind = computeWithdrawBindHash(assetIdOld, denomOld, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
     for (let j = 0; j < 32; j++) if (expectedBind[j] !== oldBindHash[j]) return null;
     sumDenomOld += denomOld;
@@ -9383,7 +9319,7 @@ function decodeTSlotMergePayload(payload) {
       oldRLeaf, oldBindHash, oldProof,
     });
   }
-  // §5.26.4 optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
+  // optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
   const hostEnd = p + POST_INPUTS;
   let encryptedNote = null;
   if (payload.length === hostEnd) {
@@ -9400,14 +9336,14 @@ function decodeTSlotMergePayload(payload) {
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
   p += 8;
   if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
-  // §5.24.6 cross-asset rule (MERGE): the output wrapper MUST be the canonical
+  // cross-asset rule (MERGE): the output wrapper MUST be the canonical
   // self-custody variant for its denomination — re-tiering within the family is
   // allowed, relabeling onto a foreign/wrong-denom asset is rejected.
   if (bytesToHex(assetIdNew) !== ctacVariantAssetId(denomNew)) return null;
   const newRecipientCommit = payload.slice(p, p + 33); p += 33;
   try { bytesToPoint(newRecipientCommit); } catch { return null; }
   const newLeafHash = payload.slice(p, p + 32); p += 32;
-  // §5.25.3 conservation: Σ denom_old ≥ denom_new (Bitcoin fee from difference).
+  // conservation: Σ denom_old ≥ denom_new (Bitcoin fee from difference).
   if (sumDenomOld < denomNew) return null;
   const newOwnerPubkey = payload.slice(p, p + 33); p += 33;
   const newOwnerSig = payload.slice(p, p + 64); p += 64;
@@ -9420,14 +9356,11 @@ function decodeTSlotMergePayload(payload) {
   };
 }
 
-// T_SLOT_FRACTIONALIZE / T_SLOT_RECONSOLIDATE wire format and builders deferred.
-// The unbonded fractionalize path is not shipping on mainnet; arbitrary-amount
-// wrapped BTC is tacBTC, minted against cBTC.zk Bitcoin locks + CollateralEngine
-// ETH escrow under the fixed CBTC_ZK_ASSET_ID. See SPEC.md
-// for the cryptographic machinery (Pedersen sum identity, two-key construction,
-// share commit semantics).
+// T_SLOT_FRACTIONALIZE / T_SLOT_RECONSOLIDATE have no builders here.
+// Arbitrary-amount wrapped BTC is tacBTC, minted against cBTC.zk Bitcoin locks +
+// CollateralEngine ETH escrow under the fixed CBTC_ZK_ASSET_ID (see SPEC.md §5.7).
 
-// SPEC-CBTC-ZK §5.21 + §5.24.0 builder. The two-key derivation: r_pedersen
+// T_SLOT_MINT builder. The two-key derivation: r_pedersen
 // is the standard mixer Poseidon(secret, ν) used as the leaf's Pedersen
 // blinding; r_btc is a separate scalar derived from the same (secret, ν)
 // via a distinct domain tag. K_btc = r_btc · G is the BTC spending key,
@@ -9446,7 +9379,7 @@ async function buildSlotMintEnvelope({
   const rPedersenBig = bytes32ToBigint(rPedersenBytes) % SECP_N;
   const recipientCommit = pedersenCommit(BigInt(denomination), rPedersenBig).toRawBytes(true);
   // Derive the independent BTC spending key. K_btc = r_btc · G is published
-  // as an explicit envelope field; recipient_commit no longer determines it.
+  // as an explicit envelope field, independent of recipient_commit.
   const rBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
   const rBtcBig = bytes32ToBigint(rBtcBytes) % SECP_N;
   const kBtcPoint = G.multiply(rBtcBig === 0n ? 1n : rBtcBig);
@@ -9536,7 +9469,7 @@ async function buildSlotRotateEnvelope({
   const newRLeaf = poseidonHash(newSecret, newNullifierPreimage);   // = r_pedersen for the new slot
   const newRLeafBigint = bytes32ToBigint(newRLeaf) % SECP_N;
   const newRecipientCommit = pedersenCommit(denomination, newRLeafBigint).toRawBytes(true);
-  // §5.24.0 two-key: derive the new slot's r_btc independently from
+  // two-key: derive the new slot's r_btc independently from
   // (newSecret, newNullifierPreimage). K_btc = r_btc · G is the new BTC
   // spending key, not derived from recipient_commit.
   const newRBtcBytes = deriveSlotRBtc(newSecret, newNullifierPreimage);
@@ -9598,7 +9531,7 @@ async function buildSlotSplitEnvelope({
                                  // assetIdHex defaults to old slot's; secret/ν generated if omitted
   oldOwnerPriv,
   encryptedNotes = null,         // optional array length === outputs.length; passed through
-                                 // to encodeTSlotSplitPayload's §5.26.4 tail
+                                 // to encodeTSlotSplitPayload's tail
 }) {
   if (!Array.isArray(outputs) || outputs.length < 2 || outputs.length > 16) {
     throw new Error('outputs must be an array of 2..16');
@@ -9625,7 +9558,7 @@ async function buildSlotSplitEnvelope({
       throw new Error(`outputs[${i}].denomNew out of range`);
     }
     sumDenomNew += denomNew;
-    // §5.24.6: an output wrapper is the canonical self-custody variant for its
+    // an output wrapper is the canonical self-custody variant for its
     // OWN denomination — default to it (re-tiering within the family), not the
     // input's asset. A caller-supplied asset must satisfy the same binding or
     // the envelope is dead-on-arrival (the decoder rejects it).
@@ -9777,7 +9710,7 @@ async function buildSlotMergeEnvelope({
     );
   }
 
-  // §5.24.6: the merged output wrapper is the canonical self-custody variant
+  // the merged output wrapper is the canonical self-custody variant
   // for its OWN denomination, not the first input's asset. A caller-supplied
   // asset must satisfy the same binding (the decoder rejects it otherwise).
   const aidNew = assetIdNewHex
@@ -9846,8 +9779,8 @@ async function buildSlotMergeEnvelope({
 }
 
 // ============== tETH BRIDGE (T_BRIDGE_DEPOSIT / T_BRIDGE_BURN / T_BRIDGE_ROTATE) ==============
-// Trustless ETH↔Tacit bridge using
-// Tornado-shape mixer on Ethereum + ZK Bitcoin inclusion proof for withdrawal.
+// Trustless ETH↔Tacit bridge using a fixed-denomination mixer on Ethereum +
+// ZK Bitcoin inclusion proof for withdrawal.
 
 const T_BRIDGE_DEPOSIT = 0x60;
 const T_BRIDGE_BURN    = 0x61;
@@ -9869,8 +9802,8 @@ function _reduceModField(hash32) {
   return bigintToBytes32(reduced);
 }
 
-// Each bind hash commits to (chain_id, mixer_address) — the generation the
-// envelope is for. `gctx` selects that generation; default = the active one.
+// Each bind hash commits to (chain_id, mixer_address) — the mixer deployment
+// the envelope is for. `gctx` selects it; default = the active one.
 function computeBridgeDepositBindHash(networkTag, assetId, denomWei, ethRoot, nullifierHash, recipientCommit, leafHash, rLeaf, gctx) {
   const _g = gctx || TETH_BRIDGE;
   const chainId32 = bigintToBytes32Strict(BigInt(_g.chainId || 1));
@@ -10187,11 +10120,11 @@ const TETH_ASSET = {
   imageUri: 'ipfs://bafkreid55b3c2w6swyjl3lec66a23subiolwwsd6tof2wticoj6d7vnv4i',
 };
 
-// Legacy alpha tETH mixer generations. ConfidentialPool supersedes this path for
-// new ETH flow; keep these immutable mixer records so existing alpha notes can
-// still be recovered/redeemed or migrated. `live:false` is intentional: it prevents
-// setupWalletButtons from configuring the old mixer as the active "Bridge ETH"
-// path. Recovery/migration code can still resolve generation records by address.
+// Retired tETH mixer deployments. The confidential pool carries new ETH flow;
+// these immutable mixer records stay so existing mixer notes can be recovered,
+// redeemed or migrated. `live:false` keeps setupWalletButtons from configuring
+// a mixer as the active "Bridge ETH" path. Recovery/migration code resolves
+// deployment records by address.
 const TETH_DEPLOYMENTS = {
   signet: {
     address: '0x5bAcd098E59e937A8FFaEA4D281B3097A01ad91C',
@@ -10270,10 +10203,10 @@ function _crosslaneConfigured(net) {
 
 // CHAIN_BINDING == keccak256(abi.encodePacked(uint256 chainid, address(pool))) — the value the pool stamps
 // into its immutables and the guest commits, so a proof is bound to one deployment. Needed here to rebuild a
-// generation-BOUND Bitcoin note leaf (btc_note_leaf_bound), which is the only leaf domain the EVM fast lane
+// deployment-bound Bitcoin note leaf (btc_note_leaf_bound), which is the only leaf domain the fast lane
 // accepts — see the cross-lane guard call site. Mirrors confidential-pool-ux.js `chainBindingHex()`; kept
-// standalone because that one closes over the ux module's own config. Returns null when the generation isn't
-// configured, and the caller then checks only the legacy unbound domain.
+// standalone because that one closes over the ux module's own config. Returns null when the deployment isn't
+// configured, and the caller then checks only the unbound domain.
 function _confidentialChainBinding(net) {
   const d = CROSSLANE_DEPLOYMENTS[net || currentNetworkName()];
   if (!d || !d.pool || !d.chainId) return null;
@@ -10402,14 +10335,13 @@ function _bridgeConfigured() {
   return TETH_BRIDGE.address && TETH_BRIDGE.chainId && TETH_BRIDGE.assetId;
 }
 
-// ── tETH generation registry ────────────────────────────────────────────────
-// One tETH asset spans an ordered list of immutable mixer generations
+// ── tETH mixer deployment registry ──────────────────────────────────────────
+// One tETH asset spans an ordered list of immutable mixer deployments
 // (TETH_DEPLOYMENTS[net].generations). TETH_BRIDGE binds the ACTIVE
-// generation (where new deposits go); every escrow-touching op resolves a
-// generation context — {gen, address, chainId, deployBlock} — and threads it
+// deployment (where new deposits go); every escrow-touching op resolves a
+// deployment context — {gen, address, chainId, deployBlock} — and threads it
 // through bind hashes, pool-tree keys, worker ?gen= fetches, and mixer
-// eth_calls, so notes from earlier generations stay redeemable after the
-// active one advances.
+// eth_calls, so notes from a predecessor stay redeemable.
 function tethGenList() {
   const dep = TETH_DEPLOYMENTS[currentNetworkName()];
   if (!dep) return [];
@@ -10428,9 +10360,9 @@ function tethActiveCtx() {
   if (!_bridgeConfigured()) return null;
   return { gen: TETH_BRIDGE.gen || '', label: TETH_BRIDGE.label, address: TETH_BRIDGE.address, chainId: TETH_BRIDGE.chainId, deployBlock: TETH_BRIDGE.deployBlock || '0x0' };
 }
-// Which generation does a stored bridge record belong to? Explicit stamp
-// first, then its mixer address, else the active generation (every record
-// written before stamping landed lives under the active mixer's storage key).
+// Which deployment does a stored bridge record belong to? Explicit stamp
+// first, then its mixer address, else the active deployment (an unstamped
+// record lives under the active mixer's storage key).
 function tethCtxForRecord(rec) {
   if (rec && rec.gen != null) {
     const g = tethGenList().find(x => (x.gen || '') === (rec.gen || ''));
@@ -10514,9 +10446,9 @@ async function bridgeGetSupplyStats() {
     // Each mixer's totalBalance is deposits − withdrawals (deposit() does
     // `totalBalance += denomination`, withdrawFromBurn() `-= denomination`).
     // tETH etched supply is 0, so every tETH is bridge-backed 1:1 by locked
-    // ETH; the unified asset spans every generation's mixer, so the
-    // circulating figure is the SUM of generation balances. One call per
-    // generation — no full-history log scan; mints/burns move tETH within
+    // ETH; the unified asset spans every deployment's mixer, so the
+    // circulating figure is the SUM of their balances. One call per
+    // deployment — no full-history log scan; mints/burns move tETH within
     // the locked pools on Bitcoin without changing the total.
     const balSel = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('totalBalance()'))).slice(0, 8);
     let ethLocked = 0n;
@@ -10657,9 +10589,9 @@ function bridgeGetDepositStatus(record) {
   return record.status || 'deposited';
 }
 
-// Merged views across generations. Records partition by mixer address in
+// Merged views across deployments. Records partition by mixer address in
 // their storage keys; each loaded record is annotated (in memory) with its
-// generation so flows can resolve a context via tethCtxForRecord.
+// deployment so flows can resolve a context via tethCtxForRecord.
 function _bridgeRecordsAcrossGens(keyFor) {
   const out = [];
   for (const g of tethGenList()) {
@@ -10700,9 +10632,9 @@ function _saveBridgeRecord(storageKey, record) {
 function _getBridgeRecords(storageKey) {
   return JSON.parse(localStorage.getItem(storageKey) || '[]');
 }
-// Read-modify-write a stored bridge record in its HOME generation's storage
-// (resolved from the record's stamp; legacy records fall back to the active
-// key, where they live). `match` picks the stored record, `mutate` edits it
+// Read-modify-write a stored bridge record in its HOME deployment's storage
+// (resolved from the record's stamp; unstamped records fall back to the
+// active key, where they live). `match` picks the stored record, `mutate` edits it
 // in place. Returns true when a record was updated.
 function _updateBridgeRecordAtHome(keyFor, rec, match, mutate) {
   const ctx = tethCtxForRecord(rec);
@@ -10850,8 +10782,8 @@ async function bridgeRecoverNotes({ onProgress } = {}) {
   const _p = (s) => { try { onProgress?.(s); } catch {} };
 
   _p('fetching mixer deposits');
-  // Sweep every generation's mixer — a recovered wallet may hold deposits
-  // across generations; each match is stamped + stored under its home key.
+  // Sweep every deployment's mixer — a recovered wallet may hold deposits
+  // across deployments; each match is stamped + stored under its home key.
   const depositTopic = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Deposit(bytes32,bytes32,uint256,uint256)')));
   const _recoverGens = tethGenList().length ? tethGenList().map(tethGenCtx) : [tethActiveCtx()].filter(Boolean);
   const commitmentSet = new Map();
@@ -11180,7 +11112,7 @@ async function buildAndBroadcastBridgeDeposit({ ethDepositRecord, onProgress }) 
   const denomWei = ethDepositRecord.denominationWei ? BigInt(ethDepositRecord.denominationWei) : denomTacit * BRIDGE_UNIT_SCALE;
   const denomWeiBytes = bigintToBytes32Strict(denomWei);
   const networkTag = currentNetworkName() === 'signet' ? 0x01 : 0x00;
-  // The mint targets the generation the ETH deposit went into.
+  // The mint targets the deployment the ETH deposit went into.
   const gctx = tethCtxForRecord(ethDepositRecord);
   if (!gctx) throw new Error('bridge not configured');
 
@@ -11418,8 +11350,8 @@ async function bridgeAutoWithdraw({ noteRecord, onProgress }) {
   // the one that made the deposit. Refuse to claim another account's note
   // unless the caller passed explicit consent (allowForeignClaim) — without
   // this, a retry under a different signed-in account silently routes the
-  // funds to that account's wallet. Legacy notes without ownerPubHex keep
-  // the old current-wallet behavior.
+  // funds to that account's wallet. Notes without ownerPubHex go to the
+  // current wallet.
   if (noteRecord.ownerPubHex && wallet?.pub && !noteRecord.allowForeignClaim) {
     const _cur = bytesToHex(wallet.pub);
     if (_cur !== noteRecord.ownerPubHex) {
@@ -11589,21 +11521,17 @@ async function ensureTotalBalanceCoversBurn(mixerAddress, denomWei) {
   }
 }
 
-// Per-pool sync check (audit #2 sync-gate liveness fix): the dapp's local
-// root for the SPECIFIC pool being burned must equal the verifier's
-// last-proven root for that pool. Replaces the prior aggregate-poolsHash
-// check that stalled redemptions whenever ANY pool advanced (a busy 0.001
-// denom would block 100 ETH withdrawals). Per-pool keeps the omitted-leaf
-// safety (a worker omitting a middle leaf in THIS pool still flips the
-// root) while letting other pools' activity not block this burn.
+// Per-pool sync check: the dapp's local root for the SPECIFIC pool being
+// burned must equal the verifier's last-proven root for that pool. A worker
+// omitting a middle leaf in THIS pool still flips the root, while other
+// pools' activity doesn't block this burn.
 //
-// Requires the verifier deployed with the per-pool tail extension (Option B
-// emission + verifier extension at SP1PoolRootVerifier.sol). On older
-// verifiers, lastProvenPoolRoot returns 0 and this check no-ops gracefully.
+// Needs a verifier with the per-pool tail (SP1PoolRootVerifier.sol); without
+// it, lastProvenPoolRoot returns 0 and this check no-ops.
 // Returns:
 //   'validated' — verifier matches local; no further check needed.
-//   'noop'      — verifier doesn't expose per-pool root (pre-upgrade deploy
-//                 or pre-first-proof), aggregate fallback should run.
+//   'noop'      — verifier doesn't expose per-pool root (or has no proof
+//                 yet), aggregate fallback should run.
 //   (throws)    — mismatch; refuse to broadcast burn.
 async function ensurePoolViewMatchesVerifier(assetIdHex, denomWei, gctx) {
   if (!_bridgeConfigured()) return 'noop';
@@ -11822,7 +11750,7 @@ async function buildAndBroadcastBridgeBurn({ noteRecord, ethRecipient, onProgres
   const denomTacitBytes = bigintToBytes32Strict(denomBig);
   const networkTag = currentNetworkName() === 'signet' ? 0x01 : 0x00;
   const ethRecipientBytes = hexToBytes(ethRecipient.replace(/^0x/, ''));
-  // The note's home generation: its pool tree, mixer, and bind-hash constants.
+  // The note's home deployment: its pool tree, mixer, and bind-hash constants.
   const gctx = tethCtxForRecord(noteRecord);
   if (!gctx) throw new Error('bridge not configured');
   const _gen = gctx.gen || '';
@@ -11861,15 +11789,14 @@ async function buildAndBroadcastBridgeBurn({ noteRecord, ethRecipient, onProgres
   // Audit blocker #5 (omitted-leaf) + #2 (sync-gate liveness): per-pool
   // check is the primary path — only the pool being burned needs to match
   // the verifier's last-proven root, so a busy unrelated pool can't stall
-  // this burn. Falls through if the verifier doesn't yet expose per-pool
-  // roots (pre-upgrade deploy); then the aggregate check runs as backstop.
+  // this burn. Falls through if the verifier doesn't expose per-pool
+  // roots; then the aggregate check runs as backstop.
   _p('verifying pool view matches on-chain SP1 state');
   const _denomWei = denomBig * BigInt(BRIDGE_UNIT_SCALE);
   const _ppResult = await ensurePoolViewMatchesVerifier(assetIdHex, _denomWei, gctx);
-  // If per-pool validation succeeded, skip the aggregate (audit #2 fix:
-  // unrelated pools' activity shouldn't stall this burn). Only run aggregate
-  // when per-pool no-oped (older verifier without per-pool tail, or
-  // pre-first-proof zero state).
+  // If per-pool validation succeeded, skip the aggregate (unrelated pools'
+  // activity shouldn't stall this burn). Only run aggregate when per-pool
+  // no-oped (verifier without per-pool tail, or pre-first-proof zero state).
   if (_ppResult !== 'validated') {
     await ensurePoolsViewMatchesVerifier(assetIdHex, gctx);
   }
@@ -11931,10 +11858,8 @@ async function buildAndBroadcastBridgeBurn({ noteRecord, ethRecipient, onProgres
 
   // Build commit/reveal Taproot pair (the bridge envelope rides in the reveal
   // tx's witness item 1, not OP_RETURN). Mainnet Bitcoin Core caps OP_RETURN
-  // at 80B; burn envelopes are ~537B, so the old bare-OP_RETURN path was
-  // signet-only. Pattern
-  // mirrors buildAndBroadcastWithdraw (dapp/tacit.js:28118-28154). The
-  // worker indexes either source (worker/src/index.js:20322); the SP1 guest
+  // at 80B; burn envelopes are ~537B. Pattern mirrors
+  // buildAndBroadcastWithdraw. The worker indexes either source; the SP1 guest
   // dispatches 0x60-0x64 from both Taproot and OP_RETURN
   // (contracts/sp1/program/src/main.rs Taproot bridge block).
   _p('building Bitcoin transaction');
@@ -12055,8 +11980,8 @@ async function buildAndBroadcastBridgeExport({ noteRecord, onProgress }) {
   // (root unknown) while the worker still records the nullifier → the note can
   // no longer be exported OR burned (both refuse on the now-"spent" nullifier).
   // Refuse to broadcast unless the local pool view matches the on-chain SP1 state.
-  // Per-pool variant first (audit #2 sync-gate); aggregate fallback if the
-  // verifier lacks per-pool tail (pre-upgrade) or pre-first-proof.
+  // Per-pool variant first; aggregate fallback if the verifier lacks the
+  // per-pool tail or has no proof yet.
   _p('verifying pool view matches on-chain SP1 state');
   const _exportPpResult = await ensurePoolViewMatchesVerifier(assetIdHex, denomBig * BigInt(BRIDGE_UNIT_SCALE), gctx);
   if (_exportPpResult !== 'validated') {
@@ -12211,8 +12136,8 @@ async function buildAndBroadcastBridgeExport({ noteRecord, onProgress }) {
 // burn. The guest tracks tETH at vout 0 of a bridge export it accepted, so
 // replay that acceptance here — the source must be an export for this
 // asset/denom whose merkle root is a known pool root and whose Groth16 proof
-// verifies against the canonical key. Resolves the generation context the
-// export binds (the import's home generation), or throws a short reason.
+// verifies against the canonical key. Resolves the deployment context the
+// export binds (the import's home deployment), or throws a short reason.
 async function ensureImportUtxoGuestTracked(tethUtxo, assetIdHex, denomBig) {
   if (tethUtxo.vout !== 0) {
     throw new Error('This tETH can only be redeemed from the export output it was sent to.');
@@ -12237,8 +12162,8 @@ async function ensureImportUtxoGuestTracked(tethUtxo, assetIdHex, denomBig) {
   if (bytesToHex(payload.slice(2, 34)) !== assetIdHex.toLowerCase()) throw new Error('Source export asset mismatch.');
   if (BigInt('0x' + bytesToHex(payload.slice(34, 66))) !== denomBig) throw new Error('Source export amount mismatch.');
   // The export's bind hash commits to (chain_id, mixer) — it names the
-  // generation whose guest registered this UTXO, so the import must target
-  // that generation. Recompute per registry entry and take the match.
+  // deployment whose guest registered this UTXO, so the import must target
+  // that deployment. Recompute per registry entry and take the match.
   const _expBindHex = bytesToHex(payload.slice(195, 227));
   const _netTag = currentNetworkName() === 'signet' ? 0x01 : 0x00;
   let gctx = tethActiveCtx();
@@ -12298,8 +12223,8 @@ async function buildAndBroadcastBridgeImport({ tethUtxo, onProgress }) {
   const assetIdBytes = TETH_BRIDGE.assetId;
   const denomBig = BigInt(tethUtxo.amount);
   // Confirm the prover recognizes this tETH before broadcasting; the source
-  // export's bind hash names the generation whose guest tracks the UTXO, and
-  // the import note is created in THAT generation's pool.
+  // export's bind hash names the deployment whose guest tracks the UTXO, and
+  // the import note is created in THAT deployment's pool.
   _p('verifying tETH is redeemable');
   const gctx = await ensureImportUtxoGuestTracked(tethUtxo, assetIdHex, denomBig);
   const _gen = (gctx && gctx.gen) || '';
@@ -12463,7 +12388,7 @@ async function buildAndBroadcastBridgeRotate({ noteRecord, newCommitmentHex, onP
   const networkTag = currentNetworkName() === 'signet' ? 0x01 : 0x00;
   const newCommitment = hexToBytes(newCommitmentHex);
   // Rotate spends and re-creates a note inside ONE pool, so the new note
-  // inherits the source note's generation.
+  // inherits the source note's deployment.
   const gctx = tethCtxForRecord(noteRecord);
   if (!gctx) throw new Error('bridge not configured');
   const _gen = gctx.gen || '';
@@ -12489,7 +12414,7 @@ async function buildAndBroadcastBridgeRotate({ noteRecord, newCommitmentHex, onP
   // an omitted-leaf indexer can wedge the note the same way (guest skips the
   // rotate on an unknown root while the worker records the nullifier → the note
   // can't be re-sent or burned). Refuse to broadcast on a divergent pool view.
-  // Per-pool first (audit #2 sync-gate); aggregate fallback when unavailable.
+  // Per-pool first; aggregate fallback when unavailable.
   _p('verifying pool view matches on-chain SP1 state');
   const _rotatePpResult = await ensurePoolViewMatchesVerifier(assetIdHex, denomBig * BigInt(BRIDGE_UNIT_SCALE), gctx);
   if (_rotatePpResult !== 'validated') {
@@ -12744,7 +12669,7 @@ async function bridgeWithdrawETH({ provider, burnRecord, onProgress }) {
   if (!_bridgeConfigured()) throw new Error('bridge not configured');
   const _p = (s) => { try { onProgress?.(s); } catch {} };
   // The claim goes to the mixer whose constants the burn's bind hash committed
-  // to — the burn record's home generation.
+  // to — the burn record's home deployment.
   const gctx = tethCtxForRecord(burnRecord) || tethActiveCtx();
 
   _p('fetching burn transaction');
@@ -12870,7 +12795,7 @@ function _computeBtcBlockMerkleProof(txids, txIndex) {
 }
 
 
-// ============== SLOT-SECRET DETERMINISTIC DERIVATION (SPEC-CBTC-ZK §5.21-§5.25) ==============
+// ============== SLOT-SECRET DETERMINISTIC DERIVATION ==============
 //
 // Slot UTXOs sit at K_btc P2TR addresses, NOT at wallet.address(). So the
 // standard scanHoldings flow doesn't see them. Recovery requires re-deriving
@@ -12905,7 +12830,7 @@ function _computeBtcBlockMerkleProof(txids, txIndex) {
 // downstream (deriveSlotRBtc, leaf-commitment), we don't reject here. The
 // caller's downstream reduction handles the curve-order modulus.
 //
-// Recovery (`scanSlots()`, to be added in a follow-up): iterate the user's
+// Recovery (not yet implemented): iterate the user's
 // outgoing-spend history. For each spent UTXO, treat its outpoint as a
 // candidate anchorOutpoint, derive (secret, ν), and check whether any
 // chain-confirmed tx in the descendant set produced a K_btc P2TR output.
@@ -13527,9 +13452,9 @@ const poolRegistry    = new Map();
 const poolMerkleTrees = new Map();
 const poolNullifiers  = new Map();
 
-// `gen` is the tETH generation segment ('' = the original keyspace, so the
-// Bitcoin-side mixer pools and the pilot bridge generation are untouched;
-// 'g1' = alpha). Mirrors the worker's gen-segmented pool keys.
+// `gen` is the tETH mixer deployment segment ('' = the base keyspace, shared
+// by the Bitcoin-side mixer pools and the first bridge mixer; 'g1' = alpha).
+// Mirrors the worker's gen-segmented pool keys.
 function poolKey(assetIdHex, denomination, gen = '') {
   const base = `${assetIdHex}:${BigInt(denomination).toString()}`;
   return gen ? `${base}:${gen}` : base;
@@ -13559,15 +13484,9 @@ function mixerIsPoolRegistered(assetIdHex, denomination, gen = '') {
 }
 
 // Canonical-pool gate. A POOL_INIT can declare ANY vk_cid + ceremony_cid, and
-// the first-confirmed-wins rule means anyone can front-run
-// canonical pool creation for a popular (asset_id, denomination) with their
-// own non-canonical setup. If a non-canonical pool is honored by the dapp's
-// validator, an attacker who retained the MPC trapdoor of the fake setup
-// can forge unlimited withdraw proofs against their own vk and inflate the
-// asset_id's supply for the cost of a single real deposit (one real deposit
-// is required to populate the pool's recent-roots window; after that, the
-// trapdoor lets the attacker pick arbitrary nullifiers and root entries from
-// the window indefinitely). Tacit has exactly one canonical Phase-1+Phase-2
+// the first confirmed POOL_INIT for an (asset_id, denomination) wins. A pool
+// whose setup is not the canonical ceremony has no soundness guarantee for
+// its withdraw proofs. Tacit has exactly one canonical Phase-1+Phase-2
 // trusted setup (CANONICAL_VK_CID, CANONICAL_CEREMONY_CID); pools that
 // declare anything else are out-of-protocol and the validator MUST refuse
 // to credit their withdrawals. The UI also hides non-canonical pools from
@@ -13596,7 +13515,7 @@ function mixerIsPoolCanonical(assetIdHex, denomination) {
 // Bitcoin block time at typical 10-min cadence and is well past any realistic
 // deep-reorg risk on either signet or mainnet (deepest historical mainnet
 // reorg: 4 blocks; signet is permissioned so reorgs are operator-bounded).
-// Tornado Cash uses ~30 for the same reason. If the pool is rapidly active
+// If the pool is rapidly active
 // and proofs frequently land against expired roots, raise this; if memory
 // pressure is the constraint, lower it. Each root is 32 bytes so 32 roots is
 // ~1KB per pool — non-issue on the scale of millions of pools.
@@ -14052,12 +13971,8 @@ const TACIT_AMM_LP_REMOVE_WASM_PATH = './vendor/amm_lp_remove.wasm';
 const _ammZkeyCache = new Map(); // ipfsPath → Promise<Uint8Array>
 async function _fetchAmmZkey(circuitKey) {
   if (!CANONICAL_AMM_VK_CID) return null;
-  // The finalized AMM proving zkeys live at the ceremony chain HEAD (the
-  // beacon-applied head_cid in GET /ceremony/<circuit_hash>), exactly like the
-  // mixer's — NOT in the VK-only CANONICAL_AMM_CEREMONY_CID bundle, which holds
-  // only the *_vk.json + ptau. Fetch from the head (its VK == CANONICAL_AMM_VK_CID
-  // by construction); fall back to the bundle path only if the chain is
-  // unreachable (and a coordinator later co-pins the zkey there).
+  // The finalized zkey is the ceremony chain head (head_cid in GET /ceremony/<circuit_hash>).
+  // If the coordinator is unreachable, fetch the same head by its pinned CID (docs/CEREMONY.md).
   const circuitName = circuitKey === 'lp_add'     ? 'amm_lp_add'
                     : circuitKey === 'lp_remove'  ? 'amm_lp_remove'
                     : circuitKey === 'swap_batch' ? 'amm_swap_batch'
@@ -14071,26 +13986,28 @@ async function _fetchAmmZkey(circuitKey) {
     try {
       return await ceremonyFetchHeadZkeyBytes(entry.hash);
     } catch (headErr) {
-      // Fallback: the legacy bundle-directory path (empty today, but harmless to try).
-      const dirCid = CANONICAL_AMM_CEREMONY_CID;
-      if (!dirCid) throw headErr;
-      const fileName = `${circuitName}_final.zkey`;
-      const resp = await fetch(`${IPFS_GATEWAY}${dirCid}/${fileName}`, { cache: 'force-cache' });
-      if (!resp.ok) throw new Error(`amm zkey: ceremony head failed (${headErr.message}); bundle ${fileName} HTTP ${resp.status}`);
-      const bytes = new Uint8Array(await resp.arrayBuffer());
-      if (bytes.length < 1024 || bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
-        throw new Error('amm zkey bundle fallback: bad/short content');
-      }
-      return bytes;
+      const cid = CANONICAL_AMM_FINAL_ZKEY_CIDS[circuitName];
+      if (!cid) throw headErr;
+      return await _ceremonyFetchIpfsWithFailover(cid, (bytes) => {
+        if (bytes.length < 1024) return `unexpectedly small (${bytes.length} bytes)`;
+        if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) return 'missing "zkey" magic bytes';
+        return null;
+      });
     }
   })();
   _ammZkeyCache.set(cacheKey, promise);
   promise.catch(() => _ammZkeyCache.delete(cacheKey));
   return promise;
 }
-// Sibling constant to CANONICAL_AMM_VK_CID for the bundle directory. Pin
-// both together post-ceremony so the prover can find the zkeys.
+// AMM ceremony VK + transcript bundle (the zkeys are the chain heads below).
 const CANONICAL_AMM_CEREMONY_CID = 'bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam';
+// Finalized (beacon-applied) zkey per AMM circuit: the ceremony chain heads, verified against
+// the published VKs and, for amm_swap_batch, the guests' batch_vk (docs/CEREMONY.md).
+const CANONICAL_AMM_FINAL_ZKEY_CIDS = Object.freeze({
+  amm_swap_batch: 'bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm',
+  amm_lp_add:     'bafybeifrj5wkuxpoa22o7rh7cu5mhnfvjoo77jhhdtouqbkut6rmms3e5q',
+  amm_lp_remove:  'bafybeid6j7prcptds2yidi2ksyceldo2zkq4lscp77swfkgsixh7igbdpy',
+});
 async function _ammProveLpRemove({ poolIdBytes, shareAmount, deltaA, deltaB, recvACBJJBytes, recvBCBJJBytes, rRecvABJJ, rRecvBBJJ }) {
   if (!_isAmmCeremonyFinalized()) return new Uint8Array(256);
   const snarkjs = await _loadSnarkjs();
@@ -14360,8 +14277,8 @@ async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHe
   if (!tx) return null;
   if (Number.isInteger(expectedHeight)) {
     // mempool.space sets status.block_height only on confirmed txs. A
-    // worker emitting `deposited_at_height` for an unconfirmed tx is a
-    // bug or an attack; either way we refuse the leaf.
+    // worker emitting `deposited_at_height` for an unconfirmed tx is
+    // wrong; refuse the leaf.
     if (!tx.status || tx.status.confirmed !== true) return false;
     if (Number(tx.status.block_height) !== Number(expectedHeight)) return false;
   }
@@ -14467,8 +14384,7 @@ async function mixerWithdrawConflictBlocks(assetIdHex, denomination, nullifierHa
 }
 
 // Slot-leaf re-verifier — counterpart to verifyMixerDepositKernelOnChain
-// for slot-derived pool leaves (SPEC-CBTC-ZK §5.21–§5.23 and FUNGIBILITY
-// §5.24–§5.25). Each cBTC.zk pool leaf carries a `kind` of 'slot_mint',
+// for slot-derived pool leaves. Each cBTC.zk pool leaf carries a `kind` of 'slot_mint',
 // 'slot_rotate_new', 'slot_split_new', or 'slot_merge_new' instead of the
 // T_DEPOSIT shape, so the Mimblewimble conservation check does not apply;
 // instead we mirror the worker's slot-op gates: envelope decode, asset_id
@@ -14639,13 +14555,10 @@ async function fetchBlockTxids(blockHash) {
 }
 
 // Verify that `depositTxidHex` is at position `claimedTxIndex` in the block
-// identified by `blockHash`. This closes the residual canonical-position
-// attack surface left open by verifyMixerDepositKernelOnChain's height
-// pin: a worker that tells the truth about height could still lie about
-// `tx_index`, swapping the order of two same-block deposits. The dapp
-// would compute a merkle root no honest indexer's recent-roots window
-// contains and broadcast a doomed T_WITHDRAW (DoS only — Conservation is
-// already closed — but cheap to fix completely).
+// identified by `blockHash`. Complements verifyMixerDepositKernelOnChain's
+// height pin: the worker-reported `tx_index` of same-block deposits is
+// checked too, so the local merkle root matches the canonical leaf order
+// and a T_WITHDRAW is built against a root the pool knows.
 //
 // Returns:
 //   true  — txid is at claimedTxIndex in its block
@@ -14716,8 +14629,8 @@ async function buildMixerDepositEnvelope({
 //
 // r_leaf is computed deterministically from the depositor's
 // (secret, ν) pair, exposed as a public input to the circuit, and published
-// in cleartext on chain. The validator's external Pedersen check closes the
-// inflation-attack vector. No share-link is needed — the recipient (whoever
+// in cleartext on chain. The validator's external Pedersen check binds the
+// withdrawn commitment to (denomination, r_leaf). No share-link is needed — the recipient (whoever
 // owns vout[0]'s P2WPKH) reads (denomination, r_leaf) directly from chain.
 //
 // Inputs:
@@ -14805,7 +14718,7 @@ function buildMixerShareLink(record, { absoluteUrl = false } = {}) {
   }
 }
 
-// Tornado-style compact note format: `tacit-{ticker}-{denom}-{network}-0x{hex}`
+// Compact note format: `tacit-{ticker}-{denom}-{network}-0x{hex}`
 // where hex = secret(32B) || nullifier_preimage(32B). Asset is identified by
 // (ticker, network) — the dapp's local registry resolves ticker → asset_id
 // at parse time (with optional asset_id fallback embedded in the trailing
@@ -15016,8 +14929,7 @@ function _lpSyntheticMeta(assetIdHex) {
   // the way to tickers would mean recursing through getAssetMeta, which
   // pulls the synchronous registry — fine for cBTC.tac variants (lookup
   // is O(1) against a fixed map) but would loop for LP-of-LP composite
-  // pools. Short hex is fine for V1 display; can upgrade to recursive
-  // resolution once nested pools land.
+  // pools, so display uses short hex.
   const aHexShort = entry.asset_a.slice(0, 8);
   const bHexShort = entry.asset_b.slice(0, 8);
   // Try to resolve to real tickers — bail to hex if unresolvable.
@@ -15115,7 +15027,7 @@ function getOpening(txidHex, vout) {
   };
 }
 
-// Stealth-credit persistence (SPEC-BLINDED-PUBKEY §A.2 class-2).
+// Stealth-credit persistence (class-2).
 // scanHoldings walks UTXOs at wallet.address(); stealth-received UTXOs sit at
 // P2WPKH(commit) on a distinct scriptpubkey, so they are not in that walk.
 // To survive page reload (and recovery-from-seed via scanAssetForStealthReceipts)
@@ -15130,11 +15042,9 @@ function getOpening(txidHex, vout) {
 //
 // Per the spec: we persist `b` (the stealth blinding, public-like once known)
 // and recompute tweaked_sk = (wallet.priv + b) mod SECP_N at rehydration time
-// when the wallet is unlocked. tweaked_sk itself NEVER hits localStorage —
-// without that rule, an attacker with localStorage access but no wallet
-// password could spend stealth UTXOs directly (asymmetric to classical UTXOs
-// which require wallet.priv). Storing only `b` keeps stealth on equal footing
-// with classical: both require wallet.priv to spend.
+// when the wallet is unlocked. tweaked_sk itself NEVER hits localStorage, so
+// stealth UTXOs stay on equal footing with classical ones: both require
+// wallet.priv to spend.
 let _stealthCreditsCache = null;
 function _stealthCreditsKey() {
   if (!wallet.pub) return null;
@@ -15209,7 +15119,7 @@ function getStealthCredit(txidHex, vout) {
     blockTime: e.blockTime || null,
   };
 }
-// Seen-tx negative cache for shielded scans (SPEC-BLINDED-PUBKEY §F.6).
+// Seen-tx negative cache for shielded scans.
 // scanAssetForStealthReceipts walks the worker's xferseen index and trial-
 // derives each tx against wallet.priv. Most txs return []. Without a
 // negative cache, every auto-scan re-fetches and re-derives the same txs
@@ -16432,13 +16342,12 @@ async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500
 // during a scan and reused for subsequent ancestry walks within the same
 // scan session. The spec's confirmation-depth rule requires the indexer to
 // canonical-order T_PMINT events at depth ≥ 3 before crediting them
-// against the cap; the dapp delegates that ordering to the worker for v1
+// against the cap; the dapp delegates that ordering to the worker
 // and just checks set membership here. If the worker is unreachable we
 // degrade to optimistic acceptance (structural invariants only) — this
 // matches the spec's posture that the worker is operational, not trust-
-// bearing for non-cap-bound envelopes, while flagging a v1 limitation:
-// without the worker the dapp cannot enforce cap-overflow rejection on
-// T_PMINT inputs to ancestry walks. The spec documents this.
+// bearing for non-cap-bound envelopes. Without the worker the dapp cannot
+// enforce cap-overflow rejection on T_PMINT inputs to ancestry walks.
 const _pmintCreditedCache = new Map();
 const PMINT_CREDITED_TTL_MS = 30 * 1000;
 function invalidatePmintCreditedCache() { _pmintCreditedCache.clear(); }
@@ -16514,16 +16423,11 @@ async function _fetchPmintCredited(assetIdHex) {
 }
 
 // ============== T_DCLAIM CAP-CREDIT GATE ==============
-// Without this gate, an attacker can rewrap a published T_DCLAIM envelope
-// into their own commit/reveal pair — paying ~$10 mainnet to gift the
-// original recipient an extra UTXO. Each rewrap doesn't profit the attacker
-// (they can't substitute the recipient pubkey without invalidating the
-// eth_sig recovery), but the dapp's local validator credits ALL structurally-
-// valid claims, so the recipient's wallet (and any chain analyst tracing
-// claims locally) sees inflated supply. The worker's cron correctly drops
-// rewraps via the (drop_id, leaf_index) nullifier check, so the canonical
-// dclaim:* KV namespace contains exactly one entry per leaf. Querying it
-// here closes the inflation gap.
+// A published T_DCLAIM envelope is structurally valid in any commit/reveal
+// pair (the recipient pubkey is fixed by the eth_sig recovery), so structural
+// validation alone can credit one claim more than once. The worker's cron
+// keeps only the first per (drop_id, leaf_index) nullifier, so the canonical
+// dclaim:* KV namespace contains exactly one entry per leaf; credit follows it.
 //
 // Same posture + cache contract as _fetchPmintCredited above. 30s TTL is
 // the same — a fresh-broadcast T_DCLAIM's worker hint typically lands within
@@ -16650,27 +16554,16 @@ async function _fetchSwapAccepted(txidHex) {
 // scanHoldings populates so it can distinguish T_PMINT failures that may
 // promote later (mempool, depth < 3, worker says not credited yet) from
 // permanently-invalid ones (forged commitment, asset_id mismatch, height
-// window violation, cap_overflow, parent not T_PETCH). Without this, every
-// T_PMINT failure mode rendered as "Inflation attempt detected" in the
-// holdings UI — a user who just successfully clicked Mint saw a scary
-// warning on their own legitimate mint until cron + 3 confs caught up.
-// Audit fix #1: pending mints render as a separate, accurate UI tier.
+// window violation, cap_overflow, parent not T_PETCH), so a fresh legitimate
+// mint renders as pending rather than as "Inflation attempt detected".
 //
-// Iterative driver. Earlier versions of this function were directly recursive
-// — each CXFER/BURN/AXFER awaited validateOutpoint on every asset input, and
-// T_MINT awaited validateOutpoint on its CETCH ancestor. That worked but had
-// a 200-hop safety cap that silently rejected change UTXOs deep in long
-// CXFER chains: an issuer fulfilling a multi-thousand-recipient airdrop ends
-// up with a treasury change UTXO at ancestry-depth ≈ batch-count, and once
-// that crossed 200 the holdings card under-counted by everything past the
-// cap (deep UTXOs landed in `h.inflated` instead of `h.balance`).
-// Now we split into two explicit passes: a BFS pre-walk that enumerates the
-// ancestry DAG with parallel tx fetches, then a reverse-topo validation pass
-// that runs the same per-opcode checks reading parent results from
-// validatedSet instead of recursing. Total work is unchanged (each unique
-// outpoint validates once, memoized via validatedSet); the cap is gone.
-// The `depth` parameter is now unused and accepted only for call-site
-// signature compatibility — it was already always 0 at every external call.
+// Iterative driver with no ancestry-depth cap (long CXFER chains, e.g. an
+// airdrop issuer's treasury change, validate fully). Two passes: a BFS
+// pre-walk that enumerates the ancestry DAG with parallel tx fetches, then a
+// reverse-topo validation pass that runs the per-opcode checks reading parent
+// results from validatedSet. Each unique outpoint validates once, memoized
+// via validatedSet. The `depth` parameter is unused and accepted only for
+// call-site signature compatibility.
 async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _depthUnused = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null, validatedReasons = null) {
   const rootKey = `${rootTxid}:${rootVout}`;
   if (validatedSet.has(rootKey)) return validatedSet.get(rootKey);
@@ -16929,9 +16822,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       return false;
     }
     // Re-derive the commit-input anchor from the reveal tx's parent commit tx.
-    // The issuer signs over this anchor; without it, replay of the envelope into
-    // a different (commit, reveal) pair would still verify and let an attacker
-    // plant a "valid" supply UTXO at any address.
+    // The issuer signs over this anchor, so the envelope verifies only in its
+    // own (commit, reveal) pair.
     const mintCommitTx = await fetchTx(tx.vin[0].txid);
     if (!mintCommitTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
     if (!mintCommitTx.vin?.[0]) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
@@ -17054,11 +16946,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // a Bulletproofs+ aggregated proof verified by bppRangeVerify (from
     // dapp/bulletproofs-plus.js, hand-port of Monero's BP+).
     //
-    // Gated by bppEnabled() — defaults to enabled on signet, disabled on
-    // mainnet. A disabled BPP envelope returns false from validation, which
-    // means the resulting UTXO is treated as non-tacit (unspendable as a
-    // tacit asset). This is the correct soft-fork behavior: clients that
-    // haven't activated BPP simply don't credit BPP-sourced balances.
+    // Gated by bppEnabled() — enabled by default on every network. With the
+    // gate off, a BPP envelope returns false from validation, so the UTXO is
+    // treated as non-tacit: a client with BPP disabled does not credit
+    // BPP-sourced balances.
     if (!bppEnabled()) {
       markAll(1, false);
       return false;
@@ -17144,7 +17035,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (vout >= N) { validatedSet.set(key, false); return false; }
     // Soft-fork gate, identical to T_CXFER_BPP: when BP+ is disabled on this
     // network, a BPP envelope fails validation so its UTXO is treated as
-    // non-tacit. Keeps the BP+ rollout uniform across CXFER/AXFER opcodes.
+    // non-tacit. Keeps the BP+ gate uniform across CXFER/AXFER opcodes.
     if (isBpp && !bppEnabled()) { markAll(N, false); return false; }
     const aic = dec.assetInputCount;
     if (aic < 1 || aic > 255) { markAll(N, false); return false; }
@@ -17238,7 +17129,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       }
     };
     // Soft-fork gate, identical to T_CXFER_BPP: BP+ disabled on this network →
-    // reject so the UTXO is treated as non-tacit (uniform BP+ rollout).
+    // reject so the UTXO is treated as non-tacit (uniform BP+ gate).
     if (isBpp && !bppEnabled()) { markBothTacitVouts(false); return false; }
     // asset_input_count is constrained to exactly 1 by the decoder, but
     // assert anyway as defense-in-depth.
@@ -17317,10 +17208,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     //   5. pedersenCommit(amount, blinding) == declared commitment
     //   6. cap-credit: this T_PMINT must appear in the worker's credited set
     //      at depth ≥ 3 (degraded to optimistic if worker unavailable —
-    //      v1 limitation, see _fetchPmintCredited)
+    //      see _fetchPmintCredited)
     //   7. vout must be 0
     //
-    // Failure-mode classification (audit fix #1): every false-return tags
+    // Failure-mode classification: every false-return tags
     // pmintStatusOut with either 'pending' (transient — may promote on
     // re-scan) or 'invalid' (permanent — forged or out-of-window). Callers
     // (scanHoldings) use this tag to render pending mints distinct from
@@ -17379,9 +17270,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     } catch { tagInvalid(); validatedSet.set(key, false); return false; }
     if (!claimed.equals(onchain)) { tagInvalid(); validatedSet.set(key, false); return false; }
     // Cap-credit check (worker-aided; degrades to optimistic when worker is
-    // unreachable). This is the v1 trade documented in the spec for T_PMINT
-    // reorg sensitivity — the worker provides canonically-ordered credit at
-    // depth ≥ 3; trustless local cap computation is a v2 enhancement.
+    // unreachable). T_PMINT is reorg-sensitive, so the worker provides
+    // canonically-ordered credit at depth ≥ 3.
     //
     // The worker's slim creditedOnly response now ships BOTH credited_txids
     // AND cap_overflow_txids. Membership in the latter is permanent (the
@@ -17465,7 +17355,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         // a dense block and silently skipped this tx (orphan was deleted
         // by the cleanup runner but canonical never written). Both cases
         // self-heal once the hint endpoint sees the txid: it decodes the
-        // on-chain envelope, validates §5.9 steps 1–4 the same way the
+        // on-chain envelope, validates it the same way the
         // cron would, and writes the canonical KV entry. Fire-and-forget;
         // bounded by _pmintHealAttempted so we don't spam on every rescan.
         if (Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
@@ -17477,9 +17367,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     }
     // Worker unavailable: degrade optimistically. We can't enforce cap
     // correctness without canonical chain ordering, so accept the mint on
-    // structural invariants alone. The spec documents this as a v1
-    // limitation: a deployment running without the worker has weaker cap-
-    // overflow guarantees than one with it.
+    // structural invariants alone: running without the worker gives weaker
+    // cap-overflow guarantees than running with it.
     if (metadataOut) {
       const aidHex = bytesToHex(dec.assetId);
       if (!metadataOut.has(aidHex)) {
@@ -17540,10 +17429,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (!mixerIsPoolRegistered(aidHex, dec.denomination)) {
       validatedSet.set(key, false); return false;
     }
-    // Soundness gate. A POOL_INIT can declare an arbitrary
-    // vk_cid; an attacker who ran their own MPC and kept the trapdoor can
-    // forge proofs that verify under their fake vk and credit unlimited
-    // withdrawals from a single real deposit (asset-id inflation). Refuse
+    // Soundness gate. A POOL_INIT can declare an arbitrary vk_cid, and only
+    // the canonical ceremony gives its proofs a soundness guarantee. Refuse
     // any withdraw from a pool whose (vk_cid, ceremony_cid) doesn't match
     // the canonical pair this dapp build was compiled against.
     if (!mixerIsPoolCanonical(aidHex, dec.denomination)) {
@@ -17568,7 +17455,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     }
     // External secp256k1 Pedersen check (validator step). Pairs
     // with the circuit's constraint 4 (r_leaf == poseidon(secret, ν)) to
-    // close the inflation-attack vector — together they force
+    // bind the withdrawn value — together they force
     // recipient_commitment to open to exactly (denomination, r_leaf).
     try {
       const rLeafBigint = bytes32ToBigint(dec.rLeaf) % SECP_N;
@@ -17624,7 +17511,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // credit a withdraw whose acceptance would drive the pool reserve
     // (# leaves − # spent nullifiers) negative — only a forged proof can
     // produce that, and rejecting it bounds a ceremony compromise to the
-    // pool's real deposits (Tornado's blast radius) rather than unbounded
+    // pool's real deposits rather than unbounded
     // minting. See mixerReserveWouldBreach for the fail-open counting that
     // keeps this from ever rejecting a live withdraw of a solvent pool.
     if (mixerReserveWouldBreach(aidHex, dec.denomination, bytesToHex(dec.nullifierHash))) {
@@ -17772,18 +17659,14 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     //        canonical claim msg, merkle proof verifies leaf membership.
     //      else (open drop): witness MUST be empty.
     //
-    // Deferred to Phase 3 (worker-aided, mirrors T_PMINT's cap-credit):
+    // Worker-aided (mirrors T_PMINT's cap-credit):
     //   - Confirmation-depth gate (≥ 3) on parent T_DROP + this T_DCLAIM
     //   - Cumulative cap: (prior_count × per_claim) + amount ≤ cap_amount
     //   - Nullifier: (drop_id, leaf_index) not previously claimed
     //   - Expiry: confirmed_height ≤ drop.expiry_height
     //
-    // Posture is identical to T_PMINT's documented limitation: until the
-    // worker exposes a canonical credit index, an attacker who pays Bitcoin
-    // tx fees can mine an envelope that exceeds the cap or replays a
-    // claimed leaf; the indexer rejects it but this client validator passes
-    // the structural part. Wallet UIs that need cap-correctness should
-    // consult the worker's /drops-onchain index (Phase 3).
+    // This validator does the structural checks; the worker-aided ones come
+    // from the worker's canonical credit index (the CAP-CREDIT GATE below).
     if (vout !== 0) { validatedSet.set(key, false); return false; }
     const dec = decodeCDClaimPayload(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
@@ -17874,17 +17757,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       // Open drop: witness MUST be empty per the spec.
       if (dec.witness) { validatedSet.set(key, false); return false; }
     }
-    // CAP-CREDIT GATE. Without this, an
-    // attacker rewrapping a published T_DCLAIM into a fresh commit/reveal
-    // pair inflates supply by per_claim per rewrap — the dapp credits BOTH
-    // UTXOs locally even though the worker's cron correctly drops the
-    // rewrap via the nullifier check. Querying the worker's canonical
-    // credited set closes the gap. Same posture as T_PMINT (see
-    // _fetchPmintCredited above), with graceful degradation when the
-    // worker is unreachable: an offline dapp continues to credit the
-    // claim optimistically (the only soundness regression vs. worker-online
-    // is the rewrap-inflation window). Production users on mainnet should
-    // always run against a live worker.
+    // CAP-CREDIT GATE. Credit only the claim in the worker's canonical
+    // credited set (one per nullifier). Same posture as T_PMINT (see
+    // _fetchPmintCredited above): when the worker is unreachable the claim
+    // is credited optimistically, without the one-per-nullifier guarantee.
     const dropIdHex = bytesToHex(dropIdFromRevealTxid(dropTxidHex));
     const credit = await _fetchDclaimCredited(dropIdHex);
     if (credit.workerAvailable && credit.credited && !credit.truncated) {
@@ -18192,7 +18068,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
   if (parentEnv.opcode === T_CXFER_BOUND) {
-    // Generation-bound CXFER (0x39): the T_CXFER body behind a 32-byte target binding. Same per-output commitments and
+    // Deployment-bound CXFER (0x39): the T_CXFER body behind a 32-byte target binding. Same per-output commitments and
     // identity vout layout, so a bound note (a cross-out mint's transfer, e.g. tETH) resolves like any other tacit output
     // and can be listed, taken and walked as an input.
     const d = decodeCXferBoundPayload(parentEnv.payload);
@@ -18311,7 +18187,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
   }
   if (parentEnv.opcode === T_PMINT) {
     // T_PMINT produces exactly one tacit UTXO at vout 0, holding
-    // the publicly-revealed (amount, blinding) commitment. Treated as a v1
+    // the publicly-revealed (amount, blinding) commitment. Treated as a
     // valid ancestor for downstream CXFER/BURN consumers.
     if (vout !== 0) return null;
     const d = decodeCPmintPayload(parentEnv.payload);
@@ -18849,20 +18725,17 @@ let _holdingsInFlight = null;
 // from before the timeout completes a few seconds later → stale balances.
 let _holdingsLatestGen = 0;
 
-// Once-per-session background scan for shielded receipts (SPEC-BLINDED-PUBKEY
-// §A.2 class-2). scanHoldings walks getUtxos(wallet.address()) — classical
-// only. Stealth-received UTXOs sit at P2WPKH(commit) on per-tx-unique
+// Once-per-session background scan for shielded (class-2 stealth) receipts.
+// scanHoldings walks getUtxos(wallet.address()) — classical only. Stealth-received UTXOs sit at P2WPKH(commit) on per-tx-unique
 // addresses, never enumerated by that walk.
 //
 // Two passes:
 //   Pass 1 (held assets): top 5 by balance from the user's holdings. Fast,
 //     common case — incoming stealth CXFER for an asset they already hold.
 //   Pass 2 (network discovery): top N recently-etched assets from the
-//     worker's discover registry, EXCLUDING pass-1 ones. Closes the
-//     fresh-wallet failure mode where a brand-new wallet receives stealth
-//     CXFER for an asset it's never held → pass 1 has no candidates →
-//     receipt sits invisible until the user manually imports the share-
-//     link. Now the dapp finds it on next session's first scan.
+//     worker's discover registry, EXCLUDING pass-1 ones. Covers a wallet
+//     receiving stealth CXFER for an asset it has never held (pass 1 has
+//     no candidates).
 //
 // Constraints:
 //   • One run per session (gated on _stealthAutoScanRanThisSession).
@@ -18904,10 +18777,7 @@ const _STEALTH_AUTO_SCAN_PROTOCOL_TOKENS = {
 };
 // Per-wallet-pubkey session flag (not a single boolean) so switching
 // between multiple tacit wallets in the same tab doesn't poison the
-// gate. Was previously a tab-scoped boolean — once any wallet's scan
-// fired, no subsequent wallet's scan could run until reload, leaving
-// stealth receipts for the second wallet invisible. Now each wallet
-// gets its own per-session scan exactly once.
+// gate: each wallet gets its own per-session scan exactly once.
 const _stealthAutoScanRanPubs = new Set();
 function _triggerStealthAutoScanInBackground(holdings) {
   if (!WORKER_BASE) return;
@@ -19134,9 +19004,9 @@ async function scanHoldingsCrossChain(force = false) {
   for (const id in reg) assets.ingestBitcoin({ assetIdHex: id, ...reg[id] });
   for (const a of (dep.assets || [])) assets.ingestEvm(a, dep.chainId);
   // Derive the wallet's dedicated EVM account so the canonical-ERC20 + pool
-  // lanes read against the right address. Domain-separated from the Bitcoin
+  // balances read against the right address. Domain-separated from the Bitcoin
   // key (evm-account.js), so unlinkable. Null when the wallet is locked —
-  // the reader then reports the Bitcoin lane only.
+  // the reader then reports the Bitcoin side only.
   let evmAddress = null;
   try {
     if (wallet && wallet.priv) {
@@ -19413,7 +19283,7 @@ async function _scanHoldingsImpl() {
     // records ghost/inflated state precisely. Also clear `metadataOut` — entries
     // recorded during the optimistic walk may have come from envelopes whose
     // rangeproofs would have failed individually, so re-derive from the strict
-    // walk to avoid attacker-chosen ticker/imageUri leaking into the registry.
+    // walk so only fully-verified ticker/imageUri reach the registry.
     // pmintStatusOut also clears: a strict re-walk re-classifies T_PMINT failures
     // from scratch. validatedReasons clears alongside validatedSet so the
     // strict walk can re-classify reasons cleanly. Re-prime from persistedTrue:
@@ -19692,7 +19562,7 @@ async function _scanHoldingsImpl() {
     } else if (env.opcode === T_SWAP_ROUTE) {
       // vout[0] = OP_RETURN(envelope_hash); vout[1]
       // = receipt UTXO in trader_output_asset (DUST P2WPKH(recipientPub)).
-      // V1 consumes the trader's whole input — no change vout. asset_id is
+      // The route consumes the trader's whole input — no change vout. asset_id is
       // carried directly in the envelope (no pool registry lookup needed).
       if (u.vout !== 1) continue;
       const dec = decodeTSwapRoutePayload(env.payload);
@@ -19745,8 +19615,8 @@ async function _scanHoldingsImpl() {
     // pmintStatusOut Map (declared above) captures whether T_PMINT failures
     // are pending (transient) or invalid (permanent) so we route the UTXO
     // to the right h.* bucket below. It MUST be the same Map the optimistic
-    // walk used — see audit fix #1, plus the comment at its declaration for
-    // why a per-UTXO Map here mis-classified pending pmints as inflated.
+    // walk used — see the comment at its declaration for why a per-UTXO Map
+    // here would mis-classify pending pmints as inflated.
     const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut, validatedReasons);
 
     // Register any newly-discovered canonical metadata. Honors first-seen wins;
@@ -19778,7 +19648,7 @@ async function _scanHoldingsImpl() {
     }
 
     if (!valid) {
-      // Pending T_PMINT branch (audit fix #1): if the failure was a transient
+      // Pending T_PMINT branch: if the failure was a transient
       // condition (mempool / depth < 3 / worker hasn't credited yet),
       // recover the opening directly from the envelope's public (amount,
       // blinding) and surface it as h.pending — distinct from h.inflated,
@@ -19986,7 +19856,7 @@ async function _scanHoldingsImpl() {
       // are public in the envelope (analogous to T_PMINT's (amount, blinding)
       // pattern). Read both, verify the commitment opens to (denomination,
       // r_leaf), and record. Recovery works identically for self-withdraw
-      // and for-other; share-links are no longer needed.
+      // and for-other without a share-link.
       const dec = decodeTWithdrawPayload(env.payload);
       if (dec) {
         const r = bytes32ToBigint(dec.rLeaf) % SECP_N;
@@ -20240,7 +20110,7 @@ async function _scanHoldingsImpl() {
 
     if (env.opcode === T_PREAUTH_BID_VAR) {
       // T_PREAUTH_BID_VAR recovery. Same chain-only shape
-      // as §5.7.11 but the inline section carries (fill_amount,
+      // as T_PREAUTH_BID but the inline section carries (fill_amount,
       // recipient_blinding) instead of (amount, blinding). The seller's
       // asset-change output, when present, sits at vout[3] (no refund) or
       // vout[4] (refund vout present at vout[3]); both indices are
@@ -20320,10 +20190,8 @@ async function _scanHoldingsImpl() {
                 : env.opcode === T_AXFER_BPP   ? decodeAxferBppPayload(env.payload)
                                                : decodeCBurnPayload(env.payload);
       if (dec && tx.vin.length >= 2) {
-        // Recovery anchor: for v1 CXFER/BURN, vin[1] is the first asset input
-        // by definition. For v2, vin[1] is also the first asset input (asset
-        // inputs come immediately after vin[0]; aux BTC inputs are appended
-        // at the tail), so the same anchor extraction is correct.
+        // Recovery anchor: vin[1] is the first asset input (asset inputs come
+        // immediately after vin[0]; aux BTC inputs are appended at the tail).
         const firstIn = tx.vin[1];
         const anchorBytes = concatBytes(
           reverseBytes(hexToBytes(firstIn.txid)),
@@ -20363,7 +20231,7 @@ async function _scanHoldingsImpl() {
             } catch {}
           }
         }
-        // §5.7.6 atomic-intent on-chain recovery: when the maker fulfilled
+        // atomic-intent on-chain recovery: when the maker fulfilled
         // with an OP_RETURN(40) carrying (amount, blinding) encrypted to the
         // taker via ECDH, the receipt is recoverable from chain + privkey
         // alone — no local cache, no worker fetch. The envelope's amount_ct
@@ -20381,7 +20249,7 @@ async function _scanHoldingsImpl() {
           if (opReturnCt) {
             try {
               const senderPub = hexToBytes(senderPubHex);
-              // intent_id = SHA256(commit_txid_BE || maker_pubkey)[:16] per §5.7.6.
+              // intent_id = SHA256(commit_txid_BE || maker_pubkey)[:16].
               // commit_txid is vin[0].prevout.txid (the maker's commit P2TR).
               const commitTxidBE = reverseBytes(hexToBytes(tx.vin[0].txid));
               const intentIdBytes = sha256(concatBytes(commitTxidBE, senderPub)).slice(0, 16);
@@ -20400,14 +20268,14 @@ async function _scanHoldingsImpl() {
             } catch {}
           }
         }
-        // SPEC-BLINDED-PUBKEY §A.2 — class-2 stealth recipient detection.
-        // CXFER/CXFER_BPP only in v1. The amount channel already decrypted
+        // class-2 stealth recipient detection.
+        // CXFER/CXFER_BPP only. The amount channel already decrypted
         // via the ECDH branch above (sender did ECDH against our underlying
         // recipientPub, independent of the stealth commit). What's left is
         // detecting that the on-chain script is P2WPKH(commit) rather than
         // P2WPKH(walletPub), and stashing the per-output stealth blinding
         // `b` so the wallet can re-derive tweaked_sk on demand at spend
-        // time (§H.2 — tweaked_sk MUST NOT be persisted).
+        // time (tweaked_sk MUST NOT be persisted).
         let stealthHitBlinding = null;
         let stealthTweakedSkHex = null;
         if (recovered && (env.opcode === T_CXFER || env.opcode === T_CXFER_BPP)) {
@@ -20472,7 +20340,7 @@ async function _scanHoldingsImpl() {
       }
     }
 
-    // §5.7.6.1 variable-amount atomic-intent on-chain recovery. Mirrors the
+    // variable-amount atomic-intent on-chain recovery. Mirrors the
     // T_AXFER OP_RETURN(40) branch above, against the T_AXFER_VAR/BPP 80-byte
     // dual-payload at vout[3]. Two sides:
     //   u.vout === 0 → wallet is the taker; decrypt taker half via ECDH
@@ -20481,8 +20349,7 @@ async function _scanHoldingsImpl() {
     // intent_id derives from (maker_pubkey, asset_utxo_outpoint) where the
     // asset_utxo is vin[1] of the reveal tx (T_AXFER_VAR spec: single asset
     // input at vin[1]). Without this branch a wallet that loses localStorage
-    // after a partial fill is unable to credit T_AXFER_VAR holdings —
-    // silent loss of funds, same class as the AMM-UTXO gap fixed 2026-05-18.
+    // after a partial fill is unable to credit T_AXFER_VAR holdings.
     if ((env.opcode === T_AXFER_VAR || env.opcode === T_AXFER_VAR_BPP) && tx.vin.length >= 2) {
       const tacitIdx = axferVarOutputIndexForVout(u.vout);
       if (tacitIdx !== null) {
@@ -20581,7 +20448,7 @@ async function _scanHoldingsImpl() {
     h.ghosts.push({ utxo: u, commitment: onChainCommitment });
   }
 
-  // SPEC-BLINDED-PUBKEY §A.2 recovery: rehydrate persisted stealth credits.
+  // recovery: rehydrate persisted stealth credits.
   // The classical address scan above only sees UTXOs at P2WPKH(wallet.pub).
   // Stealth-received UTXOs sit at P2WPKH(commit) on distinct scriptpubkeys
   // and are never enumerated by getUtxos(wallet.address()). Without this
@@ -20632,7 +20499,7 @@ async function _scanHoldingsImpl() {
         const commitment = e.commitmentHex
           ? hexToBytes(e.commitmentHex)
           : null;
-        // §H.2: derive tweaked_sk on the fly from (wallet.priv, b). Stored
+        // derive tweaked_sk on the fly from (wallet.priv, b). Stored
         // `stealthBlindingHex` is `b`; tweaked_sk itself never hits disk.
         let stealthTweakedSk = null;
         if (e.stealthBlindingHex) {
@@ -21350,17 +21217,11 @@ async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremon
   _progress('reveal-start');
   await broadcastWithRetry(revealHex);
 
-  // No optimistic local register. Reason: POOL_INIT first-confirmed-wins
-  // means a front-runner could publish a non-canonical pool for the same
-  // (asset_id, denomination) and confirm before this broadcast. If we
-  // optimistically registered locally with the user's (canonical) CIDs,
-  // mixerRegisterPool's first-write-wins would lock the local entry to
-  // canonical metadata while chain reality is the front-runner's non-
-  // canonical entry — diverging local view from canonical, and worse,
-  // mixerIsPoolCanonical would return true locally so deposits would
-  // proceed against a pool whose chain-canonical vk is the attacker's.
-  // Holding off the register until scanPools reads canonical state from
-  // the worker eliminates this divergence: chain wins, period.
+  // No optimistic local register. POOL_INIT is first-confirmed-wins, so a
+  // different POOL_INIT for the same (asset_id, denomination) may confirm
+  // first. mixerRegisterPool is first-write-wins locally, so the entry is
+  // registered only once scanPools reads the confirmed state from the
+  // worker: chain wins.
   //
   // Side benefit: also blocks the same-block deposit-before-init race —
   // the dapp's deposit UI gates on mixerIsPoolRegistered, which won't be
@@ -21724,8 +21585,8 @@ function _renderHoldingsMixerSummary(listEl) {
 }
 
 // One note, two chains. A compact roll-up of every asset that has an
-// Ethereum-lane balance (confidential-pool notes, tETH, canonical ERC20),
-// merged with its Bitcoin lane by shared asset_id and tagged with a chain
+// Ethereum-side balance (confidential-pool notes, tETH, canonical ERC20),
+// merged with its Bitcoin side by shared asset_id and tagged with a chain
 // badge. Bitcoin-only assets already render in the card list below, so the
 // strip only surfaces when at least one asset spans (or lives on) the ETH
 // lane — otherwise it's pure noise on a Bitcoin-only wallet. Fully additive:
@@ -22066,7 +21927,7 @@ function estSlotMintRevealVb() {
   return Math.ceil((baseLen * 4 + 2 + witnessLen) / 4) + 5;
 }
 
-// SPEC-CBTC-ZK §5.21 — one-click "Wrap sats to cBTC.zk".
+// one-click "Wrap sats to cBTC.zk".
 //
 // Two-tx flow (commit + reveal) following the same pattern as CETCH / CMINT
 // / DEPOSIT:
@@ -22082,8 +21943,8 @@ function estSlotMintRevealVb() {
 //   - vout[0].value = denomination
 // and credits the cBTC.zk pool with the new leaf + slot-registry entry.
 //
-// For Phase 1 (self-mint) the caller passes paymentAssetId=zeros + paymentAmount=0,
-// so there's no LP-payment leg at vout[1]. For Phase 2 (LP-mediated mint —
+// For a self-mint the caller passes paymentAssetId=zeros + paymentAmount=0,
+// so there's no LP-payment leg at vout[1]. For an LP-mediated mint (
 // trader funds slot, LP pays trader in TAC), an LP-prebuilt envelope with
 // payment_amount>0 + LP's minter_sig is used and the reveal tx adds an LP-
 // signed TAC input + vout[1] = TAC payment to trader.
@@ -22282,7 +22143,7 @@ function estSlotBurnRevealVb({ proofLen = 256 } = {}) {
   return Math.ceil((baseLen * 4 + 2 + witnessLenVin0 + witnessLenVin1) / 4) + 5;
 }
 
-// SPEC-CBTC-ZK §5.22 — one-click "Redeem slot → sats" (the unwrap).
+// one-click "Redeem slot → sats" (the unwrap).
 //
 // Three-step crypto pipeline (same as mixer withdraw): build merkle proof of
 // the leaf, generate Groth16 proof that we know the leaf's secrets without
@@ -22530,7 +22391,7 @@ async function buildAndBroadcastSlotBurn({
   // Sign vin[0]: Taproot script-path with envelope reveal.
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
   // Sign vin[1]: Taproot key-path under r_btc (the BTC spending key —
-  // distinct from r_pedersen per §5.24.0 two-key design), SIGHASH_ALL so
+  // distinct from r_pedersen), SIGHASH_ALL so
   // the spend commits to vout[0] = trader's payout.
   const rBtcBytes = slotRecord.rBtcHex
     ? hexToBytes(slotRecord.rBtcHex)
@@ -22579,7 +22440,7 @@ async function buildAndBroadcastSlotBurn({
   };
 }
 
-// ============== SLOT-NOTE ENCRYPTION (SPEC-CBTC-ZK-FUNGIBILITY §5.26) ==============
+// ============== SLOT-NOTE ENCRYPTION ==============
 // Sapling-style sender→receiver ECDH for delivering slot secrets without
 // out-of-band coordination. Recipients derive a viewing key from wallet.priv;
 // senders encrypt (kind, secret', ν', amount_hint) under that key. Wire: 122
@@ -22596,8 +22457,7 @@ const SLOT_NOTE_KIND_MERGE = 0x03;               // reserved for T_SLOT_MERGE
 
 // Viewing privkey: HKDF-derived from wallet.priv. Deterministic per-wallet;
 // users don't manage `sk_view` explicitly. Tradeoff: compromise of wallet.priv
-// also compromises sk_view (viewer/spender compartmentalisation deferred to
-// a v1.x extension).
+// also compromises sk_view (no viewer/spender compartmentalisation).
 function _slotViewingPrivkey() {
   if (!wallet || !wallet.priv) throw new Error('wallet.priv required for slot viewing key');
   const prk = hmac(sha256, SLOT_NOTE_VERSION_TAG, wallet.priv);
@@ -22719,14 +22579,12 @@ function estSlotRotateRevealVb({ proofLen = 256, hasNote = false }) {
   const envelopeLen = 45 + baseEnvelopePayload + numChunks * 3;
   const witnessLenVin0 = 1 + 65 + 3 + envelopeLen + 34;
   const witnessLenVin1 = 1 + 64;
-  // 2 inputs + 1 P2TR new-slot output. (Payment-leg vout deferred to Phase 4c.)
+  // 2 inputs + 1 P2TR new-slot output (no payment-leg vout).
   const baseLen = 125;
   return Math.ceil((baseLen * 4 + 2 + witnessLenVin0 + witnessLenVin1) / 4) + 5;
 }
 
-// SPEC-CBTC-ZK §5.23 — one-click "Rotate slot" (key-refresh / send-to-recipient).
-//
-// Phase 4b (this build) supports two modes:
+// One-click "Rotate slot" (key-refresh / send-to-recipient). Two modes:
 //   • self-rotation: recipientViewingPub omitted → wallet refreshes its own
 //     slot keys without payment. Useful if user worries r_leaf may have
 //     been exposed (e.g. they shared the slot record off-band).
@@ -22736,8 +22594,8 @@ function estSlotRotateRevealVb({ proofLen = 256, hasNote = false }) {
 //     the 122-byte note to the envelope. Recipient discovers via their
 //     on-load note scanner.
 //
-// Phase 4c will add the payment leg (paymentAssetId + paymentAmount at
-// vout[1]) for AMM-style trades. v1 build refuses paymentAmount > 0.
+// There is no payment leg (paymentAssetId + paymentAmount at vout[1]);
+// paymentAmount > 0 is refused.
 //
 // Bitcoin tx shape (same as burn for envelope placement — vin[0]=commit-
 // reveal w/ envelope, vin[1]=old slot key-path under r_leaf SIGHASH_ALL):
@@ -22774,7 +22632,7 @@ async function buildAndBroadcastSlotRotate({
     throw new Error('this slot was already redeemed or rotated');
   }
 
-  // Phase 2B: derive the new slot's (secret, ν) from priv + parent K_btc
+  // Derive the new slot's (secret, ν) from priv + parent K_btc
   // outpoint so scanSlotsFromPrivkey's descendant walk can recover it.
   // Anchor = the K_btc UTXO being consumed in this rotate, which sits at
   // vout[0] of slotRecord's locator tx (mintTxid is updated to the current
@@ -22923,8 +22781,8 @@ async function buildAndBroadcastSlotRotate({
     { value: Number(denomBig), script: slotPrevoutScript },
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  // Sign vin[1] (the OLD slot spend) under r_btc — the BTC spending key
-  // per §5.24.0 two-key design. r_pedersen (oldRLeaf) is the Pedersen
+  // Sign vin[1] (the OLD slot spend) under r_btc — the BTC spending key.
+  // r_pedersen (oldRLeaf) is the Pedersen
   // blinding for the mixer commitment but NOT the BTC spending key.
   const oldRBtcBytes = slotRecord.rBtcHex
     ? hexToBytes(slotRecord.rBtcHex)
@@ -23005,17 +22863,15 @@ async function buildAndBroadcastSlotRotate({
 //     vout[0..N-1] = new slot P2TRs (one per output, value = denom_new_i)
 //
 // Proof note: the spec calls for a Groth16 proof composing old-leaf
-// membership + (secret, ν) knowledge. The worker validator branch shipped
-// in this build does NOT yet verify it (decoder gates `proofLen > 0` and
-// the bind_hash recompute is the structural correctness gate). A 256-byte
-// placeholder satisfies the decoder; production-hardened proof generation
-// requires a circuit pass (forthcoming).
+// membership + (secret, ν) knowledge. The worker validator does not verify
+// it (decoder gates `proofLen > 0` and the bind_hash recompute is the
+// structural correctness gate), so a 256-byte placeholder satisfies it.
 async function buildAndBroadcastSlotSplit({
   slotRecord,
   outputs,                       // array of { denomNew, assetIdHex?, secret?, nullifierPreimage? }
   recipientViewingPubs = null,   // optional array length === outputs.length; null entries OK
                                   // (each non-null = encrypt note to that recipient, attach
-                                  // §5.26.4 tail bit; recipient discovers via their note scanner)
+                                  // tail bit; recipient discovers via their note scanner)
   ceremonyHash = null,
   onProgress = null,
 }) {
@@ -23070,7 +22926,7 @@ async function buildAndBroadcastSlotSplit({
   }
   const merkleRootBytes = mp.root instanceof Uint8Array ? mp.root : bigintToBytes32(BigInt(mp.root));
 
-  // Placeholder proof — see §5.24.3 note above.
+  // Placeholder proof (the worker validator doesn't verify it).
   const oldProofBytes = new Uint8Array(256);
 
   // Build optional encrypted notes for each output if a recipient viewing
@@ -23083,7 +22939,7 @@ async function buildAndBroadcastSlotSplit({
     }
   }
 
-  // Phase 2B: per-output (secret, ν) derived from priv + parent K_btc outpoint
+  // Per-output (secret, ν) derived from priv + parent K_btc outpoint
   // + outputIndex i. Each output gets a distinct deterministic pair so the
   // scanner's descendant walk recovers all N. outputIndex namespaces the
   // outputs within one SPLIT envelope; the helper's u8 cap (0..255) is well
@@ -23294,9 +23150,9 @@ async function buildAndBroadcastSlotSplit({
 // miner fee). Useful for consolidating fragmented holdings before a large
 // transfer / withdraw / cBTC.tac deposit.
 //
-// v1 single-owner: caller's wallet signs every old-slot vin under r_btc and
-// signs slot_merge_msg under wallet.priv. Multi-owner merges (§5.25.4) are
-// a forthcoming feature requiring SIGHASH_ALL coordination across signers.
+// Single-owner: caller's wallet signs every old-slot vin under r_btc and
+// signs slot_merge_msg under wallet.priv. Multi-owner merges (SIGHASH_ALL
+// coordination across signers) are not supported.
 //
 // Bitcoin tx shape:
 //   commit: sats inputs → vout[0] = P2TR(envelope script) + sats change
@@ -23374,13 +23230,13 @@ async function buildAndBroadcastSlotMerge({
     oldMerkleRoots.push(merkleRootBytes);
   }
 
-  // Placeholder proofs — see §5.25.3 note (worker validator doesn't yet
-  // verify; bind_hash recompute is the structural correctness gate).
+  // Placeholder proofs (the worker validator doesn't
+  // verify them; bind_hash recompute is the structural correctness gate).
   const oldProofs = oldSlotRecords.map(() => new Uint8Array(256));
 
   // Optional encrypted note to a recipient (consolidate-and-send pattern).
   let encryptedNote = null;
-  // Phase 2B: (secret, ν) derived from priv + canonical input anchor.
+  // (secret, ν) derived from priv + canonical input anchor.
   // MERGE consumes N input slots; the anchor is whichever input K_btc
   // outpoint sorts lexicographically smallest. Scanner reproduces this
   // sort over the spending tx's vin set to find the match.
@@ -23610,7 +23466,7 @@ function _saveSlotNoteScanCursor(network, height) {
 // (useful for ad-hoc inspections).
 //
 // The worker exposes four chronological event logs that mirror the four
-// slot-creating ops (SPEC-CBTC-ZK-FUNGIBILITY §5.26):
+// slot-creating ops:
 //   GET /slot-rotates / /slot-mints / /slot-splits / /slot-merges
 // Each returns records of the same shape — { network, asset_id,
 // denomination, new_leaf_hash, new_recipient_commitment, <op>_txid,
@@ -23745,7 +23601,7 @@ async function scanInboundSlotNotes({
   return { scanned, detected, cursor: maxHeightSeen };
 }
 
-// Phase 2 of slot privkey-only recovery — companion to the Phase 1 helpers
+// Slot privkey-only recovery scan — companion to the derivation helpers
 // (_deriveSlotSecret / _deriveSlotNullifierPreimage / _slotOutpointBytes).
 // Walks the wallet's outgoing-spend history; for each spent outpoint, treats
 // it as a candidate MINT anchor, derives (secret, ν, K_btc), and checks
@@ -23753,7 +23609,7 @@ async function scanInboundSlotNotes({
 // at the expected K_btc P2TR. Match → reconstruct the slot record from
 // chain + derived secrets and persist via saveSlotRecord.
 //
-// Phase 2A discovers MINT-rooted slots. Phase 2B chains off each discovered
+// First discovers MINT-rooted slots, then chains off each discovered
 // slot by probing its K_btc outspend: if the K_btc UTXO has been consumed
 // by a ROTATE / SPLIT / MERGE envelope, derive the new slot(s) using the
 // parent's K_btc outpoint as the anchor (per the anchor schema documented
@@ -23830,7 +23686,7 @@ async function scanSlotsFromPrivkey({ onProgress = null } = {}) {
         txid: candidate.mintTxid,
       });
     } catch {}
-    // Phase 2B: chase descendants of this MINT through ROTATE / SPLIT / MERGE.
+    // Chase descendants of this MINT through ROTATE / SPLIT / MERGE.
     // Best-effort; failures here don't lose the MINT recovery.
     try {
       _progress(`chasing descendants of ${candidate.leafCommitmentHex.slice(0, 16)}…`);
@@ -23843,7 +23699,7 @@ async function scanSlotsFromPrivkey({ onProgress = null } = {}) {
   return { scanned, recovered: recovered.length, slots: recovered };
 }
 
-// Phase 2B helper: probe a recovered slot's K_btc outspend and, if it's been
+// Descendant-walk helper: probe a recovered slot's K_btc outspend and, if it's been
 // consumed by a ROTATE / SPLIT / MERGE envelope, derive the descendant
 // slot(s), persist them, and recurse. BURN returns early (no new slot to
 // recover; BTC payout shows up via the standard wallet UTXO scan).
@@ -24061,7 +23917,7 @@ async function _scanSlotAnchorCandidate({ privkey, anchor, existingLeafHexes }) 
   const anchorBytes = _slotOutpointBytes(anchor.txid, anchor.vout);
   const secret = _deriveSlotSecret({ privkey, anchorOutpoint: anchorBytes, outputIndex: 0 });
   const nullifierPreimage = _deriveSlotNullifierPreimage({ privkey, anchorOutpoint: anchorBytes, outputIndex: 0 });
-  // r_btc is independent of r_leaf (two-key §5.24.0). Derive K_btc from
+  // r_btc is independent of r_leaf (two-key). Derive K_btc from
   // r_btc directly, then build the expected slot P2TR scriptpubkey.
   const rBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
   const rBtcBig = bytes32ToBigint(rBtcBytes) % SECP_N;
@@ -24280,7 +24136,8 @@ async function farmRecoverPositions({ onProgress = null } = {}) {
       if (!isUnbond && !isHarvest) continue;
       const dec = isUnbond ? ammEnvelopeMod.decodeLpUnbond(env.payload) : ammEnvelopeMod.decodeLpHarvest(env.payload);
       if (!dec) continue;
-      if (bytesToHex(isUnbond ? dec.unbonderPubkey : dec.harvesterPubkey) !== myPubHex) continue; // not ours
+      // ours: an unbond's lp_return output pays this wallet; a harvest names the harvester key
+      if (isUnbond ? tx.vout?.[1]?.scriptpubkey_address !== address : bytesToHex(dec.harvesterPubkey) !== myPubHex) continue;
       scanned++;
       _progress(`resolving farm ${bytesToHex(dec.farmId).slice(0, 12)}…`);
       let farmRec;
@@ -24289,15 +24146,7 @@ async function farmRecoverPositions({ onProgress = null } = {}) {
       const rewardAssetIdHex = String(farmRec.reward_asset_id || '').replace(/^0x/, '').toLowerCase();
       let openings = [];
       if (isUnbond) {
-        let bondAmount = null;
-        try {
-          const resp = await farmActions.fetchBondsForBonder(bytesToHex(dec.farmId), myPubHex);
-          const bonds = resp?.bonds || resp || [];
-          const bondIdHex = bytesToHex(dec.bondId);
-          const bond = bonds.find((b) => String(b.bond_id || '').replace(/^0x/, '').toLowerCase() === bondIdHex);
-          if (bond && bond.bond_amount != null) bondAmount = BigInt(bond.bond_amount);
-        } catch {}
-        openings = _farmRecovery.recoverUnbond(env.payload, { poolId: farmRec.pool_id, rewardAssetIdHex, bondAmount });
+        openings = _farmRecovery.recoverUnbond(env.payload, { poolId: farmRec.pool_id });
       } else {
         openings = _farmRecovery.recoverHarvest(env.payload, { rewardAssetIdHex });
       }
@@ -24671,16 +24520,15 @@ async function unstageBond({ stagedBondId, onProgress = null }) {
 //   - XCurve sigma binding (proves both commits open to the SAME amount)
 //   - Asset-spend kernel sigs for sides A + B
 //   - MINIMUM_LIQUIDITY locked output (commit + amount_ct + NUMS p2wpkh)
-// Groth16 proof is a 256-byte placeholder for v1 — worker accepts any
-// non-empty bytes and tags the pool 'xcurve-verified' (per-pool VK fetch
-// + verify is staged for follow-up sessions).
+// Groth16 proof is a 256-byte placeholder — worker accepts any non-empty
+// bytes and tags the pool 'xcurve-verified'.
 async function buildAndBroadcastLpAddPoolInit({
   assetAIdHex, assetBIdHex,    // 32-hex each (auto-canonicalized lex-smaller first)
   deltaA, deltaB,              // bigint > 0  (initial reserves)
   feeBps = 30,                 // u16, 0..1000 (default 0.3%)
   vkCid,                       // IPFS CID of the AMM circuit VK (str, ≤64B)
   ceremonyCid,                 // IPFS CID of the ceremony attestation (str, ≤64B)
-  poolCapabilityFlags = 0,     // u8 bitmap; default V1 pool
+  poolCapabilityFlags = 0,     // u8 bitmap; default pool
   recipientPubHex = null,      // founder share recipient pubkey (default: wallet)
   poolMetaUri = '',            // optional informational pointer (≤255B)
   arbiterPubkeys = [],         // optional launcher gate
@@ -25596,7 +25444,7 @@ async function buildAndBroadcastProtocolFeeClaim({
 
 // ============== AMM swap UX (T_SWAP_VAR self-fulfill) ==============
 //
-// V1 self-fulfill: wallet acts as BOTH
+// Self-fulfill: wallet acts as BOTH
 // trader (signs intent_msg) AND settler (builds kernel_sig from excess
 // scalar + assembles the Bitcoin tx). Single Bitcoin tx, no off-chain
 // coordination.
@@ -25996,13 +25844,12 @@ async function buildAndBroadcastSwapVarSelfFulfill({
 // T_SWAP_VAR's cryptography (Pedersen + BP+ m=2 + kernel sig under
 // `tacit-kernel-v1`).
 //
-// V1 self-fulfill semantics:
+// Self-fulfill semantics:
 //   - Trader's whole input UTXO is consumed (no change). If the trader
 //     wants partial input, pre-split via T_AXFER_VAR first.
 //   - Receipt blinding `r_receipt` is freshly random + revealed in the
-//     envelope (mirrors T_SWAP_VAR §5.20 self-fulfill).
-//   - Single trader = sole intent signer + sole asset input. Settler-
-//     driven routing (with per-hop tips) is a follow-up amendment.
+//     envelope (mirrors T_SWAP_VAR self-fulfill).
+//   - Single trader = sole intent signer + sole asset input.
 //
 // Inputs (all required):
 //   pools                — fresh `fetchAmmPools()` output for routing lookup
@@ -26117,7 +25964,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     return h0.direction === 0 ? h0.deltaANetMag : h0.deltaBNetMag;
   })();
   if (deltaIn0 !== inputAmount) {
-    // T_SWAP_ROUTE V1 consumes the whole trader input; findSwapRoutePath
+    // T_SWAP_ROUTE consumes the whole trader input; findSwapRoutePath
     // wires hop[0].delta_in == amountIn (= input UTXO amount). A mismatch
     // here indicates an internal bug in route discovery.
     throw new Error(`route hop[0] delta_in ${deltaIn0} != input UTXO amount ${inputAmount}`);
@@ -26180,7 +26027,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
 //     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
 //     vout[1] = trader's final receipt UTXO (DUST sats, recipient P2TR)
 //
-// Recipient defaults to wallet.pub. No change vout — V1 consumes the
+// Recipient defaults to wallet.pub. No change vout — the route consumes the
 // trader's whole input. Use T_AXFER_VAR pre-split if you need partial.
 async function buildAndBroadcastSwapRoute({
   pools, assetInputUtxo, traderOutputAssetIdHex,
@@ -26209,7 +26056,7 @@ async function buildAndBroadcastSwapRoute({
   const recipSpk = p2trScript(recipientPub.slice(1));
   const changeSpk = p2wpkhScript(wallet.pub);
 
-  // No change vout in V1 self-fulfill (whole-input). 3 outputs: OP_RETURN + receipt + the intent-bound
+  // No change vout in self-fulfill (whole-input). 3 outputs: OP_RETURN + receipt + the intent-bound
   // P2TR refund at vout 2 (where the guest homes the input back if the route no longer clears).
   const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + 43 /* refund */;
   const revealVb = 11 + 41 + 41 + vbBaseOuts
@@ -27728,7 +27575,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   // Register asset metadata locally so the freshly-minted UTXO renders with
   // the correct ticker/decimals on the holdings card immediately, instead of
   // showing as `???` until validateOutpoint succeeds (which won't until the
-  // worker credits the mint at depth ≥ 3 — see audit fix #5). For a minter
+  // worker credits the mint at depth ≥ 3). For a minter
   // who's also the deployer, registerAsset was already called by
   // buildAndBroadcastPetch; for a minter of someone else's T_PETCH this is
   // the only path that lands the parent's metadata in the local registry.
@@ -27751,13 +27598,11 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   }
   // Persist the opening locally. validateOutpoint refuses to credit the UTXO
   // as ancestry until the worker confirms cap-credit at depth ≥ 3, but
-  // scanHoldings's pending-tier path (audit fix #1) recovers the opening
-  // from the on-chain envelope and surfaces this UTXO under h.pending so
-  // the user sees their fresh mint accounted for — distinct from h.utxos
-  // (spendable) and h.inflated (genuinely-broken). Audit fix E: previous
-  // comment incorrectly claimed the recovery path runs unconditionally;
-  // the truth is that h.pending only catches T_PMINT failures whose
-  // pmintStatusOut tag is 'pending', not 'invalid'.
+  // scanHoldings's pending-tier path recovers the opening from the on-chain
+  // envelope and surfaces this UTXO under h.pending so the user sees their
+  // fresh mint accounted for — distinct from h.utxos (spendable) and
+  // h.inflated (genuinely-broken). h.pending only catches T_PMINT failures
+  // whose pmintStatusOut tag is 'pending', not 'invalid'.
   recordOpening(revealTxid, 0, aidHex, amount, blindingBig);
   recordActivity({
     kind: 'pmint', ticker: petchDec.ticker, amount, decimals: petchDec.decimals,
@@ -27796,12 +27641,11 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 // stealth-received UTXOs (those sit at P2WPKH(commit), a distinct address).
 // The recipient must either:
 //   (a) Receive the reveal-tx txid out-of-band from the sender and call
-//       discoverStealthFromTxid(txid) below. This is the v1 UX.
+//       discoverStealthFromTxid(txid) below.
 //   (b) Run scanAssetForStealthReceipts(assetIdHex) which walks every reveal
 //       tx that has ever spent a UTXO of this asset and trial-derives — the
-//       §F.6 "scan-flooding" model. Expensive on long-lived assets; bounded
+//       "scan-flooding" model. Expensive on long-lived assets; bounded
 //       by asset history depth.
-// A future view-tag amendment would let (b) filter cheaply before trial-derive.
 
 async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   await ensurePrivkey();
@@ -27962,7 +27806,7 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   return discovered;
 }
 
-// SPEC-BLINDED-PUBKEY §A.2 asset-wide recipient discovery. Walks the worker's
+// asset-wide recipient discovery. Walks the worker's
 // xferseen index for `assetIdHex` and runs `discoverStealthFromTxid` on every
 // reveal tx. Used by the holdings card's "Rescan for shielded receipts"
 // button and the auto-scan-on-small-history path so a recipient who lost
@@ -28116,12 +27960,12 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const changeAmt = inAmt - totalSendAmt;
   if (changeAmt < 0n) throw new Error('internal: change negative');
 
-  // Cross-lane reverse gate (PLAN-confidential-cross-chain.md §10). When the EVM ConfidentialPool
-  // is wired, refuse to spend on Bitcoin a note already spent on Ethereum — reflection is
-  // one-directional, so its value moved to the Ethereum lane and honoring the Bitcoin spend would
+  // Cross-lane reverse gate. When the confidential pool is configured, refuse to spend on
+  // Bitcoin a note already spent on Ethereum — reflection is one-directional, so its value
+  // moved to the Ethereum side and honoring the Bitcoin spend would
   // duplicate it. Checked here (before the commit broadcast) so a blocked spend costs no fee. The
   // worker indexer-of-record is the authoritative enforcement; this is the client-side guard.
-  // Inert when no pool is configured (CROSSLANE_DEPLOYMENTS[net].pool null — the current posture).
+  // Inert when no pool is configured (CROSSLANE_DEPLOYMENTS[net].pool null).
   {
     const _xlPool = (CROSSLANE_DEPLOYMENTS[currentNetworkName()] || {}).pool;
     if (_xlPool) {
@@ -28129,15 +27973,15 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       const _guard = makeCrossLaneGuard({ keccak256: keccak_256 });
       // nullifierSpent's auto-getter was internalized (EIP-170); read the mapping slot directly.
       const _ethGetStorageAt = (to, slot, tag) => _ethRpcCall('eth_getStorageAt', [to, slot, tag || 'latest']);
-      // The EVM chain binding this generation's bound leaves commit — keccak(chainid ‖ pool).
+      // The chain binding this deployment's bound leaves commit — keccak(chainid ‖ pool).
       const _xlBinding = _confidentialChainBinding(currentNetworkName());
       const _ZERO_AUTH = '0x' + '00'.repeat(32);
       for (const u of pickedAssetUtxos) {
         const { cx, cy } = _cp.commitXY(u.amount, u.blinding);
-        // ν is LEAF-bound, and a Bitcoin-homed note has two possible leaf domains — the legacy unbound
-        // btc_note_leaf(asset,Cx,Cy,auth_key) and the generation-bound
+        // ν is LEAF-bound, and a Bitcoin-homed note has two possible leaf domains — the unbound
+        // btc_note_leaf(asset,Cx,Cy,auth_key) and the deployment-bound
         // btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding) — which hash to DIFFERENT nullifiers.
-        // The EVM fast lane records the BOUND form, so both nullifiers are checked.
+        // The fast lane records the BOUND form, so both nullifiers are checked.
         // The auth key is the x-only key of the note's P2TR output, and is ZERO for a note homed at a
         // non-P2TR output (as the reflection derives it). Holdings records do not yet carry a per-note key,
         // so an absent one is treated as zero; a P2TR-homed note needs its key recorded for this check to
@@ -28211,7 +28055,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   // Kernel signature. excess = Σ r_out − Σ r_in across ALL m outputs (including
   // padding); padding contributes 0·H to the H-component, so the balance
   // equation is unchanged. Verifier reconstructs E' = ΣC_out − ΣC_in.
-  // BPP and CXFER share kernel-msg shape verbatim (§5.47.2).
+  // BPP and CXFER share kernel-msg shape verbatim.
   const blindingSum = blindings.reduce((s, b) => modN(s + b), 0n);
   const excess = modN(blindingSum - inBlindingSum);
   const inputOutpoints = pickedAssetUtxos.map(x => ({ txid: x.utxo.txid, vout: x.utxo.vout }));
@@ -28240,22 +28084,22 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 
   // Reveal tx outputs: m DUST P2WPKH (K to recipients, m-K to sender), then
   // optional sats change. When parsed[i].isStealth, the recipient P2WPKH is
-  // computed over commit = recipientPub + b·G (§A.2 blinded-pubkey commit);
+  // computed over commit = recipientPub + b·G (blinded-pubkey commit);
   // the underlying recipientPub is still used by the amount-encryption channel
   // (Pedersen blinding + keystream), so the recipient decrypts via ECDH as
   // usual but the on-chain pubkey is unlinkable to their identity.
   const hasStealth = parsed.some(r => r.isStealth);
   let stealthCommitsByVout = null;
   if (hasStealth) {
-    // assetSigner override signs asset inputs with a non-wallet priv. v1
+    // assetSigner override signs asset inputs with a non-wallet priv. The
     // stealth integration assumes a single key controls every eligible
     // input (so privSum = K_asset · signer.priv matches the recipient's
-    // aggregatePub = K_asset · signer.pub). Out of scope for this revision.
+    // aggregatePub = K_asset · signer.pub), so the two don't combine.
     if (assetSigner) throw new Error('stealth recipient + assetSigner not supported in this revision');
-    // §F.7 (audit 2.1) sanity-net. The dapp single-signer builder by
+    // Refusal-rule sanity-net. The dapp single-signer builder by
     // construction never co-signs foreign inputs — every asset UTXO came
-    // from scanHoldings (ours). Assert it so a future multi-signer
-    // regression fails closed.
+    // from scanHoldings (ours). Assert it so a multi-signer path fails
+    // closed.
     const safety = checkStealthEmissionSafety({
       inputs: pickedAssetUtxos.map((x) => ({
         kind: 'p2wpkh',
@@ -28267,11 +28111,11 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     if (!safety.safe) throw new Error(`stealth emission unsafe: ${safety.reason}`);
     const txAnchorHead = stealthTxAnchorHead(firstAssetIn.txid, firstAssetIn.vout);
     const domain = STEALTH_DOMAIN_BY_OPCODE.get(useBpp ? T_CXFER_BPP : T_CXFER);
-    // §A.2 privSum = Σ priv_i over eligible inputs. Reveal-tx eligibles are
+    // privSum = Σ priv_i over eligible inputs. Reveal-tx eligibles are
     // the K_asset P2WPKH asset inputs (vin[0] is script-path P2TR →
     // ineligible). Each is signed with either wallet.priv (classical UTXO)
     // or its persisted stealthTweakedSk (a stealth-received UTXO being
-    // forwarded). Per-input effective priv matches the recipient's §A.2.5
+    // forwarded). Per-input effective priv matches the recipient's
     // aggregatePub = Σ (wallet.pub or commit_i) by ECDH-sum symmetry.
     const eligiblePrivs = pickedAssetUtxos.map((x) =>
       x.stealthTweakedSk ? hexToBytes(x.stealthTweakedSk) : wallet.priv);
@@ -28417,7 +28261,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   // worker. The bridge SP1 guest needs every output's (amount, blinding) to
   // verify Pedersen conservation (sp1/program/src/main.rs:413-432); without
   // them the guest removes the input UTXO but creates no outputs, so the
-  // recipient can't import + redeem (audit T5-witness-pipeline gap). Fires
+  // recipient can't import + redeem. Fires
   // ONLY for the bridge asset to avoid bandwidth/privacy impact on non-bridge
   // tacit-asset CXFERs (the wider mixer doesn't need the worker to host them).
   if (_bridgeConfigured()) {
@@ -28446,7 +28290,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   for (let i = 0; i < K; i++) {
     if (!parsed[i].isStealth || parsed[i].selfStealthBlinding == null) continue;
     // We do NOT persist the derived tweaked_sk; we persist only the
-    // stealth blinding `b` (§H.2). The post-broadcast holdings refresh
+    // stealth blinding `b`. The post-broadcast holdings refresh
     // re-derives tweaked_sk via the rehydration path.
     recordOpening(revealTxid, i, assetIdHex, amounts[i], blindings[i]);
     recordStealthCredit({
@@ -28663,7 +28507,7 @@ async function _resolveHoldingsUtxo(utxoTxid, utxoVout, { label = 'UTXO' } = {})
 // one Bitcoin tx. Maker's reveal-tx sigs use SIGHASH_SINGLE | ANYONECANPAY
 // so the taker can append without invalidating the maker's commitments.
 //
-// v1 constraint: N=1 (single tacit output to recipient, no change). This
+// Constraint: N=1 (single tacit output to recipient, no change). This
 // requires the maker to list a UTXO whose entire value goes to the buyer.
 // To sell a fractional amount, the maker should first Send Privately to
 // themselves to split the UTXO, then list the resulting fixed-amount UTXO.
@@ -28681,9 +28525,9 @@ const SIGHASH_SINGLE_ACP = 0x83;
 
 async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats, expiry, preResolvedTarget = null, preResolvedAssetIdHex = null }) {
   await ensurePrivkey();
-  // Forward-compat guard: SPEC-BLINDED-PUBKEY domains for T_AXFER/T_AXFER_VAR
-  // are registered but the AXFER builders don't emit stealth recipients yet
-  // (CXFER-only in v1). A caller passing a tcs1.../tcsts1.../tcsrt1... handle
+  // Forward-compat guard: domains for T_AXFER/T_AXFER_VAR
+  // are registered but the AXFER builders don't emit stealth recipients
+  // (CXFER-only). A caller passing a tcs1.../tcsts1.../tcsrt1... handle
   // would silently bytestring-encode it through hexToBytes below and produce
   // a malformed offer. Reject cleanly so the failure surfaces at the form
   // edge rather than mid-broadcast.
@@ -28710,7 +28554,7 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
   const inBlinding = BigInt(target.blinding);
 
   // Anchor for the recipient's blinding derivation: first asset input outpoint
-  // = the listed UTXO. Same shape as CXFER §3.5.
+  // = the listed UTXO. Same shape as CXFER.
   const anchorBytes = concatBytes(
     reverseBytes(hexToBytes(utxoTxid)),
     (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, utxoVout >>> 0, true); return b; })(),
@@ -28869,7 +28713,7 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
 // commits funds. Rejects offers where any of the following diverge from the
 // claims in the JSON:
 //
-//   • partial_reveal structure (must be 2 inputs / 2 outputs at the v1 N=1 shape)
+//   • partial_reveal structure (must be 2 inputs / 2 outputs at the N=1 shape)
 //   • inputs[0]/inputs[1] match offer.commit_txid:0 / offer.asset_utxo
 //   • outputs[0] = (DUST, p2wpkh(wallet.pub))     — recipient gets the asset UTXO
 //   • outputs[1] = (price_sats, p2wpkh(maker_pub)) — maker_address derived
@@ -28915,8 +28759,8 @@ function verifyAxferOffer(offer) {
     throw new Error('partial_reveal missing or malformed');
   }
   if (pr.inputs.length !== 2) throw new Error(`partial_reveal must have exactly 2 inputs (got ${pr.inputs.length})`);
-  // 2 outputs = legacy / targeted §5.7.3 (recipient tacit + maker BTC payment).
-  // 3 outputs = §5.7.6 atomic intent with on-chain encrypted (amount, r)
+  // 2 outputs = legacy / targeted (recipient tacit + maker BTC payment).
+  // 3 outputs = atomic intent with on-chain encrypted (amount, r)
   // OP_RETURN at vout[2] for seed-only recovery. Other shapes are rejected.
   if (pr.outputs.length !== 2 && pr.outputs.length !== 3) {
     throw new Error(`partial_reveal must have 2 or 3 outputs (got ${pr.outputs.length})`);
@@ -29113,7 +28957,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
 
   const feeRate = await getFeeRate();
   // Add axintent on-chain OP_RETURN vbytes when the maker included one
-  // (new dapp emits it at fulfilment to close the §5.7.6 recovery exception;
+  // (new dapp emits it at fulfilment to close the recovery exception;
   // legacy fulfilments omit it, in which case the estimate is unchanged).
   const partialHasOnchainOpReturn = (offer.partial_reveal?.outputs || []).some(o => {
     try { return !!tryExtractAxintentOnchainOpReturn(hexToBytes(o.script_hex || '')); }
@@ -29281,10 +29125,9 @@ function _axintentMsg(assetIdBytes, intentIdBytes, makerPubBytes, amount, priceS
     reverseBytes(hexToBytes(assetUtxoTxidHex)), utxoVoutLE,
   ));
 }
-// v2: claim message binds a taker-controlled sat UTXO ≥ price_sats. Worker
-// re-verifies the binding so any captured v1 sig can't be replayed against
-// a different UTXO, and so a free-claim DoS (was possible in v1) can no
-// longer lock intents without proof of funds.
+// Claim message binds a taker-controlled sat UTXO ≥ price_sats. The worker
+// re-verifies the binding, so a claim sig is valid for that UTXO only and
+// every claim carries proof of funds.
 function _axintentClaimMsg(assetIdBytes, intentIdBytes, takerPubBytes, takerUtxoTxidHex, takerUtxoVout) {
   const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
   const voutLE = new Uint8Array(4);
@@ -29342,8 +29185,7 @@ async function fetchAxintentClaimDetail(assetIdHex, intentIdHex) {
 // message and a pre-signed P2WPKH spend for vin[1]/vout[1] (SIGHASH_SINGLE_ACP,
 // = 0x83). The buyer later builds the full T_AXFER reveal locally, deriving
 // r_out via ECDH against the seller pubkey so the recipient UTXO recovers
-// from chain + privkey alone (§6 path 2 — no per-intent random scalar to
-// re-fetch). The disclosure footprint is intentional: the listed UTXO's
+// from chain + privkey alone (no per-intent random scalar to re-fetch). The disclosure footprint is intentional: the listed UTXO's
 // (amount, blinding) opening is published, other holdings remain confidential.
 
 function _bitcoinVarintBytes(n) {
@@ -29535,7 +29377,7 @@ function _preauthBidCancelMsg(assetIdBytes, bidIdBytes) {
 // from buyer_pubkey so the buyer can route refunds to cold storage), and
 // concat-K-sigs in the auth_msg (so the worker can verify ALL K pre-sigs
 // were authorized as a single batch). Domain tags are distinct from
-// §5.7.11 so a §5.7.11 pre-sig cannot be replayed as a §5.7.12 ratio sig.
+// so a pre-sig cannot be replayed as a ratio sig.
 function _preauthBidVarNonceFromOutpoint(buyerPrivBytes, fundingOutpointTxidHex, fundingOutpointVout) {
   const voutLE = new Uint8Array(4);
   new DataView(voutLE.buffer).setUint32(0, fundingOutpointVout >>> 0, true);
@@ -29611,7 +29453,7 @@ function _preauthBidVarCancelMsg(assetIdBytes, bidIdBytes) {
 // BIP-143 preimage construction for the buyer's SIGHASH_SINGLE_ACP
 // (0x83) signature over the funding outpoint. The signature pins
 // vout[k] = OP_RETURN(bid_context_hash) at the same index k the
-// buyer's input occupies — position-independent per §5.7.8.1 because
+// buyer's input occupies — position-independent because
 // hashOutputs depends only on outputs[input_index], which equals the
 // canonical OP_RETURN bytes regardless of which k the seller chooses.
 //
@@ -29851,7 +29693,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
   return { intent_id: intentIdHex, asset_id: assetIdHex, commit_txid: commitTxidHex };
 }
 
-// ============== T_AXFER_VAR (§5.7.6.1 variable-amount intents) ==============
+// ============== T_AXFER_VAR (variable-amount intents) ==============
 // Maker-side publish for variable-amount intents. Unlike publishAxferIntent
 // (whole-UTXO), this does NOT broadcast a commit tx at publish time — the
 // commit phase is deferred to fulfilment, after a taker's claim fixes
@@ -29860,9 +29702,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
 // blinding scalar reused at fulfilment to derive r_recip via ECDH.
 //
 // All variable-amount maker-side functions throw if ENABLE_T_AXFER_VARIABLE
-// is false. Production has the flag off; these are unreachable until the
-// rollout completes. Worker PR1-3 + spec + on-chain validator
-// branch are all in place, but no T_AXFER_VAR envelope exists on mainnet.
+// is false (the default).
 
 // Deterministic intent_id derivation — byte-parity with the worker's
 // atomicIntentIdHexVar. Any drift between dapp + worker here would surface
@@ -30140,10 +29980,8 @@ async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim
 // never burns the consolidate fee.
 async function fetchAxferIntentFresh(assetIdHex, intentIdHex) {
   if (!WORKER_BASE) throw new Error('worker disabled — cannot verify intent freshness');
-  // Single-intent endpoint (~3 KV reads worker-side) replaces the prior
-  // approach of fetching the full /atomic-intents list and filtering
-  // client-side (~1 list + 3N reads on dense assets like TAC's 542-
-  // intent book). Same freshness semantics; the worker returns `intent`
+  // Single-intent endpoint (~3 KV reads worker-side) rather than the full
+  // /atomic-intents list. The worker returns `intent`
   // with claim/fulfilment decoration already applied.
   let resp;
   try { resp = await fetch(withNet(ATOMIC_INTENT_GET_URL(assetIdHex, intentIdHex))); }
@@ -30173,9 +30011,8 @@ async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   // Pick (or self-consolidate to produce) a P2WPKH sat UTXO of value ≥
   // price_sats. Worker re-verifies on-chain. The helper accepts an existing
   // confirmed UTXO when one fits, else broadcasts a sats-send-to-self for
-  // exactly price_sats and commits the new (unconfirmed) outpoint — closes
-  // the "fragmented sats" gap that previously forced takers to manually
-  // consolidate before claiming.
+  // exactly price_sats and commits the new (unconfirmed) outpoint, so takers
+  // never have to consolidate fragmented sats by hand before claiming.
   const taker = await prepareTakerSatsUtxo({
     requiredSats: priceSats,
     label: 'atomic intent claim',
@@ -30301,8 +30138,8 @@ async function claimAxferVarIntent({ assetIdHex, intentIdHex, intent, requestedA
   if (requestedBI < minTakeBI) throw new Error(`requested_amount ${requestedAmount} below min_take_amount ${intent.min_take_amount}`);
   if (requestedBI > amountBI)  throw new Error(`requested_amount ${requestedAmount} exceeds listed amount ${intent.amount}`);
 
-  // Scaled BTC payment. floor() rounding matches §5.7.6.1 *Bounded recipient
-  // amount* and the worker's gate.
+  // Scaled BTC payment. floor() rounding matches the bounded-recipient-amount
+  // rule and the worker's gate.
   const priceSatsBI = BigInt(intent.price_sats);
   const requiredSats = Number((requestedBI * priceSatsBI) / amountBI);
   if (requiredSats < DUST) {
@@ -30411,8 +30248,8 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim, autoM
   // of the envelope fields. The taker would catch most substitutions via
   // verifyAxferOffer at Take time — but a lowered price would settle
   // silently. Verifying locally means we never sign a partial reveal against
-  // terms we didn't agree to. Records published before this guard existed
-  // have no archived body; we surface that as a warning rather than blocking.
+  // terms we didn't agree to. A record with no archived body surfaces a
+  // warning rather than blocking.
   const _archived = loadAxintentPending(intentIdHex);
   const _origBody = _archived?.body;
   if (_origBody) {
@@ -30460,7 +30297,7 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim, autoM
 
   // On-chain encrypted (amount, blinding) for the taker. Embedded as a
   // 0-sat OP_RETURN at vout[2] so the taker can recover the receipt from
-  // chain + privkey alone — closes the §5.7.6 recovery-model exception.
+  // chain + privkey alone — closes the recovery-model exception.
   // The maker's SIGHASH_SINGLE_ACP sigs on vin[0]/vin[1] bind only to
   // vout[0]/vout[1] respectively; vout[2] is outside their binding and
   // becomes bound by the taker's SIGHASH_ALL sig at broadcast time. A
@@ -30596,8 +30433,7 @@ async function fulfilAxferVarIntent({ assetIdHex, intentIdHex, intent, claim, au
   if (scaledPriceSats < DUST) throw new Error(`scaled BTC payment ${scaledPriceSats} < DUST; refuse to fulfil`);
 
   // ---- Blindings ----
-  // r_recip: same ECDH-keystream derivation the legacy path uses — fixed
-  // by §5.7.6 and unchanged here. The taker can recompute it independently.
+  // r_recip: same ECDH-keystream derivation as the whole-UTXO path. The taker can recompute it independently.
   const blindingKs = deriveAxintentBlindingKeystream(wallet.priv, takerPub, intentIdBytes, assetIdBytes);
   const rRecipBytes = xor32(rBytes, blindingKs);
   const rRecip = bytes32ToBigint(rRecipBytes) % SECP_N;
@@ -30776,7 +30612,7 @@ async function fulfilAxferVarIntent({ assetIdHex, intentIdHex, intent, claim, au
       partial_reveal: partial,
       fulfilment_sig: bytesToHex(fSig),
       enc_recipient_blinding: bytesToHex(encRecipBlinding),
-      // PR2-shipped variable-amount fulfilment additions:
+      // Variable-amount fulfilment fields:
       commit_tx_hex: commitHex,
       envelope_script_hex: bytesToHex(envelopeScript),
       control_block_hex: bytesToHex(cb),
@@ -30820,7 +30656,7 @@ async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
 //
 // Unlike the legacy takeAxferOffer, the taker does NOT broadcast directly —
 // the worker performs the sequential commit-then-reveal so the commit only
-// hits chain after the taker has signed (anti-griefing per §5.7.6.1
+// hits chain after the taker has signed (anti-griefing
 // *Anti-griefing properties*).
 async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilment = null, onProgress = null }) {
   if (!ENABLE_T_AXFER_VARIABLE) {
@@ -31196,8 +31032,8 @@ async function cancelAxferClaim({ assetIdHex, intentIdHex }) {
   const j = await resp.json().catch(() => ({}));
   // 404 on cancel = the worker has no such claim, so the user's
   // intent ("make this claim go away") is already true. Treat as
-  // success + GC the local tracking record. Mirror of the cancel-bid
-  // 404 idempotency shipped earlier.
+  // success + GC the local tracking record. Mirrors the cancel-bid
+  // 404 idempotency.
   if (resp.status === 404) {
     try { forgetActiveAxferClaim(intentIdHex); } catch {}
     return { ok: true, already_gone: true };
@@ -31220,8 +31056,8 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
-  // Drop the local secret once the worker confirms cancellation. Note that
-  // worker cancellation alone does NOT invalidate any partial reveal already
+  // Drop the local secret once the worker confirms cancellation. Worker
+  // cancellation alone does NOT invalidate any partial reveal already
   // signed (the maker would need to spend the asset UTXO via self-send for
   // a true cancel) — but it does mean we won't be re-fulfilling, so the
   // secret can go. Also clear the archived intent body — its only consumer is
@@ -31763,7 +31599,7 @@ async function publishPreauthBidVar({
   // and the corresponding SIGHASH_SINGLE_ACP signature. The seller picks
   // exactly one of these K sigs at fill time; Bitcoin consensus enforces
   // the chosen sig's OP_RETURN bytes match the canonical preimage. The
-  // K-sig set is the load-bearing primitive of §5.7.12 — without all K
+  // K-sig set is the load-bearing primitive of T_PREAUTH_BID_VAR — without all K
   // pre-sigs the buyer's range bid cannot be partially filled.
   _progress('sign-k-start', { K });
   const buyerSatsSpendSigs = [];  // array of Uint8Array, each DER-encoded ECDSA + 0x83
@@ -32286,7 +32122,7 @@ async function takePreauthBid({ assetIdHex, bidIdHex, bid = null, onProgress = n
 //   3. The reveal tx adds an indexer-enforced refund vout at index 3
 //      paying (max_fill - fill_amount) × price_per_unit to
 //      P2WPKH(refund_pubkey). When fill_amount == max_fill the refund
-//      vout is OMITTED (rule skipped per validator §7).
+//      vout is OMITTED (the validator skips the rule).
 //
 // fillAmount may be passed explicitly; if omitted, the taker fills the
 // largest allowed ratio bounded by seller's available holdings.
@@ -32525,7 +32361,7 @@ async function takePreauthBidVar({ assetIdHex, bidIdHex, bid = null, fillAmount 
   // Fee planning: revealVbEst covers commit-spend + 2 P2WPKH inputs +
   // recipient DUST + seller payout P2WPKH + OP_RETURN (43 vb) + refund
   // P2WPKH (when included) + optional asset-change DUST.
-  // fresh + safetyMult: see §5.7.11 take comment — same rationale here.
+  // fresh + safetyMult: same rationale as the T_PREAUTH_BID take.
   const feeRate = await getFeeRate(null, { fresh: true, safetyMult: 1.2 });
   const revealVbEst = 120 + 350 + inputVbytes + inputVbytes
     + p2wpkhOutVbytes  // vout[0] recipient
@@ -32918,10 +32754,8 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // race window between this check and the reveal broadcast is unavoidable;
   // documented in the spec as the seller-double-spend race.
   //
-  // API-failure semantics: silently passing on an API hiccup used to be
-  // the default ("non-blocking — caller decides"), but in practice every
-  // caller proceeded blindly and the user paid the commit fee when the
-  // listing turned out to be stale. Now we prompt explicitly: the user
+  // API-failure semantics: an API hiccup never passes silently (the user
+  // would pay the commit fee on a stale listing). The user is prompted and
   // chooses to abort safely or proceed-at-risk with the exact sats
   // amount disclosed. The prompt is skipped during sweep/auto-router
   // multi-fill loops where the caller passes _skipApiFailurePrompt — those
@@ -32971,7 +32805,7 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // r_out via ECDH(buyer.priv, seller.pub, anchor=asset_outpoint, vout=0).
   // Symmetric with the seller's recovery loop: the seller would derive the
   // same r_out by computing ECDH(seller.priv, buyer.pub, anchor, 0) — same
-  // shared secret, same keystream. Wallet recovery (§6 path 2) hits this
+  // shared secret, same keystream. Chain-only wallet recovery hits this
   // exact derivation when it sees vin[1].witness[1] = seller_pubkey.
   const anchorBytes = concatBytes(
     reverseBytes(hexToBytes(sale.asset_outpoint.txid)),
@@ -33306,7 +33140,6 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
 // So the seller's existing signature validates at ANY vin position k as
 // long as the buyer places `{value: min_price_sats, script: seller_payout}`
 // at vout[k] and uses the same 0xfffffffd sequence the seller signed.
-// Listings from before this PR are batchable as-is.
 //
 // Layout (N sellers):
 //
@@ -33805,8 +33638,8 @@ function sale_payout_script_safe(b) { return b instanceof Uint8Array ? bytesToHe
 // ============== BID INTENTS (off-chain bid book) ==============
 // Buyer-initiated mirror of axintents. Bids are PURELY off-chain — buyer
 // signs an intent (no on-chain lock), seller claims by spinning up a regular
-// §5.7.6 atomic intent targeted at the bidder, bidder takes via the existing
-// §5.7.6 take flow. Settlement = T_AXFER, no new wire format.
+// atomic intent targeted at the bidder, bidder takes via the existing
+// take flow. Settlement = T_AXFER, no new wire format.
 
 // Canonical bid-intent + bid-claim messages. The bytes now include
 // `min_fill_amount` (publish) and `fill_amount` (claim) so a single signed
@@ -33815,10 +33648,8 @@ function sale_payout_script_safe(b) { return b instanceof Uint8Array ? bytesToHe
 // `min_fill = amount`) and `fill_amount = amount`; the bytes are
 // deterministic in both cases.
 //
-// Domain strings drop the `-v1` suffix per the canonical-form framing
-// (Tacit launched this week; the spec describes the canonical form,
-// not a versioned migration path). Worker + dapp must update in lockstep
-// — they do; both updates land in this PR.
+// Domain strings carry no `-v1` suffix. Worker + dapp must match byte for
+// byte.
 function _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amount, priceSats, minFillAmount, expiry, nonceBytes) {
   const amountLE  = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
   const priceLE   = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
@@ -33883,7 +33714,7 @@ function _bidOverCommitCheck(assetIdHex, addedSats) {
 // Publish a signed bid intent. assetIdHex is the asset to buy; amount is in
 // base units; priceSats is the total sats the bidder offers for `amount`
 // units; expiry is unix-seconds (≤ 30 days from now). Optional minFillAmount
-// opts the bid into variable-fill (§5.7.7): when present, sellers can
+// opts the bid into variable-fill: when present, sellers can
 // fulfil any chunk in [minFillAmount, remaining_amount]; absent or zero
 // keeps the whole-bid behavior. Returns the worker's stored bid record.
 //
@@ -33963,7 +33794,7 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFill
   };
   // Variable-fill opt-in: present only when caller supplied a non-degenerate
   // minFillAmount. Worker dispatches partial-fill semantics on this field's
-  // presence (mirrors §5.7.6.1's min_take_amount discriminator).
+  // presence (mirrors T_AXFER_VAR's min_take_amount discriminator).
   if (minFillBI > 0n) body.min_fill_amount = minFillBI.toString();
   const url = `${WORKER_BASE}/assets/${assetIdHex}/bid-intents?network=${encodeURIComponent(NET.name)}`;
   const resp = await fetch(url, {
@@ -34406,8 +34237,8 @@ async function cancelBidIntent(assetIdHex, bidIdHex) {
   return j;
 }
 
-// Seller flow: fulfil a bid by publishing a §5.7.6 atomic intent and linking
-// it to the bid claim. The atomic intent is an open one — by §5.7.6 design
+// Seller flow: fulfil a bid by publishing an atomic intent and linking
+// it to the bid claim. The atomic intent is an open one — by design
 // any taker who derives recipBlinding via ECDH can claim, but only the
 // bidder is incentivized to (the seller has signalled to them via the bid
 // claim). The bidder takes priority via the existing 5-min claim TTL.
@@ -34426,7 +34257,7 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   if (bid.buyer_pubkey && wallet?.pub && bid.buyer_pubkey === bytesToHex(wallet.pub)) {
     throw new Error('cannot fulfil your own bid');
   }
-  // Variable-fill (§5.7.7): if the bid carries `min_fill_amount` and the
+  // Variable-fill: if the bid carries `min_fill_amount` and the
   // caller passed `fillAmount`, sell exactly that chunk at scaled price.
   // Otherwise: whole-fill (existing behavior) — sell bid.amount at
   // bid.price_sats.
@@ -34537,9 +34368,8 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
 
 // Batched bid-fulfilment: amortize the seller's CXFER auto-split across N
 // bids in ONE multi-recipient CXFER instead of N independent CXFERs. Pure
-// flow-level win — uses the existing T_CXFER multi-output format already
-// shipped + indexed by the worker, so there's no spec change, no new
-// opcode, no schema migration.
+// flow-level win — uses the existing T_CXFER multi-output format the
+// worker already indexes.
 //
 // What's actually saved:
 //   - Per-fill auto-split is currently ~400 vB (CXFER commit + reveal,
@@ -34547,11 +34377,11 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
 //   - Batched: 1 CXFER (~500-700 vB) producing N matching child UTXOs.
 //   - For N=5 sells where every fill needs a split, seller's auto-split
 //     bill drops from ~2,000 vB → ~600 vB (≈70% off the SPLIT portion).
-//   - The atomic-intent commit per bid remains sequential (Phase 2 work).
+//   - The atomic-intent commit per bid remains sequential.
 //
 // Settlement-side wins still belong to the bidder — each bidder broadcasts
 // their own reveal whenever they Take. The seller's bill is just commits
-// + splits; this PR cuts splits.
+// + splits; batching cuts the splits.
 //
 // Falls back to per-bid fulfilBidIntent in all non-batchable cases:
 //   - bids.length === 1 (no batching gain).
@@ -34673,10 +34503,8 @@ async function fulfilBidIntentBatch({ bids, onProgress = null }) {
 
   // Now call fulfilBidIntent for each bid with the matching child UTXO
   // pre-set so it skips its internal split path. Sequential — each bid's
-  // commit tx is independent. Phase 2 would batch these commits into one
-  // tx with N P2TR outputs; that needs a worker storage change to permit
-  // N atomic intents at the same commit_txid (different vouts), so it's
-  // deferred to a follow-up.
+  // commit tx is independent (the worker stores one atomic intent per
+  // commit_txid, so they can't share one tx).
   const fills = [];
   let lastErr = null;
   for (let i = 0; i < N; i++) {
@@ -35041,8 +34869,8 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null })
 // P2WSH at 32 bytes, or anything wrong) are rejected — the dapp only
 // understands sending to P2WPKH receive addresses.
 //
-// P2TR (bech32m v1) is intentionally NOT supported in this revision. Adding it
-// requires the vendor bundle to export `bech32m`, which it currently doesn't.
+// P2TR (bech32m v1) is NOT supported: the vendor bundle doesn't export
+// `bech32m`.
 // Recipients holding P2TR-only addresses can route through any other wallet.
 function decodeP2wpkhAddress(addr) {
   if (typeof addr !== 'string' || addr.length < 14 || addr.length > 90) return null;
@@ -35077,8 +34905,7 @@ function p2wpkhScriptFromProgram(program20) {
 // Order sats UTXOs for the commit-input picker: confirmed first (so a
 // stuck mempool ancestor chain doesn't cascade into our broadcast),
 // then largest-value first (so the greedy loop terminates with fewer
-// inputs). Replaces the previous value-only sort at every commit-tx
-// build site. Pure ordering — does NOT filter; callers handle their
+// inputs). Used at every commit-tx build site. Pure ordering — does NOT filter; callers handle their
 // own dust / asset-exclusion gates.
 function sortSatsForCommit(utxos) {
   return [...(utxos || [])].sort((a, b) => {
@@ -35096,7 +34923,7 @@ function selectSatsUtxosSafe(allUtxos, holdings) {
   // Build the canonical "do not spend as sats" set from holdings. Both validated
   // asset utxos and ghost utxos (validation incomplete but parent might be tacit)
   // are excluded. Better to refuse a legitimate sats UTXO than spend a tacit one.
-  // Pending T_PMINT UTXOs (audit fix #1) are also excluded — same DUST output
+  // Pending T_PMINT UTXOs are also excluded — same DUST output
   // shape as a credited mint, so a sats-send would silently destroy the
   // commitment and the user's eventual cap-credit.
   const exclude = new Set();
@@ -35808,9 +35635,9 @@ async function verifyDisclosure(disclosure, fetchTx) {
 
 // ============== LISTINGS (orderbook layer) ==============
 // A listing wraps a published opening with price + expiry + maker_address.
-// Settlement in v1 is OFF-CHAIN OTC: taker pays maker price_sats via a regular
-// Bitcoin tx, then maker manually broadcasts a CXFER to the taker. Atomic
-// single-tx settlement is a v1.5 spec relaxation.
+// Settlement is OFF-CHAIN OTC: taker pays maker price_sats via a regular
+// Bitcoin tx, then maker manually broadcasts a CXFER to the taker. (Atomic
+// single-tx settlement is the atomic-intent path.)
 
 function listingMsgBytes(assetIdBytes, txidHex, vout, priceSats, expiry, makerAddress, openingSigBytes) {
   const txidBE = reverseBytes(hexToBytes(txidHex));
@@ -36428,7 +36255,7 @@ function computeAirdropCommitment(rows) {
 // so any client can re-parse and recompute the root. The optional `source`
 // argument records where the rows came from (ERC-20 contract + chain id +
 // block height) so auditors can independently reproduce the (addr, amount)
-// tuples and re-derive the merkle root. Audit fix M6.
+// tuples and re-derive the merkle root.
 function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, decimals, source, imageUri }) {
   const out = {
     schema: 'tacit-airdrop-v1',
@@ -36490,10 +36317,8 @@ function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, dec
 //   By signing, you authorize the airdrop issuer to send the above amount
 //   of <ticker> to the tacit pubkey listed.
 //
-// `Asset:` binding closes MED#4 (same merkle root + same recipient list could
-// theoretically cover different assets without this binding). Format remains
-// v1 since no in-flight signatures exist on mainnet — first signed claim
-// will use the format below.
+// The `Asset:` line binds the claim to one asset (the same merkle root +
+// recipient list could otherwise cover different assets).
 function buildAirdropClaimMsg({ rootHex, network, assetIdHex, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
   if (!/^[0-9a-f]{64}$/.test(String(rootHex || '').toLowerCase())) throw new Error('rootHex must be 64-hex');
   if (typeof network !== 'string' || !network) throw new Error('network required');
@@ -36818,7 +36643,7 @@ async function importShareLink(linkOrHash) {
   // duplicate transfer-in entry.
   const priorOpening = getOpening(d.txid, d.vout);
   recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, blinding);
-  // SPEC-BLINDED-PUBKEY §A.2: a share-link for a stealth-recipient send arrives
+  // a share-link for a stealth-recipient send arrives
   // identical-on-the-wire (same envelope, same Pedersen commitment, same
   // ECDH-derivable amount), but the on-chain scriptPubKey at vout d.vout is
   // P2WPKH(commit) rather than P2WPKH(wallet.pub). scanHoldings walks
@@ -36878,7 +36703,7 @@ const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 // Strip Unicode bidirectional-override / isolate controls + zero-width space +
 // BOM before HTML-escaping (Trojan-Source / visual-spoofing class). These code
-// points have no legitimate use in displayed labels but let attacker-controlled
+// points have no legitimate use in displayed labels but let untrusted
 // strings — permissionless-etch tickers, vk_cid, image_uri — visually reorder
 // or hide text to impersonate another asset or misrepresent an amount/address.
 // Real RTL *text* (Arabic/Hebrew letters) and emoji ZWJ/ZWNJ sequences are left
@@ -37956,8 +37781,7 @@ function wireAssetIdToggles(container) {
 }
 
 function toast(msg, kind = '', ms = 4000, titleOrOpts = '') {
-  // Back-compat: 4th arg used to be a string title; some callers now
-  // pass an opts object { title, onClick }. Normalise.
+  // 4th arg is either a string title or an opts object { title, onClick }.
   const opts = (titleOrOpts && typeof titleOrOpts === 'object') ? titleOrOpts : { title: titleOrOpts };
   const title = opts.title || '';
   const onClick = typeof opts.onClick === 'function' ? opts.onClick : null;
@@ -38747,11 +38571,9 @@ function _flickerTitleForClaim() {
 
 // ============== MIXER UI ==============
 // Mixer tab rendering. Pool list reads from in-memory poolRegistry /
-// poolMerkleTrees / poolNullifiers, populated by the cron-mode scan path
-// (TODO: wire scanPools into the chain-divergence watchdog cron). Deposit
-// and withdraw broadcast paths are live — see the T_DEPOSIT pipeline
-// (this file ~L7489) and the T_WITHDRAW pipeline
-// (~L7742).
+// poolMerkleTrees / poolNullifiers, populated by the cron-mode scan path.
+// Deposit and withdraw broadcast paths: see the T_DEPOSIT and T_WITHDRAW
+// pipelines.
 let _mixerWithdrawRecord = null;
 
 // Fetch pool state from the worker's /pools + /pools/:asset_id/:denom
@@ -38791,9 +38613,9 @@ async function scanPools() {
   const processPool = async (p) => {
     const aidHex = p.asset_id;
     const denom = BigInt(p.pool_denom);
-    // tETH generation segment from the worker's pool record ('' = pilot /
-    // non-bridge). Threads through local tree keys, detail fetches, and the
-    // per-generation mixer cross-checks so generations of the same
+    // tETH mixer deployment segment from the worker's pool record ('' = base
+    // keyspace / non-bridge). Threads through local tree keys, detail fetches,
+    // and the per-deployment mixer cross-checks so deployments of the same
     // (asset, denom) stay isolated — mirroring the worker's gen-keyed KV.
     const pgen = p.gen || '';
     const pgenQS = pgen ? `&gen=${encodeURIComponent(pgen)}` : '';
@@ -38961,15 +38783,12 @@ async function scanPools() {
       // yet have. Order is critical — append-only tree state is sensitive.
       //
       // Canonical leaf order is (deposited_at_height, tx_index,
-      // deposit_txid) ascending. A worker that re-orders real leaves within
-      // their canonical sort would push the dapp to compute a merkle root
-      // that no honest indexer's recent-roots window contains — the user
-      // would then broadcast a doomed T_WITHDRAW that other indexers
-      // reject, leaking the nullifier on chain and burning BTC fees on a
-      // rejected envelope. Conservation (kernel re-verify below) is
-      // unaffected by reordering — it can't inflate the pool — so this is
-      // a DoS-only attack, but cheap to close. We refuse to apply *any*
-      // new leaves if the worker's list violates monotonicity; next refresh
+      // deposit_txid) ascending. Out-of-order leaves would give a merkle
+      // root no indexer's recent-roots window contains, and a T_WITHDRAW
+      // built on it would be rejected after spending BTC fees. (Ordering
+      // doesn't affect conservation — see the kernel re-verify below.)
+      // We refuse to apply *any* new leaves if the worker's list violates
+      // monotonicity; next refresh
       // (or pointing the dapp at a different worker) re-tries cleanly.
       // Same-block ties on tx_index would mean two leaves share a slot,
       // which is impossible by construction (one T_DEPOSIT per tx); treat
@@ -39019,10 +38838,9 @@ async function scanPools() {
       // warning that has no real signal in it.
       //
       // We also pass the worker-claimed `deposited_at_height` so the
-      // kernel re-verify additionally pins the on-chain block height —
-      // closes the residual "worker lies about canonical position" attack
-      // surface (matched-height claim is what makes the canonical-order
-      // check above meaningful).
+      // kernel re-verify additionally pins the on-chain block height (a
+      // matched height is what makes the canonical-order check above
+      // meaningful).
       let hadHardReject = false;
       for (let i = localLeafCount; i < remoteLeaves.length; i++) {
         const lc = remoteLeaves[i].leaf_commitment;
@@ -39037,8 +38855,7 @@ async function scanPools() {
         // properly-signed creation event on chain before adding it to the
         // local tree. Mixer T_DEPOSIT leaves use the Mimblewimble conservation
         // kernel; cBTC.zk slot leaves (kind: slot_mint / slot_rotate_new /
-        // slot_split_new / slot_merge_new — SPEC-CBTC-ZK §5.21–5.23 + FUNG
-        // §5.24–5.25) use the Schnorr-owner-sig + vout-shape check instead,
+        // slot_split_new / slot_merge_new) use the Schnorr-owner-sig + vout-shape check instead,
         // since their reveal tx is a slot envelope, not a T_DEPOSIT.
         const leafKind = remoteLeaves[i].kind || remoteLeaves[i].source || null;
         const isSlotLeaf = leafKind &&
@@ -39169,9 +38986,8 @@ async function scanPools() {
   // processPool close over `registered` / `leavesApplied` / `nullifiersApplied`
   // and are safe under concurrent awaits because JS stays single-threaded
   // between suspension points. Concurrency cap keeps worker request volume
-  // reasonable on installations with many pools while still cutting wallclock
-  // on cold mixer load — sequential per-pool processing previously serialized
-  // dozens of independent /pools/{aid}/{denom} round-trips.
+  // reasonable on installations with many pools while keeping independent
+  // /pools/{aid}/{denom} round-trips parallel on cold mixer load.
   const POOL_SCAN_CONCURRENCY = 6;
   const queue = [...pools];
   const workerFn = async () => {
@@ -39362,9 +39178,8 @@ async function renderMixer() {
         const _asColor = _as < 5 ? 'var(--red)' : _as < 100 ? 'var(--ink-mid)' : 'var(--green)';
         const _asTier = _as < 5 ? 'tiny' : _as < 30 ? 'casual' : _as < 100 ? 'healthy' : 'strong';
         // vk_cid is parsed from a chain envelope (1..64 UTF-8 bytes, no validation
-        // on charset), and ticker is parsed from CETCH/PETCH. Both are attacker-
-        // controllable for non-canonical pools. innerHTML-escape both to defuse
-        // a `<script>` or `<img onerror>` payload smuggled into either field.
+        // on charset), and ticker is parsed from CETCH/PETCH. Both are untrusted
+        // for non-canonical pools, so innerHTML-escape both.
         // Full asset_id available on hover; same UX pattern as the FINALIZED
         // beacon hex tooltip — keep the visible label short, surface the
         // exact 32-byte value via title so users can copy / verify.
@@ -39480,7 +39295,7 @@ async function renderMixer() {
       const reg = JSON.parse(localStorage.getItem(regKey()) || '{}');
       for (const aidHex of Object.keys(reg)) {
         const m = reg[aidHex];
-        // ticker is from a CETCH/PETCH envelope (attacker-controllable bytes);
+        // ticker is from a CETCH/PETCH envelope (untrusted bytes);
         // escape before injecting into <option> innerHTML to match the other
         // mixer-tab selectors. aidHex is 64-char hex, safe to interpolate raw.
         const label = m.ticker || aidHex.slice(0, 8);
@@ -40232,7 +40047,7 @@ function setupMixerHandlers() {
         toast(`Deposited ${denomDisp} ${ticker}: reveal=${shorten(r.revealTxid, 6)}`, 'success');
         renderMixer();
       } catch (e) {
-        // Inline error rendering replaces the blocking alert(). The
+        // Inline error rendering (no blocking alert()). The
         // accumulated progress lines stay visible above the failure
         // marker so the user can see which stage failed.
         if (isUnlockCancelled(e)) {
@@ -40517,8 +40332,8 @@ function setupMixerHandlers() {
       const anonSet = stats ? stats.anonymitySet : 0;
       const totalLeaves = stats ? stats.totalLeaves : 0;
       const spentNulls = stats ? stats.spentNullifiers : 0;
-      // Anonymity-set health hint. Tornado-style mixers' privacy scales with
-      // unspent-leaves. Ladder kept in sync with the withdraw preview + broadcast
+      // Anonymity-set health hint. A fixed-denomination mixer's privacy scales
+      // with unspent leaves. Ladder kept in sync with the withdraw preview + broadcast
       // confirm (5 / 30 / 100) so the same pool size shows the same verbal tier
       // across every mixer surface.
       let anonHint;
@@ -40580,7 +40395,7 @@ function setupMixerHandlers() {
     };
   }
 
-  // ===== Slot-wrap helper (SPEC-CBTC-ZK §5.21) =====
+  // ===== Slot-wrap helper =====
   // "Wrap sats → cBTC.zk pool" — one click does the T_SLOT_MINT envelope +
   // commit/reveal Bitcoin tx that locks `denomination` sats at K_btc and
   // appends a leaf to the pool. Asset-page swap UI is the canonical trader
@@ -40700,7 +40515,7 @@ function setupMixerHandlers() {
     };
   }
 
-  // ===== Slot-burn helper (SPEC-CBTC-ZK §5.22) =====
+  // ===== Slot-burn helper =====
   // "Redeem slot → sats" — burn a live slot from localStorage to recover the
   // backing sats. Generates a Groth16 proof of leaf membership + broadcasts
   // a commit/reveal pair that spends the slot UTXO under r_leaf SIGHASH_ALL.
@@ -40803,7 +40618,7 @@ function setupMixerHandlers() {
     };
   }
 
-  // ===== Slot-rotate helper (SPEC-CBTC-ZK §5.23) =====
+  // ===== Slot-rotate helper =====
   // "Send slot to recipient" — rotates a live slot to a recipient's viewing
   // pubkey (or to self for key refresh). New (secret, ν) encrypted to
   // recipient's viewing key; their on-load scanner picks it up.
@@ -40980,10 +40795,8 @@ function setupMixerHandlers() {
 // The dapp is hard-locked to TACIT_DEFAULT_CEREMONY_HASH for the contribute
 // path. Initializing this to the canonical hash means /ceremony state loads
 // on tab open with no UI prompt, and any URL-param attempt to substitute a
-// different hash is ignored (see setupCeremonyHandlers below). This closes
-// the share-link phishing vector where an attacker could host a poisoned
-// ceremony at their own circuit_hash and lure contributors to it via
-// `?ceremony=<bad_hash>`.
+// different hash is ignored (see setupCeremonyHandlers below), so a
+// `?ceremony=<hash>` link always lands on the canonical ceremony.
 let _ceremonyActiveHash = TACIT_DEFAULT_CEREMONY_HASH;
 let _ceremonyState = null;
 
@@ -43147,9 +42960,9 @@ function _ammCerActiveTab() {
     return t?.dataset?.tab || '';
   } catch { return ''; }
 }
-// Master gate for the AMM-ceremony contribute chip. The V1 AMM ceremony is
+// Master gate for the AMM-ceremony contribute chip. The AMM ceremony is
 // one canonical bundle (three circuits sharing pot18 + a single Bitcoin-block
-// beacon); every V1 POOL_INIT pins the
+// beacon); every POOL_INIT pins the
 // same vk_cid and ceremony_cid, so a single global "contribute" surface is
 // the right unit. Set true once the three /ceremony/init POSTs have landed
 // on the worker — the chip + drawer + market-page section all gate on this.
@@ -43490,10 +43303,10 @@ async function _submitAmmCeremonyContribution() {
   //   (a) a wallet (so the airdrop layer has a pubkey to credit), AND
   //   (b) holdings of ≥ 1 TAC under that pubkey, proven via a bulletproof
   //       envelope the worker verifies against the chain.
-  // Anonymous contributes are no longer accepted by the worker, so attrCb
-  // is force-checked + disabled by _renderAmmCerEligibilityBanner; the
-  // `wantsAttribution` branch below is now always-true and exists only to
-  // route the wallet-onboarding hop when wallet.pub is missing.
+  // The worker rejects anonymous contributes, so attrCb is force-checked +
+  // disabled by _renderAmmCerEligibilityBanner; `wantsAttribution` is always
+  // true and exists only to route the wallet-onboarding hop when wallet.pub
+  // is missing.
   const wantsAttribution = true;
   if (!wallet?.pub) {
     try {
@@ -44487,7 +44300,7 @@ async function ceremonyContribute() {
     const errIdx = stage in stageToStep ? stageToStep[stage] : 0;
     _ceremonyProgressError(errIdx, errMsg.length > 80 ? errMsg.slice(0, 77) + '…' : errMsg);
     // Persist the failure to localStorage so the contributor sees the error
-    // banner on reload (replacing the old alert()-then-forgotten flow).
+    // banner on reload.
     ceremonyOutcomeWrite(TACIT_DEFAULT_CEREMONY_HASH, {
       kind: 'fail',
       at: Math.floor(Date.now() / 1000),
@@ -44744,15 +44557,13 @@ const TAB_GROUP_OF = {
   discover: 'discover',
   'confidential-pool': 'advanced', mixer: 'advanced', about: 'advanced',
   govern: 'govern',
-  // Deprecated Bitcoin-lane ceremony AMM surfaces: removed from the visible nav
-  // (see DECRUD) but kept mapped to 'advanced' so any legacy #pool / #farms
-  // bookmark still resolves to a real group instead of breaking the chrome.
+  // 'pool' / 'farms' are not in the visible nav but stay mapped to 'advanced'
+  // so a #pool / #farms bookmark still resolves to a real group instead of breaking the chrome.
   pool: 'advanced', farms: 'advanced',
 };
 
-// Is a nav surface usable on the active network? The V1 confidential / cross-chain
-// surfaces stay dormant until the pool/router/engine/factory are deployed (mainnet
-// today). Each case mirrors the in-panel gate its render() already enforces, so the
+// Is a nav surface usable on the active network? The confidential / cross-chain
+// surfaces stay dormant until the pool/router/engine/factory are deployed. Each case mirrors the in-panel gate its render() already enforces, so the
 // nav signal and the panel content never disagree. Everything not listed is a live
 // Bitcoin-native (or always-on) surface.
 function _tabLiveOnNet(name) {
@@ -44767,7 +44578,7 @@ function _tabLiveOnNet(name) {
     case 'otc': case 'earn':
       return !!d.pool;                                   // confidentialPoolReady()
     case 'confidential-pool':
-      return false;                                      // staged V1 surface; keep out of production nav
+      return false;                                      // kept out of production nav
     case 'cswap':
       return !!d.pool && _isAmmCeremonyUnlocked();       // pool + finalized AMM
     case 'cdp':
@@ -44822,7 +44633,7 @@ function _canonicalTabName(name) {
   return name;
 }
 
-// Mark dormant V1 surfaces in the nav for the active network. A primary tab is
+// Mark dormant surfaces in the nav for the active network. A primary tab is
 // dormant only when its whole group has no live child (e.g. Earn on mainnet); a
 // subtab is dormant whenever its own surface is. Network switches reload the page,
 // so this only needs to run once at setup.
@@ -44855,9 +44666,8 @@ function _syncTabChromeFor(name) {
 
 function _activateTab(name) {
   name = _canonicalTabName(name);
-  // Legacy-tab redirect: the V0 Bitcoin-lane AMM ('pool') + taproot farms ('farms') are retired and removed
-  // from the nav. An old bookmark / deep-link to them lands on their V1 successors instead of silently
-  // failing (the confidential pool and the Earn surface). Keep this the single chokepoint so hash, click,
+  // Tab-name redirect: 'pool' and 'farms' are not in the nav; a bookmark / deep-link to them lands on
+  // the confidential pool and the Earn surface instead of silently failing. Keep this the single chokepoint so hash, click,
   // and programmatic navigation all redirect.
   if (name === 'pool') name = 'confidential-pool';
   else if (name === 'farms') name = 'earn';
@@ -44886,7 +44696,7 @@ function _activateTab(name) {
   } else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
   if (name === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
   else stopMixerAutoRefresh();
-  stopPoolAutoRefresh(); // retired V0 Bitcoin-AMM 'pool' tab — 'pool'/'farms' redirect above; nothing to render
+  stopPoolAutoRefresh(); // 'pool'/'farms' redirect above; nothing to render
   if (name === 'confidential-pool') { try { renderConfidentialPoolTab(wallet); } catch (e) { console.error('confidential-pool tab', e); } }
   if (name === 'cdp') { try { renderCdpTab(wallet); } catch (e) { console.error('cdp tab', e); } }
   if (name === 'otc') { try { renderOtcTab(wallet); } catch (e) { console.error('otc tab', e); } }
@@ -45315,7 +45125,7 @@ async function ammReserveShadowCheck(poolIdHex, opts = {}) {
 // remove, swap), verify the worker's reported reserves against the client-side
 // replay reconstructed from chain (ammReserveShadowCheck → deriveAmmPoolStateLive,
 // discovering the op-list from the live /ops index). A worker that misrepresents
-// the pool is caught here and the action is REFUSED — the dapp no longer takes the
+// the pool is caught here and the action is REFUSED — the dapp never takes the
 // indexer's pool state on faith. When the pool can't yet be independently verified
 // (its op history predates the worker's op-index so /ops is incomplete, it has
 // unconfirmed ops, or the tip is unknown), no lie can be proven, so the action is
@@ -45825,8 +45635,7 @@ function _wirePoolSwapForm() {
     return labels.join(' → ');
   };
   // Pool-head memo (confirmed + in-flight-projected reserves, 5s TTL) —
-  // quoting against the projection is safe under the §5.20 outcome
-  // taxonomy: the signed floor is the price consent and a projection miss
+  // quoting against the projection is safe: the signed floor is the price consent and a projection miss
   // resolves as a pass-through refund.
   let _previewSeq = 0;
   const _headMemo = new Map();
@@ -45964,7 +45773,7 @@ function _wirePoolSwapForm() {
       // Quote against the pool head (confirmed reserves + in-flight
       // projection) so the floor the user consents to matches what the
       // fill will actually see. A projection miss costs a pass-through
-      // refund, never a burn (§5.20).
+      // refund, never a burn.
       let quoteRa = best.pool.reserve_a, quoteRb = best.pool.reserve_b;
       let pendingNote = '';
       const head0 = await _fetchPoolHead(best.pool.pool_id);
@@ -46067,7 +45876,7 @@ function _wirePoolSwapForm() {
       broadcastBtn.disabled = true;
       broadcastBtn.textContent = 'Broadcasting…';
       try {
-        // Trustless pre-action gate. A multi-hop route has NO §5.20 pass-through
+        // Trustless pre-action gate. A multi-hop route has NO pass-through
         // safety (see the confirm dialog), so verify EVERY pool it touches against
         // the on-chain replay before building — a worker misreporting any hop's
         // reserves is refused.
@@ -46471,7 +46280,7 @@ async function refreshWallet() {
   }
   $('#w-address-text').textContent = wallet.address();
   $('#w-pubkey-text').textContent = wallet.pubHex();
-  // SPEC-BLINDED-PUBKEY §A.2: opt-in shielded receive address. Failure to
+  // opt-in shielded receive address. Failure to
   // encode (unknown network HRP, etc.) is graceful — the slot just shows '—'
   // so a bad state doesn't blank the rest of the wallet card.
   try {
@@ -47730,9 +47539,9 @@ function setupBridgeModal() {
       try {
         const resp = await fetch(`${_burnMempoolBase}api/tx/${txid}`);
         const txData = await resp.json();
-        // A manually-resumed burn carries no generation stamp — recover it
+        // A manually-resumed burn carries no deployment stamp — recover it
         // from the envelope's bind hash (it commits to chain_id + mixer), so
-        // the withdraw claims against the right generation's mixer.
+        // the withdraw claims against the right deployment's mixer.
         if (_isNewBurnRecord) {
           try {
             const _w = txData?.vin?.[0]?.witness;
@@ -48005,7 +47814,7 @@ function setupBridgeModal() {
                 onProgress: _bridgeProgress(_QUICK_STAGES, burnStatus, _burnLog, burnStartBtn),
               });
               // The burn builder already persisted the record to its home
-              // generation's key — only save here if it's somehow absent.
+              // deployment's key — only save here if it's somehow absent.
               {
                 const _bctx = tethCtxForRecord(burnRec);
                 const _bkey = _BRIDGE_BURN_RECORDS_KEY_FOR(_bctx ? _bctx.address : TETH_BRIDGE.address);
@@ -48241,7 +48050,7 @@ function setupWalletButtons() {
     try { _renderWalletTacitAddress(); } catch {}
     // Re-render only the tabs that show balances; refreshAssetSelect /
     // refreshSatsSendBalance / renderHoldings all detect the locked state
-    // and switch to the affordance branch added earlier in this PR.
+    // and switch to the locked-state affordance.
     try { if (document.querySelector('.tab.active[data-tab="holdings"]')) renderHoldings(); } catch {}
     try { if (document.querySelector('.tab.active[data-tab="transfer"]')) { refreshAssetSelect(); refreshSatsSendBalance(); } } catch {}
     toast('Wallet locked.', 'success');
@@ -48634,16 +48443,9 @@ function _ensureImgCacheHydrated() {
     const raw = localStorage.getItem(IMG_PERSIST_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    // v=1 cache entries pre-date the tacit_attest extraction in
-    // resolveImageUri; their `extra` blocks have only name/description/
-    // external_url, so reading them back would silently lose the supply
-    // attestation that IPFS metadata carries. v=2 forces a one-time
-    // re-fetch on first load after this update.
-    // v=3: entries store fully-qualified gateway URLs, so anything written
-    // while the retired gateway was still answering points at a host that no
-    // longer resolves — and no amount of reloading clears it, since the
-    // entry reads back as a cache hit. Bumping re-resolves once against the
-    // current gateway.
+    // Entries store fully-qualified gateway URLs and the tacit_attest
+    // extraction; any other cache version is discarded and re-resolved
+    // against the current gateway.
     if (!parsed || parsed.v !== 3 || !parsed.entries) return;
     _imgCachePersisted = parsed.entries;
     for (const [uri, entry] of Object.entries(_imgCachePersisted)) {
@@ -48844,11 +48646,9 @@ async function resolveImageUri(imageUri) {
             if (j && typeof j === 'object') {
               if (typeof j.image === 'string') {
                 // Only allow ipfs:// or bare CIDs for the inner image — never an
-                // arbitrary https:// URL. An attacker who controls the metadata
-                // JSON could otherwise point every viewer at their tracking
-                // server (privacy beacon for IP correlation across all wallets
-                // viewing the asset). Restricting to IPFS forces traffic
-                // through the configured gateway.
+                // arbitrary https:// URL, so viewers' image traffic always goes
+                // through the configured gateway and never to a host named in
+                // the metadata.
                 const innerRaw = String(j.image).trim();
                 let innerCid = null;
                 const m = innerRaw.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
@@ -50155,7 +49955,7 @@ function parseRecipientInput(raw) {
       // Dual-mode carries scan+spend keys. Pay the SPEND key as the stealth recipient: in the tacit key model
       // spendPub == the holder's wallet pubkey and CXFER scanning uses walletPriv, so the holder detects it
       // exactly like a single-mode send (ECDH symmetry). Per-tx-unique stealth output preserved; the separate
-      // scan key is simply unused in this revision.
+      // scan key is unused.
       const recipientPub = dec.mode === 'dual' ? dec.spendPub : dec.recipientPub;
       return { kind: 'stealth', stealthAddress: raw, recipientPub, network: dec.network };
     } catch (e) {
@@ -52830,8 +52630,7 @@ function _autoFulfilResumeAll() {
 async function _crossCheckOneEntry(drop, entry) {
   // Pending entries (broadcast in flight or crashed mid-broadcast) have no
   // txid yet. Surface as a distinct status so the user knows local state is
-  // inconsistent and needs manual reconciliation. Closes HIGH#1's diagnostic
-  // gap.
+  // inconsistent and needs manual reconciliation.
   if (entry.pending === true || entry.txid == null) {
     const errSuffix = entry.pending_error ? ` (broadcast error: "${String(entry.pending_error).slice(0, 120)}")` : '';
     return { ok: false, pending: true, reason: `broadcast crashed or did not complete; no on-chain txid recorded${errSuffix}. Check mempool.space for any matching CXFER from your wallet, then either update the entry with the txid or manually delete it from the drop record before retrying.` };
@@ -52871,7 +52670,7 @@ async function _crossCheckOneEntry(drop, entry) {
   }
   if (foundVout < 0) return { ok: false, reason: `tx has no output paying hash160(tacit_pubkey ${shorten(entry.tacit_pubkey, 8)})` };
 
-  // Commitment-equality check (closes MED#7). Re-derive the recipient's
+  // Commitment-equality check. Re-derive the recipient's
   // blinding via ECDH (we're the sender — deterministic from anchor + recipient
   // pubkey), commit to the local-record amount, compare against the on-chain
   // commitment at the matched vout. Catches hand-edited amount fields.
@@ -53209,16 +53008,16 @@ function _importDropJSON(text) {
     if (!/^[0-9]+$/.test(_ts)) throw new Error('total_amount must be a base-10 non-negative integer string');
   }
 
-  // drop_id must equal _dropIdFor(rootHex, assetIdHex). An attacker-edited
-  // JSON could otherwise reuse a legitimate drop_id with mismatched root/asset
-  // to overwrite the local record (closes MED#8).
+  // drop_id must equal _dropIdFor(rootHex, assetIdHex), so an edited JSON
+  // can't reuse a drop_id with a mismatched root/asset to overwrite the
+  // local record.
   const expectedDropId = _dropIdFor(rootHex, assetIdHex);
   if (dropId !== expectedDropId) {
     throw new Error(`drop_id ${shorten(dropId, 8)} does not match expected ${shorten(expectedDropId, 8)} for (root, asset_id) — record is hand-edited or mislabeled`);
   }
 
   // Cross-check ticker/decimals against on-chain CETCH metadata when the dapp
-  // has scanned the asset (also closes MED#8). Mismatch breaks future
+  // has scanned the asset. Mismatch breaks future
   // canonical-msg reconstruction during fulfilment, so reject loudly. If we
   // haven't scanned the asset yet, we soft-pass — first fulfilment attempt
   // will surface any mismatch via sig-verify failures.
@@ -53235,9 +53034,7 @@ function _importDropJSON(text) {
   }
 
   // Recompute the merkle root from rows; refuse to import a record whose
-  // declared root doesn't match the rows it claims to be from. Prevents an
-  // attacker who edits an exported JSON to insert their own address from
-  // succeeding.
+  // declared root doesn't match the rows it claims to be from.
   const reconstructedRows = obj.rows.map((r, i) => {
     const cleanAddr = String(r.eth_address || '').toLowerCase().replace(/^0x/, '');
     if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error(`rows[${i}].eth_address malformed`);
@@ -53415,8 +53212,7 @@ function setupDropsForm() {
   // Generate treasury (one-shot reveal of fresh privkey hex). Offers three
   // post-generation actions: copy privkey (cold-storage path), copy address
   // (fund-from-external-wallet path), or switch active wallet to this key
-  // (one-click adoption — replaces the lengthy "open separate browser profile
-  // → Wallet → Import key" recipe with a single confirm-protected button).
+  // (one-click adoption behind a confirm).
   // The switch path is gated on the user having already exported the
   // currently-active wallet's key, mirroring the existing wallet-replacement
   // warnings in `setupWalletButtons`.
@@ -53624,8 +53420,7 @@ function setupDropsForm() {
   });
 
   // One-click launch: build snapshot → pin to IPFS → save drop record → toast
-  // a "what's next" pointer to the Saved drops card. Replaces the previous
-  // three-click sequence (§5 Build → §6 Pin → §6 Save).
+  // a "what's next" pointer to the Saved drops card.
   $('#btn-drop-launch')?.addEventListener('click', async () => {
     const btn = $('#btn-drop-launch');
     const errEl = $('#drop-build-err');
@@ -54102,7 +53897,7 @@ function setupDropsForm() {
     }
     btn.disabled = true; const orig = btn.textContent; btn.textContent = 'pulling…';
     try {
-      // Walk the worker's paginated queue (added in MED#9 fix). Stop early
+      // Walk the worker's paginated queue. Stop early
       // once we have enough unfulfilled claims to fill a 7-recipient batch,
       // since paging beyond that point is wasted bandwidth.
       const baseUrl = `${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims?network=${encodeURIComponent(drop.network || NET.name)}`;
@@ -54481,8 +54276,8 @@ let _claimSigned = null;       // { msg, sigHex } once user signs
 // sums their sats for the funding gate plus orders the queue by
 // cumulative tip amount. Without cumulative binding, a recipient who
 // tipped twice would lose credit for their earlier tip (orphaned in the
-// treasury) and lose priority — re-tipping is now a supported way to
-// jump the queue, not a wasted-sats mistake.
+// treasury) and lose priority — re-tipping is a supported way to jump
+// the queue.
 let _claimFundingTxids = [];
 
 // Fulfilment lookup. When a recipient revisits the Claim tab after their
@@ -54648,16 +54443,14 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   if (!Array.isArray(blob.rows) || blob.rows.length === 0) throw new Error('snapshot has no rows');
 
   // Strict-validate every metadata field interpolated into UI templates so a
-  // hostile gateway can't smuggle HTML through e.g. leaf_count or asset_id.
-  // Closes MED#6.
+  // gateway can't inject HTML through e.g. leaf_count or asset_id.
   if (blob.leaf_count != null) {
     if (!Number.isInteger(blob.leaf_count) || blob.leaf_count !== blob.rows.length) {
       throw new Error(`snapshot leaf_count (${typeof blob.leaf_count === 'string' ? blob.leaf_count.slice(0, 32) : blob.leaf_count}) ≠ rows.length (${blob.rows.length})`);
     }
   }
   // Network + asset_id are load-bearing: the canonical claim message binds
-  // to both, so a snapshot missing either would let an attacker omit binding
-  // entirely. `buildAirdropClaimMsg` rejects malformed asset_id at sign time,
+  // to both, so a snapshot must carry both. `buildAirdropClaimMsg` rejects malformed asset_id at sign time,
   // but rejecting at load gives a clearer error and prevents the UI from
   // surfacing eligibility for an unsignable claim.
   if (blob.network !== 'signet' && blob.network !== 'mainnet') {
@@ -54699,7 +54492,7 @@ function _claimValidateSnapshot(rootHexInput, blob) {
     try { const _t = BigInt(blob.total_amount); if (_t < 0n) throw new Error('negative'); }
     catch { throw new Error('snapshot total_amount unparseable as BigInt'); }
   }
-  // Optional source-provenance fields (audit fix M6). When present, surfaced
+  // Optional source-provenance fields. When present, surfaced
   // by the claim UI so the recipient can verify the issuer's CSV against the
   // declared ERC-20 contract + chain + block. Strictly validated so a hostile
   // gateway can't smuggle bad values that the UI would render verbatim.
@@ -54876,7 +54669,7 @@ function _renderClaimSnapshotInfo() {
     ? `<span style="color:var(--orange);">⚠ MAINNET</span>`
     : `<span style="color:var(--ink-mid);">signet</span>`;
   // Source-provenance row: only renders when the snapshot declares at least
-  // one source_* field. Audit fix M6 — gives recipients a starting point to
+  // one source_* field. Gives recipients a starting point to
   // independently reproduce the (addr, amount) tuples by re-pulling holders
   // of `source_contract` at `source_block_height` on chain `source_chain_id`.
   const hasSource = s.source_chain_id != null || s.source_contract != null
@@ -56109,10 +55902,10 @@ async function _renderClaimTreasuryFundPanel() {
           if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include all bound tips automatically.</span>`;
         }
       }
-      // Kick off live status tracking — replaces the silent post-submit gap
-      // with a four-stage progress readout (mempool → confirmed → dequeued →
-      // fulfilled). Skip the auto-rerender that used to fire here; it wiped
-      // the success state and the live tracker now keeps the panel coherent.
+      // Kick off live status tracking — a four-stage progress readout
+      // (mempool → confirmed → dequeued → fulfilled). No auto-rerender here:
+      // it would wipe the success state, and the live tracker keeps the
+      // panel coherent.
       _startClaimReactivePoller({
         fundingTxid,
         merkleRoot: _claimSnapshot.merkle_root,
@@ -56464,7 +56257,7 @@ function _consumeClaimUrlHash() {
   // auto-load. A crafted hash can't otherwise produce script execution (CSP
   // blocks inline JS and we use `.value=` not `innerHTML`), but stuffing
   // arbitrary strings into the inputs and auto-clicking Load could route a
-  // claimant's request to an attacker-supplied CID.
+  // claimant's request to an arbitrary CID.
   const root = (rawRoot && /^[0-9a-f]{64}$/i.test(rawRoot.replace(/^0x/, ''))) ? rawRoot.replace(/^0x/, '').toLowerCase() : null;
   let cid = null;
   if (rawCid) {
@@ -56858,9 +56651,8 @@ function _recordClaimSubmission(rec) {
 // issuer themselves removed the entry — typically post-fulfilment. We still
 // promote to `verified_at` only when on-chain holdings confirm receipt
 // because (a) the issuer's DELETE could in principle race the broadcast and
-// (b) absence could be a stale-cache artifact. Backward-compat: legacy
-// `fulfilled_at` writes are preserved by `_markClaimVerified` so v1 entries
-// don't disappear.
+// (b) absence could be a stale-cache artifact. `fulfilled_at` writes are
+// preserved by `_markClaimVerified` so older entries don't disappear.
 function _markClaimDequeued(merkle_root, leaf_index) {
   const all = _loadClaimSubs();
   const key = `${merkle_root}:${leaf_index}`;
@@ -56921,7 +56713,7 @@ async function _pollClaimSubmissionsStatus() {
   _purgeOldClaimSubs();
   const all = _loadClaimSubs();
   // Any entry not strict-verified is worth polling — old `fulfilled_at`-only
-  // entries (from v1 over-trusting semantics) get re-checked here so the UI
+  // entries get re-checked here so the UI
   // self-corrects on the next visit.
   const pending = Object.values(all).filter(c => !c.verified_at && c.network === NET.name);
   if (!pending.length) return;
@@ -57581,7 +57373,7 @@ function _renderClaimDiscoverListNow() {
     const aidExplorer = (safeAid && NET.name === 'mainnet')
       ? ` <a href="https://www.tacitscan.io/assets/${escapeHtml(safeAid)}" target="_blank" rel="noopener noreferrer" style="color:var(--ink-mid);text-decoration:underline;font-size:10px;" title="View on tacitscan ↗">tacitscan ↗</a>`
       : '';
-    // Relative expiry replaces the ISO date — "expires in 3d" scans faster than
+    // Relative expiry rather than an ISO date — "expires in 3d" scans faster than
     // a calendar lookup. Expired drops fade the entire card and switch the
     // status to past-tense so a recipient pasting a stale link gets a clear
     // "you missed it" rather than a confusing fully-active-looking card.
@@ -59096,7 +58888,7 @@ async function renderHoldings() {
             <button data-act="hide-receive" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;">Close</button>
           </div>
           ${(() => {
-            // SPEC-BLINDED-PUBKEY §A.2: opt-in opaque address. Senders who paste
+            // opt-in opaque address. Senders who paste
             // this instead of the pubkey emit per-tx-unique on-chain markers
             // (P2WPKH(commit)) so observers can't link receipts to this wallet.
             // Bech32m-encoded with tcs/tcsts/tcsrt HRPs.
@@ -59751,8 +59543,7 @@ async function renderHoldings() {
             },
           });
         } else if (b.dataset.act === 'list-sale') {
-          // Inline form replaces the chained prompt(price) → prompt(days) →
-          // confirm(summary) flow. Mounts into the [data-list-form] slot inside
+          // Inline listing form. Mounts into the [data-list-form] slot inside
           // the Marketplace details panel; submission triggers publishListing.
           const aid = b.dataset.aid;
           const target = holdings.get(aid);
@@ -60600,7 +60391,7 @@ async function renderHoldings() {
               }
             }
 
-            // Variable-fills branch (T_AXFER_VAR, §5.7.6.1). Reads + validates
+            // Variable-fills branch (T_AXFER_VAR). Reads + validates
             // min_take_amount in display units, converts to base-unit string
             // for publishAxferVarIntent. The legacy whole-UTXO branch
             // continues to call publishAxferIntent unchanged.
@@ -60893,8 +60684,7 @@ async function renderHoldings() {
             return (Number.isFinite(sats) && sats > 0) ? sats : null;
           };
           // The price input is per-token, so the prominent readout shows the
-          // derived TOTAL (the inverse of the old total-field/unit-readout
-          // arrangement). Impact warning still anchors on the unit price.
+          // derived TOTAL. Impact warning anchors on the unit price.
           const _holdingsRenderTotalReadout = (unitPrice, totalSats, label) => {
             const out = formHost.querySelector('[data-price-unit-readout]');
             if (!out) return;
@@ -61834,8 +61624,7 @@ function renderActivity() {
     // decimals) at write time, but historical rows written before the
     // asset's metadata was registered locally bake in placeholder values
     // (ticker='?', decimals=0). When the registry now has the right
-    // ticker/decimals (e.g. after the v1-stealth-credit-asset-meta-fix
-    // landed), the activity log should render the row with the canonical
+    // ticker/decimals, the activity log should render the row with the canonical
     // metadata instead of the stale frozen copy. This is render-only —
     // the persisted row keeps its original shape; only the visible
     // ticker + amount formatting use the live registry lookup.
@@ -62600,8 +62389,7 @@ async function renderRecentEtches() {
         ? ` · ⚠ copy of ${cc.chain || 'ETH'} token`
         : (a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '');
       // Petch identity is carried by the per-ticker pill below, so the meta
-      // line doesn't repeat it. Matches the lightning-free design we landed
-      // on in the Discover-tab petch tiles.
+      // line doesn't repeat it (same as the Discover-tab petch tiles).
       const petchMark = '';
       const collisionTitleSuffix = cc
         ? ` · ⚠ ticker matches a known ${cc.chain || 'Ethereum'} project — likely copycat, verify asset_id`
@@ -62614,8 +62402,8 @@ async function renderRecentEtches() {
               ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${collisionTitleSuffix}`
               : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`);
       // Neutral outline pill differentiates petches from CETCH on the
-      // mixed-kind lander grid. No fill, no lightning bolt — matches the
-      // lightning-stripped petch design we landed on in Discover.
+      // mixed-kind lander grid. No fill, no icon — same as the petch tiles
+      // in Discover.
       const petchPill = isPetch
         ? (_isPetchSoldOut
             ? ' <span style="display:inline-block;padding:0 4px;border:1px solid var(--ink-mid);color:var(--ink-mid);font-size:8px;font-style:normal;letter-spacing:0.05em;text-transform:uppercase;" title="Public-mint cap is full (T_PETCH). Trade on the market page.">minted out</span>'
@@ -62695,10 +62483,8 @@ async function renderRecentEtches() {
       tile.className = 'recent-tile';
       const _routesToDiscover = a.kind === 'petch' && !isPetchFinished(a);
       // Set href to the full deep-link target so middle-click / right-
-      // click → "open in new tab" preserves the asset focus. Previous
-      // href="#" caused some users to land on the bare tab after a
-      // service-worker-cached old tacit.js executed the click handler
-      // pre-fix; the explicit href is the belt to that suspender.
+      // click → "open in new tab" preserves the asset focus, and the tile
+      // still routes correctly if the click handler doesn't run.
       const _tileTarget = safeAssetId
         ? (_routesToDiscover ? `#tab=discover&aid=${safeAssetId}` : `#tab=market&aid=${safeAssetId}`)
         : (_routesToDiscover ? '#tab=discover' : '#tab=market');
@@ -62801,10 +62587,8 @@ async function renderRecentEtches() {
     }
   } catch (e) {
     // Only stamp the "discovery unavailable" fallback when there's no
-    // prior successful paint to preserve. A Market → Wallet tab-switch
-    // that races into a transient fetch hiccup used to overwrite the
-    // previously-rendered tiles with this empty-state message; keeping
-    // the prior grid is strictly more useful than blanking it.
+    // prior successful paint to preserve: after a transient fetch hiccup,
+    // keeping the prior grid is more useful than blanking it.
     if (_recentEtchesPaintedNet !== NET.name) {
       list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">discovery unavailable</div>`;
     }
@@ -63159,9 +62943,8 @@ async function _processDiscoverCardVerify(card, a) {
       enrichDiscoverBurns(a, verify)
         .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
         .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
-      // Marketplace enrichments (price floor, open bids) are no longer
-      // rendered on Discover cards — those surfaces moved to the Market tab.
-      // Skipping the calls saves a worker round-trip per card on every load.
+      // Marketplace enrichments (price floor, open bids) live on the Market
+      // tab, not on Discover cards.
     }
   } finally {
     _discoverVerifyRelease();
@@ -63174,7 +62957,7 @@ async function _processDiscoverCardVerify(card, a) {
 // bpRangeAggBatchVerify call — same trick scanHoldings already uses for
 // wallet UTXO ancestry. Sub-linear cost in number of proofs, so 12 cards
 // verify in roughly the same wall-clock as 1 card. If the batch fails (an
-// attacker-tampered chain in the visible set), we fall back to strict
+// invalid chain in the visible set), we fall back to strict
 // per-card verification so we can mark exactly which cards failed.
 async function _processBatchedDiscoverCardVerify(items) {
   if (items.length === 0) return;
@@ -63585,7 +63368,7 @@ async function enrichDiscoverBurns(a, verify) {
 // Combined with the chain-attested supply (etch + Σ mint − Σ burn) this
 // gives us a coarse market cap estimate per asset for the Discover card.
 // Lowest-ask is a price-discovery floor — not a true mid-market until
-// bid-side intents (§5.7.7) ship.
+// bid-side intents ship.
 async function enrichDiscoverPriceFloor(a, verify) {
   if (!verify || !verify.ok) return;
   if (!WORKER_BASE) return;
@@ -64374,7 +64157,7 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
   }
   const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
   const rowsHtml = intents.map((b) => {
-    // Variable-fill awareness (§5.7.7): for bids with min_fill_amount, the
+    // Variable-fill awareness: for bids with min_fill_amount, the
     // tradeable size is `remaining_amount` (worker-maintained ledger),
     // and any seller can fulfil a chunk in [min_fill, remaining]. Display
     // and the Fulfil click both adapt.
@@ -64451,7 +64234,7 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
     btn.onclick = async () => {
       const bid = intents.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
-      // Variable-fill (§5.7.7): seller picks a chunk in [min_fill, remaining].
+      // Variable-fill: seller picks a chunk in [min_fill, remaining].
       // Whole-bid: fills bid.amount in one shot (existing behavior).
       let chunkAmount = null;
       const isVar = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
@@ -64975,7 +64758,7 @@ async function _pendingManualRecheck(triggerBtn) {
 // Called after scanHoldings completes successfully. Any pending older
 // than the grace window has had time to land in h.utxos / h.unverified
 // (or in the seller's case, drop off the holdings list), so the actual
-// renderHoldings output is now the authoritative surface and the
+// renderHoldings output is the authoritative surface and the
 // pending row is stale clutter.
 function _pendingClearPostScan() {
   const now = Date.now();
@@ -65345,16 +65128,14 @@ const _recentLocalBidCancels = new Set();
 // Auto-refresh: re-fetch market data every few seconds while the
 // Markets tab is visible. Hooks into existing fetchMarketDataDeduped
 // so a manual swap completing within the window doesn't trigger a
-// duplicate request. 5s tightens this from the old 15s so the asks/
-// bids ladders + depth chart feel "live CEX" rather than "polled
-// every quarter-minute." Cloudflare worker responses are SWR-cached
+// duplicate request. 5s keeps the asks/bids ladders + depth chart
+// feeling live. Cloudflare worker responses are SWR-cached
 // (FRESH 1min), so most ticks at this cadence hit cache and stay
 // cheap; the only real cost is bandwidth on the bids fetch the
 // asset-detail path adds per tick.
 //
-// Backoff on errors: a degraded worker (transient 5xx, mempool.space
-// rate-limit, network blip) used to keep getting hit every 5s, which
-// amplifies the problem and burns the user's connection. Track
+// Backoff on errors: polling a degraded worker (transient 5xx, mempool.space
+// rate-limit, network blip) every 5s amplifies the problem. Track
 // consecutive failures and exponentially back off — 5s → 10s → 20s
 // → 40s → 60s cap — resetting to 5s on the next successful tick.
 // Pair with a visible "data Xs old" badge so the user knows when
@@ -65680,10 +65461,9 @@ function _renderGlobalTape() {
   if (sig === _globalTapeLastSig && root.style.display !== 'none') return;
   _globalTapeLastSig = sig;
   // relativeAge stays around for the tooltip — useful detail when a user
-  // hovers an entry. The visible strip itself no longer carries the age:
-  // "7d ago" / "2d ago" tail labels stamped quiet-but-alive tickers with
-  // unwarranted bearish color when really they're just low-velocity. The
-  // marquee is for surfacing activity, not for cross-asset recency-shaming.
+  // hovers an entry. The visible strip doesn't carry the age: the marquee
+  // surfaces activity, and age labels would read as bearish on
+  // low-velocity tickers.
   const ageShort = (ts) => relativeAge(ts) || '0m';
   const buildItem = (t) => {
     const tickGlyph = t.tickDir === 'up' ? '↑' : t.tickDir === 'down' ? '↓' : '·';
@@ -65916,10 +65696,8 @@ function _startMarketAutoRefresh() {
         if (_sigChanged) _marketPendingRerender = true;
         // Interact-idle guard: if the user is actively scrolling, wheeling,
         // touch-scrolling, or moving the mouse inside the orderbook, defer
-        // the structural re-render to a later tick. Auto-refresh used to
-        // yank the page out from under a user mid-read because the 15s tick
-        // fires unconditionally — anchor-restore helps but can't perfectly
-        // hide the rebuild when scroll momentum is active. Pending flag
+        // the structural re-render to a later tick (anchor-restore can't
+        // hide the rebuild while scroll momentum is active). Pending flag
         // ensures the deferred update fires on the next idle tick (or
         // immediately if the user idles before the next tick).
         if (_marketPendingRerender && !_marketUserIsInteracting()) {
@@ -65936,11 +65714,10 @@ function _startMarketAutoRefresh() {
           try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
         }
       }
-      // Seller-side fill notification. A listing vanishing from one tick
-      // used to fire "your listing sold ✓" immediately — but the worker
-      // occasionally drops a still-live listing for one tick (transient
-      // KV miss, partial pagination, flaky mempool.space liveness prune)
-      // and the immediate toast was a false-positive. The flow now is:
+      // Seller-side fill notification. The worker occasionally drops a
+      // still-live listing for one tick (transient KV miss, partial
+      // pagination, flaky mempool.space liveness prune), so a vanish alone
+      // doesn't fire "your listing sold ✓". The flow is:
       //
       //   tick N: listing vanished →   becomes vanish-candidate
       //   tick N+1: still gone   AND  UTXO confirmed spent on chain  → fire
@@ -66447,7 +66224,7 @@ function _effectiveReferenceUnit(aid, asset) {
       if (highestBid == null || u > highestBid) highestBid = u;
     }
   }
-  // §5.7.11 walk-away bids — same buy-side liquidity as §5.7.7 bid-intents,
+  // walk-away bids — same buy-side liquidity as bid-intents,
   // just funded up-front. Same band filter + unit-price formula apply.
   const preauthBids = (typeof _preauthBidCachePeek === 'function') ? _preauthBidCachePeek(aid) : null;
   if (Array.isArray(preauthBids)) {
@@ -66462,7 +66239,7 @@ function _effectiveReferenceUnit(aid, asset) {
       if (highestBid == null || u > highestBid) highestBid = u;
     }
   }
-  // §5.7.12 partial-fill walk-away bids. Unit price = price_per_unit
+  // partial-fill walk-away bids. Unit price = price_per_unit
   // (sats/scaled-unit) rebased to sats/whole-token via the decimals_scale
   // → asset.decimals conversion so it composes with the other unit-price
   // values uniformly. Skip bids whose remaining-fill window is empty.
@@ -66581,9 +66358,8 @@ function _marketFloorByAsset() {
       if (cur.otcUnit == null || u < cur.otcUnit) cur.otcUnit = u;
     }
     // `unit` is the headline floor: prefer the trustless floor when one
-    // exists, fall back to OTC only when no trustless ask is live. Older
-    // callers reading `.unit` keep working but no longer see fake-OTC
-    // drag-down on assets with real trustless quotes.
+    // exists, fall back to OTC only when no trustless ask is live, so OTC
+    // quotes never drag down assets with real trustless quotes.
     const headline = cur.trustlessUnit != null ? cur.trustlessUnit : cur.otcUnit;
     if (headline != null) {
       cur.unit = headline;
@@ -66679,11 +66455,9 @@ function _marketMarkPriceByAsset() {
   return map;
 }
 
-// File-scope helpers for the pre-trade price-footgun guards. The list-sale
-// path already had a local `_holdingsPriceImpactGuard` but the other sell
-// forms (range listing, atomic offer, atomic intent var + whole-UTXO)
-// shipped without an equivalent — so a typo'd unit-vs-total price could
-// silently hit chain. These hoist the bid + mark lookup to file scope so
+// File-scope helpers for the pre-trade price-footgun guards, shared by every
+// sell form (list-sale, range listing, atomic offer, atomic intent var +
+// whole-UTXO) so a typo'd unit-vs-total price never silently hits chain. These hoist the bid + mark lookup to file scope so
 // any form's submit handler can reach them without duplicating the cache
 // peek logic.
 //
@@ -66982,17 +66756,10 @@ function _loadSwapIncludeIntents() {
     if (v === '1') return true;
     if (v === '0') return false;
   } catch {}
-  // Default ON. Excluding atomic intents from the swap planner produced
-  // confusing "no route" verdicts on markets where atomic intents were
-  // the ONLY affordable fills — the user could see the "⚡ Atomic
-  // offers" section right above the swap tile with claimable lots, but
-  // typing into the swap tile would return "no asks within ±X% of mark."
-  // Atomic intents have a bounded 30s soft deadline + auto-cancel-on-
-  // timeout (no sats at risk if the maker is offline), so including
-  // them by default is fund-safe and dramatically improves the
-  // first-time buyer experience on thin orderbooks. Users who want
-  // preauth-only routing can set localStorage[…] = '0' (no UI surface
-  // yet — followup).
+  // Default ON: on thin markets atomic intents can be the only affordable
+  // fills. Atomic intents have a bounded 30s soft deadline + auto-cancel-on-
+  // timeout (no sats at risk if the maker is offline), so including them
+  // by default is fund-safe. Preauth-only routing: set localStorage[…] = '0'.
   return true;
 }
 function _saveSwapIncludeIntents(on) {
@@ -67056,10 +66823,8 @@ let _marketHideOutlierBids = _loadMarketHideOutlierBids();
 // pulses the primary action so the trader sees the auto-routed quote
 // before committing. Default ON (buttons hidden) because the Swap tile
 // already auto-routes across asks AND bids better than per-row direct-
-// commit shortcuts can — those shortcuts are a power-user surface that
-// confused new traders into mis-clicking ("I thought Buy level was a
-// one-tap fill but a form appeared"). Power users flip the toggle to
-// get the direct-commit buttons back.
+// commit shortcuts can. Power users flip the toggle to get the
+// direct-commit buttons back.
 const _MARKET_ROW_ACTIONS_HIDDEN_KEY = 'tacit-market-row-actions-hidden-v1';
 function _loadMarketRowActionsHidden() {
   try {
@@ -67281,9 +67046,8 @@ async function fetchMarketData() {
   // memory cache rather than every tile waiting on its own oracle hit.
   _prewarmBtcUsd();
   // Worker-aggregated marketplace endpoint: one round-trip, server pre-joined
-  // with kind + _asset reference per listing. Replaces the previous N×3
-  // per-asset fan-out — the slowest of N×3 round-trips no longer gates
-  // first paint of the Market tab.
+  // with kind + _asset reference per listing, so first paint of the Market
+  // tab isn't gated on a per-asset fan-out.
   const [r, petchJ] = await Promise.all([
     fetch(withNet(MARKET_URL)),
     PETCH_REGISTRY_URL
@@ -67300,8 +67064,8 @@ async function fetchMarketData() {
     normalizeMarketPetchAssets(petchJ),
   );
   // Mark ticker-collision precedence over the FULL asset set (not just the
-  // ones with listings). Without this an attacker could side-step the
-  // duplicate-ticker warning by listing a copycat asset before the original.
+  // ones with listings), so the duplicate-ticker warning holds regardless of
+  // which asset was listed first.
   markTickerCollisions(assets);
   const listings = Array.isArray(j.listings) ? j.listings : [];
   // Hydrate each listing's _asset from the assets[] array. Worker stopped
@@ -67551,7 +67315,7 @@ async function _autoFulfilPollOnce() {
         // compromised worker can't trick the daemon into signing against
         // substituted terms. Manual fulfilment still degrades to a
         // warning so a user with cleared localStorage can knowingly proceed.
-        // Dispatch on min_take_amount so variable-amount intents (§5.7.6.1)
+        // Dispatch on min_take_amount so variable-amount intents
         // route through fulfilAxferVarIntent — without this branch, every
         // variable-amount claim would sit unfulfilled because the legacy
         // helper would fail at the (missing) commit_txid cross-check.
@@ -67660,17 +67424,9 @@ function _paintSwapTileAutoFulfilHint(widget) {
   if (btn) btn.onclick = () => { try { startAutoFulfilDaemon(); } catch {} };
 }
 
-// AMM cross-link for the swap tile. The orderbook (sats↔asset) and the
-// AMM (asset↔asset pools) are separate routing surfaces with no shared
-// quote — a direct price comparison isn't apples-to-apples — but a trader
-// on the asset page should at least learn a pool exists. Async + cheap:
-// fetchAmmPools carries a 25s cache, the link only renders on networks
-// where the AMM gate is open, and the dataset stamp makes repeat calls
-// from applyDirection free. Clicking jumps to the Pool tab and prefills
-// the swap-from select with this asset once renderPool populates it.
+// No-op kept so existing callers stay wired; the confidential AMM is the
+// Swap tab (Trade → Swap).
 async function _paintSwapTileAmmLink(_widget) {
-  // Retired: this cross-linked the orderbook tile to the V0 Bitcoin-lane AMM 'pool' tab (now removed). The
-  // V1 confidential AMM is the Swap tab (Trade → Swap). No-op kept so existing callers stay wired.
 }
 
 // Background liveness prune: dispatched right after applyMarketFilters
@@ -67731,9 +67487,8 @@ function startMarketLivenessPrune() {
   // Two-stage prune. Confirmed spend → fully remove (onSpent). Unconfirmed
   // spend → flag the listing _takenPending so the floor, mark-price,
   // counts, Swap router, and per-tile UI all treat it as "sold, settling"
-  // immediately — without waiting ~10min for first confirmation, which is
-  // how a freshly-taken cheap lot used to drag the displayed floor down
-  // and lure the next buyer into pricing against a phantom ask. Flicker
+  // immediately — without waiting ~10min for first confirmation — so a
+  // freshly-taken lot never anchors the displayed floor. Flicker
   // recovery: if a later prune tick finds the same UTXO is NOT spent
   // (mempool.space false-positive), the flag is cleared and the listing
   // returns to live state. Worst case of a transient indexer hiccup is a
@@ -68175,9 +67930,7 @@ function applyMarketFilters() {
   // filters these from routing (line ~67902); hiding them from the
   // visible ladder too keeps the orderbook honest. A user staring at a
   // 50-hour-old "100 TAC for 1,111 sats!" tile that no Take→ can actually
-  // hit is worse than no tile at all. Power users can opt back in by
-  // toggling the asks header's stale-filter (future improvement) — for
-  // now the default hides them. Preauth listings don't have this maker-
+  // hit is worse than no tile at all. Preauth listings don't have this maker-
   // liveness dependency (single-tx atomic) so this filter only touches
   // intent kinds; variable-amount intents (min_take_amount set) are also
   // filtered since they share the same claim → fulfil round-trip.
@@ -68252,8 +68005,8 @@ function applyMarketFilters() {
   // The asks header's "Showing X of Y · N hidden by current filter"
   // copy tells them what's happening; one chip click brings the asks
   // back without losing swap-tile state.
-  // Swap tile: the primary trading action surface, modeled on Uniswap /
-  // Jupiter-style "from / to" swap UIs. Top input is editable (what you
+  // Swap tile: the primary trading action surface, a "from / to" swap
+  // UI. Top input is editable (what you
   // pay); bottom is a live estimate (what you receive). Click-to-flip
   // toggles direction. Slippage selector controls the orderbook walk's
   // price cap. Buy walks preauth asks; sell walks bid intents.
@@ -68332,9 +68085,8 @@ function applyMarketFilters() {
     // metadata-blob walk) for sync paint; fall back to a data-asset-
     // logo-slot placeholder that _resolveAssetLogosIn swaps in later
     // when the metadata fetch lands. The swap tile is the most
-    // prominent logo surface on the page, so a broken-image flash
-    // (the old normalizeImageUri-points-at-metadata path) was the
-    // most jarring; now it's never rendered.
+    // prominent logo surface on the page, so it never renders a
+    // broken-image flash.
     const _swapImgUriRaw = a.image_uri || a.imageUri;
     const _swapImgCached = _swapImgUriRaw && typeof _resolvedImageCache !== 'undefined'
       ? _resolvedImageCache.get(_swapImgUriRaw) : null;
@@ -68371,11 +68123,8 @@ function applyMarketFilters() {
     const _swapStripHtml = (() => {
       const summary = Array.isArray(a.price_summary) ? a.price_summary : [];
       if (summary.length < 1) return '';
-      // Outlier guard. The mini-strip previously pulled the 24h Δ
-      // reference from raw trades, so a single dust print (e.g. 18 sats
-      // when mark is 209) at the edge of the 24h window made the strip
-      // read "+1164%" while the rich stats below showed "-23.65%". Same
-      // 0.2×/5× mark band the chart + spread row use; filters out fat-
+      // Outlier guard: a single dust print at the edge of the 24h window
+      // must not set the 24h Δ reference. Same 0.2×/5× mark band the chart + spread row use; filters out fat-
       // finger / dust trades for the reference walk while leaving the
       // sparkline visualization itself untouched (the chart wants to
       // SHOW the outliers, just not anchor analytics on them).
@@ -68951,11 +68700,9 @@ function applyMarketFilters() {
   // Per-kind breakdown of what Simple mode hides — surfaced both in the
   // chip tooltip and (when meaningful) inline as a one-liner so users
   // don't have to hover to discover that the "+86 hidden" is broken
-  // down into atomic / OTC / dust buckets. Default-aggression audit
-  // (#5 in the orderbook-UX review) confirmed Simple = preauth-only is
-  // the right normie default — preauths are one-click trustless, atomic
-  // intents require a claim-response loop the user has to babysit —
-  // but the value-hidden signal should be explicit so power users can
+  // down into atomic / OTC / dust buckets. Simple = preauth-only is the
+  // default — preauths are one-click trustless, atomic intents require a
+  // claim-response loop — but the value-hidden signal should be explicit so power users can
   // opt out with one click.
   const _hiddenAtomic = rowsFull.filter(l => l.kind === 'intent').length;
   const _hiddenOTC    = rowsFull.filter(l => l.kind === 'range' || l.kind === 'opening').length;
@@ -69722,11 +69469,8 @@ function applyMarketFilters() {
       applyMarketFilters();
     };
   });
-  // "use Swap above for routed fills" jump-link. The hint was previously
-  // plain text — users seeing "BEST PRICE 79.55" would click Buy on the
-  // single best listing and miss the next four cheap ones at 175-195 that
-  // a Swap-routed fill would atomically capture. Now clickable: scrolls
-  // the Swap tile into view + focuses the buy-side input so they can
+  // "use Swap above for routed fills" jump-link: scrolls the Swap tile
+  // into view + focuses the buy-side input so they can
   // start typing immediately.
   // Mobile orderbook tabs. Flips data-orderbook-active on the wrap so
   // the CSS rule shows only the selected side at narrow viewports.
@@ -69980,10 +69724,7 @@ function applyMarketFilters() {
     }
     // Own-listing classification. Mirrors the bids-side `b._isMine`
     // pattern so the asks ladder surfaces ownership the same way: amber
-    // background tint + a "YOU" pill in the price corner. Traders
-    // comparing the book and their own open orders no longer have to
-    // bounce to Holdings → Open orders to see where their ask sits.
-    // Covers preauth (seller_pubkey), intent (maker_pubkey), and OTC
+    // background tint + a "YOU" pill in the price corner. Covers preauth (seller_pubkey), intent (maker_pubkey), and OTC
     // opening/range (owner_pubkey) in one classifier.
     const _ownerPubHex = (l.kind === 'preauth' ? (l.seller_pubkey || '')
                        : l.kind === 'intent'  ? (l.maker_pubkey  || '')
@@ -70213,9 +69954,8 @@ function applyMarketFilters() {
     // semantic matches range-listing convention. The spread line
     // below reveals the actual min–max range underneath.
     const _displayUnit = (l._isLevel && Number.isFinite(l._levelMaxUnit)) ? l._levelMaxUnit : unit;
-    // `up to` prefix on bundled-level + range rows. Replaces the ≤ glyph
-    // (which read as math jargon — half the audience parses it instantly,
-    // half stares at it). Plain English; same semantic; same width-ish.
+    // `up to` prefix on bundled-level + range rows (plain English rather
+    // than a ≤ glyph).
     const _prefix = (l.kind === 'range' || l._isLevel) ? 'up to ' : '';
     const unitStr = _displayUnit != null
       ? `${_prefix}${fmtMarketUnitSats(_displayUnit)}/${escapeHtml(a.ticker || 'token')}`
@@ -70864,7 +70604,7 @@ function applyMarketFilters() {
     };
   });
   // Partial-fill walk-away bid cancel. Same shape as the
-  // §5.7.11 cancel above, routes through cancelPreauthBidVar (DELETE on
+  // cancel above, routes through cancelPreauthBidVar (DELETE on
   // /preauth-bids-var/:bid_id with a Schnorr signature over the canonical
   // cancel domain tag). Funding outpoint becomes reclaimable identically.
   list.querySelectorAll('button[data-act="your-orders-cancel-preauth-bid-var"]').forEach(btn => {
@@ -71084,10 +70824,8 @@ function fmtMarketUnitSats(sats) {
   //     trying to verify the math.
   //   • 0.001 ≤ n < 1 — keep readable decimal ("0.6 sats", "0.0042 sats"),
   //     up to 4 fractional digits.
-  //   • n < 0.001     — scientific notation. SAT's ~4.28e-6 sats was
-  //     previously rendering as "0.00000428 sats" which is hard to scan
-  //     and easy to misread the zero count. "4.28e-6 sats" is compact
-  //     and unambiguous.
+  //   • n < 0.001     — scientific notation ("4.28e-6 sats"), which is
+  //     easier to read than a long run of zeros.
   if (n >= 1000) return `${Math.round(n).toLocaleString('en-US')} sats`;
   if (n >= 1) {
     // Trim trailing zeros so "250.00 sats" becomes "250 sats" but
@@ -71149,10 +70887,8 @@ function _resolveMarketImgSlot(slot) {
     if (slot?.dataset) delete slot.dataset.marketImgLoaded;
   });
 }
-// One module-level IntersectionObserver shared across every market render.
-// Re-created per call previously, which orphaned one observer (pinning its
-// below-fold slot nodes) on every filter/sort/page/nav re-render — a steady
-// heap leak over a long session. The shared observer unobserves each slot on
+// One module-level IntersectionObserver shared across every market render,
+// so re-renders never orphan an observer. The shared observer unobserves each slot on
 // first resolve, so its observed set stays bounded and detached slots from
 // prior renders are GC'd with the old grid.
 let _marketImgIO = null;
@@ -71176,10 +70912,8 @@ function hydrateMarketImages(scope = document) {
   if (!slots.length) return;
   // IntersectionObserver gates the IPFS resolution per-slot: an image
   // only kicks its fetch when the slot enters (or comes within 300px
-  // of) the viewport. Saves the round-trip on every below-fold tile in
-  // the gallery's 92-token initial render — previously 92 parallel
-  // IPFS gateway hits competed with critical-path resources on first
-  // paint even when only the first ~12 tiles were visible.
+  // of) the viewport, so below-fold tiles don't compete with
+  // critical-path resources on first paint.
   const io = _getMarketImgIO();
   if (!io) {
     slots.forEach(_resolveMarketImgSlot);
@@ -71463,8 +71197,8 @@ function marketVolumeSats(asset) {
     'volume_sats',
     'market_volume_sats',
   ]);
-  // Prefer the worker's explicit lifetime counter. It's now backed by a
-  // race-free trade-event journal + reconcile path (audit-walker
+  // Prefer the worker's explicit lifetime counter. It's backed by a
+  // race-free trade-event journal + reconcile path (a walker
   // bootstraps the journal from the 30-day xferseen window; reconcile
   // republishes the canonical sum via a single put). The cron's chain-
   // backfill also bumps the counter via _recordSettledTradeVolume on
@@ -72186,8 +71920,7 @@ function renderMarketBrowse(rows) {
       ? _resolvedImageCache.get(imageUriRaw) : null;
     // Trust badge: green ✓ verified when the asset is the unique or
     // earliest etcher of its ticker AND not a known external copycat;
-    // red ⚠ COPY/DUP otherwise. Replaces the orange "earliest" tag in
-    // the canonical case (less alarming, more affirming).
+    // red ⚠ COPY/DUP otherwise.
     const collisionBadge = a._copycatInfo
       ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
       : a._tickerCollision === 'duplicate'
@@ -72361,8 +72094,7 @@ function renderMarketBrowseTable(rows) {
     const _agg24hUsd = _agg24hSats > 0 ? fmtMarketUsdWholeFromSats(_agg24hSats, '') : '';
     // Each segment wraps as a unit (white-space:nowrap), separators
     // use a bullet that itself can wrap so on a narrow column the
-    // line breaks BETWEEN segments instead of mid-segment ("358 in" \n
-    // "stant" was the old behavior on iPhone-width). Inline-flex on
+    // line breaks BETWEEN segments instead of mid-segment. Inline-flex on
     // the wrapper lets the segments flow like text but keeps the
     // page chip clearly grouped at the end.
     const sep = '<span aria-hidden="true" style="color:var(--ink-faint);margin:0 6px;">·</span>';
@@ -72849,8 +72581,7 @@ function showMarketListPreviewModal(assetId) {
   // Wallet/balance state. Mirrors the button-render check at
   // marketAssetListCtaHtml: a holdings entry without verified utxos[] isn't
   // sellable (UTXOs are sitting in h.unverified / h.inflated / h.ghosts
-  // until validation catches up). The weaker "entry exists" check used to
-  // print "Pick one of your lots" when there were no lots to pick.
+  // until validation catches up).
   const _locked = !wallet.priv;
   const _entry = !_locked && _holdingsCache?.holdings ? _holdingsCache.holdings.get(assetId) : null;
   const _holdsAsset = !!(_entry && Array.isArray(_entry.utxos) && _entry.utxos.length > 0);
@@ -73188,11 +72919,8 @@ async function populateMarketActivityPanel(scope, asset, rows) {
     console.warn('asset stats load failed', err);
   }
   const officialTrades = Array.isArray(assetStats?.trades) ? assetStats.trades : [];
-  // Render rows immediately with empty seller/buyer addresses. The
-  // address lookups (one /tx/<txid> per old trade) used to block this
-  // function on `await Promise.all(...)` — 20 parallel mempool.space
-  // requests every time the activity panel rendered, competing with
-  // critical-path resources. Now: paint the rows first; attach a
+  // Render rows immediately with empty seller/buyer addresses (one
+  // /tx/<txid> lookup per trade). Paint the rows first; attach a
   // per-row IntersectionObserver; resolve addresses lazily as each row
   // scrolls into view. Rows that never enter the viewport never
   // trigger their lookup at all.
@@ -73384,13 +73112,9 @@ function renderMarketAssetHeader(assetId, rows) {
     : a._tickerCollision === 'duplicate'
       ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
       : verifiedBadgeHTML(a, { size: 'lg' });
-  // Back affordance is now a small inline text-link rather than a
-  // chip + sibling hint. Previously it occupied its own block-level row
-  // (chip + "press Esc to go back" tag) at the top of the panel — that
-  // visual weight competed with the asset's logo + ticker header
-  // immediately below. Now: muted text link, hover-darkens, Esc
-  // shortcut lives in the title tooltip only. Asset header below
-  // becomes the dominant element where it belongs.
+  // Back affordance is a small muted inline text-link (hover-darkens; the
+  // Esc shortcut lives in the title tooltip) so the asset header below
+  // stays the dominant element.
   // Refresh button — surfaces a manual hard-refresh next to the
   // breadcrumb so users don't have to F5 the browser when they want
   // the orderbook / open-orders panel re-synced with the worker.
@@ -73705,12 +73429,9 @@ function renderMarketAssetHeader(assetId, rows) {
             return `<div data-act="market-jump-to-sell" data-aid="${escapeHtml(safeAid)}" title="Click to scroll to the swap tile in Sell mode and size from your balance" style="cursor:pointer;"><span>You own <span style="color:var(--ink-mid);font-size:9px;">↗ sell</span></span><strong>${escapeHtml(_balStr)} ${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(_valStr || '—')}</small></div>`;
           })()}
           ${(() => {
-            // Multi-window price-change footer — was previously crammed
-            // inside the Price tile (≈145px wide), forcing 3 chips to
-            // wrap onto 2 lines and making Price tower over its
-            // neighbors. Moved out to a full-width footer row that
-            // spans the bottom of the stats card so all three windows
-            // sit on one elegant line and the top-row tiles align.
+            // Multi-window price-change footer: a full-width row across
+            // the bottom of the stats card so all three windows sit on
+            // one line and the top-row tiles align.
             const _stripHtml = _renderDeltaStrip(a);
             return _stripHtml ? `<div class="market-asset-stats-delta">${_stripHtml}</div>` : '';
           })()}
@@ -73916,7 +73637,6 @@ function _renderTileSparklineSVG(summary, markUnit) {
 // across reloads + asset switches after the user clicks a chip. Default
 // to ALL so direct asset links (notably TAC) show the full retained price
 // history immediately instead of looking like a last-day/week-only chart.
-// v2 intentionally ignores old v1 short-window defaults.
 const CHART_TF_KEY = 'tacit-chart-tf-v2';
 function _loadChartTimeFrame() {
   try {
@@ -74469,8 +74189,8 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null, op
   }
   // viewBox-relative coords. Logical 600×160 canvas; CSS sizes the SVG to
   // 100% width and uses preserveAspectRatio="xMidYMid meet" so it scales
-  // proportionally on mobile (the old "none" stretched everything).
-  // Switched to time-proportional X — points are placed by REAL timestamp
+  // proportionally on mobile.
+  // Time-proportional X — points are placed by REAL timestamp
   // rather than index-evenly, so a market with a burst of trades followed
   // by quiet shows the burst as a dense cluster (true to chain timing)
   // rather than a smeared line.
@@ -75114,10 +74834,9 @@ async function populateMarketAssetStats(scope, asset) {
   // Kick the BTC/USD oracle in parallel with the stats fetch. Both are
   // independent network calls and both are cache-served on the hot path
   // (refreshMarketBtcUsd has a 5min TTL on _marketBtcUsd; stats has a
-  // 60s TTL via _marketAssetStatsCache). Awaiting them serially used to
-  // mean a cold BTC/USD lookup blocked the entire stats-strip paint
-  // even though the sats-side numbers don't depend on USD. Now: race
-  // them; await USD only at the point we need the value below.
+  // 60s TTL via _marketAssetStatsCache). A cold BTC/USD lookup must not
+  // block the sats-side paint, so await USD only where the value is
+  // needed below.
   // refreshMarketBtcUsd swallows its own errors, so a bare catch keeps
   // the promise non-rejecting in case getBtcUsdPrice throws.
   const _btcUsdInflight = refreshMarketBtcUsd().catch(() => {});
@@ -75897,7 +75616,7 @@ function renderMarketBidsLadderHTML(asset) {
   // two genuinely-distinct controls (Auto-fulfil daemon toggle,
   // Hide/Show ladder collapse). Advanced mode surfaces them back for
   // traders who want explicit control over per-bid params (custom
-  // expiry, min-fill) or sell-route audit before signing.
+  // expiry, min-fill) or a sell-route review before signing.
   const _showAdvancedBidActions = (typeof _marketRowActionsHidden === 'boolean') && !_marketRowActionsHidden;
   const _sweepSellBtn = _showAdvancedBidActions
     ? `<button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Advanced: sell-route control surface. Pick a floor price + amount; each fill publishes an atomic intent. For most cases the Swap tile above is simpler — this exposes the per-bid plan so you can audit before signing.">Sweep sell (advanced)</button>`
@@ -76005,7 +75724,7 @@ function _matchableAsksForBid(b, aid, decimals, myPubHex) {
 // this asset, filtered for freshness (≤12h old, same threshold as the
 // asks-ladder stale-intent hider). Atomic intents need a maker-online
 // claim → fulfil round-trip; the buyer's tap-cost is bounded by the
-// 30s soft-deadline shipped earlier, but matching one still beats a
+// 30s soft-deadline, but matching one still beats a
 // preauth-only swap on price when the maker is responsive.
 //
 // Distinguishes from the asks ladder by:
@@ -76196,7 +75915,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   if (ENABLE_T_PREAUTH_BID && preauthBidsPeek === null && typeof _fetchPreauthBidsCached === 'function') {
     try { _fetchPreauthBidsCached(aid); } catch {}
   }
-  // Same warm-fetch pattern for VAR (§5.7.12) — fires only when the flag
+  // Same warm-fetch pattern for VAR — fires only when the flag
   // is on so disabled-on-mainnet stays quiet.
   if (ENABLE_T_PREAUTH_BID_VAR && typeof _preauthBidVarCachePeek === 'function'
       && _preauthBidVarCachePeek(aid) === null
@@ -76208,7 +75927,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     String(b.buyer_pubkey || '').toLowerCase() === myPubHex.toLowerCase() &&
     String(b.status || 'live') === 'live',
   );
-  // Mirror for §5.7.12 partial-fill walk-away bids. Same liveness filter,
+  // Mirror for partial-fill walk-away bids. Same liveness filter,
   // sourced from the parallel cache. Empty when the VAR flag is off OR no
   // cached entries yet for this asset (the warm-fetch above kicks the
   // round-trip and the next render upgrades to real rows).
@@ -76226,11 +75945,8 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
   // Bail entirely when there's nothing to show AND we KNOW bids are
   // empty (cache resolved, returned no rows for this pubkey).
   if (askGrouped.length === 0 && intentAsks.length === 0 && myBidsKnown && myBids.length === 0 && !_hasActiveClaims) return '';
-  // Cold-cache path: bids haven't resolved yet, no asks visible. Used
-  // to return '' here and hide the panel until bids landed — which
-  // produced the "land on market page → no open orders panel →
-  // refresh → suddenly my open orders appear" UX the user reported.
-  // Now render the panel with a `checking your bids…` placeholder so
+  // Cold-cache path: bids haven't resolved yet, no asks visible. Render
+  // the panel with a `checking your bids…` placeholder so
   // a returning trader sees their position load in-place instead of
   // having the panel appear out of nowhere on the second tick. Kicks
   // the bid-cache fetch in the background; the next render upgrades
@@ -76472,7 +76188,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     </tr>`;
   }).join('');
 
-  // §5.7.11 walk-away bid rows. Buyer's exact-fill preauth bids — pre-
+  // walk-away bid rows. Buyer's exact-fill preauth bids — pre-
   // signed and resting on chain. Cancel routes through cancelPreauthBid
   // (signed DELETE on the worker; funding outpoint stays spendable via
   // SIGHASH_ALL self-spend after).
@@ -76497,7 +76213,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     </tr>`;
   }).join('');
 
-  // §5.7.12 walk-away partial-fill bid rows. Same shape as above with the
+  // walk-away partial-fill bid rows. Same shape as above with the
   // range readout (min–max scaled units × price_per_unit) instead of one
   // exact lot. Cancel routes through cancelPreauthBidVar.
   const preauthBidVarRowsHtml = myPreauthBidsVar.map(b => {
@@ -76706,7 +76422,7 @@ function _decorateBidForReservation(b) {
   //
   // No protocol change — purely UI tracking. The on-chain settlement
   // is still the buyer's own takeAxferIntent broadcast, as designed.
-  // The full protocol-level fix is T_PREAUTH_BID (§5.7.11 draft) which
+  // The full protocol-level fix is T_PREAUTH_BID which
   // would let the seller settle alone using SIGHASH_SINGLE_ACP on the
   // buyer's pre-signed sats input; that's the next opcode shipment.
   try {
@@ -76975,13 +76691,10 @@ function _preauthBidVarCachePeek(aid) {
 }
 
 // In-band best-bid / best-ask snapshot, shared between the spread row and
-// the depth chart so they don't disagree about what's takeable. Both code
-// paths used to compute this independently — same filter logic, but called
-// asynchronously, so a render cycle could paint the spread row with one
-// snapshot and the depth header with a slightly newer one. Caching here
-// for a brief window guarantees coherent display.
+// the depth chart so they don't disagree about what's takeable. Caching here
+// for a brief window keeps both on the same snapshot within a render cycle.
 //
-// Filter rules (matched to historical _populateBidAskSpread / depth chart):
+// Filter rules:
 //   Ask side: kind === 'preauth', !expired, !_takenPending, expiry > now+60s
 //   Bid side: !_isReserved, !expired, for variable-fill bids remaining ≥ min_fill
 //   Both: clamp to 0.2× ≤ unit ≤ 5× of mark when mark is finite
@@ -77278,7 +76991,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   for (const b of intents) {
     if (b._isReserved) continue;
     if (Number(b.expiry || 0) <= nowSec) continue;
-    // Variable-fill (§5.7.7): depth is the TRADEABLE remaining, not the
+    // Variable-fill: depth is the TRADEABLE remaining, not the
     // bid's full posted amount. A whole-bid that's been claimed has
     // b._isReserved=true and is filtered above; a variable-fill bid
     // stays visible with the residual remaining. Without this fix, a
@@ -77465,8 +77178,8 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // surfaces the log mode for those who hover.
   const _logBadge = '';
   // Crossed badge per design.html line 32: "CROSSED 86%" — uppercase
-  // label + spread-percent-of-midpoint inline. The previously-separate
-  // explainer sentence below covers the "why".
+  // label + spread-percent-of-midpoint inline. The explainer sentence
+  // below covers the "why".
   const _spreadPctForBadge = (() => {
     if (!isCrossed || !Number.isFinite(headerBestBid) || !Number.isFinite(headerBestAsk)) return null;
     const mid = (headerBestBid + headerBestAsk) / 2;
@@ -77624,9 +77337,8 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     </svg>
     ${(() => {
       // design.html line 156-160 footer: best bid ↑ · spread · % crossed · best ask ↓.
-      // Replaces the separate `_spreadRowHtml` strip (which lives further
-      // below) for the asset-detail page so the depth section is
-      // self-contained per design.html.
+      // Used instead of the `_spreadRowHtml` strip on the asset-detail page
+      // so the depth section is self-contained per design.html.
       const _hasBid = Number.isFinite(headerBestBid) && headerBestBid > 0;
       const _hasAsk = Number.isFinite(headerBestAsk) && headerBestAsk > 0;
       const _spreadAbs = (_hasBid && _hasAsk) ? (headerBestAsk - headerBestBid) : null;
@@ -78289,8 +78001,8 @@ async function _yourOrdersTakeClaimHandler(btn) {
 //   - if claim_expires_at has passed → drop local record (worker TTL'd it)
 //   - else fetch the fulfilment endpoint; if a fulfilment exists, flip
 //     the row's Take button from disabled→enabled and update status to
-//     "ready — Take →". If the user has auto-take preference on (TODO:
-//     surface a toggle), broadcast the settlement automatically.
+//     "ready — Take →". If the user has auto-take preference on,
+//     broadcast the settlement automatically.
 // Network: one GET per claim per tick. With typical 1-2 active claims
 // and a 5s tick, that's well below the worker's per-pubkey rate cap.
 let _axferClaimsPollerTimer = null;
@@ -79091,10 +78803,9 @@ function primeSwapTileSellLimit(aid) {
 
 // ============== MY-BIDS CROSS-ASSET INDEX ==============
 // _bidsCache / _preauthBidsVarCache are per-asset and warm only for assets
-// the user has navigated to, so a bid placed on asset A used to vanish
-// from the Holdings dashboard the moment the user moved on. The worker
-// has no "my bids across all assets" endpoint, and fan-fetching every
-// asset was rejected for Holdings-load cost — so each bid publish records
+// the user has navigated to. The worker has no "my bids across all assets"
+// endpoint, and fan-fetching every asset is too costly for Holdings load —
+// so each bid publish records
 // a local pointer instead: enough display data to render a dashboard row,
 // plus (aid, bid_id) to reconcile against fresh per-asset fetches.
 // Self-healing: entries drop on expiry, on cancel, and whenever a fresh
@@ -79134,7 +78845,7 @@ function _dropMyBidFromIndex(bidIdHex) {
   const next = arr.filter(e => e && e.bid_id !== bidIdHex);
   if (next.length !== arr.length) _saveMyBidsIndex(next);
 }
-// Normalize a §5.7.12 walk-away bid (worker record or index entry — both
+// Normalize a walk-away bid (worker record or index entry — both
 // carry the same raw fields) into the dashboard's bid-row shape. Display
 // math mirrors the bids-ladder _rowsVar builder: total = max_fill ×
 // price_per_unit, amount = max_fill × 10^decimals_scale base units.
@@ -79227,8 +78938,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       }
     }
   }
-  // §5.7.12 walk-away bids — previously missing from the dashboard
-  // entirely (they live in their own cache, not _bidsCache).
+  // Walk-away bids (they live in their own cache, not _bidsCache).
   if (typeof _preauthBidsVarCache !== 'undefined' && _preauthBidsVarCache && _preauthBidsVarCache.entries) {
     for (const [aid, entry] of _preauthBidsVarCache.entries()) {
       const bids = entry && 'value' in entry ? entry.value : null;
@@ -79278,7 +78988,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
     }
     if (dirty) _saveMyBidsIndex(keep);
     // Warm just the indexed assets' bid caches (bounded by where the user
-    // actually has bids — not the all-assets fan the old comment feared),
+    // actually has bids, not every asset),
     // then repaint in place so stale indexed rows upgrade to live state.
     if (coldAids.size > 0 && !_myBidsWarmInFlight) {
       _myBidsWarmInFlight = true;
@@ -79688,7 +79398,7 @@ async function populateMarketBidsLadder(scope, asset) {
     ? bucketedLadder
     : bucketedLadder.slice(0, _BIDS_VISIBLE_DEFAULT);
   const rowsHtml = _bidsDisplayLadder.map((b, _bidIdx) => {
-    // Variable-fill (§5.7.7) display: show the remaining (tradable now)
+    // Variable-fill display: show the remaining (tradable now)
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     // Fall back to original signed amount when remaining is 0 — a row
     // that prints "0" beside the user's own bid reads as "your bid
@@ -79953,8 +79663,8 @@ async function populateMarketBidsLadder(scope, asset) {
   });
   // Walk-away bids: render a separate sub-panel
   // below the bid-intent ladder. Two flavors share the panel:
-  //   • exact-fill (§5.7.11 T_PREAUTH_BID, opcode 0x5B) — one fill ratio
-  //   • partial-fill (§5.7.12 T_PREAUTH_BID_VAR, opcode 0x5C) — K ratios,
+  //   • exact-fill (T_PREAUTH_BID, opcode 0x5B) — one fill ratio
+  //   • partial-fill (T_PREAUTH_BID_VAR, opcode 0x5C) — K ratios,
   //     seller picks fill_amount ∈ {min_fill, …, max_fill} at fill_increment
   // Seller clicks Take → takePreauthBid/takePreauthBidVar commit-reveal
   // pair, completing the bid alone without the buyer online. Best-effort
@@ -80000,7 +79710,7 @@ async function populateMarketBidsLadder(scope, asset) {
           <span><button data-act="market-take-walk-away-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id)}" title="Fill this limit bid. Pre-flight checks your asset holdings; broadcast happens after confirm." class="orders-action">take</button></span>
         </div>`;
       }).join('');
-      // §5.7.12 partial-fill walk-away rows. price column shows the per-
+      // partial-fill walk-away rows. price column shows the per-
       // unit price (price_per_unit, which is what the buyer pre-signed),
       // qty column shows the range "min – max" (in token units), Total
       // column shows max_fill × price_per_unit (the buyer's prefund cap).
@@ -80311,10 +80021,9 @@ async function populateMarketBidsLadder(scope, asset) {
     btn.onclick = async () => {
       const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
-      // Variable-fill (§5.7.7) chunk picker. Seller chooses any size in
+      // Variable-fill chunk picker. Seller chooses any size in
       // [min_fill, remaining]; modal preview shows the exact scaled BTC
-      // payment they'll receive for the chunk. Replaces the bare
-      // window.prompt previously used here. fullAmountBig stays the
+      // payment they'll receive for the chunk. fullAmountBig stays the
       // bid's original `amount` so the scaled-price math matches the
       // worker's `floor(chunk × price / amount)` rule exactly.
       let chunkAmount = null;
@@ -80521,7 +80230,7 @@ function _wireAutoFulfilToggle(section) {
 
 // Sweep buy: limit-buy a target amount by walking the asks ladder
 // cheapest-first under a user-set price cap. Each fill is one Bitcoin tx
-// (instant listings only — atomic intents are excluded from v1
+// (instant listings only — atomic intents are excluded
 // because their 3-step claim-fulfil-take flow would turn a single sweep
 // into a multi-minute babysit). Pre-flight shows what will fill before
 // any signing. Sequential broadcast (not parallel: preauth take spends
@@ -80529,8 +80238,8 @@ function _wireAutoFulfilToggle(section) {
 // inputs and one would fail). Stops on first error; reports partial
 // progress. Residual (couldn't fill enough at the cap price) → optional
 // bid intent posted at the cap.
-// Swap-tile wireup. The tile is the "type amount, click swap" surface
-// modeled on Uniswap / Jupiter. The top input is always editable; the
+// Swap-tile wireup. The tile is the "type amount, click swap" surface.
+// The top input is always editable; the
 // bottom is a live estimate. The Flip button reverses direction —
 // "buy" (sats → ticker) and "sell" (ticker → sats) toggle the labels
 // + logos in place rather than re-rendering. Slippage cap is a select
@@ -81608,7 +81317,7 @@ function _wireSwapTile(scope) {
   // (1 - slippage). Returns null if no fillable bid above floor.
   // SELL plan: walk bid intents highest-first, fitting fills until
   // accumulated amount ≥ target. Whole-bids are take-whole-or-skip;
-  // variable-fill bids (§5.7.7) can take any chunk in [min_fill,
+  // variable-fill bids can take any chunk in [min_fill,
   // remaining], so the LAST fill against a variable bid can scale
   // exactly to the remaining gap — no overshoot when a variable bid
   // is the tail.
@@ -81781,7 +81490,7 @@ function _wireSwapTile(scope) {
   // SELL exact-out: user types target SATS to receive; walk bids
   // highest-first above slippage floor, accumulate until cumulative sats
   // ≥ target. Last whole-bid can overshoot by ≤ one bid's worth of sats;
-  // variable-fill bids (§5.7.7) scale their chunk to land the tail
+  // variable-fill bids scale their chunk to land the tail
   // exactly on the gap so the cumulative SATS lands on target without
   // overselling the underlying token amount.
   const planSellExactOut = async (targetSatsTotal) => {
@@ -82911,16 +82620,15 @@ function _wireSwapTile(scope) {
       // wallet still sees "you'd receive ~X TAC" instead of a blank
       // receive field. This is the CEX behavior — Binance/Coinbase
       // happily quote a $50,000 trade even if your account holds $20,
-      // they just disable the Buy button. The pre-check before route
-      // computation used to short-circuit to blank, which lost the
-      // "explore-the-market" utility of just typing in a number.
+      // they just disable the Buy button. The balance check never blanks
+      // the quote, so typing a number still explores the market.
       const satBal = Number(_walletCardState?.balance || 0);
       const result = planBuy(sats);
       if (myToken !== updateToken) return;
       // No asks under the slippage cap → fall back to bid-on-residual:
       // estimate tokens at the user's slippage cap and frame the action
       // as "Place bid" rather than "no route". A bid at the user's cap
-      // sits in the orderbook (§5.7.7) until a maker fulfils — same
+      // sits in the orderbook until a maker fulfils — same
       // atomic settlement as taking, just async. This is the DEX-feel
       // closure: any sats budget produces a tradeable order.
       if (!result) {
@@ -82995,9 +82703,8 @@ function _wireSwapTile(scope) {
         : null;
       const avgUsd = (avgU != null && btcUsd) ? fmtUnitUsd(avgU, btcUsd) : null;
       // Min received at the limit price: the slippage cap's concrete
-      // guarantee, expressed as the worst-case token output. Uniswap/1inch-
-      // style framing — clearer for traders than only seeing the cap unit
-      // price. Bolded so it leads the meta line above the est. amount.
+      // guarantee, expressed as the worst-case token output — clearer for
+      // traders than only seeing the cap unit price. Bolded so it leads the meta line above the est. amount.
       let _minRecvHtml = '';
       const _capUnitBuy = _buyCapUnit();
       if (Number.isFinite(_capUnitBuy) && _capUnitBuy > 0) {
@@ -83315,9 +83022,8 @@ function _wireSwapTile(scope) {
   // clears it. When BOTH flags are set, _limitUnitPrice() returns the
   // implied price and the cap helpers route the whole tile into limit mode.
   // Auto-flip the explicit Market/Limit toggle when the user pins BOTH
-  // inputs by typing. Keeps the implicit-mode UX from before the toggle
-  // existed — a user who types both sides expecting limit-mode behaviour
-  // still gets it, but now the toggle visually reflects the state.
+  // inputs by typing — a user who types both sides gets limit-mode
+  // behaviour, and the toggle reflects it.
   // Trusted user input only; synthetic primes don't auto-flip.
   const _maybeAutoFlipMode = () => {
     const bothTyped = _isUserTyped('from') && _isUserTyped('to');
@@ -83418,8 +83124,7 @@ function _wireSwapTile(scope) {
     } else {
       widget.dataset.payUnit = 'sats';
     }
-    // Carry amounts across the flip instead of clearing (type-then-flip
-    // used to start the user over). Each value crosses to the field that
+    // Carry amounts across the flip instead of clearing. Each value crosses to the field that
     // keeps its unit — the token amount lands on the token side, the
     // sats value on the sats side (converted to/from USD when the
     // buy-side pay unit is dollars) — so the implied price survives and
@@ -83516,9 +83221,9 @@ function _wireSwapTile(scope) {
   // Predict the shape _postResidualAskListing will post for a residual at
   // a floor price, without broadcasting anything, so the pre-commit info
   // line can disclose what actually hits the book. k ≥ 2 → that many
-  // walk-away preauth-sale chunks (§5.7.8, tab-close safe, shows as k
+  // walk-away preauth-sale chunks (tab-close safe, shows as k
   // entries under Asks); k = 1 → single variable-amount intent
-  // (§5.7.6.1, needs this tab open + Auto-fulfil to settle fills);
+  // (needs this tab open + Auto-fulfil to settle fills);
   // k = 0 → too small to post at all. Mirrors the poster's own routing
   // below — keep the two in lockstep via this shared helper.
   const _planResidualAskShape = (residualBase, floorUnit) => {
@@ -83538,7 +83243,7 @@ function _wireSwapTile(scope) {
   };
   // Residual-list helper: given a token amount the seller still wants to
   // dispose of AT a given floor unit price, post a variable-amount
-  // listing (§5.7.6.1) for it. Mirrors the buyer's residual-bid path
+  // listing for it. Mirrors the buyer's residual-bid path
   // (which posts variable-fill bids); closes the orderbook loop on both
   // sides — a swap-sell that doesn't fully match against bids now leaves
   // an open ask any buyer can partial-fill.
@@ -83584,7 +83289,7 @@ function _wireSwapTile(scope) {
       blinding: listUtxo.blinding,
       ticker, decimals,
     };
-    // Routing: prefer walk-away chunks (§5.7.8 preauth-sale fanned into K
+    // Routing: prefer walk-away chunks (preauth-sale fanned into K
     // child UTXOs) so the seller can close the tab and any buyer can fill
     // any subset of chunks. Falls back to publishAxferVarIntent (online-
     // required) when chunks won't fit:
@@ -83653,7 +83358,7 @@ function _wireSwapTile(scope) {
         console.warn('[swap] residual chunks failed pre-broadcast, falling back to axfer-var:', e?.message);
       }
     }
-    // Fallback: online-required partial-fillable intent (§5.7.6.1). Reachable
+    // Fallback: online-required partial-fillable intent. Reachable
     // when residual is too small for ≥2 chunks above DUST, or chunks broadcast
     // raced and failed.
     const r = await publishAxferVarIntent({
@@ -84098,9 +83803,8 @@ function _wireSwapTile(scope) {
       // across all N fills instead of N independent CXFER splits. Saves
       // ~30-50% on the seller's on-chain cost when splits are needed
       // (typical case — seller's UTXOs rarely match bid amounts exactly).
-      // The atomic-intent commits stay sequential (one per bid); Phase 2
-      // would batch those too but needs worker storage permitting N
-      // intents at one commit_txid with different vouts.
+      // The atomic-intent commits stay sequential (one per bid; the worker
+      // stores one intent per commit_txid).
       //
       // Falls back silently to the per-fill loop in all non-batchable
       // cases (single bid, mixed asset_ids, no single UTXO covers the
@@ -84505,7 +84209,7 @@ function _wireSwapTile(scope) {
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'opening…';
         try {
-          // Variable-fill default (§5.7.7): make the no-route open swap
+          // Variable-fill default: make the no-route open swap
           // partial-fillable too. Same floor formula as the residual-bid
           // path so even a tiny budget gets a multi-seller-matchable order.
           let _bidMinFill = bidAmt / 10n;
@@ -84513,10 +84217,10 @@ function _wireSwapTile(scope) {
           if (_bidDustFloor > _bidMinFill) _bidMinFill = _bidDustFloor;
           if (_bidMinFill >= bidAmt) _bidMinFill = 0n;
           // Route preference — same routing as the partial-fill residual
-          // path. Prefer T_PREAUTH_BID_VAR (§5.7.12 walk-away partial-fill:
+          // path. Prefer T_PREAUTH_BID_VAR (walk-away partial-fill:
           // sats locked in a pre-fund UTXO, fills continue even if the
           // buyer closes the tab). Falls through to T_AXFER bid-intent
-          // (§5.7.7 online-required) only when var params don't fit —
+          // (online-required) only when var params don't fit —
           // small bids on high-decimal/low-price tokens where
           // price_per_unit would round to zero, or
           // ENABLE_T_PREAUTH_BID_VAR kill-switched. Unifies cold-market
@@ -84689,10 +84393,9 @@ function _wireSwapTile(scope) {
       let _totalFeesSats = 0;
       let _stoppedEarly = false;
       // Pre-broadcast stale retry (buy exact-in). Mirrors the exact-out
-      // tier-(a) at ~71761 and the sell exact-in retry shipped alongside
-      // this. Without it, a single race-loss on a fresh ask dropped the
-      // entire buy to the residual-bid fallback even when refreshing the
-      // orderbook would have surfaced a fresh route. Capped at 3 retries
+      // tier-(a) and the sell exact-in retry, so a single race-loss on a
+      // fresh ask re-plans against a refreshed orderbook instead of dropping
+      // the entire buy to the residual-bid fallback. Capped at 3 retries
       // so a thrashing book can't loop. Mid-route retries are left to
       // the residual-bid fallback below — replanning mid-swap would
       // race against already-broadcast commits.
@@ -84853,12 +84556,12 @@ function _wireSwapTile(scope) {
           try {
             // Route preference (CEX-style limit-order UX):
             //   ENABLE_T_PREAUTH_BID_VAR ON + K ≥ 2 → publishPreauthBidVar
-            //     (§5.7.12 walk-away partial-fill; buyer can close the tab,
+            //     (walk-away partial-fill; buyer can close the tab,
             //     sellers fill any allowed ratio, refund vout returns the
             //     unfilled portion). Re-denominated in WHOLE-TOKEN units so
             //     price_per_unit (sats per whole token) fits u64 even at
             //     8-decimal assets like TAC.
-            //   Otherwise → publishBidIntent (§5.7.7 online-required path;
+            //   Otherwise → publishBidIntent (online-required path;
             //     legacy fallback when VAR is disabled, the residual isn't a
             //     whole-token multiple, or the per-whole price would round
             //     to zero — small bids on high-decimal/low-price tokens).
@@ -86182,7 +85885,7 @@ function _wireMarketBidPlace(section, asset) {
     //   - outside sane range: red, "Nx floor" hint to flag a likely mistake
     // The 2× threshold is deliberate — small bid premiums above floor are
     // legitimate (you want it to fill quickly), but anything past 2× is
-    // probably a units-confusion error like the 417× case from the audit.
+    // probably a units-confusion error.
     const recomputeReadout = () => {
       const aRaw = (amountEl?.value || '').trim();
       const pRaw = (priceEl?.value || '').trim();
@@ -86344,7 +86047,7 @@ function _wireMarketBidPlace(section, asset) {
         } catch {}
         submitBtn.disabled = true;
         status.textContent = 'signing and posting...';
-        // Variable-fill (§5.7.7). When the toggle is ON (default), any
+        // Variable-fill. When the toggle is ON (default), any
         // seller can partial-fill any chunk in [min_fill, remaining_amount];
         // single bid attracts multi-seller liquidity. When OFF, the bid
         // is whole-fill only — useful for power users who specifically
@@ -86362,11 +86065,11 @@ function _wireMarketBidPlace(section, asset) {
           if (_minFill >= amount) _minFill = 0n;
         }
         // Walk-away bid path. Two opcodes share this branch:
-        //   • Walk-away + Partial-fillable ON → T_PREAUTH_BID_VAR (§5.7.12)
+        //   • Walk-away + Partial-fillable ON → T_PREAUTH_BID_VAR
         //     via _chooseVarBidParams (scale-shops decimals_scale down from
         //     asset.decimals until it finds a clean mapping; preserves
         //     fractional-whole-token bids).
-        //   • Walk-away only (partial-fill OFF) → T_PREAUTH_BID (§5.7.11).
+        //   • Walk-away only (partial-fill OFF) → T_PREAUTH_BID.
         //     Single pre-sig, exact-fill only.
         let _varRouted = false;
         if (_walkAwayToggle && ENABLE_T_PREAUTH_BID_VAR && _variableToggle && _minFill > 0n) {
@@ -86455,9 +86158,8 @@ function bindMarketAssetHeader(scope) {
   // preventDefault, so we do that explicitly.
   scope.querySelectorAll('[data-act="market-back-browse"]').forEach(el => {
     el.onclick = (ev) => { ev.preventDefault(); goToMarketBrowse(); };
-    // Hover color shift was previously inline (onmouseover/onmouseout),
-    // which the page CSP (script-src 'self' 'wasm-unsafe-eval') blocks.
-    // Bind via addEventListener so the effect survives without a CSP relax.
+    // Hover color shift via addEventListener: the page CSP (script-src
+    // 'self' 'wasm-unsafe-eval') blocks inline onmouseover/onmouseout.
     el.addEventListener('mouseenter', () => { el.style.color = 'var(--ink)'; });
     el.addEventListener('mouseleave', () => { el.style.color = 'var(--ink-mid)'; });
   });
@@ -86854,8 +86556,7 @@ function _renderMarketAskForm(formHost, aid) {
     return (Number.isFinite(sats) && sats > 0) ? sats : null;
   };
   // The price input is per-token, so the prominent readout shows the
-  // derived TOTAL (the inverse of the old total-field/unit-readout
-  // arrangement). Impact warning still anchors on the unit price.
+  // derived TOTAL. Impact warning anchors on the unit price.
   const _renderTotalReadout = (unitPrice, totalSats, label) => {
     const out = formHost.querySelector('[data-price-unit-readout]');
     if (!out) return;
@@ -87266,7 +86967,7 @@ async function marketClaimIntentHandler(btn) {
   const origText = btn.textContent;
   const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
 
-  // Variable-amount branch (§5.7.6.1 / T_AXFER_VAR). The listing carries a
+  // Variable-amount branch (T_AXFER_VAR). The listing carries a
   // non-empty min_take_amount; the taker picks any requested_amount in
   // [min_take_amount, amount] and pays a proportionally scaled BTC amount.
   // The modal picker gives live scaled-price preview + percentage chips
@@ -87323,7 +87024,7 @@ async function marketClaimIntentHandler(btn) {
     return;
   }
 
-  // Legacy whole-UTXO branch (§5.7.6 / T_AXFER).
+  // Legacy whole-UTXO branch (T_AXFER).
   if (!confirm(
     `Claim atomic intent?\n\n` +
     `Buying:  ${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
@@ -87359,7 +87060,7 @@ async function marketFulfilIntentHandler(btn) {
   try { claim = await fetchAxintentClaimDetail(aid, iid); }
   catch (e) { toast('Could not read claim detail: ' + e.message, 'error'); return; }
   if (!claim) { toast('No active claim to fulfil', 'error'); return; }
-  // Variable-amount fulfilment (§5.7.6.1) — claim carries requested_amount.
+  // Variable-amount fulfilment — claim carries requested_amount.
   const isVariable = !!intent.min_take_amount;
   const requestedBase = isVariable && claim.requested_amount ? BigInt(claim.requested_amount) : null;
   const dec = intent.decimals || 0;
@@ -87883,11 +87584,9 @@ async function marketTakePreauthHandler(btn) {
 }
 
 // Partial-fill amount picker for variable atomic intents (buy side,
-// §5.7.6.1 / T_AXFER_VAR) and variable-fill bids (sell side, §5.7.7).
-// Replaces the bare window.prompt that both entry points previously
-// used — the prompt had no live preview of the scaled BTC payment,
-// no percentage chips, no on-the-fly validation. This modal gives
-// the trader a real DEX-like picker with live recomputation.
+// T_AXFER_VAR) and variable-fill bids (sell side).
+// Live preview of the scaled BTC payment, percentage chips and
+// on-the-fly validation.
 //
 // Resolves to a BigInt amount in base units on confirm, or null on
 // cancel. Floor + ceiling + DUST validation is inline; the confirm
@@ -89361,9 +89060,7 @@ async function renderDiscover(force = false) {
           .catch(() => { /* image resolution is best-effort */ });
       }
     }
-    // STAGE 1: LAZY VIEWPORT-DRIVEN ETCH VERIFY. Pre-fix the verify pool
-    // walked through every asset on load, even ones the user never scrolled
-    // to — pure CPU/battery waste at scale. Now: each card's chain walk is
+    // STAGE 1: LAZY VIEWPORT-DRIVEN ETCH VERIFY. Each card's chain walk is
     // gated on IntersectionObserver. Cache hits process eagerly (free) so
     // the user gets immediate ✓ badges on already-verified assets; cold
     // chain walks defer until the card is in viewport (with a 300px margin
@@ -89389,7 +89086,7 @@ async function renderDiscover(force = false) {
         observer.observe(card);
       }
     }
-    // The verify work is no longer awaited here — it streams in via the
+    // The verify work is not awaited here — it streams in via the
     // observer and the cache-hit fast path. Stats stop ticking once every
     // card is processed.
     // (asset_id short/full toggles are wired per-card inside renderDiscoverCard.)
@@ -89923,11 +89620,9 @@ function applyDiscoverSort() {
 // Apply the Discover filter (search input + active pill) to the currently
 // rendered cards. Substring-matches against card.dataset.filterKey for the
 // query, and reads card.dataset.{mintable,attested,etchedAt} for the pill.
-// Coalesced filter scheduler — multiple in-flight enrichment callbacks
-// (verify, attestation, mints, burns) each used to call applyDiscoverFilter()
-// directly, so a batched verify of N cards walked the (CETCH + petch) DOM
-// 4×N times. Scheduling through rAF flushes a burst into a single walk
-// without changing user-perceived latency (still pre-paint). Direct
+// Coalesced filter scheduler — enrichment callbacks (verify, attestation,
+// mints, burns) schedule through rAF, which flushes a burst into a single
+// DOM walk without changing user-perceived latency (still pre-paint). Direct
 // applyDiscoverFilter() calls from user events (typing, pill click, sort)
 // stay direct so they feel instant.
 let _applyDiscoverFilterScheduled = false;
@@ -91911,7 +91606,7 @@ export {
   discoverStealthFromTxid, scanAssetForStealthReceipts,
   recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,
   markStealthTxidSeen, isStealthTxidSeen,
-  // SPEC-BLINDED-PUBKEY §A primitives — exported so console-driven debug
+  // primitives — exported so console-driven debug
   // sessions can step through each math layer (classify → aggregate → ECDH
   // → derive b → commit) when discoverStealthFromTxid returns no match on
   // a tx the user knows should match. Cheap exports; pure-function math.
@@ -91923,8 +91618,7 @@ export {
   STEALTH_DOMAIN_BY_OPCODE, hexToBytes, bytesToHex,
   // Local asset registry — exported so console-driven recovery flows can
   // manually register metadata for an asset that landed in localStorage
-  // without ticker/decimals (e.g. via the discoverStealthFromTxid path
-  // before the v1-stealth-credit-asset-meta-fix landed).
+  // without ticker/decimals.
   registerAsset,
   parseRecipientInput,
   getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
@@ -91965,14 +91659,14 @@ export {
   // silent-payment consolidation path (the bridge fee gate) end-to-end.
   ensureSatsFunded,
   // Auto-fulfil funding verifier — exported so adversarial tests can drive
-  // it directly without spinning up a full browser. C1+H1 audit fix
-  // surface; the unit test asserts on-chain checks reject junk + unconfirmed.
+  // it directly without spinning up a full browser; the unit test asserts
+  // on-chain checks reject junk + unconfirmed.
   _verifyAutoFulfilFundingTx as verifyAutoFulfilFundingTx,
   dropIdFromRevealTxid, dropKernelMsg, dropReclaimMsg,
   T_DROP, T_DCLAIM,
   encodeTDepositPayload, decodeTDepositPayload,
   encodeTWithdrawPayload, decodeTWithdrawPayload,
-  // SPEC-CBTC-ZK slot-wrapper opcodes + crypto helpers — exported for the
+  // slot-wrapper opcodes + crypto helpers — exported for the
   // worker↔dapp wire-format parity test and for dapp client code that builds
   // mint/burn/rotate txs.
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE, T_SLOT_SPLIT, T_SLOT_MERGE,
@@ -91992,15 +91686,14 @@ export {
   T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR,
   T_SWAP_ROUTE,
   computeSlotMintMsg, computeSlotRotateMsg, computeSlotSplitMsg, computeSlotMergeMsg,
-  // Per-denomination canonical slot asset_id (T_SLOT_SPLIT/T_SLOT_MERGE §5.24.6);
+  // Per-denomination canonical slot asset_id (T_SLOT_SPLIT/T_SLOT_MERGE);
   // computed byte-for-byte identically on the worker.
   ctacVariantAssetId,
   deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
-  // Deterministic slot-secret derivation (SPEC-CBTC-ZK §5.21-§5.25). Replaces
+  // Deterministic slot-secret derivation. Replaces
   // crypto.getRandomValues for (secret, nullifierPreimage) so privkey-only
   // recovery is possible. See block comment at _deriveSlotSecret for the
-  // anchor schema. Exported for testing; the slot builders will adopt them
-  // in the Phase 2 plumbing pass.
+  // anchor schema. Exported for testing.
   _deriveSlotSecret, _deriveSlotNullifierPreimage, _slotOutpointBytes,
   // Mixer + axintent deterministic derivation. Same anchored-HMAC pattern
   // as the slot helpers; replaces crypto.getRandomValues for bare mixer
@@ -92016,7 +91709,7 @@ export {
   // exercise the same code path the UI calls.
   buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn, buildAndBroadcastSlotRotate,
   buildAndBroadcastSlotSplit, buildAndBroadcastSlotMerge,
-  // AMM swap (T_SWAP_VAR) high-level builder. v1 self-fulfill: wallet
+  // AMM swap (T_SWAP_VAR) high-level builder. Self-fulfill: wallet
   // acts as both trader (intent sig) and settler (kernel sig from
   // excess scalar). Single Bitcoin tx, no off-chain coordination.
   buildSwapVarEnvelopeSelfFulfill, buildAndBroadcastSwapVarSelfFulfill,
@@ -92046,7 +91739,7 @@ export {
   deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
   // Asset-registry lookup.
   getAssetMeta,
-  // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
+  // Slot-note encryption primitives.
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,
   appendSlotNoteToPayload, tryExtractSlotNoteFromTail,
@@ -92106,8 +91799,8 @@ export {
   mixerRegisterPool, mixerIsPoolRegistered,
   mixerAppendLeaf, mixerHasRecentRoot, mixerHasHistoricalRoot,
   mixerIsNullifierSpent, mixerIsNullifierSpentByOther, mixerMarkNullifierSpent,
-  // Owner-conflict re-verification (audit fix: a worker-supplied stale/forged
-  // nullifier-owner txid must not brick the legitimate owner's withdraw).
+  // Owner-conflict re-verification (a worker-supplied stale/forged
+  // nullifier-owner txid must not block the legitimate owner's withdraw).
   // Exported so tests can drive the on-chain re-verify + fail-closed semantics
   // with a mock fetchTx without standing up the full validator pipeline.
   mixerGetNullifierOwner, mixerForceNullifierOwner,
@@ -92121,8 +91814,8 @@ export {
   mixerIsPoolCanonical,
   CANONICAL_VK_CID, CANONICAL_CEREMONY_CID,
   // High-level mixer wiring exported for the cBTC.zk lifecycle signet
-  // smoke + future headless drivers — pool init broadcaster, the worker→
-  // local-tree sync that hosts the slot-leaf dispatch under audit, the
+  // smoke + headless drivers — pool init broadcaster, the worker→
+  // local-tree sync that hosts the slot-leaf dispatch, the
   // merkle-proof builder consumed by buildAndBroadcastSlotBurn, and the
   // wallet unlock prompt the higher-level builders depend on.
   buildAndBroadcastPoolInit, scanPools, buildMixerMerkleProof, ensurePrivkey,
@@ -92200,25 +91893,25 @@ export {
   recordPreauthTakePending, forgetPreauthTakePending,
   listPreauthTakePendings, _renderPreauthRecoveryBannerHtml,
   recoverPreauthCommit, recoverPreauthCommitsBatch,
-  // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
+  // atomic-intent flow exports — used by the signet e2e harness to
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
   fetchAxferFulfilment, takeAxferIntent, cancelAxferIntent, cancelAxferClaim,
-  // §5.7.6.1 variable-amount intent maker-side publish. Exported so the
+  // variable-amount intent maker-side publish. Exported so the
   // worker-axintent-var parity test can pin byte-for-byte parity of the
   // intent_id derivation + publish_msg construction against the worker's
   // atomicIntentIdHexVar + atomicIntentPublishMsgVar. Drift here = a 403 at
   // every variable-amount publish, so the parity test is load-bearing.
   publishAxferVarIntent, _axintentIdVar, _axintentPublishMsgVar,
-  // §5.7.6.1 variable-amount intent taker-side claim. Exported for the
+  // variable-amount intent taker-side claim. Exported for the
   // dapp/worker parity test (claim_msg_v3 byte-equivalence with the worker's
   // atomicIntentClaimMsgVar).
   claimAxferVarIntent, _axintentClaimMsgVar,
-  // §5.7.6.1 variable-amount intent maker-side fulfilment. Exported so the
+  // variable-amount intent maker-side fulfilment. Exported so the
   // parity test can pin byte-for-byte parity of fulfilment_msg_v2 against
   // the worker's atomicIntentFulfilmentMsgVar.
   fulfilAxferVarIntent, _axintentFulfilMsgVar,
-  // §5.7.6.1 variable-amount intent taker-side completion.
+  // variable-amount intent taker-side completion.
   finalizeAxferVarTake,
   // OP_RETURN(80) encoder + decoder for the dual-recovery payload at vout[3].
   // Exported so the t-axfer-var-decoder test can pin the wire format
@@ -92239,7 +91932,7 @@ export {
   // without rebroadcasting.
   postAxferIntentBody, resumePendingAxintents,
   deriveAxintentBlindingKeystream, xor32,
-  // §5.7.6 on-chain encrypted (amount, blinding) helpers. Exported for parity
+  // on-chain encrypted (amount, blinding) helpers. Exported for parity
   // tests against the test-side mirror, and for any reference implementation
   // wanting to interop with dapp-produced OP_RETURN payloads.
   deriveAxintentOnchainKeystreams,
@@ -92254,10 +91947,8 @@ export {
   // Encrypted-at-rest privkey storage
   encryptPrivkey, decryptPrivkey,
   // Ceremony IPFS multi-gateway fetcher — exported so tests can drive its
-  // sync- and async-validator paths against a stubbed `fetch`. The async
-  // path (used for r1cs/ptau CID-hash checks) regressed once when the
-  // helper failed to await the validator and rejected good responses as
-  // "[object Promise]"; the export keeps that regression covered.
+  // sync- and async-validator paths against a stubbed `fetch` (the async
+  // path is used for r1cs/ptau CID-hash checks and must await the validator).
   _ceremonyFetchIpfsWithFailover as ceremonyFetchIpfsWithFailover,
   // Address-UTXO fetcher with the >500-cap tx-history fallback. Exported so
   // tests can stub `fetch` and assert the fallback reconstructs the unspent

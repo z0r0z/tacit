@@ -277,7 +277,7 @@ export async function buildAndBroadcastLpBond({
 
   // The receipt OWNER is a fresh one-time key (privacy + the spend-auth the trustless fold requires); harvest/
   // unbond re-derive it from (walletPriv, farmId, nonce). Persist {nonce, owner, shares} — that's the WHOLE
-  // receipt now, since the entry checkpoint is reflection state (stamped at fold time), not a note field.
+  // receipt, since the entry checkpoint is reflection state (stamped at fold time), not a note field.
   const receiptNonce = new Uint8Array(32);
   globalThis.crypto.getRandomValues(receiptNonce);
   const ownerKey = deriveFarmOwnerKey({ walletPriv: wallet.priv, farmId: hexToBytes(farmIdHex), nonce: receiptNonce });

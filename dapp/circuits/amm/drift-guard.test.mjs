@@ -39,9 +39,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // =========================================================================
 // PINNED VALUES — DO NOT EDIT WITHOUT INTENT TO INVALIDATE THE CEREMONY.
 //
-// Pinned post-hardening (see REVIEW.md). Any drift = potential ceremony
-// invalidation. If you have a deliberate reason to change these, update
-// REVIEW.md with the reasoning AND plan a fresh Phase 2 ceremony.
+// Any drift = potential ceremony invalidation. A deliberate change needs a
+// fresh Phase 2 ceremony.
 // =========================================================================
 
 const PINNED_SOURCE_HASHES = {

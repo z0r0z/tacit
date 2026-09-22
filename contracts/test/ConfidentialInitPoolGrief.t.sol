@@ -34,7 +34,7 @@ contract ConfidentialInitPoolGriefTest is Test {
         assetA = pool.registerWrapped(address(tokenA), 1, bytes32(0), "Conf A", "cA", 8);
         assetB = pool.registerWrapped(address(tokenB), 1, bytes32(0), "Conf B", "cB", 8);
         if (assetA > assetB) { (assetA, assetB) = (assetB, assetA); (tokenA, tokenB) = (tokenB, tokenA); }
-        // fund both attacker and LP
+        // fund both the front-runner and LP
         tokenA.mint(ATTACKER, 1_000_000); tokenB.mint(ATTACKER, 1_000_000);
         tokenA.mint(LP, 1_000_000);       tokenB.mint(LP, 1_000_000);
         vm.startPrank(ATTACKER);
@@ -55,7 +55,7 @@ contract ConfidentialInitPoolGriefTest is Test {
         vm.expectRevert(ConfidentialPool.FeeTooHigh.selector);
         pool.createPair(assetA, assetB, 10000, 0, bytes32(0), 0);
         // a front-run with a SANE fee just creates an EMPTY, joinable slot (the pair is not lost; the first
-        // liquidity provider — attacker or anyone — seeds it via a first-mint OP_LP_ADD).
+        // liquidity provider — anyone — seeds it via a first-mint OP_LP_ADD).
         vm.prank(ATTACKER);
         bytes32 pid = pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0);
         (bool init, , , uint256 rA, uint256 rB, uint32 fee, uint256 sh) = pool.pools(pid);
@@ -64,7 +64,7 @@ contract ConfidentialInitPoolGriefTest is Test {
 
     // GRIEF-1b: createPair CANONICALIZES the pair (sorts assetA/assetB), so the argument order is
     // irrelevant — both orderings resolve to the SAME poolId, and the second createPair reverts PoolExists
-    // (an attacker cannot pre-lock "both orderings").
+    // (one pool per unordered pair).
     function test_orderings_canonicalize_to_one_pool() public {
         vm.prank(ATTACKER);
         bytes32 pidAB = pool.createPair(assetA, assetB, 0, 0, bytes32(0), 0);

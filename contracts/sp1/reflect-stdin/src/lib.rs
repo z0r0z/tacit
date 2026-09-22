@@ -168,7 +168,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
     for kv in live {
         let t = kv.as_array().unwrap();
         // Each live entry is (outpoint key, commitment_hash, asset_id, auth_key, bound) — the guest reads
-        // all five (reflect.rs `live_quints`); the digest commits the Bitcoin spend key AND the generation
+        // all five (reflect.rs `live_quints`); the digest commits the Bitcoin spend key AND the deployment-bound
         // tag. `bound` (0/1) selects the leaf domain; absent (legacy 4-tuple fixture) ⇒ 0.
         r32(&mut s, &t[0]);
         r32(&mut s, &t[1]);
@@ -287,7 +287,7 @@ pub fn write_stdin(f: &serde_json::Value) -> SP1Stdin {
                 .and_then(|v| v.as_u64().map(|n| n as u128).or_else(|| v.as_str().and_then(|x| x.parse::<u128>().ok())))
                 .unwrap_or(0u128),
         );
-        // The MasterChef reward debt (Σ shares_i·entry_i over live positions), read between `rps` and
+        // The reward-per-share debt (Σ shares_i·entry_i over live positions), read between `rps` and
         // `lastHeight`. It sets what a launcher refund must reserve, so it rides digest() like the rest.
         s.write(
             &fe.get("totalRewardDebt")

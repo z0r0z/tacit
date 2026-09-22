@@ -12,7 +12,7 @@ interface ITacMint {
     function approve(address, uint256) external returns (bool);
 }
 
-/// MAINNET FORK: FarmManager against the LIVE gen5 pool, hooks driven by pranking the pool with the exact
+/// MAINNET FORK: FarmManager against the LIVE pool, hooks driven by pranking the pool with the exact
 /// (legs, debtValue, positionLeaf, rateSnapshot) shapes the guest emits (main.rs OP_FARM_BOND / OP_LP_BOND /
 /// OP_FARM_HARVEST / OP_FARM_UNBOND). The pool's per-harvest farmTreasury debit is replayed via a storage write.
 contract FarmManagerLivePool is Test {
@@ -238,7 +238,7 @@ contract FarmManagerLivePool is Test {
         ConfidentialPool(payable(POOL)).farmEscrow(address(m), wId, 5_000 ether, address(0));
         vm.stopPrank();
         skip(8 days);
-        // simulate retirement of the generation: successor != 0
+        // simulate retirement of the pool: successor != 0
         stdstore.target(POOL).sig("successor()").checked_write(address(0xDEAD));
         // funding barred, recover (an exit) stays open
         vm.prank(gov);

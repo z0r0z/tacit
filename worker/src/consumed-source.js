@@ -5,19 +5,16 @@
 // pool root, never the underlying outpoint — so the value has to be handed to the worker. That makes the
 // submission load-bearing for the liveness of the whole reflection lane, not just for the spender:
 // `buildModeBBatch` resolves ν by FIRST MATCH and throws when it finds none, and the guest's `fold_consumed`
-// is `.expect(...)`, so a wrong source panics the proof rather than being skipped. An unvalidated store would
-// therefore let one bad entry wedge every later Mode-B proof.
+// is `.expect(...)`, so a wrong source panics the proof rather than being skipped.
 //
-// The fix is to validate at WRITE time instead of trusting the writer. Everything `fold_consumed` checks is
-// checkable here against the reflection's own live UTXO set, so only the genuine source for a given ν can
-// ever be stored — which makes the first-match resolution safe and removes the poisoning surface entirely
-// (a wrong submission is rejected, not recorded). It also means the endpoint no longer has to be trusted to
-// the same degree as the box: a hostile caller can only fail.
+// So it is validated at WRITE time. Everything `fold_consumed` checks is checkable here against the
+// reflection's own live UTXO set, so only the genuine source for a given ν can ever be stored, which makes
+// the first-match resolution safe (a wrong submission is rejected, not recorded).
 //
 // Mirrors cxfer-core `fold_consumed` step for step:
 //   1. the outpoint must be a LIVE UTXO in the reflected set
 //   2. keccak(Cx‖Cy) must equal that outpoint's recorded commitment hash
-//   3. the source leaf is btc_note_leaf_bound(...) for a generation-bound note (bound tag 1) and
+//   3. the source leaf is btc_note_leaf_bound(...) for a deployment-bound note (bound tag 1) and
 //      btc_note_leaf(...) otherwise — reconstructed from the LIVE entry's own asset and auth key, never
 //      from anything the caller supplied
 //   4. nullifier(source leaf) must equal the submitted ν
@@ -66,7 +63,7 @@ export function validateConsumedSource(sub, liveTriples, pool, chainBinding) {
     return { ok: false, reason: 'commitment does not match the live UTXO' };
   }
 
-  // (3) Reconstruct the source leaf over the note's OWN generation domain, from live state.
+  // (3) Reconstruct the source leaf over the note's OWN deployment domain, from live state.
   if (bound === 1 && !HEX32.test(String(chainBinding || ''))) {
     return { ok: false, reason: 'bound note needs this deployment chain binding to reconstruct its leaf' };
   }
@@ -96,11 +93,10 @@ export function validateConsumedSource(sub, liveTriples, pool, chainBinding) {
  *     parses and keeps in `coords` (outpointKey → {cx, cy, txid, vout}) — off-chain bookkeeping the scanner
  *     derives itself, persisted in the snapshot and deliberately outside `digest()`.
  * So the source never needed to be told to us. Walk the live set, rebuild each note's leaf over its own
- * generation domain from state, and take the one whose nullifier is the ν we are resolving.
+ * deployment domain from state, and take the one whose nullifier is the ν we are resolving.
  *
- * With this there is no write path to poison: nothing outside the worker contributes, and the worker's own
- * inputs are chain data it re-derives. `validateConsumedSource` remains as the check on any legacy stored
- * record, so the two together mean a source is either derived from chain state or proven against it.
+ * Nothing outside the worker contributes, and the worker's own inputs are chain data it re-derives.
+ * `validateConsumedSource` is the check on any stored record, so the two together mean a source is either derived from chain state or proven against it.
  *
  * @returns {{ok:true, record:object} | {ok:false, reason:string}}
  */

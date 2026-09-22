@@ -9,10 +9,8 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
 /// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_STEALTH_LOCK ON-CHAIN,
 /// through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. Network-proven on the box
-/// (harnesses/exec-stealthlock.rs over fixtures/stealthlock_op.json) for the current guest
-/// generation. Prior to this fixture, the lockbatch/claim/refund/bridgestealthmint variants
-/// each had a real on-chain-verified proof but plain OP_STEALTH_LOCK (the single-lock op the
-/// dapp's stealthSend actually dispatches) did not — this closes that gap.
+/// (harnesses/exec-stealthlock.rs over fixtures/stealthlock_op.json) for the committed guest.
+/// Covers plain OP_STEALTH_LOCK, the single-lock op the dapp's stealthSend dispatches.
 /// The sender locks note N's full value under a one-time stealth pubkey (N and the new lock
 /// leaf L open to the same amount — conservation, no change; a lock is fee-less), authorized
 /// by a per-input opening PoK proving knowledge of N's blinding.
@@ -60,7 +58,7 @@ contract ConfidentialStealthLockProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to this guest generation).
+    /// A different program vkey is rejected (the proof is bound to this guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

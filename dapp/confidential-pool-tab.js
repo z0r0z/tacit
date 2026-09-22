@@ -1,7 +1,7 @@
-// Confidential Pool tab — the dapp render over the LIVE pool (mainnet gen3 or the Sepolia signet pilot,
+// Confidential Pool tab — the dapp render over the LIVE pool (mainnet or the Sepolia signet pilot,
 // whichever confidential-deployments.js resolves as active). Presentational only; the read path (account +
 // seed-only balance) and the wrap/exit BUILD paths live in confidential-pool-ux.js (tested). Kept OUT of
-// tacit.js (a thin hook calls this) to minimize the giant-file footprint while that file is concurrently edited.
+// tacit.js (a thin hook calls this).
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
@@ -158,7 +158,7 @@ function renderFinality() {
 function renderPoolPanel() {
   const intro =
     `<div class="note-concept"><b>One note, two chains.</b> Wrap <span class="eth-word">ETH</span> (or any token) into a shielded note here, or bring value over from <span class="btc-word">Bitcoin</span> — it becomes the same shielded note you can transfer, trade, or borrow against from either side.</div>`
-    + `<div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed (GPT-5.5 Pro · Opus 4.8 Max) — no active fund-impacting findings · <a href="#tab=about">details →</a></div>`
+    + `<div class="muted" style="font-size:11px;"><span style="color:var(--green)">●</span> Independently reviewed — no open fund-impacting findings · <a href="#tab=about">details →</a></div>`
     + `<div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>`
     + `<div id="cpool-status" class="muted">—</div>`
     + `<div id="cpool-balance"></div>`

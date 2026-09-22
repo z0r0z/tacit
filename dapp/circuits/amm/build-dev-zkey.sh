@@ -2,10 +2,9 @@
 # DEV-ONLY Phase 2 zkey generation for AMM circuits.
 #
 # Produces single-contributor, dev-beacon zkeys suitable for testing the
-# end-to-end real-Groth16 pipeline. NOT PRODUCTION SAFE — a real V1 launch
-# requires the multi-contributor ceremony described in
-# AMM-CEREMONY-RUNBOOK.md (≥1000 contributors, Bitcoin-block-hash beacon,
-# public attestation chain).
+# end-to-end real-Groth16 pipeline. NOT PRODUCTION SAFE — production keys
+# come from the multi-contributor AMM ceremony (Bitcoin-block-hash beacon,
+# public attestation chain; see dapp/circuits/README.md).
 #
 # Output files are named `*_dev_final.zkey` and `*_dev_vk.json` to make
 # the dev provenance unambiguous. Anyone routing these into production

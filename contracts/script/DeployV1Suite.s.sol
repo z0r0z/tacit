@@ -28,8 +28,7 @@ interface IFeed {
 ///         it (ctor deploy-or-adopts tacBTC + tacUSD), then `engine.setPool(pool)` — and ONLY THEN is
 ///         ownership handed to ENGINE_ADMIN. Doing the handoff before setPool would strand the wiring.
 ///
-///         Day-1 pools (TAC-centric: TAC is the common leg + incentive currency, ops/PLAN-day1-assets-and-
-///         incentives.md): TAC/cETH, TAC/cBTC, cUSD/cBTC, cUSD/cETH, cETH/cBTC. Each pool gets a
+///         Day-1 pools (TAC-centric: TAC is the common leg + incentive currency): TAC/cETH, TAC/cBTC, cUSD/cBTC, cUSD/cETH, cETH/cBTC. Each pool gets a
 ///         FarmController staking its LP-share id (keccak(poolId‖"lp")) and emitting cTAC (escrow mode).
 ///         Pairs/farms whose legs didn't resolve (e.g. no engine ⇒ no cBTC/cUSD; no TAC underlying) are
 ///         skipped with a log line — never silently. Pair creation + farm deploy are direct calls;
@@ -54,14 +53,14 @@ contract DeployV1Suite is Script {
         bytes32 genesisReflectionAnchor;
         uint256 reflectionConfirmations;
         bytes32 reflectionResumeDigest;
-        bytes32 tethBitcoinId; // pins native ETH (cETH); 0 ⇒ no cETH this generation
+        bytes32 tethBitcoinId; // pins native ETH (cETH); 0 ⇒ no cETH in this deployment
         bool deployEngine; // false ⇒ Ethereum-only, cBTC/cUSD dormant
         address wstEth; // Lido wrapped staked ETH (the cBTC escrow/reserve asset)
         address wstEthUsdFeed;
         address btcUsdFeed;
         uint256 maxStaleness;
         address engineAdmin; // engine owner after setPool
-        address lineageSteward; // the one account that may create this generation's successor
+        address lineageSteward; // the one account that may create this pool's successor
         address farmGov;
         address tacUnderlying; // public TAC ERC20 (0 ⇒ deploy a testnet TAC if deployTestnetTac, else skip)
         bool deployTestnetTac; // testnet only: etch a fixed-supply 21M TAC when tacUnderlying is unset
@@ -161,7 +160,7 @@ contract DeployV1Suite is Script {
                 anchorHeight != 0,
                 "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
             );
-            // A generational resume: the digest and the anchor describe ONE reflected state, and a mismatched
+            // A resume: the digest and the anchor describe ONE reflected state, and a mismatched
             // pair is only discovered when the first attest reverts, leaving an immutable, unbootstrappable
             // pool. RESUME_DIGEST_HEIGHT must equal the relay's own height for the anchor, confirming both
             // were read at the same reflected state rather than from two different snapshots.
@@ -352,7 +351,7 @@ contract DeployV1Suite is Script {
         c.tacUnitScale = vm.envOr("TAC_UNIT_SCALE", uint256(1)); // 8-dec TAC ERC20 → tacit 8 ⇒ scale 1
         c.tacDecimals = uint8(vm.envOr("TAC_DECIMALS", uint256(8)));
         c.feeBps = uint32(vm.envOr("DAY1_FEE_BPS", uint256(30)));
-        // Protocol/creator fee for the TAC pools: 1667 bps = Uniswap's 1/6 fee-switch (the protocol takes 1/6
+        // Protocol/creator fee for the TAC pools: 1667 bps = a 1/6 fee switch (the protocol takes 1/6
         // of the LP fee; e.g. on a 30bps pool the protocol gets ~5bps of volume, LPs ~25bps). This bps has the
         // SAME meaning on both lanes — EVM per-swap (cut = LP_fee·bps/10000) and Bitcoin lazy-mintFee
         // (protocol_fee_shares, bps=1667 ↔ the 5:1 ⇒ 1/6) — so the two chains charge identical economics.

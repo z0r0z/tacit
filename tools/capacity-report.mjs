@@ -121,5 +121,5 @@ console.log('  (a host-side limit — frontier compaction needs no redeploy, re-
 
 console.log('\nVERDICT');
 console.log('  Nothing on the immutable surface accumulates cost. The snapshot does, slowly, and the fix');
-console.log('  for it is off-chain and already scoped. Migration between generations is the maintenance');
-console.log('  model and has been exercised across five generations, resuming state by digest.\n');
+console.log('  for it is off-chain and already scoped. Successor deployments resume reflection state by');
+console.log('  digest, so migration needs no state copy.\n');

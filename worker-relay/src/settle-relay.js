@@ -1,8 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Settle relay — the confidential-op settle loop (network prove edition).
 //
-// Render service type: Background Worker (long-running). Mirrors
-// ops/scripts/confidential-settle-loop.sh, GPU swapped for the Succinct network prover.
+// Render service type: Background Worker (long-running). Proves on the Succinct network prover.
 //
 // Cycle:
 //   1. GET /confidential/job → the next queued user op {jobId, type, op, memos, mode}.
@@ -58,20 +57,12 @@ let unpricedJobs = 0;
 export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   if (job.mode === 'prove') return { ok: true, reason: 'prove-only (no on-chain submit)' };
   // DERIVED value only. `job.feeUsd` is computed by the worker from the op's own fee legs (the same
-  // witness fields the guest enforces); `job.op` is client JSON, so anything on it is attacker-controlled.
-  // Reading `op.feeUsd` first — as this did — would have let a hostile integrator declare any fee it liked
-  // the moment the producer was wired. The worker strips that field on submit; not reading it here is the
-  // other half of the same fix.
+  // witness fields the guest enforces); `job.op` is client JSON and is never trusted for the fee. The worker
+  // strips `op.feeUsd` on submit, and this gate never reads it.
   const feeUsd = Number(job.feeUsd ?? NaN);
   if (!Number.isFinite(feeUsd)) {
-    // An op that carries no priced fee is unpaid work. Every relayed op has taken this path so far — the
-    // producer never set `op.feeUsd` — which is why the relay's fee balances have been flat zero while it
-    // paid for every settle out of its own gas. The flywheel downstream (sweep -> ETH/PROVE -> vApp) is
-    // complete and correct; it has simply never had anything to sweep.
-    //
-    // Defaulting to closed here would stop production dead, since nothing populates the field yet, so the
-    // default preserves today's behaviour and makes the subsidy VISIBLE instead of silent. Wire
-    // `op.feeUsd` at the producer, then set RELAY_REQUIRE_PRICED_FEE=1 to actually collect.
+    // An op that carries no priced fee is unpaid work. By default it is relayed as a logged subsidy;
+    // RELAY_REQUIRE_PRICED_FEE=1 refuses it.
     if (CFG.requirePricedFee) {
       return { ok: false, reason: 'op carries no priced fee and RELAY_REQUIRE_PRICED_FEE=1' };
     }
@@ -86,14 +77,14 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
     provePriceUsd,
     ethPriceUsd,
   });
-  // Hold the fee to the op's MARGINAL cost by default (see gateIncludesMaintenance in config): refusing an op
-  // for failing to cover a share of fixed overhead rejected ordinary dapp fees whenever gas was above ~0.06 gwei.
+  // Hold the fee to the op's MARGINAL cost by default (see gateIncludesMaintenance in config): fixed overhead is
+  // carried by the margin, not charged to each op.
   const need = CFG.gateIncludesMaintenance ? q.costUsd : q.marginalCostUsd;
   const label = CFG.gateIncludesMaintenance ? 'cost' : 'marginal cost';
   if (feeUsd + 1e-9 < need) {
     // `reason` is logged AND acked to the job, where the submitter can read it. It must not carry the dollar value
     // of their fee: for an asset priced from private config (cTAC) that value is units x the private reference
-    // price, so echoing it back would let anyone read the price off a rejection. Our own cost is not sensitive.
+    // price, which stays private. Our own cost is not sensitive.
     return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}`, publicReason: `bound fee is below the ${label} of $${need.toFixed(4)} at current gas and PROVE prices` };
   }
   return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ ${label} $${need.toFixed(4)}`, quote: q };
@@ -103,7 +94,7 @@ async function liveGasGwei() {
   try {
     const gp = await publicClient.getGasPrice();
     return Number(gp) / 1e9;
-  } catch { return 1; } // fall back to ~1 gwei (PRICING doc centers here)
+  } catch { return 1; } // fall back to ~1 gwei
 }
 
 // Batch several queued transfers into one settle when they can share it. Gas is charged per settle, so the
@@ -123,9 +114,7 @@ async function submitSettle(proof, memos, label) {
 // Waiting on a receipt alone cannot tell "slow" from "dead". A transaction is DEAD the moment another sender on
 // this key mines a transaction with the same nonce: nothing we sent under that nonce can ever be included, yet a
 // receipt wait sits out its full timeout, and every escalation round re-broadcasts at the SAME nonce and is dead
-// too. Seen in production 2026-09-20: a relayed wrap was signed at nonce 2715, another sender's transaction took
-// 2715 before it landed, and the relay spent two full 3-minute rounds on a transaction that could never be
-// included before noticing on the third — 6.5 minutes for a settle that then landed in 13 seconds.
+// too.
 //
 // So each poll checks both things: has any of OUR broadcasts landed, and has this nonce been consumed. The
 // receipts are always checked first, and once more after a short pause before declaring the nonce taken — the
@@ -344,9 +333,7 @@ async function batchCycle() {
   let jobs = await confidentialBatch(CFG.settleBatchMax);
   if (!jobs.length) return false;
 
-  // Gate every member exactly as the single-job path does. Batched transfers used to be claimed and proved without
-  // ever passing through feeGate, so a batch could relay a job the single path would have refused. Refused members
-  // are acked individually — one underpaying member must not sink the others — and the rest carry on. The gate
+  // Gate every member exactly as the single-job path does. Refused members are acked individually — one underpaying member must not sink the others — and the rest carry on. The gate
   // holds each to its own marginal cost; a batch splits the gas, so this is conservative, never permissive.
   const [gasGwei, ethPx] = await Promise.all([liveGasGwei(), ethUsdPrice()]);
   const provePx = await provePriceUsd(ethPx);
@@ -439,7 +426,7 @@ async function cycle() {
 
   let proof;
   if (mode === 'preproven' && job.publicValues && job.proof) {
-    // The proof was produced elsewhere (a cold-box failover, or the user's own local prover — the private,
+    // The proof was produced elsewhere (a standby prover, or the user's own local prover — the private,
     // fee-free path where the witness never reached the relay). Skip proving; just settle the supplied proof.
     proof = { publicValues: job.publicValues, proof: job.proof };
     log(`job ${jobId} type=${type} preproven — settling supplied proof (no relay prove)`);

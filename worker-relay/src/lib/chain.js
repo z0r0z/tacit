@@ -1,5 +1,4 @@
 // viem clients + the minimal ABIs the relay calls on-chain.
-// We use viem (not ethers) — lighter, ESM-native, typed. Noted in README.
 
 import { createPublicClient, createWalletClient, http, fallback, getAddress } from 'viem';
 import { mainnet } from 'viem/chains';
@@ -35,10 +34,8 @@ export async function gasAboveCap() {
 // A SECOND opinion, deliberately not sharing the fallback list above. viem's fallback() sticks with the
 // first endpoint that doesn't error, so as long as RPC_URL answers every call — receipts included — every
 // read in a normal cycle goes through it alone; the public fallbacks are all reachability insurance, not a
-// disagreement check. That is exactly the gap that let a false "3 confirmations" receipt through: the
-// endpoint that reported it was the same one asked to confirm it, and it never had to answer to anyone
-// else. The reflection cursor is unrewindable once acked, so before advancing it, cross-check against an
-// endpoint that was never party to the submission.
+// disagreement check. The reflection cursor is unrewindable once acked, so before advancing it, cross-check
+// against an endpoint that was never party to the submission.
 export const verifyClient = createPublicClient({ chain, transport: http(CFG.reflectionVerifyRpcUrl) });
 
 function walletFor(pk, tp = transport) {
@@ -199,9 +196,8 @@ export async function readPool(fn, args = []) {
 
 // The digest the pool has attested up to — the reflection-folder's idempotency check (skip a batch that
 // is already on-chain, and recognise an "already attested" revert so it acks instead of looping).
-// Prefer the view: it cannot drift when the pool's storage layout shifts, which is how this read silently
-// pointed at knownBitcoinBurnRoot for a generation. The slot read stays as a fallback for older pools
-// deployed before `attestedReflectionDigest()` existed.
+// Prefer the view: it cannot drift when the pool's storage layout shifts. The slot read is a fallback for
+// pools without `attestedReflectionDigest()`.
 export async function readReflectionDigest(client = publicClient, blockNumber) {
   const at = blockNumber === undefined ? {} : { blockNumber };
   try {

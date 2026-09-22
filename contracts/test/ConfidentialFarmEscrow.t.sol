@@ -216,8 +216,7 @@ contract ConfidentialFarmEscrowTest is Test {
 
     function test_recover_unfunded_controller_reverts_cleanly() public {
         // A controller that never funded (pinned == 0) has no budget to reclaim — even when it passes a
-        // matching-looking zero rewardAsset (the old `pinned != rewardAsset` guard let 0 == 0 fall through
-        // to a vacuous zero payout). Now it reverts NotRegistered.
+        // matching-looking zero rewardAsset, it reverts NotRegistered.
         vm.prank(address(controller));
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         pool.farmEscrow(address(controller), bytes32(0), 0, creator);
@@ -236,9 +235,8 @@ contract ConfidentialFarmEscrowTest is Test {
         pool.farmEscrow(address(0), rewardId, 100, address(0));
     }
 
-    // REGRESSION (farmEscrow pin-squat): the first-fund pin binds to the controller's own REWARD_ASSET, so a
-    // griefer cannot pin a DIFFERENT registered asset for a controller (which would permanently brick its
-    // real reward funding). A fund whose asset != controller.REWARD_ASSET() reverts NotRegistered.
+    // The first-fund pin binds to the controller's own REWARD_ASSET, so no caller can pin a DIFFERENT
+    // registered asset for a controller. A fund whose asset != controller.REWARD_ASSET() reverts NotRegistered.
     function test_fund_squat_wrong_asset_reverts() public {
         MockERC20 reward2 = new MockERC20();
         bytes32 rewardId2 = pool.registerWrapped(address(reward2), 1, bytes32(0), "Reward2", "RWD2", 8);

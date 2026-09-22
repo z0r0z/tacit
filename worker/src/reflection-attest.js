@@ -1,6 +1,6 @@
 // Worker-side reflection attestation: maintains the canonical Bitcoin confidential-pool reflection state
-// via the FULL-SCAN model (every tx of every confirmed block, F4-complete) and assembles the prover batches
-// the self-hosted GPU box proves + submits to ConfidentialPool.attestBitcoinStateProven (the box-poll relay).
+// via the FULL-SCAN model (every tx of every confirmed block) and assembles the prover batches the
+// reflection relayer proves + submits to ConfidentialPool.attestBitcoinStateProven.
 // Dependency-injected (deps={secp,keccak256,sha256}, storage, getBlockTxs/getHeaders, classifyTx,
 // burnDepositKit) so it is testable + deployment-agnostic. The persisted SNAPSHOT (advanced only on ack,
 // after the on-chain attestation lands) is the source of truth, so a restart/redeploy is always consistent.
@@ -9,8 +9,7 @@ import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-sc
 import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 
-// ── Full-scan reflection attester (the worker's Bitcoin-state relay; the superseded witnessed-effects
-// attester was removed at the scan-attester cutover) ──
+// ── Full-scan reflection attester (the worker's Bitcoin-state relay) ──
 // The canonical state is a SNAPSHOT (the full-scan ScanReflection: live set + accumulators +
 // coords) persisted at the ATTESTED height. A cycle assembles the un-attested block range by
 // fetching EVERY tx of each block (so the guest's merkle-completeness check holds — no pool spend
@@ -88,7 +87,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
   }
 
   // Assemble the next un-attested block range into a prover input WITHOUT advancing the persisted
-  // anchor (the box proves + submits, then acks). Returns null if caught up. The returned
+  // anchor (the relayer proves + submits, then acks). Returns null if caught up. The returned
   // `newSnapshot` is the post-batch canonical state ackJob will persist.
   async function assembleJob() {
     const s = await loadState();

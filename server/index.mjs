@@ -5,7 +5,7 @@
 //   node server/index.mjs
 //
 // Env knobs: PORT (default 8787), DATABASE_URL, TRUST_PROXY=1 (behind
-// Render's proxy), PROXY_TRUST_KEY (legacy workers.dev proxy handshake),
+// Render's proxy), PROXY_TRUST_KEY (workers.dev proxy handshake),
 // CACHE_MAX_MB (defaults to 1/8 of the container memory limit, 16-256 MB),
 // CRON_DISABLED=1, MEM_GUARD_DISABLED=1, MEM_SOFT_RATIO / MEM_HARD_RATIO /
 // MEM_CHECK_MS (memory guard tuning), plus every var/secret the worker reads
@@ -37,8 +37,7 @@ function containerMemoryBytes() {
 // The cache holds response bodies as Buffers, which live outside the V8 heap:
 // they count fully against the container's memory limit but barely register as
 // heap pressure, so V8 will not collect its way out of an over-budget cache —
-// the container is OOM-killed first. Hence a share of the real limit, not a
-// fixed default that happened to be half of a 512 MB instance.
+// the container is OOM-killed first. Hence a share of the real limit.
 const CACHE_SHARE = 0.125;
 const CACHE_FLOOR_MB = 16;
 const CACHE_CEIL_MB = 256;

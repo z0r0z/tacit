@@ -1,5 +1,4 @@
-// Claim the OP_BRIDGE_MINT settle for the 1000-TAC bridge deposit now that gen4's reflection has folded
-// the burn (attested on-chain at height 966068). Reads bridge-mint_op.json (scratchpad/build-bridge-mint.mjs)
+// Prove the OP_BRIDGE_MINT settle for a bridge burn once reflection has folded it. Reads bridge-mint_op.json
 // and writes the settle guest's exact stdin order (main.rs header + one OP_BRIDGE_MINT op).
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};
 const ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/confidential-pool-prover");

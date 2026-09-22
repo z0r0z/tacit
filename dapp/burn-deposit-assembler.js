@@ -12,8 +12,7 @@
 // The guest's burn_deposit.rs binds each
 // provenance/etch/cmint step to the ACTUAL confirmed tx: it derives the txid (computed, not free), the
 // CXFER/CETCH/CMINT envelope, and the input outpoints FROM the tx bytes, and authenticates the witness via the
-// BIP141 commitment (wtxid merkle path + the same-block coinbase). So each provenance tx now needs, instead of
-// a free txid + separately-witnessed inputs/outputs/kernel/range: the full `tx` bytes, the spent-note
+// BIP141 commitment (wtxid merkle path + the same-block coinbase). So each provenance tx needs the full `tx` bytes, the spent-note
 // `inputCommitments` (points only; Bitcoin records just the outpoint), the produced `outputVouts`, and the
 // witness-commitment proof — `wtxidSiblings` (over the block's wtxids, coinbase wtxid := 0), `coinbase` (the
 // tx carrying the 6a24aa21a9ed commitment + reserved-value witness), and `coinbaseTxidSiblings` (the coinbase

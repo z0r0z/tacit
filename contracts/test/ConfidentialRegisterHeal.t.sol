@@ -32,12 +32,12 @@ contract MockRelayH {
     }
 }
 
-/// Pins the `_autoRegisterFromMeta` HEAL branch (ConfidentialPool.sol:2149-2166): an attacker permissionlessly
-/// deploys the canonical ERC20 for a not-yet-bridged asset id (the factory is open) and `registerMinted`s it —
-/// creating a LOCAL registry entry with NO cross-chain link and a squatter-chosen unitScale. When the real
+/// Pins the `_autoRegisterFromMeta` HEAL branch (ConfidentialPool.sol): anyone may permissionlessly
+/// deploy the canonical ERC20 for a not-yet-bridged asset id (the factory is open) and `registerMinted` it —
+/// creating a LOCAL registry entry with NO cross-chain link and a caller-chosen unitScale. When the real
 /// bridge attest later arrives, the heal branch must (a) adopt the GUEST-PROVEN scale, (b) heal the bridged
-/// link so a bridged unwrap resolves, and (c) NOT enable a scale-poison drain — which holds because a
-/// pool-minted asset has no escrow and the canonical token can only be minted by the pool (the squatter holds
+/// link so a bridged unwrap resolves, and (c) leave no value at a wrong scale — which holds because a
+/// pool-minted asset has no escrow and the canonical token can only be minted by the pool (that registrant holds
 /// zero balance, so there is no outstanding value at the old scale).
 contract ConfidentialRegisterHealTest is Test {
     ConfidentialPool pool;
@@ -113,16 +113,14 @@ contract ConfidentialRegisterHealTest is Test {
         assertEq(pool.localAssetOf(BR), internalId, "shared id resolves to the local entry");
         assertEq(pool.canonicalTokenFor(BR), address(token), "the squatter's token IS the canonical one (salt-bound to the pool)");
 
-        // F3 REGRESSION: a query/wrap by the SHARED id must resolve to the healed local entry. Before the
-        // fix, assets()/wrap() read _assets[sharedId] RAW → registered=false → wrap(sharedId) reverted
-        // NotRegistered (a healed canonical asset was un-wrappable by the id the router hands out + notes
-        // carry). The lookups now go through _resolveAsset, so the shared id finds the healed entry.
+        // A query/wrap by the SHARED id (the id the router hands out and notes carry) must resolve to the
+        // healed local entry: the lookups go through _resolveAsset.
         (bool sharedReg,, uint256 sharedScale,, bool sharedMinted,) = pool.assets(BR);
         assertTrue(sharedReg, "F3: shared-id query of a healed asset resolves as registered");
         assertEq(sharedScale, 1e10, "F3: shared-id query returns the healed guest-proven scale");
         assertTrue(sharedMinted, "F3: shared-id query returns the healed pool-minted flag");
 
-        // 4. SAFETY: no scale-poison drain is possible — a pool-minted asset has no escrow, and the canonical
+        // 4. The overwritten scale governs no value — a pool-minted asset has no escrow, and the canonical
         //    token has zero supply, so the overwritten scale governs no outstanding value.
         assertEq(pool.escrow(internalId), 0, "pool-minted asset never holds escrow");
         assertEq(token.totalSupply(), 0, "no value existed at the old scale to mis-redeem");

@@ -1,31 +1,18 @@
 // OP_SWAP_BLIND (31 / 0x1F) box harness (not part of the crate build). Mirrors exec-swap.rs.
 //
-// STATUS (measured 2026-09-20, supersedes the "HARD-DISABLED / proof-fatal" note this header used to
-// carry): the guest arm is LIVE — it was un-panicked in the 2026-08-26 reprove and src/main.rs runs the
-// real clearing. An execute against the committed elf/cxfer-guest, with EXPECT_VKEY pinned to the
-// deployed PROGRAM_VKEY 0x006cd47f…232d6e3, returns:
+// The guest arm runs the real clearing. An execute against the committed elf/cxfer-guest returns:
 //
 //     EXECUTE_OK cycles=7611678765 swaps=1 reserves 1000000/1000000→1001000/999004 tips A=0 B=0
 //
-// matching fixtures/swapblind_op.json's `expected`. So the op is correct end to end: in-guest BN254
-// Groth16 verify, per-asset conservation kernels, cross-curve sigmas, blind PoKs and the k-check all
-// pass. fixtures/swapblind_op.json is likewise complete (a real 256-byte amm_swap_batch proof), which
-// retires the "FIXTURE REGENERATION (BLOCKER)" note that used to sit below.
+// matching fixtures/swapblind_op.json's `expected` (in-guest BN254 Groth16 verify, per-asset conservation
+// kernels, cross-curve sigmas, blind PoKs and the k-check all pass; the fixture carries a real 256-byte
+// amm_swap_batch proof).
 //
-// WHAT ACTUALLY GATES ENABLEMENT IS COST, NOT CORRECTNESS — and it is a batching/pricing question:
-//   - 7.6e9 cycles is for a ONE-INTENT batch. The Groth16 verify (swap_blind.rs, one
-//     groth16_bn254_verify over the whole envelope) is a FIXED cost; only the per-intent loop
-//     (membership, xcurve sigma, blind PoK, BP+ range) scales. So cost per trader is roughly
-//     fixed/n_intents + marginal, and the guest caps n_intents at 16 — a full batch amortises the
-//     pairing across 16 traders rather than one.
-//   - That is the intended design: several parties' swaps clear in one proof, and what they are buying
-//     is prover-blindness — the box never sees a cleartext amount, unlike OP_SWAP.
-//   - The per-proof ceiling still has to move: every other settle harness proves under
-//     cycle_limit(256_000_000), which a swap-blind batch exceeds by ~30x. This harness already sets
-//     16_000_000_000 below.
-//   - Enabling it therefore means (a) a batcher that aggregates enough intents to amortise, (b) a
-//     relay fee priced for the real cycle cost, and (c) raising the settle-side cycle limit. It is a
-//     product decision, not a dead path.
+// Cost: 7.6e9 cycles is for a ONE-INTENT batch. The Groth16 verify (swap_blind.rs, one groth16_bn254_verify
+// over the whole envelope) is a FIXED cost; only the per-intent loop (membership, xcurve sigma, blind PoK,
+// BP+ range) scales, so cost per trader is roughly fixed/n_intents + marginal, and the guest caps n_intents
+// at 16. Every other settle harness proves under cycle_limit(256_000_000); this one sets 16_000_000_000
+// below, and the relay fee has to be priced for the real cycle cost.
 //
 // The Bitcoin lane runs the SAME verify (swap_batch.rs fold_swap_batch → groth16_bn254_verify over the
 // same batch_vk()), but inside a reflection proof that is produced anyway, and that lane already
@@ -292,10 +279,9 @@ fn main() {
     }
 
     // Network proving (not CPU+native-gnark): this op's in-guest Groth16 verification of the
-    // amm_swap_batch ceremony proof runs into the billions of cycles (~7.6B for a 1-intent batch per the
-    // v1-final reprove's execute-mode measurement), far past what the box's cgroup memory cap can carry
-    // through a local native-gnark wrap — the same reason every other settle harness in this round already
-    // uses .network(). Generous explicit limits so the SDK submits straight to the network instead of
+    // amm_swap_batch ceremony proof runs into the billions of cycles (~7.6B for a 1-intent batch in execute
+    // mode), far past what the box's cgroup memory cap can carry through a local native-gnark wrap — the
+    // same reason every other settle harness uses .network(). Generous explicit limits so the SDK submits straight to the network instead of
     // re-executing locally first to estimate them (this host cannot cheaply re-run a 7.6B-cycle guest).
     let client = ProverClient::builder().network().build();
     let elf = Elf::Static(ELF);

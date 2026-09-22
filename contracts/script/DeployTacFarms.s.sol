@@ -7,7 +7,7 @@ import {FarmController} from "../src/FarmController.sol";
 import {WrappedTac} from "../src/WrappedTac.sol";
 import {TacFarmFunder} from "../src/TacFarmFunder.sol";
 
-/// One broadcast deploys everything a TAC-paying farm set needs on gen5: the wTAC wrapper, its escrow registration, the
+/// One broadcast deploys everything a TAC-paying farm set needs: the wTAC wrapper, its escrow registration, the
 /// one-transaction funder, and one escrow/receipt FarmController per pool. Env: POOL, TAC, GOV (immutable governor: notify + recover),
 /// STAKE_0..STAKE_2 (each pool's LP-share id = keccak(poolId ‖ "lp")), PK. Dry run (no broadcast) on a fork first.
 contract DeployTacFarms is Script {

@@ -2,7 +2,7 @@
 //
 // Days, not "settles left": a wallet that carries BOTH roles (the merged relayer key) pays for the maintenance
 // lane as well as the settles, and maintenance costs about as much per day as the settles do at any realistic
-// volume. Counting only settles overstated the runway ~100x ("635 settles" for a wallet with ~6 days).
+// volume.
 
 // Gas the wallet burns per day, from the roles it carries.
 export function burnGasPerDay({ roles, maintenanceRunsPerDay, expectedOpsPerDay, gas }) {

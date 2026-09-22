@@ -4,10 +4,10 @@
 // at settle time — it can only choose whether to settle. Competition therefore lives at the QUOTE level: the
 // dapp asks the relayer what fee to bake into the proof. The optimal quote is GAS-PRICED, not bps-of-value —
 // a settle costs ~fixed gas regardless of note size, so `fee = settleGas × gasPrice × (1 + margin)`, converted
-// into the fee asset. A bps fee overcharges whales and undercharges dust; the gas-priced floor undercuts both,
-// which is exactly how the initial relayer competes (set margin low/zero) and how an open market clears.
+// into the fee asset. A bps fee overcharges large notes and undercharges dust; the gas-priced floor undercuts
+// both, and a relayer competes by setting its margin.
 //
-// Pure functions (no I/O) so they're byte-identical in the worker, the box loop, the dapp quote, and tests.
+// Pure functions (no I/O) so they're byte-identical in the worker, the relayer, the dapp quote, and tests.
 
 // Per-op settle gas. The Groth16 verify dominates (~constant); each public effect (withdrawal / fee leg /
 // minted leaf / nullifier) adds a little. Tune to the deployed verifier + chain (these are conservative).
@@ -42,7 +42,7 @@ export function isProfitable({ feeOffered, gasPriceWei, weiPerFeeUnit, effects =
 }
 
 // Extract the declared relay-fee legs from an op witness, per type — used to gate at submit/claim time BEFORE
-// burning a GPU prove cycle. Returns [{ value }] (asset omitted where the witness doesn't carry it; the box
+// spending a prove cycle. Returns [{ value }] (asset omitted where the witness doesn't carry it; the relayer
 // maps each op's natural fee asset). The fee-less-by-design ops return [].
 export function feeLegsOf(type, op) {
   const v = (x) => BigInt(x ?? 0n);
@@ -64,7 +64,7 @@ export function feeLegsOf(type, op) {
   }
 }
 
-// Total declared fee value across legs (naive sum; the box refines per-asset with weiPerFeeUnit). 0 ⇒ a
+// Total declared fee value across legs (naive sum; the relayer refines per-asset with weiPerFeeUnit). 0 ⇒ a
 // self-settle / subsidy candidate.
 export function totalFee(type, op) {
   return feeLegsOf(type, op).reduce((s, x) => s + x.value, 0n);

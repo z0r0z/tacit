@@ -20,9 +20,9 @@ interface IFeed {
 ///  direct fund-loss risk); supply it via env var and double-check it against docs.chain.link before any
 ///  mainnet broadcast. BTC/USD is used directly (the cUSD peg, load-bearing).
 ///
-///  Risk params (market-standard, MakerDAO/Aave-ish for BTC collateral):
+///  Risk params (market-standard for BTC collateral):
 ///    • escrowRatioBps 15000 (1.5×)  — cBTC self-custody wstETH escrow over-collateralization
-///    • cdpRatioBps    15000 (1.5×)  — cUSD mint floor (DAI-like)
+///    • cdpRatioBps    15000 (1.5×)  — cUSD mint floor
 ///    • liqRatioBps    13000 (1.3×)  — cUSD liquidation threshold (< mint floor)
 ///    • maxDeviationBps 0            — single-source Chainlink at launch (enable once a tacUSD/tacBTC pool deepens)
 ///

@@ -18,13 +18,9 @@ workers_dev = true
 #   { pattern = "tacit.finance/tacit.js*", zone_name = "tacit.finance" },
 #   { pattern = "www.tacit.finance/tacit.js*", zone_name = "tacit.finance" },
 # ]
-# NOTE (2026-06-04): enabling these requires onboarding the tacit.finance
-# zone to this Cloudflare account first — DNS currently lives at the
-# registrar (registrar-servers.com) pointing directly at Render, so
-# `wrangler deploy` rejects the route with error 10083. The KV artifact
-# (dapp:tacit.js.br) and the handler are deployed and waiting; once the
-# zone exists here, uncommenting + `wrangler deploy` completes the flip.
-# When uncommenting, KEEP workers_dev = true above — see its comment.
+# Enabling these requires the tacit.finance zone on this Cloudflare account
+# (`wrangler deploy` rejects the route with error 10083 otherwise). When
+# uncommenting, KEEP workers_dev = true above — see its comment.
 
 # UPLOAD_KV — per-IP rate limits for /pin uploads
 [[kv_namespaces]]
@@ -57,8 +53,8 @@ dataset = "tacit_worker"
 # gates every other route.
 ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is,http://localhost:8765,http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:8765,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080"
 
-# Confidential-relay profitability gate — OFF by default (no floor is enforced today; a relayed settle is
-# accepted at any offered fee, including zero). Set RELAY_FEE_FLOOR = "1" to start rejecting relayed
+# Confidential-relay profitability gate — OFF by default (a relayed settle is accepted at any offered fee,
+# including zero). Set RELAY_FEE_FLOOR = "1" to start rejecting relayed
 # (mode:'settle') submits whose fee doesn't clear the gas-priced floor (see buildRelayFeeGate in
 # src/index.js) for the op types + cETH fee leg it can verify. RELAY_FEE_MARGIN_BPS (default 1000 = 10%)
 # sets the margin over raw gas cost.
@@ -73,8 +69,7 @@ DAILY_LIMIT = "20"
 #     a proposal; defaults to 100 TAC (10000000000) if unset.
 #   GOV_TAC_ERC20_<NET>  — canonical TAC ERC20 address per network. Until set,
 #     the PUBLIC (Ethereum) voting path returns 501; the PRIVATE (Bitcoin
-#     threshold-proof) path works regardless. TAC ERC20 is not live yet, so
-#     these stay unset for now.
+#     threshold-proof) path works regardless.
 # GOV_PROPOSE_MIN_BASE = "10000000000"
 # GOV_TAC_ERC20_MAINNET = "0x..."
 # GOV_TAC_ERC20_SIGNET  = "0x..."
@@ -85,13 +80,12 @@ MAX_BYTES = "2097152"
 # Faucet drip amount (sats per request)
 DRIP_SATS = "20000"
 
-# Ethereum RPC endpoints. Legacy mixer recovery endpoints may use these for read-only checks;
-# new bridge/DeFi testing uses ConfidentialPool reflection + settle flows.
+# Ethereum RPC endpoints.
 ETH_RPCS_MAINNET = "https://ethereum-rpc.publicnode.com,https://eth.llamarpc.com,https://1rpc.io/eth,https://eth.drpc.org"
 ETH_RPCS_SEPOLIA = "https://ethereum-sepolia-rpc.publicnode.com,https://1rpc.io/sepolia,https://sepolia.drpc.org,https://sepolia.gateway.tenderly.co"
 
-# Legacy tETH mixer addresses (sunset alpha; recovery/migration only). Keep blank by
-# default so new Sepolia testing cannot accidentally target TacitBridgeMixer.
+# tETH mixer addresses (recovery only). Blank by default so nothing targets
+# TacitBridgeMixer by accident.
 TETH_MIXER_MAINNET = ""
 TETH_MIXER_SEPOLIA = ""
 TETH_UNIT_SCALE = "10000000000"

@@ -26,7 +26,7 @@ CID_FILE="${CIRCUITS_DIR}/ceremony-genesis-amm/pot18_cid.txt"
 
 if [ ! -f "$PTAU_FILE" ]; then
     echo "MISSING: $PTAU_FILE" >&2
-    echo "Fetch pot18 first (see ops/runbooks/AMM-CEREMONY-RUNBOOK.md Step 1)." >&2
+    echo "Place pot18_final.ptau (Hermez powers of tau truncated to 2^18) here first." >&2
     exit 1
 fi
 
@@ -42,7 +42,7 @@ if [ -f "$CID_FILE" ]; then
     fi
 fi
 
-# Cross-check BLAKE2b against runbook pin before paying 288 MB of upload.
+# Cross-check BLAKE2b against the pinned hash before paying 288 MB of upload.
 # A corrupt ptau here would propagate to every contributor's verify step.
 EXPECTED_BLAKE2B="7e6a9c2e5f05179ddfc923f38f917c9e6831d16922a902b0b4758b8e79c2ab8a81bb5f29952e16ee6c5067ed044d7857b5de120a90704c1d3b637fd94b95b13e"
 echo "==> Computing BLAKE2b-512 of $PTAU_FILE (~30s)…"

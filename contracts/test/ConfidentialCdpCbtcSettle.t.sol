@@ -89,7 +89,7 @@ contract MockController is ICdpController {
     }
 }
 
-/// Integration coverage for the IMMUTABLE cBTC + CDP contract paths (audit C-2): the cBTC lock registry
+/// Integration coverage for the IMMUTABLE cBTC + CDP contract paths: the cBTC lock registry
 /// recorded in attest, the escrow/commitment/one-shot-gated cBTC mint, the CDP derive-authority check,
 /// the controller callback, and the position spend-once dedup. The guest crypto is the real-proof suite's
 /// job; here the mock verifier lets us drive the contract state machine with constructed public values.
@@ -733,7 +733,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spentRoot;
         pv.nullifiers = _arr(nu);
-        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (C-01 full-source binding)
+        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (full-source binding)
         _settle(pv);
 
         assertEq(pool.bitcoinConsumed(nu), keccak256(abi.encodePacked(btcRoot, src)));
@@ -769,7 +769,7 @@ contract ConfidentialCdpCbtcSettleTest is Test {
         pv.spendRoot = btcRoot;
         pv.bitcoinSpentRoot = spentRoot;
         pv.nullifiers = _arr(nu);
-        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (C-01 full-source binding)
+        pv.bitcoinConsumedSources = _arr(src); // 1:1 with nullifiers (full-source binding)
         _settle(pv);
 
         assertEq(pool.bitcoinConsumed(nu), keccak256(abi.encodePacked(btcRoot, src)));

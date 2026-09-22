@@ -71,7 +71,7 @@ export function makeConfidentialDefiActions({ pool, cdp, farm, relay, id, chainB
   async function closeCdp({ controller, debtValue, rateSnapshot, basket, positionIndex, positionPath, spendRoot, cdpPositionRoot, fee = 0n, releaseBlindings, releaseNks, debtNotes, positionOwner, positionOwnerPriv, waitOpts }) {
     // The close is owner-authorized (BIP-340) by the position's FRESH per-position key — the same key whose
     // x-only pubkey is `positionOwner` (open's `positionOwner`). Require it; never fall back to id.owner (the
-    // account key would link positions, and only the position key can sign the close the guest now verifies).
+    // account key would link positions, and only the position key can sign the close the guest verifies).
     if (!positionOwner || !positionOwnerPriv) throw new Error('closeCdp: positionOwner + positionOwnerPriv (the fresh per-position key) are required to authorize the close');
     const legCount = (basket || []).length;
     if (!Array.isArray(releaseNks) || releaseNks.length !== legCount) {

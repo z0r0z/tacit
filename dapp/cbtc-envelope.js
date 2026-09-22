@@ -32,7 +32,7 @@ export function buildCbtcLockEnvelope({ asset, lockVout, cx, cy, sigRx, sigRy, s
 
 // T_CBTC_REDEEM (0x67), 109 bytes: 0x67 ‖ lockTxid(32) ‖ lockVout(4 LE) ‖ v_btc(8 LE) ‖ kernelSig(64). The
 // single-tx Bitcoin-native redemption: the same tx UNLOCKS the named lock AND burns exactly v_btc of cBTC
-// (Σ C_in = v_btc·H, the audited CXFER burn); reflection retires the whole lock before the rug scan.
+// (Σ C_in = v_btc·H, the CXFER burn); reflection retires the whole lock before the rug scan.
 export function buildCbtcRedeemEnvelope({ lockTxid, lockVout, vBtc, kernelSig }) {
   const env = _cat(Uint8Array.of(0x67), _hb(lockTxid, 32), _le4(lockVout), _le8(vBtc), _hb(kernelSig, 64));
   if (env.length !== 109) throw new Error(`cBTC redeem envelope must be 109 bytes, got ${env.length}`);

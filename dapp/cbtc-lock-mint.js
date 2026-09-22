@@ -1,7 +1,7 @@
 // cbtc-lock-mint — assembles the full self-custody cBTC ① lock driver from the portable pieces:
 //   bitcoin-taproot-wallet (BTC prims) + cbtc-note-recovery (recoverable blinding) + cbtc-lock (orchestrator)
 //   + cbtc-lock-broadcast (Taproot commit→reveal). Network access is public esplora (injected fetch).
-//   The two functions cbtc-lock needs that were never written elsewhere are defined here:
+//   Two functions cbtc-lock needs are defined here:
 //   - selectLockFunding: coin-select a wallet UTXO to fund the lock (the note blinding anchors to it)
 //   - ownLockScriptPubKey: the self-custody key-path P2TR the vBtc locks into (user redeems it later)
 // ② reflection folds the lock; ③ mintCbtc (engine) opens the note 1:1. Prove recoverability (scanCbtc) on a

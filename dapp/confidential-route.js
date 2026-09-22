@@ -114,7 +114,7 @@ export function makeConfidentialRoute({ keccak256, pool, kernelSign }) {
     op.change = changeOut;
     const changeLeaves = changeOut.map((c) => leaf(asset0, c.cx, c.cy, c.owner));
     // The note's REAL opening is (amountIn, rIn) for a whole-note route (change == []); a genuine partial
-    // spend would need `inNote`'s own {value,blinding} here instead — not yet threaded through (TODO).
+    // spend would need `inNote`'s own {value,blinding} here instead (TODO: thread it through).
     const k = kernelSign({ inputs: [{ value: BigInt(amountIn), blinding: BigInt(rIn) }], outputs: changeOut, fee: BigInt(amountIn), outLeaves: changeLeaves });
     op.changeKernelR = bytesToHex(k.R.toRawBytes(true));
     op.changeKernelZ = bytesToHex(be32(k.z));

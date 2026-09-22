@@ -311,8 +311,8 @@ function parseCmint(envHex) {
 //   { asset, nullifier, dest, target } (all hex). Layout (env[0]=0x2B, exactly 161B):
 //   opcode(1) ‖ assetId(32) ‖ bitcoinPoolRoot(32) ‖ nullifier(32) ‖ destCommitment(32) ‖ targetChainBinding(32).
 // `target` = the CHAIN_BINDING (keccak(chainid, poolAddress)) of the deployment the burn targets;
-// it is folded into bridge_burn_id so a burn is redeemable in exactly one generation. V3 launches with no legacy
-// 129-byte burns, so the 161-byte format is required unconditionally.
+// it is folded into bridge_burn_id so a burn is redeemable in exactly one deployment. The 161-byte format is
+// required unconditionally.
 function parseBurnEnvelope(envHex) {
   const env = hexToBytes(envHex);
   // Both a reflected bridge-burn and a scan-free burn-deposit carry exactly this 161-byte envelope; the
@@ -362,7 +362,7 @@ function axferAssetInputCount(envHex) {
   return cx ? cx.assetInputCount : null;
 }
 
-// T_CXFER_BOUND (0x39): the generation-bound CXFER → { target, asset, kernelSig, commitments[], rangeProof }.
+// T_CXFER_BOUND (0x39): the deployment-bound CXFER → { target, asset, kernelSig, commitments[], rangeProof }.
 // Same wire shape as T_CXFER with a 32-byte target_chain_binding prepended (env[0]=0x39):
 //   0x39 ‖ target(32) ‖ assetId(32) ‖ kernel_sig(64) ‖ N(1∈{1,2,4,8}) ‖ N×(commitment(33)‖amount_ct(8)) ‖ rpLen(2 LE) ‖ rp.
 // Mirrors cxfer-core::bitcoin::parse_cxfer_bound_envelope.
@@ -408,10 +408,9 @@ function encodeCxferBoundEnvelope({ target, asset, kernelSig, outputs, rangeProo
   return bytesToHex(cat(parts));
 }
 
-// One-time migration of a legacy (generation-unbound) TAC note into the current generation's bound note
-// format. A legacy TAC note can no longer ride the btcHomed fast lane (the settle guest now onboards only
-// bound notes), so the holder spends it on Bitcoin into a single T_CXFER_BOUND (0x39) TAC output note of the
-// SAME amount, homed to `targetChainBinding` (= keccak(chainid, poolAddress) of the launch generation, which
+// One-time migration of a legacy (unbound) TAC note into the deployment-bound note format. The fast lane
+// onboards only bound notes, so the holder spends a legacy TAC note on Bitcoin into a single T_CXFER_BOUND
+// (0x39) TAC output note of the SAME amount, homed to `targetChainBinding` (= keccak(chainid, poolAddress) of the deployment, which
 // the caller supplies since it is a deploy-time CREATE3 artifact). This is value-preserving — in = the legacy
 // TAC note, out = one bound TAC note of the same amount — so it conserves under the SAME `tacit-kernel-v1`
 // kernel a v1 CXFER uses (cxfer-core fold_cxfer_bound → verify_cxfer_conservation); the migration adds no
@@ -634,7 +633,7 @@ function parseFarmInitEnvelope(envHex) {
   const rpLen = e[HDR] | (e[HDR + 1] << 8), ks = HDR + 2 + rpLen, rt = ks + 64 + 64;
   if (e.length !== rt + 4 + 32 + 32) return null; // EXACT close (kernel_sig + launcher_sig + refund tail), matching guest parse_farm_init_envelope
   // start_height[146..150] + end_height[150..154]: the campaign window the reflection clamps accrual to
-  // (was parsed-over before). end == 0 ⇒ perpetual. Trailing refund tail = founder-refund binding. Mirrors
+  // end == 0 ⇒ perpetual. Trailing refund tail = founder-refund binding. Mirrors
   // guest parse_farm_init_envelope.
   return { type: 'farm_init', poolId: _h(e, 1, 33), farmNonce: _h(e, 33, 65), launcherPubkey: _h(e, 65, 98), rewardAsset: _h(e, 98, 130), rewardTotal: _u64le(e, 130), rewardPerBlock: _u64le(e, 138), startHeight: _u32le(e, 146), endHeight: _u32le(e, 150), cChangeOrSentinel: _h(e, 154, 187), kernelSig: _h(e, ks, ks + 64), launcherSig: _h(e, ks + 64, ks + 128), refundExpiry: _u32le(e, rt), refundDestXonly: _h(e, rt + 4, rt + 36), refundBlinding: _h(e, rt + 36, rt + 68) };
 }
@@ -793,8 +792,8 @@ function txOutputScript(rawTxHex, vout) {
 // T_CROSSOUT_MINT (0x65) — the Mode-B reverse mint (ETH→BTC). In a FORWARD batch (mode_b=0) the guest's
 // fold_crossout ALWAYS skips (crossout_set_root=0 → set-membership fails) — it onboards nothing — but it reads
 // the witnesses (set_index, set_path, note_path) for ANY parseable 0x65 first. Routing it (vs 'unsupported')
-// lets the forward scan emit those witnesses + skip, so a 0x65 (a reverse-mint once that path is live, or a
-// crafted one) no longer makes the attester refuse the block. The actual onboarding is the mode_b=1
+// lets the forward scan emit those witnesses + skip, so any 0x65 in a block leaves the forward scan able to
+// attest it. The actual onboarding is the mode_b=1
 // reverse-prove path (separate). Layout: opcode ‖ asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32).
 function parseCrossoutMintEnvelope(envHex) {
   const e = hexToBytes(envHex);
@@ -874,7 +873,7 @@ function classifyConfidentialTx(rawTxHex) {
     if (vouts.some((v) => v === null)) return null;
     return { type: 'cxfer', opcode, assetId: cx.asset, commitments: cx.commitments, kernelSig: cx.kernelSig, rangeProof: cx.rangeProof, vouts, assetInputCount: cx.assetInputCount };
   }
-  // A generation-bound CXFER (0x39): the bound-note fold. Surfaces target_chain_binding so the assembler/guest
+  // A deployment-bound CXFER (0x39): the bound-note fold. Surfaces target_chain_binding so the assembler/guest
   // can require it == this deployment's chainBinding before onboarding. Identity vouts, like v1 CXFER.
   const cxb = parseCxferBoundEnvelope(envHex);
   if (cxb) {
@@ -901,8 +900,8 @@ function classifyConfidentialTx(rawTxHex) {
   // parser returns no `type`, so stamp it); the assembler's swap_batch branch reads exactly these fields.
   const sb = parseSwapBatchEnvelope(envHex);
   if (sb) return { type: 'swap_batch', ...sb };
-  // lp_add (0x2D) / lp_remove (0x2E): the opening blindings (share_r / r_recv_a/b) now ride the envelope
-  // (option a), so the indexer can fold them — route to their fold env.
+  // lp_add (0x2D) / lp_remove (0x2E): the opening blindings (share_r / r_recv_a/b) ride the envelope,
+  // so the indexer can fold them — route to their fold env.
   const la = parseLpAddEnvelope(envHex);
   if (la) return la;
   const lr = parseLpRemoveEnvelope(envHex);

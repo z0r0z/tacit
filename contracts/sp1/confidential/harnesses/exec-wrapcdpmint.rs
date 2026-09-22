@@ -39,9 +39,8 @@ fn main() {
     stdin.write(&u64f(&f["debtValue"]));
     stdin.write(&hexv(f["nonce"].as_str().unwrap()));
     stdin.write(&hexv(f["rateSnapshot"].as_str().unwrap()));
-    // SECURITY (F-2): `fee` + the DEBT COMMITMENT move ahead of the deposit legs — each deposit's
-    // authorization must BIND them, or a relayer can substitute its own debt commitment and take the loan
-    // as "fee" while the borrower's collateral is encumbered for the gross debt.
+    // `fee` + the DEBT COMMITMENT move ahead of the deposit legs so each deposit's authorization BINDS
+    // them: the relayer cannot change the debt commitment or the fee.
     stdin.write(&u64f(&f["fee"]));
     {
         let d = &f["debt"];

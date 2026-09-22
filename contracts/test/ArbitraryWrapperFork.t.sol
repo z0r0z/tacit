@@ -41,7 +41,7 @@ contract FeeOnTransfer is ERC20 {
     }
 }
 
-/// MAINNET FORK ONLY (skipped elsewhere): the live gen5 pool + a FarmController support ARBITRARY external wrapper tokens.
+/// MAINNET FORK ONLY (skipped elsewhere): the live pool + a FarmController support ARBITRARY external wrapper tokens.
 ///   forge test --match-contract ArbitraryWrapperFork --fork-url $RPC -vv
 /// For each token shape: register it as an escrow asset (scale derived from its decimals), fund a farm with it (escrow IN),
 /// let the period + grace lapse with nobody staked, and recover it (payout OUT). Nothing may be lost or stuck.

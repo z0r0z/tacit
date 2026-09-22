@@ -32,10 +32,8 @@ contract MockRelayX {
     }
 }
 
-/// A CollateralEngine that reports escrow always-sufficient and is wired to its OWN pool. Using a per-pool
-/// engine keeps this suite about C-01 (one Bitcoin source, two pool generations) and NOT C-02 (an engine
-/// mis-bound to a foreign pool): each pool below owns an independently-funded engine, so the only shared
-/// resource is the Bitcoin lock itself.
+/// A CollateralEngine that reports escrow always-sufficient and is wired to its OWN pool, so each pool below
+/// owns an independent engine and the only shared resource is the Bitcoin lock itself.
 contract MockEngineX is ICollateralEngine {
     address public POOL;
 
@@ -48,23 +46,15 @@ contract MockEngineX is ICollateralEngine {
     }
 }
 
-/// Cross-generation replay regression suite (the decisive test called for by the ConfidentialPool audit
-/// exchange on C-01). The finding: a ConfidentialPool's Bitcoin single-use state — `nullifierSpent`,
-/// `bitcoinConsumed`, `cbtcMinted` — is scoped to ONE contract, while the reflected Bitcoin roots/digest are
-/// a SHARED lineage that any same-generation successor pool can resume. So two independently-deployed pools
-/// that both recognize the same reflected Bitcoin pool root can each pass their own one-shot check against
-/// the SAME Bitcoin source — one Bitcoin note / one Bitcoin lock backing value in two EVM pools.
+/// Scope of the Solidity single-use state. `nullifierSpent`, `bitcoinConsumed` and `cbtcMinted` are local to
+/// one pool, while the reflected Bitcoin roots are shared across a lineage. These tests attest the same
+/// reflected state to TWO pools and drive the same Bitcoin authorization into both, pinning that each
+/// one-shot check is per contract; each is paired with a positive control showing a second attempt in the
+/// SAME pool reverts. Uniqueness across deployments is a lineage rule (SPEC §8): a retired pool accepts no
+/// Bitcoin-homed spends or cBTC mints, so at most one pool per lineage accepts them.
 ///
-/// These tests deploy TWO pools that both attest the same reflected Bitcoin state (the shared-lineage
-/// condition), then drive the same Bitcoin authorization into both:
-///   - test_same_btc_note_consumes_in_two_pools     — one Bitcoin-homed ν → a value leaf in A AND in B.
-///   - test_same_cbtc_lock_mints_in_two_pools        — one Bitcoin cBTC lock outpoint → cBTC minted in A AND B.
-/// Each is paired with a POSITIVE CONTROL proving the intra-pool guard is faithful (a second attempt in the
-/// SAME pool reverts), so the failure is specifically the missing CROSS-pool / cross-generation dimension —
-/// no global consumption authority binds the two instances.
-///
-/// Mechanics are exercised through the mock SP1 verifier (AcceptVerifierX): the guest's own non-membership /
-/// conservation checks are out of scope here — the point is what the SOLIDITY enforces across instances.
+/// Runs against the mock SP1 verifier (AcceptVerifierX); the guest's non-membership and conservation checks
+/// are out of scope — only what the Solidity enforces per instance is measured.
 contract ConfidentialCrossGenReplayTest is Test {
     bytes32 constant RELAY_VKEY = bytes32(uint256(0xBEEF));
     bytes32 constant PROGRAM_VKEY = bytes32(uint256(0xABCD));
@@ -147,14 +137,10 @@ contract ConfidentialCrossGenReplayTest is Test {
         , address(0), address(0), address(0));
     }
 
-    // ──────────────────── C-01: fast-lane note double-consume ────────────────────
+    // ──────────────────── fast-lane consume scope ────────────────────
 
-    /// One Bitcoin-homed note (nullifier ν) exits to a value LEAF in pool A AND, with a separately
-    /// chain-bound proof, in pool B. Both settlements succeed and both record ν in their local
-    /// `bitcoinConsumed` map — one Bitcoin source, two EVM-homed outputs. Each leaf is later unwrappable
-    /// against its own pool's escrow (ConfidentialPool.sol:2414-2425 pays escrow-backed assets), so with two
-    /// independently-funded generations this is double-extraction of exogenous depositor value, not merely a
-    /// duplicated pool-minted token.
+    /// One Bitcoin-homed note (nullifier ν) settles in pool A and, with a separately chain-bound proof, in
+    /// pool B; each records ν in its own `bitcoinConsumed` map.
     function test_same_btc_note_consumes_in_two_pools() public {
         ConfidentialPool a = _newReflectingPool(address(0), address(0));
         ConfidentialPool b = _newReflectingPool(address(0), address(0));
@@ -163,14 +149,13 @@ contract ConfidentialCrossGenReplayTest is Test {
         bytes32 spentRoot = keccak256("shared-btc-spent-root"); // non-zero sentinel, as the guest seeds it
         ReflectionLib.CbtcLockFolded[] memory noLocks = new ReflectionLib.CbtcLockFolded[](0);
 
-        // Both pools attest the SAME reflected Bitcoin state — the shared-lineage condition a gen-N resume
-        // reproduces on mainnet (the live manifest resumes from a non-zero digest; here two genesis pools fold
-        // the identical batch, which recognizes the same roots identically).
+        // Both pools attest the SAME reflected Bitcoin state (two genesis pools folding the identical batch
+        // recognize the same roots).
         _attest(a, poolRoot, spentRoot, noLocks);
         _attest(b, poolRoot, spentRoot, noLocks);
 
         bytes32 nu = keccak256("bitcoin-homed-nullifier");
-        bytes32 src = keccak256("shared-btc-src-asset"); // consumed source's asset id (C-01 full-source binding)
+        bytes32 src = keccak256("shared-btc-src-asset"); // consumed source's asset id (full-source binding)
 
         // Bitcoin-homed spend (spendRoot ∈ knownBitcoinRoot ⇒ btcHomed), non-membership pinned to the shared
         // spent root, value exits as an opaque leaf. Recorded once per pool.
@@ -198,7 +183,6 @@ contract ConfidentialCrossGenReplayTest is Test {
         assertEq(b.bitcoinConsumed(nu), rec, "pool B consumed the SAME Bitcoin note");
         assertEq(a.bitcoinConsumedCount(), 1, "A recorded one consume");
         assertEq(b.bitcoinConsumedCount(), 1, "B recorded one consume");
-        // No on-chain state links the two: neither reverted, both hold a value leaf from one Bitcoin source.
     }
 
     /// Positive control: within ONE pool the guard is real — the same ν cannot be consumed twice.
@@ -230,11 +214,10 @@ contract ConfidentialCrossGenReplayTest is Test {
         _settle(a, p2, keccak256("leaf-2"));
     }
 
-    // ──────────────────── C-01: cBTC lock double-mint ────────────────────
+    // ──────────────────── cBTC lock mint scope ────────────────────
 
-    /// One Bitcoin cBTC lock outpoint mints a cBTC note in pool A AND in pool B — each gated only by its own
-    /// `cbtcMinted[outpoint]` flag against its own always-sufficient engine escrow. One locked BTC backs two
-    /// confidential cBTC obligations across the two generations.
+    /// One Bitcoin cBTC lock outpoint mints in pool A and in pool B, each gated by its own
+    /// `cbtcMinted[outpoint]` flag against its own engine escrow.
     function test_same_cbtc_lock_mints_in_two_pools() public {
         (ConfidentialPool a,) = _newCbtcPool();
         (ConfidentialPool b,) = _newCbtcPool();
@@ -278,7 +261,7 @@ contract ConfidentialCrossGenReplayTest is Test {
     }
 
     // A cBTC-capable pool: real CanonicalAssetFactory (constructor pins cBTC.tac / tacUSD) + a per-pool engine
-    // reporting escrow always-sufficient and wired to itself (so C-02's foreign-engine binding is excluded).
+    // reporting escrow always-sufficient and wired to itself.
     function _newCbtcPool() internal returns (ConfidentialPool pool, MockEngineX engine) {
         CanonicalAssetFactory factory = new CanonicalAssetFactory();
         engine = new MockEngineX();

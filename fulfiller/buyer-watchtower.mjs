@@ -25,7 +25,7 @@
 // Architecture: imports dapp/tacit.js under a jsdom shim and drives the same
 // taker path the browser does — no crypto or tx-building reimplementation.
 //
-// STATUS: v1 — NOT yet signet-validated end to end. Run with --dry-run first,
+// STATUS: NOT yet signet-validated end to end. Run with --dry-run first,
 // then on signet against a live seller before any mainnet use.
 //
 // Usage:

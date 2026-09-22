@@ -1,7 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Eth-state sidecar — the Mode-B "fuel" producer. Replaces the by-hand recipe
-// (scratchpad/MODEB-RECIPE.md §1) of manually running eth_prove on the RunPod box, hand-copying
-// eth_set.json, and hand-POSTing it before every Mode-B Bitcoin batch.
+// Eth-state sidecar — the Mode-B "fuel" producer. Runs eth_prove and POSTs the resulting eth_set
+// candidate before every Mode-B Bitcoin batch.
 //
 // WHY THE TRIGGER IS "IS A PENDING CANDIDATE LIVE", NOT "HAS crossOutCount CHANGED":
 // Once a pool's crossOutCount has advanced past 0, EVERY future Bitcoin-side reflection attest must be
@@ -10,8 +9,7 @@
 // digest chains too — reflect.rs:524-533/548 sets `state.eth_refl_digest = eth_pv.newDigest`
 // UNCONDITIONALLY on every landed mode_b=1 cycle, and the NEXT cycle's eth proof must chain its own
 // `priorDigest` from that exact value (`expected_prior`), even if nothing new happened on the Ethereum
-// side (scratchpad/MODEB-RECIPE.md's "an eth_prove proof is SINGLE-USE" section — confirmed against the
-// guest source, not just the recipe's own telling). So a "confirmed" eth-state candidate is single-use:
+// side. So a "confirmed" eth-state candidate is single-use:
 // the moment the Bitcoin batch built from it lands, that exact candidate can never be reused, and the
 // VERY NEXT Bitcoin attest (whether or not it folds a new crossout) needs a freshly-chained one or it
 // reverts. The worker already encodes this correctly: `ethBundleSource` (worker/src/index.js) feeds the
@@ -22,9 +20,8 @@
 // live, the next Bitcoin attest (whenever it happens) is fueled and this sidecar has nothing to do; the
 // instant it gets consumed-and-promoted (or never existed), Bitcoin-side reflection is stalled until a
 // fresh one appears, so produce one immediately. This self-paces to almost exactly one real eth_prove run
-// per Bitcoin-side attest generation — the protocol's own minimum, not a guessed interval — which is what
-// keeps a routine crossout/consume from ever again piling up into the multi-block, tens-of-billions-of-
-// cycles backlog this sidecar exists to prevent. attestedCrossOutCount()/attestedBitcoinConsumedCount()
+// per Bitcoin-side attest — the protocol's own minimum, not a guessed interval — which keeps a routine
+// crossout/consume from piling up into a multi-block backlog. attestedCrossOutCount()/attestedBitcoinConsumedCount()
 // are read every cycle purely for logging/heartbeat context (did this candidate actually pick up
 // anything new), never as the gate.
 //
@@ -58,12 +55,10 @@ const LOCAL_INFLIGHT_PATH = path.join(CFG.ethProveOutDir, 'sidecar-inflight.json
 // last_block (and the surrounding scan window) keeps moving forward with real time. That is indistinguishable
 // from routine idleness UNTIL it also means the pending candidate's priorDigest no longer chains against
 // on-chain reality (e.g. a fold landed through some other, out-of-band path this sidecar's local resume state
-// never learned about — confirmed happening for real 2026-09-15, see
-// project_reflection_catchup_header_relay_pacing_2026_09_15). Every affected cycle "succeeds" individually
+// never learned about). Every affected cycle "succeeds" individually
 // (job assembles fine; only the on-chain attest ever reverts, which this sidecar never sees), so nothing about
 // a single cycle's own log line reveals the stall — only the SAME contentHash reappearing cycle after cycle
-// does. Track that here and escalate once it crosses a threshold, so this is caught in tens of minutes
-// instead of rediscovered days later via a stuck bridge.
+// does. Track that here and escalate once it crosses a threshold.
 const STALL_WATCH_PATH = path.join(CFG.ethProveOutDir, 'sidecar-stall-watch.json');
 const STALL_ALERT_THRESHOLD = 6; // ~consecutive publish cycles on the same contentHash before escalating
 async function checkStall(contentHash) {
@@ -149,10 +144,10 @@ async function cycle() {
   }
   if (!CFG.sourceConsensusRpc || !CFG.sourceExecutionRpc || !CFG.ethCallOutbox || !CFG.ethProveGenesisSlot) {
     throw new Error('SOURCE_CONSENSUS_RPC/SOURCE_EXECUTION_RPC/ETH_CALL_OUTBOX/GENESIS_SLOT must all be set '
-      + '(per-generation pinned constants — see scratchpad/MODEB-RECIPE.md §1); refusing to guess them');
+      + '(pinned per deployment); refusing to guess them');
   }
 
-  // Free local dry-run first (scratchpad/MODEB-RECIPE.md's own operating rule): catches a bad witness or a
+  // Free local dry-run first: catches a bad witness or a
   // digest-chain mismatch via a low, early-panic cycle count before spending a real network prove on it.
   await heartbeat('eth-state', 'execute preflight');
   let pre;
@@ -213,14 +208,13 @@ async function cycle() {
   return true;
 }
 
-// One-time escape valve for a generation cutover: ETH_PROVE_STATE_PATH lives on this service's OWN
-// persistent disk, keyed by nothing generation-specific, so a pool migration leaves the outgoing
-// generation's real cumulative crossouts/consumeds committed here with no natural way to age out (unlike
+// One-time reset for a move to a successor deployment: ETH_PROVE_STATE_PATH lives on this service's OWN
+// persistent disk, keyed by nothing deployment-specific, so a pool migration leaves the predecessor's
+// cumulative crossouts/consumeds committed here with no natural way to age out (unlike
 // the pending/confirmed KV records, which have their own /reflection/eth-state/clear and .../confirmed/clear
 // resets). eth_prove.rs already treats a missing/unparseable state file as EthSetState::default() (all
-// zero) on its own (see its state_path() load), so deleting this file is the whole fix — no Rust change
-// needed. Gated on an env var rather than run unconditionally so this never fires by accident against a
-// generation with real, still-pending-confirmation local state.
+// zero) on its own (see its state_path() load), so deleting this file is the whole reset. Gated on an env
+// var so this never fires by accident against a deployment with still-pending-confirmation local state.
 async function resetLocalStateIfRequested() {
   if (process.env.RESET_ETH_PROVE_STATE !== '1') return;
   const committed = path.join(CFG.ethProveOutDir, 'eth_set_state.json');

@@ -3,7 +3,7 @@
 //   MODE=execute (default) — execute the guest, decode PublicValues, assert swaps[0] == expected
 //                            (fast: validates the new op without a proof).
 //   MODE=groth16           — GPU Groth16 prove + local verify, writing public_values.hex +
-//                            proof_bytes.hex for a Forge real-proof test (the C-3 re-prove uses
+//                            proof_bytes.hex for a Forge real-proof test (the re-prove uses
 //                            the new ELF's vkey via setup()).
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
@@ -208,7 +208,7 @@ fn main() {
 
     if mode == "execute" {
         let client = ProverClient::builder().cpu().build();
-        // The vkey is deterministic from the ELF — capture it here (the C-3 pin) without a proof.
+        // The vkey is deterministic from the ELF — capture it here without a proof.
         let pk = client.setup(Elf::Static(ELF)).expect("setup failed");
         let vk = pk.verifying_key().bytes32();
         println!("VKEY={vk}");

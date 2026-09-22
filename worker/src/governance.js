@@ -10,7 +10,7 @@
 //   • PRIVATE (Bitcoin / confidential holders) — a Bulletproofs+ threshold
 //     attestation: the voter proves the SUM of their TAC UTXOs clears a tier
 //     (≥1 / ≥10 / ≥100 / … TAC) WITHOUT revealing the exact balance. This is
-//     the exact same audited primitive as the AMM-ceremony eligibility gate
+//     the same primitive as the AMM-ceremony eligibility gate
 //     (decodeCeremonyEligibilityEnvelope + bpRangeAggVerify), generalized with
 //     a per-vote scope_id binding (proposal_id, choice) and a configurable
 //     threshold X. Weight counted = the proven tier floor X. Residual leak:
@@ -20,8 +20,8 @@
 //   • PUBLIC (Ethereum holders) — a transparent canonical-TAC-ERC20
 //     balanceOf() read, authorised by an EIP-191 personal_sign. ERC20 balances
 //     are already public on-chain, so nothing extra is leaked; weight counted =
-//     the exact balance. Gated on a configured ERC20 address (TAC ERC20 is not
-//     live yet → returns 501 until env GOV_TAC_ERC20_<NET> is set).
+//     the exact balance. Gated on a configured ERC20 address (returns 501
+//     until env GOV_TAC_ERC20_<NET> is set).
 //
 // Anti-double-vote nullifier: one vote per identity per proposal (keyed by the
 // holder pubkey on the private path, the recovered ETH address on the public
@@ -218,7 +218,7 @@ export function buildGovernance(deps) {
   }
 
   // ----------------------------------------------------------------------------
-  // EVM-lane (Ethereum shielded TAC / cTAC) threshold attestation.
+  // Ethereum-side (cTAC) threshold attestation.
   // Same homomorphic threshold idea as the Bitcoin path — EVM notes commit
   // value with the BYTE-IDENTICAL secp Pedersen H, so cTAC commitments sum into
   // the same BP+ range proof. Per note the worker re-derives the leaf

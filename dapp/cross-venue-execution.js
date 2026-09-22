@@ -2,7 +2,7 @@
 //
 // The router returns quotes; this module turns a selected quote into a signed taker intent and, for the
 // cross-chain orderbook venue, revalidates the live book before mutating it into adaptor-swap fills.
-// It is still dapp-side orchestration: no contract call, no proof generation. The goal is to bind
+// It is dapp-side orchestration only: no contract call, no proof generation. The goal is to bind
 // "what the user saw" to "what execution attempts".
 
 import { signSchnorr, verifySchnorr } from './bulletproofs.js';

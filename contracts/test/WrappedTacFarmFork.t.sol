@@ -8,7 +8,7 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 
 interface IMintable { function mint(address to, uint256 amount) external; function approve(address, uint256) external returns (bool); }
 
-/// MAINNET FORK ONLY (skipped elsewhere): a farm on the LIVE gen5 pool paying in wTAC.
+/// MAINNET FORK ONLY (skipped elsewhere): a farm on the LIVE pool paying in wTAC.
 ///   forge test --match-contract WrappedTacFarmFork --fork-url $RPC -vv
 /// Proves (1) the pool refuses the canonical pool-minted TAC as an escrow farm reward (the reason wTAC exists),
 /// (2) wTAC registers as an ordinary external escrow asset, (3) a farm on it funds and starts emitting.

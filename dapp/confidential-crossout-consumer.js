@@ -17,7 +17,6 @@
 // consumer scanning a nonexistent pool every cron tick).
 export const CONFIDENTIAL_POOL_DEPLOYMENTS = {
   signet:  { pool: '0x000000003eD19c48531bd397F66800004F8A18c2', deployBlock: 11175726 },
-  // gen5, live on mainnet 2026-09-18. headerRelay reused unchanged from gen4.
   mainnet: { pool: '0x000000000Ed1eabD231Be41d93b719056F7febFC', deployBlock: 25998736, headerRelay: '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0' },
 };
 

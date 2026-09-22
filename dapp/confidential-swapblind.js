@@ -1,14 +1,14 @@
 // OP_SWAP_BLIND (31 / 0x1F) settle-side emitter — the prover-blind confidential AMM batch.
 //
 // This is the EVM settle twin of the reflection T_SWAP_BATCH fold. It assembles the exact envelope
-// the guest's OP_SWAP_BLIND arm reads (src/main.rs:1665..1865) and computed via swap_blind.rs
+// the guest's OP_SWAP_BLIND arm reads (src/main.rs) and computed via swap_blind.rs
 // verify_clearing: a REAL amm_swap_batch Groth16 proof over the 123 public signals, per-asset
 // conservation kernels (Schnorr signatures over the blinding excess — never the blinding itself, which on a
 // one-way side is the inputs' combined blinding and would let a delegated prover spend them), per-receipt
 // cross-curve sigmas, and per-intent blind opening PoKs.
 //
-// The op ships DORMANT in the guest (no live emitter); this module is the reviewable settle-side
-// builder for arming it post-launch. It DOES NOT reimplement any crypto: every primitive is imported
+// The op is enabled in the deployed guest; this module is the settle-side builder (there is no
+// production emitter or relay path for it yet). It DOES NOT reimplement any crypto: every primitive is imported
 // from the same modules the reflection fold + OP_SWAP emitter use, so the guest agrees byte-for-byte.
 //
 // Reuses:
@@ -242,7 +242,7 @@ export function makeConfidentialSwapblind({ pool, proveGroth16, ammDerivePoolIdV
   // fixtures/swapblind_op.json shape exec-swapblind.rs consumes.
   async function buildSwapBlindOp({ chainBinding, assetA, assetB, feeBps, reserveAPre, reserveBPre, traders, spendRoot = null }) {
     if (traders.length < 1 || traders.length > N_MAX) throw new Error('swap-blind: 1..16 intents');
-    // Canonical orientation (asset_a < asset_b), as the guest asserts (main.rs:1685).
+    // Canonical orientation (asset_a < asset_b), as the guest asserts.
     if (!(BigInt(assetA) < BigInt(assetB))) throw new Error('swap-blind: assets must be canonically ordered A<B');
 
     const circuitPoolId = ammDerivePoolIdV1(assetA, assetB, feeBps);

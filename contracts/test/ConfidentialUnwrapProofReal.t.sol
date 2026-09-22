@@ -10,7 +10,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_UNWRAP (gasless exit)
 /// ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. The proof is
 /// GPU-proven on the prover box (contracts/sp1/confidential/harnesses/exec-unwrap.rs over
-/// fixtures/unwrap_op.json) for the gen-1 guest. This closes the loop for the fund-critical
+/// fixtures/unwrap_op.json) for the committed guest. This closes the loop for the fund-critical
 /// exit path: JS prover → SP1 guest (zkVM) → Groth16 wrap → EVM bn254 verify. The proven op
 /// spends a 1500-value note to a public recipient with fee=100 ⇒ a Withdrawal of 1400 + a
 /// FeePayment of 100 + one nullifier in the committed PublicValues.
@@ -29,7 +29,7 @@ contract ConfidentialUnwrapProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real OP_UNWRAP proof verifies on-chain against the gen-1 vkey (reverts on failure).
+    /// The real OP_UNWRAP proof verifies on-chain against the pinned vkey (reverts on failure).
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -60,7 +60,7 @@ contract ConfidentialUnwrapProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

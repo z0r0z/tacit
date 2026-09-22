@@ -110,9 +110,8 @@ interface IWstEthTest {
 /// the two claims that cannot be exercised against live production state at all:
 ///   - `postEscrowWithETHAndSettle`'s ordering claim needs `POOL.settle()` to actually run and return/revert
 ///     on demand, which requires a real SP1/Groth16 proof against the live ConfidentialPool — infeasible here.
-///   - The "escrow still locked" claim needs a lock outpoint with `cbtcMinted == true` on the pool, and as of
-///     writing NO cBTC has ever been minted against the live gen4 pool (cBTC lock/redeem has not launched),
-///     so no such real outpoint exists to test against.
+///   - The "escrow still locked" claim needs a lock outpoint with `cbtcMinted == true` on the pool, and the
+///     pinned live pool has no such outpoint to test against.
 /// See `CbtcEscrowHelperLiveEngineForkTest` below for the suite that drives the same helper against the REAL
 /// deployed CollateralEngine (0x000000008cAD17f5BB485A7D521E89A9C4716cC0 on mainnet) and its real, immutably
 /// wired live ConfidentialPool for every path that doesn't require the above.
@@ -455,7 +454,7 @@ contract CbtcEscrowHelperForkTest is Test {
 ///   - `postEscrowWithETHAndSettle` / the settle-ordering and stray-ETH-sweep claims — the live pool's
 ///     `settle` needs a real SP1/Groth16 proof, which this suite cannot manufacture.
 ///   - The "escrow still locked" revert path — needs a real outpoint with `cbtcMinted == true` on the live
-///     pool, and none exists yet (cBTC lock/redeem has not launched on gen4 as of writing).
+///     pool, and the pinned pool has none.
 contract CbtcEscrowHelperLiveEngineForkTest is Test {
     address constant WSTETH = 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0; // Lido wstETH (verified live mainnet)
     address constant LIVE_ENGINE = 0x000000008cAD17f5BB485A7D521E89A9C4716cC0; // REAL deployed CollateralEngine

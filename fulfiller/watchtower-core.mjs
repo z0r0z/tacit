@@ -4,7 +4,7 @@
 // settle-time policy re-check live in exactly ONE place.
 //
 // A bid is a limit buy: fill from any matching ask. A seller filling the bid
-// (fulfilBidIntent) publishes a PUBLIC §5.7.6 atomic-intent at the bid's price;
+// (fulfilBidIntent) publishes a PUBLIC atomic-intent at the bid's price;
 // direct asks are the same shape. The take delivers the asset to THIS bid
 // wallet and verifyAxferOffer + the policy re-check bind delivery and price ≤
 // ceiling — so settling any matching public ask IS the limit buy.

@@ -82,7 +82,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
       const secret = '0x' + bytesToHex(plain.subarray(40, 72));
       const asset = '0x' + bytesToHex(plain.subarray(72, 104));
       const owner = '0x' + bytesToHex(plain.subarray(104, 136));
-      // The decrypted value/blinding are attacker-chosen for a memo sealed to my public key: a zero or
+      // The decrypted value/blinding are sender-chosen for a memo sealed to my public key: a zero or
       // out-of-range scalar has no commitment, so it is not an opening of any leaf.
       const { cx, cy } = commitXY(value, blinding);
       if (leafHash(asset, cx, cy, owner).toLowerCase() !== String(leaf).toLowerCase()) return null;

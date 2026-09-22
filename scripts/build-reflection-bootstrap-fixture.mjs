@@ -120,7 +120,7 @@ async function main() {
   const state = cp.makeScanReflectionState();
   // The first batch resumes from the block BEFORE `from` (the deploy's genesis anchor). The guest asserts
   // anchor_height == prior reflected height + 1, so seed the prior height to from-1 (= 0 for a true genesis
-  // anchored at block 1; = the near-tip anchor height for a generational deploy). The pool must be deployed
+  // anchored at block 1; = the near-tip anchor height for a resume deploy). The pool must be deployed
   // with REFLECTION_RESUME_DIGEST set to this prior digest (0 only when from==1, i.e. height-0 genesis).
   state.setHeight(from - 1);
   console.log(`prior digest @ height ${from - 1} = ${state.digest()}`);

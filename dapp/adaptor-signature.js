@@ -89,7 +89,7 @@ export function extract(sTilde, s, R, T) {
 }
 
 // ── EVM leg: the OP_ADAPTOR_CLAIM kernel ──
-// The BIP-340 construction above locks a Bitcoin kernel signature. It does NOT verify on the EVM lane:
+// The BIP-340 construction above locks a Bitcoin kernel signature. It does NOT verify on the Ethereum side:
 // OP_ADAPTOR_CLAIM checks the settle guest's conservation kernel (cxfer-core verify_kernel) over the locked note L
 // and the claim output O, whose challenge is e = keccak("tacit-evm-cxfer-kernel-v1" ‖ L ‖ O ‖ R) mod n over
 // 33-byte compressed points, with z·G == R + e·(L − O) and no x-only or even-y rule. The guest commits `z` as the

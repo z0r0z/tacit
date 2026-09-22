@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Cast-free BitcoinLightRelay advancer.
 //
-// Use this when Foundry/cast is unavailable or crashes while building RPC transports (we hit this on
-// macOS during the Sepolia/signet pilot). It performs the same operation as scripts/advance-relay.sh:
+// Use this when Foundry/cast is unavailable or crashes while building RPC transports (seen on
+// macOS). It performs the same operation as scripts/advance-relay.sh:
 // fetch contiguous Bitcoin/signet headers from mempool.space and submit advanceTip(bytes) as a raw
 // replay-protected Ethereum transaction. It deliberately requires explicit RELAY_ADDRESS + RELAY_PK so
 // a developer cannot accidentally advance a stale/default relay.

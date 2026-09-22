@@ -9,10 +9,7 @@
 // is `script-src 'self' 'wasm-unsafe-eval'` — no 'unsafe-inline'.
 // CSP3 hash-based whitelisting would also work but pinning a hash
 // across edits is brittle, so a same-origin .js file is the simpler
-// load-bearing choice. The same logic was previously inline in
-// index.html; it was being blocked by CSP and the user reported the
-// market page loading without chart / data on first paint as a
-// result.
+// choice.
 //
 // Two-stage swap:
 //   1. INSTANT (during head parse, before body parses past the

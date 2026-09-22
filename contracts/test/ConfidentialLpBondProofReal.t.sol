@@ -47,13 +47,10 @@ contract ConfidentialLpBondProofRealTest is Test {
         verifier = new SP1Verifier();
     }
 
-    // lpbond_groth16.json is box-produced at the mainnet re-prove (CHECKLIST F-1) from the committed settle ELF.
-    // Until it lands, skip (not fail) so the suite stays green; the test activates the moment the fixture exists.
-    //
-    // STALE AS OF the execution-stamped-entry change (SPEC-masterchef-farm-stake-anytime): the committed
-    // fixture was proved by the PRE-change ELF, so it still carries the old two-leg bond CdpMint. The shape
-    // assertions below encode the NEW contract and therefore fail against it — deliberately, since the only
-    // fix is a re-prove. Regenerate it in the same pass that rebuilds/re-pins the ELF + program_vkey (§5).
+    // lpbond_groth16.json is box-produced from the committed settle ELF; without it the test skips (not fails).
+    // The committed fixture predates the execution-stamped farm entry (it carries a two-leg bond CdpMint), so
+    // the shape assertions below fail against it until it is re-proved alongside the next ELF + program_vkey
+    // re-pin.
     modifier skipIfNoFixture() {
         if (!vm.exists(string.concat(vm.projectRoot(), "/test/fixtures/lpbond_groth16.json"))) { vm.skip(true); return; }
         _;

@@ -1,6 +1,6 @@
 # Build the confidential per-op provers in NETWORK mode (Linux x86-64) and upload to the prover-bins release.
 # No box: the binaries prove on Succinct's hosted network at runtime (SP1_PROVER=network). The guest ELF is
-# committed (elf/cxfer-guest, vkey 0x003a21ba) and include_bytes!'d — no guest rebuild, no pool redeploy.
+# committed (elf/cxfer-guest, pinned in elf-vkey-pin.json) and include_bytes!'d — no guest rebuild, no pool redeploy.
 # Trigger manually (workflow_dispatch); pick which ops to build.
 name: build-provers
 on:

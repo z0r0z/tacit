@@ -1,25 +1,23 @@
-// Confidential settle relay — a prove/settle job queue for the EVM ConfidentialPool.
+// Confidential settle relay — a prove/settle job queue for the ConfidentialPool.
 //
-// The shielded-pool prover lives on a GPU box behind NAT (same box as the reflection relay), so it
-// POLLS the worker rather than the worker pushing to it: the dapp assembles a confidential op
-// (transfer / swap / route / lp), submits the witness here, the box claims it via /confidential/job, GPU
-// Groth16-proves the settle guest, submits ConfidentialPool.settle(pv, proof, memos) on-chain, then
-// /confidential/ack marks it done. Mirrors [[reflection-attest]]'s box-poll shape; this one is a
-// multi-job QUEUE (user-initiated) rather than a single advancing cursor.
+// The relayer POLLS the worker rather than the worker pushing to it: the dapp assembles a confidential op,
+// submits the witness here, the relayer claims it via /confidential/job, Groth16-proves the settle guest,
+// submits ConfidentialPool.settle(pv, proof, memos) on-chain, then /confidential/ack marks it done. Same
+// poll shape as reflection-attest.js, but a multi-job QUEUE (user-initiated) rather than a single
+// advancing cursor.
 //
 // Trust: the worker never proves and never holds funds — it only queues opaque witnesses + relays a
 // proof the contract independently verifies against PROGRAM_VKEY. A bad witness just fails to prove.
 
-const CLAIM_TTL_MS = 10 * 60 * 1000; // a claimed-but-unfinished job is reclaimable after 10 min (box crash)
+const CLAIM_TTL_MS = 10 * 60 * 1000; // a claimed-but-unfinished job is reclaimable after 10 min (prover crash)
 // KV has no compare-and-swap (real Cloudflare KV doesn't either, and this queue must stay portable to
 // it — see server/kv-store.mjs), so a plain read-then-write claim races once more than one poller hits
 // the same pending job. CLAIM_VERIFY_DELAY_MS narrows that window from "the whole poll interval" to
 // milliseconds: see nextJob()'s claim-nonce re-read below.
 const CLAIM_VERIFY_DELAY_MS = 400;
-// /confidential/submit is permissionless (a bad witness just fails to prove), so bound the
-// pending queue: an attacker can otherwise enqueue unbounded distinct ops, each of which burns a
-// full GPU prove cycle and starves real jobs (FIFO, single-prover). New submits past the cap are
-// rejected until the box drains the backlog; dedup of an in-flight op is unaffected.
+// /confidential/submit is permissionless (a bad witness just fails to prove), so the pending queue
+// is bounded: each queued op costs a full prove cycle (FIFO, single-prover). New submits past the cap
+// are rejected until the relayer drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
 const MAX_JOB_BYTES = 256 * 1024; // op + memos, serialized; the largest real op is ~15 KB
 
@@ -83,15 +81,15 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   const wait = sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
-  // `settle` keeps the legacy id (type+op); a `prove`-only job for the same op is a DISTINCT id so the two can
-  // coexist (e.g. the same deposit consume both prove-only for a router tx and box-settled).
+  // `settle` uses the id over (type+op); a `prove`-only job for the same op is a DISTINCT id so the two can
+  // coexist (e.g. the same deposit consume both prove-only for a router tx and relay-settled).
   function jobIdOf(type, op, mode = 'settle') {
     return hash(JSON.stringify(mode === 'settle' ? { type, op } : { type, op, mode }));
   }
 
   // mode:
-  //   'settle' (default) — the box GPU-proves AND submits ConfidentialPool.settle() on-chain (the relayed flow).
-  //   'prove'            — the box GPU-proves but does NOT submit; it acks { publicValues, proof } which the
+  //   'settle' (default) — the relayer proves AND submits ConfidentialPool.settle() on-chain (the relayed flow).
+  //   'prove'            — the relayer proves but does NOT submit; it acks { publicValues, proof } which the
   //                        dapp embeds into a USER-SENT ConfidentialRouter tx (wrapAndSettle* / zapETHToPayment /
   //                        farm bond). The router pulls from msg.sender, so only the user can send it.
   async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null }) {
@@ -99,9 +97,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     // Drop a caller-supplied feeUsd FIRST, before anything derives from `op`.
     //
     // Position matters as much as the deletion: `jobIdOf(type, op, mode)` hashes the op, so stripping this
-    // after the id was computed would leave a caller able to vary a field the guest never reads, mint a
-    // fresh job id for the identical op, and walk straight past dedup. Removing it here means the id is
-    // taken over the op the guest will actually see.
+    // after the id was computed would let a field the guest never reads vary the job id for an identical op.
+    // Removing it here means the id is taken over the op the guest will actually see.
     if (typeof op === 'object' && 'feeUsd' in op) delete op.feeUsd;
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint', 'fastlane'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
@@ -113,7 +110,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     }
     const recipe = exit == null ? null : normalizeExit(exit);
     // Profitability gate (relayed flow only): a fee below the current gas-priced floor is rejected BEFORE it
-    // burns a GPU prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
+    // costs a prove cycle. `prove` jobs are user-sent (the user pays gas), so they're never gated.
     // Awaited: a real feeGate reads live gas price over RPC, so it can't be synchronous.
     if (mode === 'settle' && feeGate && !(await feeGate({ type, op }))) {
       throw new Error('submitJob: relay fee below the current floor — re-quote higher or self-settle');
@@ -124,11 +121,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     const skipPricing = !!seen && seen.status !== 'failed';
     // What this op actually pays us, DERIVED from the op's own fee legs — never taken from the caller.
     //
-    // `op` is client JSON, so any field on it is attacker-controlled. The relay's fee gate used to read
-    // `op.feeUsd`, which meant a hostile integrator could have declared any number it liked and had the
-    // gate believe it. Nothing populated the field, so the bypass was never reachable — but wiring the
-    // producer is exactly what would have made it reachable, so the value is derived here instead and the
-    // client's copy is dropped before the op is stored.
+    // `op` is client JSON and is never trusted for the fee: the value is derived here and the client's copy
+    // is dropped before the op is stored.
     let priced = null;
     if (mode === 'settle' && priceFee && !skipPricing) {
       try { priced = await priceFee({ type, op }); }
@@ -142,7 +136,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       feeUnits: priced?.feeUnits ?? null,
       feeUsd: priced?.feeUsd ?? null,
       // feeAsset: the public ERC20/ETH address of this op's relay FeePayment (native ETH = the zero
-      // address / null). The box needs it for the relaySettle path so TacitRelayer forwards the right
+      // address / null). The relayer needs it for the relaySettle path so TacitRelayer forwards the right
       // token to the ops fee recipient; the direct-settle path ignores it (fee → msg.sender in-kind).
       feeAsset: feeAsset || null,
       exit: recipe, activateTx: null, activateError: null,
@@ -183,10 +177,10 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     });
   }
 
-  // The box claims the oldest provable job (FIFO). Claiming flips it to 'proving' so a second poller
-  // won't double-prove; a stale claim (crashed box) is reclaimable after CLAIM_TTL_MS.
+  // The relayer claims the oldest provable job (FIFO). Claiming flips it to 'proving' so a second poller
+  // won't double-prove; a stale claim (crashed prover) is reclaimable after CLAIM_TTL_MS.
   //
-  // With more than one box polling (real as of the 2026-09-06 fallback worker), a plain read-then-write
+  // With more than one poller, a plain read-then-write
   // claim can race: two pollers both read 'pending' before either write lands, both flip it, both prove
   // it. That never risks funds — the contract's own nullifier/deposit-status checks make a duplicate
   // settle a no-op revert, not a double-spend — but it wastes a full proof (real $PROVE cost). Since KV
@@ -213,7 +207,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       await wait(CLAIM_VERIFY_DELAY_MS);
       const won = await storage.getJob(id);
       if (!won || won.claimNonce !== nonce) continue; // lost the race — another poller's write landed after ours
-      // `mode` tells the box whether to submit on-chain ('settle') or just return the proof ('prove').
+      // `mode` tells the relayer whether to submit on-chain ('settle') or just return the proof ('prove').
       // feeUnits/feeUsd are the worker-DERIVED fee (see submitJob). They must ride along or the relay's
       // profitability gate sees undefined and treats every job as unpaid work.
       return { jobId: id, type: j.type, op: j.op, memos: j.memos, mode: j.mode || 'settle', feeAsset: j.feeAsset || null, exit: j.exit || null, feeUnits: j.feeUnits ?? null, feeUsd: j.feeUsd ?? null };
@@ -270,7 +264,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     return picked;
   }
 
-  // The box reports the outcome. 'settle' jobs ack { txHash }; 'prove' jobs ack { publicValues, proof } (no
+  // The relayer reports the outcome. 'settle' jobs ack { txHash }; 'prove' jobs ack { publicValues, proof } (no
   // on-chain submit) → status 'proven'. Idempotent: re-acking a terminal-success job returns its artifacts.
   // A settled exit that carries a recipe later acks { activateTx } or { activateError } for its activateExit; a
   // recorded activation tx is final, while a recorded error can still be followed by a tx.

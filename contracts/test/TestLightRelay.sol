@@ -86,7 +86,7 @@ contract TestLightRelay is BitcoinLightRelayBase {
         epochStartTs[bh] = ts;
     }
 
-    /// @dev Seed the per-branch target of a block (R-1 fork-choice tests seed a branch's blocks directly).
+    /// @dev Seed the per-branch target of a block (fork-choice tests seed a branch's blocks directly).
     function seedBlockTarget(bytes32 bh, uint256 target) external {
         blockTarget[bh] = target;
     }

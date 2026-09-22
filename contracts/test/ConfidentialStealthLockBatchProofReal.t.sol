@@ -10,7 +10,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_STEALTH_LOCK batch (the
 /// airdrop path: N funding notes → N lock-set leaves in one proof) ON-CHAIN, through the genuine
 /// SP1VerifierGroth16 (v6.1.0) — no mock. GPU-proven on the box (harnesses/exec-stealthlockbatch.rs
-/// over fixtures/stealthlockbatch_op.json) for the gen-1 guest. Each lock spends its funding note's
+/// over fixtures/stealthlockbatch_op.json) for the committed guest. Each lock spends its funding note's
 /// nullifier (membership-proven) and appends a stealth_lock_leaf bound to a recipient one-time pubkey.
 /// Proof fixture: contracts/test/fixtures/stealthlockbatch_groth16.json (the box produces it).
 contract ConfidentialStealthLockBatchProofRealTest is Test {
@@ -28,7 +28,7 @@ contract ConfidentialStealthLockBatchProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real OP_STEALTH_LOCK batch proof verifies on-chain against the gen-1 vkey.
+    /// The real OP_STEALTH_LOCK batch proof verifies on-chain against the pinned vkey.
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -57,7 +57,7 @@ contract ConfidentialStealthLockBatchProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

@@ -19,15 +19,14 @@ function num(name, dflt) {
   return v === undefined || v === '' ? dflt : Number(v);
 }
 
-// ── Mainnet addresses (from ops runbook / PRICING-RELAY-ECONOMICS.md) ──
+// ── Mainnet addresses ──
 // These default to the live mainnet deployment; override via env for Sepolia rehearsal.
 export const ADDR = {
-  // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest(). Per-generation:
-  // this default is a fallback only, never the real source of truth -- always set POOL_ADDR explicitly
-  // per service on a generation cutover (a stale default here silently pointed a fresh eth-state build
-  // at gen4's history during the gen5 cutover; caught, but only by chance).
+  // ConfidentialPool — settle() + attestBitcoinStateProven() + knownReflectionDigest(). Per-deployment:
+  // this default is a fallback only; set POOL_ADDR explicitly per service so every service points at the
+  // same deployment.
   pool: opt('POOL_ADDR', '0x000000000Ed1eabD231Be41d93b719056F7febFC'),
-  // ConfidentialRouter — escrowAddressFor() + activateExit() for relayed L2 exits. Per-generation, same
+  // ConfidentialRouter — escrowAddressFor() + activateExit() for relayed L2 exits. Per-deployment, same
   // caveat as pool above.
   router: opt('ROUTER_ADDR', '0x000000005dA3E3B73726af3c774Deeb9472D4992'),
   // Succinct vApp deposit contract — deposit(uint256) tops up the network prover balance
@@ -36,7 +35,7 @@ export const ADDR = {
   prove: opt('PROVE_TOKEN_ADDR', '0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29'),
   // zQuoter — best-route quote (fee-asset -> PROVE / -> ETH)
   zQuoter: opt('ZQUOTER_ADDR', '0x000000a7DfdD39f4D74c7b201501eaD119F8b86C'),
-  // zRouter — execute swaps over Uniswap V4
+  // zRouter — executes the quoted swaps
   zRouter: opt('ZROUTER_ADDR', '0x000000000000FB114709235f1ccBFfb925F600e4'),
   // BitcoinLightRelay — advanceTip(bytes) submits BTC headers; tipHeight() is the confirmed height.
   headerRelay: opt('HEADER_RELAY_ADDR', '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0'),
@@ -45,12 +44,12 @@ export const ADDR = {
 };
 
 export const CFG = {
-  // Control plane (the existing Cloudflare Worker). Serves /reflection/job,
-  // /confidential/job and the ack routes the box loops already use.
+  // Control plane (the tacit-api worker). Serves /reflection/job,
+  // /confidential/job and the ack routes.
   workerBase: req('WORKER_BASE'),
   // Bearer token = worker CONFIDENTIAL_BOX_TOKEN / DEBUG_TOKEN. The /reflection/*
-  // and /confidential/* box routes are token-gated (ack advances the un-rewindable
-  // Bitcoin cursor), so the relay must authenticate exactly like the box loops.
+  // and /confidential/* prover routes are token-gated (ack advances the un-rewindable
+  // Bitcoin cursor).
   boxToken: req('BOX_TOKEN'),
   // /prover-heartbeat authenticates on a body token, separate from the bearer above, and 401s without it.
   // Optional so a missing value degrades to "health reporting is off" rather than refusing to start a
@@ -64,7 +63,7 @@ export const CFG = {
   // Bitcoin esplora(s) for raw block headers (comma list; tried in order, next on failure).
   btcEsplora: opt('BTC_ESPLORA', 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api'),
   // Reflection maturity depth — matches the pool's immutable REFLECTION_CONFIRMATIONS (attest tip = relayTip - this).
-  // 24 on the gen5 mainnet pool; override for a pool deployed with a different depth.
+  // 24 on the mainnet pool; override for a pool deployed with a different depth.
   reflectionConfirmations: num('REFLECTION_CONFIRMATIONS', 24),
   // Keep the on-chain relay at most this many blocks ahead of reflection's attested height. This is not a
   // correctness bound — the pool accepts a batch tip up to REFLECTION_MAX_LAG below its matured anchor, so
@@ -135,9 +134,8 @@ export const CFG = {
   // quietly turn an operator's deliberate float into PROVE. Below this it stays ETH; only genuine excess goes.
   ethSweepAboveWei: BigInt(opt('ETH_SWEEP_ABOVE_WEI', '100000000000000000')), // 0.1 ETH
   // Don't convert less than this many dollars of a fee asset in one go. Dust swaps cost gas out of
-  // proportion, and the aggregator's quotes for tiny amounts are unreliable: on 2026-09-20 0.81 USDT was
-  // quoted at 417 PROVE (~$0.002 each) while 100 USDT quoted at the same 416 PROVE (~$0.24) — the first was
-  // simply wrong, and the swap correctly reverted. Below the floor the asset is held and accumulates.
+  // proportion, and the aggregator's quotes for tiny amounts are unreliable. Below the floor the asset is
+  // held and accumulates.
   sweepMinUsd: num('SWEEP_MIN_USD', 5),
   // A PROVE quote is refused if it is more than this factor away from what an independent price implies.
   // Wide on purpose: it exists to catch a quote that is off by 100x, not to second-guess normal slippage.
@@ -158,8 +156,7 @@ export const CFG = {
   settleKey: opt('SETTLE_KEY', process.env.RELAY_KEY),
   // PUBLIC address of the settle wallet, for services that must WATCH it but have no business holding its
   // key (the monitor). SETTLE_KEY is set on the settle service alone, so anywhere else it silently falls
-  // back to RELAY_KEY and the two wallets collapse into one — which is precisely how the monitor went on
-  // reporting a single healthy wallet while the one paying for settles was ~ten settles from empty.
+  // back to RELAY_KEY and the two wallets would collapse into one.
   settleAddress: opt('SETTLE_ADDRESS', ''),
 
   // Idle poll intervals (seconds).
@@ -194,8 +191,7 @@ export const CFG = {
   // OP_FILE=<op json>, writes public_values.hex + proof_bytes.hex in its cwd.
   execBin: opt('EXEC_BIN', '/app/prover/bin/exec'),
   // Per-op-type harness main.rs is baked into the exec bin's build; the relay selects
-  // the op via OP_TYPE/OP_FILE env the multi-harness `exec` dispatches on. TODO: confirm
-  // whether one `exec` dispatches all ops or one bin per op-type on the built image.
+  // the op via OP_TYPE/OP_FILE env the multi-harness `exec` dispatches on.
   harnessDir: opt('HARNESS_DIR', '/app/prover/harnesses'),
   proverOut: opt('PROVER_OUT', '/tmp/prover-out'),
   fixtureDir: opt('FIXTURE_DIR', '/tmp/prover-fixtures'),
@@ -216,7 +212,7 @@ export const CFG = {
   // eth_prove's own env (contracts/sp1/eth-reflection/prover-host/src/bin/eth_prove.rs) — required, no
   // guessed defaults: a wrong GENESIS_SLOT/DEPLOY_BLOCK/ETH_CALL_OUTBOX fails closed (guest panic or a
   // ChainMismatch-style revert) rather than silently mis-proving, but "fails closed" still means a human
-  // must supply the correct per-generation values (scratchpad/MODEB-RECIPE.md §1 has gen4's).
+  // must supply the correct per-deployment values.
   sourceConsensusRpc: opt('SOURCE_CONSENSUS_RPC', ''),
   sourceChainId: opt('SOURCE_CHAIN_ID', '1'),
   sourceExecutionRpc: opt('SOURCE_EXECUTION_RPC', ''),
@@ -289,7 +285,7 @@ export const CFG = {
   ethPriceUsd: num('ETH_PRICE_USD', 1840), // static FALLBACK only — chain.ethUsdPrice() reads the live feed
 };
 
-// Measured settle gas per op-type (PRICING-RELAY-ECONOMICS.md). Used by the fee math.
+// Measured settle gas per op-type. Used by the fee math.
 export const OP_GAS = {
   wrap: 593_000n,
   swap: 569_000n,
@@ -298,24 +294,21 @@ export const OP_GAS = {
   unwrap: 323_000n,
   transfer: 600_000n, // from a live 1-in/2-out settle estimate (600,356); 2 output leaves + membership
   swapblind: 900_000n, // heavier than swap: in-guest amm_swap_batch Groth16 verify + 2 cross-curve sigmas + opening-PoK. Consulted only for the (dormant) relayed path; tips=0 self-settle pays its own gas. Refine from a live estimate at arming.
-  // Bitcoin header attestation — the maintenance lane. Measured 2026-09-20 from three consecutive live
-  // receipts (264,253 / 264,241 / 264,241). NOT a user op: nobody pays a fee for it, but the bridge and
+  // Bitcoin header attestation — the maintenance lane, measured from live receipts. NOT a user op: nobody pays a fee for it, but the bridge and
   // the fast lane stop working in both directions without it, so it is a standing cost the margin on user
   // ops has to carry. See MAINTENANCE_RUNS_PER_DAY.
   maintenance: 264_000n,
 };
 
-// How often the maintenance lane runs, for the overhead term in the fee model. Measured 2026-09-20: 96
-// header-relay transactions in 6,000 blocks (~20.8h) ≈ 4.6/hour. Reflection attestation rides the same
+// How often the maintenance lane runs, for the overhead term in the fee model. Measured on mainnet at
+// ≈ 4.6 header-relay transactions per hour. Reflection attestation rides the same
 // wallet and cadence. Deliberately an env knob — the cadence follows HEADER_RELAY_LEAD and batch size,
 // so a deployment that paces differently should say so rather than inherit this number silently.
 export const MAINTENANCE_RUNS_PER_DAY = Number(process.env.MAINTENANCE_RUNS_PER_DAY || 111);
 export const DEFAULT_OP_GAS = 600_000n;
 
-// Measured PROVE per incremental op — near the groth16 floor (PRICING doc: ~$0.03/op).
-// PROVE per op, measured from a live Succinct fulfillment for a shielded transfer (0.3892 PROVE, the
-// heaviest confidential op at ~8.4M cycles). Lighter ops cost less and are conservatively over-covered;
-// split this into a per-op map once each has a measured request. The previous 0.15 understated it ~2.6x.
+// PROVE per op, measured from a live Succinct fulfillment for a confidential transfer (0.3892 PROVE, the
+// heaviest confidential op at ~8.4M cycles). Lighter ops cost less and are conservatively over-covered.
 export const OP_PROVE = 0.39;
 
 export { req, opt, num };

@@ -131,7 +131,7 @@ export function makeUnifiedSend(deps) {
     return await dispatchEvm({ wallet, ux, recipientPubHex: leg.pubHex, asset, amount, opts });
   }
 
-  // EVM lane: transfer from shielded notes; wrap-and-send if the user holds
+  // Ethereum side: transfer from shielded notes; wrap-and-send if the user holds
   // underlying funds but lacks sufficient shielded balance. NOT atomic — the
   // wrap must settle before the transfer note is spendable; caller surfaces the
   // two-phase status via opts.onPhase.

@@ -6,7 +6,7 @@
 // per contracts/src/ConfidentialPool.sol's `PublicValues` struct. This module is pure decoding (no I/O, no RPC)
 // plus one small driver that walks a caller-supplied stream of events and settle-tx refs.
 //
-// A stream without any LockLeavesInserted event (an older pool generation, or a caller that did not subscribe to
+// A stream without any LockLeavesInserted event (a pool that does not emit it, or a caller that did not subscribe to
 // it) falls back to rebuilding the set from settle calldata corroborated by the other events of the same tx.
 //
 // A settle can reach the pool through more than one outer transaction shape: a direct `pool.settle(...)`
@@ -35,9 +35,9 @@ const SELECTOR_RELAY_SETTLE = 'fcccb833';
 const SELECTOR_RELAY_SETTLE_SEEDED = 'e2b28725';
 
 // Mainnet ConfidentialPool and TacitRelayer: a settle sent straight to either is exactly what that contract ran
-// (see scanLockLeaves on provenance). Per-generation -- both real callers (confidential-pool-ux.js) rely on
-// these as their only source, with no override, so a generation cutover MUST update these two constants or
-// stealth-lock scanning silently keeps reading the retired generation's pool.
+// (see scanLockLeaves on provenance). Per-deployment: both callers (confidential-pool-ux.js) rely on these as
+// their only source, so a successor deployment MUST update these two constants or stealth-lock scanning keeps
+// reading the retired pool.
 const MAINNET_POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 

@@ -1,10 +1,9 @@
 // Spawn the prebuilt Rust prover binaries in NETWORK mode (Succinct), read back
-// the hex artifacts. This replaces the GPU box's `cargo run` + sp1-gpu-server with
-// a network prove: the binaries were built with the SP1 SDK's .network() path, so
+// the hex artifacts. The binaries were built with the SP1 SDK's .network() path, so
 // they need no local GPU — only SP1_PROVER=network + a funded NETWORK_PRIVATE_KEY.
 //
-// The GPU box remains a drop-in fallback: point BITCOIN_PROVE_BIN / EXEC_BIN at a
-// box-built binary and unset SP1_PROVER to prove locally instead (see README).
+// To prove locally instead, point BITCOIN_PROVE_BIN / EXEC_BIN at locally built GPU
+// binaries and unset SP1_PROVER.
 
 import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -32,9 +31,7 @@ function proverEnv(extra = {}) {
 // -slim, which may not carry bash; ulimit is a POSIX sh builtin too) so a runaway child hits its OWN
 // allocator failure (a normal, catchable non-zero exit) well before the container's shared cgroup memory
 // ceiling — otherwise the OOM killer can take out the whole container (parent Node process included), which
-// no try/catch around this call can ever observe. See eth-state-sidecar.js's execute-preflight comment for
-// the incident this fixes: the preflight's own catch block never fired because the crash killed the
-// container, not the child.
+// no try/catch around this call can ever observe.
 function run(bin, { env, cwd, timeoutMs, tag, memLimitKB }) {
   return new Promise((resolve, reject) => {
     const child = memLimitKB
@@ -57,9 +54,7 @@ async function readHex(p) {
 }
 
 // Fetch the raw compressed eth-proof bytes bitcoin_prove's Mode-B branch needs and write them to
-// $PROVER_OUT/eth_compressed.bin (the path bitcoin_prove.rs now derives from PROVER_OUT — previously
-// hardcoded to a RunPod-box-only path, which is what produced the ENOENT the first time a modeB=1 job
-// reached this relay). contentHash is derived from the job's own ethPv so a pending candidate getting
+// $PROVER_OUT/eth_compressed.bin (the path bitcoin_prove.rs derives from PROVER_OUT). contentHash is derived from the job's own ethPv so a pending candidate getting
 // replaced mid-flight is detected as a miss (the worker refuses to serve the wrong one) rather than
 // silently recursing a different eth-side witness set than the fixture actually committed to.
 async function writeEthProofFor(ethPv) {
@@ -92,7 +87,7 @@ export async function proveReflection(input) {
     tag: 'bitcoin_prove',
   });
   // The GPU client can panic in a cleanup destructor AFTER writing artifacts; treat a
-  // fresh proof file as success regardless of exit code (mirrors reflection-relay-loop.sh).
+  // fresh proof file as success regardless of exit code.
   const pvPath = path.join(CFG.proverOut, 'bitcoin_pv.hex');
   const pbPath = path.join(CFG.proverOut, 'bitcoin_proof_bytes.hex');
   try {

@@ -1,6 +1,6 @@
 // Worker-side reflection attestation: maintains the canonical Bitcoin confidential-pool reflection state
-// via the FULL-SCAN model (every tx of every confirmed block, F4-complete) and assembles the prover batches
-// the self-hosted GPU box proves + submits to ConfidentialPool.attestBitcoinStateProven (the box-poll relay).
+// via the FULL-SCAN model (every tx of every confirmed block) and assembles the prover batches the
+// reflection relayer proves + submits to ConfidentialPool.attestBitcoinStateProven.
 // Dependency-injected (deps={secp,keccak256,sha256}, storage, getBlockTxs/getHeaders, classifyTx,
 // burnDepositKit) so it is testable + deployment-agnostic. The persisted SNAPSHOT (advanced only on ack,
 // after the on-chain attestation lands) is the source of truth, so a restart/redeploy is always consistent.
@@ -9,8 +9,7 @@ import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-sc
 import { makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 
-// ── Full-scan reflection attester (the worker's Bitcoin-state relay; the superseded witnessed-effects
-// attester was removed at the scan-attester cutover) ──
+// ── Full-scan reflection attester (the worker's Bitcoin-state relay) ──
 // The canonical state is a SNAPSHOT (the full-scan ScanReflection: live set + accumulators +
 // coords) persisted at the ATTESTED height. A cycle assembles the un-attested block range by
 // fetching EVERY tx of each block (so the guest's merkle-completeness check holds — no pool spend
@@ -51,7 +50,7 @@ export function makeScanReflectionAttester({ deps, storage, prove, submit, getBl
   }
 
   // Assemble the next un-attested block range into a prover input WITHOUT advancing the persisted
-  // anchor (the box proves + submits, then acks). Returns null if caught up. The returned
+  // anchor (the relayer proves + submits, then acks). Returns null if caught up. The returned
   // `newSnapshot` is the post-batch canonical state ackJob will persist.
   async function assembleJob() {
     const s = await loadState();
@@ -300,7 +299,7 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // recomputes txids + the block merkle), so peak heap scales with the batch — a large multi-block fold of
   // full mainnet blocks is what exhausts the worker's budget. The steady-state gap is a block or two, so a
   // small batch reaches the matured tip every cycle; a rare large jump (relay leaps ahead during an outage)
-  // is caught up by the box's off-worker assembler instead of a giant in-worker fold. Hard-cap at
+  // is caught up by an off-worker assembler instead of a giant in-worker fold. Hard-cap at
   // MAX_BATCH so no env value can drive the worker back into an OOM; REFLECTION_BATCH_SIZE tunes within it.
   const MAX_BATCH = 400;
   const batchSize = Math.min(MAX_BATCH, Math.max(1, parseInt(env.REFLECTION_BATCH_SIZE || '6', 10)));

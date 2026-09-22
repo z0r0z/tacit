@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Advance the Bitcoin light relay with new headers.
-# If local Foundry/cast crashes while creating its RPC transport (seen on macOS during the Sepolia/signet
-# pilot), use the cast-free raw transaction fallback: `node scripts/advance-relay-raw.mjs --count <n>`.
+# If local Foundry/cast crashes while creating its RPC transport (seen on macOS), use the cast-free raw transaction fallback: `node scripts/advance-relay-raw.mjs --count <n>`.
 #
 # Usage:
 #   ./scripts/advance-relay.sh [--from <height>] [--count <n>]

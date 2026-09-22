@@ -13,7 +13,7 @@ import {PoolStateReader} from "./PoolStateReader.sol";
 using PoolStateReader for ConfidentialPool;
 
 /// The canonical asset hub: a CREATE2 factory issues a deterministic public ERC20 per
-/// asset (the public face, Uniswap-tradeable), gated mint/burn by the bridge/collateral
+/// asset (the public face, tradeable anywhere), gated mint/burn by the bridge/collateral
 /// minter; ConfidentialPool then wraps it for the confidential face. Address =
 /// f(assetId, minter, symbol, decimals, cid); `name` is the constant brand "Tacit Token";
 /// per-asset metadata is (symbol, decimals, cid), deterministic to the real asset.

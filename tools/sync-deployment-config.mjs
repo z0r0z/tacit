@@ -45,7 +45,7 @@ const liveTickers = typeof liveFlag === 'string'
   : [];
 // Opt-in, default OFF: the external ERC20s (by public ticker — USDC, USDT, wstETH) whose confidential wrap
 // this network advertises. Registration on the pool is permissionless (`registerWrappedAuto`) but per
-// generation, so a wrap is only advertised once its asset has actually been registered on THIS pool.
+// deployment, so a wrap is only advertised once its asset has actually been registered on THIS pool.
 const externalFlag = flag('external', false);
 const externalTickers = typeof externalFlag === 'string'
   ? externalFlag.split(',').map((t) => t.trim()).filter(Boolean)
@@ -134,7 +134,7 @@ cur[network] = {
   assetFactory: opt(manifest.assetFactory || manifest.factory),
   deployBlock: deployBlock != null ? Number(deployBlock) : (cur[network] && cur[network].deployBlock) || undefined,
   tac: opt(manifest.tac),
-  // Pool-minted canonical ERC20s (minter = this pool, so per-generation): the wrap-back targets for cBTC/cUSD.
+  // Pool-minted canonical ERC20s (minter = this pool, so per-deployment): the wrap-back targets for cBTC/cUSD.
   cBtcToken: opt(manifest.cBtcToken),
   cUsdToken: opt(manifest.cUsdToken),
   assetIds: {

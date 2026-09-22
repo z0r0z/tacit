@@ -5,8 +5,8 @@
 //
 // This surface reads live pool reserves (ux.poolReserves) and the user's shielded notes (ux.balance) to show
 // real positions, and drives ux.lpBond for a one-click farm entry when the FarmController is configured. APR
-// is derived from emissions ÷ TVL where the farm emission rate is published; until that lands it reports the
-// position honestly rather than faking a yield number.
+// is derived from emissions ÷ TVL where the farm emission rate is published; otherwise it reports the
+// position without a yield number.
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';

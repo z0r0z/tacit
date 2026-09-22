@@ -182,7 +182,7 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     }
     const legsSorted = [...collateral].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0)));
     // Derive the debt commitment FIRST: every collateral sigma must bind it (and the fee), so the borrower
-    // authorizes the exact destination of the loan rather than just its amount. Mirrors the guest, which now
+    // authorizes the exact destination of the loan rather than just its amount. Mirrors the guest, which
     // reads `fee` + the debt commitment before the collateral legs for the same reason.
     const net = BigInt(debtValue) - BigInt(fee);
     const Z32 = '0x' + '00'.repeat(32);
@@ -303,11 +303,9 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   // (combined basket, `newNonce`). Requires `pool`. The caller supplies the old basket, the added collateral
   // notes with their live merkle witnesses, and the old position's merkle witness.
   const byAsset = (a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : (BigInt(a.asset) > BigInt(b.asset) ? 1 : 0));
-  // A top-up REPLACES a live position (consumes the old ν, installs a new leaf), so it now requires the
-  // POSITION OWNER's BIP-340 authorization — proving authority over the ADDED collateral is not authority
-  // over someone else's position. Without it, anyone able to mint a dust note carrying the victim's public
-  // owner LABEL (labels are not spend authority; notes are bearer) could replace their position at will,
-  // invalidating any close proof they had prepared and repeating it to censor them into liquidation.
+  // A top-up REPLACES a live position (consumes the old ν, installs a new leaf), so it requires the
+  // POSITION OWNER's BIP-340 authorization — authority over the ADDED collateral is not authority over
+  // the position (owner labels are not spend authority; notes are bearer).
   // Each added leg carries its OWN spend owner = H(leg.nk) (the depositor's, distinct from the position
   // auth key `owner`) — bound as the sigma's FIRST note (mirroring the guest's `(cx, cy, coll_owner)`
   // context), while `owner` still binds the position via the second (controllerWord, newNonce, owner)

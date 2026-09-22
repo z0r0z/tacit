@@ -3,7 +3,7 @@
 //   MODE=execute (default) — execute the guest, decode PublicValues, assert liquidity[0] == expected
 //                            (fast: validates the new LP op without a proof).
 //   MODE=groth16           — GPU Groth16 prove + local verify, writing public_values.hex +
-//                            proof_bytes.hex for a Forge real-proof test (the C-3 re-prove pins the
+//                            proof_bytes.hex for a Forge real-proof test (the re-prove pins the
 //                            new ELF's vkey via setup()).
 use alloy_sol_types::{sol, SolValue};
 use sp1_sdk::{
@@ -124,7 +124,7 @@ fn main() {
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));
     stdin.write(&(f["feeBps"].as_u64().unwrap() as u32)); // pool fee tier — binds the pool id
-    stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional Uniswap fee-switch (0 = no skim, ≡ 3-arg pool id)
+    stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional protocol fee switch (0 = no skim, ≡ 3-arg pool id)
     let pf_rcpt = f["protocolFeeRecipient"].as_str().map(hexv).unwrap_or_else(|| vec![0u8; 33]);
     stdin.write(&pf_rcpt); // recipient33 — bound into the 6-arg protocol-fee pool id
     // The dapp emits every BigInt field as a decimal STRING (buildLpBondOp / transfer op convention,
@@ -181,7 +181,7 @@ fn main() {
     write_leg(&mut stdin, &b);
     stdin.write(&u64_field(&f["dB"])); // d_b
 
-    // d_shares is DERIVED in-guest (the V2 min rule) — no longer streamed; the share note follows B.
+    // d_shares is DERIVED in-guest (the constant-product min rule), not streamed; the share note follows B.
     let s = &f["share"];
     stdin.write(&hexv(s["cx"].as_str().unwrap()));
     stdin.write(&hexv(s["cy"].as_str().unwrap()));
@@ -200,7 +200,7 @@ fn main() {
 
     // PARTIAL-ADD CHANGE TAIL. Per leg: count, then each change note; ONE BP+ range proof spans BOTH legs
     // (so m_a + m_b must be a legal aggregation size {0,1,2,4,8} — the guest asserts it); then a kernel per
-    // asset proving note == contribution + Σ change. m == 0 reproduces the old whole-note add exactly.
+    // asset proving note == contribution + Σ change. m == 0 is a whole-note add.
     let empty: Vec<serde_json::Value> = Vec::new();
     let a_ch = f["aChange"].as_array().unwrap_or(&empty).clone();
     let b_ch = f["bChange"].as_array().unwrap_or(&empty).clone();

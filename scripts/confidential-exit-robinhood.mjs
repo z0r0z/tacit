@@ -1,10 +1,10 @@
 // Privacy-preserving ETH -> Robinhood Chain exit, ops tooling.
 //
-// Same flow as scripts/confidential-exit-base.mjs (wrap into the shielded pool -> dwell -> unwrap to a
+// Same flow as scripts/confidential-exit-base.mjs (wrap into the confidential pool -> dwell -> unwrap to a
 // recipe-bound escrow -> the escrow atomically bridges out), but Robinhood Chain is an Arbitrum Orbit
 // chain, not an OP-Stack one, and its deposit mechanism is a different, more dangerous shape:
 //
-// Inbox.depositEth() from a CONTRACT caller (our escrow) SUCCEEDS and silently credits the contract's L2
+// Inbox.depositEth() from a CONTRACT caller (the escrow) SUCCEEDS and silently credits the contract's L2
 // ALIAS (L1_addr + 0x1111000000000000000000000000000000001111) — an address nobody holds a key for.
 // There is no revert to catch this, unlike OP-Stack's onlyEOA. The only safe path is
 // Inbox.createRetryableTicket, which lets the escrow name the real L2 recipient explicitly, and both
@@ -12,12 +12,10 @@
 // dapp/confidential-router.js's buildArbitrumBridgeExit for the full explanation.
 //
 // This script deliberately duplicates confidential-exit-base.mjs's shared plumbing (state model, note
-// discovery, pin-verification framework, sendTx) rather than refactoring it into a shared lib — safer to
-// keep two proven, independent scripts than to risk already-working fund-handling code while adding new,
-// less-tested territory (live gas estimation, Arbitrum's retryable-ticket fee model).
+// discovery, pin-verification framework, sendTx) so the two fund-handling scripts stay independent.
 //
 // PRIVACY BOUNDARY: identical to the Base script's — the exit amount, l2Recipient, and timing are all
-// public on L1 once activateExit lands. Shielded accumulation, then exit anywhere — not a private
+// public on L1 once activateExit lands. Confidential accumulation, then exit anywhere — not a private
 // cross-chain transfer.
 //
 // Subcommands:
@@ -315,7 +313,7 @@ async function cmdPlan() {
   if (anon.nextLeaf < 20n) {
     console.log('*** WARNING: the pool has almost no activity. An exit today buys ~zero privacy — it is');
     console.log('*** trivially linkable by elimination. Treat any run right now as a FUNCTIONAL smoke test,');
-    console.log('*** not a privacy demonstration. See ops/DESIGN-confidential-robinhood-exit.md.');
+    console.log('*** not a privacy demonstration.');
   }
   console.log('');
   console.log('tranches (advisory only, not enforced): ' + TRANCHES_WEI.map(fmtEth).join(' / ') + ' ETH');

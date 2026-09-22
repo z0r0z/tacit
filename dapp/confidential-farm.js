@@ -63,7 +63,7 @@ export function makeConfidentialFarm({ keccak256, pool }) {
 
   // OP_FARM_HARVEST reward sigma — main.rs `tacit-farm-harvest-reward-v1`: assetA = reward_asset (the witnessed
   // reward asset — an escrow-backed asset in ESCROW mode, or debtAssetId(controller) in MINT mode), assetB =
-  // harvestNonce (this claim's freshness nonce — the position nonce no longer rotates, since the receipt is a
+  // harvestNonce (this claim's freshness nonce — the position nonce does not rotate, since the receipt is a
   // stable id), notes = [(r_cx, r_cy, owner)], amounts = [reward]. `note.value` is the reward.
   // The reward note opens to the NET (reward − fee); the gross `reward` + the relay `fee` are bound in the
   // context (mirroring the guest's OP_FARM_HARVEST). The caller MUST commit the reward note to reward − fee.

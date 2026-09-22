@@ -139,8 +139,7 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     const pok = pool.openingPokBlind(BigInt(amount), nNote.blinding, pokCtx, nonceV, nonceR);
     // `nk` and `lockLeaf` are bundled here (not left for the caller to reattach) so every consumer — the
     // relay op, packStealthLockBatch, a future single-lock dispatch — gets a complete, guest-submittable
-    // witness by construction. A prior version omitted both; nothing threaded nk through at all
-    // (confidential-airdrop.js never had it to attach), so every lock built that way was unprovable.
+    // witness by construction.
     return { chainBinding, spendRoot, asset, locker, refundPub, ownerPub, deadline: Number(deadline),
       nCx: nNote.cx, nCy: nNote.cy, nIndex: nNote.leafIndex, nPath: nNote.path, nk: nNote.secret,
       lCx, lCy, lockLeaf, kernelR: hx(kt.R.toRawBytes(true)), kernelZ: hx(be(kt.z, 32)),
@@ -239,11 +238,11 @@ export function makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrd
     const { cx: lCx, cy: lCy } = pool.commitXY(net, lBlinding);
     const kt = transfer.kernelSign({ inputs: [{ value: BigInt(amount), blinding: BigInt(burned.blinding) }],
       outputs: [{ value: net, blinding: BigInt(lBlinding) }], fee: BigInt(fee), outLeaves: [] });
-    // Range-bound L (v_L < 2^64) so the relay fee = v_in − v_L can't exceed the burned value (the bound the
-    // dropped opening sigma used to give). The guest reads + verifies this.
+    // Range-bound L (v_L < 2^64) so the relay fee = v_in − v_L can't exceed the burned value. The guest
+    // reads + verifies this.
     const { proof: lRange } = transfer.rangeProve([net], [BigInt(lBlinding)]);
     // Burned-note source class the mint reconstructs under (mirror fold_burn / OP_BRIDGE_MINT): 0 = scan-free
-    // burn-deposit native leaf, 1 = unbound reflected (legacy/TAC), 2 = generation-bound reflected. A bound note
+    // burn-deposit native leaf, 1 = unbound reflected (legacy/TAC), 2 = deployment-bound reflected. A bound note
     // MUST be witnessed as class 2 or the mint rebuilds the wrong leaf and the burn strands the note. `spentTxid`
     // / `spentVout` name the exact Bitcoin outpoint the burned note lived at (part of its burn_id identity).
     // A class-0 deposit note is owned by its own burned outpoint, keccak(txid ‖ vout as u32 LE); the guest rejects

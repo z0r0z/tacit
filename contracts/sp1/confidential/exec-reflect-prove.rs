@@ -56,7 +56,7 @@ fn main() {
     println!("prove backend = {backend}");
     let (pv_bytes, proof_bytes) = if backend == "network" {
         {
-            // NETWORK_PRIVATE_KEY authenticates the requester account (deposited $PROVE in the vApp
+            // NETWORK_PRIVATE_KEY authenticates the requester account (deposited $PROVE in the network's
             // settlement contract pays per proof from that account's balance).
             let client = ProverClient::builder().network().build();
             println!("setup (succinct network)...");
@@ -83,7 +83,7 @@ fn main() {
             let vk = pk.verifying_key().bytes32();
             println!("BITCOIN_RELAY_VKEY={vk}");
             // SKIP_VKEY_ASSERT bypasses the drift guard for the re-prove that ESTABLISHES a new vkey (the
-            // guest changed, so the derived vkey legitimately differs from the old pin). Pin the printed vkey
+            // guest changed, so the derived vkey legitimately differs from the current pin). Pin the printed vkey
             // afterward; every subsequent prove re-asserts against it.
             if std::env::var("SKIP_VKEY_ASSERT").is_err() { assert_vkey(&vk, "bitcoin_relay_vkey"); }
             else { println!("(vkey assert skipped — establishing a new pin)"); }

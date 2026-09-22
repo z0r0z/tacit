@@ -4,7 +4,7 @@ pragma solidity 0.8.36;
 import {Script, console2} from "forge-std/Script.sol";
 import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 
-/// @notice Create the next generation of a ConfidentialPool. A migrating generation can only come into
+/// @notice Create the successor of a ConfidentialPool. A successor pool can only come into
 ///         existence through its predecessor's own `createNextGen` (the successor's constructor accepts a
 ///         predecessor only when that predecessor is its deployer), so this script never deploys anything
 ///         itself: it assembles the successor's init code and has the predecessor deploy it. Broadcast from

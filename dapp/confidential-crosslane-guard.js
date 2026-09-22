@@ -22,14 +22,13 @@
 //
 // Enforcement points: the worker indexer-of-record (security) and the dapp pre-spend
 // check (UX). When the EVM pool is not wired (`poolAddress` falsy) the guard is a
-// no-op, so pure-Bitcoin operation is unchanged — but note that cross-lane IS wired
-// on mainnet as of the gen5 deployment, so that branch is a test/other-network path,
-// not the live posture.
+// no-op, so pure-Bitcoin operation is unchanged. Mainnet always has a pool wired;
+// the no-op branch is for test and other networks.
 //
 // `ethGetStorageAt(address, slot, blockTag)` is injected (worker / dapp eth_getStorageAt
 // wrapper), so this module is pure and unit-testable with a mock. It reads the
-// `nullifierSpent` mapping slot DIRECTLY (the public auto-getter was internalized to fit
-// the pool under EIP-170): a storage read is as authoritative as the old eth_call getter.
+// `nullifierSpent` mapping slot DIRECTLY (the mapping is internal, to fit the pool under
+// EIP-170); a storage read is as authoritative as a getter.
 
 export function makeCrossLaneGuard({ keccak256 }) {
   const strip = (h) => String(h == null ? '' : h).replace(/^0x/, '');
@@ -86,16 +85,16 @@ export function makeCrossLaneGuard({ keccak256 }) {
   // Multi-domain form — THE ONE CALLERS SHOULD USE for a real note.
   //
   // A note's ν is LEAF-bound, and a Bitcoin-homed note has TWO possible leaf domains: the legacy
-  // unbound `btc_note_leaf(asset,Cx,Cy,auth_key)` and the generation-bound
+  // unbound `btc_note_leaf(asset,Cx,Cy,auth_key)` and the deployment-bound
   // `btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding)`. They hash differently, so they yield
   // DIFFERENT nullifiers for the same note.
   //
-  // The EVM fast lane (a Bitcoin-homed note spent directly on Ethereum) accepts only generation-bound notes —
+  // The EVM fast lane (a Bitcoin-homed note spent directly on Ethereum) accepts only deployment-bound notes —
   // `input_leaf_authed` builds `btc_note_leaf_bound`, pinned by the guest test
   // `fast_lane_input_requires_a_generation_bound_note` — so the bound ν is the one a fast-lane spend records.
   // Check every candidate ν and block if any is spent.
   //
-  // Each generation has its own `chain_binding`, so pass one candidate per live generation the note
+  // Each deployment has its own `chain_binding`, so pass one candidate per live deployment the note
   // could have been homed to (current pool first). An empty list is a caller bug, not "nothing to
   // check" — it fails closed.
   async function bitcoinSpendBlockedAny(ethGetStorageAt, poolAddress, nullifierHexes, opts = {}) {

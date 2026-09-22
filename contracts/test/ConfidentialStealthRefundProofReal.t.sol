@@ -9,7 +9,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 
 /// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_STEALTH_REFUND ON-CHAIN,
 /// through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. GPU-proven on the box
-/// (harnesses/exec-stealthrefund.rs over fixtures/stealthrefund_op.json) for the gen-1 guest.
+/// (harnesses/exec-stealthrefund.rs over fixtures/stealthrefund_op.json) for the committed guest.
 /// The locker reclaims an unclaimed lock after its deadline (kernel-gated, refundNotBefore): L is
 /// re-opened to amount, the reclaimed note O opens to amount−fee back to the locker (conserved).
 /// Proof fixture: contracts/test/fixtures/stealthrefund_groth16.json (the box produces it).
@@ -27,7 +27,7 @@ contract ConfidentialStealthRefundProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real OP_STEALTH_REFUND proof verifies on-chain against the gen-1 vkey.
+    /// The real OP_STEALTH_REFUND proof verifies on-chain against the pinned vkey.
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -56,7 +56,7 @@ contract ConfidentialStealthRefundProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

@@ -62,8 +62,8 @@ node_suite() {
 }
 
 # node helper: the Bitcoin reflection indexer + prover-input tests. The SHIPPED model is the
-# full SCAN (confidential-reflection-scan*: every tx of every block, F4-complete); the witnessed
-# (state/witness/indexer) tests stay as the superseded-model cross-check oracle. The burn-deposit
+# full SCAN (confidential-reflection-scan*: every tx of every block, spent-set complete); the witnessed
+# (state/witness/indexer) tests are a cross-check oracle. The burn-deposit
 # block covers the scan-free TAC onboarding (realness mirror, assembler, tracer, the raw-tx kit,
 # the indexer wiring, and the attester injection seam). Both styles run under plain `node` (the
 # node:test files auto-run + set the exit code), and all must be green.
@@ -147,8 +147,7 @@ else
 fi
 
 # ── POOL layer 5: guest ELF pin discipline (no silent drift) ─────────────────
-# The real sha256(committed-ELF) == pin check lives in verify-vkey-pin.sh — run it here
-# (was a file-exists no-op that let a silently recommitted ELF pass the gate).
+# The real sha256(committed-ELF) == pin check lives in verify-vkey-pin.sh — run it here.
 if [ -f "$PIN" ]; then
   # STRICT: the readiness gate is a deploy precondition, so any working-tree-vs-HEAD-vs-pin ELF drift
   # is a hard FAIL here (not a warning) — a deploy must never be cut from a dirty/uncommitted ELF.
@@ -190,8 +189,8 @@ fi
 # ── BRIDGE layer 8b: reflection fixture freshness (guest == committed newDigest) ─
 # Every committed reflection input fixture pins a newDigest — the assembler's expected reflected
 # state for that input. Replaying it through the guest must reproduce it; a drift is a stale fixture
-# or a guest<->JS divergence, and any re-prove built on it bakes in the wrong digest (this is how the
-# redeem fixture's 0xba53-vs-0xc737 drift surfaced). Execute-mode replay is heavy → skipped under FAST.
+# or a guest<->JS divergence, and any re-prove built on it bakes in the wrong digest. Execute-mode replay
+# is heavy → skipped under FAST.
 if [ "${READINESS_FAST:-0}" = "1" ]; then
   block_gate "Reflection fixtures: guest == committed newDigest" BRIDGE "skipped (READINESS_FAST=1)"
 else
@@ -206,165 +205,19 @@ run_gate "Reflection storage slots == compiled ConfidentialPool layout" BRIDGE \
   bash contracts/sp1/confidential/verify-reflection-slots.sh
 
 # ── BRIDGE layer 9: reflection guest soundness (FAIL-CLOSED allowlist) ────
-# The gate verifies coherence + that a real Groth16 verifies — it CANNOT see an in-guest logic bug
-# (the contract sees only hashes), so a coherent, on-chain-verifying reflection vkey is NOT evidence
-# of soundness. REFLECT-1 (FUND-CRITICAL): a reflection guest that folds CXFER outputs into
-# bitcoinPoolRoot WITHOUT a value-conservation check lets a confirmed Bitcoin tx spending no pool
-# UTXO inject a phantom inflated note → drain on the Ethereum cross-lane. The source fix is
-# cxfer-core verify_cxfer_conservation (= cxfer_kernel_verify(burned=0) + verify_range), run by
-# ScanReflection::fold_cxfer, with reflect.rs checking conservation BEFORE folding; regression
-# reflection_cxfer_fold_rejects_nonconserving_outputs (gate layer 2) is the source-side catch, and
-# the worker mirror is dapp verifyCxferConservation (tests/confidential-reflection-conservation.mjs).
+# The gate checks coherence and that a real Groth16 verifies; it cannot see in-guest logic (the contract
+# sees only hashes), so a coherent reflection vkey is not evidence of soundness. The reflection guest must
+# fold CXFER outputs into bitcoinPoolRoot only after value conservation holds (cxfer-core
+# verify_cxfer_conservation, run by ScanReflection::fold_cxfer before folding); the source-side regression
+# is reflection_cxfer_fold_rejects_nonconserving_outputs (layer 2) and the worker mirror is dapp
+# verifyCxferConservation (tests/confidential-reflection-conservation.mjs).
 #
-# A DENYLIST is unsafe here: it silently PASSES any new/unknown reflection vkey, including an
-# unverified re-prove. So this is an ALLOWLIST — BRIDGE is blocked unless the pinned reflection vkey
-# is one POSITIVELY CONFIRMED to enforce conservation. "Confirmed" = an execute- or on-chain-level
-# NEGATIVE test showing THIS pinned ELF rejects/skips a non-conserving CXFER (not just that a
-# conserving one verifies). Add a vkey below only with that evidence; the empty default fails closed.
-#   Known-UNSOUND (never confirm): 0x0050d656 (anchor/F4-open), 0x0099e1c7 (REFLECT-1 unconserved fold).
-#
-# CONFIRMED 0x00e593b0 (2026-06-10): the negative test (tests/gen-reflection-nonconserve.mjs →
-# contracts/sp1/reflect-exec over the PINNED ELF) EXECUTE_OK — the guest SKIPS a non-conserving CXFER
-# (Σ C_in = 0 vs a multi-input kernel) instead of reading its output witnesses; the conserving
-# control folds + reproduces the on-chain digest 0x240a843d. So this ELF defeats the REFLECT-1
-# attack (no-input inflated note). Re-confirm before re-adding after any reflection re-prove.
-#
-# CONFIRMED 0x00687472 (2026-06-11): after the fee-enforcement / multi-fee-tier re-prove, the shared
-# cxfer-core rebuild (OP_SWAP fee enforcement + canonical-pair pool_id) rotated the reflection vkey
-# 0x00e593b0 → 0x00687472, but the conservation logic (verify_cxfer_conservation / fold_cxfer / the
-# reflect.rs check-before-fold) is BYTE-IDENTICAL (the AMM changes are unused by the reflection path).
-# The negative test was RE-RUN against THIS pinned ELF: the conserving control EXECUTE_OK + DIGEST_MATCH
-# 0x240a843d (folds), and the non-conserving input (emptied prior live set ⇒ Σ C_in = 0 vs a multi-input
-# kernel, outputs stripped) EXECUTE_OK — the guest SKIPS it instead of reading the absent output
-# witnesses (a non-enforcing guest would PANIC). So 0x00687472 defeats the REFLECT-1 attack. Prior
-# confirmed (now superseded as the pin): 0x00e593b0. (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
-#
-# CONFIRMED 0x002d2536 (2026-06-13): the Mode-B reflection re-prove (recursive eth-reflection verify +
-# CXFER asset-preservation + genesis-pinned). Both-sided negative test RE-RUN against THIS pinned ELF via
-# prover-host/bitcoin_prove (PROVE level — the eth recursion proof supplied through SP1Stdin::write_proof):
-# the CONSERVING control (gen-reflection-cxfer-synth: 2-in/2-out Σv_in=Σv_out=1000, real BIP-340 kernel +
-# BP+ range) FOLDS → poolRoot 0x1658bfbe…, newDigest 0x4d798e9a…, LOCAL_VERIFY_OK (== the on-chain
-# reflection_groth16 fixture); the NON-CONSERVING case (gen-reflection-nonconserve: emptied prior live ⇒
-# Σ C_in = 0 vs the multi-input kernel) SKIPS → poolRoot 0x7c79406a…, newDigest 0x2c7f6b26…,
-# LOCAL_VERIFY_OK with NO panic (a non-enforcing guest would fold the phantom outputs or panic on the
-# absent output witnesses). So 0x002d2536 defeats the REFLECT-1 attack AND preserves asset.
-# Lineage (superseded pins): 0x00687472, 0x00e593b0. (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
-# CONFIRMED 0x004d8dbd (2026-06-13): the coordinated re-prove — the AMM consolidation (da8cd9c) added fns
-# to the shared cxfer-core, which compiles into the reflection ELF wholesale, rotating its vkey
-# 0x002d2536…→0x004d8dbd… (it touched no reflection logic). The REFLECT-1 both-sided negative test was
-# RE-RUN against THIS pinned ELF via prover-host/bitcoin_prove: CONSERVING (gen-reflection-cxfer-synth)
-# FOLDS → poolRoot 0x1658bfbe…, newDigest 0x4d798e9a…, LOCAL_VERIFY_OK (== the on-chain reflection_groth16
-# fixture); NON-CONSERVING (gen-reflection-nonconserve) SKIPS → poolRoot 0x7c79406a…, newDigest 0x2c7f6b26…,
-# LOCAL_VERIFY_OK with NO panic. Identical conservation behavior to 0x002d2536 (only the AMM-bloat changed
-# the bytes). Lineage (superseded pins): 0x002d2536, 0x00687472, 0x00e593b0.
-# CONFIRMED 0x005e6adc (2026-06-13): the cBTC.zk re-prove — adds the digest-bound cbtcBackingSats (10th PV
-# field) + fold_cbtc_lock self-custody to the shared cxfer-core, rotating the reflection vkey
-# 0x004d8dbd→0x005e6adc. Both-sided REFLECT-1 negative test RE-RUN on THIS pinned ELF via bitcoin_prove:
-# CONSERVING (gen-reflection-cxfer-synth) FOLDS → newDigest 0xcef6d5e5…, LOCAL_VERIFY_OK (== reflection_groth16
-# fixture); NON-CONSERVING (gen-reflection-nonconserve) SKIPS → newDigest 0xdd004958…, no panic. cbtcBackingSats
-# is digest-bound (cxfer-core ScanReflection.digest folds cbtc_locks.root()+cbtc_backing_sats), so it is not a
-# forgeable free witness. Lineage (superseded): 0x004d8dbd, 0x002d2536, 0x00687472, 0x00e593b0.
-# CONFIRMED 0x0006921c (2026-06-19): Sepolia/signet pilot reflection re-prove after the BIP141 trailing-byte
-# and Mode-B 0x65 skip-witness fixes, with reflection ELF sha f66eb9d8… and both reflection Groth16 fixtures
-# LOCAL_VERIFY_OK. REFLECT-1 negative test RE-RUN against THIS committed ELF locally:
-# `node tests/gen-reflection-nonconserve.mjs > /tmp/refl_nonconserve_000692.json; REFLECT_ELF=.../elf/reflection-prover
-# cargo run --release --manifest-path contracts/sp1/reflect-exec/Cargo.toml --bin reflect-execute -- /tmp/refl_nonconserve_000692.json`
-# returned EXECUTE_OK (3,087,539 cycles) with burn-set UNCHANGED, proving the guest skipped the non-conserving
-# CXFER instead of reading/folding phantom outputs. Lineage (superseded pin): 0x008c9fa6.
-# CONFIRMED 0x0032a552 (2026-06-19): burn-envelope liveness re-prove (multi-live-spend / mismatched-ν
-# burns skip-not-panic after nullifying their live spends, reading no burn-deposit witnesses). REFLECT-1
-# negative test RE-RUN against THIS committed ELF:
-# `node tests/gen-reflection-nonconserve.mjs > /tmp/refl_nonconserve_0032.json; REFLECT_ELF=.../elf/reflection-prover
-# cargo run --release --manifest-path contracts/sp1/reflect-exec/Cargo.toml --bin reflect-execute -- /tmp/refl_nonconserve_0032.json`
-# returned EXECUTE_OK (3,090,627 cycles) with burn-set UNCHANGED, proving the guest still skips the
-# non-conserving CXFER instead of reading/folding phantom outputs. Lineage (superseded pin): 0x0006921c.
-# CONFIRMED 0x00fdfe08 (2026-06-21): pre-freeze re-prove — the shared cxfer-core farm/settle additions
-# (OP_FARM_HARVEST witnessed reward_asset + farm settle ops + adaptor/unwrap opening-sigmas) recompile
-# into the reflection ELF wholesale (sha 36224f90→27863304, 1016856→1068624 bytes), rotating its vkey
-# 0x0032a552→0x00fdfe08 although reflect.rs logic is untouched. Both-sided REFLECT-1 test RE-RUN against THIS
-# committed ELF via reflect-exec (bin reflect-execute, EXECUTE level): the CONSERVING control
-# (gen-reflection-cxfer-synth) FOLDS → EXECUTE_OK 23,221,497 cycles, DIGEST_MATCH ✓ (newDigest 0x752306d9…
-# == JS assembler); the NON-CONSERVING case (gen-reflection-nonconserve, Σ C_in = 0 vs the multi-input
-# kernel) SKIPS → EXECUTE_OK 4,044,379 cycles, nothing folded, no panic. So 0x00fdfe08 folds valid CXFERs
-# yet skips phantom ones — it defeats the REFLECT-1 attack. Lineage (superseded pin): 0x0032a552.
-# (Known-UNSOUND, never confirm: 0x0050d656, 0x0099e1c7.)
-# CONFIRMED 0x0014b726 (2026-06-25): audit-findings re-prove (C-01 coinbase-witness commitment, M-02 checked
-# merkle root, L-01 exact-length envelope parsers, X-03 reject 64-byte stripped-segwit txid) recompiled the
-# reflection ELF (sha e65777b5→3bec4cf6, 1074656→1075128 bytes); reflect.rs cxfer-conservation logic intact,
-# derived vkey 0x0014b726 unchanged. Both-sided REFLECT-1 test RE-RUN against THIS committed ELF via
-# reflect-execute: the CONSERVING control (gen-reflection-cxfer-synth) FOLDS → EXECUTE_OK 23,321,007 cycles,
-# DIGEST_MATCH ✓ (newDigest 0x752306d9… == JS assembler, identical to the prior 0x00fdfe08 confirmation); the
-# NON-CONSERVING case (gen-reflection-nonconserve) SKIPS → EXECUTE_OK 4,044,516 cycles, burn-set UNCHANGED,
-# nothing folded. So 0x0014b726 folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
-# CONFIRMED 0x0012ef33 (2026-07-01): GPU re-prove rotated the reflection vkey 0x0014b726→0x0012ef33 (shared
-# cxfer-core recompiled; reflect.rs cxfer-conservation logic intact — verify_cxfer_conservation check-before-
-# fold at reflect.rs:602/924). Both-sided REFLECT-1 test RE-RUN against THIS committed ELF (sha 66c51bd1…) via
-# a freshly-built reflect-execute: CONSERVING control (gen-reflection-cxfer-synth) FOLDS → EXECUTE_OK
-# 23,318,994 cycles, DIGEST_MATCH ✓ (guest newDigest 0x1dea13a3… == JS assembler); NON-CONSERVING case
-# (gen-reflection-nonconserve) SKIPS → EXECUTE_OK 4,048,218 cycles, nothing folded, no panic. So 0x0012ef33
-# folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack. Lineage (superseded): 0x0014b726.
-# CONFIRMED 0x00df2757 (2026-09-01): comment-only cleanup across cxfer-core/reflect.rs/main.rs rotated the
-# reflection vkey (Rust embeds panic-location strings, so even comment-only edits shift the ELF bytes and
-# the derived vkey); the cxfer-conservation logic itself is byte-identical to the prior pin. Both-sided
-# REFLECT-1 test RE-RUN against THIS committed ELF (sha 789f0576…) via reflect-execute: CONSERVING control
-# (reflection_input.json, the same fixture behind the on-chain reflection_groth16 fixture) FOLDS with
-# DIGEST_MATCH ✓ against the JS assembler; NON-CONSERVING case (gen-reflection-nonconserve, emptied prior
-# live set ⇒ Σ C_in = 0 vs the multi-input kernel) EXECUTE_OK, burn-set UNCHANGED, nothing folded, no panic.
-# So 0x00df2757 folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
-# Lineage (superseded): 0x0012ef33.
-# CONFIRMED 0x0097a385 (2026-09-08, gen4): a new generation moved the burn-deposit provenance DAG from the
-# burn tx's witness to SP1 stdin, bound the burn-deposit's burned outpoint to a produced DAG output, and
-# admitted P2WPKH note spends in destination binding — none of it touches the CXFER-fold path REFLECT-1
-# tests. Both-sided REFLECT-1 test RE-RUN against THIS committed ELF (sha 168b97d1…) via reflect-execute:
-# CONSERVING control (reflection_input.json) FOLDS with DIGEST_MATCH ✓ against the JS assembler
-# (0x5dcc1c4a…); NON-CONSERVING case (gen-reflection-nonconserve) EXECUTE_OK, burn-set UNCHANGED, spentRoot
-# unchanged, nothing folded, no panic. So 0x0097a385 folds valid CXFERs yet skips phantom ones — it defeats
-# the REFLECT-1 attack. Lineage (superseded): 0x00df2757.
-# CONFIRMED 0x001dfdc1 (2026-09-16, v1-final): a new generation relaxed the reflection cursor to admit
-# chunked/prefix catch-up batches, closed a burn-deposit completeness gap (an unregistered burn-deposit now
-# fails the batch instead of silently skipping), added H-4/H-5, and added a BP+ range proof binding the
-# secp-side swap-batch output commitment — none of it touches the CXFER-fold path REFLECT-1 tests. Both-sided
-# REFLECT-1 test RE-RUN against THIS committed ELF (sha 58e7c474…) via reflect-local: CONSERVING control
-# (reflection_input.json) FOLDS with DIGEST_MATCH ✓ against the JS assembler (0x5dcc1c4a…, byte-identical to
-# the prior generation's — the fold itself is unchanged); NON-CONSERVING case (gen-reflection-nonconserve)
-# EXECUTE_OK, nothing folded, no panic. So 0x001dfdc1 folds valid CXFERs yet skips phantom ones — it defeats
-# the REFLECT-1 attack. Lineage (superseded): 0x0097a385.
-# CONFIRMED 0x004002de (2026-09-16, v2-final-audit): the pre-lock audit refused burn-deposit provenance
-# blobs that carry pool-membership-shortcut leaves (a tree leaf commits no outpoint, so such a leaf let the
-# DAG accept a prover-asserted (outpoint, commitment) pair unbound to any real UTXO — closed by rejecting the
-# whole burn-deposit outright when any membership leaf is present, rather than admitting the leaves it
-# could verify), and rotated ETH_CALL_OUTBOX to this generation's own vanity address — neither touches the
-# CXFER-fold path REFLECT-1 tests. Both-sided REFLECT-1 test RE-RUN against THIS rebuilt ELF (sha 51269e2f…)
-# via reflect-execute: CONSERVING control (gen-reflection-cxfer-synth) FOLDS with DIGEST_MATCH ✓ against the
-# JS assembler (0x5dcc1c4a…, byte-identical to the prior generation's — the fold itself is unchanged);
-# NON-CONSERVING case (gen-reflection-nonconserve) EXECUTE_OK, burn-set UNCHANGED, nothing folded, no panic.
-# So 0x004002de folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
-# Lineage (superseded): 0x001dfdc1.
-# CONFIRMED 0x00f8c4dc (2026-09-17, v1-final pre-lock closing review): the largest reprove of the cycle —
-# cxfer-core changed for C-1 (transfer-kernel domain separation), H-1 (rebase drain-gate cross-out lag
-# admission), R1 (eth sync-committee chaining fold into the digest), R2 (pending burn-deposit set + late
-# provenance fold), R3 (deposit-class leaf owner = outpoint key), P-2 (AXFER asset_input_count parser),
-# F-5 (AMM ops refund instead of skip on an unclaimed extra live input), and BTC-call chain-id binding —
-# rotating the reflection ELF sha 51269e2f…→6b184852… (bitcoin_relay_vkey 0x004002de→0x00f8c4dc). None of
-# these touch verify_cxfer_conservation / fold_cxfer's check-before-fold gate. Both-sided REFLECT-1 test
-# RE-RUN against THIS rebuilt ELF via reflect-execute: CONSERVING control (reflection_input.json) FOLDS
-# with DIGEST_MATCH ✓ against the JS assembler (0x6d2d62a2…); NON-CONSERVING case
-# (gen-reflection-nonconserve) EXECUTE_OK (4,958,727 cycles), burn-set UNCHANGED, nothing folded, no panic.
-# So 0x00f8c4dc folds valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
-# Lineage (superseded): 0x004002de.
-# CONFIRMED 0x00bb158b (2026-09-17, ETH_CALL_OUTBOX re-pin): the prior committed ETH_CALL_OUTBOX
-# (0x00000000526e89e1...) was only reachable from a deployer whose key was never actually available,
-# discovered during deploy-prep dry-run. Rotated to a fresh vanity address independently re-derived and
-# confirmed reachable by the real launch deployer, and confirmed still empty on live mainnet — reflection
-# ELF sha 6b184852...->55b5ccff... (bitcoin_relay_vkey 0x00f8c4dc->0x00bb158b). This is the ONLY guest
-# source change this round (reflect.rs's ETH_CALL_OUTBOX constant); cxfer-core/verify_cxfer_conservation
-# untouched. Both-sided REFLECT-1 test RE-RUN against THIS rebuilt ELF via reflect-execute: CONSERVING
-# control (reflection_input.json) FOLDS with DIGEST_MATCH against the JS assembler (0x6d2d62a2..., same
-# digest as the prior generation since this fixture is a non-Mode-B path unaffected by ETH_CALL_OUTBOX);
-# NON-CONSERVING case (gen-reflection-nonconserve) EXECUTE_OK (4,958,727 cycles, identical cycle count to
-# the prior generation's confirmation), burn-set UNCHANGED, nothing folded, no panic. So 0x00bb158b folds
-# valid CXFERs yet skips phantom ones — it defeats the REFLECT-1 attack.
-# Lineage (superseded): 0x00f8c4dc.
+# This is an ALLOWLIST so an unknown reflection vkey fails closed. A vkey is added only after a both-sided
+# test against THAT committed ELF: the conserving control (reflection_input.json or
+# gen-reflection-cxfer-synth) folds with DIGEST_MATCH against the JS assembler, and the non-conserving case
+# (tests/gen-reflection-nonconserve.mjs, Σ C_in = 0 vs a multi-input kernel) executes OK with nothing folded
+# and no panic, via contracts/sp1/reflect-exec (reflect-execute) or the harness reflect-local bin.
+# Never confirm 0x0050d656 or 0x0099e1c7 (both fold without the conservation check).
 CONFIRMED_SOUND_REFL_VKEYS="0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5 0x00f8c4dcfac00cb79a20878cf8d07ceb7ab5c66c53046c15d348eabd8598be3e 0x004002de15c5a657052725f8d9573c4dcecc9874bde6e7ab0da7815838f06771 0x001dfdc126c24bacb497f7186913220bc3e62fcbb674d4822cdbbfd71b57aaa9 0x0097a385128aa14d92aebd08e5550b4b488df8e62de440ee225304f3ebd18c8d 0x00df27576a1b1c3f7055811045c9535e22298e7d816df1753a316007c7d30b02 0x00de8331bd06d7150c49218de747dba446615d0081e139b1f41a9c3e7e827583 0x00a01b6858aef05a5720f16aeaa2e4c522a53d374b7749e693297c3db6776b65 0x0014b726c0ae74b7e10821c816d9478b4e1b34c75c4b870165636154bc5aec56 0x003ff6f92c41c5217f98c8e38c42d4ade7e2747c302d60dce6daa263a40716cb 0x00fdfe08721b3ad298529bf632975a2f0ca29440004536d1fa5f43eadd3b0891 0x0032a552d82143745ed675a217822187e15118060dcea1514589ce47c2ec3c02 0x0006921c364ff0c13a006f3117a2c0d40d2df44ca8671a13c86eaa50492395bd 0x008c9fa6e9ee312ba99be8ba5a222ad161912fafebc3cec893e3dfc25f041160 0x007a9feef7f58594cfb2ae5e59610e235b309beb23c4a1dc59d68935a0785648 0x005e6adc6f6d208a7c1652b13626c5e5cdf802fb05418dd64ec5b67f4763d23d 0x004d8dbda0b8590cebe53a74140804389e5a3d2cefe8076c37cf5172e617790d 0x002d2536aa22213fb4e178432a8068e80b041308b4e626c761b74705f71af96c 0x0068747232900af2f75fde3a5fb1143ccac63c56128394e638683cdcd5f307a3"
 refl_confirmed=0
 for v in $CONFIRMED_SOUND_REFL_VKEYS; do [ "$RPIN_VKEY" = "$v" ] && refl_confirmed=1; done
@@ -373,7 +226,7 @@ if [ "$refl_confirmed" = 1 ]; then
     test -n "$RPIN_VKEY"
 else
   block_gate "Reflection guest soundness (REFLECT-1 + F4)" BRIDGE \
-    "pinned reflection vkey ($RPIN_VKEY) is NOT in the confirmed-conservation allowlist — BRIDGE is fail-closed until a negative test proves THIS ELF skips a non-conserving CXFER (REFLECT-1). The source fix + worker mirror exist (verify_cxfer_conservation / fold_cxfer + reflect.rs check-before-fold + tests/confidential-reflection-conservation.mjs); confirm the pinned build enforces them, then allowlist the vkey. See RUNBOOK-confidential-pool-readiness.md."
+    "pinned reflection vkey ($RPIN_VKEY) is NOT in the confirmed-conservation allowlist — BRIDGE is fail-closed until a negative test proves THIS ELF skips a non-conserving CXFER (REFLECT-1). The source fix + worker mirror exist (verify_cxfer_conservation / fold_cxfer + reflect.rs check-before-fold + tests/confidential-reflection-conservation.mjs); confirm the pinned build enforces them, then allowlist the vkey."
 fi
 
 # ── DAY1 layer A: launch-asset engine coverage (oracle / escrow / slash / CDP / cBTC) ─────────
@@ -434,9 +287,9 @@ for r in "${RESULTS[@]}"; do
 done
 
 if [ "$pool_open" -eq 0 ]; then
-  echo "  POOL (Ethereum shielded pool):  READY"
+  echo "  POOL (confidential pool):       READY"
 else
-  echo "  POOL (Ethereum shielded pool):  NOT READY ($pool_open gate(s) open above)"
+  echo "  POOL (confidential pool):       NOT READY ($pool_open gate(s) open above)"
 fi
 if [ "$bridge_open" -eq 0 ]; then
   echo "  BRIDGE (Bitcoin cross-chain):    READY"

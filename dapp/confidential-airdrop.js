@@ -2,11 +2,11 @@
 // Each recipient needs only a published static spend
 // pubkey; the sender derives a one-time address per recipient and locks value under it, with a memo
 // that lets the recipient discover + reconstruct the lock by scanning alone. Built entirely on the
-// already-proven stealth primitives (dapp/confidential-stealth.js) — no guest or contract change.
+// stealth primitives (dapp/confidential-stealth.js).
 //
 // Two pieces are new here vs. the per-note memo (dapp/confidential-memo.js): (1) ephemeralPub is
 // PUBLISHED in the clear so any candidate recipient can run the ECDH scan, and (2) the lock params
-// (asset, amount, Cx, Cy, deadline, locker) — none of which are on-chain in the clear, only the leaf
+// (asset, amount, blinding, deadline, refund key) — none of which are on-chain in the clear, only the leaf
 // hash is — are sealed under the same shared point e·B = b·E. The stealth lock leaf is the
 // authenticator: a wrong key / tampered memo recomputes to a leaf that won't match the on-chain one.
 //
@@ -19,14 +19,10 @@
 // split + driver. Wire form (bytes memo): ephemeralPub(33) ‖ ciphertext(112), ciphertext =
 // xor(asset(32)‖amount_be8(8)‖lBlinding(32)‖deadline_be8(8)‖refundPub(32)).
 //
-// The memo carries `lBlinding` (r_L) and `refundPub`, NOT Cx/Cy/`locker`(=refundPub, old naming) — Cx/Cy are
-// recomputed from (amount, lBlinding) via pool.commitXY (the recipient needs r_L to claim by kernel anyway,
-// so transmitting the commitment separately is redundant), and the field previously called `locker` in this
-// memo was always semantically the lock's refund-auth pubkey (buildStealthLock's `refundPub`), never the
-// input note's H(nk) spend-owner (also confusingly called `locker` — but that is sender-internal bookkeeping
-// the recipient has no use for). A prior version of this memo omitted `lBlinding` entirely, which meant a
-// recipient who scanned a lock had no way to actually build the L→M claim kernel — the lock could be found
-// but never spent.
+// The memo carries `lBlinding` (r_L) and `refundPub`, not Cx/Cy: Cx/Cy are recomputed from
+// (amount, lBlinding) via pool.commitXY, and the recipient needs r_L to build the L→M claim kernel.
+// `refundPub` is the lock's refund-auth pubkey (buildStealthLock's `refundPub`), not the input note's
+// H(nk) spend-owner.
 
 const PLAIN_LEN = 112;        // asset(32) ‖ amount(8) ‖ lBlinding(32) ‖ deadline(8) ‖ refundPub(32)
 const MAX_DENOM_PER_OP = 7;  // a transfer aggregates ≤8 outputs (BP+ {1,2,4,8}); reserve one slot for change
@@ -151,9 +147,7 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   };
 
   // SENDER. `lockerNk` is the SECRET nullifier key of the funding notes' shared H(nk) owner (`locker` is
-  // derived from it here, never taken as a bare hash the caller might not actually hold the preimage of —
-  // a prior version took `locker` directly and never threaded a matching nk anywhere, so every lock it
-  // built was missing the field the guest reads to spend N and could never settle). recipients:
+  // derived from it here, never taken as a bare hash, since the guest reads nk to spend N). recipients:
   // [{ recipientSpendPub, amount }]; fundingNotes[i] must open to recipients[i].amount and be owned by
   // `pool.nkToOwner(lockerNk)` ({ cx, cy, blinding, leafIndex, path } from a prior split). Returns the lock
   // ops + lock leaves + memos for ONE batch settle (the guest takes up to MAX_OPS = 256 ops per proof).
@@ -170,9 +164,8 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
       const nNote = { ...fundingNotes[i], secret: lockerNk };
       const op = stealth.buildStealthLock({ chainBinding, asset, locker, refundPub, ownerPub, amount, deadline, spendRoot, nNote, lBlinding });
       ops.push(op);
-      // op.lockLeaf is exactly what the kernel above binds (stealthLockLeafBlind) — using anything else here
-      // (the old code recomputed via the non-blind, amount-bearing stealthLockLeaf) would insert a leaf the
-      // proof doesn't match, and the settle would fail leaf-membership for every claim/refund against it.
+      // op.lockLeaf is exactly what the kernel above binds (stealthLockLeafBlind); any other leaf here would
+      // not match the proof, and every claim/refund against it would fail leaf-membership.
       leaves.push(op.lockLeaf);
       memos.push(sealStealthMemo({ recipientSpendPub: r.recipientSpendPub, ephemeralPriv: ePriv, asset, amount, lBlinding, deadline, refundPub }));
     });
@@ -283,9 +276,8 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
   }
 
   // Stitch post-settle membership (one { leafIndex, path } per denomination note, in `amounts` order)
-  // into the fundingNotes buildStealthLock consumes. Carries `secret` through — buildStealthLock now
-  // requires nNote.secret (see confidential-stealth.js) — so dropping it here would silently reproduce
-  // the same missing-nk bug this fix closes.
+  // into the fundingNotes buildStealthLock consumes. Carries `secret` through: buildStealthLock requires
+  // nNote.secret (see confidential-stealth.js).
   function fundingNotesFor({ denomNotes, membership }) {
     return denomNotes.map((d, i) => ({ cx: d.cx, cy: d.cy, blinding: d.blinding, secret: d.secret, leafIndex: membership[i].leafIndex, path: membership[i].path }));
   }
@@ -320,11 +312,8 @@ export function makeConfidentialAirdrop({ stealth, secp, sha256, keccak256, curv
         throw new Error('airdrop batch: every lock must share chainBinding + spendRoot (one proof, one header)');
       }
     }
-    // Every field exec-stealthlockbatch.rs reads per op, in its read order — `refundPub`, `nk`, and the
-    // three inPok* spend-authority fields were missing here (only asset/locker/ownerPub/deadline/n*/l*/
-    // kernel* were kept), which silently dropped both the refund binding and the ENTIRE per-input proof
-    // that the locker actually owns N. A batch built from that stripped shape could never pass the guest's
-    // `verify_opening_pok_blind` (undefined fields), so no airdrop batch built this way could ever settle.
+    // Every field exec-stealthlockbatch.rs reads per op, in its read order, including `refundPub`, `nk`
+    // and the inPok* spend-authority fields the guest's `verify_opening_pok_blind` checks.
     const pick = (o) => ({ asset: o.asset, locker: o.locker, ownerPub: o.ownerPub, refundPub: o.refundPub, deadline: o.deadline,
       nCx: o.nCx, nCy: o.nCy, nIndex: o.nIndex, nPath: o.nPath, nk: o.nk,
       lCx: o.lCx, lCy: o.lCy, kernelR: o.kernelR, kernelZ: o.kernelZ,

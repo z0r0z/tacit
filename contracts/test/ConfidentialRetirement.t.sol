@@ -45,9 +45,9 @@ contract MockCanonicalR {
     function burn(address, uint256) external {}
 }
 
-/// Generations: a pool creates its own successor (`createNextGen`), the successor authenticates its
+/// Lineage: a pool creates its own successor (`createNextGen`), the successor authenticates its
 /// predecessor by construction and rebases from the predecessor's LIVE attested state at its first attest,
-/// and — above all — a RETIRED generation keeps every exit and its reflection open while refusing new value
+/// and a RETIRED pool keeps every exit and its reflection open while refusing new value
 /// entry and every cross-lane primitive. The SP1 verifier is mocked (AcceptVerifierR): the point is what the
 /// SOLIDITY enforces around a proof, not the guest.
 contract ConfidentialRetirementTest is Test {
@@ -88,7 +88,7 @@ contract ConfidentialRetirementTest is Test {
     // ──────────────────── helpers ────────────────────
 
     /// A successor's init code: this test contract stays the steward, the predecessor is `predecessor`, and
-    /// the two reflected-genesis inputs are zero (a migrating generation derives both by proof).
+    /// the two reflected-genesis inputs are zero (a successor derives both by proof).
     function _initCode(address predecessor, bytes32 resumeDigest, bytes32 anchor) internal view returns (bytes memory) {
         return abi.encodePacked(
             type(ConfidentialPool).creationCode,
@@ -218,7 +218,7 @@ contract ConfidentialRetirementTest is Test {
         });
     }
 
-    // ──────────────────── creating the next generation ────────────────────
+    // ──────────────────── creating the successor ────────────────────
 
     function test_create_next_gen_is_steward_only_one_shot_and_lands_at_create2() public {
         bytes memory code = _initCode(address(pool), bytes32(0), bytes32(0));
@@ -232,7 +232,7 @@ contract ConfidentialRetirementTest is Test {
         assertEq(next, predicted);
         assertEq(pool.successor(), next);
         assertTrue(next.code.length != 0);
-        // one-shot: this generation has exactly one successor, ever
+        // one-shot: a pool has exactly one successor, ever
         vm.expectRevert(ConfidentialPool.AlreadyRetired.selector);
         pool.createNextGen(code, keccak256("another"));
         // a successor with no runtime code would end the lineage on the spot
@@ -243,7 +243,7 @@ contract ConfidentialRetirementTest is Test {
         vm.expectRevert(ConfidentialPool.NotAContract.selector);
         fresh.createNextGen(hex"00", SALT);
         assertEq(fresh.successor(), address(0));
-        // a generation with no steward can never retire
+        // a pool with no steward can never retire
         ConfidentialPool lone = new ConfidentialPool(
             verifier, PROGRAM_VKEY, RELAY_VKEY, address(0), address(relay), ANCHOR, CONFIRMATIONS, bytes32(0),
             bytes32(0), address(0), address(0), address(0), address(0)
@@ -252,7 +252,7 @@ contract ConfidentialRetirementTest is Test {
         lone.createNextGen(_initCode(address(lone), bytes32(0), bytes32(0)), SALT);
     }
 
-    /// A migrating generation exists only as its predecessor's creation, with nothing about its reflected
+    /// A successor exists only as its predecessor's creation, with nothing about its reflected
     /// genesis pinned: any other shape fails closed at construction.
     function test_successor_ctor_fails_closed() public {
         // deployed directly (the deployer is not the predecessor it names)
@@ -298,7 +298,7 @@ contract ConfidentialRetirementTest is Test {
         vm.expectRevert(ReflectionLib.StaleReflectionDigest.selector);
         _rebase(succ, pool);
         _attest(succ);
-        // and the successor is the active generation (past `notRetired`, it fails on the unregistered asset)
+        // and the successor is the active pool (past `notRetired`, it fails on the unregistered asset)
         vm.expectRevert(ConfidentialPool.NotRegistered.selector);
         succ.wrap(bytes32(0), 1, bytes32(0));
     }
@@ -327,7 +327,7 @@ contract ConfidentialRetirementTest is Test {
         succ.attestBitcoinStateProven(_relayPv(succ, keccak256("successor-genesis"), handoffTip, binding), "");
     }
 
-    // ──────────────────── a retired generation ────────────────────
+    // ──────────────────── a retired pool ────────────────────
 
     function _retirePool() internal {
         _attest(pool);
@@ -345,7 +345,7 @@ contract ConfidentialRetirementTest is Test {
         pool.farmEscrow(address(0xF0), keccak256("asset"), 1, address(this));
     }
 
-    /// A retired generation's own canonical token is not new value: it was minted here on an exit, and
+    /// A retired pool's own canonical token is not new value: it was minted here on an exit, and
     /// burning it back into a note is how a borrower repays (or a keeper liquidates) a position after the
     /// handoff. Only an external asset is refused (above).
     function test_retired_still_wraps_its_own_canonical_token() public {
@@ -404,8 +404,8 @@ contract ConfidentialRetirementTest is Test {
         _settle(pool, v, new bytes[](0));
     }
 
-    /// A Bitcoin burn that targeted this generation is redeemable ONLY here (its id carries this
-    /// generation's chain binding), so a retired generation must still pay it — including one that confirmed
+    /// A Bitcoin burn that targeted this pool is redeemable ONLY here (its id carries this
+    /// pool's chain binding), so a retired pool must still pay it — including one that confirmed
     /// after the handoff, which is why its reflection stays open.
     function test_retired_still_pays_a_bridge_mint_targeting_it() public {
         _retirePool();
@@ -427,7 +427,7 @@ contract ConfidentialRetirementTest is Test {
         pool.drainOverflow(new bytes32[](0), 0, new ReflectionLib.CbtcLockFolded[](0), new ReflectionLib.AssetMeta[](0), new bytes32[](0));
     }
 
-    /// A retired generation still crosses out: it is the Bitcoin exit for value held here (a bridged asset, or
+    /// A retired pool still crosses out: it is the Bitcoin exit for value held here (a bridged asset, or
     /// the cBTC a locker needs to redeem a lock registered here). The handoff record keeps the counters it was
     /// attested at, so a cross-out recorded afterwards cannot stale a rebase built against the record.
     function test_retired_still_crosses_out_and_the_handoff_record_keeps_its_counts() public {

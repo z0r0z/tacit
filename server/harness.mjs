@@ -57,10 +57,10 @@ export function buildEnv(driver, { tomlPath = WRANGLER_TOML, extra = {} } = {}) 
 
 // --- client IP ------------------------------------------------------------
 // The worker reads CF-Connecting-IP for rate-limit bucketing. Off Cloudflare
-// that header is attacker-writable, so it is always stripped from inbound
+// that header is client-writable, so it is always stripped from inbound
 // requests and re-derived here:
 //   1. x-tacit-forwarded-ip, only when x-tacit-proxy-key matches
-//      PROXY_TRUST_KEY — set by the legacy workers.dev pass-through proxy so
+//      PROXY_TRUST_KEY — set by the workers.dev pass-through proxy so
 //      old clients keep per-user rate-limit identity.
 //   2. True-Client-IP when TRUST_PROXY=1 (Render). Render sits behind its own
 //      Cloudflare, which sets that header to the address it accepted the
@@ -96,8 +96,8 @@ const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-ta
 //
 // Two ceilings. Anonymous requests get the small one, far above any real op or
 // memo submission. The full ceiling (the largest handler-side cap is the 16 MB
-// reflection snapshot) is for the relay and prover box, which send the box
-// token, and for the multipart upload routes.
+// reflection snapshot) is for the relay and prover services, which send the
+// box token, and for the multipart upload routes.
 export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_MAX_ANON_REQUEST_BYTES = 1024 * 1024;
 const UPLOAD_PATH = /^\/(pin|pin-airdrop-snapshot|ceremony\/[0-9a-f]{64}\/contribute|ceremony\/init)(\?|$)/i;
@@ -243,7 +243,7 @@ export function createCtxFactory() {
 
 // Names the route behind a heap jump. The cron has its own per-stage trace
 // (CRON_MEM_TRACE), but the expensive work here is not all on the cron: the
-// reflection batch is assembled on a request, polled by the box relay loop, so
+// reflection batch is assembled on a request, polled by the reflection relayer, so
 // growth that no cron stage accounts for is otherwise unattributable. Logs
 // only requests that retain more than the threshold, so it stays quiet.
 // MEM_TRACE_MB=0 turns it off.

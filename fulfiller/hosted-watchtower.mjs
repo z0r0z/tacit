@@ -8,7 +8,7 @@
 // and persists progress back to KV. Bids are processed serially because the
 // dapp keeps a single global wallet — watchtower-core binds it per bid.
 //
-// Trust boundary (ops doc): the orchestrator holds only the dedicated bid keys
+// Trust boundary: the orchestrator holds only the dedicated bid keys
 // (decrypted in-process from ciphertext-at-rest), each bounded to the funding a
 // buyer chose to commit and self-reclaimable. The service decryption key lives
 // only in WATCHTOWER_SERVICE_SK.

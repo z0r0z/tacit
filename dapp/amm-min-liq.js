@@ -105,7 +105,7 @@ export function isqrt(n) {
   return x;
 }
 
-// LP_ADD initial founder + locked shares per Uniswap V2 convention.
+// LP_ADD initial founder + locked shares (constant-product AMM minimum-liquidity lock).
 //   total = isqrt(deltaA · deltaB)
 //   locked = MINIMUM_LIQUIDITY = 1000
 //   founder = total − locked

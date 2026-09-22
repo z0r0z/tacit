@@ -30,10 +30,10 @@ contract MockSP1Verifier is ISP1Verifier {
     function verifyProof(bytes32, bytes calldata, bytes calldata) external pure {}
 }
 
-/// C-1: the confidential AMM pool reserve state + the OP_SWAP SwapSettlement applied in settle.
+/// The confidential AMM pool reserve state + the OP_SWAP SwapSettlement applied in settle.
 /// The proof crypto (membership/nullifier/sigma/clearing/conservation) is the guest's job + the
 /// real-proof suite; this pins the on-chain pool state machine (init + reserve pre-gate + post move).
-/// Reserves are seeded well above MINIMUM_LIQUIDITY (1000) — the V2-style seed lock — so the founder
+/// Reserves are seeded well above MINIMUM_LIQUIDITY (1000) — the constant-product seed lock — so the founder
 /// gets a positive claimable LP-share position.
 contract ConfidentialPoolSwapTest is Test {
     ConfidentialPool pool;
@@ -154,7 +154,7 @@ contract ConfidentialPoolSwapTest is Test {
     }
 
     // A first mint whose seed shares fall below MINIMUM_LIQUIDITY is rejected by the LP floor — the locked
-    // 1000 must remain, so a dust pool can't be created (the createPair-model analog of the old seed guard).
+    // 1000 must remain, so a dust pool can't be created.
     function test_first_mint_below_min_liquidity_reverts() public {
         pool.createPair(assetA, assetB, 30, 0, bytes32(0), 0);
         ConfidentialPool.PublicValues memory pv = _pv();
@@ -214,8 +214,8 @@ contract ConfidentialPoolSwapTest is Test {
     // deliberately does NOT enforce escrow >= reserve (the guest proves backing/conservation, and a
     // poolMinted asset carries NO escrow by design so such a guard is not even viable). This pins the
     // boundary: a settle moves a reserve to a value with no escrow behind it and the pool accepts it.
-    // The worst-case drain is instead capped at exit by _payout's InsufficientEscrow. If the AMM ever
-    // moves off the single-prover pilot and adds an on-chain backing guard, THIS TEST MUST FLIP.
+    // Payout is instead capped at exit by _payout's InsufficientEscrow. If an on-chain backing guard is
+    // ever added, THIS TEST MUST FLIP.
     function test_pilot_boundary_swap_post_need_not_be_escrow_backed() public {
         bytes32 id = _init(assetA, assetB, 10_000, 20_000, 30);
         assertEq(pool.escrow(assetA), 0, "no wrap: reserves are guest-seeded here, not escrow-backed");
@@ -281,8 +281,7 @@ contract ConfidentialPoolSwapTest is Test {
         _settle(pv);
     }
 
-    // A swap post that drops the constant product below the pre is a compromised-guest drain (the
-    // classic AMM attack: pull a pool below its k curve). The on-chain check mirrors the guest's own
+    // A swap post must not drop the constant product below the pre. The on-chain check mirrors the guest's own
     // OP_SWAP k-non-decrease (main.rs: a_post·b_post ≥ a_pre·b_pre), so it never false-reverts honest
     // output but rejects a k-dropping post. Here 12000·16000 = 1.92e8 < 2e8 = 1e4·2e4.
     function test_settle_swap_k_decrease_reverts() public {
@@ -307,7 +306,7 @@ contract ConfidentialPoolSwapTest is Test {
     }
 
     // ──────────────────── settle LP (OP_LP_ADD / OP_LP_REMOVE) ────────────────────
-    // C-1: the on-chain LP state machine — reserves AND totalShares move together, pre-gated.
+    // The on-chain LP state machine — reserves AND totalShares move together, pre-gated.
     // The in-ratio-add / proportional-remove + the shielded LP-share + asset notes are the guest's job.
 
     function test_first_mint_seeds_total_shares() public {

@@ -1,12 +1,12 @@
 // Privacy-preserving ETH -> Base L2 exit, ops tooling.
 //
-// Flow: wrap ETH into the shielded pool (join the anonymity set) -> dwell -> unwrap straight to a
+// Flow: wrap ETH into the confidential pool (join the anonymity set) -> dwell -> unwrap straight to a
 // recipe-bound escrow -> the escrow atomically deposits into Base's own (already-trustless)
-// L1StandardBridge. No new Solidity: every on-chain primitive here (ConfidentialRouter.exitAndExecute /
-// activateExit / reclaimExit / escrowAddressFor) is already live on the immutable mainnet suite.
+// L1StandardBridge. Every on-chain primitive here (ConfidentialRouter.exitAndExecute / activateExit /
+// reclaimExit / escrowAddressFor) is part of the immutable mainnet suite.
 //
 // PRIVACY BOUNDARY (same as dapp/confidential-router.js's buildBridgeExit): the exit amount, the
-// l2Recipient and the exit's timing are all public on L1. This buys "shielded accumulation, then exit
+// l2Recipient and the exit's timing are all public on L1. This buys "confidential accumulation, then exit
 // anywhere" — never present it as a private cross-chain transfer.
 //
 // Subcommands:
@@ -285,7 +285,7 @@ async function cmdPlan() {
   if (anon.nextLeaf < 20n) {
     console.log('*** WARNING: the pool has almost no activity. An exit today buys ~zero privacy — it is');
     console.log('*** trivially linkable by elimination. Treat any run right now as a FUNCTIONAL smoke test,');
-    console.log('*** not a privacy demonstration. See ops/DESIGN-confidential-base-exit.md.');
+    console.log('*** not a privacy demonstration.');
   }
   console.log('');
   console.log('tranches (advisory only, not enforced): ' + TRANCHES_WEI.map(fmtEth).join(' / ') + ' ETH');

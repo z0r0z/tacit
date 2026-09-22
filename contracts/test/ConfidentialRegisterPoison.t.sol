@@ -32,13 +32,11 @@ contract ConfidentialRegisterPoisonTest is Test {
         usdc.approve(address(pool), type(uint256).max);
     }
 
-    // GRIEF-2 (fixed): registerWrapped takes an operator-chosen unitScale and is permissionless, so an
-    // attacker could once front-run a legit registration with an absurd scale that mis-aligns EVERY wrap
-    // amount — permanently bricking that escrow token's confidential lane (no de-register/heal path).
-    // The fix bounds an escrow asset's unitScale to its underlying's 10^decimals, so the poison reverts
-    // BadDecimals and the honest auto-registration (scale derived from decimals) wins.
+    // registerWrapped is permissionless and takes a caller-chosen unitScale, bounded to the underlying's
+    // 10^decimals: an out-of-range scale reverts BadDecimals, so the auto-registration (scale derived from
+    // decimals) is the one that lands.
     function test_attacker_cannot_poison_unitScale() public {
-        // attacker's absurd 10^30 scale (> 10^6 = USDC's 10^decimals) is rejected at registration.
+        // a 10^30 scale (> 10^6 = USDC's 10^decimals) is rejected at registration.
         vm.prank(ATTACKER);
         vm.expectRevert(ConfidentialPool.BadDecimals.selector);
         pool.registerWrapped(address(usdc), 1e30, bytes32(0), "x", "x", 6);

@@ -24,7 +24,7 @@ interface IFeed {
 ///         The key facts this script relies on:
 ///
 ///         1. CREATE3 address = f(CreateX, guardedSalt) — independent of initCode. So the same salt
-///            yields the same address on Sepolia / mainnet / every L2, even though our per-chain
+///            yields the same address on Sepolia / mainnet / every L2, even though the per-chain
 ///            constructor args (vkeys / admin / feeds) differ.
 ///
 ///         2. For a portable address the salt MUST guard to the same value on every chain. We use
@@ -33,10 +33,10 @@ interface IFeed {
 ///            no block.chainid. The miner (tools/mine-vanity-salts.sh) produces such salts.
 ///
 ///         3. deployCreate3(salt,…) APPLIES _guard; computeCreate3Address(salt) does NOT. So to
-///            predict a deploy we precompute with the guarded salt: computeCreate3Address(_guard(salt)).
-///            CREATE3 thus removes deploy-ordering deps — we know the pool address before deploying
-///            the engine and vice-versa, so the engine↔pool immutable circular dep is no longer an
-///            address problem (still honored as STATE wiring: engine.setPool then ownership handoff).
+///            predict a deploy, precompute with the guarded salt: computeCreate3Address(_guard(salt)).
+///            CREATE3 thus removes deploy-ordering deps — the pool address is known before deploying
+///            the engine and vice-versa, so the engine↔pool immutable circular dep is not an address
+///            problem (still honored as STATE wiring: engine.setPool then ownership handoff).
 ///
 ///         This script deploys the engine + pool + periphery (router/relayer/btcExecutor) at vanity
 ///         addresses. The asset-registration / pool-founding / farm deploys (which are NOT vanity
@@ -85,7 +85,7 @@ contract DeployV1SuiteCreateX is Script {
 
     /// @notice The guardedSalt CreateX uses for a "Random" salt: keccak256(abi.encode(salt)). This is
     ///         the ONLY input to computeCreate3Address that predicts a deployCreate3(salt,…) landing.
-    ///         A Random salt has salt[0:20] != msg.sender && != 0; we additionally require salt[20] != 0x01
+    ///         A Random salt has salt[0:20] != msg.sender && != 0; this also requires salt[20] != 0x01
     ///         so it never enters the chainid/sender-mixing branches — keeping the address portable.
     function guardRandom(bytes32 salt) public pure returns (bytes32) {
         require(salt[20] != 0x01, "salt byte[20]=0x01 enables redeploy protection (chainid-mixed, non-portable)");
@@ -127,8 +127,8 @@ contract DeployV1SuiteCreateX is Script {
         require(block.chainid != 1 || c.engineAdmin == MAINNET_OPS_MULTISIG || !c.deployEngine, "mainnet: ENGINE_ADMIN must be the ops multisig");
         require(block.chainid != 1 || c.lineageSteward == MAINNET_OPS_MULTISIG, "mainnet: LINEAGE_STEWARD must be the ops multisig");
         // Reflected effects are final at REFLECTION_CONFIRMATIONS headers past the last reflected block, and the
-        // relay sees only what its submitters feed it: while they are idle an attacker needs just that many
-        // privately mined headers. Keep the depth well past Bitcoin's usual six.
+        // relay sees only what its submitters feed it, so finality rests on that many headers. Keep the depth
+        // well past Bitcoin's usual six.
         require(block.chainid != 1 || c.reflectionConfirmations >= 24, "mainnet: REFLECTION_CONFIRMATIONS must be >= 24");
         // The pool ctor sets localAssetOf[TETH_BITCOIN_ID] = cETH_id ONCE (never permissionless), so a
         // forgotten TETH_BITCOIN_ID permanently breaks the tETH<->cETH cross-chain link on an immutable
@@ -167,7 +167,7 @@ contract DeployV1SuiteCreateX is Script {
                 anchorHeight != 0,
                 "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
             );
-            // A generational resume: the digest and the anchor describe ONE reflected state, and a mismatched
+            // A resume: the digest and the anchor describe ONE reflected state, and a mismatched
             // pair is only discovered when the first attest reverts, leaving an immutable, unbootstrappable
             // pool. RESUME_DIGEST_HEIGHT must equal the relay's own height for the anchor, confirming both
             // were read at the same reflected state rather than from two different snapshots.
@@ -236,8 +236,8 @@ contract DeployV1SuiteCreateX is Script {
         }
 
         // 3. Engine + adapter. Engine's pool ptr is a one-shot setter and its ctor takes the owner; the
-        //    pool ptr is set AFTER the pool exists. CREATE3 means we already know the pool address, but the
-        //    engine doesn't need it at ctor time, so the ordering is purely about STATE wiring now.
+        //    pool ptr is set AFTER the pool exists. CREATE3 means the pool address is already known, but the
+        //    engine doesn't need it at ctor time, so the ordering is purely about STATE wiring.
         if (c.deployEngine) {
             if (canonicalAdapter == address(0)) {
                 // c.wstEthUsdFeed carries the canonical ETH/USD feed here (see `_feeds()` above) —
@@ -295,10 +295,10 @@ contract DeployV1SuiteCreateX is Script {
             c.reflectionResumeDigest,
             c.tethBitcoinId,
             c.deployEngine ? a.engine : address(0),
-            // The one account that may later create this generation's successor (`createNextGen`).
+            // The one account that may later create this pool's successor (`createNextGen`).
             c.lineageSteward,
-            // A generation deployed here is always a lineage genesis (predecessor 0). A migrating
-            // generation is never deployed by this script: it is created by its predecessor's own
+            // A pool deployed here is always a lineage genesis (predecessor 0). A successor is never
+            // deployed by this script: it is created by its predecessor's own
             // `createNextGen` (see CreateNextGen.s.sol), which is what authenticates the lineage. The
             // reflected STATE may still resume near-tip from an earlier, unrelated deployment via
             // REFLECTION_RESUME_DIGEST / GENESIS_REFLECTION_ANCHOR above.
@@ -410,7 +410,7 @@ contract DeployV1SuiteCreateX is Script {
 
     // No Chainlink wstETH/USD (or wstETH/ETH) feed exists on mainnet — checked live against the Feed
     // Registry (0x47Fb2585…), both denominations revert "Feed not found". The address commonly cited for
-    // one, 0x8B685115…, is actually Aave's `WstETHSynchronicityPriceAdapter`: it implements only the legacy
+    // one, 0x8B685115…, is actually a third-party `WstETHSynchronicityPriceAdapter`: it implements only the legacy
     // `latestAnswer()`, with no `latestRoundData()` at all. The two Chainlink feeds that ARE registered for
     // stETH (stETH/USD 0x26f19680…, stETH/ETH 0xC9c8Efa8…) are `AccessControlledOCR2Aggregator`s gated by
     // `tx.origin == msg.sender` — they answer a bare `cast call` (which sets both fields equal) but revert
@@ -476,8 +476,8 @@ contract DeployV1SuiteCreateX is Script {
         vm.serializeAddress(k, "btcCallExecutor", a.btcCallExecutor);
         vm.serializeAddress(k, "ethCallOutbox", a.ethCallOutbox);
         // The pool-minted canonical ERC20s are CREATE2'd with the pool as minter, so their addresses (and
-        // the CDP debt id, keyed by the engine) are per-generation. Record them so the dapp sync reads them
-        // from here instead of carrying a copy that goes stale on the next generation.
+        // the CDP debt id, keyed by the engine) are per-deployment. Record them so the dapp sync reads them
+        // from here instead of carrying a copy that goes stale on the next deployment.
         ConfidentialPool pool = ConfidentialPool(a.pool);
         vm.serializeAddress(k, "tac", pool.canonicalTokenFor(TAC_ASSET_ID));
         vm.serializeAddress(k, "cBtcToken", pool.canonicalTokenFor(pool.CBTC_ZK_ASSET_ID()));

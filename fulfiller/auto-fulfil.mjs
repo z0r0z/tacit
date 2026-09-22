@@ -92,7 +92,7 @@ const MIN_FUNDING_SATS = Number.isInteger(cfg.min_funding_sats) ? cfg.min_fundin
 // effectively covers the recipient's tip from their pre-funded sats. As
 // treasury balance drops below the threshold (via fulfilment broadcasts
 // consuming sats), strict require_funding kicks back in automatically.
-// Default 0 = disabled = today's behavior (every claim must tip).
+// Default 0 = disabled (every claim must tip).
 // Recommended starting value: 50000 sats on mainnet (covers ~7 batches'
 // worth of free fulfilment before recipients have to tip again).
 const FREE_CLAIMS_TREASURY_THRESHOLD = Number.isInteger(cfg.free_claims_when_treasury_above_sats)
@@ -183,7 +183,7 @@ log('info', 'drop validated', {
 });
 
 // Treasury-pubkey ↔ announcement-issuer parity check.
-// The worker now requires DELETE /airdrops/.../claims to be signed by the
+// The worker requires DELETE /airdrops/.../claims to be signed by the
 // announcement's `issuer_pubkey`. If the daemon's treasury_privkey doesn't
 // correspond to that pubkey, every queue cleanup will silently 403 and
 // claims pile up undeleted (recipients get fulfilled CXFERs but their
@@ -522,10 +522,9 @@ async function treasuryReady() {
 async function broadcastOnce(batchesRemaining) {
   const queue = await pullQueue();
   if (queue.length === 0) { log('info', 'queue empty'); return 0; }
-  // Verify every pulled claim before slicing to the 7-recipient cap.
-  // The previous shape stopped at the first 7 OK claims, which made the
-  // queue effectively FIFO. With cumulative-tip priority, we need to
-  // evaluate everything to know which 7 paid the most for their seats.
+  // Verify every pulled claim before slicing to the 7-recipient cap: with
+  // cumulative-tip priority, everything must be evaluated to know which 7
+  // paid the most for their seats.
   // pullQueue is already bounded (32 pages × AIRDROP_LIST_PAGE), so this
   // is fine.
   const verifiedAll = [];

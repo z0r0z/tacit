@@ -9,8 +9,7 @@
 // the shielded balance by the payout panel (confidential-payout-panel.js).
 //
 // VERIFICATION: commitXY ≡ ct.commit (verified), and the op shape is byte-identical to the guest fixtures,
-// so a built op is what the settle guest re-checks. Goes fully live once the coordinated re-prove/redeploy
-// pins the matching settle vkey.
+// so a built op is what the settle guest re-checks.
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';

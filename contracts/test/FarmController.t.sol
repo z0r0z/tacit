@@ -9,9 +9,9 @@ import {FarmController} from "../src/FarmController.sol";
 /// and the receipt leaf via `rateSnapshot`) + the farm-treasury seam (`farmEscrow` stub). It exercises the
 /// EXECUTION-STAMPED entry (SPEC-masterchef-farm-stake-anytime): a mid-campaign join at an arbitrary live
 /// rps, per-position fairness across stakers that joined at different rps, replayed harvests paying 0, the
-/// exact `totalRewardDebt` reserve invariant, the Synthetix notify/period-clamp, and escrow recover gating.
+/// exact `totalRewardDebt` reserve invariant, the notify/period-clamp, and escrow recover gating.
 contract FarmControllerTest is Test {
-    FarmController farm;  // receiptMode = true — the V1 reward-farm config (DeployV1Suite/SeedV1Pools)
+    FarmController farm;  // receiptMode = true — the reward-farm config (DeployV1Suite)
     FarmController vault; // receiptMode = false — a plain position-lock vault (bare bonds, no receipt rewards)
     bytes32 constant HARVEST = bytes32(uint256(1));
     bytes32 constant STAKE = keccak256("LP");
@@ -21,7 +21,7 @@ contract FarmControllerTest is Test {
     // ── farm-treasury recover seam stub (the pool's job in Phase 2; funding is the funder's direct pool call) ──
     uint256 public stubTreasury;
     // The pool view the controller reads to refuse an unbacked rate; default high so accrual/recover tests
-    // (which don't exercise the L-02 preflight) notify freely. `test_notify_rejects_unbacked_rate` drives it.
+    // (which don't exercise the backing preflight) notify freely. `test_notify_rejects_unbacked_rate` drives it.
     uint256 public stubBacking = type(uint256).max;
 
     function farmEscrow(address, bytes32, uint256, address) external returns (uint256 out) {
@@ -179,7 +179,7 @@ contract FarmControllerTest is Test {
     }
 
     /// `outstandingReward()` is EXACTLY Σ shares_i·(rps − entry_i)/PRECISION — the reserve invariant `recover`
-    /// and `notify` both depend on, and the reason the H-01 upper-bound accumulator could be deleted.
+    /// and `notify` both depend on.
     function test_reward_debt_reserve_invariant() public {
         _receiptBond(keccak256("alice"), 100);
         skip(10);
@@ -335,9 +335,9 @@ contract FarmControllerTest is Test {
         other.onCdpClose(0, 0, 0, new CdpLeg[](0), keccak256("n1"));
     }
 
-    // ── v2: Synthetix notify + period clamp + recover ──
+    // ── notify + period clamp + recover ──
 
-    /// notify rolls the unspent remaining emission into the new rate (Synthetix), and extends the period.
+    /// notify rolls the unspent remaining emission into the new rate, and extends the period.
     function test_notify_rolls_rate() public {
         FarmController f = new FarmController(address(this), STAKE, REWARD, true, false, address(this), 0);
         f.notifyRewardAmount(1000, 100); // rate = 10, periodFinish = t0 + 100
@@ -399,8 +399,8 @@ contract FarmControllerTest is Test {
     }
 
     /// A staker that bonds then unbonds WITHOUT harvesting forfeits its reward, and once the last share leaves
-    /// the reservation is exactly 0, so the sponsor recovers the ENTIRE treasury. (The H-01 clear-on-zero hack
-    /// is gone: `totalRewardDebt` retires the stamped debt exactly, which makes the reservation 0 by itself.)
+    /// the reservation is exactly 0, so the sponsor recovers the ENTIRE treasury (`totalRewardDebt` retires the
+    /// stamped debt exactly, which makes the reservation 0 by itself).
     function test_recover_returns_forfeited_budget_after_full_unbond() public {
         FarmController esc = new FarmController(address(this), STAKE, REWARD, true, true, address(this), 0);
         esc.notifyRewardAmount(1000, 100); // rate 10/sec over 100s

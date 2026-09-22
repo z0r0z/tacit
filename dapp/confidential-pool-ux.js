@@ -1,5 +1,5 @@
-// Dapp-side orchestration for the confidential-pool UX — mainnet (pool 0x…0Ed1eabD, live since
-// 2026-09-18) and the Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
+// Dapp-side orchestration for the confidential-pool UX — mainnet (pool 0x…0Ed1eabD) and the
+// Sepolia signet pilot, selected via confidential-deployments.js's active network. Wires
 // the already-built primitives into one tab-facing API so tacit.js stays a thin renderer over the LIVE pool:
 //   - evm-account        → the persistent per-network EVM identity derived from the Tacit wallet scalar
 //   - confidential-evm-log + confidential-indexer → seed-only confidential balance from the pool's logs
@@ -151,8 +151,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Public RPCs cap eth_getLogs by block range (and reject a full deploy-block→head span with "Internal
   // error"/400), so the scan walks fixed windows and concatenates. Chain order is preserved (ascending
   // windows, and each window's logs are already block+logIndex ordered). 500 stays under the tightest
-  // range cap seen across the configured mainnet RPCs (one enforces 800) — confirmed live 2026-09-08,
-  // balance() unconditionally failed at 2000 against every currently configured endpoint.
+  // range cap seen across the configured mainnet RPCs (one enforces 800); 2000 fails on all of them.
   const LOG_WINDOW = 500;
   async function getLogsChunked(params, from, to) {
     const out = [];
@@ -466,11 +465,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   // Memo ephemeral scalar — FRESH PER MEMO, never wallet-derived.
   //
-  // This was previously `BigInt(id.secret) % n`, a wallet CONSTANT, which meant every leaf a wallet ever
-  // created carried the same ephemeral pubkey: all of a user's notes were linkable by anyone reading the
-  // chain, which defeats the point of the pool. It also sealed the wallet-wide secret into each recipient's
-  // memo, so a single counterparty could re-derive the sender's ephemeral for every OTHER note and open the
-  // sender's own change memos (their values and blindings).
+  // A wallet-constant ephemeral would put the same ephemeral pubkey on every leaf a wallet creates (making
+  // its notes linkable) and would let any one counterparty open the sender's other memos.
   //
   // Nothing depends on the scalar being reproducible: memos are sealed here in the client and travel to the
   // relay as data (confidential-relay.submitOp seals then sends `sealedMemos`); no server-side code re-seals.
@@ -657,11 +653,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // shielded note. The note commitment is the SAME one buildWrap produces (so the recovery memo + scan are
   // unchanged); only the on-chain entrypoint differs. Native ETH → router.wrapETH{value}(commit); an ERC20
   // → router.wrapWithPermit(...) with an EIP-2612 permit signed by the wallet's EVM account. INERT until
-  // cfg.router is set (the DeployConfidentialPool broadcast pins it) — folded in now, live on deploy.
+  // cfg.router is set (the DeployConfidentialPool broadcast pins it).
   const _router = makeConfidentialRouter({ secp, keccak256, sha256, cfg });
   // Wrap-permit strategy per token: 'native' (ETH → wrapETH{value}); 'eip2612' (token has EIP-2612 permit —
   // USDC, our canonical bridged 'Tacit Token' ERC20s — single-tx gasless approval); 'permit2' (no EIP-2612,
-  // e.g. USDT — route through the Uniswap Permit2 singleton: one-time ERC20 approval of Permit2, then a
+  // e.g. USDT — route through the canonical Permit2 singleton: one-time ERC20 approval of Permit2, then a
   // per-wrap signature). Explicit `meta.permitType` wins; otherwise a permit name implies EIP-2612.
   function wrapPermitType(meta) {
     if (meta.native) return 'native';
@@ -1492,9 +1488,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // poolId/lpShareId are byte-identical to pool.evmPoolId/evmLpShareId (verified), so this targets the same
   // pool swaps trade against. The witness is produced by the canonical assembler (confidential-lp.buildAdd).
   // PARTIAL ADDS: pass `contributeA` / `contributeB` to add less than a note's full value — the remainder
-  // comes back as a change note in the SAME settle. Previously a partial add cost up to two extra
-  // `ensureExactNote` split settles (and each split is itself a linkability event), so this is both a
-  // 3-settles-to-1 saving and a privacy improvement. Omit them for the old whole-note behaviour.
+  // comes back as a change note in the SAME settle, with no separate split settle. Omit them to add
+  // whole notes.
   // Reshapes buildAdd's internal op into the wire shape harnesses/exec-lp.rs parses (the file the
   // build-provers CI pipeline actually compiles exec-lp from — see build-all-network.sh, which copies
   // harnesses/exec-<op>.rs over harnesses/src/main.rs before building): dA/dB top-level decimal
@@ -1663,9 +1658,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { note: fresh, split: true };
   }
 
-  // Burn an LP-share note back into its two underlying notes (OP_LP_REMOVE) — the exit for lpAdd. Every other
-  // layer already supported this (guest op 8, confidential-lp.buildRemove, the exec-lpremove prover, the relay
-  // route); only this binding was missing, which left liquidity addable but not withdrawable from the dapp.
+  // Burn an LP-share note back into its two underlying notes (OP_LP_REMOVE) — the exit for lpAdd (guest op 8,
+  // confidential-lp.buildRemove, the exec-lpremove prover).
   // `dShares` defaults to the whole note. The relay fee is carved from the A withdrawal: the A note opens to
   // (dA − fee) while the pool still releases the full proportional dA, so the fee must be < dA.
   // NOTE: the burn is WHOLE-NOTE. buildRemove commits the share as commitXY(dShares, shareNote.blinding), so
@@ -1912,7 +1906,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // ── fast-lane exit: move Bitcoin-homed notes into native notes (OP_TRANSFER, authenticated batch) ──
-  // A Bitcoin-homed note (a reflected Bitcoin pool note bound to this deployment) is spent on the EVM lane by an
+  // A Bitcoin-homed note (a reflected Bitcoin pool note bound to this deployment) is spent on the Ethereum side by an
   // OP_TRANSFER whose batch carries a non-zero bitcoinSpentRoot. The guest then reads every input as
   // btc_note_leaf_bound(asset, Cx, Cy, auth_key, chainBinding) proven against the Bitcoin pool root, proves each
   // input's ν absent from the reflected Bitcoin spent set, and requires a BIP-340 signature under the note's
@@ -2012,7 +2006,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `transfer()` above can only ever send to yourself (a native note's owner is keccak(nk ‖ dom); minting
   // one to a third party's pubkey mints a note no nk hashes to). This is the actual third-party path: the
   // sender locks a note under a one-time address derived from the recipient's PUBLISHED static spend
-  // pubkey (the exact same key `identity(priv).pubHex` / a Tacit address's EVM lane already carry — no
+  // pubkey (the exact same key `identity(priv).pubHex` / a Tacit address's Ethereum side already carry — no
   // new recipient-identification scheme), the recipient does not need to be online, and the sender cannot
   // spend it back out even though they built it. The recipient later discovers + claims it by scanning;
   // an unclaimed lock can be reclaimed by the sender after `deadline`. See dapp/confidential-stealth.js
@@ -2062,7 +2056,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // OUR OWN identity key instead of the recipient's — lets us recover this lock's full refund authority
     // later from our own key + the on-chain-visible ephemeralPub alone, without having persisted `built`
     // (onBuilt's own contract) or re-discovering it via a lock-set scan. openStealthMemo tolerates and
-    // ignores this tail (145+ byte fix), so the recipient's own decode is unaffected.
+    // ignores this tail (it decodes 145+ bytes), so the recipient's own decode is unaffected.
     const ephemeralPub = _bytesHex(secp.ProjectivePoint.BASE.multiply(ephemeralPriv).toRawBytes(true));
     const senderTail = _airdrop.sealStealthSenderTail({
       senderPriv: _bytesHex(id.priv), ephemeralPub,
@@ -2334,7 +2328,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // envelope built from the wrong value can never fold (fold_crossout hashes claim_id into its membership
     // check) -- a permanently stranded mint with no on-chain error anywhere. Verify against the actual
     // CrossOutRecorded event before trusting the prediction; correct it in place if it diverges, matching by
-    // destCommitment (unambiguous -- it is the note's own opening, not attacker-influenced).
+    // destCommitment (unambiguous -- it is the note's own opening, fixed by the caller).
     if (r.txHash) {
       try {
         const receipt = await rpc('eth_getTransactionReceipt', [r.txHash]);
@@ -2417,7 +2411,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // A solo swap is a batch of one: its public reserve delta IS its exact amount, so the size is visible to
   // anyone reading the settle. Buffering intents per pool and clearing N of them at ONE uniform price makes
   // the single delta cover all of them, so individual sizes hide in the aggregate. The guest's OP_SWAP
-  // already loops over `intents`, so this is purely off-chain — no contract change, no re-prove.
+  // already loops over `intents`, so this is purely off-chain.
   //
   // Availability, not default: `swapBatched` exists so a caller can opt in. Batching only buys privacy when
   // peers are actually trading the same pool inside the window — with no concurrent volume every batch is a
@@ -2463,10 +2457,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Build + relay-settle a confidential route (a 1-hop path is a plain swap). `inNote` is a recovered note.
-  // PARTIAL ROUTES: `amountIn` may now be LESS than the note's value — the remainder returns as a change
-  // note in the same settle, in the ROUTE START asset. Previously the input had to be an exact-value note,
-  // so every partial swap paid for an ensureExactNote self-transfer first (an extra settle, and an extra
-  // linkability event). Passing the note's full value keeps the old whole-note shape (no change leaf).
+  // PARTIAL ROUTES: `amountIn` may be LESS than the note's value — the remainder returns as a change
+  // note in the same settle, in the ROUTE START asset. Passing the note's full value emits no change leaf.
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, waitOpts } = {}) {
     const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
     if (!q) throw new Error('route: a hop pool is not initialized');
@@ -2480,7 +2472,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const outKeys = deriveOutput(walletPriv, anchor, 'swapOut', 0);
     const rOut = outKeys.blinding;
     // Per-note owner for the swap output — routeCtx binds op.out.owner as a free choice separate
-    // from the spent note's own (unchangeable) owner, same reasoning as every other op fixed above.
+    // from the spent note's own (unchangeable) owner, as for every other op above.
     const outNk = outKeys.nk;
     const outOwner = pool.nkToOwner(outNk);
     // Change gets its own nk too: a wallet-constant owner would link every partial route, and its nk
@@ -2551,10 +2543,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Dispatch a built leaf-bearing op: relay-settle (default) or, when `selfRelay`, box-PROVE (fee-less) and
-  // broadcast settle() from the caller's own EOA. Self-relay needs no live relayer (useful while relayers are
-  // still being provisioned / when one is down) at the cost of revealing the user's EOA as msg.sender.
+  // broadcast settle() from the caller's own EOA. Self-relay needs no live relayer (useful when one is down)
+  // at the cost of revealing the user's EOA as msg.sender.
   // `sealedMemos` are sealed HERE in the client and passed through to settle() verbatim — nothing server-side
-  // re-seals them, which is why the memo ephemeral can be (and now is) fresh randomness per memo.
+  // re-seals them, which is why the memo ephemeral is fresh randomness per memo.
   async function _dispatch({ type, spec, sealedMemos, selfRelay, walletPriv, waitOpts, pair = null }) {
     // Pass the memos THIS caller already sealed (and checked via assertOutputsRecoverable) straight through
     // to submitOp, instead of letting it reseal with a fresh ephRand — otherwise the memo the local recovery
@@ -2585,12 +2577,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // declines to relay it rather than the relay absorbing a cost it cannot price or convert.
   // cTAC is deliberately fee-BEARING but floor-priced only, and `replenish` deliberately omits TAC from
   // FEE_ASSETS — collected TAC is never auto-sold, it accrues as protocol-owned reserve. Charging it still
-  // matters: a free op is a griefing vector, and the fee reduces float rather than adding sell pressure.
-  // POLICY KNOB. Derived 2026-07-22 from the live 30bps cTAC/cETH pool (reserves 2.0 cTAC / 0.00018406 cETH
-  // ⇒ 1 TAC ≈ 0.000092 ETH ≈ $0.18), set to ~$0.35 so it sits alongside the stables' $0.30 floor with slack
-  // for TAC's volatility. Deliberately a STATIC floor, not an AMM quote: that pool holds well under a dollar
-  // of depth, so a live quote off it would be trivially manipulable into an absurd fee. Re-set from the
-  // market as TAC's price moves.
+  // matters: every relayed op carries a cost.
+  // POLICY KNOB: a STATIC floor, not an AMM quote, so a thin pool's price cannot move the fee.
   const CTAC_FEE_FLOOR_UNDERLYING = 2000000000000000000n; // 2 TAC (18dp)
   const RELAY_FEE_ASSETS = {
     cETH:  { usd: 'eth',    minUnderlying: 100000000000000n },     // 0.0001 ETH
@@ -2640,8 +2628,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!pol || !meta) return staticFloor;
     let gwei; try { gwei = BigInt((await rpc('eth_gasPrice', [])) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;
-    // 1.35x, not 1.2x: minutes pass between quoting this and the settle landing, and the base fee can climb
-    // materially in that window — a 1.2x margin was being wiped out by ordinary drift, settling at a loss.
+    // 1.35x margin: minutes pass between quoting this and the settle landing, and the base fee can climb
+    // materially in that window.
     const costWei = ((SETTLE_GAS[opKind] || 500000n) * gwei + PROVE_COST_WEI) * 135n / 100n;
     let floor;
     if (pol.usd === 'eth') {
@@ -2669,8 +2657,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // Relay fee for a shielded transfer: FLAT (the quantized gas+prove floor), deliberately NOT a percentage.
   // A transfer's amount is hidden, but the fee is published in pv.fees — so charging bps would let anyone
   // divide the fee by the rate and recover the amount, defeating the point of shielding it. The relay's cost
-  // is flat per settle anyway (gas and proving don't scale with amount), so proportional pricing was never
-  // cost-justified here. Exits are different: their payout is already public, so quoteUnwrapFee keeps bps.
+  // is flat per settle anyway (gas and proving don't scale with amount). Exits are different: their payout is already public, so quoteUnwrapFee keeps bps.
   // Unlike an exit the fee is NOT carved out of `amount` — it comes from the change, so the inputs must
   // cover amount + fee.
   async function quoteTransferFee(amount, ticker = 'cETH', { minFee } = {}) {
@@ -3043,9 +3030,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     d.wrap = st.diag.wrap; d.cbtc = st.diag.cbtc; d.bridge = st.diag.bridge; d.change = st.diag.change; d.derived = st.diag.derived;
     d.coverage = {
       notes: { memo: true, wrapWalk: !d.errors.wrap, changeWalk: deep && !d.errors.change, derivedOutputs: deep && !d.errors.derived && !d.errors.derivedOutputs, bridgeMintWalk: !d.errors.bridge, cbtcScan: cbtc && d.cbtc.attempted ? !d.errors.cbtc : (cbtc ? 'not needed' : false) },
-      farmPositions: { derived: d.farm.attempted && !d.errors.farm, needsImportedRecord: 'positions opened under a random key (older builds) — importFarmPosition(record)' },
+      farmPositions: { derived: d.farm.attempted && !d.errors.farm, needsImportedRecord: 'positions opened under a key not derived from this wallet — importFarmPosition(record)' },
       stealthLocks: { sent: d.locks.attempted && !d.errors.locks, received: d.locks.attempted && !d.errors.locks },
-      cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp, needsSavedRecord: 'positions opened under a random key (older builds)' },
+      cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp, needsSavedRecord: 'positions opened under a key not derived from this wallet' },
       complete: Object.keys(d.errors).length === 0,
     };
     d.unresolved = {

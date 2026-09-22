@@ -142,10 +142,9 @@ contract ConfidentialLpProofRealTest is Test {
         verifier.verifyProof(vkey, bad, proofBytes);
     }
 
-    // ── OP_LP_ADD with a non-zero protocol fee (Uniswap fee-switch): the 6-arg pool the confidential LP
-    //    FUNDS and OP_SWAP skims. Closes the LP-funding gap (LP previously derived the 3-arg id, swap the
-    //    6-arg id → fee pools were unfundable). Self-skips until the box produces lp_protofee_groth16.json
-    //    (queued in box-prove-remote.sh: `prove lp_protofee ... lp_protofee_op.json`). ──
+    // ── OP_LP_ADD with a non-zero protocol fee (fee switch): the 6-arg pool the confidential LP
+    //    FUNDS and OP_SWAP skims; LP and swap derive the same 6-arg id. Self-skips until lp_protofee_groth16.json is proven
+    //    from lp_protofee_op.json. ──
     function _protofeeFixture() internal view returns (bool present, bytes32 v, bytes memory pv, bytes memory pf) {
         string memory fx = string.concat(vm.projectRoot(), "/test/fixtures/lp_protofee_groth16.json");
         if (!vm.exists(fx)) return (false, bytes32(0), "", "");

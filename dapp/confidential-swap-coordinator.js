@@ -6,7 +6,7 @@
 // WHY: a solo swap is a batch-of-1 — its public reserve delta == its exact amount (transparent). Batching N
 // intents into one OP_SWAP makes the single reserve delta cover all of them, so individual trade sizes are
 // hidden among the batch. The on-chain OP_SWAP ALREADY clears N intents at a uniform price (the guest loops
-// over `intents`), so this is a PURELY off-chain capability — no contract redeploy, no guest re-prove.
+// over `intents`), so this is a PURELY off-chain capability.
 //
 // NOT wired into the live path yet (slow-start ships solo/transparent — confidential-swap-tab.js calls
 // ux.route directly). Flip to this when intent volume makes batching worthwhile. Everything is injected so it

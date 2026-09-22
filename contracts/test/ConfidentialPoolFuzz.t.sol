@@ -165,7 +165,7 @@ contract ConfidentialPoolFuzzTest is Test {
     function testFuzz_poolminted_supply_conserved(uint64 value, uint8 dExp) public {
         value = uint64(bound(value, 1, 1e9));
         // unitScale is DERIVED from the native precision, not registrant-chosen: tacitDecimals ∈
-        // [9,18] ⇒ scale = 10^(18−tacitDecimals) ∈ [10^0, 10^9] (the same range the old free scale spanned).
+        // [9,18] ⇒ scale = 10^(18−tacitDecimals) ∈ [10^0, 10^9].
         uint8 tacitDecimals = uint8(bound(dExp, 9, 18));
         uint256 scale = 10 ** uint256(18 - uint256(tacitDecimals));
         uint256 amount = uint256(value) * scale;
@@ -208,7 +208,7 @@ contract ConfidentialPoolFuzzTest is Test {
         _settle(pv2);
     }
 
-    /// F-01 (greenlight round 3): two identical CDP position leaves would share one position nullifier, so
+    /// Two identical CDP position leaves would share one position nullifier, so
     /// spending one (close/liquidate/top-up) permanently locks the other. The pool must reject a duplicate
     /// real position leaf at insertion.
     function test_duplicate_cdp_position_leaf_reverts() public {

@@ -101,6 +101,6 @@ echo "== done. manifest: deployments/$CHAINID.json =="
 if [ "$REFLECTION" = "1" ]; then
   echo "RELAY ADVANCER: keep the relay tip live — loop scripts/advance-relay.sh (RELAY_ADDRESS=$HEADER_RELAY),"
   echo "  retargeting at each 2016-block boundary (scripts/retarget-relay.sh). This is SEPARATE from the"
-  echo "  attest loop (ops/scripts/reflection-relay-loop.sh), which proves/submits attests but never advances headers."
+  echo "  reflection attest service (worker-relay), which proves/submits attests but never advances headers."
 fi
 echo "NEXT: run tests/v1-day1-bootstrap-signet.mjs to seed liquidity + fund farms (box-proven)"

@@ -21,10 +21,10 @@ contract MockWstEth {
     function transferFrom(address, address, uint256) external pure returns (bool) { return true; }
 }
 
-/// End-to-end coverage for the DAY-1 cBTC link (closes M-1): with a CanonicalAssetFactory AND a
+/// End-to-end coverage for the DAY-1 cBTC link: with a CanonicalAssetFactory AND a
 /// CollateralEngine both wired, the pool constructor deploy-or-adopts the canonical cBTC.tac ERC20 and pins
-/// cBTC.zk → it, so (1) a cBTC note / a cUSD-CDP seized-collateral payout resolves to a mintable token (was
-/// NotRegistered — see ConfidentialCdpCbtcSettle.test_liquidation_seize_of_unregistered_cbtc_fails_closed),
+/// cBTC.zk → it, so (1) a cBTC note / a cUSD-CDP seized-collateral payout resolves to a mintable token (unwired, it
+/// fails closed — see ConfidentialCdpCbtcSettle.test_liquidation_seize_of_unregistered_cbtc_fails_closed),
 /// and (2) the engine's narrow recovery path can move any cBTC explicitly/accidentally paid there. Real
 /// factory + engine + pool (mock verifier only).
 contract ConfidentialCbtcLinkTest is Test {
@@ -110,7 +110,7 @@ contract ConfidentialCbtcLinkTest is Test {
         , address(0), address(0), address(0));
     }
 
-    // A public cBTC withdrawal, including a liquidation seizure payout, now RESOLVES (M-1 link closed) and
+    // A public cBTC withdrawal, including a liquidation seizure payout, RESOLVES and
     // mints cBTC.tac at unitScale 10^10.
     function test_cbtc_withdrawal_resolves_and_mints() public {
         address recipient = address(0xB0B);

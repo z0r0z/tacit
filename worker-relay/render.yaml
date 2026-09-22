@@ -1,10 +1,10 @@
 # Render blueprint — Tacit confidential-pool relay + reflection backbone.
 #
 # Proving is offloaded to the Succinct NETWORK prover; no GPU on Render. Two always-on
-# Background Workers (reflection + settle) plus two Cron Jobs (replenish + monitor).
+# Background Workers (settle + eth-state) plus Cron Jobs (reflection, header, monitor).
 #
-# The prebuilt Rust prover binaries (bitcoin_prove, exec) are baked into the image by
-# the Dockerfile (see README). Secrets are sync:false — set them in the Render dashboard.
+# The prebuilt Rust prover binaries are fetched into the image by the Dockerfile from a
+# pinned GitHub release (see README). Secrets are sync:false — set them in the Render dashboard.
 #
 # Shared env lives in an env group so every service inherits WORKER_BASE / RPC_URL /
 # addresses / Succinct config without repetition; only the secrets differ per-need.
@@ -38,9 +38,8 @@ envVarGroups:
       - key: NETWORK_RPC_URL
         value: https://rpc.mainnet.succinct.xyz
       # The pool verifies ONE immutable program_vkey. A prover binary built against a different guest
-      # produces proofs that generate fine and are rejected on-chain, with nothing in the logs to say so —
-      # which is exactly how a settle lane can look healthy while never landing a leaf. Pinning the expected
-      # vkey here makes the harness assert it at startup and fail loudly instead. Rotate this together with
+      # produces proofs that generate fine and are rejected on-chain, with nothing in the logs to say so.
+      # Pinning the expected vkey here makes the harness assert it at startup and fail loudly instead. Rotate this together with
       # the guest ELF pin and the on-chain program_vkey; never on its own.
       - key: EXPECT_VKEY
         value: "0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3"
@@ -48,7 +47,7 @@ envVarGroups:
         value: /app/prover/bin/bitcoin_prove
       - key: EXEC_BIN
         value: /app/prover/bin/exec
-      # Fee economics (PRICING-RELAY-ECONOMICS.md)
+      # Fee economics (see src/replenish.js quoteRelayFee)
       - key: MIN_FLOOR_USD
         value: "0.5"
       - key: OPS_MARGIN
@@ -89,7 +88,7 @@ services:
 
   # Cron: BitcoinLightRelay header feeder — submits BTC headers (advanceTip) so the relay confirms blocks
   # ahead of reflection. No proving; just fetch headers + one on-chain tx. Paced to stay ≤ HEADER_RELAY_LEAD
-  # ahead of reflection's attested height (maturity-window constraint). */3 keeps it moving through the catch-up.
+  # ahead of reflection's attested height (maturity-window constraint).
   - type: cron
     name: tacit-header
     runtime: docker
@@ -107,18 +106,17 @@ services:
   # Always-on worker: Mode-B eth-state producer (src/eth-state-sidecar.js). Publishes the eth-side
   # crossOut/consumed candidate tacit-reflection's ethBundleSource needs for every Mode-B attest — see
   # that file's header comment for why this must track "is a candidate currently live," not
-  # crossOutCount, and self-paces to roughly one real eth_prove run per Bitcoin-side attest generation.
+  # crossOutCount, and self-paces to roughly one real eth_prove run per Bitcoin-side attest.
   # NOT type: cron — eth_prove keeps its own cumulative resume state on a local file across cycles
   # (out_dir()/eth_set_state.json); a cron's fresh-container-per-run would force a full eth_getLogs
   # rescan from DEPLOY_BLOCK on every single invocation, growing without bound as history accumulates.
-  # The attached disk makes that state (and the cheaper eth_set_state.pending.json handoff) survive
+  # The attached disk makes that state (and the pending eth_set_state.pending.json) survive
   # restarts/redeploys too — losing it is a one-time expensive rescan, not a correctness issue (see
   # prover.js's proveEthState comment), but avoid relying on that as normal operation.
   #
   # DO NOT deploy this without first setting the REAL secrets below AND confirming SOURCE_CONSENSUS_RPC/
-  # SOURCE_EXECUTION_RPC/DEPLOY_BLOCK/GENESIS_SLOT/ETH_CALL_OUTBOX still match the CURRENT generation
-  # (re-pin on every future gen bump, same discipline as tacit-settle's POOL_ADDR override above) — see
-  # scratchpad/MODEB-RECIPE.md §1 for how these were derived for gen4. Start with DRY_RUN=1 for at least
+  # SOURCE_EXECUTION_RPC/DEPLOY_BLOCK/GENESIS_SLOT/ETH_CALL_OUTBOX match the live deployment
+  # (re-pin them for a successor deployment). Start with DRY_RUN=1 for at least
   # one full cycle against production before removing it (validates the trigger + API wiring with zero
   # proving spend).
   - type: worker
@@ -136,12 +134,12 @@ services:
     envVars:
       - fromGroup: tacit-relay-shared     # reuses NETWORK_PRIVATE_KEY, BOX_TOKEN, SP1_PROVER, NETWORK_RPC_URL
       - key: ETH_PROVE_BIN
-        value: /app/prover/bin/eth_prove   # shipped in the image as of the Dockerfile's eth_prove fetch entry
+        value: /app/prover/bin/eth_prove   # fetched into the image by the Dockerfile
       - key: DRY_RUN
         value: "0"
       - key: ETH_STATE_POLL_SECS
         value: "60"
-      # ── gen5-pinned constants (scratchpad/MODEB-RECIPE.md §1) — re-pin every generation bump ──
+      # ── deployment-pinned constants — re-pin for a successor deployment ──
       - key: SOURCE_CONSENSUS_RPC
         value: https://ethereum-beacon-api.publicnode.com
       - key: SOURCE_CHAIN_ID
@@ -154,9 +152,9 @@ services:
         value: "0x00000000a26a6E291972666a9687741dBa11Af46"
       - key: DEPLOY_BLOCK
         value: "25998736"
-      # The resume digest carries the sync committee the last Mode-B cycle ended on (period 1860, root 0xc52c…);
-      # the eth proof must bootstrap from a slot in that period, and an older bootstrap replays dozens of periods
-      # that the network refuses as unexecutable. Chained mode then follows the committed state's landed slot, so no fixed
+      # The resume digest carries the sync committee the last Mode-B cycle ended on; the eth proof must
+      # bootstrap from a slot in that period, since an older bootstrap replays periods the network refuses as
+      # unexecutable. Chained mode then follows the committed state's landed slot, so no fixed
       # committee pin is set: the expected committee advances every period and the assembler checks it per job.
       - key: GENESIS_SLOT
         value: "15237120"
@@ -171,7 +169,7 @@ services:
       - key: ETHPROVE_GAS_LIMIT
         value: "3000000000"
 
-  # Always-on worker: confidential settle relay (user ops). Polls the queue every SETTLE_POLL_SECS (~15s)
+  # Always-on worker: confidential settle relay (user ops). Polls the queue every SETTLE_POLL_SECS
   # and proves+settles immediately — no 2-min cron lag, so a user's wrap/send/top-up settles promptly.
   # (Revert to a per-run Cron Job by setting type: cron + schedule + RUN_MODE=cron if cost matters more.)
   - type: worker
@@ -180,21 +178,17 @@ services:
     rootDir: worker-relay
     dockerfilePath: ./Dockerfile
     # Standard (2GB): the SP1 network-prove client spikes past 512MB (Starter) when it retrieves + deserializes
-    # the groth16 proof, which OOM-killed the instance mid-proof on Starter. 2GB clears it.
+    # the groth16 proof, so it needs 2GB.
     plan: standard
     dockerCommand: node src/settle-relay.js
     autoDeploy: false
     envVars:
       - fromGroup: tacit-relay-shared
-      # No per-service POOL_ADDR override here: settle had one ahead of the group while gen5's reflection
-      # KV state was still being seeded (settle has no reflection-cursor dependency, so it could move the
-      # moment gen5's contracts were live; tacit-reflection/tacit-header could not, until seeded). The
-      # full-suite cutover (seed + group flip) is done, so the group's POOL_ADDR above is gen5 for
-      # everyone — an override here would now just be redundant.
+      # No per-service POOL_ADDR override: the group's POOL_ADDR is the single source for every service.
       - key: SETTLE_JOB_TIMEOUT_SECS
         value: "900"
-      # Tight poll so a queued job starts proving within ~3s instead of up to 15s — the worker is always-on, so
-      # the extra idle GETs are cheap and shave real latency off every user prove.
+      # Tight poll so a queued job starts proving within ~3s — the worker is always-on, so the extra idle GETs
+      # are cheap.
       - key: SETTLE_POLL_SECS
         value: "3"
       # Ceiling, not a target: the relay batches whatever is already queued and never waits to fill, so a
@@ -202,12 +196,12 @@ services:
       # split it (proving is per-op and does not amortize). 1 disables batching.
       - key: SETTLE_BATCH_MAX
         value: "8"
-      # Ordered PRIVATE submission endpoints. A settle carries a proof whose bound fee is stealable in a
-      # public mempool, and one endpoint refusing a valid tx would otherwise discard an already-paid proof.
+      # Ordered PRIVATE submission endpoints. A settle pays its bound fee to msg.sender, so it is kept out of
+      # the public mempool; several endpoints mean one refusing a valid tx does not discard a paid proof.
       - key: SETTLE_RPC_URLS
         value: "https://rpc.flashbots.net,https://rpc.mevblocker.io"
-      # Last resort after every private endpoint refuses: the user's op still settles, at the risk of a
-      # searcher taking the bound fee. 0 keeps submission private-only.
+      # Last resort after every private endpoint refuses: the user's op still settles, though the bound fee
+      # may go to another submitter. 0 keeps submission private-only.
       - key: SETTLE_ALLOW_PUBLIC
         value: "1"
       # One key. The settle service signs with RELAY_KEY (the account behind the network prover key, the vApp
@@ -222,10 +216,10 @@ services:
       - key: FEE_ASSETS
         value: "0x0000000000000000000000000000000000000000,0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,0xdAC17F958D2ee523a2206206994597C13D831ec7,0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
 
-  # RETIRED. Replenish now runs inside tacit-settle, in the loop's idle time (REPLENISH_IN_SETTLE), because that
-  # is where the fee income lands and it serialises with settles on the one relayer key's nonce. Left defined but
-  # inert — and suspended — so that a blueprint sync or an accidental resume cannot start a SECOND replenisher
-  # racing the settle service for the same wallet's nonces. Do not point this back at src/replenish.js.
+  # Inert. Replenish runs inside tacit-settle, in the loop's idle time (REPLENISH_IN_SETTLE), because that is
+  # where the fee income lands and it serialises with settles on the one relayer key's nonce. Kept defined, inert
+  # and suspended so a blueprint sync cannot start a second replenisher on the same wallet's nonces. Do not point
+  # this at src/replenish.js.
   - type: cron
     name: tacit-replenish
     runtime: docker

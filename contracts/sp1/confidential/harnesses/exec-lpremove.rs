@@ -40,7 +40,7 @@ fn main() {
     stdin.write(&hexv(f["assetA"].as_str().unwrap()));
     stdin.write(&hexv(f["assetB"].as_str().unwrap()));
     stdin.write(&(f["feeBps"].as_u64().unwrap() as u32));
-    stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional Uniswap fee-switch (0 = no skim, ≡ 3-arg pool id)
+    stdin.write(&(f["protocolFeeBps"].as_u64().unwrap_or(0) as u32)); // optional protocol fee switch (0 = no skim, ≡ 3-arg pool id)
     let pf_rcpt = f["protocolFeeRecipient"].as_str().map(hexv).unwrap_or_else(|| vec![0u8; 33]);
     stdin.write(&pf_rcpt); // recipient33 — bound into the 6-arg protocol-fee pool id
     stdin.write(&f["reserveAPre"].as_u64().unwrap());
@@ -56,8 +56,7 @@ fn main() {
     }
     stdin.write(&s["dShares"].as_u64().unwrap()); // PUBLIC shares burned (moves totalShares)
     // PARTIAL WITHDRAWAL: the share note proves authority with a value-HIDING blind PoK — it may hold MORE
-    // than dShares, and the remainder returns as an LP-share change note. Burning the whole note was
-    // previously the only option, so exiting a fraction of a position was impossible.
+    // than dShares, and the remainder returns as an LP-share change note.
     stdin.write(&hexv(s["pokR"].as_str().expect("lpremove: share.pokR")));
     stdin.write(&hexv(s["pokZv"].as_str().expect("lpremove: share.pokZv")));
     stdin.write(&hexv(s["pokZr"].as_str().expect("lpremove: share.pokZr")));

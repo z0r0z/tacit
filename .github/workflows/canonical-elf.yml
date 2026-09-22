@@ -2,10 +2,9 @@ name: Canonical guest ELF (Docker rebuild)
 
 # Rebuilds the tETH guest ELF inside the official succinctlabs/sp1 Docker
 # image and asserts the result matches the committed ELF byte-for-byte and
-# the pinned vkey. This is the independent vkey↔ELF binding that audit
-# T2-LOW-1 / GC-4 / SP1V-4 / T2-LOW-2 calls out as a mainnet prerequisite:
-# anyone with this repo + Docker can reproduce the exact bytes the verifier
-# was deployed with, eliminating the "non-Docker build" trust assumption.
+# the pinned vkey. This is the independent vkey↔ELF binding: anyone with
+# this repo + Docker can reproduce the exact bytes the verifier was deployed
+# with, without trusting a non-Docker build.
 #
 # Triggers:
 #   - push/PR touching the guest source or pin (gates the merge)

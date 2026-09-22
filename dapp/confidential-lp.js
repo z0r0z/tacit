@@ -41,7 +41,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     const [lo, hi] = bigOf(a) <= bigOf(b) ? [a, b] : [b, a];
     return bytesToHex(keccak256(concat([hexToBytes(lo), hexToBytes(hi), be32(feeBps)])));
   };
-  // Optional Uniswap fee-switch pool id — mirrors cxfer-core `pool_id_with_protocol_fee` + the contract's
+  // Optional protocol-fee pool id — mirrors cxfer-core `pool_id_with_protocol_fee` + the contract's
   // 6-arg id byte-for-byte: pfBps == 0 ≡ the canonical 3-arg `poolId`; else keccak(lo ‖ hi ‖ feeBps_be32 ‖
   // recipient33 ‖ pfBps_be32). Lets the confidential LP fund the SAME slot OP_SWAP skims against.
   const ZERO_RCPT = '0x' + '00'.repeat(33);
@@ -114,7 +114,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
       if (dShares <= 0n) throw new Error('lp_add: contribution below one share');
     }
     // PARTIAL ADDS: the A/B notes commit their FULL value; the contribution (dA/dB) is what enters the pool
-    // and the remainder returns as change. With no change these reduce to the old whole-note commitments.
+    // and the remainder returns as change. With no change these reduce to whole-note commitments.
     const aTotal = aChange.reduce((t, c) => t + BigInt(c.value), BigInt(dA));
     const bTotal = bChange.reduce((t, c) => t + BigInt(c.value), BigInt(dB));
     // Single-note legs derive the commitment from (total, r). Multi-note legs use each note's own
@@ -280,7 +280,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     if (!(feeBig < a.q)) throw new Error('lp_remove: fee >= A withdrawal');
     const netA = a.q - feeBig;
     // PARTIAL WITHDRAWAL: the share note commits its FULL holding; `dShares` is the public amount burned and
-    // the remainder returns as LP-share change. Empty change ⇒ the old whole-note remove.
+    // the remainder returns as LP-share change. Empty change ⇒ a whole-note remove.
     const sTotal = shareChange.reduce((t, c) => t + BigInt(c.value), BigInt(dShares));
     const sC = commitXY(sTotal, rShares), aC = commitXY(netA, rA), bC = commitXY(b.q, rB);
     const op = {
@@ -324,7 +324,7 @@ export function makeConfidentialLp({ keccak256, pool, kernelSign, rangeProve }) 
     const pid = poolIdWithProtocolFee(op.assetA, op.assetB, op.feeBps, op.protocolFeeRecipient ?? ZERO_RCPT, op.protocolFeeBps ?? 0), lpAsset = lpShareId(pid);
     if (merkleRootFrom(leaf(lpAsset, op.share.cx, op.share.cy, op.share.owner), op.share.leafIndex, op.share.path) !== spendRoot) fail('share membership');
     const ctx = removeCtx(op);
-    // The SPENT share note now carries a value-hiding PoK (it may exceed dShares); the kernel conserves it.
+    // The SPENT share note carries a value-hiding PoK (it may exceed dShares); the kernel conserves it.
     if (!verifyOpeningPokBlind(op.share.cx, op.share.cy, op.sPok.R, op.sPok.zV, op.sPok.zR, ctx)) fail('share opening PoK');
     for (const c of (op.shareChange || [])) if (c.asset !== lpAsset) fail('share change asset != lpAsset');
     if (!(op.sharesPre > 0n && op.dShares > 0n && op.dShares <= op.sharesPre)) fail('shares in range');

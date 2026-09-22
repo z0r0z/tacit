@@ -42,12 +42,9 @@ const ETH_ELF: &[u8] = include_bytes!(
     "/root/sp1-helios/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/eth_reflection"
 );
 
-// Runtime output/state layout, overridable so this binary can run somewhere other than the RunPod box
-// it was written for (e.g. a Render service with a mounted persistent disk) — mirrors bitcoin_prove.rs's
-// own PROVER_OUT env knob, added for the identical reason (that one was hardcoded to a box-only path
-// too, which is what produced the ENOENT the first time a modeB job reached a different host). Defaults
-// reproduce the exact original hardcoded paths, so the RunPod recipe (scratchpad/MODEB-RECIPE.md) still
-// works unmodified with no env set.
+// Runtime output/state layout, overridable so this binary can run off the prover box (e.g. a Render service
+// with a mounted persistent disk) — mirrors bitcoin_prove.rs's PROVER_OUT env knob. Defaults are the prover
+// box paths.
 fn out_dir() -> String {
     std::env::var("ETH_PROVE_OUT_DIR").unwrap_or_else(|_| "/root/work/prover-host/out".to_string())
 }
@@ -56,8 +53,8 @@ fn debug_dir() -> String {
 }
 // STATE_PATH is the CUMULATIVE, committed resume state — only ever advanced by the caller copying
 // PENDING_STATE_PATH over it after confirming (off-host) that the batch built from it actually landed.
-// Never write STATE_PATH from inside this binary (see the header comment + MODEB-RECIPE.md's
-// "single-use" section: committing early desyncs the next cycle's prior_set_root/prior_count).
+// Never write STATE_PATH from inside this binary: committing early desyncs the next cycle's
+// prior_set_root/prior_count.
 fn state_path() -> std::path::PathBuf {
     std::env::var("ETH_PROVE_STATE_PATH")
         .map(std::path::PathBuf::from)
@@ -347,7 +344,7 @@ fn main() -> anyhow::Result<()> {
     );
     // SYNC_COMMITTEE_MODE=chained bootstraps from the committed state's last landed slot; anything else keeps
     // bootstrapping from GENESIS_SLOT every run, which is what a reflection guest pinned to one genesis committee
-    // requires. One binary therefore serves both generations, chosen per deployment.
+    // requires. One binary therefore serves both modes, chosen per deployment.
     let chained = std::env::var("SYNC_COMMITTEE_MODE").map(|m| m == "chained").unwrap_or(false);
     let bootstrap_slot = if chained { state.bootstrap_slot.or(genesis_slot) } else { genesis_slot };
     // EXPECT_SYNC_COMMITTEE: the committee the reflection state says the next proof must start from (0x-hex, the

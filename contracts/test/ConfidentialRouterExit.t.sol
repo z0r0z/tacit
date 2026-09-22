@@ -638,12 +638,12 @@ contract ConfidentialRouterExitTest is Test {
         emit log_named_address("escrowAddressFor(fixedRouter, sample)", escrow);
     }
 
-    // ──────────────── F-1: exit recovery is decoupled from settlement (no one-shot entombment) ────────────────
+    // ──────────────── exit recovery is decoupled from settlement ────────────────
 
     /// A settle that lands the exit funds at the recipe escrow WITHOUT going through `exitAndExecute` (a raw
     /// POOL.settle race/reorg, or an activate-before-settle) is recoverable: `activateExit` deploys+runs the
-    /// escrow, and — crucially — is RE-RUNNABLE, so funds that arrive AFTER a first activation are still swept
-    /// out rather than entombed behind the one-shot clone. Recipe has no calls: run() sweeps the underlying.
+    /// escrow, and is RE-RUNNABLE, so funds that arrive AFTER a first activation are still swept
+    /// out rather than left behind the one-shot clone. Recipe has no calls: run() sweeps the underlying.
     function test_activateExit_reRunnable_recoversRelandedExit() public {
         ConfidentialRouter.ExitCall[] memory noCalls = new ConfidentialRouter.ExitCall[](0);
         ConfidentialRouter.ExitRecipe memory recipe =
@@ -693,10 +693,9 @@ contract ConfidentialRouterExitTest is Test {
         assertEq(usdc.balanceOf(escrow), 0, "escrow emptied by the batch-less sweep");
     }
 
-    /// M-01: the deadline expires EXECUTION authority, not just the settle. Past the deadline, `activateExit`
-    /// must NOT run the recipe's (now-stale) batch — otherwise a searcher front-runs the user's `reclaimExit`
-    /// with `activateExit` + a sandwich, forcing the expired swap at a manipulated price. Post-deadline the
-    /// only path is the no-batch `reclaimExit`. Activation still works exactly AT the deadline.
+    /// The deadline expires EXECUTION authority, not just the settle. Past the deadline, `activateExit`
+    /// must NOT run the recipe's (now-stale) batch, so an expired swap never executes at a later price.
+    /// Post-deadline the only path is the no-batch `reclaimExit`. Activation still works exactly AT the deadline.
     function test_activateExit_barredAfterDeadline() public {
         // A swap whose only protection is the recipe deadline (loose floor) — the sandwich target.
         uint256 exitValue = 1000;

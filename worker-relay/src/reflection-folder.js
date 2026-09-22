@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Reflection folder — the always-on incremental Bitcoin-state attester.
+// Reflection folder — the incremental Bitcoin-state attester.
 //
-// Render service type: Background Worker (long-running). This is the piece that
-// keeps reflection INCREMENTAL (1-2 blocks per cycle) so the 176-block liveness
-// trap never recurs: every cycle folds only the small gap since the last attested
-// height, proves it on the Succinct NETWORK prover, and attests it on-chain.
+// Render service type: Cron Job (RUN_MODE=cron drains pending batches, then exits) or
+// Background Worker. It keeps reflection INCREMENTAL (1-2 blocks per cycle) so a batch
+// never grows too large to prove: every cycle folds only the small gap since the last
+// attested height, proves it on the Succinct NETWORK prover, and attests it on-chain.
 //
-// Cycle (mirrors ops/scripts/reflection-relay-loop.sh, GPU swapped for network):
+// Cycle:
 //   1. GET /reflection/job?network=  → the assembled next batch (worker streaming
 //      assembler, bounded memory). jobId = the batch's newDigest.
 //   2. Idempotency: read knownReflectionDigest(); if newDigest already landed
@@ -17,7 +17,7 @@
 //      un-rewindable attested cursor (persists newSnapshot keyed by jobId).
 //
 // The persisted snapshot advances only on ack, so a failed prove/submit is a safe
-// retry — the same job re-serves and completes (idempotency proven). A submitted attest is waited on by polling
+// retry — the same job re-serves and completes. A submitted attest is waited on by polling
 // the pool's digest rather than trusting one receipt wait, and is recorded with the API so a later run waits on
 // it instead of proving the same batch again; a pool that got ahead of the cursor is reconciled, not re-proved.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,9 +56,8 @@ async function cycle() {
   // CANNOT land (StaleReflectionDigest) and proving it just buys an unusable proof. That is the expensive
   // failure mode: the worker's cursor can end up AHEAD of the chain — a tx that landed, got acked, then was
   // dropped by a reorg — and there is no idempotent recovery for ahead-ness the way there is for behind-ness
-  // (the re-ack path above). Left unguarded the cycle re-proves every 5 minutes forever, draining the prover
-  // balance until reflection stops for lack of funds, turning a transient reorg into a funded outage.
-  // Fail loud and cheap instead; recovery is a cursor rewind (re-seed /reflection/seed at the chain's height).
+  // (the re-ack path above). Proving on a stale prior would only spend the prover balance, so fail loud and
+  // cheap instead; recovery is a cursor rewind (re-seed /reflection/seed at the chain's height).
   if (job.priorDigest && onchain && String(job.priorDigest).toLowerCase() !== String(onchain).toLowerCase()) {
     // Ahead-ness caused by a lost ack is recoverable: the API still holds the batch that landed. Adopt it and let
     // the loop rebuild the job from the advanced cursor. Anything else stays a refusal.
@@ -145,12 +144,10 @@ async function txStatus(hash) {
 
 // Wait for a submitted attest to land, then ack it. Confirmations, not just inclusion: the ack advances the worker's
 // canonical cursor and there is no recovery from the cursor being ahead of the chain (see the drift guard above), so
-// acking on a one-block receipt strands it permanently the first time that block is reorged. Observed exactly that:
-// a tx whose receipt read `success`, was acked, and then had no receipt at all minutes later.
+// acking on a one-block receipt strands it permanently the first time that block is reorged.
 //
 // The wait polls the pool's digest instead of blocking on one receipt call, because a receipt wait that times out
-// tells us nothing about the tx: one landed five minutes after the wait gave up, the cycle exited without acking,
-// and the next run re-proved a batch that was already on-chain. Running out of time here is therefore not an error —
+// tells us nothing about the tx: it can still land minutes later. Running out of time here is therefore not an error —
 // the tx is left alone and the next run finds it through the recorded submission.
 async function settleSubmitted({ txHash, newDigest, attestedTo }) {
   const res = await awaitAttestLanding({
@@ -174,10 +171,7 @@ async function settleSubmitted({ txHash, newDigest, attestedTo }) {
 
   // A confirmed receipt from publicClient is not yet grounds to ack. publicClient sticks with the FIRST
   // endpoint that answers (viem's fallback() has no reason to move on if RPC_URL keeps returning success),
-  // so RPC_URL both submitted this tx and, alone, decided it landed — nothing else was ever asked. That
-  // exact shape once produced a receipt reading `success` with confirmations, for a tx that no other node
-  // had ever seen; the worker acked it, and the cursor was permanently ahead of the real chain until
-  // manually re-seeded. Ack is unrewindable, so before trusting it, ask an endpoint that had no part in the
+  // so RPC_URL both submitted this tx and, alone, decided it landed. Ack is unrewindable, so before trusting it, ask an endpoint that had no part in the
   // submission whether the STATE actually changed — not just whether a receipt exists.
   if (!(await confirmDigestOn(verifyClient, newDigest))) {
     log(`WARNING: ${txHash} has ${ATTEST_CONFIRMATIONS} confirmations on the primary RPC, but an independent `

@@ -190,7 +190,7 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
         }),
       };
     } else if (tx.decode && tx.decode.type === 'cxfer_bound') {
-      // A generation-bound CXFER (0x39): onboard BOUND output notes. Same shape as cxfer with the envelope's
+      // A deployment-bound CXFER (0x39): onboard BOUND output notes. Same shape as cxfer with the envelope's
       // target_chain_binding surfaced (the assembler requires it == this deployment's chainBinding) and each
       // note leaf built over the bound domain (btcNoteLeafBound), mirroring the guest's fold_cxfer_bound.
       env = {

@@ -8,7 +8,7 @@
 // `replayAmmPoolState` is a pure, deterministic state machine. Given the pool's
 // ops in canonical (height, tx_index) order — each ALREADY decoded and verified
 // on chain at confirmation depth >= 3 by the caller — it replays them to compute
-// the authoritative { reserveA, reserveB, totalShares }. Crucially it does not
+// the authoritative { reserveA, reserveB, totalShares }. It does not
 // just accumulate: every op that DECLARES a derived value (the LP_ADD share
 // amount, the LP_REMOVE outputs, optionally a swap output) is RE-CHECKED against
 // the formula recomputed from the replayed reserves. A mismatch means a forged
@@ -42,7 +42,7 @@ function _toHex(x) {
 }
 
 // Protocol-fee crystallization — mirrors the worker's ammComputeProtocolShares
-// (Uniswap-V2 lazy mintFee skim): the protocol's cut of LP-fee growth, measured
+// (lazy protocol-fee skim): the protocol's cut of LP-fee growth, measured
 // as the increase in sqrt(k) (k = reserveA·reserveB) since the last
 // crystallization, diluting existing LPs. Returns the shares to mint.
 //   shares = S·bps·(√k_now − √k_pre) / ((10000−bps)·√k_now + bps·√k_pre)
@@ -97,7 +97,7 @@ export function replayAmmPoolState(ops, deps) {
 
   // Crystallize the protocol fee against k-growth since the last crystallization,
   // minting the protocol's cut as new shares, then advance k_last to k_now. Run
-  // at the START of each LP event (matches the worker / Uniswap V2 mintFee). A
+  // at the START of each LP event (matches the worker). A
   // no-op when the pool has no protocol fee. Returns nothing; mutates state.
   const crystallize = () => {
     const kNow = reserveA * reserveB;
@@ -145,7 +145,7 @@ export function replayAmmPoolState(ops, deps) {
         throw new Error(`replay[${i}]: lp_add share mismatch (declared ${op.shareAmount}, formula ${shares})`);
       }
       reserveA += da; reserveB += db; totalShares += shares;
-      kLast = reserveA * reserveB;   // k_last = post-add product (Uniswap V2)
+      kLast = reserveA * reserveB;   // k_last = post-add product
       continue;
     }
 
@@ -225,7 +225,7 @@ export function replayAmmPoolState(ops, deps) {
       if (op.outA != null && BigInt(op.outA) !== oA) throw new Error(`replay[${i}]: lp_remove outA mismatch (declared ${op.outA}, formula ${oA})`);
       if (op.outB != null && BigInt(op.outB) !== oB) throw new Error(`replay[${i}]: lp_remove outB mismatch (declared ${op.outB}, formula ${oB})`);
       reserveA -= oA; reserveB -= oB; totalShares -= burned;
-      kLast = reserveA * reserveB;   // k_last = post-remove product (Uniswap V2)
+      kLast = reserveA * reserveB;   // k_last = post-remove product
       continue;
     }
 

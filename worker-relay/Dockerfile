@@ -1,26 +1,16 @@
 # Render image for the Tacit relay backbone.
 #
-# Two stages:
-#   1. prover — build the SP1 network-prove binaries (bitcoin_prove, exec) from the repo.
-#      These are patched to .network(), so the RUNTIME needs NO GPU — only SP1_PROVER=network
-#      + a funded NETWORK_PRIVATE_KEY. Building them here bakes the exact vkeys into the image.
-#   2. runtime — Node 20 + the built binaries + this worker's JS.
-#
-# NOTE: the SP1 guest ELFs are include_bytes!'d into the binaries at build time (see
-# bitcoin_prove.rs / the harness bins). The build context must include the guest ELF paths
-# those bins reference, or pre-build the binaries out-of-band and COPY them in (fallback below).
+# The SP1 prover binaries (exec-*, bitcoin_prove, eth_prove) are patched to .network(), so the
+# runtime needs NO GPU — only SP1_PROVER=network + a funded NETWORK_PRIVATE_KEY. The guest ELFs are
+# include_bytes!'d into them at build time, so each binary carries the program it proves.
 
-# ── Stage 1: build the prover binaries ───────────────────────────────────────
-# Prefer building in CI where the SP1 toolchain + guest ELFs are already staged, then
-# COPY the artifacts in. If you build here, install the SP1 toolchain first.
-FROM rust:1.81-bookworm AS prover
-WORKDIR /build
-# TODO: copy the prover-host + confidential harness sources + prebuilt guest ELFs, then:
+# ── Stage 1: placeholder ─────────────────────────────────────────────────────
+# The binaries are built out-of-band and fetched in the runtime stage. To build them here:
 #   RUN curl -L https://sp1.succinct.xyz | bash && ~/.sp1/bin/sp1up
 #   RUN cd eth-reflection/prover-host && cargo build --release --bin bitcoin_prove
 #   RUN cd confidential/harnesses     && cargo build --release --bin exec
-# For now this stage is a placeholder; the runtime COPY below falls back to ./prover/bin
-# which you populate from a CI build artifact (recommended — keeps the Render build fast).
+FROM rust:1.81-bookworm AS prover
+WORKDIR /build
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim AS runtime
@@ -32,9 +22,8 @@ WORKDIR /app
 # staging separately.
 #
 # The pinned hashes are the second line of defence, not the first: what actually matters is which
-# guest ELF each exec-* embeds, because the pool verifies one immutable program_vkey. v4 shipped
-# binaries built against a superseded guest — they proved happily and were rejected on-chain, with
-# nothing in the logs to say why. Set EXPECT_VKEY on the settle services so a drifted binary fails
+# guest ELF each exec-* embeds, because the pool verifies one immutable program_vkey. A binary
+# built against a different guest proves fine and is rejected on-chain. Set EXPECT_VKEY on the settle services so a drifted binary fails
 # closed at run time, and note the harness crate's build.rs refuses to compile against an
 # unpinned guest. Rotating the guest means bumping SHA256SUMS, this release tag, and the on-chain
 # program_vkey together.

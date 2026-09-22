@@ -812,8 +812,8 @@ contract CollateralEngineTest is CollateralEngineHarness {
         assertEq(eng.outstandingCusd(), 0);
     }
 
-    /// A feed swap freezes MINTS for the grace (a hostile high mark could otherwise mint unbacked debt the moment it
-    /// lands), but never top-ups: a top-up mints nothing, and it is the borrower's remedy the grace exists to give.
+    /// A feed swap freezes MINTS for the grace (so debt is never minted against a mark the moment it lands),
+    /// but never top-ups: a top-up mints nothing, and it is the borrower's remedy the grace exists to give.
     function test_feed_change_freezes_mints_but_not_topups_for_the_grace_window() public {
         CdpLeg[] memory legs = _legs(1e8);
         vm.prank(address(pool));
@@ -1185,8 +1185,8 @@ contract CollateralEngineTest is CollateralEngineHarness {
         eng.fundInsurance(2 ether);
         assertEq(eng.insuranceReserve(), 2 ether);
 
-        // The engine no longer has a `receive()` — it only ever takes funds via the explicit ERC20 pull paths
-        // (postEscrow/fundInsurance), so a plain native-ETH send now just fails, and the reserve is unmoved.
+        // The engine has no `receive()` — it only takes funds via the explicit ERC20 pull paths
+        // (postEscrow/fundInsurance), so a plain native-ETH send fails, and the reserve is unmoved.
         (bool ok,) = address(eng).call{value: 1 ether}("");
         assertFalse(ok, "plain ETH sends are no longer accepted (wstETH-only reserve)");
         assertEq(eng.insuranceReserve(), 2 ether, "unaffected by the rejected native-ETH send");
@@ -1844,7 +1844,7 @@ contract TsrCumulativeTest is TsrSettleBase {
             }
         }
         // `feesAccruedCusd` is the authoritative cumulative fee (drip accrual + close/liquidate ceil dust); the
-        // helper's returned per-round `fee` is a ceil-based estimate that no longer coincides with the on-drip
+        // helper's returned per-round `fee` is a ceil-based estimate that does not coincide with the on-drip
         // accrual to the base unit, so measure against the engine's own cumulative counter (invariant #4).
         assertLe(totalHarvested, eng.feesAccruedCusd(), "cumulative harvest never exceeds cumulative fees");
         assertEq(eng.feeBudgetCusd(), eng.feesAccruedCusd() - totalHarvested, "budget == cumulative fees - harvested, exactly");
@@ -2028,7 +2028,7 @@ contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
         }
     }
 
-    // The hard invariant GPT demanded, fuzzed: arbitrary STALE per-mint snapshots ∈ [RAY, rate], the fee dripped
+    // The fee-budget invariant, fuzzed: arbitrary STALE per-mint snapshots ∈ [RAY, rate], the fee dripped
     // in a fuzzed number of partitions at fuzzed gaps, several positions opened at different snapshots, then an
     // interleaved close/liquidate unwind. After EVERY op `feeBudgetInvariantHolds()` must hold strictly (no unit
     // of budget ever unbacked), and after the full unwind aggregate debt must net to zero — every position was
@@ -2110,8 +2110,7 @@ contract FeeBudgetSurplusDrawFuzzTest is TsrSettleBase {
 /// Retirement books ONLY the burn above the accrued `owed` as surplus, never the principal↔normalized-debt
 /// reconstruction gap. With no savers the whole fee budget is surplus, so `surplusFeeCusd == feeBudgetCusd`
 /// and both must stay bounded by the fee the burn actually collected (`repaid − principal`). The boundary
-/// case is a single-base-unit position where `floor(art·rate/RAY) < owed`: the old code booked that floored
-/// reconstruction as a drawable unit; the current code books zero.
+/// case is a single-base-unit position where `floor(art·rate/RAY) < owed`, which books zero.
 contract RetireCollectedFeeOnlyTest is CollateralEngineHarness {
     // A position sized so `art = floor(principal·RAY/snap)` reconstructs BELOW `principal` at the mint snapshot:
     // principal 2 at snap == rate == RAY+1 gives art 1 and floor(art·rate/RAY) == 1, one unit under the owed 2.
@@ -2207,8 +2206,8 @@ contract FeeSurplusUnwindTest is CollateralEngineHarness {
         assertGt(owedA, 100e8, "debt grew past principal");
 
         // Accrue-on-drip: a single drip injects the AGGREGATE fee for BOTH open positions into the budget/surplus
-        // BEFORE any close. This is the solvency fix — under the old accrue-on-close model surplus stayed 0 until
-        // a close, so the fee cUSD needed to repay was not yet mintable. `normalizedDebtRay == 200e8` here (both
+        // BEFORE any close, so the fee cUSD needed to repay is already
+        // mintable. `normalizedDebtRay == 200e8` here (both
         // 100e8 positions minted at RAY), and drip credits `normalizedDebtRay·Δrate/RAY` ≈ (owedA-100e8)+(owedB-100e8).
         eng.drip();
         uint256 aggFee = (owedA - 100e8) + (owedB - 100e8);
@@ -2241,10 +2240,8 @@ contract FeeSurplusUnwindTest is CollateralEngineHarness {
         assertTrue(eng.feeBudgetInvariantHolds(), "invariant holds after full unwind");
     }
 
-    /// FLAGSHIP solvency test (invariant #3): the previously-stuck LAST/only borrower can now close. Under the old
-    /// accrue-on-close model the sole borrower's fee only materialized in surplus AT close, so the cUSD needed to
-    /// repay was not yet mint-authorized and the position could not be unwound. Accrue-on-drip injects that fee
-    /// into surplus BEFORE the close, and the borrower then closes cleanly to outstanding/normalizedDebt == 0.
+    /// Solvency test (invariant #3): the LAST/only borrower can close. Accrue-on-drip injects that borrower's fee
+    /// into surplus BEFORE the close, so the cUSD needed to repay is mint-authorized, and the borrower then closes cleanly to outstanding/normalizedDebt == 0.
     function test_solvent_active_fee_last_borrower_can_close() public {
         vm.prank(address(pool));
         eng.onCdpMint(_legs(1e8), 100e8, keccak256("alice"), RAY);

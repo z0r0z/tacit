@@ -1,4 +1,4 @@
-// Pass-through for the legacy workers.dev API origin: every request forwards
+// Pass-through for the workers.dev API origin: every request forwards
 // to ORIGIN unchanged. The two x-tacit-* headers carry the real client IP to
 // the origin's rate-limit buckets; the origin honors them only when the key
 // matches its PROXY_TRUST_KEY (see server/harness.mjs clientIpFrom) and

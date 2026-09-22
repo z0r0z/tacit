@@ -6,7 +6,7 @@ import {CanonicalAssetFactory} from "../src/CanonicalAssetFactory.sol";
 
 /// @notice Deploy the CanonicalAssetFactory — the stateless CREATE2 deployer the pool uses to lazily
 ///         issue a Tacit asset's public ERC20 (cBTC.tac, cUSD, bridged tokens). Standalone so a suite
-///         deploy can reuse one factory across generations; the address is the only thing the pool needs.
+///         deploy can reuse one factory across deployments; the address is the only thing the pool needs.
 ///
 ///         Logs the factory's `extcodehash`, which is the value to pass as EXPECTED_FACTORY_CODEHASH to
 ///         DeployConfidentialPool (REQUIRED on mainnet when a factory is wired).

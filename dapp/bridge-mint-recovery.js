@@ -3,17 +3,15 @@
 // PRE-COMMITTED at burn time on Bitcoin (the guest pins dest_leaf into the bridge-burn set; the Ethereum mint
 // must reproduce that exact (cx, cy, owner), fee-less by necessity), and Bitcoin envelopes carry no memo
 // channel the way an Ethereum-side settle() does — so whatever blinding the burn envelope commits to is the
-// ONLY chance to make this note recoverable. A random choice there means the re-minted note can never be
-// re-opened without whatever off-chain record happened to keep it, mirroring the same bearer-note gap
-// cbtc-note-recovery.js solves for cBTC locks and confidential-pool-ux.js's crossOut() solves for fast-lane
-// crossOuts. This is the same fix, applied at the one remaining point in the bridge pipeline that still lacks
-// it: derive the blinding from the identity key + the burned note's own nullifier (unique per spend, already
-// computed by whatever builds the burn envelope) instead of a fresh random scalar.
+// ONLY chance to make this note recoverable. As cbtc-note-recovery.js does for cBTC locks and
+// confidential-pool-ux.js's crossOut() does for fast-lane cross-outs, the blinding is derived from the
+// identity key + the burned note's own nullifier (unique per spend, already computed by whatever builds the
+// burn envelope) instead of a fresh random scalar.
 //
 // Deps: { hmac, sha256, curveOrder } — @noble hmac/sha256 + the secp order N (so the result is a valid scalar).
 // Whoever builds a burn-deposit / bridge-mint destination commitment (dapp code or an external integrator's
 // own client) should call this for the destination blinding rather than inventing a fresh one, exactly the
-// way confidential-pool-ux.js's crossOut() now does for the fast-lane path.
+// way confidential-pool-ux.js's crossOut() does for the fast-lane path.
 
 export function makeBridgeMintRecovery({ hmac, sha256, curveOrder }) {
   const N = BigInt(curveOrder);

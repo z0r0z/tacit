@@ -243,7 +243,7 @@ contract ConfidentialRouterTest is Test {
         uint256 deadline = block.timestamp + 1 hours;
         (uint8 v, bytes32 r, bytes32 s) = _sign2612(AMOUNT, deadline);
 
-        // Attacker front-runs by submitting the user's permit directly (allowance now set, nonce consumed).
+        // A third party submits the user's permit first (allowance now set, nonce consumed).
         usdc.permit(user, address(router), AMOUNT, deadline, v, r, s);
 
         // The same call now hits a permit that reverts (used nonce) — but the wrap still completes.
@@ -1596,8 +1596,8 @@ contract ConfidentialRouterTest is Test {
         assertEq(tokB.balanceOf(address(zapRouter)), 0, "router holds no TKB");
     }
 
-    /// R-2 hardening: a settle relayed through wrapAndSettle now sweeps a fee/residue resting in the wrapped
-    /// `token` back to the caller (was: stranded in the router). Modeled by a stray balance the settle leaves.
+    /// A settle relayed through wrapAndSettle sweeps a fee/residue resting in the wrapped `token` back to the
+    /// caller. Modeled by a stray balance the settle leaves.
     function test_wrapAndSettle_refundsStrandedWrapToken() public {
         usdc.mint(address(router), 250); // stand-in for a settler fee paid to the router (msg.sender) in `token`
         bytes32 bobCommit = keccak256("bob-fee-c");

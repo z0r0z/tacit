@@ -6,7 +6,7 @@
 # assembler's expected reflected-state digest for that input. The guest must
 # reproduce it exactly: a drift means either a stale fixture (the field was not
 # regenerated after a guest/JS change) or a real guest<->JS divergence. Either
-# way the fixture no longer means what it claims, and a re-prove built on it
+# way the fixture does not mean what it claims, and a re-prove built on it
 # would bake in the wrong digest.
 #
 # This replays each committed fixture through the guest (reflect-exec, execute

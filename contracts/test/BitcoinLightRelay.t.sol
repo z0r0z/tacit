@@ -178,8 +178,8 @@ contract BitcoinLightRelayTest is TestHelper {
 
     // Median-time-past must use the median of the last 11 ancestors, NOT the
     // immediate parent's timestamp. Bitcoin block timestamps wobble (a valid
-    // block's ts can dip below its parent's), so the old strict-monotonic check
-    // wrongly rejected canonical headers and bricked the relay at mainnet 952005.
+    // block's ts can dip below its parent's), so a strict-monotonic check would
+    // reject canonical headers (e.g. mainnet 952005).
     function test_mtp_uses_median_not_parent() public {
         uint32[11] memory tss = [uint32(500), 520, 510, 530, 525, 540, 535, 550, 545, 560, 555];
         bytes32 parent = bytes32(0);
@@ -254,10 +254,8 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.blockTarget(_dsha256(h55)), newTarget, "later epoch-472 blocks inherit it");
     }
 
-    // R-1: a fork that diverged at a retarget boundary can now CROSS the boundary and overtake the tip. The
-    // old single global epoch target barred any non-tip branch from crossing, so a boundary-height reorg
-    // permanently pinned the tip to the orphaned block and bricked the whole Bitcoin lane. With the per-branch
-    // `blockTarget`, the crossing block derives its own epoch target from its branch, so a heavier fork wins.
+    // A fork that diverged at a retarget boundary can CROSS the boundary and overtake the tip. With the
+    // per-branch `blockTarget`, the crossing block derives its own epoch target from its branch, so a heavier fork wins.
     // PoW is mocked (synthetic headers can't be mined) — target derivation, crossing, cumulative work, and the
     // heaviest-chain rule all run the production path.
     function test_advanceTip_fork_crosses_retarget_boundary_and_overtakes() public {
@@ -382,7 +380,7 @@ contract BitcoinLightRelayTest is TestHelper {
 
     // The epoch-start timestamp feeding a boundary crossing is carried PER BLOCK on the crossing branch
     // (epochStartTs), never from a global per-epoch value. Two branches that replaced each other's epoch-1
-    // first block must therefore carry DIFFERENT epoch-start timestamps — the crux of the R-1 per-branch
+    // first block must therefore carry DIFFERENT epoch-start timestamps — the core of the per-branch
     // retarget. Each branch's epoch-1 blocks inherit their own boundary block's timestamp.
     function test_epoch_start_ts_is_branch_local_not_cached() public {
         TestLightRelay r = new TestLightRelay();
@@ -411,7 +409,7 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.epochStartTs(keccak256("g")), 1000, "genesis: deployer-seeded epoch-start on the anchor");
     }
 
-    // ──────────────────── R-1: reorg / per-branch-target coverage ────────────────────
+    // ──────────────────── reorg / per-branch-target coverage ────────────────────
 
     /// @dev A header carrying arbitrary nBits (TestHelper's _makeHeader hardcodes 0x1d00ffff), so a
     ///      boundary crossing can be submitted with a branch's OWN derived target.
@@ -469,7 +467,7 @@ contract BitcoinLightRelayTest is TestHelper {
     }
 
     // (b) A multi-block fork that crosses a retarget boundary and overtakes, and a competing crossing on
-    // the other branch that LOSES. Both cross — the boundary is no longer a tip-only privilege (R-1) — but
+    // the other branch that LOSES. Both cross — the boundary is not a tip-only privilege — but
     // only the heavier one moves the tip.
     function test_advanceTip_multiblock_boundary_fork_winner_and_loser() public {
         MockPowLightRelay r = new MockPowLightRelay();
@@ -506,7 +504,7 @@ contract BitcoinLightRelayTest is TestHelper {
         assertEq(r.blockTarget(_dsha256(a1)), TEST_TARGET, "with its own branch-derived target");
     }
 
-    // (c) THE CRUX OF R-1: two branches whose epoch-0 boundary timestamps differ enough to derive DIFFERENT
+    // (c) Two branches whose epoch-0 boundary timestamps differ enough to derive DIFFERENT
     // epoch-1 targets. Each branch's crossing block must validate against ITS OWN derived target — and a
     // crossing carrying the OTHER branch's nBits must be rejected. A single global epochTarget cannot
     // express this: whichever branch crossed first would fix the target for both.
@@ -583,8 +581,8 @@ contract BitcoinLightRelayTest is TestHelper {
 
     // (e) A NON-genesis crossing reads the branch's epoch-start timestamp in O(1) from the boundary parent's
     // per-block `epochStartTs` — no walk. Seeds a full epoch, confirms the boundary parent carries epoch 1's
-    // first-block ts, crosses the boundary, and asserts the crossing costs a normal advance (not the former
-    // 2015-SLOAD, ~4.2M-gas spike) — the crossing is no longer a standing liveness dependency.
+    // first-block ts, crosses the boundary, and asserts the crossing costs a normal advance
+    // (not a 2015-SLOAD walk).
     function test_advanceTip_non_genesis_crossing_is_o1() public {
         MockPowLightRelay r = new MockPowLightRelay();
         uint32 T = 1_700_000_000;
@@ -619,8 +617,8 @@ contract BitcoinLightRelayTest is TestHelper {
 
         assertEq(r.tipHeight(), 4032, "crossed the non-genesis boundary");
         assertEq(r.blockTarget(_dsha256(cross)), expected, "target derived from the branch's own epoch-start ts");
-        // The crossing now reads ONE per-block epochStartTs slot instead of walking 2015 parents, so it costs
-        // an ordinary advance — orders of magnitude below the former ~4.2M-gas boundary spike.
+        // The crossing reads ONE per-block epochStartTs slot instead of walking 2015 parents, so it costs
+        // an ordinary advance.
         assertLt(used, 500_000, "boundary crossing is O(1), no longer a 4.2M-gas liveness dependency");
         emit log_named_uint("boundary-crossing advanceTip gas", used);
     }

@@ -81,7 +81,7 @@ contract FeeOnTransferToken {
     }
 }
 
-// A token exposing MINTER() — stands in for a canonical pool-minted ERC20 (M-4 guard).
+// A token exposing MINTER() — stands in for a canonical pool-minted ERC20.
 contract MockMinterToken {
     address public MINTER;
 
@@ -788,7 +788,7 @@ contract ConfidentialPoolTest is Test {
         pool.settle(abi.encode(pv), "", new bytes[](1)); // one memo, two leaves — cardinality mismatch reverts
     }
 
-    // ──────────────────── cross-chain (Phase 3 in gen-1) ────────────────────
+    // ──────────────────── cross-chain ────────────────────
 
     event CrossOutRecorded(
         bytes32 indexed claimId, uint16 destChain, bytes32 destCommitment, bytes32 nullifier, bytes32 assetId
@@ -1534,7 +1534,7 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.knownReflectionDigest(), next, "reflection digest advanced on the sentinel batch");
     }
 
-    // The relay anchor (F1): a batch whose tip doesn't match the relay tip (nor a recent ancestor)
+    // The relay anchor: a batch whose tip doesn't match the relay tip (nor a recent ancestor)
     // is rejected — so the proven header chain must be canonical Bitcoin, not a free witness.
     function test_reflection_anchor_rejects_wrong_tip() public {
         bytes32 prior = pool.knownReflectionDigest();
@@ -2003,7 +2003,7 @@ contract ConfidentialPoolTest is Test {
         , address(0), address(0), address(0));
     }
 
-    /// A non-zero predecessor is the authenticated migration path: such a generation can only be created
+    /// A non-zero predecessor is the authenticated migration path: such a pool can only be created
     /// BY that predecessor (`createNextGen`, so `msg.sender == predecessor`), never deployed directly. The
     /// fully-wired positive case lives in ConfidentialRetirement.t.sol.
     function test_ctor_rejects_nonzero_predecessor() public {
@@ -2020,7 +2020,7 @@ contract ConfidentialPoolTest is Test {
             bytes32(0),
             address(0)
         , address(0), address(relay), address(0));
-        // the same with a pinned resume digest (a migrating generation derives its genesis by proof): rejected.
+        // the same with a pinned resume digest (a successor derives its genesis by proof): rejected.
         vm.expectRevert(ConfidentialPool.BadGenerationalConfig.selector);
         new ConfidentialPool(
             address(verifier),
@@ -2145,12 +2145,12 @@ contract ConfidentialPoolTest is Test {
         assertTrue(address(off) != address(0), "off: unvalidated, unused");
     }
 
-    /// GENERATIONAL anchoring: a gen deployed with `reflectionResumeDigest`
-    /// = 0 seeds `knownReflectionDigest` to the protocol genesis (gen-1, continues genesis); a NON-ZERO
-    /// resume digest seeds it there — a gen-N joining the SHARED Bitcoin reflection mid-stream at near-tip,
+    /// Resume anchoring: a pool deployed with `reflectionResumeDigest`
+    /// = 0 seeds `knownReflectionDigest` to the protocol genesis; a NON-ZERO resume digest seeds it
+    /// there — a deployment joining the SHARED Bitcoin reflection mid-stream at near-tip,
     /// so it never replays Bitcoin history. The block-anchor + this digest are the matched resume pair.
     function test_generational_reflection_resume_digest() public {
-        // gen-1: default 0 ⇒ continues the protocol genesis digest.
+        // default 0 ⇒ continues the protocol genesis digest.
         ConfidentialPool gen1 = new ConfidentialPool(
             address(verifier),
             VKEY,
@@ -2165,7 +2165,7 @@ contract ConfidentialPoolTest is Test {
         , address(0), address(0), address(0));
         assertEq(gen1.knownReflectionDigest(), REFLECTION_GENESIS_DIGEST, "gen-1 seeds the genesis digest");
 
-        // gen-N: a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
+        // a non-zero near-tip resume digest seeds knownReflectionDigest to it (no history replay).
         bytes32 nearTip = keccak256("near-tip-reflected-digest");
         ConfidentialPool genN = new ConfidentialPool(
             address(verifier),
@@ -2183,8 +2183,8 @@ contract ConfidentialPoolTest is Test {
         assertTrue(genN.knownReflectionDigest() != REFLECTION_GENESIS_DIGEST, "gen-N is not genesis-anchored");
     }
 
-    /// STAGE 1 — tETH subsumption: NATIVE ETH carries a cross-chain link
-    /// PINNED AT CONSTRUCTION (tETH = shielded ETH); the permissionless registerWrapped can't set a
+    /// NATIVE ETH carries a cross-chain link
+    /// PINNED AT CONSTRUCTION (tETH is cETH's Bitcoin-side link id); the permissionless registerWrapped can't set a
     /// native-ETH link, and a FOREIGN ERC20 escrow + a link stays barred. The escrow==supply invariant:
     /// wrap ETH → escrow tracks it; an unwrap draws EXACTLY the value released; and the contract is
     /// FAIL-CLOSED on escrow (an unwrap beyond escrow reverts InsufficientEscrow — locks, never drains).
@@ -2414,7 +2414,7 @@ contract ConfidentialPoolTest is Test {
         bytes32 provenCid = _metaCid(shared);
         assertTrue(attackerCid != provenCid, "distinct cids");
 
-        // Attacker pre-deploys a canonical ERC20 for (asset_id, pool, symbol, 18) with their OWN
+        // A third party pre-deploys a canonical ERC20 for (asset_id, pool, symbol, 18) with its OWN
         // cid. Because cid is bound into the CREATE2 salt, this lands at a different address than
         // the etch-proven one — it can never shadow it.
         address attackerTok = factory.deployCanonical(shared, address(pool), "cBTC", 18, attackerCid);
@@ -2424,7 +2424,7 @@ contract ConfidentialPoolTest is Test {
         address tok = _linkViaAttest(shared, "cBTC", 8);
 
         // The pool deploys/uses the token at the cid-bound slot — a DIFFERENT address from the
-        // attacker's, carrying the etch-proven cid (trustless contractURI, un-poisonable).
+        // pre-deployed one, carrying the etch-proven cid.
         assertTrue(tok != attackerTok, "pool's canonical token is NOT the wrong-cid pre-deploy");
         assertEq(CanonicalBridgedERC20(tok).METADATA_CID(), provenCid, "registered token carries the etch-proven cid");
         // The pool's local registry resolves the shared id to the correct-cid token.
@@ -2455,7 +2455,7 @@ contract ConfidentialPoolTest is Test {
         pool.registerWrapped(address(ext), 1, keccak256("some-shared-id"), "x", "x", 8);
     }
 
-    /// F1: registerMinted registers a LOCAL asset only — it establishes NO cross-chain link, so a
+    /// registerMinted registers a LOCAL asset only — it establishes NO cross-chain link, so a
     /// permissionless caller can never bind localAssetOf (and thus can't poison a bridged asset's
     /// scale or token). The only link path is the guest-proven attest_meta above.
     function test_registerMinted_is_local_only_no_link() public {
@@ -2466,9 +2466,9 @@ contract ConfidentialPoolTest is Test {
         assertEq(pool.localAssetOf(keccak256("local-asset")), bytes32(0), "no localAssetOf entry");
     }
 
-    /// F1: a BRIDGED asset's scale is bound to the GUEST-PROVEN decimals (attest_meta), not a
-    /// caller's word — a bridged unwrap pays value · 10^(18 − provenDecimals), set by the proof, so
-    /// a front-runner cannot register a too-large scale and over-mint the real canonical ERC20.
+    /// A BRIDGED asset's scale is bound to the GUEST-PROVEN decimals (attest_meta), not a
+    /// caller's word — a bridged unwrap pays value · 10^(18 − provenDecimals), set by the proof, never by the
+    /// registering caller.
     function test_bridged_scale_bound_to_proven_decimals() public {
         bytes32 shared = keccak256("proven-8dec");
         address tok = _linkViaAttest(shared, "cBTC", 8); // proven 8 decimals → scale 10^10
@@ -2483,17 +2483,17 @@ contract ConfidentialPoolTest is Test {
         assertEq(CanonicalBridgedERC20(tok).balanceOf(RECIP), 3 * 10 ** 10, "payout = value * proven-derived scale");
     }
 
-    /// CID-1: a permissionless registerMinted SQUAT of the EXACT etch-proven canonical token (pre-
+    /// A permissionless registerMinted of the EXACT etch-proven canonical token (pre-
     /// registering its internalId with a deliberately-WRONG scale) must NOT permanently lock the
     /// bridged shared id. attest_meta heals the link AND adopts the GUEST-PROVEN scale (overwriting
-    /// the squat's), so the bridged value exits at the correct rate instead of reverting NotRegistered.
-    /// (Overwrite is drain-safe: the canonical ERC20 is pool-minted, so a squatter holds zero balance
-    /// and could not have wrapped any note at the wrong scale.)
+    /// the earlier registration's), so the bridged value exits at the correct rate instead of reverting NotRegistered.
+    /// (The overwrite governs no value: the canonical ERC20 is pool-minted, so the earlier registrant
+    /// holds zero balance and wrapped no note at the wrong scale.)
     function test_registerMinted_squat_does_not_lock_bridged_asset() public {
         bytes32 shared = keccak256("squat-asset");
         bytes32 provenCid = _metaCid(shared);
 
-        // Attacker pre-deploys the EXACT etch-proven canonical token (proven symbol + cid, 18 dec) and
+        // A third party pre-deploys the EXACT etch-proven canonical token (proven symbol + cid, 18 dec) and
         // registerMinted's it with a WRONG scale: tacitDecimals 18 → scale 1 (proven is 8 dec → 10^10).
         address tok = factory.deployCanonical(shared, address(pool), "cBTC", 18, provenCid);
         bytes32 internalId = pool.registerMinted(tok, "squat-name", "SQUAT", 18);
@@ -2523,8 +2523,7 @@ contract ConfidentialPoolTest is Test {
 
     /// FAST LANE escrow guard: a Bitcoin-homed value-exit must mint its bridged (pool-minted) asset, never
     /// pay from escrow funded by Ethereum wraps. `assetId` here is an EXTERNAL escrow ERC20 (not bridged),
-    /// so a btcHomed withdrawal of it is rejected — otherwise a (compromised) guest could drain others'
-    /// escrow against a Bitcoin-homed note that never funded it.
+    /// so a btcHomed withdrawal of it is rejected: escrow pays only value that entered through it.
     function test_btc_homed_withdrawal_escrow_asset_reverts() public {
         bytes32 btcRoot = keccak256("btc-pool-ve");
         bytes32 spent = keccak256("btc-spent-ve");
@@ -2961,8 +2960,7 @@ contract ConfidentialPoolTest is Test {
     }
 
     /// A bridge round-trip (mint then a true EVM spend of an equal-magnitude note) must NOT false-trip
-    /// the reserve floor. Under the old accounting the bridge ν was double-counted, so the second
-    /// settle saw evmNullifiersSpent (2) > nextLeafIndex (1) and reverted ReserveFloorBreach.
+    /// the reserve floor: the bridge ν is counted once, so the second settle stays within it.
     function test_bridge_round_trip_does_not_trip_floor() public {
         _wrap(10, bytes32(uint256(0x100)), bytes32(uint256(0x101)), bytes32(uint256(0x102))); // seed escrow
         bytes32 root = keccak256("rt-pool");
@@ -3159,8 +3157,8 @@ contract ConfidentialPoolTest is Test {
         _settle(pv);
     }
 
-    // A claim/refund must prove membership against a KNOWN lock root; a forged root (carrying an
-    // attacker-authored locked note) is rejected — closing the "mint from a fabricated lock set" path.
+    // A claim/refund must prove membership against a KNOWN lock root; a root the pool never
+    // recorded is rejected.
     function test_adaptor_claim_unknown_lock_root_reverts() public {
         ConfidentialPool.PublicValues memory pv = _pv();
         pv.lockSetRoot = bytes32(uint256(0xBADBAD));

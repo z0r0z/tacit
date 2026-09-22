@@ -20,8 +20,7 @@
 // STATUS: this is a SCRIPT, not a deployed service — worker-relay/render.yaml runs no keeper. Liquidations
 // only happen while somebody runs this. It also needs cUSD INVENTORY: onCdpLiquidate burns notes summing to
 // the FULL accrued debt (no partial liquidation, no auction), so a keeper holding no cUSD cannot act at all
-// and must source it first. Both points are launch gates in
-// audit/AUDIT-2026-09-19-cbtc-cusd-cdp-review.md.
+// and must source it first.
 //
 // NETWORK defaults to signet — pass NETWORK=mainnet explicitly to run against the live deployment.
 //

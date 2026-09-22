@@ -282,7 +282,7 @@ contract ConfidentialPoolPublicAmmTest is Test {
     }
 
     /// The pool's apply* applicators move AMM escrow, so ONLY the authorized immutable periphery may call
-    /// them; any other caller (a would-be second periphery, an EOA, an attacker) reverts NotAuthorized.
+    /// them; any other caller (a would-be second periphery, an EOA, any other contract) reverts NotAuthorized.
     function test_apply_applicators_reject_non_periphery() public {
         amm.createPairAndAddLiquidityPublic(assetA, assetB, 30, 1_000_000, 1_000_000, 0, 0, address(this));
         (bytes32 lo, bytes32 hi) = assetA < assetB ? (assetA, assetB) : (assetB, assetA);

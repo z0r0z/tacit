@@ -3,8 +3,7 @@
 // Goal: catch any future drift between (a) the validator's canonical
 // `buildPublicSignals*` helpers and (b) the public.json emitted by
 // `snarkjs.groth16.prove`. A divergence here would cause every honest
-// envelope to be rejected post-ceremony — which is exactly the bug class
-// the May 2026 pre-ceremony audit caught for swap_batch's layout.
+// envelope to be rejected.
 //
 // For each of the three AMM circuits:
 //   1. Build an honest witness using the JS reference impl in tests/amm-*
@@ -243,7 +242,7 @@ if (!existsSync(LP_REM_VK) || !existsSync(LP_REM_ZKEY)) {
 }
 
 // =========================================================================
-// SWAP_BATCH (the one that found the original layout bug)
+// SWAP_BATCH
 // =========================================================================
 console.log('\namm_swap_batch prove + verify + publicSignals byte-equality');
 

@@ -10,7 +10,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// Verifies a REAL SP1 Groth16 proof of the confidential guest's OP_WRAP (public deposit)
 /// ON-CHAIN, through the genuine SP1VerifierGroth16 (v6.1.0) — no mock. The proof is
 /// GPU-proven on the prover box (contracts/sp1/confidential/harnesses/exec-wrap.rs over
-/// fixtures/wrap_op.json) for the gen-1 guest. The proven op opens a deposit commitment to
+/// fixtures/wrap_op.json) for the committed guest. The proven op opens a deposit commitment to
 /// its in-system value under the wrap intent sigma and emits the depositId + leaf.
 /// Proof fixture: contracts/test/fixtures/wrap_groth16.json (the box produces it).
 contract ConfidentialWrapProofRealTest is Test {
@@ -27,7 +27,7 @@ contract ConfidentialWrapProofRealTest is Test {
         proofBytes = vm.parseJsonBytes(json, ".proofBytes");
     }
 
-    /// The real OP_WRAP proof verifies on-chain against the gen-1 vkey (reverts on failure).
+    /// The real OP_WRAP proof verifies on-chain against the pinned vkey (reverts on failure).
     function test_real_proof_verifies_onchain() public view {
         verifier.verifyProof(vkey, publicValues, proofBytes);
     }
@@ -56,7 +56,7 @@ contract ConfidentialWrapProofRealTest is Test {
         verifier.verifyProof(vkey, publicValues, bad);
     }
 
-    /// A different program vkey is rejected (the proof is bound to the gen-1 guest).
+    /// A different program vkey is rejected (the proof is bound to the committed guest).
     function test_wrong_vkey_rejected() public {
         vm.expectRevert();
         verifier.verifyProof(bytes32(uint256(vkey) ^ 1), publicValues, proofBytes);

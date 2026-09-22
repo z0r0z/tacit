@@ -144,7 +144,7 @@ const T_MINT     = 0x24;
 const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement)
 const T_AXFER_BPP = 0x3C; // BP+ variant of T_AXFER; byte-identical wire shape modulo opcode + rangeproof
-const T_CXFER_BOUND = 0x39; // generation-bound CXFER: T_CXFER wire shape + a leading 32-byte target_chain_binding (reflection onboards non-legacy assets)
+const T_CXFER_BOUND = 0x39; // deployment-bound CXFER: T_CXFER wire shape + a leading 32-byte target_chain_binding (reflection onboards non-legacy assets)
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement
 const T_AXFER_VAR_BPP = 0x3D; // BP+ variant of T_AXFER_VAR; byte-identical wire shape modulo opcode + rangeproof
 const T_PETCH    = 0x27; // permissionless-mint deployment record
@@ -198,10 +198,10 @@ const T_SLOT_MERGE         = 0x47; // atomic N→1 slot merge, ΣD_old ≥ D_new
 // 0x4D-0x4E reserved (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via envelopes; the unbonded standalone path is
 // not shipped on mainnet).
-// 0x49–0x4C, 0x4F, 0x57–0x5A reserved (formerly a lien model, removed pre-V1).
+// 0x49–0x4C, 0x4F, 0x57–0x5A reserved.
 // 0x5B–0x5E: preauth/offline-trading family.
 // 0x5B/0x5C are a reserved pre-signed construction; 0x5D–0x5E stay reserved for
-// the named follow-ups (batched-fill, both-sides match). Walk-away bids are
+// batched-fill and both-sides match. Walk-away bids are
 // served by the watchtower path, which
 // completes a buyer's fill from a bounded, self-reclaimable funding UTXO and
 // signs the full settlement online.
@@ -259,9 +259,8 @@ const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
 // canonical TAC asset_id (no cross-asset replay), an expiry height (bounded
 // freshness), and the contributor pubkey (no third-party reuse).
 //
-// Canonical mainnet TAC asset_id. Locked at deploy; if TAC ever re-etches
-// (e.g., post-incident reissue) this constant gets bumped alongside the
-// corresponding dapp constant so worker + frontend stay in lockstep.
+// Canonical mainnet TAC asset_id. Must match the dapp constant so worker and
+// frontend stay in lockstep.
 const CANONICAL_TAC_ASSET_ID_HEX = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const CER_ELIGIBILITY_MIN_TAC_BASE_UNITS = 100_000_000n;      // 1 TAC @ 8 decimals
 const CER_ELIGIBILITY_MAX_OUTPOINTS = 8;                       // bounds subrequest fan-out (≤ 16 chain calls per /contribute)
@@ -550,7 +549,7 @@ function verifyXCurve(proof, C_secp_bytes, C_BJJ_bytes) {
   return bjjEq(lhsB, rhsB);
 }
 
-// SPEC-CBTC-ZK §5.21–§5.23: derive the slot's Bitcoin spending key from the
+// Derive the slot's Bitcoin spending key from the
 // mixer leaf's Pedersen commitment. Identity:
 //   K_btc = recipient_commit − denomination · H = r_leaf · G
 // Anyone who can withdraw the mixer note (knowledge of r_leaf) can spend the
@@ -580,7 +579,7 @@ function slotScriptPubKey(kBtcXOnly) {
 // T_PMINT envelopes carry public (amount, blinding) alongside the
 // commitment, so any indexer can recompute the binding before crediting.
 // Returns true iff `pedersenCommit(amount, blinding)` equals the declared
-// compressed point. The dapp's PMINT recovery path (path 6 in §5.13) already
+// compressed point. The dapp's PMINT recovery path already
 // rejects mismatches client-side; indexing without the same gate lets bogus
 // envelopes occupy canonical (height, tx_index) slots and feed `cumulative_minted`.
 // Inputs are taken in decoder format: `amount` as decimal string or BigInt,
@@ -650,9 +649,9 @@ function jsonResponse(obj, status, headers) {
   });
 }
 
-// Prover liveness: the box posts /prover-heartbeat every ~2m; anyone GETs /prover-health.
+// Prover liveness: the prover services post /prover-heartbeat every ~2m; anyone GETs /prover-health.
 const PROVER_HB_KEY = 'prover:heartbeat:mainnet';
-const PROVER_HB_STALE_MS = 10 * 60 * 1000;        // >10m with no heartbeat ⇒ box or loop down
+const PROVER_HB_STALE_MS = 10 * 60 * 1000;        // >10m with no heartbeat ⇒ prover down
 const PROVER_HB_MIN_GAS_WEI = 2000000000000000n;  // 0.002 ETH floor before the gas key needs a top-up
 
 async function handleProverHeartbeat(req, env, cors) {
@@ -661,23 +660,22 @@ async function handleProverHeartbeat(req, env, cors) {
   const tok = env.PROVER_HEARTBEAT_TOKEN || '';
   // Constant-time compare, like every other bearer gate here (checkDebugAuth /
   // checkConfidentialAuth / ceremonyAuthOk). A `!==` on the raw secret short-circuits at the
-  // first differing byte; forging a beat only fakes liveness, but the token is shared with the
-  // prover box's env so it should not be the one secret with a timing side-channel.
+  // first differing byte; the token is shared with the prover services' env, so it gets the same
+  // constant-time treatment as every other secret.
   if (!tok || !constantTimeEqual(String(body.token || ''), tok)) {
     return jsonResponse({ ok: false, error: 'unauthorized' }, 401, cors);
   }
   const rec = {
     ts: Date.now(),
     network: String(body.network || 'mainnet'),
-    // null = the box couldn't read the balance this beat (RPC throttled) —
+    // null = the prover couldn't read the balance this beat (RPC throttled) —
     // distinct from a real "0", which trips the low-gas alarm.
     gas_wei: (typeof body.gas_wei === 'string' && /^\d+$/.test(body.gas_wei)) ? body.gas_wei : null,
     prover_alive: body.prover_alive === true || body.prover_alive === 'true',
     note: typeof body.note === 'string' ? body.note.slice(0, 200) : '',
   };
-  // Progress fields (optional — older box heartbeats omit them). These let
-  // /prover-health answer "how far behind is proof coverage", not just "is
-  // the box up": prover_alive only says the loop process exists, not that
+  // Progress fields (optional). These let /prover-health answer "how far
+  // behind is proof coverage", not just "is the prover up": prover_alive only says the loop process exists, not that
   // state is advancing.
   for (const k of ['last_proven_height', 'relay_tip', 'btc_tip']) {
     const v = Number(body[k]);
@@ -723,8 +721,7 @@ async function handleProverHealth(env, cors) {
 }
 
 // Eth-side reflection state (Mode-B): the cumulative Ethereum crossOut/consumed bundle an `eth_prove`
-// run produces, published here so the worker's own attester can fold it instead of relying on a by-hand
-// file shuffled onto the RunPod box. Two keys per
+// run produces, published here so the worker's own attester can fold it. Two keys per
 // network, mirroring the reflection:scan/reflection:tip split above: `confirmed` is the last state a
 // LANDED Mode-B batch actually built from; `pending` is the latest unconfirmed candidate a human (today)
 // or the future sidecar (Phase 2) has published, promoted to `confirmed` only once the batch that used it
@@ -802,7 +799,7 @@ function scanReflectionAttesterFor(env, network) {
   if (att) att.lastEthContentHash = () => lastEthContentHash;
   return att;
 }
-// The full-scan ackJob persists a post-batch SNAPSHOT (not just a cursor), but the box-poll ack carries only
+// The full-scan ackJob persists a post-batch SNAPSHOT (not just a cursor), but the relayer's ack carries only
 // {jobId, attestedTo}. So /reflection/job stashes the assembled job's newSnapshot in KV keyed by jobId, and
 // /reflection/ack retrieves it. Ephemeral (the snapshot is reproducible by re-assembling), 1-day TTL. Also
 // carries which eth-state `contentHash` (if any) this job's ethBundleSource call folded, so ack can promote
@@ -880,7 +877,7 @@ async function reflectionDigestOnchain(network, pool, depth) {
   return seen.length === 2 && seen[0] === seen[1] ? seen[0] : null;
 }
 
-// Self-heal for a lost ack. When a batch's attest lands but the box never acks, the cursor stays behind the
+// Self-heal for a lost ack. When a batch's attest lands but the relayer never acks, the cursor stays behind the
 // pool and every later job (built over a longer range from the old prior) reverts as stale. The stash written
 // when that batch was served is keyed by its digest, so if the pool's digest matches a stash we still hold, that
 // batch is the one that landed: ack it. Returns the recovery, or null when there was nothing to recover.
@@ -898,7 +895,7 @@ async function reconcileLandedReflection(env, network, att) {
 }
 
 // GET /reflection/pending?network=&digest= — does the API still hold the stashed candidate for `digest`, and the
-// height an ack for it should carry. The box's own recovery path when the pool is ahead of the cursor.
+// height an ack for it should carry. The relayer's recovery path when the pool is ahead of the cursor.
 async function handleReflectionPending(req, env, url, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
@@ -949,21 +946,20 @@ async function handleReflectionAttestState(req, env, url, cors) {
   return jsonResponse({ network, submitted: await readJson(reflectionSubmittedKey(network)), lastAck, driftStreak: drift ? Number(drift.streak) | 0 : 0, now: Date.now() }, 200, h);
 }
 
-// Reflection relay: serve the next assembled Bitcoin-state batch for the box to prove. The box
-// (ops/scripts/reflection-relay-loop.sh) proves it, submits attestBitcoinStateProven on-chain, then
+// Reflection relay: serve the next assembled Bitcoin-state batch for the relayer to prove. The relayer
+// (worker-relay/src/reflection-folder.js) proves it, submits attestBitcoinStateProven on-chain, then
 // POSTs /reflection/ack. Returns {} when nothing is pending; 404 when reflection attest is off.
 async function handleReflectionJob(req, env, url, cors) {
-  // Box-only, like the confidential settle routes: /reflection/ack advances the attested
-  // Bitcoin cursor (monotonic, un-rewindable), so an unauthenticated POST could freeze it and
-  // stall every cross-lane / bridge_mint gate. /reflection/job is gated the same for symmetry.
+  // Box-token only, like the confidential settle routes: /reflection/ack advances the attested
+  // Bitcoin cursor (monotonic, un-rewindable), which every cross-lane / bridge_mint gate depends on.
+  // /reflection/job is gated the same for symmetry.
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
-  // Fail-loud Mode-B gate: once gen4's crossOutCount >= 1, a batch assembled with no eth-state bundle can
-  // only build mode_b=0 and revert on-chain — refuse to
-  // serve one rather than burn a doomed prove+submit cycle. Off by default (REFLECTION_MODEB_REQUIRED unset)
-  // so shipping this endpoint changes no behavior until the coordinator flips it on deliberately.
+  // Fail-loud Mode-B gate: once the pool's crossOutCount >= 1, a batch assembled with no eth-state bundle can
+  // only build mode_b=0 and revert on-chain — refuse to serve one rather than spend a prove+submit cycle on
+  // it. Off unless REFLECTION_MODEB_REQUIRED=1.
   if (env.REFLECTION_MODEB_REQUIRED === '1') {
     const pendingRaw = await env.REGISTRY_KV.get(ethStatePendingKey(network));
     if (!pendingRaw) return jsonResponse({ error: 'reflection attest not configured (mode-B required, no eth-state bundle published yet)' }, 404, { ...cors, 'Cache-Control': 'no-store' });
@@ -979,13 +975,13 @@ async function handleReflectionJob(req, env, url, cors) {
     // jobId) can both advance the persisted state and promote that candidate once the batch lands.
     const ethContentHash = att.lastEthContentHash ? att.lastEthContentHash() : null;
     await env.REGISTRY_KV.put(reflectionPendingKey(network, job.jobId), JSON.stringify({ newSnapshot: job.newSnapshot, ethContentHash, attestedTo: job.attestedTo }), { expirationTtl: 86400 });
-    const { newSnapshot, ...jobForBox } = job; // the box needs input + jobId + attestedTo, not the snapshot
+    const { newSnapshot, ...jobForBox } = job; // the relayer needs input + jobId + attestedTo, not the snapshot
     return jsonResponse(jobForBox, 200, { ...cors, 'Cache-Control': 'no-store' });
   }
   return jsonResponse({}, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
-// GET /reflection/eth-state?network= — the eth_prove sidecar (Phase 2) or, for now, the human recipe reads
+// GET /reflection/eth-state?network= — the eth_prove sidecar (worker-relay/src/eth-state-sidecar.js) reads
 // this to learn what cumulative state to continue from (`confirmed`) and whether a candidate is already
 // in flight (`pending`). Box-token gated like every other reflection route. Deliberately omits the pending
 // bundle's own ethPv/crossouts/consumeds from the response (those can be large) — only its bookkeeping
@@ -1095,14 +1091,14 @@ async function handleReflectionEthStateClear(req, env, url, cors) {
 }
 
 // POST /reflection/eth-state/confirmed/clear?network= — drop the CONFIRMED eth-state record outright.
-// ethStateConfirmedKey is network-scoped, not generation-scoped, so a pool migration leaves the outgoing
-// generation's real cumulative crossouts/consumeds sitting here with nothing to age them out (unlike
+// ethStateConfirmedKey is network-scoped, not deployment-scoped, so a pool migration leaves the
+// predecessor's cumulative crossouts/consumeds sitting here with nothing to age them out (unlike
 // pending, which the staleness gate eventually supersedes on its own). The next eth_prove cycle then
 // permanently fails its on-chain freshness assertions — the new pool's real attestedCrossOutCount/
 // attestedBitcoinConsumedCount can never equal a stale predecessor's counts, no retry fixes that. Clearing
 // this is exactly the sidecar's own documented "cold start" case (see eth-state-sidecar.js's `confirmed ?
-// ... : 'no confirmed candidate yet (cold start)'` branch) — safe for a fresh generation with zero landed
-// history, NOT something to run against a generation with real folded state still pending confirmation.
+// ... : 'no confirmed candidate yet (cold start)'` branch) — safe for a fresh deployment with zero landed
+// history, NOT something to run against a deployment with folded state still pending confirmation.
 async function handleReflectionEthStateConfirmedClear(req, env, url, cors) {
   if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
@@ -1150,7 +1146,7 @@ async function handleReflectionEthStateProof(req, env, url, cors) {
   const wantHash = String(url.searchParams.get('contentHash') || '').toLowerCase().replace(/^0x/, '');
   if (!wantHash) return jsonResponse({ error: 'missing contentHash' }, 400, cors);
   // Confirm this contentHash is (or was) a real published candidate before serving its blob — cheap since
-  // pending/confirmed no longer carry the blob inline (see ethStateProofBlobKey above).
+  // pending/confirmed do not carry the blob inline (see ethStateProofBlobKey above).
   const [pendingRaw, confirmedRaw] = await Promise.all([
     env.REGISTRY_KV.get(ethStatePendingKey(network)),
     env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
@@ -1180,7 +1176,7 @@ async function handleReflectionReset(req, env, url, cors) {
   return jsonResponse({ ok: true, reset: `reflection:scan:${network}` }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 // Seed the persisted reflection state (`reflection:scan:{net}`) to a known-good snapshot — used once to
-// hand reflection off to the worker (e.g. after an out-of-band box-driven catch-up left the worker cursor
+// hand reflection off to the worker (e.g. after an out-of-band catch-up left the worker cursor
 // behind on-chain). Box-token gated. SAFE: it recomputes the posted snapshot's digest via the scan indexer
 // and REFUSES to write unless it matches `expectDigest` (the pool's on-chain knownReflectionDigest), so a
 // wrong/partial snapshot can never overwrite the canonical cursor. Body: { state:{attestedHeight,tipHeight,
@@ -1334,9 +1330,8 @@ async function handleReflectionStatus(req, env, url, cors) {
 
 // Export the persisted reflection record verbatim (the counterpart to /reflection/seed). The
 // off-worker assembler needs the FULL snapshot — not just the cursor — to build a large catch-up
-// batch off-box when the in-worker eager fold would exhaust the worker's heap. Box-token gated like
-// the other box routes; read-only, and the state it returns is derived entirely from public Bitcoin
-// data plus this pool's own on-chain attestations.
+// batch off-worker when the in-worker eager fold would exhaust the worker's heap. The state it returns
+// is derived entirely from public Bitcoin data plus this pool's own on-chain attestations.
 // Public read: no box token required. This mirrors the pool's own reflected Bitcoin-side state (note
 // leaves, spent set, headers) so integrators can verify a bridge without reindexing Bitcoin themselves —
 // see the integration guide's trust-model table. Authenticated callers (internal ops/cron) are exempt from
@@ -1412,7 +1407,7 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
 // getBurnDeposits reads (`reflection:burndep:{net}:{burnTxidDisplay}`), so when the scan folds that 0x2B burn
 // it finds the bundle and onboards the burned note (else it skips — no bundle, no mint). The guest re-verifies
 // the bundle in-zkVM (provenance DAG -> C_0 + per-cxfer inclusion + conservation), so this is a passthrough
-// store: a bad bundle leaves the burn pending, never mis-attests. Box-token gated like the other box routes. A
+// store: a bad bundle leaves the burn pending, never mis-attests. Box-token gated like the other prover routes. A
 // burn whose bundle was missing or refused when its block was scanned stays pending and completes in any later
 // batch once a valid bundle is stored here, so bundles are kept long enough to cover a slow submission, and a
 // holder can simply register again after expiry.
@@ -1512,7 +1507,7 @@ async function handleReflectionAck(req, env, cors) {
   const att = scanReflectionAttesterFor(env, network);
   if (!att) return jsonResponse({ error: 'reflection attest not configured' }, 404, cors);
   // Retrieve the snapshot stashed at job-serve time. Missing/expired ⇒ refuse to advance with a null
-  // snapshot (which would reset the canonical state) — the box should re-GET /reflection/job and retry.
+  // snapshot (which would reset the canonical state) — the relayer should re-GET /reflection/job and retry.
   const jobId = String(body.jobId || '');
   const stash = await readReflectionStash(env, network, jobId);
   if (!stash) return jsonResponse({ ok: false, error: 'unknown or expired jobId — re-fetch /reflection/job' }, 409, cors);
@@ -1520,31 +1515,28 @@ async function handleReflectionAck(req, env, cors) {
   return jsonResponse({ ok: true, ...r }, 200, cors);
 }
 
-// ===== Confidential settle relay (box-poll prove/settle queue for ConfidentialPool) =====
+// ===== Confidential settle relay (relayer-polled prove/settle queue for ConfidentialPool) =====
 // POST /confidential/submit {type, op, memos?, mode?} → enqueue a confidential op (public,
-//      permissionless — a bad witness just fails to prove). mode 'settle' (default) = box proves AND
-//      submits settle on-chain; mode 'prove' = box proves only and acks {publicValues, proof} for the dapp
-//      to embed in a user-sent ConfidentialRouter tx. GET /confidential/job → the box claims the next job
+//      permissionless — a bad witness just fails to prove). mode 'settle' (default) = relayer proves AND
+//      submits settle on-chain; mode 'prove' = relayer proves only and acks {publicValues, proof} for the dapp
+//      to embed in a user-sent ConfidentialRouter tx. GET /confidential/job → the relayer claims the next job
 //      (its `mode` says submit-or-prove); POST /confidential/ack {jobId, txHash?|error?|publicValues+proof}
-//      → the box reports the outcome (both box routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN,
+//      → the relayer reports the outcome (both prover routes gated by CONFIDENTIAL_BOX_TOKEN/DEBUG_TOKEN,
 //      default-deny 404). GET /confidential/status?id= → the dapp polls (a 'proven' job carries the
 //      artifacts). Config-gated on CONFIDENTIAL_SETTLE=1.
 //      A relayed unwrap/sendunwrap to an L2 may add `exit` (its ConfidentialRouter ExitRecipe): the relay then
 //      sends activateExit itself once the settle lands, and status reports `activation` ('pending' | 'done' |
-//      'failed') with `activateTx` — the box acks it as {jobId, activateTx|activateError}.
+//      'failed') with `activateTx` — the relayer acks it as {jobId, activateTx|activateError}.
 //
 // Profitability gate — OFF BY DEFAULT (env.RELAY_FEE_FLOOR must be '1'). Without it, submitJob's `feeGate &&
-// ...` check is skipped entirely: today, a relayed (mode:'settle') submit is accepted at ANY offered fee,
-// including zero, so the relay burns a full GPU prove + its own settle gas with no profitability check at
-// all. That may be an intentional subsidized-launch posture; this only adds the ABILITY to enforce a floor,
-// it does not change default behavior on deploy. Scoped to transfer/unwrap/sendunwrap/bridgeburn/lp/lpremove/
+// ...` check is skipped entirely and a relayed (mode:'settle') submit is accepted at ANY offered fee,
+// including zero. Scoped to transfer/unwrap/sendunwrap/bridgeburn/lp/lpremove/
 // lpbond/route paid in cETH specifically — feeAssetOf/relay-quote.js only resolves a single verified fee-leg
 // asset for those types (see its own comment), and only cETH's wei conversion is a fixed constant (unitScale)
-// rather than needing a USD price oracle server-side; every other type or fee asset passes through UNGATED,
-// identical to today. RELAY_FEE_MARGIN_BPS defaults to 1000 (10%) — comfortably under the dapp's own 35%
+// rather than needing a USD price oracle server-side; every other type or fee asset passes through UNGATED.
+// RELAY_FEE_MARGIN_BPS defaults to 1000 (10%) — comfortably under the dapp's own 35%
 // client-side quote margin (confidential-pool-ux.js gasAwareMinFee), so the dapp's self-quoted fee should
-// keep clearing this floor; a THIRD-PARTY integrator quoting a thinner margin is exactly who this protects
-// the relay against. Fails OPEN (passes the op through) on an RPC outage or an unpriceable fee leg — a
+// keep clearing this floor; a third-party integrator quoting a thinner margin may not. Fails OPEN (passes the op through) on an RPC outage or an unpriceable fee leg — a
 // missing profitability check is a cost the relay eats; wrongly rejecting a real user's submit is worse.
 // What asset is this op's fee paid in, and can we value it? The ONE place that answers, so the gate, the
 // pricer and the paid-bucket check cannot disagree about which fees are verifiable.
@@ -1740,7 +1732,7 @@ function confSettler(env) {
   const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
   return buildConfidentialSettler(env, { hash, feeGate: buildRelayFeeGate(env), priceFee: buildFeePricer(env) });
 }
-// Default-deny Bearer gate for the box-only routes (mirrors checkDebugAuth; constant-time compare).
+// Default-deny Bearer gate for the prover routes (mirrors checkDebugAuth; constant-time compare).
 function checkConfidentialAuth(req, env) {
   const token = env.CONFIDENTIAL_BOX_TOKEN || env.DEBUG_TOKEN;
   if (!token || typeof token !== 'string' || token.length < 16) return false;
@@ -1761,8 +1753,8 @@ const PROVE_RL_REFILL_MS = 40000;  // one token back every 40s (~90/hr sustained
 // Per-IP token bucket for the public (unauthenticated) reflection-dump read. A wrong or stale copy of this
 // snapshot cannot forge a note — a bad leaf just fails to root to the digest already attested on-chain — so
 // serving it without a box token is safe by the same reasoning the integration guide gives integrators; this
-// bucket only protects the shared KV/worker from being hammered, not correctness. Authenticated (box-token)
-// callers skip it entirely, unchanged from before.
+// bucket only protects the shared KV/worker from load, not correctness. Authenticated (box-token)
+// callers skip it entirely.
 const DUMP_RL_BURST = 30;
 const DUMP_RL_REFILL_MS = 10000; // one token back every 10s (~360/hr sustained per source)
 async function dumpRateLimit(env, ip) {
@@ -1806,7 +1798,7 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
 // Prove-mode proves on OUR network PROVE and, unlike a relayed settle, can never carry a collectable fee: the
 // user sends the settle tx themselves, so any fee bound into the op is paid to the user. The per-IP bucket
 // bounds one source (~90/hr), but says nothing about many — and each job is real PROVE spend. This bounds the
-// total, so the worst case is a number we chose instead of one an attacker does.
+// total, so the worst case is a number we chose.
 //
 // Two rules keep it from becoming its own denial-of-service:
 //   - it is SPENT only when a job is actually accepted (new, non-deduped), never on a submit that fails
@@ -1840,19 +1832,15 @@ async function handleConfidentialSubmit(req, env, cors) {
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
-  // EVERY submit is metered. This used to be skipped entirely when RELAY_FEE_FLOOR == '1', on the theory
-  // that a fee floor makes flooding self-limiting — but `buildRelayFeeGate` only ever prices a cETH fee
-  // leg and passes every other asset through ungated, so lifting the meter would have re-opened zero-fee
-  // floods for every non-cETH asset. That coupling is why the floor could never safely be switched on.
+  // EVERY submit is metered, floor or not: `buildRelayFeeGate` only prices a cETH fee leg and passes every
+  // other asset through ungated, so the floor alone does not bound submissions.
   //
-  // So the flag now only chooses WHICH bucket applies. Fee-paying relayed submits get their own, more
-  // generous allowance (they are paying for the work); prove-only and unflagged submits keep the strict
-  // one. Metering is no longer something the floor can turn off.
+  // The flag only chooses WHICH bucket applies. Fee-paying relayed submits get their own, more generous
+  // allowance (they are paying for the work); prove-only and unflagged submits keep the strict one.
   const submitMode = body.mode || 'settle';
   // "Paying" means the gate can actually VERIFY a fee: a cETH fee leg above zero, which buildRelayFeeGate
   // then holds to the gas-priced floor. Anything it cannot price — zero-fee ops, or a fee in any other
-  // asset — passes that gate ungated, so it must stay on the strict bucket. Keying this on the flag alone
-  // would hand the looser allowance to exactly the traffic the gate is blind to.
+  // asset — passes that gate ungated, so it must stay on the strict bucket.
   const paying = submitMode !== 'prove' && env.RELAY_FEE_FLOOR === '1' && hasVerifiableFee(body.type, body.op, env);
   {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
@@ -1977,8 +1965,8 @@ async function handleConfidentialIndex(req, env, url, cors) {
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
 // can burn substantial mempool.space subrequest budget — /rescan?from=0 in
 // particular triggers a scan from genesis on the next cron tick. Default-deny:
-// if DEBUG_TOKEN isn't configured the endpoints return 404 (so an attacker
-// probing the surface can't tell they exist) rather than 401.
+// if DEBUG_TOKEN isn't configured the endpoints return 404 (so they are
+// indistinguishable from absent routes) rather than 401.
 function checkDebugAuth(req, env) {
   const token = env.DEBUG_TOKEN;
   if (!token || typeof token !== 'string' || token.length < 16) return false;
@@ -2016,11 +2004,6 @@ function cronNetworks(env) {
 // + blockstream.info, both network-matched) are always appended as fallbacks so
 // a single blocked or rate-limited source self-heals without a redeploy. Signet
 // uses blockstream.info/signet (verified real signet data, not mainnet).
-// Maestro's Blockstream-compatible esplora (mainnet only; a forked
-// mempool.space). Rate-limited per-API-key rather than per-IP, so the cron
-// scan stops getting throttled when the whole indexer runs behind a single
-// egress IP. Requires the `api-key` header, attached in apiFetch.
-const MAESTRO_BASE = 'https://xbt-mainnet.gomaestro-api.org/v0/esplora';
 function networkApis(env, network) {
   const mp = network === 'mainnet' ? 'https://mempool.space/api'  : 'https://mempool.space/signet/api';
   const bs = network === 'mainnet' ? 'https://blockstream.info/api' : 'https://blockstream.info/signet/api';
@@ -2032,17 +2015,11 @@ function networkApis(env, network) {
     ? ['https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']
     : [];
   for (const fb of [mp, bs, ...extra]) if (!list.includes(fb)) list.push(fb);
-  // Maestro first when configured (mainnet only — no signet endpoint). The
-  // keyless mempool/blockstream stay as fallbacks if Maestro ever errors, and
-  // apiFetch demotes a 401/402/403 from a bad key so the scan never stalls on it.
-  if (network === 'mainnet' && env.MAESTRO_API_KEY && !list.includes(MAESTRO_BASE)) list.unshift(MAESTRO_BASE);
   return list.length ? list : [mp, bs];
 }
-// Keyless Esplora mirrors for the user-facing proxy/batch paths, in rotation
-// order. Excludes Maestro — its api-key header plumbing lives in apiFetch (the
-// cron path); the extra mainnet mirrors added in networkApis() come along.
+// Esplora mirrors for the user-facing proxy/batch paths, in rotation order.
 function proxyBases(env, network) {
-  return networkApis(env, network).filter(b => !b.includes('gomaestro-api.org'));
+  return networkApis(env, network);
 }
 // Spread load across the mirrors by choosing each request's starting host from
 // a hash of its path. Same path → same host (edge cache stays coherent), but
@@ -2332,10 +2309,8 @@ function dropDirtyPrefix(network) {
 
 // Per-asset cap-progress snapshot. Maintained by cron + hint so user-facing
 // reads don't pay O(N) KV.list cost for assets with tens of thousands of
-// canonical pmints (FAIR hit 50k+ where the inline per-request derivation
-// blew past 30s wall-time and 1000 subrequest budgets, and the legacy
-// loadCanonicalPmints value-fetch path took 45s for ~5800 entries before
-// truncating). Read endpoints return this snapshot directly; writers
+// canonical pmints (FAIR has 50k+, beyond one request's wall-time and
+// subrequest budget). Read endpoints return this snapshot directly; writers
 // schedule async refreshes via ctx.waitUntil.
 function petchProgressKey(network, aid) {
   return network === 'signet' ? `petch_progress:${aid}` : `petch_progress:${network}:${aid}`;
@@ -2451,7 +2426,7 @@ function poolNullifierPrefix(network, aid, denom, gen = '') {
 }
 
 // Ethereum RPC endpoints for read-only eth_call / eth_getStorageAt (mainnet only — the confidential pool
-// and its header relay are mainnet-only; signet has no EVM lane). Multiple public fallbacks so a single
+// and its header relay are mainnet-only; signet has no Ethereum side). Multiple public fallbacks so a single
 // rate-limited or down endpoint doesn't stall the reflection tip cursor or crossout-consumer scans.
 const _TETH_ETH_RPCS = {
   mainnet: [
@@ -2536,7 +2511,7 @@ async function _ethGetStorageAt(network, address, slot) {
   }
   return null;
 }
-// SPEC-CBTC-ZK §5.21–§5.23: slot-registry keys. Each self-custody-slot wrapper
+// Slot-registry keys. Each self-custody-slot wrapper
 // tracks (K_btc_xonly → leaf_index) so coverage checks can find the backing
 // Bitcoin UTXO from a leaf's recipient_commit. xonly is the 64-char hex string.
 function slotRegistryKey(network, aid, denom, xonlyHex) {
@@ -2552,7 +2527,7 @@ function slotRegistryPrefix(network, aid, denom) {
 // chain order. Value is the rotation's display payload including the
 // encrypted-note tail (when present) so recipients can scan for inbound
 // transfers without having to scan every leaf in every variant pool. SPEC-
-// CBTC-ZK-FUNGIBILITY §5.26: this is the index a recipient's dapp queries
+// This is the index a recipient's dapp queries
 // via the worker's GET /slot-rotates endpoint.
 function slotRotateLogKey(network, height, txIndex, txid) {
   const h = String(height || 0).padStart(10, '0');
@@ -2564,7 +2539,7 @@ function slotRotateLogKey(network, height, txIndex, txid) {
 function slotRotateLogPrefix(network) {
   return network === 'signet' ? 'slotrot:' : `slotrot:${network}:`;
 }
-// SPEC-CBTC-ZK-FUNGIBILITY §5.26: T_SLOT_MINT, T_SLOT_SPLIT, and T_SLOT_MERGE
+// T_SLOT_MINT, T_SLOT_SPLIT, and T_SLOT_MERGE
 // also accept the optional encrypted-note tail (mint and merge: one note;
 // split: per-output via has_note bitmap). Each gets its own log namespace so
 // recipients can scan chronologically without having to walk every leaf in
@@ -2601,7 +2576,7 @@ function slotMergeLogPrefix(network) {
   return network === 'signet' ? 'slotmerge:' : `slotmerge:${network}:`;
 }
 
-// ============== cBTC.zk PER-SLOT COVERAGE CHECK (SPEC-CBTC-ZK §4.2.x.2) ==============
+// ============== cBTC.zk PER-SLOT COVERAGE CHECK ==============
 //
 // For each cBTC.zk variant (asset_id, denom_sats), verify that every `live`
 // slot leaf has a corresponding unspent Bitcoin UTXO at its K_btc. Surfaces
@@ -2765,7 +2740,7 @@ async function slotCoverageScanRoundRobin(env, network, opts = {}) {
 //
 // Returns whether a Bitcoin UTXO has been spent and how deep its spending
 // tx is buried. Used by:
-//   - per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2)
+//   - per-slot coverage check
 //   - CER eligibility + marketplace outpoint liveness checks
 //
 // Read-only. Hits the same Esplora-shaped /tx/<txid>/outspend/<vout>
@@ -2833,7 +2808,7 @@ async function slotLeafLookupPut(env, network, leafHashHex, value) {
 //
 // Pool ID is derived from the canonical asset pair PLUS fee tier,
 // capability flags, and (size-discriminated) the protocol-fee config —
-// V3/V4-style fee-tier parity, extended to make the no-skim
+// one pool per fee tier, extended to make the no-skim
 // canonical pool un-squattable:
 //   pool_id = SHA256(
 //     "tacit-amm-pool-v1"
@@ -2854,18 +2829,18 @@ async function slotLeafLookupPut(env, network, leafHashHex, value) {
 // from either the POOL_INIT envelope (variant=1) or the existing pool
 // record (variant=0 / SWAP / REMOVE).
 //
-// v1 worker integration: structural decode + canonical asset ordering check
-// + lpInitShares arithmetic verify + launcher gate Schnorr verify. Full
+// Worker validation: structural decode + canonical asset ordering check
+// + lpInitShares arithmetic verify + launcher gate Schnorr verify. The full
 // cryptographic gates (kernel sigs against on-chain input UTXOs, BJJ
 // Pedersen + XCURVE sigma cross-curve binding, per-pool Groth16 VK verify)
-// are staged for follow-up sessions. The validation tag in the pool record
-// reflects how far validation got at confirmation time.
+// are not run here; the validation tag in the pool record reflects how far
+// validation got at confirmation time.
 const _AMM_POOL_ID_DOMAIN = new TextEncoder().encode('tacit-amm-pool-v1');
 const _AMM_LP_ASSET_DOMAIN = new TextEncoder().encode('tacit-amm-lp-v1');
 const _AMM_LAUNCHER_GATE_DOMAIN = new TextEncoder().encode('tacit-amm-launcher-gate-v1');
 const AMM_FEE_BPS_MAX = 1000;
 const AMM_CAPABILITY_FLAGS_MAX = 255;
-const AMM_MINIMUM_LIQUIDITY = 1000n;       // Uniswap V2 convention; locked at POOL_INIT
+const AMM_MINIMUM_LIQUIDITY = 1000n;       // constant-product minimum-liquidity lock; locked at POOL_INIT
 // Finalized AMM ceremony vk wrapper CID (the /pin-amm-vk output, also pinned
 // in the dapp as CANONICAL_AMM_VK_CID). V1 POOL_INIT
 // pins this so the canonical (pair, fee, flags) slot can't be registered
@@ -2961,7 +2936,7 @@ function ammIsqrt(n) {
   return x;
 }
 
-// Uniswap V2 initial-share formula. founder_shares = isqrt(deltaA·deltaB) − ML;
+// Constant-product initial-share formula. founder_shares = isqrt(deltaA·deltaB) − ML;
 // MINIMUM_LIQUIDITY locked to a NUMS-derived recipient at vout[k_min_liq].
 function ammLpInitShares(deltaA, deltaB) {
   const da = BigInt(deltaA), db = BigInt(deltaB);
@@ -3047,7 +3022,7 @@ async function ammSwapAcceptedPut(env, network, txidHex, value) {
 // Pending-swap line per pool — mempool-seen T_SWAP_VARs reported via
 // POST /amm/swap-hint, served back through GET /amm/pool/:id/head as a
 // projected-reserves view so wallets can quote against in-flight fills
-// (the §5.20 outcome taxonomy makes quoting from projected state safe:
+// (the outcome taxonomy makes quoting from projected state safe:
 // the signed min_out floor is the price consent, and a projection miss
 // resolves as a pass-through refund, never a burn). One small array per
 // pool; entries prune on read once their accepted record lands or they
@@ -3072,8 +3047,8 @@ async function ammSwapPendingPut(env, network, poolIdHex, list) {
 }
 
 // Per-pair reverse index. Multiple pools can share an (assetA, assetB) pair
-// at different fee tiers / capability flags (V3/V4 parity: one
-// canonical pool per (pair, fee_bps, capability_flags)). Variant-0 LP_ADD
+// at different fee tiers / capability flags (one canonical pool per
+// (pair, fee_bps, capability_flags)). Variant-0 LP_ADD
 // and T_LP_REMOVE envelopes do NOT carry fee_bps / capability_flags in
 // their wire format, so the worker enumerates candidate pools by canonical
 // pair and matches via kernel-sig verification (which binds the full
@@ -3800,8 +3775,8 @@ async function ammCollectAssetInputs(env, tx, network, startVin = 1) {
 // For variant 0 LP_ADD: shareAmount = floor(min(ΔA·S/R_A, ΔB·S/R_B)).
 // Penalizes off-ratio joins by giving the LP only the smaller side's
 // proportional share — the LP's excess (asset whose ratio is over-supplied)
-// effectively rides as a donation to existing LPs, matching Uniswap V2's
-// LP-add discipline.
+// effectively rides as a donation to existing LPs (standard constant-product
+// LP-add discipline).
 function ammLpAddShares(deltaA, deltaB, R_A, R_B, S) {
   const da = BigInt(deltaA), db = BigInt(deltaB);
   const ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
@@ -4319,7 +4294,7 @@ function ammVerifyMinLiqVoutStructural(tx, poolIdBytes) {
   return true;
 }
 
-// ============== Protocol-fee lazy crystallization (Uniswap V2 mintFee) ==============
+// ============== Protocol-fee lazy crystallization (constant-product protocol-fee mint) ==============
 //
 // Mirrors tests/amm-protocol-fee.mjs `computeProtocolShares` + `crystallizeProtocolFee`.
 // At every LP event (LP_ADD, LP_REMOVE, PROTOCOL_FEE_CLAIM) the indexer
@@ -4602,7 +4577,7 @@ function ammBuildIntentMsg({
   refundScriptPubKey,
 }) {
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0 or 1');
-  if (tipAsset !== direction) throw new Error('tipAsset must equal direction per AMM.md §"Tip mechanics"');
+  if (tipAsset !== direction) throw new Error('tipAsset must equal direction (tip_asset is always the input side)');
   if (!Array.isArray(inputUtxos) || inputUtxos.length === 0 || inputUtxos.length > 255) {
     throw new Error('inputUtxos: 1..255 entries required');
   }
@@ -4801,9 +4776,8 @@ function decodeTLpRemovePayload(payload) {
 // mint is bound by kernel-sig conservation plus share_r's direct opening of
 // share_c_secp against the public share_amount, matching the guest.
 //
-// This decoder ONLY validates structure (lengths + bounds). Cryptographic
-// gates (sigma verify, kernel-sig verify, BJJ binding) land in a follow-up
-// session.
+// This decoder ONLY validates structure (lengths + bounds); it does not run
+// the cryptographic gates (sigma verify, kernel-sig verify, BJJ binding).
 function decodeTLpAddPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_LP_ADD) return null;
@@ -4939,8 +4913,8 @@ function decodeTLpAddPayload(payload) {
 // structural decode + chain-scan KV updates + emit-resolver wiring for the
 // T_LP_UNBOND-minted UTXOs. Deep crypto verification (kernel sigs against
 // on-chain Pedersen commits, range proof verify, BIP-340 over signed msgs)
-// is deferred to follow-up sessions, matching the T_LP_ADD precedent of
-// 'sigs-and-arithmetic-verified' staging tags. Pools transacted-against
+// is not run here, matching T_LP_ADD's 'sigs-and-arithmetic-verified'
+// staging tags. Pools transacted-against
 // via T_LP_BOND/T_LP_UNBOND still go through full T_LP_ADD validation; the
 // farm subsystem only adds reward-distribution metadata on top.
 
@@ -5013,8 +4987,7 @@ function decodeTFarmInitPayload(payload) {
 
 // ── Trustless farm receipt auth (byte-parity with dapp/amm-envelope.js
 // farmReceiptLeaf / lpHarvestOwnerMsg / lpUnbondOwnerMsg + guest cxfer-core). The
-// reflection receipt model supersedes the worker's standalone MasterChef sig for
-// harvest/unbond: the receipt is a STABLE position id committing (shares, owner, nonce) — the entry
+// reflection receipt model authorizes harvest/unbond: the receipt is a STABLE position id committing (shares, owner, nonce) — the entry
 // checkpoint is stamped in reflection state at fold time, not in the leaf; the spend
 // is authorized by a BIP-340 sig from `owner` over the materialized note's blinding
 // AND its vout[1] destination (front-run defense). The worker FOLLOWS it — positions
@@ -5442,15 +5415,12 @@ function listingPrefix(network, aid) {
 // recipient who tipped the treasury includes their funding_txid in the claim
 // submission; the worker writes both the claim record AND a marker keyed by
 // txid in a single KV.put pair. A second submission citing the same
-// funding_txid (whether honest retry or an attacker trying to ride someone
-// else's tip) fails the existence check and is rejected.
+// funding_txid fails the existence check and is rejected.
 //
-// Trade-off: a malicious frontrunner could still see a tip broadcast in the
-// mempool and race a claim citing it before the honest recipient submits.
-// Closing that fully requires the funding tx to commit to the recipient's
-// eth_address (OP_RETURN or a per-eth-address derived funding address), which
-// is a bigger feature deferred to a hardened-mode follow-up. For a community
-// drop with ~5 USD tips, the race window is small and the attack uneconomic.
+// Limit: the funding tx does not commit to the recipient's eth_address, so the
+// first claim to cite a given tip wins. Binding it would need an OP_RETURN or a
+// per-eth-address funding address; for small community-drop tips this is
+// accepted.
 function airdropFundingKey(network, rootHex, fundingTxidHex) {
   return network === 'signet'
     ? `airdrop:funding:${rootHex}:${fundingTxidHex}`
@@ -5641,13 +5611,9 @@ async function bumpTransferCount(env, network, aid, txidHex) {
 //
 //   2. Per-asset `recent-cxfers:{network}:{aid}` — capped at the same
 //      depth, scoped to one asset. Powers /assets/{aid}/recent-xfer-
-//      txids when it falls back to the rolling list. Existed previously
-//      as a KV.list over xferseen:{aid}:* prefix, which returned keys
-//      in LEX order — naming the endpoint "recent" but returning the
-//      lex-smallest 20 first. For high-activity assets (e.g. TAC with
-//      ~2,000 transfers) a fresh recipient's stealth tx mid-range was
-//      invisible to a small-page walk. This per-asset rolling list is
-//      strictly recency-ordered.
+//      txids when it falls back to the rolling list. Strictly
+//      recency-ordered (a KV.list over xferseen:{aid}:* would return
+//      keys in lex order instead).
 //
 // Concurrency: KV writes are last-write-wins; rare cron/hint races may
 // drop an entry. Per-asset xferseen + xfercnt are unaffected (each owns
@@ -5768,7 +5734,7 @@ async function handleBackfillHolders(env, network, cors, opts = {}) {
     // Decode the envelope at vin[0] to determine which vouts are the
     // tacit asset outputs. For T_CXFER and T_AXFER the mapping is
     // identity (output i → vout[i], outputs contiguous from vout[0]).
-    // For T_AXFER_VAR (§5.7.9) the layout is INTERLEAVED — tacit at
+    // For T_AXFER_VAR the layout is INTERLEAVED — tacit at
     // {vout[0], vout[2]}, BTC payment at vout[1], OP_RETURN(80) at
     // vout[3]; we need to skip vout[1] when bumping holder counts.
     const wit = tx?.vin?.[0]?.witness;
@@ -6319,7 +6285,7 @@ async function _derivePreauthBidTradeFromChain(env, network, revealTx, assetIdHe
   // Skip vin[0] (commit P2TR). vin[1] is typically the seller's asset
   // input (not in the bid index). vin[2..] is where the buyer's
   // pre-signed funding outpoint lives in the canonical layout —
-  // position-independent per §5.7.8.1, so we walk all vin[1..] to be
+  // position-independent, so we walk all vin[1..] to be
   // safe and accept the first funding-index match per asset.
   for (let i = 1; i < revealTx.vin.length; i++) {
     const vin = revealTx.vin[i];
@@ -6379,7 +6345,7 @@ function _validatePreauthBidVarRefundVout(decodedPayload, revealTx) {
 // but reads the fill_amount + price_per_unit from the envelope's inline
 // section (decoded payload) — those values are Bitcoin-bound via the
 // OP_RETURN preimage. The bid record is consulted only to (a) confirm
-// the funding outpoint corresponds to a known §5.7.12 bid (vs §5.7.11),
+// the funding outpoint corresponds to a known T_PREAUTH_BID_VAR bid (vs T_PREAUTH_BID),
 // and (b) tag the settlement with the right bid_id for cleanup.
 async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetIdHex, decodedPayload) {
   if (!revealTx?.vin?.length || revealTx.vin.length < 2) return null;
@@ -6404,7 +6370,7 @@ async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetI
   if (priceForThisFillBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   const priceForThisFill = Number(priceForThisFillBig);
   // Volume amount: scale up to base units so /trade-event aggregation
-  // composes uniformly with §5.7.11 (which already reports base units).
+  // composes uniformly with T_PREAUTH_BID (which already reports base units).
   const fillAmountBaseBig = fillAmountBig * scaleBig;
   const fills = [];
   for (let i = 1; i < revealTx.vin.length; i++) {
@@ -6430,7 +6396,7 @@ async function _derivePreauthBidVarTradeFromChain(env, network, revealTx, assetI
     break;
   }
   if (fills.length === 0) return null;
-  // amount is reported in base units (matches §5.7.11 / T_AXFER reporting).
+  // amount is reported in base units (matches T_PREAUTH_BID / T_AXFER reporting).
   return { price_sats: priceForThisFill, amount: fillAmountBaseBig, fills };
 }
 
@@ -6468,13 +6434,10 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
       await env.REGISTRY_KV.put(tradeEventKey(network, assetIdHex, txidHex), JSON.stringify(ev));
     }
   } catch { /* journal write best-effort — reconcile recovers */ }
-  // Outlier-gated `last_trade` pointer. Previously last-write-wins — but
-  // on a thin Bitcoin-cadence market the latest fill can be a 5.56-sats/
-  // TAC dust outlier (real on-chain settlement, just sharply off-mark)
-  // and that would clobber the hero's "last fill / now" status reading
-  // even though the worker's mark_price already outlier-guards against
-  // it on read. This brings `last_trade` to parity with mark_price's
-  // outlier semantics: gate the write on the same `[median × 0.2,
+  // Outlier-gated `last_trade` pointer. On a thin Bitcoin-cadence market
+  // the latest fill can be a dust outlier (real on-chain settlement, just
+  // sharply off-mark), so `last_trade` follows mark_price's outlier
+  // semantics: gate the write on the same `[median × 0.2,
   // median × 5]` band the chart filter + mark-price selector use, and
   // route off-band fills to a separate `last_outlier_trade` key for
   // forensic / audit purposes.
@@ -6707,9 +6670,7 @@ async function apiFetch(env, network, path, opts = {}) {
       const base = bases[i];
       if (hasHealthy && _upstreamCooldownMs(base) > 0) continue;
       const host = base.replace(/^https?:\/\//, '').split('/')[0];
-      const useOpts = (env.MAESTRO_API_KEY && base.includes('gomaestro-api.org'))
-        ? { ...opts, headers: { ...(opts.headers || {}), 'api-key': env.MAESTRO_API_KEY } }
-        : (opts || {});
+      const useOpts = opts || {};
       try {
         const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, useOpts);
         // 401/402/403 = this source's auth/quota, not a real answer — fail over to the next source.
@@ -6757,9 +6718,7 @@ async function apiRawBytes(env, path, network = 'signet') {
   const hasHealthy = bases.some(b => _upstreamCooldownMs(b) <= 0);
   for (const base of bases) {
     if (hasHealthy && _upstreamCooldownMs(base) > 0) continue;
-    const isMaestro = base.includes('gomaestro-api.org');
-    if (isMaestro && !env.MAESTRO_API_KEY) continue;
-    const opts = { timeoutMs: 30000, ...(isMaestro ? { headers: { 'api-key': env.MAESTRO_API_KEY } } : {}) };
+    const opts = { timeoutMs: 30000 };
     const host = base.replace(/^https?:\/\//, '').split('/')[0];
     try {
       const r = await _fetchUpstreamWithAbortRetry(`${base}${path}`, opts);
@@ -6792,10 +6751,7 @@ async function apiJson(env, path, opts = {}, network = 'signet') {
 async function broadcastTxRedundant(env, network, hex) {
   const txid = (await apiText(env, '/tx', { method: 'POST', body: hex }, network)).trim();
   for (const base of networkApis(env, network)) {
-    const isMaestro = base.includes('gomaestro-api.org');
-    if (isMaestro && !env.MAESTRO_API_KEY) continue;
-    const headers = isMaestro ? { 'api-key': env.MAESTRO_API_KEY } : undefined;
-    fetch(`${base}/tx`, { method: 'POST', body: hex, headers }).catch(() => {});
+    fetch(`${base}/tx`, { method: 'POST', body: hex }).catch(() => {});
   }
   return txid;
 }
@@ -7529,9 +7485,8 @@ async function pinBinaryToIpfs(env, bytes, filename, contentType = 'application/
 // First-write-wins per circuit_hash.
 async function handleCeremonyInit(req, env, cors) {
   if (!env.PINATA_JWT && !_filebaseConfigured(env)) return jsonResponse({ error: 'no pin provider configured' }, 500, cors);
-  // SECURITY: coordinator-only. Without auth, an attacker could squat the
-  // canonical (asset_id, denomination) pair by racing /ceremony/init with a
-  // bad ptau the moment the r1cs file is published.
+  // Coordinator-only, so only the coordinator can bind the canonical
+  // (asset_id, denomination) pair to a ptau.
   if (!ceremonyAuthOk(req, env)) {
     if (!env.CEREMONY_INIT_TOKEN) {
       return jsonResponse({ error: 'CEREMONY_INIT_TOKEN not configured on worker — set via wrangler secret put' }, 503, cors);
@@ -7624,8 +7579,7 @@ async function handleCeremonyInit(req, env, cors) {
   // circuit-agnostic (mixer, AMM, future ceremonies all use the same
   // /ceremony/init endpoint) and means the Pinata dashboard distinguishes
   // ceremonies by the short hash an auditor can cross-reference against
-  // the r1cs sha256, not by a self-asserted name a malicious coordinator
-  // could spoof.
+  // the r1cs sha256, not by a self-asserted name.
   const shortHash = circuitHash.slice(0, 8);
   let zkeyCid, r1csCid, ptauCid;
   try {
@@ -7750,9 +7704,8 @@ async function handleCeremonyState(env, circuitHash, cors) {
 // contributor doesn't block the head forever.
 //
 // MAX_HEAD_MS caps how long any one contributor can occupy position 0
-// before /contribute. Without it, an attacker who keeps polling
-// refreshes the 15-min KV TTL forever and never uploads, blocking the
-// whole queue. The cap covers swap_batch's ~7-min mix budget plus
+// before /contribute, so polling alone cannot refresh the 15-min KV TTL
+// indefinitely and hold the queue. The cap covers swap_batch's ~7-min mix budget plus
 // slack; lp_add and lp_remove finish well inside the same envelope so
 // one constant fits all three AMM circuits.
 const CEREMONY_MAX_HEAD_MS = 10 * 60 * 1000;
@@ -8001,8 +7954,8 @@ async function handleCeremonyReserveRelease(req, env, circuitHash, cors) {
 //
 // Security: master PINATA_JWT stays server-side. The signed URL is
 // time-limited (10 min), size-capped (200 MB), and mime-restricted to
-// the snarkjs zkey content-type. Worst-case interception lets the
-// attacker upload one zkey-sized blob; nothing reaches the account.
+// the snarkjs zkey content-type; it grants one zkey-sized upload and
+// nothing else on the account.
 async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'server not configured (PINATA_JWT missing)' }, 500, cors);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
@@ -8434,8 +8387,8 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // without this, a single farmer can spin up unlimited pubkeys cheaply.
   // The proof reveals the contributor's UTXO outpoints to the worker but
   // not the underlying amounts. Anonymous contributions (no
-  // contributor_pubkey) are no longer accepted because the airdrop layer
-  // wouldn't have anything to credit anyway.
+  // contributor_pubkey) are not accepted because the airdrop layer
+  // would have nothing to credit.
   if (!contributorPubkey) {
     return jsonResponse({
       error: 'eligibility_proof: contributor_pubkey is required (the eligibility proof binds to it)',
@@ -8625,9 +8578,8 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     }
   }
 
-  // Phase 2 header-continuity check (see _extractZkeyConstHeader). On the
-  // first /contribute per ceremony after this guard ships, state may not
-  // yet carry zkey_const_header_b64 — backfill it from the current head
+  // Phase 2 header-continuity check (see _extractZkeyConstHeader). State
+  // may not yet carry zkey_const_header_b64 — backfill it from the current head
   // (which the dapp has already chain-verified via snarkjs.zKey.verifyFrom
   // R1cs to be valid against r1cs+ptau, so it's a sound anchor). Once
   // bootstrapped, every subsequent contribute byte-matches the new
@@ -8885,7 +8837,7 @@ async function handleCeremonyReset(req, env, circuitHash, cors) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
   // Delete the head state + every contribution record. Paginate via
-  // cursor — Tornado's reference 1100-contribution ceremony exceeds the
+  // cursor — a large ceremony (1000+ contributions) exceeds the
   // 1000-key page limit, so a single list() would leave a tail of stale
   // records that would re-emerge under the next init's attestations
   // endpoint with conflicting indices.
@@ -9178,7 +9130,6 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   }
   if (haveZkeyFile && zkey.size > 100 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 100 MB). Pre-pin to Pinata and submit zkey_cid instead.' }, 413, cors);
   // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
-  // The previous regex accepted any-length hex which let through e.g. "ab".
   if (!/^[0-9a-f]{64}$/.test(beaconHash)) {
     return jsonResponse({ error: 'beacon_block_hash must be exactly 64 hex chars (Bitcoin block hash)' }, 400, cors);
   }
@@ -9391,9 +9342,8 @@ async function handlePinMixerVk(req, env, cors) {
 // ============== /pin-amm-vk — pin the AMM ceremony's vk wrapper JSON ==============
 //
 // Mirrors /pin-mixer-vk but accepts a wrapper containing the three AMM
-// V1 circuits' verifying keys keyed by `lp_add`, `lp_remove`, `swap_batch`
-// (per AMM-CEREMONY-RUNBOOK §"What the ceremony produces"). Coordinator
-// uploads this after the Phase 2 ceremony finalizes; the returned CID gets
+// circuits' verifying keys keyed by `lp_add`, `lp_remove`, `swap_batch`.
+// The coordinator uploads this after the Phase 2 ceremony finalizes; the returned CID gets
 // hardcoded into the dapp as CANONICAL_AMM_VK_CID, which is the single
 // flip-point that activates AMM Groth16 prover + verifier across the dapp.
 //
@@ -10167,7 +10117,7 @@ async function handleChainOutspendsBatch(req, env, network, cors) {
 
 // ---- /chain read cache -------------------------------------------------------------------------------------------
 // The proxy's `cf.cacheTtl` hint only means something on an edge runtime; on the Node host it is ignored, so every
-// reader used to re-fetch immutable data (a confirmed tx, a block) from the public explorers, and a holdings scan
+// reader would re-fetch immutable data (a confirmed tx, a block) from the public explorers, and a holdings scan
 // multiplies that by hundreds of txs. This keeps immutable responses in a bounded in-process LRU and collapses
 // concurrent identical requests into one upstream call. Responses that can still change (unconfirmed tx, address
 // state, a spend not yet confirmed) are never stored.
@@ -10760,7 +10710,7 @@ function decodeAxferVarBppPayload(payload) {
 // recompute the OP_RETURN bid_context_hash chain-only. output[0] carries
 // only the Pedersen commitment (no encryptedAmount); output[1] (when
 // present) is seller's change with the standard self-keystream
-// encryptedAmount per §5.7.6.
+// encryptedAmount
 const PREAUTH_BID_INLINE_BYTES = 16 + 33 + 8 + 32 + 8;  // 97
 function decodePreauthBidPayload(payload) {
   if (!payload) return null;
@@ -11263,7 +11213,7 @@ function _computeWithdrawBindHash(assetIdBytes, denomination, nullifierHashBytes
 
 
 
-// SPEC-CBTC-ZK §5.21 T_SLOT_MINT — atomic mint into self-custody slot.
+// T_SLOT_MINT — atomic mint into self-custody slot.
 // Fixed-size payload: 1 + 1 + 32 + 8 + 33 + 32 + 32 + 8 + 33 + 64 = 244 bytes.
 const _SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
 const _SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
@@ -11336,7 +11286,7 @@ function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCo
     v.setUint32(0, Number(p & 0xffffffffn), true);
     v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
   }
-  // §5.24.0 two-key: k_btc_xonly is folded into slot_mint_msg under the same
+  // Two-key: k_btc_xonly is folded into slot_mint_msg under the same
   // tacit-slot-mint-v1 domain. The minter explicitly attests to the slot's
   // BTC spending key alongside the other terms.
   return sha256(concatBytes(
@@ -11402,7 +11352,7 @@ function decodeTDepositPayload(payload) {
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
-  // Canonical 276-byte payload (§5.24.0 two-key). §5.26.4 optional note
+  // Canonical 276-byte payload (two-key). Optional note
   // tail allows 277 (has_note=0) or 399 (has_note=1+122-byte note).
   if (payload.length !== 276 && payload.length !== 277 && payload.length !== 399) return null;
   let p = 1;
@@ -11426,7 +11376,7 @@ function decodeTSlotMintPayload(payload) {
   const minterPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const minterSigBytes = payload.slice(p, p + 64); p += 64;
   const kBtcXOnly = payload.slice(p, p + 32); p += 32;
-  // §5.26.4 optional encrypted-note tail.
+  // Optional encrypted-note tail.
   let encryptedNote = null;
   if (payload.length === 277) {
     if (payload[p] !== 0x00) return null;
@@ -11455,7 +11405,7 @@ function decodeTSlotMintPayload(payload) {
   };
 }
 
-// SPEC-CBTC-ZK §5.22 T_SLOT_BURN — atomic redeem from self-custody slot.
+// T_SLOT_BURN — atomic redeem from self-custody slot.
 // Variable-size payload due to Groth16 proof (matches T_WITHDRAW's proofLen-prefixed shape).
 function decodeTSlotBurnPayload(payload) {
   if (!payload) return null;
@@ -11500,11 +11450,11 @@ function decodeTSlotBurnPayload(payload) {
   };
 }
 
-// SPEC-CBTC-ZK §5.23 T_SLOT_ROTATE — atomic transfer of self-custody slot.
+// T_SLOT_ROTATE — atomic transfer of self-custody slot.
 // Bundles a burn-side (old note) + mint-side (new leaf) + optional payment.
 function _computeSlotRotateMsg(networkTag, assetIdBytes, denomination, oldNullifierBytes, newRecipientCommitBytes, newLeafHashBytes, paymentAssetIdBytes, paymentAmount, newKBtcXOnly) {
   if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
-    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key)');
+    throw new Error('new_k_btc_xonly must be 32 bytes');
   }
   const denomLE = new Uint8Array(8);
   {
@@ -11559,7 +11509,7 @@ function decodeTSlotRotatePayload(payload) {
   // optional encrypted-note tail: one
   // `has_note` byte (0x00 or 0x01) followed by 122 bytes of AES-GCM
   // ciphertext if has_note == 1. Decoder accepts all three lengths.
-  // Wire layout (§5.24.0 two-key): host payload includes a 32-byte
+  // Wire layout (two-key): host payload includes a 32-byte
   // new_k_btc_xonly field right after new_leaf_hash.
   const hostEnd = p + oldProofLen + 33 + 32 + 32 + 32 + 8 + 33 + 64;
   let encryptedNote = null;
@@ -11620,7 +11570,7 @@ function decodeTSlotRotatePayload(payload) {
 
 // Deterministic derivation of the canonical cBTC.zk self-custody variant
 // asset_id per denomination: SHA256("tacit-cbtc-tac-variant-v1" || denom_sats_LE_u64).
-// Used by the SLOT_SPLIT/SLOT_MERGE decoders to enforce the §5.24.6 cross-asset
+// Used by the SLOT_SPLIT/SLOT_MERGE decoders to enforce the cross-asset
 // rule (each output wrapper must be the canonical variant for its denomination).
 const _CTAC_VARIANT_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-variant-v1');
 function ctacVariantAssetId(denomSats) {
@@ -11666,7 +11616,7 @@ function decodeTSlotSplitPayload(payload) {
   if (oldProofLen === 0) return null;
   if (p + oldProofLen + 1 + 2 * 105 + 33 + 64 > payload.length) return null;
   const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
-  // Bind-hash check reuses tacit-withdraw-bind-v1 domain per §5.24.3 (full
+  // Bind-hash check reuses tacit-withdraw-bind-v1 domain (full
   // T_SLOT_BURN-equivalent validation of the old leaf, minus the BTC payout).
   const expectedOldBind = _computeWithdrawBindHash(
     assetIdOldBytes, denomOld, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
@@ -11674,7 +11624,7 @@ function decodeTSlotSplitPayload(payload) {
   for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHashBytes[i]) return null;
   const nOutputs = payload[p]; p += 1;
   if (nOutputs < 2 || nOutputs > 16) return null;
-  // Validate length tolerating optional §5.26.4 notes tail.
+  // Validate length tolerating the optional notes tail.
   const hostEnd = p + nOutputs * 105 + 33 + 64;
   if (hostEnd > payload.length) return null;
   let sumDenomNew = 0n;
@@ -11685,7 +11635,7 @@ function decodeTSlotSplitPayload(payload) {
     const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
     p += 8;
     if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
-    // §5.24.6 cross-asset rule: each output wrapper MUST be the canonical
+    // Cross-asset rule: each output wrapper MUST be the canonical
     // self-custody variant for its denomination (parity with the dapp decoder).
     // Permits re-tiering within the family; rejects relabeling onto a foreign
     // or wrong-denom asset.
@@ -11701,12 +11651,12 @@ function decodeTSlotSplitPayload(payload) {
       new_leaf_hash: bytesToHex(newLeafHashBytes),
     });
   }
-  // §5.24.3 conservation: denom_old ≥ Σ denom_new (Bitcoin pays its fee
+  // Conservation: denom_old ≥ Σ denom_new (Bitcoin pays its fee
   // from the difference, OR the user funds the fee from a separate vin[1+]).
   if (sumDenomNew > denomOld) return null;
   const oldOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const oldOwnerSigBytes = payload.slice(p, p + 64); p += 64;
-  // §5.26.4 optional encrypted-notes tail (per-output bitmap + N notes).
+  // Optional encrypted-notes tail (per-output bitmap + N notes).
   let encryptedNotes = null;
   if (payload.length > p) {
     const bitmapBytes = Math.ceil(nOutputs / 8);
@@ -11792,7 +11742,7 @@ function decodeTSlotMergePayload(payload) {
     if (proofLen === 0) return null;
     if (p + proofLen + POST_INPUTS > payload.length) return null;
     const oldProof = payload.slice(p, p + proofLen); p += proofLen;
-    // Bind-hash recompute per §5.25.3 (each input is full T_SLOT_BURN-equivalent).
+    // Bind-hash recompute (each input is full T_SLOT_BURN-equivalent).
     const expectedBind = _computeWithdrawBindHash(
       assetIdOldBytes, denomOld, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
     );
@@ -11809,7 +11759,7 @@ function decodeTSlotMergePayload(payload) {
       old_proof: bytesToHex(oldProof),
     });
   }
-  // §5.26.4 optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
+  // Optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
   const hostEnd = p + POST_INPUTS;
   let encryptedNote = null;
   if (payload.length === hostEnd) {
@@ -11826,13 +11776,13 @@ function decodeTSlotMergePayload(payload) {
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
   p += 8;
   if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
-  // §5.24.6 cross-asset rule (MERGE): the output wrapper MUST be the canonical
+  // Cross-asset rule (MERGE): the output wrapper MUST be the canonical
   // self-custody variant for its denomination (parity with the dapp decoder).
   if (bytesToHex(assetIdNewBytes) !== ctacVariantAssetId(denomNew)) return null;
   const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
   const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
-  // §5.25.3 conservation: Σ denom_old ≥ denom_new (Bitcoin fee from the difference).
+  // Conservation: Σ denom_old ≥ denom_new (Bitcoin fee from the difference).
   if (sumDenomOld < denomNew) return null;
   const newOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const newOwnerSigBytes = payload.slice(p, p + 64); p += 64;
@@ -12076,9 +12026,8 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // adjacent trades have very different unit prices.
 //
 // Outlier band: ±5× of `markUnit` (the outlier-guarded mark price). This
-// guards the reference selection against dust prints / fat-fingers (the
-// original +1683% TAC incident was a 0.18-sat print anchoring the 24h
-// ref) AND ensures the interpolated reference is itself in-band (a
+// guards the reference selection against dust prints / fat-fingers (a
+// sub-sat print must not anchor the 24h ref) AND ensures the interpolated reference is itself in-band (a
 // linear combination of two in-band values is in-band).
 //
 // `unitFn(price_sats, amount_str)` converts a ring entry to a Number
@@ -12239,10 +12188,9 @@ function _computeMarkPriceFromTrades({ lastTrade, ring, unitFn, nowSec }) {
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
   // Pre-compute today + yesterday's daily-bucket keys so the
-  // volume_24h_sats fan-out joins the same parallel Promise.all. The
-  // dapp used to per-asset-enrich this from /assets/:id; folding it
-  // into the bulk response kills the visible "…" lag on every market
-  // load. Same bucket-sum logic as handleAssetGet — slightly over-
+  // volume_24h_sats fan-out joins the same parallel Promise.all, so the
+  // bulk response carries it without a per-asset /assets/:id call. Same
+  // bucket-sum logic as handleAssetGet — slightly over-
   // counts (up to 48h worst case) but the bound is documented.
   const _nowSec = Math.floor(Date.now() / 1000);
   const _todayKey = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec));
@@ -12822,7 +12770,7 @@ function marketCacheKey(network, opts = {}) {
 // the (expensive) ~16-ops-per-asset hydration instead of running it
 // twice per tick. Mints are stripped because /market doesn't carry the
 // per-asset mints array (assetsComputeAndCache pre-warms with mints=true
-// for the Discover surface; /market historically called with mints=false).
+// for the Discover surface; /market uses mints=false).
 // On-demand /market requests pass null here and pay full compute.
 // `opts.lite` (boolean) — when true, skip the per-asset 4-way listings
 // fan-out entirely and return only the asset summaries. Useful for
@@ -13429,8 +13377,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       return jsonResponse({ error: 'T_PREAUTH_BID_VAR settlement missing or mis-priced refund vout' }, 400, cors);
     }
     const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
-    // Optional last-traded record. AXFER (whole-UTXO atomic OTC, §5.7) and
-    // AXFER_VAR (variable-amount, §5.7.6.1) both have a well-defined trade
+    // Optional last-traded record. AXFER (whole-UTXO atomic OTC) and
+    // AXFER_VAR (variable-amount) both have a well-defined trade
     // price the dapp can vouch for at broadcast time. For AXFER_VAR the
     // dapp hints the SCALED price (floor(requested × full_price / amount))
     // and the actual settled (requested) amount, so last_trade reflects the
@@ -13537,8 +13485,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // T_PETCH hint — register a permissionless-mint deployment record so
   // /petch-assets surfaces it immediately rather than waiting for the cron to
   // re-scan its block. Mirrors the cron's per-petch put in scanForEtches; same
-  // §5.8 mint_start_height invariant enforced here so a deployer can't bypass
-  // §5.9 step-4 by hinting a malformed petch the cron would have dropped.
+  // The mint_start_height invariant is enforced here so a deployer can't bypass
+  // PMINT rule 4 by hinting a malformed petch the cron would have dropped.
   // Mainnet's scanner is forward-only (backfillBlocks=0); without this branch a
   // T_PETCH whose reveal confirmed before the petch-aware code went live can
   // never be indexed at all.
@@ -13597,14 +13545,14 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   if (decoded.opcode === T_PMINT) {
     const cm = decodeCPmintPayload(decoded.payload);
     if (!cm) return jsonResponse({ error: 'invalid T_PMINT payload' }, 400, cors);
-    // §5.9 step 1: asset_id derivation must match.
+    // PMINT rule 1: asset_id derivation must match.
     const expectedAid = assetIdFor(cm.etch_txid, 0);
     if (expectedAid !== cm.asset_id) return jsonResponse({ error: 'asset_id != sha256(etch_txid_BE || 0_LE)' }, 400, cors);
-    // §5.9 step 2: parent envelope must be T_PETCH (looked up by derived aid
+    // PMINT rule 2: parent envelope must be T_PETCH (looked up by derived aid
     // so a forged cm.asset_id can't aim at a real CETCH namespace).
     const petch = await env.REGISTRY_KV.get(petchKey(network, expectedAid), 'json');
     if (!petch) return jsonResponse({ error: 'parent T_PETCH not indexed yet — hint the etch first' }, 400, cors);
-    // §5.9 step 3: amount must equal mint_limit.
+    // PMINT rule 3: amount must equal mint_limit.
     try {
       if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) {
         return jsonResponse({ error: 'amount != petch.mint_limit' }, 400, cors);
@@ -13612,7 +13560,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     } catch {
       return jsonResponse({ error: 'unparseable amount' }, 400, cors);
     }
-    // §5.9 step 4: confirmed_height in [effective_start, effective_end]. Skip
+    // PMINT rule 4: confirmed_height in [effective_start, effective_end]. Skip
     // when not yet confirmed — the cron will pick the pmint up on confirmation
     // and re-validate. Out-of-window broadcasts get rejected so the cap counter
     // never sees them.
@@ -13626,7 +13574,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         }
       }
     }
-    // §5.9 step 5: Pedersen binding. Same check the cron path performs — see
+    // PMINT rule 5: Pedersen binding. Same check the cron path performs — see
     // the matching block in scanForEtches for rationale. Hint callers that
     // ship a forged commitment get rejected here rather than poisoning KV.
     if (!pmintCommitmentOpens(cm.amount, cm.blinding, cm.commitment)) {
@@ -13665,8 +13613,8 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     // The canonical key embeds zero-padded block height; an unconfirmed hint
     // would land under height 0000000000, which (a) lex-sorts ahead of every
     // real entry — polluting the first KV.list page on heavy assets — and
-    // (b) was historically misclassified as deeply confirmed by
-    // loadCanonicalPmints, crediting it toward the cap. The cron will pick
+    // (b) could be misread as deeply confirmed by loadCanonicalPmints,
+    // crediting it toward the cap. The cron will pick
     // this PMINT up on confirmation and write it under its real
     // (height, tx_index) canonical key. Caller (postHint fire-and-forget)
     // doesn't read the body, so source='pending' is purely informational.
@@ -13903,10 +13851,8 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   }
   // Per-window price-change deltas via the shared helper — single-asset
   // GET and bulk /assets agree to the byte, and the interpolation fix /
-  // outlier-band live in one place. Previously this block was duplicated
-  // inline (~100 LOC) and was the path the dapp's asset-detail page
-  // hits, so any drift between bulk and detail showed up as banner ≠
-  // tile Δ%.
+  // outlier-band live in one place, so the asset-detail banner and the
+  // tile Δ% cannot drift.
   if (Number.isInteger(v.decimals) && trades.length > 0) {
     const _dec = v.decimals;
     const _u = (priceSats, amountStr) => {
@@ -13968,7 +13914,7 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   // count. The split below queries each bucket separately so the orphan
   // backlog can't starve the canonical path.
   //
-  // Orphans (legacy hint-endpoint pre-fix entries) all have padded-height
+  // Orphans (unconfirmed hint-endpoint entries) all have padded-height
   // 0000000000. Canonical entries have padded-height matching the real
   // block. We list each in turn with cursor pagination, capped per-bucket
   // to bound Worker memory.
@@ -14061,11 +14007,9 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   // slot.
   const seenTxids = new Set();
   const annotated = events.map(e => {
-    // Defensive: an earlier worker version (handleAssetHint T_PMINT branch)
-    // wrote unconfirmed hints into this canonical namespace with
-    // minted_at_height=null, which the previous `Number(null) || 0 = 0`
-    // computation turned into a fake `depth = tip + 1`, crediting them as
-    // deeply confirmed. Trust `pending: true` and require an integer height
+    // Defensive: entries in this canonical namespace can carry
+    // minted_at_height=null (unconfirmed hints), which `Number(null) || 0`
+    // would turn into a fake `depth = tip + 1`. Trust `pending: true` and require an integer height
     // before doing the depth math. The cron's confirmed entry under a
     // real-height key supersedes any orphan; the orphan stays here as
     // 'pending' and is never credited.
@@ -14130,7 +14074,7 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
 // (height, tx_index, txid) order — which KV.list yields because the key embeds
 // zero-padded height + tx_index:
 //   (1) depth ≥ 3   — tip-state claims are pending, not credited (same 3-conf
-//                     rule as §5.9; a shallow claim can reorder/vanish on reorg);
+//                     rule as PMINT; a shallow claim can reorder/vanish on reorg);
 //   (2) the cap     — only the first cap_amount/per_claim claims credit; the
 //                     rest are cap_overflow;
 //   (3) de-dup txid — a reorg re-confirm leaves two keys for one claim, but one
@@ -14314,7 +14258,7 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   //      pmints can only be cap_overflow (don't move cumulative_minted).
   //   2. mint window has closed at the snapshot's tip (mint_end_height set
   //      AND tip_at_update > mint_end_height + PMINT_CONFIRMATION_DEPTH);
-  //      no future pmint can ever pass the §5.9 step 4 height-window gate.
+  //      no future pmint can ever pass the PMINT rule 4 height-window gate.
   // Anything else — including healthy in-progress fair launches — is NOT
   // authoritative: the snapshot may be momentarily complete but the very next
   // block can credit more mints. cumulative_minted etc. are only
@@ -14386,8 +14330,7 @@ async function markPetchDirty(env, network, aid) {
 //
 // Per-isolate memoization. The tip endpoint is hit from handleAssetsList,
 // handleAssetGet, handlePetchAssetsList, /pools, /drops-onchain, and the cron's
-// pre-warm pass — every cold load fan-outs them in parallel and previously
-// every fan-out was its own upstream call. 5s TTL is short enough that a new
+// pre-warm pass — every cold load fans them out in parallel. 5s TTL is short enough that a new
 // block is reflected within one cron interval and unnoticeable to UX (the
 // freshness banner shows tip ± a few seconds), and long enough to collapse the
 // burst of in-flight handlers sharing a single isolate.
@@ -14596,11 +14539,10 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
       if (!petch) { await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {}); continue; }
       const snap = await refreshAndStorePetchProgress(env, network, aid, tip, petch);
       // We deliberately do NOT pre-warm the /pmints?credited=1 fat-path edge
-      // cache here. The new dapp uses ?include_txids=0 (slim path, ~50ms,
+      // cache here. The dapp uses ?include_txids=0 (slim path, ~50ms,
       // served directly from the snapshot we just refreshed) and bypasses
-      // that cache entirely. Old dapp clients still in stale browser caches
-      // pay one cold MISS per 30s FRESH window per POP, which is acceptable
-      // for a deprecated path. Saves ~14s of cron CPU per FAIR-scale asset
+      // that cache entirely; older clients pay one cold MISS per 30s FRESH
+      // window per POP. Saves ~14s of cron CPU per FAIR-scale asset
       // and the per-POP edge storage of a 3.3MB response.
       if (snap) {
         // Only clear the dirty marker on successful refresh. If refresh
@@ -14635,21 +14577,13 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
   return { network, refreshed, bootstrapped, errored, tip };
 }
 
-// ============== PMINT BACKFILL (one-time FAIR recovery for issue #31) =======
-// FAIR's mainnet etch landed during dense fair-launch reveal blocks (3000-5500
-// txs/block) and the cron's per-tick subrequest budget ran out before the
-// block's pmint tail was indexed — silently dropping ~125k canonical entries
-// across blocks 948488..948700 (issue #31 Problem #4 + utx0set's clarifying
-// comment). The HTTP /admin/pmint-backfill endpoint exists for one-shot
-// recovery, but FAIR-era blocks are too large to fit in a single CF wall-time
-// budget. This cron-driven variant processes one block per tick (~5 min
-// cadence), persists progress in a KV cursor, and self-terminates when
-// complete. Configuration is intentionally hardcoded — this is migration code
-// for a specific historical incident, not a generic feature.
-//
-// Removal: after FAIR completes (cursor.completed_at set), this function is
-// a no-op forever. Safe to delete the call site + function in a follow-up
-// commit once the snapshot has read as bootstrapped=true for a tick.
+// ============== PMINT BACKFILL (FAIR) =======
+// FAIR's mainnet fair-launch blocks 948488..948700 are dense (3000-5500
+// txs/block), beyond one cron tick's subrequest budget, so the forward scanner
+// cannot index their full pmint tail and /admin/pmint-backfill cannot fit one
+// in a single wall-time budget. This cron-driven variant processes one block
+// per tick, persists progress in a KV cursor, and is a no-op once
+// cursor.completed_at is set. Configuration is hardcoded to that range.
 const PMINT_BACKFILLS = [
   {
     network: 'mainnet',
@@ -14716,8 +14650,7 @@ async function runOnePmintBackfill(env, cfg) {
   let txs;
   // Use sequential fetchBlockTxs (proven-working in the cron context for the
   // forward scanner). The parallel variant triggers mempool.space rate-limits
-  // for dense legacy blocks. The sequential walk's 5000-tx cap is the same
-  // bug that caused the silent drops in the first place — we lift it here so
+  // for dense blocks. The sequential walk's 5000-tx cap is lifted here so
   // backfill sees the full block. CF subrequest budget (1000) is the real
   // ceiling; 8000 txs ~ 320 pages, well within the 1000 cap even with our
   // other cron work.
@@ -14820,7 +14753,7 @@ async function runOnePmintBackfill(env, cfg) {
 // remaining) read from the petch_progress snapshot. The snapshot is
 // maintained by the cron tick (full refresh) and by hint POSTs (async
 // refresh via ctx.waitUntil), so this endpoint pays O(1) per asset instead
-// of the O(N) KV.list scan the previous version did. Kept distinct from
+// of an O(N) KV.list scan. Kept distinct from
 // /assets so a Discover UI can present each issuance model in its own pane
 // without the other polluting; consumers wanting a unified list union both
 // endpoints.
@@ -15252,7 +15185,7 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     return { commitment: cv.outputs[outIdx].commitment, asset_id: cv.asset_id };
   }
   if (decoded.opcode === T_PREAUTH_BID) {
-    // T_PREAUTH_BID (§5.7.11) canonical settlement layout:
+    // T_PREAUTH_BID canonical settlement layout:
     //   vout[0] = buyer's tacit recipient (output[0])
     //   vout[1] = seller's BTC payout (non-tacit, not resolvable here)
     //   vout[2] = OP_RETURN(bid_context_hash) (non-tacit)
@@ -15398,8 +15331,7 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
   }
 
   // Ownership: hash160(owner_pubkey) must match the P2WPKH script-pubkey hash
-  // at the UTXO's vout. Anyone publishing on the holder's behalf would have to
-  // forge a Schnorr sig under their pubkey or grind a hash collision.
+  // at the UTXO's vout, and the Schnorr sig must verify under that pubkey.
   const tx = await apiJson(env, `/tx/${txidHex}`, {}, network);
   const out = tx?.vout?.[vout];
   if (!out?.scriptpubkey) return jsonResponse({ error: 'vout has no scriptpubkey' }, 400, cors);
@@ -15443,9 +15375,8 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
 // opening blob the buyer can later decrypt to recover (amount,
 // blinding). No auth: the ciphertext is bound to a declared pubkey;
 // only a wallet holding the matching priv produces a valid AES-GCM
-// open. Worst-case attacker overwrites with garbage → legitimate
-// buyer fails decrypt → falls through to other recovery paths
-// (same as today). 90-day TTL auto-collects stale entries.
+// open. A garbage overwrite only makes decrypt fail, and the buyer
+// falls through to other recovery paths. 90-day TTL auto-collects stale entries.
 async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
   const vout = parseInt(voutStr, 10);
@@ -15988,8 +15919,7 @@ const FULFILMENT_TTL_SECONDS = 24 * 3600;
 //
 // Per-request observability without manual instrumentation everywhere.
 // One sampled datapoint per request; reads in the Cloudflare dashboard
-// or via the GraphQL API. Used to find the next round of hot paths
-// after Phase 1-3 reshaped most of the cost surface.
+// or via the GraphQL API, to find hot paths.
 //
 // Sampling: 1-in-N requests to stay under the 10M-datapoint/mo free tier.
 // At 5s polling × 100 active tabs × 7 cached endpoints, the worker fires
@@ -16061,11 +15991,9 @@ function _logCronError(env, op, network, e) {
 
 // ============== Marketplace record auto-expiry ==============
 // Marketplace records (listings, range-listings, atomic-intents,
-// preauth-sales, bid-intents) carry an `expiry` field but were
-// historically written WITHOUT a KV expirationTtl, so expired records
-// accumulated indefinitely in storage. Readers already filter
-// `expired=true` at decoration time so consumers don't see stale rows,
-// but KV storage was billed forever. Writing with expirationTtl =
+// preauth-sales, bid-intents) carry an `expiry` field. Readers filter
+// `expired=true` at decoration time so consumers don't see stale rows;
+// writing with expirationTtl =
 // (expiry - now) + grace causes KV to auto-evict the record some
 // time after expiry, capping storage growth.
 //
@@ -16290,9 +16218,8 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
 
   // Verify both signatures (body-only data) and charge the rate limit BEFORE
   // the per-UTXO chain validation below, which fans out up to 2×64 retrying
-  // upstream fetches. Without this gate an unsigned/forged request — or a
-  // flood of signed ones referencing bogus txids — forces all that fetch
-  // cost at zero attacker cost.
+  // upstream fetches, so that cost is only paid for signed, rate-limited
+  // requests.
   const xonly = hexToBytes(ownerPubHex).slice(1);
   const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
   if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
@@ -16574,12 +16501,10 @@ function atomicClaimCancelMsg(assetIdHex, intentIdHex, takerPubHex) {
   ));
 }
 
-// ======== T_AXFER_VAR (§5.7.6.1 + §5.7.9) — variable-amount atomic intents ========
+// ======== T_AXFER_VAR — variable-amount atomic intents ========
 // Pure-function message helpers + intent_id derivation for the variable-amount
-// flow. Land before any handler changes so PR2/PR3 can call into a stable
-// surface. None of these are wired into the route table yet — the legacy
-// whole-UTXO path (atomicIntentMsg / atomicIntentClaimMsg / fulfilment-v1)
-// continues to handle every live atomic-intent.
+// flow. The whole-UTXO path (atomicIntentMsg / atomicIntentClaimMsg /
+// fulfilment-v1) handles every intent without `min_take_amount`.
 
 // Deterministic intent_id for variable-amount intents. Unlike the legacy v1
 // derivation (which depends on commit_txid and so requires the commit tx to
@@ -16692,7 +16617,7 @@ function verifyAtomicIntentPublishSig({
 
 // ============== PREAUTH SALES ==============
 // Buyer-completable T_AXFER: seller signs once at listing time, buyer
-// completes settlement alone via ECDH-derived r_out (§5.7.3-style recovery).
+// completes settlement alone via ECDH-derived r_out (T_AXFER-style recovery).
 // Storage: one record per sale, plus an outpoint→sale_id index so POST
 // can reject duplicates in O(1) and cron outspend-scans can mark spent
 // outpoints stale without iterating every presale.
@@ -16886,7 +16811,7 @@ function preauthBidContextHash({
 // (SIGHASH_SINGLE | ANYONECANPAY = 0x83). The signature pins vout[k]
 // = OP_RETURN(bid_context_hash) at any index k — hashOutputs depends
 // only on outputs[input_index] which equals the canonical OP_RETURN
-// bytes regardless of k (position-independence per §5.7.8.1).
+// bytes regardless of k (position-independence).
 function preauthBidSighash({
   fundingOutpointTxidHex, fundingOutpointVout, fundingOutpointValue,
   buyerPubHex, bidContextHash,
@@ -16914,14 +16839,14 @@ const PREAUTH_BID_MAX_FEE_BUDGET = 10_000;
 const PREAUTH_BID_MAX_EXPIRY_SECONDS = 30 * 86400;
 
 // ============== T_PREAUTH_BID_VAR — worker helpers ==============
-// Mirror of the §5.7.11 helper family above with three structural deltas:
+// Mirror of the T_PREAUTH_BID helper family above with three structural deltas:
 //   • per-ratio bid_context_hash (the seller picks one of K at fill time);
 //   • refund_pubkey in the auth_msg (separate from buyer_pubkey for cold-
 //     storage refunds);
 //   • concat-K-sigs in the auth_msg (worker batch-verifies all K pre-sigs
 //     are authorized as a single bundle).
-// Domain tags are distinct from §5.7.11 so a §5.7.11 pre-sig cannot be
-// replayed as a §5.7.12 ratio sig.
+// Domain tags are distinct from T_PREAUTH_BID so a T_PREAUTH_BID pre-sig cannot be
+// replayed as a T_PREAUTH_BID_VAR ratio sig.
 
 function preauthBidVarKey(network, aid, bidIdHex) {
   return network === 'signet'
@@ -16933,7 +16858,7 @@ function preauthBidVarPrefix(network, aid) {
 }
 function preauthBidVarFundingIndexKey(network, txidHex, vout) {
   // VAR uses a distinct index key prefix so the same funding outpoint
-  // can't simultaneously back a §5.7.11 bid AND a §5.7.12 bid. Both
+  // can't simultaneously back a T_PREAUTH_BID bid AND a T_PREAUTH_BID_VAR bid. Both
   // codepaths spend the same UTXO, so concurrent live entries would
   // conflict at fill time regardless — the index just rejects faster.
   return network === 'signet'
@@ -16993,7 +16918,7 @@ function preauthBidVarCancelMsg(assetIdHex, bidIdHex) {
 }
 
 // Per-ratio bid_context_hash binding for T_PREAUTH_BID_VAR, used inside the
-// K-sig verification loop. Domain tag is distinct from §5.7.11 so the
+// K-sig verification loop. Domain tag is distinct from T_PREAUTH_BID so the
 // per-ratio binding doesn't collide with the exact-fill version.
 // recipient_blinding is deliberately omitted (lives in the inline section
 // only; chain-side Pedersen consistency rule covers it). K pre-sigs each
@@ -17091,7 +17016,7 @@ function verifyEcdsaDerSig(derSigBytes, msgHash32, pubkeyBytes33) {
   try { return secp.verify(compact, msgHash32, pubkeyBytes33, { lowS: true }); } catch { return false; }
 }
 
-// ======== Variable-amount handler helpers (PR2/3 of §5.7.6.1 rollout) ========
+// ======== Variable-amount handler helpers ========
 // Each `_var` helper is dispatched from the matching legacy handler when the
 // intent / body carries `min_take_amount`. The legacy whole-UTXO path is
 // otherwise untouched: an intent without `min_take_amount` flows through the
@@ -17205,7 +17130,7 @@ async function _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors) 
     created_at: now,
     network,
     // NOTE: NO commit_txid / envelope_script_hex / control_block_hex /
-    // p2tr_spk_hex / commit_value. Per §5.7.6.1 *Commit-phase timing*, those
+    // p2tr_spk_hex / commit_value. Per the variable-amount commit-phase timing, those
     // fields are populated at fulfilment time, not publish.
   };
   const _intentTtl = _ttlFromExpiry(expiryRaw);
@@ -17444,8 +17369,6 @@ async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env,
   // with `bad-txns-inputs-missingorspent` (code -25) because it can't see
   // commit:0 yet. The fix is to retry the reveal a few times with backoff —
   // each retry gives bitcoind another chance to receive the commit via gossip.
-  // Surfaced on the §5.7.6.1 signet e2e harness's second run (the first run
-  // had an OP_RETURN(80) bug; once that was fixed, this timing race remained).
   let revealTxid;
   let revealErr = null;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -17469,7 +17392,7 @@ async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env,
   if (revealErr) {
     // Reveal failed for real (not a transient indexer race). Commit is on
     // chain but the reveal won't settle. Mark fulfilment ABANDONED so the
-    // maker UI can offer the script-path reclaim per §5.7.6 *recovery*.
+    // maker UI can offer the script-path reclaim.
     await env.REGISTRY_KV.put(
       atomicFulfilmentKey(network, assetIdHex, intentIdHex),
       JSON.stringify({ ...fulfilmentAdvanced, state: 'ABANDONED', commit_txid: commitTxid, abandoned_at: now, error: String(revealErr.message).slice(0, 200) }),
@@ -17540,7 +17463,7 @@ async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, cla
   // the claimant; the eventual reveal would fail to relay but the taker
   // would already have spent the CLAIM_TTL window for nothing. The legacy
   // (whole-UTXO) path does this at /atomic-intents POST; variable-amount
-  // can't, because §5.7.6.1 defers commit-phase to fulfilment time, so
+  // can't, because variable-amount defers commit-phase to fulfilment time, so
   // this is the first opportunity to bind the envelope.
   let _env_decoded;
   try { _env_decoded = decodeEnvelopeScript(hexToBytes(envelopeScriptHex)); }
@@ -17586,7 +17509,7 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
 
-  // Dispatch variable-amount publishes (§5.7.6.1) to the dedicated handler.
+  // Dispatch variable-amount publishes to the dedicated handler.
   // Presence of `min_take_amount` is the discriminator — legacy whole-UTXO
   // publishes omit it and fall through to the existing path unchanged.
   if (body && body.min_take_amount !== undefined && body.min_take_amount !== null && String(body.min_take_amount) !== '') {
@@ -17849,12 +17772,9 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors, opts = {})
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents, next_cursor }, 200, cors);
 }
 
-// Single-intent fetch. Pre-claim freshness gate (the dapp's
-// fetchAxferIntentFresh) used to fetch the full /atomic-intents list
-// and filter client-side for one intent_id — ~3 KV reads when this
-// endpoint serves the same data directly vs. 1 list + 3N reads when
-// the same lookup goes through the bulk endpoint. ~500× cheaper on
-// dense assets like TAC's 542-intent book.
+// Single-intent fetch for the dapp's pre-claim freshness gate
+// (fetchAxferIntentFresh): ~3 KV reads, vs. 1 list + 3N reads for the
+// same lookup through the bulk /atomic-intents endpoint.
 async function handleAtomicIntentGet(assetIdHex, intentIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
@@ -17914,7 +17834,7 @@ async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, netwo
     return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
   }
   // Don't wipe settlement state out from under a taker who is mid-fill, and
-  // preserve the §5.7.6 reclaim breadcrumb. A bare reservation (claim, no
+  // preserve the atomic-intent reclaim breadcrumb. A bare reservation (claim, no
   // fulfilment) does NOT block — refusing on claim-liveness alone would let a
   // taker grief the maker. We gate only on the fulfilment record.
   const _ful = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json');
@@ -18076,7 +17996,7 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
     }, 409, cors);
   }
 
-  // Dispatch variable-amount claims (§5.7.6.1) to the dedicated handler. The
+  // Dispatch variable-amount claims to the dedicated handler. The
   // intent's `min_take_amount` field is the discriminator — legacy intents
   // omit it and fall through to the existing path. A taker who tries to
   // submit a `requested_amount` against a legacy intent is rejected here
@@ -18201,7 +18121,7 @@ async function handleAtomicIntentFulfil(assetIdHex, intentIdHex, req, env, netwo
   if (!claim || claim.expires_at <= now) return jsonResponse({ error: 'no active claim' }, 404, cors);
   if (claim.taker_pubkey !== takerPubHex) return jsonResponse({ error: 'taker_pubkey does not match claim' }, 403, cors);
 
-  // Dispatch variable-amount fulfilments (§5.7.6.1) to the dedicated handler.
+  // Dispatch variable-amount fulfilments to the dedicated handler.
   // The intent's `min_take_amount` is the discriminator — a v1 fulfilment POST
   // against a variable-amount intent would silently store a v1-shaped record
   // and later confuse the broadcast path, so we branch here before parsing
@@ -18543,13 +18463,10 @@ async function handlePreauthSaleDelete(assetIdHex, saleIdHex, req, env, network,
 
 // ============== Preauth-bid handlers ==============
 
-// The funding-outpoint reverse index value used to be the bare bid_id, which
-// the reader then looked up under the CURRENT request's asset — so a live bid
-// on a DIFFERENT asset read back as null, skipping the conflict check and
-// leaking a second live bid pre-signing the same UTXO (the seller who settles
-// second loses their fee work). Store {asset_id, bid_id} and resolve the lookup
-// against the STORED asset. Bare-hex values written before this upgrade fall
-// back to the current asset for backward compatibility.
+// The funding-outpoint reverse index stores {asset_id, bid_id} and resolves the
+// lookup against the STORED asset, so a live bid on a different asset still
+// blocks a second bid pre-signing the same UTXO. Bare-hex bid_id values fall
+// back to the current asset.
 function _parsePreauthFundingIdx(raw, fallbackAssetIdHex) {
   if (!raw) return null;
   const s = String(raw);
@@ -18691,7 +18608,7 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
   const _orderRl = await _orderbookWriteRateLimit(req, env, buyerPubHex, 'preauth-bid');
   if (!_orderRl.ok) return jsonResponse({ error: `bid rate limited: ${_orderRl.reason}` }, 429, cors);
 
-  // ---------- one-live-bid-per-funding-outpoint (cross §5.7.11 + §5.7.12) ----------
+  // ---------- one-live-bid-per-funding-outpoint ----------
   const _exactIdx = _parsePreauthFundingIdx(
     await env.REGISTRY_KV.get(preauthBidFundingIndexKey(network, fundingTxidHex, fundingVoutRaw)),
     assetIdHex,
@@ -18701,7 +18618,7 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
     const _now = Math.floor(Date.now() / 1000);
     if (_eb && (_eb.expiry || 0) > _now) {
       return jsonResponse({
-        error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+        error: 'a live exact-fill preauth-bid already exists for this funding_outpoint; cancel it first',
         existing_bid_id: _exactIdx.bidId,
       }, 409, cors);
     }
@@ -18717,7 +18634,7 @@ async function handlePreauthBidPost(assetIdHex, req, env, network, cors) {
     const _now2 = Math.floor(Date.now() / 1000);
     if (_evb && (_evb.expiry || 0) > _now2) {
       return jsonResponse({
-        error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+        error: 'a live partial-fill preauth-bid already exists for this funding_outpoint; cancel it first',
         existing_bid_id: _varIdx.bidId,
       }, 409, cors);
     }
@@ -19154,8 +19071,8 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
   const _orderRl = await _orderbookWriteRateLimit(req, env, buyerPubHex, 'preauth-bid-var');
   if (!_orderRl.ok) return jsonResponse({ error: `bid rate limited: ${_orderRl.reason}` }, 429, cors);
 
-  // ---------- one-live-bid-per-funding-outpoint (cross §5.7.11 + §5.7.12) ----------
-  // Reject if the outpoint already backs a §5.7.11 bid OR a §5.7.12 bid.
+  // ---------- one-live-bid-per-funding-outpoint ----------
+  // Reject if the outpoint already backs a T_PREAUTH_BID bid OR a T_PREAUTH_BID_VAR bid.
   // The settlement-tx flow can't differentiate at funding-outpoint level
   // (it sees an unspent P2WPKH UTXO with two competing pre-sigs); the
   // index conflict makes the rejection deterministic.
@@ -19168,7 +19085,7 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
     const _now3 = Math.floor(Date.now() / 1000);
     if (_eb2 && (_eb2.expiry || 0) > _now3) {
       return jsonResponse({
-        error: 'a live exact-fill preauth-bid (§5.7.11) already exists for this funding_outpoint; cancel it first',
+        error: 'a live exact-fill preauth-bid already exists for this funding_outpoint; cancel it first',
         existing_bid_id: _exactIdx2.bidId,
       }, 409, cors);
     }
@@ -19184,7 +19101,7 @@ async function handlePreauthBidVarPost(assetIdHex, req, env, network, cors) {
     const _now4 = Math.floor(Date.now() / 1000);
     if (_evb2 && (_evb2.expiry || 0) > _now4) {
       return jsonResponse({
-        error: 'a live partial-fill preauth-bid (§5.7.12) already exists for this funding_outpoint; cancel it first',
+        error: 'a live partial-fill preauth-bid already exists for this funding_outpoint; cancel it first',
         existing_bid_id: _varIdx2.bidId,
       }, 409, cors);
     }
@@ -19298,9 +19215,9 @@ async function handlePreauthBidVarDelete(assetIdHex, bidIdHex, req, env, network
 const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
 const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
 // 90-day TTL on claim records. Bounds stale entries when issuers abandon a
-// drop and limits the attack surface of an unauthenticated DELETE: legitimate
-// recipients re-POST during fulfilment, attackers must keep wiping under the
-// per-IP rate limit, and any drop that hasn't fulfilled in 90 days is
+// drop and bounds the effect of an unauthenticated DELETE: legitimate
+// recipients re-POST during fulfilment, deletes stay under the per-IP rate
+// limit, and any drop that hasn't fulfilled in 90 days is
 // effectively dead anyway.
 const AIRDROP_CLAIM_TTL_SECONDS = 90 * 24 * 3600;
 // Each returned claim costs one KV.get subrequest. CF Workers paid plan caps
@@ -19309,18 +19226,15 @@ const AIRDROP_CLAIM_TTL_SECONDS = 90 * 24 * 3600;
 // so this per-call cap is invisible in normal use.
 const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subrequest cost
 
-// Layered daily rate limit for airdrop-claim POST and DELETE. Without this an
-// attacker could fill KV with junk submissions for any root, or wipe a
-// recipient's submission before the issuer pulls.
+// Layered daily rate limit for airdrop-claim POST and DELETE, bounding junk
+// submissions per root and deletes of a recipient's submission.
 //
 // Four counters compose:
 //   1. ip-global: per-IP, all drops combined. Generous so legitimate
 //      recipients who claim from multiple drops aren't throttled.
-//   2. pk-global: per tacit-pubkey, all drops. Forces a determined attacker
-//      to rotate tacit keys as well as IPs (mirrors /drops posture).
-//   3. ip-per-root: per-IP within a single drop. Scopes a targeted attack
-//      against one drop — without this, an attacker could burn the global
-//      limit on a single root and prevent legitimate claimants from there.
+//   2. pk-global: per tacit-pubkey, all drops (mirrors /drops posture).
+//   3. ip-per-root: per-IP within a single drop, so one root cannot consume
+//      the global limit meant for its legitimate claimants.
 //   4. pk-per-root: per tacit-pubkey within a single drop. Stops a single
 //      identity from spamming many leaves in one drop.
 //
@@ -19518,9 +19432,9 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
     // present.
     record.funding_txid = mergedTxids[0];
   }
-  // 90-day TTL bounds stale records and self-heals after a mass-delete
-  // attack: legitimate recipients re-POST on their next visit and the
-  // attacker has to keep wiping under the existing rate-limit ceiling.
+  // 90-day TTL bounds stale records and self-heals after a mass delete:
+  // legitimate recipients re-POST on their next visit, and deletes stay
+  // under the existing rate-limit ceiling.
   // The issuer's pull window is typically days, not months, so any drop
   // active long enough to exceed this TTL has already been fulfilled and
   // the dropbox is just a leak.
@@ -19530,8 +19444,8 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
     { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS },
   );
   // Per-tip nullifier markers — outlive the claim record by 30 days so
-  // an attacker can't wait for a TTL'd record to expire then re-bind
-  // the same tip to a different claim. Same TTL anchors both flows
+  // a tip cannot be re-bound to a different claim after the record
+  // expires. Same TTL anchors both flows
   // once expired. Only write for NEW tips to avoid burning KV writes on
   // already-bound ones.
   for (const t of incomingTxids) {
@@ -19549,10 +19463,9 @@ async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
   const requestedLimit = Number.isInteger(opts.limit) ? Math.min(opts.limit, AIRDROP_LIST_HARD_CAP) : AIRDROP_LIST_HARD_CAP;
 
-  // Synthetic cursor: "after:<leaf_index>". The previous design tried to
-  // reuse KV's native cursor here, which broke when ?limit truncated mid-
-  // KV-page (KV gives no cursor when list_complete=true, but we DO have
-  // unreturned entries within that page). The synthetic form is always
+  // Synthetic cursor: "after:<leaf_index>". KV's native cursor cannot
+  // resume when ?limit truncates mid-KV-page (KV gives no cursor when
+  // list_complete=true, but there are unreturned entries within that page). The synthetic form is always
   // resumable: caller passes back the same string, worker filters keys
   // whose leaf_index suffix is ≤ the cursor's value.
   let afterLeaf = -1;
@@ -19597,10 +19510,9 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
 
   // Issuer-authenticated DELETE. The body must carry a BIP-340 signature
   // over `airdropClaimDeleteMsg(network, root, leaf_index, issuer_pubkey, timestamp)`
-  // verifiable under the announcement's `issuer_pubkey`. Without auth, a
-  // single curl attacker could DELETE-wipe the entire queue (DoS), and
-  // queue-absence could be falsely interpreted as fulfilment by recipient
-  // dashboards. The sig binds the request to: the originating issuer (key
+  // verifiable under the announcement's `issuer_pubkey`, so only the issuer
+  // can clear the queue (recipient dashboards read queue absence as
+  // fulfilment). The sig binds the request to: the originating issuer (key
   // gate), the specific leaf, and a fresh timestamp (replay gate).
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
@@ -19612,8 +19524,7 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
 
   // ±5 min freshness window. Prevents replay of a stale sig against a later
   // resubmission of the same leaf_index. Five minutes covers ordinary NTP
-  // skew + brief network detours without being so wide that an attacker
-  // could harvest sigs and replay them at scale.
+  // skew + brief network detours while keeping the replay window short.
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - timestamp) > 300) {
     return jsonResponse({ error: 'timestamp not fresh (must be within ±5 min of server time)' }, 403, cors);
@@ -19671,9 +19582,8 @@ async function handleAirdropClaimPaid(rootHex, leafIndexStr, req, env, network, 
   if (!/^[0-9a-f]{64}$/.test(payoutTxidHex)) return jsonResponse({ error: 'payout_txid must be 64 hex chars' }, 400, cors);
   if (!Number.isInteger(timestamp) || timestamp <= 0) return jsonResponse({ error: 'timestamp required (unix seconds, integer)' }, 400, cors);
 
-  // ±5 min freshness — same window as the DELETE handler. Prevents an
-  // attacker who recovers a sig later from re-marking a deleted-then-
-  // resubmitted claim.
+  // ±5 min freshness — same window as the DELETE handler, so a stale sig
+  // cannot re-mark a deleted-then-resubmitted claim.
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - timestamp) > 300) {
     return jsonResponse({ error: 'timestamp not fresh (must be within ±5 min of server time)' }, 403, cors);
@@ -19760,9 +19670,8 @@ function dropAnnounceCancelMsg(network, rootHex, issuerPubHex) {
 }
 
 // Layered rate-limit: per-IP and per-issuer. The per-IP cap is the same TTL
-// pattern as /pin and /drip; the per-pubkey cap forces a determined attacker
-// to acquire fresh keys, which costs them nothing but bounds the fan-out
-// from a single rotated IP-per-key. Either limit triggers 429.
+// pattern as /pin and /drip; the per-pubkey cap bounds the fan-out from a
+// single key. Either limit triggers 429.
 async function _dropAnnounceRateLimit(req, env, issuerPubHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
@@ -19904,9 +19813,8 @@ async function handleDropAnnounceDelete(rootHex, req, env, network, cors) {
 
   const stored = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
   if (!stored) return jsonResponse({ error: 'no such drop' }, 404, cors);
-  // Sig must be under the SAME pubkey that announced it. Otherwise an
-  // attacker who learned the rootHex could publish their own announcement
-  // first and then DELETE the legitimate one.
+  // Sig must be under the SAME pubkey that announced it, so only the
+  // original announcer can cancel an announcement.
   if (stored.issuer_pubkey !== issuerPubHex) {
     return jsonResponse({ error: 'cancel must be signed by the original announcer' }, 403, cors);
   }
@@ -19922,13 +19830,13 @@ async function handleDropAnnounceDelete(rootHex, req, env, network, cors) {
 // ============== BID INTENTS (off-chain bid book) ==============
 // Buyer-initiated counterpart to atomic intents. Bid intents are pure
 // off-chain coordination — the buyer signs an intent (no on-chain lock), a
-// seller can claim by spinning up a §5.7.6 atomic intent targeted at the
-// bidder, and the bidder takes through the existing §5.7.6 take flow.
-// Settlement is exactly §5.7.3 (T_AXFER opcode 0x26) — no new wire format.
+// seller can claim by spinning up an atomic intent targeted at the
+// bidder, and the bidder takes through the existing atomic-intent take flow.
+// Settlement is exactly T_AXFER (opcode 0x26) — no new wire format.
 //
 // Trust model: bidder-can-ghost. Spam mitigation = sig-required POST,
-// per-IP rate limit, 30-day expiry cap. v2 with covenants can replace this
-// with on-chain escrow (see the spec trust analysis).
+// per-IP rate limit, 30-day expiry cap. On-chain escrow would need covenants
+// (SPEC §10).
 
 const BID_EXPIRY_MAX_DAYS = 30;
 
@@ -19945,7 +19853,7 @@ function bidClaimKey(network, aid, bidIdHex) {
     ? `bidclaim:${aid}:${bidIdHex}`
     : `bidclaim:${network}:${aid}:${bidIdHex}`;
 }
-// Variable-fill bid (§5.7.7) needs many claim records per bid — one per
+// Variable-fill bid needs many claim records per bid — one per
 // partial fulfilment. Keyed by axintent_id so each linked atomic-intent
 // owns its own claim record; the bid's `remaining_amount` is the
 // authoritative ledger (decremented as fills settle, re-credited by the
@@ -20102,7 +20010,7 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
   if (minFillBI > 0n && minFillBI > BigInt(amountStr))return jsonResponse({ error: 'min_fill_amount must not exceed amount' }, 400, cors);
   if (minFillBI > 0n && minFillBI === BigInt(amountStr)) {
     // Degenerate: variable bid with min_fill == amount collapses to whole-bid.
-    // Reject so the bidder uses the simpler path; matches the §5.7.6.1
+    // Reject so the bidder uses the simpler path; matches the variable-amount
     // pattern for variable-amount intents.
     return jsonResponse({ error: 'min_fill_amount == amount is the degenerate (whole-bid) case; omit min_fill_amount instead' }, 400, cors);
   }
@@ -20167,7 +20075,7 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
     created_at: now,
     network,
   };
-  // Variable-fill record fields (§5.7.7). `min_fill_amount` is stored as a
+  // Variable-fill record fields. `min_fill_amount` is stored as a
   // signal to readers + sellers that partial fulfilment is allowed;
   // `remaining_amount` is the worker-maintained ledger the atomic-CAS
   // (PR2) will decrement on each linked atomic-intent settlement.
@@ -20252,7 +20160,7 @@ async function handleBidIntentDelete(assetIdHex, bidIdHex, req, env, network, co
   // Variable-fill bids may have many linked partial claims; delete them all.
   // Any in-flight linked atomic-intents still exist independently — the
   // seller can self-spend their asset_utxo back to invalidate. Same hard-
-  // cancel pattern as §5.7.6.1 *Garbage collection*.
+  // cancel pattern as variable-amount intents.
   try {
     const partials = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
     await Promise.all(partials.keys.map(k => env.REGISTRY_KV.delete(k.name)));
@@ -20481,7 +20389,7 @@ async function sweepPreauthBidPhantoms(env, network) {
   return { probed, deleted, cursor_reset: !cursor };
 }
 
-// Same shape as sweepPreauthBidPhantoms above, but for §5.7.12 partial-
+// Same shape as sweepPreauthBidPhantoms above, but for T_PREAUTH_BID_VAR partial-
 // fill bids. Walks `prebidv:` keys, probes each funding outpoint, deletes
 // the record + funding reverse-index when the UTXO is spent. Catches all
 // three of the same cases: settlement confirmed but scanner lagged, buyer
@@ -20717,7 +20625,7 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   // output commitment vs. an off-chain "intended_buyer_hash160" field.
   // We'll require the dapp to include that field in the axintent post for
   // bid-flow axintents; absent that, we skip and trust the dapp re-verifies
-  // at take-time (same policy as §5.6).
+  // at take-time (same policy as swaps).
   if (axintent.intended_buyer_h160 && axintent.intended_buyer_h160.toLowerCase() !== expectedBuyerH160) {
     return jsonResponse({ error: 'linked axintent does not target buyer_address' }, 400, cors);
   }
@@ -21171,16 +21079,10 @@ async function scanForEtches(env, network) {
   let scanned = 0, found = 0;
   let _subreqEstimate = 0;
   const _SUBREQ_BUDGET = 40;
-  // Per-scan petch lookup cache. Each T_PMINT in the block-tx loop used to
-  // do its own KV.get(petchKey(...)), so a dense block on a popular fair
-  // launch (FAIR's etch+200 blocks landed ~300 reveals/block) burned
-  // ~300 subrequests per block just on petch lookups. With the per-tx
-  // KV.put for canonical entries plus the orphan-cleanup KV.delete on top,
-  // the cron tipped past the 1000-subrequest budget mid-block and silently
-  // skipped the rest of the T_PMINTs — leaving "confirmed but not credited"
-  // mints in users' wallets that no rescan would heal because last_scanned
-  // had already advanced. Caching keeps it at one petch lookup per asset
-  // per scan tick.
+  // Per-scan petch lookup cache: one petch lookup per asset per scan tick
+  // rather than one KV.get per T_PMINT, so a dense fair-launch block (~300
+  // reveals) stays inside the 1000-subrequest budget and no T_PMINT is
+  // skipped mid-block.
   const _petchCache = new Map();
   const _petchLookup = async (aid) => {
     if (_petchCache.has(aid)) return _petchCache.get(aid);
@@ -21335,8 +21237,8 @@ async function scanForEtches(env, network) {
         // bump a single per-asset counter so /assets can surface a
         // "movement" stat without paying the cost of a full per-tx
         // index. The xferseen dedupe key makes hint+cron idempotent:
-        // whichever path sees the tx first wins, the other no-ops.
-        // Mid-block-crash re-scans no longer double-count.
+        // whichever path sees the tx first wins, the other no-ops, and a
+        // mid-block-crash re-scan does not double-count.
         const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                       : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
                       : decoded.opcode === T_PREAUTH_BID ? decodePreauthBidPayload
@@ -21354,9 +21256,9 @@ async function scanForEtches(env, network) {
         // gates the recipient credit identically).
         if (decoded.opcode === T_PREAUTH_BID_VAR && !_validatePreauthBidVarRefundVout(dx, tx)) continue;
         const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
-        // (Reflection attestation no longer ingests per-CXFER here: the full-scan model re-scans EVERY tx of
-        // each confirmed block via the box-poll /reflection/job, so completeness can't depend on this loop
-        // catching only the CXFERs. The cron advances the confirmed tip; the box assembles + proves.)
+        // (Reflection does not ingest per-CXFER here: the full-scan model re-scans EVERY tx of each
+        // confirmed block via /reflection/job, so completeness can't depend on this loop catching only
+        // the CXFERs. The cron advances the confirmed tip; the relayer proves.)
         // Implicit-cancel detection for opening listings. Any tx that
         // spends the asset_id's UTXOs (CXFER consolidate, AXFER settle,
         // or the maker shuffling funds around) terminates whichever
@@ -21391,7 +21293,7 @@ async function scanForEtches(env, network) {
         // Per-asset holder counter: each output's recipient scriptpubkey is
         // a candidate new wallet. Walk the tx outputs that correspond to
         // tacit asset commitments. For T_CXFER and T_AXFER the mapping is
-        // dx.outputs[i] -> tx.vout[i]. For T_AXFER_VAR (§5.7.9) the layout
+        // dx.outputs[i] -> tx.vout[i]. For T_AXFER_VAR the layout
         // is INTERLEAVED: dx.outputs[0] -> tx.vout[0] (recipient), the
         // BTC payment to the maker sits at tx.vout[1], and dx.outputs[1]
         // -> tx.vout[2] (maker change). Walking i==i for AXFER_VAR would
@@ -21401,7 +21303,7 @@ async function scanForEtches(env, network) {
         const _voutForOutput = decoded.opcode === T_AXFER_VAR
           ? (i) => (i === 0 ? 0 : 2)
           : decoded.opcode === T_PREAUTH_BID
-          // T_PREAUTH_BID canonical settlement layout (§5.7.11):
+          // T_PREAUTH_BID canonical settlement layout:
           //   vout[0] = buyer's tacit recipient (output[0])
           //   vout[1] = seller's BTC payout (non-tacit)
           //   vout[2] = OP_RETURN(bid_context_hash) (non-tacit)
@@ -21410,7 +21312,7 @@ async function scanForEtches(env, network) {
           // the tacit-asset outputs follow the canonical (0, 3) indices.
           ? (i) => (i === 0 ? 0 : 3)
           : decoded.opcode === T_PREAUTH_BID_VAR
-          // T_PREAUTH_BID_VAR canonical settlement layout (§5.7.12):
+          // T_PREAUTH_BID_VAR canonical settlement layout:
           //   vout[0] = buyer's tacit recipient
           //   vout[1] = seller's BTC payout
           //   vout[2] = OP_RETURN(bid_context_hash_i)
@@ -21473,7 +21375,7 @@ async function scanForEtches(env, network) {
                     _bumpCount(env, preauthSaleCountKey(network, dx.asset_id), -1).catch(() => {});
                     await env.REGISTRY_KV.delete(preauthOutpointIndexKey(network, dx.asset_id, op.txid, op.vout));
                   } else if ((f.kind === 'intent' || f.kind === 'intent-var') && f.intent_id) {
-                    // If this settled atomic-intent was a chunk of a §5.7.7
+                    // If this settled atomic-intent was a chunk of a variable-fill
                     // variable-fill bid, durably record the consumed capacity on
                     // the parent bid so it can't "spring back" when the bidpclaim
                     // TTLs out (over-fill past the signed amount). Mark the
@@ -21572,7 +21474,7 @@ async function scanForEtches(env, network) {
         // If mint_start_height ≠ 0, it MUST be ≥ etch_height + 1.
         // The decoder defers this (it doesn't see etch_height); enforce here
         // so a deployer can't set mint_start_height = etch_height to bypass
-        // the §5.9 step-4 same-block defense and premine into their own
+        // the PMINT rule 4 same-block defense and premine into their own
         // T_PETCH. Non-conforming T_PETCHes are dropped entirely.
         if (cp.mint_start_height !== 0 && cp.mint_start_height < h + 1) continue;
         const aid = assetIdFor(tx.txid, 0);
@@ -21599,23 +21501,18 @@ async function scanForEtches(env, network) {
         // structurally-valid envelopes pass the decoder length/opcode checks
         // but the cron must additionally enforce:
         //
-        //   §5.9 step 1: asset_id == sha256(etch_txid_BE || 0_LE). Without
-        //     this an attacker can broadcast a T_PMINT claiming a victim's
-        //     real asset_id with a forged etch_txid; the cron would write
-        //     under the victim's pmint:* namespace, poisoning the cap
-        //     counter on /petch-assets and (eventually) disabling the Mint
-        //     button across all wallets. Each grief envelope costs full
-        //     Bitcoin fees but the asymmetry is one bad mint affects every
-        //     viewer's UI.
-        //   §5.9 step 2: parent envelope at etch_txid is T_PETCH (not
+        //   PMINT rule 1: asset_id == sha256(etch_txid_BE || 0_LE), so a
+        //     T_PMINT only ever counts against the cap of the asset its
+        //     etch_txid actually derives.
+        //   PMINT rule 2: parent envelope at etch_txid is T_PETCH (not
         //     CETCH or anything else). Cross-mode references would index a
         //     T_PMINT against an asset that has no cap_amount/mint_limit
         //     metadata — read-side cap arithmetic divides by zero and the
         //     dapp's UI shows wrong state.
-        //   §5.9 step 3: amount == petch.mint_limit. T_PMINT is the
+        //   PMINT rule 3: amount == petch.mint_limit. T_PMINT is the
         //     non-substitutable per-mint tranche; an envelope with a
         //     different amount is malformed and shouldn't credit.
-        //   §5.9 step 4: confirmed_height in [effective_start,
+        //   PMINT rule 4: confirmed_height in [effective_start,
         //     effective_end]. This is the structural defense of the
         //     "zero deployer allocation" property — without it, a deployer
         //     who broadcasts T_PETCH and T_PMINT in the same block would
@@ -21628,21 +21525,21 @@ async function scanForEtches(env, network) {
         // the surface this validation block protects.
         const cm = decodeCPmintPayload(decoded.payload);
         if (!cm) continue;
-        // §5.9 step 1: asset_id derivation.
+        // PMINT rule 1: asset_id derivation.
         const expectedAid = assetIdFor(cm.etch_txid, 0);
         if (expectedAid !== cm.asset_id) continue;
-        // §5.9 step 2: parent must be T_PETCH. Lookup by the DERIVED asset_id
+        // PMINT rule 2: parent must be T_PETCH. Lookup by the DERIVED asset_id
         // rather than the (potentially forged) cm.asset_id so a payload that
         // somehow slipped past step 1 still resolves to the right namespace.
         // Cached across the scan invocation — see _petchLookup above for why.
         const petch = await _petchLookup(expectedAid);
         if (!petch) continue;   // T_PETCH not yet indexed — re-scan picks it up
-        // §5.9 step 3: amount equals mint_limit (BigInt compare; both are
+        // PMINT rule 3: amount equals mint_limit (BigInt compare; both are
         // base-10 strings in the metadata + decoder).
         try {
           if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) continue;
         } catch { continue; }
-        // §5.9 step 4: height window. effective_start = mint_start_height ||
+        // PMINT rule 4: height window. effective_start = mint_start_height ||
         // (etch_height + 1); effective_end = mint_end_height || ∞. Any mint
         // outside that window is permanently invalid and must not be counted.
         const startH = Number(petch.mint_start_height) || 0;
@@ -21651,7 +21548,7 @@ async function scanForEtches(env, network) {
         const effectiveStart = startH !== 0 ? startH : etchedAt + 1;
         if (h < effectiveStart) continue;
         if (endH !== 0 && h > endH) continue;
-        // §5.9 step 5: Pedersen binding. (amount, blinding) are public in the
+        // PMINT rule 5: Pedersen binding. (amount, blinding) are public in the
         // envelope, so the indexer must recompute pedersenCommit(amount, blinding)
         // and verify it equals the declared commitment. Without this gate, any
         // structurally-valid envelope with a forged commitment lands in the
@@ -21725,7 +21622,7 @@ async function scanForEtches(env, network) {
           found++;
         }
       } else if (decoded.opcode === T_SLOT_MINT) {
-        // SPEC-CBTC-ZK §5.21. Self-custody-slot atomic mint. Verifies:
+        // Self-custody-slot atomic mint. Verifies:
         //   1. Pool init exists for (asset_id, denomination)
         //   2. The minter's BIP-340 sig covers the envelope's claimed terms
         //   3. tx.vout[0] is the slot P2TR at K_btc = recipient_commit − denom·H
@@ -21783,7 +21680,7 @@ async function scanForEtches(env, network) {
           network,
           kind: 'slot_mint',
           recipient_commitment: sm.recipient_commitment,
-          // SPEC-CBTC-ZK-FUNGIBILITY §5.26: T_SLOT_MINT MAY carry an
+          // T_SLOT_MINT MAY carry an
           // encrypted-note tail when the minter is not the recipient
           // (AMM-driven mint, paid distribution, OTC sale). Persist it on
           // the leaf record so the /pools detail endpoint and the
@@ -21837,7 +21734,7 @@ async function scanForEtches(env, network) {
         });
         found++;
       } else if (decoded.opcode === T_SLOT_BURN) {
-        // SPEC-CBTC-ZK §5.22. Self-custody-slot atomic redeem. The full
+        // Self-custody-slot atomic redeem. The full
         // soundness chain (Groth16 verify + Bitcoin Schnorr key-path verify) is
         // dapp-authoritative per the three-verifier model; the worker
         // structurally decodes, records the nullifier, and marks the slot as
@@ -21882,7 +21779,7 @@ async function scanForEtches(env, network) {
           found++;
         }
       } else if (decoded.opcode === T_SLOT_ROTATE) {
-        // SPEC-CBTC-ZK §5.23. Self-custody-slot atomic transfer. Bundles a
+        // Self-custody-slot atomic transfer. Bundles a
         // burn-side (old note's nullifier consumed) with a mint-side (new
         // leaf appended) plus the old owner's BIP-340 sig binding the
         // rotation terms. Supply is conserved (one nullifier in, one leaf
@@ -21902,7 +21799,7 @@ async function scanForEtches(env, network) {
           ownerXOnly = ownerPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(sr.old_owner_sig), rotateMsg, ownerXOnly)) continue;
-        // §5.24.0 two-key: the new slot is at K_btc = r_btc · G, with the
+        // Two-key: the new slot is at K_btc = r_btc · G, with the
         // x-only published explicitly in the envelope's new_k_btc_xonly
         // field. The validator does NOT recompute K_btc from new_recipient_commit.
         const newKBtcXOnly = hexToBytes(sr.new_k_btc_xonly);
@@ -21929,7 +21826,7 @@ async function scanForEtches(env, network) {
           network,
           kind: 'slot_rotate_new',
           recipient_commitment: sr.new_recipient_commitment,
-          // SPEC-CBTC-ZK-FUNGIBILITY §5.26: persist the encrypted-note tail
+          // Persist the encrypted-note tail
           // alongside the leaf so the /slot-rotates endpoint can return it
           // to the recipient's on-load scanner.
           encrypted_note: sr.encrypted_note || null,
@@ -22027,7 +21924,7 @@ async function scanForEtches(env, network) {
         if (!oldInitRec) continue;
 
         // Each output pool must be initialized. Cross-asset SPLIT is allowed
-        // by §5.24.6 when wrapper conventions match; pool-init existence is
+        // by the cross-asset rule when wrapper conventions match; pool-init existence is
         // the structural gate (canonical-vk verification is upstream).
         let allPoolsReady = true;
         for (const out of ss.outputs) {
@@ -22203,8 +22100,8 @@ async function scanForEtches(env, network) {
         }
 
         // Mark old slot 'split' in slot-registry (best-effort). Recovered K_btc
-        // for the old slot comes from deriveSlotKbtc on the pre-§5.24.0 legacy
-        // single-key path — for two-key slots the registry was populated at
+        // for the old slot comes from deriveSlotKbtc on the single-key
+        // path — for two-key slots the registry was populated at
         // mint time with the explicit k_btc_xonly, so lookup by recipient_commit
         // is informational only.
         try {
@@ -22395,13 +22292,13 @@ async function scanForEtches(env, network) {
         // This branch verifies:
         //   - canonical asset ordering (lex byte-compare, assetA < assetB)
         //   - pool_id derivation includes fee_bps + capability_flags
-        //     (V3/V4 fee-tier parity; same (A,B) at different fees = different pools)
+        //     (same (A,B) at different fees = different pools)
         //   - founder shares match isqrt(deltaA·deltaB) − MINIMUM_LIQUIDITY
-        //     (Uniswap V2 initial-share convention)
+        //     (constant-product initial-share convention)
         //   - launcher gate signatures verify under the declared launcher
         //     pubkeys + tacit-amm-launcher-gate-v1 domain (if any declared)
         //
-        // Deferred to follow-up sessions:
+        // Not verified here:
         //   - kernel sigs against on-chain input UTXO Pedersen commits
         //     (needs walking tx.vin + asset-UTXO index lookup)
         //   - BJJ Pedersen commits + XCURVE sigma cross-curve binding
@@ -22436,20 +22333,18 @@ async function scanForEtches(env, network) {
           const deltaA = swapped ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
           const deltaB = swapped ? BigInt(lp.delta_a) : BigInt(lp.delta_b);
 
-          // V1 pools fix capability_flags to 0x00. The byte is reserved in
-          // the pool_id preimage so follow-up opcodes (range-LP, etc.) can
-          // extend the pool taxonomy without colliding with V1 pool_ids.
-          // Any non-zero V1 POOL_INIT
-          // would derive a pool_id no V1 validator can interpret, so we
-          // skip indexing it here. The wire decoder still accepts any u8
+          // Pools fix capability_flags to 0x00. The byte is reserved in the
+          // pool_id preimage so future opcodes (range-LP, etc.) can extend
+          // the pool taxonomy without colliding with existing pool_ids. A
+          // non-zero POOL_INIT derives a pool_id this validator cannot
+          // interpret, so we skip indexing it here. The wire decoder still accepts any u8
           // for forward-format compatibility; this gate mirrors dapp's
           // encoder guard at dapp/amm-envelope.js's encodeLpAdd.
           if ((lp.pool_capability_flags ?? 0) !== 0) continue;
 
-          // v1 hard-disable of arbiter mechanism (mandatory
-          // inclusion of qualifying intents is DISABLED AT V1).
-          // Trust-quorum opt-in is deferred to a follow-up amendment.
-          // Wire-format reservation preserved; validator rejects non-zero.
+          // The arbiter mechanism (mandatory inclusion of qualifying
+          // intents) is disabled. Wire-format reservation preserved;
+          // validator rejects non-zero.
           if ((lp.arbiter_pubkeys?.length ?? 0) !== 0) continue;
           if ((lp.arbiter_threshold_m ?? 0) !== 0) continue;
 
@@ -22469,9 +22364,9 @@ async function scanForEtches(env, network) {
           const existing = await ammPoolGet(env, network, poolIdHex);
           if (existing) continue;  // first-confirmed-wins
 
-          // Uniswap V2 initial shares: founder gets isqrt(Δa·Δb) − ML,
-          // ML is locked to NUMS recipient at vout[k_min_liq] (locked-
-          // output check deferred to follow-up session).
+          // Constant-product initial shares: founder gets isqrt(Δa·Δb) − ML,
+          // ML is locked to NUMS recipient at vout[k_min_liq] (the
+          // locked-output check is not run here).
           let init;
           try { init = ammLpInitShares(deltaA, deltaB); }
           catch { continue; }
@@ -22620,7 +22515,7 @@ async function scanForEtches(env, network) {
           // Variant 0 standard LP add — append liquidity to existing pool.
           // Arithmetic gates verified here (reserve update + share mint).
           // Cryptographic gates (kernel sigs A+B, XCURVE sigma, Groth16
-          // proof against pool.vk_cid) deferred to follow-up sessions.
+          // proof against pool.vk_cid) are not run here.
 
           // Canonical asset pair (rejects A == B).
           let canon0;
@@ -22634,7 +22529,7 @@ async function scanForEtches(env, network) {
           // Locate the pool. Variant 0 doesn't carry fee_bps / capability_flags
           // (variant-0 LP_ADD only carries
           // the asset pair). Multiple pools can share an (A,B) pair at
-          // different fee tiers / capability_flags (V3/V4 parity), so we
+          // different fee tiers / capability_flags, so we
           // enumerate candidates via the canonical-pair reverse index and
           // match the kernel sig against each. The kernel sig binds the full
           // pool_id (which encodes fee_bps + capability_flags), so only the
@@ -22864,11 +22759,6 @@ async function scanForEtches(env, network) {
         // Worker validates all non-Groth16 gates here. The Groth16 batch
         // proof itself is verified browser-side via snarkjs (mirrors the
         // mixer pattern — worker is /pin-mixer-vk + indexer, not prover).
-        //
-        // Pre-ceremony reality: no real T_SWAP_BATCH txs exist yet because
-        // POOL_INIT references a vk_cid produced by the Phase 2 ceremony.
-        // This branch is the foundation that activates as soon as the
-        // ceremony lands; until then it sees no envelopes and stays inert.
         //
         // What this branch verifies (matches tests/amm-validator.mjs
         // validateSwapBatch byte-for-byte except for the Groth16 step):
@@ -23251,7 +23141,7 @@ async function scanForEtches(env, network) {
         found++;
       } else if (decoded.opcode === T_SWAP_VAR) {
         // Per-trade variable-amount AMM swap, validated under
-        // the OUTCOME TAXONOMY (2026-06-05 revision):
+        // the OUTCOME TAXONOMY:
         //
         //   INVALID      — Stage-A authentication failure (decode, OP_RETURN
         //                  binding, input binding, sigs, r_receipt range,
@@ -24068,7 +23958,7 @@ async function scanForEtches(env, network) {
         await ammFarmOwnerDelete(env, network, lu.owner_commit);
         found++;
       } else if (decoded.opcode === T_LP_HARVEST) {
-        // SPEC-masterchef-farm-stake-anytime §4 (reflection receipt model). Claim accrued
+        // Reflection receipt model. Claim accrued
         // reward without unbonding. The receipt is a STABLE position id (owner_commit,
         // nonce, shares) and stays put; the owner's BIP-340 sig over the reward note's
         // blinding AND its vout[1] destination authorizes. The worker mirrors the
@@ -24157,7 +24047,7 @@ async function scanForEtches(env, network) {
 
         // RE-STAMP: roll entry_acc to the current accumulator. The receipt nonce is the
         // stable position id and does NOT rotate, so this roll is both the "pending reward
-        // resets post-harvest" view AND the replay gate the nonce advance used to be.
+        // resets post-harvest" view AND the replay gate.
         const newBondLh = {
           ...bondLh,
           entry_acc_per_share: String(farmCopyLh.acc_reward_per_share),
@@ -24335,14 +24225,14 @@ async function scanForEtches(env, network) {
       } else if (decoded.opcode === T_DCLAIM) {
         // Permissionless claim event against a T_DROP parent.
         // Cron-side validation mirrors T_PMINT's gate:
-        //   §5.13 step 2: drop_id derives from drop_reveal_txid; parent envelope
+        //   DCLAIM rule 2: drop_id derives from drop_reveal_txid; parent envelope
         //                 at drop_reveal_txid is T_DROP standard (not reclaim).
-        //   §5.13 step 3: amount == drop.per_claim.
-        //   §5.13 step 5: cumulative_claimed + amount ≤ cap_amount (cap_overflow).
-        //   §5.13 step 6: if merkle-gated, witness verifies (recipient_pub
+        //   DCLAIM rule 3: amount == drop.per_claim.
+        //   DCLAIM rule 5: cumulative_claimed + amount ≤ cap_amount (cap_overflow).
+        //   DCLAIM rule 6: if merkle-gated, witness verifies (recipient_pub
         //                 binding, merkle proof, eth_sig recovery) AND
         //                 (drop_id, leaf_index) not previously claimed.
-        //   §5.13 step 7: Pedersen open: pedersenCommit(amount, blinding) == commitment.
+        //   DCLAIM rule 7: Pedersen open: pedersenCommit(amount, blinding) == commitment.
         //
         // The dapp's validateOutpoint covers all of these client-side too, so
         // wallets never credit a bad UTXO regardless of whether the cron
@@ -24358,17 +24248,17 @@ async function scanForEtches(env, network) {
         // unknown (cron lag, reorg), skip and let a re-scan catch it.
         const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
         if (!drop || drop.kind !== 'drop') continue;
-        // §5.13 step 3: amount == drop.per_claim.
+        // DCLAIM rule 3: amount == drop.per_claim.
         try {
           if (BigInt(cdc.amount) !== BigInt(drop.per_claim)) continue;
         } catch { continue; }
         // Expiry: confirmed_height ≤ drop.expiry_height (when set).
         if (drop.expiry_height !== 0 && h > drop.expiry_height) continue;
-        // §5.13 step 7: Pedersen binding. Reuses pmintCommitmentOpens since
+        // DCLAIM rule 7: Pedersen binding. Reuses pmintCommitmentOpens since
         // both opcodes carry plaintext (amount, blinding) and a Pedersen
         // commitment — identical opening check.
         if (!pmintCommitmentOpens(cdc.amount, cdc.blinding, cdc.commitment)) continue;
-        // §5.13 step 6: eligibility gate. Merkle-gated drops require witness;
+        // DCLAIM rule 6: eligibility gate. Merkle-gated drops require witness;
         // open drops require empty witness.
         const merkleRootZero = /^0+$/.test(drop.merkle_root);
         if (merkleRootZero) {
@@ -24398,7 +24288,7 @@ async function scanForEtches(env, network) {
             network,
           }));
         }
-        // §5.13 step 5: cap_overflow ordering. Same KV.list-based canonical
+        // DCLAIM rule 5: cap_overflow ordering. Same KV.list-based canonical
         // ordering as T_PMINT — keys embed (height, tx_index, txid) so a
         // lex sort = canonical chain order. The CAP check happens at
         // read time via the drop_progress snapshot, NOT here, so dense-block
@@ -24434,12 +24324,12 @@ async function scanForEtches(env, network) {
         // (reserves, supply, timestamp) flags the issuer as an equivocator.
         const wa = decodeWrapperAttestPayload(decoded.payload);
         if (!wa) continue;
-        // §5.19 validator step 1: network_tag matches local network identifier.
+        // Validator step 1: network_tag matches local network identifier.
         const expectedNetTag = networkTagFor(network);
         if (expectedNetTag === null || wa.network_tag !== expectedNetTag) continue;
-        // §5.19 validator step 2 (post-confirmation): as_of_height ≤ confirmation_height.
+        // Validator step 2 (post-confirmation): as_of_height ≤ confirmation_height.
         if (wa.as_of_height > h) continue;
-        // §5.19 validator step 3: recompute attestation_msg per §4.2.4 and
+        // Validator step 3: recompute attestation_msg and
         // verify BIP-340 sig under issuer_pubkey's x-only form.
         const msg = wrapperAttestationMsg(
           wa.network_tag, wa.asset_id, wa.issuer_pubkey,
@@ -24447,7 +24337,7 @@ async function scanForEtches(env, network) {
         );
         const issuerXOnly = hexToBytes(wa.issuer_pubkey).slice(1);
         if (!verifySchnorr(hexToBytes(wa.attestation_sig), msg, issuerXOnly)) continue;
-        // §5.19 three-case dedup. Tuple key includes network in the prefix.
+        // Three-case dedup. Tuple key includes network in the prefix.
         const wak = wrapperAttestKey(network, wa.asset_id, wa.issuer_pubkey, wa.as_of_height);
         const existing = await env.REGISTRY_KV.get(wak, 'json');
         const record = {
@@ -24549,7 +24439,7 @@ export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
   atomicIntentClaimReadMsg, _slimAtomicClaim, handleAtomicIntentClaimDetail,
-  // T_AXFER_VAR (§5.7.6.1) — variable-amount atomic-intent message helpers.
+  // T_AXFER_VAR — variable-amount atomic-intent message helpers.
   // Exported so tests/worker-axintent-var can pin byte-for-byte determinism
   // of intent_id derivation, message-byte equality with the dapp side, and
   // signature-verification round-trip before the handler PRs wire them in.
@@ -24642,7 +24532,7 @@ export {
   ammCollectAssetInputs,
   decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,
-  // Protocol-fee crystallization (Uniswap V2 mintFee) + claim envelope.
+  // Protocol-fee crystallization + claim envelope.
   ammComputeProtocolShares, ammCrystallizeProtocolFee,
   decodeTProtocolFeeClaimPayload, buildProtocolFeeClaimMsg,
   // MINIMUM_LIQUIDITY locked-output verification.
@@ -24658,7 +24548,7 @@ export {
   chainOutspendProbe,
   // Leaf-lookup index (cBTC.zk leaf_hash → slot metadata).
   slotLeafLookupKey, slotLeafLookupGet, slotLeafLookupPut,
-  // Per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2) — reuses chainOutspendProbe.
+  // Per-slot coverage check — reuses chainOutspendProbe.
   slotCoverageProbeVariant, slotCoverageCachePut, slotCoverageCacheGet,
   slotCoverageEnumerateVariants, slotCoverageScanRoundRobin,
   slotCoverageCacheKey, slotCoverageCursorKey,
@@ -24928,7 +24818,7 @@ async function handleDiscordInteraction(req, env, cors, ctx) {
 // live index.html references (build/build.mjs derives the token and the
 // .br from the same file bytes and prints the upload command), so a
 // forgotten KV upload — or a Render deploy mid-propagation — degrades to
-// today's origin-compressed behavior rather than ever serving stale code.
+// the origin-compressed response rather than ever serving stale code.
 //
 // encodeBody:'manual' tells the runtime the body is already encoded so
 // it passes the bytes through verbatim instead of re-compressing.
@@ -25010,9 +24900,9 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
     if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors);
 
-    // Reflection relay loop (the self-hosted prover box polls these — see ops/scripts/reflection-relay-loop.sh).
+    // Reflection relay (the relayer polls these — see worker-relay/src/reflection-folder.js).
     // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
-    // the attested cursor after the box lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
+    // the attested cursor after the relayer lands attestBitcoinStateProven on-chain. Config-gated (404 if off).
     if (url.pathname === '/reflection/job' && req.method === 'GET') return handleReflectionJob(req, env, url, cors);
     if (url.pathname === '/reflection/ack' && req.method === 'POST') return handleReflectionAck(req, env, cors);
     if (url.pathname === '/reflection/pending' && req.method === 'GET') return handleReflectionPending(req, env, url, cors);
@@ -25028,8 +24918,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
     if (url.pathname === '/reflection/consumed-source' && req.method === 'POST') return handleReflectionConsumedSource(req, env, url, cors);
     if (url.pathname === '/reflection/burndep-list' && req.method === 'GET') return handleReflectionBurndepList(req, env, url, cors);
-    // Mode-B eth-side state hand-off: today the human recipe
-    // POSTs eth_prove's output here after running it by hand; Phase 2's sidecar will do the same.
+    // Mode-B eth-side state: the eth-state sidecar POSTs eth_prove's output here.
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
@@ -25037,9 +24926,9 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/eth-state/confirmed/clear' && req.method === 'POST') return handleReflectionEthStateConfirmedClear(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/confirm' && req.method === 'POST') return handleReflectionEthStateConfirm(req, env, url, cors);
 
-    // Confidential settle relay (the same box polls these — see ops/scripts/confidential-settle-loop.sh).
-    // /confidential/submit enqueues a user's confidential op; /confidential/job lets the box claim +
-    // GPU-prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
+    // Confidential settle relay (the relayer polls these — see worker-relay/src/settle-relay.js).
+    // /confidential/submit enqueues a user's confidential op; /confidential/job lets the relayer claim +
+    // prove it; /confidential/ack records the on-chain settle; /confidential/status is the dapp poll.
     if (url.pathname === '/confidential/submit' && req.method === 'POST') return handleConfidentialSubmit(req, env, cors);
     if (url.pathname === '/confidential/job' && req.method === 'GET') return handleConfidentialJob(req, env, cors);
     if (url.pathname === '/confidential/queue' && req.method === 'GET') return handleConfidentialQueue(req, env, cors);
@@ -25169,12 +25058,12 @@ async function _routeFetch(req, env, ctx) {
     // The current dapp explicitly passes ?network=mainnet for mainnet ops.
     const network = parseNetwork(url.searchParams.get('network'));
 
-    // SPEC-CBTC-ZK-FUNGIBILITY §5.26 — slot-rotate log endpoint. Returns
+    // Slot-rotate log endpoint. Returns
     // chronologically-ordered T_SLOT_ROTATE events with their encrypted-note
     // tails. Recipients call this on dapp load, iterate, and attempt to
     // decrypt each note with their HKDF-derived viewing privkey. Successful
     // decrypts identify slots addressed to this wallet.
-    // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage check. Returns cached
+    // Per-slot coverage check. Returns cached
     // coverage_ratio + missing-slot list for a specific variant, or the
     // full list of cached coverage records across all variants.
     //
@@ -25218,7 +25107,7 @@ async function _routeFetch(req, env, ctx) {
     // pending fills from the confirmed reserves — entries whose fill
     // would violate their own min_out floor are flagged
     // `projects_passthrough` and skipped (a pass-through leaves the
-    // pool untouched, §5.20). Wallets SHOULD quote new swaps against
+    // pool untouched). Wallets SHOULD quote new swaps against
     // `projected`; the outcome taxonomy makes a stale projection cost
     // at most a refund, never a burn.
     {
@@ -25623,9 +25512,8 @@ async function _routeFetch(req, env, ctx) {
     //   1. KEY-LEVEL since_height pre-filter. The log keys are
     //      zero-padded height-first ('slotmint:0000949875:...'), so a
     //      string comparison against the padded since_height drops
-    //      old records BEFORE issuing the KV.get — old polls used to
-    //      fetch every record and filter post-load, paying N reads on
-    //      every incremental scan. The dapp's slot scanner polls all
+    //      old records BEFORE issuing the KV.get, so an incremental scan
+    //      does not pay N reads. The dapp's slot scanner polls all
     //      four endpoints on each tick with a since_height that's
     //      usually just behind the chain tip; the typical poll
     //      returned 0-5 new records but loaded 100-1000.
@@ -25666,7 +25554,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/slot-rotates' && req.method === 'GET') {
       return _slotLogServe(slotRotateLogPrefix(network), 'rotates');
     }
-    // SPEC-CBTC-ZK-FUNGIBILITY §5.26 — companion log endpoints for the
+    // Companion log endpoints for the
     // three slot-creating ops that also accept an encrypted note tail
     // (mint, split, merge). Same shape as /slot-rotates: chronological
     // KV list filtered by since_height, returning the records the
@@ -25683,9 +25571,9 @@ async function _routeFetch(req, env, ctx) {
     }
 
     // ============== /chain/* — Esplora read-only proxy ==============
-    // The dapp previously called mempool.space / blockstream.info DIRECTLY
-    // from the browser for outspend / utxo / tx-history / fee-rate fetches.
-    // That works but has three failure modes the worker can eliminate:
+    // Outspend / utxo / tx-history / fee-rate reads go through the worker
+    // rather than straight from the browser to mempool.space /
+    // blockstream.info, which has three failure modes:
     //   1) CORS spam — public mirrors serve error responses without
     //      Access-Control-Allow-Origin, so 4xx/5xx upstream surfaces as
     //      cross-origin failures in the browser console.
@@ -25724,11 +25612,9 @@ async function _routeFetch(req, env, ctx) {
     }
     // IPFS content proxy. Races multiple public gateways server-side and
     // returns the first valid response. The dapp's IPFS fetches (asset
-    // metadata, airdrop snapshots, supply attestations) previously hit
-    // one gateway at a time from the browser — a slow primary = 5-15s
-    // visible delay per asset. Racing server-side eliminates the variance
-    // (slowest of 4 gateways no longer holds up the user) and lets CF's
-    // edge cache absorb popular content across all readers. IPFS is
+    // metadata, airdrop snapshots, supply attestations) go through it so a
+    // slow gateway never holds up the user, and the edge cache absorbs
+    // popular content across all readers. IPFS is
     // content-addressed so cache invalidation is free.
     if (url.pathname.startsWith('/ipfs/') && req.method === 'GET') {
       return handleIpfsProxy(req, env, cors);
@@ -26336,15 +26222,11 @@ async function _routeFetch(req, env, ctx) {
       const aid = mpa[1];
       const v = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
       if (!v) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
-      // Read snapshot first. The previous implementation called
-      // loadCanonicalPmints which value-fetched every canonical key and took
-      // ~45s wall-time on FAIR before truncating at 5000 entries — over the
-      // 30s worker ceiling and inconsistent with /petch-assets's 50000-key
-      // counts. The snapshot is the single source of truth maintained by
+      // Read snapshot first (loadCanonicalPmints value-fetches every canonical
+      // key, which is too slow for large assets). The snapshot is the single source of truth maintained by
       // the cron + hint write paths.
       // Parallel: tip fetch (mempool.space, 50ms–2.5s) and snapshot KV.get
-      // (~10-50ms) are independent. Sequential awaits added the smaller of
-      // the two to every cold response unnecessarily.
+      // (~10-50ms) are independent.
       let [tip, snap] = await Promise.all([
         fetchTipHeight(env, network),
         readPetchProgress(env, network, aid),
@@ -26549,9 +26431,8 @@ async function _routeFetch(req, env, ctx) {
       const txid = String(body?.txid || '').toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'txid must be 64-char hex' }, 400, cors);
       // Per-IP daily cap, same posture as /assets/hint: hints only echo data
-      // already on chain (or in mempool), so abuse is bounded — but we still
-      // don't want an attacker fetching every txid in their flood through
-      // the worker's subrequest budget.
+      // already on chain (or in mempool), so the cost is bounded, but the
+      // per-IP limit keeps hint fetches within the worker's subrequest budget.
       const ip = req.headers.get('CF-Connecting-IP') || 'anon';
       const day = new Date().toISOString().slice(0, 10);
       const hintKey = `hint:${day}:${ip}`;
@@ -26578,14 +26459,10 @@ async function _routeFetch(req, env, ctx) {
       // doesn't; the keys differ.)
       const txIndex = 0;
       if (decoded.opcode === T_DROP) {
-        // Reject unconfirmed T_DROP hints. An attacker who broadcasts a
-        // valid-looking T_DROP envelope (locking real asset UTXOs as inputs)
-        // could RBF it out before confirmation while the worker's drop:*
-        // record persists indefinitely. Recipients seeing the phantom drop
-        // via /drops-onchain would attempt T_DCLAIMs against a parent that
-        // never confirmed and burn their own commit + reveal fees. The
-        // attacker's RBF replacement reclaims their inputs — they pay
-        // nothing for the grief. Cron picks up confirmed T_DROPs on its
+        // Reject unconfirmed T_DROP hints: an unconfirmed T_DROP can be
+        // replaced before confirmation, and a drop:* record for it would
+        // send recipients to claim against a parent that never confirmed.
+        // Cron picks up confirmed T_DROPs on its
         // next tick (≤5 min), so the only UX cost is a short wait between
         // broadcast and discovery.
         if (!tx.status?.confirmed) {
@@ -26623,9 +26500,8 @@ async function _routeFetch(req, env, ctx) {
           // Reclaim variant. Write the same drop-reclaim KV
           // record the cron writes, so /drops-onchain/:drop_id surfaces it
           // immediately. The dapp validator independently re-checks the cap
-          // equality + reclaim_sig against the live drop record, so an
-          // attacker hinting a fake reclaim cannot inflate supply — the
-          // record's existence is informational, soundness lives in the
+          // equality + reclaim_sig against the live drop record, so a hinted
+          // reclaim cannot change supply — the record's existence is informational, soundness lives in the
           // dapp's validator against the worker's authoritative drop_id state.
           const reclaimMeta = {
             kind: 'drop-reclaim',
@@ -26651,13 +26527,9 @@ async function _routeFetch(req, env, ctx) {
       if (decoded.opcode === T_DCLAIM) {
         // Hinting a T_DCLAIM has soundness implications the T_DROP hint
         // doesn't: it writes a leaf nullifier that PERMANENTLY locks
-        // (drop_id, leaf_index) in this KV namespace. If we accepted a
-        // mempool-only tx, an attacker could broadcast a low-fee /
-        // RBF-replaceable T_DCLAIM with a valid Pedersen open for any
-        // victim's leaf, hint it, then drop or RBF the tx — leaf
-        // nullifier persists indefinitely, blocking the legitimate
-        // claimant. The cost is ~zero (the attacker's RBF replacement
-        // pays them, not the network). Refuse mempool hints; the
+        // (drop_id, leaf_index) in this KV namespace, and a mempool-only tx
+        // can still be replaced, which would leave a nullifier for a claim
+        // that never confirmed. Refuse mempool hints; the
         // claimant retries after first confirmation, or the cron picks
         // the tx up on its next scan once confirmed. For drops the
         // posture is different (the metadata is only ever additive and
@@ -26823,7 +26695,7 @@ async function _routeFetch(req, env, ctx) {
     if (mm && req.method === 'POST')                           return _mutateAndBust(mm[1], () => handleMintAttest(mm[1], mm[2], req, env, network, cors));
     const mo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/openings$/);
     if (mo && req.method === 'GET')                            return handleAssetOpenings(mo[1], env, network, cors);
-    // SPEC-BLINDED-PUBKEY §A.2 recipient discovery aid. Returns recent
+    // Blinded-pubkey recipient discovery aid. Returns recent
     // CXFER reveal txids for an asset, used by the dapp's
     // scanAssetForStealthReceipts to walk and trial-derive shielded
     // credits.
@@ -27085,8 +26957,7 @@ async function _routeFetch(req, env, ctx) {
 
     // Preauth bids (seller-completable T_PREAUTH_BID). Buyer signs
     // once, sellers complete settlement alone via inline-cleartext bid context.
-    // SWR cache layer matches preauth-sales but lands in a follow-up commit;
-    // for now serve fresh on every GET (no per-asset cache yet).
+    // Served fresh on every GET (no per-asset cache).
     const mpb = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-bids$/);
     if (mpb && req.method === 'POST')                          return _mutateAndBust(mpb[1], () => handlePreauthBidPost(mpb[1], req, env, network, cors));
     if (mpb && req.method === 'GET')                           return handlePreauthBidsList(mpb[1], env, network, cors);
@@ -27261,9 +27132,8 @@ async function _routeFetch(req, env, ctx) {
     if (mda && req.method === 'GET')                           return handleDropAnnounceGet(mda[1], env, network, cors);
     if (mda && req.method === 'DELETE')                         return handleDropAnnounceDelete(mda[1], req, env, network, cors);
 
-    // Debug endpoints: gated on DEBUG_TOKEN. Without the secret, attackers
-    // can rescan-from-genesis and exhaust the worker's daily subrequest
-    // budget. We return 404 (not 401) on missing/wrong auth so the surface
+    // Debug endpoints: gated on DEBUG_TOKEN, since a rescan-from-genesis can
+    // consume the worker's daily subrequest budget. We return 404 (not 401) on missing/wrong auth so the surface
     // looks like it doesn't exist.
     if (url.pathname === '/scan' && req.method === 'POST') {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
@@ -27604,7 +27474,7 @@ async function _routeFetch(req, env, ctx) {
     // per seller input), vout[1] for T_AXFER_VAR (interleaved layout).
     // The dapp's /hint endpoint and the cron's forward-backfill are
     // both authority for new trades; this is the catch-up tool for
-    // assets whose hint POSTs failed historically or whose intent/sale
+    // assets whose hint POSTs failed or whose intent/sale
     // records were cancelled-after-settle (the record is gone, but the
     // chain reveal is permanent).
     //
@@ -27867,8 +27737,8 @@ async function _routeFetch(req, env, ctx) {
     // envelopes against `aid` and writes any canonical pmint:* entries the
     // cron missed. Recovers dense fair-launch blocks where the per-cron-tick
     // subrequest budget tipped past 1000 before the block's pmint tail was
-    // indexed (silent-drop case documented at the §5.9 cron block). Applies
-    // §5.9 steps 1-5 identically to the cron — including the commitment-
+    // indexed (silent-drop case documented at the PMINT cron block). Applies
+    // PMINT rules 1-5 identically to the cron — including the commitment-
     // opening check — so this never indexes anything the cron would have
     // rejected. Asset-scoped + height-bounded; long ranges walk in chunks.
     if (url.pathname === '/admin/pmint-backfill' && req.method === 'POST') {
@@ -28149,8 +28019,7 @@ export default {
       try {
         const _path = (() => { try { return new URL(req.url).pathname; } catch { return ''; } })();
         const cors = corsHeaders(env, req.headers.get('Origin') || '', OPEN_ORIGIN_PATHS.has(_path));
-        // Surface the real message to authenticated box callers (temporary diagnostics for the mainnet
-        // reflection bring-up); anonymous callers still get the opaque error.
+        // Surface the real message to authenticated box-token callers; anonymous callers get the opaque error.
         const _authed = checkConfidentialAuth(req, env);
         _resp = new Response(
           JSON.stringify(_authed ? { error: 'internal error', detail: String(e?.stack || e?.message || e).slice(0, 400), cause: String(e?.cause?.stack || e?.cause?.message || e?.cause || '').slice(0, 300) } : { error: 'internal error' }),
@@ -28223,9 +28092,9 @@ export default {
         }
       });
       // Reflection attestation (full-scan model): the cron advances the confirmed TIP (the latest
-      // finality-buried Bitcoin height) so the box-poll job (/reflection/job → prove → submit →
-      // /reflection/ack, ops/scripts/reflection-relay-loop.sh) assembles the newly-buried blocks. The cron
-      // does NOT prove (the box does), unless a synchronous box HTTP prover (REFLECTION_PROVE_URL) is set,
+      // finality-buried Bitcoin height) so the relayer's job (/reflection/job → prove → submit →
+      // /reflection/ack) assembles the newly-buried blocks. The cron does NOT prove (the relayer does),
+      // unless a synchronous HTTP prover (REFLECTION_PROVE_URL) is set,
       // in which case it runs the full cycle inline after setting the tip. Config-gated (env.REFLECTION_ATTEST
       // + REFLECTION_GENESIS_HEIGHT → a null attester is an inert no-op). The per-network maturity depth
       // (reflectionConf) matches the pool's immutable window so a job's tip is buried enough to attest.
@@ -28272,7 +28141,7 @@ export default {
         }),
       ));
       // Sweep abandoned variable-fill bid partial-claims and refund their
-      // fill_amount back to the parent bid (§5.7.7 *Re-credit on
+      // fill_amount back to the parent bid (re-credit on
       // abandonment*). Bounded per network to keep cron CPU under budget.
       await _stage('sweepBidPartialClaims', () => Promise.allSettled(
         _cronNets.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
@@ -28304,7 +28173,7 @@ export default {
       await _stage('promotePmintOrphans', () => Promise.allSettled(
         _cronNets.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
       ));
-      // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage scan. Round-robin across
+      // Per-slot coverage scan. Round-robin across
       // variants; each tick advances one variant by one page. Reuses
       // chainOutspendProbe.
       await _stage('slotCoverageScan', () => Promise.allSettled(

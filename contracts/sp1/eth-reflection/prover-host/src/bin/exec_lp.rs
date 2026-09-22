@@ -1,6 +1,6 @@
 // Settle re-prove: OP_LP_ADD groth16 (writes lp_pv.hex + lp_pb.hex for ConfidentialLpProofReal).
 // Re-pointed at the settle ELF + fixtures/lp_op.json; threads the op deadline (read after the share
-// sigma, guest main.rs:554). d_shares is DERIVED in-guest (V2 min rule) — not streamed.
+// sigma, guest main.rs:554). d_shares is DERIVED in-guest (constant-product min rule) — not streamed.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, HashableKey, ProvingKey};
 const ELF: &[u8] = include_bytes!("/root/work/confidential/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/confidential-pool-prover");
 fn hexv(s: &str) -> Vec<u8> { hex::decode(s.trim_start_matches("0x")).unwrap() }

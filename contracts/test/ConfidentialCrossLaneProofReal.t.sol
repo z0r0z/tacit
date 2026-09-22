@@ -12,7 +12,7 @@ import {SP1Verifier} from "./vendor/sp1/v6.1.0/SP1VerifierGroth16.sol";
 /// with `bitcoinSpentRoot != 0`), proving the cross-lane gate end-to-end — not just
 /// `CROSSLANE_OK` in the zkVM. Proof fixture: test/fixtures/crosslane_groth16.json,
 /// produced by the prover box (contracts/sp1/confidential/exec-crosslane.rs) for the
-/// frozen gen-1 guest vkey.
+/// pinned guest vkey.
 ///
 /// FIXTURE-GATED: until the box drops the fixture, this is a documented no-op so it
 /// never blocks the suite; the on-chain verification lands automatically the instant

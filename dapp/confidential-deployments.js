@@ -31,7 +31,7 @@ const MAINNET_RPCS = [
   'https://1rpc.io/eth',
   'https://cloudflare-eth.com',
 ];
-const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // Uniswap Permit2 singleton (same on every chain)
+const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3'; // canonical Permit2 singleton (same on every chain)
 const ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4'; // pinned zRouter aggregator
 const TAC_ASSET_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const CBTC_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
@@ -40,7 +40,7 @@ const CBTC_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f47
 const MAINNET_TAC_POOL_ASSET_ID = TAC_ASSET_ID;
 const MAINNET_CBTC_POOL_ASSET_ID = CBTC_ASSET_ID;
 // The cUSD id is keyed by the CollateralEngine (cdpDebtAssetId below), and the canonical TAC / tacBTC / tacUSD
-// ERC20s are minter-bound to the pool — all four change with every generation, so they come from the deploy
+// ERC20s are minter-bound to the pool — all four change with every deployment, so they come from the deploy
 // sync (confidential-deployments.generated.js: assetIds.cUsd, tac, cBtcToken, cUsdToken), never from a copy here.
 
 function _hex(bytes) {
@@ -94,13 +94,13 @@ const EXTERNAL_ERC20_SEPOLIA = [
 
 // Day-1 confidential asset templates. assetId is filled by the
 // deploy sync; everything else is the launch economics the wrap/scale math depends on.
-//   cETH  — native ETH slot, in-system 8-dec (18→scale 1e10 once re-pinned; pilot used scale 1).
+//   cETH  — native ETH slot, in-system 8-dec (18-dec ETH at scale 1e10).
 //   cTAC  — escrow-wrapped TAC (underlying = the TAC ERC20, set by sync), 8-dec.
 //   cBTC  — pool-minted against a slashable escrow (no ERC20 underlying until exit to tacBTC), 8-dec.
 //   cUSD  — pool-minted CDP debt (no underlying), 8-dec.
 function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLink) {
   return [
-    // live = the cross-lane holdings/bridge gate (flipped deliberately per surface at launch, playbook §7);
+    // live = the cross-lane holdings/bridge gate (set deliberately per surface);
     // the pool surfaces use `assetId` (not live), so cETH is usable in the pool regardless.
     // bitcoinLink = the legacy tETH Bitcoin asset id (the pool's on-chain TETH_BITCOIN_ID / localAssetOf
     // key). MUST equal the TETH_BITCOIN_ID the live pool was deployed with, so a legacy tETH note merges
@@ -125,7 +125,7 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
 
 // Per external ERC20 → confidential-asset template, keyed by public ticker. `permitType` selects the
 // gasless-approval path the router wrap uses: 'eip2612' (native EIP-2612 permit — single-tx, e.g. USDC)
-// or 'permit2' (token has no EIP-2612, so wrap via the Uniswap Permit2 singleton — one-time Permit2
+// or 'permit2' (token has no EIP-2612, so wrap via the canonical Permit2 singleton — one-time Permit2
 // approval, then signature-per-wrap; falls back to a standard approve+wrap if Permit2 isn't approved).
 const EXTERNAL_WRAP_META = {
   USDC: { ticker: 'cUSDC', tacitDecimals: 6, permitType: 'eip2612', permitName: 'USD Coin', permitVersion: '2',
@@ -143,7 +143,7 @@ function registeredExternalPoolAssets(d) {
   const out = [];
   if (!d || d.chainId !== 1) return out;
   // Only the ERC20s the deploy sync marked registered on THIS pool (`--external`): registration is per
-  // generation, and advertising a wrap the pool would reject is worse than not listing it yet.
+  // deployment, and advertising a wrap the pool would reject is worse than not listing it yet.
   const enabled = new Set((d._externalTickers || []).map((t) => String(t).toUpperCase()));
   for (const t of (d.externalErc20 || [])) {
     if (!enabled.has(String(t.ticker || '').toUpperCase())) continue;
@@ -192,10 +192,10 @@ const MAINNET_FARM_CONTROLLERS = Object.fromEntries(MAINNET_FARM.pools.map((p) =
 //      DeployV1Suite sync (tools/sync-deployment-config.mjs) — do NOT hand-edit a placeholder address.
 //   2. Register the cross-chain link on-chain (localAssetOf[bitcoinLink] = the pool asset) so bridged /
 //      legacy notes merge into the right row.
-//   3. Pin the re-proven settle vkey (the coordinated re-prove/redeploy) — the dapp builds are already
-//      guest-exact; live settlement needs the matching vkey.
+//   3. Pin the settle vkey of the deployed guest — the dapp builds are guest-exact; live settlement
+//      needs the matching vkey.
 //   4. Mark the intended asset(s) `live:true` — this un-gates holdings merge, the bridge affordance, and
-//      Ethereum-lane sends. Leave others live:false.
+//      Ethereum-side sends. Leave others live:false.
 // Steps 1–2–3 are on-chain/prover; step 4 + the address writes are this file. No dapp code change.
 export const CONFIDENTIAL_DEPLOYMENTS = {
   signet: {
@@ -219,7 +219,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     externalErc20: EXTERNAL_ERC20_SEPOLIA,
     // cETH scale 1e10 matches the V1 pool's native-ETH registration (_register(0, 10**10,…) → 18-dec ETH to
     // 8-dec in-system). The relay fee floor (RELAY_MIN_FEE, in wei ÷ unitScale) + display/entry (tacitDecimals
-    // vs decimals) are now scale-aware, so 1e10 is coherent end-to-end. (The retired pilot pool used scale 1.)
+    // vs decimals) are scale-aware, so 1e10 is coherent end-to-end.
     assets: day1ConfidentialAssets('0x2a0f3cb492f4add38bada8b7ef18de79445846ce7c5b7dc1c4b0d768467a04c2', '10000000000', '0xd903de2d2a7c1958f8ab3c4b9a91175ef3885027a24af306dead9e8f671a450b'),
   },
   mainnet: {

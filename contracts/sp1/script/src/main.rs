@@ -359,7 +359,7 @@ fn main() {
         // empty-pools-empty-null fallback (deposit-side regime only).
         (None, Some((ph, nh, h, lb))) => {
             assert!(*ph == empty_pools_hash,
-                "verifier poolsHash advanced beyond empty trees and no STATE_FILE provided — set STATE_FILE to the persisted prover state (see ops/prover-incremental-state.md) or redeploy from genesis");
+                "verifier poolsHash advanced beyond empty trees and no STATE_FILE provided — set STATE_FILE to the persisted prover state or redeploy from genesis");
             assert!(*nh == [0u8; 32],
                 "verifier nullifierSetHash != 0 and no STATE_FILE provided — same recovery: set STATE_FILE or redeploy");
             (false, lb.to_vec(), *h)

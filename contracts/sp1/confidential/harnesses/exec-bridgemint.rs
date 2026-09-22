@@ -7,7 +7,7 @@
 // membership), then asset(32) ‖ poolRoot(32) ‖ inCx(32) ‖ inCy(32) ‖ inOwner(32) ‖ sourceClass(u32) ‖
 // spentTxid(32) ‖ spentVout(u32) ‖ inLeafIndex(u64) ‖ inPath[] ‖ outCx(32) ‖ outCy(32) ‖ outOwner(32) ‖
 // bmNext(32) ‖ bmIndex(u64) ‖ bmPath[] ‖ rangeProof(bytes) ‖ fee(u64) ‖ kernelR(33) ‖ kernelZ(32).
-// sourceClass: 0 = burn-deposit native leaf, 1 = unbound reflected btc_note_leaf, 2 = generation-bound
+// sourceClass: 0 = burn-deposit native leaf, 1 = unbound reflected btc_note_leaf, 2 = deployment-bound
 // reflected btc_note_leaf_bound (the class the fold_burn recorded the burn under).
 //   MODE=execute (default) — execute + print cycles. MODE=groth16 — prove + write artifacts.
 use sp1_sdk::{blocking::{ProverClient, Prover, ProveRequest}, SP1Stdin, Elf, ProvingKey, HashableKey};

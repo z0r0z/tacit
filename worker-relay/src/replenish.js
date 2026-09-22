@@ -5,7 +5,7 @@
 //
 //   1. Read accumulated fee-asset balances (the proof-bound fees the relay collected).
 //   2. zQuoter → best route fee-asset -> PROVE and fee-asset -> ETH.
-//   3. zRouter (Uniswap V4) → execute the swaps, keeping an ETH gas buffer.
+//   3. zRouter → execute the swaps, keeping an ETH gas buffer.
 //   4. approve + deposit(PROVE) to the Succinct vApp → top up the network prover balance.
 //
 // Also exports quoteRelayFee() — the dynamic fee the dapp shows at quote time and the
@@ -21,7 +21,7 @@ import {
 
 const log = (...a) => console.log(`[replenish ${new Date().toISOString()}]`, ...a);
 
-// ── Dynamic fee math (PRICING-RELAY-ECONOMICS.md §Pricing recommendation) ──
+// ── Dynamic fee math ──
 //   per_op_cost = live_gas_cost(op) + live_PROVE_cost(op)
 //   fee         = max(MIN_FLOOR, per_op_cost * (1 + OPS_MARGIN))
 //   displayed_bps = fee / trade_size, capped at BPS_CAP
@@ -141,8 +141,8 @@ async function maxPreApprove(assets, wallet = relayWallet, includeProve = true) 
 }
 
 // zQuoter.buildSwapAuto returns ready-to-fire zRouter callData + msgValue for the best route,
-// multihopping through the ETH/WETH hub when a token's PROVE liquidity sits behind it
-// (UniV2/Sushi/zAMM/UniV3/UniV4/Curve/Lido). exactOut=false ⇒ exact-in. `to` = recipient.
+// multihopping through the ETH/WETH hub when a token's PROVE liquidity sits behind it.
+// exactOut=false ⇒ exact-in. `to` = recipient.
 async function quote(tokenIn, tokenOut, amountIn, recipient, exactOut = false) {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
   const [best, callData, amountLimit, msgValue] = await publicClient.readContract({
@@ -205,8 +205,7 @@ async function depositProveToVApp(wallet = relayWallet) {
 
 // Dollar value of an ERC20 fee balance, for the dust floor and the quote sanity check. It must NOT come from
 // the aggregator: the check exists to catch a bad aggregator quote, so valuing the asset with one would make the
-// guard fail whenever the thing it guards against does. (It did: 0.000284 wstETH, about $0.88, was valued at
-// $135,744 through a wstETH->ETH quote — a dust quote as broken as the USDT one that motivated the guard.)
+// guard fail whenever the thing it guards against does.
 //
 //   stablecoins — exact: balance / 10^decimals
 //   wstETH      — exact on-chain: stEthPerToken() (stETH per wstETH, 1e18), and stETH is valued as ETH
@@ -232,9 +231,8 @@ async function usdValueOf(asset, amount, ethUsd) {
   } catch { return null; }
 }
 
-// Refuse a PROVE quote that an independent price says is nonsense. The aggregator returned 417 PROVE for
-// $0.81 of USDT (the same as for $100) — a 100x error that, had it not reverted at simulation, would have
-// been a swap at a wildly wrong price. Reference price is the live PROVE->ETH probe, which is clamped to a
+// Refuse a PROVE quote that an independent price says is nonsense (the aggregator's quotes for small
+// amounts can be off by orders of magnitude). Reference price is the live PROVE->ETH probe, which is clamped to a
 // band around the configured value, so a manipulated reference cannot swing this far either.
 async function provePlausible(q, usdIn, ethUsd, label) {
   const px = await provePriceUsd(ethUsd);
@@ -320,8 +318,7 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
   const sinkAddr = sink.account.address;
   log(`replenish start — sink=${sinkAddr} roles=${roles ? roles.join('+') : 'all'} convertToProve=${convertToProve}`);
   // DEPOSIT_ONLY: skip the fee-asset sweep entirely and just move PROVE into the vApp. The sweep
-  // early-returns when FEE_ASSETS is unset ("manual top-up mode"), which also skipped the deposit —
-  // so a manual top-up previously had no path through this job at all.
+  // early-returns when FEE_ASSETS is unset ("manual top-up mode"), which would skip the deposit too.
   if (process.env.DEPOSIT_ONLY === '1') {
     log('DEPOSIT_ONLY=1 — skipping fee sweep, depositing PROVE only');
     await depositProveToVApp(sink);

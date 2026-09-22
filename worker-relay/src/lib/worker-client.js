@@ -1,5 +1,4 @@
-// Thin client for the control-plane worker routes the box loops already use.
-// Mirrors ops/scripts/reflection-relay-loop.sh + confidential-settle-loop.sh:
+// Thin client for the control-plane worker's prover routes:
 // Bearer-token auth, tolerant of empty bodies, ack is best-effort (the worker
 // re-serves on a lost ack; the on-chain digest-chain / nullifier makes it idempotent).
 
@@ -131,17 +130,12 @@ export async function confidentialActivateAck({ jobId, txHash, error }) {
   catch { /* see above */ }
 }
 
-// Prover heartbeat (so /prover-health sees the Render worker as alive, same as the box).
+// Prover heartbeat (so /prover-health sees the Render worker as alive).
 //
 // /prover-heartbeat authenticates on a body `token`, NOT the bearer header, and answers 401 to anything
-// else. This posted no token and swallowed every error, so each beat was rejected in silence: the endpoint
-// kept serving a months-old beat from the box, /prover-health reported the relay as down forever, and the
-// lag pager never fired — a reflection lane sat wedged overnight with nothing to show it. The worker also
-// stores `note`, not `detail`, so the drift/error text the callers pass has to ride in that field to be
-// visible at all.
+// else. The worker stores `note`, not `detail`, so the drift/error text the callers pass rides in that field.
 //
-// Still best-effort — a failed beat must never take down a prove — but a rejection is now logged once per
-// process, because a monitoring channel that fails quietly is worse than none.
+// Best-effort — a failed beat must never take down a prove — but a rejection is logged once per process.
 let _hbWarned = false;
 export async function heartbeat(kind, detail) {
   try {

@@ -25,7 +25,7 @@ import {TacitRelayer} from "../src/TacitRelayer.sol";
 ///    SP1_VERIFIER=0x... forge script script/DeployConfidentialPool.s.sol \
 ///      --rpc-url $RPC --private-key $PK --broadcast --verify
 contract DeployConfidentialPool is Script {
-    // Confidential guest vkey: the complete gen-1 settle op set — wrap/transfer/unwrap/bridge_burn/
+    // Confidential guest vkey: the complete settle op set — wrap/transfer/unwrap/bridge_burn/
     // bridge_mint/crossout + the cross-lane non-membership gate (IMT, bitcoinSpentRoot); the confidential
     // AMM (OP_SWAP / OP_LP_ADD / OP_LP_REMOVE / OP_SWAP_ROUTE), OP_OTC (2-party swap), OP_BID (buyer-
     // offline partial-fill); the adaptor swap (OP_ADAPTOR_LOCK / CLAIM / REFUND); the CDP / cUSD vault
@@ -42,8 +42,8 @@ contract DeployConfidentialPool is Script {
     // mintable token); this id is how the deploy confirms that pin landed.
     bytes32 constant CBTC_ZK_ASSET_ID = 0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8;
 
-    // ConfidentialRouter singletons (same address on most chains): Uniswap Permit2 (AllowanceTransfer) and the
-    // pinned zRouter aggregator (routes a swap across V2/V3/V4/Curve/zAMM). The router pins both IMMUTABLY;
+    // ConfidentialRouter singletons (same address on most chains): Permit2 (AllowanceTransfer) and the
+    // pinned zRouter aggregator (routes a swap across external AMMs). The router pins both IMMUTABLY;
     // override via PERMIT2 / ZROUTER env on a chain/test where they differ. Skip the router with DEPLOY_ROUTER=false.
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     address constant ZROUTER = 0x000000000000FB114709235f1ccBFfb925F600e4;
@@ -110,15 +110,12 @@ contract DeployConfidentialPool is Script {
         bytes32 genesisReflectionAnchor = vm.envOr("GENESIS_REFLECTION_ANCHOR", bytes32(0));
         // Reflection maturity depth: a reflected batch's tip must be buried this many blocks below the
         // relay tip, so a bridge-burn carries that many Bitcoin confirmations before a mint can act on it.
-        // Default 6 (R-2): the exchange standard for high-value BTC (~1h), and above the deepest Bitcoin reorg
-        // since 2015 (4 blocks). A reorg DEEPER than this permanently halts reflection (fail-closed — re-
-        // anchoring would resume onto already-paid-out orphaned mints, i.e. silent inflation). A 7+ block reorg
-        // has not occurred since the 2013 consensus-bug fork and would be a Bitcoin-wide event that freezes
-        // every exchange and bridge — not worth over-provisioning latency against. Only affects BTC→ETH mints;
-        // ETH-native + ETH→BTC are unaffected. Raise per appetite via env. Ctor-bounded to 1..144.
+        // Default 24 (~4h), well above the deepest Bitcoin reorg since 2015 (4 blocks). A reorg DEEPER than
+        // this halts reflection (fail-closed: re-anchoring would resume onto orphaned mints). Only affects
+        // BTC→ETH mints; ETH-native + ETH→BTC are unaffected. Ctor-bounded to 1..144.
         uint256 reflectionConfirmations = vm.envOr("REFLECTION_CONFIRMATIONS", uint256(24));
-        // GENERATIONAL deploys: the reflection-resume digest. 0 (default) = a genesis-anchored gen-1 (the
-        // first cycle continues the protocol genesis digest). For a later generation that JOINS the shared
+        // Resume deploys: the reflection-resume digest. 0 (default) = a genesis-anchored deployment that
+        // continues the protocol genesis digest. For a deployment that JOINS the shared
         // Bitcoin reflection mid-stream, set this to the CURRENT reflected digest (paired with a near-tip
         // GENESIS_REFLECTION_ANCHOR) so it never replays Bitcoin history.
         bytes32 reflectionResumeDigest = vm.envOr("REFLECTION_RESUME_DIGEST", bytes32(0));
@@ -126,7 +123,7 @@ contract DeployConfidentialPool is Script {
         // hash, the anchor is the Bitcoin block its tip sits at. The pool cannot check the pairing itself
         // (the digest is an opaque guest state hash), and a mismatched pair is only discovered when the
         // first attest reverts — leaving an immutable, unbootstrappable pool whose only remedy is
-        // redeploying. So a generational resume also requires the reflected height the pair was read at
+        // redeploying. So a resume also requires the reflected height the pair was read at
         // (RESUME_DIGEST_HEIGHT), cross-checked below against the relay's own height for the anchor.
         if (reflectionResumeDigest != bytes32(0)) {
             require(
@@ -134,9 +131,9 @@ contract DeployConfidentialPool is Script {
                 "REFLECTION_RESUME_DIGEST set without GENESIS_REFLECTION_ANCHOR: a generational resume needs the anchor its digest was read at"
             );
         }
-        // tETH (shielded ETH): the canonical Bitcoin-side tETH asset id, bound
+        // tETH (cETH's Bitcoin-side link id): the canonical Bitcoin-side tETH asset id, bound
         // to native ETH at CONSTRUCTION so the single native-ETH slot's link is fixed at deploy and identical
-        // across generations (registerWrapped can't set a native-ETH link). 0 = this deploy doesn't host tETH.
+        // across deployments (registerWrapped can't set a native-ETH link). 0 = this deploy doesn't host tETH.
         bytes32 tethBitcoinId = vm.envOr("TETH_BITCOIN_ID", bytes32(0));
 
         // ── Coherence guards (the tETH deploy bar): the deployed guest must be the proven one ──
@@ -149,13 +146,12 @@ contract DeployConfidentialPool is Script {
         if (vkey != pinnedVkey) {
             require(vm.envOr("ALLOW_UNPINNED_VKEY", false), "PROGRAM_VKEY != elf-vkey-pin.json program_vkey (set ALLOW_UNPINNED_VKEY=1 only for an intentional guest change)");
         }
-        // Cross-chain activation gate. Reflection F1-F4 are all CLOSED and PROVEN: the guest commits
-        // its prev/tip hashes and the pool pins them to a MATURED ancestor of HEADER_RELAY.tip()
-        // (≥ REFLECTION_CONFIRMATIONS deep, within a finality window — F1/F2/F3: anchor /
-        // self-declared-difficulty / confirmation), and the pinned reflection vkey (elf-vkey-pin.json
-        // .bitcoin_relay_vkey) is the FULL-SCAN model — every tx of every block + every vin against the
-        // handed live set, so no pool-note spend can be omitted (F4 — spent-set completeness). The cross-lane
-        // gate is sound. The residual is operational only: a Bitcoin reorg deeper than REFLECTION_CONFIRMATIONS
+        // Cross-chain activation gate. The guest commits its prev/tip hashes and the pool pins them to a
+        // MATURED ancestor of HEADER_RELAY.tip() (≥ REFLECTION_CONFIRMATIONS deep, within a finality window:
+        // anchor, relay-checked difficulty, confirmation depth), and the pinned reflection vkey
+        // (elf-vkey-pin.json .bitcoin_relay_vkey) is the FULL-SCAN model — every tx of every block + every vin
+        // against the handed live set, so no pool-note spend can be omitted (spent-set completeness). The
+        // residual is operational only: a Bitcoin reorg deeper than REFLECTION_CONFIRMATIONS
         // (accept-and-document, as on the tETH bridge / AMM) and the relay running (liveness). So require
         // (a) BITCOIN_RELAY_VKEY == the pinned reflection vkey, (b) a wired HEADER_RELAY (also
         // ctor-enforced), (c) the genesis anchor, and (d) an explicit ack of that operational posture.
@@ -174,7 +170,7 @@ contract DeployConfidentialPool is Script {
                 anchorHeight != 0,
                 "GENESIS_REFLECTION_ANCHOR is not a header the relay knows - use the little-endian INTERNAL block hash (relay byte order), not the big-endian display hash"
             );
-            // For a generational resume, RESUME_DIGEST_HEIGHT must equal the anchor's OWN relay-reported
+            // For a resume, RESUME_DIGEST_HEIGHT must equal the anchor's OWN relay-reported
             // height — not just be present — so a digest snapshot taken at one height can't be silently
             // paired with an anchor from another.
             if (reflectionResumeDigest != bytes32(0)) {

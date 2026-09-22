@@ -21,7 +21,7 @@ fn main() {
         serde_json::from_str(&std::fs::read_to_string(&args[2]).expect("read fixture")).expect("parse fixture");
     let expected = f["newDigest"].as_str().unwrap_or("").to_lowercase();
 
-    // The serializer itself can panic on a stale-shape fixture (the harvest #5 class) — catch it as a finding.
+    // The serializer itself can panic on a stale-shape fixture — catch it and report it.
     let stdin = match std::panic::catch_unwind(|| write_stdin(&f)) {
         Ok(s) => s,
         Err(_) => {

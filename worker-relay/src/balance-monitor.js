@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Balance + lag monitor — the pager (ops runbook P1).
+// Balance + lag monitor — the pager.
 //
 // Render service type: Cron Job (e.g. every 5-10 min). Runs once and exits.
 //
@@ -14,13 +14,10 @@
 //     FARM_MANAGER_ADDR overrides the manager, or set it to "off" to skip the check
 //
 // The lag alert is the "reflection is falling behind" signal that catches a stalled
-// reflection worker before the 176-block trap can form.
+// reflection worker before the backlog grows into a batch too large to prove.
 //
-// A CRITICAL also makes the process EXIT NON-ZERO. ALERT_WEBHOOK_URL is optional and has historically
-// been unset, which quietly turned every critical into a log line inside a cron run nobody reads — a
-// pager with no pager attached. A failing exit code is the one channel that always exists: Render marks
-// the cron run failed and surfaces it without any configuration at all. The webhook stays the good path;
-// this is the floor beneath it.
+// A CRITICAL also makes the process EXIT NON-ZERO. ALERT_WEBHOOK_URL is optional; a failing exit code is
+// the one channel that always exists, since Render marks the cron run failed without any configuration.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { formatEther, formatUnits } from 'viem';
@@ -59,18 +56,13 @@ async function checkProve() {
   // This is the relay's UNDEPOSITED PROVE — what `replenish` has bought but not yet deposited. It is NOT
   // the vApp prover balance, which is what proving actually spends.
   //
-  // That gap cannot be closed on-chain: the vApp is a rollup and holds the deposited balance off-chain.
-  // Probed 2026-09-20 against 0x5Ad5Bc4B…951F — balances/balanceOf/deposits/accountBalance/proverBalance
-  // all revert, and the contract's ABI here carries only deposit(uint256). So there is nothing to read,
-  // and this check should not be mistaken for one. Closing it properly means the Succinct API, with a key,
-  // which is a credential decision rather than a code one.
+  // That gap cannot be closed on-chain: the vApp is a rollup and holds the deposited balance off-chain,
+  // and its contract exposes no balance read. Reading it needs the Succinct API with a key.
   //
   // Read it for what it is: a healthy figure here means replenish is working, and a zero means replenish
   // has stopped — but neither tells you the prover can pay. Treat a stalled prover as the symptom to watch.
   // A WARNING, never a critical. Replenish deposits everything it buys into the vApp straight away, so a
-  // healthy relay reads ~0 here by design — as a critical this fired on every run, which turned the cron
-  // permanently red and taught everyone to ignore the one signal that is supposed to mean something. A
-  // check that is wrong most of the time must not be able to page.
+  // healthy relay reads ~0 here by design.
   if (whole < CFG.proveBalanceFloor) {
     await alert('warning', `PROVE (undeposited) ${whole} < ${CFG.proveBalanceFloor} — expected while replenish deposits eagerly; a stalled prover is the real signal`, { prove: whole });
   }
@@ -78,10 +70,8 @@ async function checkProve() {
 
 // Check EVERY wallet the relay spends from, not just RELAY_KEY.
 //
-// This check used to read `relayWallet` alone. On a split-key deployment that is the wrong wallet: the
-// settle wallet is msg.sender on every settle, so it is the one that burns gas per op, and it can sit
-// minutes from empty while the relay wallet looks fine. Measured 2026-09-20 — relay 0.0109 ETH (healthy)
-// while settle held 0.00098, about ten settles. Nothing alerted, because nothing was looking.
+// On a split-key deployment the settle wallet is msg.sender on every settle, so it burns gas per op and can
+// run low while the relay wallet looks fine.
 async function checkEth() {
   let gasPrice = null;
   try { gasPrice = await publicClient.getGasPrice(); }
@@ -92,10 +82,9 @@ async function checkEth() {
     const who = `${address} (${roles.join('+')})`;
     log(`ETH ${who} = ${formatEther(bal)}`);
 
-    // Runway in DAYS of this wallet's actual burn at the live gas price. It must be days, not "settles": once
-    // the two roles were merged this one wallet pays for the maintenance lane AND the settles, and maintenance
-    // (header attestation, reflection) costs about as much per day as the settles do at any realistic volume.
-    // "635 settles left" was true and useless — the same wallet really had ~6 days, and under one at 10x gas.
+    // Runway in DAYS of this wallet's actual burn at the live gas price. It must be days, not "settles": a
+    // wallet carrying both roles pays for the maintenance lane AND the settles, and maintenance (header
+    // attestation, reflection) costs about as much per day as the settles do at any realistic volume.
     //   burn = (maintenance runs/day x maintenance gas)   if it carries the relay role
     //        + (expected ops/day x settle gas)            if it carries the settle role
     let runway = null;
@@ -115,8 +104,7 @@ async function checkEth() {
 
     // Absolute floor — a BACKSTOP for when the runway could not be computed (no gas price). Once runway is
     // known it says everything the floor would, in a unit you can act on (settles left), so alerting on both
-    // is just a second line for the same fact. It also fired on every run: 0.03 ETH sits above what either
-    // wallet needs to run for weeks at today's gas, which taught the log to be ignored.
+    // is just a second line for the same fact.
     if (runway === null && bal < CFG.ethGasBufferWei) {
       await alert('critical', `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} and runway unavailable — fund it`, { address, roles, ethWei: bal.toString() });
     }
@@ -129,7 +117,7 @@ async function checkEth() {
 // cost tracks batch size. The reflection snapshot is the exception — `noteLeaves` and `spentLinks` are
 // append-only, so it only ever grows, and the assembler that loads it is where that lands first.
 //
-// This is a slow curve, not an incident: the point of watching it is to schedule compaction deliberately
+// This is a slow curve: the point of watching it is to schedule compaction deliberately
 // rather than meet it during a catch-up.
 // Is anyone waiting on a relay that is not answering? The queue's oldest pending job says so directly. Reads counts
 // and ages only, from the worker's box-token route.

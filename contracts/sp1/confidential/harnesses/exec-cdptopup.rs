@@ -49,12 +49,10 @@ fn main() {
         stdin.write(&hexv(leg["owner"].as_str().unwrap())); // added collateral note's own H(nk) spend owner (coll_owner)
         stdin.write(&hexv(leg["nk"].as_str().unwrap()));     // its secret nk (native_nu reads it after the sigma)
     }
-    // SECURITY (F-3): the POSITION OWNER's BIP-340 signature, read as R(32) ‖ s(32), over
+    // The POSITION OWNER's BIP-340 signature, read as R(32) ‖ s(32), over
     // (domain ‖ chainBinding ‖ oldLeaf ‖ oldNullifier ‖ newLeaf ‖ addedLegHashes ‖ debt).
     // A top-up REPLACES a live position, so authority over the ADDED collateral is not authority over the
-    // position: without this, anyone able to mint a dust note carrying the victim's public owner LABEL
-    // (labels are not spend authority — notes are bearer) could replace their position at will, invalidating
-    // any close proof they had prepared, and repeat it to censor them into liquidation.
+    // position (owner labels are public and notes are bearer), so only the owner may replace it.
     {
         let osig = hexv(f["ownerSig"].as_str().expect("cdptopup: ownerSig"));
         assert_eq!(osig.len(), 64, "cdptopup: ownerSig must be R(32) || s(32)");

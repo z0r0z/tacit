@@ -84,9 +84,9 @@ export function createKVNamespace(driver, ns) {
 
     async list({ prefix = '', limit = LIST_LIMIT_MAX, cursor = null } = {}) {
       const capped = Math.max(1, Math.min(Number(limit) || LIST_LIMIT_MAX, LIST_LIMIT_MAX));
-      // Cursors persisted by the previous deployment are Cloudflare's opaque
-      // blobs, not this shim's base64url(key) form. They surface via sweep
-      // cursors imported with the KV snapshot. Restart such lists from the
+      // Cursors from Cloudflare KV are opaque blobs, not this shim's
+      // base64url(key) form, and can arrive in imported sweep state. Restart
+      // such lists from the
       // beginning — every cursor consumer is a resumable sweep that
       // tolerates a fresh pass — and the next persisted cursor is native.
       let after = null;

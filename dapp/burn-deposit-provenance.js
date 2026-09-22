@@ -237,7 +237,7 @@ export function makeBurnDepositProvenance({
   //   asset, poolRoot: hex. cx/cy/owner: the tracked note's own opening (public once its cxfer reveals it).
   //   outpoint: hex (the note's own Bitcoin outpoint — what a provenance CXFER's input must resolve to).
   //   noteClass: which tree leaf format this note was inserted under (mirrors OP_BRIDGE_MINT's sourceClass)
-  //     — 0 = native `leaf` (non-Bitcoin-homed), 1 = unbound `btcNoteLeaf`, 2 = generation-bound
+  //     — 0 = native `leaf` (non-Bitcoin-homed), 1 = unbound `btcNoteLeaf`, 2 = deployment-bound
   //     `btcNoteLeafBound` (needs chainBinding). The wrong class just fails membership — no false admission.
   //   leafIndex: number/bigint. path: hex[] (the note-tree membership witness).
   // Returns [outpoint, commitmentHash] (a validLeaves entry) or null (not a real member — admit nothing).

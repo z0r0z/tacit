@@ -9,7 +9,7 @@ import {TacitPublicAmm} from "../src/TacitPublicAmm.sol";
 /// Minimal subset of the verified zRouter (0x000000000000FB114709235f1ccBFfb925F600e4) this test ABI-encodes
 /// calldata against. `swapV2` PULLS the input from the caller (the executor escrow, via the approval the
 /// executor set) when zRouter holds no transient credit: `safeTransferFrom(tokenIn, msg.sender, pool, amountIn)`.
-/// The V2 pool sends the output directly to `to`. This is the recipe call's `push == false` (APPROVE) mode.
+/// The constant-product pair sends the output directly to `to`. This is the recipe call's `push == false` (APPROVE) mode.
 interface IZRouter {
     function swapV2(
         address to,
@@ -22,9 +22,9 @@ interface IZRouter {
     ) external payable returns (uint256 amountIn, uint256 amountOut);
 }
 
-/// Live Aave V3 Pool: supply(asset, amount, onBehalfOf, referralCode) pulls `amount` of `asset` (via the
-/// caller's approval) and mints aTokens to `onBehalfOf`. This is a recipe call's `push == false` mode (Aave
-/// pulls via transferFrom), with the supply landing aWETH directly on `finalRecipient`.
+/// Live lending pool (AAVE_V3_POOL): supply(asset, amount, onBehalfOf, referralCode) pulls `amount` of `asset` (via the
+/// caller's approval) and mints aTokens to `onBehalfOf`. This is a recipe call's `push == false` mode (the lending
+/// pool pulls via transferFrom), with the supply landing aWETH directly on `finalRecipient`.
 interface IAaveV3Pool {
     function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
 }
@@ -73,8 +73,8 @@ contract MockExitPool {
 }
 
 /// MAINNET-FORK test: drives `ConfidentialRouter.exitAndExecute` against REAL mainnet contracts in ONE recipe
-/// batch — shielded exit USDC → (1) zRouter swapV2 USDC→WETH → (2) Aave V3 supply(WETH) on-behalf-of the final
-/// recipient → finalRecipient receives aWETH. "Anything Railgun can do," on live state.
+/// batch — confidential exit USDC → (1) zRouter swapV2 USDC→WETH → (2) lending-pool supply(WETH) on-behalf-of
+/// the final recipient → finalRecipient receives aWETH, on live state.
 contract ConfidentialRouterExitForkTest is Test {
     address constant ZROUTER = 0x000000000000FB114709235f1ccBFfb925F600e4;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
@@ -118,7 +118,7 @@ contract ConfidentialRouterExitForkTest is Test {
         router = new ConfidentialRouter(address(pool), address(new TacitPublicAmm(msg.sender)), ZROUTER, PERMIT2);
     }
 
-    /// Shielded exit → swap → Aave deposit, one tx, on live state.
+    /// Confidential exit → swap → lending-pool deposit, one tx, on live state.
     function test_exitAndExecute_swap_then_aaveSupply_liveMainnet() public {
         if (!forked) {
             vm.skip(true);
@@ -127,7 +127,7 @@ contract ConfidentialRouterExitForkTest is Test {
 
         uint256 amountIn = 5_000e6; // 5,000 USDC exited
 
-        // Aave's supply() pulls a FIXED amount, so we supply a conservative floor (>= minOut) and sweep residual
+        // supply() pulls a FIXED amount, so supply a conservative floor (>= minOut) and sweep residual
         // WETH. wethSupply = the swap minOut floor; the swap yields more, the remainder is swept as WETH.
         uint256 wethMinOut = 0.5 ether; // floor on the USDC->WETH swap output
         uint256 wethSupply = wethMinOut;
@@ -146,7 +146,7 @@ contract ConfidentialRouterExitForkTest is Test {
             push: true,
             data: abi.encodeCall(SwapHelper.swapToCaller, (USDC, WETH, amountIn, wethMinOut))
         });
-        // Step 2: Aave V3 supply(WETH, wethSupply, FINAL, 0) — approve WETH to the Aave pool; aWETH minted to FINAL.
+        // Step 2: supply(WETH, wethSupply, FINAL, 0) — approve WETH to the lending pool; aWETH minted to FINAL.
         calls[1] = ConfidentialRouter.ExitCall({
             target: AAVE_V3_POOL,
             value: 0,

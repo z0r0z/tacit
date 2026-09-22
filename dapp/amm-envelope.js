@@ -20,9 +20,9 @@ function _scalar32(d) { const b = new Uint8Array(32); let x = d; for (let i = 31
 
 // ── Trustless farm receipt + owner-auth helpers (mirror confidential-pool.js + guest cxfer-core) ──
 // The farm receipt leaf — a STABLE position id: keccak(DOM ‖ farm ‖ lpAsset ‖ shares(8 LE) ‖ owner ‖ nonce).
-// v3 dropped rps_entry: the entry checkpoint is stamped at execution (reflection state / FarmController),
+// It carries no rps entry: the entry checkpoint is stamped at execution (reflection state / FarmController),
 // the only time the live rps is knowable, so a bond can join a campaign at any moment without drifting.
-// v2 commits the STAKED asset so a harvest/unbond cannot re-label the receipt into another asset.
+// It commits the STAKED asset so a harvest/unbond cannot re-label the receipt into another asset.
 export function farmReceiptLeaf({ farmId, lpAsset, shares, owner, nonce }) {
   return keccak_256(concatBytes(_FARM_RECEIPT_DOM, asBytes(farmId, 32, 'farmId'), asBytes(lpAsset, 32, 'lpAsset'), u64LE(shares), asBytes(owner, 32, 'owner'), asBytes(nonce, 32, 'nonce')));
 }
@@ -645,8 +645,8 @@ export function encodeLpUnbond(args) {
   // Trustless complete exit: the bond's RECEIPT (owner_commit, nonce, shares) + the lp-return note's PUBLIC
   // blinding ride the envelope, so any prover nullifies the receipt, drops shares, and mints the shares-worth
   // lp_asset note back. No reward (harvest first). Matches guest parse_lp_unbond_fields (217B).
-  // `rpsEntry` is a VESTIGIAL wire field: the entry checkpoint now lives in reflection state, stamped at fold
-  // time, and the guest ignores what rides here. The layout is unchanged so existing decoders keep parsing.
+  // `rpsEntry` is an unused fixed-width wire field: the entry checkpoint lives in reflection state, stamped at
+  // fold time, and the guest ignores what rides here.
   return concatBytes(
     new Uint8Array([OPCODE_T_LP_UNBOND]),
     asBytes(args.farmId, 32, 'farmId'),
@@ -671,8 +671,8 @@ export function encodeLpHarvest(args) {
     asBytes(args.rewardR, 32, 'rewardR'),
     asBytes(args.ownerCommit, 32, 'ownerCommit'), // The receipt's (owner, nonce, shares) ride the PUBLIC
     asBytes(args.oldNonce, 32, 'oldNonce'),       // envelope so any prover reconstructs the position id and
-    // re-stamps its entry. `newNonce`/`rpsEntry` are VESTIGIAL: the receipt is a stable id that no longer
-    // rotates, and the checkpoint lives in reflection state. Layout unchanged so decoders keep parsing.
+    // re-stamps its entry. `newNonce`/`rpsEntry` are unused fixed-width slots: the receipt is a stable id
+    // that does not rotate, and the checkpoint lives in reflection state.
     asBytes(args.newNonce ?? new Uint8Array(32), 32, 'newNonce'),
     u64LE(args.shares),
     u128LE(args.rpsEntry ?? 0n),

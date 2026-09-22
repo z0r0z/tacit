@@ -10,7 +10,7 @@ import {ConfidentialPool} from "../src/ConfidentialPool.sol";
 
 interface ITacMint { function mint(address to, uint256 amount) external; }
 
-/// MAINNET FORK ONLY (skipped elsewhere): one-transaction farm funding from public TAC against the live gen5 pool.
+/// MAINNET FORK ONLY (skipped elsewhere): one-transaction farm funding from public TAC against the live pool.
 ///   forge test --match-contract TacFarmFunderFork --fork-url $RPC -vv
 contract TacFarmFunderFork is Test {
     address constant POOL = 0x000000000Ed1eabD231Be41d93b719056F7febFC;
