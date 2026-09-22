@@ -117,7 +117,7 @@ function day1ConfidentialAssets(cEthId, cEthScale, tethBitcoinLink, tacBitcoinLi
     // bitcoinLink = CBTC_ZK_ASSET_ID — a CONSTANT pinned at the pool ctor (localAssetOf[0x62a20d98]=tacBTC is
     // always set, no deploy env), so the resolver merges the cBTC.zk(BTC) + tacBTC(ETH) lanes. Same on every chain.
     { ticker: 'cBTC', assetId: null, bitcoinLink: CBTC_ASSET_ID, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
-      description: 'Confidential Bitcoin minted from SP1-reflected Bitcoin locks; native-ETH escrow is slashable rug insurance.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
+      description: 'Confidential Bitcoin minted 1:1 from SP1-reflected Bitcoin locks, with a slashable wstETH escrow per lock.', imageUri: 'ipfs://bafkreifqbhoqbnho2d22bpy5s2qfsnc5ta3uxktvg4q4xn2zumxsweserq' },
     { ticker: 'cUSD', assetId: null, underlying: null, unitScale: cEthScale, decimals: 18, tacitDecimals: 8, native: false, live: false,
       description: 'Confidential USD — a cBTC-collateralized stablecoin (CDP).' },
   ];

@@ -180,9 +180,9 @@ A 169-byte Camenisch–Stadler sigma links each BabyJubJub commitment to a secp2
 320-bit response across both groups. Range checks on both sides lift that equality from modular to
 integer.
 
-**Mixer.** The mixer circuit and its artifacts are published. The Bitcoin fixed-denomination pool
-(`T_DEPOSIT` / `T_WITHDRAW`) still uses them. They are available for any denominated anonymity pool built
-on Tacit.
+**Mixer.** The mixer circuit and its artifacts are published. They back the legacy Bitcoin
+fixed-denomination pool (`T_DEPOSIT` / `T_WITHDRAW`, §3.8) and are available for any denominated
+anonymity pool built on Tacit.
 
 Artifacts are content-addressed. [`docs/CEREMONY.md`](./docs/CEREMONY.md) lists every zkey, verifying key,
 r1cs and witness generator with its CID and hash, including the finalized `amm_swap_batch` zkey
@@ -838,7 +838,8 @@ Other extension points are live today:
 
 **Hidden:**
 - amounts on both chains;
-- which note a pool spend consumes;
+- which note a pool spend consumes, for owned notes (bearer and Bitcoin-homed nullifiers derive from the
+  leaf alone);
 - trade sizes in `OP_SWAP_BLIND` and `T_SWAP_BATCH`, from the chain and the SP1 prover;
 - recipient identity for stealth receipts.
 

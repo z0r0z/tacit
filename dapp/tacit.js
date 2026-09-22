@@ -68349,7 +68349,7 @@ function applyMarketFilters() {
         <input data-swap-watchtower type="checkbox">
         <span>Complete leftover while I'm away <span class="muted" title="If your buy doesn't fully fill, the unfilled budget posts as a bid and a managed watchtower completes it while you're offline (capped ≤ ${WATCHTOWER_MAX_BID_SATS.toLocaleString()} sats; your main wallet is never shared; reclaim unspent funds anytime).">(watchtower)</span></span>
       </label>` : ''}
-      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles atomically on Bitcoin. No front-running, no MEV.">Atomic settlement · no front-running</div>
+      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles atomically on Bitcoin at the signed terms.">Atomic settlement on Bitcoin</div>
       <!-- Auto-fulfil status hint: visible only in sell direction since
            sells depend on this tab signing claim responses from buyers.
            Updated dynamically by the wireup's applyDirection() based on

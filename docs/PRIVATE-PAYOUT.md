@@ -1,6 +1,6 @@
-# Paying an address from a shielded balance
+# Paying an address from a confidential balance
 
-Pay a plain 0x address an exact amount out of your own shielded balance: deposit into the pool, find your notes from your key, and have the pool pay the address through a relayed send-and-unwrap. The recipient needs no Tacit key and no setup.
+Pay a plain 0x address an exact amount out of your own confidential balance: deposit into the pool, find your notes from your key, and have the pool pay the address through a relayed send-and-unwrap. The recipient needs no Tacit key and no setup.
 
 **This hides the sender only, and weakly.** The address and the amount are public on-chain, the pool is small, and anyone who can match the payout to a recent deposit can tie it to the address that made the deposit. Section 5 says what to tell a user.
 
@@ -22,7 +22,7 @@ A relayed send-and-unwrap has settled on the mainnet pool for cETH ([`0xa08346db
 
 ## 2. The four steps
 
-### Step 1. Deposit into your own shielded balance
+### Step 1. Deposit into your own confidential balance
 
 ```js
 const me = tacit.identity(walletPriv);
@@ -133,9 +133,9 @@ A merge tells the relay that those notes belong together. `plan.code === 'insuff
 On the confidential pool's send tab, paste a 0x address into **To**. The note-send controls give way to a panel titled "Pay this address publicly from your shielded balance":
 
 1. The address is checked: EIP-55 when mixed-case (a wrong checksum is refused), and the zero address, the pool, the router and the token contracts are refused. An all-lower or all-upper address has no checksum, and the review says so.
-2. An asset picker lists the assets that can be paid out to an address, with the shielded balance found from the key.
+2. An asset picker lists the assets that can be paid out to an address, with the confidential balance found from the key.
 3. **They receive** is the amount the recipient gets. **Review** rescans the balance, quotes the fee live and shows the recipient, the amount, the fee (with a dollar estimate when priced), the total debited, the note that will be spent and the change that comes back, and the privacy note in section 5. It warns on a whole-note payout, a fee larger than the amount, and a contract recipient.
-4. With no shielded balance for the asset, or too little, **Deposit first** hands over to the send tab's own-address flow (wrap and settle in one transaction), with the recipient and asset filled in and "Always pay from my wallet" ticked.
+4. With no confidential balance for the asset, or too little, **Deposit first** hands over to the send tab's own-address flow (wrap and settle in one transaction), with the recipient and asset filled in and "Always pay from my wallet" ticked.
 5. With enough in total but no single note, a **Merge** button runs the self-transfer above and reviews again.
 6. **Confirm** re-checks the fee (a rise sends you back to review), reads the recipient's balance, submits with `wait: false`, and polls. The result line says "Paid" only after the balance rose. On timeout it says "Submitted, not yet confirmed" with the job id.
 

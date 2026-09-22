@@ -51,7 +51,7 @@ if (!existsSync(CONFIG_PATH)) {
   console.error(JSON.stringify({
     treasury_privkey: 'hex64 (or set TACIT_TREASURY_PRIVKEY env var)',
     drop_record_path: './drop-export.json',
-    worker_base: 'https://tacit-pin.rosscampbell9.workers.dev',
+    worker_base: 'https://api.tacit.finance',
     network: 'signet',
     interval_sec: 600,
     max_batches_per_run: 50,

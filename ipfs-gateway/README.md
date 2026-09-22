@@ -1,7 +1,7 @@
 # tacit-ipfs — self-hosted IPFS gateway
 
-Runs a Kubo node that pins `index.html` and serves it over its own HTTP gateway.
-Your gateway, your pin — no third-party content policy, gate, or upgrade wall.
+Runs a Kubo node that pins `index.html` and serves it over its own HTTP gateway,
+so the loader does not depend on a third-party gateway.
 
 `index.html` is a small loader: it calls `html()` on an ERC-8244 on-chain pointer
 contract over public Ethereum RPCs and replaces itself with the returned

@@ -226,10 +226,10 @@ To pay a plain 0x address an exact amount out of a larger note, with the rest ke
 - **Names.** A receiver can publish their `tacit1…` address as the `finance.tacit` text record of a `.wei`, `.gwei` or `.eth` name
   (`.base.eth` is not read), and the send tab accepts the name in the recipient field. `dapp/confidential-names.js`
   (`makeConfidentialNames({ call, send, secp, keccak256 })`) is the same code for your own dapp:
-  `resolveName(name)` returns `{ name, address, key, source, node }`, where `key` is the Ethereum-lane key to pass as `recipientPubHex`;
+  `resolveName(name)` returns `{ name, address, key, source, node }`, where `key` is the Ethereum-side key to pass as `recipientPubHex`;
   `primaryName(address)`, `planPublish` and `publish` cover the receiver's side. Behaviour to keep:
   - Lookups read Ethereum mainnet only, whatever network the page is on, and are never cached; look the name up at send time and pin the key for that send.
-  - The record must decode strictly: bech32m prefix `tacit`, a 101-byte payload (`[0x00][flags][spend][scan][Ethereum-lane key]`, 33 bytes each after the two header bytes), the Ethereum-lane flag (`0x02`) set, and a valid secp256k1 point in the last 33 bytes. Otherwise the send is refused with the reason.
+  - The record must decode strictly: bech32m prefix `tacit`, a 101-byte payload (`[0x00][flags][spend][scan][Ethereum-side key]`, 33 bytes each after the two header bytes), the Ethereum-side flag (`0x02`) set, and a valid secp256k1 point in the last 33 bytes. Otherwise the send is refused with the reason.
   - A missing or invalid record, or a name whose resolver answers with an off-chain lookup (no CCIP-read), is refused; a bare 0x account address is never accepted as a private-send recipient.
   - Show the sender `name → tacit1…` before anything is signed, so a changed record is visible.
   - `.eth` resolvers are read directly on the name's own node, or through a parent's wildcard resolver; the record can only be written from here when the resolver sits on the name's own node.
@@ -600,8 +600,8 @@ the relay still proves, so it still sees the witness. If the link between an op'
 trade size, matters to you, prove locally.
 
 `OP_SWAP_BLIND` keeps amounts out of the SP1 witness: clearing is proven by a Groth16 circuit that the
-batch's coordinator produces and the guest verifies. It is enabled in the deployed guest but not yet
-accepted by the relay, so relayed swaps are `OP_SWAP_ROUTE` or `OP_SWAP` and the paragraph above applies ([SPEC §5.6](../SPEC.md#56-prover-blind-swaps)).
+batch's coordinator produces and the guest verifies. It is enabled in the deployed guest but the relay
+does not accept it, so relayed swaps are `OP_SWAP_ROUTE` or `OP_SWAP` and the paragraph above applies ([SPEC §5.6](../SPEC.md#56-prover-blind-swaps)).
 
 ## 7. Iterating on the design
 
@@ -639,7 +639,7 @@ A failed proof costs the relay, not you, and moves no state. A settle either app
 
 - [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md) — a trustless integration: farm zap, key-only recovery, self-settle checklist
 - [`RECOVERY.md`](./RECOVERY.md) — what a wallet recovers from its key
-- [`PRIVATE-PAYOUT.md`](./PRIVATE-PAYOUT.md) — paying a 0x address from a shielded balance
+- [`PRIVATE-PAYOUT.md`](./PRIVATE-PAYOUT.md) — paying a 0x address from a confidential balance
 - [`FARMS.md`](./FARMS.md) — the TAC launch farms: cards, flows, monitoring and governance bounds
 - [`AIRDROP.md`](./AIRDROP.md) — the TAC airdrop contract and its roles
 - [`DEPLOYMENTS.md`](./DEPLOYMENTS.md) — every live address and vkey

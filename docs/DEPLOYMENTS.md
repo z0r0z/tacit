@@ -15,8 +15,8 @@ Every contract here is deployed at a deterministic CREATE3 address via
 
 The machine-readable source of truth is
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json), written by
-`DeployV1SuiteCreateX.s.sol` at broadcast. This page mirrors it. The dapp and relay read the manifest through
-`tools/sync-deployment-config.mjs`.
+`DeployV1SuiteCreateX.s.sol` at broadcast. This page mirrors it. `tools/sync-deployment-config.mjs` writes it into
+the dapp's deployment config, which the API also imports.
 
 ## Ethereum mainnet (chainId 1)
 
@@ -32,7 +32,7 @@ The machine-readable source of truth is
 | TacitRelayer | [`0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3`](https://etherscan.io/address/0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3) |
 | BtcCallExecutor | [`0x00000000Df8263Ac5810C53B31AaE20ee53C247f`](https://etherscan.io/address/0x00000000Df8263Ac5810C53B31AaE20ee53C247f) |
 | WstEthUsdFeed (the engine's BTC-per-wstETH price feed) | [`0x000000005010E4A43e83a658D36BF3ADb38ed62c`](https://etherscan.io/address/0x000000005010E4A43e83a658D36BF3ADb38ed62c) |
-| EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
+| EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the Bitcoin reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
 | CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
 
 These match `contracts/deployments/1-createx.json` exactly.
@@ -89,8 +89,8 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 | --- | --- |
 | SP1 verifier (immutable Groth16 leaf) | `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` |
 | Program vkey (settle guest) | `0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3` |
-| Bitcoin relay vkey (reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
-| Eth reflection vkey (eth-reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
+| Bitcoin relay vkey (Bitcoin reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
+| Eth reflection vkey (Ethereum reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
 | Swap-batch Groth16 key (compiled into both guests) | `batch_vk.bin` SHA-256 `31fd05cc…bbc7c`; final zkey `bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm` ([ceremony artifacts](./CEREMONY.md)) |
 | Reflection confirmations | 24 |
 | Ops multisig (engine admin and the pool's lineage steward) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |

@@ -24,8 +24,8 @@ Config defaults come from `worker/wrangler.toml` `[vars]`; any real env var
 overrides them. Secrets (`PINATA_JWT`, `FAUCET_PRIV`, `VERIFY_SERVICE_TOKEN`,
 `DISCORD_*`, …) come from env, same names as the Cloudflare secrets.
 
-Behind Render set `TRUST_PROXY=1` so client IPs derive from
-`X-Forwarded-For`; inbound `CF-Connecting-IP` is always stripped and
+Behind Render set `TRUST_PROXY=1` so client IPs derive from Render's
+forwarding headers (`True-Client-IP`, else `X-Forwarded-For`); inbound `CF-Connecting-IP` is always stripped and
 re-derived (`harness.mjs` `clientIpFrom`). The workers.dev pass-through
 proxy (`worker/proxy/`) authenticates its forwarded client IP with
 `PROXY_TRUST_KEY`.

@@ -303,11 +303,12 @@ export async function renderCdpTab(wallet) {
   const acct = ux.account(wallet.priv);
   body.innerHTML = `
     <div class="tab-form">
-    <div class="note-concept"><b>cUSD &amp; cBTC — the flagship Tacit assets.</b>
-      <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock a shielded note as collateral and
-      mint a confidential stable note. <b>cBTC</b> is <span class="btc-word">conservation-backed BTC</span>: mint it 1:1
-      from an SP1-reflected Bitcoin lock; tacBTC is the ERC-20 form, with wstETH escrow as slashable rug insurance,
-      not peg collateral. Both are ordinary shielded notes: private amounts, they transfer, trade, and exit like anything else in the pool.</div>
+    <div class="note-concept"><b>cUSD &amp; cBTC.</b>
+      <b>cUSD</b> is the <span class="btc-word">bitcoin-backed dollar</span>: lock cBTC as collateral and mint a
+      cUSD note. A position's amounts are public so it can be priced, but its owner is not linked to it.
+      <b>cBTC</b> is minted 1:1 from an SP1-reflected Bitcoin lock; tacBTC is its ERC-20 form. A slashable
+      wstETH escrow (1.5× the lock today) deters spending the lock; it does not back the peg. Both are ordinary
+      shielded notes that transfer, trade and exit like anything else in the pool.</div>
     <div>Account: <code class="addr" style="font-size:11px;">${acct.address}</code></div>
     <div id="cdp-status" class="muted">Scanning the pool for collateral…</div>
 

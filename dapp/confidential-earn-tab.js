@@ -56,7 +56,8 @@ export async function renderEarnTab(wallet) {
   }
   body.innerHTML = `
     <div class="note-concept" style="margin-bottom:12px;"><b>Earn TAC, shielded.</b> Provide liquidity to a
-      confidential pool and farm <span class="eth-word">TAC</span> rewards — your position size stays private.
+      confidential pool and farm <span class="eth-word">TAC</span> rewards. Your LP shares sit in a shielded note; the
+      liquidity you add shows in the pool's public reserves.
       Start from TAC you claimed, a note bridged from Bitcoin, or raw ETH; one click adds liquidity and bonds
       the shares into the farm in a single settle.</div>
     <div id="earn-pools" class="muted" style="font-size:12px;">Reading pools…</div>
@@ -67,8 +68,8 @@ export async function renderEarnTab(wallet) {
   const wrap = el('earn-pools');
   if (!pairs.length) {
     if (wrap) wrap.innerHTML = `<div class="muted" style="font-size:12px;line-height:1.6;">
-      The day-1 TAC farms (cETH/TAC · cBTC/TAC · cUSD/TAC) light up here once the pools are seeded.
-      In the meantime you can wrap into the <a href="#tab=confidential-pool">Shielded Pool</a>, claim your
+      The TAC farms (cETH/TAC · cBTC/TAC · cUSD/TAC) appear here once their pools are seeded.
+      Meanwhile you can wrap into the <a href="#tab=confidential-pool">confidential pool</a>, claim your
       <a href="#tab=claim">airdrop</a>, or bring value over from <span class="btc-word">Bitcoin</span>.</div>`;
     return;
   }

@@ -72,8 +72,8 @@ export async function renderGovernTab(wallet, gov) {
 // ============================ LIST ==========================================
 async function renderList(body) {
   body.innerHTML = `
-    <div class="note-concept" style="margin-bottom:14px;"><b>TAC governance.</b> Holders steer the protocol —
-      Collateral Engine admin, spec amendments, parameters, treasury. Vote with your TAC held on
+    <div class="note-concept" style="margin-bottom:14px;"><b>TAC governance.</b> Holders steer the governed
+      periphery — CollateralEngine and FarmManager parameters and the treasury. Vote with your TAC held on
       <b>Bitcoin</b> (private threshold proof — your balance stays hidden) or on <b>Ethereum</b>
       (public ERC20 balance). Results are advisory inputs the multisig executes.</div>
     <div class="gov-toolbar">
@@ -352,7 +352,7 @@ async function renderCreate(body) {
     ${_gov.walletReady() ? '' : '<div style="color:var(--red-warn);font-size:12px;margin-bottom:14px;">Unlock a Tacit wallet first — the proposal is bound to your TAC stake.</div>'}
     <div class="gov-form">
       <label class="gov-label">Title
-        <input id="gp-title" class="gov-field" maxlength="140" style="margin-top:4px;" placeholder="e.g. Transfer Collateral Engine admin to the 3/5 multisig"></label>
+        <input id="gp-title" class="gov-field" maxlength="140" style="margin-top:4px;" placeholder="e.g. Reweight the TAC farm pools"></label>
       <label class="gov-label">Category
         <select id="gp-category" class="gov-field" style="margin-top:4px;">
           ${_gov.categories.map((c) => `<option value="${c}">${esc(CAT_LABEL[c] || c)}</option>`).join('')}

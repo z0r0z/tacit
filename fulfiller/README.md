@@ -19,9 +19,7 @@ and repeats. The API is only a mailbox for claims; the fulfiller verifies everyt
 
 ### When to use
 
-You ran the full `Drops` tab flow in the dapp end-to-end, you have a saved drop record with 100+ recipients, and you don't want to sit there clicking `Fulfil → Verify → Broadcast` 500 times.
-
-Skip this if your drop is small (~< 50 recipients) — manual fulfilment in the browser is faster.
+For a drop with a saved record (from the dapp's `Drops` tab) and too many recipients to fulfil by hand. For a small drop (under about 50 recipients), fulfilling in the browser is faster.
 
 ### Trust model
 
@@ -99,7 +97,7 @@ Stop with Ctrl-C — finishes the current batch then exits cleanly. State persis
 
 ### Output
 
-Structured JSON logs on stdout — one event per line. Pipe to `jq`, ship to your favourite log aggregator, or just tail. Key events:
+Structured JSON logs on stdout — one event per line. Key events:
 
 - `booting daemon` — config + network
 - `treasury wallet loaded` — pubkey + bech32 address
@@ -107,14 +105,15 @@ Structured JSON logs on stdout — one event per line. Pipe to `jq`, ship to you
 - `staging batch` — leaves + total TAC + treasury sats
 - `batch broadcast` — commit + reveal txids
 - `claim rejected` — reason (merkle fail / sig fail / already fulfilled)
-- `treasury insufficient` — sats below `min_treasury_sats`
+- `broadcast failed` — the batch stays pending for operator review
+- `treasury insufficient, skipping batch` — sats below `min_treasury_sats`
 - `cycle complete` — batches in this cycle
 
 ### Operational notes
 
-**Local state file.** `fulfiller-state-<root_prefix>.json` records every fulfilled leaf with its txid + timestamp. Back it up alongside the dapp's drop record JSON. If you delete it, the daemon will pull from the queue and try to re-broadcast already-fulfilled claims — wasting fees, not double-paying (the worker queue's DELETE is best-effort, but the recipient's wallet ignores duplicate CXFERs against the same leaf).
+**Local state file.** `fulfiller-state-<root_prefix>.json` records every fulfilled leaf with its txid + timestamp. Back it up alongside the dapp's drop record JSON. If you delete it, the daemon can re-broadcast claims it already fulfilled and pay those recipients twice.
 
-**Run as a service.** For long campaigns, run under `pm2`, `systemd`, or a Docker container. The daemon is single-threaded and lightweight (~150 MB RSS with jsdom loaded).
+**Run as a service.** For long campaigns, run under `pm2`, `systemd`, or a Docker container. The daemon is single-threaded.
 
 **Monitoring.** Tail the JSON logs and alert on `broadcast failed` or `treasury insufficient` lines repeating. Both mean the daemon is not making progress.
 

@@ -11,7 +11,7 @@ to check it. Each value below was re-derived from the fetched bytes.
 Its verifying key is compiled into both SP1 guests:
 
 - `OP_SWAP_BLIND` in the confidential pool, verified by the settle guest ([SPEC §5.6](../SPEC.md#56-prover-blind-swaps)).
-- `T_SWAP_BATCH` on Bitcoin, verified by the reflection guest ([SPEC §3.5](../SPEC.md#35-trading-amm-and-farms)).
+- `T_SWAP_BATCH` on Bitcoin, verified by the Bitcoin reflection guest ([SPEC §3.5](../SPEC.md#35-trading-amm-and-farms)).
 
 A proof is valid only under the finalized zkey below.
 

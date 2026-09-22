@@ -15,17 +15,17 @@ This is separate from cBTC, the confidential pool's collateral asset (ERC-20 tac
 
 ## Etching a tier
 
-1. Pin `logo.svg` to IPFS and check the CID resolves on at least two gateways.
-2. Replace `__LOGO_CID__` in `metadata.json` with `ipfs://<logo CID>`. Do not reformat the file: keys
-   stay sorted and the JSON compact, or the CID changes and discovery breaks.
-3. Pin the updated `metadata.json` and take its CID.
-4. CETCH from the dapp's Etch tab:
+1. `metadata.json` already points `image` at the pinned `logo.svg`. For another tier, change only
+   `denom_sats` (and the name). Do not reformat the file: keys stay sorted and the JSON compact, or the
+   CID changes and discovery breaks.
+2. Pin `metadata.json` and take its CID.
+3. CETCH from the dapp's Create tab:
    - `ticker`: `tacBTC` (tier-suffixed for other tiers, e.g. `cBTC.zk-1M`)
    - `decimals`: `8`
    - `supply`: `2_100_000_000_000_000` (21M BTC in sats, the only supply ceiling; `max_supply` is null)
    - `image_uri`: `ipfs://<metadata CID>`
    - `mintable`: `false` (units come only from `T_SLOT_MINT`)
-5. After confirmation and a worker cron tick, the asset appears under `/wrappers/<asset_id>` with
+4. After confirmation and an API cron tick, the asset appears under `/wrappers/<asset_id>` with
    `custody.kind = self_custody_slot`, and the Mixer tab lists its pool at its `denom_sats`.
 
 Each `denom_sats` value is a separate asset id and a separate CETCH.

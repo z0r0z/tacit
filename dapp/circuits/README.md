@@ -5,7 +5,7 @@ Tacit needs no trusted setup; see [SPEC §2.8](../../SPEC.md#28-circuits-and-cer
 keys are used.
 
 - **AMM** (`amm/`): `amm_swap_batch`, `amm_lp_add`, `amm_lp_remove`. The `amm_swap_batch` verifying key
-  is compiled into the settle guest (`OP_SWAP_BLIND`, SPEC §5.6) and the reflection guest
+  is compiled into the settle guest (`OP_SWAP_BLIND`, SPEC §5.6) and the Bitcoin reflection guest
   (`T_SWAP_BATCH`, SPEC §3.5).
 - **Mixer** (`withdraw.circom`, `merkleTree.circom`): the legacy fixed-denomination Bitcoin mixer
   (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §3.8). Derived from

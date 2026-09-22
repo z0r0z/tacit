@@ -38,14 +38,14 @@ suites (`bulletproofs*`, `composition`, `range-proof`, `swap-var`, `*-fuzz`) tak
 
 ## Network-gated
 
-These need a live service, a funded wallet, or a prover box, and are not part of an offline run:
+These need a live service, a funded wallet, or a Linux prover host, and are not part of an offline run:
 
 - Anything named `*-signet*`, `*-sepolia*`, `*-testnet*`, `*broadcast*`, `run-v1-testnet.mjs`,
   `v1-fund-wallets.mjs`, `live-evm-settle-sepolia.mjs`, `etch-asset.mjs`, `bridge-3a.mjs`, `bridge-3b.mjs`.
 - Mainnet readers: `bridge-multigen.test.mjs`, `tac-bridge-bundle.mjs`, `tac-bridge-provenance-dag.mjs`.
 - CLIs that need arguments or env: `amm-pool-init-cli.mjs` (`ASSET_A_HEX`, …), `e2e-confidential-settle.mjs`.
 - `capacity-monitoring.test.mjs` has one live check against the reflection API; set `OFFLINE=1` to skip it.
-- `box-setup.sh` (prover box), `evm-confidential-anvil-roundtrip.sh` (local anvil + forge build),
+- `evm-confidential-anvil-roundtrip.sh` (local anvil + forge build),
   `reflection-*.sh` (build and execute the reflection guest locally).
 
 Some tests skip cases unless an env var points at a heavy artifact: `RUN_SWAPBATCH_GEN` with

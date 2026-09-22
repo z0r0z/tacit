@@ -52,20 +52,20 @@
 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co; img-src 'self' data: https://ipfs.filebase.io http://localhost:* http://127.0.0.1:* https://content.wrappr.wtf https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
-<meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, borrow against, and bridge. Mint cUSD and cBTC/tacBTC from SP1-reflected Bitcoin locks.">
+<meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, borrow against, and bridge. Mint cBTC/tacBTC from SP1-reflected Bitcoin locks and borrow cUSD against it.">
 <meta name="theme-color" content="#f7931a">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/">
 <meta property="og:title" content="tacit — confidential money across Bitcoin & Ethereum">
-<meta property="og:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, borrow, and bridge. cUSD, cBTC/tacBTC, SP1 reflection, and a capped mainnet pilot.">
+<meta property="og:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, borrow, and bridge. cUSD, cBTC/tacBTC and SP1 reflection.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="tacit — confidential money across Bitcoin & Ethereum">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="tacit — confidential money across Bitcoin & Ethereum">
-<meta name="twitter:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, borrow, and bridge. cUSD, cBTC/tacBTC, SP1 reflection, and a capped mainnet pilot.">
+<meta name="twitter:description" content="One shielded note across Bitcoin and Ethereum — send privately, swap, borrow, and bridge. cUSD, cBTC/tacBTC and SP1 reflection.">
 <meta name="twitter:image" content="https://tacit.finance/tacit-card.png">
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -103,7 +103,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=00ab1f4d">
+<link rel="modulepreload" href="./tacit.js?cb=dea8e38a">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -8655,7 +8655,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      user create/match one. -->
 <div class="tabs subtabs" data-group="trade" style="display:none;">
   <button class="tab active" data-tab="market" title="Bitcoin order book — trade for real sats. Atomic, non-custodial settlement on Bitcoin L1; limit orders and price discovery. You walk away holding actual BTC.">Order book</button>
-  <button class="tab" data-tab="cdp" title="Borrow tacUSD or mint cBTC against a shielded note as collateral — confidential, on the Ethereum lane">CDP</button>
+  <button class="tab" data-tab="cdp" title="Borrow cUSD against cBTC, or mint cBTC from a Bitcoin lock — in the confidential pool on Ethereum">CDP</button>
 </div>
 
 <!-- Earn: confidential-pool LP and farms. Not in the primary nav. -->
@@ -9056,7 +9056,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
             </div>
           </div>
           <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.5;">
-            Validation: start must be ≥ <em>deploy block + 1</em>, end must be > start, both must fit in u32. If start = 0 the dapp uses <em>deploy block + 1</em>; if end = 0 minting stays open until the cap fills. SPEC §5.8.
+            Validation: start must be ≥ <em>deploy block + 1</em>, end must be > start, both must fit in u32. If start = 0 the dapp uses <em>deploy block + 1</em>; if end = 0 minting stays open until the cap fills. SPEC §3.4.
           </div>
         </div>
       </details>
@@ -9068,7 +9068,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> How is this different from a confidential etch?
         </summary>
         <div class="muted" style="padding-top:8px;border-top:1px dashed var(--ink-faint);margin-top:4px;line-height:1.6;">
-          Mints publicly reveal <code>(amount, blinding)</code>, so the cap is auditable from chain alone — supply is fully observable, unlike CETCH where supply is committed but hidden. The deploy is a 2-tx flow (commit + reveal). Once the cap fills, no more T_PMINTs are accepted. SPEC §5.8 / §5.9.
+          Mints publicly reveal <code>(amount, blinding)</code>, so the cap is auditable from chain alone — supply is fully observable, unlike CETCH where supply is committed but hidden. The deploy is a 2-tx flow (commit + reveal). Once the cap fills, no more T_PMINTs are accepted. SPEC §3.4.
         </div>
       </details>
       <div class="flex" style="margin-top:18px;">
@@ -9321,7 +9321,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
             </label>
           </div>
           <div class="muted" style="font-size:11px;margin-top:6px;">
-            Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>. For merkle-gated drops, size cap to the count of eligible leaves × per-claim. For open FCFS drops, set a non-zero expiry so unclaimed remainder is recoverable by you via Reclaim once expiry passes (SPEC §5.12.1).
+            Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>. For merkle-gated drops, size cap to the count of eligible leaves × per-claim. For open FCFS drops, set a non-zero expiry so unclaimed remainder is recoverable by you via Reclaim once expiry passes.
           </div>
           <label style="margin-top:10px;">Merkle root (paste 64-hex from step 5 above, or leave empty for open FCFS)
             <input id="ondrop-merkle-root" type="text" placeholder="64-hex from Build snapshot — or empty for open FCFS" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;">
@@ -9705,9 +9705,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
           <p style="margin:0;"><strong>Trade.</strong> Type an amount, click Swap. Every fill is a single Bitcoin transaction — your asset and the counterparty's sats change hands in the same tx or neither moves. No bridges, no custodians, no settlement layer.</p>
           <p style="margin:8px 0 0;"><strong>Fees.</strong> Zero protocol fee. You pay only Bitcoin miner fees, shown in the preview before you sign.</p>
-          <p style="margin:8px 0 0;"><strong>No MEV.</strong> Orders are pre-signed by the maker against a specific outpoint, so the only valid fill is the one that spends it. No sequencer to reorder you, no privileged relayer, no protocol surface to bribe. Bitcoin's PoW is the only orderer.</p>
+          <p style="margin:8px 0 0;"><strong>Signed terms.</strong> Orders are pre-signed by the maker against a specific outpoint, so the only valid fill is the one that spends it at the signed price. There is no sequencer or relayer in between.</p>
           <p style="margin:8px 0 0;"><strong>Limit + rest.</strong> If your swap doesn't fully fill at your limit price — including when nothing matches — the unfilled remainder rests as a passive order for 24h. One click either fills, posts a tradeable order, or both.</p>
-          <p style="margin:8px 0 0;"><strong>Private amounts.</strong> Trade sizes are hidden on-chain via Pedersen commitments + bulletproof rangeproofs. Asset IDs and tickers are public; the size you move is not.</p>
+          <p style="margin:8px 0 0;"><strong>Amounts.</strong> The asset side of a fill is a Pedersen commitment on-chain. The BTC payment is an ordinary public output, asset ids are public, and a listed offer shows its size and price.</p>
           <p style="margin:8px 0 0;"><strong>Custody.</strong> Your signing key never leaves this browser. Tacit can't move your funds — only your wallet can.</p>
         </div>
       </details>
@@ -9890,7 +9890,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         Bitcoin-native private send for any tacit asset that stays on Bitcoin. Deposit a fixed denomination into a shared pool, wait, then withdraw to a fresh address — a zero-knowledge proof breaks the on-chain link between the two halves. The prover and verifier run live in your browser against a separate trusted-setup ceremony.
       </div>
       <div class="muted" style="margin-bottom:14px;padding:10px 12px;border:1px solid var(--line,#d8cfc0);border-radius:6px;">
-        For amount-flexible privacy plus swap, borrow, and cross-chain flows, use the <a href="#tab=confidential-pool">Shielded Pool</a> — it works with any amount and needs no trusted setup. The mixer is the Bitcoin-only option when you want notes to never leave Bitcoin.
+        For amount-flexible privacy plus swap, borrow, and cross-chain flows, use the <a href="#tab=confidential-pool">confidential pool</a>, which works with any amount. This fixed-denomination mixer is legacy.
       </div>
     </div>
   </div>
@@ -10234,8 +10234,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     <div class="section-header"><span>documentation</span></div>
     <div class="section-body protocol-body">
       <p class="protocol-lede">Confidential money across Bitcoin and Ethereum — one shielded note you can send, swap, borrow against, and bridge, settled in ordinary on-chain transactions.</p>
-      <p>Tacit is a Bitcoin metaprotocol: Bitcoin orders and stores the data, and open-source indexers enforce the token rules by reading the chain — the validation model of Runes, BRC-20 and Ordinals, with real cryptography on top. The same note extends into a <strong>confidential pool</strong> on Ethereum: one confidential note wraps value from either chain, then transfers, trades on a native AMM, borrows cUSD against cBTC, and bridges back, with the same amount-hiding, self-custody and key-is-your-backup guarantees throughout.</p>
-      <p style="margin-top:12px;">The Ethereum contracts are live on mainnet at Etherscan-verified addresses: the immutable ConfidentialPool, ConfidentialRouter and asset factory, plus the CollateralEngine, TacitRelayer and BitcoinLightRelay. Addresses are in <a href="https://github.com/z0r0z/tacit/blob/main/docs/DEPLOYMENTS.md" target="_blank" rel="noopener noreferrer">DEPLOYMENTS.md</a>.</p>
+      <p>Tacit is a Bitcoin metaprotocol: Bitcoin orders and stores the data, and open-source indexers enforce the token rules by reading the chain. The same note extends into a <strong>confidential pool</strong> on Ethereum, where it transfers, trades on an AMM, backs a cUSD loan and bridges back, with amounts hidden and your key as your backup throughout.</p>
+      <p style="margin-top:12px;">The Ethereum contracts are live on mainnet at Etherscan-verified addresses. The ConfidentialPool, ConfidentialRouter, asset factory and SP1 guests are immutable: no owner, no proxy, no pause. The CollateralEngine and FarmManager are governed by a 2-of-4 multisig within fixed bounds. Addresses are in <a href="https://github.com/z0r0z/tacit/blob/main/docs/DEPLOYMENTS.md" target="_blank" rel="noopener noreferrer">DEPLOYMENTS.md</a>.</p>
 
       <div class="protocol-grid">
         <div class="protocol-card">
@@ -10249,33 +10249,33 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <p class="crypto-claim">Blinded-pubkey commits — same curve math as BIP-341 / silent payments</p>
         </div>
         <div class="protocol-card">
-          <h4>Anonymous spend <span class="mode">bitcoin · opt-in</span></h4>
-          <p>The legacy Bitcoin mixer breaks the on-chain link between deposit and withdrawal, at fixed denominations. For any amount, and for DeFi and cross-chain, use the confidential pool.</p>
-          <p class="crypto-claim">Groth16 + Poseidon Merkle tree · 2,227-contributor ceremony</p>
+          <h4>Unlinkable pool spends</h4>
+          <p>Inside the confidential pool, a spend does not reveal which note it consumes. Only deposits into and withdrawals out of the pool are public.</p>
+          <p class="crypto-claim">Nullifiers · SP1 proof of note-tree membership</p>
         </div>
         <div class="protocol-card">
           <h4>Native AMM</h4>
-          <p>Swap and provide liquidity on Bitcoin and in the confidential pool. Trade sizes stay confidential in batched settlement.</p>
-          <p class="crypto-claim">Uniform clearing price per block · in-circuit amounts</p>
+          <p>Swap and provide liquidity on Bitcoin and in the confidential pool. Balances stay in hidden notes; pool reserves are public, so a swap's size shows in the reserve change.</p>
+          <p class="crypto-claim">Constant-product curve · public reserves</p>
         </div>
         <div class="protocol-card">
-          <h4>Wrapped BTC, no federation</h4>
-          <p>cBTC is minted 1:1 from SP1-reflected Bitcoin locks, with no price oracle in the peg. tacBTC is its ERC-20 form. A slashable wstETH escrow makes spending a lock unprofitable.</p>
+          <h4>cBTC from Bitcoin locks</h4>
+          <p>cBTC is minted 1:1 from SP1-reflected Bitcoin locks, with no price oracle in the peg. tacBTC is its ERC-20 form. A slashable wstETH escrow (1.5× the lock today) makes spending a lock unprofitable.</p>
           <p class="crypto-claim">SP1 Bitcoin reflection · slashable wstETH escrow</p>
         </div>
         <div class="protocol-card">
           <h4>Atomic marketplace</h4>
-          <p>Orderbook and OTC trades settle asset-for-sats in one Bitcoin transaction. No MEV by construction.</p>
-          <p class="crypto-claim">Pre-signed offers · Bitcoin PoW is the only orderer</p>
+          <p>Orderbook and OTC trades settle asset-for-sats atomically in one Bitcoin transaction: a fill completes in full or not at all.</p>
+          <p class="crypto-claim">Pre-signed offers · one Bitcoin transaction per fill</p>
         </div>
         <div class="protocol-card">
           <h4>Cross-chain note <span class="mode">btc ⇄ eth</span></h4>
-          <p>Wrap from Bitcoin or Ethereum into the same shielded note, and bridge value back across — no bridge multisig, no wrapped-asset IOU.</p>
-          <p class="crypto-claim">SP1 zero-knowledge reflection · burn→mint provenance, one-time per note</p>
+          <p>Wrap from Bitcoin or Ethereum into the same shielded note, and bridge value back across. No multisig or attestor set signs a bridge message.</p>
+          <p class="crypto-claim">SP1 zero-knowledge reflection · each burn pays once</p>
         </div>
         <div class="protocol-card">
           <h4>cUSD &amp; cBTC</h4>
-          <p>Mint <strong>cUSD</strong>, the bitcoin-backed dollar, against cBTC collateral, or <strong>cBTC</strong> / tacBTC 1:1 from a reflected Bitcoin lock. Note balances stay hidden; a CDP position's amounts are priced in the open, but its owner is not linked to it.</p>
+          <p>Mint <strong>cUSD</strong> against cBTC collateral, or <strong>cBTC</strong> / tacBTC 1:1 from a reflected Bitcoin lock. Note balances stay hidden; a CDP position's amounts are public so they can be priced, but its owner is not linked to it.</p>
           <p class="crypto-claim">Unlinkable CDP positions · conservation-backed cBTC peg</p>
         </div>
         <div class="protocol-card">
@@ -10285,14 +10285,14 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         </div>
       </div>
 
-      <p>Fair-launch mints, airdrops, LP farms and the reflection bridge ride the same rails. The privacy layers compose: a merchant might keep the defaults for clean accounting with amount privacy, while a privacy-focused user stacks all three for unlinkability at every endpoint.</p>
+      <p>Fair-launch mints, airdrops and LP farms use the same notes. The privacy layers compose: keep the defaults for amount privacy, or add shielded addresses and pool round trips for unlinkability.</p>
 
       <h3 class="protocol-h3" id="proto-validation">Validation model</h3>
-      <p>Bitcoin validates the transactions; indexers validate the tokens. Like every Bitcoin token meta-protocol, tacit's rules are <strong>not enforced by Bitcoin nodes</strong> — an indexer reads the chain and checks the cryptography riding on top: commitments, rangeproofs, kernel signatures, zero-knowledge proofs.</p>
-      <p>Everything an indexer needs lives on the chain. Any UTXO can be walked back to its origin and re-verified step by step, so every indexer running the open spec reaches the same verdict — no federation (Liquid), no proof files to pass around and keep safe (RGB, Taproot Assets), no consensus change.</p>
-      <p>That also means <strong>your key is your backup</strong>: a fresh wallet holding only its private key rebuilds its full balance from chain data alone, years later on a new device. For how SP1 proofs, range proofs and the two Groth16 ceremonies fit together, see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a>.</p>
+      <p>Bitcoin validates the transactions; indexers validate the tokens. Tacit's rules are <strong>not enforced by Bitcoin nodes</strong>: an indexer reads the chain and checks the cryptography on top — commitments, range proofs, kernel signatures and zero-knowledge proofs.</p>
+      <p>Everything an indexer needs is on the chain. Any UTXO can be walked back to its origin and re-verified step by step, so every indexer running the spec reaches the same verdict, with no off-chain proof files and no consensus change.</p>
+      <p>That also means <strong>your key is your backup</strong>: a fresh wallet holding only its private key rebuilds its balance from chain data alone. For how SP1 proofs, range proofs and the two Groth16 ceremonies fit together, see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a>.</p>
 
-      <p style="margin-top:18px;">The cards above are <em>what you can do</em>. Everything below is <em>how it works</em> — readable top to bottom, each section one layer deeper, from the privacy guarantees down to the cryptography that enforces them and the security work behind it. Skim the headings or jump straight to a topic:</p>
+      <p style="margin-top:18px;">The sections below go one layer deeper each, from privacy down to the cryptography and the security work behind it:</p>
 
       <nav class="protocol-toc protocol-docnav" aria-label="Documentation sections">
         <div><strong>Privacy</strong><a href="#proto-privacy">Privacy scope</a><a href="#proto-blinding">Blinding + recovery</a></div>
@@ -10304,36 +10304,37 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
       <details class="protocol-section" id="proto-privacy">
         <summary class="protocol-h3">Privacy scope</summary>
-        <p style="margin-top:8px;">Tacit gives you three independent privacy layers — each works on its own, and they stack, so you pick how much to hide:</p>
+        <p style="margin-top:8px;">Three privacy layers, each usable on its own:</p>
         <ul style="margin-left:20px;margin-top:8px;">
-          <li><strong>Shielded amount</strong> (default) — hidden in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte Pedersen commit + 8-byte HMAC-encrypted u64). In <code>T_SWAP_BATCH</code>, per-trader amounts stay hidden during settlement via BabyJubJub Pedersen openings inside Groth16.</li>
-          <li><strong>Shielded address</strong> (opt-in, blinded-pubkey commit primitive) — BIP-341-style construction <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit doubles as Schnorr key and P2TR output key, so on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340/341/352 silent payments, no new ceremony. Composes orthogonally with shielded amounts.</li>
-          <li><strong>Anonymous spend via mixer pool</strong> (opt-in, Bitcoin-only) — deposit a fixed-denomination UTXO into the Poseidon-Merkle pool (<code>T_DEPOSIT</code>), later withdraw under a Groth16 proof of unspent leaf membership (<code>T_WITHDRAW</code>). The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. The mixer is legacy (fixed denominations, its own trusted setup). The confidential pool is the primary privacy surface: any amount, both chains, and where DeFi lives.</li>
+          <li><strong>Shielded amount</strong> (default) — every CETCH, T_MINT, CXFER, T_AXFER and burn-change output is a 33-byte Pedersen commitment plus an 8-byte encrypted amount. Pool notes use the same commitment.</li>
+          <li><strong>Shielded address</strong> (opt-in) — the sender pays to <code>commit = recipient_pubkey + b·G</code>, with <code>b</code> derived from ECDH between sender and recipient and a per-transaction anchor. Each receipt lands at a one-time address with no visible link to the recipient's published key. Same curve math as BIP-340/341/352.</li>
+          <li><strong>Confidential pool</strong> — a pool spend does not reveal which note it consumes, and amounts stay hidden on both chains. Only entry and exit are public.</li>
         </ul>
-        <p style="margin-top:12px;">End-to-end: amount-hiding is on by default; address-graph unlinkability is opt-in (a shielded address per transfer, or a round trip through the confidential pool or mixer). Stricter posture than Liquid CT, approaching Mimblewimble or shielded Zcash for assets that route through the pool.</p>
+        <p style="margin-top:12px;">The fixed-denomination Bitcoin mixer (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) is legacy; the confidential pool is the privacy surface for any amount.</p>
         <p style="margin-top:8px;">What remains public:</p>
       <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope).</li>
-        <li><strong>Sender pubkey</strong> on non-pool transfers — visible in <code>tx.vin[1].witness[1]</code>; recipient needs it for ECDH blinding recovery.</li>
-        <li><strong>Pool participation</strong> — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
-        <li><strong>AMM pool reserves and per-batch net deltas</strong> — public by design (cost of trustless reconstruction). Per-trader amounts within a batch are hidden.</li>
+        <li><strong>Asset id</strong> on Bitcoin transfers.</li>
+        <li><strong>Bitcoin addresses and the transaction graph</strong>, including the sender pubkey the recipient needs for ECDH recovery.</li>
+        <li><strong>The pool boundary</strong> — deposits into and withdrawals out of the confidential pool.</li>
+        <li><strong>AMM reserves</strong> and burn amounts. Trade sizes are hidden only in Bitcoin <code>T_SWAP_BATCH</code> and pool <code>OP_SWAP_BLIND</code> batches; live pool swaps settle as <code>OP_SWAP_ROUTE</code>, whose amounts show in the reserve change.</li>
+        <li><strong>The prover's witness.</strong> Whoever proves a pool batch sees its inputs. To keep them private, prove locally.</li>
       </ul>
       </details>
 
       <details class="protocol-section" id="proto-blinding">
         <summary class="protocol-h3">Blinding delivery + amount recovery</summary>
-        <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
-      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx (typically 1 for a 2-output CXFER, but parameterized so multi-output CXFERs with N=4 or N=8 can place change at higher vouts). Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
+        <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(SHA-256(ECDH_x), "tacit-blind-v1" ‖ anchor ‖ vout_LE) mod n</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The per-transaction anchor gives every transfer between the same two parties fresh blindings, so commitments cannot be compared across transactions.</p>
+      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx. It is deterministic from the wallet key, so it is recoverable from the chain alone.</p>
       <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
       <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
       <p>For self-derived roles (CETCH supply, MINT amount, CXFER change), <strong>blinding and keystream are derived under distinct HMAC domain tags</strong> (<code>tacit-etch-v1</code> vs <code>tacit-etch-amount-v1</code>; <code>tacit-mint-blind-v1</code> vs <code>tacit-mint-amount-v1</code>) so the 8-byte keystream output cannot leak any structure of the 32-byte blinding scalar.</p>
-      <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
+      <p>So <strong>share-links are optional notifications, not required for recovery</strong>. A fresh wallet with only its key finds its balance from the chain: incoming transfers via ECDH, and its own change, etches and mints via self-derived keys.</p>
       </details>
 
       <details class="protocol-section" id="proto-ops">
         <summary class="protocol-h3">Operations</summary>
-      <p style="margin-top:8px;">Everything tacit can do is one of the operations below — each is a compact instruction tucked inside an ordinary Bitcoin transaction. The tables group them by purpose; the rest of this section is reference detail.</p>
-      <p style="margin-top:8px;">Technically: the v1 envelope version is <code>0x01</code>, and every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §3.9 is the canonical opcode map, with assigned, legacy and reserved bytes.</p>
+      <p style="margin-top:8px;">Every Bitcoin-side action is one of the operations below, carried inside an ordinary Bitcoin transaction.</p>
+      <p style="margin-top:8px;">The envelope version is <code>0x01</code>, and every op is a commit/reveal pair carrying the envelope in <code>tx.vin[0].witness[1]</code> of the reveal. SPEC.md §3.9 is the canonical opcode map, with assigned, legacy and reserved bytes.</p>
       <p class="protocol-kicker">Core asset lifecycle</p>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x21</span><span class="op">CETCH</span><span class="desc">issue new asset; hidden initial supply, optionally mintable</span>
@@ -10348,8 +10349,8 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC, preauth sales and batched takes</span>
         <span class="hex">0x37</span><span class="op">T_AXFER_VAR</span><span class="desc">legacy variable-amount atomic settlement; builders off, not reflected</span>
-        <span class="hex">0x5B</span><span class="op">T_PREAUTH_BID</span><span class="desc">buyer-offline preauth bid, exact-fill — buyer signs once, seller completes whenever</span>
-        <span class="hex">0x5C</span><span class="op">T_PREAUTH_BID_VAR</span><span class="desc">buyer-offline preauth bid, partial fills from a pre-signed grid; residual returns to the buyer</span>
+        <span class="hex">0x5B</span><span class="op">T_PREAUTH_BID</span><span class="desc">buyer-offline bid, exact fill — buyer signs once, any seller completes it; wallet builders gated</span>
+        <span class="hex">0x5C</span><span class="op">T_PREAUTH_BID_VAR</span><span class="desc">buyer-offline bid, partial fills from a pre-signed grid; residual returns to the buyer; wallet builders gated</span>
         <span class="hex">0x3C</span><span class="op">T_AXFER_BPP</span><span class="desc">Bulletproofs+ variant of T_AXFER; same wire shape, smaller rangeproof</span>
         <span class="hex">0x3D</span><span class="op">T_AXFER_VAR_BPP</span><span class="desc">legacy Bulletproofs+ variant of T_AXFER_VAR</span>
       </div>
@@ -10357,7 +10358,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x29</span><span class="op">T_DEPOSIT</span><span class="desc">lock a fixed-denomination UTXO into a mixer pool (Poseidon leaf)</span>
         <span class="hex">0x2A</span><span class="op">T_WITHDRAW</span><span class="desc">Groth16-gated mint from a pool; recipient unlinkable to any specific deposit</span>
-        <span class="hex">0x2B</span><span class="op">T_DROP</span><span class="desc">lock existing supply into a public claim pool with optional Merkle eligibility gate</span>
+        <span class="hex">0x2B</span><span class="op">T_DROP</span><span class="desc">lock existing supply into a public claim pool with optional Merkle eligibility gate (a 161-byte <code>0x2B</code> is the bridge burn)</span>
         <span class="hex">0x2C</span><span class="op">T_DCLAIM</span><span class="desc">permissionless claim from a drop; reveals (per_claim, blinding) for audit</span>
       </div>
       <p class="protocol-kicker">Native AMM (SPEC §3.5)</p>
@@ -10366,7 +10367,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="hex">0x2E</span><span class="op">T_LP_REMOVE</span><span class="desc">burn LP shares for proportional withdrawal of pool reserves</span>
         <span class="hex">0x2F</span><span class="op">T_SWAP_BATCH</span><span class="desc">batched uniform-price settlement; N intents at one P_clear via Groth16 over hidden per-trader amounts</span>
         <span class="hex">0x30</span><span class="op">T_INTENT_ATTEST</span><span class="desc">reserved name; no validator</span>
-        <span class="hex">0x31</span><span class="op">T_PROTOCOL_FEE_CLAIM</span><span class="desc">mint accrued protocol fee shares to the founder-pinned recipient (or insurance-pool sentinel)</span>
+        <span class="hex">0x31</span><span class="op">T_PROTOCOL_FEE_CLAIM</span><span class="desc">mint a pool's accrued protocol-fee skim to its configured recipient</span>
         <span class="hex">0x32</span><span class="op">T_SWAP_VAR</span><span class="desc">per-trade variable-amount swap; cleartext amounts against curve, no Groth16, no ceremony coupling</span>
         <span class="hex">0x33</span><span class="op">T_SWAP_ROUTE</span><span class="desc">atomic multi-hop AMM routing (2..4 pools in one Bitcoin tx); reuses T_SWAP_VAR cryptography</span>
       </div>
@@ -10387,14 +10388,21 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="hex">0x46</span><span class="op">T_SLOT_SPLIT</span><span class="desc">cBTC.zk: atomic 1→N slot split, ΣD_new = D_old</span>
         <span class="hex">0x47</span><span class="op">T_SLOT_MERGE</span><span class="desc">cBTC.zk: atomic N→1 slot merge</span>
       </div>
-      <p class="protocol-kicker">Legacy tETH bridge (recovery/migration)</p>
+      <p class="protocol-kicker">Cross-chain and cBTC (SPEC §3.6–3.7)</p>
       <div class="script-decode" style="margin:10px 0;">
-        <span class="hex">0x60</span><span class="op">T_BRIDGE_DEPOSIT</span><span class="desc">tETH: Groth16-gated mint on Bitcoin; client verifies proof + checks <code>ethRoot</code> against Ethereum's <code>isKnownDepositRoot</code> via <code>eth_call</code></span>
-        <span class="hex">0x61</span><span class="op">T_BRIDGE_BURN</span><span class="desc">tETH: burn on Bitcoin; SP1 proof unlocks ETH withdrawal on Ethereum</span>
-        <span class="hex">0x62</span><span class="op">T_BRIDGE_ROTATE</span><span class="desc">tETH: atomic key rotation / transfer of a bridge position</span>
-        <span class="hex">0x63</span><span class="op">T_BRIDGE_NOTE</span><span class="desc">tETH: note commitment for bridge position metadata</span>
+        <span class="hex">0x39</span><span class="op">T_CXFER_BOUND</span><span class="desc">transfer whose outputs become notes bound to one pool deployment, spendable in its fast lane</span>
+        <span class="hex">0x2B</span><span class="op">bridge burn</span><span class="desc">161 bytes; burns a note for the pool deployment named in it, which mints it once</span>
+        <span class="hex">0x65</span><span class="op">T_CROSSOUT_MINT</span><span class="desc">re-mints on Bitcoin a note crossed out of the pool</span>
+        <span class="hex">0x66</span><span class="op">T_CBTC_LOCK</span><span class="desc">registers a self-custody BTC output for cBTC minting on Ethereum</span>
+        <span class="hex">0x67</span><span class="op">T_CBTC_REDEEM</span><span class="desc">unlocks a lock and burns exactly its value in cBTC</span>
+        <span class="hex">0x68</span><span class="op">T_BTC_CALL</span><span class="desc">value-free, Bitcoin-signed authorization of an Ethereum call</span>
+        <span class="hex">0x69</span><span class="op">T_ETH_CALL</span><span class="desc">delivers a message from Ethereum's <code>EthCallOutbox</code></span>
       </div>
-      <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules, including the cross-chain ops not listed above (<code>T_CXFER_BOUND</code>, the bridge burn, <code>T_CROSSOUT_MINT</code>, <code>T_CBTC_LOCK</code> / <code>T_CBTC_REDEEM</code>, <code>T_BTC_CALL</code>, <code>T_ETH_CALL</code>) — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#3-the-bitcoin-metaprotocol" target="_blank" rel="noopener noreferrer">SPEC.md</a> §3.</p>
+      <p class="protocol-kicker">Legacy: early tETH bridge</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x60–0x64</span><span class="op">tETH bridge ops</span><span class="desc">kept in the validator for recovery; new flows use the confidential pool</span>
+      </div>
+      <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The other opcodes use the same envelope with their own payload layouts and rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#3-the-bitcoin-metaprotocol" target="_blank" rel="noopener noreferrer">SPEC.md</a> §3.</p>
       <p style="margin-top:8px;">Marketplace flows settle through <code>T_AXFER</code> and the preauth bids, with no separate opcodes: <strong>atomic intents</strong> (a seller publishes one signed offer and any taker settles it atomically on Bitcoin), <strong>preauth sales</strong> (the seller pre-signs, then goes offline), and <strong>batched takes</strong> (a buyer sweeps several preauths in one reveal tx, using position-independent <code>SIGHASH_SINGLE|ANYONECANPAY</code>). They share the kernel and range-proof checks of a plain CXFER; only the coordination differs.</p>
       </details>
 
@@ -10425,7 +10433,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="hex">2B</span><span class="op">image_len</span><span class="desc">u16 LE (0–256)</span>
         <span class="hex">..</span><span class="op">image_uri</span><span class="desc">opaque UTF-8; image OR metadata-blob CID; renderers MUST validate scheme</span>
       </div>
-      <p style="margin-top:8px;">The wire format treats <code>image_uri</code> as opaque UTF-8 bytes. The decoder accepts any valid UTF-8 ≤256 bytes — it does not enforce a URI scheme. This leaves room for future schemes (<code>ar://</code>, <code>ipns://</code>, etc.) without a wire-format change. <strong>Renderers MUST validate before display</strong>: tacit's UI accepts only <code>ipfs://CID</code> and bare CIDs (Qm…/bafy…), and rejects <code>http:</code>, <code>https:</code>, <code>javascript:</code>, <code>data:</code>, and other schemes. Direct <code>https://</code> images are rejected on purpose — every wallet that views the asset would fetch from the issuer-controlled host, which is an IP-correlation beacon. Forcing IPFS routes traffic through the configured gateway, one fixed origin that the CSP locks down at <code>img-src</code>.</p>
+      <p style="margin-top:8px;">The wire format treats <code>image_uri</code> as opaque UTF-8 bytes. The decoder accepts any valid UTF-8 up to 256 bytes and does not enforce a URI scheme. <strong>Renderers MUST validate before display</strong>: tacit's UI accepts only <code>ipfs://CID</code> and bare CIDs (Qm…/bafy…), and rejects <code>http:</code>, <code>https:</code>, <code>javascript:</code>, <code>data:</code> and other schemes. Direct <code>https://</code> images are rejected so viewing an asset never contacts an issuer-controlled host; IPFS images load through the gateways the CSP allows at <code>img-src</code>.</p>
       <p>Asset_id = <code>sha256(reveal_txid_BE ‖ 0_LE)</code> (32 bytes). Supply commitment lives at vout 0 of the reveal tx. If <code>mint_authority</code> is all-zero, the asset is fixed-supply (BTC-style); otherwise the named pubkey can issue more via <code>T_MINT</code>.</p>
       <h4 class="protocol-h4">CXFER payload (opcode 0x23) — confidential transfer</h4>
       <div class="script-decode" style="margin:10px 0;">
@@ -10466,10 +10474,10 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
       <details class="protocol-section" id="proto-indexer">
         <summary class="protocol-h3">Indexer rules (recursive validation)</summary>
-        <p style="margin-top:8px;">This is exactly how a wallet — or any independent indexer — reads the chain and works out what's real and what each balance is. Anyone can re-run these steps and reach the same answer, which is why no trusted server is needed:</p>
+        <p style="margin-top:8px;">This is how a wallet, or any independent indexer, works out what is valid and what each balance is. Anyone can re-run these steps and reach the same answer:</p>
         <ol style="margin-left:20px;margin-top:8px;">
         <li>For each wallet UTXO, fetch parent tx; read <code>vin[0].witness[1]</code>; decode as tacit envelope.</li>
-        <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Memoize results to keep cost O(N) over a chain of length N. Depth-bounded at 200 hops.</li>
+        <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Each outpoint validates once and is memoized, so cost is O(N) over an ancestry of N steps. There is no depth cap.</li>
         <li><strong>Aggregated rangeproof verification.</strong> A single bulletproof per envelope covers all m commitments (m ∈ {1,2,4,8}). The walker can additionally <em>batch</em> proofs across the entire ancestry into one multi-scalar multiplication via <code>bpRangeAggBatchVerify</code>, with random per-proof scalars α<sub>i</sub>, β<sub>i</sub> ensuring soundness preservation.</li>
         <li><strong>For CETCH leaves</strong> (T_CETCH): only vout 0 is the supply commitment; no kernel; the rangeproof bounds the initial supply.</li>
         <li><strong>For MINT envelopes</strong> (T_MINT): vout 0 holds the new supply commitment. Validator confirms <code>asset_id = sha256(etch_txid ‖ 0)</code>, recursively validates the CETCH ancestor, requires <code>mint_authority ≠ 0</code>, and verifies the issuer's BIP-340 sig under the authority's x-only pubkey. <code>mint_msg</code> binds <code>commit_anchor</code> (the commit-tx's first input outpoint), preventing replay of the envelope into a different commit/reveal pair.</li>
@@ -10485,10 +10493,10 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <p style="margin-top:8px;">The confidential pool carries the note onto Ethereum and back, and lets it do more than move:</p>
         <ul style="margin-left:20px;margin-top:8px;">
           <li><strong>One note, two chains.</strong> Wrap <span class="eth-word">ETH</span> or any token through the <code>ConfidentialRouter</code>, or bring value over from <span class="btc-word">Bitcoin</span> — both land as the same shielded note. From there it transfers, trades, or borrows, and can exit on either side.</li>
-          <li><strong>cUSD CDP.</strong> Borrow the protocol's own cUSD against cBTC. A position's collateral and debt are visible to the pricing controller, but the position cannot be linked to its owner. Minting needs 150% collateralization and liquidation is possible below 130%; the stability fee and savings rate are built in and dormant.</li>
-          <li><strong>cBTC.</strong> Mint cBTC against an SP1-reflected Bitcoin lock at a 1:1 peg set by conservation, not a price feed. tacBTC is its ERC-20 form. Each mint needs a wstETH escrow (1.5× the lock value), slashed if the lock is spent without a redeem; it deters, it does not back the peg.</li>
-          <li><strong>LP farms.</strong> Bond LP shares to earn rewards. The farm controller escrows the reward asset, so a farm can never pay beyond what it holds.</li>
-          <li><strong>Trustless reflection bridge.</strong> Bitcoin ⇄ Ethereum value moves by SP1 zero-knowledge <em>reflection</em>: a burn on one side is proven and reflected as a one-time mint on the other, with full provenance back to a real supply leaf and an on-chain finality gate against reorgs. No wrapped-asset IOU, no bridge multisig.</li>
+          <li><strong>cUSD CDP.</strong> Borrow cUSD against cBTC. A position's collateral and debt are public so the CollateralEngine can price them, but the position cannot be linked to its owner. Minting needs 150% collateralization and liquidation is possible below 130%; a stability fee and savings rate are built in and dormant.</li>
+          <li><strong>cBTC.</strong> Mint cBTC 1:1 against an SP1-reflected Bitcoin lock; supply is bounded by reflected locks, not a price feed. tacBTC is its ERC-20 form. Each mint needs a wstETH escrow (1.5× the lock value today), slashable if the lock is spent without a redeem; it deters, it does not back the peg.</li>
+          <li><strong>LP farms.</strong> Bond LP shares to earn rewards. The FarmManager escrows the reward asset, so a farm never pays beyond what it holds.</li>
+          <li><strong>Reflection bridge.</strong> Bitcoin ⇄ Ethereum value moves by SP1 zero-knowledge <em>reflection</em>: a burn on one side is proven on the other and minted once, after Bitcoin blocks are 24 confirmations deep. No multisig or attestor set signs a bridge message.</li>
           <li><strong>One unified address.</strong> Publish a single <code>tacit1…</code> address; senders don't need to know whether you're receiving on Bitcoin or in the confidential pool — it resolves to the right endpoint, and a send can wrap straight into a shielded note for the recipient.</li>
         </ul>
         <p style="margin-top:12px;">Every one of these settles through the same conservation kernel as a plain transfer, so value-in equals value-out per asset, and any op can be relayed gaslessly with the fee bound inside the proof. See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#6-reflection-and-the-bridge" target="_blank" rel="noopener noreferrer">SPEC §6</a> for the cross-chain path.</p>
@@ -10496,21 +10504,21 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
       <details class="protocol-section" id="proto-cryptography">
         <summary class="protocol-h3">Cryptography</summary>
-      <p style="margin-top:8px;">The full ZK + commitment toolkit composes across all surfaces. See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a> for the canonical walkthrough.</p>
+      <p style="margin-top:8px;">See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a> for the canonical walkthrough.</p>
       <h4 class="protocol-h4">On-chain commitments — Pedersen on secp256k1</h4>
       <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
       <h4 class="protocol-h4">Rangeproofs — aggregated Bulletproofs + Bulletproofs+</h4>
-      <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms prove, ~150 ms verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost. 64-bit range bounds any single Pedersen commitment to ~184 billion display units at 8 decimals.</p>
-      <p style="margin-top:8px;"><strong>Bulletproofs+</strong> (Chung et al. 2022) is the default for new transfers (<code>T_CXFER_BPP</code>, <code>T_AXFER_BPP</code>, and every pool output): about 14% smaller at the same security level, with the same wire shape as the base opcodes. Classic Bulletproofs stay valid, and the verifier picks the scheme by proof length.</p>
+      <p style="margin-top:8px;">Bünz et al. 2017, at n=64 bits — each committed value proven to lie in <code>[0, 2⁶⁴)</code>. A single proof covers m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. The client batches the proofs along an ancestry into a single multi-scalar multiplication. A 64-bit range bounds one commitment to about 184 billion units at 8 decimals.</p>
+      <p style="margin-top:8px;"><strong>Bulletproofs+</strong> (Chung et al. 2022) is the default for new transfers (<code>T_CXFER_BPP</code>) and every pool output: about 14% smaller at the same security level, with the same wire shape as the base opcode. Classic Bulletproofs stay valid, and the verifier picks the scheme by proof length.</p>
       <h4 class="protocol-h4">Proof systems — SP1, range proofs, two small ceremonies</h4>
       <p style="margin-top:8px;">The confidential pool and reflection run on SP1 proofs, Bulletproofs+ range proofs and Schnorr kernels. None of these needs a Tacit ceremony (SP1 proofs are wrapped in Groth16 using SP1's own setup). Two Groth16 circuit sets over BN254, with Phase 1 from the Polygon Hermez ceremony, cover narrower jobs:</p>
       <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Swap batch</strong> — the AMM circuits (<code>amm_swap_batch</code> 171K constraints at N≤16 traders, plus <code>amm_lp_add</code> and <code>amm_lp_remove</code>; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings, range checks and a uniform clearing price over hidden per-trader amounts. The <code>amm_swap_batch</code> key is compiled into the settle guest (<code>OP_SWAP_BLIND</code>) and the reflection guest (<code>T_SWAP_BATCH</code>).</li>
+        <li><strong>Swap batch</strong> — the AMM circuits (<code>amm_swap_batch</code> 171K constraints at N≤16 traders, plus <code>amm_lp_add</code> and <code>amm_lp_remove</code>; <code>pot18</code> Phase 1). BabyJubJub Pedersen openings, range checks and a uniform clearing price over hidden per-trader amounts. The <code>amm_swap_batch</code> key is compiled into the settle guest (<code>OP_SWAP_BLIND</code>) and the reflection guest (<code>T_SWAP_BATCH</code>). <code>OP_SWAP_BLIND</code> is enabled in the guest but not yet emitted by the relayer; its batcher sees the amounts, while the SP1 prover and the chain do not.</li>
         <li><strong>Legacy mixer</strong> — <code>withdraw.circom</code> (Poseidon-Merkle leaf membership + nullifier reveal, <code>pot14</code> Phase 1) for Bitcoin <code>T_DEPOSIT</code> / <code>T_WITHDRAW</code> only.</li>
       </ul>
-      <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup. This avoids ~1M constraints per opening that an in-circuit secp256k1 gadget would cost.</p>
+      <p>Chain commitments live on secp256k1; in-circuit work lives on BabyJubJub (the embedded curve over BN254 Fr). A <strong>169-byte Camenisch–Stadler sigma proof</strong> binds the two, out-of-circuit, with no trusted setup, so no secp256k1 arithmetic runs inside the circuit.</p>
       <h4 class="protocol-h4">Shielded-address primitive — blinded-pubkey commits</h4>
-      <p style="margin-top:8px;">Opt-in BIP-341-style construction: <code>commit = recipient_pubkey + blinding · G</code> where <code>blinding = HMAC(wallet.priv, domain || op-specific anchor)</code>. The commit serves as both a Schnorr verification key (if the op signs under the recipient) AND a P2TR output key (so payouts go to <code>P2TR(x_only(commit))</code>). Hides the recipient pubkey itself — on-chain markers sit at per-transaction unique addresses with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352; no new ceremony. Composes orthogonally with shielded amounts; both schemes remain valid indefinitely, wallets pick at tx-build time based on the recipient's signaled capability.</p>
+      <p style="margin-top:8px;">Opt-in: <code>commit = recipient_pubkey + b·G</code>, where <code>b = HMAC(SHA-256(ECDH_x), domain ‖ network ‖ tx_anchor) mod n</code>. The output pays to the commit, and the recipient spends it with <code>sk + b mod n</code>. Each receipt sits at a one-time address with no visible link to the recipient's published key. Same curve math as BIP-340 / BIP-341 / BIP-352; no ceremony. It composes with shielded amounts, and a plain pubkey recipient stays valid.</p>
       </details>
 
       <details class="protocol-section" id="proto-attacks">
@@ -10530,16 +10538,15 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 
       <details class="protocol-section" id="proto-cost">
         <summary class="protocol-h3">Validation cost</summary>
-        <p style="margin-top:8px;">How heavy is it to verify a coin? In short: the work scales with how far back the coin's history runs, it's cached so you pay only once per session, and a slow check never threatens correctness — only speed. The detail:</p>
-        <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache, depth-bounded at 200 hops. With aggregated bulletproofs and batched verification, the practical cost is dominated by BIP-340 Schnorr verification (kernel sigs + mint sigs) across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments benefit from a persistent validation cache or a shared indexer service. Cryptographic correctness holds without either; the gain is purely UX.</p>
+        <p style="margin-top:8px;">Verifying a coin costs work proportional to its history: recursive validation is <strong>O(ancestry size)</strong> on a cold cache. Range proofs along the walk are batched into one multi-scalar multiplication, and memoization keeps later scans in the same session to O(new UTXOs). Deep ancestries are slow on a fresh device; a slow check affects speed only, never correctness.</p>
       </details>
 
       <details class="protocol-section" id="proto-ceremony">
-        <summary class="protocol-h3">Ceremony artifacts (public goods)</summary>
-        <p style="margin-top:8px;">Tacit's Groth16 circuits rely on trusted-setup ceremonies — and every artifact is published openly on IPFS as a public good: the Powers-of-Tau lineage, each circuit's final zkey, the verifying keys the dapp pins, and the Bitcoin-block beacon that seals each ceremony. Anyone can re-derive the pinned verifying key from the bundle and confirm the dapp trusts exactly what the ceremony produced. <strong>Soundness needs only one honest contributor; privacy (zero-knowledge) never depends on the ceremony at all.</strong></p>
+        <summary class="protocol-h3">Ceremony artifacts</summary>
+        <p style="margin-top:8px;">Tacit's Groth16 circuits use two trusted-setup ceremonies, and every artifact is published on IPFS: the Powers-of-Tau lineage, each circuit's final zkey, the pinned verifying keys, and the Bitcoin-block beacon that seals each ceremony. Anyone can re-derive a pinned verifying key from its bundle. <strong>Soundness needs only one honest contributor; zero-knowledge never depends on the ceremony.</strong> <a href="https://github.com/z0r0z/tacit/blob/main/docs/CEREMONY.md" target="_blank" rel="noopener noreferrer">CEREMONY.md</a> lists every CID and hash.</p>
 
         <p class="protocol-kicker">Mixer ceremony — <code>withdraw.circom</code></p>
-        <p style="margin-top:6px;font-size:12px;">Phase 1 from the Polygon Hermez <code>pot14</code> Powers of Tau; Phase 2 with <strong>2,227 contributors</strong>, sealed by a beacon over <strong>Bitcoin block 948824</strong> (finalized 2026-05-11). One circuit proves anonymous unique-spend for the legacy Bitcoin mixer.</p>
+        <p style="margin-top:6px;font-size:12px;">Phase 1 from the Polygon Hermez <code>pot14</code> Powers of Tau; Phase 2 with <strong>2,227 contributors</strong>, sealed by a beacon over <strong>Bitcoin block 948,824</strong>. Used by the legacy Bitcoin mixer, and available to any denominated anonymity pool built on Tacit.</p>
         <div class="script-decode" style="margin:10px 0;">
           <span class="hex">~11,938</span><span class="op">withdraw</span><span class="desc">Poseidon-Merkle leaf membership + nullifier reveal (mixer spend)</span>
         </div>
@@ -10549,7 +10556,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         </dl>
 
         <p class="protocol-kicker">AMM ceremony — three circuits</p>
-        <p style="margin-top:6px;font-size:12px;">Three independent Phase 2 chains under one shared <code>pot18</code> Phase 1 (5,018 contributions for <code>amm_swap_batch</code>, 13,668 for <code>amm_lp_add</code>, 13,703 for <code>amm_lp_remove</code>), all sealed by a single beacon over <strong>Bitcoin block 951267</strong>. Pool reserves are public; the circuits only hide per-trader amounts.</p>
+        <p style="margin-top:6px;font-size:12px;">Three independent Phase 2 chains under one shared <code>pot18</code> Phase 1 (5,018 contributions for <code>amm_swap_batch</code>, 13,668 for <code>amm_lp_add</code>, 13,703 for <code>amm_lp_remove</code>), all sealed by a single beacon over <strong>Bitcoin block 951,267</strong>. Pool reserves are public; the circuits hide per-trader amounts. The production <code>amm_swap_batch</code> zkey is <code>bafybeieb5haf…xefwqm</code>.</p>
         <div class="script-decode" style="margin:10px 0;">
           <span class="hex">~5,153</span><span class="op">amm_lp_add</span><span class="desc">confidential liquidity add (hidden LP-share blinding)</span>
           <span class="hex">~10,369</span><span class="op">amm_lp_remove</span><span class="desc">proportional withdrawal with confidential receipts</span>
@@ -10559,7 +10566,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <dt>Pinned VK bundle</dt><dd><a href="https://ipfs.io/ipfs/bafkreibjpe4xfqtq2ziki4uupydnkeiakqi76m674xtdhmxnfbrn4iomp4" target="_blank" rel="noopener noreferrer">ipfs://bafkreibjpe…iomp4</a></dd>
           <dt>Ceremony bundle</dt><dd><a href="https://ipfs.io/ipfs/bafybeiheww2ndia2gld4mu7x2h7iwzawv6likpmfpklm6x5kj3btaniuam/" target="_blank" rel="noopener noreferrer">ipfs://bafybeiheww…niuam</a> (per-circuit zkeys · vkeys · transcripts)</dd>
         </dl>
-        <p style="margin-top:10px;font-size:12px;">The confidential pool, cBTC and the reflection bridge otherwise run on SP1 proofs, Bulletproofs+ and Schnorr kernels, which need no Tacit ceremony. The one exception is prover-blind swap batches: the <code>amm_swap_batch</code> key above is compiled into both SP1 guests. See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a> for the full circuit walkthrough.</p>
+        <p style="margin-top:10px;font-size:12px;">The confidential pool, cBTC and the reflection bridge otherwise run on SP1 proofs, Bulletproofs+ and Schnorr kernels, which need no Tacit ceremony. The one exception is swap batches: the <code>amm_swap_batch</code> key above is compiled into both SP1 guests, for <code>OP_SWAP_BLIND</code> and <code>T_SWAP_BATCH</code>. See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a> for the full circuit walkthrough.</p>
       </details>
 
       <details class="protocol-section" id="proto-audits" open>
@@ -10568,13 +10575,13 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <p class="audit-models">Reviewed by <strong>GPT-5.5 Pro</strong>, <strong>Claude Opus 4.8</strong>, <strong>Claude Fable 5.1</strong> &amp; <strong>Claude Opus 5</strong></p>
           <p class="audit-verdict">Independent, adversarial reviews of the immutable contracts, the SP1 guests and the relayed cross-chain ops, before and after deployment. The deployed bytecode was checked byte for byte against source. <strong>No open fund-impacting findings</strong>: every finding is fixed or dispositioned in the published report.</p>
         </div>
-        <p style="margin-top:12px;">The reviews are deliberately transparent and reproducible — each report pins the exact commit and cites <code>file:line</code>, and the maintainer responses live in the repo. Representative closed items:</p>
+        <p style="margin-top:12px;">Each report pins the exact commit and cites <code>file:line</code>, and the maintainer responses are in the repo. Areas covered include:</p>
         <ul style="margin-left:20px;margin-top:8px;">
-          <li>Bitcoin coinbase witness-commitment binding and merkle/txid malleability guards.</li>
-          <li>Delegated-prover authorization — every op's amounts, recipient, fee, and output owner bound in an op-specific proof context, so a relayer/proving box can't redirect, skim, or strand a note.</li>
-          <li>Cross-chain burn→mint provenance + the consumed-nullifier freshness gate against double-spend.</li>
-          <li>Classic Bulletproofs + Bulletproofs+ range verification dispatch, so legacy mainnet TAC and new BP+ notes verify under the same immutable guest.</li>
-          <li>Collateral oracle bounds, fee-free relayed settles, and the in-guest swap-batch verifier.</li>
+          <li>Bitcoin witness-commitment binding and Merkle/txid malleability checks.</li>
+          <li>Relayed-op authorization: every op's amounts, recipient, fee and output owner are bound in an op-specific proof context.</li>
+          <li>Cross-chain burn→mint provenance and the spent-set check before any Bitcoin-homed spend.</li>
+          <li>Classic Bulletproofs and Bulletproofs+ dispatch, so older TAC notes and new notes verify under the same guest.</li>
+          <li>Collateral oracle bounds, relayed settles, and the in-guest swap-batch verifier.</li>
         </ul>
         <p style="margin-top:12px;">
           <a href="https://github.com/z0r0z/tacit/blob/main/audit/AUDIT-2026-09-20-v1-launch-review.md" target="_blank" rel="noopener noreferrer">Launch review →</a>
@@ -10585,18 +10592,17 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           &nbsp;·&nbsp;
           <a href="https://github.com/z0r0z/tacit/blob/main/audit/AUDITS.md" target="_blank" rel="noopener noreferrer">All reports &amp; responses →</a>
         </p>
-        <p class="muted" style="margin-top:10px;font-size:11px;">Independent model reviews, not a certification by a named firm — the value is the adversarial coverage, the public transcripts, and commit-pinned responses anyone can re-check.</p>
       </details>
 
       <details class="protocol-section" id="proto-trust">
         <summary class="protocol-h3">Trust model</summary>
-        <p style="margin-top:8px;">The honest question for anything holding value: what do you actually have to trust? Here it is surface by surface — what's enforced by math alone, and the few places where a key holder or a setup ceremony is assumed honest.</p>
-        <p style="margin-top:8px;"><strong>Issuer at CETCH.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
-      <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. Standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so supply remains publicly auditable. Fixed-supply CETCHes (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives provably and permanently public supply.</p>
+        <p style="margin-top:8px;">What each surface relies on, beyond Bitcoin and Ethereum consensus and the soundness of SP1 and Groth16:</p>
+        <p style="margin-top:8px;"><strong>Confidential pool.</strong> The pool, router, asset factory and SP1 guests are immutable. The CollateralEngine and FarmManager are governed by a 2-of-4 ops multisig within fixed bounds, with a delay and notice before changes that work against borrowers or farmers. cUSD relies on the CollateralEngine's price feed. Ethereum → Bitcoin reflection relies on the sp1-helios sync committee. Relayers, the hosted API and IPFS gateways cannot change validity; anyone can prove locally and call <code>settle</code>.</p>
+        <p style="margin-top:8px;"><strong>Issuer at CETCH.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default in the asset's IPFS metadata, so anyone can check <code>C == supply·H + r·G</code> against the on-chain commitment. An issuer can opt out to keep the total confidential.</p>
+      <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. Holders trust whoever holds that key. The dApp attests every mint by default so supply stays auditable. Fixed-supply CETCHes (<code>mint_authority</code> all-zero), such as TAC, can never be expanded.</p>
       <p style="margin-top:8px;"><strong>T_PETCH (permissionless mints).</strong> No issuer trust at all. The deploy declares <code>cap_amount</code>, <code>mint_limit</code>, and an optional height window; deployer receives zero tokens. Each <code>T_PMINT</code> reveals <code>(amount, blinding)</code> on chain, so cumulative supply against the cap is auditable from chain alone — no attestation channel needed.</p>
-      <p style="margin-top:8px;"><strong>Mixer (Groth16 + Phase 2 ceremony).</strong> Soundness rests on ≥ 1 honest contributor in the Phase 2 ceremony; privacy (zero-knowledge) is unconditional and does <em>not</em> depend on the ceremony. The mixer ceremony (Phase 2, beacon-finalized 2026-05-11, 2,227 contributors) is pinned in the dApp as the trust anchor for legacy Bitcoin mixer withdrawals only.</p>
-      <p style="margin-top:8px;"><strong>AMM circuits (Phase 2 ceremony sealed).</strong> The three AMM circuits ran independent Phase 2 chains under one shared <code>pot18</code> Phase 1, sealed by one Bitcoin-block beacon (block 951267); the artifacts are published (see Ceremony artifacts). Same ≥ 1-honest-per-circuit assumption as the mixer. The <code>amm_swap_batch</code> key is the only ceremony key the confidential pool relies on, for <code>OP_SWAP_BLIND</code>. Pool reserves are virtual public quantities the indexer tracks — no UTXO holds any pool's funds, so no party can rug. The constant-product invariant is plain arithmetic on public reserves; Groth16 binds hidden per-trader amounts to public batch deltas.</p>
-      <p style="margin-top:8px;"><strong>cBTC / tacBTC (conservation peg + slashable wstETH escrow).</strong> cBTC, and its ERC-20 form tacBTC, is minted from SP1-reflected Bitcoin locks plus a CollateralEngine wstETH escrow. The BTC anchor is cryptographic — total cBTC cannot exceed reflected locked sats — while the price feed sizes only the deterrent escrow. An oracle failure can mis-size the backstop; it cannot authorize unbacked cBTC.</p>
+      <p style="margin-top:8px;"><strong>Ceremony circuits.</strong> Soundness of the legacy mixer circuit and the three AMM circuits rests on at least one honest contributor per Phase 2 chain; zero-knowledge does not depend on the ceremony. The <code>amm_swap_batch</code> key is the only ceremony key the confidential pool uses, for <code>OP_SWAP_BLIND</code>. On Bitcoin, AMM reserves are public numbers the indexer tracks and no UTXO holds pool funds; Groth16 binds hidden per-trader amounts in <code>T_SWAP_BATCH</code> to public batch deltas.</p>
+      <p style="margin-top:8px;"><strong>cBTC / tacBTC.</strong> Minted from SP1-reflected Bitcoin locks plus a CollateralEngine wstETH escrow (1.5× the lock today). Total cBTC cannot exceed reflected locked sats; the price feed only sizes the escrow. Custody is economic: the locker holds the key, and the escrow makes spending the lock unprofitable.</p>
       <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER / T_AXFER / T_BURN; <code>T_PMINT</code> caps are chain-auditable; AMM circuits bind hidden amounts to public deltas), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). Recursive client-side validation guarantees this independent of any indexer's honesty.</p>
       </details>
 
@@ -10608,7 +10614,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 </div>
 
 <footer>
-  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees · <a href="#tab=about" title="Protocol documentation">docs</a></span>
+  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · <a href="#tab=about" title="Protocol documentation">docs</a></span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
 
@@ -10831,90 +10837,81 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
     <div class="faq-body">
       <div class="faq-q">What is tacit?</div>
       <div class="faq-a">
-        Confidential money that starts on Bitcoin and reaches Ethereum. Every transfer hides amounts by default; opt in to <strong>shielded addresses</strong> to hide who's receiving, and to the <strong>mixer pool</strong> to break the on-chain link between deposit and withdrawal entirely. The same shielded note carries a <strong>native AMM</strong> with confidential trade sizes, <strong>cBTC / tacBTC</strong> minted from SP1-reflected Bitcoin locks, <strong>confidential DeFi</strong> (borrow cUSD against shielded collateral), and a <strong>Bitcoin↔Ethereum reflection bridge</strong> — settling in ordinary on-chain transactions, all verifiable by anyone reading the chain. No federation, no sidechain, no bridge multisig. Your private key plus the chain rebuild your full balance, years later on a fresh device.
+        Confidential money on Bitcoin that extends to Ethereum. Every transfer hides amounts by default, and <strong>shielded addresses</strong> hide who receives. The same note moves into the <strong>confidential pool</strong> on Ethereum, where it transfers, swaps on an AMM, backs a <strong>cUSD</strong> loan, and bridges back. <strong>cBTC / tacBTC</strong> is minted 1:1 from SP1-reflected Bitcoin locks. Everything settles in ordinary on-chain transactions, and your private key plus the chain rebuild your balance on any device.
       </div>
 
-      <div class="faq-q">Why not just use Runes / Liquid / RGB / a rollup?</div>
+      <div class="faq-q">How is it different from other Bitcoin token protocols?</div>
       <div class="faq-a">
-        Runes and BRC-20 publish amounts in cleartext and do tokens only — no AMM, no wrapped BTC. Liquid hides amounts (and offers a sidechain AMM, SideSwap) but lives on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB and Taproot Assets hide amounts on Bitcoin proper, but the recipient must receive a proof chain from the sender off-chain — lose the proof, lose the asset. Bitcoin rollup DEXes (Citrea, Botanix) inherit operator-set or fraud-proof trust. Tacit layers privacy on Bitcoin L1 — shielded amounts by default, opt-in shielded addresses for per-tx unique recipient markers, opt-in mixer pool for full anonymity-set unlinkability — and hosts a native confidential AMM on the same indexer-validated substrate plus cBTC/tacBTC via SP1-reflected Bitcoin locks. All without federation, sidechain, or rollup operators — and v1 extends the same note to an Ethereum lane for confidential DeFi (borrow cUSD, mint cBTC) and a Bitcoin↔Ethereum reflection bridge with no bridge multisig. You recover from privkey + chain alone, the way Bitcoin itself works.
-      </div>
-
-      <div class="faq-q">What's actually new here architecturally?</div>
-      <div class="faq-a">
-        Indexer-validated meta-protocols (Runes, Ordinals, BRC-20) already prove at production scale that <em>consensus of indexers over chain state</em> can underwrite real market value with no Bitcoin-consensus enforcement. Tacit takes that same substrate and layers two things on it: <strong>cryptographic primitives</strong> where they must be cryptographic (Pedersen + bulletproofs for shielded amounts, BIP-341-style blinded-pubkey commits for shielded addresses, Groth16 + Poseidon-Merkle for anonymous spend, BabyJubJub Pedersen for in-circuit AMM logic, and SP1 reflection for Bitcoin lock/burn state), and <strong>economic discipline</strong> where indexer-validated value can carry it (native-ETH escrow as tacBTC rug insurance). Indexer consensus + cryptographic privacy + market-validated backstops = smart-contract-shaped properties (AMM, cBTC/tacBTC, batched settlement) on Bitcoin L1 and the Ethereum lane, with no VM on Bitcoin, no sidechain, no rollup. See <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#28-circuits-and-ceremonies" target="_blank" rel="noopener noreferrer">SPEC §2.8</a> for the full primitive walkthrough.
+        Tacit uses the same validation model as other indexer-based Bitcoin protocols: Bitcoin orders the data and indexers apply the rules. On top it hides amounts with Pedersen commitments and range proofs, keeps everything needed for validation on-chain (no off-chain proof files), and has no federation or sidechain. Bitcoin and Ethereum state cross by SP1 zero-knowledge reflection; no multisig or attestor set signs a bridge message.
       </div>
 
       <div class="faq-q">What else can I do besides send / receive?</div>
       <div class="faq-a">
-        <strong>Trade on the orderbook</strong> — five marketplace flows, all settling via <code>T_AXFER</code> / <code>T_AXFER_VAR</code>: <em>preauth sales</em> (§5.7.8 — seller pre-signs once, buyer settles whenever), <em>batched preauth-take</em> (§5.7.8.1 — N preauths in ONE reveal tx, ~70% fee reduction), <em>atomic intents</em> (§5.7.6 — claim &amp; take), <em>variable-amount intents</em> (§5.7.6.1 — partial-fillable seller offers), and <em>variable-fill bids</em> (§5.7.7 — partial-fillable buyer offers). Every fill settles atomically on Bitcoin, signed by both parties.
-        <strong>Native AMM</strong> (<code>T_LP_ADD</code> / <code>T_LP_REMOVE</code> / <code>T_SWAP_BATCH</code> / <code>T_SWAP_VAR</code> / <code>T_SWAP_ROUTE</code>, SPEC §3.5) — uniform-clearing block-batched market with confidential per-trader amounts (Groth16) plus a per-trade variable-amount path that needs no Groth16 at all. LP shares are themselves tacit assets — mixer-composable for anonymous positions.
-        <strong>cBTC / tacBTC</strong> — mint cBTC from a SP1-reflected Bitcoin lock at an oracle-free conservation peg: total cBTC cannot exceed reflected live locked sats. <strong>tacBTC</strong> is the single ERC-20 form; a CollateralEngine native-ETH escrow backs each lock as slashable rug insurance, not as peg collateral.
-        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16. Canonical v1 ceremony beacon-finalized 2026-05-11 with 2,227 contributors.
-        <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — public claim pools, optionally Merkle-gated. <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
+        <strong>Trade on the order book</strong> — pre-signed sales, batched takes and atomic intents, each settling asset-for-sats atomically on Bitcoin through <code>T_AXFER</code>.
+        <strong>AMM</strong> — add liquidity and swap on Bitcoin (<code>T_LP_ADD</code> / <code>T_SWAP_VAR</code> / <code>T_SWAP_ROUTE</code>, SPEC §3.5) or in the confidential pool. LP shares are ordinary tacit assets and can be bonded into farms.
+        <strong>cUSD and cBTC</strong> — mint cBTC 1:1 from a reflected Bitcoin lock, backed by a slashable wstETH escrow (1.5× today), and borrow cUSD against it.
+        <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless, cap-gated minting with public supply.
       </div>
 
-      <div class="faq-q">How does the DEX / orderbook actually work for a trader?</div>
+      <div class="faq-q">How does the order book work for a trader?</div>
       <div class="faq-a">
-        The Market tab's Swap tile is the trader-facing front-end. Type how much to buy or sell at a limit price, click Swap. The dapp routes across the orderbook automatically — you never have to pick which offer type to hit. The three kinds of offers (instant pre-signed listings, claim-and-take atomic intents, partial-fillable variable-amount offers) all match against the same Swap action. If your swap can't fully fill at your limit price — including when nothing matches at all — the unfilled amount auto-posts as a passive partial-fillable order at your limit for 24h. Every click either fills or leaves a tradeable position behind. <strong>First-trade markets</strong> (no mark price yet) hand off to the Advanced bid / listing form so the trader can set a seed price. Mark price comes from the worker's last-trade unit when it's within 0.2×–5× of the recent-trades ring median (outside that band the median takes over so a single fat-finger or dust print can't swing the headline). 24h Volume is a strict rolling 24h sum over every settled trade.
+        Enter how much to buy or sell at a limit price. The dapp matches across the available offers for you. Whatever cannot fill at your limit can be posted as a resting order. Markets with no trades yet open the advanced bid / listing form so you can set the first price.
       </div>
 
-      <div class="faq-q">Is there MEV / front-running?</div>
+      <div class="faq-q">Is there front-running?</div>
       <div class="faq-a">
-        Not by construction. Every orderbook fill commits asset + sats atomically — once the maker and taker both sign, only the holder of the signed bundle can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. Atomic-intent claims have a 5-min first-come window where another buyer could claim before you (not MEV — just race condition), but the rest of the orderbook (preauth sales + batched takes) is sealed-bid by signature. The AMM's <code>T_SWAP_BATCH</code> path batches all swap intents per block at one uniform clearing price, so intra-batch sandwich attacks have nothing to sandwich; per-trade <code>T_SWAP_VAR</code> uses public amounts against a known pre-state curve, so the settler has zero pricing freedom (the indexer recomputes the curve output and requires strict equality).
+        Order-book fills are pre-signed against specific outpoints and settle asset and sats in one Bitcoin transaction, so a fill completes in full or not at all at the signed terms. An atomic intent can be claimed by another buyer first. On the AMM, <code>T_SWAP_BATCH</code> clears a batch at one uniform price, and <code>T_SWAP_VAR</code> is recomputed by the indexer against the curve with strict equality. Pool swaps carry a minimum output and a signed deadline.
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>
       <div class="faq-a">
-        Right here in the dApp, or in any third-party tacit indexer. Tacit envelopes ride in Bitcoin Taproot witnesses; the dApp decodes them client-side, walks ancestry to each CETCH / MINT, and decrypts amounts via ECDH — all from chain data alone, no server in the trust path. External wallets like Xverse / UniSat / Leather connect for <em>funding</em> the tacit wallet from your existing BTC; the tacit privkey stays in this browser, encrypted and separate from your external wallet's seed.
+        Here in the dapp, or with any indexer that follows the spec. The dapp reads Bitcoin through public Esplora endpoints with fallbacks (or your own, under Manage wallet → Advanced: chain indexer), walks each coin's ancestry, and decrypts amounts from chain data. External wallets such as Xverse, UniSat or Leather can fund the tacit wallet; the tacit key stays in this browser, encrypted and separate from their seeds.
       </div>
 
       <div class="faq-q">Am I locked into your platform?</div>
       <div class="faq-a">
-        No. The protocol spec is open (MIT); any indexer reaches the same verdict from chain alone, and the dApp itself can be pinned to IPFS by anyone. Asset metadata pins to IPFS by content hash — the CID on-chain references the content itself, not anyone's server, so any IPFS gateway works. Both <code>WORKER_BASE</code> and <code>IPFS_GATEWAY</code> are configurable constants in <code>tacit.js</code>; setting the worker URL to <code>''</code> disables it entirely and the protocol keeps working.
+        No. The spec is open, any indexer reaches the same verdict from the chain, and anyone can host the dapp. Asset metadata is pinned to IPFS by content hash, so any gateway serves it. Anyone can prove a pool batch locally and call <code>settle</code> without a relayer.
       </div>
 
-      <div class="faq-q">Can I recover from just my privkey?</div>
+      <div class="faq-q">Can I recover from just my private key?</div>
       <div class="faq-a">
-        Yes — for every on-chain envelope. The dApp scans chain data, walks ancestry back to each CETCH / MINT, and decrypts amounts via ECDH. No share-link, no sync server, no counterparty cooperation; privkey + chain alone reconstruct the wallet, even years later on a fresh device. <em>Marketplace failure modes</em> have explicit recovery flows too: a preauth-take whose commit broadcast but reveal failed leaves a stranded P2TR output that the original wallet can script-path-spend back to itself (Holdings + Activity tabs surface a Recover button automatically; recovery record stored in browser localStorage as a hint, but the chain + privkey are sufficient to spend the commit either way). Atomic-intent claims have their own recovery flow in SPEC §5.7.6.
+        Yes. The dapp rebuilds Bitcoin balances by re-deriving blindings from your key and the chain, and pool notes by decrypting their on-chain memos. No share-link, sync server or counterparty is needed. If a marketplace commit confirms but its reveal fails, the stranded output is spendable back to your wallet, and Holdings shows a Recover button. <a href="https://github.com/z0r0z/tacit/blob/main/docs/RECOVERY.md" target="_blank" rel="noopener noreferrer">RECOVERY.md</a> lists the exact reads.
       </div>
 
-      <div class="faq-q">How much privacy do I actually get, and can I dial it?</div>
+      <div class="faq-q">How much privacy do I get?</div>
       <div class="faq-a">
-        Tacit layers privacy so each user picks the level that fits the use case rather than forcing one posture on everyone. <strong>Three orthogonal axes</strong>, composable:
         <ul style="margin:8px 0 8px 18px;line-height:1.6;">
-          <li><strong>Shielded amount</strong> — <em>default on every transfer.</em> Pedersen + bulletproofs hide the amount in every CETCH, T_MINT, CXFER, T_AXFER, BURN-change commitment (32-byte commit + 8-byte HMAC-encrypted u64). BabyJubJub Pedersen + Groth16 inside <code>T_SWAP_BATCH</code> hide per-trader amounts during AMM settlement.</li>
-          <li><strong>Shielded address</strong> — <em>opt-in per receipt</em> (live in production for CXFER). BIP-341-style blinded-pubkey commit <code>commit = recipient_pubkey + blinding·G</code> with <code>blinding = HMAC(ECDH(sender_priv, recipient_pub) || domain || tx_anchor)</code>. On-chain marker is a per-tx unique P2WPKH address with no apparent link to the recipient's published identity. Same crypto as BIP-340 / BIP-341 / BIP-352 silent payments; no new ceremony.</li>
-          <li><strong>Mixer pool</strong> — <em>opt-in per UTXO</em> (live in production). T_DEPOSIT locks a fixed-denomination UTXO into a Poseidon Merkle tree; T_WITHDRAW proves unspent-leaf membership via Groth16 + nullifier without revealing which leaf. Breaks the on-chain link between deposit and withdrawal entirely, giving full anonymity-set unlinkability. This is separate from v1 cBTC, whose Bitcoin lock path is SP1-reflected and setup-free.</li>
+          <li><strong>Shielded amount</strong> — <em>on every transfer.</em> Each output is a Pedersen commitment with a range proof and an encrypted amount.</li>
+          <li><strong>Shielded address</strong> — <em>opt-in per receipt.</em> Paying a <code>tcs1…</code> address sends to a one-time key derived by ECDH, with no visible link to the recipient's published key.</li>
+          <li><strong>Confidential pool</strong> — a pool spend does not reveal which note it consumes; only deposits and withdrawals at the pool boundary are public.</li>
         </ul>
-        Practical postures: a <strong>merchant</strong> takes public transfers + shielded balances (default — clean accounting + amount privacy); a <strong>privacy-conscious user</strong> publishes a tcs1 shielded address for receipts and routes outbound payments through the mixer pool (full unlinkability). Asset-id remains public on chain; asset surjection proofs are on the roadmap.
+        Asset ids on Bitcoin, the Bitcoin transaction graph, AMM reserves and burn amounts stay public, so a pool swap's size shows in the reserve change. Whoever proves a pool batch sees its inputs; prove locally to keep them private.
       </div>
 
       <div class="faq-q">How do I trust the announced supply when amounts are hidden?</div>
       <div class="faq-a">
-        The dApp publishes a supply attestation by default. At etch time the <code>(supply, blinding)</code> opening is pinned to IPFS as part of the asset's metadata; anyone fetches the blob and verifies <code>pedersenCommit(supply, blinding) == on-chain commitment</code> from chain alone — no worker trust, no issuer trust beyond the one-time honest publish. Issuers can opt out for a centralized-stablecoin-style "trust me" model. Discover surfaces a ✓ verified badge for attested assets.
+        By default the dapp pins the <code>(supply, blinding)</code> opening to IPFS with the asset's metadata, so anyone can check it against the on-chain commitment. An issuer can opt out. Discover shows a verified badge for attested assets.
       </div>
 
       <div class="faq-q">Can I trade BTC here?</div>
       <div class="faq-a">
-        Yes — directly, today. Every orderbook trade pays in real Bitcoin satoshis: maker signs, taker signs, asset ↔ sats settles atomically in one Bitcoin tx. No wrap needed.
-        cBTC/tacBTC matters when you want amount-confidential BTC balances or a tacit-side BTC token for the AMM (pools are tacit-asset ↔ tacit-asset by design). Tacit's v1 cBTC path mints from SP1-reflected Bitcoin locks at an oracle-free conservation peg — no bridge multisig and no price feed in the mint path. <strong>tacBTC</strong> is its single fungible ERC-20 form: arbitrary-amount, minted 1:1 against reflected live locked sats. The CollateralEngine native-ETH escrow is slashable rug insurance, not peg collateral, giving you amount-granular BTC exposure that behaves like any other tacit asset.
+        Yes. Every order-book trade pays in real bitcoin: asset and sats settle atomically in one Bitcoin transaction.
+        cBTC is for confidential BTC balances and AMM pairs. It is minted 1:1 against SP1-reflected Bitcoin locks, with no price feed in the peg; tacBTC is its ERC-20 form. A slashable wstETH escrow deters spending a lock; it does not back the peg.
       </div>
 
-      <div class="faq-q">What's the cost per transfer / swap?</div>
+      <div class="faq-q">What does a transfer cost?</div>
       <div class="faq-a">
-        Two different operations, different costs.
-        <strong>Plain send</strong> (within-wallet <code>CXFER</code>): ~10 KB witness with m=2 aggregation, ~2,500–3,000 vBytes after the SegWit discount. At typical low feerates (~1 sat/vB) that's ~2,500–3,000 sats; at 10 sat/vB during Bitcoin congestion it's ~25,000–30,000 sats. Roughly 10× a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs; that's where the bytes go.
-        <strong>Marketplace swap</strong> (one preauth-take settling on Bitcoin): commit + reveal pair ~950 vBytes single-fill, ~1,400 vBytes for a 5-fill batched route. At 1 sat/vB that's ~950 sats single, ~1,400 sats for a 5-fill batch (≈280 sats per fill) — the batching saves ~70% vs N independent settlements (SPEC §5.7.8.1).
+        A Bitcoin transfer is a commit/reveal pair whose size is mostly the range proof, so it costs more than a cleartext token transfer; the dapp shows the fee before you broadcast. Batching several order-book takes into one reveal shares that cost. Pool ops can be relayed gaslessly, paying a relay fee bound inside the proof.
       </div>
 
-      <div class="faq-q">Is the worker trust-bearing? What if I don't trust it?</div>
+      <div class="faq-q">Is the API trust-bearing?</div>
       <div class="faq-a">
-        It isn't. The worker is a convenience cache (asset directory, image pinning, OTC marketplace, airdrop queue) — it cannot make an invalid envelope appear valid, because every consumer re-verifies rangeproofs, kernel sigs, mint sigs, and Pedersen openings client-side. You can run your own in ~5 minutes on a free Cloudflare account, or set <code>WORKER_BASE = ''</code> in <code>dapp/tacit.js</code> to disable it entirely.
+        No. The hosted API is a cache and convenience layer (asset directory, image pinning, marketplace, relaying). It cannot make an invalid envelope or proof appear valid, because the dapp re-verifies range proofs, kernel signatures, mint signatures and openings itself, and the pool contract verifies every proof on-chain.
       </div>
 
       <div class="faq-q">License / source?</div>
       <div class="faq-a">
-        MIT. The repo is the canonical source. SPEC.md is the authoritative reference; any indexer in any language reaches the same verdict from chain alone.
+        MIT. SPEC.md is the normative reference; any indexer that follows it reaches the same verdict from the chain.
       </div>
     </div>
     <div class="faq-foot">
@@ -11080,7 +11077,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <div class="welcome-card">
     <div class="welcome-title" id="bridge-title" style="display:flex;align-items:center;gap:10px;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="36" height="36" style="flex-shrink:0;"><style>.tr{stroke:#0a0a0a}@media(prefers-color-scheme:dark){.tr{stroke:#f4efe6}}</style><circle class="tr" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#627eea" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#627eea" stroke-width="2.4" stroke-linecap="round"/><path d="M14.8 17L19 17" stroke="#627eea" stroke-width="2.2" stroke-linecap="round"/></svg><span>tETH <span class="accent">bridge</span></span></div>
     <div class="welcome-lede">
-      Legacy alpha bridge. The <a href="#tab=confidential-pool">Shielded Pool</a> is now the canonical cross-chain surface — wrap any amount, no trusted setup, plus swap, borrow, and farm. Use this only to redeem or migrate tETH notes created during the pilot.<br><span style="font-size:11px;">Pilot mixer — deposits were 0.001 ETH each. <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#38-legacy-ops" target="_blank" rel="noopener noreferrer">how it works</a></span>
+      Legacy tETH bridge, kept for redeeming existing tETH notes. For cross-chain value use the <a href="#tab=confidential-pool">confidential pool</a>.<br><span style="font-size:11px;">Fixed 0.001 ETH deposits. <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md#38-legacy-ops" target="_blank" rel="noopener noreferrer">how it works</a></span>
     </div>
     <div class="xchain-header" style="margin:6px 0 10px;"><span class="chain-badge btc"><span class="dot"></span>Bitcoin</span><span class="xchain-arrow" aria-hidden="true">⇄</span><span class="chain-badge eth"><span class="dot"></span>Ethereum</span><span class="xchain-note">· tETH · legacy</span></div>
     <div id="bridge-supply-stats" style="margin:-4px 0 8px;"></div>
@@ -11156,7 +11153,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=00ab1f4d"></script>
+<script type="module" src="./tacit.js?cb=dea8e38a"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
