@@ -8711,7 +8711,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
               <span id="w-sp-balance" class="muted" style="font-size:10px;display:none;"></span>
             </div>
           </div>
-          <div class="wallet-balance-note">Receive Bitcoin privately, hold Tacit assets on Bitcoin, and publish one universal Tacit address for the V1 shielded pool.</div>
+          <div class="wallet-balance-note">Receive Bitcoin privately, hold Tacit assets on Bitcoin, and publish one universal Tacit address for the shielded pool.</div>
         </div>
 
         <div class="wallet-address-panel">
@@ -8738,13 +8738,13 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
                 <a class="muted" id="tacitscan-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;white-space:nowrap;display:none;" title="View this address on tacitscan (independent block explorer)">tacitscan ↗</a>
               </div>
             </dd>
-            <dt title="Universal tacit1 identity for Bitcoin-native Tacit assets and the V1 shielded pool lane. Plain BTC still uses the Bitcoin row.">Tacit</dt>
+            <dt title="Universal tacit1 identity for Bitcoin-native Tacit assets and the shielded pool lane. Plain BTC still uses the Bitcoin row.">Tacit</dt>
             <dd>
               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
                 <img id="btn-tacit-address-unlock" class="sp-toggle-img off" src="privacy-48.png" alt="" title="Unlock to show your universal Tacit address">
                 <div class="mono-box" id="w-tacit-address" style="flex:1;min-width:0;word-break:break-all;">—</div>
                 <button class="btn-copy" data-copy-target="w-tacit-address" title="Copy your universal Tacit address" type="button">copy</button>
-                <span class="muted" id="w-tacit-address-note" style="font-size:10px;white-space:nowrap;" title="Share this tacit1... identity for Tacit asset sends and V1 shielded pool receives; use the Bitcoin row for plain BTC.">universal address</span>
+                <span class="muted" id="w-tacit-address-note" style="font-size:10px;white-space:nowrap;" title="Share this tacit1... identity for Tacit asset sends and shielded pool receives; use the Bitcoin row for plain BTC.">universal address</span>
               </div>
             </dd>
             <dt id="w-tacit-assets-dt" style="display:none;">Tacit assets</dt>
@@ -8772,15 +8772,15 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
           <div class="wallet-lane-meta">Bitcoin-native assets with private amounts and wallet-level discovery.</div>
           <div class="wallet-lane-tail">holdings</div>
         </a>
-        <div class="wallet-lane-card wallet-lane-card--soon" title="V1 shielded pool and EVM DeFi are staged, not open in production yet.">
+        <a class="wallet-lane-card" href="#tab=confidential-pool" title="Live on Ethereum mainnet: wrap into a shielded note, then swap, borrow, or move across chains.">
           <div class="wallet-lane-head">
-            <span class="wallet-lane-kicker">V1</span>
+            <span class="wallet-lane-kicker">Shielded pool</span>
             <span class="wallet-chain-badge">EVM</span>
           </div>
           <div class="wallet-lane-title">Shielded pool</div>
-          <div class="wallet-lane-meta">One note can move into shielded swaps, borrowing, and cross-chain DeFi.</div>
-          <div class="wallet-lane-tail">soon</div>
-        </div>
+          <div class="wallet-lane-meta">One note moves into shielded swaps, borrowing, and cross-chain DeFi.</div>
+          <div class="wallet-lane-tail">wrap / swap / borrow</div>
+        </a>
       </div>
 
       <div id="sp-discover-row" style="display:none;margin-top:8px;padding:6px 8px;background:var(--bg-alt,#ebe3d4);border-radius:6px;font-size:11px;">
