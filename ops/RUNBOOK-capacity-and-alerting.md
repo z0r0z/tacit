@@ -390,12 +390,28 @@ the same day and added several more hours of tail latency for not much extra gas
 the above once cBTC locks were confirmed to be a real user-facing path, not just occasional ops bridging.)
 Revert any of these by unsetting the var or restoring the old schedule (`*/5 * * * *`).
 
-Both entrypoints a locker can use to skip the wait entirely are already permissionless: `advanceTip` on the header
-relay and `attestBitcoinStateProven` on the pool take a call from any address, so a locker who wants their specific
-lock to mature faster than the shared background cadence can push the header relay's tip and submit their own
-attest, paying only the marginal gas — without the shared infrastructure needing to detect or predict demand. No
-packaged tool for this exists yet; it would read the same way `tools/crossout-rehearsal-preflight.mjs` and
-`ops/RUNBOOK-crossout-rehearsal.md` do for a cross-out.
+Two tools skip the wait for a specific lock, escrow or cross-out, rather than waiting on the shared lean
+cadence — mirroring `tools/crossout-rehearsal-preflight.mjs` / `ops/RUNBOOK-crossout-rehearsal.md` for a
+cross-out:
+
+- **`tools/advance-header-relay.mjs`** — genuinely public and permissionless. `advanceTip` on the header
+  relay takes a call from any address, so this fetches the real headers for the gap and submits them from
+  a caller-supplied key, no Tacit credentials involved. Dry-runs by default (`--run` to broadcast); pass
+  `--to <your lock's block + 24>` to push the relay's own tip (what reflection's maturity is measured
+  against) past your specific target rather than wherever the lean cadence would otherwise leave it.
+- **`tools/expedite-reflection.mjs`** — an operator tool, not public self-serve: folding a batch means
+  proving it (real SP1 compute, paid from Tacit's funded account) and submitting
+  `attestBitcoinStateProven` (paid from the relay's gas wallet), so it needs a Render API key with access
+  to `tacit-reflection`. It triggers that exact cron early via Render's own `run-cron-job` endpoint — no
+  new proving logic, just running the same code sooner — and then polls `/reflection/status` for
+  `attestedHeight` to move, since Render's cron-run API has no documented endpoint for polling one run's
+  own status.
+
+A locker who is not Tacit and wants both halves without depending on Tacit at all still has that option: run
+their own SP1 network client against the reflection guest, the "fully self-hosted" tier the integration
+guide already describes for settle proofs, generalized to this guest. Neither tool above needs that — the
+first is genuinely permissionless today, the second exists because Tacit already holds the credentials the
+first can't stand in for.
 
 ## 4. Responding
 
