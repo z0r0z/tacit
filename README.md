@@ -41,6 +41,8 @@ or attestor set signs a bridge message.
 - **Transfer confidentially.** Amounts are hidden, conservation is proven by a kernel signature, and
   range proofs are Bulletproofs+. Recipients recover credits from their key alone.
 - **Trade atomically.**
+  - **Atomic offers:** sell an asset directly for BTC in one transaction. A maker lists a lot, any taker
+    completes it.
   - Bids that a watchtower fills while the buyer is offline. The decoder, validator and reflection fold
     are live; no wallet exposes building one yet.
   - A native AMM: per-trade swaps, routes over up to four pools, and batch clearing at a uniform price.
