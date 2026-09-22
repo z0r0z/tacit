@@ -153,14 +153,37 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // windows, and each window's logs are already block+logIndex ordered). 500 stays under the tightest
   // range cap seen across the configured mainnet RPCs (one enforces 800); 2000 fails on all of them.
   const LOG_WINDOW = 500;
+  // Session-scoped raw-log cache, keyed by the exact (address, topics, from) a caller asked for. Every
+  // fetchEvents caller (balance, recover, and every deep-recovery walk) defaults `fromBlock` to the pool's
+  // deploy block, so without this every single one of them re-walks the pool's ENTIRE history in 500-block
+  // windows on every call — a cost that only grows as the live pool accumulates activity. Logs more than
+  // REORG_MARGIN blocks behind the previously-fetched tip are chain-final and reused as-is; only the
+  // trailing margin is re-walked each call, so a shallow reorg at the head can never leave a stale or
+  // missing log behind. Purely a fetch-path cache: the note-recovery logic below still runs over the full
+  // merged stream every time, so this can only make scanning faster, never change what it finds.
+  const REORG_MARGIN = 12;
+  const _logsCache = new Map(); // key -> { toBlock, logs }
   async function getLogsChunked(params, from, to) {
+    const cacheKey = `${JSON.stringify(params.address)}|${JSON.stringify(params.topics)}|${from}`;
+    const cached = _logsCache.get(cacheKey);
+    // Zero-RPC reuse only once `to` sits behind the previously-fetched tip by more than the reorg
+    // margin — i.e. every block in [from, to] was already re-walked past REORG_MARGIN at least once
+    // and is provably final. A `to` still inside that margin (including an unchanged `to` from a
+    // fast repeat call) always falls through to the walk below, so a shallow reorg since the last
+    // fetch is never missed.
+    if (cached && to <= cached.toBlock - REORG_MARGIN) {
+      return cached.logs.filter((l) => Number(BigInt(l.blockNumber)) <= to);
+    }
+    const walkFrom = cached ? Math.max(from, cached.toBlock - REORG_MARGIN + 1) : from;
     const out = [];
-    for (let start = from; start <= to; start += LOG_WINDOW) {
+    for (let start = walkFrom; start <= to; start += LOG_WINDOW) {
       const end = Math.min(start + LOG_WINDOW - 1, to);
       const logs = await rpc('eth_getLogs', [{ ...params, fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
       if (logs && logs.length) out.push(...logs);
     }
-    return out;
+    const merged = cached ? [...cached.logs.filter((l) => Number(BigInt(l.blockNumber)) < walkFrom), ...out] : out;
+    _logsCache.set(cacheKey, { toBlock: to, logs: merged });
+    return merged;
   }
   async function headBlock() { return parseInt(await rpc('eth_blockNumber', []), 16); }
   // `include` widens the stream for key-only recovery: 'wraps' (the pool's Wrap deposits), 'cdp' (position inserts),
