@@ -53,7 +53,8 @@ or attestor set signs a bridge message.
 
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
-- Trade on a confidential AMM: swaps, routes and liquidity. Bids run here too; OTC is pool-only.
+- Trade on a confidential AMM: swaps, routes and liquidity. OTC also runs here. Bids are a real,
+  guest-verified op on both chains, but no wallet exposes building one yet on either.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
 - Use adaptor locks for atomic cross-chain swaps — the primitives are guest-verified; no dapp module
   assembles the op yet.
