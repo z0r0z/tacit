@@ -9618,11 +9618,11 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Got a share-link or atomic offer from someone?</summary>
         <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
           <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:10px;">
-            Most incoming transfers are auto-discovered — you don't need either button. Use these only when a counterparty hands you a paste-in payload (share-link URL or an OTC atomic-offer JSON).
+            Most incoming transfers are auto-discovered — you don't need either button. Use these only when a counterparty hands you a paste-in payload (share-link URL or an atomic-offer JSON).
           </div>
           <div class="flex" style="flex-wrap:wrap;align-items:center;gap:8px;">
             <button id="btn-import-share" title="Open a paste field for a share-link URL (https://…/#recv=…). The dapp validates the claim against on-chain data before recording the credit. Optional — receivers usually auto-discover transfers without one.">Import share-link</button>
-            <button id="btn-take-atomic" title="Open a paste field for an atomic-offer JSON shared by a maker (OTC settlement). The dapp validates the offer cryptographically and atomically settles in one Bitcoin tx.">Take atomic offer</button>
+            <button id="btn-take-atomic" title="Open a paste field for an atomic-offer JSON shared by a maker. No counterparty trust needed: the dapp validates the offer cryptographically and atomically settles in one Bitcoin tx.">Take atomic offer</button>
           </div>
         </div>
       </details>
@@ -10265,7 +10265,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         </div>
         <div class="protocol-card">
           <h4>Atomic marketplace</h4>
-          <p>Orderbook and OTC trades settle asset-for-sats atomically in one Bitcoin transaction: a fill completes in full or not at all.</p>
+          <p>Orderbook and atomic-offer trades settle asset-for-sats atomically in one Bitcoin transaction: a fill completes in full or not at all.</p>
           <p class="crypto-claim">Pre-signed offers · one Bitcoin transaction per fill</p>
         </div>
         <div class="protocol-card">
@@ -10345,9 +10345,9 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
         <span class="hex">0x27</span><span class="op">T_PETCH</span><span class="desc">permissionless-mint deployment: cap + per-mint amount + height window; deployer gets zero tokens</span>
         <span class="hex">0x28</span><span class="op">T_PMINT</span><span class="desc">anyone mints exactly <code>mint_limit</code>; reveals (amount, blinding) so the cap is auditable</span>
       </div>
-      <p class="protocol-kicker">Marketplace (atomic OTC + orderbook)</p>
+      <p class="protocol-kicker">Marketplace (atomic offers + orderbook)</p>
       <div class="script-decode" style="margin:10px 0;">
-        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC, preauth sales and batched takes</span>
+        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic offers, preauth sales and batched takes</span>
         <span class="hex">0x37</span><span class="op">T_AXFER_VAR</span><span class="desc">legacy variable-amount atomic settlement; builders off, not reflected</span>
         <span class="hex">0x5B</span><span class="op">T_PREAUTH_BID</span><span class="desc">buyer-offline bid, exact fill — buyer signs once, any seller completes it; wallet builders gated</span>
         <span class="hex">0x5C</span><span class="op">T_PREAUTH_BID_VAR</span><span class="desc">buyer-offline bid, partial fills from a pre-signed grid; residual returns to the buyer; wallet builders gated</span>
