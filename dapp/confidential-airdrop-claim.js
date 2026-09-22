@@ -24,7 +24,7 @@
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, esc, formatErr, notify } from './confidential-deployments.js';
+import { confidentialPoolReady, activeNetwork, esc, formatErr, notify } from './confidential-deployments.js';
 import { checksumAddress } from './confidential-payout.js';
 
 export const BANNER_ID = 'tac-airdrop-claim-banner';
@@ -142,8 +142,16 @@ let _sharedState = null;
 function sharedState() { return _sharedState || (_sharedState = makeAirdropState()); }
 
 // ── the confidential pool ux, for ux.tacAirdrop + ux.rpc (gas estimates only — no notes touched). ──
-let _ux = null;
-function getUx() { return _ux || (_ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256 })); }
+// Rebuilt whenever the active network differs from the one it was last built for, not memoized forever:
+// this module's mount runs at boot, which can fire before tacit.js's own first tab activation has corrected
+// confidential-deployments.js's active-network default (see setActiveNetwork) away from its 'signet' default,
+// and a live mainnet/signet toggle later in the session needs to be picked up too, same as any other tab.
+let _ux = null, _uxNet = null;
+function getUx() {
+  const net = activeNetwork();
+  if (!_ux || _uxNet !== net) { _ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: net }); _uxNet = net; }
+  return _ux;
+}
 function safeUx() {
   if (!confidentialPoolReady()) return null;
   try { return getUx(); } catch (e) { console.error('confidential pool ux', e); return null; }
