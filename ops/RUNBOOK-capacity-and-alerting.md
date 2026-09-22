@@ -377,12 +377,25 @@ Switch on in this order, and only when no bridge burn is waiting on the fold, be
 follow the tip: set the two header knobs (one env write, then redeploy `tacit-header`); watch `batching:` lines for a
 day; then change the reflection schedule and monitor threshold together. To revert, unset the knobs.
 
-**Live since 2026-09-22** (after burn 2 minted and reflection caught up to `lagBlocks: 0`): `tacit-header` runs
-`HEADER_RELAY_MIN_BATCH=24`, `HEADER_RELAY_MAX_STALE_BLOCKS=48`, `MAX_GAS_GWEI=0.2` (still `*/3 * * * *`, but most
-runs now log `batching:` and wait); `tacit-api` runs `REFLECTION_BATCH_SIZE=36`; `tacit-reflection`'s schedule is
-`11 */4 * * *`; `tacit-monitor`'s `REFLECTION_STALL_HOURS` is 9. A cBTC lock's mint now waits for the next reflection
-batch (up to ~4h) rather than the next 5-minute cron (~25min). Revert any of these by unsetting the var or restoring
-the old schedule.
+**Live since 2026-09-22**, tuned to where each knob's marginal gas saving stops being worth its added latency
+(cBTC locks feed live farming, so turnaround matters): `tacit-header` runs `HEADER_RELAY_MIN_BATCH=6`,
+`HEADER_RELAY_MAX_STALE_BLOCKS=12`, `MAX_GAS_GWEI=0.2` (per-header gas mostly plateaus by a batch of ~6, so a
+larger minimum buys little beyond this); `tacit-api` runs `REFLECTION_BATCH_SIZE=12`; `tacit-reflection`'s
+schedule is `17 * * * *` (hourly — a 55% cut in attest count versus the original 5-minute cadence, without the
+multi-hour tail an even leaner schedule would add); `tacit-monitor`'s `REFLECTION_STALL_HOURS` is 3. Net effect on
+a cBTC lock's own turnaround: still bound mostly by the unavoidable 24-confirmation maturity floor
+(~4h), with roughly 30 minutes to 2 hours of cadence tax on top, versus a couple of minutes under the
+original always-submit settings. (A more aggressive setting — batch 24 / stale 48 / every 4h — was live briefly
+the same day and added several more hours of tail latency for not much extra gas savings; reverted in favor of
+the above once cBTC locks were confirmed to be a real user-facing path, not just occasional ops bridging.)
+Revert any of these by unsetting the var or restoring the old schedule (`*/5 * * * *`).
+
+Both entrypoints a locker can use to skip the wait entirely are already permissionless: `advanceTip` on the header
+relay and `attestBitcoinStateProven` on the pool take a call from any address, so a locker who wants their specific
+lock to mature faster than the shared background cadence can push the header relay's tip and submit their own
+attest, paying only the marginal gas — without the shared infrastructure needing to detect or predict demand. No
+packaged tool for this exists yet; it would read the same way `tools/crossout-rehearsal-preflight.mjs` and
+`ops/RUNBOOK-crossout-rehearsal.md` do for a cross-out.
 
 ## 4. Responding
 
