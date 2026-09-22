@@ -5,7 +5,8 @@
 //   - no note yet → one-tx wrap-and-send from the user's public ETH/token (OP_WRAP_TRANSFER), gasless permit
 //     for ERC20 (USDC = one click, no approve), the deposit consumed straight into the recipient note.
 // "Just hold it privately" wraps into a note the user owns (no recipient). Receiving is a Tacit address
-// (one handle, both chains) or an invoice.
+// (one handle, both chains) or an invoice. A plain 0x recipient cannot receive a note; it is paid publicly out of
+// the shielded balance by the payout panel (confidential-payout-panel.js).
 //
 // VERIFICATION: commitXY ≡ ct.commit (verified), and the op shape is byte-identical to the guest fixtures,
 // so a built op is what the settle guest re-checks. Goes fully live once the coordinated re-prove/redeploy
@@ -16,6 +17,7 @@ import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { makeConfidentialInvoice } from './confidential-invoice.js';
 import { makeConfidentialNames, makeMainnetCall, NameError } from './confidential-names.js';
+import { payoutPanelHtml, wirePayout } from './confidential-payout-panel.js';
 
 let _ux = null;
 let _pendingSend = null;
@@ -736,13 +738,16 @@ export async function renderSendTab(wallet, helpers = {}) {
 
       <div id="csend-evm-controls" style="margin-top:12px;">
         <label class="field-label" for="csend-recipient">To</label>
-        <input id="csend-recipient" type="text" placeholder="${addrPrefix}1… address, name.wei / name.gwei / name.eth, or 0x02…/0x03… pubkey">
+        <input id="csend-recipient" type="text" placeholder="${addrPrefix}1… address, name.wei / name.gwei / name.eth, 0x02…/0x03… pubkey, or a 0x… address to pay publicly">
+        <div id="cpay-activity" style="display:none;"></div>
+        ${payoutPanelHtml()}
+        <div id="csend-note-send">
         <div class="field-row" style="margin-top:8px;">
           <input id="csend-amount" type="number" min="0" step="0.00000001" placeholder="ETH amount">
           <button id="csend-review-btn">Review</button>
           <button id="csend-btn" class="primary" disabled>Send note</button>
         </div>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Your own address makes a plain private note; anyone else's address makes a stealth send (see the note above). A name works if its owner has published a Tacit address to it; a plain Ethereum account address does not.</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Your own address makes a plain private note; anyone else's address makes a stealth send (see the note above). A name works if its owner has published a Tacit address to it. A plain 0x account address has no Tacit address to send a note to: paste it and the option to pay it publicly appears.</div>
         <div id="csend-preview" style="display:none;"></div>
         <div id="csend-status" class="muted field-status"></div>
         <details style="margin-top:8px;">
@@ -756,6 +761,7 @@ export async function renderSendTab(wallet, helpers = {}) {
             <span>Self-relay (broadcast from your own EVM account if the relayer is unavailable — reveals that account on-chain).</span>
           </label>
         </details>
+        </div>
         ${helpers.crosslaneLive ? `
         <div class="muted" style="font-size:11px;margin-top:10px;padding-top:8px;border-top:1px dashed var(--ink-faint);">
           Moving value to <span class="btc-word">Bitcoin</span>? cETH bridges 1:1 to <b>tETH</b> and back —
@@ -863,9 +869,11 @@ export async function renderSendTab(wallet, helpers = {}) {
         + setLine;
     }
     wireSend(wallet, ux, notes || [], helpers);
+    wirePayout({ ux, wallet, scan: { notes: notes || [], poolStats }, own: myTacit || id.pubHex, keccak256: keccak_256 });
   } catch (e) {
     const balEl = el('csend-balance');
     if (balEl) balEl.textContent = 'Could not scan existing notes. Fresh ETH wrap-and-send is still available.';
     wireSend(wallet, ux, [], helpers);
+    wirePayout({ ux, wallet, scan: null, own: myTacit || id.pubHex, keccak256: keccak_256 });
   }
 }

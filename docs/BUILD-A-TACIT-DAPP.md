@@ -222,6 +222,8 @@ await tacit.unwrap({ note: notes[0], walletPriv, recipient: '0xabc…' });
 await tacit.stealthSend({ walletPriv, notes, recipientPubHex, amount: 5_000_000n });
 ```
 
+To pay a plain 0x address an exact amount out of a larger note, with the rest kept as hidden change, use `tacit.sendUnwrap`; the pattern, fees and privacy limits are in [`PRIVATE-PAYOUT.md`](./PRIVATE-PAYOUT.md).
+
 **Paying someone else, and what the receiver needs.**
 - **Address.** `recipientPubHex` is the receiver's static spend pubkey, the confidential account's public key. A 0x address does not work:
   it is a hash of a pubkey, so a sender cannot derive the pubkey from it, and the pool has no registry from a 0x address to a pubkey.
