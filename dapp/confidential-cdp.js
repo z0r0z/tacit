@@ -21,6 +21,14 @@ const TREE_DEPTH = 32;
 
 export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
   const enc = new TextEncoder();
+  // CollateralEngine's position lifecycle events (mint / voluntary close / liquidation) — the topic0 an
+  // indexer keys a key-alone CDP recovery scan on, same role NullifiersSpent plays for the pool. Computed
+  // here (not read from an ABI) so it's byte-identical to CollateralEngine.sol's own event signatures.
+  const CDP_EVENT_TOPIC0 = {
+    CdpMinted: '0x' + [...keccak256(enc.encode('CdpMinted(bytes32,uint256,uint256)'))].map((x) => x.toString(16).padStart(2, '0')).join(''),
+    CdpClosed: '0x' + [...keccak256(enc.encode('CdpClosed(bytes32,uint256)'))].map((x) => x.toString(16).padStart(2, '0')).join(''),
+    CdpLiquidated: '0x' + [...keccak256(enc.encode('CdpLiquidated(bytes32,uint256,uint256)'))].map((x) => x.toString(16).padStart(2, '0')).join(''),
+  };
   const CDP_POSITION_DOMAIN = enc.encode('tacit-cdp-position-v1');
   const CDP_DEBT_DOMAIN = enc.encode('tacit-cdp-debt-v1');
   // Voluntary-close authorization (mirrors cxfer-core CDP_CLOSE_DOMAIN). The position owner BIP-340-signs the
@@ -354,5 +362,6 @@ export function makeConfidentialCdp({ keccak256, pool, signSchnorr }) {
     cdpMintCollateralSigma, cdpMintDebtSigma, cdpCloseReleaseSigma, cdpCloseDebtSigma,
     cdpLiquidateDebtSigma, cdpTopupCollateralSigma, cbtcMintSigma,
     buildCdpMintOp, buildCdpCloseOp, buildCdpLiquidateOp, buildCbtcMintOp, buildCdpTopupOp,
+    CDP_EVENT_TOPIC0,
   };
 }
