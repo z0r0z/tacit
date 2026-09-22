@@ -158,7 +158,14 @@ function getUx() {
     const hadPrior = _uxNet !== null;
     _ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: net });
     _uxNet = net;
-    if (hadPrior) sharedState().resetStatusCache();
+    if (hadPrior) {
+      const st = sharedState();
+      st.resetStatusCache();
+      // A clear alone leaves an already-set address with no status AND nothing in flight, which both
+      // surfaces read as "nothing to show" rather than "still checking" -- kick off a fresh, forced
+      // check right away so the UI has something to transition through instead of going quiet.
+      if (st.address) st.refresh(_ux.tacAirdrop, { force: true }).catch(() => {});
+    }
   }
   return _ux;
 }
