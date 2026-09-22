@@ -6,6 +6,7 @@
 // (wall-clock-aligned so the worker's every-Nth-tick cadence matches
 // Cloudflare's scheduler).
 
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,7 +62,11 @@ export function buildEnv(driver, { tomlPath = WRANGLER_TOML, extra = {} } = {}) 
 //   1. x-tacit-forwarded-ip, only when x-tacit-proxy-key matches
 //      PROXY_TRUST_KEY — set by the legacy workers.dev pass-through proxy so
 //      old clients keep per-user rate-limit identity.
-//   2. First hop of X-Forwarded-For when TRUST_PROXY=1 (Render).
+//   2. True-Client-IP when TRUST_PROXY=1 (Render). Render sits behind its own
+//      Cloudflare, which sets that header to the address it accepted the
+//      connection from. Render forwards X-Forwarded-For as
+//      `<client-sent…>, <client>, <edge>, <internal>`, so without True-Client-IP
+//      the third hop from the right is Render's own record of the client.
 //   3. Socket peer address (direct/local).
 const trustProxy = (env) => (env.TRUST_PROXY ?? process.env.TRUST_PROXY) === '1';
 
@@ -71,8 +76,10 @@ export function clientIpFrom(nodeReq, env) {
   if (trustKey && h['x-tacit-proxy-key'] === trustKey && h['x-tacit-forwarded-ip']) {
     return String(h['x-tacit-forwarded-ip']).trim();
   }
-  if (trustProxy(env) && h['x-forwarded-for']) {
-    return String(h['x-forwarded-for']).split(',')[0].trim();
+  if (trustProxy(env)) {
+    if (h['true-client-ip']) return String(h['true-client-ip']).trim();
+    const hops = h['x-forwarded-for'] ? String(h['x-forwarded-for']).split(',').map((x) => x.trim()).filter(Boolean) : [];
+    if (hops.length >= 3) return hops[hops.length - 3];
   }
   return nodeReq.socket?.remoteAddress || 'anon';
 }
@@ -85,14 +92,33 @@ const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-ta
 // the whole body into the V8 heap before any handler's own size check runs. On
 // a 512 MB instance with the memory guard armed, one unauthenticated POST of a
 // few hundred MB to any POST route reaches the hard ratio and recycles the
-// process — repeat it and the public API never stays up. Every legitimate body
-// is far below this (the largest handler-side cap is the 16 MB reflection
-// snapshot), so the ceiling only ever rejects abuse.
+// process — repeat it and the public API never stays up.
+//
+// Two ceilings. Anonymous requests get the small one, far above any real op or
+// memo submission. The full ceiling (the largest handler-side cap is the 16 MB
+// reflection snapshot) is for the relay and prover box, which send the box
+// token, and for the multipart upload routes.
 export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
+export const DEFAULT_MAX_ANON_REQUEST_BYTES = 1024 * 1024;
+const UPLOAD_PATH = /^\/(pin|pin-airdrop-snapshot|ceremony\/[0-9a-f]{64}\/contribute|ceremony\/init)(\?|$)/i;
 
-export function maxRequestBytes(env) {
-  const raw = Number(env?.MAX_REQUEST_BYTES ?? process.env.MAX_REQUEST_BYTES);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_REQUEST_BYTES;
+function sizeEnv(env, key, dflt) {
+  const raw = Number(env?.[key] ?? process.env[key]);
+  return Number.isFinite(raw) && raw > 0 ? raw : dflt;
+}
+
+function carriesBoxToken(nodeReq, env) {
+  const m = String(nodeReq.headers.authorization || '').match(/^Bearer (.+)$/);
+  if (!m) return false;
+  const a = Buffer.from(m[1]);
+  return [env?.CONFIDENTIAL_BOX_TOKEN ?? process.env.CONFIDENTIAL_BOX_TOKEN, env?.DEBUG_TOKEN ?? process.env.DEBUG_TOKEN]
+    .some((t) => typeof t === 'string' && t.length >= 16 && Buffer.byteLength(t) === a.length && crypto.timingSafeEqual(a, Buffer.from(t)));
+}
+
+export function maxRequestBytes(env, nodeReq) {
+  const full = sizeEnv(env, 'MAX_REQUEST_BYTES', DEFAULT_MAX_REQUEST_BYTES);
+  if (!nodeReq || UPLOAD_PATH.test(nodeReq.url || '') || carriesBoxToken(nodeReq, env)) return full;
+  return Math.min(full, sizeEnv(env, 'MAX_ANON_REQUEST_BYTES', DEFAULT_MAX_ANON_REQUEST_BYTES));
 }
 
 // Declared length, when the client sent an honest one. Returns null for a
@@ -151,7 +177,7 @@ export function toWebRequest(nodeReq, env) {
 
   const init = { method: nodeReq.method, headers };
   if (nodeReq.method !== 'GET' && nodeReq.method !== 'HEAD') {
-    init.body = Readable.toWeb(limitBody(nodeReq, maxRequestBytes(env)));
+    init.body = Readable.toWeb(limitBody(nodeReq, maxRequestBytes(env, nodeReq)));
     init.duplex = 'half';
   }
   return new Request(url, init);
@@ -250,7 +276,7 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
       // Reject an oversize body on its declared length, before a byte of it is
       // read — the streaming cap in `toWebRequest` is the backstop for a body
       // that arrives chunked or under-declares itself.
-      const bodyLimit = maxRequestBytes(env);
+      const bodyLimit = maxRequestBytes(env, nodeReq);
       const declared = declaredBodyBytes(nodeReq);
       if (declared !== null && declared > bodyLimit) {
         nodeReq.resume(); // drain so the socket closes cleanly instead of stalling the client

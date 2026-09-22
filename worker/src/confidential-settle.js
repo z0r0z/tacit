@@ -21,6 +21,7 @@ const CLAIM_VERIFY_DELAY_MS = 400;
 // full GPU prove cycle and starves real jobs (FIFO, single-prover). New submits past the cap are
 // rejected until the box drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
+const MAX_JOB_BYTES = 256 * 1024; // op + memos, serialized; the largest real op is ~15 KB
 
 // A relayed exit to an L2 may carry its ConfidentialRouter ExitRecipe, so the relay can call the permissionless
 // activateExit(recipe) as soon as the settle lands — otherwise the user has to send it from some wallet, and that
@@ -104,6 +105,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     if (typeof op === 'object' && 'feeUsd' in op) delete op.feeUsd;
     if (!['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'adaptorlock', 'adaptorclaim', 'adaptorrefund', 'cdpclose', 'cdpliquidate', 'cdptopup', 'bridgemint', 'cbtcmint', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'bridgestealthmint', 'wraptransfer', 'sendunwrap', 'lpbond', 'lpremove', 'batchtransfer', 'wraplp', 'wrapswap', 'wrapcdpmint', 'fastlane'].includes(type)) throw new Error(`submitJob: unknown type ${type}`);
     if (!['settle', 'prove'].includes(mode)) throw new Error(`submitJob: unknown mode ${mode}`);
+    // A stored job is re-read and re-serialized on every relay poll and outlives a restart, so its size is
+    // bounded at submit. Real ops are ~15 KB.
+    if (JSON.stringify({ op, memos: memos || [] }).length > MAX_JOB_BYTES) throw new Error(`submitJob: op + memos exceed ${MAX_JOB_BYTES} bytes`);
     if (exit != null && (mode !== 'settle' || !EXIT_TYPES.includes(type))) {
       throw new Error('submitJob: an exit recipe rides only on a relayed unwrap or sendunwrap');
     }

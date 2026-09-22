@@ -73,8 +73,15 @@ ok('POST body reaches worker (auth-gated, not 5xx)', hb.status >= 400 && hb.stat
   ok('spoofed CF-Connecting-IP replaced by socket addr',
     req1.headers.get('CF-Connecting-IP') === '127.0.0.1');
   const req2 = toWebRequest(fakeReq, { ...env, TRUST_PROXY: '1' });
-  ok('TRUST_PROXY=1 takes first X-Forwarded-For hop',
-    req2.headers.get('CF-Connecting-IP') === '9.9.9.9');
+  ok('TRUST_PROXY=1 ignores a client-written single X-Forwarded-For hop',
+    req2.headers.get('CF-Connecting-IP') === '127.0.0.1');
+  // Render: <client-sent…>, <client>, <edge>, <internal>; True-Client-IP is set by its edge.
+  const render = { ...fakeReq, headers: { host: 'h', 'x-forwarded-for': '9.9.9.9, 81.97.145.24, 172.71.195.123, 10.226.90.65' } };
+  ok('TRUST_PROXY=1 takes the third hop from the right',
+    toWebRequest(render, { ...env, TRUST_PROXY: '1' }).headers.get('CF-Connecting-IP') === '81.97.145.24');
+  const edge = { ...render, headers: { ...render.headers, 'true-client-ip': '81.97.145.25' } };
+  ok('TRUST_PROXY=1 prefers True-Client-IP',
+    toWebRequest(edge, { ...env, TRUST_PROXY: '1' }).headers.get('CF-Connecting-IP') === '81.97.145.25');
   const envKey = { ...env, TRUST_PROXY: undefined, PROXY_TRUST_KEY: 's3cret' };
   const proxied = {
     ...fakeReq,
