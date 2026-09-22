@@ -43,8 +43,8 @@ or attestor set signs a bridge message.
 - **Trade atomically.**
   - **Atomic offers:** sell an asset directly for BTC in one transaction. A maker lists a lot, any taker
     completes it.
-  - Bids that a watchtower fills while the buyer is offline. The decoder, validator and reflection fold
-    are live; no wallet exposes building one yet.
+  - Bids that a watchtower fills while the buyer is offline, matched off-chain and settled atomically on
+    the first fill. The on-chain preauth opcode this could also use is reserved for now (signet only).
   - A native AMM: per-trade swaps, routes over up to four pools, and batch clearing at a uniform price.
   - LP farms.
 - **Lock BTC for cBTC.** A self-custody lock on Bitcoin backs fungible cBTC in the pool.
@@ -53,8 +53,8 @@ or attestor set signs a bridge message.
 
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
-- Trade on a confidential AMM: swaps, routes and liquidity. OTC also runs here. Bids are a real,
-  guest-verified op on both chains, but no wallet exposes building one yet on either.
+- Trade on a confidential AMM: swaps, routes and liquidity. OTC also runs here. `OP_BID` is a real,
+  guest-verified op, but no wallet builds it yet — Bitcoin's bid path (above) has no pool-side twin today.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
 - Use adaptor locks for atomic cross-chain swaps — the primitives are guest-verified; no dapp module
   assembles the op yet.
