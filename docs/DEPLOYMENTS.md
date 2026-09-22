@@ -86,6 +86,44 @@ and the mint back on Ethereum
 ([`0f0793f6…006465bb`](https://etherscan.io/tx/0x0f0793f61e57a0eb40ef551ef516e9a33ba0f270343abedf4ea014aa006465bb)) —
 the same note, both chains, proven twice.
 
+### cBTC, cUSD and tETH
+
+Unlike TAC, cBTC and cUSD are pool-minted, not Bitcoin-issued: neither has a `T_CETCH` genesis, and
+neither has been unwrapped to its public ERC-20 form yet — `tacBTC`
+([`0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696`](https://etherscan.io/address/0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696))
+and `tacUSD`
+([`0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564`](https://etherscan.io/address/0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564))
+both read `totalSupply() == 0` on mainnet today, so what's minted so far lives entirely as confidential
+pool notes. Icons: [`cbtc-zk-icon.svg`](../contracts/tokenlist-drafts/cbtc-zk-icon.svg) and
+[`cusd-zk-icon.svg`](../contracts/tokenlist-drafts/cusd-zk-icon.svg), standalone marks distinct from the
+composite cBTC/TAC and cUSD/TAC pairing icons elsewhere in `contracts/`.
+
+**cBTC** mints against real Bitcoin locks ([SPEC §5.7](../SPEC.md#57-cdp-cusd-and-cbtc)): `cbtcBackingSats()`
+on the pool — the cumulative value of every `T_CBTC_LOCK` reflection has recorded — currently reads
+**6,800 sats** (`cast call` against the live pool). Of that, three locks (`cbtcLockVBtc` of 700, 700 and
+2,000 sats, each independently confirmed live) have cleared the 1.5× wstETH escrow gate and actually
+minted; the remaining lock sits under-escrowed and correctly stays unmintable.
+
+**cUSD** mints as CDP debt against cBTC collateral, at the same 150% mint / 130% liquidation thresholds
+([SPEC §5.7](../SPEC.md#57-cdp-cusd-and-cbtc)). `CollateralEngine.outstandingCusd()` currently reads
+**49,815,650** (in-system units) across the engine's two currently-open positions; the insurance reserve is
+still empty (nothing has ever been liquidated). Three real `CdpMinted` mints and one `CdpClosed` close, all
+on the current engine:
+[`0xb4a1f32d…afa7d4908`](https://etherscan.io/tx/0xb4a1f32d80ff1cd413d58023811eaafa8aed3388d3fa82741f52f06afa7d4908),
+[`0x6da330c1…ebceaccb479b3229`](https://etherscan.io/tx/0x6da330c161f236030ef83ce5c9c77268c735a52e7f9789c7ebceaccb479b3229)
+(open), [`0x23851ea3…14e44232e`](https://etherscan.io/tx/0x23851ea3ec4c0434940a1120505b0efe1878023e3d6faac9cea41ad14e44232e)
+(closed), [`0x5f20ec5c…ffe52ec`](https://etherscan.io/tx/0x5f20ec5cc1dc1ecd31cd8f60970e8947ca61165500dbb4cb27bb9c048ffe52ec)
+(open).
+
+**tETH** is not a separate asset from cETH — it's the same shared asset id
+(`0x3cba71e1…03126f34`, [SPEC §4.2](../SPEC.md#42-assets-and-units)) named by chain context: "cETH" when
+you're wrapping native ETH into the pool from Ethereum, "tETH" when the same note is spent on Bitcoin.
+There's no bridge or swap between the two names, and no separate tETH ERC-20 — one note, read either way.
+It has its own standalone Bitcoin-side mark: [`teth.svg`](../contracts/teth.svg) /
+[`teth-icon.svg`](../contracts/teth-icon.svg), a "T" in Ethereum's brand purple. It's the asset the
+[Bitcoin-native AMM pool](#bitcoin-native-amm-pool) actually trades: its founding reserves are tETH against
+TAC.
+
 ### TAC launch farms
 
 A reward program on the pool, outside the CreateX manifest. The `FarmManager` is a pool controller (the pool
