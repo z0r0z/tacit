@@ -1,36 +1,22 @@
 # TAC airdrop snapshot
 
-Token-holder snapshots that fixed the initial TAC distribution.
+Token-holder snapshots that fixed the initial TAC distribution on Bitcoin.
 
-The two CSVs are Etherscan token-holder exports for the
-Ethereum-rooted zOrg DeFi DAO contracts whose holders received
-the initial TAC airdrop. zOrg has operated as a DeFi protocol on
-Ethereum for over a year.
+The two CSVs are Etherscan token-holder exports for the Ethereum-rooted zOrg DeFi DAO contracts whose holders
+received the initial TAC airdrop:
 
 - [`export-tokenholders-for-contract-0x00a6ba94bbb5474725515de88fe04f854f2dcb12.csv`](./export-tokenholders-for-contract-0x00a6ba94bbb5474725515de88fe04f854f2dcb12.csv)
 - [`export-tokenholders-for-contract-0xe9b1cfea55baa219e34301f2f31b9fd0921664ed.csv`](./export-tokenholders-for-contract-0xe9b1cfea55baa219e34301f2f31b9fd0921664ed.csv)
 
-Each row is `(address, balance)` at the snapshot block. The CSVs are
-the same shape Etherscan exports — directly consumable by the dApp's
-**Drops** flow (`T_DROP` / `T_DCLAIM`, SPEC §5.12–5.13) for snapshot
-verification.
+Each row is `(address, balance)` at the snapshot block, in Etherscan's export format, which is the shape the
+Bitcoin claim-pool ops `T_DROP` / `T_DCLAIM` read for snapshot verification (legacy ops,
+[SPEC §3.8](../SPEC.md#38-legacy-ops)).
 
-The distribution carried real economic cost on both sides. zOrg
-eligibility was earned through ETH spending — share purchase, protocol
-fees, or LP farming on Ethereum — so airdrop recipients had skin in
-the game before any TAC was minted. Fulfillment then paid Bitcoin
-fees to broadcast the on-chain envelopes, so the distribution side
-also burned real value through Bitcoin's fee market.
+zOrg eligibility was earned through ETH spending (share purchases, protocol fees or LP farming on Ethereum), and
+fulfillment paid Bitcoin fees to broadcast the envelopes, so both sides of the distribution carried real cost.
 
-TAC has traded on the open DeFi market since the airdrop, and the
-asset is etched on Bitcoin via the public-mint `T_PETCH` /
-`T_PMINT` mechanism with a fixed 21M-base-unit cap. An active OTC
-market for TAC settles at [tacit.finance](https://tacit.finance)
-through the protocol's atomic asset-vs-BTC settlement primitives
-(`T_AXFER` / `T_AXFER_VAR` and the atomic-intent flow).
+TAC is the protocol's native asset ([SPEC §7.3](../SPEC.md#73-tac)); the [whitepaper](../whitepaper/WHITEPAPER.md)
+describes its role.
 
-See the [whitepaper](../whitepaper/WHITEPAPER.md) for TAC's role in the
-protocol and [`SPEC.md`](../SPEC.md) for the on-chain primitives.
-
-The distribution for the Ethereum-side confidential pool and the formal v1 launch is separate from this one; its inputs and method are in
-[`v1/README.md`](./v1/README.md).
+The Ethereum-side distribution, through the `TacAirdrop` contract, is separate from this one; its inputs and method
+are in [`v1/README.md`](./v1/README.md).

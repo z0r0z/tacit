@@ -86,11 +86,11 @@ Each is pinned by ELF hash to an immutable verifying key, and each
 
 **Ceremonies.** The transparent stack needs no trusted setup. Two finalized ceremonies supply Groth16
 keys for circuits that are expensive to express otherwise:
-- the **AMM ceremony**, whose `amm_swap_batch` key is compiled into both guests for prover-blind batch
-  swaps;
+- the **AMM ceremony**, whose `amm_swap_batch` key is compiled into both guests for blind batch swaps;
 - the **mixer ceremony**, for denominated anonymity pools.
 
-Details are in [SPEC §2.8](./SPEC.md#28-circuits-and-ceremonies).
+Details are in [SPEC §2.8](./SPEC.md#28-circuits-and-ceremonies); every artifact, with its CID and hash,
+is in [`docs/CEREMONY.md`](./docs/CEREMONY.md).
 
 **Room for Bitcoin covenants.** Some op codes and opcode bytes are held for constructions Bitcoin cannot
 yet enforce. The main one is covenant-locked cBTC with no escrow. The others are on-chain bid escrow and
@@ -98,8 +98,8 @@ fractional BTC slots. See [SPEC §10](./SPEC.md#10-extensions-and-covenant-place
 
 ## Privacy and trust
 
-- **Hidden:** amounts, which note a pool spend consumes, stealth recipients, and trade sizes in blind
-  batches.
+- **Hidden:** amounts, which note a pool spend consumes, and stealth recipients. Blind batches also keep
+  trade sizes from the SP1 prover.
 - **Public:** Bitcoin addresses and the transaction graph, asset ids on Bitcoin, the pool's deposit and
   withdrawal boundary, AMM reserves, and CDP position amounts. A position's owner stays unlinkable.
 - **You trust:** Bitcoin and Ethereum consensus, SP1 and Groth16 soundness, and the ceremonies (only for
@@ -141,7 +141,7 @@ worker/          indexer + API (served by server/ on Node); never proves, never 
 worker-relay/    hosted relay: settle, reflection, header relay, monitoring
 tests/           cross-implementation vectors and test suites
 tools/ scripts/  operational and verification tools
-docs/            integrator guides: build a dapp, deployments, farms, airdrop, recovery, reproducible builds
+docs/            integrator guides: build a dapp, deployments, ceremony artifacts, farms, airdrop, recovery, builds
 audit/           security reviews
 whitepaper/      whitepaper (.md, .tex, .pdf)
 ```

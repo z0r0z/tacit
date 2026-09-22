@@ -1,9 +1,8 @@
 # Recovering a wallet from its key
 
-This chapter is for integrators. It says what a wallet can find again from its private key alone, what needs a saved
-record, how to run the recovery, and what the client checks so that a note is never sealed in a way it cannot be opened.
-
-Everything here is read-only against public chain data. Nothing is signed or sent.
+What a wallet finds again from its private key alone, what needs a saved record, how to run recovery, and what the
+client checks so that a note is never sealed in a way it cannot be opened. The protocol side is
+[SPEC §9](../SPEC.md#9-recovery). Everything here reads public chain data; nothing is signed or sent.
 
 ## What comes back from the key alone
 
@@ -82,10 +81,10 @@ keys (`swapBatched`, the OTC and bid tabs) keeps whatever the caller chose.
 
 | What | Why | What to save |
 | --- | --- | --- |
-| A farm position opened under a random receipt key (older builds) | its key is not derived from anything the chain or the wallet key holds | `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }`; restore it with `importFarmPosition` |
-| A CDP position opened under a random owner key (older builds and scripts) | same | the position descriptor with `positionOwnerPriv` |
-| A stealth lock sent by a build that did not append the sender tail | the refund key was random and never published | the `onBuilt` result of `stealthSend` |
-| A self-owned output minted by a build before derived outputs, with no memo on chain | its keys were random | nothing to save if the memo exists; otherwise the note's opening |
+| A farm position opened under a random receipt key (an explicit `bondFarm`) | its key is not derived from anything the chain or the wallet key holds | `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }`; restore it with `importFarmPosition` |
+| A CDP position opened under a random owner key (a script that supplies its own) | same | the position descriptor with `positionOwnerPriv` |
+| A stealth lock sent without the sender tail on its memo | the refund key was random and never published | the `onBuilt` result of `stealthSend` |
+| A self-owned output built with caller-chosen keys, with no memo on chain | its keys were random | nothing to save if the memo exists; otherwise the note's opening |
 | A split of a self-send whose amount is not m × 10^k, with no memo on chain | the split is not public and the derivation cannot search it | the note's opening |
 | The destination note of a cross-out to Bitcoin | the note is owned by the destination key the sender chose, on Bitcoin; the wallet can recompute the blinding, but only the holder of that key can spend it | the destination key and the returned `destBlinding` |
 | A bridge-mint note of an amount that is not m × 10^k for m below 100 | the amount is hidden in the commitment | the amount, passed as `bridgeAmounts` |
@@ -111,10 +110,10 @@ const r = await tacit.recover({ walletPriv });
 `source` is absent for a note found through its memo, and otherwise names the channel: `wrap`, `change`,
 `bridge-mint`, `cbtc` or `derived`. A `derived` note also carries `role` and `roleIndex`.
 
-`balance(walletPriv)` returns the same `{ notes, byAsset, poolStats }` it always did, and now also lists the wrap,
-bridge-mint and cBTC notes. It skips the walks that read transaction calldata, so it stays cheap enough to poll.
+`balance(walletPriv)` returns `{ notes, byAsset, poolStats }`, including wrap, bridge-mint and cBTC notes. It skips the
+walks that read transaction calldata, so it is cheap enough to poll.
 
-Options: `{ toBlock, deep: false }` skips the calldata walks (change notes and derived outputs found from a spent note),`{ cbtc: false }` skips the Bitcoin history
+Options: `{ toBlock, deep: false }` skips the calldata walks (change notes and derived outputs found from a spent note), `{ cbtc: false }` skips the Bitcoin history
 read, `{ bridgeAmounts: [units…] }` adds amounts to try for bridge-mint notes, `{ btcHistory }` supplies the wallet's
 Bitcoin history (`{ anchors: [{ txid, vout }], lockOutputs: [{ txid, vout }] }`) instead of reading esplora, and
 `{ events }` reuses an event stream you already fetched (from `fetchEvents({ include: ['wraps', 'cdp', 'bonds'] })`).
@@ -138,7 +137,7 @@ category raised an error. The detail sits beside it:
 
 ```js
 await tacit.importFarmPosition(record);            // checks the record against the chain, then stores it
-const positions = await tacit.farmPositions({ walletPriv });   // now includes it, with imported: true
+const positions = await tacit.farmPositions({ walletPriv });   // includes it, with imported: true
 ```
 
 The record is accepted only when the receipt leaf reproduces from `(manager, lpAsset, shares, owner, nonce)`, `ownerPriv`
@@ -164,8 +163,8 @@ from 0 and stops after 24 unused in a row, so an index left far behind a gap of 
 
 ## Cost
 
-- One event pass over the pool from its deploy block, in windows of 500 blocks (the tightest range cap seen on public
-  nodes): one `eth_getLogs` call per window, about 60 for the first month of history. `recover` fetches the pool's note events, `Wrap`,
+- One event pass over the pool from its deploy block, in windows of 500 blocks (the tightest range cap on common
+  public nodes): one `eth_getLogs` call per window, about 430 per month of history. `recover` fetches the pool's note events, `Wrap`,
   `CdpPositionInserted` and the farm manager's `Bonded` and `Harvested` in that one pass. Pass `events` to avoid fetching twice.
 - Wrap and bridge-mint walks are local hashing over that stream. The bridge-mint walk tries the amounts m × 10^k for m
   below 100 (about 1,900 per burn nullifier and destination index, plus any `bridgeAmounts`); it runs only for leaves with an empty memo and is remembered per session.

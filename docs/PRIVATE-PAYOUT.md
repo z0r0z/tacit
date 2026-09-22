@@ -130,7 +130,7 @@ A merge tells the relay that those notes belong together. `plan.code === 'insuff
 
 ## 3. In the dapp
 
-On the EVM pool send tab, paste a 0x address into **To**. The note-send controls give way to a panel titled "Pay this address publicly from your shielded balance":
+On the confidential pool's send tab, paste a 0x address into **To**. The note-send controls give way to a panel titled "Pay this address publicly from your shielded balance":
 
 1. The address is checked: EIP-55 when mixed-case (a wrong checksum is refused), and the zero address, the pool, the router and the token contracts are refused. An all-lower or all-upper address has no checksum, and the review says so.
 2. An asset picker lists the assets that can be paid out to an address, with the shielded balance found from the key.
@@ -145,7 +145,7 @@ There is no self-settle option: `sendUnwrap` is always relayed, so its fee is al
 
 The relay's fee on a payout is `max(0.30% of gross, floor)`, rounded up to at most two significant digits (the settle guest rejects a fee that is not), in the asset's own units, and capped at the amount.
 
-- The floor is `tacit.quoteOpFee(ticker, 'sendunwrap')`: the larger of the static floor and a gas-priced one, live. `GET /confidential/quote?asset=<ticker>` returns the relay's own numbers (`staticFloorUnits`, `gasAwareFloorUnits`, in in-system units); the relay refuses an offer below its floor. Read on 2026-09-22: cETH static 10,000 units (0.0001 ETH), gas-aware 3,436; cUSD static 30,000,000 units ($0.30), gas-aware 9,550,250. Both move with gas.
+- The floor is `tacit.quoteOpFee(ticker, 'sendunwrap')`: the larger of the static floor and a gas-priced one, live. `GET /confidential/quote?asset=<ticker>` returns the relay's own numbers (`staticFloorUnits`, `gasAwareFloorUnits`, in in-system units); the relay refuses an offer below its floor. The static floors are 10,000 units (0.0001 ETH) for cETH and 30,000,000 units ($0.30) for cUSD; the gas-aware floor moves with gas.
 - Only assets the relay can take a fee in can be paid out this way (`tacit.relayFeeEligible(ticker)`): cETH, cUSDC, cUSDT, cUSD, cBTC and cTAC.
 
 Paying an exact amount, at the static floors (a higher live floor raises the fee):
@@ -161,7 +161,7 @@ The ladder exists because an odd-valued fee is a fingerprint: it lands in a publ
 
 An amount so small that the fee would swallow it is refused (`below-fee`). A payment smaller than its fee is allowed and the dapp warns.
 
-**Self-settled.** `sendUnwrap` has no self-settle mode: it always submits to the relay, so a partial payout always pays the relay's fee. (The settle guest accepts a payout with fee 0, but the SDK has no prove-and-submit path for this op.) A whole note can be exited with no fee if you settle it yourself, from the derived account, which then needs ETH for gas:
+**Self-settled.** `sendUnwrap` always submits to the relay, so a partial payout always pays the relay's fee. (The settle guest accepts a payout with fee 0, but the SDK has no prove-and-submit path for this op.) A whole note can be exited with no fee if you settle it yourself, from the derived account, which then needs ETH for gas:
 
 ```js
 const built = tacit.buildUnwrap({ note, walletPriv, recipient, selfSettle: true });   // fee 0, the whole note
@@ -169,7 +169,7 @@ const proven = await tacit.relay.prove({ type: 'unwrap', op: built.op, memos: []
 await tacit.submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos: [] });
 ```
 
-To pay an exact amount this way, first make a note of exactly that value (`tacit.ensureExactNote`, a relayed self-transfer that pays its own fee). The relay still receives the witness and proves it; only the fee and the relay's address on the transaction go away. See the ETH guide, section 3 step D and section 4, for the prove-then-settle path.
+To pay an exact amount this way, first make a note of exactly that value (`tacit.ensureExactNote`, a relayed self-transfer that pays its own fee). The relay still receives the witness and proves it; only the fee and the relay's address on the transaction go away. To keep the witness to yourself, prove it locally (the trustless checklist in [`INTEGRATOR-PLAYBOOK.md`](./INTEGRATOR-PLAYBOOK.md#4-trustless-checklist)).
 
 ## 5. Privacy: what to tell the user
 

@@ -1,14 +1,11 @@
-# Tacit V1 launch farms
+# TAC launch farms
 
 How to show, drive and watch the TAC liquidity program from your own dapp.
 
-Written for an integrator who already has the basics from [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md)
-(notes, the relay, `makeConfidentialPoolUx`). Everything here is live on Ethereum mainnet; addresses are also in
-[`DEPLOYMENTS.md`](./DEPLOYMENTS.md).
-
-Names marked **verify** are part of the SDK / API surface that ships alongside this chapter. Check them against
-`dapp/confidential-farm-program.js`, `dapp/confidential-pool-ux.js` and the live `/farm/program` response before
-you depend on an exact shape.
+For an integrator who has the basics from [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) (notes, the relay,
+`makeConfidentialPoolUx`). Everything here is live on Ethereum mainnet; addresses are also in
+[`DEPLOYMENTS.md`](./DEPLOYMENTS.md), and the op semantics are [SPEC §5.8](../SPEC.md#58-farms-and-locks). The
+SDK surface is `dapp/confidential-farm-program.js` and the farm calls in `dapp/confidential-pool-ux.js`.
 
 ---
 
@@ -39,7 +36,7 @@ on any pool: you can unbond at any time.
 | TAC ERC20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) |
 | TacFarmFunder | [`0x7fc40b13c7a99a1d2c41f8b5382978363d18525a`](https://etherscan.io/address/0x7fc40b13c7a99a1d2c41f8b5382978363d18525a) |
 | wTAC asset id (reward) | `0x1097c9e552ae4fce2a8c416b93403953fa445a5f2cdae8ced36d9a78cfe40832` |
-| Operator (governor once it accepts) | ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
+| Governor | ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
 
 The three pools. The stake asset is the pair's **LP-share asset id** (30 bps tier); the pool id is the AMM pair
 id.
@@ -50,8 +47,8 @@ id.
 | 1 | cETH / cUSD | 30 | `0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571` | `0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7` |
 | 2 | cETH / cBTC | 20 | `0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254` | `0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331` |
 
-Read the live values, do not trust this table: the weights can be re-set by governance (section 9), and the
-addresses are also in the dapp config's `farm` block (section 3).
+Read the live values: governance can re-weight within bounds (section 9). The addresses are also in the dapp
+config's `farm` block (section 3).
 
 **Units.** The reward value unit is `1e-8` TAC (the pool's 8-decimal in-system unit). `wei = units × 1e10`.
 The epoch rate is `1,282,150` units per second. Every reward figure from the manager (`pending`, `rate`,
@@ -59,11 +56,11 @@ The epoch rate is `1,282,150` units per second. Every reward figure from the man
 
 ## 3. Read the program
 
-The dapp config carries the program (**verify** the exact shape in `confidential-deployments.js`):
+The dapp config (`confidential-deployments.js`) carries the program:
 
 ```js
 cfg.farm = {
-  manager, rewardAsset, rewardToken, tac, funder,
+  manager, rewardAsset, rewardToken, tac, funder, unitScale, rewardDecimals,
   pools: [{ pid, pair, poolId, lpAsset, feeBps, allocPoint, lockSeconds }],
 };
 cfg.farmControllers[poolId] = manager;   // enables one-click add-and-bond for that pool
@@ -132,9 +129,8 @@ present a fixed APR: it moves with every bond and unbond.
 
 ## 5. Flows
 
-Like every pool op, these go through the relay: you build and sign, the relay proves and settles. The proven
-reference implementations are the scripts the flows below were run from; the mainnet transactions are listed in
-section 11.
+Like every pool op, these go through the relay: you build and sign, the relay proves and settles. The mainnet
+transactions for each flow are in section 11.
 
 ### One-click add and farm (OP_LP_BOND)
 
@@ -143,9 +139,8 @@ await tacit.lpBond({ walletPriv, controller: cfg.farm.manager, aNote, bNote, fee
 ```
 
 Adds liquidity to the pair and bonds the resulting shares in one settle, so the user never holds an idle LP
-note. It is enabled per pool by `cfg.farmControllers[poolId]` and has been driven live against this manager
-(section 11). It builds with no relay fee leg, so submit it with `selfRelay: true`: the user's own account
-broadcasts the settle and pays its gas, which is what the Earn tab does. The position's receipt key re-derives from
+note. It is enabled per pool by `cfg.farmControllers[poolId]`. It has no relay fee leg, so submit it with
+`selfRelay: true`: the user's own account broadcasts the settle and pays its gas, as the Earn tab does. The position's receipt key re-derives from
 the wallet key and the spent A note (`lpBondPosition`); persist the position record as section 7 says.
 
 ### Bond an existing LP note
@@ -201,11 +196,11 @@ Two rules the button copy should carry:
 - **The reward lands as a wTAC note**, not TAC. It is a normal confidential note and sits in the wallet under
   the wTAC asset id.
 - **A harvest re-stamps the position.** Whatever is pending and not claimed in that harvest is forfeited. The
-  proven runs claimed 99.5% of `pending` read at build time, so a harvest leaves about half a percent behind.
-  Claim as close to `pending` as you dare; do not build a "claim half" control.
+  snippet claims 99.5% of `pending` read at build time, so it leaves about half a percent behind. Claim as close
+  to `pending` as you can; do not build a "claim half" control.
 
-The reference runs passed `fee: 0n`. If the relay rejects a submit for a fee below its floor, pass a fee from
-`GET /confidential/quote` for the wTAC asset (**verify** eligibility for wTAC before you launch).
+Harvest and unbond run with `fee: 0n`. wTAC is not one of the relay's fee assets, so a fee-less farm op relays
+within the relay's daily free budget, or you self-settle it.
 
 ### Unbond
 
@@ -226,7 +221,7 @@ a lock, an unbond before `unlockAt` reverts `Locked`; the launch pools have none
 
 ### Redeem rewards to TAC, and to Bitcoin
 
-A wTAC note becomes plain TAC in three hops, each a mainnet-proven step:
+A wTAC note becomes plain TAC in three steps:
 
 1. **Unwrap the note** to the wTAC ERC20: `tacit.unwrap({ note, walletPriv, recipient })`. Public: the
    recipient address and amount appear on-chain.
@@ -238,9 +233,10 @@ TAC notes then reach Bitcoin over the pool's cross-out round trip; see
 [SPEC §6.4](../SPEC.md#64-ethereum--bitcoin). That path is for TAC notes, not wTAC
 notes: redeem first.
 
-The SDK wraps all four in one entry: `tacit.farmBond`, `farmHarvest`, `farmUnbond`, `farmRedeem`, plus
-`tacit.farmPositions({ walletPriv })` to list positions (**verify** argument shapes in
-`confidential-pool-ux.js`). The explicit calls above are the ones proven on mainnet.
+The SDK wraps the four flows as `tacit.farmBond({ walletPriv, controller, lpNote })`,
+`farmHarvest({ walletPriv, position })`, `farmUnbond({ walletPriv, position, forfeitPending })` and
+`farmRedeem({ walletPriv, note, to })`, plus `tacit.farmPositions({ walletPriv })` to list positions. These derive
+the receipt key from the wallet key (section 7); the explicit calls above take a key you hold.
 
 A redeem wizard is four screens: pick the wTAC note, confirm the public unwrap to an address, wait for the
 ERC20 to arrive (poll `balanceOf`, do not trust a scan), then `withdraw`. Poll the ERC20 balance at each hop.
@@ -263,11 +259,11 @@ unbonded and any pending reward cannot be claimed. Nothing in the protocol, and 
 - **Use the SDK's deterministic path where you can**: a position opened with `tacit.farmBond` or `tacit.lpBond`
   derives its receipt key from the wallet key and the note it spent, and `tacit.farmPositions({ walletPriv })`
   finds it again from the chain and the key, so a restored wallet needs no stored file. A position opened
-  under a random key (the explicit bond above) is not derivable; keep its record (or, once saved,
-  `tacit.importFarmPosition(record)` checks it against the chain and stores it).
+  under a random key (the explicit bond above) is not derivable: keep its record, and restore it with
+  `tacit.importFarmPosition(record)`, which checks it against the chain before storing it.
 - **If you hold keys yourself, persist before you submit.** Write `{ controller, lpAsset, shares, receiptOwner,
-  ownerPriv, nonce }` durably first, then bond. The reference run writes the file mode `0600` and refuses to
-  overwrite an existing one.
+  ownerPriv, nonce }` durably first, then bond. Write it with owner-only permissions and never overwrite an
+  existing record.
 - **A fresh key per position.** Never reuse the wallet key as a receipt owner; that would link positions.
 - **Also persist per-op secrets:** a harvest's `(reward blinding, nk)` and an unbond's `(blinding, nk)` open the
   notes they create. The wallet's seed scan finds a note through its memo, but keep the secrets until you have seen the note
@@ -277,10 +273,10 @@ unbonded and any pending reward cannot be claimed. Nothing in the protocol, and 
 
 ## 8. Monitoring
 
-If you host farm cards or run a keeper, watch these. The relay operator runs `tools/farm-monitor.mjs`, which exits
-non-zero on a warn or a critical, and `GET /farm/health` returns the same checks as JSON with
-`status: ok | warn | critical` (**verify** the check names). The thresholds below are what to alert on in
-your own tooling.
+If you host farm cards or run a keeper, watch these. `tools/farm-monitor.mjs` exits non-zero on a warn or a
+critical, and `GET /farm/health` returns the same checks as JSON with `status: ok | warn | critical`. Its checks
+are `manager`, `solvency`, `runway`, `emission`, `idle-pools` and `governor`. The thresholds below are what to
+alert on in your own tooling.
 
 | what | condition | severity |
 |---|---|---|
@@ -297,9 +293,9 @@ Two readings that look alarming and are not: the treasury is larger than the sch
 
 ## 9. Governance and what it cannot do
 
-The manager has one governor, the **operator**: the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2`, which accepted the role from the deployer in
-[`0x6074f810…5f39`](https://etherscan.io/tx/0x6074f810491dff24cf130490ac55f9994c953cf1dab852f180003b7646735f39)
-(`gov()` is the multisig and `pendingGov()` is empty). The bounds below are enforced by the contract, not by policy.
+The manager has one governor: the ops multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` (`gov()`; it accepted
+the role in [`0x6074f810…5f39`](https://etherscan.io/tx/0x6074f810491dff24cf130490ac55f9994c953cf1dab852f180003b7646735f39)).
+The bounds below are enforced by the contract, not by policy ([SPEC §7.2](../SPEC.md#72-governed-periphery)).
 
 | the governor can | but only |
 |---|---|
@@ -310,7 +306,7 @@ The manager has one governor, the **operator**: the ops multisig `0x006CD14F36F6
 | propose a new governor | the new one must accept; the old governor's queued changes die with the handover |
 
 So: a pool's weight only moves within a bounded band, a running program's end date never moves earlier and its rate
-never drops, and earned rewards stay claimable. The operator cannot spend a position, move an LP note, or touch a
+never drops, and earned rewards stay claimable. The governor cannot spend a position, move an LP note, or touch a
 harvest.
 
 **Top-ups.** `TacFarmFunder.fund(controller, amount)` (or `fundWithPermit(controller, amount, deadline, v, r, s)`)
@@ -345,7 +341,7 @@ through `notifyRewardAmount`, and positions carry over unchanged.
 
 ## 11. Verified on mainnet
 
-Every flow above was driven with real proofs against the live manager.
+Each flow above, settled against the live manager:
 
 | step | transaction |
 |---|---|

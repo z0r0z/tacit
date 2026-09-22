@@ -1,223 +1,114 @@
-# Tacit relay + reflection backbone (Render, GPU-free)
+# Tacit relay and reflection services (Render)
 
-Production deployment of the ConfidentialPool **data plane** — the piece that today
-runs on a self-hosted GPU box (`ops/scripts/*-loop.sh`) — as **Render** services that
-prove on the **Succinct network prover** instead of a local GPU. The GPU box remains a
-**fallback only** (see below).
+The operational services behind the confidential pool: the settle relayer, the Bitcoin
+reflection attester, the header relay feeder, the Mode-B eth-state producer and the monitor.
+They run on Render and prove on the **Succinct network prover**, so no GPU is needed.
 
-This mirrors the existing architecture exactly:
-the **control plane** stays the Cloudflare Worker (`worker/`) — it never proves and never
-holds funds; it queues opaque witnesses and hands back proofs the contract independently
-verifies against its pinned vkeys. All safety lives in the contract's vkey verification, so
-losing/redeploying any of these services loses no funds and no authority.
+## Trust role
 
-On-chain library: **viem** (ESM-native, typed, light).
+None of these services can change what is valid. Every settle and every reflection attest
+carries an SP1 proof that the pool verifies against its immutable vkeys, and `settle` is
+permissionless. The relayer never holds user funds or spending keys; the relay fee is bound
+in the proof and paid to `msg.sender`. The relayer can decline a job, but it cannot redirect
+or change one. Users can always self-settle or prove locally instead (SPEC §5.4).
 
----
+The control plane is the API worker (`worker/`, run as `tacit-api` via `server/`). It queues
+opaque witnesses and serves reflection jobs; it never proves and never holds funds.
 
 ## What runs
 
+Declared in `render.yaml`:
+
 | Service | Render type | File | Role |
 |---|---|---|---|
-| `tacit-reflection` | Background Worker (always-on) | `src/reflection-folder.js` | Incremental Bitcoin-state attest — keeps reflection 1–2 blocks behind tip so the 176-block liveness trap never recurs. |
-| `tacit-eth-state` | Background Worker (always-on) | `src/eth-state-sidecar.js` | Mode-B fuel producer — publishes the eth-side crossOut/consumed candidate `tacit-reflection` needs for every Mode-B attest (mandatory once a pool's `crossOutCount` has ever left 0). See the file's header comment for why the trigger is "is a candidate currently live," not "did crossOutCount change." |
-| `tacit-settle` | Background Worker (always-on) | `src/settle-relay.js` | Confidential settle relay for user ops (transfer/swap/route/lp/…); `feeGate` + per-job timeout. |
-| `tacit-replenish` | Cron (`*/30 * * * *`) | `src/replenish.js` | Sweep fee assets → PROVE + ETH via zQuoter/zRouter, deposit PROVE to the Succinct vApp. |
-| `tacit-monitor` | Cron (`*/5 * * * *`) | `src/balance-monitor.js` | Alert on low PROVE/ETH and on reflection lag > N blocks. |
+| `tacit-reflection` | Cron (`*/5`) | `src/reflection-folder.js` | Incremental Bitcoin-state attest: fetch the next batch, prove it, `attestBitcoinStateProven`, ack. |
+| `tacit-header` | Cron (`*/3`) | `src/header-relay.js` | Feeds Bitcoin headers to `BitcoinLightRelay.advanceTip`, paced to stay about `HEADER_RELAY_LEAD` blocks ahead of reflection. No proving. |
+| `tacit-eth-state` | Background Worker + disk | `src/eth-state-sidecar.js` | Runs `eth_prove` and publishes the Ethereum-side candidate every Mode-B attest needs. See the file header for why the trigger is "is a candidate live", not "did `crossOutCount` change". |
+| `tacit-settle` | Background Worker | `src/settle-relay.js` | Settle relayer for user ops: `feeGate`, prove, `settle(pv, proof, memos)`, ack; batches queued transfers; activates relayed L2 exits; runs replenish in idle time. |
+| `tacit-monitor` | Cron (`*/5`) | `src/balance-monitor.js` | Alerts on gas runway, undeposited PROVE, reflection lag and stalls, snapshot size, queue age and farm health. A critical exits non-zero. |
 
-Shared libs: `src/lib/config.js` (env + addresses), `src/lib/chain.js` (viem clients + ABIs),
-`src/lib/prover.js` (spawn the network-prove binaries), `src/lib/worker-client.js`
-(control-plane routes).
+`tacit-replenish` is defined but inert: replenish (sweep fee assets to ETH gas and PROVE via
+zQuoter/zRouter, deposit PROVE to the Succinct vApp) runs inside `tacit-settle`
+(`REPLENISH_IN_SETTLE=1`) so it shares the relayer key's nonce with settles.
 
-### Loop shape (same idempotency as the box)
+Shared libraries live in `src/lib/`: `config.js` (env and addresses), `chain.js` (viem clients
+and ABIs), `prover.js` (spawns the prover binaries), `worker-client.js` (API routes).
 
-**Reflection** — `GET /reflection/job?network=` → read `knownReflectionDigest()` (if the
-batch's `newDigest` already landed, just re-ack — a re-submit reverts, never double-attest)
-→ `bitcoin_prove` groth16 on Succinct → `attestBitcoinStateProven(pv, proof)` (RELAY_KEY) →
-`POST /reflection/ack`. The worker advances the un-rewindable attested cursor only on ack, so
-a failed prove/submit is a safe retry.
+### Loop shape
 
-**Settle** — `GET /confidential/job` → `feeGate` (reject unprofitable) → `exec` harness groth16
-on Succinct (per-job wall-clock timeout so a poison witness can't wedge the FIFO) →
-`settle(pv, proof, memos)` (SETTLE_KEY; the proof-bound fee is paid to `msg.sender` = the relay)
-→ `POST /confidential/ack`. A revert (e.g. a lost-ack re-serve of an already-applied op) is
-acked failed so the queue advances.
+**Reflection**: `GET /reflection/job` → compare the batch's `priorDigest` and `newDigest` with the
+pool (re-ack if it already landed, stop if the pool is on a different prior) → `bitcoin_prove`
+groth16 on Succinct → `attestBitcoinStateProven` → wait for confirmations and cross-check the
+digest on an independent RPC → `POST /reflection/ack`. The API advances its cursor only on ack,
+so a failed prove or submit is a safe retry.
 
----
+**Settle**: `GET /confidential/job` → `feeGate` → skip inputs already spent on chain → prove with
+the per-op `exec-<type>` binary (per-job wall-clock timeout) → check the memos match the proof's
+memo root → `settle` over the private submission endpoints → `POST /confidential/ack`.
 
-## The prebuilt Rust prover binaries
+## Prover binaries
 
-The workers **spawn** two prebuilt binaries — they do **not** compile Rust at runtime:
+The image fetches the prebuilt binaries (`exec-<op>` for each confidential op, `bitcoin_prove`,
+`eth_prove`) from the GitHub release named by `PROVER_RELEASE` in the `Dockerfile` and checks
+them against `prover/bin/SHA256SUMS`. They are patched to `.network()` and embed their guest
+ELFs, so each proves exactly one program. Set `EXPECT_VKEY` so a binary built against a
+different guest fails at startup rather than producing proofs the pool rejects. Rotating a guest
+means bumping `SHA256SUMS`, the release tag and the on-chain vkey together.
 
-- `bitcoin_prove` — `contracts/sp1/eth-reflection/prover-host`, built `--bin bitcoin_prove`,
-  patched to `.network()`. Reads `REFLECT_FIXTURE` (the assembled reflection input),
-  `PROOF_MODE=groth16`, writes `$PROVER_OUT/bitcoin_pv.hex` + `bitcoin_proof_bytes.hex`.
-  This worker drives the **forward** (single-ELF, no eth recursion) incremental attest; the
-  Mode-B reverse-bridge recursion stays on its dedicated path.
-- `exec` — `contracts/sp1/confidential/harnesses`, built `--bin exec`, patched to `.network()`.
-  `MODE=groth16`, `OP_TYPE`/`OP_FILE=<op json>`, writes `public_values.hex` + `proof_bytes.hex`
-  in its cwd (`$PROVER_OUT`).
+The binaries read the standard SP1 network env (`SP1_PROVER=network`, `NETWORK_PRIVATE_KEY`,
+`NETWORK_RPC_URL`). The services refuse to start if `SP1_PROVER=network` and
+`NETWORK_PRIVATE_KEY` is unset. To prove locally instead, point `BITCOIN_PROVE_BIN` / `EXEC_BIN`
+at locally built binaries and unset `SP1_PROVER`. Run only one attester per network.
 
-The SP1 guest **ELFs are `include_bytes!`'d into these binaries at build time**, so building
-them pins the exact vkeys the deployed pool verifies against. **Build them once in CI** on a
-machine with the SP1 toolchain + the guest ELFs staged (the box already builds them this way),
-publish as a release artifact, and drop the artifacts under `worker-relay/prover/bin/` for the
-Docker build to `COPY`. `Dockerfile` stage 1 shows the in-image build path if you prefer it;
-the recommended path is the CI-artifact `COPY` (keeps Render builds fast). See the `TODO`s in
-`Dockerfile`.
+## Environment
 
-> The binaries read the standard SP1 network env: `SP1_PROVER=network`, `NETWORK_PRIVATE_KEY`,
-> `NETWORK_RPC_URL`. The workers fail loud at startup if `SP1_PROVER=network` and
-> `NETWORK_PRIVATE_KEY` is unset — there is **no silent local-GPU fallback**.
+Secrets are `sync: false` in `render.yaml` and set in the Render dashboard; everything else is in
+the `tacit-relay-shared` env group or on the service. `src/lib/config.js` is the full list with
+defaults.
 
-### Mode-B sidecar (`tacit-eth-state`) — NOT YET fully deployable
-
-`eth_prove` (`contracts/sp1/eth-reflection/prover-host`, built `--bin eth_prove`) produces the
-recursive Ethereum-side proof `tacit-reflection` needs to fold every Mode-B batch. Unlike
-`bitcoin_prove`/`exec`, it is **not yet in the `prover-bins` release** the Dockerfile fetches — building
-it needs the `sp1-helios` guest ELF staged at compile time (`include_bytes!`'d, same discipline as the
-confidential-pool ELFs), which today only happens on the RunPod box. Before `tacit-eth-state` can run for
-real:
-
-1. Build `eth_prove` (RunPod box or CI with the SP1 + `sp1-helios` toolchain staged), confirm its compiled-
-   in `ETH_REFLECTION_VKEY` matches what `reflect.rs` pins, and add it + its sha256 to
-   `worker-relay/prover/bin/SHA256SUMS` and the `curl` loop in `Dockerfile`, bumping `PROVER_RELEASE`.
-2. Verify the gen-pinned constants in `render.yaml`'s `tacit-eth-state` block (`SOURCE_CONSENSUS_RPC`,
-   `SOURCE_EXECUTION_RPC`, `DEPLOY_BLOCK`, `GENESIS_SLOT`, `ETH_CALL_OUTBOX`) are still correct for the
-   CURRENT generation — `scratchpad/MODEB-RECIPE.md` §1 has the derivation.
-3. Deploy with `DRY_RUN=1` first and watch a full cycle's logs against production before removing it —
-   this validates the "is a pending candidate live" trigger and the worker API wiring with zero proving
-   spend (see `src/eth-state-sidecar.js`'s header comment for why that, not `crossOutCount`, is the gate).
-
-`eth_prove` keeps its own cumulative resume state on disk (`ETH_PROVE_OUT_DIR/eth_set_state.json`) —
-this is why the service is a Background Worker with an attached persistent disk, not a Cron Job: a fresh
-container per run would force a full historical `eth_getLogs` rescan every cycle.
-
-### Box-as-fallback
-
-The GPU box (`ops/scripts/*-loop.sh` + `sp1-gpu-server`) still works unchanged and is the
-fallback if the Succinct network is degraded or PROVE runs dry. To fall back: point
-`BITCOIN_PROVE_BIN` / `EXEC_BIN` at box-built local-GPU binaries and unset `SP1_PROVER`
-(prove locally). Run **only one** attester at a time against a given `network` — the on-chain
-digest-chain makes a double-submit revert, but running both wastes gas/PROVE. The reflection
-cursor has a single writer by design (runbook P3).
-
----
-
-## Environment variables
-
-Set the **secrets** (`sync:false`) in the Render dashboard; the rest are declared in
-`render.yaml`'s shared env group.
-
-### Required (all services)
-| Var | What | Secret? |
+| Var | What | Secret |
 |---|---|---|
-| `WORKER_BASE` | Control-plane worker base URL (serves `/reflection/*`, `/confidential/*`, `/prover-health`) | no |
-| `BOX_TOKEN` | Bearer token = worker `CONFIDENTIAL_BOX_TOKEN` / `DEBUG_TOKEN` (the box routes are token-gated) | **yes** |
-| `RPC_URL` | Ethereum execution RPC for the relay's own tx | **yes** |
-| `RELAY_KEY` | Funded signer — pays gas for attest + settle + replenish, collects fees | **yes** |
-| `NETWORK_PRIVATE_KEY` | Funded Succinct network-prover key (spends PROVE) | **yes** |
+| `WORKER_BASE` | API base URL (`/reflection/*`, `/confidential/*`, `/prover-health`) | no |
+| `BOX_TOKEN` | Bearer token for the token-gated prover routes | yes |
+| `PROVER_HEARTBEAT_TOKEN` | Must equal the API's value, or `/prover-health` shows the services down | yes |
+| `RPC_URL` | Ethereum RPC for reads and maintenance transactions | yes |
+| `RELAY_KEY` | Relayer key: pays gas, receives relay fees, funds the Succinct deposit | yes |
+| `NETWORK_PRIVATE_KEY` | Succinct network prover key | yes |
+| `ALERT_WEBHOOK_URL` | Optional incoming webhook for the monitor | yes |
 
-### Addresses (defaulted to mainnet; override for Sepolia rehearsal)
-`POOL_ADDR`, `VAPP_DEPOSIT_ADDR`, `PROVE_TOKEN_ADDR`, `ZQUOTER_ADDR`, `ZROUTER_ADDR`,
-`CHAIN_ID`, `NETWORK` (`mainnet`|`signet`).
+Addresses default to mainnet (`POOL_ADDR`, `ROUTER_ADDR`, `HEADER_RELAY_ADDR`,
+`VAPP_DEPOSIT_ADDR`, `PROVE_TOKEN_ADDR`, `ZQUOTER_ADDR`, `ZROUTER_ADDR`); set `POOL_ADDR`
+explicitly so every service points at the same deployment. The `tacit-eth-state` block pins
+per-deployment constants (`SOURCE_*_RPC`, `ETH_CALL_OUTBOX`, `DEPLOY_BLOCK`, `GENESIS_SLOT`);
+re-pin them for a successor deployment and start with `DRY_RUN=1` for one cycle.
 
-### Succinct / binaries
-`SP1_PROVER=network`, `NETWORK_RPC_URL`, `BITCOIN_PROVE_BIN`, `EXEC_BIN`, `PROVER_OUT`,
-`FIXTURE_DIR`.
+## Relay fee
 
-### Fee economics (`PRICING-RELAY-ECONOMICS.md`)
-`MIN_FLOOR_USD` (0.5), `OPS_MARGIN` (0.12), `BPS_CAP` (30), `PROVE_PRICE_USD`, `ETH_PRICE_USD`.
-
-### Settle
-`SETTLE_KEY` (secret; optional, falls back to `RELAY_KEY`), `SETTLE_POLL_SECS`,
-`SETTLE_JOB_TIMEOUT_SECS`.
-
-### Replenish
-`FEE_ASSETS` (comma list of **underlying** tokens to convert to PROVE; defaulted to
-ETH/USDC/USDT/wstETH in `render.yaml` — TAC is intentionally held, not swept), `SLIPPAGE_BPS`
-(100), `MIN_ETH_SWEEP_WEI` (0.005 ETH). The settle fee is paid to the relay as the underlying
-(native ETH / escrow ERC20 / minted canonical) via the pool's `_payout` — **not** a confidential
-note — so there is no unwrap leg: replenish just swaps underlying → PROVE on zRouter and deposits.
-Native ETH is kept as gas (only the surplus over `ETH_GAS_BUFFER_WEI` is converted); an ERC20
-sweep first tops the gas buffer back up (exact-out) before routing the rest to PROVE.
-
-### Monitor
-`PROVE_BALANCE_FLOOR` (50), `ETH_GAS_BUFFER_WEI` (0.03 ETH), `REFLECTION_LAG_ALERT_BLOCKS` (6),
-`ALERT_WEBHOOK_URL` (secret; optional Slack/Discord-compatible incoming webhook).
-
----
-
-## Dynamic fee (the quote the dapp shows + the settle `feeGate`)
-
-`quoteRelayFee({ op, tradeSizeUsd, liveGasGwei, provePriceUsd })` in `src/replenish.js`
-implements the `PRICING-RELAY-ECONOMICS.md` model:
+`quoteRelayFee` in `src/replenish.js` is the fee the dapp shows and `feeGate` enforces:
 
 ```
-per_op_cost = live_gas_cost(op) + live_PROVE_cost(op)
-fee         = max(MIN_FLOOR, per_op_cost * (1 + OPS_MARGIN))
+per_op_cost   = live_gas_cost(op) + PROVE_cost(op)
+fee           = max(MIN_FLOOR_USD, per_op_cost * (1 + OPS_MARGIN))
 displayed_bps = min(fee / trade_size, BPS_CAP)
 ```
 
-Gas dominates (~100× PROVE), so the fee is really a **dynamic gas-abstraction fee**; measured
-settle gas per op-type is baked into `OP_GAS` (wrap 593k, swap 569k, LP 749k, unwrap 323k).
-`belowFloor` flags tiny trades where self-settle is the honest option.
-
----
+Gas dominates, so this is mostly a gas-abstraction fee. Measured settle gas per op type is in
+`OP_GAS` (`src/lib/config.js`). By default the gate holds a fee to the op's marginal cost;
+`RELAY_REQUIRE_PRICED_FEE=1` refuses ops that carry no priced fee. The fee is paid to the relayer
+as the underlying asset by the pool's `_payout`, so replenish swaps it directly; native ETH is
+kept as gas up to `ETH_SWEEP_ABOVE_WEI`.
 
 ## Deploy
 
-```bash
-# 1. Stage the prebuilt prover binaries into prover/bin/ (from ~/tacit-critical-backup or a box):
-scripts/stage-prover-bins.sh            # or: BOX_SSH='-i key -p PORT root@HOST' scripts/stage-prover-bins.sh
-# 2. Push; in Render: New > Blueprint > point at worker-relay/render.yaml.
-# 3. Set the sync:false secrets in the dashboard (RPC_URL, RELAY_KEY, NETWORK_PRIVATE_KEY, BOX_TOKEN).
-# 4. Fund the deployer key (0x68575B): ETH gas + PROVE (replenish cron keeps them topped from fees).
-```
+1. In Render: New → Blueprint → `worker-relay/render.yaml`.
+2. Set the `sync: false` secrets in the dashboard.
+3. Fund the relayer key with ETH for gas and PROVE for the Succinct deposit.
 
-### Cost / run mode (Render)
-All four services default to **Cron Jobs** (`type: cron` in render.yaml) — billed for *runtime only*,
-so the whole stack runs for **~$5–10/mo**. `RUN_MODE=cron` makes reflection/settle drain pending work
-then exit (bounded by `CRON_MAX_CYCLES`/`CRON_BUDGET_SECS`):
-- **reflection** every 5 min — keeps pace with Bitcoin's ~10-min blocks (lag ≪ the ~60-min maturity window)
-- **settle** every 2 min — near-instant settle without a paid always-on worker
-- **replenish** 30 min · **monitor** 5 min
+Services have `autoDeploy: false`; deploy from the dashboard.
 
-For **zero-lag settle UX**, flip `tacit-settle` back to `type: worker` (drop `RUN_MODE`) — one Starter
-worker ≈ $7/mo. Render's free tier is Web-Services-only (they spin down on idle), which would break the
-always-on path — hence cron/worker, not free.
+Local run:
 
-Local smoke:
 ```bash
 cd worker-relay && npm install
 WORKER_BASE=… BOX_TOKEN=… RPC_URL=… RELAY_KEY=… NETWORK_PRIVATE_KEY=… node src/reflection-folder.js
 ```
-
----
-
-## Open TODOs — status (verified against live contracts 2026-07-18)
-
-- ✅ **zQuoter / zRouter ABI — RESOLVED.** Both verified on-chain. `chain.js` now uses the real
-  `zQuoter.buildBestSwap(to, exactOut, tokenIn, tokenOut, amount, slippageBps, deadline)` →
-  `(best, callData, amountLimit, msgValue)`, and `replenish.js` fires the returned `callData`
-  straight at zRouter (`sendTransaction({to: zRouter, data: callData, value: msgValue})`). zRouter
-  also exposes `swapV4(...)` (direct V4) + `execute(target,value,data)` + `multicall(bytes[])`.
-- ✅ **Pool digest read — RESOLVED (was a latent bug).** `knownReflectionDigest` is an INTERNAL
-  var (no getter — calls revert). `chain.js` now reads it by **storage slot 80** via
-  `readReflectionDigest()`; `reflection-folder.js` uses it for idempotency.
-- ✅ **`exec` op dispatch — RESOLVED.** It's **one binary per op-type** (`exec-wrap`, `exec-lp`,
-  `exec-swap`, `exec-unwrap` — each built from its own `exec-<op>.rs` copied to `main.rs`), NOT a
-  single `exec` dispatching via `OP_TYPE`. Ship all per-op binaries; `prover.js` picks by op.
-- ⏳ **attested-height slot** — `lastRelayHeight` is also an internal var; pin its storage slot
-  from the compiled layout for the lag monitor (or use the control-plane `/prover-health` lag field).
-- ⏳ **vApp deposited-balance read** — the vApp (`0x5Ad5Bc4B`) is an **ERC1967 proxy**; the balance
-  getter lives on the implementation. Read via the impl ABI, or rely on the prover's
-  `ResourceExhausted` error (which reports `balance X for cost Y`) + the replenish top-up cadence.
-- ⏳ **`op.feeUsd` / `op.tradeSizeUsd`** on the job payload for a hard `feeGate` (dapp-side; until
-  wired the relay accepts unpriced jobs). Uses `quoteRelayFee()` in `replenish.js`.
-- ✅ **Fee-asset unwrap leg — RESOLVED (not needed).** The settle fee is paid to the relay as the
-  underlying (native ETH via `forceSafeTransferETH`, escrow ERC20, or a minted canonical) by the
-  pool's `_payout` — never a confidential note — so there is nothing to unwrap. Replenish sweeps the
-  underlying (ETH/USDC/USDT/wstETH) straight to PROVE with one-time max approvals; native ETH is kept
-  as gas and only its surplus is converted. `exitAndExecute` on the router is the *user* exit-and-call
-  primitive, unrelated to the relay's fee sweep.

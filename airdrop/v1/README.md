@@ -1,7 +1,6 @@
 # TAC airdrop: inputs, method and how to check the root
 
-This is the Ethereum-side distribution for the confidential pool and the formal v1 launch. It is separate from the earlier Bitcoin-side
-airdrop described in [`../README.md`](../README.md), and is not a continuation of it.
+The Ethereum-side TAC distribution. It is separate from the Bitcoin-side distribution in [`../README.md`](../README.md).
 
 A one-time distribution of 999,999 TAC (the public ERC20) to holders of seven tokens, through
 [`TacAirdrop`](../../contracts/src/TacAirdrop.sol). The contract, its roles and the claim paths are described in
@@ -44,9 +43,10 @@ to the total exactly.
 
 - Tokens 2, 3, 5, 6 and 7 were rebuilt from chain data at block 26028062 (2026-09-21 19:47:35 UTC). Each was checked against the
   token's total supply where it has one, and every listed balance was checked against `balanceOf`.
-- Tokens 1 and 4 come from the public holder exports, with every balance re-read from the chain (`balanceOf`, latest block) a little
-  later that day. Their totals equal the tokens' total supply.
-- The holder export for token 2 lagged the chain (the token's balances live in a multi-token contract), so it was not used.
+- Tokens 1 and 4 come from the public holder exports, with every balance re-read from the chain (`balanceOf`) the same day.
+  Their totals equal the tokens' total supply.
+- Token 2 is rebuilt from chain data rather than its holder export, which did not match the chain (its balances live in a
+  multi-token contract).
 
 ## Rebuild the root
 

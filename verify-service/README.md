@@ -1,49 +1,52 @@
 # tacit-verify-service
 
 Standalone HTTP service that runs `snarkjs.zKey.verifyFromR1cs` on a ceremony
-contribution. Exists because Cloudflare Workers can't fit the 288 MB pot18
-ptau in their 128 MB memory budget, so the chain's "is this contribution a
-valid extension of (r1cs, ptau)?" check has to live outside the worker.
+contribution: is this zkey a valid extension of (r1cs, ptau)? It runs outside
+the API because the check holds the 288 MB pot18 ptau plus the zkey in memory,
+and takes up to several minutes for the heaviest circuit.
 
-When wired up via `VERIFY_SERVICE_URL` in the worker's environment, every
-`/contribute` call blocks on a verify result before advancing `state.head_cid`.
-If the verify service is unreachable, the worker soft-fails open by default
-(set `VERIFY_SERVICE_FAIL_CLOSED=1` to flip).
+## How the API uses it
+
+When `VERIFY_SERVICE_URL` is set, the API's scheduled tick
+(`runCeremonyHeadVerifyPass` in `worker/src/index.js`) asks this service
+whether each ceremony's new head extends the last verified head. On `ok` it
+advances the verified marker; on a structural failure it rolls the head back to
+the verified marker so the next contributor extends a known-good head. Requests
+use `{async: true}`, so the first tick starts the verify and later ticks read
+the cached result. `/contribute` never waits on it. With `VERIFY_SERVICE_URL`
+unset the sweep is skipped.
+
+Trust role: the service holds no keys. Every contribution stays independently
+verifiable from its pinned r1cs, ptau and zkey CIDs; this service only automates
+that check for the API.
 
 ## Endpoint
 
 ```
 POST /verify
-Authorization: Bearer $VERIFY_SERVICE_TOKEN   (if AUTH_TOKEN env set)
+Authorization: Bearer $VERIFY_SERVICE_TOKEN   (if VERIFY_SERVICE_TOKEN is set)
 Content-Type: application/json
 
-{ "r1cs_cid": "bafy…", "ptau_cid": "bafy…", "new_cid": "bafy…" }
+{ "r1cs_cid": "bafy…", "ptau_cid": "bafy…", "new_cid": "bafy…", "async": true }
 ```
 
-Response: `{ ok: true, ms: 12345 }` or `{ ok: false, error: "...", ms: 12345 }`.
-
-Also exposes `GET /healthz` for the host's liveness probe.
+Response: `{ ok: true, ms }`, `{ ok: false, error, ms }`, or `{ pending: true }`
+while an async verify runs. Verifies run one at a time. `GET /healthz` is the
+liveness probe.
 
 ## Hosting
 
-Needs ≥ 1 GB RAM (288 MB ptau + 90 MB swap_batch zkey + node overhead).
+Needs at least 1 GB RAM (288 MB ptau + zkey + Node overhead). The repo's root
+`render.yaml` deploys it as `tacit-verify` (Docker, this directory) and
+generates `VERIFY_SERVICE_TOKEN`. Any Docker host works:
 
-- **Render** (basic plan, $25/mo) — `docker build` and deploy from this dir,
-  set env vars in the dashboard.
-- **Fly.io** (shared 1x with 1 GB volume, ~$3/mo) — `fly launch` from this dir.
-- **Any VM with Docker** — `docker build -t verify . && docker run -p 8080:8080
-  -e VERIFY_SERVICE_TOKEN=$(head -c 32 /dev/urandom | base64) verify`.
-
-Then set on the worker:
-
-```
-wrangler secret put VERIFY_SERVICE_URL    # e.g. https://verify.tacit.finance
-wrangler secret put VERIFY_SERVICE_TOKEN  # same value as above
+```sh
+docker build -t verify . && docker run -p 8080:8080 \
+  -e VERIFY_SERVICE_TOKEN=$(head -c 32 /dev/urandom | base64) verify
 ```
 
-When `VERIFY_SERVICE_URL` is unset the worker skips the verify step entirely
-(same behaviour as before this service existed) — deploying this code is a
-no-op until the env var is configured.
+Then set `VERIFY_SERVICE_URL` and `VERIFY_SERVICE_TOKEN` (same value) in the
+API's environment.
 
 ## Environment variables
 
@@ -51,6 +54,6 @@ no-op until the env var is configured.
 |---|---|---|
 | `PORT` | `8080` | HTTP listen port |
 | `VERIFY_SERVICE_TOKEN` | (none) | If set, requires `Authorization: Bearer <token>` |
-| `MAX_BYTES` | 157 MB | Per-blob cap before refusing to download |
-| `FETCH_TIMEOUT_MS` | 60000 | Per-gateway HTTP timeout |
-| `IPFS_GATEWAYS` | wrappr,ipfs.io,w3s.link,dweb.link | Comma-separated, tried in order |
+| `MAX_BYTES` | 500 MB | Per-blob cap before refusing to download |
+| `FETCH_TIMEOUT_MS` | 180000 | Per-gateway HTTP timeout |
+| `IPFS_GATEWAYS` | wrappr, ipfs.io, w3s.link, dweb.link | Comma-separated, tried in order |

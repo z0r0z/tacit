@@ -3,9 +3,8 @@
 The three SP1 guest programs behind the mainnet pool are pinned by ELF sha256 and verifying key. This page explains
 what is pinned, how to rebuild each ELF byte for byte, and how to check the result against the chain. The pin file
 is [`contracts/sp1/confidential/elf-vkey-pin.json`](../contracts/sp1/confidential/elf-vkey-pin.json); the recipe
-files are in [`contracts/sp1/reproducible/`](../contracts/sp1/reproducible/).
-
-Last verified: 2026-09-21 (see [What was verified](#what-was-verified)).
+files are in [`contracts/sp1/reproducible/`](../contracts/sp1/reproducible/). The guests themselves are
+described in [SPEC §2.9](../SPEC.md#29-sp1-programs).
 
 ## What is pinned
 
@@ -51,7 +50,7 @@ Fingerprints of the toolchain files used (SHA-256): `cargo-prove` `c6cc580744877
 `succinct` `bin/rustc` `2e952f92635ee0388b5eac9b06f2fec7b23a620b0a7dbcceab576caeb89cb160`;
 `succinct` `lib/librustc_driver-6d6de6fbd9068a63.so` `db572b411a9458e154fcc59bd900a0280fa0b4b1b8659945efc54cec126b5136`.
 
-How to obtain it (each step below was run from an empty machine state on 2026-09-21):
+How to obtain it, from an empty machine state:
 
 1. Install rustup with the host toolchain the builds used:
    `curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1 --no-modify-path`.
@@ -66,8 +65,8 @@ How to obtain it (each step below was run from an empty machine state on 2026-09
    `1.94.0-dev` toolchain, which it links into rustup as `succinct` (rustup must already be installed).
    `cargo prove --version` and `rustc +succinct -V` must print the strings above.
 3. Check the toolchain archive. `~/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz` has SHA-256
-   `12c94435d41bfe4e20131bbcce40b35abd32270ad792befc653af4e3fabc192f`; it was identical in two downloads ten days
-   apart, and its `bin/rustc` and `lib/librustc_driver-*.so` are the fingerprinted files above.
+   `12c94435d41bfe4e20131bbcce40b35abd32270ad792befc653af4e3fabc192f`, and its `bin/rustc` and
+   `lib/librustc_driver-*.so` are the fingerprinted files above.
 
 ## Build paths matter
 
@@ -80,18 +79,17 @@ Two inputs are embedded in the ELF bytes and are part of the recipe:
 - **Source tree path (eth-reflection only).** The eth guest's own sources and its path dependency
   `../confidential/cxfer-core` are recorded by absolute path, so the tree must sit at
   `/workspace/tacit/contracts/sp1/eth-reflection` (with `/workspace/tacit/contracts/sp1/confidential` beside it).
-  Building it from another directory produced a different ELF (2326848 bytes instead of 2327032). The settle and
-  reflection ELFs record their own crates by workspace-relative path; both were rebuilt byte for byte from a
-  different directory, so the tree location does not affect them. Using `/workspace/tacit` for all three is still
-  the simplest rule.
+  From another directory the ELF differs (2326848 bytes instead of 2327032). The settle and reflection ELFs record
+  their own crates by workspace-relative path, so the tree location does not affect them. Using `/workspace/tacit`
+  for all three is the simplest rule.
 
 `/workspace` is normally not something you want to create on a development machine, so build inside a container or
 chroot in which `/workspace/tacit` and `/workspace/.cargo` exist. Any of these works:
 
 - **Container.** Mount a copy of the tree so `/workspace/tacit` exists, install the toolchain (steps 1 and 2 above)
-  inside it and run the script. Not run for this page; nothing in the script is specific to a chroot.
+  inside it and run the script. Nothing in the script is specific to a chroot, but this path is untested.
 - **Private mount namespace** (`unshare -m`), where permitted.
-- **Bare chroot without `/proc`** (the verified path, on a host where `unshare` and `mount` were denied). Copy the host
+- **Bare chroot without `/proc`** (the tested path, for a host where `unshare` and `mount` are denied). Copy the host
   userland (`/usr`, `/etc`, an empty `/dev/null` file, empty `/root`, `/tmp`, `/workspace`) into a new directory, then
   run rustup-init and sp1up from outside with `HOME=<root>/root RUSTUP_HOME=<root>/workspace/.rustup
   CARGO_HOME=<root>/workspace/.cargo` (both installers refuse to run in a chroot with no `/proc`), and `chroot <root>`
@@ -105,13 +103,13 @@ Rules for the tree you build from:
   commit: the `eth-reflection` manifest at later commits differs (it vendors a dependency), and only the manifest
   and lock file at `4a425f1d` reproduce the pinned eth ELF.
 - Always pass `--locked`. The build must not modify `Cargo.lock`.
-- Network access is needed on a fresh Cargo home (git dependencies and crates.io). A completely empty Cargo home was
-  verified to resolve the locked revisions to the pinned bytes; the fetch is about 220 MB.
+- Network access is needed on a fresh Cargo home (git dependencies and crates.io). An empty Cargo home resolves the
+  locked revisions to the pinned bytes; the fetch is about 220 MB.
 
 ## The eth-reflection comment line
 
-The pinned eth ELF was built from a `src/main.rs` that is exactly one comment line shorter than the file committed
-at `4a425f1d`. Code is identical; only panic-location line numbers in the binary differ, which is enough to change
+The pinned eth ELF corresponds to a `src/main.rs` exactly one comment line shorter than the file committed at
+`4a425f1d`. The code is identical; only panic-location line numbers in the binary differ, which is enough to change
 its bytes. To reproduce the pinned binary, apply
 [`eth-main-rs-original-build.patch`](../contracts/sp1/reproducible/eth-main-rs-original-build.patch) on top of
 `4a425f1d` from the tree root:
@@ -174,26 +172,15 @@ three ELFs build in about 4 minutes on 16 cores from an empty Cargo home.
 
 ## What was verified
 
-On 2026-09-21, on the build host described under [Toolchain](#toolchain):
-
-- All three ELFs were rebuilt from their source commits and matched the pinned sha256 exactly (settle
-  `f7bc327d...`, reflection `55b5ccfd...`, eth reflection `5fb193b5...`), with `--locked` and an unchanged
-  `Cargo.lock`.
-- `cargo prove vkey --elf` on each rebuilt ELF printed the verifying keys in the table.
-- The settle and relay keys each occur once in the runtime bytecode of the pool at the address above, read from a
-  public RPC.
-- The eth ELF was reproduced only with the comment-line patch and only at `/workspace/tacit`; without the patch or
-  at another path the result differed.
-
-The same day the whole recipe was run again as a newcomer would: a new bare chroot (no `/proc`), rustup 1.98.1 and
-`sp1up --version v6.2.3` installed into it, a fresh `git clone` of the public repository, empty Cargo homes fetched
-online, then `bash contracts/sp1/reproducible/build-in-chroot.sh` with no arguments. All three ELFs and vkeys matched
-and the on-chain occurrence check printed 1 for both keys.
+On the build host described under [Toolchain](#toolchain), from a fresh `git clone`, a new bare chroot with rustup
+1.98.1 and `sp1up --version v6.2.3`, and empty Cargo homes, `bash contracts/sp1/reproducible/build-in-chroot.sh`
+rebuilt all three ELFs to the pinned sha256 (`--locked`, `Cargo.lock` unchanged), `cargo prove vkey --elf` printed
+the keys in the table, and the settle and relay keys each occur once in the pool's runtime bytecode read from a
+public RPC. The eth ELF reproduces only with the comment-line patch and only at `/workspace/tacit`.
 
 Not verified:
 
-- A Docker build (`cargo prove build --docker`) was not run; it uses SP1's own container and toolchain and is
-  not the recipe here. A general-purpose container with the toolchain installed, in place of the bare chroot, was not
-  run either (it needs no shims).
-- Both runs used the same physical host. A machine with a different CPU, glibc or gcc should not matter (the guest is
-  compiled by the `succinct` toolchain for RISC-V, and host tools only run build scripts) but has not been tried.
+- `cargo prove build --docker`. It uses SP1's own container and toolchain and is not the recipe here. A
+  general-purpose container with the toolchain installed was not run either (it needs no shims).
+- A second physical host. A different CPU, glibc or gcc should not matter (the guest is compiled by the `succinct`
+  toolchain for RISC-V, and host tools only run build scripts) but has not been tried.

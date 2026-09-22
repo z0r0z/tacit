@@ -3,18 +3,22 @@
 Runs a Kubo node that pins `index.html` and serves it over its own HTTP gateway.
 Your gateway, your pin — no third-party content policy, gate, or upgrade wall.
 
+`index.html` is a small loader: it calls `html()` on an ERC-8244 on-chain pointer
+contract over public Ethereum RPCs and replaces itself with the returned
+document. The gateway serves content-addressed bytes only (it does not fetch
+arbitrary CIDs), so the hash check below is all a visitor needs to trust it.
+
 Content CID: `QmWZ3X8yBzZHrN5f5a5rnx4BZASpckck77khCBGKNXLRAb`
 
 ## Deploy on Render
-1. Commit `ipfs-gateway/` and push.
-2. Render dashboard → **New → Web Service** → this repo.
+1. Render dashboard → **New → Web Service** → this repo.
    - Runtime: **Docker**
    - Dockerfile path: `ipfs-gateway/Dockerfile`
    - Docker context: `ipfs-gateway`
    - (Optional) add a 1 GB disk mounted at `/data` so the peer identity and
      pinset survive restarts.
    Or point Render at `ipfs-gateway/render.yaml` (Blueprint) to set all of this.
-3. After it goes live, the dapp is served at:
+2. After it goes live, the loader is served at:
    `https://<your-service>.onrender.com/ipfs/QmWZ3X8yBzZHrN5f5a5rnx4BZASpckck77khCBGKNXLRAb`
    Put your domain in front for a clean URL.
 

@@ -1,8 +1,9 @@
 # Deployed contracts
 
 The `ConfidentialPool`, router, and SP1 guests are **immutable**: no proxy, no upgrade path, no pause switch,
-and no admin key over escrow, exits or payouts. The one privileged call on the pool is `createNextGen`, held by
-the lineage steward; see [Lineage](#lineage).
+and no admin key over escrow, exits or payouts. The pool's three privileged callers (the lineage steward, the
+public AMM and the farm controller) are listed in [SPEC §7.1](../SPEC.md#71-immutable-surface); none can move a
+note or escrow. The steward's one call, `createNextGen`, is described under [Lineage](#lineage).
 
 The **`CollateralEngine`** (CDP/cUSD and cBTC escrow) is governed. Its owner is the ops multisig, which can
 set the oracle and CDP parameters, drive cBTC-escrow enforcement and draw on the insurance reserve. Its
@@ -13,10 +14,9 @@ Every contract here is deployed at a deterministic CREATE3 address via
 [CreateX](https://github.com/pcaversaccio/createx), so the same address is reproducible across chains.
 
 The machine-readable source of truth is
-[`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json)
-(written by `DeployV1SuiteCreateX.s.sol` at broadcast); this page is its
-human-readable mirror. The dapp and relay read that manifest through
-`tools/sync-deployment-config.mjs`, never from a copy.
+[`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json), written by
+`DeployV1SuiteCreateX.s.sol` at broadcast. This page mirrors it. The dapp and relay read the manifest through
+`tools/sync-deployment-config.mjs`.
 
 ## Ethereum mainnet (chainId 1)
 
@@ -35,8 +35,7 @@ human-readable mirror. The dapp and relay read that manifest through
 | EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
 | CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
 
-These match `contracts/deployments/1-createx.json` exactly. The manifest is the source of truth: refresh this
-table from it with `tools/sync-deployment-config.mjs`, rather than editing addresses here by hand.
+These match `contracts/deployments/1-createx.json` exactly.
 
 Shared infrastructure outside the CreateX manifest:
 
@@ -46,27 +45,25 @@ Shared infrastructure outside the CreateX manifest:
 
 ### Canonical bridged / pool-minted ERC20s
 
-Each canonical ERC20 is minter-bound to the pool, so its address is unique to
-this suite. Bridged and pool-minted assets are keyed in the pool registry by
-their shared cross-chain id, so a bridged note and an ERC20-wrapped note of the
-same asset are one confidential asset. Native ETH is registered under its
-Bitcoin-side (tETH) link id, `0x3cba71e1…03126f34`, with scale 1e10.
+Each canonical ERC20 is minted only by this pool, so its address is unique to this deployment. Bridged and
+pool-minted assets are keyed by their shared cross-chain id, so a bridged note and an ERC20-wrapped note of the
+same asset are one confidential asset ([SPEC §4.2](../SPEC.md#42-assets-and-units)). Native ETH is registered
+under its Bitcoin-side (tETH) link id, `0x3cba71e1…03126f34`, with scale 1e10.
 
 | Token | Address | Asset id |
 | --- | --- | --- |
-| TAC | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) | `0xf0bbe868…3f94762b` (unchanged) |
-| tacBTC (cBTC) | [`0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696`](https://etherscan.io/address/0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696) | `0x62a20d98…cf0679c8` (unchanged) |
+| TAC | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) | `0xf0bbe868…3f94762b` |
+| tacBTC (cBTC) | [`0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696`](https://etherscan.io/address/0xdf1d99148bEb7a9AFf1d95C49B3d22b7ed90D696) | `0x62a20d98…cf0679c8` |
 | tacUSD (cUSD) | [`0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564`](https://etherscan.io/address/0x23cACFFAc2674514A6d4F6cD420B4cc2aC921564) | `0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d` |
 
-The cUSD asset id is `keccak256("tacit-cdp-debt-v1" ‖ engine)`, so it too is
-specific to this suite's CollateralEngine.
+The cUSD asset id is `keccak256("tacit-cdp-debt-v1" ‖ engine)`, so it is specific to this CollateralEngine.
 
 ### TAC launch farms
 
-A reward program layered on the live pool. It is not part of the CreateX manifest above: the
-`FarmManager` is a controller of the pool (the pool calls into it during a settle), and it pays in **wTAC**, a 1:1
-ERC20 wrapper of TAC that is registered in the pool as an external escrow asset. The dapp reads it from the `farm`
-block of its deployment config. Integrator guide: [`FARMS.md`](./FARMS.md).
+A reward program on the pool, outside the CreateX manifest. The `FarmManager` is a pool controller (the pool
+calls it during a settle, [SPEC §5.8](../SPEC.md#58-farms-and-locks)) and pays in **wTAC**, a 1:1 ERC20 wrapper
+of TAC registered in the pool as an escrow asset. The dapp reads it from the `farm` block of its deployment
+config. Integrator guide: [`FARMS.md`](./FARMS.md).
 
 | Contract | Address |
 | --- | --- |
@@ -94,8 +91,9 @@ Full ids are in [`FARMS.md`](./FARMS.md).
 | Program vkey (settle guest) | `0x006cd47fd23937a6d247696cace28c22d2c6a8280447e6ac45a3571de232d6e3` |
 | Bitcoin relay vkey (reflection guest) | `0x00bb158ba04f18a100f998af0e3b074b5368771f22b8b6e4fd1d66823a074bc5` |
 | Eth reflection vkey (eth-reflection guest) | `0x00ca817124b59c05eb6f2731d48a6d7145dc4aff06510e0ba710a7312f6aea72` |
+| Swap-batch Groth16 key (compiled into both guests) | `batch_vk.bin` SHA-256 `31fd05cc…bbc7c`; final zkey `bafybeieb5hafaix2xwvnmsodby4vkvcpdv4bpt4ny3etza4lpy2rxefwqm` ([ceremony artifacts](./CEREMONY.md)) |
 | Reflection confirmations | 24 |
-| Ops multisig (engine admin, unchanged; also the pool's lineage steward) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
+| Ops multisig (engine admin and the pool's lineage steward) | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` |
 | Deploy block | 25998736 |
 | BTC anchor height (reflection seed) | 967040 |
 
@@ -114,9 +112,8 @@ What [key-only recovery](./RECOVERY.md) reads besides the pool's note events.
 
 The three guest ELFs behind these keys rebuild byte for byte; see [Reproducible builds](./REPRODUCIBLE-BUILDS.md).
 
-The pool is deployed with a **fully-validated Bitcoin light relay** (full
-proof-of-work, mainnet target floor) and the **immutable** SP1 Groth16 verifier
-leaf, not the upgradeable gateway. Its reflection state starts from an attested
+The pool uses a fully validated Bitcoin header relay (full proof-of-work, mainnet target floor) and the
+immutable SP1 Groth16 verifier, not the upgradeable gateway. Its reflection state starts from an attested
 Bitcoin digest at the anchor height above.
 
 ## TAC airdrop (merkle distributor)
@@ -144,12 +141,12 @@ root of its lineage.
   is local to that contract. Every proof is bound to `chainId ‖ pool address`, and canonical tokens are
   addressed by their minter. A look-alike pool deployed by anyone else cannot spend this pool's escrow, mint
   its tokens or write its state; users should transact only with the addresses above.
-- **One funded pool at a time.** A successor accepts value only after its predecessor has drained, so at
-  most one pool per lineage takes new value.
+- **One pool takes new value.** Setting `successor` closes this pool to new value, so at most one pool per
+  lineage accepts it at a time.
 
 ### The lineage steward
 
-The pool has one privileged entry point, `createNextGen(initCode, salt)`. Only the pool's immutable
+The steward's entry point is `createNextGen(initCode, salt)`. Only the pool's immutable
 `LINEAGE_STEWARD` (the ops multisig above) can call it, and only once. It deploys the successor from the
 pool's own address and records it as `successor`, and that is the whole of its authority: the steward
 chooses the successor's code and nothing else. `pool.successor()` reads zero while this pool is active. When

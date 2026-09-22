@@ -184,8 +184,9 @@ integer.
 (`T_DEPOSIT` / `T_WITHDRAW`) still uses them. They are available for any denominated anonymity pool built
 on Tacit.
 
-Artifacts are content-addressed. The dapp pins their CIDs and hashes (`CANONICAL_VK_SHA256`,
-`CANONICAL_AMM_VK_CID`). Circuit sources are in [`dapp/circuits/`](./dapp/circuits/). The mixer
+Artifacts are content-addressed. [`docs/CEREMONY.md`](./docs/CEREMONY.md) lists every zkey, verifying key,
+r1cs and witness generator with its CID and hash, including the finalized `amm_swap_batch` zkey
+(`bafybeieb5haf…xefwqm`) used in production. Circuit sources are in [`dapp/circuits/`](./dapp/circuits/). The mixer
 ceremony's attestations are in [`dapp/circuits/ceremony-bundle/`](./dapp/circuits/ceremony-bundle/).
 
 ### 2.9 SP1 programs
@@ -555,7 +556,8 @@ The fee is bound by one or more of: the kernel's `f·H` term, the opening-proof 
 Bitcoin-note spend signature. A relayer therefore cannot redirect a payout, raise the fee or reuse the
 proof. Deadlines bound into those proofs become the batch deadline.
 
-A fee must be zero or have at most two significant decimal digits. A user who proves locally and calls `settle` needs no relayer. See
+A fee must be zero or have at most two significant decimal digits. A user who proves locally and calls
+`settle` needs no relayer. See
 [`docs/INTEGRATOR-PLAYBOOK.md`](./docs/INTEGRATOR-PLAYBOOK.md).
 
 ### 5.5 AMM
@@ -573,7 +575,9 @@ confidential liquidity therefore share one curve.
 
 ### 5.6 Prover-blind swaps
 
-`OP_SWAP_BLIND` removes the prover's view of trade sizes. Each trader submits:
+`OP_SWAP_BLIND` keeps trade sizes out of the SP1 witness. The batcher that assembles the batch computes
+the clearing and produces the Groth16 proof, so it sees the amounts. The SP1 prover and the chain do not.
+Each trader submits:
 - a BabyJubJub commitment to the input,
 - a cross-curve sigma to its secp256k1 note,
 - a blind opening proof,
@@ -583,8 +587,9 @@ The batch carries one `amm_swap_batch` Groth16 proof (§2.8), which the guest ve
 compiled ceremony key. Conservation per asset is a Schnorr kernel over the blinding excess. Each output
 carries a Bulletproofs+ proof. The op accepts up to 16 intents, on pools without a protocol fee.
 
-The op is enabled in the deployed guest. Relayed swaps settle as `OP_SWAP` until batching and pricing
-for its larger proving cost are wired into the relay.
+The input note is spent whole, and each trader signs its output and a share of the per-asset kernel
+after the clearing is known. The op is enabled in the deployed guest. Swaps settle as `OP_SWAP_ROUTE` or
+`OP_SWAP` until a blind-batch coordinator and pricing for its larger proving cost are wired into the relay.
 
 ### 5.7 CDP, cUSD and cBTC
 
@@ -700,7 +705,7 @@ reflection guest verifies this proof recursively and folds, by membership:
 
 ### 6.6 Liveness
 
-Reflection advances only when someone runs the provers. The reference relay does, and anyone else can.
+Reflection advances only when someone runs the provers. The reference relayer does, and anyone else can.
 Ethereum-homed notes stay spendable regardless. A Bitcoin reorg deeper than the confirmation depth halts
 reflection rather than rewriting it.
 
@@ -834,7 +839,7 @@ Other extension points are live today:
 **Hidden:**
 - amounts on both chains;
 - which note a pool spend consumes;
-- trade sizes in `OP_SWAP_BLIND` and `T_SWAP_BATCH`;
+- trade sizes in `OP_SWAP_BLIND` and `T_SWAP_BATCH`, from the chain and the SP1 prover;
 - recipient identity for stealth receipts.
 
 **Public:**
@@ -844,8 +849,8 @@ Other extension points are live today:
 - AMM reserves;
 - burn amounts.
 
-Whoever proves a batch sees its witness. The sole exception is `OP_SWAP_BLIND`, which hides trade sizes
-from the prover. A user who needs even that hidden proves locally.
+Whoever proves a batch sees its witness. `OP_SWAP_BLIND` keeps trade sizes out of that witness, though
+its batcher sees them. A user who needs a witness kept private proves locally.
 
 **Trusted:**
 - Bitcoin and Ethereum consensus;

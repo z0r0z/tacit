@@ -196,7 +196,8 @@ confidential liquidity share one curve. An `OP_SWAP` batch clears many hidden-ou
 uniform price. Every trader in a batch pays the same price, so no trader can sandwich another. Routes
 compose up to four pools atomically.
 
-**Prover-blind swaps.** Whoever proves an `OP_SWAP` sees its amounts. `OP_SWAP_BLIND` removes that view.
+**Prover-blind swaps.** Whoever proves an `OP_SWAP` sees its amounts. `OP_SWAP_BLIND` keeps them out of
+the SP1 witness: only the batcher that clears the batch and produces its Groth16 proof sees them.
 
 Each trader commits to its input on BabyJubJub, the curve native to BN254. A 169-byte cross-curve sigma
 proves that commitment equals the trader's secp256k1 note. The batch carries one Groth16 proof of the
@@ -273,7 +274,7 @@ deployed by anyone else is an isolated system that cannot touch the lineage.
 | | Hidden | Public |
 |---|---|---|
 | Bitcoin | amounts; stealth recipients | addresses, the transaction graph, asset ids, burn amounts |
-| Pool | amounts; which note a spend consumes; trade sizes in blind batches | the deposit and withdrawal boundary, AMM reserves, CDP amounts |
+| Pool | amounts; which note a spend consumes; blind-batch trade sizes (hidden from the SP1 prover) | the deposit and withdrawal boundary, AMM reserves, CDP amounts |
 | Relay | your key, seed and blindings | the witness of the ops it proves (except blind-swap amounts) |
 
 The pool's anonymity set is every note of an asset, not one denomination. A user who wants no one to see

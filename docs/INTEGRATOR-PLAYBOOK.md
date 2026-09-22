@@ -52,7 +52,7 @@ const { notes: fresh } = await tacit.balance(walletPriv);              // ONE sc
 - Show the expected `shares` before the user confirms. Bond shares are public in the manager's events; the
   identity behind them is not.
 
-Proven live: bond [`0x1db736a7…414c`](https://etherscan.io/tx/0x1db736a739ffdda1f2cffb685a5caba2ebfcfb454094b66e6e9dbf2db67f414c),
+On mainnet: bond [`0x1db736a7…414c`](https://etherscan.io/tx/0x1db736a739ffdda1f2cffb685a5caba2ebfcfb454094b66e6e9dbf2db67f414c),
 its harvest [`0xb9a500a2…5a85`](https://etherscan.io/tx/0xb9a500a2d49e255e3192cac65d51a7f04952049af4a7eadcadc255f8a9b75a85),
 its unbond [`0xaa3f122e…5a07`](https://etherscan.io/tx/0xaa3f122ed9bce60d085af458486a10b8c229a22623e69b40fb91f6a842a45a07)
 (see [`FARMS.md`](./FARMS.md) section 11).
@@ -109,8 +109,7 @@ is what the current code derives from the key alone.
 | cBTC bearer notes (owner 0, empty memo) | blinding derived from the wallet's Bitcoin funding prevout, so it needs the wallet's Bitcoin history (`balance` and `recover` read it from a public Bitcoin index unless you pass `btcHistory`) | no, but the scan must include that channel |
 | Stealth locks received / sent | trial-decrypt of lock memos; the sender's own tail restores its refund key | no |
 | Send-and-unwrap change | read from the settle calldata of the spent parent | no |
-| Farm positions opened under a random receipt key (an explicit `bondFarm` with a generated `ownerPriv`, or an older build) | not derivable | **yes**: keep `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }` |
-| Anything created before a recovery walk existed for it | not derivable | **yes** |
+| Farm positions opened under a random receipt key (an explicit `bondFarm` with a generated `ownerPriv`) | not derivable | **yes**: keep `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }` |
 | A note whose emitted memo differs from the one sealed | the sealed memo | **yes**: the client keeps it locally under the settle's tx hash |
 | The destination blinding of a cross-out | returned by `tacit.crossOut` | **yes**: persist it |
 
@@ -154,8 +153,8 @@ For a wallet, an aggregator or a swap front-end that wants to show a user's TAC 
 
 - **Show the balance first, with no wallet.** `status(address)` (`tacit.tacAirdrop.status` in the dapp) needs only an address. It fetches one proof file, recomputes the proof against the pinned root, and reads the contract in one `eth_call`.
   Show `amountTac` and `claimByISO`, and switch on `reason`. An `error` means "could not check", never "not eligible".
-- **Offer `claim` and `claimTo`. Do not offer shield yet.** The shield route's last step, settling the deposit into a note with a proof, has not been run on mainnet for this contract. The client refuses to plan it
-  unless you pass `allowUnproven: true`; build no shield control until that step is confirmed.
+- **Offer `claim` and `claimTo`, not shield.** The shield route's last step, settling the deposit into a note with a proof, has not been run on mainnet for this contract. The client refuses to plan it
+  unless you pass `allowUnproven: true`.
 - **A sponsor can claim for the user.** `claim` can be submitted by anyone, needs no signature from the recipient, and always pays the recipient's own address, so a wallet or a relayer can cover the gas without being able to
   redirect the TAC. `claimTo` and `claimAndShield` need the recipient's own account. A sponsored `claim` uses up the allocation, so it takes away the user's choice to send it elsewhere or shield it: ask first, or sponsor only
   users who asked for it. Skip allocations too small to be worth the gas (a claim costs about 91k whatever it pays; the smallest is 0.00000001 TAC).
@@ -173,16 +172,16 @@ For a wallet, an aggregator or a swap front-end that wants to show a user's TAC 
 
 | check | how |
 |---|---|
-| **Settle it yourself** | `mode: 'prove'` returns `{ publicValues, proof }`; submit with `tacit.submitSettle({ settlerPriv: walletPriv, publicValues, proof, memos })` from the user's own account. `selfRelay: true` on an op does both steps. Proving on your own hardware (see the ETH guide, section 4) removes the relay from the loop entirely. |
+| **Settle it yourself** | `mode: 'prove'` returns `{ publicValues, proof }`; submit with `tacit.submitSettle({ settlerPriv: walletPriv, publicValues, proof, memos })` from the user's own account. `selfRelay: true` on an op does both steps. Proving the op yourself with its harness (`contracts/sp1/confidential/harnesses/exec-<op>.rs`, `MODE=groth16`) and submitting the result removes the relay from the loop entirely. |
 | **Self-relay by default where it costs nothing** | Ops with no fee leg (`lpBond`, pool founding) should use `selfRelay: true`. Pool founding cannot be relayed at all: it needs `createPairAndSettle`. |
 | **Read chain state yourself** | Pool roots (`currentRoot()`), pair reserves (`pools(bytes32)`), spent flags, the lock set (count and root at storage slots 84 and 85, the `getLockState` callback of `scanLockLeaves`), `successor()`. Use your own RPC, not only a hosted endpoint. |
-| **Check the pinned code** | The pool's `PROGRAM_VKEY` and `BITCOIN_RELAY_VKEY` are immutables in the deployed bytecode. Compare them with [`contracts/sp1/confidential/elf-vkey-pin.json`](../contracts/sp1/confidential/elf-vkey-pin.json) and the anchors in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md). A different pool address is a different generation and all its proofs are bound to it. |
+| **Check the pinned code** | The pool's `PROGRAM_VKEY` and `BITCOIN_RELAY_VKEY` are immutables in the deployed bytecode. Compare them with [`contracts/sp1/confidential/elf-vkey-pin.json`](../contracts/sp1/confidential/elf-vkey-pin.json) and the anchors in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md), and rebuild the ELFs with [`REPRODUCIBLE-BUILDS.md`](./REPRODUCIBLE-BUILDS.md). Every proof is bound to its pool's address, so a different pool is a different deployment. |
 | **Witnesses do not go stale** | The pool never prunes a root it has had, so a membership path stays valid. An op carries one `spendRoot`: take every input's path from one scan. |
 | **A relay's `settled` is not final** | Confirm from the chain: the settle transaction's receipt and events, the note's nullifier, or the recipient's balance for an exit. Tell the user "submitted" until then. |
 | **Know what the relay sees** | Per spent note: commitment, owner, index, path and its nullifier key `nk`; per op: outputs, public legs and the authorizing sigma or kernel; the memos. Never the wallet key, the seed or a note's blinding. It can decline or delay; it cannot redirect an output, raise a fee or spend a note some other way. Before submitting a settle it checks the memos against the proof's memo root. Details in [`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md) section 6. |
 | **Hosted endpoints are conveniences** | `/confidential/index`, `/confidential/quote`, `/confidential/status`, `/farm/program` re-serve or price public state. The index can be rebuilt from logs and calldata (`scanLockLeaves` with `strict: true` checks the result against the pool), and its own `lockSet.verified` says whether it reproduces the pool. Show the user something they can check without you. |
-| **Ops multisig powers** | The multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` owns the collateral engine (oracle and CDP parameters, cBTC escrow enforcement inside an immutable minimum grace window) and is the pool's lineage steward. The steward can create the next generation once; that closes **new** value entry to this generation while every exit, removal, close, claim and refund stays open. It cannot touch escrow, freeze an exit or redirect a payout. See [`DEPLOYMENTS.md`](./DEPLOYMENTS.md). Watch `successor()` and tell users when it is set. |
-| **Farm governance bounds** | Re-weighting is a public 7-day queue, one change per 30 days, at most 25% per change and never to zero; the rate may be kept or raised, never lowered, and the end only moved later; a lock is capped at 90 days and applies to later bonds only; treasury recovery waits until 7 days after the end and only takes unearned surplus. It cannot spend a position. See [`FARMS.md`](./FARMS.md) section 9. |
+| **Ops multisig powers** | The multisig `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` owns the collateral engine (oracle and CDP parameters, cBTC escrow enforcement inside an immutable minimum grace window) and is the pool's lineage steward. The steward can deploy a successor once; that closes this pool to **new** value while every exit, removal, close, claim and refund stays open. It cannot touch escrow, freeze an exit or redirect a payout. See [Lineage](./DEPLOYMENTS.md#lineage). Watch `successor()` and tell users when it is set. |
+| **Farm governance bounds** | Re-weighting is a public 7-day queue, one change per 30 days, at most ±25% per change and never to zero; the rate may be kept or raised, never lowered, and the end only moved later; a lock is capped at 90 days and applies to later bonds only; treasury recovery waits until 7 days after the end and only takes unearned surplus. It cannot spend a position. See [`FARMS.md`](./FARMS.md) section 9. |
 
 ---
 

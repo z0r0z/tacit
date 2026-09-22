@@ -244,7 +244,8 @@ uniform price. Every trader in a batch pays the same price, so no trader can san
 compose up to four pools atomically.
 
 \textbf{Prover-blind swaps.} Whoever proves an \op{OP\_SWAP} sees its amounts. \op{OP\_SWAP\_BLIND}
-removes that view.
+keeps them out of the SP1 witness: only the batcher that clears the batch and produces its Groth16 proof
+sees them.
 
 Each trader commits to its input on BabyJubJub, the curve native to BN254. A 169-byte cross-curve sigma
 proves that commitment equals the trader's secp256k1 note. The batch carries one Groth16 proof of the
@@ -335,7 +336,7 @@ deployed by anyone else is an isolated system that cannot touch the lineage.
  & \textbf{Hidden} & \textbf{Public} \\
 \midrule
 Bitcoin & amounts; stealth recipients & addresses, the transaction graph, asset ids, burn amounts \\
-Pool & amounts; which note a spend consumes; trade sizes in blind batches & the deposit and withdrawal boundary, AMM reserves, CDP amounts \\
+Pool & amounts; which note a spend consumes; blind-batch trade sizes (hidden from the SP1 prover) & the deposit and withdrawal boundary, AMM reserves, CDP amounts \\
 Relay & your key, seed and blindings & the witness of the ops it proves (except blind-swap amounts) \\
 \bottomrule
 \end{tabular}

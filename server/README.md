@@ -1,7 +1,10 @@
 # tacit-api — the worker on plain Node
 
-Runs `worker/src/index.js` unmodified outside Cloudflare. Three shims supply
-the platform pieces the worker expects:
+Runs `worker/src/index.js` unmodified outside Cloudflare. This is how the
+production API runs (`tacit-api` on Render, `https://api.tacit.finance`); its
+trust role is the worker's (see `worker/README.md`): a cache and mailbox that
+cannot change what is valid. Three shims supply the platform pieces the worker
+expects:
 
 | Cloudflare | Here |
 |---|---|
@@ -23,8 +26,8 @@ overrides them. Secrets (`PINATA_JWT`, `FAUCET_PRIV`, `VERIFY_SERVICE_TOKEN`,
 
 Behind Render set `TRUST_PROXY=1` so client IPs derive from
 `X-Forwarded-For`; inbound `CF-Connecting-IP` is always stripped and
-re-derived (`harness.mjs` `clientIpFrom`). The legacy workers.dev
-pass-through proxy authenticates its forwarded client IP with
+re-derived (`harness.mjs` `clientIpFrom`). The workers.dev pass-through
+proxy (`worker/proxy/`) authenticates its forwarded client IP with
 `PROXY_TRUST_KEY`.
 
 Memory: two ceilings bind, and `/healthz` reports both under `mem`. The

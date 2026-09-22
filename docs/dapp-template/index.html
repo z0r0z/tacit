@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tacit — dapp skeleton</title>
-<meta name="description" content="A minimal starting point for a Tacit V1 confidential-pool dapp.">
+<meta name="description" content="A minimal starting point for a Tacit confidential-pool dapp.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23171717'/%3E%3Ctext x='32' y='45' text-anchor='middle' font-family='Georgia,serif' font-weight='700' font-size='40' fill='%23ff9818'%3Et%3C/text%3E%3C/svg%3E">
 <style>
   /* ─── tokens ────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@
   <div class="brand">
     <h1>tacit<span>.</span></h1>
     <span class="tag">confidential pool — dapp skeleton</span>
-    <span class="pill" id="net">mainnet · gen5</span>
+    <span class="pill" id="net">mainnet</span>
   </div>
 </header>
 
@@ -140,8 +140,8 @@
         hand it &mdash; each spent note&rsquo;s commitment, owner, path and nullifier key, and the op&rsquo;s
         outputs &mdash; but never your wallet key or a note&rsquo;s blinding. The op&rsquo;s opening sigma or
         kernel binds its recipient, value, fee and outputs, so the relay can prove what you authorized and
-        earn the fee you set, not build a different op. Self-submitting drops the fee; only proving locally
-        keeps the witness to yourself. Request bodies are capped at 32&nbsp;MiB (<code>413</code> above that).
+        earn the fee you set, not build a different op. Self-submitting drops the fee; only proving the op
+        yourself keeps the witness to yourself. Request bodies are capped at 32&nbsp;MiB (<code>413</code> above that).
       </p>
     </div>
   </section>
@@ -210,7 +210,7 @@
 </section>
 
 <footer>
-  Skeleton for the Tacit V1 confidential pool. Read
+  Skeleton for the Tacit confidential pool. Read
   <a href="../BUILD-A-TACIT-DAPP.md">BUILD-A-TACIT-DAPP.md</a> next; addresses come from
   <a href="../../contracts/deployments/1-createx.json">1-createx.json</a>, which is the source of truth.
 </footer>
@@ -219,8 +219,7 @@
 
 <script type="module">
 // ─────────────────────────────────────────────────────────────────────────
-// Config. Mirrors contracts/deployments/1-createx.json — re-read that file
-// after any redeploy rather than trusting these constants.
+// Config. Mirrors contracts/deployments/1-createx.json, the source of truth.
 // ─────────────────────────────────────────────────────────────────────────
 const CFG = {
   chainId: 1,
@@ -415,9 +414,9 @@ loadFarms();
 //     await tacit.submitWrapSettle({ built: w });
 //   };
 //
-// Read docs/BUILD-A-TACIT-DAPP.md §4-5 before wiring: the two things that
-// bite first are that you cannot transfer directly to a third party (use
-// stealthSend), and that every wrap needs a fresh note index (wrap() picks one; buildWrap() does not). A membership
+// Read docs/BUILD-A-TACIT-DAPP.md sections 4-5 before wiring. You cannot
+// transfer directly to a third party (use stealthSend), and every wrap needs
+// a fresh note index (wrap() picks one; buildWrap() does not). A membership
 // witness stays valid (the pool keeps every root it has had), but rescan
 // before spending so all inputs share one root and spent notes drop out.
 // ─────────────────────────────────────────────────────────────────────────
