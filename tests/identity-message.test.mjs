@@ -59,4 +59,50 @@ ok('evm-wallet derives sha256(signature over the pinned message)', () => {
   assert.equal(got.address, addr);
 });
 
+// A malleated (high-s) signature must be REFUSED, not normalised and not hashed.
+//
+// (r, N-s, v^1) is a valid signature over the same message that recovers the same address, so the
+// recovered-address check cannot see it — but it hashes to different bytes and would derive a different,
+// empty identity. Normalising it here would be worse than refusing: this derivation is shared byte-for-byte
+// with every other Tacit app, so one app normalising and another not would split a high-s signer's funds
+// across two keys. Refusing derives nothing, so it cannot split anything.
+//
+// The pair of assertions below is the contract: a canonical signature is untouched (the test above already
+// pins its exact derivation), and a malleated one yields no key at all.
+{
+  const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const malleate = (sigHex) => {
+    const b = hexToBytes(sigHex.slice(2));
+    let s = 0n;
+    for (let i = 32; i < 64; i++) s = (s << 8n) | BigInt(b[i]);
+    let flipped = N - s;
+    for (let i = 63; i >= 32; i--) { b[i] = Number(flipped & 0xffn); flipped >>= 8n; }
+    b[64] = b[64] === 27 ? 28 : 27; // the recovery bit flips with s
+    return '0x' + bytesToHex(b);
+  };
+  const highSProvider = { request: async (a) => (a.method === 'personal_sign' ? malleate(await provider.request(a)) : provider.request(a)) };
+  globalThis.window = { ethereum: highSProvider, addEventListener() {}, dispatchEvent() {} };
+  const w2 = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+  let threw = null;
+  try { await w2.deriveIdentity(); } catch (e) { threw = e; }
+  ok('a malleated (high-s) signature is refused, not turned into a different identity', () => {
+    assert.ok(threw, 'deriveIdentity must throw on a high-s signature');
+    assert.match(String(threw.message), /high-s|non-canonical/i);
+  });
+  // Sanity: the malleated signature really does recover the same account, i.e. the address check alone
+  // would have let it through. Without this, the test above could pass for the wrong reason.
+  ok('the malleated signature still recovers the same address (so the address check cannot catch it)', () => {
+    const msgHex = '0x' + bytesToHex(enc(identityMessage({ netName: 'mainnet' })));
+    const good = personalSign(msgHex), bad = malleate(good);
+    assert.notEqual(good, bad);
+    const rec = (sig) => {
+      const b = hexToBytes(sig.slice(2));
+      const p = secp.Signature.fromCompact(bytesToHex(b.slice(0, 64))).addRecoveryBit(b[64] - 27)
+        .recoverPublicKey(eip191(identityMessage({ netName: 'mainnet' })));
+      return bytesToHex(keccak_256(p.toRawBytes(false).slice(1)).slice(12));
+    };
+    assert.equal(rec(bad), rec(good));
+  });
+}
+
 console.log(`\n${pass} passed, 0 failed`);

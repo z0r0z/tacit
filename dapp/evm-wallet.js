@@ -8,6 +8,9 @@ import { identityMessage } from './identity-message.js';
 
 const ETH_SIGNED_PREFIX = '\x19Ethereum Signed Message:\n';
 
+// secp256k1 group order — the low-s bound is N/2 (EIP-2).
+const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
 export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes, prfBytesToScalar, netName = 'mainnet' } = {}) {
   const enc = (s) => new TextEncoder().encode(s);
   const concat = (...a) => { const n = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(n); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
@@ -87,6 +90,26 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
 
   // Derive the deterministic tacit1 identity from a personal_sign over the domain message. Returns
   // { priv (hex), pubHex, address, provider } — priv is the tacit1 secret; provider/address stay for funding.
+  // Per-account anchor: the pubkey this account derived last time, so a second derivation that produces a
+  // DIFFERENT key is refused instead of silently opening an empty wallet. tacit.js's own ethWallet.login()
+  // has had this for a while; this module — the one integrators build on — had nothing, so an integrator's
+  // page would just show a zero balance and no explanation.
+  //
+  // It catches a real, narrow case. The `recovered !== address` guard above does not: ECDSA is malleable in
+  // `s`, and (r, N−s, v^1) recovers the SAME address while hashing to different bytes and therefore a
+  // different identity. RFC-6979 wallets always produce low-s, so this only fires for a buggy or hostile
+  // signer — but that is exactly when the user needs to be told, rather than shown an empty wallet.
+  // (The deeper fix is normalising to low-s before hashing. That is deliberately NOT done here: this
+  // derivation is shared byte-for-byte with every other Tacit app, so changing it is a cross-app decision,
+  // not a local one.)
+  const ANCHOR_KEY = 'tacit-eth-identity-anchor:';
+  function readAnchor(address) {
+    try { return localStorage.getItem(ANCHOR_KEY + String(address).toLowerCase()) || null; } catch { return null; }
+  }
+  function writeAnchor(address, pubHex) {
+    try { localStorage.setItem(ANCHOR_KEY + String(address).toLowerCase(), pubHex); } catch { /* best effort */ }
+  }
+
   async function deriveIdentity({ pick } = {}) {
     const { provider, address } = await connect({ pick });
     let code = '0x'; try { code = await provider.request({ method: 'eth_getCode', params: ['0x' + address, 'latest'] }); } catch { /* treat as EOA */ }
@@ -103,9 +126,46 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     // varies by provider, and hashing the raw byte would derive a different identity for the same
     // account depending only on that encoding. No-op for every wallet observed in the wild.
     if (sigBytes[64] === 0 || sigBytes[64] === 1) sigBytes[64] += 27;
+
+// REFUSE a non-canonical (high-s) signature rather than hashing it or "fixing" it.
+//
+// ECDSA is malleable in s: (r, N-s, v^1) is an equally valid signature over the same message and recovers
+// the SAME address, so the `recovered !== addr` check above cannot see it. It hashes to different bytes,
+// though, so it derives a DIFFERENT identity — a silently empty wallet.
+//
+// Normalising to low-s would look like the obvious fix and is the wrong one HERE. This derivation is shared
+// byte-for-byte with every other Tacit app, and that sameness is the whole point of the shared identity
+// message: one wallet, one key, everywhere. If this page normalised and another app did not, a high-s signer
+// would get key X here and key X' there — funds silently split across two identities, which is strictly
+// worse than today's consistently-wrong-but-identical behaviour. Normalising is a decision every Tacit app
+// has to take together, not one this file can take alone.
+//
+// Refusing has neither problem: it changes no existing identity (EIP-2 has required s <= N/2 since 2016 and
+// every mainstream signer enforces it, so a real wallet's signature is always low-s and reaches this check
+// untouched), and it cannot split anyone's funds because it derives nothing at all. A high-s signature here
+// is not a wallet quirk to be accommodated — it means something modified the signature between the wallet
+// and this page, and deriving a private key from bytes bearing that mark is the wrong default.
+    const sHigh = (() => {
+      let s = 0n;
+      for (let i = 32; i < 64; i++) s = (s << 8n) | BigInt(sigBytes[i]);
+      return s > SECP_N / 2n;
+    })();
+    if (sHigh) {
+      sigBytes.fill(0);
+      throw new Error('wallet returned a non-canonical (high-s) signature — refusing to derive an identity '
+        + 'from it. Every compliant signer produces the canonical form, so this usually means the signature '
+        + 'was altered in transit. Reconnect with a wallet you trust and retry; nothing was derived or spent.');
+    }
     const priv = prfBytesToScalar(sha256(sigBytes)); sigBytes.fill(0);
     const privHex = priv instanceof Uint8Array ? bytesToHex(priv) : String(priv);
     const pubHex = bytesToHex(secp.getPublicKey(priv instanceof Uint8Array ? priv : hexToBytes(privHex), true));
+    const prior = readAnchor(address);
+    if (prior && prior !== pubHex) {
+      throw new Error('this account previously derived a different Tacit identity — refusing to open a different, '
+        + 'empty wallet. Your funds are safe on-chain under the original key; reconnect the original wallet/account, '
+        + 'or clear this account\u2019s anchor if you are certain you want the new derivation.');
+    }
+    if (!prior) writeAnchor(address, pubHex);
     return { priv: privHex, pubHex, address, provider, label: providerLabel() };
   }
 

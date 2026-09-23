@@ -1516,6 +1516,36 @@ const ethWallet = {
     // (MetaMask/Rabby/Rainbow/Coinbase Wallet/WalletConnect all already report 27/28), so this
     // changes nothing for any identity derived so far and only protects the 0/1-reporting case.
     if (sigBytes[64] === 0 || sigBytes[64] === 1) sigBytes[64] += 27;
+
+// REFUSE a non-canonical (high-s) signature rather than hashing it or "fixing" it.
+//
+// ECDSA is malleable in s: (r, N-s, v^1) is an equally valid signature over the same message and recovers
+// the SAME address, so the `recovered !== addr` check above cannot see it. It hashes to different bytes,
+// though, so it derives a DIFFERENT identity — a silently empty wallet.
+//
+// Normalising to low-s would look like the obvious fix and is the wrong one HERE. This derivation is shared
+// byte-for-byte with every other Tacit app, and that sameness is the whole point of the shared identity
+// message: one wallet, one key, everywhere. If this page normalised and another app did not, a high-s signer
+// would get key X here and key X' there — funds silently split across two identities, which is strictly
+// worse than today's consistently-wrong-but-identical behaviour. Normalising is a decision every Tacit app
+// has to take together, not one this file can take alone.
+//
+// Refusing has neither problem: it changes no existing identity (EIP-2 has required s <= N/2 since 2016 and
+// every mainstream signer enforces it, so a real wallet's signature is always low-s and reaches this check
+// untouched), and it cannot split anyone's funds because it derives nothing at all. A high-s signature here
+// is not a wallet quirk to be accommodated — it means something modified the signature between the wallet
+// and this page, and deriving a private key from bytes bearing that mark is the wrong default.
+    const sHigh = (() => {
+      let s = 0n;
+      for (let i = 32; i < 64; i++) s = (s << 8n) | BigInt(sigBytes[i]);
+      return s > SECP_N / 2n;
+    })();
+    if (sHigh) {
+      sigBytes.fill(0);
+      throw new Error('wallet returned a non-canonical (high-s) signature — refusing to derive an identity '
+        + 'from it. Every compliant signer produces the canonical form, so this usually means the signature '
+        + 'was altered in transit. Reconnect with a wallet you trust and retry; nothing was derived or spent.');
+    }
     const priv = toValidScalar(sha256(sigBytes));
     sigBytes.fill(0);
     const pub = secp.getPublicKey(priv, true);
@@ -27980,19 +28010,42 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       // The chain binding this deployment's bound leaves commit — keccak(chainid ‖ pool).
       const _xlBinding = _confidentialChainBinding(currentNetworkName());
       const _ZERO_AUTH = '0x' + '00'.repeat(32);
+      // When a UTXO record carries no output script we cannot tell a P2WPKH home from a P2TR one, so the
+      // note's real auth key is unknown. Offer the x-only keys this wallet could plausibly have homed a
+      // note under, so the P2TR nullifier is checked too instead of silently skipped.
+      const _p2trAuthCandidates = (u) => {
+        const out = [];
+        const add = (k) => { const h = k && (typeof k === 'string' ? (k.startsWith('0x') ? k : '0x' + k) : hx(k)); if (h && h.length === 66 && !out.includes(h)) out.push(h); };
+        add(u.stealthXonly); add(u.xonly);
+        try { add(wallet.xonly || (wallet.pub && hx(wallet.pub.slice(1, 33)))); } catch { /* no wallet key shape */ }
+        return out;
+      };
       for (const u of pickedAssetUtxos) {
         const { cx, cy } = _cp.commitXY(u.amount, u.blinding);
         // ν is LEAF-bound, and a Bitcoin-homed note has two possible leaf domains — the unbound
         // btc_note_leaf(asset,Cx,Cy,auth_key) and the deployment-bound
         // btc_note_leaf_bound(asset,Cx,Cy,auth_key,chain_binding) — which hash to DIFFERENT nullifiers.
         // The fast lane records the BOUND form, so both nullifiers are checked.
-        // The auth key is the x-only key of the note's P2TR output, and is ZERO for a note homed at a
-        // non-P2TR output (as the reflection derives it). Holdings records do not yet carry a per-note key,
-        // so an absent one is treated as zero; a P2TR-homed note needs its key recorded for this check to
-        // match its nullifier.
-        const authKey = u.authKey || u.kBtcXonly || _ZERO_AUTH;
-        const nus = [_cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey))];
-        if (_xlBinding) nus.push(_cp.nullifier(_cp.btcNoteLeafBound(assetIdHex, cx, cy, authKey, _xlBinding)));
+        // The auth key is the x-only key of the note's P2TR output, and ZERO for a note homed at a
+        // non-P2TR output (exactly as the reflection derives it, via p2trXonly over the output script).
+        //
+        // `u.authKey`/`u.kBtcXonly` have no producer anywhere in this codebase — nothing has ever set
+        // either — so this used to collapse to the zero key unconditionally. For the P2WPKH-homed notes
+        // this builder usually spends that is the CORRECT key and the check worked. For a P2TR-homed note
+        // it is not, and P2TR-homed is precisely the shape the EVM fast lane consumes: the computed ν then
+        // belongs to no real note, the storage read comes back "unspent", and the guard waves the Bitcoin
+        // spend through while telling the user it checked. Derive the key from the note's own output script
+        // when we have it, and when the home is unknown check BOTH candidates rather than assuming one —
+        // bitcoinSpendBlockedAny blocks if ANY candidate is spent, so extra candidates only add coverage
+        // and can never block a genuinely unspent note.
+        const _spk = u.scriptpubkey || u.scriptPubKey || (u.utxo && (u.utxo.scriptpubkey || u.utxo.scriptPubKey)) || null;
+        const _derived = u.authKey || u.kBtcXonly || (_spk ? _cp.p2trXonly(_spk) : null);
+        const authKeys = _derived ? [_derived] : [_ZERO_AUTH, ..._p2trAuthCandidates(u)];
+        const nus = [];
+        for (const authKey of authKeys) {
+          nus.push(_cp.nullifier(_cp.btcNoteLeaf(assetIdHex, cx, cy, authKey)));
+          if (_xlBinding) nus.push(_cp.nullifier(_cp.btcNoteLeafBound(assetIdHex, cx, cy, authKey, _xlBinding)));
+        }
         const v = await _guard.bitcoinSpendBlockedAny(_ethGetStorageAt, _xlPool, nus);
         if (v.blocked) throw new Error(`cross-lane: an input note is already spent on Ethereum (${v.reason}); it cannot also be spent on Bitcoin`);
       }
@@ -47131,7 +47184,7 @@ function setupBridgeModal() {
       _startAutoWithdrawPipeline(note);
     } catch (e) {
       _bridgePipelineUpdate('error', e.message || String(e));
-      if (depositStatus) { depositStatus.innerHTML += `<br>Auto-mint failed: ${e.message || e}`; _bridgeStatusColor(depositStatus, 'error'); }
+      if (depositStatus) { depositStatus.innerHTML += `<br>Auto-mint failed: ${escapeHtml(String(e.message || e))}`; _bridgeStatusColor(depositStatus, 'error'); }
       connectBtn.textContent = 'Retry mint';
       connectBtn.style.opacity = '1';
       connectBtn.disabled = false;
@@ -47236,7 +47289,7 @@ function setupBridgeModal() {
           return;
         }
         _bridgePipelineUpdate('error', e.message || String(e));
-        if (depositStatus) { depositStatus.innerHTML += `<br>Auto-withdraw failed: ${e.message || e}`; _bridgeStatusColor(depositStatus, 'error'); }
+        if (depositStatus) { depositStatus.innerHTML += `<br>Auto-withdraw failed: ${escapeHtml(String(e.message || e))}`; _bridgeStatusColor(depositStatus, 'error'); }
         connectBtn.textContent = 'Retry withdraw';
         connectBtn.style.opacity = '1';
         connectBtn.disabled = false;
@@ -47421,7 +47474,7 @@ function setupBridgeModal() {
             return;
           }
           _bridgePipelineUpdate('error', e.message || String(e));
-          if (depositStatus) { depositStatus.innerHTML += `<br>Auto-withdraw failed: ${e.message || e}`; _bridgeStatusColor(depositStatus, 'error'); }
+          if (depositStatus) { depositStatus.innerHTML += `<br>Auto-withdraw failed: ${escapeHtml(String(e.message || e))}`; _bridgeStatusColor(depositStatus, 'error'); }
           connectBtn.textContent = 'Retry withdraw';
           connectBtn.style.opacity = '1';
           connectBtn.disabled = false;
