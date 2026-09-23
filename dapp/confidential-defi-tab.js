@@ -9,7 +9,7 @@
 
 import { secp, sha256, keccak_256, hmac } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater, protectOutpoint, listProtectedOutpoints } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater, protectOutpoint, listProtectedOutpoints, listReservedLocks, reservedLockSats } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -231,10 +231,28 @@ function renderPendingCbtcLocks() {
     </div>`).join('');
 }
 
+// Sats sitting in live locks are still the user's Bitcoin, but they are not spendable change: coin selection
+// skips them, so without this line the wallet simply looks smaller than the chain says it is.
+function renderReservedCbtcLocks() {
+  const box = el('cdp-cbtc-reserved');
+  if (!box) return;
+  const locks = listReservedLocks();
+  const total = reservedLockSats();
+  box.innerHTML = !locks.length ? '' : `${locks.length} live cBTC lock${locks.length === 1 ? '' : 's'}`
+    + (total > 0n ? ` — ${esc(total.toString())} sats reserved as collateral` : ' — reserved as collateral')
+    + `, held out of ordinary spending until redeemed.`;
+}
+
 function wireCbtc(wallet, ux) {
   const lockBtn = el('cdp-cbtc-lock-btn');
   const statusEl = el('cdp-cbtc-status');
   renderPendingCbtcLocks();
+  renderReservedCbtcLocks();
+  // The local reservation set is browser-scoped; the pool's cbtcLock* records are not. Refresh from chain so
+  // a second device, a private window or a cleared cache still knows which outputs must never be spent.
+  if (wallet && wallet.priv) {
+    ux.syncCbtcLockReservations(wallet.priv).then(renderReservedCbtcLocks).catch(() => {});
+  }
 
   function makeDefi() {
     const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool: ux.pool, signSchnorr });
@@ -287,6 +305,13 @@ function wireCbtc(wallet, ux) {
         // cBTC lock. Spending one of those is read by the fold as a rug and slashes its escrow, and there is
         // no cure path. cbtc-lock-mint also excludes the dust band on its own; this adds what only the tab
         // knows.
+        // Refreshed from chain first, not read straight from local storage: on a device that has never held
+        // this wallet's locks the cached set is empty, and an empty exclude set is exactly how a new lock
+        // funds itself out of an older one. Better to refuse the lock than to build it half-blind.
+        try { await ux.syncCbtcLockReservations(wallet.priv); } catch (e) {
+          throw new Error(`cannot confirm which of your Bitcoin outputs are live cBTC locks (${(e && e.message) || e}) — `
+            + 'retry once Bitcoin history is reachable rather than funding a lock from an unchecked set.');
+        }
         const lm = makeCbtcLockMint({
           priv: wallet.priv, pool: ux.pool, cbtcAsset: ux.pool.CBTC_ZK_ASSET_ID, hrp,
           excludeOutpoints: listProtectedOutpoints(),
@@ -295,7 +320,7 @@ function wireCbtc(wallet, ux) {
         // Reserve the lock output from ordinary coin selection as soon as it is broadcast. The lock is a plain
         // spendable UTXO, and spending it outside a redemption retires it against its escrow. Registered here
         // rather than at mint time because the broadcast-to-mint window is when other payments are most likely.
-        try { protectOutpoint(res.lockTxid, res.lockVout); } catch {}
+        try { protectOutpoint(res.lockTxid, res.lockVout, res.vBtc); renderReservedCbtcLocks(); } catch {}
         // blinding comes back as a BigInt (deriveCbtcNoteBlinding); JSON.stringify can't serialize that, so
         // store it as hex and convert back to BigInt at mint time.
         addPendingCbtcLock({ ...res, blinding: '0x' + BigInt(res.blinding).toString(16).padStart(64, '0') });
@@ -368,6 +393,7 @@ export async function renderCdpTab(wallet) {
         <button id="cdp-cbtc-lock-btn" class="primary">Lock BTC</button>
       </div>
       <div id="cdp-cbtc-pending" style="margin-top:4px;"></div>
+      <div id="cdp-cbtc-reserved" class="muted" style="font-size:11.5px;margin-top:4px;"></div>
       <div id="cdp-cbtc-status" class="muted field-status" style="margin-top:6px;"></div>
     </div>
 

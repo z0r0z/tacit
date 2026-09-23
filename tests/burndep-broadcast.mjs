@@ -114,4 +114,69 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   ok('completeBurnDepositToEthereum orders submit → confirm → register, never registering before confirmation');
 }
 
-console.log(`\n${n}/7 burndep-broadcast checks passed`);
+// ── 8. a submitted burn is journalled, and a session that lost the register step can finish it ──
+{
+  let list = [];
+  const journal = { load: () => list, save: (l) => { list = l; } };
+  const seen = [];
+  const fetchImpl = async (url, opts) => {
+    if (url.includes('/api/transactions') && opts?.method === 'POST') { seen.push('submit'); return { ok: true, json: async () => ({ success: true }), text: async () => JSON.stringify(({ success: true })) }; }
+    if (url.includes('/reflection/burndep')) { seen.push('register'); return { ok: true, json: async () => ({ ok: true }), text: async () => JSON.stringify(({ ok: true })) }; }
+    return { json: async () => ({}) };
+  };
+  // A page that closes between submit and register: the submit lands, the wait never finishes.
+  const b1 = makeBurnDepositBroadcaster({ workerBase: 'https://api.example', fetchImpl, journal });
+  await assert.rejects(
+    () => b1.completeBurnDepositToEthereum({
+      txHex: 'deadbeef', txid: 'abc', burnTxidDisplay: 'abcdisplay', bundle: { x: 1 },
+      checkConfirmed: async () => false, waitOpts: { timeoutMs: 1, intervalMs: 1, sleep: async () => {} },
+    }),
+    /not confirmed after/,
+    'the wait gives up',
+  );
+  assert.deepStrictEqual(seen, ['submit'], 'the burn was submitted but never registered');
+  const pending = b1.pendingBurnDeposits();
+  assert.strictEqual(pending.length, 1, 'the submitted burn is journalled');
+  assert.strictEqual(pending[0].txid, 'abc', 'the reveal txid is what a resume needs, and it is there');
+  assert.strictEqual(pending[0].stage, 'submitted', 'the record says how far it got');
+
+  // A fresh session reads the same journal and completes it.
+  const b2 = makeBurnDepositBroadcaster({ workerBase: 'https://api.example', fetchImpl, journal });
+  const r = await b2.resumeBurnDeposit({ txid: 'abc', checkConfirmed: async () => true, waitOpts: { intervalMs: 1, sleep: async () => {} } });
+  assert.deepStrictEqual(seen, ['submit', 'register'], 'the resume registers without resubmitting');
+  assert.strictEqual(r.resumed.burnTxidDisplay, 'abcdisplay', 'the resume used the journalled display txid');
+  assert.strictEqual(b2.pendingBurnDeposits().length, 0, 'a registered burn leaves the journal');
+  await assert.rejects(() => b2.resumeBurnDeposit({ txid: 'nope', checkConfirmed: async () => true }), /no pending burn deposit/, 'rejects an unknown txid');
+  ok('a submitted burn is journalled with its reveal txid and resumes to registration in a later session');
+}
+
+// ── 9. a completed burn leaves nothing behind, and resume-all reports per burn ──
+{
+  let list = [];
+  const journal = { load: () => list, save: (l) => { list = l; } };
+  const fetchImpl = async (url, opts) => {
+    if (url.includes('/api/transactions') && opts?.method === 'POST') return { ok: true, json: async () => ({ success: true }), text: async () => JSON.stringify(({ success: true })) };
+    if (url.includes('/reflection/burndep')) return { ok: true, json: async () => ({ ok: true }), text: async () => JSON.stringify(({ ok: true })) };
+    return { json: async () => ({}) };
+  };
+  const b = makeBurnDepositBroadcaster({ workerBase: 'https://api.example', fetchImpl, journal });
+  await b.completeBurnDepositToEthereum({
+    txHex: 'deadbeef', txid: 'abc', burnTxidDisplay: 'abc', bundle: { x: 1 },
+    checkConfirmed: async () => true, waitOpts: { intervalMs: 1, sleep: async () => {} },
+  });
+  assert.strictEqual(b.pendingBurnDeposits().length, 0, 'the happy path clears its own record');
+
+  list = [{ txid: 'a1', burnTxidDisplay: 'a1', bundle: {}, network: 'mainnet', stage: 'submitted' },
+          { txid: 'a2', burnTxidDisplay: 'a2', bundle: {}, network: 'mainnet', stage: 'submitted' }];
+  const res = await b.resumePendingBurnDeposits({
+    checkConfirmed: async (t) => t === 'a1',
+    waitOpts: { timeoutMs: 1, intervalMs: 1, sleep: async () => {} },
+  });
+  assert.strictEqual(res.length, 2, 'reports on every journalled burn');
+  assert.ok(res[0].registered, 'the confirmed one registered');
+  assert.match(res[1].error, /not confirmed after/, 'the unconfirmed one reports why, rather than aborting the sweep');
+  assert.deepStrictEqual(list.map((r) => r.txid), ['a2'], 'the one that could not finish stays pending for next time');
+  ok('a completed burn clears its record; a sweep reports per burn and keeps the unfinished ones');
+}
+
+console.log(`\n${n}/9 burndep-broadcast checks passed`);

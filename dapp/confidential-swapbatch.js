@@ -36,6 +36,27 @@ export function swapBatchIntentMsg(a) {
     hu8(a.traderPubkey), u16leB(spkB(a.refundSpk).length), spkB(a.refundSpk),
   ]));
 }
+// Builder-side gate on batch size. A T_SWAP_BATCH envelope carries the batch's NET reserve deltas (δa, δb)
+// and the net blinding excesses (R_net_a, R_net_b) in cleartext — that is how the fold checks conservation
+// without opening anything. With more than one intent those nets say nothing about any single trade; with
+// exactly one they ARE that trade: δa and δb are the trader's own amount in and amount out, readable off the
+// Bitcoin transaction by anyone, and the one intent's blinding relation is pinned by R_net alone.
+//
+// Nothing is stealable — a Bitcoin-homed note's authority is its Taproot key, never its blinding — so the
+// fold accepts n_intents == 1 and MUST keep accepting it (it is consensus). This is a builder refusing to
+// hand a trader a batch that quietly isn't confidential. Pass `acknowledgeSingleIntent` where a transparent
+// swap is what was actually asked for.
+export function assertBatchAnonymitySet({ nIntents, acknowledgeSingleIntent = false } = {}) {
+  const n = Number(nIntents);
+  if (!Number.isInteger(n) || n < 1 || n > N_MAX) throw new Error(`swap batch: n_intents must be 1..${N_MAX}`);
+  if (n === 1 && !acknowledgeSingleIntent) {
+    throw new Error('swap batch: a single-intent batch is not confidential — the envelope\'s cleartext net '
+      + 'reserve deltas are that trader\'s exact amount in and amount out. Batch it with other intents, or '
+      + 'pass acknowledgeSingleIntent to trade transparently on purpose.');
+  }
+  return n;
+}
+
 const batchIntentSigOk = (sigHex, msg32, traderPubkeyHex) => {
   const pk = hu8(traderPubkeyHex); if (pk.length !== 33) return false;
   try { return verifySchnorr(hu8(sigHex), msg32, pk.slice(1, 33)); } catch { return false; }

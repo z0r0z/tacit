@@ -15,10 +15,37 @@
 // registration, so integrators don't have to hand-roll either.
 
 const SLIPSTREAM_BASE = 'https://slipstream.mara.com';
+const JOURNAL_KEY = 'tacit-burndep-pending-v1';
 
-export function makeBurnDepositBroadcaster({ workerBase, fetchImpl, slipstreamBase = SLIPSTREAM_BASE } = {}) {
+// A submitted burn survives the page that submitted it: the tx is in MARA's queue and the guest re-verifies
+// the burn from Bitcoin regardless, so nothing is lost by closing the tab. What IS lost without a journal is
+// the caller's knowledge that it happened — which reveal txid to watch, and whether its provenance bundle was
+// ever handed to the worker. Registration is a liveness convenience, not a deadline: an unregistered burn
+// stays pending and folds in any later batch. This is so a resumed session can say which, not so value is
+// saved.
+function defaultJournal() {
+  const ls = (() => { try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch { return null; } })();
+  let mem = [];
+  return {
+    load() { if (!ls) return mem; try { const r = JSON.parse(ls.getItem(JOURNAL_KEY) || '[]'); return Array.isArray(r) ? r : []; } catch { return []; } },
+    save(list) { mem = list; if (ls) { try { ls.setItem(JOURNAL_KEY, JSON.stringify(list)); } catch {} } },
+  };
+}
+
+export function makeBurnDepositBroadcaster({ workerBase, fetchImpl, slipstreamBase = SLIPSTREAM_BASE, journal = null } = {}) {
   const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
   if (!f) throw new Error('burndep-broadcast: no fetch implementation');
+  const store = journal || defaultJournal();
+
+  /** Burns submitted from this client that have not been registered yet, oldest first. */
+  function pendingBurnDeposits() { return store.load(); }
+  function journalPut(rec) {
+    const list = store.load().filter((r) => r.txid !== rec.txid);
+    list.push(rec);
+    store.save(list);
+    return rec;
+  }
+  function journalDrop(txid) { store.save(store.load().filter((r) => r.txid !== txid)); }
 
   // A resubmission of the same tx is acknowledged as success and keeps its queue position (MARA's own
   // docs), so this is safe to call again from a caller that lost track of whether an earlier call landed.
@@ -85,13 +112,41 @@ export function makeBurnDepositBroadcaster({ workerBase, fetchImpl, slipstreamBa
   }
 
   // Submit → wait for real confirmation → register, in that order. Matches the waitOpts/onUpdate
-  // convention crossout-broadcast.js uses for the reverse direction.
+  // convention crossout-broadcast.js uses for the reverse direction. The journal entry is written the moment
+  // the submit is acknowledged, so a caller that never reaches the register step can pick the burn up again.
   async function completeBurnDepositToEthereum({ txHex, txid, burnTxidDisplay, bundle, network = 'mainnet', checkConfirmed, waitOpts } = {}) {
     const submitResult = await submitToSlipstream(txHex);
+    journalPut({ txid, txHex, burnTxidDisplay: burnTxidDisplay || txid, bundle, network, stage: 'submitted', at: Date.now() });
     await waitForBurnDepositMined({ txid, checkConfirmed, ...waitOpts });
+    journalPut({ txid, txHex, burnTxidDisplay: burnTxidDisplay || txid, bundle, network, stage: 'confirmed', at: Date.now() });
     const registered = await registerBurnDeposit({ burnTxidDisplay: burnTxidDisplay || txid, bundle, network });
+    journalDrop(txid);
     return { submitResult, registered };
   }
 
-  return { submitToSlipstream, waitForBurnDepositMined, registerBurnDeposit, completeBurnDepositToEthereum };
+  // Finish a journalled burn from wherever it stopped. Resubmission is a no-op for a tx MARA already holds
+  // (it keeps its queue position), so a record whose submit outcome is unknown is simply re-sent.
+  async function resumeBurnDeposit({ txid, checkConfirmed, waitOpts, resubmit = false } = {}) {
+    const rec = store.load().find((r) => r.txid === txid);
+    if (!rec) throw new Error(`burndep-broadcast: no pending burn deposit for ${txid}`);
+    if (resubmit && rec.txHex) await submitToSlipstream(rec.txHex);
+    await waitForBurnDepositMined({ txid: rec.txid, checkConfirmed, ...waitOpts });
+    const registered = await registerBurnDeposit({ burnTxidDisplay: rec.burnTxidDisplay, bundle: rec.bundle, network: rec.network });
+    journalDrop(rec.txid);
+    return { resumed: rec, registered };
+  }
+
+  // Every journalled burn, one at a time. One failure doesn't abandon the rest — the record stays, so the
+  // next resume tries it again.
+  async function resumePendingBurnDeposits({ checkConfirmed, waitOpts, resubmit = false } = {}) {
+    const out = [];
+    for (const rec of store.load()) {
+      try { out.push({ txid: rec.txid, ...(await resumeBurnDeposit({ txid: rec.txid, checkConfirmed, waitOpts, resubmit })) }); }
+      catch (e) { out.push({ txid: rec.txid, error: String((e && e.message) || e) }); }
+    }
+    return out;
+  }
+
+  return { submitToSlipstream, waitForBurnDepositMined, registerBurnDeposit, completeBurnDepositToEthereum,
+    pendingBurnDeposits, resumeBurnDeposit, resumePendingBurnDeposits };
 }

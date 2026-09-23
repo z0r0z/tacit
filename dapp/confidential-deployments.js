@@ -463,9 +463,14 @@ export async function copyToClipboard(text, btn) {
 // such outputs out of coin selection, and is consumed by tacit.js's getUtxos filter and by cbtc-lock-mint's
 // own funding guard.
 //
-// An outpoint is registered when its lock is broadcast and released only once the lock is genuinely retired
-// (a proven redemption, or a spend that already happened). It is not released on mint, which is why it is a
-// separate store from `tacit-cbtc-pending-locks-v1`, whose lifecycle ends at mint.
+// The AUTHORITATIVE record is the pool's own: cbtcLockVBtc[outpoint] is the lock's value, and
+// cbtcLockSpent / cbtcLockRedeemed are its two terminal states. `syncProtectedOutpoints` rebuilds the set
+// from those reads, so a reload, a second device or a private window converges on the same reservations
+// instead of starting empty. Local storage is a cache in front of that — it also carries the window between
+// broadcasting a lock and the reflection recording it, when no chain record exists to rebuild from.
+//
+// A lock is released only in a state the chain itself reports as terminal: redeemed, or already spent. That
+// is also where redemption unreserves — there is no separate client-side hand-off to miss.
 //
 // WHAT THIS ACTUALLY REACHES — read before relying on it.
 //
@@ -479,35 +484,74 @@ export async function copyToClipboard(text, btn) {
 // other wallet restored from that seed sees an ordinary spendable UTXO and may sweep it — which the fold
 // reads as a rug and which slashes the escrow with no cure path. No client-side registry can fix that; it is
 // a property of a lock being a plain output rather than a covenant.
-//
-// Persisted across reloads, in this browser only. If local storage is cleared — or the user opens a second
-// device, or a private window — the set is empty and the wallet falls back to unprotected selection. So this
-// is a safeguard, never something correctness depends on.
 const _PROTECTED_OUTPOINTS_KEY = 'tacit-protected-outpoints-v1';
+// outpoint key -> reserved sats as a decimal string ('0' where the value isn't known yet, which is every
+// entry written before the pool has recorded the lock).
 let _protectedOutpoints = null;
+const _outpointKey = (txid, vout) => `${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`;
 function _loadProtectedOutpoints() {
   if (_protectedOutpoints) return _protectedOutpoints;
+  _protectedOutpoints = new Map();
   try {
-    const raw = JSON.parse(localStorage.getItem(_PROTECTED_OUTPOINTS_KEY) || '[]');
-    _protectedOutpoints = new Set(Array.isArray(raw) ? raw.map(String) : []);
-  } catch { _protectedOutpoints = new Set(); }
+    const raw = JSON.parse(localStorage.getItem(_PROTECTED_OUTPOINTS_KEY) || '{}');
+    // Entries written before locks carried their value are a bare array of keys.
+    if (Array.isArray(raw)) for (const k of raw) _protectedOutpoints.set(String(k), '0');
+    else if (raw && typeof raw === 'object') for (const [k, v] of Object.entries(raw)) _protectedOutpoints.set(String(k), String(v ?? '0'));
+  } catch { /* an unreadable cache is an empty one; the chain sync refills it */ }
   return _protectedOutpoints;
 }
 function _saveProtectedOutpoints() {
-  try { localStorage.setItem(_PROTECTED_OUTPOINTS_KEY, JSON.stringify([..._loadProtectedOutpoints()])); } catch {}
+  try { localStorage.setItem(_PROTECTED_OUTPOINTS_KEY, JSON.stringify(Object.fromEntries(_loadProtectedOutpoints()))); } catch {}
 }
 export function isProtectedOutpoint(txid, vout) {
-  return _loadProtectedOutpoints().has(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+  return _loadProtectedOutpoints().has(_outpointKey(txid, vout));
 }
 /** Register a cBTC lock output as unspendable by ordinary coin selection. Idempotent. */
-export function protectOutpoint(txid, vout) {
-  _loadProtectedOutpoints().add(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+export function protectOutpoint(txid, vout, vBtc = 0) {
+  const m = _loadProtectedOutpoints();
+  const k = _outpointKey(txid, vout);
+  // A later registration without a value must not erase a value an earlier one carried.
+  const sats = BigInt(vBtc || 0);
+  m.set(k, (sats > 0n ? sats : BigInt(m.get(k) || 0)).toString());
   _saveProtectedOutpoints();
 }
 /** Release a lock outpoint — call ONLY once it is genuinely retired (redeemed, or already spent). */
 export function unprotectOutpoint(txid, vout) {
-  _loadProtectedOutpoints().delete(`${String(txid).replace(/^0x/, '').toLowerCase()}:${vout | 0}`);
+  if (!_loadProtectedOutpoints().delete(_outpointKey(txid, vout))) return;
   _saveProtectedOutpoints();
 }
-/** The live protected set, as `txid:vout` strings — for UI that wants to show why a balance is reserved. */
-export function listProtectedOutpoints() { return [..._loadProtectedOutpoints()]; }
+/** The live protected set, as `txid:vout` strings — the exclude set coin selection is handed. */
+export function listProtectedOutpoints() { return [..._loadProtectedOutpoints().keys()]; }
+/** The same set with the sats each lock holds, for UI that wants to show why a balance is reserved. */
+export function listReservedLocks() {
+  return [..._loadProtectedOutpoints()].map(([k, v]) => {
+    const i = k.lastIndexOf(':');
+    return { txid: k.slice(0, i), vout: Number(k.slice(i + 1)), sats: BigInt(v || 0) };
+  });
+}
+/** Total sats held in live cBTC locks, as far as the pool has told us. */
+export function reservedLockSats() {
+  let t = 0n;
+  for (const v of _loadProtectedOutpoints().values()) t += BigInt(v || 0);
+  return t;
+}
+/**
+ * Rebuild the reserved set from the pool's own lock records, so it survives a cache clear or a new device.
+ * `lockOutputs` are the wallet's candidate lock outpoints (confidential-recovery-btc's history walk);
+ * `lockState(txid, vout)` reads cbtcLockVBtc / cbtcLockSpent / cbtcLockRedeemed for one of them.
+ * Entries the chain has not recorded yet are left alone — the local pre-confirmation reservation is the
+ * only thing protecting a freshly broadcast lock.
+ */
+export async function syncProtectedOutpoints({ lockOutputs, lockState } = {}) {
+  if (typeof lockState !== 'function') throw new Error('confidential-deployments: syncProtectedOutpoints needs lockState(txid, vout)');
+  const reserved = [], released = [];
+  for (const o of lockOutputs || []) {
+    const st = await lockState(o.txid, o.vout) || {};
+    const vBtc = BigInt(st.vBtc || 0);
+    if (vBtc <= 0n) continue;
+    if (st.spent || st.redeemed) { unprotectOutpoint(o.txid, o.vout); released.push({ txid: o.txid, vout: o.vout }); continue; }
+    protectOutpoint(o.txid, o.vout, vBtc);
+    reserved.push({ txid: o.txid, vout: o.vout, sats: vBtc });
+  }
+  return { reserved, released };
+}
