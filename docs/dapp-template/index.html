@@ -168,13 +168,15 @@
   <h2>Assets</h2>
   <div class="card">
     <table>
-      <thead><tr><th>asset</th><th>id</th><th style="text-align:right">unitScale</th></tr></thead>
+      <thead><tr><th>asset</th><th>id</th><th style="text-align:right">unitScale</th><th style="text-align:right">usd</th></tr></thead>
       <tbody id="assets"></tbody>
     </table>
     <p class="note">
       The pool keys by <em>asset id</em>, not token address. In-system values are
       <code>amount / unitScale</code> and must divide exactly — ETH is 18-dec at scale 1e10, so the pool
-      sees 8 decimals.
+      sees 8 decimals. The usd column reads the standard mainnet Chainlink ETH/USD and BTC/USD aggregators
+      directly (not a Tacit contract, so it never goes stale on a redeploy) — plain
+      <code>latestRoundData()</code> calls, same zero-dependency pattern as everything else on this page.
     </p>
   </div>
 </section>
@@ -205,6 +207,29 @@
       Two steps. <code>pool.wrap()</code> is a plain tx that escrows the ETH and registers a pending
       deposit — no proof. It becomes a spendable note only once an <code>OP_WRAP</code> settle consumes it
       (<code>submitWrapSettle</code>).
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Send</h2>
+  <div class="card">
+    <label for="s-to">recipient pubkey (hex)</label>
+    <input id="s-to" placeholder="0x…" autocomplete="off" spellcheck="false">
+    <label for="s-asset">asset</label>
+    <select id="s-asset">
+      <option value="cETH">cETH</option>
+      <option value="cBTC">cBTC</option>
+      <option value="cUSD">cUSD</option>
+      <option value="TAC">TAC</option>
+    </select>
+    <label for="s-amt">amount</label>
+    <input id="s-amt" value="0.01" inputmode="decimal">
+    <button id="send" disabled>send</button>
+    <p class="note">
+      Shielded — the recipient is looked up by a pubkey they've shared out of band, not a wallet address.
+      Covers the amount from your own notes when you hold enough; otherwise wraps straight from your public
+      balance and sends in one step (<code>wrapAndSend</code>).
     </p>
   </div>
 </section>
@@ -241,8 +266,8 @@ const CFG = {
     ],
   },
   assets: [
-    { t: 'cETH', id: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', scale: 10n ** 10n },
-    { t: 'cBTC', id: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', scale: 10n ** 10n },
+    { t: 'cETH', id: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', scale: 10n ** 10n, feed: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419' },
+    { t: 'cBTC', id: '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', scale: 10n ** 10n, feed: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' },
     { t: 'cUSD', id: '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d', scale: 10n ** 10n },
     { t: 'TAC',  id: '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', scale: 10n ** 10n },
   ],
@@ -369,13 +394,28 @@ async function loadFarms() {
 }
 
 // ── asset table ──────────────────────────────────────────────────────────
-function loadAssets() {
+// Chainlink's standard mainnet aggregators — not a Tacit contract, so these never go
+// stale on a redeploy. latestRoundData() -> (roundId, answer, startedAt, updatedAt,
+// answeredInRound); answer is word[1], an int256 with 8 decimals.
+async function feedUsd(addr) {
+  const r = await ethCall(addr, '0xfeaf968c');
+  if (!r || r.length < 2 + 128) return null;
+  const answer = BigInt('0x' + r.slice(2).slice(64, 128));
+  return answer > 0n ? Number(answer) / 1e8 : null;
+}
+
+async function loadAssets() {
   $('assets').innerHTML = CFG.assets.map((a) => `
     <tr>
       <td>${a.t}</td>
       <td class="id" title="${a.id}">${short(a.id, 10)}</td>
       <td style="text-align:right">1e${a.scale.toString().length - 1}</td>
+      <td style="text-align:right" id="usd-${a.t}">${a.feed ? '…' : '—'}</td>
     </tr>`).join('');
+  await Promise.all(CFG.assets.filter((a) => a.feed).map(async (a) => {
+    const usd = await feedUsd(a.feed).catch(() => null);
+    $(`usd-${a.t}`).textContent = usd ? `$${usd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—';
+  }));
 }
 
 loadPool();
@@ -402,6 +442,7 @@ loadFarms();
 //     // tacit.identity(seed) is the confidential identity: { priv, pubHex, owner, secret }
 //     $('a-addr').textContent = acct.address;
 //     $('wrap').disabled = false;
+//     $('send').disabled = false;
 //     tacit.balance($('seed').value.trim())
 //       .then((f) => { $('a-bal').textContent = JSON.stringify(f); });
 //   };
@@ -414,11 +455,34 @@ loadFarms();
 //     await tacit.submitWrapSettle({ built: w });
 //   };
 //
+//   $('send').onclick = async () => {
+//     const walletPriv = $('seed').value.trim();
+//     const ticker = $('s-asset').value;
+//     const wei = BigInt(Math.round(parseFloat($('s-amt').value) * 1e18));
+//     const recipientPubHex = $('s-to').value.trim();
+//     const assetId = CFG.assets.find((a) => a.t === ticker).id.toLowerCase();
+//     const fee = await tacit.quoteTransferFee(wei, ticker).catch(() => 0n);
+//     const { byAsset } = await tacit.balance(walletPriv);
+//     const held = byAsset[assetId];
+//     if (held && held.value >= wei + fee) {
+//       // pick notes summing to >= wei + fee from held.notes yourself (e.g. largest-first);
+//       // transfer() proves the exact sum, so overshoot comes back as a fresh change note.
+//       await tacit.transfer({ walletPriv, notes: pickCovering(held.notes, wei + fee), recipientPubHex, amount: wei, fee });
+//     } else {
+//       // no covering note: wrap straight from the public balance and send in one step.
+//       await tacit.wrapAndSend({ walletPriv, ticker, recipientPubHex, amountWei: wei, fee: 0n });
+//     }
+//   };
+//
+// The relay is paid in-kind in the sent asset, so it only relays assets it can price and
+// convert (relayFeeEligible(ticker)) — an ineligible asset needs a wallet holding gas to
+// self-settle instead.
+//
 // Read docs/BUILD-A-TACIT-DAPP.md sections 4-5 before wiring. You cannot
-// transfer directly to a third party (use stealthSend), and every wrap needs
-// a fresh note index (wrap() picks one; buildWrap() does not). A membership
-// witness stays valid (the pool keeps every root it has had), but rescan
-// before spending so all inputs share one root and spent notes drop out.
+// transfer directly to a third party's raw address (use stealthSend for that), and every
+// wrap needs a fresh note index (wrap() picks one; buildWrap() does not). A membership
+// witness stays valid (the pool keeps every root it has had), but rescan before spending
+// so all inputs share one root and spent notes drop out.
 // ─────────────────────────────────────────────────────────────────────────
 </script>
 </body>
