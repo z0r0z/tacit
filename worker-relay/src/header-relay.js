@@ -13,6 +13,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG } from './lib/config.js';
+import { withNonceRetry } from './lib/nonce-retry.js';
 import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, gasAboveCap } from './lib/chain.js';
 import { planHeaderAdvance } from './lib/header-plan.js';
 
@@ -111,7 +112,9 @@ async function submitAdvance(from, to) {
   for (let h = from; h <= to; h++) hex += await headerHex(h);
   const advanceCall = { address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${hex}`] };
   const advanceGas = await publicClient.estimateContractGas({ ...advanceCall, account: relayWallet.account });
-  const txHash = await relayWallet.writeContract({ ...advanceCall, gas: (advanceGas * 125n) / 100n });
+  // Same shared-key nonce race as the reflection attest (see lib/nonce-retry.js). Cheap to lose here — the
+  // next cron run is three minutes away — but retrying keeps the relay's pacing steady under load.
+  const txHash = await withNonceRetry('advanceTip', () => relayWallet.writeContract({ ...advanceCall, gas: (advanceGas * 125n) / 100n }), { log });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   if (rcpt.status !== 'success') throw new Error(`advanceTip reverted ${txHash}`);
   return txHash;

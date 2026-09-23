@@ -28,6 +28,7 @@ import { consumedInputs } from './lib/spent-precheck.js';
 import { settleWallet, settleWallets, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ROUTER_EXIT_ABI, recipeArgs, exitCheck, activationCover } from './lib/exit-activate.js';
 import { quoteRelayFee, provePriceUsd, replenishOnce, drainToSink } from './replenish.js';
+import { safeErr } from './lib/safe-err.js';
 
 const log = (...a) => console.log(`[settle ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -158,7 +159,7 @@ async function submitCall(base, label, gasLimit = null) {
     publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'pending' }),
     gasLimit ? null : publicClient.estimateContractGas({ ...base, account: settleWallet.account }).catch(() => null),
   ]);
-  const baseFee = blk.baseFeePerGas ?? 0n;
+  let baseFee = blk.baseFeePerGas ?? 0n;
   // Tip proportional to the base fee, floored so it is never dust and capped so a spike can't run away.
   // The floor matters more than it looks: at sub-gwei base fees the proportional term is worth a fraction of
   // a cent on a ~600k-gas settle, which a builder has no reason to include. A private endpoint ACCEPTS such a
@@ -181,6 +182,19 @@ async function submitCall(base, label, gasLimit = null) {
   // re-proving is not.
   let refreshes = 0;
   for (let round = 0; round < SUBMIT_ROUNDS; round++) {
+    // Reprice against the LIVE base fee each round, not the snapshot taken before the first submit. The 3x
+    // multiplier is what absorbs a climb between pricing and inclusion, but applied to a stale snapshot it
+    // absorbs nothing: if base fee more than triples across the ~4.5 minutes these rounds span, all three
+    // carry the same unincludable cap, escalating the tip changes nothing, and an already-paid Groth16 proof
+    // is discarded. A gas spike is exactly when a settle is slow enough to reach a later round, so the stale
+    // case and the case the multiplier exists for are the same case.
+    if (round > 0) {
+      const fresh = await publicClient.getBlock({ blockTag: 'latest' }).catch(() => null);
+      if (fresh && (fresh.baseFeePerGas ?? 0n) > baseFee) {
+        baseFee = fresh.baseFeePerGas;
+        log(`${label} base fee moved to ${baseFee} wei — repricing this round's cap against it`);
+      }
+    }
     const tx = { ...call, nonce, maxFeePerGas: baseFee * 3n + tip, maxPriorityFeePerGas: tip };
     let txHash, taken = false;
     for (let i = 0; i < endpoints.length; i++) {
@@ -246,7 +260,22 @@ async function submitCall(base, label, gasLimit = null) {
     tip = tip * 3n > TIP_CAP_WEI ? TIP_CAP_WEI : tip * 3n; // a replacement must clear the node's bump rule
   }
 
-  throw lastErr || new Error(`${base.functionName} accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
+  // Last look before giving up. A private endpoint keeps re-submitting an accepted bundle for far longer
+  // than the rounds above wait, so "we stopped waiting" and "it did not land" are different facts — and the
+  // job is about to be acked FAILED, which is terminal and never retried. Getting this wrong tells a user
+  // their op failed while it is settling, with no way to reach the tx hash.
+  for (const h of seen) {
+    const r = await publicClient.getTransactionReceipt({ hash: h }).catch(() => null);
+    if (!r) continue;
+    if (r.status !== 'success') throw new Error(`${base.functionName} reverted ${h}`);
+    log(`${label} landed as ${h} after the wait window closed`);
+    return h;
+  }
+  const e = lastErr || new Error(`${base.functionName} accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
+  // Carry the broadcast hashes so the caller can name them rather than reporting a bare failure: a
+  // still-pending bundle may yet land, and these are the only handles on it.
+  e.broadcastHashes = seen.slice();
+  throw e;
 }
 
 // A relayed exit that carried its recipe: activate it now that the settle has funded the escrow, so the bridge
@@ -324,7 +353,7 @@ async function settleOne(j) {
     await activateRelayedExit(j, txHash);
   } catch (e) {
     log(`job ${j.jobId} failed: ${e.message}`);
-    await confidentialAck({ jobId: j.jobId, error: e.message.slice(0, 200) });
+    await confidentialAck({ jobId: j.jobId, error: safeErr(e) });
   }
 }
 
@@ -435,7 +464,7 @@ async function cycle() {
       proof = await proveSettle({ type, op: job.op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 });
     } catch (e) {
       log(`job ${jobId} prove failed/timeout: ${e.message}`);
-      await confidentialAck({ jobId, error: `prove failed: ${e.message.slice(0, 200)}` });
+      await confidentialAck({ jobId, error: `prove failed: ${safeErr(e)}` });
       return true; // acked failed → FIFO advances, no wedge
     }
   }
@@ -460,7 +489,15 @@ async function cycle() {
   } catch (e) {
     // A revert is typically a lost-ack re-serve of an already-applied op (nullifier spent).
     log(`job ${jobId} settle failed: ${e.message}`);
-    await confidentialAck({ jobId, error: `settle reverted: ${e.message.slice(0, 200)}` });
+    // Acking an error is TERMINAL for the job — the worker marks it failed and drops it from the queue, and
+    // nothing retries. So distinguish "the chain rejected this" from "we stopped waiting": a private
+    // endpoint keeps re-submitting an accepted bundle well past our inclusion window, so a broadcast that
+    // has not landed yet may still land. Name those hashes in the error the user is shown, so `failed` on
+    // /confidential/status at least points at something checkable instead of dead-ending.
+    const pending = Array.isArray(e.broadcastHashes) && e.broadcastHashes.length
+      ? ` — broadcast and possibly still pending: ${e.broadcastHashes.join(', ')}`
+      : '';
+    await confidentialAck({ jobId, error: `settle reverted: ${safeErr(e, 200 - pending.length)}${pending}` });
     return true;
   }
 
@@ -504,7 +541,7 @@ async function main() {
       if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
       let worked;
       try { worked = await cycle(); }
-      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('settle', `error ${e.message}`); break; }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('settle', `error ${safeErr(e)}`); break; }
       if (!worked) { log('queue drained — cron run done'); await heartbeat('settle', 'queue drained'); break; }
     }
     return;
@@ -518,7 +555,7 @@ async function main() {
       if (!worked) { await heartbeatIdle('settle', 'idle — queue empty'); await maybeReplenish(); await sleep(CFG.settlePollSecs); }
     } catch (e) {
       log('cycle error (continuing):', e.message);
-      await heartbeat('settle', `error ${e.message}`);
+      await heartbeat('settle', `error ${safeErr(e)}`);
       await sleep(CFG.settlePollSecs);
     }
   }

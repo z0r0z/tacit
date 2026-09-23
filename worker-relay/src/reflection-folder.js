@@ -29,6 +29,8 @@ import { awaitAttestLanding, digestDeepEnough } from './lib/attest-wait.js';
 import { recoverLostAck } from './lib/reflection-reconcile.js';
 import { proveReflection } from './lib/prover.js';
 import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { safeErr } from './lib/safe-err.js';
+import { withNonceRetry } from './lib/nonce-retry.js';
 
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -126,7 +128,11 @@ async function cycle() {
   // whole proof. Unused gas is refunded, so the pad only insures.
   const attestCall = { address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven', args: [publicValues, proofBytes] };
   const attestGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account });
-  const txHash = await relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n });
+  // The proof above is already paid for. SETTLE_KEY is unset in production, so the settle service, the
+  // header cron and this one all sign from RELAY_KEY — and settles go out privately, so a public RPC's
+  // pending nonce does not see one in flight and a collision here is routine. A bare write throws the whole
+  // proof away and re-proves next cycle; retrying the submission costs a few seconds.
+  const txHash = await withNonceRetry('attest', () => relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n }), { log });
   await reflectionSubmitted({ newDigest, txHash, attestedTo });
   return await settleSubmitted({ txHash, newDigest, attestedTo });
 }
@@ -221,7 +227,7 @@ async function main() {
       if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
       let worked;
       try { worked = await cycle(); }
-      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('reflection', `error ${e.message}`); break; }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('reflection', `error ${safeErr(e)}`); break; }
       if (!worked) { log('caught up — cron run done'); await heartbeat('reflection', 'caught up'); break; }
     }
     return;
@@ -235,7 +241,7 @@ async function main() {
       if (!worked) { await heartbeatIdle('reflection', 'caught up'); await sleep(CFG.reflectionPollSecs); } // idle or retry backoff
     } catch (e) {
       log('cycle error (continuing):', e.message);
-      await heartbeat('reflection', `error ${e.message}`);
+      await heartbeat('reflection', `error ${safeErr(e)}`);
       await sleep(CFG.reflectionPollSecs);
     }
   }

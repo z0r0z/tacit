@@ -14,6 +14,7 @@
 
 import { getAddress, maxUint256 } from 'viem';
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
+import { withNonceRetry as _withNonceRetry } from './lib/nonce-retry.js';
 import {
   publicClient, relayWallet, fundedWallets, ethUsdPrice, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
   PROVE, VAPP, ZQUOTER, ZROUTER,
@@ -98,21 +99,8 @@ async function erc20Balance(token, owner) {
 // gas buffer + this floor is converted to PROVE; the buffer stays as native gas.
 const MIN_ETH_SWEEP = BigInt(process.env.MIN_ETH_SWEEP_WEI || '5000000000000000'); // 0.005 ETH
 
-// The sink's transactions are signed from inside the settle service, while the header/reflection services
-// sign with the same key. A send that loses that race fails BEFORE broadcast (nonce too low / underpriced),
-// so retrying it is safe and cheap; anything else is a real error and is rethrown untouched.
-const NONCE_RACE = /nonce ?too ?low|lower than the current nonce|nonce has already been used|replacement transaction underpriced|already known/i;
-async function withNonceRetry(label, fn, tries = 3) {
-  for (let i = 1; ; i++) {
-    try { return await fn(); }
-    catch (e) {
-      const msg = String(e?.shortMessage || e?.message || e);
-      if (i >= tries || !NONCE_RACE.test(msg)) throw e;
-      log(`  ${label}: nonce race with another service on this key (attempt ${i}/${tries}) — retrying`);
-      await new Promise((r) => setTimeout(r, 3000 * i));
-    }
-  }
-}
+// Shared with the header and reflection services, which sign from the same key — see lib/nonce-retry.js.
+const withNonceRetry = (label, fn, tries = 3) => _withNonceRetry(label, fn, { tries, log });
 
 async function ensureApproval(token, spender, amount, wallet = relayWallet) {
   const owner = wallet.account.address;

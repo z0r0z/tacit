@@ -39,6 +39,7 @@ import { CFG } from './lib/config.js';
 import { reflectionEthState, reflectionEthStatePublish, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { proveEthState, commitEthProveState } from './lib/prover.js';
 import { readPool } from './lib/chain.js';
+import { safeErr } from './lib/safe-err.js';
 
 const log = (...a) => console.log(`[eth-state ${new Date().toISOString()}]`, ...a);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
@@ -152,7 +153,7 @@ async function cycle() {
   await heartbeat('eth-state', 'execute preflight');
   let pre;
   try {
-    pre = await proveEthState({ mode: 'execute' });
+    pre = await proveEthState({ mode: 'execute', timeoutMs: CFG.ethProveTimeoutSecs * 1000 });
   } catch (e) {
     // SP1's local CPU execute() for this guest is unreliable on this host's container — its spawned child
     // process has been observed to die multiple distinct ways (a stdin pipe closing early with "Broken
@@ -174,7 +175,7 @@ async function cycle() {
   }
 
   await heartbeat('eth-state', 'proving (network)');
-  const result = await proveEthState({ mode: 'network' });
+  const result = await proveEthState({ mode: 'network', timeoutMs: CFG.ethProveTimeoutSecs * 1000 });
   const contentHash = ethStateContentHash(result.ethPv);
   log(`proved — ${result.crossouts.length} cumulative crossout(s), ${result.consumeds.length} cumulative `
     + `consumed, execBlock=${result.execBlock}, contentHash=${contentHash}`);
@@ -241,12 +242,20 @@ async function main() {
       if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
       let worked;
       try { worked = await cycle(); }
-      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('eth-state', `error ${e.message}`); break; }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('eth-state', `error ${safeErr(e)}`); break; }
       if (!worked) { log('idle — cron run done'); await heartbeat('eth-state', 'idle'); break; }
     }
     return;
   }
+  // Back off on CONSECUTIVE failures. A cycle spends a real network proof before it publishes, so a failure
+  // mode where publishing keeps failing (control plane down, a persistent 4xx) but proving keeps succeeding
+  // bills a fresh proof on every pass — at a 60s poll that is ~60 paid proofs per hour of outage, for
+  // nothing. Backing off bounds the cost of a bad hour without slowing the healthy path at all: one success
+  // resets it immediately, and the ceiling still retries often enough to recover unattended.
+  const BACKOFF_CAP_SECS = 30 * 60;
+  let consecutiveFailures = 0;
   for (;;) {
+    let failed = false;
     try {
       const worked = await cycle();
       // cycle() returns false on every "nothing to do yet" branch (candidate still pending, dry-run stop,
@@ -255,10 +264,16 @@ async function main() {
       // goes stale after 10 quiet minutes on a perfectly healthy sidecar.
       if (!worked) await heartbeatIdle('eth-state', 'idle — no candidate to produce yet');
     } catch (e) {
+      failed = true;
       log('cycle error (continuing):', e.message);
-      await heartbeat('eth-state', `error ${e.message}`);
+      await heartbeat('eth-state', `error ${safeErr(e)}`);
     }
-    await sleep(CFG.ethStatePollSecs);
+    consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
+    const delay = failed
+      ? Math.min(BACKOFF_CAP_SECS, CFG.ethStatePollSecs * 2 ** Math.min(consecutiveFailures - 1, 20))
+      : CFG.ethStatePollSecs;
+    if (failed) log(`  ${consecutiveFailures} consecutive failure(s) — next attempt in ${delay}s`);
+    await sleep(delay);
   }
 }
 
