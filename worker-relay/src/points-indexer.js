@@ -6,11 +6,33 @@
 // only for now — this serves a leaderboard/lookup API; it does not mint or gate anything on-chain.
 
 import { createServer } from 'node:http';
+import { createWalletClient, http } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './lib/config.js';
 import { publicClient } from './lib/chain.js';
 import { openStore } from './lib/points-store.js';
+import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
 
 const log = (...a) => console.log(`[points ${new Date().toISOString()}]`, ...a);
+
+const DISTRIBUTOR_ABI = [
+  { type: 'function', name: 'updateRoot', stateMutability: 'nonpayable', inputs: [{ name: 'newRoot', type: 'bytes32' }, { name: 'newTotalAllocated', type: 'uint256' }], outputs: [] },
+  { type: 'function', name: 'totalClaimed', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+];
+const ERC20_BALANCEOF_ABI = [
+  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
+];
+
+// Built once at startup, reused for every settle cycle. null when publishing isn't configured yet (no
+// POINTS_ROOT_SETTER_KEY) — settleCycle still folds days into the local reward ledger either way; only the
+// on-chain publish step is skipped.
+const rootSetterWallet = CFG.pointsRootSetterKey
+  ? createWalletClient({
+      account: privateKeyToAccount(CFG.pointsRootSetterKey.startsWith('0x') ? CFG.pointsRootSetterKey : `0x${CFG.pointsRootSetterKey}`),
+      chain: publicClient.chain,
+      transport: http(CFG.rpcUrl),
+    })
+  : null;
 
 const WRAP_EVENT = {
   type: 'event',
@@ -88,6 +110,101 @@ async function scanCycle(store) {
   log(`scanned to block ${cursor.lastScannedBlock}, ${cursor.ethDepositCount} ETH deposits recorded`);
 }
 
+// Cumulative TAC budget through `daysElapsed` whole days of the program (clamped to [0, pointsProgramDays]).
+// Computed as a fraction of the total each time, rather than a fixed per-day rate, so the 90 days sum to
+// EXACTLY pointsProgramTotalWei with no rounding drift — any remainder from integer division lands in
+// whichever day's delta absorbs it, never accumulates across days.
+export function cumulativeTargetWei(daysElapsed) {
+  const d = daysElapsed < 0 ? 0 : daysElapsed > CFG.pointsProgramDays ? CFG.pointsProgramDays : daysElapsed;
+  return (CFG.pointsProgramTotalWei * BigInt(d)) / BigInt(CFG.pointsProgramDays);
+}
+export function dayBudgetWei(dayIndex) {
+  return cumulativeTargetWei(dayIndex + 1) - cumulativeTargetWei(dayIndex);
+}
+
+// Splits `budgetWei` pro-rata across `rows` ([{address, dayPoints}], dayPoints a JS float — a WEIGHT, never a
+// wei amount). Scaling both sides of the ratio by the same factor before doing BigInt division means the
+// float's imprecision only ever affects the last few bits of the ratio, never the wei-scale result, and never
+// compounds across days (each day's split is independent). Integer division leaves a few wei of dust
+// unallocated per day — negligible at TAC's scale and not worth the complexity of redistributing.
+export function splitDayBudget(rows, budgetWei) {
+  const scaled = rows.map((r) => BigInt(Math.round(r.dayPoints * 1e6)));
+  const totalScaled = scaled.reduce((s, v) => s + v, 0n);
+  const deltas = new Map();
+  if (totalScaled <= 0n) return deltas;
+  rows.forEach((r, i) => {
+    const share = (budgetWei * scaled[i]) / totalScaled;
+    if (share > 0n) deltas.set(r.address, share);
+  });
+  return deltas;
+}
+
+export function buildRewardTree(rewards) {
+  return buildMerkleTree(rewards.map((r) => ({ address: r.address, cumulativeAmountWei: BigInt(r.cumulativeWei) })));
+}
+
+// Folds every UTC day-epoch through yesterday into the local reward ledger (always happens, independent of
+// funding), then best-effort publishes a new cumulative root on-chain (only when POINTS_DISTRIBUTOR_ADDR +
+// POINTS_ROOT_SETTER_KEY are set AND the distributor currently holds enough TAC to cover the new declared
+// total). Deliberately decoupled: scoring stays accurate and current even on days the ops multisig hasn't yet
+// topped up the distributor, and a funding shortfall just defers the on-chain publish to a later cycle rather
+// than blocking or losing the day's computed entitlements.
+export async function settleCycle(store) {
+  if (!CFG.pointsProgramStartSec) return; // reward program not configured yet — informational points still work
+
+  const startDay = Math.floor(CFG.pointsProgramStartSec / 86400);
+  const lastProgramDay = startDay + CFG.pointsProgramDays - 1;
+  const todayDay = Math.floor(Date.now() / 1000 / 86400);
+  const settleThroughDay = Math.min(todayDay - 1, lastProgramDay); // never settle a day still in progress
+
+  const state = store.loadSettleState() ?? { lastSettledDay: startDay - 1, publishedRoot: null, publishedTotalWei: null };
+
+  for (let d = state.lastSettledDay + 1; d <= settleThroughDay; d++) {
+    const dayIndex = d - startDay;
+    const dayStart = d * 86400;
+    const dayEnd = dayStart + 86400;
+    const rows = store.dayPointsByAddress(dayStart, dayEnd);
+    if (rows.length) {
+      const budget = dayBudgetWei(dayIndex);
+      if (budget > 0n) {
+        const deltas = splitDayBudget(rows, budget);
+        if (deltas.size) store.applyDayRewards(deltas);
+      }
+    }
+    state.lastSettledDay = d;
+    store.saveSettleState(state);
+  }
+
+  if (!ADDR.pointsDistributor || !rootSetterWallet) return; // publishing not configured yet
+
+  const rewards = store.allRewards();
+  if (!rewards.length) return;
+  const tree = buildRewardTree(rewards);
+  if (tree.root === state.publishedRoot) return; // nothing new since the last successful publish
+
+  const totalWei = BigInt(tree.totalWei);
+  const [balance, totalClaimed] = await Promise.all([
+    publicClient.readContract({ address: ADDR.tacToken, abi: ERC20_BALANCEOF_ABI, functionName: 'balanceOf', args: [ADDR.pointsDistributor] }),
+    publicClient.readContract({ address: ADDR.pointsDistributor, abi: DISTRIBUTOR_ABI, functionName: 'totalClaimed' }),
+  ]);
+  const funded = balance + totalClaimed;
+  if (totalWei > funded) {
+    log(`ALERT: PointsDistributor needs ${formatTac(totalWei - funded)} more TAC funded before day ${settleThroughDay} settles on-chain (declared ${formatTac(totalWei)}, funded ${formatTac(funded)})`);
+    return;
+  }
+
+  const hash = await rootSetterWallet.writeContract({
+    address: ADDR.pointsDistributor,
+    abi: DISTRIBUTOR_ABI,
+    functionName: 'updateRoot',
+    args: [tree.root, totalWei],
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  store.savePublishedClaims(tree.claims);
+  store.saveSettleState({ lastSettledDay: state.lastSettledDay, publishedRoot: tree.root, publishedTotalWei: tree.totalWei });
+  log(`published points root ${tree.root} (${formatTac(totalWei)} TAC across ${tree.count} addresses), tx ${hash}`);
+}
+
 function startHttp(store) {
   const server = createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -117,6 +234,14 @@ function startHttp(store) {
         res.end(JSON.stringify({ ...total, deposits }));
         return;
       }
+      // The claim proof for the LAST on-chain-published root — see savePublishedClaims. A brand-new address
+      // with no settled reward yet just gets null, not an error: the dapp shows "nothing to claim yet" for that.
+      const claimMatch = url.pathname.match(/^\/claim\/(0x[0-9a-fA-F]{40})$/);
+      if (claimMatch) {
+        const claim = store.claimFor(claimMatch[1]);
+        res.end(JSON.stringify(claim));
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: 'not found' }));
     } catch (err) {
@@ -137,6 +262,11 @@ async function main() {
       await scanCycle(store);
     } catch (err) {
       log('scan cycle failed:', err?.message || err);
+    }
+    try {
+      await settleCycle(store);
+    } catch (err) {
+      log('settle cycle failed:', err?.message || err);
     }
     await new Promise((r) => setTimeout(r, CFG.pointsPollSecs * 1000));
   }

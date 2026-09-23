@@ -256,8 +256,13 @@ services:
 
   # Always-on web service: ETH-wrap points program (src/points-indexer.js). Reads the pool's existing
   # Wrap event + each wrap's tx sender — no contract change, nothing on the settle/reflection path. Serves
-  # /leaderboard and /points/:address over HTTP for the dapp; informational only, nothing here is
-  # claimable on-chain yet. See lib/config.js's "Points program" section for the formula and every knob.
+  # /leaderboard, /points/:address and /claim/:address over HTTP for the dapp. See lib/config.js's "Points
+  # program" / "Points reward settlement" sections for the formula and every knob.
+  #
+  # Reward settlement (contracts/src/PointsDistributor.sol) is DORMANT by default: POINTS_PROGRAM_START_SEC
+  # is unset below, so settleCycle no-ops and only the informational points/leaderboard run. Flip the reward
+  # program on by setting POINTS_PROGRAM_START_SEC + POINTS_DISTRIBUTOR_ADDR + POINTS_ROOT_SETTER_KEY once
+  # the contract is deployed and the ops multisig has funded it — no code change needed.
   - type: web
     name: tacit-points
     runtime: docker
@@ -290,3 +295,14 @@ services:
         value: "4"
       - key: POINTS_BONUS_HALF_LIFE
         value: "200"
+      # ── Reward settlement — unset (dormant) until the program actually launches ──
+      # - key: POINTS_PROGRAM_START_SEC       # unix seconds; first UTC day fully after this is day 0
+      #   value: ""
+      # - key: POINTS_PROGRAM_DAYS
+      #   value: "90"
+      # - key: POINTS_PROGRAM_TOTAL_WEI       # 100,000 TAC
+      #   value: "100000000000000000000000"
+      # - key: POINTS_DISTRIBUTOR_ADDR        # set once contracts/src/PointsDistributor.sol is deployed
+      #   value: ""
+      # - key: POINTS_ROOT_SETTER_KEY         # secret — dedicated key, never RELAY_KEY/SETTLE_KEY
+      #   sync: false

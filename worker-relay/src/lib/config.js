@@ -41,6 +41,12 @@ export const ADDR = {
   headerRelay: opt('HEADER_RELAY_ADDR', '0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0'),
   // Chainlink ETH/USD — the relay prices its own gas cost in USD, so this drives the fee gate.
   ethUsdFeed: opt('ETH_USD_FEED', '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419'),
+  // Public TAC ERC20 (contracts/deployments/1.json's tacToken) — read-only here, just to check the points
+  // distributor's funded balance before attempting updateRoot.
+  tacToken: opt('TAC_TOKEN_ADDR', '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279'),
+  // PointsDistributor (contracts/src/PointsDistributor.sol) — empty until deployed, in which case
+  // points-indexer.js's settleCycle logs and skips publishing rather than failing.
+  pointsDistributor: opt('POINTS_DISTRIBUTOR_ADDR', ''),
 };
 
 export const CFG = {
@@ -309,6 +315,20 @@ export const CFG = {
   pointsBasePerEth: num('POINTS_BASE_PER_ETH', 1000),
   pointsBonusScale: num('POINTS_BONUS_SCALE', 4),
   pointsBonusHalfLife: num('POINTS_BONUS_HALF_LIFE', 200),
+
+  // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
+  // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC
+  // budget, once per UTC day-epoch, and publishes the result as a new cumulative merkle root. Empty
+  // pointsProgramStartSec means "not configured yet" — settleCycle no-ops entirely rather than guessing a
+  // start date, so deploying points-indexer.js ahead of the reward program going live is safe.
+  pointsProgramStartSec: num('POINTS_PROGRAM_START_SEC', 0),
+  pointsProgramDays: num('POINTS_PROGRAM_DAYS', 90),
+  // 100,000 whole TAC, in wei, as a BigInt-safe string (avoid a float literal anywhere near 1e23).
+  pointsProgramTotalWei: BigInt(opt('POINTS_PROGRAM_TOTAL_WEI', '100000000000000000000000')),
+  // Hot wallet that calls updateRoot daily. Deliberately its own key, not RELAY_KEY/SETTLE_KEY — see
+  // PointsDistributor.sol's header: a leak only exposes whatever is currently funded into the distributor,
+  // and keeping it separate from the higher-value relay/settle keys keeps that bound meaningful.
+  pointsRootSetterKey: opt('POINTS_ROOT_SETTER_KEY', ''),
 };
 
 // Measured settle gas per op-type. Used by the fee math.

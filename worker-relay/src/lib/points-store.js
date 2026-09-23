@@ -35,6 +35,38 @@ export function openStore(dbPath) {
       last_scanned_block INTEGER NOT NULL,
       eth_deposit_count  INTEGER NOT NULL
     );
+
+    -- Reward ledger (src/points-indexer.js's settleCycle): each address's cumulative TAC-wei entitlement,
+    -- the mirror of what the current on-chain PointsDistributor root should declare for that leaf. Kept as
+    -- TEXT and only ever updated by reading+adding as a JS BigInt (see applyDayRewards) — SQLite's INTEGER
+    -- affinity is 64-bit and this program's 100,000 TAC budget (1e23 wei) is already ~10,000x past that, so
+    -- any CAST(...AS INTEGER) arithmetic on this column (the way totals.amount_wei above does it for much
+    -- smaller ETH amounts) would silently wrap.
+    CREATE TABLE IF NOT EXISTS reward_ledger (
+      address        TEXT PRIMARY KEY,
+      cumulative_wei TEXT NOT NULL
+    );
+
+    -- Which UTC day-epochs (floor(unixSec/86400)) have been folded into reward_ledger, and the last root this
+    -- process successfully got onto PointsDistributor. A day can be settled locally (advancing
+    -- last_settled_day) well before its reward is actually claimable on-chain — see settleCycle's comment on
+    -- why those two things deliberately don't have to happen together.
+    CREATE TABLE IF NOT EXISTS settle_state (
+      id                  INTEGER PRIMARY KEY CHECK (id = 1),
+      last_settled_day    INTEGER NOT NULL,
+      published_root      TEXT,
+      published_total_wei TEXT
+    );
+
+    -- The full claim set (address, cumulativeAmount, merkle proof) for whichever tree's root was LAST
+    -- successfully published on-chain — never for a newer locally-computed tree still waiting on funding, since
+    -- a proof for a root the contract doesn't hold yet would just revert with BadProof. Rebuilt wholesale each
+    -- successful publish (see savePublishedClaims).
+    CREATE TABLE IF NOT EXISTS published_claims (
+      address            TEXT PRIMARY KEY,
+      cumulative_amount  TEXT NOT NULL,
+      proof_json         TEXT NOT NULL
+    );
   `);
 
   const insertDeposit = db.prepare(`
@@ -66,6 +98,31 @@ export function openStore(dbPath) {
     SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
+  const dayPointsStmt = db.prepare(`
+    SELECT depositor AS address, SUM(points) AS dayPoints
+    FROM deposits WHERE block_time >= ? AND block_time < ?
+    GROUP BY depositor
+  `);
+  const getRewardStmt = db.prepare(`SELECT cumulative_wei FROM reward_ledger WHERE address = ?`);
+  const upsertRewardStmt = db.prepare(`
+    INSERT INTO reward_ledger (address, cumulative_wei) VALUES (@address, @cumulativeWei)
+    ON CONFLICT(address) DO UPDATE SET cumulative_wei = excluded.cumulative_wei
+  `);
+  const allRewardsStmt = db.prepare(`SELECT address, cumulative_wei AS cumulativeWei FROM reward_ledger WHERE cumulative_wei != '0'`);
+  const loadSettleStateStmt = db.prepare(`SELECT last_settled_day, published_root, published_total_wei FROM settle_state WHERE id = 1`);
+  const saveSettleStateStmt = db.prepare(`
+    INSERT INTO settle_state (id, last_settled_day, published_root, published_total_wei)
+    VALUES (1, @lastSettledDay, @publishedRoot, @publishedTotalWei)
+    ON CONFLICT(id) DO UPDATE SET
+      last_settled_day = excluded.last_settled_day,
+      published_root = excluded.published_root,
+      published_total_wei = excluded.published_total_wei
+  `);
+  const clearPublishedClaimsStmt = db.prepare(`DELETE FROM published_claims`);
+  const insertPublishedClaimStmt = db.prepare(`
+    INSERT INTO published_claims (address, cumulative_amount, proof_json) VALUES (@address, @cumulativeAmount, @proofJson)
+  `);
+  const claimForStmt = db.prepare(`SELECT cumulative_amount AS cumulativeAmount, proof_json AS proofJson FROM published_claims WHERE address = ?`);
 
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
@@ -100,5 +157,67 @@ export function openStore(dbPath) {
     return depositsForStmt.all(address.toLowerCase(), limit);
   }
 
-  return { db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor };
+  function dayPointsByAddress(dayStartSec, dayEndSec) {
+    return dayPointsStmt.all(dayStartSec, dayEndSec);
+  }
+
+  // deltas: Map<lowercaseAddress, bigint wei>. Read-add-write per address, in one transaction, so a crash
+  // mid-batch can't leave some addresses credited for a day and others not.
+  const applyDayRewards = db.transaction((deltas) => {
+    for (const [address, deltaWei] of deltas) {
+      if (deltaWei <= 0n) continue;
+      const row = getRewardStmt.get(address);
+      const prior = row ? BigInt(row.cumulative_wei) : 0n;
+      upsertRewardStmt.run({ address, cumulativeWei: (prior + deltaWei).toString() });
+    }
+  });
+
+  function allRewards() {
+    return allRewardsStmt.all();
+  }
+
+  function rewardFor(address) {
+    const row = getRewardStmt.get(address.toLowerCase());
+    return row ? row.cumulative_wei : '0';
+  }
+
+  function loadSettleState() {
+    const row = loadSettleStateStmt.get();
+    return row
+      ? { lastSettledDay: row.last_settled_day, publishedRoot: row.published_root, publishedTotalWei: row.published_total_wei }
+      : null;
+  }
+
+  function saveSettleState({ lastSettledDay, publishedRoot, publishedTotalWei }) {
+    saveSettleStateStmt.run({
+      lastSettledDay,
+      publishedRoot: publishedRoot ?? null,
+      publishedTotalWei: publishedTotalWei ?? null,
+    });
+  }
+
+  // Replaces the whole published-claims set atomically — it always describes exactly one tree (the one whose
+  // root currently lives on PointsDistributor), never a mix of two.
+  const savePublishedClaims = db.transaction((claims) => {
+    clearPublishedClaimsStmt.run();
+    for (const [address, c] of Object.entries(claims)) {
+      insertPublishedClaimStmt.run({
+        address: address.toLowerCase(),
+        cumulativeAmount: c.cumulativeAmount,
+        proofJson: JSON.stringify(c.proof),
+      });
+    }
+  });
+
+  function claimFor(address) {
+    const row = claimForStmt.get(address.toLowerCase());
+    if (!row) return null;
+    return { cumulativeAmount: row.cumulativeAmount, proof: JSON.parse(row.proofJson) };
+  }
+
+  return {
+    db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor,
+    dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
+    loadSettleState, saveSettleState, savePublishedClaims, claimFor,
+  };
 }
