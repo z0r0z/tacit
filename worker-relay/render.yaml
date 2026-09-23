@@ -297,17 +297,19 @@ services:
         value: "200"
       # ── Reward settlement ──
       # Epoch scoring is live (settleCycle folds each UTC day into the local reward ledger, visible at
-      # /rewards) so participation can be watched from day one. On-chain PUBLISHING stays dormant —
-      # POINTS_DISTRIBUTOR_ADDR/POINTS_ROOT_SETTER_KEY are unset below — until the contract is deployed and
-      # the ops multisig has funded it; settleCycle already no-ops the publish step without either, so this
-      # is zero fund risk as configured.
+      # /rewards) so participation can be watched from day one.
       - key: POINTS_PROGRAM_START_SEC       # 2026-09-23T00:00:00Z — day 0 is the day tacit-points went live
         value: "1790121600"
       - key: POINTS_PROGRAM_DAYS
         value: "90"
       - key: POINTS_PROGRAM_TOTAL_WEI       # 100,000 TAC
         value: "100000000000000000000000"
-      # - key: POINTS_DISTRIBUTOR_ADDR        # set once contracts/src/PointsDistributor.sol is deployed
-      #   value: ""
-      # - key: POINTS_ROOT_SETTER_KEY         # secret — dedicated key, never RELAY_KEY/SETTLE_KEY
-      #   sync: false
+      # PointsDistributor (CreateX CREATE3, deployed 2026-09-23, salt sender-guarded to the deployer key,
+      # verified on Etherscan + Sourcify). ROOT_SETTER = 0x5c1aBec44465f305f2F1AE492eEd191327EbdF3f, its
+      # own dedicated key (never RELAY_KEY/SETTLE_KEY — see the contract's own header for why). Publishing
+      # still needs the ops multisig to fund the distributor before the first updateRoot can succeed;
+      # until then settleCycle keeps folding days locally and logs a funding-shortfall alert each cycle.
+      - key: POINTS_DISTRIBUTOR_ADDR
+        value: "0x000000C918e44A3a443937fA7594eA4f7C95D6b9"
+      - key: POINTS_ROOT_SETTER_KEY         # secret — set in the Render dashboard
+        sync: false
