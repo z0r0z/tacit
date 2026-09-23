@@ -1,0 +1,12 @@
+{
+  "root": "0x447beb3ae5c5a69fe789306a4b9f090cf7267f22ab16efbd0511316cabe19825",
+  "count": 1,
+  "totalWei": "2002000000000000000000",
+  "claims": {
+    "0xfe46b29ca817e22331c60196e6dff8f22cfd1b9b": {
+      "address": "0xFe46B29Ca817E22331C60196e6dff8F22cfd1b9B",
+      "cumulativeAmount": "2002000000000000000000",
+      "proof": []
+    }
+  }
+}
