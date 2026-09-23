@@ -620,7 +620,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/farm/program', '/farm/health']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/farm/program', '/farm/health']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1411,9 +1411,17 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
 // burn whose bundle was missing or refused when its block was scanned stays pending and completes in any later
 // batch once a valid bundle is stored here, so bundles are kept long enough to cover a slow submission, and a
 // holder can simply register again after expiry.
+// Public, self-service: whoever made a burn already holds everything needed to reconstruct its own provenance
+// from public Bitcoin data, and the guest re-verifies the whole bundle in-zkVM regardless of who submitted it —
+// a bad entry here just means that burn stays pending, never a false onboarding. The completion path above is
+// already robust (any later batch picks up a bundle once one exists); gating registration itself behind an
+// operator credential only adds an extra "did someone with the token notice and register it" dependency in
+// front of that, with no soundness benefit. Rate-limited per IP for storage hygiene, not to gate real usage.
 async function handleReflectionBurndep(req, env, url, cors) {
-  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const rl = await proveRateLimit(env, ip, 'burndep', Number(env.BURNDEP_RL_BURST || 20), Number(env.BURNDEP_RL_REFILL_MS || 60000));
+  if (!rl.ok) return jsonResponse({ ok: false, error: `too many burndep registrations — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
