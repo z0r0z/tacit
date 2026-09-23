@@ -242,6 +242,29 @@ function startHttp(store) {
         res.end(JSON.stringify(claim));
         return;
       }
+      // Monitoring view of the reward settlement itself — separate from /points, which is real-time. A day's
+      // entitlements only land here once that whole UTC day has elapsed (settleCycle never settles "today").
+      if (url.pathname === '/rewards') {
+        const state = store.loadSettleState();
+        const startDay = CFG.pointsProgramStartSec ? Math.floor(CFG.pointsProgramStartSec / 86400) : null;
+        const todayDay = Math.floor(Date.now() / 1000 / 86400);
+        const rewards = store.allRewards();
+        const totalLedgerWei = rewards.reduce((s, r) => s + BigInt(r.cumulativeWei), 0n).toString();
+        const leaderboard = rewards.sort((a, b) => (BigInt(a.cumulativeWei) < BigInt(b.cumulativeWei) ? 1 : -1)).slice(0, 100);
+        res.end(JSON.stringify({
+          programConfigured: Boolean(CFG.pointsProgramStartSec),
+          programStartDay: startDay,
+          programDays: CFG.pointsProgramDays,
+          currentDay: todayDay,
+          lastSettledDay: state?.lastSettledDay ?? null,
+          publishingConfigured: Boolean(ADDR.pointsDistributor && CFG.pointsRootSetterKey),
+          publishedRoot: state?.publishedRoot ?? null,
+          publishedTotalWei: state?.publishedTotalWei ?? null,
+          totalLedgerWei,
+          leaderboard,
+        }));
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: 'not found' }));
     } catch (err) {

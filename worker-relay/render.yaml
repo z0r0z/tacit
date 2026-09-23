@@ -295,13 +295,18 @@ services:
         value: "4"
       - key: POINTS_BONUS_HALF_LIFE
         value: "200"
-      # ── Reward settlement — unset (dormant) until the program actually launches ──
-      # - key: POINTS_PROGRAM_START_SEC       # unix seconds; first UTC day fully after this is day 0
-      #   value: ""
-      # - key: POINTS_PROGRAM_DAYS
-      #   value: "90"
-      # - key: POINTS_PROGRAM_TOTAL_WEI       # 100,000 TAC
-      #   value: "100000000000000000000000"
+      # ── Reward settlement ──
+      # Epoch scoring is live (settleCycle folds each UTC day into the local reward ledger, visible at
+      # /rewards) so participation can be watched from day one. On-chain PUBLISHING stays dormant —
+      # POINTS_DISTRIBUTOR_ADDR/POINTS_ROOT_SETTER_KEY are unset below — until the contract is deployed and
+      # the ops multisig has funded it; settleCycle already no-ops the publish step without either, so this
+      # is zero fund risk as configured.
+      - key: POINTS_PROGRAM_START_SEC       # 2026-09-23T00:00:00Z — day 0 is the day tacit-points went live
+        value: "1790121600"
+      - key: POINTS_PROGRAM_DAYS
+        value: "90"
+      - key: POINTS_PROGRAM_TOTAL_WEI       # 100,000 TAC
+        value: "100000000000000000000000"
       # - key: POINTS_DISTRIBUTOR_ADDR        # set once contracts/src/PointsDistributor.sol is deployed
       #   value: ""
       # - key: POINTS_ROOT_SETTER_KEY         # secret — dedicated key, never RELAY_KEY/SETTLE_KEY
