@@ -53,6 +53,11 @@ export const ADDR = {
   // PointsDistributor (contracts/src/PointsDistributor.sol) — empty until deployed, in which case
   // points-indexer.js's settleCycle logs and skips publishing rather than failing.
   pointsDistributor: opt('POINTS_DISTRIBUTOR_ADDR', ''),
+  // WrapTipForwarder (contracts/src/WrapTipForwarder.sol) — deployed 2026-09-23. Optional for
+  // points-indexer.js: when set, a Wrap's matching WrappedWithTip (same tx) is recorded alongside it purely
+  // as metadata (tip amount + who it went to) — it never changes which address gets points. Points always
+  // go to the tx's own sender, forwarder or not, since that's who actually funded the deposit.
+  wrapTipForwarder: opt('WRAP_TIP_FORWARDER_ADDR', '0x000000D218B03db5837943b0b05DeA2965AE956e'),
 };
 
 export const CFG = {
@@ -259,7 +264,13 @@ export const CFG = {
   bpsCap: num('BPS_CAP', 30), // displayed bps ceiling for mid/large trades
   // Ops/day the maintenance overhead is amortised across. Set it to what the relay actually serves; too
   // high quietly under-prices every op and the relay bleeds, too low prices us out of competitiveness.
-  expectedOpsPerDay: num('EXPECTED_OPS_PER_DAY', 50),
+  // Measured twice independently 2026-09-23 against real mainnet activity since gen5 launched (deploy
+  // block 25998736): 19.61/day from the pool's leaf count (114 leaves / 5.81 days) and 19.35/day from
+  // distinct settle transactions on the relay key (112 / 5.79 days) — agreeing within 1.3%. The previous
+  // default of 50 overstated real volume by ~2.6x, understating this term's true per-op cost by the same
+  // factor wherever RELAY_GATE_INCLUDE_MAINTENANCE is on. Re-measure before trusting this far into the
+  // future — it moves with real adoption, not with intent.
+  expectedOpsPerDay: num('EXPECTED_OPS_PER_DAY', 20),
   // Refuse ops that carry no priced fee. Default OFF: nothing populates op.feeUsd yet, so switching this
   // on before the producer is wired would refuse every job. Turn it on once fees actually arrive.
   requirePricedFee: opt('RELAY_REQUIRE_PRICED_FEE', '0') === '1',
