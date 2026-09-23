@@ -255,6 +255,10 @@ const WORKER_BASE = (typeof globalThis !== 'undefined' && typeof globalThis.__TA
 const WORKER_FALLBACK = 'https://tacit-pin.rosscampbell9.workers.dev';
 const WORKER_BASES = [WORKER_BASE, WORKER_FALLBACK].filter((b, i, a) => b && a.indexOf(b) === i);
 
+// Read-only ETH-wrap points leaderboard (worker-relay/src/points-indexer.js). Informational only —
+// nothing here gates or unlocks anything; a fetch failure just leaves the points chip blank.
+const POINTS_BASE = 'https://tacit-points.onrender.com';
+
 // Service worker registration. Moved here from an inline <script> in
 // index.html because the dapp's CSP forbids inline scripts (script-src 'self'
 // 'wasm-unsafe-eval' only). Registration runs after page load so the
@@ -89293,6 +89297,18 @@ function setupExtWalletButtons() {
   };
 }
 
+// Points program (worker-relay/src/points-indexer.js): tallies ETH deposits into the confidential
+// pool by the depositing address. Informational only, so a fetch failure just leaves the chip blank
+// rather than surfacing an error — nothing in the dapp depends on this succeeding.
+async function fetchEthWrapPoints(address) {
+  try {
+    const r = await fetch(`${POINTS_BASE}/points/${address}`, { signal: AbortSignal.timeout ? AbortSignal.timeout(3000) : undefined });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return Number.isFinite(j?.points) ? j.points : null;
+  } catch { return null; }
+}
+
 function renderEthWalletPanel() {
   const info = document.getElementById('eth-wallet-info');
   if (!info) return;
@@ -89301,8 +89317,17 @@ function renderEthWalletPanel() {
     return;
   }
   info.style.display = '';
+  const addr = '0x' + ethWallet.state.address;
   const addrEl = document.getElementById('eth-wallet-address');
-  if (addrEl) addrEl.textContent = '0x' + ethWallet.state.address;
+  if (addrEl) addrEl.textContent = addr;
+  const pointsEl = document.getElementById('eth-wallet-points');
+  if (pointsEl) {
+    pointsEl.textContent = '…';
+    fetchEthWrapPoints(addr).then((points) => {
+      const el = document.getElementById('eth-wallet-points');
+      if (el) el.textContent = points != null ? Math.round(points).toLocaleString() : '—';
+    });
+  }
 }
 
 function renderBtcWalletPanel() {
