@@ -69616,7 +69616,7 @@ function applyMarketFilters() {
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
   const grid = $('#market-grid');
-  const myPubHex = bytesToHex(wallet.pub);
+  const myPubHex = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
   // Locate the cheapest preauth in the currently-paginated page so we can
   // pin a "Best price" pill on it. Asset-mode default sort is unit-asc so
   // this is usually the first tile, but we walk explicitly to skip
