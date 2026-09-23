@@ -32,7 +32,10 @@ function ethToWei(s) {
   return (BigInt(i || '0') * (10n ** 18n) + BigInt(frac || '0')).toString();
 }
 
-// Wrap on-ramp: build + sign + broadcast the deposit from the user's (funded) Sepolia EVM account.
+// Wrap on-ramp: build + sign + broadcast the deposit, then carry it all the way to a spendable note. Order
+// matters — submitWrapSettle's guest checks the deposit is already registered, so the deposit tx must be
+// mined before submitting the OP_WRAP witness for settle. wrap()/routerWrap() already return every field
+// submitWrapSettle needs (wrapOp, leaf, outputs, memos, ephRand).
 function wireWrap(wallet, ux) {
   const btn = el('cpool-wrap-btn');
   if (!btn) return;
@@ -43,17 +46,28 @@ function wireWrap(wallet, ux) {
     if (!wei || wei === '0') { if (st) st.textContent = 'Enter an amount.'; return; }
     btn.disabled = true;
     if (st) st.textContent = 'Building + broadcasting the deposit…';
+    let r; // declared outside try so the catch block can still report a txHash from a step after broadcast
     try {
       // One-tx ConfidentialRouter wrap when the router is deployed (collapses approve+wrap); otherwise the
       // direct pool deposit. Same note commitment + recovery either way.
-      const r = ux.cfg.router
+      r = ux.cfg.router
         ? await ux.routerWrap({ walletPriv: wallet.priv, amountWei: wei })
         : await ux.wrap({ walletPriv: wallet.priv, amountWei: wei });
-      if (st) st.innerHTML = `Deposit broadcast${ux.cfg.router ? ' (one-tx router)' : ''}: <code class="addr">${esc(r.txHash)}</code> — awaiting OP_WRAP settle; your cETH note appears once it settles.`;
-      notify('Deposit broadcast — awaiting settle', 'ok');
+      if (st) st.innerHTML = `Deposit broadcast${ux.cfg.router ? ' (one-tx router)' : ''}: <code class="addr">${esc(r.txHash)}</code> — waiting for it to confirm…`;
+      await ux.waitReceipt(r.txHash);
+      if (st) st.innerHTML = `Deposit confirmed: <code class="addr">${esc(r.txHash)}</code> — submitting for settle (proving your cETH note; can take a minute)…`;
+      await ux.submitWrapSettle({ built: r });
+      if (st) st.innerHTML = `Settled: <code class="addr">${esc(r.txHash)}</code> — your cETH note is ready.`;
+      notify('Wrap settled — cETH note ready', 'ok');
     } catch (e) {
       const m = formatErr(e, 'Wrap');
-      if (st) st.textContent = m; notify(m, 'error');
+      // The deposit itself may already be irreversibly on-chain even though this failed (a dropped
+      // connection after broadcast, a settle timeout) — never imply otherwise, since the fix here is to
+      // resubmit the SAME index's settle, not to re-wrap and double-deposit.
+      if (st) st.textContent = r && r.txHash
+        ? `${m} — the deposit (${r.txHash}) may still be on-chain; do not re-wrap the same amount before checking, or it will revert as a duplicate.`
+        : m;
+      notify(m, 'error');
     } finally {
       btn.disabled = false;
     }
