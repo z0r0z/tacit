@@ -23,7 +23,7 @@
 //   activate → delete old cache versions
 //   fetch → route by URL pattern, fall back to network on any error
 
-const CACHE_VERSION = 'v1-stealth-cache-ttl-activity-fallback-66f1ccf5';
+const CACHE_VERSION = 'v1-ipfs-cid-verified-immutable-66f1ccf5';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
 
@@ -72,6 +72,7 @@ function _cacheForRequest(url) {
 
   // Static CSS / images / fonts at fixed paths
   if (path.startsWith('/circuits/')
+      || path.startsWith('/fonts/')
       || path === '/tacit.svg'
       || path === '/tacit.png'
       || path === '/tacit-dark.png') {
@@ -81,19 +82,74 @@ function _cacheForRequest(url) {
   return null;
 }
 
-// Worker-origin URLs that proxy content-addressed (immutable) data. We
-// detect by URL pattern rather than origin since WORKER_BASE is a
-// configurable host. The patterns are conservative: only paths whose
-// response can never change for a given URL go in the immutable cache.
-function _isImmutableWorkerPath(url) {
-  // /ipfs/<cid> — content-addressed, immutable forever
-  if (/\/ipfs\/[A-Za-z0-9]+(\/.*)?$/.test(url.pathname)) return true;
-  // /chain/tx/<txid> — confirmed tx body is immutable; we accept the
-  // small risk of caching an unconfirmed body too (browser cache layer
-  // re-fetches on the next call via Cache-Control honors, and the dapp's
-  // own mempool-aware paths re-poll until confirmation lands).
-  if (/^\/chain\/tx\/[0-9a-f]{64}$/i.test(url.pathname)) return true;
-  return false;
+// Content-addressed (immutable) data. We detect by URL pattern rather than
+// origin since WORKER_BASE is a configurable host — which is exactly why a
+// URL pattern alone is not enough to earn a permanent cache entry. An
+// /ipfs/<cid> URL is a *claim* that the bytes hash to <cid>; storing the
+// gateway's answer forever under that name without checking makes a lying
+// or coerced gateway's answer permanent, and content addressing is the one
+// case where the client can check for itself. So we check.
+//
+// /chain/tx/<txid> stays pattern-matched: a confirmed tx body is immutable,
+// and the response is the worker's JSON rendering of the tx rather than the
+// preimage of the txid, so there is nothing to hash-check here. Nothing
+// executable is fetched this way and the dapp re-polls mempool-aware paths
+// until confirmation lands.
+function _isImmutableTxPath(url) {
+  return /^\/chain\/tx\/[0-9a-f]{64}$/i.test(url.pathname);
+}
+
+// Exact /ipfs/<cid> only. A trailing sub-path (/ipfs/<cid>/thumb.png)
+// addresses a file *inside* a DAG: the returned bytes are not the preimage
+// of the CID in the URL, so they can never be verified from the response
+// alone and must not be cached immutably.
+function _ipfsCid(url) {
+  const m = /^\/ipfs\/([A-Za-z0-9]+)$/.exec(url.pathname);
+  return m ? m[1] : null;
+}
+
+// Multibase base32 (RFC 4648 lowercase, no padding). Returns bytes, or
+// null on any character outside the alphabet.
+const _B32_ALPHA = 'abcdefghijklmnopqrstuvwxyz234567';
+function _b32Decode(str) {
+  const out = [];
+  let bits = 0, value = 0;
+  for (let i = 0; i < str.length; i++) {
+    const idx = _B32_ALPHA.indexOf(str[i]);
+    if (idx < 0) return null;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((value >>> bits) & 0xff); }
+  }
+  return new Uint8Array(out);
+}
+
+// The expected sha2-256 digest for a CIDv1 whose codec is raw, or null for
+// every other CID shape. Specifically null for:
+//   - CIDv0 (`Qm…`, base58btc, always dag-pb) — the bytes on the wire are
+//     the unixfs *file*, while the CID commits to a dag-pb node wrapping
+//     it, so sha256(response) does not equal the digest in the CID;
+//   - CIDv1 dag-pb (0x70) — same reason;
+//   - any multihash other than sha2-256/32, and any multibase other than
+//     base32-lower.
+// A null is not a verdict that the content is bad, only that this worker
+// cannot check it — callers fall through to an ordinary uncached network
+// fetch rather than minting a permanent cache entry on trust.
+function _rawSha256Digest(cid) {
+  if (!/^b[a-z2-7]{20,}$/.test(cid)) return null;      // multibase prefix 'b' = base32 lower
+  const bytes = _b32Decode(cid.slice(1));
+  if (!bytes || bytes.length !== 36) return null;      // 1+1+2+32
+  if (bytes[0] !== 0x01) return null;                  // CID version 1
+  if (bytes[1] !== 0x55) return null;                  // multicodec: raw
+  if (bytes[2] !== 0x12 || bytes[3] !== 0x20) return null; // multihash: sha2-256, 32 bytes
+  return bytes.subarray(4);
+}
+
+function _bytesEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
 }
 
 self.addEventListener('fetch', (event) => {
@@ -111,10 +167,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cross-origin: if it looks like an immutable worker proxy path, cache it.
-  if (_isImmutableWorkerPath(url)) {
+  // Confirmed-tx bodies: pattern-matched, immutable, nothing to verify.
+  if (_isImmutableTxPath(url)) {
     event.respondWith(_cacheFirst(req, IMMUTABLE_CACHE));
     return;
+  }
+
+  // /ipfs/<cid>: only the shapes we can actually verify get the immutable
+  // cache. Everything else (CIDv0, dag-pb, sub-paths, exotic multihashes)
+  // is left entirely alone — no respondWith, so the browser fetches it
+  // normally and the SW mints no permanent entry it cannot vouch for.
+  const cid = _ipfsCid(url);
+  if (cid) {
+    const expected = _rawSha256Digest(cid);
+    if (expected) {
+      event.respondWith(_cacheFirstVerifiedIpfs(req, expected));
+      return;
+    }
   }
 
   // Everything else: do nothing (let the browser handle it normally).
@@ -157,4 +226,46 @@ async function _revalidate(req, cache) {
     const resp = await fetch(req);
     if (resp && resp.ok) await cache.put(req, resp.clone());
   } catch { /* network blip — keep existing cache entry */ }
+}
+
+// Cache-first for /ipfs/<cid> where <cid> is a CIDv1 raw/sha2-256 CID: the
+// bytes are hashed and compared against the digest in the CID before they
+// are allowed into the immutable cache. Three outcomes:
+//   digest matches  → served and cached forever (the cache name now means
+//                     what it says: these bytes ARE that content);
+//   digest differs  → nothing is cached and the request fails with 502.
+//                     A raw CID whose body does not hash to it is not a
+//                     stale answer, it is a wrong one, so fail closed
+//                     rather than hand the page substituted content;
+//   unreadable body → served through untouched and NOT cached. Opaque
+//                     responses (an <img src> is a no-cors request) have
+//                     no readable body, so there is nothing to check;
+//                     serving them is the status quo, caching them is not.
+async function _cacheFirstVerifiedIpfs(req, expected) {
+  const cache = await caches.open(IMMUTABLE_CACHE);
+  const cached = await cache.match(req);
+  if (cached) return cached;              // only verified bytes are ever in here
+
+  const resp = await fetch(req);          // network error propagates, as before
+  if (!resp || !resp.ok) return resp;
+  if (resp.type !== 'basic' && resp.type !== 'cors' && resp.type !== 'default') return resp;
+
+  let buf;
+  try { buf = await resp.clone().arrayBuffer(); }
+  catch { return resp; }
+
+  let digest;
+  try { digest = new Uint8Array(await crypto.subtle.digest('SHA-256', buf)); }
+  catch { return resp; }
+
+  if (!_bytesEqual(digest, expected)) {
+    return new Response('ipfs: response does not hash to the requested CID', {
+      status: 502,
+      statusText: 'CID mismatch',
+      headers: { 'content-type': 'text/plain' }
+    });
+  }
+
+  try { await cache.put(req, resp.clone()); } catch { /* quota — fine */ }
+  return resp;
 }
