@@ -27,6 +27,8 @@ or attestor set signs a bridge message.
 - **Spec:** [`SPEC.md`](./SPEC.md), the normative protocol
 - **Whitepaper:** [`whitepaper/`](./whitepaper/WHITEPAPER.md), design and rationale
 - **Contracts:** [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md), mainnet addresses and verifying keys
+- **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
+  live deployment against this repository
 - **Build on it:** [`docs/BUILD-A-TACIT-DAPP.md`](./docs/BUILD-A-TACIT-DAPP.md)
 - **Security:** [`audit/AUDITS.md`](./audit/AUDITS.md)
 
@@ -157,7 +159,8 @@ worker/          indexer + API (served by server/ on Node); reads Bitcoin from p
 worker-relay/    hosted relay: settle, reflection, header relay, monitoring
 tests/           cross-implementation vectors and test suites
 tools/ scripts/  operational and verification tools
-docs/            integrator guides: build a dapp, deployments, ceremony artifacts, farms, airdrop, recovery, builds
+docs/            integrator guides: build a dapp, deployments, ceremony artifacts, farms, airdrop, recovery,
+                 reproducible builds, live verification
 audit/           security reviews
 whitepaper/      whitepaper (.md, .tex, .pdf)
 ```
