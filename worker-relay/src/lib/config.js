@@ -343,6 +343,14 @@ export const CFG = {
   // ETH->BTC crossOut and not yet broadcast its Bitcoin-side mint, which is entirely at their discretion. What
   // is not normal is a gap that never closes, because one failure mode makes it permanent (see the check).
   crossOutFoldGapWarnHours: num('CROSSOUT_FOLD_GAP_WARN_HOURS', 48),
+  // Cross-outs already known to be unfoldable, excluded from the gap the check above measures.
+  //
+  // A cross-out whose Bitcoin block was scanned before an eth-state bundle covering it existed can never
+  // fold — the fold is one-shot and the guest never rescans a block. That leaves a permanent, irreducible
+  // gap, and without a baseline the watchdog would page about it every run forever, which trains everyone to
+  // ignore the one alert that matters. Raising this is an explicit operator acknowledgement that a specific
+  // cross-out is written off; it must never be raised to silence a gap that has not been diagnosed.
+  crossOutFoldGapBaseline: num('CROSSOUT_FOLD_GAP_BASELINE', 0),
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't

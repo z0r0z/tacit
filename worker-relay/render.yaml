@@ -261,6 +261,12 @@ services:
       # Healthy steady state is ~HEADER_RELAY_LEAD (144) plus a few blocks of batch cadence, so this sits above it.
       - key: REFLECTION_LAG_ALERT_BLOCKS
         value: "200"
+      # Cross-outs already diagnosed as unfoldable, so the fold-gap watchdog measures only the unexplained
+      # remainder. Three today: one whose Bitcoin block was scanned before a bundle covering it existed (the
+      # fold is one-shot, so it can never land), and two whose Bitcoin-side mints have not been broadcast.
+      # Raise this ONLY after diagnosing a specific cross-out — never to quiet an unexplained gap.
+      - key: CROSSOUT_FOLD_GAP_BASELINE
+        value: "3"
 
   # Always-on web service: ETH-wrap points program (src/points-indexer.js). Reads the pool's existing
   # Wrap event + each wrap's tx sender — no contract change, nothing on the settle/reflection path. Serves

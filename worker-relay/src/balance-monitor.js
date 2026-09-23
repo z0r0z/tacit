@@ -368,21 +368,25 @@ async function checkCrossOutFold() {
   } catch { /* fall through */ }
   if (!Number.isFinite(onchain) || !Number.isFinite(folded)) { log('crossOut fold check: counts unavailable'); return; }
 
-  const gap = onchain - folded;
+  // Measure against the baseline, not against zero: a cross-out already written off as unfoldable leaves a
+  // permanent gap, and paging about it every run would bury the alert this check exists to raise.
+  const baseline = CFG.crossOutFoldGapBaseline;
+  const gap = onchain - folded - baseline;
   const since = await crossOutGapSeen(gap > 0);
-  log(`crossOut fold: onchain=${onchain} folded=${folded} gap=${gap}`);
+  log(`crossOut fold: onchain=${onchain} folded=${folded} baseline=${baseline} unexplained=${gap}`);
   if (gap <= 0 || !since) return;
 
   const hours = (Date.now() - since) / 3600000;
   if (hours < CFG.crossOutFoldGapWarnHours) return;
   await alert('warning',
-    `${gap} ETH->BTC cross-out(s) recorded on the pool have not folded on the Bitcoin side for ${hours.toFixed(0)}h `
-    + `(crossOutCount=${onchain}, foldedCrossoutCount=${folded}). This is normal if nobody has broadcast their `
+    `${gap} ETH->BTC cross-out(s) beyond the known-unfoldable baseline have not folded on the Bitcoin side for `
+    + `${hours.toFixed(0)}h (crossOutCount=${onchain}, foldedCrossoutCount=${folded}, baseline=${baseline}). `
+    + `This is normal if nobody has broadcast their `
     + `T_CROSSOUT_MINT reveal yet. If a reveal HAS been broadcast, check its Bitcoin block height against `
     + `reflection's attestedHeight (${attestedHeight ?? 'unknown'}) FIRST: if attestedHeight was already past that `
     + `block before the eth-state bundle covering the cross-out existed, the fold is one-shot and the mint can `
     + `never land, no matter how long you wait — recover by settling a fresh cross-out, not by waiting.`,
-    { onchain, folded, gap, attestedHeight, gapSinceHours: Number(hours.toFixed(1)) });
+    { onchain, folded, baseline, gap, attestedHeight, gapSinceHours: Number(hours.toFixed(1)) });
 }
 
 async function main() {
