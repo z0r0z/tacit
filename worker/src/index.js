@@ -845,6 +845,10 @@ const reflectionPendingKey = (network, jobId) => `reflection:pending:${network}:
 const reflectionSubmittedKey = (network) => `reflection:submitted:${network}`;
 const reflectionLastAckKey = (network) => `reflection:lastack:${network}`;
 const reflectionDriftKey = (network) => `reflection:driftstreak:${network}`;
+// Consecutive monitor runs that have seen the pool's crossOutCount running ahead of reflection's folded
+// count. A gap is normal and open-ended — it just means an ETH->BTC cross-out has settled and its Bitcoin
+// mint has not been broadcast yet — so only PERSISTENCE is a signal. See the monitor's own check.
+const crossOutGapKey = (network) => `reflection:crossoutgap:${network}`;
 const REFLECTION_ATTESTED_DIGEST_SELECTOR = '0xb909cdaf'; // attestedReflectionDigest()
 
 // The stashed candidate for a jobId, in the {newSnapshot, ethContentHash, attestedTo} shape. Tolerates a bare
@@ -970,7 +974,15 @@ async function handleReflectionAttestState(req, env, url, cors) {
       await env.REGISTRY_KV.put(reflectionDriftKey(network), JSON.stringify({ streak, at: Date.now() }));
       return jsonResponse({ ok: true, driftStreak: streak }, 200, h);
     }
-    return jsonResponse({ ok: false, error: 'nothing to record (submitted | driftSeen)' }, 400, h);
+    if (typeof body.crossOutGapSeen === 'boolean') {
+      // `since` is when the CURRENT unbroken run of gap-seen observations started, which is the number the
+      // alert actually wants ("this gap has not closed in N hours"). A run with no gap clears it.
+      const cur = (await readJson(crossOutGapKey(network))) || {};
+      const since = body.crossOutGapSeen ? (Number(cur.since) || Date.now()) : 0;
+      await env.REGISTRY_KV.put(crossOutGapKey(network), JSON.stringify({ since, at: Date.now() }));
+      return jsonResponse({ ok: true, crossOutGapSince: since }, 200, h);
+    }
+    return jsonResponse({ ok: false, error: 'nothing to record (submitted | driftSeen | crossOutGapSeen)' }, 400, h);
   }
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   let lastAck = await readJson(reflectionLastAckKey(network));
@@ -979,7 +991,8 @@ async function handleReflectionAttestState(req, env, url, cors) {
     await env.REGISTRY_KV.put(reflectionLastAckKey(network), JSON.stringify(lastAck));
   }
   const drift = await readJson(reflectionDriftKey(network));
-  return jsonResponse({ network, submitted: await readJson(reflectionSubmittedKey(network)), lastAck, driftStreak: drift ? Number(drift.streak) | 0 : 0, now: Date.now() }, 200, h);
+  const coGap = await readJson(crossOutGapKey(network));
+  return jsonResponse({ network, submitted: await readJson(reflectionSubmittedKey(network)), lastAck, driftStreak: drift ? Number(drift.streak) | 0 : 0, crossOutGapSince: coGap ? Number(coGap.since) || 0 : 0, now: Date.now() }, 200, h);
 }
 
 // Reflection relay: serve the next assembled Bitcoin-state batch for the relayer to prove. The relayer
@@ -1052,11 +1065,13 @@ async function handleReflectionEthStateGet(req, env, url, cors) {
 // side reveal is checked once, at scan time, against whatever the current eth-state candidate covers — this
 // is the one check to make before broadcasting one, so an integrator doesn't have to fetch the full
 // pending/confirmed objects and compare execBlock by hand. See BUILD-A-TACIT-DAPP.md §5f.
-// This answer is the same for every caller and changes only when the sidecar publishes, so it's cached
-// briefly and shares the more permissive bucket /reflection/status already uses, rather than metering it
-// hard on its own. An integrator who can't reach this endpoint is one who broadcasts a crossOut-mint
-// without checking coverage first, and a premature reveal there is a permanently stranded mint — so keeping
-// this route reliably reachable matters more than metering it tightly.
+// This answer is the same for every caller and changes only when the sidecar publishes, so it is cached and
+// only lightly metered. It was metered HARD (a 60-token bucket refilling once a minute) and not cached at
+// all, which made the gate unavailable in practice: a first-ever caller was observed getting a 429, because
+// one poller at more than a request a minute holds the bucket at zero indefinitely. An integrator who cannot
+// reach this endpoint is an integrator who broadcasts without checking it — and a premature broadcast is a
+// permanently stranded mint. The failure mode of metering this route is strictly worse than the failure mode
+// of serving it, so serve it.
 const ETH_STATE_COVERS_TTL_MS = 5000;
 const _ethStateCoversCache = new Map();
 async function handleReflectionEthStateCovers(req, env, url, cors) {
@@ -1081,8 +1096,26 @@ async function handleReflectionEthStateCovers(req, env, url, cors) {
     _ethStateCoversCache.set(network, view);
   }
   const { confirmedBlock, pendingBlock } = view;
+  // `covered` answers from whichever candidate reaches furthest, confirmed included — and that is correct,
+  // not a loophole, for a reason worth writing down because it is not obvious from this file alone.
+  //
+  // What a caller actually needs to know is whether the bundle that will be current WHEN reflection scans
+  // their reveal's Bitcoin block contains their cross-out. ReflectionLib's freshness gate decides that: a
+  // Mode-B attest only lands if the bundle's own crossOutCount equals the pool's LIVE crossOutCount, and a
+  // forward attest only lands if every recorded cross-out has already folded. So while any cross-out is
+  // outstanding, the only batch that can land at all is one carrying a count-current bundle — which, since
+  // the eth guest proves the contiguous index range against pool storage, necessarily contains it. A stale
+  // or regressed bundle does not quietly skip the mint; it fails to attest.
+  //
+  // What that gate does NOT cover is a reveal broadcast before the Ethereum cross-out has settled at all:
+  // the claimId is computable in advance, so such a reveal is constructible, and its block can be scanned
+  // while the cross-out does not yet exist to be a member of anything. That is the case that has actually
+  // stranded a mint on mainnet, and it is exactly what this endpoint rules out — no bundle can cover the
+  // cross-out's own Ethereum block before that block exists.
+  //
+  // confirmedBlock/pendingBlock are reported separately so a caller can see which candidate answered.
   const bestBlock = Math.max(confirmedBlock || 0, pendingBlock || 0) || null;
-  return jsonResponse({ network, block, bestBlock, covered: !!(bestBlock && bestBlock >= block) }, 200, headers);
+  return jsonResponse({ network, block, bestBlock, confirmedBlock, pendingBlock, covered: !!(bestBlock && bestBlock >= block) }, 200, headers);
 }
 
 // How long a published-but-unconfirmed eth-state candidate stays authoritative before a fresh POST is
@@ -1139,6 +1172,30 @@ async function handleReflectionEthStatePost(req, env, url, cors) {
         pendingContentHash: existing?.contentHash || null,
         pendingAgeSec: Math.round(ageMs / 1000),
         staleAfterSec: Math.round(staleMs / 1000),
+      }, 409, cors);
+    }
+  }
+  // execBlock must never go BACKWARDS relative to what has already been folded on-chain. Nothing else
+  // enforces this: the field is taken on nothing but Number.isFinite, and a sidecar restarting from an older
+  // resume point (or a hand-run eth_prove against a stale checkpoint) would publish a candidate covering
+  // less Ethereum state than the last one that landed. GET /reflection/eth-state/covers answers from
+  // whichever candidate reaches furthest, and integrators broadcast an unretryable Bitcoin-side mint on that
+  // answer, so a regression there is a silently wrong green light. The on-chain freshness gate would refuse
+  // to attest such a candidate anyway — this just turns a confusing downstream failure into a clear 409 at
+  // the point of publication. Skipped when either side is unknown, so it can never brick the lane over a
+  // candidate that simply predates the field.
+  if (Number.isFinite(body.execBlock)) {
+    let confirmedBlock = null;
+    try {
+      const raw = await env.REGISTRY_KV.get(ethStateConfirmedKey(network));
+      confirmedBlock = raw ? (JSON.parse(raw).execBlock ?? null) : null;
+    } catch { confirmedBlock = null; }
+    if (Number.isFinite(confirmedBlock) && body.execBlock < confirmedBlock) {
+      return jsonResponse({
+        ok: false,
+        error: 'execBlock regresses below the last confirmed candidate — this eth_prove ran against a stale resume point; re-run it from the current committed state rather than publishing this',
+        execBlock: body.execBlock,
+        confirmedExecBlock: confirmedBlock,
       }, 409, cors);
     }
   }
@@ -1929,24 +1986,48 @@ const PROVE_RL_REFILL_MS = 40000;  // one token back every 40s (~90/hr sustained
 // serving it without a box token is safe by the same reasoning the integration guide gives integrators; this
 // bucket only protects the shared KV/worker from load, not correctness. Authenticated (box-token)
 // callers skip it entirely.
+// Serialize a read-modify-write on one KV key against every other call for that same key.
+//
+// A token bucket and a daily counter are both `get` → compute → `put` across an `await`, and without this
+// N concurrent requests all resolve their `get` before any `put` lands, all read the same token count, and
+// all write count-1. N parallel requests then cost ONE token — so every per-IP bucket and every daily cap in
+// this file was bypassable simply by not sending requests one at a time. That is not a small overshoot: the
+// prove and free-relay daily caps are the only bound on real PROVE spend from a permissionless route.
+//
+// Node runs this worker in a single process, so a promise-chain mutex per key is sufficient and exact — the
+// same mechanism `makeLock` already gives the `cps:pending` queue. Keyed rather than global so unrelated
+// buckets never queue behind each other. Entries are dropped once their chain is idle, so the map cannot
+// grow without bound across distinct IPs.
+const _kvRmwLocks = new Map();
+function withKvKeyLock(key, fn) {
+  const prev = _kvRmwLocks.get(key) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  const settled = run.then(() => {}, () => {});
+  _kvRmwLocks.set(key, settled);
+  settled.then(() => { if (_kvRmwLocks.get(key) === settled) _kvRmwLocks.delete(key); });
+  return run;
+}
+
 const DUMP_RL_BURST = 30;
 const DUMP_RL_REFILL_MS = 10000; // one token back every 10s (~360/hr sustained per source)
 async function dumpRateLimit(env, ip) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };
   const key = 'cps:dumprl:' + ip;
-  const now = Date.now();
-  let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
-  if (!b || typeof b.tokens !== 'number') b = { tokens: DUMP_RL_BURST, ts: now };
-  const refill = Math.floor((now - b.ts) / DUMP_RL_REFILL_MS);
-  if (refill > 0) { b.tokens = Math.min(DUMP_RL_BURST, b.tokens + refill); b.ts = now; }
-  if (b.tokens <= 0) {
-    const retryAfter = Math.max(1, Math.ceil((DUMP_RL_REFILL_MS - (now - b.ts)) / 1000));
-    return { ok: false, retryAfter };
-  }
-  b.tokens -= 1;
-  await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
-  return { ok: true };
+  return withKvKeyLock(key, async () => {
+    const now = Date.now();
+    let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
+    if (!b || typeof b.tokens !== 'number') b = { tokens: DUMP_RL_BURST, ts: now };
+    const refill = Math.floor((now - b.ts) / DUMP_RL_REFILL_MS);
+    if (refill > 0) { b.tokens = Math.min(DUMP_RL_BURST, b.tokens + refill); b.ts = now; }
+    if (b.tokens <= 0) {
+      const retryAfter = Math.max(1, Math.ceil((DUMP_RL_REFILL_MS - (now - b.ts)) / 1000));
+      return { ok: false, retryAfter };
+    }
+    b.tokens -= 1;
+    await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
+    return { ok: true };
+  });
 }
 // Token bucket, per IP, per NAMED bucket. The bucket name is part of the key so a caller paying a real fee
 // is metered separately from an anonymous prove-only submit rather than sharing one allowance.
@@ -1954,18 +2035,20 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };
   const key = `cps:rl:${bucket}:${ip}`;
-  const now = Date.now();
-  let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
-  if (!b || typeof b.tokens !== 'number') b = { tokens: burst, ts: now };
-  const refill = Math.floor((now - b.ts) / refillMs);
-  if (refill > 0) { b.tokens = Math.min(burst, b.tokens + refill); b.ts = now; }
-  if (b.tokens <= 0) {
-    const retryAfter = Math.max(1, Math.ceil((refillMs - (now - b.ts)) / 1000));
-    return { ok: false, retryAfter };
-  }
-  b.tokens -= 1;
-  await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
-  return { ok: true };
+  return withKvKeyLock(key, async () => {
+    const now = Date.now();
+    let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
+    if (!b || typeof b.tokens !== 'number') b = { tokens: burst, ts: now };
+    const refill = Math.floor((now - b.ts) / refillMs);
+    if (refill > 0) { b.tokens = Math.min(burst, b.tokens + refill); b.ts = now; }
+    if (b.tokens <= 0) {
+      const retryAfter = Math.max(1, Math.ceil((refillMs - (now - b.ts)) / 1000));
+      return { ok: false, retryAfter };
+    }
+    b.tokens -= 1;
+    await kv.put(key, JSON.stringify(b), { expirationTtl: 3600 });
+    return { ok: true };
+  });
 }
 // A GLOBAL daily ceiling on prove-mode jobs, on top of the per-IP bucket.
 //
@@ -1990,8 +2073,11 @@ async function dailyBudget(env, name, cap) {
 async function spendDailyBudget(env, name) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return;
-  const used = Number((await kv.get(budgetKey(name))) || 0);
-  await kv.put(budgetKey(name), String(used + 1), { expirationTtl: 172800 });
+  const key = budgetKey(name);
+  return withKvKeyLock(key, async () => {
+    const used = Number((await kv.get(key)) || 0);
+    await kv.put(key, String(used + 1), { expirationTtl: 172800 });
+  });
 }
 const proveBudget = (env) => dailyBudget(env, 'prove', Number(env.PROVE_MODE_DAILY_CAP || 400));
 const spendProveBudget = (env) => spendDailyBudget(env, 'prove');
