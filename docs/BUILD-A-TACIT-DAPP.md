@@ -818,7 +818,28 @@ expiry. So:
 - Call `assertFreshRefundKey({ refundSpk, inputAuthKeys, otherRefundSpks })` from `dapp/amm-refund-key.js`
   before you sign. It checks both cases and explains the failure.
 
-The guest cannot check this for you — it only ever sees the key the transaction pays to.
+**Why the shape is like this, and why the rule lives in your builder.** Two decisions meet here, and each is
+right on its own.
+
+The refund commits the input commitment *verbatim* because that makes conservation **syntactic** rather than
+proven. The refunded note is the input note's commitment, so there is no arithmetic for a prover to get wrong
+or to manipulate — no range proof, no kernel, no prover-chosen blinding. Minting a fresh commitment for "the
+same" value would instead require the guest to verify a prover-supplied opening, reintroducing exactly the
+class of error a refund exists to avoid.
+
+The leaf omits the outpoint because that is what lets the reflection, which sees a Bitcoin output, and the
+settle guest, which sees a spend request, compute the **same** leaf and therefore the same nullifier for the
+same note. A note with two identities depending on which lane looked at it would break the cross-lane gate
+that stops it being spent on both chains — a far worse property to give up.
+
+Together they fix a note's identity as `(asset, commitment, key)`. A refund pins the asset and the
+commitment, so the key is the single degree of freedom, and the protocol asks you to spend it.
+
+And the guest genuinely cannot enforce this at fold time. By the time it folds a refund the Bitcoin
+transaction has already confirmed and the input has already been nullified by the vin scan. Refusing would
+either halt the lane or strand the very input the refund exists to return — both worse than minting a note
+that cannot be spent. Before broadcast is the only moment the choice is still open, which is why the rule
+lives in the builder rather than in the program.
 
 ### A Bitcoin swap batch of one is not confidential
 
