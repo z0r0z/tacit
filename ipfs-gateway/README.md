@@ -6,9 +6,21 @@ so the loader does not depend on a third-party gateway.
 `index.html` is a small loader: it calls `html()` on an ERC-8244 on-chain pointer
 contract over public Ethereum RPCs and replaces itself with the returned
 document. The gateway serves content-addressed bytes only (it does not fetch
-arbitrary CIDs), so the hash check below is all a visitor needs to trust it.
+arbitrary CIDs).
 
-Content CID: `QmWZ3X8yBzZHrN5f5a5rnx4BZASpckck77khCBGKNXLRAb`
+**What the hash check below does and does not cover.** It proves the gateway served
+this loader and not something else. It says nothing about the document the loader
+then becomes — those bytes come from an RPC at load time, and the loader runs their
+scripts on this origin. Since this origin goes on to ask for the Tacit identity
+signature, and that signature is the private key, a single lying RPC would otherwise
+be a complete key-theft path. So the loader adopts a document only when two
+independent providers return byte-identical results, and refuses to load at all if
+they disagree. Treat any "providers disagree" message as a live incident, not a
+glitch: do not sign anything on a page showing it.
+
+Content CID: `QmbULJcE9VWFbpLuFynAF3anAzZBWMUxCkh3o7F47Do7ep` (recomputed after the quorum check was
+added; the previously published `QmWZ3X8yBzZHrN5f5a5rnx4BZASpckck77khCBGKNXLRAb` addresses the older
+first-success-wins loader and must not be served). Re-pin before the next deploy.
 
 ## Deploy on Render
 1. Render dashboard → **New → Web Service** → this repo.

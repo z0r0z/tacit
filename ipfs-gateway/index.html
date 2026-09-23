@@ -61,16 +61,40 @@
     }
   };
 
+  // QUORUM, not first-success.
+  //
+  // Whatever comes back here becomes this origin's document, scripts included (that is what reactivate()
+  // is for). This origin then asks the visitor's wallet to sign the Tacit identity message — and that
+  // message is deliberately the same in every Tacit app, so a user has been told explicitly that seeing
+  // this exact prompt somewhere new is normal. The signature IS the private key for every note that
+  // wallet holds. So "whichever public RPC answers first" cannot be the trust root: one operator having a
+  // bad day, or one hijacked route, is a total and irreversible drain of everyone who loads this page.
+  //
+  // There is nothing to pin against — the on-chain document is meant to change — so the check that fits is
+  // agreement: take the byte-identical answer from QUORUM independent providers before adopting anything.
+  // Corrupting the page now costs an attacker control of two unrelated RPC operators instead of one, and a
+  // provider that is merely broken or stale disagrees and is discarded rather than believed.
+  const QUORUM = 2;
+  const counts = new Map();
+  const failures = [];
   for (const url of RPCS) {
-    try {
-      const doc = new DOMParser().parseFromString(await load(url), 'text/html');
-      document.documentElement.replaceWith(document.adoptNode(doc.documentElement));
-      document.title = document.querySelector('title')?.textContent ?? '';
-      reactivate();
-      return;
-    } catch (e) { console.warn('[8244]', url, e.message); }
+    let html;
+    try { html = await load(url); }
+    catch (e) { failures.push(url); console.warn('[8244]', url, e.message); continue; }
+    const n = (counts.get(html) || 0) + 1;
+    counts.set(html, n);
+    if (n < QUORUM) continue;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    document.documentElement.replaceWith(document.adoptNode(doc.documentElement));
+    document.title = document.querySelector('title')?.textContent ?? '';
+    reactivate();
+    return;
   }
-  s.textContent = 'Failed to load from chain. Try refreshing.';
+  // Never fall back to a single answer. Disagreement is the alarm, not an inconvenience: refusing to load
+  // costs a refresh, while adopting an unconfirmed document costs the visitor every note they own.
+  s.textContent = counts.size > 1
+    ? 'Providers disagree on the on-chain document — refusing to load it. Do not sign anything here.'
+    : `Failed to load from chain (${failures.length} provider(s) unreachable, need ${QUORUM} to agree). Try refreshing.`;
 })();
 </script>
 </html>
