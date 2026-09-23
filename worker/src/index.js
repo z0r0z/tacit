@@ -1746,6 +1746,7 @@ function handleConfidentialQuote(req, env, url, cors) {
     return (async () => {
       let gasPriceHex;
       try { gasPriceHex = await _ethGasPrice('mainnet'); } catch { gasPriceHex = null; }
+      const ethUsd = await _ethUsdPrice().catch(() => null);
       const weiPerFeeUnit = await weiPerFeeUnitOf(priced).catch(() => null);
       if (gasPriceHex && weiPerFeeUnit) {
         try {
@@ -1759,16 +1760,36 @@ function handleConfidentialQuote(req, env, url, cors) {
           // cost or maintenance-share math. MIN_FLOOR_USD here defaults to the same $0.50 as worker-relay's
           // CFG.minFloorUsd by convention, not by any shared source of truth — keep them in sync by hand.
           const minFloorUsd = Number(env.MIN_FLOOR_USD || '0.5');
-          if (minFloorUsd > 0) {
-            const ethUsd = await _ethUsdPrice().catch(() => null);
-            if (ethUsd) {
-              const minFloorWei = BigInt(Math.ceil((minFloorUsd / ethUsd) * 1e18));
-              const minFloorUnits = (minFloorWei + weiPerFeeUnit - 1n) / weiPerFeeUnit; // ceil
-              if (minFloorUnits > floorUnits) floorUnits = minFloorUnits;
-            }
+          if (minFloorUsd > 0 && ethUsd) {
+            const minFloorWei = BigInt(Math.ceil((minFloorUsd / ethUsd) * 1e18));
+            const minFloorUnits = (minFloorWei + weiPerFeeUnit - 1n) / weiPerFeeUnit; // ceil
+            if (minFloorUnits > floorUnits) floorUnits = minFloorUnits;
           }
           out.gasAwareFloorUnits = floorUnits.toString();
         } catch { /* leave gasAwareFloorUnits null on any conversion hiccup */ }
+      }
+      // Recommended tip (raw wei — NOT fee-asset units) for WrapTipForwarder.wrapWithTip: covers this
+      // relay's real cost to settle a wrap afterward (settle gas + the SP1 network-prove cost) plus the
+      // same margin as worker-relay's own fee model, so integrators (zFi's zSwap, tacit's own dapp) have
+      // one number to attach as `msg.value - amount` instead of guessing. cETH-only: the forwarder only
+      // ever wraps native ETH. WRAP_SETTLE_GAS mirrors worker-relay's OP_GAS.wrap (593000) and OP_PROVE
+      // mirrors its OP_PROVE (0.39) — kept in sync by convention like MIN_FLOOR_USD above, not by a shared
+      // source of truth. A wrap is NEVER refused for an insufficient tip (ConfidentialRouter's feeLegsOf
+      // treats 'wrap' as fee-less by design and both fee gates unconditionally pass it through — see
+      // relay-quote.js's passesFloor), so an integrator that under-tips costs the relay margin, never a
+      // stuck deposit: this is a recommendation for healthy economics, not a precondition for service.
+      if (ticker === 'cETH' && gasPriceHex) {
+        try {
+          const wrapSettleGas = BigInt(env.WRAP_SETTLE_GAS || '593000');
+          const gasCostWei = wrapSettleGas * BigInt(gasPriceHex);
+          const opProve = Number(env.OP_PROVE || '0.39');
+          const provePriceUsd = await _provePriceUsd('mainnet').catch(() => null);
+          let proveCostWei = 0n;
+          if (provePriceUsd && ethUsd) proveCostWei = BigInt(Math.ceil((opProve * provePriceUsd / ethUsd) * 1e18));
+          const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
+          const base = gasCostWei + proveCostWei;
+          out.recommendedWrapTipWei = (base + (base * marginBps) / 10000n).toString();
+        } catch { /* leave recommendedWrapTipWei unset — callers should treat a missing field as "ask again" */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
     })();
@@ -2547,6 +2568,47 @@ async function _chainlinkUsd(feed, network = 'mainnet') {
 }
 const _ethUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_ETH_USD, network);
 const _btcUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_BTC_USD, network);
+
+// Live PROVE/USD via zQuoter.buildBestSwap(PROVE -> ETH) — the same quoter address and function
+// worker-relay's own provePriceUsd() uses (see worker-relay/src/lib/chain.js's ZQUOTER_ABI comment: the
+// PREVIOUS quoter's buildSwapAuto had no PROVE->ETH route at all, silently pricing PROVE off a stale
+// constant forever; this one's buildBestSwap resolves it correctly). This worker can't import
+// worker-relay's code (separate deployable), so this is an independent implementation of the same call —
+// verified 2026-09-23 that both resolve to the same live price. Raw hex encode/decode, matching this
+// file's existing _chainlinkUsd style, rather than pulling in an ABI library for one static call.
+const ZQUOTER_V2 = '0x000000bd2DB80567c23E353ca95a251c573cBf9B';
+const PROVE_TOKEN = '0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29';
+const _pad32 = (hex) => hex.replace(/^0x/, '').padStart(64, '0');
+let _provePxCache = { at: 0, v: null };
+async function _provePriceUsd(network = 'mainnet') {
+  if (Date.now() - _provePxCache.at < 60_000 && _provePxCache.v) return _provePxCache.v;
+  try {
+    const ethUsd = await _ethUsdPrice(network);
+    if (!ethUsd) return null;
+    const deadline = Math.floor(Date.now() / 1000) + 600;
+    // buildBestSwap(to, exactOut, tokenIn, tokenOut, swapAmount, slippageBps, deadline) — selector 0xe7798987.
+    // `to` is unused for a pure quote (only matters for the callData this call also builds but we discard).
+    const data = '0xe7798987'
+      + _pad32('0x0000000000000000000000000000000000000000')
+      + _pad32('0x00')
+      + _pad32(PROVE_TOKEN)
+      + _pad32('0x0000000000000000000000000000000000000000')
+      + _pad32('0x' + (10n ** 18n).toString(16)) // swapAmount = 1 PROVE
+      + _pad32('0x64') // slippageBps = 100 (1%)
+      + _pad32('0x' + deadline.toString(16));
+    const result = await _ethCall(network, ZQUOTER_V2, data);
+    if (!result || result.length < 2 + 64 * 4) return null;
+    // Return shape (Quote best, bytes callData, uint256 amountLimit, uint256 msgValue); Quote itself is
+    // fully static (source, feeBps, amountIn, amountOut) so it occupies the first 4 head words directly —
+    // amountOut is word index 3.
+    const amountOutWei = BigInt('0x' + result.slice(2 + 64 * 3, 2 + 64 * 4));
+    if (amountOutWei <= 0n) return null;
+    const usd = (Number(amountOutWei) / 1e18) * ethUsd; // ETH received for 1 PROVE, priced in USD
+    if (!Number.isFinite(usd) || usd <= 0) return null;
+    _provePxCache = { at: Date.now(), v: usd };
+    return usd;
+  } catch { return null; }
+}
 // eth_getStorageAt for reading internal (no-getter) pool mappings by slot — e.g.
 // ConfidentialPool.nullifierSpent[ν], whose auto-getter was internalized to fit EIP-170.
 async function _ethGetStorageAt(network, address, slot) {
