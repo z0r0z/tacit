@@ -460,15 +460,29 @@ export async function copyToClipboard(text, btn) {
 //
 // A cBTC lock is a plain Bitcoin output carrying a 0x66 envelope; nothing on Bitcoin prevents it from being
 // spent (covenant-enforced locks are held behind the reserved OP_COVENANT_MINT opcode). This registry keeps
-// such outputs out of ordinary coin selection, and is consumed by tacit.js's getUtxos filter, the single point
-// every UTXO read passes through.
+// such outputs out of coin selection, and is consumed by tacit.js's getUtxos filter and by cbtc-lock-mint's
+// own funding guard.
 //
 // An outpoint is registered when its lock is broadcast and released only once the lock is genuinely retired
 // (a proven redemption, or a spend that already happened). It is not released on mint, which is why it is a
 // separate store from `tacit-cbtc-pending-locks-v1`, whose lifecycle ends at mint.
 //
-// Persisted across reloads. If local storage is cleared the wallet falls back to unprotected selection, so
-// this is a safeguard rather than something correctness depends on.
+// WHAT THIS ACTUALLY REACHES — read before relying on it.
+//
+// tacit.js's getUtxos is only ever called with the wallet's P2WPKH address, while a lock output is a
+// key-path P2TR. Those two sets are disjoint, so that filter alone can never see a lock outpoint: its real
+// job there is the general "do not spend a reserved outpoint" rule, not lock protection specifically. Lock
+// protection is enforced where lock-adjacent funding is actually chosen — cbtc-lock-mint's guarded
+// fetchUtxos, which this set is passed into.
+//
+// It cannot reach an EXTERNAL wallet at all. The lock sits at a key-path P2TR under the same seed, so any
+// other wallet restored from that seed sees an ordinary spendable UTXO and may sweep it — which the fold
+// reads as a rug and which slashes the escrow with no cure path. No client-side registry can fix that; it is
+// a property of a lock being a plain output rather than a covenant.
+//
+// Persisted across reloads, in this browser only. If local storage is cleared — or the user opens a second
+// device, or a private window — the set is empty and the wallet falls back to unprotected selection. So this
+// is a safeguard, never something correctness depends on.
 const _PROTECTED_OUTPOINTS_KEY = 'tacit-protected-outpoints-v1';
 let _protectedOutpoints = null;
 function _loadProtectedOutpoints() {

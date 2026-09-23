@@ -96,21 +96,24 @@ function wireSubmit(wallet, ux) {
       if (statusEl) statusEl.textContent = 'Offer incomplete: ' + (e && e.message || e);
       return;
     }
-    btn.disabled = true;
-    if (statusEl) statusEl.textContent = `Offer valid (${result.leaves.length} outputs) — settling via the relayer…`;
-    try {
-      const r = await ux.relay.settle({
-        type: 'otc', op: wireOp, leaves: result.leaves, outputs: [], ephRand: () => 1n,
-        waitOpts: { onUpdate: (st) => { if (statusEl) statusEl.textContent = `OTC ${st.status}…`; } },
-      });
-      if (statusEl) statusEl.innerHTML = 'OTC settled'
-        + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '') + '.';
-      notify('OTC settled', 'ok');
-    } catch (e) {
-      const m = formatErr(e, 'OTC settle');
-      if (statusEl) statusEl.textContent = m; notify(m, 'error');
-      btn.disabled = false;
+    // Settling is NOT wired, and is refused here rather than attempted.
+    //
+    // This call used to pass `outputs: []` with four real leaves, so the relay's recovery guard threw on
+    // every attempt — the button could never succeed. Worse was what sat next to it: `ephRand: () => 1n`, a
+    // CONSTANT ephemeral scalar. Anyone "fixing" the first problem by supplying real output descriptors
+    // would have armed the second, and an ephemeral of 1 makes the ECDH shared secret equal to the
+    // recipient's own public key — every OTC memo on chain would be decryptable by any observer. Removing
+    // the constant is the point of this change: a dead path that fails closed is fine, a dead path carrying
+    // a loaded footgun for the next person to touch it is not.
+    //
+    // To finish this: build one recovery descriptor per leaf (as confidential-pool-ux's own op builders do),
+    // pass `ephRand: freshEph` — the CSPRNG scalar source, never a fixed value — and move `waitOpts` to
+    // settle()'s SECOND argument, where it is actually read.
+    if (statusEl) {
+      statusEl.textContent = 'OTC settle is not wired up in this build — the offer above is valid and verified, '
+        + 'but settling it needs per-leaf recovery descriptors that this tab does not build yet.';
     }
+    notify('OTC settle is not available in this build', 'error');
   };
 }
 

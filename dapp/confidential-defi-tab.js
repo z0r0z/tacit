@@ -9,7 +9,7 @@
 
 import { secp, sha256, keccak_256, hmac } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
-import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater, protectOutpoint } from './confidential-deployments.js';
+import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater, protectOutpoint, listProtectedOutpoints } from './confidential-deployments.js';
 import { makeConfidentialCdp } from './confidential-cdp.js';
 import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
@@ -60,8 +60,10 @@ function fmtUnits(v, decimals) {
   return f ? `${i}.${f}` : i;
 }
 
-// Persist the opening of each position so it can be closed later (the CDP position tree is not yet scanned
-// client-side; this descriptor carries everything buildCdpCloseOp needs except the live membership path).
+// Persist the opening of each position so it can be closed later. This descriptor is a CACHE, not the record:
+// ux.recoverCdpPositions rebuilds positions from key + chain, and the renderer merges anything it finds that
+// has no local descriptor. What the descriptor buys is not having to walk the chain to close a position you
+// opened in this browser.
 const POS_KEY = 'tacit-cdp-positions-v1';
 function loadPositions() { try { return JSON.parse(localStorage.getItem(POS_KEY) || '[]'); } catch { return []; } }
 function savePosition(p) {
@@ -71,14 +73,37 @@ function savePosition(p) {
 }
 // The next position key index for a controller. It only ever grows: counting the saved positions would hand a
 // new position the key of a still-open one as soon as an earlier one was closed and its descriptor dropped.
+//
+// CHAIN FIRST, storage only as a floor. Every input here used to be local: with storage cleared — a new
+// device, a private window, a user who cleared site data — the counter read 0 and loadPositions() was empty,
+// so a new position derived the SAME owner key as a still-open one. That is the same shape as the wrap-index
+// bug that was fixed by making nextWrapIndex throw instead of falling back to 0, and the same remedy applies:
+// `recoverCdpPositions` already walks the chain for this exact number and returns it as `nextKeyNonce`, so
+// take that as the authority and never silently fall back to 0.
 const KEY_NONCE_PREFIX = 'tacit-cdp-next-key-nonce:';
-function nextKeyNonce(controller) {
+function localKeyNonceFloor(controller) {
   const c = String(controller).toLowerCase();
   let n = 0;
   try { n = Math.max(0, parseInt(localStorage.getItem(KEY_NONCE_PREFIX + c), 10) || 0); } catch {}
   for (const p of loadPositions()) {
     if (String(p.controller).toLowerCase() === c && Number.isInteger(p.keyNonce)) n = Math.max(n, p.keyNonce + 1);
   }
+  return n;
+}
+async function nextKeyNonce(ux, walletPriv, controller) {
+  const c = String(controller).toLowerCase();
+  const local = localKeyNonceFloor(controller);
+  let onchain = null;
+  try {
+    const r = await ux.recoverCdpPositions({ walletPriv });
+    if (r && Number.isInteger(r.nextKeyNonce)) onchain = r.nextKeyNonce;
+  } catch { /* handled below */ }
+  if (onchain == null && local === 0) {
+    throw new Error('cannot establish the next CDP position key index: the chain walk failed and this browser '
+      + 'has no saved positions. Opening one now could reuse the key of a position that is still open — retry '
+      + 'once the RPC is reachable rather than proceeding.');
+  }
+  const n = Math.max(local, onchain ?? 0);
   try { localStorage.setItem(KEY_NONCE_PREFIX + c, String(n + 1)); } catch {}
   return n;
 }
@@ -142,8 +167,8 @@ function wireOpen(wallet, ux, notes) {
     // Fresh per-position owner (the unlinkable leaf owner the guest publishes for keeper liquidation); the
     // guest's own position-tree nonce is fixed to 0 (unrelated to keyNonce below). Deterministically derived
     // (see derivePositionOwnerPriv) so this position stays recoverable from the identity key alone; keyNonce
-    // is simply "the Nth position opened against this controller" so far, per the local descriptor cache.
-    const keyNonce = nextKeyNonce(controller);
+    // is simply "the Nth position opened against this controller" so far, taken from the chain (see nextKeyNonce).
+    const keyNonce = await nextKeyNonce(ux, wallet.priv, controller);
     const positionOwnerPriv = derivePositionOwnerPriv(wallet.priv, controller, keyNonce);
     const positionOwner = xOnly(positionOwnerPriv);
     // The debt note's blinding and nullifier key derive from the wallet key and the first collateral note's nullifier (the
@@ -258,7 +283,14 @@ function wireCbtc(wallet, ux) {
       if (statusEl) statusEl.textContent = 'Broadcasting your self-custody Bitcoin lock…';
       try {
         const hrp = Number(ux.cfg.chainId) === 1 ? 'bc' : 'tb';
-        const lm = makeCbtcLockMint({ priv: wallet.priv, pool: ux.pool, cbtcAsset: ux.pool.CBTC_ZK_ASSET_ID, hrp });
+        // Never let a lock fund itself out of an outpoint that is already reserved — above all, an earlier
+        // cBTC lock. Spending one of those is read by the fold as a rug and slashes its escrow, and there is
+        // no cure path. cbtc-lock-mint also excludes the dust band on its own; this adds what only the tab
+        // knows.
+        const lm = makeCbtcLockMint({
+          priv: wallet.priv, pool: ux.pool, cbtcAsset: ux.pool.CBTC_ZK_ASSET_ID, hrp,
+          excludeOutpoints: listProtectedOutpoints(),
+        });
         const res = await lm.lock({ amountSats });
         // Reserve the lock output from ordinary coin selection as soon as it is broadcast. The lock is a plain
         // spendable UTXO, and spending it outside a redemption retires it against its escrow. Registered here
@@ -370,16 +402,34 @@ export async function renderCdpTab(wallet) {
     if (statusEl) statusEl.textContent = 'Could not scan the pool: ' + formatErr(e);
   }
 
-  // Locally-tracked positions, each closable: the CDP position tree is rebuilt from CdpPositionInserted to
-  // prove membership, the debt is repaid from the user's cUSD notes, and the basket is released.
+  // Positions, each closable: the CDP position tree is rebuilt from CdpPositionInserted to prove membership,
+  // the debt is repaid from the user's cUSD notes, and the basket is released.
+  //
+  // The chain is the source of truth, this browser's descriptors are a cache. Listing only the local ones
+  // meant a user who cleared site data, switched laptops or opened a private window saw NO positions at all,
+  // while their collateral sat locked behind cUSD debt with no import path in the UI. `recoverCdpPositions`
+  // rebuilds them from key + chain — it is already folded into ux.recover() and covered by tests — so a
+  // recovered position that has no local descriptor is merged in and shown rather than silently dropped.
   const posBox = el('cdp-positions');
-  const positions = loadPositions().filter((p) => p.controller && ux.cfg.collateralEngine
+  const local = loadPositions().filter((p) => p.controller && ux.cfg.collateralEngine
     && p.controller.toLowerCase() === ux.cfg.collateralEngine.toLowerCase());
+  const positions = local.slice();
+  try {
+    const rec = await ux.recoverCdpPositions({ walletPriv: wallet.priv });
+    const seen = new Set(local.map((p) => String(p.positionOwner || '').toLowerCase()));
+    for (const p of (rec && rec.positions) || []) {
+      const key = String(p.positionOwner || '').toLowerCase();
+      if (key && !seen.has(key)) { positions.push({ ...p, recovered: true }); seen.add(key); }
+    }
+  } catch (e) {
+    // A failed walk must not be reported as "no positions": say the list may be incomplete instead.
+    if (statusEl) statusEl.textContent = 'Showing locally-saved positions only — the chain walk failed: ' + formatErr(e);
+  }
   if (posBox && positions.length) {
     posBox.style.display = '';
     posBox.innerHTML = `<div style="font-weight:600;margin-bottom:6px;">Your positions</div>`
       + positions.map((p, i) => `<div class="list-row">
-          <span>${p.debtValue} cUSD borrowed · ${p.basket.length} collateral leg${p.basket.length === 1 ? '' : 's'}</span>
+          <span>${p.debtValue} cUSD borrowed · ${p.basket.length} collateral leg${p.basket.length === 1 ? '' : 's'}${p.recovered ? ' · recovered from chain' : ''}</span>
           <button class="cdp-close-one" data-pos="${i}" style="padding:3px 10px;font-size:10px;flex:0 0 auto;">Close</button></div>`).join('')
       + `<div id="cdp-close-status" class="muted field-status" style="margin-top:6px;"></div>`;
     wireClose(wallet, ux, positions);

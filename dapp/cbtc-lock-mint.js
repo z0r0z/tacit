@@ -54,12 +54,42 @@ function makeEsplora(bases = [
   };
 }
 
-export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint = null, lockVout = 1, hrp = 'bc' } = {}) {
+// Bitcoin's P2PKH dust threshold, and the same floor tacit.js's own sats picker uses. Tacit asset notes,
+// pending T_PMINT outputs and stealth receipts all live at or below it, at the SAME P2WPKH address this
+// wallet funds from — they are ordinary-looking UTXOs distinguished only by the commitment they carry.
+const DUST_FLOOR = 546;
+
+// Funding UTXOs this module is allowed to spend.
+//
+// This file talks to esplora directly (`makeEsplora` below), so none of tacit.js's asset-UTXO classifier
+// applies to anything selected here — and both the funding pick and the commit's fee top-up loop took
+// whatever the address returned, in list order. That is how a lock can silently consume the user's own
+// note outputs: the sats are just spent as fee, and the commitment they carried is destroyed with them.
+//
+// Two gates, both computable without the classifier. The dust band is asset territory by construction and
+// is never a sensible thing to fund a lock from anyway. `exclude` carries anything the caller knows about —
+// the defi tab can pass its holdings-derived set, and protected outpoints (a live cBTC lock, which must
+// never be spent: the fold reads a spend as a rug and slashes the escrow with no cure path) belong here too.
+function guardFundingUtxos(fetchUtxos, exclude) {
+  const skip = new Set([...(exclude || [])].map((k) => String(k).toLowerCase()));
+  return async (address) => {
+    const utxos = await fetchUtxos(address);
+    if (!Array.isArray(utxos)) return utxos;
+    return utxos.filter((u) => (u.value || 0) > DUST_FLOOR && !skip.has(`${u.txid}:${u.vout}`.toLowerCase()));
+  };
+}
+
+export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint = null, lockVout = 1, hrp = 'bc', excludeOutpoints = null } = {}) {
   if (!(priv instanceof Uint8Array) || priv.length !== 32) throw new Error('cbtc-lock-mint: priv must be 32 bytes');
   if (!pool || typeof pool.commitXY !== 'function') throw new Error('cbtc-lock-mint: need pool.commitXY');
   if (!cbtcAsset) throw new Error('cbtc-lock-mint: need cbtcAsset (0x62a20d98… CBTC_ZK_ASSET_ID)');
 
-  const { wallet, prims } = makeBtcWallet({ priv, hrp, ...makeEsplora(esploraBases) });
+  const esplora = makeEsplora(esploraBases);
+  const { wallet, prims } = makeBtcWallet({
+    priv, hrp, ...esplora,
+    // One chokepoint: both selectLockFunding and cbtc-lock-broadcast's fee top-up read through prims.getUtxos.
+    fetchUtxos: guardFundingUtxos(esplora.fetchUtxos, excludeOutpoints),
+  });
   const rec = makeCbtcNoteRecovery({ hmac, sha256, curveOrder: SECP_N });
   const broadcastCbtcLockTx = makeCbtcLockBroadcast(prims);
 
@@ -75,7 +105,10 @@ export function makeCbtcLockMint({ priv, pool, cbtcAsset, esploraBases, postHint
   // largest available (the lock's fee logic tops up with extra UTXOs if needed).
   async function selectLockFunding({ amountSats }) {
     const utxos = await prims.getUtxos(wallet.address());
-    if (!Array.isArray(utxos) || !utxos.length) throw new Error('cbtc-lock: no BTC UTXOs to fund the lock');
+    if (!Array.isArray(utxos) || !utxos.length) {
+      throw new Error('cbtc-lock: no spendable BTC UTXOs to fund the lock '
+        + `(dust-band outputs at or below ${DUST_FLOOR} sats are excluded — they may carry Tacit notes)`);
+    }
     const need = BigInt(amountSats);
     const covering = utxos.filter((u) => BigInt(u.value) >= need).sort((a, b) => Number(BigInt(a.value) - BigInt(b.value)));
     const pick = covering[0] || utxos.slice().sort((a, b) => Number(BigInt(b.value) - BigInt(a.value)))[0];
