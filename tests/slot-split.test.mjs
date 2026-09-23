@@ -384,7 +384,11 @@ group('§5.24.6 — cross-asset relabel rejected');
       ],
       oldOwnerPriv: sha256(new TextEncoder().encode('p')),
     });
-  } catch (e) { threwBuild = String(e.message || e).includes('§5.24.6'); }
+    // Assert the RULE, not the prose. This pinned the string "§5.24.6" and went red the moment the spec was
+    // renumbered (the builder correctly cites SPEC §3.8 now) — a failing test that says nothing about whether
+    // the guard still works. What matters is that a caller-supplied output asset which is not the canonical
+    // variant for its denomination is refused before anything is built.
+  } catch (e) { threwBuild = /ctacVariantAssetId|variant/i.test(String(e.message || e)); }
   ok('builder rejects non-variant output asset', threwBuild);
 }
 
