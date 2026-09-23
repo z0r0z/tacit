@@ -19,10 +19,14 @@ const catB = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o
 const spkB = (spk) => (!spk ? new Uint8Array(0) : (typeof spk === 'string' ? hu8(spk) : spk));
 // Per-intent authorization message (mirror cxfer-core swap_batch_intent_msg, KAT-pinned): sha256 of the
 // concatenated fields; the input outpoint's txid is the internal (little-endian) tx-serialization byte order.
-// `refundSpk`'s x-only key becomes the refund note's owner (onboard_batch_refunds), so a caller building
-// successive intents should derive a FRESH refundSpk each time — reusing one across intents collides the
-// refund note's leaf/nullifier if more than one is ever onboarded, losing that fast-lane refund path (the
-// value is not destroyed, just that specific refund becomes unspendable through this note).
+// `refundSpk`'s x-only key becomes the refund note's owner (onboard_batch_refunds). It MUST be a fresh key.
+// Two distinct collisions destroy value here, and the second is worse than this comment used to say:
+//   - reusing one refundSpk across intents collides those refunds' leaves with each other, so only one of
+//     them is ever spendable;
+//   - reusing the SPENT INPUT's own key reproduces the nullifier the vin scan just spent, because a refund
+//     commits the input commitment verbatim and a Bitcoin-homed note's leaf carries no outpoint. That refund
+//     is born already-spent and the input is gone — the value IS destroyed, not merely stranded.
+// `assertFreshRefundKey` (dapp/amm-refund-key.js) checks both; call it before signing.
 export function swapBatchIntentMsg(a) {
   return sha256(catB([
     AMM_INTENT_DOM, hu8(a.poolId), Uint8Array.of(a.direction & 0xff), Uint8Array.of(a.inputOutpoints.length & 0xff),
@@ -199,6 +203,18 @@ export async function foldSwapBatch(pool, state, env, txidHex, spends, { vk, ver
   // Each note's spend authority = the x-only key of its output (P2TR); the intent binds the FULL output script.
   const receiptAuths = receiptSpks.map((s) => pool.p2trXonly(s));
   const refundAuths = refundSpks.map((s) => pool.p2trXonly(s));
+  // Fail loudly on a refund key that collides with another refund in this batch. The input-key collision is
+  // checked by the builder (it is the only place the input notes' auth keys are known); this catches the
+  // in-batch case at assembly, where the full refund set is visible.
+  {
+    const seen = new Set();
+    for (const a of refundAuths) {
+      if (!a) continue;
+      const k = String(a).replace(/^0x/, '').toLowerCase();
+      if (seen.has(k)) throw new Error('swap-batch: two intents share a refund key — both refunds would hash to the same leaf and nullifier, so only one could ever be spent');
+      seen.add(k);
+    }
+  }
   const peekN = () => Array.from({ length: ni }, () => state.notePathPeek());
   // 1. resolve the pool (canonical pair → v1 pool_id) + tracked reserves; c0-backed + canonically oriented.
   const [aLo, aHi] = pool.ammCanonicalPair(env.assetA, env.assetB);

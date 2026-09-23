@@ -795,6 +795,31 @@ receipt and reports the outcome as `claimIdVerified` (with `claimIdNote` saying 
 coverage poll. If you corroborate the claimId yourself, pass `claimIdVerified: true` explicitly. Note that
 `ethBlock` is only populated alongside a corroborated claimId, since the two are read together.
 
+### Bitcoin-lane AMM refunds need a fresh key
+
+`T_SWAP_VAR`, `T_SWAP_ROUTE` and the swap-batch fold never skip an op they cannot execute — expired, below
+`min_out`, stale reserves, a malformed proof. The vin scan has already nullified the input by then, so
+skipping would destroy it. They refund instead, minting a note that commits **the input commitment verbatim**
+under the refund output's x-only Taproot key.
+
+A Bitcoin-homed note's nullifier is `keccak(leaf ‖ "spent")` over a leaf of `(asset, Cx, Cy, auth_key)` — with
+**no outpoint in it**. That is deliberate: it is what lets the reflection and the settle guest agree on one
+nullifier per note. It also means the refund's identity is fully determined by the commitment and the key. So
+if the refund pays a key one of the spent inputs was homed at, the refund's nullifier is byte-identical to the
+one the scan just spent. The note appends to the tree and reads as live, but it can never be spent. The input
+is gone and the refund is unspendable.
+
+Refunding to the address the input came from is the obvious thing to build, and forcing the refund branch is
+cheap for anyone else — move the pool's reserves so the proof goes stale, add an input, or wait out the
+expiry. So:
+
+- Derive a **fresh** key for every refund output. Never an input's key, never another intent's refund key in
+  the same transaction (two refunds under one key collide with each other for the same reason).
+- Call `assertFreshRefundKey({ refundSpk, inputAuthKeys, otherRefundSpks })` from `dapp/amm-refund-key.js`
+  before you sign. It checks both cases and explains the failure.
+
+The guest cannot check this for you — it only ever sees the key the transaction pays to.
+
 **Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
 (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
 confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id. TAC is
