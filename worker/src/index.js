@@ -650,8 +650,13 @@ function jsonResponse(obj, status, headers) {
 }
 
 // Prover liveness: the prover services post /prover-heartbeat every ~2m; anyone GETs /prover-health.
-const PROVER_HB_KEY = 'prover:heartbeat:mainnet';
-const PROVER_HB_STALE_MS = 10 * 60 * 1000;        // >10m with no heartbeat ⇒ prover down
+// Heartbeats are kept per KIND — settle, reflection and eth-state are separate Render services on separate
+// schedules (one is a 5-min cron, two are always-on workers), each proving a different thing. A single
+// shared record used to mean whichever posted most recently silently hid the other two — a hung settle
+// relay would read as "healthy" for as long as reflection kept beating, and vice versa.
+const PROVER_KINDS = ['settle', 'reflection', 'eth-state'];
+const proverHbKey = (network, kind) => `prover:heartbeat:${network}:${kind}`;
+const PROVER_HB_STALE_MS = 10 * 60 * 1000;        // >10m with no heartbeat ⇒ that service is down
 const PROVER_HB_MIN_GAS_WEI = 2000000000000000n;  // 0.002 ETH floor before the gas key needs a top-up
 
 async function handleProverHeartbeat(req, env, cors) {
@@ -665,9 +670,14 @@ async function handleProverHeartbeat(req, env, cors) {
   if (!tok || !constantTimeEqual(String(body.token || ''), tok)) {
     return jsonResponse({ ok: false, error: 'unauthorized' }, 401, cors);
   }
+  const network = String(body.network || 'mainnet');
+  // A relay build from before `kind` existed (or any other caller) lands in its own 'unknown' bucket
+  // rather than colliding with a real service's key or getting rejected.
+  const kind = PROVER_KINDS.includes(body.kind) ? body.kind : 'unknown';
   const rec = {
     ts: Date.now(),
-    network: String(body.network || 'mainnet'),
+    network,
+    kind,
     // null = the prover couldn't read the balance this beat (RPC throttled) —
     // distinct from a real "0", which trips the low-gas alarm.
     gas_wei: (typeof body.gas_wei === 'string' && /^\d+$/.test(body.gas_wei)) ? body.gas_wei : null,
@@ -681,16 +691,17 @@ async function handleProverHeartbeat(req, env, cors) {
     const v = Number(body[k]);
     if (Number.isInteger(v) && v >= 0 && v < 100000000) rec[k] = v;
   }
-  await env.REGISTRY_KV.put(PROVER_HB_KEY, JSON.stringify(rec));
+  await env.REGISTRY_KV.put(proverHbKey(network, kind), JSON.stringify(rec));
   return jsonResponse({ ok: true, stored: rec.ts }, 200, cors);
 }
 
-async function handleProverHealth(env, cors) {
-  const hdr = { ...cors, 'Cache-Control': 'no-store' };
-  const raw = await env.REGISTRY_KV.get(PROVER_HB_KEY);
-  if (!raw) return jsonResponse({ status: 'unknown', healthy: false, reasons: ['no heartbeat recorded yet'] }, 503, hdr);
+// One kind's stored heartbeat -> the {status,healthy,reasons,...} shape /prover-health has always returned.
+// Shared by the single-kind and all-kinds paths below so they can never drift apart on what "healthy" means.
+async function readProverKindHealth(env, network, kind) {
+  const raw = await env.REGISTRY_KV.get(proverHbKey(network, kind));
+  if (!raw) return { status: 'unknown', healthy: false, reasons: ['no heartbeat recorded yet'] };
   let hb;
-  try { hb = JSON.parse(raw); } catch { return jsonResponse({ status: 'unknown', healthy: false, reasons: ['corrupt heartbeat record'] }, 503, hdr); }
+  try { hb = JSON.parse(raw); } catch { return { status: 'unknown', healthy: false, reasons: ['corrupt heartbeat record'] }; }
   const age_ms = Date.now() - (hb.ts || 0);
   const stale = age_ms > PROVER_HB_STALE_MS;
   let gas = null;
@@ -699,17 +710,16 @@ async function handleProverHealth(env, cors) {
   const dead = hb.prover_alive === false;
   const healthy = !stale && !low_gas && !dead;
   const reasons = [];
-  if (stale) reasons.push(`no heartbeat for ${Math.round(age_ms / 60000)}m (threshold ${PROVER_HB_STALE_MS / 60000}m) — prover box likely down`);
-  if (dead) reasons.push('box up but prover-loop process not running');
-  if (low_gas) reasons.push(`gas key low: ${hb.gas_wei} wei < ${PROVER_HB_MIN_GAS_WEI.toString()} (0.002 ETH)`);
+  if (stale) reasons.push(`no heartbeat for ${Math.round(age_ms / 60000)}m (threshold ${PROVER_HB_STALE_MS / 60000}m) — ${kind} likely down`);
+  if (dead) reasons.push(`${kind} box up but loop process not running`);
+  if (low_gas) reasons.push(`${kind} gas key low: ${hb.gas_wei} wei < ${PROVER_HB_MIN_GAS_WEI.toString()} (0.002 ETH)`);
   const status = stale ? 'down' : dead ? 'process_down' : low_gas ? 'low_gas' : 'ok';
-  return jsonResponse({
+  return {
     status, healthy,
     age_seconds: Math.round(age_ms / 1000),
     last_heartbeat_ts: hb.ts || null,
     gas_wei: gas !== null ? hb.gas_wei : null,
     prover_alive: hb.prover_alive !== false,
-    network: hb.network || 'mainnet',
     note: hb.note || '',
     last_proven_height: Number.isInteger(hb.last_proven_height) ? hb.last_proven_height : null,
     relay_tip: Number.isInteger(hb.relay_tip) ? hb.relay_tip : null,
@@ -717,7 +727,33 @@ async function handleProverHealth(env, cors) {
     blocks_behind: (Number.isInteger(hb.btc_tip) && Number.isInteger(hb.last_proven_height))
       ? Math.max(0, hb.btc_tip - hb.last_proven_height) : null,
     reasons,
-  }, healthy ? 200 : 503, hdr);
+  };
+}
+
+// ?kind=settle|reflection|eth-state narrows to one service's own record, in the exact shape this endpoint
+// has always returned for a single service. Omit it to get all three, keyed under `services`, with a
+// top-level healthy/status/reasons that is the AND/union of all of them — so an existing caller that only
+// ever checked the top-level fields (built back when there was only one shared record) still gets "any
+// prover service down" rather than silently narrowing to whichever kind happens to sort first.
+async function handleProverHealth(env, cors, url) {
+  const hdr = { ...cors, 'Cache-Control': 'no-store' };
+  const network = url.searchParams.get('network') || 'mainnet';
+  const kindParam = url.searchParams.get('kind');
+
+  if (kindParam) {
+    const health = await readProverKindHealth(env, network, kindParam);
+    return jsonResponse({ network, kind: kindParam, ...health }, health.healthy ? 200 : 503, hdr);
+  }
+
+  const services = {};
+  let healthy = true;
+  const reasons = [];
+  for (const kind of PROVER_KINDS) {
+    const health = await readProverKindHealth(env, network, kind);
+    services[kind] = health;
+    if (!health.healthy) { healthy = false; reasons.push(...health.reasons); }
+  }
+  return jsonResponse({ network, healthy, status: healthy ? 'ok' : 'down', reasons, services }, healthy ? 200 : 503, hdr);
 }
 
 // Eth-side reflection state (Mode-B): the cumulative Ethereum crossOut/consumed bundle an `eth_prove`
@@ -25010,7 +25046,7 @@ async function _routeFetch(req, env, ctx) {
     }
 
     if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
-    if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors);
+    if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors, url);
 
     // Reflection relay (the relayer polls these — see worker-relay/src/reflection-folder.js).
     // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
