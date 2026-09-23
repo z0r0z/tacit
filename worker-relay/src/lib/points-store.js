@@ -19,7 +19,9 @@ export function openStore(dbPath) {
       depositor        TEXT NOT NULL,
       amount_wei       TEXT NOT NULL,
       prior_deposit_count INTEGER NOT NULL,
-      points           REAL NOT NULL
+      points           REAL NOT NULL,
+      tip_wei          TEXT,
+      tip_recipient    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_deposits_depositor ON deposits(depositor);
 
@@ -69,10 +71,17 @@ export function openStore(dbPath) {
     );
   `);
 
+  // Migration for a store created before tip tracking existed — CREATE TABLE IF NOT EXISTS above only
+  // covers a fresh database. SQLite has no ADD COLUMN IF NOT EXISTS on the version better-sqlite3 bundles,
+  // so this just swallows the "duplicate column" error a second run throws.
+  for (const col of ['tip_wei TEXT', 'tip_recipient TEXT']) {
+    try { db.exec(`ALTER TABLE deposits ADD COLUMN ${col}`); } catch {}
+  }
+
   const insertDeposit = db.prepare(`
     INSERT OR IGNORE INTO deposits
-      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points)
-    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points)
+      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient)
+    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient)
   `);
   const bumpTotals = db.prepare(`
     INSERT INTO totals (address, points, deposit_count, amount_wei)
@@ -95,7 +104,7 @@ export function openStore(dbPath) {
   `);
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
   const depositsForStmt = db.prepare(`
-    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points
+    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
   const dayPointsStmt = db.prepare(`
@@ -127,8 +136,14 @@ export function openStore(dbPath) {
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
   // a value near 2^63 wei, which is not a real deposit size).
+  //
+  // tipWei/tipRecipient default null here (not in the SQL) so every existing caller — including a direct
+  // wrap with no WrapTipForwarder involved at all — stays valid without knowing these fields exist; points-
+  // indexer.js only fills them in when it found a matching WrappedWithTip log for this same tx hash. Either
+  // way `depositor` (tx.from, the transaction's own signer) is what earns points — a forwarder tip never
+  // changes who that is.
   const recordDeposit = db.transaction((dep) => {
-    const wrote = insertDeposit.run(dep);
+    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ...dep });
     if (wrote.changes === 0) return false; // already recorded (safe to re-scan a chunk after a crash)
     bumpTotals.run({ address: dep.depositor, points: dep.points, amountWei: dep.amountWei });
     return true;

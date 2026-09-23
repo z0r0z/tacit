@@ -47,6 +47,21 @@ const WRAP_EVENT = {
   ],
 };
 
+// contracts/src/WrapTipForwarder.sol. Purely informational here — points already go to `tx.from` (the
+// transaction's own signer) regardless of whether it called the pool directly or through the forwarder, so
+// a missing/unmatched tip log never affects who earns points, only whether this deposit's row also shows
+// the tip it paid.
+const WRAPPED_WITH_TIP_EVENT = {
+  type: 'event',
+  name: 'WrappedWithTip',
+  inputs: [
+    { name: 'depositCommit', type: 'bytes32', indexed: true },
+    { name: 'amount', type: 'uint256', indexed: false },
+    { name: 'tip', type: 'uint256', indexed: false },
+    { name: 'tipRecipient', type: 'address', indexed: true },
+  ],
+};
+
 function pointsForDeposit(amountWei, priorDepositCount) {
   const amountEth = Number(amountWei) / 1e18;
   const bonus = 1 + CFG.pointsBonusScale / (1 + priorDepositCount / CFG.pointsBonusHalfLife);
@@ -71,13 +86,21 @@ async function scanCycle(store) {
   while (from <= confirmedTip) {
     const to = from + chunk - 1n > confirmedTip ? confirmedTip : from + chunk - 1n;
 
-    const logs = await publicClient.getLogs({
-      address: ADDR.pool,
-      event: WRAP_EVENT,
-      args: { assetId: CFG.ethAssetId },
-      fromBlock: from,
-      toBlock: to,
-    });
+    const [logs, tipLogs] = await Promise.all([
+      publicClient.getLogs({
+        address: ADDR.pool,
+        event: WRAP_EVENT,
+        args: { assetId: CFG.ethAssetId },
+        fromBlock: from,
+        toBlock: to,
+      }),
+      ADDR.wrapTipForwarder
+        ? publicClient.getLogs({ address: ADDR.wrapTipForwarder, event: WRAPPED_WITH_TIP_EVENT, fromBlock: from, toBlock: to })
+        : [],
+    ]);
+    // Keyed by tx hash: the forwarder makes exactly one pool.wrap() call per invocation, so a tx has at
+    // most one Wrap and at most one WrappedWithTip, and they always share a tx hash when both are present.
+    const tipByTx = new Map(tipLogs.map((t) => [t.transactionHash, { tipWei: t.args.tip.toString(), tipRecipient: t.args.tipRecipient.toLowerCase() }]));
 
     for (const evt of logs) {
       let block = blockCache.get(evt.blockNumber);
@@ -97,10 +120,14 @@ async function scanCycle(store) {
         txHash: evt.transactionHash,
         blockNumber: Number(evt.blockNumber),
         blockTime: Number(block.timestamp),
+        // tx.from, not msg.sender as seen by the pool: whether this call reached the pool directly or via
+        // WrapTipForwarder, tx.from is always the EOA that signed and funded it — the true depositor, never
+        // the forwarder's own address, and unaffected by whatever tipRecipient it chose.
         depositor: tx.from.toLowerCase(),
         amountWei: evt.args.amount.toString(),
         priorDepositCount,
         points,
+        ...tipByTx.get(evt.transactionHash),
       });
       if (wrote) cursor.ethDepositCount += 1;
     }
