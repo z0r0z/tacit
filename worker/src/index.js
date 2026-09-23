@@ -1072,11 +1072,18 @@ async function handleReflectionEthStateCovers(req, env, url, cors) {
 }
 
 // How long a published-but-unconfirmed eth-state candidate stays authoritative before a fresh POST is
-// allowed to replace it outright (see handleReflectionEthStatePost). Default a few hours: long enough that
-// a normal Bitcoin-batch cycle (minutes) always confirms well within it, short enough that an abandoned
-// candidate (the process that published it died before its batch ever landed) doesn't wedge the pending
-// slot indefinitely. Tunable via ETH_STATE_PENDING_STALE_SECS.
-const ETH_STATE_PENDING_STALE_SECS_DEFAULT = 4 * 60 * 60;
+// allowed to replace it outright (see handleReflectionEthStatePost). 90 minutes: long enough that a normal
+// Bitcoin-batch cycle (minutes) always confirms well within it, short enough that an abandoned candidate
+// (the process that published it died before its batch ever landed) doesn't wedge the pending slot for
+// long. Set here as the code default rather than relying only on the env var, because the sidecar
+// (worker-relay/src/eth-state-sidecar.js) enforces its own local copy of this same number via its own env
+// var of the same name on a DIFFERENT hosting platform (Render) — the two can drift out of sync if only one
+// side's config gets retuned, which is exactly what happened: this worker (Cloudflare) kept the old 4-hour
+// default while the sidecar's own check had already moved to 90 minutes, so the sidecar spent 3+ hours
+// producing valid candidates the sidecar itself believed should be accepted, all rejected by this file's
+// stale 4-hour ceiling. Tunable via ETH_STATE_PENDING_STALE_SECS, but the default is now the source of
+// truth both sides should actually match.
+const ETH_STATE_PENDING_STALE_SECS_DEFAULT = 90 * 60;
 
 // POST /reflection/eth-state?network= {ethPv, crossouts[], consumeds[], ethCompressedProof(base64),
 // consumedSources?[], lastBlock?, execBlock?, finalizedSlot?} — publish a new pending eth-state candidate
@@ -1489,8 +1496,54 @@ async function handleReflectionBurndep(req, env, url, cors) {
   if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ ok: false, error: 'bad burnTxidDisplay (want 32-byte display hex)' }, 400, cors);
   const bundle = body.bundle;
   if (!bundle || typeof bundle !== 'object') return jsonResponse({ ok: false, error: 'missing bundle object' }, 400, cors);
+
+  // Validate the SHAPE here, at the door. This route is unauthenticated by design (a holder must be able to
+  // register their own burn's provenance without asking anyone), and what it stores is later dereferenced by
+  // the reflection assembler against every transaction in a scan range. The assembler now skips a bundle it
+  // cannot use rather than dying on it, but a well-formed store is the cheaper half of that defence: it keeps
+  // junk out of the 90-day KV namespace, out of the prefix scan that runs on every job assembly, and out of
+  // the per-record block fetches entirely.
+  //
+  // Every provenance record must name its block. A record carrying neither blockHash nor blockHeight is the
+  // exact shape that used to throw out of the assembler, and /reflection/burndep-list already reports it as
+  // `missing` — so it was known to be unusable and still accepted.
+  const HEX32 = /^(0x)?[0-9a-fA-F]{64}$/;
+  const MAX_HOPS = 64, MAX_HEADERS = 4032;
+  const namesItsBlock = (r) => !!r && typeof r === 'object'
+    && (HEX32.test(String(r.blockHash || '')) || (Number.isInteger(r.blockHeight) && r.blockHeight > 0));
+  const bad = (msg) => jsonResponse({ ok: false, error: msg }, 400, cors);
+  for (const [field, val] of [['cxfers', bundle.cxfers], ['cmints', bundle.cmints]]) {
+    if (val == null) continue;
+    if (!Array.isArray(val)) return bad(`bundle.${field} must be an array`);
+    if (val.length > MAX_HOPS) return bad(`bundle.${field} has ${val.length} hops (max ${MAX_HOPS})`);
+    for (let i = 0; i < val.length; i++) {
+      if (!namesItsBlock(val[i])) return bad(`bundle.${field}[${i}] needs a 32-byte blockHash or a positive integer blockHeight`);
+    }
+  }
+  for (const field of ['etch', 'burnTxWitness']) {
+    if (bundle[field] != null && !namesItsBlock(bundle[field])) {
+      return bad(`bundle.${field} needs a 32-byte blockHash or a positive integer blockHeight`);
+    }
+  }
+  if (bundle.provHeaders != null) {
+    if (!Array.isArray(bundle.provHeaders)) return bad('bundle.provHeaders must be an array');
+    if (bundle.provHeaders.length > MAX_HEADERS) return bad(`bundle.provHeaders has ${bundle.provHeaders.length} entries (max ${MAX_HEADERS})`);
+  }
+
   const key = `reflection:burndep:${network}:${txid}`;
-  await env.REGISTRY_KV.put(key, JSON.stringify(bundle), { expirationTtl: 90 * 86400 });
+  // Burn txids are public Bitcoin data, so without this anyone could watch for a real 0x2B burn and replace
+  // its holder's registration with junk — silently preventing that burn from onboarding. First writer wins;
+  // an identical re-registration is a no-op so an honest retry still works.
+  const serialized = JSON.stringify(bundle);
+  const existing = await env.REGISTRY_KV.get(key);
+  if (existing && existing !== serialized) {
+    return jsonResponse({
+      ok: false,
+      error: 'a different provenance bundle is already registered for this burn txid — refusing to overwrite it',
+      stored: key,
+    }, 409, { ...cors, 'Cache-Control': 'no-store' });
+  }
+  await env.REGISTRY_KV.put(key, serialized, { expirationTtl: 90 * 86400 });
   return jsonResponse({ ok: true, stored: key }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 

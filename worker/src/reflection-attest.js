@@ -324,6 +324,14 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
   // pending is completed batches later, so the chain a holder submitted is carried forward here, from its last
   // header to `anchorHeight`, out of the same header source the batch uses. Headers are public chain data, so
   // extending them adds nothing a holder could have got wrong.
+  //
+  // The extension is BOUNDED. The only guard used to be `lastHeight >= anchorHeight`, with no floor — and the
+  // last header is attacker-supplied (anyone can register a bundle; see handleReflectionBurndep). A genuine
+  // header from an early block therefore asked this to materialise every height from there to the tip and
+  // fetch each one, which on mainnet is hundreds of thousands of upstream requests from a 512MB worker. A
+  // real pending burn is extended over the blocks it waited out, which is small; anything claiming to span
+  // more than this is not a chain worth completing here, and the burn simply stays pending.
+  const MAX_HEADER_EXTEND = 4032; // ~4 weeks of Bitcoin blocks
   const extendProvHeaders = async (bundle, anchorHeight) => {
     const hs = bundle.provHeaders;
     if (anchorHeight == null || !Array.isArray(hs) || !hs.length) return bundle;
@@ -333,15 +341,34 @@ export function buildScanReflectionAttester(env, { deps, api, apiRawBytes, netwo
     let lastHeight;
     try { lastHeight = Number(JSON.parse(await api(env, `/block/${lastHash}`, {}, network)).height); } catch { return bundle; }
     if (!Number.isInteger(lastHeight) || lastHeight >= anchorHeight) return bundle;
+    if (anchorHeight - lastHeight > MAX_HEADER_EXTEND) return bundle;
     const heights = [];
     for (let h = lastHeight + 1; h <= anchorHeight; h++) heights.push(h);
     return { ...bundle, provHeaders: [...hs, ...(await getHeaders(heights))] };
   };
+  // A bad bundle must never be able to stop the lane.
+  //
+  // This is called with EVERY txid of every block in the scan range, and a bundle is registered by an
+  // unauthenticated POST keyed by a caller-chosen txid — so anyone can broadcast a cheap Bitcoin tx and
+  // attach a bundle to it. Without this catch, one malformed record (a provenance entry carrying neither
+  // blockHash nor blockHeight is enough) throws out of assembleJob, /reflection/job 500s, and since the guest
+  // requires anchor_height == prior + 1 the cursor can never advance past that block. There is no route that
+  // deletes a burndep row, so recovery would mean direct database access. That is a permanent, remote,
+  // unauthenticated halt of Bitcoin->Ethereum reflection reachable for the price of one Bitcoin transaction.
+  //
+  // Skipping is not a compromise here, it is the already-correct behaviour: a burn whose bundle is missing or
+  // unusable stays pending and completes in any later batch that has a good one. So the worst case for an
+  // honest holder is a delay, and the worst case for an attacker is that their own junk is ignored.
   const getBurnDeposits = async (txidsDisplay, anchorHeight) => {
     const map = new Map();
     for (const txid of txidsDisplay) {
       const raw = await env.REGISTRY_KV.get(burnDepKey(txid));
-      if (raw) map.set(txid, await extendProvHeaders(await enrichBurnDeposit(JSON.parse(raw)), anchorHeight));
+      if (!raw) continue;
+      try {
+        map.set(txid, await extendProvHeaders(await enrichBurnDeposit(JSON.parse(raw)), anchorHeight));
+      } catch (e) {
+        console.log(`[reflection] burn-deposit bundle for ${txid} is unusable, skipping it (stays pending): ${String(e && e.message || e).slice(0, 200)}`);
+      }
     }
     return map;
   };
