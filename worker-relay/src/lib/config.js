@@ -290,6 +290,25 @@ export const CFG = {
   // hard-depend on a third-party price API; the dapp passes live prices at quote time.
   provePriceUsd: num('PROVE_PRICE_USD', 0.19),
   ethPriceUsd: num('ETH_PRICE_USD', 1840), // static FALLBACK only — chain.ethUsdPrice() reads the live feed
+
+  // ── Points program (src/points-indexer.js) ──
+  // Read-only over existing Wrap events; no contract change. Counts ETH wraps only, forward from
+  // pointsStartBlock — no backfill, so a wrap before that block never appears.
+  pointsStartBlock: opt('POINTS_START_BLOCK', ''), // required: chain head at first deploy of this service
+  pointsPollSecs: num('POINTS_POLL_SECS', 60),
+  pointsScanChunk: num('POINTS_SCAN_CHUNK', 2000), // getLogs block span per call
+  // Wait this many blocks behind head before scanning, so a reorg can't hand out points for a wrap that
+  // then disappears. 12 covers ordinary reorgs; the wrap is still irreversible well before finality.
+  pointsConfirmations: num('POINTS_CONFIRMATIONS', 12),
+  pointsDbPath: opt('POINTS_DB_PATH', '/var/lib/tacit-points/points.db'),
+  pointsHttpPort: num('PORT', 8080), // Render's web services assign this; falls back to 8080 for local runs
+  // points = amountEth * pointsBasePerEth * (1 + pointsBonusScale / (1 + priorEthDepositCount / pointsBonusHalfLife))
+  // priorEthDepositCount is this service's own running count of ETH wraps scanned before the current one —
+  // a smaller count (earlier in the program) means a bigger bonus, which is the "grow the anonymity set while
+  // it's still small" incentive. Tune via env; not a protocol parameter, so it carries no on-chain meaning.
+  pointsBasePerEth: num('POINTS_BASE_PER_ETH', 1000),
+  pointsBonusScale: num('POINTS_BONUS_SCALE', 4),
+  pointsBonusHalfLife: num('POINTS_BONUS_HALF_LIFE', 200),
 };
 
 // Measured settle gas per op-type. Used by the fee math.

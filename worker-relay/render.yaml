@@ -253,3 +253,40 @@ services:
         value: "200"
       - key: ALERT_WEBHOOK_URL
         sync: false
+
+  # Always-on web service: ETH-wrap points program (src/points-indexer.js). Reads the pool's existing
+  # Wrap event + each wrap's tx sender — no contract change, nothing on the settle/reflection path. Serves
+  # /leaderboard and /points/:address over HTTP for the dapp; informational only, nothing here is
+  # claimable on-chain yet. See lib/config.js's "Points program" section for the formula and every knob.
+  - type: web
+    name: tacit-points
+    runtime: docker
+    rootDir: worker-relay
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    dockerCommand: node src/points-indexer.js
+    autoDeploy: false
+    disk:
+      name: points-db
+      mountPath: /var/lib/tacit-points
+      sizeGB: 1
+    envVars:
+      - fromGroup: tacit-relay-shared
+      # Forward-only: chain head at first deploy of this service. Re-pin to the actual deploy-time head if
+      # deploying meaningfully later than when this was written (2026-09-23, mainnet head ~26,039,038) — a
+      # wrap before this block is never counted, by design (no backfill).
+      - key: POINTS_START_BLOCK
+        value: "26039038"
+      - key: POINTS_POLL_SECS
+        value: "60"
+      - key: POINTS_CONFIRMATIONS
+        value: "12"
+      # Tunable incentive knobs, not protocol parameters — see lib/config.js for the formula. Safe to
+      # change without a redeploy of anything else; only affects future scans (past rows keep the points
+      # they were awarded).
+      - key: POINTS_BASE_PER_ETH
+        value: "1000"
+      - key: POINTS_BONUS_SCALE
+        value: "4"
+      - key: POINTS_BONUS_HALF_LIFE
+        value: "200"

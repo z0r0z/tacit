@@ -9,9 +9,11 @@
     "reflection": "node src/reflection-folder.js",
     "settle": "node src/settle-relay.js",
     "replenish": "node src/replenish.js",
-    "monitor": "node src/balance-monitor.js"
+    "monitor": "node src/balance-monitor.js",
+    "points": "node src/points-indexer.js"
   },
   "dependencies": {
+    "better-sqlite3": "^11.3.0",
     "viem": "^2.21.0"
   }
 }
