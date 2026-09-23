@@ -277,6 +277,13 @@ export const CFG = {
   snapshotBytesWarn: num('SNAPSHOT_BYTES_WARN', 64 * 1024 * 1024),
   // No successful attest for this long while Bitcoin has un-attested blocks in range is a stalled reflection lane.
   reflectionStallHours: num('REFLECTION_STALL_HOURS', 3),
+  // A pending eth-state candidate bridges an ETH-side crossOut to its Bitcoin-side fold. The sidecar discards
+  // and republishes its own candidate once it passes ETH_STATE_PENDING_STALE_SECS (90min live, chosen to sit
+  // above the ~hourly normal Bitcoin batch cadence so a candidate survives long enough to be consumed, and
+  // below the ~4h REFLECTION_CONFIRMATIONS block-maturity window so real margin remains after a fresh one
+  // publishes). These two thresholds cover the case where that hasn't happened on its own timeline yet.
+  ethStatePendingWarnSec: num('ETH_STATE_PENDING_WARN_SEC', 105 * 60),
+  ethStatePendingCriticalSec: num('ETH_STATE_PENDING_CRITICAL_SEC', 150 * 60),
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't

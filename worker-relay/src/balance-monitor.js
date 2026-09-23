@@ -260,9 +260,38 @@ async function checkReflectionStall() {
   if (drift.level === 'critical') await alert('critical', `reflection cursor drift: ${drift.reason}. Recovery: ${manualRecoveryHint(onchain)}`, { cursorDigest, onchain, streak });
 }
 
+// A pending eth-state candidate bridges an ETH-side crossOut to its Bitcoin-side fold. The sidecar normally
+// discards and republishes its own candidate once it passes ETH_STATE_PENDING_STALE_SECS on its own; this check
+// covers the case where that hasn't happened yet, well ahead of the reflection lane's own block-maturity window.
+// No pending candidate at all is healthy (nothing outstanding to fold); only an old, unconfirmed one is the signal.
+async function checkEthStatePending() {
+  let body;
+  try {
+    const res = await fetch(`${CFG.workerBase}/reflection/eth-state?network=${encodeURIComponent(CFG.network)}`, {
+      headers: { authorization: `Bearer ${CFG.boxToken}` },
+    });
+    if (!res.ok) { log(`eth-state pending check unavailable: /reflection/eth-state ${res.status}`); return; }
+    body = await res.json();
+  } catch (e) { log(`eth-state pending check failed: ${e?.message || e}`); return; }
+  const pending = body?.pending;
+  if (!pending || !pending.publishedAt) { log('eth-state pending: none outstanding'); return; }
+  const ageSec = (Date.now() - Date.parse(pending.publishedAt)) / 1000;
+  log(`eth-state pending: ${pending.contentHash} published ${(ageSec / 60).toFixed(1)}min ago (execBlock=${pending.execBlock})`);
+  const extra = { contentHash: pending.contentHash, publishedAt: pending.publishedAt, ageSec, execBlock: pending.execBlock };
+  if (ageSec > CFG.ethStatePendingCriticalSec) {
+    await alert('critical',
+      `eth-state candidate unconfirmed for ${(ageSec / 3600).toFixed(1)}h (> ${(CFG.ethStatePendingCriticalSec / 3600).toFixed(1)}h, past the self-heal window) — clear it (POST /reflection/eth-state/clear) once nothing is still relying on this exact candidate`,
+      extra);
+  } else if (ageSec > CFG.ethStatePendingWarnSec) {
+    await alert('warning',
+      `eth-state candidate unconfirmed for ${(ageSec / 60).toFixed(0)}min (> ${(CFG.ethStatePendingWarnSec / 60).toFixed(0)}min, past the self-heal window) — confirm the sidecar is running and check for a fresh candidate shortly`,
+      extra);
+  }
+}
+
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet.account.address}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkFarmHealth(), checkReflectionStall(), checkQueue()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkFarmHealth(), checkReflectionStall(), checkQueue(), checkEthStatePending()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is
