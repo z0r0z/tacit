@@ -26,6 +26,7 @@ or recorded as a stated limitation. Earlier working rounds, prompts and point re
 | 2026-09-19 | Public release (post-deploy) | Claude Opus 5 | Clear to publish | [`AUDIT-2026-09-19-public-release-review`](./AUDIT-2026-09-19-public-release-review.md) |
 | 2026-09-19 | cBTC / cUSD / CDP | Claude Opus 5 | Mechanism sound | [`AUDIT-2026-09-19-cbtc-cusd-cdp-review`](./AUDIT-2026-09-19-cbtc-cusd-cdp-review.md) |
 | 2026-09-20 | Launch review (post-deploy) | Claude Opus 5 | Green-lit | [`AUDIT-2026-09-20-v1-launch-review`](./AUDIT-2026-09-20-v1-launch-review.md) |
+| 2026-09-23 | Public ramp: whole live surface + guest Rust line by line | Claude Opus 5 (multi-agent) | Immutable surface sound, no redeploy | [`AUDIT-2026-09-23-public-ramp-review`](./AUDIT-2026-09-23-public-ramp-review.md) |
 
 ## What the post-deploy reviews established
 
