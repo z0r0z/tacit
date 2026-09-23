@@ -852,6 +852,44 @@ The TAC round trip linked above is a real, fully independent-verified example of
 crossOut, its Bitcoin-side re-mint, a Bitcoin-side return burn, and the mint back on Ethereum — four
 separate settled transactions, each hash checked against live chain state before being written down here.
 
+## 5g. Cross-chain messages (EthCallOutbox / T_ETH_CALL)
+
+Two value-free message channels run alongside the value lanes, in opposite directions. `T_BTC_CALL` (0x68) is
+a Schnorr-signed Bitcoin transaction authorizing an Ethereum call, surfaced to the pool as a pending call and
+fired by the off-pool `BtcCallExecutor`. `T_ETH_CALL` (0x69) is the mirror: `EthCallOutbox.send()` on
+Ethereum, folded on the Bitcoin side into an honored-message set.
+
+**They carry no value, by construction.** An outbox record commits `(destChain, ns, sender, payloadHash)` —
+no amount, ever — so honoring one authorizes no mint, no note and no transfer. The effect of a fold *is* the
+honored-set entry. That is what makes the channel safe to treat as data rather than as money, and it is worth
+keeping in mind when deciding what to put behind it.
+
+**The channel is at-least-once with sender-driven retry, not exactly-once.** Two things can cause a
+particular Bitcoin transaction's 0x69 to be dropped:
+
+- The prover supplies a bad membership witness for it. The fold is deliberately skip-not-panic — a fabricated
+  0x69 costs anyone a Bitcoin transaction to broadcast, and aborting on one would let that person halt the
+  lane for everybody. The same tolerance means a genuine message can be silently passed over.
+- The batch scanning that block is a forward batch (no Ethereum-state bundle attached). A forward batch
+  carries a zero message-set root, so every 0x69 in it fails membership.
+
+Neither is a completeness gate, and that is also deliberate: requiring every message to fold would let one
+unfoldable message brick the lane permanently. A Bitcoin transaction is scanned exactly once, so a dropped
+message is dropped for that transaction — but **not for that intent**. `msgId` is
+`keccak256(outbox ‖ chainId ‖ recordHash ‖ index)` over a monotone index, so calling `send()` again produces a
+fresh `msgId` and a fresh fold attempt, even with a byte-identical payload.
+
+**So, practically:** treat the outbox as a retryable channel. After sending, confirm the message landed in the
+honored set rather than assuming it did, and re-send if it did not. Do not put a one-shot emergency action, a
+governance execution that must fire exactly once, or anything whose timing you cannot control behind it
+without a confirm-and-retry loop in front. Anything idempotent — an attestation, a pointer update, a data push
+— fits the channel well as it stands.
+
+**Which outbox is honored is fixed in the guest**, not configurable: the reflection program pins
+`ETH_CALL_OUTBOX` as a build constant and asserts it on every cycle, so changing it requires a program rebuild
+and a new deployment. That is the intended one-way door — it means no operator can redirect the channel at a
+different contract — and it is why the outbox address is not surfaced as a settable parameter.
+
 ## 6. Relay API
 
 Base `https://api.tacit.finance`. Everything below is public; nothing needs a key.
