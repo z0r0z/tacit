@@ -105,7 +105,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=df90cbb7">
+<link rel="modulepreload" href="./tacit.js?cb=43364b46">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -994,7 +994,12 @@ button.market-chip .chip-caret {
 }
 .mkt-offer-card {
   display: grid;
-  grid-template-columns: minmax(74px, 1fr) minmax(98px, 1.2fr) minmax(68px, 0.8fr) auto;
+  /* The asks column here is always the narrow half of a two-column
+     asks|bids split (.mkt-orderbook), capped by the market tile's own
+     max-width — never wide enough for four side-by-side fields no
+     matter the viewport. One field per row is the only layout that
+     doesn't truncate or collide. */
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 8px;
   row-gap: 3px;
@@ -1017,9 +1022,13 @@ button.market-chip .chip-caret {
   min-width: 0;
 }
 .mkt-offer-price {
+  grid-column: 1 / -1;
   font-size: 13px;
   font-weight: 700;
   color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mkt-offer-size {
@@ -1053,9 +1062,13 @@ button.market-chip .chip-caret {
   color: var(--green);
 }
 .mkt-offer-meta {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  /* stretch, not flex-start: flex-start lets each span size to its own
+     max-content width instead of the column width, which skips the
+     spans' own overflow/ellipsis truncation entirely. */
+  align-items: stretch;
   gap: 2px;
   min-width: 0;
   font-size: 9px;
@@ -1068,7 +1081,7 @@ button.market-chip .chip-caret {
   white-space: nowrap;
 }
 .mkt-offer-note {
-  grid-column: 1 / 4;
+  grid-column: 1 / -1;
   font-size: 9px;
   color: var(--ink-mid);
   overflow: hidden;
@@ -1076,8 +1089,8 @@ button.market-chip .chip-caret {
   white-space: nowrap;
 }
 .mkt-offer-card button {
-  grid-column: 4;
-  grid-row: 1 / span 2;
+  grid-column: 2;
+  grid-row: 1;
   width: auto;
   min-width: 84px;
   min-height: 30px;
@@ -1089,9 +1102,7 @@ button.market-chip .chip-caret {
   .mkt-offer-gallery { margin: 0 8px 8px; padding: 8px; }
   .mkt-offer-gallery-head { align-items: flex-start; flex-direction: column; gap: 2px; }
   .mkt-offer-gallery-head span { text-align: left; }
-  .mkt-offer-card { grid-template-columns: minmax(0, 1fr) auto; }
-  .mkt-offer-price, .mkt-offer-meta, .mkt-offer-note { grid-column: 1 / -1; }
-  .mkt-offer-card button { grid-column: 2; grid-row: 1; min-width: 76px; }
+  .mkt-offer-card button { min-width: 76px; }
 }
 .market-bids-row[data-fill-aid]:focus-visible {
   outline: 2px solid var(--green);
@@ -11156,7 +11167,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=df90cbb7"></script>
+<script type="module" src="./tacit.js?cb=43364b46"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for
