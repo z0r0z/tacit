@@ -22,6 +22,9 @@ const DISTRIBUTOR_ABI = [
 const ERC20_BALANCEOF_ABI = [
   { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
 ];
+const CLAIMED_ABI = [
+  { type: 'function', name: 'claimed', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
+];
 
 // Built once at startup, reused for every settle cycle. null when publishing isn't configured yet (no
 // POINTS_ROOT_SETTER_KEY) — settleCycle still folds days into the local reward ledger either way; only the
@@ -206,7 +209,7 @@ export async function settleCycle(store) {
 }
 
 function startHttp(store) {
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
@@ -234,12 +237,36 @@ function startHttp(store) {
         res.end(JSON.stringify({ ...total, deposits }));
         return;
       }
-      // The claim proof for the LAST on-chain-published root — see savePublishedClaims. A brand-new address
-      // with no settled reward yet just gets null, not an error: the dapp shows "nothing to claim yet" for that.
+      // The claim proof for the LAST on-chain-published root (see savePublishedClaims) PLUS what the
+      // distributor already shows as claimed for this account, so an integrator can render "earned so far /
+      // already claimed / claimable now" without doing its own on-chain read. cumulativeAmount only ever grows
+      // across epochs (see settleCycle) — this never resets, it just reports where the running total sits
+      // right now and how much of it hasn't been picked up yet.
       const claimMatch = url.pathname.match(/^\/claim\/(0x[0-9a-fA-F]{40})$/);
       if (claimMatch) {
-        const claim = store.claimFor(claimMatch[1]);
-        res.end(JSON.stringify(claim));
+        const address = claimMatch[1];
+        const claim = store.claimFor(address); // { cumulativeAmount, proof } | null
+        const cumulativeAmount = claim?.cumulativeAmount ?? '0';
+        let claimedWei = '0';
+        if (ADDR.pointsDistributor) {
+          try {
+            const onChain = await publicClient.readContract({
+              address: ADDR.pointsDistributor, abi: CLAIMED_ABI, functionName: 'claimed', args: [address],
+            });
+            claimedWei = onChain.toString();
+          } catch (err) {
+            log(`/claim read failed for ${address}:`, err?.message || err); // report 0 claimed rather than fail the response over a transient RPC hiccup
+          }
+        }
+        const unclaimedWei = (BigInt(cumulativeAmount) > BigInt(claimedWei) ? BigInt(cumulativeAmount) - BigInt(claimedWei) : 0n).toString();
+        res.end(JSON.stringify({
+          address,
+          distributor: ADDR.pointsDistributor || null,
+          cumulativeAmount,
+          claimedWei,
+          unclaimedWei,
+          proof: claim?.proof ?? null,
+        }));
         return;
       }
       // Monitoring view of the reward settlement itself — separate from /points, which is real-time. A day's
