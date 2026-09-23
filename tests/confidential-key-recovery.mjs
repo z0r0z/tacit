@@ -464,7 +464,12 @@ test('balance keeps its shape and still recovers ordinary memo notes alongside t
   const n = derivedNote(ux0, walletPriv, ceth.assetId, 9, 555);
   const events = [leavesEv(0, [n.leaf], [sealTo(ux0, walletPriv, n)], tx(50))];
   const b = await mkUx(chainHandler(events)).balance(walletPriv);
-  assert.deepEqual(Object.keys(b).sort(), ['byAsset', 'notes', 'poolStats']);
+  // `diag` is part of the contract: several channels (cBTC, bridge-mint) have no memo at all, so key+chain
+  // re-derivation is the only way to find those notes — and _scanNotes swallows a per-channel failure so one
+  // dead endpoint cannot blank the whole wallet. Without diag travelling with the result, a caller cannot
+  // tell an empty channel from one that errored, and an esplora outage reads as a zero balance.
+  assert.deepEqual(Object.keys(b).sort(), ['byAsset', 'diag', 'notes', 'poolStats']);
+  assert.deepEqual(b.diag.errors, {}, 'a clean scan reports no channel errors');
   assert.equal(b.notes.length, 1); assert.equal(BigInt(b.notes[0].value), 555n);
   assert.equal(b.notes[0].source, undefined);
 });

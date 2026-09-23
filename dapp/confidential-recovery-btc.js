@@ -39,17 +39,29 @@ export function makeBtcHistoryProvider({ fetchImpl, sha256, bases = ESPLORA_BASE
 
   // Every transaction touching a script, newest first, in esplora's pages of 25 (confirmed pages continue from the last
   // confirmed txid).
+  //
+  // THROWS rather than truncating. These transactions are the `anchors` list, and anchors are the only input
+  // to the cBTC blinding re-derivation — cBTC notes carry no memo at all, so key + chain is the sole channel
+  // by which they can be found. Returning a short list on hitting the page cap therefore does not degrade
+  // gracefully, it reports someone's BTC-backed balance as smaller than it is, with nothing anywhere saying
+  // the history was cut off. A wallet busy enough to exceed the cap needs a higher `maxPages`, not a quietly
+  // wrong answer.
   async function txsOf(spk) {
     const h = scriptHash(spk);
     const out = [];
     let page = await getJson(`/scripthash/${h}/txs`);
-    for (let n = 0; n < maxPages && Array.isArray(page) && page.length; n++) {
+    for (let n = 0; ; n++) {
+      if (!Array.isArray(page) || !page.length) return out;
+      if (n >= maxPages) {
+        throw new Error(`btc history: script has more than ${maxPages * 25} transactions and the walk hit its page cap — `
+          + 'refusing to return a truncated history (cBTC notes are derivable only from these anchors); '
+          + 'raise maxPages and retry');
+      }
       out.push(...page);
       const confirmed = page.filter((t) => t.status && t.status.confirmed);
-      if (page.length < 25 || !confirmed.length) break;
+      if (page.length < 25 || !confirmed.length) return out;
       page = await getJson(`/scripthash/${h}/txs/chain/${confirmed[confirmed.length - 1].txid}`);
     }
-    return out;
   }
 
   // The wallet's funding and lock scripts, derived the way the lock driver derives them (cbtc-lock-mint.js).

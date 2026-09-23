@@ -41,26 +41,66 @@ export function makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, postHint, w
   // waitForSettle/waitForProof convention elsewhere in this SDK. Resolves with the covers response once
   // covered=true; throws on timeout rather than silently returning uncovered, so a caller can't mistake a
   // timeout for a green light.
-  async function waitForCrossOutCoverage({ network = 'mainnet', block, intervalMs = 30000, timeoutMs = 3 * 60 * 60 * 1000, onUpdate, sleep } = {}) {
+  //
+  // The default interval matches the endpoint's own refill rate (its bucket is a 60-token burst that
+  // refills one token per minute), so a long wait can't outrun its own budget. A faster interval spends
+  // the burst in the first half hour and then 429s for the rest of the wait — and since a throttled
+  // response carries no `covered` field, polling through one looks exactly like "not covered yet". That
+  // misreads a self-inflicted rate limit as a protocol state, which on this particular endpoint is the
+  // difference between waiting and broadcasting a claim that can never be folded. Handle 429 explicitly:
+  // honour the server's Retry-After, never count it as an answer, and name it in the timeout.
+  async function waitForCrossOutCoverage({ network = 'mainnet', block, intervalMs = 60000, timeoutMs = 3 * 60 * 60 * 1000, onUpdate, sleep } = {}) {
     if (!workerBase) throw new Error('crossout-broadcast: waitForCrossOutCoverage needs workerBase');
     if (!f) throw new Error('crossout-broadcast: no fetch implementation');
     if (!Number.isFinite(block) || block <= 0) throw new Error('crossout-broadcast: block (the crossOut settle\'s own block number) is required');
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
     let last = null;
+    let throttled = 0;
     for (;;) {
       const res = await f(`${workerBase}/reflection/eth-state/covers?network=${network}&block=${block}`);
-      const body = await res.json();
+      let body = null;
+      try { body = await res.json(); } catch { body = null; }
+      // A throttled or errored poll is not an answer about coverage. Back off and ask again rather than
+      // letting a missing `covered` field read as "still waiting". The `covered` field itself is the
+      // test for a real answer — a response that carries one is authoritative whatever else it says.
+      if (!body || typeof body.covered !== 'boolean') {
+        throttled += 1;
+        const retryAfter = Number(body && body.retryAfter) || Number(res.headers && res.headers.get && res.headers.get('Retry-After')) || 0;
+        if (Date.now() > deadline) break;
+        await wait(Math.max(intervalMs, retryAfter * 1000));
+        continue;
+      }
       const status = body.covered ? 'covered' : 'waiting';
       if (status !== last) { last = status; if (onUpdate) onUpdate(body); }
       if (body.covered) return body;
-      if (Date.now() > deadline) throw new Error(`crossOut coverage wait timed out after ${Math.round(timeoutMs / 60000)}min — check /reflection/eth-state before retrying rather than assuming it's safe to broadcast`);
+      if (Date.now() > deadline) break;
       await wait(intervalMs);
     }
+    const why = throttled
+      ? ` — ${throttled} poll(s) were rate-limited or unreadable, so this may be a polling problem rather than a protocol state; slow intervalMs down`
+      : '';
+    throw new Error(`crossOut coverage wait timed out after ${Math.round(timeoutMs / 60000)}min${why} — check /reflection/eth-state before retrying rather than assuming it's safe to broadcast`);
   }
 
-  // Convenience: wait for coverage, then broadcast. `block` is the crossOut()'s own returned `ethBlock`.
-  async function completeCrossOutOnBitcoin({ block, assetId, claimId, cx, cy, owner, network = 'mainnet', waitOpts } = {}) {
+  // Convenience: wait for coverage, then broadcast. Pass the whole crossOut() result — `block` is its
+  // `ethBlock` and `claimIdVerified` is its corroboration flag — so both gates are checked from one object:
+  //
+  //   completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0] })
+  //
+  // Coverage is only half of "safe to broadcast". The other half is that the claimId being broadcast is the
+  // one the pool actually recorded: fold_crossout hashes claim_id into its membership check, so a reveal
+  // built from a predicted-but-wrong claimId can never fold, and there is no on-chain error anywhere to say
+  // so. crossOut() corroborates its prediction against the real CrossOutRecorded event and reports the
+  // outcome; refuse to broadcast when it could not. `claimIdVerified: true` can be passed explicitly by a
+  // caller that corroborated the claimId some other way.
+  async function completeCrossOutOnBitcoin({ block, assetId, claimId, cx, cy, owner, network = 'mainnet', waitOpts, claimIdVerified, claimIdNote } = {}) {
+    if (claimIdVerified !== true) {
+      throw new Error('refusing to broadcast a crossOut mint whose claimId was not corroborated against the '
+        + `CrossOutRecorded event (${claimIdNote || 'claimIdVerified was not set'}). A reveal built from a wrong `
+        + 'claimId can never fold and fails silently — re-read the settle receipt and retry, or pass '
+        + 'claimIdVerified: true if you have corroborated it yourself.');
+    }
     await waitForCrossOutCoverage({ network, block, ...waitOpts });
     return broadcastCrossoutMint({ assetId, claimId, cx, cy, owner });
   }

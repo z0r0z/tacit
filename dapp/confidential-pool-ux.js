@@ -93,8 +93,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // After a relayed settle: the memo the pool emitted for each of our leaves must be byte-identical to the one
   // sealed here (the relay chooses the memo hashes it proves, so it could substitute a memo consistently).
   async function checkEmittedMemos({ txHash, leaves, memos }) {
+    // Retry before giving up. A single failed receipt read turns "verified" into "unverified" — and since the
+    // caller only throws on ok === false, an `ok: null` used to pass through as a success-looking result with
+    // the sealed memos dropped. A settle receipt is available from any node, so one flaky response is not a
+    // reason to stop checking; the relay is also the party with the most to gain from this read failing.
     let receipt = null;
-    try { receipt = await rpc('eth_getTransactionReceipt', [txHash]); } catch { /* reported as unchecked */ }
+    for (let attempt = 0; attempt < 3 && !receipt; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 400 * attempt));
+      try { receipt = await rpc('eth_getTransactionReceipt', [txHash]); } catch { /* reported as unchecked */ }
+    }
     if (!receipt || !Array.isArray(receipt.logs)) return { ok: null, mismatched: [], reason: 'receipt unavailable' };
     const emitted = new Map();
     for (const log of receipt.logs) {
@@ -392,7 +399,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       byAsset[id].value += BigInt(n.value);
       byAsset[id].notes.push(n);
     }
-    return { notes, byAsset, poolStats: poolStatsFromEvents(events) };
+    // `diag` travels with the result. _scanNotes swallows a failure in any one channel so a single dead
+    // endpoint cannot blank the whole wallet — but a caller that sees only `notes` cannot tell a genuinely
+    // empty channel from one that errored, and for cBTC and bridge-mint notes that distinction is the
+    // difference between "you hold nothing" and "we could not look". Those two channels have no memo: key +
+    // chain re-derivation is the ONLY way to find them, so an esplora outage renders a real balance as zero
+    // with no error anywhere. recover() has always surfaced this as diagnostics.coverage; balance() is the
+    // entry point almost every tab actually calls, and it was dropping it.
+    //
+    // `errors` is keyed by channel and empty on a clean scan, so `Object.keys(diag.errors).length` is the
+    // one test a caller needs before treating a balance as authoritative.
+    return { notes, byAsset, poolStats: poolStatsFromEvents(events), diag: st.diag };
   }
 
   // Rough pool-wide activity stat, derived for free from the SAME event stream balance() just fetched
@@ -667,6 +684,27 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       gasLimit: BigInt(gasLimit), to: cfg.pool, value: BigInt(w.amount), data: w.calldata,
     };
     const signed = evmTx.signEip1559(tx, acct.priv);
+    // Simulate before spending gas. A wrap's deposit id is hash3(assetId, value, commit) and the pool
+    // registers it exactly once, ever — a repeat reverts DepositExists permanently. Broadcasting blind then
+    // returning a txHash regardless means a reverted wrap is reported to the user as a pending deposit, and
+    // the UI tells them to wait for a note that can never arrive: gas burned, nothing escrowed, no error
+    // anywhere. eth_call costs nothing and turns that into a message before the send.
+    if (broadcast) {
+      let simErr = null;
+      try {
+        await rpc('eth_call', [{ from: acct.address, to: cfg.pool, value: '0x' + BigInt(w.amount).toString(16), data: w.calldata }, 'latest']);
+      } catch (e) { simErr = e; }
+      if (simErr) {
+        const raw = String(simErr && (simErr.data || simErr.message) || simErr);
+        // DepositExists() — selector 0xad2fa98e. Worth naming explicitly: it is the one revert a
+        // user can hit by doing something entirely reasonable (re-wrapping the same amount at the same
+        // index), and the remedy is specific.
+        const dup = /0xad2fa98e/i.test(raw) || /DepositExists/i.test(raw);
+        throw new Error(dup
+          ? `this exact deposit (${ticker} ${w.amount} at wrap index ${index}) has already been registered on the pool and can never be registered again — wrap a different amount, or let nextWrapIndex pick a fresh index instead of pinning one`
+          : `wrap would revert on-chain, not broadcasting: ${raw.slice(0, 200)}`);
+      }
+    }
     const txHash = broadcast ? await rpc('eth_sendRawTransaction', [signed.raw]) : null;
     return { ...w, from: acct.address, nonce: nonce.toString(), signedRaw: signed.raw, txHash };
   }
@@ -2093,7 +2131,48 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     onBuilt?.(built);
 
     const r = await _dispatch({ type: 'stealthlock', spec: { op, lockMemos: [memo] }, sealedMemos: [memo], selfRelay, walletPriv, waitOpts });
-    return { ...r, ...built };
+    const memoCheck = await checkEmittedLockMemos({ txHash: r && r.txHash, lockLeaves: [op.lockLeaf], memos: [memo] });
+    return { ...r, ...built, ...(memoCheck ? { memoCheck } : {}) };
+  }
+
+  // The lock memo, checked against the chain — the one memo on this op, and the only channel either side has.
+  //
+  // A stealth lock ships no note leaves, so `spec` carries no `leaves` and relay.settle's verifyEmittedMemos
+  // has nothing to compare: the memo bypassed the check entirely. It is also the memo that matters most. It
+  // carries BOTH halves of the payment — the recipient's discovery and one-time-key material, and the
+  // sender's own refund tail — so a relay that proves the same op against a garbage memo produces a settle
+  // that succeeds, a memoRoot that matches, a recipient who can never find the payment, and a sender whose
+  // chain-only refund scan finds nothing either. The only thing left is this browser's saved record.
+  //
+  // Lock memos ride the settle CALLDATA (the tail past the note memos), not LeavesInserted, so
+  // checkEmittedMemos cannot see them however it is called — hence a separate reader over the same decoder
+  // the lock scanner already uses. `ok: null` means the comparison could not run, which is reported rather
+  // than treated as a pass.
+  async function checkEmittedLockMemos({ txHash, lockLeaves, memos }) {
+    if (!txHash) return { ok: null, mismatched: [], reason: 'no settle tx hash — the lock memo was never checked' };
+    let input = null;
+    try { const t = await rpc('eth_getTransactionByHash', [txHash]); input = t && t.input; } catch { /* reported below */ }
+    if (!input) return { ok: null, mismatched: [], reason: 'settle calldata unavailable — the lock memo was not checked' };
+    const decoded = _lockScan.decodeSettleCalls(input);
+    const norm = (m) => '0x' + String(m ?? '').replace(/^0x/, '').toLowerCase();
+    const want = lockLeaves.map((lf) => String(lf).toLowerCase());
+    for (const call of (decoded && decoded.calls) || []) {
+      let fields;
+      try { fields = _lockScan.decodePublicValuesLockFields(call.publicValues); } catch { continue; }
+      const got = (fields.lockLeaves || []).map((lf) => String(lf).toLowerCase());
+      if (got.length !== want.length || got.some((lf, i) => lf !== want[i])) continue;
+      if (call.memos.length !== fields.leavesCount + fields.lockLeaves.length) continue;
+      const tail = call.memos.slice(fields.leavesCount);
+      const mismatched = [];
+      memos.forEach((m, i) => { if (norm(tail[i]) !== norm(m)) mismatched.push({ index: i, lockLeaf: lockLeaves[i], expected: norm(m), emitted: tail[i] == null ? null : norm(tail[i]) }); });
+      if (mismatched.length && typeof saveMismatchedMemos === 'function') {
+        // The sealed memo is the only copy of this payment's opening and refund key: persist it before the
+        // caller has any chance to drop it.
+        try { await saveMismatchedMemos({ txHash, leaves: lockLeaves, memos, memoCheck: { ok: false, mismatched } }); } catch { /* still returned below */ }
+      }
+      return { ok: mismatched.length === 0, mismatched };
+    }
+    return { ok: null, mismatched: [], reason: 'this settle carries no matching lock-leaf set — the lock memo was not checked' };
   }
 
   // The pool's lock set rebuilt from its LockLeavesInserted events (memos from each settle's calldata), read to one
@@ -2131,7 +2210,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // in this module.
   async function scanStealthLocks({ walletPriv, opts } = {}) {
     const set = await scanLockSet(opts);
-    return { mine: await _flagSpentLocks(_openReceivedLocks(walletPriv, set)), lockSetRoot: set.lockSetRoot };
+    // `verified` travels with the result. scanLockLeaves distinguishes "the pool confirmed this set" (true)
+    // from "the pool's lock state could not be read, so nothing was checked" (null) — and dropping that here
+    // meant no caller could tell, while building claim and refund proofs from the positions either way.
+    return {
+      mine: await _flagSpentLocks(_openReceivedLocks(walletPriv, set)),
+      lockSetRoot: set.lockSetRoot,
+      verified: set.verified ?? null,
+      ...(set.unverifiedReason ? { unverifiedReason: set.unverifiedReason } : {}),
+    };
   }
   function _openReceivedLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
     const recipientSpendPrivHex = _bytesHex(identity(walletPriv).priv);
@@ -2356,21 +2443,39 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // A crossOut-mint reveal is checked once, at scan time, against whatever the reflection worker's current
     // eth-state view covers — this is the number to compare against GET /reflection/eth-state/covers before
     // broadcasting one (see completeCrossOutOnBitcoin in crossout-broadcast.js, and BUILD-A-TACIT-DAPP.md §5f).
+    //
+    // The OUTCOME of that verification is reported, not swallowed. "Corroborated against the event" and
+    // "the check threw, or no matching event was found" are different facts with the same silent result
+    // today, and the consequence of acting on an unverified claimId is a mint that can never fold, with no
+    // on-chain error anywhere. `ethBlock` was also being assigned inside the same try BEFORE the decode
+    // loop, so a decodeLog throw left a non-null block number next to an unverified claimId — the exact
+    // combination a caller reads as "safe to broadcast".
     let ethBlock = null;
+    let claimIdVerified = false;
+    let claimIdNote = 'not checked (no settle tx hash)';
     if (r.txHash) {
       try {
         const receipt = await rpc('eth_getTransactionReceipt', [r.txHash]);
-        if (receipt?.blockNumber) ethBlock = Number(BigInt(receipt.blockNumber));
+        const blockNumber = receipt?.blockNumber ? Number(BigInt(receipt.blockNumber)) : null;
         const real = (receipt?.logs || [])
           .map((l) => evmLog.decodeLog(l))
           .filter((e) => e && e.type === 'CrossOutRecorded');
+        let matchedAll = t.crossOuts.length > 0;
         for (const co of t.crossOuts) {
           const match = real.find((e) => String(e.destCommitment).toLowerCase() === String(co.destCommitment).toLowerCase());
-          if (match && String(match.claimId).toLowerCase() !== String(co.claimId).toLowerCase()) co.claimId = match.claimId;
+          if (!match) { matchedAll = false; continue; }
+          if (String(match.claimId).toLowerCase() !== String(co.claimId).toLowerCase()) co.claimId = match.claimId;
         }
-      } catch { /* best-effort verification -- a failed check doesn't invalidate the crossOut itself */ }
+        // Only publish the block number once the claimIds it accompanies are corroborated: the two are read
+        // together by anything deciding whether to broadcast.
+        claimIdVerified = matchedAll;
+        claimIdNote = matchedAll ? 'corroborated against CrossOutRecorded' : 'no matching CrossOutRecorded event for every destCommitment';
+        if (matchedAll) ethBlock = blockNumber;
+      } catch (e) {
+        claimIdNote = `verification failed: ${String(e && e.message || e).slice(0, 120)}`;
+      }
     }
-    return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset, ethBlock };
+    return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset, ethBlock, claimIdVerified, claimIdNote };
   }
 
   // Pay a confidential invoice (confidential-invoice.js): wrap public funds to the invoice's commit so the
@@ -3058,11 +3163,30 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     d.wrap = st.diag.wrap; d.cbtc = st.diag.cbtc; d.bridge = st.diag.bridge; d.change = st.diag.change; d.derived = st.diag.derived;
     d.coverage = {
-      notes: { memo: true, wrapWalk: !d.errors.wrap, changeWalk: deep && !d.errors.change, derivedOutputs: deep && !d.errors.derived && !d.errors.derivedOutputs, bridgeMintWalk: !d.errors.bridge, cbtcScan: cbtc && d.cbtc.attempted ? !d.errors.cbtc : (cbtc ? 'not needed' : false) },
+      notes: {
+        memo: true,
+        wrapWalk: !d.errors.wrap,
+        changeWalk: deep && !d.errors.change && !(d.change && d.change.skipped && d.change.skipped.length),
+        derivedOutputs: deep && !d.errors.derived && !d.errors.derivedOutputs && !(d.derived && d.derived.skipped && d.derived.skipped.length),
+        bridgeMintWalk: !d.errors.bridge,
+        cbtcScan: cbtc && d.cbtc.attempted ? !d.errors.cbtc : (cbtc ? 'not needed' : false),
+      },
       farmPositions: { derived: d.farm.attempted && !d.errors.farm, needsImportedRecord: 'positions opened under a key not derived from this wallet — importFarmPosition(record)' },
       stealthLocks: { sent: d.locks.attempted && !d.errors.locks, received: d.locks.attempted && !d.errors.locks },
       cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp, needsSavedRecord: 'positions opened under a key not derived from this wallet' },
-      complete: Object.keys(d.errors).length === 0,
+      // A walk that SKIPPED transactions did not fail — it returns normally with a `skipped` list — so
+      // errors alone do not answer "did we see everything". walkChange and walkDerivedOutputs push a
+      // {txHash, reason:'settle calldata unavailable'} entry and carry on whenever a single
+      // eth_getTransactionByHash misses, which one flaky RPC pass is enough to cause. Reporting `complete`
+      // while a change note's own settle calldata went unread is the worst possible answer to give someone
+      // restoring from a seed: they conclude the note is gone, or treat the set as authoritative.
+      complete: Object.keys(d.errors).length === 0
+        && !(d.change && d.change.skipped && d.change.skipped.length)
+        && !(d.derived && d.derived.skipped && d.derived.skipped.length),
+      skipped: {
+        change: (d.change && d.change.skipped) || [],
+        derived: (d.derived && d.derived.skipped) || [],
+      },
     };
     d.unresolved = {
       notes: 'empty-memo leaves no wallet channel explained (other holders\' seed-derived notes, or notes outside the derivation windows): ' + st.diag.unattributedEmptyLeaves.length,

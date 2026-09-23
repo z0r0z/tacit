@@ -353,13 +353,21 @@ export function makeConfidentialLockScan({ pool }) {
       return { tree, lockLeaves: list.flatMap((c) => c.lockLeaves), lockMemos: list.flatMap((c) => c.lockMemos), lockSetRoot: tree.root() };
     };
     const all = build(found);
-    if (!getLockState) return { ...all, verified: null, excluded: [] };
+    // `verified: null` means the set was never checked against the pool — NOT that it passed.
+    //
+    // Deliberately not an error, even under `strict`: a node that serves no historical storage cannot answer
+    // this, and hard-failing there would leave such a user unable to see their own locks at all. But the
+    // distinction has to reach the caller, because claim and refund proofs are built from these positions and
+    // the contiguity check catches an interior gap, not a truncated tail. So `strict` still throws on a proven
+    // MISMATCH (a set the pool contradicts), while an unverifiable set comes back labelled, with the reason.
+    const unverifiable = (reason) => ({ ...all, verified: null, unverifiedReason: reason, excluded: [] });
+    if (!getLockState) return unverifiable('no getLockState reader was wired');
     const word32 = (h) => '0x' + strip0x(h).toLowerCase().padStart(64, '0');
     let chain;
     try {
       const s = await getLockState();
       chain = { count: Number(BigInt(s.count)), root: word32(s.root) };
-    } catch { return { ...all, verified: null, excluded: [] }; }
+    } catch (e) { return unverifiable(`lockNextLeafIndex/lockRoot read failed: ${String(e && e.message || e).slice(0, 120)}`); }
     const matches = (b) => b.lockLeaves.length === chain.count && word32(b.lockSetRoot) === chain.root;
     if (matches(all)) return { ...all, verified: true, excluded: [] };
     const untrusted = found.filter((c) => !c.trusted);

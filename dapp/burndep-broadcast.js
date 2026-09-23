@@ -29,8 +29,12 @@ export function makeBurnDepositBroadcaster({ workerBase, fetchImpl, slipstreamBa
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tx_hex: txHex }),
     });
-    const body = await res.json();
-    if (!res.ok) throw new Error(`burndep-broadcast: slipstream submit failed (${res.status}): ${JSON.stringify(body)}`);
+    // Status BEFORE parsing. A successful submit that answers with a non-JSON body would otherwise throw out
+    // of res.json() and read to the caller as a failed broadcast — and a caller that treats a rejection as
+    // "nothing happened" abandons a burn that is in fact queued. Read the text once, then decide.
+    const text = await res.text();
+    let body; try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+    if (!res.ok) throw new Error(`burndep-broadcast: slipstream submit failed (${res.status}): ${text.slice(0, 300)}`);
     return body;
   }
 

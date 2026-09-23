@@ -91,9 +91,22 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
 
   // Compare what the settle emitted with what was sealed (see checkEmittedMemos above). Only note leaves carry a
   // memo per leaf, in leaf order; a leaf-less op (unwrap, a lock) has nothing to compare.
+  //
+  // A leaf-bearing op with no tx hash is NOT "nothing to compare" — it is a check that could not run. Say so
+  // rather than returning a clean result: the sealed memos are the only copy of those notes' openings, and a
+  // relay that suppresses the hash is exactly the party this check exists to catch.
   async function verifyEmittedMemos(st, leaves, memos) {
-    if (typeof checkEmittedMemos !== 'function' || !st || !st.txHash || !leaves || !leaves.length) return st;
+    if (typeof checkEmittedMemos !== 'function' || !st || !leaves || !leaves.length) return st;
+    if (!st.txHash) return { ...st, memoCheck: { ok: null, reason: 'no settle tx hash — emitted memos were never checked' } };
     const memoCheck = await checkEmittedMemos({ txHash: st.txHash, leaves, memos: memos || [] });
+    // An UNVERIFIABLE check is not a passing one. `ok: null` means the receipt could not be read, so nothing
+    // was compared — and the sealed memos are the only copy of these notes' openings. Persist them exactly as
+    // the mismatch path does, so a check that could not run never silently costs the user their recovery
+    // channel. Not thrown: the settle itself is fine and the memos are probably honest; the caller gets the
+    // result with `memoCheck.ok === null` so it can surface "unverified" rather than a clean success.
+    if (memoCheck && memoCheck.ok === null && typeof saveMismatchedMemos === 'function') {
+      try { await saveMismatchedMemos({ txHash: st.txHash, leaves, memos, memoCheck }); } catch { /* best effort */ }
+    }
     if (memoCheck && memoCheck.ok === false) {
       const e = new Error(`settled in ${st.txHash}, but the emitted memos differ from the sealed ones for leaf ${memoCheck.mismatched.map((m) => m.index).join(', ')}: keep this note's opening, the chain cannot recover it`);
       e.settleResult = st; e.memoCheck = memoCheck; e.sealedMemos = memos;
@@ -145,8 +158,17 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
 
   // Convenience: submit and block until on-chain.
   async function settle(opSpec, waitOpts) {
-    const { jobId, status: s, sealedMemos } = await submitOp(opSpec);
-    const st = s === 'settled' ? { jobId, status: 'settled' } : await waitForSettle(jobId, waitOpts);
+    const { sealedMemos, ...sub } = await submitOp(opSpec);
+    const { jobId, status: s } = sub;
+    // A relay answering the submit with "already settled" used to skip straight past the memo check: the
+    // literal {jobId, status} built here carried no txHash, and verifyEmittedMemos has nothing to read
+    // without one. That made the one client-side defence against memo substitution opt-out, by the very
+    // party it defends against. Keep whatever the submit returned, and go ask for the hash if it is missing
+    // — the same re-query sendUnwrap already does.
+    let st = s === 'settled' ? { ...sub, jobId, status: 'settled' } : await waitForSettle(jobId, waitOpts);
+    if (!st.txHash && st.status === 'settled' && opSpec.leaves && opSpec.leaves.length) {
+      try { const rs = await status(jobId); if (rs && rs.txHash) st = { ...st, txHash: rs.txHash }; } catch { /* verifyEmittedMemos reports the gap */ }
+    }
     return verifyEmittedMemos(st, opSpec.leaves, sealedMemos);
   }
 

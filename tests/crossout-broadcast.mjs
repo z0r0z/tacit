@@ -87,10 +87,33 @@ const burn = { assetId: b32('TAC'), claimId: b32('claimZ'), cx: b32('cx'), cy: b
   const buildAndBroadcastEnvelope = async () => { broadcastCalledAt = covered; return { txid: 'btc-txid-2' }; };
   const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, workerBase: 'https://api.example', fetchImpl });
   const sleep = async () => { covered = true; }; // flips to covered on the poll's wait, simulating time passing
-  const r = await broadcast.completeCrossOutOnBitcoin({ block: 105, ...burn, waitOpts: { intervalMs: 1, sleep } });
+  const r = await broadcast.completeCrossOutOnBitcoin({ block: 105, ...burn, claimIdVerified: true, waitOpts: { intervalMs: 1, sleep } });
   assert.strictEqual(broadcastCalledAt, true, 'only broadcast once coverage was confirmed, never before');
   assert.strictEqual(r.txid, 'btc-txid-2', 'returns the broadcast result');
   ok('completeCrossOutOnBitcoin waits for coverage before broadcasting');
 }
 
-console.log(`\n${n}/6 crossout-broadcast checks passed`);
+// ── 7. an uncorroborated claimId is refused, before any coverage poll or broadcast ──
+// Coverage is only half the safety question. fold_crossout hashes claim_id into its membership check, so a
+// reveal built from a predicted-but-wrong claimId can never fold and fails with no on-chain error anywhere.
+// crossOut() corroborates its prediction against the real CrossOutRecorded event; if that could not be done,
+// broadcasting is exactly as unrecoverable as broadcasting too early.
+{
+  let polled = false, broadcastCalled = false;
+  const fetchImpl = async () => { polled = true; return { json: async () => ({ covered: true }) }; };
+  const buildAndBroadcastEnvelope = async () => { broadcastCalled = true; return { txid: 'never' }; };
+  const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, workerBase: 'https://api.example', fetchImpl });
+  await assert.rejects(
+    () => broadcast.completeCrossOutOnBitcoin({ block: 105, ...burn, claimIdNote: 'verification failed: boom' }),
+    /claimId was not corroborated.*verification failed: boom/s,
+    'refuses, and names why the corroboration failed',
+  );
+  assert.strictEqual(polled, false, 'refused before spending a coverage poll');
+  assert.strictEqual(broadcastCalled, false, 'nothing was broadcast');
+  // And an explicitly corroborated claimId still goes through.
+  const r2 = await broadcast.completeCrossOutOnBitcoin({ block: 105, ...burn, claimIdVerified: true, waitOpts: { intervalMs: 1, sleep: async () => {} } });
+  assert.strictEqual(r2.txid, 'never', 'a corroborated claimId broadcasts normally');
+  ok('completeCrossOutOnBitcoin refuses an uncorroborated claimId, before polling or broadcasting');
+}
+
+console.log(`\n${n} crossout-broadcast checks passed`);

@@ -15,7 +15,7 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   let posted = null;
   const fetchImpl = async (url, opts) => {
     posted = { url, body: JSON.parse(opts.body) };
-    return { ok: true, json: async () => ({ success: true }) };
+    return { ok: true, json: async () => ({ success: true }), text: async () => JSON.stringify(({ success: true })) };
   };
   const b = makeBurnDepositBroadcaster({ fetchImpl });
   const r = await b.submitToSlipstream('deadbeef');
@@ -28,7 +28,7 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 // ── 2. submitToSlipstream throws loudly on a rejected submission ──
 {
-  const fetchImpl = async () => ({ ok: false, status: 400, json: async () => ({ error: 'bad tx' }) });
+  const fetchImpl = async () => ({ ok: false, status: 400, json: async () => ({ error: 'bad tx' }), text: async () => JSON.stringify(({ error: 'bad tx' })) });
   const b = makeBurnDepositBroadcaster({ fetchImpl });
   await assert.rejects(() => b.submitToSlipstream('deadbeef'), /slipstream submit failed/, 'surfaces a rejected submission');
   ok('submitToSlipstream fails loudly on a non-ok response');
@@ -81,14 +81,14 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 // ── 6. registerBurnDeposit posts to /reflection/burndep, requires workerBase ──
 {
   let posted = null;
-  const fetchImpl = async (url, opts) => { posted = { url, body: JSON.parse(opts.body) }; return { ok: true, json: async () => ({ ok: true, stored: 'k' }) }; };
+  const fetchImpl = async (url, opts) => { posted = { url, body: JSON.parse(opts.body) }; return { ok: true, json: async () => ({ ok: true, stored: 'k' }), text: async () => JSON.stringify(({ ok: true, stored: 'k' })) }; };
   const b = makeBurnDepositBroadcaster({ workerBase: 'https://api.example', fetchImpl });
   const r = await b.registerBurnDeposit({ burnTxidDisplay: 'abc', bundle: { some: 'data' } });
   assert.strictEqual(posted.url, 'https://api.example/reflection/burndep?network=mainnet', 'posts to the burndep endpoint with network');
   assert.deepStrictEqual(posted.body, { burnTxidDisplay: 'abc', bundle: { some: 'data' } }, 'body carries the txid + bundle');
   assert.deepStrictEqual(r, { ok: true, stored: 'k' }, 'returns the worker response');
 
-  const noBase = makeBurnDepositBroadcaster({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true }) }) });
+  const noBase = makeBurnDepositBroadcaster({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true }), text: async () => JSON.stringify(({ ok: true })) }) });
   await assert.rejects(() => noBase.registerBurnDeposit({ burnTxidDisplay: 'abc', bundle: {} }), /needs workerBase/, 'rejects without workerBase');
   ok('registerBurnDeposit posts to /reflection/burndep, requires workerBase');
 }
@@ -98,8 +98,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const order = [];
   let confirmedAt = null;
   const fetchImpl = async (url, opts) => {
-    if (url.includes('/api/transactions') && opts?.method === 'POST') { order.push('submit'); return { ok: true, json: async () => ({ success: true }) }; }
-    if (url.includes('/reflection/burndep')) { order.push('register'); confirmedAt = order.includes('wait-confirmed'); return { ok: true, json: async () => ({ ok: true }) }; }
+    if (url.includes('/api/transactions') && opts?.method === 'POST') { order.push('submit'); return { ok: true, json: async () => ({ success: true }), text: async () => JSON.stringify(({ success: true })) }; }
+    if (url.includes('/reflection/burndep')) { order.push('register'); confirmedAt = order.includes('wait-confirmed'); return { ok: true, json: async () => ({ ok: true }), text: async () => JSON.stringify(({ ok: true })) }; }
     return { json: async () => ({}) };
   };
   const checkConfirmed = async () => { order.push('wait-confirmed'); return true; };

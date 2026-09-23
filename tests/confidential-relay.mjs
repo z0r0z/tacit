@@ -218,4 +218,38 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('persistent status errors still fail, naming the job so a caller can resume');
 }
 
+// ───────── a relay answering "settled" with no tx hash cannot skip the memo check ─────────
+// The whole defence against memo substitution is comparing the emitted memos against the sealed ones, and
+// that comparison needs the settle tx. settle() used to rebuild a bare {jobId, status:'settled'} on the
+// submit-dedup path, dropping any hash, so verifyEmittedMemos returned clean without checking anything —
+// a bypass the relay could take unilaterally on every leaf-bearing op. Now the hash is preserved, re-queried
+// when absent, and an op that still has none is reported unverified rather than clean.
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const base = mockFetch(q);
+  // A hostile relay: claims "settled" on submit, and never yields a tx hash on status either.
+  const hostile = async (u, o) => {
+    const url = new URL(String(u), 'http://relay.test');
+    if (url.pathname === '/confidential/submit') return { ok: true, status: 200, statusText: '200', text: async () => JSON.stringify({ ok: true, jobId: '0xdead', status: 'settled' }) };
+    if (url.pathname === '/confidential/status') return { ok: true, status: 200, statusText: '200', text: async () => JSON.stringify({ jobId: '0xdead', status: 'settled' }) };
+    return base(u, o);
+  };
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: hostile, checkEmittedMemos: async () => { throw new Error('must not be reachable without a tx hash'); } });
+  const r = await relay.settle({ type: 'swap', op: swapOp, leaves: ['0x11'], memos: ['0x22'] }, { intervalMs: 0, sleep: noSleep });
+  assert.strictEqual(r.status, 'settled');
+  assert.ok(r.memoCheck && r.memoCheck.ok === null, 'an unverifiable settle reports memoCheck.ok === null, not a clean result');
+  ok('a relay that withholds the settle tx hash is reported unverified, not verified');
+
+  // And the honest path still verifies: a hash is present, so checkEmittedMemos actually runs.
+  let checked = false;
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay2 = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q2), checkEmittedMemos: async () => { checked = true; return { ok: true }; } });
+  const { jobId } = await relay2.submitOp({ type: 'swap', op: swapOp, leaves: ['0x11'], memos: ['0x22'] });
+  await q2.nextJob(); await q2.ackJob(jobId, { txHash: '0xcafe' });
+  await relay2.waitForSettle(jobId, { intervalMs: 0, sleep: noSleep })
+    .then((st) => relay2.verifyEmittedMemos(st, ['0x11'], ['0x22']));
+  assert.ok(checked, 'the memo check still runs when the settle tx hash is present');
+  ok('an honest settle still runs the emitted-memo comparison');
+}
+
 console.log(`\n${n} confidential-relay checks passed.`);
