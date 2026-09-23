@@ -15,6 +15,8 @@ import { makeConfidentialFarm } from './confidential-farm.js';
 import { makeConfidentialDefiActions } from './confidential-defi-actions.js';
 import { signSchnorr, G } from './bulletproofs.js';
 import { makeCbtcLockMint } from './cbtc-lock-mint.js';
+import { makeCdpPositionStore } from './confidential-secret-store.js';
+import { scanHealth, scanHealthHtml, inboundBadgeHtml, inboundSummaryHtml } from './confidential-scan-health.js';
 
 let _ux = null;
 function getUx() {
@@ -64,13 +66,14 @@ function fmtUnits(v, decimals) {
 // ux.recoverCdpPositions rebuilds positions from key + chain, and the renderer merges anything it finds that
 // has no local descriptor. What the descriptor buys is not having to walk the chain to close a position you
 // opened in this browser.
-const POS_KEY = 'tacit-cdp-positions-v1';
-function loadPositions() { try { return JSON.parse(localStorage.getItem(POS_KEY) || '[]'); } catch { return []; } }
-function savePosition(p) {
-  const all = loadPositions();
-  all.push(p);
-  try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
-}
+//
+// It holds no keys. The close key is the Nth position key against this controller (derivePositionOwnerPriv),
+// so the descriptor keeps the nonce and the key is derived — and checked against the owner the position was
+// opened under — at close time. The debt note's nullifier key and blinding derive from the anchor the settle
+// makes public, so the anchor is kept in their place. confidential-secret-store.js owns both rules, and seals
+// anything a descriptor written by an older build carries that does not re-derive.
+const _posStore = makeCdpPositionStore({ sha256, hmac, secp, curveOrder: secp.CURVE.n });
+const loadPositions = () => _posStore.list();
 // The next position key index for a controller. It only ever grows: counting the saved positions would hand a
 // new position the key of a still-open one as soon as an earlier one was closed and its descriptor dropped.
 //
@@ -201,8 +204,11 @@ function wireOpen(wallet, ux, notes) {
         spendRoot: root, debtBlinding, positionOwner, debtNk,
         waitOpts: { onUpdate: proveUpdater(statusEl, 'Opening CDP') },
       });
-      savePosition({
-        controller, debtValue: debtValue.toString(), nonce: ZERO32, keyNonce, positionOwner, positionOwnerPriv, rateSnapshot, debtBlinding, debtNk,
+      // Locators only: `keyNonce` re-derives positionOwnerPriv, `debtAnchor` re-derives the debt note's
+      // (nk, blinding). Neither secret is written. A descriptor that could not be saved costs nothing but a
+      // chain walk — recoverCdpPositions rebuilds the position from the wallet key — so it is not fatal.
+      await _posStore.add(wallet.priv, {
+        controller, debtValue: debtValue.toString(), nonce: ZERO32, keyNonce, positionOwner, rateSnapshot, debtAnchor: anchor,
         basket: collateral.map((c) => ({ asset: c.asset, value: String(BigInt(c.value)) })),
         openedAt: r && r.txHash || null,
       });
@@ -404,22 +410,28 @@ export async function renderCdpTab(wallet) {
 
   if (el('cdp-status')) el('cdp-status').textContent = 'Scanning the pool…';
   try {
-    const { notes } = await ux.balance(wallet.priv);
+    const { notes, diag } = await ux.balance(wallet.priv);
     const statusEl = el('cdp-status');
     const collat = el('cdp-collat-list');
+    // Collateral is picked from this list, so a channel that did not answer is named before the list, not
+    // left to read as "you have nothing to post".
+    const health = scanHealth(diag);
+    const banner = scanHealthHtml(diag, { style: 'margin:6px 0;' });
     if (!notes || !notes.length) {
-      if (statusEl) statusEl.textContent = 'No shielded notes to use as collateral — wrap into the pool first.';
-      if (collat) collat.textContent = 'No collateral notes yet.';
+      if (statusEl) statusEl.textContent = health.ok
+        ? 'No shielded notes to use as collateral — wrap into the pool first.'
+        : 'No collateral notes found in the channels this scan could finish.';
+      if (collat) collat.innerHTML = banner + '<span class="muted">No collateral notes yet.</span>';
     } else {
       if (statusEl) statusEl.textContent = `${notes.length} shielded note${notes.length === 1 ? '' : 's'} available as collateral`;
       if (collat) {
-        collat.innerHTML = notes.map((n) => {
+        collat.innerHTML = banner + notes.map((n) => {
           const ticker = ux.tickerOf(n.asset) || 'note';
           const dec = decOf(ux, n.asset);
           return `<label class="check-row" style="padding:5px 0;">
             <input type="checkbox" class="cdp-collat-pick" data-leaf="${n.leafIndex}">
-            <span>${fmtUnits(n.value, dec)} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span></span></label>`;
-        }).join('');
+            <span>${fmtUnits(n.value, dec)} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span>${inboundBadgeHtml(n)}</span></label>`;
+        }).join('') + inboundSummaryHtml(notes);
       }
     }
     wireOpen(wallet, ux, notes || []);
@@ -436,6 +448,9 @@ export async function renderCdpTab(wallet) {
   // while their collateral sat locked behind cUSD debt with no import path in the UI. `recoverCdpPositions`
   // rebuilds them from key + chain — it is already folded into ux.recover() and covered by tests — so a
   // recovered position that has no local descriptor is merged in and shown rather than silently dropped.
+  // Descriptors an older build wrote carry the position's close key (and the debt note's nullifier key) in
+  // the clear: rewrite them first — derived where the nonce reproduces them, sealed where it does not.
+  if (wallet && wallet.priv) { try { await _posStore.migrate(wallet.priv); } catch { /* left as they were; retried next render */ } }
   const posBox = el('cdp-positions');
   const local = loadPositions().filter((p) => p.controller && ux.cfg.collateralEngine
     && p.controller.toLowerCase() === ux.cfg.collateralEngine.toLowerCase());
@@ -491,7 +506,10 @@ function wireClose(wallet, ux, positions) {
         const sortedBasket = [...p.basket].sort((a, b) => (BigInt(a.asset) < BigInt(b.asset) ? -1 : 1));
         const basketRootHex = cdp.basketRoot(sortedBasket.map((l) => cdp.basketLeg(l.asset, l.value)));
         const pOwner = p.positionOwner || id.owner; // fresh per-position owner (legacy fallback)
-        const pOwnerPriv = p.positionOwnerPriv; // the one-time key that signs the owner-authorized close
+        // The one-time key that signs the owner-authorized close, re-derived from this position's key nonce
+        // (and only accepted when it reproduces the owner the position was opened under). A descriptor an
+        // older build wrote, or one recoverCdpPositions handed back in memory, still answers from its own copy.
+        const pOwnerPriv = await _posStore.ownerPrivFor(wallet.priv, p);
         if (!pOwnerPriv) { if (statusEl) statusEl.textContent = 'This position predates owner-authorized close (no saved key); it can only be liquidated.'; btn.disabled = false; return; }
         const pNonce = p.nonce || ZERO32;
         const positionLeaf = cdp.positionLeaf(controller, debtAsset, basketRootHex, debtValue, p.rateSnapshot, pOwner, pNonce);
@@ -533,8 +551,7 @@ function wireClose(wallet, ux, positions) {
         });
         // Drop the local descriptor on success.
         // Every position's tree nonce is 0, so the per-position owner is what identifies this one.
-        const all = loadPositions().filter((x) => !(x.controller === p.controller && (x.positionOwner || '') === (p.positionOwner || '') && x.debtValue === p.debtValue));
-        try { localStorage.setItem(POS_KEY, JSON.stringify(all)); } catch {}
+        _posStore.remove((x) => x.controller === p.controller && (x.positionOwner || '') === (p.positionOwner || '') && x.debtValue === p.debtValue);
         if (statusEl) statusEl.textContent = 'Position closed — collateral released to your notes.';
         notify('Position closed — collateral released', 'ok');
         setTimeout(() => renderCdpTab(wallet), 1500);

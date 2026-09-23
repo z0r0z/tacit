@@ -7,6 +7,7 @@ import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, proveUpdater } from './confidential-deployments.js';
 import { classifyFinality, finalityBadgeHtml, listProvisional } from './confidential-finality.js';
+import { scanHealthHtml, inboundBadgeHtml, inboundSummaryHtml, pendingWrapsText, recoveryCoverageHtml, recoveryCoverage } from './confidential-scan-health.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 
 let _ux = null;
@@ -100,9 +101,9 @@ function wireExit(wallet, ux, notes) {
         : '→ too small for a fee exit — tick “No fee”';
     } catch { /* leave preview blank */ }
     return `<div class="list-row">`
-      + `<span>${fmtUnits(n.value, dec)} ${esc(ticker)} <span class="muted">${esc(preview)}</span></span>`
+      + `<span>${fmtUnits(n.value, dec)} ${esc(ticker)}${inboundBadgeHtml(n)} <span class="muted">${esc(preview)}</span></span>`
       + `<button data-leaf="${n.leafIndex}" class="cpool-exit-one" style="padding:4px 10px;font-size:10px;flex:0 0 auto;">Exit</button></div>`;
-  }).join('');
+  }).join('') + inboundSummaryHtml(notes);
 
   for (const btn of listEl.querySelectorAll('.cpool-exit-one')) {
     btn.onclick = async () => {
@@ -135,6 +136,35 @@ function wireExit(wallet, ux, notes) {
       }
     };
   }
+}
+
+// The full key-only restore (notes, farm and borrow positions, stealth payments). ux.recover() reports its own
+// coverage, and a restore that skipped a settle it could not read is NOT a finished restore: someone rebuilding
+// from a seed who reads a partial set as complete concludes the rest is gone. The coverage line is rendered
+// with the totals, never after them.
+function wireRestore(wallet, ux) {
+  const btn = el('cpool-restore-btn');
+  const out = el('cpool-restore-out');
+  if (!btn) return;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    if (out) out.textContent = 'Rebuilding everything your key can reach from the chain…';
+    try {
+      const r = await ux.recover({ walletPriv: wallet.priv });
+      const n = (x) => (x || []).length;
+      const line = `Found ${n(r.notes)} note${n(r.notes) === 1 ? '' : 's'}`
+        + `, ${n(r.farmPositions)} farm position${n(r.farmPositions) === 1 ? '' : 's'}`
+        + `, ${n(r.cdpPositions)} borrow position${n(r.cdpPositions) === 1 ? '' : 's'}`
+        + `, ${n(r.receivedLocks)} claimable payment${n(r.receivedLocks) === 1 ? '' : 's'}.`;
+      if (out) out.innerHTML = recoveryCoverageHtml(r.diagnostics, { style: 'margin:0 0 6px;' }) + `<div>${esc(line)}</div>`;
+      const cov = recoveryCoverage(r.diagnostics);
+      notify(cov.complete ? 'Restore complete' : 'Restore incomplete — some of the scan did not finish', cov.complete ? 'ok' : '');
+    } catch (e) {
+      if (out) out.textContent = formatErr(e, 'Restore');
+    } finally {
+      btn.disabled = false;
+    }
+  };
 }
 
 let _finalityTimer = null;
@@ -176,6 +206,8 @@ function renderPoolPanel() {
     + `<div>Your confidential account: <code id="cpool-address" class="addr" style="font-size:11px;">—</code></div>`
     + `<div id="cpool-status" class="muted">—</div>`
     + `<div id="cpool-balance"></div>`
+    + `<div style="margin-top:6px;"><button id="cpool-restore-btn" style="padding:4px 10px;font-size:10px;">Restore everything from my key</button></div>`
+    + `<div id="cpool-restore-out" class="muted field-status" style="margin-top:6px;"></div>`
     + `<div id="cpool-finality" style="font-size:11px;"></div>`;
 
   const wrapBody =
@@ -235,6 +267,7 @@ export async function renderConfidentialPoolTab(wallet) {
   const legacy = el('cpool-legacy-bridge');
   if (legacy) legacy.onclick = (e) => { e.preventDefault(); if (window._openBridgeModal) window._openBridgeModal(); };
   wireWrap(wallet, ux);
+  wireRestore(wallet, ux);
   if (statusEl) statusEl.textContent = 'Scanning the pool for your notes…';
   if (balEl) balEl.innerHTML = '';
 
@@ -242,7 +275,7 @@ export async function renderConfidentialPoolTab(wallet) {
   try {
     // Seed-only recovery from the pool's log stream — no off-chain note storage. (The scan key aligns
     // with note ownership once the wrap path lands; an empty pool recovers nothing regardless.)
-    const { byAsset, notes } = await ux.balance(wallet.priv);
+    const { byAsset, notes, diag } = await ux.balance(wallet.priv);
     const assets = Object.values(byAsset);
     if (statusEl) {
       statusEl.textContent = notes.length
@@ -250,12 +283,18 @@ export async function renderConfidentialPoolTab(wallet) {
         : 'No shielded notes yet — wrap ETH to mint your first cETH note.';
     }
     if (balEl) {
-      balEl.innerHTML = assets.map((a) => {
-        const meta = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset);
-        const dec = meta ? (meta.tacitDecimals ?? meta.decimals) : 8; // note values are in-system units
-        return `<div class="list-row">`
-          + `<span>${esc(a.ticker || (a.asset.slice(0, 10) + '…'))}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;
-      }).join('');
+      // A channel that failed is said so above the figure, not swallowed: an unreachable cBTC or bridge
+      // endpoint makes a real holding read as zero, and "no notes yet" is the wrong thing to tell someone
+      // in that case.
+      const pending = pendingWrapsText(diag);
+      balEl.innerHTML = scanHealthHtml(diag)
+        + (pending ? `<div class="muted" style="margin-bottom:4px;">${esc(pending)}</div>` : '')
+        + assets.map((a) => {
+          const meta = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset);
+          const dec = meta ? (meta.tacitDecimals ?? meta.decimals) : 8; // note values are in-system units
+          return `<div class="list-row">`
+            + `<span>${esc(a.ticker || (a.asset.slice(0, 10) + '…'))}</span><strong>${fmtUnits(a.value, dec)}</strong></div>`;
+        }).join('');
     }
     wireExit(wallet, ux, notes);
     renderFinality();

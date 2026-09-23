@@ -376,7 +376,7 @@ test('importFarmPosition: a saved random-key position is validated against the c
   await assert.rejects(ux.importFarmPosition(record, { events: s.events.filter((e) => e.type !== 'LeavesInserted' || e.firstLeafIndex !== 2) }), /not in the pool tree/);
   await assert.rejects(ux.importFarmPosition({ ...record, lpAsset: '0x' + '99'.repeat(32) }, { events: s.events }), /no pool for this LP asset/);
   assert.equal((await ux.farmPositions({ walletPriv, events: s.events })).filter((p) => p.imported).length, 0, 'nothing is listed before the import');
-  const r = await ux.importFarmPosition(record, { events: s.events });
+  const r = await ux.importFarmPosition(record, { events: s.events, walletPriv });
   assert.equal(r.imported, true); assert.equal(r.receiptLeaf, s.randomReceipt);
   const listed = await ux.farmPositions({ walletPriv, events: s.events });
   const imp = listed.find((p) => p.imported);

@@ -513,6 +513,39 @@ test('when the initial scan failed the panel still works and reads the balance a
   assert.match(dom.at('cpay-balance').textContent, /Shielded balance: 1 ETH in 1 note/);
 });
 
+// ── what the scan could not see ──
+
+test('a balance from a scan that lost a channel says so, naming the channel, and still offers the form', () => {
+  const world = makeWorld({ notes: [note(100_000_000, 5)] });
+  const { dom } = mount(world, { scan: { notes: world.notes, poolStats: world.poolStats, diag: { errors: { cbtc: 'esplora 502' } } } });
+  type(dom.at('csend-recipient'), RECIPIENT);
+  const t = dom.at('cpay-balance').textContent;
+  assert.match(t, /Shielded balance: 1 ETH in 1 note\./);
+  assert.match(t, /Balances may be incomplete — the cBTC scan did not finish\./);
+  assert.match(t, /cBTC notes are found from your key and the chain alone/);
+  assert.equal(shown(dom.at('cpay-form')), true, 'a caveat is not a block');
+});
+
+test('an asset with nothing found under a failed scan is not presented as an empty balance', () => {
+  const world = makeWorld({ notes: [] });
+  const { dom } = mount(world, { scan: { notes: [], poolStats: world.poolStats, diag: { errors: { bridge: 'rpc timeout' } } } });
+  type(dom.at('csend-recipient'), RECIPIENT);
+  assert.match(dom.at('cpay-balance').textContent, /none in ETH\. Balances may be incomplete — the Bitcoin-bridge scan did not finish/);
+  assert.match(dom.at('cpay-deposit-text').innerHTML, /showed up in the channels this scan could finish/);
+});
+
+test('a clean scan adds nothing to the balance line, and an inbound note is labelled on it', () => {
+  const world = makeWorld({ notes: [note(100_000_000, 5)] });
+  const clean = mount(world, { scan: { notes: world.notes, poolStats: world.poolStats, diag: { errors: {}, wrap: { pending: [], truncated: [] } } } });
+  type(clean.dom.at('csend-recipient'), RECIPIENT);
+  assert.equal(clean.dom.at('cpay-balance').textContent, 'Shielded balance: 1 ETH in 1 note.');
+
+  const inbound = { ...note(100_000_000, 6), inboundUnverified: true };
+  const marked = mount(world, { scan: { notes: [inbound], poolStats: world.poolStats, diag: { errors: {} } } });
+  type(marked.dom.at('csend-recipient'), RECIPIENT);
+  assert.match(marked.dom.at('cpay-balance').textContent, /1 note marked “inbound” was found from a memo addressed to you/);
+});
+
 // ── the tab itself ──
 
 test('renderSendTab carries the panel, keeps the note-send controls, and a typed 0x address flips them', async () => {

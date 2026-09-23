@@ -17,6 +17,8 @@ import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, not
 import { makeConfidentialInvoice } from './confidential-invoice.js';
 import { makeConfidentialNames, makeMainnetCall, NameError } from './confidential-names.js';
 import { payoutPanelHtml, wirePayout } from './confidential-payout-panel.js';
+import { makeStealthSendStore } from './confidential-secret-store.js';
+import { scanHealthHtml, lockScanHealthHtml, inboundSummaryHtml, pendingWrapsText } from './confidential-scan-health.js';
 
 let _ux = null;
 let _pendingSend = null;
@@ -40,23 +42,16 @@ function short(s, n = 10) {
 
 // Sender-side bookkeeping for stealth sends: onBuilt's refund record has to survive a page reload to be
 // useful (the lock lives on-chain for up to ~90 days), so it's kept in localStorage, per-browser like the
-// wallet itself. Nothing here is sensitive beyond what a note-holding browser already carries — refundPriv
-// only unlocks a REFUND of this one lock, not the recipient's claim.
-const STEALTH_SEND_LS_KEY = 'tacit:stealthSends:v1';
-function loadPendingStealthSends() {
-  try { return JSON.parse(localStorage.getItem(STEALTH_SEND_LS_KEY) || '[]'); } catch { return []; }
-}
-function savePendingStealthSends(list) {
-  try { localStorage.setItem(STEALTH_SEND_LS_KEY, JSON.stringify(list)); } catch {}
-}
-function addPendingStealthSend(rec) {
-  const list = loadPendingStealthSends();
-  list.push(rec);
-  savePendingStealthSends(list);
-}
-function removePendingStealthSend(lockLeaf) {
-  savePendingStealthSends(loadPendingStealthSends().filter((r) => r.lockLeaf !== lockLeaf));
-}
+// wallet itself. Two of its fields ARE spend authority: `lBlinding` and `refundPriv` together are the whole
+// refund authority for the lock, and buildStealthRefund signs over a caller-chosen refund owner, so anyone
+// who reads them refunds this lock into a note of their own once the deadline passes. They are sealed at
+// rest under a key derived from the wallet key (confidential-secret-store.js); what stays readable is the
+// locator the pending list renders from, all of which the chain already publishes.
+//
+// The record is kept rather than dropped because it is the sender's only backstop for a lock whose memo the
+// relay substituted — the chain-side copy of the same authority rides that memo's sender tail, and the
+// refund path below falls back to it (scanSentLocks) whenever the local record cannot be opened.
+const _stealthStore = makeStealthSendStore({ sha256 });
 
 // A stealth lock is minted from ONE WHOLE freshly-wrapped note — there's no atomic wrap+lock op for a
 // third party (unlike wrapAndSend's self-only OP_WRAP_TRANSFER), so this polls the pool after a plain wrap
@@ -360,12 +355,16 @@ function wireSend(wallet, ux, notes, helpers) {
         let deadlineStr = null;
         if (built) {
           deadlineStr = new Date(Number(built.deadline) * 1000).toLocaleString();
-          addPendingStealthSend({
+          const saved = await _stealthStore.add(wallet.priv, {
             lockLeaf: built.lockLeaf, asset: built.asset, ticker, dec, amount: built.amount, deadline: built.deadline,
             lCx: built.lCx, lCy: built.lCy, ownerPub: built.ownerPub, lBlinding: built.lBlinding,
             refundPriv: built.refundPriv, refundPub: built.refundPub, recipientPubHex: built.recipientPubHex,
             txHash: r && r.txHash, createdAt: Date.now(), recipientName: recipientName ? recipientName.name : undefined,
           });
+          // A record that could not be sealed is held for this session only — never written in the clear. The
+          // refund itself still works from the chain (the lock memo's sender tail), unless the relay replaced
+          // that memo, so say what was lost rather than let the panel imply a saved backstop.
+          if (!saved.persisted) notify('This send\u2019s local refund record could not be saved securely in this browser — refund it from this tab before closing it, or recover it later from the chain.', 'error');
         }
         if (statusEl) statusEl.innerHTML = `Locked ${fmtUnits(amount, dec)} ${esc(ticker)} for the recipient`
           + (r && r.txHash ? ` (<code class="addr">${esc(r.txHash)}</code>)` : '')
@@ -580,9 +579,21 @@ function wireClaimAndRefund(wallet, ux, helpers) {
   const pendingDetails = el('csend-pending-details');
   const pendingList = el('csend-pending-list');
 
+  // Refund authority for one pending send: the sealed local record, or — when it cannot be opened (a record
+  // this wallet did not write, storage cleared between build and refund) — the sender tail the lock memo
+  // carries on-chain, which is the same authority by a different route.
+  async function refundAuthorityFor(rec) {
+    const local = await _stealthStore.secretsFor(wallet.priv, rec);
+    if (local && local.refundPriv && local.lBlinding) return local;
+    const { sent } = await ux.scanSentLocks({ walletPriv: wallet.priv });
+    const hit = (sent || []).find((l) => String(l.leaf).toLowerCase() === String(rec.lockLeaf).toLowerCase());
+    if (!hit) throw new Error('this browser cannot open the saved refund record for this send, and the lock’s memo on-chain does not open under this wallet either — unlock the wallet that sent it');
+    return { refundPriv: hit.refundPriv, lBlinding: hit.lBlinding };
+  }
+
   function renderPending() {
     if (!pendingList || !pendingDetails) return;
-    const mine = loadPendingStealthSends();
+    const mine = _stealthStore.list();
     pendingDetails.style.display = mine.length ? '' : 'none';
     if (!mine.length) { pendingList.innerHTML = ''; return; }
     pendingList.innerHTML = mine.map((rec, i) => {
@@ -598,7 +609,7 @@ function wireClaimAndRefund(wallet, ux, helpers) {
     }).join('');
     pendingList.querySelectorAll('.csend-refund-btn').forEach((btn) => {
       btn.onclick = async () => {
-        const rec = loadPendingStealthSends()[Number(btn.dataset.i)];
+        const rec = _stealthStore.list()[Number(btn.dataset.i)];
         if (!rec) return;
         btn.disabled = true;
         const prevText = btn.textContent;
@@ -606,11 +617,12 @@ function wireClaimAndRefund(wallet, ux, helpers) {
         try {
           const pos = await ux.stealthLockPosition({ lockLeaf: rec.lockLeaf });
           if (!pos) throw new Error('this lock isn’t visible on-chain yet — try again once the send has confirmed');
+          const auth = await refundAuthorityFor(rec);
           const lockRecord = { asset: rec.asset, lCx: rec.lCx, lCy: rec.lCy, ownerPub: rec.ownerPub,
-            amount: rec.amount, deadline: rec.deadline, refundPub: rec.refundPub, lBlinding: rec.lBlinding,
+            amount: rec.amount, deadline: rec.deadline, refundPub: rec.refundPub, lBlinding: auth.lBlinding,
             lIndex: pos.lIndex, lPath: pos.lPath };
-          await ux.stealthRefund({ walletPriv: wallet.priv, lockRecord, refundPriv: rec.refundPriv, lockSetRoot: pos.lockSetRoot });
-          removePendingStealthSend(rec.lockLeaf);
+          await ux.stealthRefund({ walletPriv: wallet.priv, lockRecord, refundPriv: auth.refundPriv, lockSetRoot: pos.lockSetRoot });
+          _stealthStore.remove(rec.lockLeaf);
           notify(`Refunded ${fmtUnits(rec.amount, rec.dec ?? 8)} ${rec.ticker} to your shielded balance`, 'ok');
           renderPending();
         } catch (e) {
@@ -621,7 +633,10 @@ function wireClaimAndRefund(wallet, ux, helpers) {
       };
     });
   }
-  renderPending();
+  // Records an older build wrote are plaintext: seal them before anything else reads this origin's storage,
+  // then render. A migration that cannot run (no WebCrypto here) leaves them as they are and still renders.
+  if (wallet && wallet.priv) _stealthStore.migrate(wallet.priv).catch(() => {}).then(renderPending);
+  else renderPending();
 
   if (scanBtn) scanBtn.onclick = async () => {
     scanBtn.disabled = true;
@@ -631,11 +646,15 @@ function wireClaimAndRefund(wallet, ux, helpers) {
       const scanned = await ux.scanStealthLocks({ walletPriv: wallet.priv });
       const lockSetRoot = scanned.lockSetRoot;
       const mine = scanned.mine.filter((l) => l.spent !== true);   // a claimed lock stays in the append-only set
+      // Whether the pool confirmed the set this scan was built from, and whether any lock's memo went
+      // unread, decide how much "no payments found" is worth saying. Shown either way, above the list.
+      const lockHealth = lockScanHealthHtml(scanned, { style: 'margin:6px 0;' });
       if (!mine.length) {
-        if (claimStatus) claimStatus.textContent = 'No unclaimed payments found right now.';
+        if (claimStatus) claimStatus.textContent = lockHealth ? 'No unclaimed payments found in what this scan could read.' : 'No unclaimed payments found right now.';
+        if (claimList) claimList.innerHTML = lockHealth;
       } else {
         if (claimStatus) claimStatus.textContent = `${mine.length} payment${mine.length > 1 ? 's' : ''} waiting for you.`;
-        if (claimList) claimList.innerHTML = mine.map((rec, i) => {
+        if (claimList) claimList.innerHTML = lockHealth + mine.map((rec, i) => {
           const ticker = ux.tickerOf(rec.asset) || rec.asset.slice(0, 10) + '…';
           const meta = ux.assetByTicker[ticker] || {};
           const dec = meta.tacitDecimals ?? meta.decimals ?? 8;
@@ -848,7 +867,7 @@ export async function renderSendTab(wallet, helpers = {}) {
 
   if (el('csend-balance')) el('csend-balance').textContent = 'Scanning the pool…';
   try {
-    const { byAsset, notes, poolStats } = await ux.balance(wallet.priv);
+    const { byAsset, notes, poolStats, diag } = await ux.balance(wallet.priv);
     const balEl = el('csend-balance');
     const assets = Object.values(byAsset || {});
     // A rough, honestly-labeled pool-wide count — how many shielded notes currently sit in the pool across
@@ -857,19 +876,27 @@ export async function renderSendTab(wallet, helpers = {}) {
     const setLine = (poolStats && poolStats.outstandingNotes > 0)
       ? `<div class="muted" style="font-size:10px;margin-top:6px;">~${poolStats.outstandingNotes.toLocaleString()} shielded notes currently in the pool across all users.</div>`
       : '';
+    // A figure from a scan that lost a channel is shown with what it could not reach named above it. The
+    // cBTC and bridge channels have no memo to fall back on, so an endpoint outage there reads as zero.
+    const pendingWraps = pendingWrapsText(diag);
     if (balEl) {
-      balEl.innerHTML = (assets.length
+      balEl.innerHTML = scanHealthHtml(diag, { style: 'margin:0 0 8px;' })
+        + (pendingWraps ? `<div class="muted" style="margin-bottom:4px;">${esc(pendingWraps)}</div>` : '')
+        + (assets.length
         ? '<div style="font-weight:600;color:var(--ink);margin-bottom:4px;">Shielded balance</div>'
           + assets.map((a) => {
             const m = ux.assets.find((x) => x.assetId.toLowerCase() === a.asset) || {};
             const dec = m.tacitDecimals ?? m.decimals ?? 8; // note values are in-system units
             return `<div style="padding:2px 0;">${fmtUnits(a.value, dec)} ${esc(a.ticker || a.asset.slice(0, 10) + '…')}</div>`;
           }).join('')
-        : 'No shielded notes yet — “Send privately” will wrap from your wallet automatically, or use “Hold it privately” to just make funds private.')
+        : (scanHealthHtml(diag) // an empty result from an incomplete scan is not "you hold nothing"
+          ? 'No shielded notes were found in the channels that did finish.'
+          : 'No shielded notes yet — “Send privately” will wrap from your wallet automatically, or use “Hold it privately” to just make funds private.'))
+        + inboundSummaryHtml(notes || [])
         + setLine;
     }
     wireSend(wallet, ux, notes || [], helpers);
-    wirePayout({ ux, wallet, scan: { notes: notes || [], poolStats }, own: myTacit || id.pubHex, keccak256: keccak_256 });
+    wirePayout({ ux, wallet, scan: { notes: notes || [], poolStats, diag }, own: myTacit || id.pubHex, keccak256: keccak_256 });
   } catch (e) {
     const balEl = el('csend-balance');
     if (balEl) balEl.textContent = 'Could not scan existing notes. Fresh ETH wrap-and-send is still available.';

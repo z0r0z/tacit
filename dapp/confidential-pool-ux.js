@@ -32,6 +32,7 @@ import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar, bppGens, G as BPP_G } from './bulletproofs-plus.js';
 import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialRecovery, privBytes, deriveOutputKeys } from './confidential-recovery.js';
+import { makeImportedFarmStore } from './confidential-secret-store.js';
 import { makeBtcHistoryProvider } from './confidential-recovery-btc.js';
 import { makeCbtcNoteRecovery } from './cbtc-note-recovery.js';
 
@@ -1422,7 +1423,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (receiptIndex != null && !hits.has(d.receiptLeaf)) hits.set(d.receiptLeaf, { lpAsset: d.lpAsset, anchorLeaf: d.anchorLeaf, receiptLeaf: d.receiptLeaf, receiptIndex, via: 'bonded-event' });
     }
     const imported = [];
-    for (const rec of _importedFarmRecords()) {
+    for (const rec of await _importedFarmRecords(walletPriv)) {
       const receiptIndex = slot.get(String(rec.receiptLeaf).toLowerCase());
       if (receiptIndex == null || hits.has(String(rec.receiptLeaf).toLowerCase())) continue;
       hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, via: 'imported-record' });
@@ -1452,19 +1453,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // holder saved: { lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }. importFarmPosition checks a record against the
   // chain before storing it: the receipt leaf must reproduce from (manager, lpAsset, shares, owner, nonce), ownerPriv must be
   // the private key of the x-only owner, the leaf must be in the pool tree and the manager must hold it live for that pool.
-  const FARM_RECORDS_KEY = 'tacit:farm-position-records:v1';
-  const _farmRecordsMem = new Map();
-  function _importedFarmRecords() {
-    const out = new Map(_farmRecordsMem);
-    try {
-      if (typeof localStorage !== 'undefined') {
-        const rec = JSON.parse(localStorage.getItem(FARM_RECORDS_KEY) || '{}');
-        for (const [k, v] of Object.entries(rec)) out.set(k, v);
-      }
-    } catch { /* storage unavailable: only records imported in this session apply */ }
-    return [...out.values()];
-  }
-  async function importFarmPosition(record, { events } = {}) {
+  // `ownerPriv` here is the one secret in this module that no derivation can replace — the position was opened
+  // under a key this wallet never generated — so the record is sealed at rest under the wallet key instead of
+  // being written in the clear (confidential-secret-store.js). A record an older build wrote in the clear is
+  // still read, and resealed on the next import.
+  const _farmStore = makeImportedFarmStore({ sha256 });
+  const _importedFarmRecords = (walletPriv) => _farmStore.list(walletPriv);
+  async function importFarmPosition(record, { events, walletPriv } = {}) {
     const farm = _farmCfg();
     const r = record || {};
     const hex32 = (v, what) => { const h = String(v || '').toLowerCase(); if (!/^0x[0-9a-f]{64}$/.test(h)) throw new Error(`farm-import: ${what} must be a 32-byte hex value`); return h; };
@@ -1486,15 +1481,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!cur.live) throw new Error('farm-import: the manager does not hold this position live (already unbonded?)');
     const pid = await prog.pidOf(rec.lpAsset);
     if (pid == null || Number(cur.pid) !== Number(pid) || String(cur.shares) !== rec.shares) throw new Error('farm-import: the record does not match the manager\'s position');
-    _farmRecordsMem.set(rec.receiptLeaf, rec);
-    try {
-      if (typeof localStorage !== 'undefined') {
-        const all = JSON.parse(localStorage.getItem(FARM_RECORDS_KEY) || '{}');
-        all[rec.receiptLeaf] = rec;
-        localStorage.setItem(FARM_RECORDS_KEY, JSON.stringify(all));
-      }
-    } catch { /* best effort: the record stays valid for this session */ }
-    return { imported: true, receiptLeaf: rec.receiptLeaf, pid: cur.pid, lpAsset: rec.lpAsset, shares: cur.shares, unlockAt: cur.unlockAt, pendingUnits: cur.pendingUnits };
+    // Without a wallet key there is nothing to seal the record under, and it is not written in the clear: it
+    // stays valid for this session and the caller is told it did not persist.
+    const saved = await _farmStore.add(walletPriv || null, rec);
+    await _farmStore.migrate(walletPriv || null).catch(() => ({}));
+    return { imported: true, persisted: saved.persisted, receiptLeaf: rec.receiptLeaf, pid: cur.pid, lpAsset: rec.lpAsset, shares: cur.shares, unlockAt: cur.unlockAt, pendingUnits: cur.pendingUnits };
   }
 
   // Re-derive a position's receipt key from the wallet, confirm it matches the receipt the caller holds, and take
@@ -1506,7 +1497,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const shares = BigInt(position.shares);
     // A position recovered from chain re-derives its key from the anchor note; one opened under a random key uses the
     // record importFarmPosition stored (looked up by receipt leaf, never taken from the caller's object).
-    const stored = _importedFarmRecords().find((r) => String(r.receiptLeaf).toLowerCase() === String(position.receiptLeaf).toLowerCase());
+    const stored = (await _importedFarmRecords(walletPriv)).find((r) => String(r.receiptLeaf).toLowerCase() === String(position.receiptLeaf).toLowerCase());
     if (!stored && !position.anchorLeaf) throw new Error('farm: a position from farmPositions is required');
     const keys = stored ? { owner: stored.owner, nonce: stored.nonce, ownerPriv: stored.ownerPriv }
       : lpBondPosition({ walletPriv, controller: farm.manager, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });

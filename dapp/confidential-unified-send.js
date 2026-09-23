@@ -19,6 +19,16 @@
 // and refuses to construct/route EVM when the pool isn't live for the network
 // (all of mainnet today; signet until an asset is flipped live).
 
+import { scanHealth } from './confidential-scan-health.js';
+
+// A shielded balance that looks too small to cover a send is only a fact when the scan that produced it
+// saw every channel. When it did not, the refusal says which scan is missing rather than asserting the
+// shortfall — the cBTC and bridge channels have no memo fallback, so an endpoint outage reads as zero.
+function shortfallReason(base, diag) {
+  const h = scanHealth(diag);
+  return h.ok ? base : `${base}. ${h.text}`;
+}
+
 export function makeUnifiedSend(deps) {
   const {
     parseRecipient,            // (raw, {network, chainHint}) → normalized recipient
@@ -157,7 +167,7 @@ export function makeUnifiedSend(deps) {
 
     if (shielded < need) {
       if (!opts.allowWrap) {
-        return { ok: false, reason: `insufficient shielded ${ticker}; enable wrap-and-send to top up from your balance` };
+        return { ok: false, reason: shortfallReason(`insufficient shielded ${ticker}; enable wrap-and-send to top up from your balance`, bal.diag) };
       }
       const shortfall = need - shielded;
 
@@ -209,7 +219,7 @@ export function makeUnifiedSend(deps) {
     let sendNotes = usable ? myAssetNotes : null;
     if (!sendNotes) {
       if (!opts.allowWrap) {
-        return { ok: false, reason: `no single existing ${ticker} note covers that amount; enable wrap-and-send to fund a fresh one` };
+        return { ok: false, reason: shortfallReason(`no single existing ${ticker} note covers that amount; enable wrap-and-send to fund a fresh one`, bal.diag) };
       }
       const unitScale = BigInt((ux.assetByTicker[ticker] || {}).unitScale || '1');
       onPhase({ phase: 'wrap', shortfall: amount, ticker });

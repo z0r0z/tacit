@@ -5,6 +5,7 @@
 // balance has actually risen. The arithmetic and the poll live in confidential-payout.js.
 
 import { esc, formatErr, notify } from './confidential-deployments.js';
+import { scanHealth, inboundSummaryText } from './confidential-scan-health.js';
 import {
   parseRecipient, looksLikeAddress, parseUnits, formatUnits, underlyingUnits, payoutAssets, heldByAsset, notesOf,
   planPayout, planMerge, coverSince, makeBalanceReader, waitForPayout, activityView,
@@ -143,14 +144,20 @@ function wire({
       show('cpay-deposit', false); show('cpay-form', true);
       return;
     }
+    // What the scan could not reach rides along with every figure it produced. "None in cBTC" from a scan
+    // whose cBTC channel never answered is not a balance — that channel has no memo to fall back on.
+    const health = scanHealth(state.scan.diag);
+    const inbound = inboundSummaryText(notesOf(state.scan.notes, a.assetId));
+    const caveat = (health.ok ? '' : ' ' + health.text) + (inbound ? ' ' + inbound : '');
     if (!x) {
-      if (bal) bal.textContent = `Shielded balance: none in ${a.label}.`;
+      if (bal) bal.textContent = `Shielded balance: none in ${a.label}.` + caveat;
       show('cpay-form', false);
-      return renderDeposit(a);
+      return renderDeposit(a, health.ok ? '' : `Nothing in ${a.label} showed up in the channels this scan could finish.`);
     }
     if (bal) {
       bal.textContent = `Shielded balance: ${formatUnits(x.total, a.decimals)} ${a.label} in ${x.count} note${x.count === 1 ? '' : 's'}`
-        + (x.count > 1 ? `, largest ${formatUnits(x.largest, a.decimals)}.` : '.');
+        + (x.count > 1 ? `, largest ${formatUnits(x.largest, a.decimals)}.` : '.')
+        + caveat;
     }
     show('cpay-deposit', false); show('cpay-form', true);
   }

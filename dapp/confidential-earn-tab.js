@@ -11,6 +11,7 @@
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc } from './confidential-deployments.js';
+import { scanHealth, scanHealthHtml } from './confidential-scan-health.js';
 
 let _ux = null;
 function getUx() {
@@ -86,7 +87,17 @@ export async function renderEarnTab(wallet) {
   };
 
   let notes = [];
-  try { notes = (await ux.balance(wallet.priv)).notes || []; } catch {}
+  // Whether a pair can be bonded is decided by the notes this scan found, so a channel that did not answer
+  // has to travel with that verdict — "you need a cBTC note" is the wrong thing to say when the cBTC scan
+  // is the part that failed.
+  let noteHealth = scanHealth(null);
+  let scanFailed = false;
+  try {
+    const bal = await ux.balance(wallet.priv);
+    notes = bal.notes || [];
+    noteHealth = scanHealth(bal.diag);
+    if (!noteHealth.ok && el('earn-status')) el('earn-status').innerHTML = scanHealthHtml(bal.diag, { style: 'margin:0 0 8px;' });
+  } catch { scanFailed = true; if (el('earn-status')) el('earn-status').textContent = 'Your notes could not be read, so what you can bond here may be understated. Reopen Earn to scan again.'; }
   // The largest note of each asset: the bond spends both notes whole, so the smaller side sets the size.
   const noteFor = (assetId) => notes.filter((n) => n.asset && assetId && n.asset.toLowerCase() === assetId.toLowerCase())
     .sort((x, y) => (BigInt(y.value) > BigInt(x.value) ? 1 : -1))[0];
@@ -113,6 +124,7 @@ export async function renderEarnTab(wallet) {
       : !controller ? 'farm not deployed for this pool yet'
       : !init ? 'pool not initialized'
       : (!aNote || !bNote) ? `need a ${p.ta} note and a ${p.tb} note (wrap into the pool first)`
+        + (scanFailed ? ' — your notes could not be read on this pass' : noteHealth.ok ? '' : ` — ${noteHealth.text}`)
       : 'add liquidity & bond into the farm in one transaction';
     p._feeBps = feeBps; p._controller = controller; p._reserves = reserves;
     const tvl = init ? `${reserves.reserveA} / ${reserves.reserveB}` : '—';

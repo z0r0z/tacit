@@ -15,6 +15,7 @@ import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify, copyToClipboard } from './confidential-deployments.js';
 import { makeConfidentialOtc } from './confidential-otc.js';
 import { randomScalar } from './bulletproofs-plus.js';
+import { scanHealth, scanHealthHtml, inboundBadgeHtml, inboundSummaryHtml } from './confidential-scan-health.js';
 
 // Strip the client-only blindings (_r) from a leg before it leaves this browser. The opening sigmas (R,z)
 // are zero-knowledge; the raw _r is bearer-spend authority and must never be shared.
@@ -292,17 +293,20 @@ export async function renderOtcTab(wallet) {
 
   if (el('otc-notes')) el('otc-notes').textContent = 'Scanning the pool…';
   try {
-    const { notes } = await ux.balance(wallet.priv);
+    const { notes, diag } = await ux.balance(wallet.priv);
     const box = el('otc-notes');
     if (!box) return;
+    const banner = scanHealthHtml(diag, { style: 'margin:6px 0;' });
     if (!notes || !notes.length) {
-      box.textContent = 'No shielded notes yet — wrap into the pool to have something to trade.';
+      box.innerHTML = banner + (scanHealth(diag).ok
+        ? 'No shielded notes yet — wrap into the pool to have something to trade.'
+        : 'No tradeable notes found in the channels this scan could finish.');
     } else {
-      box.innerHTML = '<div style="font-weight:600;margin-bottom:4px;color:var(--ink);">Your tradeable notes</div>'
+      box.innerHTML = banner + '<div style="font-weight:600;margin-bottom:4px;color:var(--ink);">Your tradeable notes</div>'
         + notes.map((n) => {
           const ticker = ux.tickerOf(n.asset) || 'note';
-          return `<div style="padding:3px 0;">${n.value} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span></div>`;
-        }).join('');
+          return `<div style="padding:3px 0;">${n.value} ${esc(ticker)} <span class="muted">#${n.leafIndex}</span>${inboundBadgeHtml(n)}</div>`;
+        }).join('') + inboundSummaryHtml(notes);
     }
     wireComposer(wallet, ux, notes || []);
   } catch (e) {

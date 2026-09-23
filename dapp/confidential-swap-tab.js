@@ -17,6 +17,7 @@
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
 import { confidentialPoolReady, confidentialUnavailableHTML, esc, formatErr, notify } from './confidential-deployments.js';
+import { scanHealth, scanHealthHtml, inboundBadgeText, inboundSummaryHtml } from './confidential-scan-health.js';
 
 let _ux = null;
 function getUx() {
@@ -85,10 +86,15 @@ export async function renderSwapTab(wallet) {
   let lastQuote = null;
   if (el('cswap-notes')) el('cswap-notes').textContent = 'Scanning the pool…';
   try {
-    const { notes } = await ux.balance(wallet.priv);
+    const { notes, diag } = await ux.balance(wallet.priv);
     const sel = el('cswap-from');
-    if (sel) sel.innerHTML = (notes || []).map((n) => `<option value="${n.leafIndex}">${n.value} ${esc(ux.tickerOf(n.asset) || n.asset.slice(0, 8))} #${n.leafIndex}</option>`).join('');
-    el('cswap-notes').textContent = (notes && notes.length) ? `${notes.length} shielded note(s) available` : 'No shielded notes yet — wrap into the pool first.';
+    // A select can hold no markup, so an inbound note carries its label in the option text itself.
+    if (sel) sel.innerHTML = (notes || []).map((n) => `<option value="${n.leafIndex}">${n.value} ${esc(ux.tickerOf(n.asset) || n.asset.slice(0, 8))} #${n.leafIndex}${esc(inboundBadgeText(n))}</option>`).join('');
+    // What the scan could not reach is named beside the count, so a short list is not read as the whole wallet.
+    el('cswap-notes').innerHTML = esc((notes && notes.length)
+      ? `${notes.length} shielded note(s) available`
+      : (scanHealth(diag).ok ? 'No shielded notes yet — wrap into the pool first.' : 'No notes found in the channels this scan could finish.'))
+      + scanHealthHtml(diag, { style: 'margin:6px 0;' }) + inboundSummaryHtml(notes || []);
     const byLeaf = new Map((notes || []).map((n) => [String(n.leafIndex), n]));
 
     const quoteBtn = el('cswap-quote');
