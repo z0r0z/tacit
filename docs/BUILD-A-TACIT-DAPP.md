@@ -787,11 +787,31 @@ should check it too before broadcasting.
 
 **Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
 (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
-confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id — a
-relayer or the reflection cron completes this side, not the sender. TAC is the one asset whose Bitcoin-side
-transfers reflect unbound already ([SPEC §6.2](../SPEC.md#62-bitcoin--ethereum)), so a plain Bitcoin-side
-send needs no separate onboarding step before it can bridge; other assets onboard through
-`T_CXFER_BOUND`, a bridge burn, or as AMM/farm/bid outputs first.
+confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id. TAC is
+the one asset whose Bitcoin-side transfers reflect unbound already ([SPEC §6.2](../SPEC.md#62-bitcoin--ethereum)),
+so a plain Bitcoin-side send needs no separate onboarding step before it can bridge; other assets onboard
+through `T_CXFER_BOUND`, a bridge burn, or as AMM/farm/bid outputs first.
+
+**This direction's reveal needs a private-submission relay, not ordinary Bitcoin p2p relay.** The guest
+identifies the burned note as the burn tx's own first spent input, and reads its ~161-byte envelope from
+that same input's witness — the two can't be split across separate inputs, and the envelope can't be
+pre-committed into the note's own home script ahead of time either, since it names that note's own outpoint,
+which doesn't exist yet when the note is created. Either way, the witness item carrying the envelope ends up
+well over Bitcoin Core's 80-byte standardness cap for witness arguments, so mempool.space / blockstream.info
+and other ordinary relay won't carry it — it's still a perfectly valid, minable Bitcoin transaction, just not
+a *policy-standard* one. This is a structural property of the current, immutable guest, not a sign of a
+badly-built transaction. [MARA Slipstream](https://slipstream.mara.com/docs/) accepts exactly this kind of
+non-standard-but-consensus-valid transaction directly into a miner-side queue, which is how every
+burn-deposit that has actually landed got broadcast, including the round trip linked above.
+
+`dapp/burndep-broadcast.js` (`makeBurnDepositBroadcaster`) wraps that path: `submitToSlipstream(txHex)` posts
+the reveal to MARA's queue, `waitForBurnDepositMined({ txid, checkConfirmed, ... })` polls until an injected,
+real chain check (an esplora lookup, or the relay API's own `/chain/tx` — MARA's own queue status is
+progress-only, not proof of inclusion) reports it landed, and `registerBurnDeposit({ burnTxidDisplay, bundle })`
+posts the provenance to `POST /reflection/burndep` (permissionless — the guest re-verifies everything
+in-zkVM regardless, so this is a liveness convenience, not a trust boundary) so the reflection worker's
+batch-builder finds it without blindly rescanning every block. `completeBurnDepositToEthereum({ ... })` runs
+all three in order, registering only once real confirmation is observed.
 
 The TAC round trip linked above is a real, fully independent-verified example of exactly this: an Ethereum
 crossOut, its Bitcoin-side re-mint, a Bitcoin-side return burn, and the mint back on Ethereum — four
