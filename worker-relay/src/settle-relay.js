@@ -21,7 +21,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
-import { confidentialJob, confidentialBatch, confidentialAck, confidentialActivateAck, heartbeat } from './lib/worker-client.js';
+import { confidentialJob, confidentialBatch, confidentialAck, confidentialActivateAck, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { proveSettle } from './lib/prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
 import { consumedInputs } from './lib/spent-precheck.js';
@@ -505,14 +505,17 @@ async function main() {
       let worked;
       try { worked = await cycle(); }
       catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('settle', `error ${e.message}`); break; }
-      if (!worked) { log('queue drained — cron run done'); break; }
+      if (!worked) { log('queue drained — cron run done'); await heartbeat('settle', 'queue drained'); break; }
     }
     return;
   }
   for (;;) {
     try {
       const worked = await cycle();
-      if (!worked) { await maybeReplenish(); await sleep(CFG.settlePollSecs); }
+      // An empty queue is the common case, not an error — but it must still beat, or /prover-health
+      // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
+      // only fires on real activity (proving/settled/error), so idle time needs its own signal.
+      if (!worked) { await heartbeatIdle('settle', 'idle — queue empty'); await maybeReplenish(); await sleep(CFG.settlePollSecs); }
     } catch (e) {
       log('cycle error (continuing):', e.message);
       await heartbeat('settle', `error ${e.message}`);

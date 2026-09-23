@@ -134,6 +134,8 @@ export async function confidentialActivateAck({ jobId, txHash, error }) {
 //
 // /prover-heartbeat authenticates on a body `token`, NOT the bearer header, and answers 401 to anything
 // else. The worker stores `note`, not `detail`, so the drift/error text the callers pass rides in that field.
+// `kind` also rides as its own field — the worker keys heartbeats per kind (settle/reflection/eth-state
+// are separate processes on separate schedules; a live one must never mask a dead one).
 //
 // Best-effort — a failed beat must never take down a prove — but a rejection is logged once per process.
 let _hbWarned = false;
@@ -142,6 +144,7 @@ export async function heartbeat(kind, detail) {
     const res = await postJson('/prover-heartbeat', {
       token: CFG.heartbeatToken,
       network: CFG.network,
+      kind,
       prover_alive: true,
       note: `${kind}: ${detail || ''}`.slice(0, 200),
     });
@@ -153,4 +156,17 @@ export async function heartbeat(kind, detail) {
   } catch (e) {
     if (!_hbWarned) { _hbWarned = true; console.warn('[worker-client] prover heartbeat failed:', String(e && e.message).slice(0, 120)); }
   }
+}
+
+// Idle-loop variant: a poll loop with nothing to do should still prove it's alive, but calling
+// heartbeat() on every empty poll (as often as every few seconds) would just spam the KV write with no
+// benefit. Throttle to at most once per minInterval per kind. Cron-mode services (one short-lived process
+// per invocation, no state carries between runs) should call heartbeat() directly instead — the external
+// schedule is already the rate limit, and this throttle would just suppress the one beat that run gets.
+const _lastIdleBeatAt = new Map();
+export async function heartbeatIdle(kind, detail, minIntervalMs = 120_000) {
+  const last = _lastIdleBeatAt.get(kind) || 0;
+  if (Date.now() - last < minIntervalMs) return;
+  _lastIdleBeatAt.set(kind, Date.now());
+  await heartbeat(kind, detail);
 }

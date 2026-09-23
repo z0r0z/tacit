@@ -36,7 +36,7 @@ import { readFile, writeFile, rm, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { keccak256 } from 'viem';
 import { CFG } from './lib/config.js';
-import { reflectionEthState, reflectionEthStatePublish, heartbeat } from './lib/worker-client.js';
+import { reflectionEthState, reflectionEthStatePublish, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { proveEthState, commitEthProveState } from './lib/prover.js';
 import { readPool } from './lib/chain.js';
 
@@ -242,13 +242,18 @@ async function main() {
       let worked;
       try { worked = await cycle(); }
       catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('eth-state', `error ${e.message}`); break; }
-      if (!worked) { log('idle — cron run done'); break; }
+      if (!worked) { log('idle — cron run done'); await heartbeat('eth-state', 'idle'); break; }
     }
     return;
   }
   for (;;) {
     try {
-      await cycle();
+      const worked = await cycle();
+      // cycle() returns false on every "nothing to do yet" branch (candidate still pending, dry-run stop,
+      // etc). Those are the normal steady state here, not errors — but /prover-health only sees a live
+      // heartbeat() call on real work, so idle stretches need their own throttled beat or the endpoint
+      // goes stale after 10 quiet minutes on a perfectly healthy sidecar.
+      if (!worked) await heartbeatIdle('eth-state', 'idle — no candidate to produce yet');
     } catch (e) {
       log('cycle error (continuing):', e.message);
       await heartbeat('eth-state', `error ${e.message}`);

@@ -24,7 +24,7 @@
 
 import { CFG } from './lib/config.js';
 import { isMatured } from './lib/maturity.js';
-import { reflectionJob, reflectionAck, reflectionPending, reflectionAttestState, reflectionSubmitted, heartbeat } from './lib/worker-client.js';
+import { reflectionJob, reflectionAck, reflectionPending, reflectionAttestState, reflectionSubmitted, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { awaitAttestLanding, digestDeepEnough } from './lib/attest-wait.js';
 import { recoverLostAck } from './lib/reflection-reconcile.js';
 import { proveReflection } from './lib/prover.js';
@@ -222,14 +222,17 @@ async function main() {
       let worked;
       try { worked = await cycle(); }
       catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('reflection', `error ${e.message}`); break; }
-      if (!worked) { log('caught up — cron run done'); break; }
+      if (!worked) { log('caught up — cron run done'); await heartbeat('reflection', 'caught up'); break; }
     }
     return;
   }
   for (;;) {
     try {
       const worked = await cycle();
-      if (!worked) await sleep(CFG.reflectionPollSecs); // idle or retry backoff
+      // "Caught up" is the steady state between Bitcoin blocks, not a fault — but a caught-up loop never
+      // calls heartbeat() itself, so without this /prover-health goes stale (and "down") every time the
+      // chain is quiet for 10+ minutes on an otherwise-healthy reflector.
+      if (!worked) { await heartbeatIdle('reflection', 'caught up'); await sleep(CFG.reflectionPollSecs); } // idle or retry backoff
     } catch (e) {
       log('cycle error (continuing):', e.message);
       await heartbeat('reflection', `error ${e.message}`);

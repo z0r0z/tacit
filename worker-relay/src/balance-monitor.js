@@ -177,9 +177,12 @@ async function checkFarmHealth() {
 async function checkReflectionLag() {
   // Relay tip = the worker's confirmed Bitcoin tip; we approximate via /prover-health,
   // which already reports lag fields. Prefer that over re-scanning Bitcoin here.
+  // ?kind=reflection: /prover-health used to blend settle/reflection/eth-state heartbeats into one
+  // record, so this read whichever of the three last posted — not necessarily reflection. Heartbeats are
+  // now kept per kind (see worker's handleProverHeartbeat), so ask for the one this check is named for.
   let health = {};
   try {
-    const res = await fetch(`${CFG.workerBase}/prover-health`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
+    const res = await fetch(`${CFG.workerBase}/prover-health?kind=reflection`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
     if (res.ok) health = await res.json();
   } catch { /* fall through to on-chain read */ }
 
@@ -219,7 +222,9 @@ async function checkReflectionLag() {
   }
 
   if (health.healthy === false) {
-    await alert('critical', `/prover-health reports unhealthy: ${health.reason || 'no heartbeat'}`, health);
+    // health.reasons is an array (see readProverKindHealth) — there has never been a singular .reason field,
+    // so this fell back to the literal string below on every single unhealthy reading until now.
+    await alert('critical', `/prover-health (reflection) unhealthy: ${(health.reasons || []).join('; ') || 'no heartbeat'}`, health);
   }
 }
 
