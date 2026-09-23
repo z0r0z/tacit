@@ -27,8 +27,9 @@ import { queueVerdict } from './lib/queue-health.js';
 import { makeRpc, checkFarm, FARM_MANAGER_MAINNET } from './lib/farm-health.js';
 import { stallVerdict, driftVerdict } from './lib/reflection-stall.js';
 import { manualRecoveryHint } from './lib/reflection-reconcile.js';
-import { reflectionDriftSeen } from './lib/worker-client.js';
+import { reflectionDriftSeen, crossOutGapSeen } from './lib/worker-client.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { safeErr } from './lib/safe-err.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -102,11 +103,18 @@ async function checkEth() {
       }
     }
 
-    // Absolute floor — a BACKSTOP for when the runway could not be computed (no gas price). Once runway is
-    // known it says everything the floor would, in a unit you can act on (settles left), so alerting on both
-    // is just a second line for the same fact.
-    if (runway === null && bal < CFG.ethGasBufferWei) {
-      await alert('critical', `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} and runway unavailable — fund it`, { address, roles, ethWei: bal.toString() });
+    // Absolute floor — now UNCONDITIONAL, not a fallback for when runway is unavailable.
+    //
+    // The runway figure is only as good as EXPECTED_OPS_PER_DAY, which is a pinned constant measured at
+    // today's volume. Its error is one-directional and grows exactly when it matters most: at 10x volume the
+    // settle term is understated 10x, so a wallet with a day and a half of real gas reports a comfortable
+    // week — and this key funds the header and reflection lanes too, so running it dry stops far more than
+    // settles. Gating the floor on `runway === null` meant a computable-but-wrong runway suppressed the one
+    // check that does not depend on a volume estimate at all. Now they are independent: the runway warns
+    // early when the estimate is good, and the balance floor still fires when it is not.
+    if (bal < CFG.ethGasBufferWei) {
+      const why = runway === null ? 'runway unavailable' : `runway says ~${runway.toFixed(1)}d, but that assumes ${CFG.expectedOpsPerDay} ops/day`;
+      await alert('critical', `${who} ETH ${formatEther(bal)} < buffer ${formatEther(CFG.ethGasBufferWei)} (${why}) — fund it`, { address, roles, ethWei: bal.toString(), runwayDays: runway });
     }
   }
 }
@@ -165,7 +173,7 @@ async function checkFarmHealth() {
   if (/^(off|none|0|false)$/i.test(manager) || /^0x0{40}$/i.test(manager)) { log('farm check disabled (FARM_MANAGER_ADDR)'); return; }
   let res;
   try { res = await checkFarm({ rpc: makeRpc(CFG.rpcUrls), manager }); }
-  catch (e) { await alert('warning', `farm state unreadable: ${e?.message || e}`, { manager }); return; }
+  catch (e) { await alert('warning', `farm state unreadable: ${safeErr(e)}`, { manager }); return; }
   const { health } = res;
   log(`farm ${manager} = ${health.status}`);
   for (const c of health.checks) {
@@ -225,6 +233,40 @@ async function checkReflectionLag() {
     // health.reasons is an array (see readProverKindHealth) — there has never been a singular .reason field,
     // so this fell back to the literal string below on every single unhealthy reading until now.
     await alert('critical', `/prover-health (reflection) unhealthy: ${(health.reasons || []).join('; ') || 'no heartbeat'}`, health);
+  }
+}
+
+// Every service's liveness, not just reflection's. The lag check above reads ?kind=reflection because it wants
+// that record's lag fields; that left `settle` and `eth-state` with no health check at all, which matters most
+// for eth-state: once the pool's crossOutCount has passed 0, EVERY Bitcoin-side attest must be Mode-B forever
+// (ReflectionLib's freshness gate — a forward batch commits foldedCrossOutCount, which only equals crossOutCount
+// once every recorded cross-out has folded), so the eth-state sidecar is a hard dependency for the entire
+// Bitcoin->Ethereum lane. A dead sidecar with no candidate outstanding used to read as healthy everywhere: the
+// pending-candidate check reports "none outstanding", the folder logs "caught up", and only the 3-hour stall
+// clock eventually fires — labelled as a REFLECTION stall, pointing triage at the wrong service.
+//
+// The `note` read matters as much as `healthy`. The sidecar's own desync watchdog (its checkStall) escalates
+// by writing a STALL note and nothing else — heartbeat() never clears prover_alive — so that escalation had no
+// reader. Alert on a note that announces an error or a stall, whatever `healthy` says.
+const HEALTH_KINDS = ['settle', 'reflection', 'eth-state'];
+async function checkProverKinds() {
+  for (const kind of HEALTH_KINDS) {
+    let h = null;
+    try {
+      const res = await fetch(`${CFG.workerBase}/prover-health?kind=${encodeURIComponent(kind)}`, { headers: { authorization: `Bearer ${CFG.boxToken}` } });
+      if (!res.ok) { log(`prover-health ${kind}: HTTP ${res.status}`); continue; }
+      h = await res.json();
+    } catch (e) { log(`prover-health ${kind} unreadable: ${e?.message || e}`); continue; }
+    const note = String(h?.note || '');
+    log(`prover-health ${kind}: healthy=${h?.healthy} age=${h?.age_seconds}s note=${note}`);
+    if (h?.healthy === false) {
+      await alert('critical', `${kind} prover unhealthy: ${(h.reasons || []).join('; ') || 'no heartbeat'}`, { kind, ...h });
+    } else if (/^error\b|\bSTALL\b/i.test(note)) {
+      // A service still beating but reporting its own failure. For eth-state a STALL note specifically means
+      // its resume state has desynced from on-chain reality: every cycle "succeeds" and only the on-chain
+      // attest reverts, which the sidecar never observes, so this note is the only signal that exists.
+      await alert('warning', `${kind} prover is beating but reports: ${note}`, { kind, note });
+    }
   }
 }
 
@@ -294,9 +336,58 @@ async function checkEthStatePending() {
   }
 }
 
+// An ETH->BTC cross-out that never folds is the one way this protocol loses user value with no error
+// anywhere on either chain, and until now nothing watched for it.
+//
+// The mechanism: the pool records a cross-out (crossOutCount++) when the Ethereum side settles; the Bitcoin
+// side is a separate T_CROSSOUT_MINT reveal the user broadcasts themselves. Reflection checks that reveal
+// ONCE, at scan time, against the cross-out set its current eth-state bundle carries — membership or nothing.
+// There is no pending list and no retry (unlike a bridge burn, whose uniqueness comes from spending a real
+// Bitcoin UTXO, so it can safely wait for a later batch). A reveal broadcast before a bundle covering that
+// cross-out exists is therefore a PERMANENT miss: the guest's anchor_height == prior + 1 invariant means its
+// block is never rescanned. That is not hypothetical — it has already stranded one cross-out on mainnet.
+//
+// A gap is NOT itself a fault: it is the normal state between settling on Ethereum and broadcasting on
+// Bitcoin, and how long that takes is entirely the user's business. Only a gap that never closes is a signal,
+// so this alerts on DURATION, not on the gap existing.
+//
+// What this check can and cannot prove: it cannot tell a stranded cross-out from one whose owner simply has
+// not broadcast yet — that needs the reveal's own Bitcoin block height, which is not knowable from here. So
+// it pages a human with the one question that settles it, rather than guessing. That question is the whole
+// point: the last time this happened, the gap was read as "reflection is just pacing" for over a day before
+// anyone compared the reveal's block height against attestedHeight and found the wait had been structurally
+// pointless from the first minute.
+async function checkCrossOutFold() {
+  let onchain = null;
+  try { onchain = Number(await readPool('attestedCrossOutCount')); }
+  catch (e) { log(`crossOut fold check: pool crossOutCount unreadable: ${e?.message || e}`); return; }
+  let folded = null, attestedHeight = null;
+  try {
+    const res = await fetch(`${CFG.workerBase}/reflection/status?network=${encodeURIComponent(CFG.network)}`);
+    if (res.ok) { const b = await res.json(); folded = Number(b.foldedCrossoutCount); attestedHeight = Number(b.attestedHeight); }
+  } catch { /* fall through */ }
+  if (!Number.isFinite(onchain) || !Number.isFinite(folded)) { log('crossOut fold check: counts unavailable'); return; }
+
+  const gap = onchain - folded;
+  const since = await crossOutGapSeen(gap > 0);
+  log(`crossOut fold: onchain=${onchain} folded=${folded} gap=${gap}`);
+  if (gap <= 0 || !since) return;
+
+  const hours = (Date.now() - since) / 3600000;
+  if (hours < CFG.crossOutFoldGapWarnHours) return;
+  await alert('warning',
+    `${gap} ETH->BTC cross-out(s) recorded on the pool have not folded on the Bitcoin side for ${hours.toFixed(0)}h `
+    + `(crossOutCount=${onchain}, foldedCrossoutCount=${folded}). This is normal if nobody has broadcast their `
+    + `T_CROSSOUT_MINT reveal yet. If a reveal HAS been broadcast, check its Bitcoin block height against `
+    + `reflection's attestedHeight (${attestedHeight ?? 'unknown'}) FIRST: if attestedHeight was already past that `
+    + `block before the eth-state bundle covering the cross-out existed, the fold is one-shot and the mint can `
+    + `never land, no matter how long you wait — recover by settling a fresh cross-out, not by waiting.`,
+    { onchain, folded, gap, attestedHeight, gapSinceHours: Number(hours.toFixed(1)) });
+}
+
 async function main() {
-  log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet.account.address}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkSnapshotCapacity(), checkFarmHealth(), checkReflectionStall(), checkQueue(), checkEthStatePending()]);
+  log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkSnapshotCapacity(), checkFarmHealth(), checkReflectionStall(), checkQueue(), checkEthStatePending(), checkCrossOutFold()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

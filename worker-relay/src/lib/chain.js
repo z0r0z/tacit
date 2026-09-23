@@ -38,7 +38,16 @@ export async function gasAboveCap() {
 // against an endpoint that was never party to the submission.
 export const verifyClient = createPublicClient({ chain, transport: http(CFG.reflectionVerifyRpcUrl) });
 
+// `null` when no signing key is configured, rather than throwing at import.
+//
+// Not every service in this repo signs anything: the points indexer and the monitor read chain state and
+// nothing else. Building a wallet unconditionally at module scope meant importing `publicClient` from here
+// REQUIRED a private key, which is why RELAY_KEY ended up on services that have no use for it — including a
+// public web service. A key's blast radius should be bounded by which boxes hold it, and that is only
+// achievable if a keyless service can actually boot. Anything that genuinely signs has its key and is
+// unaffected; anything that does not gets `null` and fails loudly at the point of use if it ever tries.
 function walletFor(pk, tp = transport) {
+  if (!pk) return null;
   const account = privateKeyToAccount(pk.startsWith('0x') ? pk : `0x${pk}`);
   return createWalletClient({ account, chain, transport: tp });
 }
@@ -49,7 +58,7 @@ export const settleWallet = walletFor(CFG.settleKey || CFG.relayKey, settleTrans
 export const settleWallets = [
   ...(CFG.settleRpcUrls || []).map((url) => ({ url, wallet: walletFor(CFG.settleKey || CFG.relayKey, http(url)) })),
   ...(CFG.settleAllowPublic ? [{ url: `${CFG.rpcUrl} (PUBLIC)`, wallet: walletFor(CFG.settleKey || CFG.relayKey, transport) }] : []),
-];
+].filter((e) => e.wallet);
 
 // Every address the relay spends from, deduped — the set the monitor must watch and replenish must fund.
 //
@@ -66,6 +75,7 @@ export const settleWallets = [
 export const fundedWallets = (() => {
   const seen = new Map();
   for (const [role, w] of [['relay', relayWallet], ['settle', settleWallet]]) {
+    if (!w) continue; // keyless service (points, monitor) — nothing to fund or watch here
     const addr = w.account.address.toLowerCase();
     const prior = seen.get(addr);
     if (prior) { prior.roles.push(role); continue; }

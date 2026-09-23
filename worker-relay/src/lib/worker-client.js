@@ -4,17 +4,20 @@
 
 import { CFG } from './config.js';
 
-const auth = { authorization: `Bearer ${CFG.boxToken}` };
+// Built per call, not once at module load: CFG.boxToken is required-on-read, and evaluating it at module
+// scope would make every importer of this file demand the control-plane token whether or not it calls one
+// of these routes.
+const auth = () => ({ authorization: `Bearer ${CFG.boxToken}` });
 
 async function getJson(path) {
-  const res = await fetch(`${CFG.workerBase}${path}`, { headers: auth });
+  const res = await fetch(`${CFG.workerBase}${path}`, { headers: auth() });
   if (!res.ok) return {};
   try { return await res.json(); } catch { return {}; }
 }
 async function postJson(path, body) {
   const res = await fetch(`${CFG.workerBase}${path}`, {
     method: 'POST',
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { ...auth(), 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   return res;
@@ -50,6 +53,15 @@ export async function reflectionDriftSeen(driftSeen) {
     return res.ok ? (await res.json()).driftStreak : null;
   } catch { return null; }
 }
+// Record whether this run saw the pool's crossOutCount ahead of reflection's folded count, and get back the
+// timestamp the current unbroken run of such observations started (0 = no gap). The monitor is a cron with no
+// disk of its own, so the "how long has this been true" state lives server-side, exactly like driftSeen.
+export async function crossOutGapSeen(gapSeen) {
+  try {
+    const res = await postJson('/reflection/attest-state', { network: CFG.network, crossOutGapSeen: gapSeen });
+    return res.ok ? (await res.json()).crossOutGapSince : null;
+  } catch { return null; }
+}
 // The raw compressed eth-proof bytes behind a specific published eth-state candidate (identified by
 // contentHash = keccak256(ethPv), which the caller derives from the job.input.ethPv it already has). Needed
 // only for a Mode-B (modeB=1) job — bitcoin_prove's inner recursion verify loads these from disk, and they
@@ -69,7 +81,7 @@ export async function reflectionEthProofPatient(contentHash, {
   const deadline = now() + waitSecs * 1000;
   for (;;) {
     let res = null;
-    try { res = await fetchImpl(url, { headers: auth }); } catch { res = null; }
+    try { res = await fetchImpl(url, { headers: auth() }); } catch { res = null; }
     if (res && res.ok) { try { return await res.json(); } catch { /* a truncated body reads as transient */ } }
     else if (res && res.status === 404) return {};
     if (now() >= deadline) return {};

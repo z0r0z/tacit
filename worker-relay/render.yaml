@@ -70,6 +70,13 @@ envVarGroups:
         sync: false
       - key: NETWORK_PRIVATE_KEY
         sync: false
+      # Every service's escalation channel, not just the monitor's. header-relay.js has its own alert() and it
+      # is the SOLE escalation for a Bitcoin fork deeper than HEADER_RELAY_REORG_DEPTH — the one event meaning
+      # the light relay's view of the chain was materially wrong. Scoped to tacit-monitor alone, that alert
+      # no-opped into the logs, and because the header cron SUCCEEDS while restoring, Render's failed-run
+      # signal never fired either. Same for the eth-state sidecar's own stall escalation.
+      - key: ALERT_WEBHOOK_URL
+        sync: false
 
 services:
   # Cron ($ = runtime only): incremental Bitcoin-state reflection attester. A 5-min cron keeps
@@ -254,8 +261,6 @@ services:
       # Healthy steady state is ~HEADER_RELAY_LEAD (144) plus a few blocks of batch cadence, so this sits above it.
       - key: REFLECTION_LAG_ALERT_BLOCKS
         value: "200"
-      - key: ALERT_WEBHOOK_URL
-        sync: false
 
   # Always-on web service: ETH-wrap points program (src/points-indexer.js). Reads the pool's existing
   # Wrap event + each wrap's tx sender — no contract change, nothing on the settle/reflection path. Serves

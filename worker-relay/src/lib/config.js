@@ -10,6 +10,17 @@ function req(name) {
   if (!v) throw new Error(`missing required env ${name}`);
   return v;
 }
+// Required only for the services that actually use it. `req()` runs while this module is being evaluated,
+// so a value declared with it is demanded by EVERY service that imports CFG — which is how a settle key and
+// a control-plane token came to be required by the points web service, a process that uses neither. A lazy
+// property keeps the same "fail loudly rather than run misconfigured" contract, but moves the failure to
+// first use, so a service that never reads it never needs it set.
+function lazyReq(target, name, envName) {
+  Object.defineProperty(target, name, {
+    enumerable: true,
+    get() { return req(envName); },
+  });
+}
 function opt(name, dflt) {
   const v = process.env[name];
   return v === undefined || v === '' ? dflt : v;
@@ -58,16 +69,16 @@ export const ADDR = {
   // as metadata (tip amount + who it went to) — it never changes which address gets points. Points always
   // go to the tx's own sender, forwarder or not, since that's who actually funded the deposit.
   wrapTipForwarder: opt('WRAP_TIP_FORWARDER_ADDR', '0x000000D218B03db5837943b0b05DeA2965AE956e'),
+  // WrapTokenTipForwarder (contracts/src/WrapTokenTipForwarder.sol) — deployed 2026-09-23. The ERC20
+  // sibling: one generic deployment covers any registered token asset (cUSDC/cUSDT/cwstETH escrow-backed,
+  // cTAC/cBTC/cUSD poolMinted), assetId chosen per call rather than baked into the contract. No current
+  // consumer here — the points program (see points-indexer.js's own header) is deliberately ETH-only, so
+  // this asset's wraps aren't in scope for it. Recorded for discoverability if that ever changes.
+  wrapTokenTipForwarder: opt('WRAP_TOKEN_TIP_FORWARDER_ADDR', '0x0000007b1d93d72f698A861aA86Ac675D6AF7216'),
 };
 
 export const CFG = {
-  // Control plane (the tacit-api worker). Serves /reflection/job,
-  // /confidential/job and the ack routes.
-  workerBase: req('WORKER_BASE'),
-  // Bearer token = worker CONFIDENTIAL_BOX_TOKEN / DEBUG_TOKEN. The /reflection/*
-  // and /confidential/* prover routes are token-gated (ack advances the un-rewindable
-  // Bitcoin cursor).
-  boxToken: req('BOX_TOKEN'),
+  // workerBase / boxToken / relayKey are attached lazily below — see lazyReq.
   // /prover-heartbeat authenticates on a body token, separate from the bearer above, and 401s without it.
   // Optional so a missing value degrades to "health reporting is off" rather than refusing to start a
   // prover — but leave it unset and /prover-health reports this service down forever.
@@ -169,7 +180,12 @@ export const CFG = {
   // Relay signer — pays gas for attest + settle + replenish swaps and collects fees.
   // A single key can serve all roles; split RELAY_KEY / SETTLE_KEY if you want
   // separate nonspaces. SETTLE_KEY falls back to RELAY_KEY.
-  relayKey: req('RELAY_KEY'),
+  //
+  // OPTIONAL, deliberately: chain.js reads this at module scope to build its wallets, so requiring it here
+  // would make importing anything from chain.js — including the read-only publicClient — demand a signing
+  // key. A service with no key gets null wallets instead (see walletFor), which is what lets the points and
+  // monitor services run without one.
+  relayKey: opt('RELAY_KEY', ''),
   settleKey: opt('SETTLE_KEY', process.env.RELAY_KEY),
   // PUBLIC address of the settle wallet, for services that must WATCH it but have no business holding its
   // key (the monitor). SETTLE_KEY is set on the settle service alone, so anywhere else it silently falls
@@ -218,10 +234,19 @@ export const CFG = {
   // proving cadence, just how often the sidecar looks for "no pending candidate live" (see that file's
   // header for why that, not crossOutCount, is the real trigger). Cheap enough to poll often.
   ethStatePollSecs: num('ETH_STATE_POLL_SECS', 60),
-  // Mirrors the worker's own ETH_STATE_PENDING_STALE_SECS default (worker/src/index.js) so the sidecar's
-  // own "is it worth trying to publish" pre-check agrees with the server's actual gate — kept independently
-  // configurable in case the two are ever intentionally detuned relative to each other.
-  ethStatePendingStaleSecs: num('ETH_STATE_PENDING_STALE_SECS', 4 * 60 * 60),
+  // Hard ceiling on a single eth_prove run. Without one, a network prove that never returns blocks the only
+  // producer of Mode-B fuel — and once the pool's crossOutCount has passed 0 that is the ONLY way any
+  // Bitcoin-side attest can land, so a single hung child process silently halts the whole Bitcoin->Ethereum
+  // lane with every service still reporting healthy. Generous (a real network prove is minutes), but finite.
+  ethProveTimeoutSecs: num('ETH_PROVE_TIMEOUT_SECS', 45 * 60),
+  // MUST mirror ETH_STATE_PENDING_STALE_SECS_DEFAULT in worker/src/index.js. This value decides whether the
+  // sidecar thinks it is worth publishing; that one decides whether the server 409s the publish. When they
+  // disagree, the sidecar spends a network proof on a candidate the server then refuses — and the two sides
+  // are deployed independently (Render vs the worker), so a retune on one side silently desyncs the other.
+  // That has already happened once in the live direction: the server-side ceiling stayed at 4h after the
+  // Render-side config was retuned, and a crossOut's Bitcoin-side broadcast sat blocked for 3+ hours.
+  // Change both together, in the same commit, and keep this default equal to that constant.
+  ethStatePendingStaleSecs: num('ETH_STATE_PENDING_STALE_SECS', 90 * 60),
   // DRY_RUN=1: run every check + log the decision, never invoke eth_prove or POST — the safe first-run
   // mode to validate the trigger logic and API wiring against production before spending any real PROVE.
   ethStateDryRun: opt('DRY_RUN', '0') === '1',
@@ -301,12 +326,23 @@ export const CFG = {
   // No successful attest for this long while Bitcoin has un-attested blocks in range is a stalled reflection lane.
   reflectionStallHours: num('REFLECTION_STALL_HOURS', 3),
   // A pending eth-state candidate bridges an ETH-side crossOut to its Bitcoin-side fold. The sidecar discards
-  // and republishes its own candidate once it passes ETH_STATE_PENDING_STALE_SECS (90min live, chosen to sit
-  // above the ~hourly normal Bitcoin batch cadence so a candidate survives long enough to be consumed, and
-  // below the ~4h REFLECTION_CONFIRMATIONS block-maturity window so real margin remains after a fresh one
-  // publishes). These two thresholds cover the case where that hasn't happened on its own timeline yet.
-  ethStatePendingWarnSec: num('ETH_STATE_PENDING_WARN_SEC', 105 * 60),
-  ethStatePendingCriticalSec: num('ETH_STATE_PENDING_CRITICAL_SEC', 150 * 60),
+  // and republishes its own candidate once it passes ETH_STATE_PENDING_STALE_SECS, so these thresholds exist
+  // only for the case where that hasn't happened on its own timeline.
+  //
+  // They are DERIVED from that window rather than pinned, because pinning them is how you get an alert that
+  // fires before the thing it is alerting about has had its chance: hard-coded 105/150min sat BELOW a 4h
+  // default stale window, so the critical claimed the candidate was "past the self-heal window" 90 minutes
+  // before self-heal was due, and told the operator to clear it — which destroys the exact candidate the next
+  // Bitcoin attest chains from. Deriving keeps the alert true at whatever the window is actually set to.
+  ethStatePendingWarnSec: num('ETH_STATE_PENDING_WARN_SEC', 0)
+    || Math.round(num('ETH_STATE_PENDING_STALE_SECS', 4 * 60 * 60) * 1.1),
+  ethStatePendingCriticalSec: num('ETH_STATE_PENDING_CRITICAL_SEC', 0)
+    || Math.round(num('ETH_STATE_PENDING_STALE_SECS', 4 * 60 * 60) * 1.5),
+  // How long the pool's recorded crossOutCount may run ahead of reflection's foldedCrossoutCount before the
+  // gap is worth a human look. A gap is NORMAL and open-ended by design — it just means someone has settled an
+  // ETH->BTC crossOut and not yet broadcast its Bitcoin-side mint, which is entirely at their discretion. What
+  // is not normal is a gap that never closes, because one failure mode makes it permanent (see the check).
+  crossOutFoldGapWarnHours: num('CROSSOUT_FOLD_GAP_WARN_HOURS', 48),
   alertWebhookUrl: opt('ALERT_WEBHOOK_URL', ''), // optional Slack/Discord/webhook
 
   // Price oracles for the USD fee math. Kept as overridable env so the crons don't
@@ -375,3 +411,9 @@ export const DEFAULT_OP_GAS = 600_000n;
 export const OP_PROVE = 0.39;
 
 export { req, opt, num };
+
+// Control plane (the tacit-api worker): serves /reflection/job, /confidential/job and the ack routes.
+lazyReq(CFG, 'workerBase', 'WORKER_BASE');
+// Bearer token = worker CONFIDENTIAL_BOX_TOKEN / DEBUG_TOKEN. The /reflection/* and /confidential/* prover
+// routes are token-gated (ack advances the un-rewindable Bitcoin cursor).
+lazyReq(CFG, 'boxToken', 'BOX_TOKEN');
