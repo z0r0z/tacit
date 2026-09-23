@@ -97,7 +97,11 @@ function startHttp(store) {
     try {
       if (url.pathname === '/health') {
         const cursor = store.loadCursor();
-        res.end(JSON.stringify({ ok: true, ...cursor }));
+        res.end(JSON.stringify({
+          ok: true,
+          lastScannedBlock: cursor ? cursor.lastScannedBlock.toString() : null,
+          ethDepositCount: cursor ? cursor.ethDepositCount : 0,
+        }));
         return;
       }
       if (url.pathname === '/leaderboard') {
