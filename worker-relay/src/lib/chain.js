@@ -132,33 +132,17 @@ export const VAPP_ABI = [
   { type: 'function', name: 'deposit', stateMutability: 'nonpayable', inputs: [{ type: 'uint256' }], outputs: [] },
 ];
 
-// zQuoter (verified 0x000000a7…) — buildSwapAuto (0x98d7d292) auto-routes across all venues
-// INCLUDING multihop through the ETH/WETH hub, and returns ready-to-send zRouter callData +
-// msgValue, so replenish just fires (to: zRouter, data: callData, value: msgValue).
-// exactOut=false ⇒ exact-in. (buildBestSwap, 0xe7798987, is single-pool only — a thin quote
-// for tokens whose PROVE liquidity sits behind the WETH hub, e.g. USDC/wstETH → PROVE.)
+// zQuoter (ADDR.zQuoter) has no single "auto, try everything" entrypoint — replenish.js's quote() calls
+// BOTH of these and keeps whichever gives the better result:
+//   buildBestSwap (0xe7798987) — single-pool, ready-to-fire callData + msgValue. Works for any pair with
+//     direct PROVE liquidity (ETH, USDC) but NoRoute()s pairs whose liquidity sits behind the WETH hub.
+//   buildBestSwapViaETHMulticall (a two-leg tokenIn->ETH->tokenOut route) — covers exactly that hub case
+//     (wstETH, USDT -> PROVE verified 2026-09-23). Returns each leg's own Quote (`a`, `b`) plus `multicall`,
+//     which is ALREADY the ready-to-fire zRouter calldata for both legs bundled together — same shape as
+//     buildBestSwap's `callData` once renamed, so quote() can treat both candidates uniformly.
+// Both exactOut=false (exact-in, optimize for highest amountOut) and exactOut=true (exact-out, optimize
+// for lowest amountIn) are real call sites in replenish.js — see its comment for which.
 export const ZQUOTER_ABI = [
-  {
-    type: 'function', name: 'buildSwapAuto', stateMutability: 'view',
-    inputs: [
-      { name: 'to', type: 'address' }, { name: 'exactOut', type: 'bool' },
-      { name: 'tokenIn', type: 'address' }, { name: 'tokenOut', type: 'address' },
-      { name: 'swapAmount', type: 'uint256' }, { name: 'slippageBps', type: 'uint256' }, { name: 'deadline', type: 'uint256' },
-    ],
-    outputs: [
-      { name: 'best', type: 'tuple', components: [
-        { name: 'source', type: 'uint8' }, { name: 'feeBps', type: 'uint256' },
-        { name: 'amountIn', type: 'uint256' }, { name: 'amountOut', type: 'uint256' }] },
-      { name: 'callData', type: 'bytes' }, { name: 'amountLimit', type: 'uint256' }, { name: 'msgValue', type: 'uint256' },
-    ],
-  },
-];
-
-// ADDR.proveEthQuoter's buildBestSwap (0xe7798987) — same shape as ZQUOTER_ABI's buildSwapAuto, different
-// selector/contract. Scoped to the PROVE<->ETH price check ONLY (see ADDR.proveEthQuoter's comment): this
-// quoter's buildBestSwap quotes both PROVE->ETH and ETH->PROVE correctly, unlike ZQUOTER's buildSwapAuto
-// (no PROVE->ETH route), but it NoRoute()s wstETH -> PROVE, so it is not a swap-in-place replacement.
-export const PROVE_ETH_QUOTER_ABI = [
   {
     type: 'function', name: 'buildBestSwap', stateMutability: 'view',
     inputs: [
@@ -171,6 +155,23 @@ export const PROVE_ETH_QUOTER_ABI = [
         { name: 'source', type: 'uint8' }, { name: 'feeBps', type: 'uint256' },
         { name: 'amountIn', type: 'uint256' }, { name: 'amountOut', type: 'uint256' }] },
       { name: 'callData', type: 'bytes' }, { name: 'amountLimit', type: 'uint256' }, { name: 'msgValue', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'function', name: 'buildBestSwapViaETHMulticall', stateMutability: 'view',
+    inputs: [
+      { name: 'to', type: 'address' }, { name: 'refundTo', type: 'address' }, { name: 'exactOut', type: 'bool' },
+      { name: 'tokenIn', type: 'address' }, { name: 'tokenOut', type: 'address' },
+      { name: 'swapAmount', type: 'uint256' }, { name: 'slippageBps', type: 'uint256' }, { name: 'deadline', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'a', type: 'tuple', components: [
+        { name: 'source', type: 'uint8' }, { name: 'feeBps', type: 'uint256' },
+        { name: 'amountIn', type: 'uint256' }, { name: 'amountOut', type: 'uint256' }] },
+      { name: 'b', type: 'tuple', components: [
+        { name: 'source', type: 'uint8' }, { name: 'feeBps', type: 'uint256' },
+        { name: 'amountIn', type: 'uint256' }, { name: 'amountOut', type: 'uint256' }] },
+      { name: 'calls', type: 'bytes[]' }, { name: 'multicall', type: 'bytes' }, { name: 'msgValue', type: 'uint256' },
     ],
   },
 ];

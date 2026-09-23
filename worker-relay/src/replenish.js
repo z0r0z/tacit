@@ -13,10 +13,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getAddress, maxUint256 } from 'viem';
-import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
+import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import {
   publicClient, relayWallet, fundedWallets, ethUsdPrice, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
-  PROVE_ETH_QUOTER_ABI, PROVE, VAPP, ZQUOTER, ZROUTER,
+  PROVE, VAPP, ZQUOTER, ZROUTER,
 } from './lib/chain.js';
 
 const log = (...a) => console.log(`[replenish ${new Date().toISOString()}]`, ...a);
@@ -140,28 +140,50 @@ async function maxPreApprove(assets, wallet = relayWallet, includeProve = true) 
   }
 }
 
-// zQuoter.buildSwapAuto returns ready-to-fire zRouter callData + msgValue for the best route,
-// multihopping through the ETH/WETH hub when a token's PROVE liquidity sits behind it.
-// exactOut=false ⇒ exact-in. `to` = recipient.
-async function quote(tokenIn, tokenOut, amountIn, recipient, exactOut = false) {
+// zQuoter has no single "auto, try everything" entrypoint (see chain.js's ZQUOTER_ABI comment) — this
+// tries buildBestSwap (direct pools) and buildBestSwapViaETHMulticall (the tokenIn->ETH->tokenOut hub
+// route, needed when a token's PROVE liquidity sits behind WETH — wstETH and USDT, verified 2026-09-23)
+// and keeps whichever actually quotes, picking the better one when both do. exactOut=false ⇒ exact-in,
+// optimize for highest amountOut; exactOut=true ⇒ optimize for lowest amountIn (both are real call sites
+// below). `to` = recipient of the output; the via-ETH route also needs a refund address for ETH-leg dust,
+// which is the same recipient here (nothing downstream currently wants it split out).
+export async function quote(tokenIn, tokenOut, amountIn, recipient, exactOut = false) {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
-  const [best, callData, amountLimit, msgValue] = await publicClient.readContract({
-    address: ZQUOTER, abi: ZQUOTER_ABI, functionName: 'buildSwapAuto',
-    args: [recipient, exactOut, tokenIn, tokenOut, amountIn, SLIPPAGE_BPS, deadline],
-  });
-  return { amountIn: best.amountIn, amountOut: best.amountOut, callData, amountLimit, msgValue };
+  const candidates = [];
+
+  try {
+    const [best, callData, amountLimit, msgValue] = await publicClient.readContract({
+      address: ZQUOTER, abi: ZQUOTER_ABI, functionName: 'buildBestSwap',
+      args: [recipient, exactOut, tokenIn, tokenOut, amountIn, SLIPPAGE_BPS, deadline],
+    });
+    if (best.amountIn > 0n && best.amountOut > 0n) {
+      candidates.push({ amountIn: best.amountIn, amountOut: best.amountOut, callData, amountLimit, msgValue });
+    }
+  } catch {}
+
+  if (tokenIn !== ETH && tokenOut !== ETH) {
+    try {
+      const [legA, legB, , multicall, msgValue] = await publicClient.readContract({
+        address: ZQUOTER, abi: ZQUOTER_ABI, functionName: 'buildBestSwapViaETHMulticall',
+        args: [recipient, recipient, exactOut, tokenIn, tokenOut, amountIn, SLIPPAGE_BPS, deadline],
+      });
+      if (legA.amountIn > 0n && legB.amountOut > 0n) {
+        candidates.push({ amountIn: legA.amountIn, amountOut: legB.amountOut, callData: multicall, amountLimit: 0n, msgValue });
+      }
+    } catch {}
+  }
+
+  if (!candidates.length) throw new Error(`zQuoter: no route ${tokenIn} -> ${tokenOut}`);
+  return exactOut
+    ? candidates.reduce((a, b) => (b.amountIn < a.amountIn ? b : a))    // cheapest input for a fixed output
+    : candidates.reduce((a, b) => (b.amountOut > a.amountOut ? b : a)); // most output for a fixed input
 }
 
-// Live PROVE price in USD, via ADDR.proveEthQuoter's buildBestSwap — NOT the general zQuoter/buildSwapAuto
-// used below for actual fee-asset swaps. Verified 2026-09-23: zQuoter's buildSwapAuto has no PROVE->ETH
-// route (reverts NoRoute()) even though ETH->PROVE works on it, so this price check was silently falling
-// back to the static CFG.provePriceUsd on every single call, with no error ever surfacing (the try/catch
-// below swallows exactly this revert). ADDR.proveEthQuoter's buildBestSwap quotes PROVE<->ETH correctly
-// both directions (cross-checked against each other), but NoRoute()s wstETH -> PROVE, so it's scoped to
-// this price check only — see ADDR.proveEthQuoter's comment in lib/config.js before reusing it elsewhere.
-// Probe size is batch-representative, so the quote carries the price impact a real top-up would pay.
-// Clamped to a band around the static value: PROVE is ~10% of per-op cost, but a broken or manipulated
-// quote should never be able to swing the fee gate wildly in either direction.
+// Live PROVE price in USD, via the same quoter/route selection replenish actually swaps through — so the
+// cost model tracks what replenishing genuinely costs rather than a constant. Probe size is
+// batch-representative, so the quote carries the price impact a real top-up would pay. Clamped to a band
+// around the static value: PROVE is ~10% of per-op cost, but a broken or manipulated quote should never be
+// able to swing the fee gate wildly in either direction.
 let _provePx = { at: 0, v: null };
 const PROVE_PROBE = 100_000_000_000_000_000_000n; // 100 PROVE (18dp)
 export async function provePriceUsd(ethPriceUsd) {
@@ -169,13 +191,9 @@ export async function provePriceUsd(ethPriceUsd) {
   const fallback = CFG.provePriceUsd;
   try {
     const ethPx = Number(ethPriceUsd ?? CFG.ethPriceUsd);
-    const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
-    const [best] = await publicClient.readContract({
-      address: ADDR.proveEthQuoter, abi: PROVE_ETH_QUOTER_ABI, functionName: 'buildBestSwap',
-      args: [relayWallet.account.address, false, PROVE, ETH, PROVE_PROBE, SLIPPAGE_BPS, deadline],
-    });
-    if (!best?.amountOut || best.amountOut <= 0n) return fallback;
-    const ethOut = Number(best.amountOut) / 1e18;          // ETH received for the probe
+    const q = await quote(PROVE, ETH, PROVE_PROBE, relayWallet.account.address);
+    if (!q?.amountOut || q.amountOut <= 0n) return fallback;
+    const ethOut = Number(q.amountOut) / 1e18;          // ETH received for the probe
     const usd = (ethOut * ethPx) / (Number(PROVE_PROBE) / 1e18); // USD per PROVE
     if (!Number.isFinite(usd) || usd <= 0) return fallback;
     const clamped = Math.min(Math.max(usd, fallback / 10), fallback * 10);

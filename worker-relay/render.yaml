@@ -26,14 +26,13 @@ envVarGroups:
         value: "0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F"
       - key: PROVE_TOKEN_ADDR
         value: "0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29"
+      # Deprecated the previous 0x000000a7… quoter 2026-09-23 — its buildSwapAuto had no PROVE->ETH route,
+      # silently mispricing PROVE. This one has no single "auto" function either, so replenish.js's quote()
+      # tries buildBestSwap + buildBestSwapViaETHMulticall and keeps the better result — see chain.js.
       - key: ZQUOTER_ADDR
-        value: "0x000000a7DfdD39f4D74c7b201501eaD119F8b86C"
+        value: "0x000000bd2DB80567c23E353ca95a251c573cBf9B"
       - key: ZROUTER_ADDR
         value: "0x000000000000FB114709235f1ccBFfb925F600e4"
-      # Dedicated quoter for provePriceUsd's PROVE<->ETH price check only — see lib/config.js's comment.
-      # ZQUOTER_ADDR above stays on buildSwapAuto for actual swaps (the only combo that routes wstETH).
-      - key: PROVE_ETH_QUOTER_ADDR
-        value: "0x000000bd2DB80567c23E353ca95a251c573cBf9B"
       - key: SP1_PROVER
         value: network
       # Mainnet/auction endpoint. The exec-* binaries build in Mainnet (auction) mode — auction gRPC calls
