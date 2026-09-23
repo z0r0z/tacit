@@ -290,7 +290,23 @@ services:
       mountPath: /var/lib/tacit-points
       sizeGB: 1
     envVars:
-      - fromGroup: tacit-relay-shared
+      # DELIBERATELY NOT `fromGroup: tacit-relay-shared`. This is the one service here that listens on the
+      # public internet, and that group carries RELAY_KEY, BOX_TOKEN and NETWORK_PRIVATE_KEY — a signing key
+      # for every settle and attest, the token that gates the control plane including the reflection cursor
+      # reseed, and the prover balance. This process signs nothing and calls no control-plane route: it reads
+      # Wrap events and serves a leaderboard. It needs a chain endpoint and its own POINTS_* settings, so
+      # those are declared here instead. Keeping the group off this service is the whole point — re-adding it
+      # would put the relay's keys back on a public box, and a blueprint sync is how that silently happens.
+      - key: NETWORK
+        value: mainnet
+      - key: CHAIN_ID
+        value: "1"
+      - key: POOL_ADDR
+        value: "0x000000000Ed1eabD231Be41d93b719056F7febFC"
+      # Its own read endpoint, separate from the relay's. Read-only eth_getLogs/eth_getBlock over a forward
+      # range; it never needs the relay's provider credential.
+      - key: RPC_URL
+        sync: false
       # Forward-only: chain head at first deploy of this service. Re-pin to the actual deploy-time head if
       # deploying meaningfully later than when this was written (2026-09-23, mainnet head ~26,039,038) — a
       # wrap before this block is never counted, by design (no backfill).
