@@ -761,9 +761,10 @@ real `CrossOutRecorded` event, not just the client-side prediction), `cx`/`cy`, 
 (the settle's own Ethereum block — see below for what it's for). Two ways to finish the Bitcoin side:
 
 - **`makeCrossoutBroadcaster` (`dapp/crossout-broadcast.js`)**, dependency-injected on your own Bitcoin
-  commit/reveal broadcast: `broadcast.completeCrossOutOnBitcoin({ block: r.ethBlock, ...r.crossOuts[0],
-  waitOpts })` waits until the crossOut is safely coverable (see below), then broadcasts. `waitOpts` matches
-  this SDK's usual `{ intervalMs, timeoutMs, onUpdate }` convention.
+  commit/reveal broadcast: `broadcast.completeCrossOutOnBitcoin({ ...r, ...r.crossOuts[0], waitOpts })`
+  waits until the crossOut is safely coverable (see below), then broadcasts. Spread the whole `crossOut()`
+  result: it carries `ethBlock` **and** `claimIdVerified`, and both are checked. `waitOpts` matches this
+  SDK's usual `{ intervalMs, timeoutMs, onUpdate }` convention.
 - **`tools/build-crossout-mint.mjs`** — a CLI, build-only: takes the same fields plus a funding UTXO and
   writes the two signed transactions to a file for you to review and broadcast by hand.
 
@@ -784,6 +785,15 @@ that actually matters here — is Ethereum block `N` (a crossOut's own `ethBlock
 reflection worker's current view — so broadcast the reveal only once that says yes, not the instant the
 crossOut itself settles. `completeCrossOutOnBitcoin` above checks this for you; building the reveal by hand
 should check it too before broadcasting.
+
+**Coverage is only half of "safe to broadcast". The other half is the claimId.** `fold_crossout` hashes
+`claim_id` into its membership check, so a reveal built from a claimId that is merely *predicted* — rather
+than the one the pool actually recorded — can never fold, and fails exactly as silently as broadcasting too
+early. `crossOut()` corroborates its prediction against the real `CrossOutRecorded` event in the settle
+receipt and reports the outcome as `claimIdVerified` (with `claimIdNote` saying why, when it could not).
+`completeCrossOutOnBitcoin` refuses to broadcast unless that flag is `true`, before it spends so much as a
+coverage poll. If you corroborate the claimId yourself, pass `claimIdVerified: true` explicitly. Note that
+`ethBlock` is only populated alongside a corroborated claimId, since the two are read together.
 
 **Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
 (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
