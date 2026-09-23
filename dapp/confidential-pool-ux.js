@@ -2352,9 +2352,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // check) -- a permanently stranded mint with no on-chain error anywhere. Verify against the actual
     // CrossOutRecorded event before trusting the prediction; correct it in place if it diverges, matching by
     // destCommitment (unambiguous -- it is the note's own opening, fixed by the caller).
+    // ethBlock: the settle's own block number, from the same receipt fetch this verification already makes.
+    // A crossOut-mint reveal is checked once, at scan time, against whatever the reflection worker's current
+    // eth-state view covers — this is the number to compare against GET /reflection/eth-state/covers before
+    // broadcasting one (see completeCrossOutOnBitcoin in crossout-broadcast.js, and BUILD-A-TACIT-DAPP.md §5f).
+    let ethBlock = null;
     if (r.txHash) {
       try {
         const receipt = await rpc('eth_getTransactionReceipt', [r.txHash]);
+        if (receipt?.blockNumber) ethBlock = Number(BigInt(receipt.blockNumber));
         const real = (receipt?.logs || [])
           .map((l) => evmLog.decodeLog(l))
           .filter((e) => e && e.type === 'CrossOutRecorded');
@@ -2364,7 +2370,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         }
       } catch { /* best-effort verification -- a failed check doesn't invalidate the crossOut itself */ }
     }
-    return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset };
+    return { ...r, crossOuts: t.crossOuts, destOwner: owner, destBlinding: beHex(rDest), amount: amount.toString(), asset, ethBlock };
   }
 
   // Pay a confidential invoice (confidential-invoice.js): wrap public funds to the invoice's commit so the

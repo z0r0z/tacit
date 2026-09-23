@@ -40,4 +40,57 @@ const burn = { assetId: b32('TAC'), claimId: b32('claimZ'), cx: b32('cx'), cy: b
   ok('fails loudly on a missing txid / missing injection');
 }
 
-console.log(`\n${n}/2 crossout-broadcast checks passed`);
+// ── 3. the broadcast function is still directly callable (backward compatible), with the new methods
+//      hanging off it rather than changing the return shape ──
+{
+  const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope: async () => ({ txid: 'x' }), workerBase: 'https://api.example' });
+  assert.strictEqual(typeof broadcast, 'function', 'still returns the callable broadcast function');
+  assert.strictEqual(typeof broadcast.waitForCrossOutCoverage, 'function', 'waitForCrossOutCoverage hangs off it');
+  assert.strictEqual(typeof broadcast.completeCrossOutOnBitcoin, 'function', 'completeCrossOutOnBitcoin hangs off it');
+  ok('backward compatible: broadcast is still a bare callable function');
+}
+
+// ── 4. waitForCrossOutCoverage polls until covered=true, firing onUpdate on each status change, using an
+//      injected sleep so the test never actually waits ──
+{
+  let calls = 0;
+  const fetchImpl = async () => ({ json: async () => ({ covered: ++calls >= 3, bestBlock: 100 + calls, network: 'mainnet', block: 105 }) });
+  const updates = [];
+  const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope: async () => ({ txid: 'x' }), workerBase: 'https://api.example', fetchImpl });
+  const slept = [];
+  const r = await broadcast.waitForCrossOutCoverage({ block: 105, intervalMs: 10, onUpdate: (b) => updates.push(b.covered), sleep: async (ms) => { slept.push(ms); } });
+  assert.strictEqual(calls, 3, 'polled until covered');
+  assert.strictEqual(r.covered, true, 'resolves with the covering response');
+  assert.deepStrictEqual(updates, [false, true], 'onUpdate fires once per status change, not once per poll');
+  assert.deepStrictEqual(slept, [10, 10], 'slept between polls via the injected sleep, not a real timer');
+  ok('waitForCrossOutCoverage polls until covered, firing onUpdate on status change');
+}
+
+// ── 5. waitForCrossOutCoverage times out rather than returning uncovered silently ──
+{
+  const fetchImpl = async () => ({ json: async () => ({ covered: false }) });
+  const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope: async () => ({ txid: 'x' }), workerBase: 'https://api.example', fetchImpl });
+  await assert.rejects(
+    () => broadcast.waitForCrossOutCoverage({ block: 105, timeoutMs: 5, intervalMs: 1, sleep: async () => {} }),
+    /timed out/,
+    'rejects on timeout rather than resolving uncovered',
+  );
+  await assert.rejects(() => broadcast.waitForCrossOutCoverage({ block: 0 }), /block .* required/, 'rejects a non-positive block');
+  ok('waitForCrossOutCoverage times out loudly instead of returning uncovered');
+}
+
+// ── 6. completeCrossOutOnBitcoin waits for coverage, then broadcasts — not before ──
+{
+  let covered = false;
+  const fetchImpl = async () => ({ json: async () => ({ covered }) });
+  let broadcastCalledAt = null;
+  const buildAndBroadcastEnvelope = async () => { broadcastCalledAt = covered; return { txid: 'btc-txid-2' }; };
+  const broadcast = makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, workerBase: 'https://api.example', fetchImpl });
+  const sleep = async () => { covered = true; }; // flips to covered on the poll's wait, simulating time passing
+  const r = await broadcast.completeCrossOutOnBitcoin({ block: 105, ...burn, waitOpts: { intervalMs: 1, sleep } });
+  assert.strictEqual(broadcastCalledAt, true, 'only broadcast once coverage was confirmed, never before');
+  assert.strictEqual(r.txid, 'btc-txid-2', 'returns the broadcast result');
+  ok('completeCrossOutOnBitcoin waits for coverage before broadcasting');
+}
+
+console.log(`\n${n}/6 crossout-broadcast checks passed`);

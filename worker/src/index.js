@@ -620,7 +620,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/farm/program', '/farm/health']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/farm/program', '/farm/health']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1009,6 +1009,30 @@ async function handleReflectionEthStateGet(req, env, url, cors) {
       finalizedSlot: pending.finalizedSlot ?? null,
     } : null,
   }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+// GET /reflection/eth-state/covers?network=&block=N — public: does the current eth-state view (whichever of
+// pending/confirmed is further along) already cover Ethereum state up to `block`? A crossOut-mint's Bitcoin-
+// side reveal is checked once, at scan time, against whatever the current eth-state candidate covers — this
+// is the one check to make before broadcasting one, so an integrator doesn't have to fetch the full
+// pending/confirmed objects and compare execBlock by hand. See BUILD-A-TACIT-DAPP.md §5f.
+async function handleReflectionEthStateCovers(req, env, url, cors) {
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const rl = await proveRateLimit(env, ip, 'ethstate-covers', 60, 60000);
+  if (!rl.ok) return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const block = parseInt(url.searchParams.get('block') || '', 10);
+  if (!Number.isFinite(block) || block <= 0) return jsonResponse({ error: 'block (positive integer) required' }, 400, cors);
+  const [confirmedRaw, pendingRaw] = await Promise.all([
+    env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
+    env.REGISTRY_KV.get(ethStatePendingKey(network)),
+  ]);
+  let confirmedBlock = null, pendingBlock = null;
+  try { confirmedBlock = confirmedRaw ? (JSON.parse(confirmedRaw).execBlock ?? null) : null; } catch { confirmedBlock = null; }
+  try { pendingBlock = pendingRaw ? (JSON.parse(pendingRaw).execBlock ?? null) : null; } catch { pendingBlock = null; }
+  const bestBlock = Math.max(confirmedBlock || 0, pendingBlock || 0) || null;
+  return jsonResponse({ network, block, bestBlock, covered: !!(bestBlock && bestBlock >= block) }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 // How long a published-but-unconfirmed eth-state candidate stays authoritative before a fresh POST is
@@ -24929,6 +24953,7 @@ async function _routeFetch(req, env, ctx) {
     // Mode-B eth-side state: the eth-state sidecar POSTs eth_prove's output here.
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);
+    if (url.pathname === '/reflection/eth-state/covers' && req.method === 'GET') return handleReflectionEthStateCovers(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/proof' && req.method === 'GET') return handleReflectionEthStateProof(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/clear' && req.method === 'POST') return handleReflectionEthStateClear(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state/confirmed/clear' && req.method === 'POST') return handleReflectionEthStateConfirmedClear(req, env, url, cors);
