@@ -187,7 +187,35 @@ export async function settleCycle(store) {
   const todayDay = Math.floor(Date.now() / 1000 / 86400);
   const settleThroughDay = Math.min(todayDay - 1, lastProgramDay); // never settle a day still in progress
 
-  const state = store.loadSettleState() ?? { lastSettledDay: startDay - 1, publishedRoot: null, publishedTotalWei: null };
+  const state = store.loadSettleState() ?? { lastSettledDay: startDay - 1, publishedRoot: null, publishedTotalWei: null, knobs: null };
+
+  // Refuse to extend a settled history under different scoring knobs.
+  //
+  // Days already folded into the reward ledger were scored at the knobs in force then. Folding further days
+  // at different ones silently mixes two scoring regimes into one cumulative tree — and after a disk loss the
+  // whole history is re-scored at today's knobs, which can lower an individual account's cumulative below
+  // what it already claimed. The contract catches an aggregate decrease (TotalDecreased) but not a per-account
+  // one, so the damage surfaces later as honest claimants hitting OverAllocated. Stop at the point where it
+  // is still one operator decision rather than a payout failure.
+  const knobs = JSON.stringify({
+    basePerEth: CFG.pointsBasePerEth,
+    bonusScale: CFG.pointsBonusScale,
+    bonusHalfLife: CFG.pointsBonusHalfLife,
+    programStartSec: CFG.pointsProgramStartSec,
+    programDays: CFG.pointsProgramDays,
+    programTotalWei: CFG.pointsProgramTotalWei.toString(),
+  });
+  if (state.knobs && state.knobs !== knobs && state.lastSettledDay >= startDay) {
+    log(`REFUSING to settle: the scoring knobs changed after ${state.lastSettledDay - startDay + 1} day(s) were `
+      + `already settled.\n  settled under: ${state.knobs}\n  configured now: ${knobs}\n`
+      + '  Restore the original values, or deliberately reset the reward ledger — do not mix two regimes '
+      + 'into one cumulative tree.');
+    // Deliberately NOT a heartbeat: worker-client's heartbeat needs WORKER_BASE + BOX_TOKEN, and this
+    // service is specifically the one that should hold neither. The log plus a `lastSettledDay` that stops
+    // advancing on /rewards is the signal.
+    return;
+  }
+  state.knobs = knobs;
 
   for (let d = state.lastSettledDay + 1; d <= settleThroughDay; d++) {
     const dayIndex = d - startDay;

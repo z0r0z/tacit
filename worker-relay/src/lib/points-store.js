@@ -57,7 +57,18 @@ export function openStore(dbPath) {
       id                  INTEGER PRIMARY KEY CHECK (id = 1),
       last_settled_day    INTEGER NOT NULL,
       published_root      TEXT,
-      published_total_wei TEXT
+      published_total_wei TEXT,
+      -- The scoring knobs the settled history was computed under, as a stable JSON string.
+      --
+      -- The knobs are documented as safe to retune because past rows keep the points they were awarded --
+      -- true only while this file survives. On disk loss the scan restarts from POINTS_START_BLOCK and
+      -- re-scores EVERY historical deposit at whatever the knobs currently say, producing a different
+      -- cumulative root for the same history. The contract only refuses a decrease in the AGGREGATE
+      -- (TotalDecreased), not in an individual account's cumulative, so an account that already claimed
+      -- keeps its tokens while the recomputed total sits lower -- and later honest claimants then hit
+      -- OverAllocated and cannot claim at all until the guardian re-funds. Recording the knobs lets a
+      -- rebuild refuse rather than silently re-price.
+      knobs               TEXT
     );
 
     -- The full claim set (address, cumulativeAmount, merkle proof) for whichever tree's root was LAST
@@ -118,14 +129,17 @@ export function openStore(dbPath) {
     ON CONFLICT(address) DO UPDATE SET cumulative_wei = excluded.cumulative_wei
   `);
   const allRewardsStmt = db.prepare(`SELECT address, cumulative_wei AS cumulativeWei FROM reward_ledger WHERE cumulative_wei != '0'`);
-  const loadSettleStateStmt = db.prepare(`SELECT last_settled_day, published_root, published_total_wei FROM settle_state WHERE id = 1`);
+  // Additive migration for a database created before `knobs` existed.
+  try { db.exec('ALTER TABLE settle_state ADD COLUMN knobs TEXT'); } catch { /* already present */ }
+  const loadSettleStateStmt = db.prepare(`SELECT last_settled_day, published_root, published_total_wei, knobs FROM settle_state WHERE id = 1`);
   const saveSettleStateStmt = db.prepare(`
-    INSERT INTO settle_state (id, last_settled_day, published_root, published_total_wei)
-    VALUES (1, @lastSettledDay, @publishedRoot, @publishedTotalWei)
+    INSERT INTO settle_state (id, last_settled_day, published_root, published_total_wei, knobs)
+    VALUES (1, @lastSettledDay, @publishedRoot, @publishedTotalWei, @knobs)
     ON CONFLICT(id) DO UPDATE SET
       last_settled_day = excluded.last_settled_day,
       published_root = excluded.published_root,
-      published_total_wei = excluded.published_total_wei
+      published_total_wei = excluded.published_total_wei,
+      knobs = excluded.knobs
   `);
   const clearPublishedClaimsStmt = db.prepare(`DELETE FROM published_claims`);
   const insertPublishedClaimStmt = db.prepare(`
@@ -149,11 +163,19 @@ export function openStore(dbPath) {
     return true;
   });
 
+  // `ethDepositCount` is DERIVED from the deposits table, not trusted from the cursor row.
+  //
+  // The indexer bumps it once per recorded deposit but only persists the cursor once per scan chunk, while
+  // each deposit row is committed immediately. A crash mid-chunk therefore leaves a persisted count lower
+  // than the rows that actually exist — and since re-scanning a chunk is deliberately idempotent (a duplicate
+  // insert returns false and does not re-bump), the gap never closes. That count is the early-adopter bonus
+  // divisor, so every later depositor would be scored as if they were earlier than they are. Counting the
+  // rows is exact, cheap, and runs once at startup.
   function loadCursor() {
     const row = loadCursorStmt.get();
-    return row
-      ? { lastScannedBlock: BigInt(row.last_scanned_block), ethDepositCount: row.eth_deposit_count }
-      : null;
+    if (!row) return null;
+    const actual = db.prepare('SELECT COUNT(*) AS n FROM deposits').get().n;
+    return { lastScannedBlock: BigInt(row.last_scanned_block), ethDepositCount: actual };
   }
 
   function saveCursor({ lastScannedBlock, ethDepositCount }) {
@@ -199,15 +221,16 @@ export function openStore(dbPath) {
   function loadSettleState() {
     const row = loadSettleStateStmt.get();
     return row
-      ? { lastSettledDay: row.last_settled_day, publishedRoot: row.published_root, publishedTotalWei: row.published_total_wei }
+      ? { lastSettledDay: row.last_settled_day, publishedRoot: row.published_root, publishedTotalWei: row.published_total_wei, knobs: row.knobs ?? null }
       : null;
   }
 
-  function saveSettleState({ lastSettledDay, publishedRoot, publishedTotalWei }) {
+  function saveSettleState({ lastSettledDay, publishedRoot, publishedTotalWei, knobs }) {
     saveSettleStateStmt.run({
       lastSettledDay,
       publishedRoot: publishedRoot ?? null,
       publishedTotalWei: publishedTotalWei ?? null,
+      knobs: knobs ?? null,
     });
   }
 
