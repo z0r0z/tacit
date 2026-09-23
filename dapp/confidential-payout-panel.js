@@ -387,6 +387,7 @@ function wire({
     if (out.status === 'paid') {
       setActivity({ phase: 'paid', txHash, relayStatus: null, receivedText: formatUnits(out.delta / a.unitScale, a.decimals) });
       toast(`Paid ${shown.amountText} ${a.label} to ${p.checksummed}`, 'ok');
+      await checkChangeMemo(r);
     } else if (out.status === 'failed') {
       setActivity({ phase: 'failed', error: out.error, relayStatus: null });
       toast('The relay could not settle the payment', 'error');
@@ -397,6 +398,20 @@ function wire({
     }
     if (state.plan) { invalidate(); say('Your balance changed after that payment. Review again.'); }
     rescan().catch(() => {});
+  }
+
+  // The change note's memo is the relay's copy of an opening only this wallet can use. The payment was submitted
+  // without waiting, so nothing compared it then; it is compared once the payment has landed. A memo the relay
+  // replaced never costs the change — it re-derives from the wallet key — but it is the one visible sign that the
+  // relay is not shipping what it was handed, and saying nothing is how that goes unnoticed.
+  async function checkChangeMemo(r) {
+    if (!r || typeof r.verifyMemos !== 'function') return;
+    try {
+      const v = await r.verifyMemos();
+      if (v && v.memoCheck && v.memoCheck.ok === null) say('Paid. The change note’s memo could not be checked against the settle — your change is still recoverable from your wallet key.');
+    } catch {
+      toast('Paid, but the relay published a different memo for your change note. Your change is still recoverable from your wallet key.', 'error');
+    }
   }
 
   // The existing own-address send wraps public funds into a note in one transaction; reuse it instead of a second

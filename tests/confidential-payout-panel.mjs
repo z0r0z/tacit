@@ -351,6 +351,29 @@ test('confirm submits with wait:false at the reviewed gross and floor, then repo
   assert.equal(shown(dom.at('cpay-confirm-btn')), false, 'a confirmed plan cannot be confirmed twice');
 });
 
+// The payment is submitted without waiting, so the change note's memo is compared once the payment has landed.
+test('a paid payment checks the change memo the relay shipped, and says so when it does not match', async () => {
+  for (const [outcome, expected] of [['mismatch', /different memo for your change note/], ['unchecked', /could not be checked against the settle/]]) {
+    const world = makeWorld({ notes: [note(100_000_000, 5)] });
+    const base = world.ux.sendUnwrap;
+    world.ux.sendUnwrap = async (a) => ({
+      ...(await base(a)),
+      verifyMemos: async () => {
+        if (outcome === 'mismatch') throw new Error('settled in 0xabc, but the emitted memos differ from the sealed ones for leaf 0');
+        return { memoCheck: { ok: null, reason: 'no settle tx hash — emitted memos were never checked' } };
+      },
+    });
+    const { dom } = await reviewed(world);
+    world.job = { status: 'settled', txHash: '0x' + 'ab'.repeat(32) };
+    world.onSleep = async (n) => { if (n === 1) world.ethBalance += 50_000_000n * 10n ** 10n; };
+    await click(dom.at('cpay-confirm-btn'));
+    assert.match(dom.at('cpay-activity').innerHTML, /Paid: 0\.5 ETH to /, 'the payment itself still landed');
+    const said = outcome === 'mismatch' ? world.toasts.map(([m]) => m).join(' ') : dom.at('cpay-status').textContent;
+    assert.match(said, expected);
+    assert.match(said, /recoverable from your wallet key/);
+  }
+});
+
 test('confirm with a relay that settles but a balance that never moves ends as submitted, not yet confirmed, with the job id', async () => {
   const world = makeWorld({ notes: [note(100_000_000, 5)] });
   const { dom } = await reviewed(world);

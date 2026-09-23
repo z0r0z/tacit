@@ -451,8 +451,9 @@ test('makeMainnetCall: falls through failing endpoints, treats a revert as final
   const seen = [];
   const mk = (handler) => async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return handler(url); };
   const ok = (result) => ({ ok: true, json: async () => ({ result }) });
-  const call = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => (u === 'https://a' ? { ok: false, status: 500 } : ok('0x01'))) });
+  const call = makeMainnetCall({ rpcs: ['https://a', 'https://b', 'https://c'], fetchImpl: mk((u) => (u === 'https://a' ? { ok: false, status: 500 } : ok('0x01'))) });
   assert.strictEqual(await call({ to: WNS, data: '0x00', from: OWNER }), '0x01');
+  assert.strictEqual(seen.length, 3, 'a dead endpoint does not count towards agreement');
   assert.strictEqual(seen[0].body.method, 'eth_call');
   assert.strictEqual(seen[0].body.params[0].to, lc(WNS));
   assert.strictEqual(seen[0].body.params[0].from, lc(OWNER));
@@ -465,6 +466,35 @@ test('makeMainnetCall: falls through failing endpoints, treats a revert as final
 
   const down = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk(() => { throw new Error('boom'); }) });
   await assert.rejects(down({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc');
+});
+
+// What a name resolves to decides where a private send goes, so one endpoint's word is never enough.
+test('makeMainnetCall: an answer needs two endpoints that agree, and a disagreement resolves nothing', async () => {
+  const seen = [];
+  const mk = (handler) => async (url, init) => { seen.push(url); void init; return handler(url); };
+  const ok = (result) => ({ ok: true, json: async () => ({ result }) });
+  const REAL = '0x' + '11'.repeat(32), FAKE = '0x' + '22'.repeat(32);
+
+  const agreeing = makeMainnetCall({ rpcs: ['https://a', 'https://b', 'https://c'], fetchImpl: mk(() => ok(REAL)) });
+  assert.strictEqual(await agreeing({ to: WNS, data: '0x' }), REAL);
+  assert.strictEqual(seen.length, 2, 'stops at the first two that match');
+
+  // A single lying endpoint ahead of the honest ones neither wins nor poisons the answer.
+  seen.length = 0;
+  const lying = makeMainnetCall({ rpcs: ['https://liar', 'https://b', 'https://c'], fetchImpl: mk((u) => ok(u === 'https://liar' ? FAKE : REAL)) });
+  assert.strictEqual(await lying({ to: WNS, data: '0x' }), REAL);
+
+  // Nothing agrees: a refusal the user can act on, never a resolution.
+  const split = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => ok(u === 'https://a' ? FAKE : REAL)) });
+  await assert.rejects(split({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc-disagreement');
+
+  // Only one endpoint answered at all: not agreement either.
+  const alone = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => (u === 'https://a' ? ok(REAL) : { ok: false, status: 503 })) });
+  await assert.rejects(alone({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc');
+
+  // One configured endpoint has nothing to compare against and is used as-is.
+  const single = makeMainnetCall({ rpcs: ['https://a'], fetchImpl: mk(() => ok(REAL)) });
+  assert.strictEqual(await single({ to: WNS, data: '0x' }), REAL);
 });
 
 test('a transport failure is surfaced, never read as "no record"', async () => {

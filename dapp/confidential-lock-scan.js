@@ -209,7 +209,9 @@ export function makeConfidentialLockScan({ pool }) {
   // note memos belongs to the locks. A settle that also minted notes (a swap that skims a protocol-fee lock
   // beside its output notes, or a batch carrying a transfer and a lock) emits LeavesInserted with that full
   // note-plus-lock memo array; the lock leaves never depend on it. A lock whose transaction cannot be fetched or
-  // decoded keeps its position and gets a null memo.
+  // decoded keeps its position and gets a null memo. More than one call of the same transaction can claim the same
+  // lock leaves with different memos, so `lockMemoCandidates[i]` holds every distinct memo offered for lock i and
+  // `lockMemos[i]` is the first of them — an opener that authenticates a memo against the leaf should try them all.
   //
   // FROM CALLDATA (no LockLeavesInserted in the stream). Each decoded call must be corroborated against an event this
   // exact tx emitted, because TacitRelayer._relay wraps each inner POOL.settle() in try/catch and silently skips a
@@ -259,7 +261,7 @@ export function makeConfidentialLockScan({ pool }) {
       return { calls, trusted };
     }
 
-    let found; // corroborated lock batches in append order: { txHash, trusted, lockLeaves, lockMemos }
+    let found; // corroborated lock batches in append order: { txHash, trusted, lockLeaves, lockMemos, lockMemoCandidates }
     if ((events || []).some((e) => e && e.type === 'LockLeavesInserted')) {
       const byFirst = new Map();
       for (const e of events) {
@@ -279,7 +281,13 @@ export function makeConfidentialLockScan({ pool }) {
         const e = byFirst.get(first);
         if (first !== next) throw new Error(`stealth lock stream is not contiguous: expected lock index ${next}, found ${first} (tx ${e.txHash}) — a LockLeavesInserted log was missed`);
         next += e.lockLeaves.length;
-        let lockMemos = e.lockLeaves.map(() => null);
+        // EVERY call of this transaction that carries exactly these lock leaves, not the first one only. A
+        // relaySettle batch keeps an inner call its own try/catch skipped, and any other contract's calldata can
+        // carry a settle blob that never ran, so a second call claiming the same leaves with a different memo tail
+        // is something a third party can arrange — and stopping at the first one lets that decoy shadow the real
+        // memo, leaving the recipient unable to see a lock that is theirs. Each distinct tail is kept, in calldata
+        // order; the opener authenticates a candidate against the leaf, which is what actually decides.
+        const candidates = e.lockLeaves.map(() => []);
         if (e.txHash) {
           if (!cache.has(e.txHash)) cache.set(e.txHash, await callsOf(e.txHash));
           const info = cache.get(e.txHash);
@@ -288,11 +296,13 @@ export function makeConfidentialLockScan({ pool }) {
             try { fields = decodePublicValuesLockFields(decoded.publicValues); } catch { continue; }
             if (!sameArray(fields.lockLeaves, e.lockLeaves) || decoded.memos.length !== fields.leavesCount + fields.lockLeaves.length) continue;
             const tail = decoded.memos.slice(fields.leavesCount);
-            lockMemos = e.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null));
-            break;
+            e.lockLeaves.forEach((_, i) => {
+              const m = tail[i];
+              if (m != null && !candidates[i].some((c) => String(c).toLowerCase() === String(m).toLowerCase())) candidates[i].push(m);
+            });
           }
         }
-        found.push({ txHash: e.txHash, trusted: true, lockLeaves: e.lockLeaves, lockMemos });
+        found.push({ txHash: e.txHash, trusted: true, lockLeaves: e.lockLeaves, lockMemos: candidates.map((c) => (c.length ? c[0] : null)), lockMemoCandidates: candidates });
       }
     } else {
       const groups = new Map(); // txHash -> { blockNumber, logIndex (min), leavesEvents, nullifierEvents }
@@ -342,7 +352,8 @@ export function makeConfidentialLockScan({ pool }) {
             }
           } // else: a lock-only, spend-nothing call — no event exists to corroborate it here.
           if (!landed) continue;
-          found.push({ txHash: g.txHash, trusted: info.trusted, lockLeaves: fields.lockLeaves, lockMemos: fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null)) });
+          const lockMemos = fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null));
+          found.push({ txHash: g.txHash, trusted: info.trusted, lockLeaves: fields.lockLeaves, lockMemos, lockMemoCandidates: lockMemos.map((m) => (m != null ? [m] : [])) });
         }
       }
     }
@@ -350,7 +361,10 @@ export function makeConfidentialLockScan({ pool }) {
     const build = (list) => {
       const tree = new pool.Tree();
       for (const c of list) for (const leaf of c.lockLeaves) tree.insert(leaf);
-      return { tree, lockLeaves: list.flatMap((c) => c.lockLeaves), lockMemos: list.flatMap((c) => c.lockMemos), lockSetRoot: tree.root() };
+      return {
+        tree, lockLeaves: list.flatMap((c) => c.lockLeaves), lockMemos: list.flatMap((c) => c.lockMemos),
+        lockMemoCandidates: list.flatMap((c) => c.lockMemoCandidates), lockSetRoot: tree.root(),
+      };
     };
     const all = build(found);
     // `verified: null` means the set was never checked against the pool — NOT that it passed.

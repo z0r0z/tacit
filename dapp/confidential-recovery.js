@@ -123,7 +123,18 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
   // amount, and depositId = keccak(asset, value, keccak(Cx, Cy, owner)), so every (index, value) the wallet could have
   // used is checked against the deposit ids the pool holds. Per index the blinding point is computed once and each
   // distinct deposited value adds its (cached) value point to it. A run of `gap` unused indexes ends the walk.
-  function walkWraps({ priv, events, assets, gap = 24, maxIndex = 4096 }) {
+  //
+  // `minIndex` (a number, or a function of the assetId) is scanned through whatever the gaps look like. The index a
+  // wallet picks is reserved and persisted BEFORE its deposit is broadcast, so a run of wraps that were built and
+  // never sent burns indexes that no deposit will ever occupy — a hole the gap rule stops at, leaving every later
+  // wrap invisible to a key-only recovery. A caller that keeps that reservation (confidential-pool-ux's wrap-index
+  // hint) passes it here as the floor. `scanned` says per asset how far the walk actually got and whether a gap is
+  // what ended it, so a short result is reportable rather than indistinguishable from "nothing more was wrapped".
+  function walkWraps({ priv, events, assets, gap = 24, maxIndex = 4096, minIndex = 0 }) {
+    const floorFor = (assetId) => {
+      const n = Number(typeof minIndex === 'function' ? minIndex(assetId) : minIndex);
+      return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), maxIndex) : 0;
+    };
     const byAsset = new Map();
     for (const e of events || []) {
       if (!e || e.type !== 'Wrap') continue;
@@ -138,8 +149,9 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
       const scale = BigInt(a.unitScale || 1);
       const values = [...new Set([...d.amounts].filter((x) => x > 0n && x % scale === 0n).map((x) => x / scale))];
       const Hv = new Map(values.map((v) => [v, H.multiply(v)]));
-      let miss = 0, tried = 0, matched = 0;
-      for (let i = 0; i <= maxIndex && miss < gap; i++) {
+      const floor = floorFor(a.assetId);
+      let miss = 0, tried = 0, matched = 0, lastMatch = -1;
+      for (let i = 0; i <= maxIndex && (miss < gap || i <= floor); i++) {
         tried++;
         const dn = pool.deriveNote(priv, a.assetId, i);
         const owner = pool.nkToOwner(dn.secret);
@@ -149,12 +161,17 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
           const { cx, cy } = affineHex(Hv.get(v).add(Gr));
           const depositId = pool.depositId(a.assetId, v, cx, cy, owner);
           if (!d.ids.has(lc(depositId))) continue;
-          hit = true; matched++;
+          hit = true; matched++; lastMatch = i;
           found.push({ index: i, value: v, blinding: w32(dn.blinding), secret: dn.secret, asset: a.assetId, owner, cx, cy, leaf: pool.leaf(a.assetId, cx, cy, owner), depositId });
         }
         miss = hit ? 0 : miss + 1;
       }
-      scanned.push({ assetId: a.assetId, ticker: a.ticker || null, deposits: d.ids.size, indexesTried: tried, matched });
+      const scannedThrough = tried - 1;
+      scanned.push({
+        assetId: a.assetId, ticker: a.ticker || null, deposits: d.ids.size, indexesTried: tried, matched,
+        minIndex: floor, scannedThrough, lastMatch,
+        stoppedOnGap: miss >= gap && scannedThrough < maxIndex, stoppedAtMaxIndex: scannedThrough >= maxIndex,
+      });
     }
     return { found, scanned };
   }
@@ -413,6 +430,7 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     };
     const lineage = new Map(); // current live leaf lc → position record
     const positions = [];
+    const skipped = [];
     const seenTx = new Set();
     let farthest = -1;
     for (const ev of positionEvents) {
@@ -421,7 +439,9 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
       seenTx.add(txHash);
       let calls = null;
       try { const input = await getTxInput(txHash); calls = input ? lockScan.decodeSettleCalls(input) : null; } catch { calls = null; }
-      if (!calls) continue;
+      // A position's opening exists only in its own settle's calldata, so one unread transaction is one position
+      // the wallet stops knowing it has — reported like the note walks report theirs, never dropped in silence.
+      if (!calls) { skipped.push({ txHash, reason: 'settle calldata unavailable' }); continue; }
       for (const call of calls.calls) {
         let f; try { f = decodeCdpFields(call.publicValues); } catch { continue; }
         for (const m of f.mints) {
@@ -449,7 +469,7 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     // The position tree index of each surviving leaf (the CdpPositionInserted order).
     const live = positions.filter((r) => lineage.get(lc(r.positionLeaf)) === r);
     for (const r of positions) r.positionIndex = positionIndexOf ? positionIndexOf(r.positionLeaf) : null;
-    return { positions: live, allOpened: positions, nextKeyNonce: farthest + 1 };
+    return { positions: live, allOpened: positions, nextKeyNonce: farthest + 1, skipped };
   }
   // ── outputs derived from the wallet key ──
   // Every self-owned output an assembler mints takes its nullifier key and blinding from deriveOutputKeys(key, anchor, role,
@@ -714,17 +734,21 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
 
   // ── stealth locks the wallet sent ──
   // The lock memo the sender publishes is the recipient's memo followed by a tail sealed to the sender's own key. Open
-  // each lock's tail with that key; the lock leaf authenticates the result.
-  function openSentLocks({ senderPriv, lockLeaves, lockMemos }) {
+  // each lock's tail with that key; the lock leaf authenticates the result. `lockMemoCandidates[i]` (every memo a
+  // transaction's calls offered for lock i, from the lock scan) is tried in turn when it is supplied, so a memo
+  // another call of the same transaction claims for this leaf cannot hide the sender's own.
+  function openSentLocks({ senderPriv, lockLeaves, lockMemos, lockMemoCandidates }) {
     const RECIPIENT_MEMO = 33 + 112;
     const out = [];
     for (let i = 0; i < lockLeaves.length; i++) {
-      const m = lockMemos[i];
-      if (!m) continue;
-      const b = hexToBytes(m);
-      if (b.length < RECIPIENT_MEMO + 177) continue;
-      const opened = airdrop.openStealthSenderTail({ senderPriv, ephemeralPub: '0x' + bytesToHex(b.subarray(0, 33)), leaf: lockLeaves[i], tailHex: '0x' + bytesToHex(b.subarray(RECIPIENT_MEMO)) });
-      if (opened) out.push({ ...opened, leaf: lockLeaves[i], lIndex: i, ephemeralPub: '0x' + bytesToHex(b.subarray(0, 33)) });
+      const cand = lockMemoCandidates && lockMemoCandidates[i];
+      for (const m of (cand && cand.length ? cand : [lockMemos[i]])) {
+        if (!m) continue;
+        const b = hexToBytes(m);
+        if (b.length < RECIPIENT_MEMO + 177) continue;
+        const opened = airdrop.openStealthSenderTail({ senderPriv, ephemeralPub: '0x' + bytesToHex(b.subarray(0, 33)), leaf: lockLeaves[i], tailHex: '0x' + bytesToHex(b.subarray(RECIPIENT_MEMO)) });
+        if (opened) { out.push({ ...opened, leaf: lockLeaves[i], lIndex: i, ephemeralPub: '0x' + bytesToHex(b.subarray(0, 33)) }); break; }
+      }
     }
     return out;
   }

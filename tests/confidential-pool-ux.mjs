@@ -886,6 +886,46 @@ test('sendUnwrap: the emitted change memo is compared with the sealed one', asyn
   await assert.rejects(run(true), (e) => /emitted memos differ/.test(e.message) && Array.isArray(e.sealedMemos));
 });
 
+// Not waiting for the settle must not quietly skip that comparison: the result says the check has not run, and
+// carries the check itself so a caller can run it once the settle lands.
+test('sendUnwrap: a non-waiting exit reports the memo check as unrun, and verifyMemos() runs it later', async () => {
+  const w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const encodeLeavesInserted = (leaves, memos) => {
+    const lv = [w32(leaves.length), ...leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0'))].join('');
+    const bodies = memos.map((m) => { const h = String(m).replace(/^0x/, ''); const len = h.length / 2; return w32(len) + h.padEnd(Math.ceil(len / 32) * 64, '0'); });
+    let off = 32 * memos.length; const heads = [];
+    for (const b of bodies) { heads.push(w32(off)); off += b.length / 2; }
+    return '0x' + w32(64) + w32(64 + lv.length / 2) + lv + w32(memos.length) + heads.join('') + bodies.join('');
+  };
+  const run = async (tamper) => {
+    const state = {};
+    const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      let obj;
+      if (String(url).includes('/confidential/submit')) { state.sub = body; obj = { jobId: 'j', status: 'pending' }; }
+      else if (String(url).includes('/confidential/status')) obj = { jobId: 'j', status: 'settled', txHash: '0x' + 'ab'.repeat(32) };
+      else if (body && body.method === 'eth_getTransactionReceipt') {
+        const { op, memos } = state.sub;
+        const leaf = state.pool.leaf(op.asset, op.change[0].cx, op.change[0].cy, op.change[0].owner);
+        obj = { result: { logs: [{ address: state.poolAddr, topics: [state.topic, '0x' + w32(1)], data: encodeLeavesInserted([leaf], tamper ? ['0x' + 'ee'.repeat(169)] : memos) }] } };
+      } else obj = { result: '0x0' };
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    } });
+    state.pool = ux.pool; state.poolAddr = ux.cfg.pool; state.topic = makeConfidentialEvmLogTopic();
+    const walletPriv = '0x' + '5e'.repeat(32);
+    const { note } = transferFixture(ux, walletPriv);
+    return ux.sendUnwrap({ note, walletPriv, recipient: '0x' + '12'.repeat(20), amount: BigInt(note.value) / 2n, feeOpts: { minFee: 1n }, wait: false });
+  };
+  const r = await run(false);
+  assert.equal(r.memoCheck.ok, null, 'nothing has been compared yet, and the result says so');
+  assert.match(r.memoCheck.reason, /verifyMemos/);
+  assert.equal(typeof r.verifyMemos, 'function');
+  const checked = await r.verifyMemos();
+  assert.equal(checked.memoCheck.ok, true, 'the same comparison, on demand');
+  const bad = await run(true);
+  await assert.rejects(bad.verifyMemos(), (e) => /emitted memos differ/.test(e.message) && Array.isArray(e.sealedMemos));
+});
+
 function makeConfidentialEvmLogTopic() {
   return '0x' + Buffer.from(keccak_256(new TextEncoder().encode('LeavesInserted(uint256,bytes32[],bytes[])'))).toString('hex');
 }

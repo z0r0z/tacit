@@ -7,7 +7,7 @@
 // The wrap (on-chain deposit) + transfer/unwrap BUILD paths layer the op assemblers + evm-tx on top of
 // this; this module owns the read path (account + balance) + the live config + the settle/RPC handles.
 
-import { getConfidentialDeployment, activeNetwork } from './confidential-deployments.js';
+import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints } from './confidential-deployments.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
@@ -259,6 +259,29 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { outpoint, vBtc };
   }
 
+  // The pool's own record of one lock: its value plus the two states that retire it. vBtc is cacheable (it is
+  // written once, at fold time); spent/redeemed are not, since either can land at any later block.
+  async function cbtcLockState(txid, vout) {
+    const { outpoint, vBtc } = await _cbtcLockVBtc(txid, vout);
+    if (vBtc <= 0n) return { outpoint, vBtc, spent: false, redeemed: false };
+    const flag = async (sig) => {
+      const r = await ethCall(cfg.pool, '0x' + _selector(sig) + _word(outpoint));
+      return !!(r && r !== '0x' && BigInt(r) !== 0n);
+    };
+    return { outpoint, vBtc, spent: await flag('cbtcLockSpent(bytes32)'), redeemed: await flag('cbtcLockRedeemed(bytes32)') };
+  }
+
+  // Rebuild the coin-selection reservation for this wallet's live cBTC locks from chain state. The local
+  // registry is a browser-scoped cache, so on a second device or after a cleared cache it is empty and a
+  // lock reads as ordinary spendable change — spending one is folded as a rug and slashes its escrow with no
+  // cure path. The lock outputs come from the wallet's own public Bitcoin history and the pool says which of
+  // them are still live, which is also what releases a redeemed lock from the set.
+  async function syncCbtcLockReservations(walletPriv, { btcHistory = null } = {}) {
+    const id = identity(walletPriv);
+    const h = typeof btcHistory === 'function' ? await btcHistory(id.priv) : (btcHistory || await _defaultBtcHistory(id.priv));
+    return syncProtectedOutpoints({ lockOutputs: h.lockOutputs || [], lockState: cbtcLockState });
+  }
+
   // The assets an output of a wallet's settle can be in: every pool asset plus the assets of the notes the wallet has held.
   const _knownAssets = (notes) => [...new Set([..._poolAssets.map((a) => a.assetId), ...notes.map((n) => n.asset)].map(lc))];
 
@@ -275,22 +298,34 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const diag = { errors: {} };
     const addDerived = (n, source, extra = {}) => {
       const lf = lc(n.leaf), leafIndex = slot.get(lf);
-      if (leafIndex == null || all.has(lf)) return false;
+      if (leafIndex == null) return false;
+      const held = all.get(lf);
+      if (held) {
+        // The same note re-derived from the wallet key: it is no longer known only from a memo somebody else
+        // could have written, so the inbound label goes and the channel that vouched for it is recorded.
+        if (held.inboundUnverified) { held.inboundUnverified = false; held.keyDerivedBy = source; }
+        return false;
+      }
       all.set(lf, { value: BigInt(n.value), blinding: n.blinding, secret: n.secret, asset: n.asset, owner: n.owner, cx: n.cx, cy: n.cy, leaf: n.leaf, leafIndex, nullifier: nu(n, n.leaf), source, ...extra });
       return true;
     };
     const emptyLeaves = leaves.filter((l) => l && (!l.memo || l.memo === '0x'));
     diag.leaves = leaves.filter(Boolean).length; diag.emptyMemoLeaves = emptyLeaves.length;
 
-    // (a) memo channel
-    for (const n of memo.scan(_scanKeyHex(id.priv), leaves.filter(Boolean), [], nu)) all.set(lc(n.leaf), n);
+    // (a) memo channel. A memo is authenticated by the leaf it opens and by nothing else: anyone who knows this
+    // wallet's scan key can seal one over a note they built themselves, and they keep that note's nk. So a note
+    // known only from a memo is an INBOUND claim — spendable, but not the wallet's own work — and it is marked
+    // here rather than presented as equivalent to one re-derived from the key. A key-derived channel below that
+    // reaches the same leaf clears the mark.
+    for (const n of memo.scan(_scanKeyHex(id.priv), leaves.filter(Boolean), [], nu)) all.set(lc(n.leaf), { ...n, inboundUnverified: true });
     diag.memoNotes = all.size;
 
     // (b) wrap deposits
-    diag.wrap = { found: 0, pending: [], scanned: [] };
+    diag.wrap = { found: 0, pending: [], scanned: [], truncated: [] };
     try {
-      const w = R.walkWraps({ priv: id.priv, events, assets: _poolAssets });
+      const w = R.walkWraps({ priv: id.priv, events, assets: _poolAssets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) });
       diag.wrap.scanned = w.scanned;
+      diag.wrap.truncated = w.scanned.filter((s) => s.stoppedAtMaxIndex).map((s) => s.assetId);
       for (const n of w.found) {
         if (slot.has(lc(n.leaf))) { if (addDerived(n, 'wrap', { wrapIndex: n.index })) diag.wrap.found++; }
         else if (!all.has(lc(n.leaf))) diag.wrap.pending.push({ index: n.index, asset: n.asset, value: n.value, depositId: n.depositId });
@@ -379,6 +414,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const owned = [...all.values()].sort((a, b) => a.leafIndex - b.leafIndex);
     const notes = owned.filter((n) => !spent.has(lc(n.nullifier))).map((n) => ({ ...n, path: tree.rootAndPath(n.leafIndex).path, root }));
     diag.unattributedEmptyLeaves = unexplained().map((l) => ({ leafIndex: l.leafIndex, leaf: l.leaf }));
+    diag.inboundUnverified = notes.filter((n) => n.inboundUnverified).length;
     return { notes, owned, tree, root, slot, spent, leaves, tx, diag, id };
   }
 
@@ -630,6 +666,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `index` to pin one.
   const _reservedWrapIndex = new Map();
   const WRAP_INDEX_HINT_PREFIX = 'tacit:next-wrap-index:';
+  const _wrapHintKey = (pubHex, assetId) => `${WRAP_INDEX_HINT_PREFIX}${pubHex}:${String(assetId).toLowerCase()}`;
+  // The first index this device has not reserved for (wallet, asset). A reservation is recorded before its deposit
+  // is broadcast, so indexes below this may hold no deposit at all — the recovery walk takes it as the floor it
+  // scans through, or a row of wraps built and never sent hides every wrap after them from a key-only scan.
+  function _wrapIndexHint(pubHex, assetId) {
+    const key = _wrapHintKey(pubHex, assetId);
+    let n = 0;
+    try { n = Math.max(0, parseInt(localStorage.getItem(key), 10) || 0); } catch { /* no storage: nothing reserved here */ }
+    for (const i of _reservedWrapIndex.get(key) || []) n = Math.max(n, i + 1);
+    return n;
+  }
   async function nextWrapIndex({ walletPriv, ticker = 'cETH' } = {}) {
     const meta = assetByTicker[ticker];
     if (!meta) throw new Error(`unknown asset ${ticker}`);
@@ -647,9 +694,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     const known = new Set(events.map((e) => String(e.depositId).toLowerCase()));
     const values = [...new Set(events.filter((e) => e.amount % unitScale === 0n).map((e) => e.amount / unitScale))];
-    const hintKey = `${WRAP_INDEX_HINT_PREFIX}${id.pubHex}:${assetId}`;
-    let start = 0;
-    try { start = Math.max(0, parseInt(localStorage.getItem(hintKey), 10) || 0); } catch { /* no storage: scan from 0 */ }
+    const hintKey = _wrapHintKey(id.pubHex, assetId);
+    const start = _wrapIndexHint(id.pubHex, assetId);
     const taken = _reservedWrapIndex.get(hintKey) || new Set();
     for (let i = start; ; i++) {
       if (taken.has(i)) continue;
@@ -2213,25 +2259,39 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // `verified` travels with the result. scanLockLeaves distinguishes "the pool confirmed this set" (true)
     // from "the pool's lock state could not be read, so nothing was checked" (null) — and dropping that here
     // meant no caller could tell, while building claim and refund proofs from the positions either way.
+    const mine = await _flagSpentLocks(_openReceivedLocks(walletPriv, set));
     return {
-      mine: await _flagSpentLocks(_openReceivedLocks(walletPriv, set)),
+      mine,
       lockSetRoot: set.lockSetRoot,
       verified: set.verified ?? null,
+      // A lock whose memo could not be read is not a lock that is not yours: the settle's calldata was
+      // unavailable, so nothing was trial-decrypted for that position at all. Counted here so a caller can tell
+      // an empty `mine` from a scan that never got to look.
+      locksWithoutMemo: set.lockMemos.filter((m) => !m).length,
       ...(set.unverifiedReason ? { unverifiedReason: set.unverifiedReason } : {}),
     };
   }
-  function _openReceivedLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
+  // Every memo the scan collected for a lock is tried, not just the one it picked: a memo authenticates itself by
+  // recomputing the lock leaf, so a decoy from a third party fails that check instead of hiding the real one.
+  const _lockMemosAt = (set, i) => {
+    const c = set.lockMemoCandidates && set.lockMemoCandidates[i];
+    return (c && c.length ? c : [set.lockMemos[i]]).filter(Boolean);
+  };
+  function _openReceivedLocks(walletPriv, set) {
+    const { tree, lockLeaves } = set;
     const recipientSpendPrivHex = _bytesHex(identity(walletPriv).priv);
     const mine = [];
     for (let i = 0; i < lockLeaves.length; i++) {
-      if (!lockMemos[i]) continue;
-      try {
-        const m = _airdrop.openStealthMemo({ recipientSpendPriv: recipientSpendPrivHex, leaf: lockLeaves[i], memoHex: lockMemos[i] });
-        if (!m) continue; // not mine, or a sender using a different memo format entirely — see the doc's §5
-        const { oneTimePriv } = _stealth.recoverOneTimeKey({ recipientSpendPriv: recipientSpendPrivHex, ephemeralPub: m.ephemeralPub });
-        const { path } = tree.rootAndPath(i);
-        mine.push({ ...m, oneTimePriv, leaf: lockLeaves[i], lIndex: i, lPath: path });
-      } catch { /* a lock whose memo cannot be processed is skipped; the rest of the scan continues */ }
+      for (const memoHex of _lockMemosAt(set, i)) {
+        try {
+          const m = _airdrop.openStealthMemo({ recipientSpendPriv: recipientSpendPrivHex, leaf: lockLeaves[i], memoHex });
+          if (!m) continue; // not mine, or a sender using a different memo format entirely — see the doc's §5
+          const { oneTimePriv } = _stealth.recoverOneTimeKey({ recipientSpendPriv: recipientSpendPrivHex, ephemeralPub: m.ephemeralPub });
+          const { path } = tree.rootAndPath(i);
+          mine.push({ ...m, oneTimePriv, leaf: lockLeaves[i], lIndex: i, lPath: path });
+          break;
+        } catch { /* a lock whose memo cannot be processed is skipped; the rest of the scan continues */ }
+      }
     }
     return mine;
   }
@@ -2262,8 +2322,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const v = await rpc('eth_getStorageAt', [cfg.pool, '0x' + k, 'latest']);
     return BigInt(v || '0x0') !== 0n;
   }
-  async function _openSentLocks(walletPriv, { tree, lockLeaves, lockMemos }) {
-    const opened = recovery().openSentLocks({ senderPriv: _bytesHex(identity(walletPriv).priv), lockLeaves, lockMemos });
+  async function _openSentLocks(walletPriv, { tree, lockLeaves, lockMemos, lockMemoCandidates }) {
+    const opened = recovery().openSentLocks({ senderPriv: _bytesHex(identity(walletPriv).priv), lockLeaves, lockMemos, lockMemoCandidates });
     const out = [];
     for (const o of opened) {
       let spent = null;
@@ -3012,7 +3072,24 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     };
     const sub = await relay.submitOp({ type: 'sendunwrap', op, leaves: [changeLeaf], outputs: changeOut, ephRand });
     const out = { ...built, fee, payout, change, recipient: to, ticker };
-    if (!wait) return { ...out, jobId: sub.jobId, status: sub.status };
+    // The memo comparison is the only thing that catches a relay sealing something other than what was handed to
+    // it, and the change note is the leaf it would substitute. Not waiting for the settle must not quietly skip
+    // that: `verifyMemos()` runs the same check on demand, and until it has run the result says so instead of
+    // reading like a clean one. A job the submit already reports settled is checked here, since that costs no wait.
+    const verifyMemos = async () => {
+      let st = { jobId: sub.jobId, status: sub.status, txHash: sub.txHash || null };
+      if (!st.txHash) {
+        try { const rs = await relay.status(sub.jobId); if (rs) st = { ...st, status: rs.status || st.status, txHash: rs.txHash || null }; } catch { /* verifyEmittedMemos reports the gap */ }
+      }
+      return relay.verifyEmittedMemos(st, [changeLeaf], sub.sealedMemos);
+    };
+    if (!wait) {
+      if (sub.status === 'settled') {
+        const early = await verifyMemos();
+        return { ...out, jobId: sub.jobId, status: early.status, txHash: early.txHash || null, ...(early.memoCheck ? { memoCheck: early.memoCheck } : {}), verifyMemos };
+      }
+      return { ...out, jobId: sub.jobId, status: sub.status, memoCheck: { ok: null, reason: 'the settle has not landed yet — call verifyMemos() once it has' }, verifyMemos };
+    }
     const st = await waitForExit({ walletPriv, note, jobId: sub.jobId, waitOpts });
     // The change note's memo is checked like every other relayed leaf. An exit confirmed from chain state alone
     // carries no tx hash, so the relay's record of the job supplies it when it has one.
@@ -3050,12 +3127,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       try { spent = await _mappingFlag(CDP_SPENT_SLOT, _cdp.positionNullifier(p.positionLeaf)); } catch { spent = null; }
       positions.push({ ...p, spent, live: spent == null ? null : !spent });
     }
-    return { positions: positions.filter((p) => p.spent !== true), positionEvents: positionEvents.length, opened: r.allOpened.length, nextKeyNonce: r.nextKeyNonce, allOpened: r.allOpened };
+    return { positions: positions.filter((p) => p.spent !== true), positionEvents: positionEvents.length, opened: r.allOpened.length, nextKeyNonce: r.nextKeyNonce, allOpened: r.allOpened, skipped: r.skipped || [] };
   }
 
   // ── one entry point: everything recoverable from the wallet key alone ──
   // Returns { notes, farmPositions, sentLocks, receivedLocks, cbtc, cdpPositions, diagnostics }: `notes` are the unspent
-  // notes (each with its membership path and root, ready to spend; `source` tells which channel found it), `cbtc` the subset
+  // notes (each with its membership path and root, ready to spend; `source` tells which channel found it, and
+  // `inboundUnverified` marks one known only from a memo somebody else could have sealed), `cbtc` the subset
   // that are cBTC bearer notes, `sentLocks` / `receivedLocks` the stealth locks the wallet sent / can claim, and
   // `diagnostics.coverage` says per category what was scanned and what could not be resolved. Reads chain state only: no
   // transaction is sent. opts: { events, toBlock, deep (default true: also the calldata walks), btcHistory, bridgeAmounts }.
@@ -3096,7 +3174,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       d.cdp = { attempted: true };
       try {
         const r = await recoverCdpPositions({ walletPriv, events: evs });
-        cdpPositions = r.positions; cdpOpened = r.allOpened || []; Object.assign(d.cdp, { positionEvents: r.positionEvents || 0, found: r.positions.length, nextKeyNonce: r.nextKeyNonce ?? 0 });
+        cdpPositions = r.positions; cdpOpened = r.allOpened || []; Object.assign(d.cdp, { positionEvents: r.positionEvents || 0, found: r.positions.length, nextKeyNonce: r.nextKeyNonce ?? 0, skipped: r.skipped || [] });
       } catch (e) { d.errors.cdp = String((e && e.message) || e); }
     }
 
@@ -3156,6 +3234,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const src = (k) => notes.filter((n) => n.source === k).length;
     d.notes = {
       leaves: st.diag.leaves, unspent: notes.length, viaMemo: notes.filter((n) => !n.source).length, viaWrapWalk: src('wrap'), viaChangeWalk: src('change'),
+      inboundUnverified: notes.filter((n) => n.inboundUnverified).length,
       viaBridgeMintWalk: src('bridge-mint'), viaCbtcScan: src('cbtc'), viaDerivedOutputs: src('derived'),
       pendingWraps: st.diag.wrap.pending.length,
       derivedAlreadySpent: st.owned.filter((n) => n.source && st.spent.has(lc(n.nullifier))).map((n) => ({ leafIndex: n.leafIndex, source: n.source })),
@@ -3165,7 +3244,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     d.coverage = {
       notes: {
         memo: true,
-        wrapWalk: !d.errors.wrap,
+        wrapWalk: !d.errors.wrap && !(d.wrap.truncated || []).length,
         changeWalk: deep && !d.errors.change && !(d.change && d.change.skipped && d.change.skipped.length),
         derivedOutputs: deep && !d.errors.derived && !d.errors.derivedOutputs && !(d.derived && d.derived.skipped && d.derived.skipped.length),
         bridgeMintWalk: !d.errors.bridge,
@@ -3173,7 +3252,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       },
       farmPositions: { derived: d.farm.attempted && !d.errors.farm, needsImportedRecord: 'positions opened under a key not derived from this wallet — importFarmPosition(record)' },
       stealthLocks: { sent: d.locks.attempted && !d.errors.locks, received: d.locks.attempted && !d.errors.locks },
-      cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp, needsSavedRecord: 'positions opened under a key not derived from this wallet' },
+      cdpPositions: { derived: d.cdp.attempted && !d.errors.cdp && !(d.cdp.skipped || []).length, needsSavedRecord: 'positions opened under a key not derived from this wallet' },
       // A walk that SKIPPED transactions did not fail — it returns normally with a `skipped` list — so
       // errors alone do not answer "did we see everything". walkChange and walkDerivedOutputs push a
       // {txHash, reason:'settle calldata unavailable'} entry and carry on whenever a single
@@ -3182,10 +3261,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       // restoring from a seed: they conclude the note is gone, or treat the set as authoritative.
       complete: Object.keys(d.errors).length === 0
         && !(d.change && d.change.skipped && d.change.skipped.length)
-        && !(d.derived && d.derived.skipped && d.derived.skipped.length),
+        && !(d.derived && d.derived.skipped && d.derived.skipped.length)
+        && !(d.cdp && d.cdp.skipped && d.cdp.skipped.length),
       skipped: {
         change: (d.change && d.change.skipped) || [],
         derived: (d.derived && d.derived.skipped) || [],
+        cdp: (d.cdp && d.cdp.skipped) || [],
       },
     };
     d.unresolved = {
@@ -3207,5 +3288,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
     deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     erc2612Nonce: _erc2612Nonce, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
+    cbtcLockState, syncCbtcLockReservations,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

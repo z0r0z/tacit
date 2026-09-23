@@ -228,6 +228,26 @@ let scanned, txByHash;
   const uxNoState = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(txByHash) });
   assert.strictEqual((await uxNoState.scanStealthLocks({ walletPriv: RECIPIENT })).mine.length, 1);
   ok('scanStealthLocks: a lock set the pool does not confirm throws; an unreadable pool state degrades to unchecked');
+
+  // Another call in the same transaction can claim the very same lock leaf with a memo of its own — a settle blob
+  // that never ran, riding ahead of the real one in some contract's calldata. The scan keeps every memo offered
+  // for a lock, and a memo authenticates itself by recomputing the lock leaf, so the decoy loses rather than
+  // hiding a lock the recipient owns.
+  const decoy = encodeSettleCalldata({
+    publicValues: encodePublicValuesForLock([sendResult.lockLeaf], [spentNullifier]),
+    proof: '0x' + 'bb'.repeat(32),
+    memos: ['0x' + 'ee'.repeat(145)],
+  });
+  const shadowed = { '0xsettletx1': {
+    input: '0x11223344' + decoy.slice(2) + settleCalldata.slice(2), // both behind an unrecognized outer selector
+    log: txByHash['0xsettletx1'].log,
+  } };
+  const uxShadow = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(shadowed, lockStateOf([sendResult.lockLeaf])) });
+  const shadowScan = await uxShadow.scanStealthLocks({ walletPriv: RECIPIENT });
+  assert.strictEqual(shadowScan.mine.length, 1, 'a decoy memo ahead of the real one does not hide the lock');
+  assert.strictEqual(shadowScan.mine[0].leaf.toLowerCase(), sendResult.lockLeaf.toLowerCase());
+  assert.strictEqual(shadowScan.locksWithoutMemo, 0);
+  ok('scanStealthLocks: a decoy memo claiming the same lock leaf cannot shadow the real one');
 }
 
 // ───────────────── 3. stealthClaim: the recipient spends the discovered lock into their own note,

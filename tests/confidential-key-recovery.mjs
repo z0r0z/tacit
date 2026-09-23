@@ -145,6 +145,59 @@ test('balance: a spent wrap note is not offered, and a memo-carrying wrap is not
   assert.equal(memoOnly.notes[0].source, undefined, 'found through its memo, not derived a second time');
 });
 
+// The index a wrap uses is reserved and persisted before its deposit is broadcast, so a row of wraps that were
+// built and never sent leaves indexes no deposit will ever occupy. The walk carries on through them to whatever
+// this device reserved, instead of stopping at the first long gap and calling the wallet empty.
+test('balance: a wrap past a run of reserved-but-unbroadcast indexes is found from the index hint this device kept', async () => {
+  const ux0 = mkUx();
+  const ceth = ux0.assetByTicker.cETH, scale = BigInt(ceth.unitScale);
+  const far = ux0.buildWrap({ walletPriv, amountWei: (7000n * scale).toString(), ticker: 'cETH', index: 40 });
+  const events = [
+    { type: 'Wrap', depositId: far.depositId, assetId: ceth.assetId, amount: 7000n * scale, txHash: tx(1) },
+    leavesEv(0, [far.leaf], null, tx(2)),
+  ];
+  const blind = await mkUx(chainHandler(events)).balance(walletPriv, { cbtc: false, bridge: false });
+  assert.equal(blind.notes.length, 0, '40 idle indexes is wider than the run the walk crosses unaided');
+
+  const prior = globalThis.localStorage;
+  const store = new Map([[`tacit:next-wrap-index:${ux0.identity(walletPriv).pubHex}:${ceth.assetId.toLowerCase()}`, '41']]);
+  globalThis.localStorage = {
+    get length() { return store.size; }, key: (i) => [...store.keys()][i] ?? null,
+    getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: (k) => { store.delete(k); },
+  };
+  try {
+    const b = await mkUx(chainHandler(events)).balance(walletPriv, { cbtc: false, bridge: false });
+    assert.deepEqual(b.notes.map((n) => [BigInt(n.value), n.source]), [[7000n, 'wrap']]);
+    const row = b.diag.wrap.scanned.find((x) => String(x.assetId).toLowerCase() === ceth.assetId.toLowerCase());
+    assert.equal(row.minIndex, 41, 'the reservation is the floor the walk scans through');
+    assert.ok(row.scannedThrough >= 40, 'and how far it got is reported');
+    assert.equal(row.lastMatch, 40);
+    assert.deepEqual(b.diag.wrap.truncated, [], 'nothing was cut short at maxIndex');
+  } finally { globalThis.localStorage = prior; }
+});
+
+// A memo is authenticated by the leaf it opens and by nothing else, so a note known only from one is an inbound
+// claim: whoever sealed it may have built it and kept its nk. It is labelled until a key channel re-derives it.
+test('balance: a note known only from a memo is labelled inbound-unverified; one the wrap walk re-derives is not', async () => {
+  const ux0 = mkUx();
+  const ceth = ux0.assetByTicker.cETH, scale = BigInt(ceth.unitScale);
+  const gift = derivedNote(ux0, otherPriv, ceth.assetId, 0, 1234n); // built under another key, sealed to this wallet
+  const wr = ux0.buildWrap({ walletPriv, amountWei: (9000n * scale).toString(), ticker: 'cETH', index: 0 });
+  const events = [
+    { type: 'Wrap', depositId: wr.depositId, assetId: ceth.assetId, amount: 9000n * scale, txHash: tx(1) },
+    leavesEv(0, [gift.leaf, wr.leaf], [sealTo(ux0, walletPriv, gift), wr.memo], tx(2)),
+  ];
+  const b = await mkUx(chainHandler(events)).balance(walletPriv, { cbtc: false, bridge: false });
+  const byLeaf = new Map(b.notes.map((n) => [String(n.leaf).toLowerCase(), n]));
+  assert.equal(b.notes.length, 2, 'both are spendable either way');
+  assert.equal(byLeaf.get(gift.leaf.toLowerCase()).inboundUnverified, true);
+  assert.equal(byLeaf.get(wr.leaf.toLowerCase()).inboundUnverified, false);
+  assert.equal(byLeaf.get(wr.leaf.toLowerCase()).keyDerivedBy, 'wrap');
+  assert.equal(b.diag.inboundUnverified, 1);
+  const r = await mkUx().recover({ walletPriv, events, ...noFlags });
+  assert.equal(r.diagnostics.notes.inboundUnverified, 1);
+});
+
 // ── bridge-mint destination notes ──
 test('balance: a bridge-mint destination note (empty memo) is derived from the wallet key and the burn nullifier', async () => {
   const ux = mkUx();
@@ -380,6 +433,17 @@ test('recoverCdpPositions: a position opened under the derived key nonce is foun
   const ownerPriv = derivePositionOwnerPriv({ hmac, sha256: nobleSha256, curveOrder: secp.CURVE.n }, walletPriv, engine, 0);
   assert.equal(p.positionOwnerPriv, ownerPriv, 'the descriptor carries the key the close is signed with');
   assert.equal((await ux.recoverCdpPositions({ walletPriv: otherPriv, events })).positions.length, 0);
+
+  // A position lives in its own settle's calldata: one transaction the RPC will not serve is one position the
+  // wallet stops knowing about, so it is reported rather than quietly missing from the list.
+  const partial = mkUx(async (method, params) => {
+    if (method === 'eth_getTransactionByHash') return params[0] === T[0] ? null : { input: inputs.get(params[0]), to: CFG.pool };
+    if (method === 'eth_getStorageAt') return '0x' + w(0);
+    return undefined;
+  });
+  const missed = await partial.recoverCdpPositions({ walletPriv, events });
+  assert.deepEqual(missed.skipped, [{ txHash: T[0], reason: 'settle calldata unavailable' }]);
+  assert.deepEqual(missed.positions.map((x) => x.positionLeaf), [b.positionLeaf], 'the position that was read is still listed');
 });
 
 // ── stealth locks the wallet sent ──

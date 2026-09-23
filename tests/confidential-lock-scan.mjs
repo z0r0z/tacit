@@ -440,4 +440,28 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
   ok('scanLockLeaves: lock leaves come from LockLeavesInserted (pure notes, pure locks, mixed settles, one-block batches); a count/root/contiguity mismatch is an error');
 }
 
+// ── 8. Two calls of one transaction claiming the same lock leaves: every memo offered is kept, in calldata
+// order, so a decoy riding ahead of the real call cannot be the only one a recipient ever gets to try ──
+{
+  const zero = '0x' + '00'.repeat(32);
+  const L = ['0x' + '8a'.repeat(32)];
+  const REAL = '0x' + '11'.repeat(6), DECOY = '0x' + '22'.repeat(6);
+  const mk = (memo) => encodeSettleCall({ publicValues: encodePublicValuesPrefix({ leaves: [], lockSetRoot: zero, lockLeaves: L, nullifiers: [] }), proof: '0x01', memos: [memo] });
+  const wrapped = '0x11223344' + mk(DECOY).slice(2) + mk(REAL).slice(2);
+  const events = [{ type: 'LockLeavesInserted', txHash: '0xw', blockNumber: 60, logIndex: 0, firstLockIndex: 0, lockLeaves: L }];
+  const r = await scan.scanLockLeaves({ events, getTxInput: async () => wrapped });
+  assert.deepStrictEqual(r.lockLeaves, L);
+  assert.deepStrictEqual(r.lockMemoCandidates, [[DECOY, REAL]], 'both memos offered for the lock are kept, in calldata order');
+  assert.strictEqual(r.lockMemos[0], DECOY, 'lockMemos stays the first candidate, deterministically');
+
+  // A repeat of the same memo is one candidate, and a lock nobody offered a memo for has none.
+  const twice = '0x11223344' + mk(REAL).slice(2) + mk(REAL).slice(2);
+  const same = await scan.scanLockLeaves({ events, getTxInput: async () => twice });
+  assert.deepStrictEqual(same.lockMemoCandidates, [[REAL]]);
+  const none = await scan.scanLockLeaves({ events, getTxInput: async () => null });
+  assert.deepStrictEqual(none.lockMemoCandidates, [[]]);
+  assert.deepStrictEqual(none.lockMemos, [null]);
+  ok('scanLockLeaves: keeps every distinct memo a transaction offers for a lock, so none can be shadowed by the first');
+}
+
 console.log(`\n${n}/${n} confidential-lock-scan checks passed`);
