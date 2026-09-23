@@ -58,15 +58,18 @@ export function makeCrossoutBroadcaster({ buildAndBroadcastEnvelope, postHint, w
     let last = null;
     let throttled = 0;
     for (;;) {
-      const res = await f(`${workerBase}/reflection/eth-state/covers?network=${network}&block=${block}`);
-      let body = null;
-      try { body = await res.json(); } catch { body = null; }
+      // The request itself can fail (a DNS hiccup, a dropped connection, a laptop waking from sleep) before
+      // a response ever exists to read a body from. That's the same "not an answer" case as a throttled or
+      // malformed response below — worth one more poll, not a reason to abandon an otherwise-safe wait.
+      let res = null, body = null;
+      try { res = await f(`${workerBase}/reflection/eth-state/covers?network=${network}&block=${block}`); } catch { res = null; }
+      if (res) { try { body = await res.json(); } catch { body = null; } }
       // A throttled or errored poll is not an answer about coverage. Back off and ask again rather than
       // letting a missing `covered` field read as "still waiting". The `covered` field itself is the
       // test for a real answer — a response that carries one is authoritative whatever else it says.
       if (!body || typeof body.covered !== 'boolean') {
         throttled += 1;
-        const retryAfter = Number(body && body.retryAfter) || Number(res.headers && res.headers.get && res.headers.get('Retry-After')) || 0;
+        const retryAfter = Number(body && body.retryAfter) || Number(res && res.headers && res.headers.get && res.headers.get('Retry-After')) || 0;
         if (Date.now() > deadline) break;
         await wait(Math.max(intervalMs, retryAfter * 1000));
         continue;
