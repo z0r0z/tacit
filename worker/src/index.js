@@ -1052,23 +1052,37 @@ async function handleReflectionEthStateGet(req, env, url, cors) {
 // side reveal is checked once, at scan time, against whatever the current eth-state candidate covers — this
 // is the one check to make before broadcasting one, so an integrator doesn't have to fetch the full
 // pending/confirmed objects and compare execBlock by hand. See BUILD-A-TACIT-DAPP.md §5f.
+// This answer is the same for every caller and changes only when the sidecar publishes, so it's cached
+// briefly and shares the more permissive bucket /reflection/status already uses, rather than metering it
+// hard on its own. An integrator who can't reach this endpoint is one who broadcasts a crossOut-mint
+// without checking coverage first, and a premature reveal there is a permanently stranded mint — so keeping
+// this route reliably reachable matters more than metering it tightly.
+const ETH_STATE_COVERS_TTL_MS = 5000;
+const _ethStateCoversCache = new Map();
 async function handleReflectionEthStateCovers(req, env, url, cors) {
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
-  const rl = await proveRateLimit(env, ip, 'ethstate-covers', 60, 60000);
+  const rl = await dumpRateLimit(env, ip);
   if (!rl.ok) return jsonResponse({ error: `too many requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const block = parseInt(url.searchParams.get('block') || '', 10);
   if (!Number.isFinite(block) || block <= 0) return jsonResponse({ error: 'block (positive integer) required' }, 400, cors);
-  const [confirmedRaw, pendingRaw] = await Promise.all([
-    env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
-    env.REGISTRY_KV.get(ethStatePendingKey(network)),
-  ]);
-  let confirmedBlock = null, pendingBlock = null;
-  try { confirmedBlock = confirmedRaw ? (JSON.parse(confirmedRaw).execBlock ?? null) : null; } catch { confirmedBlock = null; }
-  try { pendingBlock = pendingRaw ? (JSON.parse(pendingRaw).execBlock ?? null) : null; } catch { pendingBlock = null; }
+  const headers = { ...cors, 'Cache-Control': 'public, max-age=5' };
+  let view = _ethStateCoversCache.get(network);
+  if (!view || Date.now() - view.at >= ETH_STATE_COVERS_TTL_MS) {
+    const [confirmedRaw, pendingRaw] = await Promise.all([
+      env.REGISTRY_KV.get(ethStateConfirmedKey(network)),
+      env.REGISTRY_KV.get(ethStatePendingKey(network)),
+    ]);
+    let confirmedBlock = null, pendingBlock = null;
+    try { confirmedBlock = confirmedRaw ? (JSON.parse(confirmedRaw).execBlock ?? null) : null; } catch { confirmedBlock = null; }
+    try { pendingBlock = pendingRaw ? (JSON.parse(pendingRaw).execBlock ?? null) : null; } catch { pendingBlock = null; }
+    view = { at: Date.now(), confirmedBlock, pendingBlock };
+    _ethStateCoversCache.set(network, view);
+  }
+  const { confirmedBlock, pendingBlock } = view;
   const bestBlock = Math.max(confirmedBlock || 0, pendingBlock || 0) || null;
-  return jsonResponse({ network, block, bestBlock, covered: !!(bestBlock && bestBlock >= block) }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  return jsonResponse({ network, block, bestBlock, covered: !!(bestBlock && bestBlock >= block) }, 200, headers);
 }
 
 // How long a published-but-unconfirmed eth-state candidate stays authoritative before a fresh POST is
