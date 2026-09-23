@@ -154,6 +154,27 @@ export const ZQUOTER_ABI = [
   },
 ];
 
+// ADDR.proveEthQuoter's buildBestSwap (0xe7798987) — same shape as ZQUOTER_ABI's buildSwapAuto, different
+// selector/contract. Scoped to the PROVE<->ETH price check ONLY (see ADDR.proveEthQuoter's comment): this
+// quoter's buildBestSwap quotes both PROVE->ETH and ETH->PROVE correctly, unlike ZQUOTER's buildSwapAuto
+// (no PROVE->ETH route), but it NoRoute()s wstETH -> PROVE, so it is not a swap-in-place replacement.
+export const PROVE_ETH_QUOTER_ABI = [
+  {
+    type: 'function', name: 'buildBestSwap', stateMutability: 'view',
+    inputs: [
+      { name: 'to', type: 'address' }, { name: 'exactOut', type: 'bool' },
+      { name: 'tokenIn', type: 'address' }, { name: 'tokenOut', type: 'address' },
+      { name: 'swapAmount', type: 'uint256' }, { name: 'slippageBps', type: 'uint256' }, { name: 'deadline', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'best', type: 'tuple', components: [
+        { name: 'source', type: 'uint8' }, { name: 'feeBps', type: 'uint256' },
+        { name: 'amountIn', type: 'uint256' }, { name: 'amountOut', type: 'uint256' }] },
+      { name: 'callData', type: 'bytes' }, { name: 'amountLimit', type: 'uint256' }, { name: 'msgValue', type: 'uint256' },
+    ],
+  },
+];
+
 // zRouter (verified 0x0000…600e4) — fire the zQuoter callData via a raw tx (to: zRouter, data, value),
 // or swapV4 directly for a known V4 pool. execute() is the generic passthrough.
 export const ZROUTER_ABI = [

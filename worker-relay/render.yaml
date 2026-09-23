@@ -30,6 +30,10 @@ envVarGroups:
         value: "0x000000a7DfdD39f4D74c7b201501eaD119F8b86C"
       - key: ZROUTER_ADDR
         value: "0x000000000000FB114709235f1ccBFfb925F600e4"
+      # Dedicated quoter for provePriceUsd's PROVE<->ETH price check only — see lib/config.js's comment.
+      # ZQUOTER_ADDR above stays on buildSwapAuto for actual swaps (the only combo that routes wstETH).
+      - key: PROVE_ETH_QUOTER_ADDR
+        value: "0x000000bd2DB80567c23E353ca95a251c573cBf9B"
       - key: SP1_PROVER
         value: network
       # Mainnet/auction endpoint. The exec-* binaries build in Mainnet (auction) mode — auction gRPC calls

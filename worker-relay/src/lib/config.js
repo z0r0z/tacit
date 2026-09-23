@@ -33,8 +33,18 @@ export const ADDR = {
   vApp: opt('VAPP_DEPOSIT_ADDR', '0x5Ad5Bc4B18f7c173DcE17A57682Cb0Dc8788951F'),
   // PROVE token — the prover-fee currency (approve + deposit to vApp)
   prove: opt('PROVE_TOKEN_ADDR', '0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29'),
-  // zQuoter — best-route quote (fee-asset -> PROVE / -> ETH)
+  // zQuoter — best-route quote (fee-asset -> PROVE / -> ETH), used for the swaps replenish.js actually
+  // fires. Keep on buildSwapAuto (multihop): verified 2026-09-23 that this is the only combination that
+  // routes wstETH -> PROVE correctly (wstETH's PROVE liquidity sits behind the WETH hub, single-pool
+  // buildBestSwap NoRoute()s it) — don't swap this address/function without re-checking every FEE_ASSETS
+  // entry, not just PROVE/ETH.
   zQuoter: opt('ZQUOTER_ADDR', '0x000000a7DfdD39f4D74c7b201501eaD119F8b86C'),
+  // Dedicated quoter for the PROVE<->ETH price check ONLY (provePriceUsd). zQuoter's buildSwapAuto has no
+  // PROVE->ETH route (reverts NoRoute()) even though ETH->PROVE works on it — verified 2026-09-23 by
+  // calling both directions directly. This address's buildBestSwap quotes PROVE<->ETH correctly both ways
+  // (cross-checked against each other: ~$0.235-0.244/PROVE at $2725.86 ETH, consistent within normal AMM
+  // spread) but NoRoute()s wstETH -> PROVE, so it is NOT a general replacement for zQuoter above.
+  proveEthQuoter: opt('PROVE_ETH_QUOTER_ADDR', '0x000000bd2DB80567c23E353ca95a251c573cBf9B'),
   // zRouter — executes the quoted swaps
   zRouter: opt('ZROUTER_ADDR', '0x000000000000FB114709235f1ccBFfb925F600e4'),
   // BitcoinLightRelay — advanceTip(bytes) submits BTC headers; tipHeight() is the confirmed height.
