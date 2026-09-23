@@ -126,6 +126,12 @@ fractional BTC slots. See [SPEC §10](./SPEC.md#10-extensions-and-covenant-place
     one-hour delay, within on-chain bounds.
 - **You don't trust:** relayers, the hosted API or IPFS gateways. The pool, its guests and their keys
   cannot be changed, and every balance recovers from your key plus chain data.
+- **You do depend on someone proving.** Nobody can take or forge a balance, but Bitcoin state only reaches
+  Ethereum when a prover runs, and once a cross-out has been recorded every Bitcoin-side attest carries an
+  Ethereum-state proof with it. If nothing is proving, Bitcoin-side folds wait rather than going wrong —
+  reflected state stops advancing instead of advancing incorrectly. Exits on the Ethereum side need no
+  prover but your own. The proving lane is permissionless by design: the inputs are public chain data, so
+  it is a liveness dependency on someone, not a trust dependency on us.
 
 The protocol evolves by deploying successor pools that users opt into by exiting one pool and entering
 the next. A retired pool keeps every exit open ([SPEC §8](./SPEC.md#8-deployment-lineage)).
