@@ -47,10 +47,16 @@ const WRAP_EVENT = {
   ],
 };
 
-// contracts/src/WrapTipForwarder.sol. Purely informational here — points already go to `tx.from` (the
-// transaction's own signer) regardless of whether it called the pool directly or through the forwarder, so
-// a missing/unmatched tip log never affects who earns points, only whether this deposit's row also shows
-// the tip it paid.
+// contracts/src/WrapTipForwarder.sol — the NATIVE-ETH forwarder specifically. Purely informational here:
+// points already go to `tx.from` (the transaction's own signer) whether it called the pool directly or
+// through the forwarder, so a missing or unmatched tip log never affects who earns points, only whether this
+// deposit's row also shows the tip it paid.
+//
+// The ERC20 sibling (WrapTokenTipForwarder) emits a DIFFERENT event — it carries a leading indexed assetId,
+// so a different topic0 — and is deliberately not decoded here. Adding it would find nothing: this scan only
+// reads Wrap events for CFG.ethAssetId, so a token wrap never produces a row for a tip to attach to. If the
+// points program is ever widened past native ETH, this ABI has to be widened with it rather than the
+// forwarder address simply being pointed at the token one.
 const WRAPPED_WITH_TIP_EVENT = {
   type: 'event',
   name: 'WrappedWithTip',

@@ -820,6 +820,22 @@ expiry. So:
 
 The guest cannot check this for you — it only ever sees the key the transaction pays to.
 
+### A Bitcoin swap batch of one is not confidential
+
+The Bitcoin-lane batch publishes its net reserve deltas in the envelope, in the clear. That is deliberate and
+load-bearing: it is what lets any indexer rebuild the pool's reserves from chain data alone, which is the
+basis of the Bitcoin-side AMM. The consequence is that a batch with a single intent has no anonymity set —
+the net delta *is* that trade, readable straight off the transaction, with no cryptographic work required.
+Amounts are hidden by being mixed with other people's, and one trade mixes with nothing.
+
+`assertBatchAnonymitySet({ nIntents, acknowledgeSingleIntent })` in `dapp/confidential-swapbatch.js` refuses a
+single-intent batch unless you say explicitly that you want one; the EVM-lane batcher defaults to a minimum
+of four. The fold accepts `n_intents == 1` and always will — it is consensus-valid — so this is a choice the
+builder makes on the user's behalf, not something the protocol can decide.
+
+The settle lane does not share this shape: `OP_SWAP_BLIND` proves the excess with a Schnorr proof of
+knowledge rather than publishing a residue.
+
 **Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
 (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
 confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id. TAC is
