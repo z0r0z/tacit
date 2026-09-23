@@ -752,8 +752,29 @@ const r = await tacit.crossOut({
 `notes` must be one asset and sum to exactly `amount + fee` — a bridge burn has no change output, so
 pre-split first if you're not sending a note's full value. `destOwner` has to be a real, non-zero x-only
 key: an owner label here would mint a note nothing can spend. This settles `OP_BRIDGE_BURN` on the pool;
-reflection later proves it to Bitcoin and `T_CROSSOUT_MINT` re-mints the note there — no separate action
-needed once the crossOut itself settles.
+reflection then recognizes and folds the Bitcoin-side mint once one exists — but building and broadcasting
+that Bitcoin transaction is a separate step today, not something `crossOut` does for you. The return value
+carries everything it needs: `crossOuts[].claimId` (verified against the real `CrossOutRecorded` event, not
+just the client-side prediction), `cx`/`cy`, and `destOwner`. `tools/build-crossout-mint.mjs` takes those
+plus a funding UTXO and builds the two Bitcoin transactions (build-only — it prints them for you to review
+and broadcast yourself, the same commit/reveal shape a bridge burn uses).
+
+**Confirmation depth is the same for both directions of the bridge.** A Bitcoin-side fold — this re-mint, or
+a bridge burn's own onboarding — only happens once its block reaches the pool's `REFLECTION_CONFIRMATIONS`
+depth (24 on the mainnet pool, roughly four hours of Bitcoin blocks). That's the normal latency either way,
+not a sign anything is wrong.
+
+**The two directions differ in what happens if you're early, and it comes down to who can guarantee
+uniqueness.** A bridge burn spends a real Bitcoin UTXO, so Bitcoin's own consensus guarantees there is
+exactly one valid burn for that coin — reflection can let an unmatched burn sit and complete in any later
+batch once its provenance is registered, with no ambiguity about which transaction is the real one. A
+crossOut's Bitcoin-side claim has no such built-in uniqueness — nothing on Bitcoin stops more than one
+transaction from claiming the same crossOut — so the guest resolves it once, at scan time, against its
+current view of Ethereum state, and whichever claim is a member at that moment wins; a later claim for the
+same crossOut is a no-op, not a retry. Practically: broadcast the reveal `tools/build-crossout-mint.mjs`
+produces only once the crossOut is visible in the reflection worker's current state
+(`GET /reflection/eth-state`, or simply after a normal wait rather than immediately), not the instant the
+crossOut itself settles.
 
 **Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
 (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
