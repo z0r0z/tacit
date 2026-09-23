@@ -1938,6 +1938,13 @@ function handleConfidentialQuote(req, env, url, cors) {
       // treats 'wrap' as fee-less by design and both fee gates unconditionally pass it through — see
       // relay-quote.js's passesFloor), so an integrator that under-tips costs the relay margin, never a
       // stuck deposit: this is a recommendation for healthy economics, not a precondition for service.
+      //
+      // The cost-based number above is flat in USD, so as a fraction of the deposit it is regressive: fine
+      // on a 1 ETH wrap, disproportionate on a 0.001 ETH one. `amountWei`, when passed, caps the
+      // recommendation at WRAP_TIP_CAP_BPS of the deposit (default 300 = 3%, matching zSwap's own cpFeeOk
+      // ceiling on relay fees) — a client sizing a real deposit gets a tip that is never a double-digit
+      // share of it, at the cost of only partial cost recovery on very small wraps. Omit `amountWei` to get
+      // the plain cost-based number uncapped, unchanged from before this parameter existed.
       if (ticker === 'cETH' && gasPriceHex) {
         try {
           const wrapSettleGas = BigInt(env.WRAP_SETTLE_GAS || '593000');
@@ -1948,7 +1955,14 @@ function handleConfidentialQuote(req, env, url, cors) {
           if (provePriceUsd && ethUsd) proveCostWei = BigInt(Math.ceil((opProve * provePriceUsd / ethUsd) * 1e18));
           const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
           const base = gasCostWei + proveCostWei;
-          out.recommendedWrapTipWei = (base + (base * marginBps) / 10000n).toString();
+          let tipWei = base + (base * marginBps) / 10000n;
+          const amountParam = url.searchParams.get('amountWei') || '';
+          if (/^\d+$/.test(amountParam)) {
+            const capBps = BigInt(env.WRAP_TIP_CAP_BPS || '300');
+            const cap = (BigInt(amountParam) * capBps) / 10000n;
+            if (cap < tipWei) tipWei = cap;
+          }
+          out.recommendedWrapTipWei = tipWei.toString();
         } catch { /* leave recommendedWrapTipWei unset — callers should treat a missing field as "ask again" */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
