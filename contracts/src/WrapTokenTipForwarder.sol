@@ -15,6 +15,13 @@ interface IERC20Allowance {
     function allowance(address owner, address spender) external view returns (uint256);
 }
 
+/// EIP-2612 permit (USDC and most modern ERC20s; DAI's non-standard permit is NOT this shape, and USDT has
+/// no permit at all — both fall through this contract's waterfall to the allowance check / Permit2 instead).
+interface IERC2612 {
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external;
+}
+
 /// Uniswap Permit2 (AllowanceTransfer) — the same sub-interface ConfidentialRouter already builds its own
 /// wrapWithPermit2/etc. on, so a signature built for one spender works unmodified against the other; only
 /// `spender` in the signed PermitSingle changes. Canonical singleton at
@@ -37,90 +44,126 @@ interface IPermit2 {
     function transferFrom(address from, address to, uint160 amount, address token) external;
 }
 
-/// @title WrapTokenTipForwarder — WrapTipForwarder's sibling for a TOKEN-backed asset
+/// @title WrapTokenTipForwarder — WrapTipForwarder's sibling for any ERC20-backed pool asset
 /// @notice `ConfidentialPool.wrap` reverts EthValueMismatch on ANY nonzero msg.value against a token asset —
 ///         poolMinted (burn(msg.sender, amount)) or escrow-backed (transferFrom(msg.sender, pool, amount))
-///         alike — so unlike the native-ETH forwarder there is no wrap value to skim a tip from. Splitting
-///         the concerns instead: Permit2 pulls the wrap amount in TOKEN, wrap() runs with value:0, and
-///         msg.value — plain ETH, untouched by the wrap call — is the tip.
+///         alike — so unlike the native-ETH forwarder there is no wrap value to skim a tip from. The tip is
+///         plain ETH instead, sent as msg.value alongside the token pull and forwarded untouched — not a
+///         same-token tip. Deliberately: the wrap tx is sent by the depositor's own wallet (no sponsored/
+///         4337 path exists here), so anyone able to broadcast this call already holds ETH for gas, and an
+///         ETH tip needs no price conversion to be useful (the relay's own costs — gas, PROVE — are ETH-
+///         denominated). A same-token tip would only add a live pricing dependency for zero reachability
+///         gained, and for a canonical asset like TAC would mean putting a price reference on-chain for a
+///         number this project deliberately keeps out of public view. Revisit only if a sponsored-deposit
+///         path (paymaster/bundler) ever means a caller can hold a token but no ETH at all.
 ///
-///         One contract for both poolMinted and escrow-backed assets, not two: ConfidentialRouter's own
-///         `_wrapPermit2` already approves the pool unconditionally for both cases (see its `_lazyApprove`
-///         call) and lets `wrap()`'s own internal branch decide whether that allowance is actually consulted
-///         (escrow-backed) or simply unused (poolMinted burns directly from whoever called wrap — this
-///         forwarder, once it holds the pulled tokens). Mirroring that exactly here means no extra branch,
-///         and no extra deploy-time flag to get wrong.
+///         Pulls the wrap amount via a waterfall, cheapest/most-compatible first:
+///          1. If an EIP-2612 signature is supplied, try the token's own `permit()` — best-effort (try/catch),
+///             identical reasoning to ConfidentialRouter's `_pull2612`: a stale or already-applied signature
+///             must never block a wrap the resulting allowance already covers.
+///          2. Check the caller's plain allowance to this contract. This one check is what makes a standing
+///             manual `approve()` work with no signature at all, not a separate code path — and it's also
+///             what makes step 1 useful, since a successful permit() just becomes an allowance the same check
+///             picks up.
+///          3. Otherwise, if a Permit2 signature is supplied, pull through Permit2 — the only path that works
+///             for a token with no EIP-2612 support at all (e.g. USDT).
 ///
-///         `owner` passed to Permit2 is always this call's own `msg.sender` — never a parameter, exactly
-///         like ConfidentialRouter's `_pullPermit2`. A free `owner` parameter would let anyone submit a
-///         signature some OTHER account made and collect that deposit's points for themselves (points key
-///         off tx.from, per points-indexer.js) — hardcoding it is what keeps "whoever's tokens funded the
-///         wrap" and "whoever earns points for it" the same address, the guarantee the native-ETH sibling
-///         gets for free from requiring the caller's own msg.value.
+///         `owner`/`from` in every pull path is always this call's own `msg.sender`, never a parameter. A free
+///         `owner` would let anyone submit a signature some OTHER account made and collect that deposit's
+///         points for themselves (points-indexer.js credits tx.from) — hardcoding it keeps "whoever's tokens
+///         funded the wrap" and "whoever earns points for it" the same address, the guarantee the native-ETH
+///         sibling gets for free from requiring the caller's own msg.value.
 ///
-///         Permissionless and stateless otherwise, same as the ETH sibling: anyone can call this for any
-///         pool/asset/tip recipient it's pointed at, and it holds a pulled token only transiently within one
-///         call — an infinite pool approval is its only standing state, safe because the pool is immutable
-///         and trusted (identical reasoning to ConfidentialRouter's own lazy-approve).
+///         One deployment for every ERC20-backed asset the pool has (present or future), not one per asset:
+///         `assetId` is a call parameter, resolved live via `assets()` each call rather than pinned at
+///         construction. The cost is one extra external view call per wrap — cheap next to verifying a
+///         signature, and it means a newly-registered asset works here immediately with no redeploy.
 contract WrapTokenTipForwarder {
     address public immutable POOL;
-    bytes32 public immutable ASSET_ID;
-    address public immutable TOKEN;
-
     IPermit2 public constant PERMIT2 = IPermit2(0x000000000022D473030F116dDEE9F6B43aC78BA3);
 
     error BadRecipient();
     error BadConfig();
+    error BadAsset();
     error BadPermit2();
+    error NoPullAuthorized();
 
-    event WrappedWithTip(bytes32 indexed depositCommit, uint256 amount, uint256 tip, address indexed tipRecipient);
+    event WrappedWithTip(bytes32 indexed assetId, bytes32 indexed depositCommit, uint256 amount, uint256 tip, address indexed tipRecipient);
 
-    constructor(address pool, bytes32 assetId) {
-        if (pool == address(0) || assetId == bytes32(0)) revert BadConfig();
-        if (pool.code.length == 0) revert BadConfig();
-        // Native ETH (underlying == 0) is WrapTipForwarder's job, not this contract's — there is nothing
-        // here for Permit2 to pull for it.
-        (bool registered, address underlying,,,,) = IWrapPool(pool).assets(assetId);
-        if (!registered || underlying == address(0)) revert BadConfig();
-        POOL = pool;
-        ASSET_ID = assetId;
-        TOKEN = underlying;
+    /// v == 0 means "skip the permit() attempt, go straight to the allowance check" — a real secp256k1 `v` is
+    /// always 27 or 28, so 0 is an unambiguous sentinel, not a value a genuine signature could produce.
+    struct Permit2612 {
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
     }
 
-    /// Pulls `amount` of TOKEN from the caller via Permit2 (one signature; the only other prerequisite is
-    /// the standard one-time `token.approve(PERMIT2, max)` every Permit2 integration already needs), wraps
-    /// it into the pool at `commit` with value:0, then forwards `msg.value` — a plain, separate ETH payment
-    /// the wrap itself never touches — to `tipRecipient` as the tip. `permitSingle.spender` must be this
-    /// contract: that binding is what proves the signature was made for this call, not replayed from
-    /// elsewhere (ConfidentialRouter enforces the identical check in `_pullPermit2`).
-    function wrapWithTip(
-        bytes32 commit,
-        uint256 amount,
-        address tipRecipient,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata signature
-    ) external payable {
-        if (amount > type(uint160).max) revert BadPermit2(); // Permit2 amounts are uint160
-        if (
-            permitSingle.details.token != TOKEN || permitSingle.spender != address(this)
-                || permitSingle.details.amount < amount || permitSingle.sigDeadline < block.timestamp
-        ) revert BadPermit2();
-        // Best-effort: a signature already applied (e.g. a front-run replay of the same permit, or a prior
-        // call that left a sufficient allowance) makes this permit() revert on its now-stale nonce, but the
-        // transferFrom below still succeeds against the allowance already in place. Never let that block the
-        // pull — identical reasoning to ConfidentialRouter's own _pull2612/_pullPermit2.
-        try PERMIT2.permit(msg.sender, permitSingle, signature) {} catch {}
-        PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), TOKEN);
+    constructor(address pool) {
+        if (pool == address(0) || pool.code.length == 0) revert BadConfig();
+        POOL = pool;
+    }
 
-        if (IERC20Allowance(TOKEN).allowance(address(this), POOL) < amount) {
-            SafeTransferLib.safeApproveWithRetry(TOKEN, POOL, type(uint256).max);
+    /// @param assetId  the pool's registered id for the ERC20 asset. Must not be native ETH — that's
+    ///        WrapTipForwarder's job; this contract has nothing to pull for it.
+    /// @param amount   underlying amount to wrap (must be a multiple of the asset's unitScale, per the pool).
+    /// @param commit   the note commitment keccak(Cx‖Cy‖owner) — identical to a direct `wrap`; forwarded verbatim.
+    /// @param tipRecipient required whenever msg.value != 0 (an accidental zero address would otherwise burn the tip).
+    /// @param permit2612   EIP-2612 attempt; leave `v` as 0 to skip straight to the allowance check.
+    /// @param permitSingle / permit2Signature  Permit2 fallback; leave `permit2Signature` empty to disable it.
+    function wrapWithTip(
+        bytes32 assetId,
+        uint256 amount,
+        bytes32 commit,
+        address tipRecipient,
+        Permit2612 calldata permit2612,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permit2Signature
+    ) external payable {
+        (bool registered, address token,,,,) = IWrapPool(POOL).assets(assetId);
+        if (!registered || token == address(0)) revert BadAsset(); // native ETH belongs to WrapTipForwarder
+
+        _pull(token, amount, permit2612, permitSingle, permit2Signature);
+
+        if (IERC20Allowance(token).allowance(address(this), POOL) < amount) {
+            SafeTransferLib.safeApproveWithRetry(token, POOL, type(uint256).max);
         }
-        IWrapPool(POOL).wrap(ASSET_ID, amount, commit);
+        IWrapPool(POOL).wrap(assetId, amount, commit);
 
         if (msg.value != 0) {
             if (tipRecipient == address(0)) revert BadRecipient();
             SafeTransferLib.safeTransferETH(tipRecipient, msg.value);
         }
-        emit WrappedWithTip(commit, amount, msg.value, tipRecipient);
+        emit WrappedWithTip(assetId, commit, amount, msg.value, tipRecipient);
+    }
+
+    function _pull(
+        address token,
+        uint256 amount,
+        Permit2612 calldata permit2612,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permit2Signature
+    ) internal {
+        if (permit2612.v != 0) {
+            try IERC2612(token).permit(msg.sender, address(this), amount, permit2612.deadline, permit2612.v, permit2612.r, permit2612.s)
+            {} catch {}
+        }
+        if (IERC20Allowance(token).allowance(msg.sender, address(this)) >= amount) {
+            SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), amount);
+            return;
+        }
+        if (permit2Signature.length != 0) {
+            if (amount > type(uint160).max) revert BadPermit2(); // Permit2 amounts are uint160
+            if (
+                permitSingle.details.token != token || permitSingle.spender != address(this)
+                    || permitSingle.details.amount < amount || permitSingle.sigDeadline < block.timestamp
+            ) revert BadPermit2();
+            // Best-effort, same reasoning as the EIP-2612 attempt above: a stale/replayed Permit2 signature
+            // fails on its own nonce, but transferFrom still succeeds if the allowance is already there.
+            try PERMIT2.permit(msg.sender, permitSingle, permit2Signature) {} catch {}
+            PERMIT2.transferFrom(msg.sender, address(this), uint160(amount), token);
+            return;
+        }
+        revert NoPullAuthorized();
     }
 }
