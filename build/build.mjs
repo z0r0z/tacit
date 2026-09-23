@@ -27,6 +27,7 @@ const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extrac
 const PREBOOT    = join(DAPP_DIR, 'preboot.js');             // head-loaded, SW-cached like tacit.js
 const PRF_WALLET = join(DAPP_DIR, 'prf-wallet.js');          // passkey/PRF key derivation, SW-cached like tacit.js
 const SW_JS      = join(DAPP_DIR, 'sw.js');
+const VERIFY_HTML = join(DAPP_DIR, 'verify.html');   // self-contained verifier; its inline module is CSP-hash-pinned
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -148,6 +149,27 @@ function updateCacheVersion(swBytes, vendorBundle, prfWalletBytes) {
   return { changed: true, token };
 }
 
+
+// verify.html keeps its script inline on purpose (auditable in one View-Source) but must NOT fall back to
+// `script-src 'unsafe-inline'`: it is served from the same origin as the key-bearing dapp, whose whole
+// defence is that no inline script runs there, and CSP is per-response — one page opting out is enough.
+// Pinning the exact sha256 of its own inline module keeps both properties. Recomputed on every build so an
+// edit to that script can never leave a stale pin (which would simply stop the page working, loudly).
+// Returns { changed, digest } or null when the page has no inline module.
+function verifyCspDigest(htmlText) {
+  const m = /<script type="module">([\s\S]*?)<\/script>/.exec(htmlText);
+  if (!m) return null;
+  return 'sha256-' + createHash('sha256').update(m[1], 'utf8').digest('base64');
+}
+function updateVerifyCsp(htmlText) {
+  const digest = verifyCspDigest(htmlText);
+  if (!digest) return { changed: false, digest: null };
+  const after = htmlText.replace(/script-src '(?:unsafe-inline|sha256-[A-Za-z0-9+/=]+)'/, `script-src '${digest}'`);
+  if (after === htmlText) return { changed: false, digest };
+  writeFileSync(VERIFY_HTML, after);
+  return { changed: true, digest };
+}
+
 async function main() {
   mkdirSync(VENDOR_DIR, { recursive: true });
 
@@ -178,11 +200,54 @@ async function main() {
 
   let cb = null;
   let brBytes = null;
+  if (verifyOnly) {
+    // --verify-only must actually VERIFY the fingerprints, not just skip writing them. It used to skip both
+    // updateCacheBust and updateCacheVersion entirely, so it could not tell a committed tree whose tokens
+    // match its bytes from one where someone edited dapp/ and never ran the build. Nothing else catches that:
+    // no CI job touches dapp/, there is no hook, and Render autodeploys straight from git. The sharpest edge
+    // is prf-wallet.js and the vendor crypto bundle — imported at bare paths, cache-first in the service
+    // worker, and invalidated ONLY by CACHE_VERSION — so a skipped build leaves returning visitors on the
+    // pre-fix module indefinitely. Recompute all three and fail loudly on any drift.
+    const wantCb = createHash('sha256').update(appJs).digest('hex').slice(0, 8);
+    const wantPreboot = createHash('sha256').update(preboot).digest('hex').slice(0, 8);
+    const wantSw = createHash('sha256').update(Buffer.concat([bundle, prfWallet])).digest('hex').slice(0, 8);
+    const htmlText = html.toString('utf8');
+    const swText = readFileSync(SW_JS).toString('utf8');
+    const found = (re, text) => { const m = re.exec(text); return m ? m[1] : null; };
+    const drift = [];
+    const gotCb = found(/\.\/tacit\.js\?cb=([A-Za-z0-9_-]+)/, htmlText);
+    const gotPreboot = found(/\.\/preboot\.js\?cb=([A-Za-z0-9_-]+)/, htmlText);
+    const gotSw = found(/const CACHE_VERSION = '[^']*?-([0-9a-f]{8})'/, swText);
+    if (gotCb !== wantCb) drift.push(`index.html tacit.js ?cb=${gotCb} but sha256(dapp/tacit.js)=${wantCb}`);
+    if (gotPreboot !== wantPreboot) drift.push(`index.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
+    if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
+    if (drift.length) {
+      console.error('✗ cache-bust tokens are stale — run `npm run build` and commit the result:');
+      for (const d of drift) console.error(`    ${d}`);
+      process.exit(1);
+    }
+    if (existsSync(VERIFY_HTML)) {
+      const vText = readFileSync(VERIFY_HTML).toString('utf8');
+      const want = verifyCspDigest(vText);
+      const got = (/script-src '(sha256-[A-Za-z0-9+/=]+)'/.exec(vText) || [])[1] || null;
+      if (want && got !== want) {
+        console.error('✗ verify.html CSP script hash is stale — run `npm run build` and commit the result:');
+        console.error(`    script-src '${got}' but sha256(inline module)=${want}`);
+        process.exit(1);
+      }
+      if (want) console.log(`• verify.html CSP hash verified: ${want}`);
+    }
+    console.log(`• Cache-bust tokens verified: tacit.js ${wantCb} · preboot ${wantPreboot} · SW ${wantSw}`);
+  }
   if (!verifyOnly) {
     cb = updateCacheBust(html, appJs, preboot);
     console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'} · preboot ?cb=${cb.prebootToken}`);
     if (cb.changed) html = readFileSync(HTML);
 
+    if (existsSync(VERIFY_HTML)) {
+      const v = updateVerifyCsp(readFileSync(VERIFY_HTML).toString('utf8'));
+      if (v.digest) console.log(`• verify.html CSP hash: ${v.digest}${v.changed ? ' (updated)' : ' (unchanged)'}`);
+    }
     const swVer = updateCacheVersion(readFileSync(SW_JS), bundle, prfWallet);
     console.log(`• SW cache version: ${swVer.token}${swVer.changed ? ' (updated — will bust STATIC_CACHE)' : ' (unchanged)'}`);
     // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).
