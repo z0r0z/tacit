@@ -1749,7 +1749,25 @@ function handleConfidentialQuote(req, env, url, cors) {
       const weiPerFeeUnit = await weiPerFeeUnitOf(priced).catch(() => null);
       if (gasPriceHex && weiPerFeeUnit) {
         try {
-          out.gasAwareFloorUnits = floorInFeeUnits({ gasPriceWei: BigInt(gasPriceHex), weiPerFeeUnit, effects, marginBps: BigInt(env.RELAY_FEE_MARGIN_BPS || '1000') }).toString();
+          let floorUnits = floorInFeeUnits({ gasPriceWei: BigInt(gasPriceHex), weiPerFeeUnit, effects, marginBps: BigInt(env.RELAY_FEE_MARGIN_BPS || '1000') });
+          // This gas-only floor and worker-relay's actual settle-time gate (feeGate/quoteRelayFee, which
+          // additionally counts PROVE cost and holds every op to CFG.minFloorUsd) are two independently
+          // computed numbers with no shared config between the two services — verified 2026-09-23 that they
+          // can disagree (this floor priced ~$0.386 against the relay's real $0.50 minimum). An integrator
+          // who bakes THIS published number into a proof gets a fee the relay then refuses outright, so this
+          // published floor must never sit below MIN_FLOOR_USD even though it can't see the relay's own PROVE
+          // cost or maintenance-share math. MIN_FLOOR_USD here defaults to the same $0.50 as worker-relay's
+          // CFG.minFloorUsd by convention, not by any shared source of truth — keep them in sync by hand.
+          const minFloorUsd = Number(env.MIN_FLOOR_USD || '0.5');
+          if (minFloorUsd > 0) {
+            const ethUsd = await _ethUsdPrice().catch(() => null);
+            if (ethUsd) {
+              const minFloorWei = BigInt(Math.ceil((minFloorUsd / ethUsd) * 1e18));
+              const minFloorUnits = (minFloorWei + weiPerFeeUnit - 1n) / weiPerFeeUnit; // ceil
+              if (minFloorUnits > floorUnits) floorUnits = minFloorUnits;
+            }
+          }
+          out.gasAwareFloorUnits = floorUnits.toString();
         } catch { /* leave gasAwareFloorUnits null on any conversion hiccup */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
