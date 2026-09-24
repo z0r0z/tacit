@@ -19,14 +19,16 @@ interface ICbtcEscrowHelper {
 ///         `tipRecipient` immediately after.
 ///
 ///         Inherits the helper's own documented scope exactly, one layer removed — this forwarder does not
-///         widen or narrow it. `postEscrowWithETHAndSettle` is self-prove-batches-only: a fee or public
-///         withdrawal in the batch pays whoever calls the HELPER, never the depositor, and the helper only
-///         auto-sweeps a NATIVE-ETH payout back to its own caller; anything else is stranded there, a
-///         pre-existing constraint of that contract this forwarder does not change. When routed through
-///         here, "the helper's caller" is this forwarder, so any native-ETH the helper refunds lands here
-///         and is captured by the same balance-diff refund below that `SettleTipForwarder` already uses, on
-///         top of (never mixed into) the tip. Same caller-side rule as that contract: don't route a batch
-///         carrying a fee or public withdrawal through this forwarder.
+///         widen or narrow it. `postEscrowWithETHAndSettle` is self-prove-batches-only: a fee in the batch
+///         pays whoever calls the HELPER, never the depositor, and it is the DEPOSITOR'S OWN carved-out
+///         refund, not relay revenue (see `SettleTipForwarder`'s NatSpec for the general shape of this
+///         hazard). Unlike that contract, this one can still check for it before it happens: `PublicValues`
+///         field 7 (`fees`) is read directly off calldata and the whole call reverts if it's non-empty,
+///         fail-closed, the same technique `ConfidentialRouter._relaySettle` already uses for its own
+///         router-relayed settles — no need to decode the rest of the struct, just that one field's length.
+///         A public withdrawal (any recipient other than the escrow this batch targets) is NOT similarly
+///         checked here, matching the helper's own scope; the helper's native-ETH auto-sweep and this
+///         forwarder's balance-diff refund below both still apply to it.
 ///
 ///         Permissionless and stateless: anyone can call this for any outpoint or tip recipient. `tip == 0`
 ///         is a valid loss-leader.
@@ -36,6 +38,7 @@ contract CbtcEscrowHelperTipForwarder {
     error BadConfig();
     error InsufficientValue();
     error BadRecipient();
+    error FeeBearingProof();
 
     event EscrowSettledWithTip(bytes32 indexed outpoint, uint256 stakeAmount, uint256 tip, address indexed tipRecipient);
 
@@ -61,6 +64,7 @@ contract CbtcEscrowHelperTipForwarder {
         address tipRecipient
     ) external payable {
         if (msg.value < stakeAmount) revert InsufficientValue();
+        if (_hasFees(publicValues)) revert FeeBearingProof();
         ICbtcEscrowHelper(HELPER).postEscrowWithETHAndSettle{value: stakeAmount}(outpoint, publicValues, proof, memos);
         uint256 tip = msg.value - stakeAmount;
         uint256 refund = address(this).balance - tip;
@@ -70,5 +74,28 @@ contract CbtcEscrowHelperTipForwarder {
             SafeTransferLib.safeTransferETH(tipRecipient, tip);
         }
         emit EscrowSettledWithTip(outpoint, stakeAmount, tip, tipRecipient);
+    }
+
+    /// `PublicValues` is ABI-encoded as one tuple argument (`abi.encode(pv)`), so word 0 is the tuple offset
+    /// and field 7 is `fees` — same layout `ConfidentialRouter._relaySettle` reads. True iff that array is
+    /// non-empty. A malformed/short `publicValues` reads as non-empty (fail-closed: the real pool would
+    /// reject it anyway, so refusing here first costs nothing).
+    function _hasFees(bytes calldata publicValues) internal pure returns (bool) {
+        if (publicValues.length < 32) return true;
+        uint256 tupleStart;
+        assembly ("memory-safe") {
+            tupleStart := calldataload(publicValues.offset)
+        }
+        if (tupleStart > publicValues.length || publicValues.length - tupleStart < 8 * 32) return true;
+        uint256 feesOffset;
+        assembly ("memory-safe") {
+            feesOffset := calldataload(add(add(publicValues.offset, tupleStart), mul(7, 32)))
+        }
+        if (feesOffset > publicValues.length || tupleStart + feesOffset > publicValues.length - 32) return true;
+        uint256 feesLen;
+        assembly ("memory-safe") {
+            feesLen := calldataload(add(add(publicValues.offset, tupleStart), feesOffset))
+        }
+        return feesLen != 0;
     }
 }

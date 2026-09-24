@@ -50,6 +50,30 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         vm.deal(caller, 10 ether);
     }
 
+    /// Minimal hand-built `abi.encode(PublicValues)`-shaped bytes: a tuple offset, 8 head words (fields
+    /// 0-7; only field 7's value matters here), and field 7 (`fees`)'s own length word at the offset field
+    /// 7 points to. `_hasFees` only ever reads through that length word, so nothing past it needs to exist.
+    function _pvWithFeesCount(uint256 feesLen) internal pure returns (bytes memory) {
+        uint256 tupleStart = 32;
+        uint256 feesOffset = 8 * 32; // right after the 8 head words
+        bytes memory head = abi.encodePacked(
+            tupleStart,
+            uint256(0), // field 0: version
+            uint256(0), // field 1: chainBinding
+            uint256(0), // field 2: spendRoot
+            uint256(0), // field 3: nullifiers offset (never dereferenced by _hasFees)
+            uint256(0), // field 4: leaves offset (never dereferenced)
+            uint256(0), // field 5: depositsConsumed offset (never dereferenced)
+            uint256(0), // field 6: withdrawals offset (never dereferenced)
+            feesOffset // field 7: fees offset
+        );
+        return abi.encodePacked(head, feesLen);
+    }
+
+    function _feelessPv() internal pure returns (bytes memory) {
+        return _pvWithFeesCount(0);
+    }
+
     function test_constructorRejectsZeroOrEoaHelper() public {
         vm.expectRevert(CbtcEscrowHelperTipForwarder.BadConfig.selector);
         new CbtcEscrowHelperTipForwarder(address(0));
@@ -65,7 +89,7 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         uint256 callerBefore = caller.balance;
 
         vm.prank(caller);
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), relay);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
 
         assertEq(helper.callCount(), 1, "helper wasn't called");
         assertEq(helper.lastOutpoint(), outpoint, "wrong outpoint forwarded");
@@ -78,7 +102,7 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
     function test_zeroTipIsValidLossLeader() public {
         uint256 stakeAmount = 1 ether;
         vm.prank(caller);
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), relay);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
         assertEq(helper.lastValue(), stakeAmount);
         assertEq(address(fwd).balance, 0);
     }
@@ -86,7 +110,7 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
     function test_zeroTipDoesNotRequireRecipient() public {
         uint256 stakeAmount = 1 ether;
         vm.prank(caller);
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), address(0));
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), address(0));
         assertEq(helper.lastValue(), stakeAmount);
     }
 
@@ -95,14 +119,14 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         uint256 tip = 0.01 ether;
         vm.prank(caller);
         vm.expectRevert(CbtcEscrowHelperTipForwarder.BadRecipient.selector);
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), address(0));
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), address(0));
     }
 
     function test_insufficientValueReverts() public {
         uint256 stakeAmount = 1 ether;
         vm.prank(caller);
         vm.expectRevert(CbtcEscrowHelperTipForwarder.InsufficientValue.selector);
-        fwd.postEscrowWithETHAndSettleWithTip{value: 0.5 ether}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), relay);
+        fwd.postEscrowWithETHAndSettleWithTip{value: 0.5 ether}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
     }
 
     /// The helper's own documented safety net (a native-ETH payout from an unusual batch swept back to
@@ -117,7 +141,7 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         uint256 callerBefore = caller.balance;
 
         vm.prank(caller);
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), relay);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount + tip}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
 
         assertEq(relay.balance, relayBefore + tip, "relay should get exactly the tip, not the helper payout");
         assertEq(
@@ -133,6 +157,24 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         uint256 stakeAmount = 1 ether;
         vm.prank(caller);
         vm.expectRevert("mock: escrow settle reverted");
-        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, "pv", "proof", new bytes[](0), relay);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
+    }
+
+    /// The on-chain guard: a proof whose PublicValues.fees is non-empty must never reach the helper at all —
+    /// that fee is the depositor's own carved-out refund, and it would strand here (or worse, if ever
+    /// mistaken for tip) for any asset other than native ETH.
+    function test_revertsOnFeeBearingProof() public {
+        uint256 stakeAmount = 1 ether;
+        vm.prank(caller);
+        vm.expectRevert(CbtcEscrowHelperTipForwarder.FeeBearingProof.selector);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, _pvWithFeesCount(1), "proof", new bytes[](0), relay);
+        assertEq(helper.callCount(), 0, "helper must never be called for a fee-bearing proof");
+    }
+
+    function test_revertsOnMalformedProof() public {
+        uint256 stakeAmount = 1 ether;
+        vm.prank(caller);
+        vm.expectRevert(CbtcEscrowHelperTipForwarder.FeeBearingProof.selector);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, "too short", "proof", new bytes[](0), relay);
     }
 }
