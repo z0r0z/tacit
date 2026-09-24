@@ -126,7 +126,10 @@ export function makeCoinbaseForEnvTx(envTx) {
 
 // Build a P2TR script-path reveal tx embedding `payload` (the Tacit envelope body)
 // via the "TACIT"||v1 frame + OP_PUSHDATA2, matching extract_taproot_envelope.
-export function buildRevealTx(payload) {
+// `omitEndif` drops the trailing OP_ENDIF: the branch still runs to the end of the script, which is
+// valid Bitcoin under an unallocated leaf version, and the guest accepts it — used to pin that the JS
+// mirror does too.
+export function buildRevealTx(payload, { omitEndif = false } = {}) {
   const script = cat([
     [0x20], Buffer.alloc(32),       // PUSH32 xonly
     [0xac],                          // OP_CHECKSIG
@@ -134,7 +137,7 @@ export function buildRevealTx(payload) {
     [0x05], Buffer.from('TACIT'),    // PUSH5 "TACIT"
     [0x01, 0x01],                    // PUSH1 v1
     [0x4d], Buffer.from([payload.length & 0xff, (payload.length >> 8) & 0xff]), payload, // OP_PUSHDATA2
-    [0x68],                          // OP_ENDIF
+    ...(omitEndif ? [] : [[0x68]]),  // OP_ENDIF
   ]);
   return cat([
     [0x02, 0x00, 0x00, 0x00],        // version 2

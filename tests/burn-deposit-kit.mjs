@@ -50,6 +50,17 @@ const G = secp.ProjectivePoint.BASE.toRawBytes(true); // a real 33-byte compress
   eq(extractTaprootEnvelope(hex(Uint8Array.from([1, 0, 0, 0, 0]))), null, 'extractTaprootEnvelope: non-segwit → null');
 }
 
+// ── 2b. extractTaprootEnvelope accepts a script that never reaches its own OP_ENDIF, matching the guest.
+// A branch that runs to the end of the script is valid Bitcoin (nothing requires closing the conditional
+// once the interpreter has nothing left to execute) — cxfer-core::bitcoin::extract_taproot_envelope
+// accepts it, so this mirror must too. Regression for a prior divergence: this parser used to reject the
+// input the guest accepts, which desynced the reflection prover's witness stream on any such transaction.
+{
+  const payload = Uint8Array.from([0x65, ...new Array(40).fill(0xcd)]); // a crossout-mint-shaped body
+  const tx = buildRevealTx(payload, { omitEndif: true });
+  eq(extractTaprootEnvelope(hex(tx)), hex(payload), 'extractTaprootEnvelope accepts a script with no OP_ENDIF, like the guest');
+}
+
 // ── 3. extractInputs reads the prevout(s) (internal order) ──
 {
   const tx = buildRevealTx(Uint8Array.from([0x21, 0, 0]));
