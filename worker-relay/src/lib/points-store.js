@@ -80,19 +80,38 @@ export function openStore(dbPath) {
       cumulative_amount  TEXT NOT NULL,
       proof_json         TEXT NOT NULL
     );
+
+    -- Every Privacy Pools (privacypools.com) ETH WithdrawalRelayed this service has seen, address-indexed —
+    -- an append-only log, not deduplicated by address, so more than one qualifying withdrawal per address is
+    -- fine and auditable. See points-indexer.js's ppBoostMultiplier for how this gates a wrap's boost.
+    CREATE TABLE IF NOT EXISTS pp_recipients (
+      tx_hash      TEXT PRIMARY KEY,
+      address      TEXT NOT NULL,
+      block_number INTEGER NOT NULL,
+      block_time   INTEGER NOT NULL,
+      amount_wei   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pp_recipients_address ON pp_recipients(address);
+
+    -- Separate cursor from the wrap-event scan above: a different contract, a different starting block
+    -- (Privacy Pools' Entrypoint deploy block, not pointsStartBlock), scanned on its own schedule.
+    CREATE TABLE IF NOT EXISTS pp_cursor (
+      id                 INTEGER PRIMARY KEY CHECK (id = 1),
+      last_scanned_block INTEGER NOT NULL
+    );
   `);
 
-  // Migration for a store created before tip tracking existed — CREATE TABLE IF NOT EXISTS above only
-  // covers a fresh database. SQLite has no ADD COLUMN IF NOT EXISTS on the version better-sqlite3 bundles,
-  // so this just swallows the "duplicate column" error a second run throws.
-  for (const col of ['tip_wei TEXT', 'tip_recipient TEXT']) {
+  // Migration for a store created before tip tracking / the Privacy Pools boost existed — CREATE TABLE IF
+  // NOT EXISTS above only covers a fresh database. SQLite has no ADD COLUMN IF NOT EXISTS on the version
+  // better-sqlite3 bundles, so this just swallows the "duplicate column" error a second run throws.
+  for (const col of ['tip_wei TEXT', 'tip_recipient TEXT', 'pp_boosted INTEGER NOT NULL DEFAULT 0']) {
     try { db.exec(`ALTER TABLE deposits ADD COLUMN ${col}`); } catch {}
   }
 
   const insertDeposit = db.prepare(`
     INSERT OR IGNORE INTO deposits
-      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient)
-    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient)
+      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted)
+    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted)
   `);
   const bumpTotals = db.prepare(`
     INSERT INTO totals (address, points, deposit_count, amount_wei)
@@ -115,7 +134,7 @@ export function openStore(dbPath) {
   `);
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
   const depositsForStmt = db.prepare(`
-    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient
+    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
   const dayPointsStmt = db.prepare(`
@@ -147,6 +166,19 @@ export function openStore(dbPath) {
   `);
   const claimForStmt = db.prepare(`SELECT cumulative_amount AS cumulativeAmount, proof_json AS proofJson FROM published_claims WHERE address = ?`);
 
+  const insertPpRecipientStmt = db.prepare(`
+    INSERT OR IGNORE INTO pp_recipients (tx_hash, address, block_number, block_time, amount_wei)
+    VALUES (@txHash, @address, @blockNumber, @blockTime, @amountWei)
+  `);
+  const hasEarlierPpWithdrawalStmt = db.prepare(`
+    SELECT 1 FROM pp_recipients WHERE address = ? AND block_number <= ? LIMIT 1
+  `);
+  const loadPpCursorStmt = db.prepare(`SELECT last_scanned_block FROM pp_cursor WHERE id = 1`);
+  const savePpCursorStmt = db.prepare(`
+    INSERT INTO pp_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
+    ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
+  `);
+
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
   // a value near 2^63 wei, which is not a real deposit size).
@@ -157,7 +189,7 @@ export function openStore(dbPath) {
   // way `depositor` (tx.from, the transaction's own signer) is what earns points — a forwarder tip never
   // changes who that is.
   const recordDeposit = db.transaction((dep) => {
-    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ...dep });
+    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, ...dep });
     if (wrote.changes === 0) return false; // already recorded (safe to re-scan a chunk after a crash)
     bumpTotals.run({ address: dep.depositor, points: dep.points, amountWei: dep.amountWei });
     return true;
@@ -191,7 +223,7 @@ export function openStore(dbPath) {
   }
 
   function depositsFor(address, limit) {
-    return depositsForStmt.all(address.toLowerCase(), limit);
+    return depositsForStmt.all(address.toLowerCase(), limit).map((r) => ({ ...r, pp_boosted: !!r.pp_boosted }));
   }
 
   function dayPointsByAddress(dayStartSec, dayEndSec) {
@@ -253,9 +285,30 @@ export function openStore(dbPath) {
     return { cumulativeAmount: row.cumulativeAmount, proof: JSON.parse(row.proofJson) };
   }
 
+  function recordPpWithdrawal(w) {
+    insertPpRecipientStmt.run(w); // INSERT OR IGNORE: idempotent against a re-scanned chunk
+  }
+
+  // Whether `address` was ever the recipient of a Privacy Pools ETH withdrawal at or before
+  // `beforeBlockNumber` — the ordering check that makes "funded by" meaningful (a withdrawal that hasn't
+  // happened yet can't have funded an earlier wrap).
+  function hasEarlierPpWithdrawal(address, beforeBlockNumber) {
+    return !!hasEarlierPpWithdrawalStmt.get(address.toLowerCase(), beforeBlockNumber);
+  }
+
+  function loadPpCursor() {
+    const row = loadPpCursorStmt.get();
+    return row ? BigInt(row.last_scanned_block) : null;
+  }
+
+  function savePpCursor(lastScannedBlock) {
+    savePpCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
+  }
+
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor,
     dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
+    recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
   };
 }

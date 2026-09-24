@@ -75,6 +75,9 @@ export const ADDR = {
   // consumer here — the points program (see points-indexer.js's own header) is deliberately ETH-only, so
   // this asset's wraps aren't in scope for it. Recorded for discoverability if that ever changes.
   wrapTokenTipForwarder: opt('WRAP_TOKEN_TIP_FORWARDER_ADDR', '0x0000007b1d93d72f698A861aA86Ac675D6AF7216'),
+  // Privacy Pools (privacypools.com) Entrypoint — third-party protocol, not ours. Its own WithdrawalRelayed
+  // event names the real recipient of a relayed ETH withdrawal; see points-indexer.js's ppBoostMultiplier.
+  ppEntrypoint: opt('PP_ENTRYPOINT_ADDR', '0x6818809EefCe719E480a7526D76bD3e561526b46'),
 };
 
 export const CFG = {
@@ -376,6 +379,17 @@ export const CFG = {
   pointsBasePerEth: num('POINTS_BASE_PER_ETH', 1000),
   pointsBonusScale: num('POINTS_BONUS_SCALE', 4),
   pointsBonusHalfLife: num('POINTS_BONUS_HALF_LIFE', 200),
+
+  // ── Privacy Pools cross-protocol boost (src/points-indexer.js) ──
+  // A wrap's points get multiplied by ppBoostMultiplier when the depositor address has EVER shown up as the
+  // recipient of a Privacy Pools (privacypools.com) ETH withdrawal — full history, no recency cutoff. The
+  // Entrypoint's own WithdrawalRelayed event names the real recipient directly (the pool-level Withdrawn
+  // event's _processooor is just the Entrypoint contract when relayed, never the person), so this is a
+  // cheap, indexed-topic scan, not funding-graph tracing. Deliberately direct-recipient only — boosting a
+  // wallet merely FUNDED BY a recipient would let anyone forward 1 wei from a Privacy Pools payout to any
+  // address and claim the multiplier on unrelated ETH wrapped there.
+  ppEntrypointDeployBlock: num('PP_ENTRYPOINT_DEPLOY_BLOCK', 22153713),
+  ppBoostMultiplier: num('PP_BOOST_MULTIPLIER', 1.2),
 
   // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
   // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC

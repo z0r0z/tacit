@@ -68,10 +68,75 @@ const WRAPPED_WITH_TIP_EVENT = {
   ],
 };
 
+// Privacy Pools (privacypools.com) Entrypoint — third-party protocol. Fired once per relayed withdrawal
+// with the REAL recipient named directly; the pool contract's own Withdrawn event only ever names the
+// Entrypoint itself as `_processooor` when a withdrawal is relayed (the default UX path), never the person
+// who actually receives the funds. `_recipient` is indexed, so this is a cheap, direct topic filter.
+const PP_WITHDRAWAL_RELAYED_EVENT = {
+  type: 'event',
+  name: 'WithdrawalRelayed',
+  inputs: [
+    { name: 'relayer', type: 'address', indexed: true },
+    { name: 'recipient', type: 'address', indexed: true },
+    { name: 'asset', type: 'address', indexed: true },
+    { name: 'amount', type: 'uint256', indexed: false },
+    { name: 'feeAmount', type: 'uint256', indexed: false },
+  ],
+};
+const NATIVE_ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+
 function pointsForDeposit(amountWei, priorDepositCount) {
   const amountEth = Number(amountWei) / 1e18;
   const bonus = 1 + CFG.pointsBonusScale / (1 + priorDepositCount / CFG.pointsBonusHalfLife);
   return amountEth * CFG.pointsBasePerEth * bonus;
+}
+
+// Incrementally scans Privacy Pools' Entrypoint for ETH WithdrawalRelayed events, address-indexed, so
+// scanCycle below can check a wrap's boost eligibility with a single local lookup instead of an RPC call
+// per deposit. No recency cutoff by design (see config.js) — full history from the Entrypoint's own deploy
+// block on first run, then just the delta each cycle. Volume here is low (Privacy Pools mainnet, not a
+// high-frequency protocol), so the first-run backfill finishes in one call rather than needing to be spread
+// across multiple cycles the way a much larger backfill would.
+async function scanPrivacyPoolCycle(store) {
+  const cursorBlock = store.loadPpCursor();
+  let from = cursorBlock != null ? cursorBlock + 1n : BigInt(CFG.ppEntrypointDeployBlock);
+
+  const latest = await publicClient.getBlockNumber();
+  const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
+  if (confirmedTip < from) return;
+
+  const chunk = BigInt(CFG.pointsScanChunk);
+  const blockCache = new Map();
+
+  while (from <= confirmedTip) {
+    const to = from + chunk - 1n > confirmedTip ? confirmedTip : from + chunk - 1n;
+
+    const logs = await publicClient.getLogs({
+      address: ADDR.ppEntrypoint,
+      event: PP_WITHDRAWAL_RELAYED_EVENT,
+      args: { asset: NATIVE_ETH_SENTINEL },
+      fromBlock: from,
+      toBlock: to,
+    });
+
+    for (const evt of logs) {
+      let block = blockCache.get(evt.blockNumber);
+      if (!block) {
+        block = await publicClient.getBlock({ blockNumber: evt.blockNumber });
+        blockCache.set(evt.blockNumber, block);
+      }
+      store.recordPpWithdrawal({
+        txHash: evt.transactionHash,
+        address: evt.args.recipient.toLowerCase(),
+        blockNumber: Number(evt.blockNumber),
+        blockTime: Number(block.timestamp),
+        amountWei: evt.args.amount.toString(),
+      });
+    }
+
+    store.savePpCursor(to);
+    from = to + 1n;
+  }
 }
 
 async function scanCycle(store) {
@@ -121,7 +186,13 @@ async function scanCycle(store) {
       }
 
       const priorDepositCount = cursor.ethDepositCount;
-      const points = pointsForDeposit(evt.args.amount, priorDepositCount);
+      const depositor = tx.from.toLowerCase();
+      // Boosted only when the depositor itself has EVER been paid out by a Privacy Pools ETH withdrawal at
+      // or before this wrap's own block — see scanPrivacyPoolCycle. This runs once per deposit, against the
+      // local cache only, never a live RPC call.
+      const ppBoosted = store.hasEarlierPpWithdrawal(depositor, Number(evt.blockNumber));
+      let points = pointsForDeposit(evt.args.amount, priorDepositCount);
+      if (ppBoosted) points *= CFG.ppBoostMultiplier;
       const wrote = store.recordDeposit({
         txHash: evt.transactionHash,
         blockNumber: Number(evt.blockNumber),
@@ -129,10 +200,11 @@ async function scanCycle(store) {
         // tx.from, not msg.sender as seen by the pool: whether this call reached the pool directly or via
         // WrapTipForwarder, tx.from is always the EOA that signed and funded it — the true depositor, never
         // the forwarder's own address, and unaffected by whatever tipRecipient it chose.
-        depositor: tx.from.toLowerCase(),
+        depositor,
         amountWei: evt.args.amount.toString(),
         priorDepositCount,
         points,
+        ppBoosted: ppBoosted ? 1 : 0,
         ...tipByTx.get(evt.transactionHash),
       });
       if (wrote) cursor.ethDepositCount += 1;
@@ -384,6 +456,13 @@ async function main() {
   startHttp(store);
 
   for (;;) {
+    // Runs before scanCycle so any Privacy Pools withdrawal that landed this cycle is already cached by the
+    // time a same-cycle wrap is scored against it.
+    try {
+      await scanPrivacyPoolCycle(store);
+    } catch (err) {
+      log('privacy pool scan cycle failed:', err?.message || err);
+    }
     try {
       await scanCycle(store);
     } catch (err) {
