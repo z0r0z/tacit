@@ -2856,9 +2856,21 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
           const sbSpends = openings.map((o, i) => ({ cx: o.cx, cy: o.cy, asset: inAssets[i], outpoint: inOutpoints[i] }));
           const receiptSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, 1 + i));
           const refundSpks = Array.from({ length: n }, (_, i) => txOutputScript(tx.txData, 1 + n + i));
-          const sbw = batch.swapBatchFold
-            ? await batch.swapBatchFold(tx.env, tx.txid, sbSpends, { receiptSpks, refundSpks, height: BigInt(sbHeight) })
-            : null;
+          // A fold error must never stop the lane: the reflection cursor advances strictly in block order, so
+          // an exception that escapes this call would block every later block from folding too, not just this
+          // one batch. foldSwapBatch can reject a batch before real verification completes; treat that the
+          // same way an absent hook is already treated below (unfolded, ordinary traffic) rather than letting
+          // it propagate. Mirrors the existing burn-deposit bundle handling in
+          // worker/src/reflection-attest.js's getBurnDeposits.
+          let sbw = null;
+          if (batch.swapBatchFold) {
+            try {
+              sbw = await batch.swapBatchFold(tx.env, tx.txid, sbSpends, { receiptSpks, refundSpks, height: BigInt(sbHeight) });
+            } catch (e) {
+              console.log(`[reflection] swap_batch fold for ${tx.txid} is unusable, treating as unfolded: ${String(e && e.message || e).slice(0, 200)}`);
+              sbw = null;
+            }
+          }
           swapBatch = sbw
             ? { nIntents: n, receiptPaths: sbw.receiptPaths, refundPaths: sbw.refundPaths }
             : {

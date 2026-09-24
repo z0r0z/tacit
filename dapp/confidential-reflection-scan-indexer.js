@@ -164,51 +164,68 @@ export function makeScanReflectionIndexer({ secp, keccak256, sha256, ownerTag, b
     const vins = (tx.vins || []).map((vi) => ({ prevTxid: internal(vi.prevTxidDisplay), vout: vi.vout }));
     const txid = internal(tx.txidDisplay);
     let env = null;
+    // A commitment field isn't checked against the curve before this point, so decompressing it can throw.
+    // That must never escape this function: the reflection cursor advances strictly in block order, so an
+    // uncaught exception on one transaction would block every later block from folding too, not just this
+    // one. A commitment that doesn't decompress was never a real confidential transfer the guest could have
+    // folded either, so falling through to env=null (ordinary, unrecognized traffic) is the correct outcome
+    // here, not a compromise — matching the `pointOk` guard already used for the same operation in
+    // burn-deposit-bitcoin.js, and the same handling already applied to swap_batch in confidential-pool.js.
     if (tx.decode && tx.decode.type === 'cxfer') {
-      env = {
-        type: 'cxfer',
-        opcode: tx.decode.opcode, // env[0]: distinguishes pure CXFER (0x22/0x23) from the atomic-settlement family / bids
-        // T_AXFER / T_AXFER_BPP: the kernel's asset inputs are vin[1..1+assetInputCount] (null for every other opcode).
-        assetInputCount: tx.decode.assetInputCount == null ? null : tx.decode.assetInputCount,
-        assetId: tx.decode.assetId,
-        kernelSig: tx.decode.kernelSig,     // 64-byte BIP-340 kernel sig (conservation)
-        rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
-        outputs: tx.decode.commitments.map((comm, j) => {
-          const { cx, cy } = pool.decompressCommitment(comm);
-          // Notes are keyed at their REAL Bitcoin vout, supplied per-opcode by classifyConfidentialTx
-          // (canonicalOutputVout / canonicalBidOutputVout — identity for plain cxfers, the {0->0,1->2}
-          // interleave for AXFER_VAR, the bid layout for 0x5B/0x5C), so the indexer's live set matches the
-          // guest's fold and a later spend is detected at the right outpoint. Legacy decode w/o vouts → j.
-          const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
-          // A confirmed CXFER's reflected note leaf is domain-separated (btcNoteLeaf) and bound to the
-          // OUTPUT'S OWN x-only Taproot key as its spend authority (cxfer-core::fold_cxfer / reflected_note_leaf
-          // — the guest derives it the same way, from the confirmed tx's OWN output script at this vout via
-          // bitcoin::output_p2tr_xonly, defaulting to zero for a non-P2TR output). NOT the plain native `leaf`
-          // and NOT the zero-owner sentinel — that pairing is for OP_BRIDGE_MINT's Ethereum-side dest leaf only.
-          const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeaf(tx.decode.assetId, cx, cy, authKey), vout };
-        }),
-      };
+      try {
+        env = {
+          type: 'cxfer',
+          opcode: tx.decode.opcode, // env[0]: distinguishes pure CXFER (0x22/0x23) from the atomic-settlement family / bids
+          // T_AXFER / T_AXFER_BPP: the kernel's asset inputs are vin[1..1+assetInputCount] (null for every other opcode).
+          assetInputCount: tx.decode.assetInputCount == null ? null : tx.decode.assetInputCount,
+          assetId: tx.decode.assetId,
+          kernelSig: tx.decode.kernelSig,     // 64-byte BIP-340 kernel sig (conservation)
+          rangeProof: tx.decode.rangeProof,   // BP+ range proof over the output commitments
+          outputs: tx.decode.commitments.map((comm, j) => {
+            const { cx, cy } = pool.decompressCommitment(comm);
+            // Notes are keyed at their REAL Bitcoin vout, supplied per-opcode by classifyConfidentialTx
+            // (canonicalOutputVout / canonicalBidOutputVout — identity for plain cxfers, the {0->0,1->2}
+            // interleave for AXFER_VAR, the bid layout for 0x5B/0x5C), so the indexer's live set matches the
+            // guest's fold and a later spend is detected at the right outpoint. Legacy decode w/o vouts → j.
+            const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
+            // A confirmed CXFER's reflected note leaf is domain-separated (btcNoteLeaf) and bound to the
+            // OUTPUT'S OWN x-only Taproot key as its spend authority (cxfer-core::fold_cxfer / reflected_note_leaf
+            // — the guest derives it the same way, from the confirmed tx's OWN output script at this vout via
+            // bitcoin::output_p2tr_xonly, defaulting to zero for a non-P2TR output). NOT the plain native `leaf`
+            // and NOT the zero-owner sentinel — that pairing is for OP_BRIDGE_MINT's Ethereum-side dest leaf only.
+            const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
+            return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeaf(tx.decode.assetId, cx, cy, authKey), vout };
+          }),
+        };
+      } catch (e) {
+        console.log(`[reflection] cxfer envelope for ${tx.txidDisplay} has an unusable commitment, treating as unrecognized traffic: ${String(e && e.message || e).slice(0, 200)}`);
+        env = null;
+      }
     } else if (tx.decode && tx.decode.type === 'cxfer_bound') {
       // A deployment-bound CXFER (0x39): onboard BOUND output notes. Same shape as cxfer with the envelope's
       // target_chain_binding surfaced (the assembler requires it == this deployment's chainBinding) and each
       // note leaf built over the bound domain (btcNoteLeafBound), mirroring the guest's fold_cxfer_bound.
-      env = {
-        type: 'cxfer_bound',
-        opcode: tx.decode.opcode,
-        target: tx.decode.target,
-        assetId: tx.decode.assetId,
-        kernelSig: tx.decode.kernelSig,
-        rangeProof: tx.decode.rangeProof,
-        outputs: tx.decode.commitments.map((comm, j) => {
-          const { cx, cy } = pool.decompressCommitment(comm);
-          const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
-          // Same output-own-key spend authority as the unbound path above (cxfer-core::fold_cxfer_bound /
-          // reflected_note_leaf_bound) — NOT the zero-owner sentinel.
-          const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
-          return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeafBound(tx.decode.assetId, cx, cy, authKey, tx.decode.target), vout };
-        }),
-      };
+      try {
+        env = {
+          type: 'cxfer_bound',
+          opcode: tx.decode.opcode,
+          target: tx.decode.target,
+          assetId: tx.decode.assetId,
+          kernelSig: tx.decode.kernelSig,
+          rangeProof: tx.decode.rangeProof,
+          outputs: tx.decode.commitments.map((comm, j) => {
+            const { cx, cy } = pool.decompressCommitment(comm);
+            const vout = (tx.decode.vouts && tx.decode.vouts[j] != null) ? tx.decode.vouts[j] : (j + (tx.decode.voutBase || 0));
+            // Same output-own-key spend authority as the unbound path above (cxfer-core::fold_cxfer_bound /
+            // reflected_note_leaf_bound) — NOT the zero-owner sentinel.
+            const authKey = pool.p2trXonly(txOutputScript(tx.rawHex, vout)) || ZERO_OWNER;
+            return { cx, cy, compressed: comm, commitmentHash: pool.commitmentHash(cx, cy), noteLeaf: pool.btcNoteLeafBound(tx.decode.assetId, cx, cy, authKey, tx.decode.target), vout };
+          }),
+        };
+      } catch (e) {
+        console.log(`[reflection] cxfer_bound envelope for ${tx.txidDisplay} has an unusable commitment, treating as unrecognized traffic: ${String(e && e.message || e).slice(0, 200)}`);
+        env = null;
+      }
     } else if (tx.decode && tx.decode.type === 'burn') {
       env = { type: 'burn', assetId: tx.decode.assetId || null, nullifier: tx.decode.nullifier || null, dest: tx.decode.dest, target: tx.decode.target || null };
       // BURN-DEPOSIT (scan-free TAC/cmint onboarding): a 0x2B burn of a pre-existing note (no live-set
