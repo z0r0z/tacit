@@ -90,6 +90,14 @@ All fixed and deployed unless stated.
   now validated at the door, the header walk is bounded, and an unusable bundle is skipped rather than
   propagating — which was already the correct semantics, since such a burn stays pending and completes in any
   later batch. First-writer-wins prevents one registration displacing another.
+- **Two more places had the same shape, found in a follow-up pass — not yet deployed.** The reflection scanner
+  classifies a transaction's type from its envelope structure alone, ahead of any signature or spend check, so
+  a transaction that merely looks like a given op can still reach the code that folds it. Two spots let that
+  reach an unguarded exception rather than a graceful skip: the batch assembler's own duplicate-refund check
+  (detailed further down, under the stated batch tradeoff), and commitment decompression for ordinary
+  confidential transfers, which fails to parse for a wide range of otherwise well-formed-looking input. Both
+  now fall through to the same "not a real fold" path every other malformed case already takes, isolated to
+  the one transaction rather than the whole scan.
 - **Error text published to unauthenticated endpoints could carry endpoint URLs.** A viem exception embeds the
   request URL in its message and viem's own redaction covers basic-auth credentials only, never a
   path-embedded key. Heartbeat notes and job-ack errors now pass through a sanitiser.
@@ -122,9 +130,12 @@ The theme is uniform: several checks could not run and reported success rather t
   exactly as quietly as broadcasting too early.
 - **Bitcoin-lane AMM refunds need a fresh key.** A refund commits the spent input's commitment verbatim, and a
   Bitcoin-homed note's leaf carries no outpoint, so refunding to a key one of the inputs was homed at
-  reproduces the nullifier just spent. `assertFreshRefundKey` enforces it, the batch assembler rejects a
-  duplicate, and both integrator guides say so. The guest only ever sees the key the transaction pays to,
-  which is why this belongs in the builder.
+  reproduces the nullifier just spent. `assertFreshRefundKey` existed and was tested at the time of this
+  review, but was not yet called anywhere — this round confirmed it and closed the gap: the two builders that
+  exist (`buildSwapVarEnvelopeSelfFulfill`, `buildSwapRouteEnvelopeSelfFulfill`) now derive a fresh, per-swap
+  key before signing and call the guard as a second check. The guest only ever sees the key the transaction
+  pays to, which is why this belongs in the builder. The batch lane has no builder yet, so there is nothing to
+  wire the guard into there; see below for what the batch assembler's own rejection needed instead.
 - **cBTC lock funding bypassed the asset-UTXO classifier**, because that module builds its own chain client;
   one guarded accessor now covers both the funding pick and the fee top-up.
 - **The on-chain page loader trusted whichever RPC answered first** and executed the document it returned, on
@@ -135,7 +146,7 @@ The theme is uniform: several checks could not run and reported success rather t
   identity — every compliant signer has produced canonical signatures since EIP-2 — and cannot split funds
   across two keys, which normalising unilaterally would risk while this derivation is shared with other apps.
 
-## A stated tradeoff, now enforced client-side
+## A stated tradeoff, confirmed enforced by default
 
 The Bitcoin-lane swap batch publishes its net reserve deltas in the envelope, as cleartext `u64`. That is what
 lets any indexer reproduce the pool's reserves from the chain alone, which is the property the whole
@@ -144,9 +155,13 @@ the net delta *is* that trade, readable straight off the transaction — no cryp
 settle lane does not share this shape; `OP_SWAP_BLIND` proves the excess with a Schnorr proof of knowledge
 instead.
 
-This is a design consequence rather than a defect, and the right place to handle it is the builder.
-`assertBatchAnonymitySet` refuses to build a single-intent Bitcoin batch unless the caller acknowledges it
-explicitly, and the EVM-lane batcher already defaults to a minimum of four. The fold itself is untouched —
+This is a design consequence rather than a defect. `assertBatchAnonymitySet` is a builder-side helper meant
+to refuse a single-intent batch unless the caller acknowledges it, but there is no batch builder in the
+codebase yet for it to be called from — this round confirmed that directly rather than assuming the helper's
+existence meant the property held. What actually enforces the minimum today sits a layer down: the relay
+declines to process any Bitcoin-lane batch below a floor of two intents unless a pool explicitly opts in to
+allow a solo one, and a live check found no pool that has. That default is what to preserve; the helper
+becomes load-bearing only once a batch builder exists to call it. The fold itself is untouched —
 `n_intents == 1` is consensus-valid and must stay that way.
 
 ## Refuted
