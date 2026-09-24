@@ -386,6 +386,14 @@ export async function buildAndBroadcastLpBond({
 // key for the position's life), `nonce` (the receipt nonce, equal to it), and `shares`. No entry accumulator:
 // the checkpoint is reflection state, stamped at fold time and re-stamped by this harvest. Harvest
 // reconstructs + owner-signs the receipt, which stays in place.
+//
+// The signed envelope carries no nonce, so it can be rebroadcast once accrual against the CURRENT
+// checkpoint re-reaches `rewardAmount` — which happens again as the farm keeps emitting, regardless of
+// how often this is called. Harvesting smaller amounts more often does not close that gap, but it keeps
+// the value any one replay can destroy below the cost of the Bitcoin fee needed to attempt it, which is
+// the only lever available without a guest change. Callers that automate harvesting should size
+// `rewardAmount` against a current fee estimate (`getFeeRate`, already used in this file) rather than
+// letting accrual build into one large, more worthwhile target.
 export async function buildAndBroadcastLpHarvest({
   farmIdHex, lpAssetHex, bondIdHex, exitAccPerShare, exitViewHeight, rewardAmount,
   ownerNonce, nonce, shares,
@@ -464,6 +472,12 @@ export async function buildAndBroadcastLpUnbond({
 // ============================================================
 // T_FARM_REFUND — launcher reclaims unspent treasury
 // ============================================================
+
+// A launcher whose refund can never succeed (fold_farm_refund requires total_shares == 0, and a single
+// bond-unbond-rebond of any position permanently prevents that) is not fully out of options: fold_harvest
+// has no such requirement, only a per-position accrual check. Bonding a dominant stake and harvesting
+// normally recovers most of a farm's remaining treasury over its remaining life, proportional to that
+// stake's share of total_shares — spread out via ordinary harvests instead of one lump sum, but not lost.
 
 // `refundAmount` MUST equal the farm's full live treasury (`pools[farmId].reserve_a` in the reflection
 // state), not a partial draw. The signed envelope carries no nonce, so anyone who reads it off the chain
