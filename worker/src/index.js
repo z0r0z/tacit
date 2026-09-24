@@ -649,6 +649,23 @@ function jsonResponse(obj, status, headers) {
   });
 }
 
+// Proxies the ETH-wrap points program's read routes (points-indexer.js, a separate Render service) behind
+// this worker's own stable host. Points-only pages, and zSwap's page specifically, are chunked and deployed
+// on-chain — a hardcoded Render hostname baked into that would be permanent, immutable, and unrepointable if
+// tacit-points ever moves; proxying it here means an integrator only ever needs api.tacit.finance, and
+// inherits the same repointability/fallback story every other endpoint already has.
+const POINTS_API_BASE = 'https://tacit-points.onrender.com';
+async function handlePointsProxy(pathname, search, cors) {
+  let upstream;
+  try {
+    upstream = await fetch(`${POINTS_API_BASE}${pathname}${search}`);
+  } catch {
+    return jsonResponse({ error: 'points service unavailable' }, 502, { ...cors, 'Cache-Control': 'no-store' });
+  }
+  const body = await upstream.text();
+  return new Response(body, { status: upstream.status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+}
+
 // Prover liveness: the prover services post /prover-heartbeat every ~2m; anyone GETs /prover-health.
 // Heartbeats are kept per KIND — settle, reflection and eth-state are separate Render services on separate
 // schedules (one is a 5-min cron, two are always-on workers), each proving a different thing. A single
@@ -25202,7 +25219,11 @@ async function _routeFetch(req, env, ctx) {
       if (url.pathname === '/tacit.js') return handleDappBundle(req, env, url);
       return fetch(req); // any other zone-routed path → origin passthrough
     }
-    const cors = corsHeaders(env, req.headers.get('Origin') || '', OPEN_ORIGIN_PATHS.has(url.pathname));
+    // /points/0x… and /claim/0x… carry the address as a path segment, not a query param like every other
+    // OPEN_ORIGIN_PATHS entry, so a plain Set.has() can't match them — check the prefix instead.
+    const openOrigin = OPEN_ORIGIN_PATHS.has(url.pathname)
+      || url.pathname === '/leaderboard' || url.pathname.startsWith('/points/') || url.pathname.startsWith('/claim/');
+    const cors = corsHeaders(env, req.headers.get('Origin') || '', openOrigin);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
     if (url.pathname === '/health' && req.method === 'GET') {
@@ -25214,6 +25235,10 @@ async function _routeFetch(req, env, ctx) {
 
     if (url.pathname === '/prover-heartbeat' && req.method === 'POST') return handleProverHeartbeat(req, env, cors);
     if (url.pathname === '/prover-health' && req.method === 'GET') return handleProverHealth(env, cors, url);
+
+    if (req.method === 'GET' && (url.pathname === '/leaderboard' || /^\/(points|claim)\/0x[0-9a-fA-F]{40}$/.test(url.pathname))) {
+      return handlePointsProxy(url.pathname, url.search, cors);
+    }
 
     // Reflection relay (the relayer polls these — see worker-relay/src/reflection-folder.js).
     // /reflection/job serves the next assembled Bitcoin-state batch to prove; /reflection/ack advances
