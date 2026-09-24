@@ -465,6 +465,14 @@ export async function buildAndBroadcastLpUnbond({
 // T_FARM_REFUND — launcher reclaims unspent treasury
 // ============================================================
 
+// `refundAmount` MUST equal the farm's full live treasury (`pools[farmId].reserve_a` in the reflection
+// state), not a partial draw. The signed envelope carries no nonce, so anyone who reads it off the chain
+// can rebroadcast the identical bytes to debit the treasury again — but fold_harvest's own guard is
+// `reward_amount > farm.reserve_a`, a strict check against a value that only ever falls. A full-drain
+// refund leaves reserve_a at exactly 0, so a replay of these same bytes fails that guard outright,
+// forever, for this farm — a partial refund leaves headroom a replay can still spend. The mint always
+// lands at this launcher's own destSpk regardless of whose copy of the bytes gets processed first, so a
+// full drain is free of downside: at most one copy ever succeeds, and it always pays the right party.
 export async function buildAndBroadcastFarmRefund({
   farmIdHex, refundAmount, refundViewHeight,
 }) {
