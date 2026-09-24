@@ -1914,7 +1914,13 @@ function handleConfidentialQuote(req, env, url, cors) {
   // free, caller-chosen parameter (see WrapTipForwarder.sol's NatSpec: "the dapp names its relay, a third
   // party names theirs, a self-relayer names themselves"), so without this an integrator has no way to know
   // which address that is for us specifically. Static and asset-independent: unaffected by relayFeeEligible.
-  const recommendedTipRecipient = env.RELAY_TIP_RECIPIENT_ADDR || '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7';
+  //
+  // Deliberately the ops multisig, not the relay/settle hot key: an integrator compiling this into an
+  // immutable page (zSwap) needs a target stable enough to hard-refuse any other address forever — the hot
+  // key can rotate, the multisig is what CollateralEngine/FarmManager already treat as the permanent
+  // address. Ops keeps the actual relayer wallet topped up from the multisig; this value is what a tip
+  // pays, not what signs settles.
+  const recommendedTipRecipient = env.RELAY_TIP_RECIPIENT_ADDR || '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2';
   const policy = QUOTE_RELAY_FEE_ASSETS[ticker];
   if (!policy) return jsonResponse({ ticker, assetId: asset.assetId, relayFeeEligible: false, recommendedTipRecipient }, 200, { ...cors, 'Cache-Control': 'public, max-age=60' });
   const unitScale = BigInt(asset.unitScale || '1');
