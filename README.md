@@ -30,7 +30,11 @@ or attestor set signs a bridge message.
 - **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
   live deployment against this repository
 - **Build on it:** [`docs/BUILD-A-TACIT-DAPP.md`](./docs/BUILD-A-TACIT-DAPP.md)
-- **Security:** [`audit/AUDITS.md`](./audit/AUDITS.md)
+- **Security:** [`audit/AUDITS.md`](./audit/AUDITS.md) — full review history. The v1 release's agentic audits:
+  [Fable 5.1 lock checkpoint](./audit/AUDIT-2026-09-16-17-fable51-lock-checkpoint.md) (the review that gated
+  the deploy), an [external automated review](./audit/AUDIT-2026-09-21-gpt-astra-external-review.md), and the
+  [Pashov `solidity-auditor` v4 round](./audit/AUDIT-2026-09-24-pashov-solidity-auditor-v4.md) (24-agent,
+  post-deploy, extended to the zkVM guest) — run after a week of live mainnet use.
 
 ---
 

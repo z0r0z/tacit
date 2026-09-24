@@ -23,10 +23,13 @@ or recorded as a stated limitation. Earlier working rounds, prompts and point re
 | 2026-08-24 | Freeze-readiness scans | Opus 4.8 · Codex | Findings fixed | [Opus](./AUDIT-2026-08-24-opus48max-with-responses.md) · [Codex](./AUDIT-2026-08-24-codex-scan-with-responses.md) · [sign-off](./FREEZE-READINESS-SIGNOFF.md) · [engine trust boundary](./collateral-engine-trust-boundary.md) |
 | 2026-09-16 | Pre-lock, whole immutable surface | Claude Fable 5.1 | Findings fixed | [`AUDIT-2026-09-16-…`](./AUDIT-2026-09-16-fable51-v1-final-prelock.md) |
 | 2026-09-17 | Closing review + re-audit of fixes | Fable 5.1 → Opus 5 | Freeze, re-prove | [`AUDIT-2026-09-17-closing-review`](./AUDIT-2026-09-17-closing-review.md) |
+| 2026-09-16/17 | *Combined summary of the two rounds above* | — | Locked and deployed as gen5 | [`AUDIT-2026-09-16-17-fable51-lock-checkpoint`](./AUDIT-2026-09-16-17-fable51-lock-checkpoint.md) |
 | 2026-09-19 | Public release (post-deploy) | Claude Opus 5 | Clear to publish | [`AUDIT-2026-09-19-public-release-review`](./AUDIT-2026-09-19-public-release-review.md) |
 | 2026-09-19 | cBTC / cUSD / CDP | Claude Opus 5 | Mechanism sound | [`AUDIT-2026-09-19-cbtc-cusd-cdp-review`](./AUDIT-2026-09-19-cbtc-cusd-cdp-review.md) |
 | 2026-09-20 | Launch review (post-deploy) | Claude Opus 5 | Green-lit | [`AUDIT-2026-09-20-v1-launch-review`](./AUDIT-2026-09-20-v1-launch-review.md) |
+| 2026-09-21 | External automated scan (guide + live-path check) | GPT-5-class, via OpenAI Codex tooling | Findings dispositioned; launchable | [`AUDIT-2026-09-21-gpt-astra-external-review`](./AUDIT-2026-09-21-gpt-astra-external-review.md) |
 | 2026-09-23 | Public ramp: whole live surface + guest Rust line by line | Claude Opus 5 (multi-agent) | Immutable surface sound, no redeploy | [`AUDIT-2026-09-23-public-ramp-review`](./AUDIT-2026-09-23-public-ramp-review.md) |
+| 2026-09-24 | Pashov Audit Group `solidity-auditor` v4, extended to the zkVM guest | Claude Opus 5 (24-agent) | Clean; two stated limitations on an unlaunched lane | [`AUDIT-2026-09-24-pashov-solidity-auditor-v4`](./AUDIT-2026-09-24-pashov-solidity-auditor-v4.md) |
 
 ## What the post-deploy reviews established
 
