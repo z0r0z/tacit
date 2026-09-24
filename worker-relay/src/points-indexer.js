@@ -295,7 +295,19 @@ function startHttp(store) {
         const address = pointsMatch[1];
         const total = store.totalFor(address) ?? { address: address.toLowerCase(), points: 0, deposit_count: 0, amount_wei: '0' };
         const deposits = store.depositsFor(address, 100);
-        res.end(JSON.stringify({ ...total, deposits }));
+        // Cheap trend context for a client that doesn't want a full history view: today's points for this
+        // address against today's TAC budget, since the payout is a share of a fixed daily pool rather than a
+        // flat points-to-TAC rate. null when the reward program isn't configured yet — no day budget to report.
+        let today = null;
+        if (CFG.pointsProgramStartSec) {
+          const startDay = Math.floor(CFG.pointsProgramStartSec / 86400);
+          const todayDay = Math.floor(Date.now() / 1000 / 86400);
+          const dayStart = todayDay * 86400;
+          const row = store.dayPointsByAddress(dayStart, dayStart + 86400)
+            .find((r) => r.address.toLowerCase() === address.toLowerCase());
+          today = { points: row ? row.dayPoints : 0, dayBudgetWei: dayBudgetWei(todayDay - startDay).toString() };
+        }
+        res.end(JSON.stringify({ ...total, today, deposits }));
         return;
       }
       // The claim proof for the LAST on-chain-published root (see savePublishedClaims) PLUS what the
