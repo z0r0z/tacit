@@ -9,10 +9,18 @@
 // (makeConfidentialPool, the single source of truth for the leaf/sigma primitives).
 
 import { signSchnorr } from './bulletproofs.js';
+import { secp } from './vendor/tacit-deps.min.js';
 
 export function makeConfidentialFarm({ keccak256, pool }) {
   const enc = new TextEncoder();
   const CDP_DEBT_DOMAIN = enc.encode('tacit-cdp-debt-v1');
+
+  // Same check verifySchnorr uses to accept an x-only key: the guest's OP_FARM_HARVEST/OP_FARM_UNBOND
+  // verify a signature under `owner` and simply fail for an off-curve value, which is how a bond built
+  // with a bad owner gets its stake stuck forever with no guest-side rejection at bond time.
+  const isValidXonly = (ownerHex) => {
+    try { secp.ProjectivePoint.fromHex('02' + String(ownerHex).replace(/^0x/, '')); return true; } catch { return false; }
+  };
 
   const hx = (b) => '0x' + [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const concat = (arrs) => {
@@ -93,14 +101,17 @@ export function makeConfidentialFarm({ keccak256, pool }) {
   // depositor's, distinct from the position key: reusing `owner` there would force one 32-byte value to be
   // both a hash preimage (H(nk)) and a curve point with a known discrete log, which no value can be — a
   // position bonded that way could never be harvested or unbonded (main.rs OP_FARM_BOND `leg_auth`).
-  const buildBondOp = ({ chainBinding, spendRoot, controller, owner, nonce, lpAsset, legs }) => ({
-    chainBinding, spendRoot, controller, owner, nonce, lpAsset,
-    legs: legs.map((leg) => {
-      const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
-      const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, nLegs: legs.length });
-      return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ, owner: leg.owner, nk: leg.nk };
-    }),
-  });
+  const buildBondOp = ({ chainBinding, spendRoot, controller, owner, nonce, lpAsset, legs }) => {
+    if (!isValidXonly(owner)) throw new Error('farm bond: owner is not a valid x-only public key');
+    return {
+      chainBinding, spendRoot, controller, owner, nonce, lpAsset,
+      legs: legs.map((leg) => {
+        const note = { cx: leg.cx, cy: leg.cy, owner, value: leg.value, blinding: leg.blinding };
+        const sig = farmBondLegSigma({ chainBinding, controller, nonce, owner, lpAsset, note, index: leg.index, nLegs: legs.length });
+        return { cx: leg.cx, cy: leg.cy, value: leg.value, index: leg.index, path: leg.path, sigR: sig.sigR, sigZ: sig.sigZ, owner: leg.owner, nk: leg.nk };
+      }),
+    };
+  };
 
   // OP_FARM_HARVEST: prove the receipt is in the tree and mint the reward note (`rewardNote` = {cx, cy,
   // blinding}) under `rewardAsset`. The receipt is a STABLE position id — it is neither consumed nor re-minted
