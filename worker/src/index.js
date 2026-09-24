@@ -1909,11 +1909,17 @@ function handleConfidentialQuote(req, env, url, cors) {
     : assets.find((a) => String(a.ticker || '').toLowerCase() === q.toLowerCase());
   if (!asset) return jsonResponse({ error: 'unknown asset — pass a ticker (cETH, cUSD, …) or its 0x assetId' }, 400, { ...cors, 'Cache-Control': 'no-store' });
   const ticker = asset.ticker;
+  // The address a WrapTipForwarder/WrapTokenTipForwarder/SettleTipForwarder caller should name as
+  // `tipRecipient` to pay THIS relay for the prove it does — the contracts themselves take that address as a
+  // free, caller-chosen parameter (see WrapTipForwarder.sol's NatSpec: "the dapp names its relay, a third
+  // party names theirs, a self-relayer names themselves"), so without this an integrator has no way to know
+  // which address that is for us specifically. Static and asset-independent: unaffected by relayFeeEligible.
+  const recommendedTipRecipient = env.RELAY_TIP_RECIPIENT_ADDR || '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7';
   const policy = QUOTE_RELAY_FEE_ASSETS[ticker];
-  if (!policy) return jsonResponse({ ticker, assetId: asset.assetId, relayFeeEligible: false }, 200, { ...cors, 'Cache-Control': 'public, max-age=60' });
+  if (!policy) return jsonResponse({ ticker, assetId: asset.assetId, relayFeeEligible: false, recommendedTipRecipient }, 200, { ...cors, 'Cache-Control': 'public, max-age=60' });
   const unitScale = BigInt(asset.unitScale || '1');
   const staticFloorUnits = (policy.minUnderlying / unitScale).toString();
-  const out = { ticker, assetId: asset.assetId, relayFeeEligible: true, staticFloorUnits, gasAwareFloorUnits: null };
+  const out = { ticker, assetId: asset.assetId, relayFeeEligible: true, staticFloorUnits, gasAwareFloorUnits: null, recommendedTipRecipient };
   // A live gas-aware floor is published for every asset the gate holds to one — with ONE deliberate exception.
   // cTAC's reference price is private deployment config, and a floor in cTAC units would hand it out: the floor in
   // dollars is public (gas x ETH price), so dollars / units IS the price. cTAC gets the static floor only.
