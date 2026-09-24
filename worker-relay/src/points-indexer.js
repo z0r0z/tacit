@@ -350,10 +350,14 @@ function startHttp(store) {
     try {
       if (url.pathname === '/health') {
         const cursor = store.loadCursor();
+        const ppCursor = store.loadPpCursor();
         res.end(JSON.stringify({
           ok: true,
           lastScannedBlock: cursor ? cursor.lastScannedBlock.toString() : null,
           ethDepositCount: cursor ? cursor.ethDepositCount : 0,
+          // Privacy Pools scan is a separate backfill (see scanPrivacyPoolCycle) — surfaced here so a stalled
+          // or still-catching-up scan is visible without a dedicated endpoint.
+          ppLastScannedBlock: ppCursor != null ? ppCursor.toString() : null,
         }));
         return;
       }
