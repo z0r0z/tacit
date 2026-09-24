@@ -27,9 +27,14 @@ interface ISettlePool {
 ///         (a relayed settle's fee leg is priced in cETH). If a self-settle proof happens to carry its own
 ///         native-ETH `FeePayment` — unusual, since self-settle is chosen specifically to avoid a fee — it
 ///         lands on this contract as `settle`'s caller and is refunded back below, never mixed into the
-///         tip. A `FeePayment` in any OTHER asset would still land here uncollected and unswept; that's
-///         the same scope boundary `WrapTipForwarder` draws around ERC20 wraps, and the fix is the same:
-///         don't route a fee-bearing proof through this contract.
+///         tip. A `FeePayment` in any OTHER asset would still land here uncollected and unswept — and that
+///         fee is the SETTLING USER'S OWN MONEY, not relay revenue foregone: self-settle's `fee` field, when
+///         nonzero, is carved out of the user's own note/debt specifically so whoever calls `settle` gets
+///         paid it back (e.g. a stored fee from an abandoned relay attempt, reused when the user later
+///         settles it themselves). Routing that proof through this contract doesn't just skip a tip, it
+///         permanently burns the user's own refund for any asset other than native ETH. Same scope boundary
+///         `WrapTipForwarder` draws around ERC20 wraps; the fix is the same: don't route a fee-bearing proof
+///         through this contract — check for a zero fee before choosing this over calling `settle` directly.
 ///
 ///         General lesson for the next contract put in this position: `msg.sender` stops meaning "the
 ///         user" the moment anything sits between the wallet and the pool. Any payout keyed to it —
