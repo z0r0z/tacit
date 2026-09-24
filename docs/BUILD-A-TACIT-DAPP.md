@@ -81,6 +81,13 @@ ETH is registered under its Bitcoin-side (tETH) link id, which keeps a bridged n
 same confidential asset. cBTC's id is a protocol constant; cUSD's is `keccak("tacit-cdp-debt-v1" ‖ engine)`, so
 it belongs to this engine ([SPEC §4.2](../SPEC.md#42-assets-and-units)).
 
+Beyond this fixed set, `ConfidentialPool`'s asset registry is permissionless: anyone can register a new
+ERC20 under its own id, and the checks are self-attested by the candidate token contract. Registration is
+not a legitimacy or endorsement signal — resolve ids to token addresses only from the table above or from
+[`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json), and if you build an
+asset picker or indexer over `registeredExternalPoolAssets` (`confidential-deployments.js`), do not present
+a registered asset as vetted by Tacit.
+
 ## 4. Reuse the dapp modules — do not reimplement the crypto
 
 `dapp/` is a set of plain ES modules with no build step and no framework. Import them directly.
@@ -648,9 +655,11 @@ drives it as a three-message handshake, with no coordinator:
 const maker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
                              inLeafIndex: n.leafIndex, inPath: n.path, give: vA, recvValue: vB, recvR, changeR });
 const offer = { assetA: n.asset, assetB, vA, vB, chainBinding, spendRoot: n.root, deadline: 0, maker: publicLeg(maker) };
-// publicLeg strips _r (the note blinding) and nk before this leaves the browser — never share either. The
-// real tab persists this `maker` object (with its secret _r/nk) between steps 1 and 3 — e.g. localStorage —
-// since a maker's own browser is what finalizes in step 3, not a value that survives as a JS variable alone.
+// publicLeg always strips _r (the note blinding — a discrete-log secret, never share it, signed or not).
+// It also strips nk UNLESS the leg is already signed: an unsigned leg's nk protects nothing (there is no
+// spend to authorize yet) but nobody else needs it either, so it stays local. The real tab persists this
+// `maker` object (with its secret _r/nk) between steps 1 and 3 — e.g. localStorage — since a maker's own
+// browser is what finalizes in step 3, not a value that survives as a JS variable alone.
 
 // 2. Taker countersigns, from their own note
 const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, inR: n.blinding,
@@ -658,12 +667,12 @@ const taker = otc.buildLeg({ owner: n.owner, nk: n.secret, inAmount: n.value, in
 const ctx = otc.composeCtx({ assetA: offer.assetA, assetB: offer.assetB, chainBinding: offer.chainBinding,
                              vA, vB, maker: hydrateLeg(offer.maker), taker, deadline: offer.deadline });
 otc.signLegs(taker, ctx, 'taker');
-const countersign = { ...offer, taker: publicLeg(taker) };
+const countersign = { ...offer, taker: publicLeg(taker) }; // taker is now SIGNED, so publicLeg keeps its nk
 
-// 3. Maker finalizes and submits (needs the taker's nk — see below)
+// 3. Maker finalizes and submits — the taker's nk rode in on step 2, no separate channel needed
 const ctx2 = otc.composeCtx({ ...countersign, maker, taker: hydrateLeg(countersign.taker) });
 otc.signLegs(maker, ctx2, 'maker');
-const assembled = otc.assembleOtc({ ...countersign, maker, taker });
+const assembled = otc.assembleOtc({ ...countersign, maker, taker: hydrateLeg(countersign.taker) });
 const result = otc.verifyOtc(assembled, { merkleRootFrom: tacit.pool.merkleRootFrom });   // same checks the guest re-runs
 await tacit.relay.settle({ type: 'otc', op: otc.toWireOp(assembled), leaves: result.leaves, outputs: [], ephRand: () => 1n });
 ```
@@ -672,12 +681,12 @@ await tacit.relay.settle({ type: 'otc', op: otc.toWireOp(assembled), leaves: res
 `amount`'s BigInt-vs-string shape and the secret fields on the way in and out of a shared message.) Each
 side may carve its own relay fee out of what it receives (`feeA`/`feeB`), fixed once both legs sign.
 
-**Step 3 needs the taker's `nk` (their spent note's nullifier key), which step 2's public countersignature
-never carries — `publicLeg` strips it on the way out, same as the blinding.** Finalizing genuinely
-peer-to-peer needs that `nk` routed from the taker's own client directly, out of band, not through the
-maker; the shipped tab has no such channel and only finalizes when maker and taker are the same operator
-holding both legs (a matcher). Build that channel yourself if you need two independent strangers to close
-a trade end to end.
+**Finalizing genuinely works between two independent strangers — no matcher, no side channel.** The taker's
+`nk` rides directly in step 2's countersignature; a signed leg's `nk` cannot forge an opening for any other
+context (`cxfer-core::verify_opening_sigma` is a standard, unforgeable Schnorr check over the discrete log
+of the note's blinding `r`, which `nk` plays no part in), so there is nothing left for withholding it to
+protect once the leg is signed, and the finalizer needs it to complete this exact trade. `_r` is the one
+field that must never appear in a shared message, signed or not — `publicLeg` never includes it.
 
 ## 5d. Buyer-offline bids
 
