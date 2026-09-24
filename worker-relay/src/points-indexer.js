@@ -68,21 +68,11 @@ const WRAPPED_WITH_TIP_EVENT = {
   ],
 };
 
-// Privacy Pools (privacypools.com) Entrypoint — third-party protocol. Fired once per relayed withdrawal
-// with the REAL recipient named directly; the pool contract's own Withdrawn event only ever names the
-// Entrypoint itself as `_processooor` when a withdrawal is relayed (the default UX path), never the person
-// who actually receives the funds. `_recipient` is indexed, so this is a cheap, direct topic filter.
-const PP_WITHDRAWAL_RELAYED_EVENT = {
-  type: 'event',
-  name: 'WithdrawalRelayed',
-  inputs: [
-    { name: 'relayer', type: 'address', indexed: true },
-    { name: 'recipient', type: 'address', indexed: true },
-    { name: 'asset', type: 'address', indexed: true },
-    { name: 'amount', type: 'uint256', indexed: false },
-    { name: 'feeAmount', type: 'uint256', indexed: false },
-  ],
-};
+// Privacy Pools (privacypools.com) Entrypoint — third-party protocol. Its WithdrawalRelayed event names
+// the REAL recipient of a relayed ETH withdrawal directly; the pool contract's own Withdrawn event only
+// ever names the Entrypoint itself as `_processooor` under the default relayed flow, never the person who
+// actually receives the funds.
+const PP_BLOCKSCOUT_BASE = 'https://eth.blockscout.com/api/v2';
 const NATIVE_ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
 
 function pointsForDeposit(amountWei, priorDepositCount) {
@@ -91,52 +81,58 @@ function pointsForDeposit(amountWei, priorDepositCount) {
   return amountEth * CFG.pointsBasePerEth * bonus;
 }
 
-// Incrementally scans Privacy Pools' Entrypoint for ETH WithdrawalRelayed events, address-indexed, so
-// scanCycle below can check a wrap's boost eligibility with a single local lookup instead of an RPC call
-// per deposit. No recency cutoff by design (see config.js) — full history from the Entrypoint's own deploy
-// block on first run, then just the delta each cycle. Volume here is low (Privacy Pools mainnet, not a
-// high-frequency protocol), so the first-run backfill finishes in one call rather than needing to be spread
-// across multiple cycles the way a much larger backfill would.
+// Scans Privacy Pools' Entrypoint for ETH WithdrawalRelayed events via Blockscout's address-logs API
+// (paginated by item, not block range), so scanCycle below can check a wrap's boost eligibility with a
+// single local lookup instead of an RPC call per deposit. NOT plain eth_getLogs: this address's own history
+// spans ~3.9M blocks back to its deploy, and public RPC providers cap eth_getLogs to as little as a 10-block
+// range per call (hit in practice on this service's own RPC_URL) — a raw block-range backfill over that
+// span would mean hundreds of thousands of calls and would stall scanCycle/settleCycle behind it in the
+// same loop. Blockscout pages by ITEM COUNT regardless of block span, so the real (low) event volume is
+// what bounds the request count, not the block range. No recency cutoff by design (see config.js): walks
+// backward from the newest log, recording every qualifying (ETH-asset) WithdrawalRelayed it finds, and
+// stops as soon as a page is entirely at or before ppCursor (already covered by a prior run) or at the
+// Entrypoint's own deploy block (nothing real can exist before it) — so a fully-caught-up run costs one
+// request, and only the first-ever run pays for the full historical walk.
 async function scanPrivacyPoolCycle(store) {
-  const cursorBlock = store.loadPpCursor();
-  let from = cursorBlock != null ? cursorBlock + 1n : BigInt(CFG.ppEntrypointDeployBlock);
+  const priorCursor = store.loadPpCursor(); // BigInt | null — newest block already fully covered by a past run
+  const deployBlock = BigInt(CFG.ppEntrypointDeployBlock);
+  let newestSeen = null;
+  let params = '';
 
-  const latest = await publicClient.getBlockNumber();
-  const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
-  if (confirmedTip < from) return;
+  for (;;) {
+    const res = await fetch(`${PP_BLOCKSCOUT_BASE}/addresses/${ADDR.ppEntrypoint}/logs${params}`);
+    if (!res.ok) throw new Error(`blockscout address-logs ${res.status}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) break;
+    if (newestSeen === null) newestSeen = BigInt(items[0].block_number);
 
-  const chunk = BigInt(CFG.pointsScanChunk);
-  const blockCache = new Map();
-
-  while (from <= confirmedTip) {
-    const to = from + chunk - 1n > confirmedTip ? confirmedTip : from + chunk - 1n;
-
-    const logs = await publicClient.getLogs({
-      address: ADDR.ppEntrypoint,
-      event: PP_WITHDRAWAL_RELAYED_EVENT,
-      args: { asset: NATIVE_ETH_SENTINEL },
-      fromBlock: from,
-      toBlock: to,
-    });
-
-    for (const evt of logs) {
-      let block = blockCache.get(evt.blockNumber);
-      if (!block) {
-        block = await publicClient.getBlock({ blockNumber: evt.blockNumber });
-        blockCache.set(evt.blockNumber, block);
+    let reachedCoverage = false;
+    for (const item of items) {
+      const blockNumber = BigInt(item.block_number);
+      if (blockNumber < deployBlock || (priorCursor != null && blockNumber <= priorCursor)) {
+        reachedCoverage = true;
+        break;
       }
+      if (!item.decoded || !item.decoded.method_call.startsWith('WithdrawalRelayed(')) continue;
+      const params_ = Object.fromEntries(item.decoded.parameters.map((p) => [p.name, p.value]));
+      if (String(params_._asset).toLowerCase() !== NATIVE_ETH_SENTINEL.toLowerCase()) continue;
       store.recordPpWithdrawal({
-        txHash: evt.transactionHash,
-        address: evt.args.recipient.toLowerCase(),
-        blockNumber: Number(evt.blockNumber),
-        blockTime: Number(block.timestamp),
-        amountWei: evt.args.amount.toString(),
+        txHash: item.transaction_hash,
+        address: String(params_._recipient).toLowerCase(),
+        blockNumber: Number(blockNumber),
+        blockTime: Math.floor(new Date(item.block_timestamp).getTime() / 1000),
+        amountWei: String(params_._amount),
       });
     }
 
-    store.savePpCursor(to);
-    from = to + 1n;
+    if (reachedCoverage || !data.next_page_params) break;
+    params = '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(data.next_page_params).map(([k, v]) => [k, String(v)])),
+    ).toString();
   }
+
+  if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.savePpCursor(newestSeen);
 }
 
 async function scanCycle(store) {
