@@ -24,6 +24,14 @@
 //
 // The guest cannot check this for you: it only ever sees the key the transaction pays to. Which is also why
 // this is fixable here rather than in an immutable program.
+//
+// WIRED IN: dapp/tacit.js's buildSwapVarEnvelopeSelfFulfill and buildSwapRouteEnvelopeSelfFulfill both call
+// assertFreshRefundKey after deriving the refund key via deriveSwapRefundKey (a per-swap additive key tweak
+// off the trader's own priv key + the swap's own spent outpoint — deterministic, reconstructible, never the
+// trader's own key). NOT WIRED IN: T_SWAP_BATCH has no trader-side builder in this codebase at all yet
+// (dapp/confidential-swapbatch.js is fold/verify-only, operating on already-confirmed transactions — nothing
+// there signs anything). Whoever eventually writes that builder must call this guard with `otherRefundSpks`
+// populated from the rest of the batch's intents once assembled, per this module's original design.
 
 const strip = (h) => String(h == null ? '' : h).replace(/^0x/, '').toLowerCase();
 /// Accept either a P2TR scriptPubKey or a bare 32-byte x-only key, and NOTHING else. The `?? strip(v)`

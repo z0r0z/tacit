@@ -19,6 +19,7 @@ import { keccak_256 } from './vendor/tacit-deps.min.js';
 import { hmac } from './vendor/tacit-deps.min.js';
 import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
 import { bech32, base58, base32 } from './vendor/tacit-deps.min.js';
+import { assertFreshRefundKey } from './amm-refund-key.js';
 // sats-connect (the Xverse / Leather / OKX provider abstraction) is the
 // one vendor dependency most sessions never touch — burner/passkey users
 // fund in-page and never connect an external BTC wallet. It lives in its
@@ -25551,6 +25552,23 @@ function buildSwapVarIntentMsg({
   ));
 }
 
+const SWAP_REFUND_KEY_DOMAIN = new TextEncoder().encode('tacit-swap-refund-key-v1');
+
+// A fresh, per-swap key for a T_SWAP_VAR/T_SWAP_ROUTE refund output — never the trader's own key, so a
+// refund can never collide with the input note it stands in for (see dapp/amm-refund-key.js: a refund
+// mints the spent input's commitment VERBATIM, so reusing that note's own key makes the refund's leaf and
+// nullifier identical to the note this swap just spent — born already-nullified). Deterministic from the
+// trader's own priv key + the swap's own spent outpoint (public, recorded in the reveal tx itself), so a
+// trader can reconstruct it during recovery from their own transaction history with no extra state — the
+// same additive-tweak primitive already used for stealth-received UTXOs (computeStealthTweakedSk).
+function deriveSwapRefundKey(traderPriv, utxo) {
+  const voutLE = (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, utxo.vout >>> 0, true); return b; })();
+  const anchor = concatBytes(reverseBytes(hexToBytes(utxo.txid)), voutLE);
+  const blinding = BigInt('0x' + bytesToHex(hmac(sha256, traderPriv, concatBytes(SWAP_REFUND_KEY_DOMAIN, anchor)))) % SECP_N;
+  const priv = computeStealthTweakedSk({ underlyingPriv: traderPriv, blinding });
+  return { priv, pub: secp.getPublicKey(priv, true) };
+}
+
 // Pure envelope builder (no Bitcoin tx assembly).
 async function buildSwapVarEnvelopeSelfFulfill({
   poolReserves, assetInputUtxo,
@@ -25627,7 +25645,13 @@ async function buildSwapVarEnvelopeSelfFulfill({
   // re-clearing against the reserves at fold time misses minOut, it homes a note worth the trader's exact input
   // there instead of dropping the swap. Returned like changeScriptPubKey so the broadcast wrapper pays THIS
   // script — the guest reads vout 3 verbatim, so builder and emitter cannot drift.
-  const refundScriptPubKey = p2trScript(traderPub.slice(1));
+  // MUST be a fresh key, never the trader's own (== the input's own key): a refund mints the spent input's
+  // commitment verbatim (onboard_btc_refund), so paying the input's own key makes the refund's leaf/nullifier
+  // collide with the note this swap just spent, destroying it if the refund branch is ever taken. Deterministic
+  // from (traderPriv, this swap's own input outpoint) — reconstructible later with no extra state.
+  const refundKey = deriveSwapRefundKey(traderPriv, assetInputUtxo);
+  const refundScriptPubKey = p2trScript(refundKey.pub.slice(1));
+  assertFreshRefundKey({ refundSpk: refundScriptPubKey, inputAuthKeys: [bytesToHex(traderPub.slice(1))], label: 'swap_var' });
   const intentMsg = buildSwapVarIntentMsg({
     poolId: poolIdBytes, direction: dirInt,
     deltaIn: din, deltaInMin: dinMin, deltaInMax: dinMax,
@@ -25685,6 +25709,7 @@ async function buildSwapVarEnvelopeSelfFulfill({
     receiveScriptPubKey,
     changeScriptPubKey,
     refundScriptPubKey,
+    refundPriv: refundKey.priv, // recoverable any time via deriveSwapRefundKey(traderPriv, assetInputUtxo)
     kernelSig, intentSig,
     changeAmount,
     isWholeInput: changeAmount === 0n,
@@ -25975,7 +26000,11 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   // The refund destination (reveal-tx vout 2 — a route has no change output). Bound on every route: below
   // min_out the reflection homes a note worth the trader's exact input there instead of dropping the route, and
   // which branch it takes depends on the reserves as they stand when it folds.
-  const refundScriptPubKey = p2trScript(traderPub.slice(1));
+  // MUST be a fresh key, never the trader's own — see the identical comment + fix in
+  // buildSwapVarEnvelopeSelfFulfill above (deriveSwapRefundKey), same self-nullifying-refund hazard.
+  const refundKeyRoute = deriveSwapRefundKey(traderPriv, assetInputUtxo);
+  const refundScriptPubKey = p2trScript(refundKeyRoute.pub.slice(1));
+  assertFreshRefundKey({ refundSpk: refundScriptPubKey, inputAuthKeys: [bytesToHex(traderPub.slice(1))], label: 'swap_route' });
   const intentMsg = buildSwapRouteIntentMsg({
     traderPubkey: traderPub,
     traderInputAssetId: traderInputAssetIdBytes,
@@ -26050,6 +26079,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
     // The refund destination the intent binds: the broadcast wrapper MUST place this script at vout 2 — the
     // guest reads vout 2 verbatim (a missing refund output skips the whole fold after the input is nullified).
     refundScriptPubKey,
+    refundPriv: refundKeyRoute.priv, // recoverable any time via deriveSwapRefundKey(traderPriv, assetInputUtxo)
   };
 }
 
