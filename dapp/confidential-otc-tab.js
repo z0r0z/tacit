@@ -3,12 +3,17 @@
 //
 // PROTOCOL NOTE: a trustless OTC is a 3-message handshake — the shared opening-sigma context binds BOTH
 // parties' note commitments, so neither side can sign until both sets of commitments are exchanged. A
-// note's blinding `r` MUST NEVER appear in a shared artifact (it is bearer-spend authority). This tab
-// therefore does the part that is safe + guest-exact today: it VERIFIES a fully-assembled OTC offer
-// (every commitment + opening sigma present, as produced by a matcher or counterparty tooling) against
-// the live spend root, then submits it to the relay. The interactive composer (exchange commitments →
-// each party signs its own legs → assemble) is the follow-up; it reuses these same primitives, so a
-// passing verifyOtc here is the exact check the settle guest re-runs.
+// note's blinding `r` MUST NEVER appear in a shared artifact — it is a discrete-log secret, and
+// verifyOpeningSigma / cxfer-core::verify_opening_sigma is a standard, unforgeable Schnorr check over it,
+// so `r` alone is what would let a recipient forge an opening for a DIFFERENT context (spend the note
+// arbitrarily). `nk` is different: once a leg is signed, its `nk` cannot forge anything new — the guest
+// only ever uses it for nk_to_owner(nk)==owner and the nullifier of THIS SAME already-bound leaf/context —
+// so a SIGNED leg's `nk` is safe to disclose to the finalizer (or to anyone) alongside its sigmas; an
+// UNSIGNED leg's `nk` still isn't needed by anyone but its own owner. That is why step 2 below (the
+// taker's countersignature, sent after signing) includes `nk` — the finalizer needs it, has nothing else
+// to gain from it, and no separate out-of-band channel is required. The interactive composer (exchange
+// commitments → each party signs its own legs → assemble) is what drives all three steps; a passing
+// verifyOtc is the exact check the settle guest re-runs.
 
 import { secp, sha256, keccak_256 } from './vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
@@ -17,16 +22,21 @@ import { makeConfidentialOtc } from './confidential-otc.js';
 import { randomScalar } from './bulletproofs-plus.js';
 import { scanHealth, scanHealthHtml, inboundBadgeHtml, inboundSummaryHtml } from './confidential-scan-health.js';
 
-// Strip the client-only blindings (_r) from a leg before it leaves this browser. The opening sigmas (R,z)
-// are zero-knowledge; the raw _r is bearer-spend authority and must never be shared.
+// Strip the client-only blinding (_r) from a leg before it leaves this browser — the one field that must
+// never cross, signed or not (it is bearer-spend authority for any context, not just this trade). `nk` is
+// kept ONLY when the leg is already signed (sig present): unsigned, no one else needs it yet; signed, it
+// cannot forge a different spend (see the PROTOCOL NOTE above), so there is nothing left to protect by
+// withholding it, and the finalizer needs it to complete this exact trade.
 function publicLeg(leg) {
   const strip = (p) => p && { cx: p.cx, cy: p.cy, amount: p.amount.toString(), leafIndex: p.leafIndex, path: p.path, sig: p.sig };
-  return { owner: leg.owner, in: strip(leg.in), recv: strip(leg.recv), change: leg.change ? strip(leg.change) : null };
+  const signed = leg.in?.sig && leg.recv?.sig;
+  return { owner: leg.owner, nk: signed ? leg.nk : undefined, in: strip(leg.in), recv: strip(leg.recv), change: leg.change ? strip(leg.change) : null };
 }
-// Re-hydrate a pasted public leg's amounts to BigInt for verifyOtc / ctx.
+// Re-hydrate a pasted public leg's amounts to BigInt for verifyOtc / ctx. Carries `nk` through when the
+// leg included it (a signed leg from publicLeg) — undefined otherwise, same as an unsigned offer.
 function hydrateLeg(leg) {
   const h = (p) => p && { ...p, amount: BigInt(p.amount) };
-  return { owner: leg.owner, in: h(leg.in), recv: h(leg.recv), change: leg.change ? h(leg.change) : null };
+  return { owner: leg.owner, nk: leg.nk, in: h(leg.in), recv: h(leg.recv), change: leg.change ? h(leg.change) : null };
 }
 const OTC_DRAFT_KEY = 'tacit-otc-maker-draft-v1';
 
@@ -192,17 +202,12 @@ function wireComposer(wallet, ux, notes) {
       if (!draft.makerLeg) { if (st) st.textContent = 'No local maker draft — create the offer in step 1 first.'; return; }
       const reBig = (p) => p && { ...p, amount: BigInt(p.amount), _r: BigInt(p._r) };
       const maker = { owner: draft.makerLeg.owner, nk: draft.makerLeg.nk, in: reBig(draft.makerLeg.in), recv: reBig(draft.makerLeg.recv), change: draft.makerLeg.change ? reBig(draft.makerLeg.change) : null };
-      // `cs.taker` is the taker's PUBLIC countersignature (publicLeg strips nk on the way out, same as it
-      // strips the input blinding) — it never carries the taker's nk, so `assembled` below cannot reach
-      // the relay on its own. verifyOtc's nk_to_owner check rejects it with a clear error rather than let
-      // a witness missing the taker's nk reach the box (which the guest would fail on SILENTLY —
-      // EXECUTE_OK with pv_bytes = 0). A trustless 3-party handoff would need the relay to collect each
-      // side's nk directly from its own party — never routed through the counterparty, which would hand
-      // the maker outright spend authority over the taker's note — and this tab has no such co-submission
-      // channel. So this finalize step is only for the case where maker and taker are the same trusted
-      // operator (e.g. a matcher wallet holding both legs), which supplies the taker's nk out of band.
+      // `cs.taker` is the taker's PUBLIC countersignature — publicLeg keeps its `nk` (the leg is already
+      // signed by step 2, so `nk` cannot forge a different spend; see the PROTOCOL NOTE at the top of this
+      // file) while still stripping `_r`. So this genuinely finalizes a trade between two independent
+      // strangers: nothing here requires maker and taker to be the same operator.
       const taker = hydrateLeg(cs.taker);
-      if (cs.takerNk) taker.nk = cs.takerNk; // optional out-of-band field, not part of the public countersignature
+      if (taker.nk == null) throw new Error('finalize: the countersignature has no taker nk — was it produced by an older publicLeg?');
       const vA = BigInt(cs.vA), vB = BigInt(cs.vB);
       const ctx = otc.composeCtx({ assetA: cs.assetA, assetB: cs.assetB, chainBinding: cs.chainBinding, vA, vB, maker, taker, deadline: cs.deadline || 0 });
       otc.signLegs(maker, ctx, 'maker');

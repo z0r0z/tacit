@@ -127,4 +127,48 @@ function assemble({ vA, vB, makerIn, takerIn }) {
   ok('zero-amount and same-asset OTCs are rejected');
 }
 
+// ───────────────── 7. two independent strangers finalize — neither `_r` ever crosses ─────────────────
+// The 3-message composer (buildLeg/composeCtx/signLegs/assembleOtc) lets maker and taker sign their own
+// legs independently. This confirms the taker's ONLY disclosure to the finalizer (maker, here) is `nk`
+// plus its already-computed, context-bound sigmas — never `_r` — and that this is sufficient: `nk` alone
+// cannot forge an opening for any OTHER context (verifyOpeningSigma is a standard, unforgeable Schnorr
+// check over the discrete log of the commitment's blinding, per cxfer-core::verify_opening_sigma), so
+// once the taker's leg is signed, its `nk` is safe to hand to the finalizer directly in the same message
+// as the countersignature, with no separate secure channel.
+{
+  const vA = 100n, vB = 50n, makerIn = 100n, takerIn = 50n;
+  const mInR = randomScalar(), tInR = randomScalar();
+  const mInC = pool.commitXY(makerIn, mInR), tInC = pool.commitXY(takerIn, tInR);
+  const tree = new pool.Tree();
+  const mIdx = tree.insert(pool.leaf(ASSET_A, mInC.cx, mInC.cy, MAKER));
+  const tIdx = tree.insert(pool.leaf(ASSET_B, tInC.cx, tInC.cy, TAKER));
+  const spendRoot = tree.rootAndPath(0).root;
+
+  // Step 1 — maker proposes (unsigned), from its own note.
+  const maker = otcMod.buildLeg({ owner: MAKER, nk: MAKER_NK, inAmount: makerIn, inR: mInR,
+    inLeafIndex: mIdx, inPath: tree.rootAndPath(mIdx).path, give: vA, recvValue: vB, recvR: randomScalar(), changeR: null });
+
+  // Step 2 — taker independently builds + signs its OWN leg, using ONLY its own note's secrets.
+  const taker = otcMod.buildLeg({ owner: TAKER, nk: TAKER_NK, inAmount: takerIn, inR: tInR,
+    inLeafIndex: tIdx, inPath: tree.rootAndPath(tIdx).path, give: vB, recvValue: vA, recvR: randomScalar(), changeR: null });
+  const ctx = otcMod.composeCtx({ assetA: ASSET_A, assetB: ASSET_B, chainBinding: CHAIN_BINDING, vA, vB, maker, taker, deadline: 0 });
+  otcMod.signLegs(taker, ctx, 'taker');
+
+  // What the taker actually discloses to the finalizer: nk + the already-signed sigmas — no `_r`.
+  const stripR = (p) => p && { cx: p.cx, cy: p.cy, amount: p.amount, leafIndex: p.leafIndex, path: p.path, sig: p.sig };
+  const takerDisclosed = { owner: taker.owner, nk: taker.nk, in: stripR(taker.in), recv: stripR(taker.recv), change: taker.change ? stripR(taker.change) : null };
+  const flat = JSON.stringify(takerDisclosed, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  assert.ok(!/_r"/.test(flat), 'taker discloses no _r to the finalizer');
+  assert.ok(/"nk"/.test(flat), 'taker discloses nk (unavoidable, but not sufficient to forge a new spend)');
+
+  // Step 3 — maker (an independent stranger, never given taker's _r) finalizes using ONLY takerDisclosed.
+  otcMod.signLegs(maker, ctx, 'maker');
+  const assembled = otcMod.assembleOtc({ assetA: ASSET_A, assetB: ASSET_B, vA, vB, chainBinding: CHAIN_BINDING, spendRoot, maker, taker: takerDisclosed, deadline: 0 });
+  const { nullifiers, leaves } = otcMod.verifyOtc(assembled, { merkleRootFrom: pool.merkleRootFrom });
+  assert.strictEqual(nullifiers.length, 2, 'two nullifiers, finalized from taker data with no _r ever shared');
+  assert.strictEqual(leaves.length, 2, 'two leaves (no change on either side)');
+  assert.strictEqual(otcMod.toWireOp(assembled).taker.nk, TAKER_NK, 'wire still carries the taker nk the guest needs');
+  ok('two independent strangers finalize an OTC — taker never shares _r, only nk + pre-signed sigmas');
+}
+
 console.log(`\n${n} OP_OTC checks passed.`);
