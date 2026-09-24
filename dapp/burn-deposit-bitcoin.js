@@ -203,8 +203,11 @@ function noteSpendsBindOutputs(txHex, noteOutpoints) {
 }
 
 // extract_taproot_envelope (cxfer-core::bitcoin::extract_taproot_envelope): from the first input's witness
-// item[1] tapscript (PUSH32 xonly ‖ OP_CHECKSIG ‖ OP_FALSE OP_IF ‖ data pushes ‖ OP_ENDIF), concatenate the
-// pushed chunks, strip the "TACIT"‖0x01 frame, return the envelope (env[0] = opcode) as hex. null otherwise.
+// item[1] tapscript (PUSH32 xonly ‖ OP_CHECKSIG ‖ OP_FALSE OP_IF ‖ data pushes ‖ optional OP_ENDIF),
+// concatenate the pushed chunks, strip the "TACIT"‖0x01 frame, return the envelope (env[0] = opcode) as
+// hex. null otherwise. The push loop stops at OP_ENDIF or end-of-script, matching the guest exactly: a
+// script that never reaches its own OP_ENDIF is still valid Bitcoin (the branch simply ran to its end),
+// so this must not reject it — the guest does not.
 function extractTaprootEnvelope(txHex) {
   const tx = hexToBytes(txHex);
   if (tx.length < 6 || tx[4] !== 0x00 || tx[5] !== 0x01) return null;
@@ -226,9 +229,8 @@ function extractTaprootEnvelope(txHex) {
   if (sp >= script.length || script[sp] !== 0xac) return null; sp += 1; // OP_CHECKSIG
   if (sp + 1 >= script.length || script[sp] !== 0x00 || script[sp + 1] !== 0x63) return null; sp += 2; // OP_FALSE OP_IF
   const chunks = [];
-  let endif = false;
   while (sp < script.length) {
-    if (script[sp] === 0x68) { endif = true; break; } // OP_ENDIF
+    if (script[sp] === 0x68) break; // OP_ENDIF
     const op = script[sp]; sp += 1;
     if (op >= 1 && op <= 75) {
       if (sp + op > script.length) return null;
@@ -252,7 +254,6 @@ function extractTaprootEnvelope(txHex) {
       return null;
     }
   }
-  if (!endif) return null; // data pushes ran out the script without ever closing the OP_IF branch
   const payload = cat(chunks);
   const FRAME = [0x54, 0x41, 0x43, 0x49, 0x54, 0x01]; // "TACIT" ‖ v1
   if (payload.length <= 6 || !FRAME.every((b, i) => payload[i] === b)) return null;
