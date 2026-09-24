@@ -219,4 +219,40 @@ const SELLER = pool.nkToOwner(SELLER_NK);
   ok(`seed-only recovery: ${LOTS} received lots + live funding note recovered; single-shot path finds none`);
 }
 
+// ───────────────── 4. toShareableRestingBid: no `_r`/bidSecret, fillRestingLot still works ─────────────────
+// buildRestingBid already pre-signs every state's sigma at build time, so `_r`/bidSecret were never
+// actually needed downstream — toShareableRestingBid strips them, and fillRestingLot completes two
+// sequential lots from the stripped object alone (plus each seller's own leg), verifying identically.
+{
+  const maxFill = 100n, price = 5n, increment = 10n;
+  const fundR = randomScalar();
+  const rest = bidMod.buildRestingBid({
+    assetA: ASSET_A, assetB: ASSET_B, maxFill, price, increment, chainBinding: CB,
+    buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, bidSecret: BID_SECRET,
+  });
+  const shareable = bidMod.toShareableRestingBid(rest);
+  const flat = JSON.stringify(shareable, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  assert.ok(!/_r"|bidSecret/.test(flat), 'shareable resting bid carries no _r or bidSecret anywhere');
+  assert.ok(/"nk"/.test(flat), 'shareable resting bid still carries nk (unavoidable)');
+
+  const tree = new pool.Tree();
+  let headIdx = tree.insert(pool.leaf(ASSET_B, shareable.states[0].fund.cx, shareable.states[0].fund.cy, BUYER));
+  for (let i = 0; i < 2; i++) {
+    const C = BigInt(i) * increment;
+    const sInR = randomScalar();
+    const sInC = pool.commitXY(increment, sInR);
+    const sIdx = tree.insert(pool.leaf(ASSET_A, sInC.cx, sInC.cy, SELLER));
+    const spendRoot = tree.rootAndPath(0).root;
+    const filled = bidMod.fillRestingLot(shareable, C, {
+      spendRoot, fundLeafIndex: headIdx, fundPath: tree.rootAndPath(headIdx).path,
+      sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: increment, sellerInRSecp: sInR,
+      sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path, sellerRecvRSecp: randomScalar(),
+    });
+    const { leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.merkleRootFrom });
+    assert.strictEqual(leaves.length, 3, `lot ${i}: three leaves, verified from the shareable resting bid`);
+    headIdx = tree.insert(leaves[2]); // next funding (refund) becomes the new live head
+  }
+  ok('toShareableRestingBid (no _r/bidSecret ever shared) settles two lots identically to the raw path');
+}
+
 console.log(`\n${n} OP_BID resting checks passed.`);

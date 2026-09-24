@@ -293,6 +293,96 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return out;
   }
 
+  // ───────── Publishable (offline, no `_r` disclosure) single-shot grid ─────────
+  // fillBid signs the funding note's opening AT FILL TIME (needs bid.fund._r), which is why a `bid`
+  // fit for fillBid still carries the raw blinding — fine for a single trusted operator holding both
+  // sides, but not safe to hand to an arbitrary filler. This is the offline form the header comment
+  // above always described ("the buyer pre-signs one received-note opening per grid fill... offline"):
+  // sign every grid point's openings ONCE, upfront, so nothing downstream ever needs `_r`/`bidSecret`
+  // again. `nk` still has to reach whoever finalizes (see the module-end note) — that's unavoidable,
+  // since the guest checks nk_to_owner(nk) directly — but `nk` alone cannot forge an opening for any
+  // OTHER context (that needs `_r`, a discrete-log secret no signature here reveals), so what a filler
+  // actually receives only lets it complete one of the buyer's own pre-authorized fills, not spend the
+  // note arbitrarily.
+  function presignBidGrid(bid) {
+    const { assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, bidSecret, fund, deadline } = bid;
+    const grid = {};
+    for (let f = BigInt(minFill); f <= BigInt(maxFill); f += BigInt(increment)) {
+      const nonces = deriveBidNonces(bidSecret, f);
+      const raR = deriveNote(bidSecret, assetA, Number(f)).blinding;
+      const raC = commitXY(f, raR);
+      const buyerRecvA = { cx: raC.cx, cy: raC.cy };
+      let refundNote = null;
+      const refund = vFund - f * price;
+      if (f < BigInt(maxFill)) {
+        const rfR = deriveNote(bidSecret, assetB, Number(f)).blinding;
+        const rfC = commitXY(refund, rfR);
+        refundNote = { cx: rfC.cx, cy: rfC.cy };
+      }
+      const bNotes = [[fund.cx, fund.cy, buyerOwner], [buyerRecvA.cx, buyerRecvA.cy, buyerOwner]];
+      if (refundNote) bNotes.push([refundNote.cx, refundNote.cy, buyerOwner]);
+      const ctx = intentContext(BID_BUYER_TAG, chainBinding, assetA, assetB, bNotes, [minFill, maxFill, price, increment, f, BigInt(deadline ?? 0)]);
+      const fundSig = openingSigma(vFund, fund._r, ctx, nonces.fund);
+      buyerRecvA.sig = openingSigma(f, raR, ctx, nonces.recvA);
+      if (refundNote) refundNote.sig = openingSigma(refund, deriveNote(bidSecret, assetB, Number(f)).blinding, ctx, nonces.refund);
+      grid[f.toString()] = { fundSig, buyerRecvA, refundNote };
+    }
+    return { ...bid, grid };
+  }
+
+  // The object actually safe to hand to any filler: drops `_r` and `bidSecret` (only `presignBidGrid`
+  // ever needs them), keeps `nk` (unavoidable — see above) and every grid point's pre-signed openings.
+  function toShareableBid(bid) {
+    if (!bid.grid) throw new Error('bid: call presignBidGrid before toShareableBid');
+    const { assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner, vFund, deadline, fund, grid } = bid;
+    return { assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner, vFund, deadline,
+             fund: { cx: fund.cx, cy: fund.cy, leafIndex: fund.leafIndex, path: fund.path, nk: fund.nk }, grid };
+  }
+
+  // Any filler completes a `toShareableBid` output at one grid point — no buyer secret needed beyond
+  // what that object already carries. Same seller-side construction as fillBid; only the buyer side
+  // differs (read from the pre-signed grid instead of signing here).
+  function fillPresignedBid(shareableBid, { chosenF, sellerOwner, sellerNk, sellerInAmount, sellerInRSecp,
+                            sellerInLeafIndex, sellerInPath, sellerRecvRSecp, sellerChangeRSecp, fee = 0n }) {
+    if (sellerNk == null) throw new Error('bid: sellerNk (the seller input note\'s own secret nullifier key) is required');
+    chosenF = BigInt(chosenF);
+    const g = shareableBid.grid[chosenF.toString()];
+    if (!g) throw new Error('bid: chosenF is not on the presigned grid');
+    const { assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner, vFund, deadline, fund } = shareableBid;
+    sellerInAmount = BigInt(sellerInAmount);
+    if (sellerInAmount < chosenF) throw new Error('bid: seller input below fill');
+    const pay = chosenF * price, refund = vFund - pay;
+    fee = BigInt(fee);
+    if (!(fee < pay)) throw new Error('bid: fee >= seller payment');
+
+    const sInC = commitXY(sellerInAmount, sellerInRSecp);
+    const payC = commitXY(pay - fee, sellerRecvRSecp);
+    const sellerIn = { cx: sInC.cx, cy: sInC.cy, amount: sellerInAmount, owner: sellerOwner, nk: sellerNk,
+                       leafIndex: sellerInLeafIndex, path: sellerInPath, _r: BigInt(sellerInRSecp) };
+    const sellerRecvB = { cx: payC.cx, cy: payC.cy, amount: pay - fee, _r: BigInt(sellerRecvRSecp) };
+    let sellerChange = null;
+    const changeAmt = sellerInAmount - chosenF;
+    if (changeAmt > 0n) {
+      if (sellerChangeRSecp == null) throw new Error('bid: sellerChangeRSecp required when input exceeds fill');
+      const scC = commitXY(changeAmt, sellerChangeRSecp);
+      sellerChange = { cx: scC.cx, cy: scC.cy, amount: changeAmt, _r: BigInt(sellerChangeRSecp) };
+    } else if (sellerChangeRSecp != null) throw new Error('bid: sellerChangeRSecp given but input equals fill');
+
+    const sNotes = [[sellerIn.cx, sellerIn.cy, sellerOwner], [sellerRecvB.cx, sellerRecvB.cy, sellerOwner]];
+    if (sellerChange) sNotes.push([sellerChange.cx, sellerChange.cy, sellerOwner]);
+    const sellerCtx = intentContext(BID_SELLER_TAG, chainBinding, assetA, assetB, sNotes, [chosenF, price, fee]);
+    sellerIn.sig = openingSigma(sellerInAmount, sellerIn._r, sellerCtx, deriveOpeningNonce(sellerIn._r, sellerCtx, 'bid-seller-in'));
+    sellerRecvB.sig = openingSigma(pay - fee, sellerRecvB._r, sellerCtx, deriveOpeningNonce(sellerRecvB._r, sellerCtx, 'bid-seller-recv'));
+    if (sellerChange) sellerChange.sig = openingSigma(changeAmt, sellerChange._r, sellerCtx, deriveOpeningNonce(sellerChange._r, sellerCtx, 'bid-seller-change'));
+
+    return {
+      assetA, assetB, minFill, maxFill, price, increment, chainBinding, spendRoot, buyerOwner, vFund, deadline,
+      fund: { cx: fund.cx, cy: fund.cy, leafIndex: fund.leafIndex, path: fund.path, nk: fund.nk, sig: g.fundSig },
+      chosenF, pay, refund, fee, buyerRecvA: g.buyerRecvA, refundNote: g.refundNote,
+      sellerOwner, sellerIn, sellerRecvB, sellerChange,
+    };
+  }
+
   // ───────────────── Resting (multi-fill) bid ─────────────────
   // Turns the single-shot OP_BID into a RESTING order that many sellers fill over time, with NO guest
   // change. A resting order is a chain of standard OP_BID states: a fill of one `increment` lot spends
@@ -457,6 +547,38 @@ export function makeConfidentialBid({ keccak256, pool }) {
     return { cx: state.fund.cx, cy: state.fund.cy, amount: state.fund.amount, nk: state.fund.nk, _r: state.fund._r };
   }
 
+  // Same idea as toShareableBid, for the resting form: buildRestingBid already pre-signs every state's
+  // sigma at build time (unlike single-shot buildBid), so `_r`/`bidSecret` were never actually needed
+  // downstream — fillRestingLot only ever spreads state.fund/recv/refund's cx/cy/amount/nk/sig. Strip
+  // the two fields before this ever leaves the buyer's device.
+  function toShareableRestingBid(restingBid) {
+    const pub = (n) => n && { cx: n.cx, cy: n.cy, amount: n.amount, sig: n.sig };
+    const { assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, deadline, states } = restingBid;
+    return {
+      assetA, assetB, minFill, maxFill, price, increment, chainBinding, buyerOwner, vFund, deadline,
+      states: states.map((s) => ({ C: s.C, remaining: s.remaining,
+        fund: { ...pub(s.fund), nk: s.fund.nk }, recv: pub(s.recv), refund: pub(s.refund) })),
+    };
+  }
+
+  // Distribution note, now precise rather than a blanket "don't publish this": `nk` is unavoidably
+  // needed by whoever finalizes a fill — the guest checks nk_to_owner(nk) directly, as a private SP1
+  // input, never a signature — so no client-side trick hides it from a filler. But `nk` ALONE cannot
+  // forge an opening for a context the buyer never signed: that needs `_r`, a discrete-log secret no
+  // sigma reveals. The raw `buildBid`/`buildRestingBid` return DOES carry `_r`/`bidSecret` alongside
+  // `nk` — fine for a single trusted operator holding both sides of a fill, but if that whole object
+  // were ever handed to an arbitrary filler, `_r` is what turns "can complete one pre-authorized fill"
+  // into "can spend the funding note however it likes." `presignBidGrid`/`toShareableBid` (single-shot)
+  // and `toShareableRestingBid` (resting) are the objects actually fit to publish: `_r`/`bidSecret`
+  // dropped, `nk` + every grid point's already-computed openings kept. What a filler holding one of
+  // those can do is bounded to completing an already-authorized fill — not open-ended bearer risk — so
+  // the funding note does not strictly need to be disposable for that reason. It is still worth funding
+  // bids from a dedicated note rather than a reused one, for the separate, narrower reason the original
+  // finding raised: `nk` (and so `owner = H(nk)`) becoming known to a filler lets that filler compute
+  // the nullifier of any other note sharing the same owner ahead of time — a linkage concern, not a
+  // theft one.
+
   return { buildBid, fillBid, verifyBid, recoverBidOutputs, recoverRestingBidOutputs, deriveBidNonces,
-           buildRestingBid, fillRestingLot, restingFundingNote, toWireOp, BID_BUYER_TAG, BID_SELLER_TAG };
+           presignBidGrid, toShareableBid, fillPresignedBid,
+           buildRestingBid, fillRestingLot, restingFundingNote, toShareableRestingBid, toWireOp, BID_BUYER_TAG, BID_SELLER_TAG };
 }

@@ -157,4 +157,46 @@ function assemble({ minFill, maxFill, price, increment, chosenF, sellerIn }) {
   ok('shorting the buyer fill (10 vs owed 40 A) breaks a buyer opening — fill is enforced');
 }
 
+// ───────────────── 9. presigned-grid path: no `_r`/bidSecret in the shareable object ─────────────────
+// presignBidGrid + toShareableBid produce the object actually safe to hand to an arbitrary filler.
+// Confirms it (a) contains no secret field anywhere (recursive scan), (b) fillPresignedBid completes a
+// fill from it alone (plus the seller's own leg) and produces the SAME filled shape fillBid does, and
+// (c) verifyBid accepts it — the guest sees no difference between the two paths.
+{
+  const fundR = randomScalar();
+  const vFund = 500n; // maxFill(100) * price(5)
+  const fundC = pool.commitXY(vFund, fundR);
+  const sInR = randomScalar();
+  const sInC = pool.commitXY(40n, sInR);
+  const tree = new pool.Tree();
+  const fundIdx = tree.insert(pool.leaf(ASSET_B, fundC.cx, fundC.cy, BUYER));
+  const sIdx = tree.insert(pool.leaf(ASSET_A, sInC.cx, sInC.cy, SELLER));
+  const spendRoot = tree.rootAndPath(0).root;
+
+  const bid = bidMod.buildBid({
+    assetA: ASSET_A, assetB: ASSET_B, minFill: 10, maxFill: 100, price: 5, increment: 10, chainBinding: CB,
+    spendRoot, buyerOwner: BUYER, nk: BUYER_NK, fundRSecp: fundR, fundLeafIndex: fundIdx,
+    fundPath: tree.rootAndPath(fundIdx).path, bidSecret: BID_SECRET,
+  });
+  const presigned = bidMod.presignBidGrid(bid);
+  assert.strictEqual(Object.keys(presigned.grid).length, 10, 'one pre-signed entry per grid point (10..100 step 10)');
+  const shareable = bidMod.toShareableBid(presigned);
+
+  const flat = JSON.stringify(shareable, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  assert.ok(!/_r"|bidSecret/.test(flat), 'shareable bid carries no _r or bidSecret anywhere');
+  assert.ok(/"nk"/.test(flat), 'shareable bid still carries nk (unavoidable)');
+
+  const filled = bidMod.fillPresignedBid(shareable, {
+    chosenF: 40, sellerOwner: SELLER, sellerNk: SELLER_NK, sellerInAmount: 40, sellerInRSecp: sInR,
+    sellerInLeafIndex: sIdx, sellerInPath: tree.rootAndPath(sIdx).path, sellerRecvRSecp: randomScalar(),
+  });
+  assert.strictEqual(filled.pay, 200n, 'pay = 40·5, same as the fillBid path');
+  assert.strictEqual(filled.refund, 300n, 'refund = (100−40)·5, same as the fillBid path');
+  const { nullifiers, leaves } = bidMod.verifyBid(filled, { merkleRootFrom: pool.merkleRootFrom });
+  assert.strictEqual(nullifiers.length, 2, 'two nullifiers, verified from the presigned-grid path');
+  assert.strictEqual(leaves.length, 3, 'three leaves, verified from the presigned-grid path');
+  assert.strictEqual(bidMod.toWireOp(filled).fund.nk, BUYER_NK, 'toWireOp still carries the funding nk it needs');
+  ok('presigned-grid path (no _r/bidSecret ever shared) settles identically to the fillBid path');
+}
+
 console.log(`\n${n} OP_BID checks passed.`);
