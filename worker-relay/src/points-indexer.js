@@ -303,9 +303,12 @@ function startHttp(store) {
           const startDay = Math.floor(CFG.pointsProgramStartSec / 86400);
           const todayDay = Math.floor(Date.now() / 1000 / 86400);
           const dayStart = todayDay * 86400;
-          const row = store.dayPointsByAddress(dayStart, dayStart + 86400)
-            .find((r) => r.address.toLowerCase() === address.toLowerCase());
-          today = { points: row ? row.dayPoints : 0, dayBudgetWei: dayBudgetWei(todayDay - startDay).toString() };
+          const dayRows = store.dayPointsByAddress(dayStart, dayStart + 86400);
+          const row = dayRows.find((r) => r.address.toLowerCase() === address.toLowerCase());
+          // The running total as of THIS request, not a settled end-of-day figure — it moves as more
+          // addresses deposit today, same as `row`'s own count does.
+          const totalPoints = dayRows.reduce((s, r) => s + r.dayPoints, 0);
+          today = { points: row ? row.dayPoints : 0, totalPoints, dayBudgetWei: dayBudgetWei(todayDay - startDay).toString() };
         }
         res.end(JSON.stringify({ ...total, today, deposits }));
         return;
