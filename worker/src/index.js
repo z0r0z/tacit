@@ -1980,7 +1980,12 @@ function handleConfidentialQuote(req, env, url, cors) {
             if (cap < tipWei) tipWei = cap;
           }
           out.recommendedWrapTipWei = tipWei.toString();
-        } catch { /* leave recommendedWrapTipWei unset — callers should treat a missing field as "ask again" */ }
+          // Self-settle (SettleTipForwarder.settleWithTip) carries no gas leg: the caller is already
+          // broadcasting their own settle transaction and paying its gas directly, so the wrap figure's
+          // gas component would bill them again for gas they never cost the relay. This is the prove
+          // leg alone (+ the same margin) — the only cost self-settle actually adds to the relay's bill.
+          out.recommendedProveTipWei = (proveCostWei + (proveCostWei * marginBps) / 10000n).toString();
+        } catch { /* leave recommendedWrapTipWei/recommendedProveTipWei unset — callers should treat a missing field as "ask again" */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
     })();
