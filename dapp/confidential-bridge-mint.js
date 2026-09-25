@@ -167,7 +167,7 @@ export function makeConfidentialBridgeMint({ pool, ct, relay = null, fetchImpl =
   // committing the Ethereum destination to v_burn − fee, plus the destination opening the mint will need. The
   // caller wraps `envelope` in the standard commit/reveal Taproot envelope ("TACIT"‖v1 frame, script-path spend
   // as vin[0]) and spends the burned note in another input of the same reveal tx; that tx must spend no other
-  // reflected note. Pass `deriveDestBlinding(nullifier)` (e.g. deriveBridgeMintBlinding from bridge-mint-recovery.js,
+  // reflected note. bridge-burn-broadcast.js builds, checks and broadcasts that pair. Pass `deriveDestBlinding(nullifier)` (e.g. deriveBridgeMintBlinding from bridge-mint-recovery.js,
   // keyed by the wallet) instead of `dest.blinding` so the minted note is recoverable from the seed.
   function buildBridgeBurnEnvelope({ asset, bitcoinPoolRoot, chainBinding, sourceClass = SOURCE_REFLECTED_BOUND, burned, fee = 0n, dest, deriveDestBlinding = null }) {
     const cls = Number(sourceClass);

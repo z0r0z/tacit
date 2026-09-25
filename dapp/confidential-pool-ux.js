@@ -29,6 +29,7 @@ import { makeConfidentialAirdrop } from './confidential-airdrop.js';
 import { makeTacAirdrop, makeRpcCall as makeAirdropRpcCall } from './tac-airdrop.js';
 import { makeConfidentialLockScan } from './confidential-lock-scan.js';
 import { makeConfidentialBridgeMint } from './confidential-bridge-mint.js';
+import { makeBridgeBurnBroadcaster } from './bridge-burn-broadcast.js';
 import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar, bppGens, G as BPP_G } from './bulletproofs-plus.js';
 import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
@@ -1875,6 +1876,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const _stealth = makeConfidentialStealth({ keccak256, secp, signSchnorr, curveOrder: SECP_N, pool, transfer: _ct });
   // BTC→ETH: mint the Ethereum note for a folded Bitcoin bridge burn through the relay (fee carried in the note).
   const _bridgeMint = makeConfidentialBridgeMint({ pool, ct: _ct, relay, fetchImpl: _fetch, relayBase: cfg.relayBase });
+  // The Bitcoin half: burn a reflected note on Bitcoin (standard commit/reveal, paid in BTC) toward this pool.
+  // `prims` is makeBtcWallet(...).prims; the result's mintArgs go to bridgeMint.bridgeMint once the burn is folded.
+  const _bridgeBurn = makeBridgeBurnBroadcaster({ pool, bridgeMint: _bridgeMint, fetchImpl: _fetch, relayBase: cfg.relayBase });
+  function bridgeBurnToPool({ prims, chainBinding, ...args } = {}) {
+    return _bridgeBurn.broadcastBridgeBurn({ ...args, prims, chainBinding: chainBinding || chainBindingHex() });
+  }
   function buildTransferOp({ walletPriv, notes, recipientPubHex, amount, fee = 0n, feeUsd = null }) {
     if (!notes || !notes.length) throw new Error('transfer: no input notes');
     const asset = notes[0].asset;
@@ -3283,5 +3290,5 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     cbtcLockState, syncCbtcLockReservations,
-    relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
+    relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }
