@@ -26,6 +26,7 @@ or attestor set signs a bridge message.
 - **App:** [tacit.finance](https://tacit.finance)
 - **Spec:** [`SPEC.md`](./SPEC.md), the normative protocol
 - **Whitepaper:** [tacit.finance/tacit-v1](https://tacit.finance/tacit-v1) (source in [`whitepaper/`](./whitepaper/WHITEPAPER.md)), design and rationale
+- **Secret Sats paper:** [tacit.finance/secret-sats](https://tacit.finance/secret-sats), private payments on Bitcoin itself
 - **Contracts:** [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md), mainnet addresses and verifying keys
 - **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
   live deployment against this repository
@@ -126,7 +127,7 @@ fractional BTC slots. See [SPEC §10](./SPEC.md#10-extensions-and-covenant-place
 
 ## Secret Sats: special-purpose pools
 
-[Secret Sats](https://tacit.finance/sats) ([paper](https://tacit.finance/secret-sats.pdf)) is a
+[Secret Sats](https://tacit.finance/sats) ([paper](https://tacit.finance/secret-sats)) is a
 Bitcoin-native shielded pool for private payments. It complements the confidential pool; it does not
 replace it.
 
@@ -208,7 +209,7 @@ tools/ scripts/  operational and verification tools
 docs/            integrator guides: build a dapp, deployments, ceremony artifacts, farms, airdrop, recovery,
                  reproducible builds, live verification
 audit/           security reviews
-whitepaper/      whitepaper (.md, .tex, .pdf)
+whitepaper/      the papers: the Tacit whitepaper (.md, .tex, .pdf) and Secret Sats (.tex, .pdf)
 ```
 
 ## Brand assets
