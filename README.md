@@ -124,6 +124,34 @@ is in [`docs/CEREMONY.md`](./docs/CEREMONY.md).
 yet enforce. The main one is covenant-locked cBTC with no escrow. The others are on-chain bid escrow and
 fractional BTC slots. See [SPEC §10](./SPEC.md#10-extensions-and-covenant-placeholders).
 
+## Secret Sats: special-purpose pools
+
+[Secret Sats](https://tacit.finance/sats) ([paper](https://tacit.finance/secret-sats.pdf)) is a
+Bitcoin-native shielded pool for private payments. It complements the confidential pool; it does not
+replace it.
+
+- **General pool, general prover.** The confidential pool runs open-ended DeFi and the bridge, so it uses
+  the SP1 zkVM: one program for many ops, one immutable verifier, and batched proofs whose cost is shared.
+  System-level work stays there: reflection, batch settlement, cross-chain facts.
+- **Special-purpose pools, fixed circuits.** A pool that does one thing, such as private payments, uses a
+  small fixed circuit. Users prove their own spends on their device in seconds, so no prover sees their
+  amounts and nobody pays for proving. Indexers verify each proof locally against Bitcoin data, and
+  relayers post spends for a fee paid inside the pool, so a sender needs no Bitcoin wallet.
+- **The Bitcoin pool.** It carries bitcoin-backed Tacit assets, cBTC first. Shield and exit connect to
+  ordinary Tacit notes through a cross-curve proof and a range proof. Joining is one step (buy-and-shield)
+  and so is leaving (exit-to-sats, with the maker's payout bound into the signed spend). It runs on
+  signet; the mainnet proof system is Halo2 with KZG over the Hermez setup already pinned, so it needs no
+  new ceremony.
+- **Sats in and out.** Atomic swaps move sats in and out with no custodian. A BitVM peg and, once Bitcoin
+  allows them, covenants can back the same pool unchanged. Secret Sats Join mixes real sats in an
+  equal-amount join to silent-payment outputs, with no coordinator and no custody.
+
+Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled). Design:
+[pool](./contracts/sp1/confidential/DESIGN-btc-shielded-pool.md),
+[security](./contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md),
+[BTC boundary](./contracts/sp1/confidential/DESIGN-btc-pool-native-peg.md),
+[join](./contracts/sp1/confidential/DESIGN-secret-sats-join.md).
+
 ## Privacy and trust
 
 - **Hidden:** amounts, which owned note a pool spend consumes, and stealth recipients.
