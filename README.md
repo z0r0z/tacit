@@ -8,8 +8,8 @@
 Ethereum.**
 
 Live on Ethereum mainnet since 2026-09-18 ([contracts and addresses](./docs/DEPLOYMENTS.md)). The first
-Bitcoin-native AMM pool, founded directly on Bitcoin with no Ethereum contract, went live 2026-09-22
-([pool and reserves](./docs/DEPLOYMENTS.md#bitcoin-native-amm-pool)).
+Bitcoin-native AMM pool, founded directly on Bitcoin with no Ethereum contract, is live in the indexer as
+of 2026-09-25 ([pool and reserves](./docs/DEPLOYMENTS.md#bitcoin-native-amm-pool)).
 
 Tacit is a Bitcoin metaprotocol. Assets are issued and transferred in Taproot envelopes. Amounts are
 hidden by Pedersen commitments and range proofs, and any indexer running the spec reaches the same state
@@ -61,7 +61,8 @@ or attestor set signs a bridge message.
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
 - Trade on a confidential AMM: swaps, routes and liquidity. OTC also runs here. `OP_BID` is a real,
-  guest-verified op, but no wallet builds it yet — Bitcoin's bid path (above) has no pool-side twin today.
+  guest-verified op with a complete, tested wallet-side implementation (`confidential-bid.js`); it has no
+  dedicated UI tab yet.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
 - Use adaptor locks for atomic cross-chain swaps — the primitives are guest-verified; no dapp module
   assembles the op yet.
