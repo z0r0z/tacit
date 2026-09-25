@@ -386,6 +386,51 @@ services:
       - key: PORT
         value: "10000"
 
+  # Always-on web service: the same replay plus the pool relayer (src/lib/btc-pool-relayer.js), mounted at
+  # /btc-pool/relay because BTC_POOL_RELAYER_* keys are set. Kept separate from tacit-btc-pool so the public
+  # indexer stays keyless. The relayer key holds only its own signet coins: one confirmed coin is reserved as
+  # each batch's carrier bind, the rest fund commits.
+  - type: web
+    name: tacit-btc-pool-relay
+    runtime: docker
+    rootDir: .
+    dockerfilePath: ./worker-relay/Dockerfile.btc-pool
+    dockerContext: .
+    plan: starter
+    region: oregon
+    dockerCommand: node src/btc-pool-indexer.js
+    healthCheckPath: /health
+    autoDeploy: false
+    disk:
+      name: btc-pool-relay-db
+      mountPath: /var/lib/tacit-btc-pool
+      sizeGB: 1
+    envVars:
+      # DELIBERATELY NOT `fromGroup: tacit-relay-shared`: it holds only its own signet relayer keys.
+      - key: BTC_POOL_NETWORK
+        value: signet
+      - key: BTC_POOL_START_HEIGHT
+        value: "323678"
+      - key: BTC_POOL_ESPLORA
+        value: https://mempool.space/signet/api
+      - key: BTC_POOL_CONFIRMATIONS
+        value: "1"
+      - key: BTC_POOL_POLL_SECS
+        value: "30"
+      - key: BTC_POOL_DB
+        value: /var/lib/tacit-btc-pool/btc-pool-zk.db
+      - key: BTC_POOL_RELAYER_MEMPOOL
+        value: esplora
+      # <asset hex>:<fee units>, comma-separated. Signet cBTC.
+      - key: BTC_POOL_RELAYER_FEES
+        value: "17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5:100"
+      - key: BTC_POOL_RELAYER_BTC_KEY      # signet P2WPKH key, hex — set in the Render dashboard
+        sync: false
+      - key: BTC_POOL_RELAYER_POOL_SEED    # 32-byte hex pool wallet seed — set in the Render dashboard
+        sync: false
+      - key: PORT
+        value: "10000"
+
   # Always-on web service: Secret Sats signet faucet (src/sats-faucet.js). Keeps FAUCET_TARGET_LISTINGS
   # pre-authorized cBTC sales listed on the control-plane worker (relisting before expiry and after takes), serves
   # GET /faucet/status, and drips signet sats on POST /faucet/sats. Signet only.
