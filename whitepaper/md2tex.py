@@ -93,8 +93,9 @@ def blocks(text):
             para.append(lines[i]); i += 1
         k = i
         while k < len(lines) and not lines[k].strip(): k += 1
-        keep = para[-1].rstrip().endswith(':') and k < len(lines) and lines[k].startswith('|')
-        emit(('\\needspace{9\\baselineskip}\n' if keep else '') + inline('\n'.join(para)), glue=g)
+        lead = para[-1].rstrip().endswith(':') and k < len(lines)
+        need = '9' if lead and lines[k].startswith('|') else '4' if lead and re.match(r'^(- |\\d+\\. )', lines[k]) else None
+        emit(('\\needspace{' + need + '\\baselineskip}\n' if need else '') + inline('\n'.join(para)), glue=g)
     return ''.join(sep + x for sep, x in out).lstrip('\n')
 
 # abstract
