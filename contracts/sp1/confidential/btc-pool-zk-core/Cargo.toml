@@ -1,0 +1,23 @@
+[package]
+name = "btc-pool-zk-core"
+version = "0.1.0"
+edition = "2021"
+
+# Client-proved Bitcoin shielded pool: note model, Poseidon (circomlib), tree, nullifier, body hash, the
+# secp↔BabyJub boundary check and the native Groth16 verify indexers run. Reference twin of
+# dapp/btc-pool-zk.js; circuit dapp/circuits/btc-pool/spend.circom. Reuses the guest's babyjubjub.rs and
+# groth16.rs sources and cxfer-core's BP+ verifier. Standalone.
+[workspace]
+
+[dependencies]
+cxfer-core = { path = "../cxfer-core" }
+bn = { package = "substrate-bn-succinct-rs", version = "0.6.0", default-features = false }
+num-bigint = "0.4"
+sha2 = "0.10"
+serde_json = "1"
+
+[dev-dependencies]
+hex = "0.4"
+
+[profile.release]
+overflow-checks = true
