@@ -7,17 +7,19 @@
 // DESIGN-btc-shielded-pool-security.md (the formal goals this acceptance order is required to uphold).
 //
 // NOT WIRED IN. This module is not imported by worker/src/index.js and nothing in the worker's request
-// handlers, cron scan, or startup path references it. There is no pinned verifying key for the fourth SP1
-// guest (DESIGN-btc-shielded-pool.md §4/§12 step 2) — `verifyBtcPoolSpendProof` below is a deliberate stub
-// that always fails closed. Wiring this into the live scan loop before that guest exists and its
-// verifying key is pinned would mean silently accepting unverified spend envelopes, which is exactly what
-// the design's whole security argument depends on not happening (security doc A3 / G2 / G4). Whoever wires
-// this in for real must: (1) get a real ELF-pinned verifying key from Phase 2, (2) replace
-// `verifyBtcPoolSpendProof`'s stub body, (3) hook `parseBtcPoolEnvelope`/`BtcShieldedPoolState` into the
-// same per-block replay loop `worker/src/index.js` already runs for every other opcode, in the same
-// canonical transaction-index order (§10), (4) claim 0x6C/0x6D in SPEC.md's opcode table per its own
-// stated procedure (SPEC §3.9) — deliberately not done here (see DESIGN doc "Fit with the rest of Tacit
-// V1"; out of scope for this phase).
+// handlers, cron scan, or startup path references it. The fourth SP1 guest now has a real, pinned
+// verifying key (contracts/sp1/confidential/elf-vkey-pin.json:btc_pool_vkey, ELF built and committed) and
+// a real off-chain verifier (worker-relay/src/lib/btc-pool-verify.js — a free `eth_call` against the live,
+// immutable SP1 Groth16 verifier every settle/reflection proof already trusts; this pool has no EVM
+// contract of its own to call it from). `verifyBtcPoolSpendProof` below is still a deliberate stub that
+// always fails closed: `acceptBtcSpendEnvelope`'s `verifyProof` option is how a caller supplies the real
+// implementation, and this plain `worker` module (no EVM deps by design) is not that caller. Wiring this
+// in for real still needs: (1) hook `parseBtcPoolEnvelope`/`BtcShieldedPoolState` into the same per-block
+// replay loop `worker/src/index.js` already runs for every other opcode, in the same canonical
+// transaction-index order (§10), passing `verifyProof: verifyBtcPoolSpendProof` from
+// worker-relay/src/lib/btc-pool-verify.js at the call site, (2) claim 0x6C/0x6D in SPEC.md's opcode table
+// per its own stated procedure (SPEC §3.9) — deliberately not done here (see DESIGN doc "Fit with the
+// rest of Tacit V1"; out of scope for this phase).
 //
 // Crypto: @noble/secp256k1 + @noble/hashes, the same libraries worker/src/index.js itself imports (not
 // dependency-injected — this module is worker-side, unlike the dapp's DI'd confidential-pool.js).
@@ -307,13 +309,12 @@ export function btcPoolMerkleRootFrom(leafHex, index, path) {
 // so a caller that forgets to check the return value still rejects the envelope instead of accepting an
 // unverified spend.
 //
-// TODO(btc-pool-guest): once Phase 2 lands, replace this body with a real Groth16 verification call
-// against the pinned verifying key for the btc-pool guest (same shape as whatever verifies the settle/
-// swap-batch guests' proofs today), and update every caller's acceptance-order check (§10 step 5) to treat
-// a `false` return as "reject, mutate nothing" — which is already how `acceptBtcSpendEnvelope` below
-// treats it, so no call-site change should be needed once this function itself is real.
-export function verifyBtcPoolSpendProof(_proofHex, _publicStatement) {
-  return false; // STUB — no verifying key pinned yet. See comment above. Never returns true.
+// The real implementation now exists (worker-relay/src/lib/btc-pool-verify.js:verifyBtcPoolSpendProof) —
+// this stub remains the DEFAULT for `acceptBtcSpendEnvelope`'s injectable `verifyProof` option, since this
+// plain `worker` module has no EVM/network access by design. Same (statement, proofHex) argument order as
+// the real implementation, so swapping one for the other at a call site is a drop-in — never returns true.
+export async function verifyBtcPoolSpendProof(_publicStatement, _proofHex) {
+  return false; // STUB — this module never verifies for real. See comment above.
 }
 
 // ── §10 acceptance-order state machine ──
@@ -358,7 +359,7 @@ export function acceptBtcShieldEnvelope(state, parsedShield, { chainCtx, hPointH
   return { accepted: true, leaf, leafIndex: index };
 }
 
-export function acceptBtcSpendEnvelope(state, parsedSpend, { chainCtx, verifyProof = verifyBtcPoolSpendProof } = {}) {
+export async function acceptBtcSpendEnvelope(state, parsedSpend, { chainCtx, verifyProof = verifyBtcPoolSpendProof } = {}) {
   if (!parsedSpend || parsedSpend.type !== 'btc_spend') return { accepted: false, reason: 'not a spend envelope' };
 
   // §10 step 2a (exit only): exit_vout names a real output of this transaction, and its real value/script
@@ -394,15 +395,18 @@ export function acceptBtcSpendEnvelope(state, parsedSpend, { chainCtx, verifyPro
   const root = state.rootsByHeight.get(anchorHeight);
   if (!root) return { accepted: false, reason: 'no root retained at h_anchor' };
 
-  // §10 step 5: proof verifies against that root, and (once a real verifier exists) the guest's committed
-  // statement matches the published envelope field-by-field. The stub above always fails closed.
+  // §10 step 5: proof verifies against that root, and the guest's committed statement matches the
+  // published envelope field-by-field. `verifyProof` may be a real, async on-chain check (see
+  // worker-relay/src/lib/btc-pool-verify.js) or the fail-closed stub below — always awaited, since a real
+  // check is inherently a network call and awaiting a non-Promise value from the stub is a no-op.
   const publicStatement = {
     asset: parsedSpend.asset, root, hAnchor: parsedSpend.hAnchor, outKind: parsedSpend.outKind,
     nullifiers: parsedSpend.nullifiers, outputs: parsedSpend.outputs,
+    hasExitVout: parsedSpend.outKind === BTC_POOL_OUT_EXIT,
     exitVout: parsedSpend.exitVout, exitValue: parsedSpend.exitValue, destSpkHash: parsedSpend.destSpkHash,
   };
-  const proofOk = verifyProof(parsedSpend.proof, publicStatement);
-  if (!proofOk) return { accepted: false, reason: 'proof does not verify (no pinned verifying key yet — see verifyBtcPoolSpendProof)' };
+  const proofOk = await verifyProof(publicStatement, parsedSpend.proof);
+  if (!proofOk) return { accepted: false, reason: 'proof does not verify' };
 
   // §10 step 6, only now: append new leaves (pay) or none (exit), insert nullifiers.
   const newLeaves = [];

@@ -229,7 +229,7 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
   const state = makeBtcShieldedPoolState();
   commitBtcPoolBlockRoot(state, 100);
   const goodCtx = { txOutputs: [{ valueSats: 0n }, { valueSats: 77_000n, scriptPubKeyHash: destSpkHash }] };
-  const res = acceptBtcSpendEnvelope(state, parsed, { chainCtx: goodCtx, verifyProof: alwaysAccept });
+  const res = await acceptBtcSpendEnvelope(state, parsed, { chainCtx: goodCtx, verifyProof: alwaysAccept });
   assert.equal(res.accepted, true, 'exit accepted when real output value AND destination both match');
   assert.ok(state.nullifierSet.has(nf.toLowerCase()), 'accepted exit inserts its nullifier');
   ok('acceptBtcSpendEnvelope (exit) accepts when both value and destination match real chain data');
@@ -237,7 +237,7 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
   const state2 = makeBtcShieldedPoolState();
   commitBtcPoolBlockRoot(state2, 100);
   const wrongValueCtx = { txOutputs: [{ valueSats: 0n }, { valueSats: 76_999n, scriptPubKeyHash: destSpkHash }] };
-  const res2 = acceptBtcSpendEnvelope(state2, parsed, { chainCtx: wrongValueCtx, verifyProof: alwaysAccept });
+  const res2 = await acceptBtcSpendEnvelope(state2, parsed, { chainCtx: wrongValueCtx, verifyProof: alwaysAccept });
   assert.equal(res2.accepted, false, 'exit rejected when real output value disagrees with exit_value');
   assert.equal(state2.nullifierSet.size, 0, 'a rejected exit mutates nothing');
   ok('acceptBtcSpendEnvelope (exit) rejects a value mismatch and mutates nothing');
@@ -245,7 +245,7 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
   const state3 = makeBtcShieldedPoolState();
   commitBtcPoolBlockRoot(state3, 100);
   const wrongDestCtx = { txOutputs: [{ valueSats: 0n }, { valueSats: 77_000n, scriptPubKeyHash: rand32() }] };
-  const res3 = acceptBtcSpendEnvelope(state3, parsed, { chainCtx: wrongDestCtx, verifyProof: alwaysAccept });
+  const res3 = await acceptBtcSpendEnvelope(state3, parsed, { chainCtx: wrongDestCtx, verifyProof: alwaysAccept });
   assert.equal(res3.accepted, false, 'exit rejected when real output scriptPubKey disagrees with dest_spk_hash — value-correct, recipient-wrong is still rejected');
   ok('acceptBtcSpendEnvelope (exit) rejects a destination mismatch even when the value matches');
 }
@@ -262,9 +262,9 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
   const ctx = { txOutputs: [{ valueSats: 1n, scriptPubKeyHash: parsed.destSpkHash }] };
   const alwaysAccept = () => true;
 
-  const first = acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
+  const first = await acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
   assert.equal(first.accepted, true, 'first spend of a nullifier is accepted');
-  const replay = acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
+  const replay = await acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
   assert.equal(replay.accepted, false, 'replaying the same nullifier a second time is rejected');
   assert.match(replay.reason, /already spent/);
   ok('acceptBtcSpendEnvelope rejects a replayed nullifier (double-spend resistance)');
@@ -282,18 +282,18 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
 
   const state = makeBtcShieldedPoolState();
   commitBtcPoolBlockRoot(state, 1000 - BTC_POOL_ANCHOR_WINDOW); // exactly at the edge — retained
-  const atEdge = acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
+  const atEdge = await acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
   assert.equal(atEdge.accepted, true, 'h_anchor exactly W blocks behind the only retained root is still accepted');
   ok('acceptBtcSpendEnvelope accepts an h_anchor at the edge of the retained window');
 
   const state2 = makeBtcShieldedPoolState();
   commitBtcPoolBlockRoot(state2, 1000 - BTC_POOL_ANCHOR_WINDOW - 1); // one block too old
-  const tooOld = acceptBtcSpendEnvelope(state2, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
+  const tooOld = await acceptBtcSpendEnvelope(state2, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
   assert.equal(tooOld.accepted, false, 'h_anchor outside the retained window is rejected');
   ok('acceptBtcSpendEnvelope rejects an h_anchor outside the retained anchor window');
 
   const state3 = makeBtcShieldedPoolState(); // no roots retained at all
-  const noRoot = acceptBtcSpendEnvelope(state3, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
+  const noRoot = await acceptBtcSpendEnvelope(state3, parsed, { chainCtx: ctx, verifyProof: alwaysAccept });
   assert.equal(noRoot.accepted, false, 'h_anchor with no retained root at all is rejected');
   ok('acceptBtcSpendEnvelope rejects when no root is retained for h_anchor');
 }
@@ -302,7 +302,7 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
 // Proof-verification stub fails closed (design §4/§12 step 2 — no guest/verifying key yet)
 // ────────────────────────────────────────────────────────────────────────────
 {
-  assert.equal(verifyBtcPoolSpendProof('0x' + 'ff'.repeat(256), { anything: true }), false, 'the stub verifier never returns true');
+  assert.equal(await verifyBtcPoolSpendProof({ anything: true }, '0x' + 'ff'.repeat(256)), false, 'the stub verifier never returns true');
   ok('verifyBtcPoolSpendProof stub always fails closed');
 
   const nf = rand32();
@@ -312,7 +312,7 @@ const H = secp.ProjectivePoint.fromPrivateKey(hexToBytes('0x' + '07'.repeat(32))
   commitBtcPoolBlockRoot(state, 5);
   const ctx = { txOutputs: [{ valueSats: 1n, scriptPubKeyHash: parsed.destSpkHash }] };
   // No `verifyProof` override — uses the real (stub) default, which must reject.
-  const res = acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx });
+  const res = await acceptBtcSpendEnvelope(state, parsed, { chainCtx: ctx });
   assert.equal(res.accepted, false, 'without a real verifying key, acceptBtcSpendEnvelope rejects by default (fail closed, not fail open)');
   assert.equal(state.nullifierSet.size, 0, 'a proof-rejected envelope mutates nothing');
   ok('acceptBtcSpendEnvelope fails closed end-to-end when no real proof verifier is wired in');
