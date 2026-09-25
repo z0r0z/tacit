@@ -44,7 +44,8 @@ const {
   getActiveWalletMode, NET, hexToBytes, bytesToHex,
 } = await import('../dapp/tacit.js');
 
-const BTC_WALLET_KEY = 'tacit-btc-identity';
+// Per-network record; these tests run on the default network, mainnet.
+const BTC_WALLET_KEY = 'tacit-btc-identity:mainnet';
 const ONBOARDED_KEY = 'tacit-onboarded-v1';
 const ENROLLED_ADDR = 'tb1qenrolledtestaddrxxxxxxxxxxxxxxxxxxxx';
 

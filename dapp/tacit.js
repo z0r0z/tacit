@@ -1437,6 +1437,40 @@ const prfWallet = {
 // Reuses the existing EIP-6963 multi-provider discovery and _ethProvider()
 // infrastructure from the claim flow.
 const ETH_WALLET_KEY = 'tacit-eth-identity';
+// The signed message names the network, so one linked wallet derives a
+// different key on mainnet and on signet. Each network keeps its own record
+// under `<base>:<net>`. The unscoped key is the record from before the split;
+// _migrateIdentityRecords files it under its network once and leaves it in place.
+const IDENTITY_NETS = ['mainnet', 'signet'];
+function _identityKey(base, net = NET.name) { return `${base}:${net}`; }
+function _readIdentityRecord(base, net = NET.name) {
+  try {
+    const j = JSON.parse(localStorage.getItem(_identityKey(base, net)) || 'null');
+    return j && typeof j === 'object' ? j : null;
+  } catch { return null; }
+}
+function _writeIdentityRecord(base, rec, net = NET.name) {
+  try { localStorage.setItem(_identityKey(base, net), JSON.stringify(rec)); } catch {}
+}
+// The same wallet linked on another network. Its account (and a Bitcoin
+// wallet's signing protocol) carries over; its key does not, so this network's
+// key comes from one new signature at the next unlock.
+function _identityLinkedElsewhere(base) {
+  for (const net of IDENTITY_NETS) {
+    if (net === NET.name) continue;
+    const r = _readIdentityRecord(base, net);
+    if (r?.address) return r;
+  }
+  return null;
+}
+// A migrated record whose network was never known, and which this network's
+// signature did not reproduce: it belongs to the other network, so keep it
+// there unless that network already has its own.
+function _parkUnverifiedIdentity(base, rec) {
+  for (const net of IDENTITY_NETS) {
+    if (net !== NET.name && !_readIdentityRecord(base, net)) _writeIdentityRecord(base, rec, net);
+  }
+}
 function _ethDerivationMsg() {
   return identityMessage({ netName: NET.name });
 }
@@ -1579,10 +1613,13 @@ const ethWallet = {
     // into a different, empty wallet. Their assets stay safe on-chain.
     const priorPub = this.state?.pubkey;
     if (priorPub && priorPub !== pubHex) {
-      wallet.priv = null; wallet.pub = null; wallet.mode = null;
-      throw new Error(
-        'ETH signature changed — refusing to derive a different identity. ' +
-        'Reconnect the original wallet/account to recover.');
+      if (!this.state.netUnverified) {
+        wallet.priv = null; wallet.pub = null; wallet.mode = null;
+        throw new Error(
+          'ETH signature changed — refusing to derive a different identity. ' +
+          'Reconnect the original wallet/account to recover.');
+      }
+      _parkUnverifiedIdentity(ETH_WALLET_KEY, this.state);
     }
     wallet.priv = priv;
     wallet.pub = pub;
@@ -1610,27 +1647,33 @@ const ethWallet = {
   },
 
   _cache(state) {
-    try {
-      if (state) localStorage.setItem(ETH_WALLET_KEY, JSON.stringify(state));
-    } catch {}
+    if (state) _writeIdentityRecord(ETH_WALLET_KEY, state);
   },
 
+  // Returns this network's record, or `{ address, pubkey: null }` when the
+  // account is linked only on the other network: its key here is derived at the
+  // next unlock.
   tryRestore() {
     try {
-      const raw = localStorage.getItem(ETH_WALLET_KEY);
-      if (!raw) return null;
-      const j = JSON.parse(raw);
-      if (!j || !j.address || !j.pubkey) return null;
-      if (!/^[0-9a-f]{40}$/.test(j.address) || !/^0[23][0-9a-f]{64}$/.test(j.pubkey)) return null;
       if (!_ethProvider()) return null;
-      this.state = j;
-      return j;
+      const isAddr = (a) => typeof a === 'string' && /^[0-9a-f]{40}$/.test(a);
+      const j = _readIdentityRecord(ETH_WALLET_KEY);
+      if (j && isAddr(j.address) && /^0[23][0-9a-f]{64}$/.test(j.pubkey || '')) {
+        this.state = j;
+        return j;
+      }
+      const other = _identityLinkedElsewhere(ETH_WALLET_KEY);
+      if (other && isAddr(other.address)) {
+        this.state = { address: other.address, pubkey: null };
+        return this.state;
+      }
+      return null;
     } catch { return null; }
   },
 
   disconnect() {
     this.state = null;
-    try { localStorage.removeItem(ETH_WALLET_KEY); } catch {}
+    try { localStorage.removeItem(_identityKey(ETH_WALLET_KEY)); } catch {}
   },
 
   lock() {
@@ -1742,58 +1785,130 @@ const btcWallet = {
   // the stored anchor. If the wallet/version ever changes its signing and yields a
   // different key, refuse rather than silently dropping the user into an empty
   // wallet. First-ever call (no anchor) routes to full enrollment.
+  //
+  // A wallet linked only on the other network has no anchor here yet. The same
+  // account already proved there that it signs deterministically with `kind`,
+  // so one signature derives and anchors this network's key.
   async login() {
     const cached = this.state || this._read();
-    if (!cached?.tacitPubkey) return this.enroll();
+    const carried = !cached?.tacitPubkey && !!cached?.address
+      && (cached.kind === 'ecdsa' || cached.kind === 'bip322');
+    if (!cached?.tacitPubkey && !carried) return this.enroll();
     if (!extWallet.state) await extWallet.connectDefault();
     const ext = extWallet.state;
     if (ext.address !== cached.address) {
+      if (carried) return this.enroll();
       throw new Error(`connected BTC account ${shorten(ext.address, 8)} differs from the enrolled ${shorten(cached.address, 8)} — reconnect the original wallet`);
     }
     // Reuse the exact protocol enrollment settled on so the signature (and thus
     // the derived key) matches the stored anchor. Legacy anchors predate the
     // stored `kind`; default to ECDSA and try the other protocol once on failure.
     const msg = _btcDerivationMsg();
-    const kind = cached.kind === 'bip322' ? 'bip322' : 'ecdsa';
+    let kind = cached.kind === 'bip322' ? 'bip322' : 'ecdsa';
     let sig;
     try {
       sig = await this._signOnce(msg, kind);
     } catch (e) {
-      if (e?._btcNonDeterministic) throw e;
-      sig = await this._signOnce(msg, kind === 'ecdsa' ? 'bip322' : 'ecdsa');
+      if (e?._btcNonDeterministic || carried) throw e;
+      kind = kind === 'ecdsa' ? 'bip322' : 'ecdsa';
+      sig = await this._signOnce(msg, kind);
     }
     const priv = toValidScalar(sha256(sig));
     const pub = secp.getPublicKey(priv, true);
     sig.fill(0);
-    if (bytesToHex(pub) !== cached.tacitPubkey) {
-      wallet.priv = null; wallet.pub = null; wallet.mode = null;
-      throw new Error(
-        'BTC signature changed — refusing to derive a different identity. Your ' +
-        'assets are safe on-chain; reconnect the original wallet/version to recover.');
+    const pubHex = bytesToHex(pub);
+    if (!carried && pubHex !== cached.tacitPubkey) {
+      if (!cached.netUnverified) {
+        wallet.priv = null; wallet.pub = null; wallet.mode = null;
+        throw new Error(
+          'BTC signature changed — refusing to derive a different identity. Your ' +
+          'assets are safe on-chain; reconnect the original wallet/version to recover.');
+      }
+      _parkUnverifiedIdentity(BTC_WALLET_KEY, cached);
     }
     wallet.priv = priv;
     wallet.pub = pub;
     wallet.mode = 'btc';
-    this.state = cached;
+    if (carried || cached.netUnverified) {
+      this.state = { address: ext.address, provider: ext.provider, btcPubkey: ext.pubkey, tacitPubkey: pubHex, kind };
+      this._cache(this.state);
+    } else {
+      this.state = cached;
+    }
     setActiveWalletMode('btc');
     return this.state;
   },
 
-  _cache(s) { try { localStorage.setItem(BTC_WALLET_KEY, JSON.stringify(s)); } catch {} },
+  _cache(s) { _writeIdentityRecord(BTC_WALLET_KEY, s); },
   _read() {
-    try {
-      const j = JSON.parse(localStorage.getItem(BTC_WALLET_KEY));
-      if (j && j.address && /^0[23][0-9a-f]{64}$/.test(j.tacitPubkey || '')) return j;
-    } catch {}
+    const j = _readIdentityRecord(BTC_WALLET_KEY);
+    if (j && j.address && /^0[23][0-9a-f]{64}$/.test(j.tacitPubkey || '')) return j;
     return null;
   },
-  tryRestore() { const s = this._read(); if (s) this.state = s; return this.state; },
+  // This network's anchor, or, for a wallet linked only on the other network,
+  // its account with `tacitPubkey: null` so the next unlock derives the key here.
+  tryRestore() {
+    const s = this._read();
+    if (s) this.state = s;
+    else {
+      const other = _identityLinkedElsewhere(BTC_WALLET_KEY);
+      if (other) {
+        this.state = { address: other.address, provider: other.provider, btcPubkey: other.btcPubkey, tacitPubkey: null, kind: other.kind };
+      }
+    }
+    return this.state;
+  },
   disconnect() {
     this.state = null;
-    try { localStorage.removeItem(BTC_WALLET_KEY); } catch {}
+    try { localStorage.removeItem(_identityKey(BTC_WALLET_KEY)); } catch {}
   },
   lock() { wallet.priv = null; wallet.pub = null; wallet.mode = null; },
 };
+
+// One-time move of the unscoped linked-wallet records to the network each was
+// made on. A Bitcoin record's address names its network. An Ethereum record
+// names none; the Secret Sats page's own per-network record settles it when it
+// holds the same key. A record whose network stays unknown goes to mainnet,
+// the default, marked `netUnverified`: if the first unlock there derives a
+// different key, that key is taken as mainnet's and the old record moves to
+// signet, instead of being refused. The unscoped records are left in place.
+const IDENTITY_SPLIT_KEY = 'tacit-identity-per-net-v1';
+function _btcAddressNet(addr) {
+  const a = String(addr || '').toLowerCase();
+  if (/^bc1/.test(a) || /^[13]/.test(a)) return 'mainnet';
+  if (/^tb1/.test(a) || /^[mn2]/.test(a)) return 'signet';
+  return null;
+}
+function _ethRecordNet(rec) {
+  for (const net of IDENTITY_NETS) {
+    try {
+      const s = JSON.parse(localStorage.getItem(`tacit-sats-id-v1:${net}`) || 'null');
+      if (s?.mode === 'eth' && s.address === rec.address && s.pubkey === rec.pubkey) return net;
+    } catch {}
+  }
+  return null;
+}
+function _migrateIdentityRecords() {
+  try {
+    if (localStorage.getItem(IDENTITY_SPLIT_KEY)) return;
+    const legacy = [
+      [ETH_WALLET_KEY, 'pubkey', _ethRecordNet],
+      [BTC_WALLET_KEY, 'tacitPubkey', (r) => _btcAddressNet(r.address)],
+    ];
+    for (const [base, pubField, netOf] of legacy) {
+      let rec = null;
+      try { rec = JSON.parse(localStorage.getItem(base) || 'null'); } catch {}
+      if (!rec?.address || !/^0[23][0-9a-f]{64}$/.test(rec[pubField] || '')) continue;
+      const net = netOf(rec);
+      const target = net || 'mainnet';
+      if (!_readIdentityRecord(base, target)) {
+        _writeIdentityRecord(base, net ? rec : { ...rec, netUnverified: true }, target);
+      }
+    }
+    localStorage.setItem(IDENTITY_SPLIT_KEY, '1');
+  } catch {}
+}
+_migrateIdentityRecords();
 
 // Lazy-unlock gate. Returns once `wallet.priv` is loaded; if it's null,
 // triggers the passkey biometric prompt (passkey mode), ETH wallet signature
@@ -1814,6 +1929,9 @@ async function ensurePrivkey() {
   // promise so exactly one prompt fires and both callers resume on success.
   if (_ensurePrivkeyInFlight) return _ensurePrivkeyInFlight;
   _ensurePrivkeyInFlight = (async () => {
+    // A linked wallet opening on a network it hasn't signed for yet has no
+    // pubkey until this unlock derives one.
+    const pubBefore = wallet.pub ? bytesToHex(wallet.pub) : null;
     try {
       if (!wallet.pub && !wallet.mode) {
         const r = await _runFirstLoadChoice();
@@ -1840,6 +1958,10 @@ async function ensurePrivkey() {
       // effort; failures don't gate the actual sign flow.
       try { renderWalletCard(); } catch {}
       try { _renderWalletTacitAddress(); } catch {}
+      if (wallet.pub && bytesToHex(wallet.pub) !== pubBefore) {
+        try { invalidateHoldingsCache(); } catch {}
+        try { refreshWallet().catch(() => {}); } catch {}
+      }
       // Resume the maker-side claim poller now that the wallet can act on
       // an arriving claim. startMakerClaimPoller is idempotent — no-op if
       // already running (e.g. when ensurePrivkey is called for a routine
@@ -46855,6 +46977,17 @@ function _renderWalletTacitAddress() {
         }
       : null;
   };
+  if (!wallet?.pub && (wallet?.mode === 'eth' || wallet?.mode === 'btc')) {
+    // Linked wallet that hasn't signed for this network yet.
+    tacitAddrEl.textContent = `sign to open on ${NET.name}`;
+    if (noteEl) {
+      noteEl.textContent = 'linked wallet';
+      noteEl.title = `Your linked wallet signs once to derive its ${NET.name} key. Each network has its own key.`;
+    }
+    setIcon({ on: false, title: `Sign with your linked wallet to open it on ${NET.name}`, clickable: true });
+    setCopyDisabled(true);
+    return;
+  }
   if (!wallet?.pub) {
     tacitAddrEl.textContent = '—';
     if (noteEl) {
@@ -91618,6 +91751,10 @@ async function init() {
         console.warn('eth wallet pubkey hydration failed:', e.message);
         ethWallet.disconnect();
       }
+    } else if (ethRestored?.address) {
+      // Linked on the other network only: stay linked, and derive this
+      // network's key at the first unlock.
+      wallet.mode = 'eth';
     }
   }
   // BTC-derived wallet restore: pubkey-only from the persisted anchor — no
@@ -91634,13 +91771,16 @@ async function init() {
         console.warn('btc wallet pubkey hydration failed:', e.message);
         btcWallet.disconnect();
       }
+    } else if (btcRestored?.address) {
+      try { await extWallet.tryRestore(); } catch {}
+      wallet.mode = 'btc';
     }
   }
   const restoredPasskey = prfWallet.tryRestore();
   let bootstrapped = false;
-  if (activeMode === 'eth' && wallet.mode === 'eth' && wallet.pub) {
+  if (activeMode === 'eth' && wallet.mode === 'eth') {
     bootstrapped = true;
-  } else if (activeMode === 'btc' && wallet.mode === 'btc' && wallet.pub) {
+  } else if (activeMode === 'btc' && wallet.mode === 'btc') {
     bootstrapped = true;
   } else if (restoredPasskey && activeMode !== 'ext' && activeMode !== 'local') {
     if (restoredPasskey.pubkey) {

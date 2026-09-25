@@ -1,7 +1,7 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=34f214b7';
+const TACIT_URL = '/tacit.js?cb=f6b62bf2';
 const SECRET_URL = '/sats/secret.js?cb=dc883c5a';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
@@ -12,13 +12,16 @@ const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 const NET_PREF = 'tacit-sats-net-v1';
 const SHARED_NET = 'tacit-network-v1';
 const PREV_NET = 'tacit-sats-prev-net-v1';
-// This page's own record of how the user signed in, per network. The main
-// app's linked-wallet caches hold one identity for whichever network it last
-// used, and the derived key differs per network, so the page never reads its
-// identity from them and puts them back after any call that rewrites them.
+// This page's own record of how the user signed in, per network. The page
+// never reads its identity from the main app's linked-wallet records and puts
+// them back after any call that rewrites them, so signing in here never
+// changes which wallet the main app opens.
 const SESSION = 'tacit-sats-session-v1';
 const IDENTITY = (net) => `tacit-sats-id-v1:${net}`;
-const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1'];
+const SHARED_WALLET_KEYS = [
+  'tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
+  ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`]),
+];
 // Silent-payment tweak index per network. The wallet fetches public tweaks
 // and matches them locally; the index never sees a key.
 const SP_INDEX_URL = { signet: 'https://tacit-sp-index.onrender.com', mainnet: null };

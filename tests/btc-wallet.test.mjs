@@ -43,7 +43,8 @@ const {
   bytesToHex,
 } = await import('../dapp/tacit.js');
 
-const BTC_WALLET_KEY = 'tacit-btc-identity';
+// Per-network record; these tests run on the default network, mainnet.
+const BTC_WALLET_KEY = 'tacit-btc-identity:mainnet';
 const ENROLLED_ADDR = 'tb1qenrolledtestaddrxxxxxxxxxxxxxxxxxxxx';
 
 // ---- tiny test harness (matches prf-wallet.test.mjs) ----
