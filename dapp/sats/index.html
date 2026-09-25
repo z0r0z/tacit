@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src https://tacit-btc-pool.onrender.com">
+<title>Secret Sats</title>
+<meta name="description" content="Pay in bitcoin without revealing who paid whom, or how much.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤫</text></svg>">
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('../fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('../fonts/instrument-serif-400-latin.woff2') format('woff2'); }
+:root {
+  --bg: #E8E0CC;
+  --card: #F2EBD4;
+  --ink: #1A1A1A;
+  --mute: #6B6557;
+  --hairline: rgba(10,10,10,0.12);
+  --orange: #f7931a;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --serif: 'Instrument Serif', Georgia, serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 14px/1.65 var(--mono); padding: 0 16px; }
+main { max-width: 560px; margin: 0 auto; padding: 72px 0 56px; }
+.hush { font-size: 88px; line-height: 1; }
+h1 { font: 400 56px/1 var(--serif); margin: 20px 0 6px; letter-spacing: -0.01em; }
+.tag { color: var(--mute); margin: 0 0 36px; }
+p { margin: 0 0 14px; }
+a { color: var(--ink); text-underline-offset: 3px; }
+.paper { display: inline-block; margin: 10px 0 44px; padding: 8px 14px; border: 1px solid var(--ink); text-decoration: none; }
+.paper:hover { background: var(--ink); color: var(--bg); }
+h2 { font: 400 24px/1.2 var(--serif); margin: 0 0 12px; }
+ol { list-style: none; margin: 0 0 40px; padding: 0; border-top: 1px solid var(--hairline); }
+li { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--hairline); }
+li span:last-child { color: var(--mute); white-space: nowrap; }
+.live { background: var(--card); padding: 14px 16px; margin: 0 0 40px; }
+.live div { display: flex; justify-content: space-between; gap: 16px; }
+.live b { font-weight: 400; overflow-wrap: anywhere; text-align: right; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--mute); margin-right: 8px; vertical-align: 1px; }
+.dot.on { background: var(--orange); }
+footer { color: var(--mute); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="hush" aria-hidden="true">🤫</div>
+  <h1>Secret Sats</h1>
+  <p class="tag">Pay in bitcoin. Tell no one.</p>
+
+  <p>Secret Sats lets you pay in bitcoin without revealing who paid whom, or how much.</p>
+  <p>BTC becomes cBTC, a Tacit asset on Bitcoin whose transfers hide their amounts and pay one-time addresses only the recipient can find.</p>
+  <p>Shield it into Tacit's Bitcoin pool and a payment also hides where it came from. Relayers post it, so you need no Bitcoin wallet to send.</p>
+  <a class="paper" href="/secret-sats.pdf">Read the paper →</a>
+
+  <h2>Done on signet</h2>
+  <ol>
+    <li><span><a href="https://mempool.space/signet/tx/56fcdf0f17cca0327bcbad1a11e4382c70fde3b178ac12e866b0764a8a405fa9">Alice shields 50,000</a></span><span>block 323662</span></li>
+    <li><span><a href="https://mempool.space/signet/tx/55d4cdb1147eaca47d27f1d0d62bd75f1ddc19588b44bfd4618c09fdbe278ea7">Alice pays Bob, privately</a></span><span>block 323664</span></li>
+    <li><span>Bob scans and finds 30,000</span><span>off-chain</span></li>
+    <li><span><a href="https://mempool.space/signet/tx/7cb822352c6cbe9d94226892b9fde440d2552d552a529c65ee716da23208c20d">Bob exits to his own address</a></span><span>block 323665</span></li>
+  </ol>
+
+  <h2>The pool, live</h2>
+  <div class="live" id="live">
+    <div><span><i class="dot" id="dot"></i>signet</span><b id="st">connecting…</b></div>
+    <div><span>height</span><b id="h">—</b></div>
+    <div><span>notes</span><b id="n">—</b></div>
+    <div><span>root</span><b id="r">—</b></div>
+  </div>
+
+  <footer>cBTC pilot live on mainnet · <a href="/">tacit.finance</a></footer>
+</main>
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  try {
+    const r = await fetch('https://tacit-btc-pool.onrender.com/btc-pool/status', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const s = await r.json();
+    $('h').textContent = s.height ?? '—';
+    $('n').textContent = s.leafCount ?? '—';
+    $('r').textContent = s.root ? s.root.slice(0, 10) + '…' + s.root.slice(-6) : '—';
+    $('st').textContent = s.halted ? 'paused' : 'replaying';
+    $('dot').classList.toggle('on', !s.halted);
+  } catch { $('st').textContent = 'offline'; }
+})();
+</script>
+</body>
+</html>
