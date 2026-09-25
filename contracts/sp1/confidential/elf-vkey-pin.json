@@ -9,7 +9,7 @@
   "reflection_elf_sha256": "55b5ccffd4cd19e10061c4b5e70658e36bc806a365d0f5535918392e7bf12c5b",
   "reflection_elf_bytes": 1340080,
   "_btc_pool_note": "elf/btc-pool-prover (DESIGN-btc-shielded-pool.md) is an independent guest, not part of the settle/reflection lockstep group: it proves one T_BTC_SPEND and commits abi.encode(uint16 1, bytes32 root, bytes32 keccak(body)). Its proofs are verified locally by Bitcoin-side indexers with sp1_verifier::Groth16Verifier against the SP1 Groth16 key (btc-pool-verify); no Ethereum contract verifies it and nothing on Ethereum depends on this vkey. The vkey is derived with `cargo prove vkey --elf elf/btc-pool-prover`, which needs no prover backend: the ELF alone determines it. The Groth16 key is byte-identical to the one behind the mainnet SP1 v6.1.0 verifier leaf 0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2: btc_pool_groth16_verifier_hash is its VERIFIER_HASH (sha256 of sp1-verifier groth16_vk.bin) and btc_pool_groth16_vk_root its VK_ROOT.",
-  "btc_pool_elf_built_from_src_commit": "pending",
+  "btc_pool_elf_built_from_src_commit": "ec5e0da7",
   "btc_pool_elf_sha256": "9dd86f3111ef5162e349fea1fd87ed472528539c513973c8de6f1af8fb9d8c52",
   "btc_pool_elf_bytes": 272976,
   "btc_pool_vkey": "0x00b77e666f0ab39245e9a0f7e389fb6c116f5da857c74b79f1d750563b19c243",

@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src https://tacit-btc-pool.onrender.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-points.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co https://tacit-btc-pool.onrender.com https://tacit-sats-faucet.onrender.com https://tacit-btc-pool-prover.onrender.com http://localhost:8787 http://localhost:8788 http://localhost:8789; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
 <title>Secret Sats</title>
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
@@ -18,86 +19,492 @@
 <meta name="twitter:description" content="Pay in bitcoin. Tell no one. Private payments on Bitcoin: hidden amounts, stealth addresses, and a shielded pool that unlinks sender and receiver.">
 <meta name="twitter:image" content="https://tacit.finance/secret-sats-card.png">
 <meta name="description" content="Private payments on Bitcoin: amounts hidden, sender and receiver unlinked.">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#17150F" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤫</text></svg>">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('../fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('../fonts/instrument-serif-400-latin.woff2') format('woff2'); }
+
 :root {
   --bg: #E8E0CC;
   --card: #F2EBD4;
   --ink: #1A1A1A;
-  --mute: #6B6557;
-  --hairline: rgba(10,10,10,0.12);
+  --mute: #625D50;
+  --hair: rgba(10,10,10,.12);
+  --hair-strong: rgba(10,10,10,.28);
   --orange: #f7931a;
+  --err: #a52f1a;
+  --ok: #2f6b3a;
+  --scrim: rgba(26,26,26,.4);
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   --serif: 'Instrument Serif', Georgia, serif;
+  /* spacing */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 72px;
+  /* type */
+  --t-xs: 12px; --t-sm: 13px; --t-md: 14px; --t-h3: 20px; --t-h2: 30px; --t-h1: 64px;
+  --tap: 44px;
+  color-scheme: light;
 }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17150F;
+    --card: #221F17;
+    --ink: #EDE5CF;
+    --mute: #A8A08A;
+    --hair: rgba(237,229,207,.13);
+    --hair-strong: rgba(237,229,207,.3);
+    --err: #f08a6c;
+    --ok: #93c48a;
+    --scrim: rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+}
+
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
-body { font: 14px/1.65 var(--mono); padding: 0 16px; }
-main { max-width: 560px; margin: 0 auto; padding: 72px 0 56px; }
-.hush { font-size: 88px; line-height: 1; }
-h1 { font: 400 56px/1 var(--serif); margin: 20px 0 6px; letter-spacing: -0.01em; }
-.tag { color: var(--mute); margin: 0 0 36px; }
-p { margin: 0 0 14px; }
-a { color: var(--ink); text-underline-offset: 3px; }
-.paper { display: inline-block; margin: 10px 0 44px; padding: 8px 14px; border: 1px solid var(--ink); text-decoration: none; }
-.paper:hover { background: var(--ink); color: var(--bg); }
-h2 { font: 400 24px/1.2 var(--serif); margin: 0 0 12px; }
-ol { list-style: none; margin: 0 0 40px; padding: 0; border-top: 1px solid var(--hairline); }
-li { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--hairline); }
-li span:last-child { color: var(--mute); white-space: nowrap; }
-.live { background: var(--card); padding: 14px 16px; margin: 0 0 40px; }
-.live div { display: flex; justify-content: space-between; gap: 16px; }
-.live b { font-weight: 400; overflow-wrap: anywhere; text-align: right; }
-.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--mute); margin-right: 8px; vertical-align: 1px; }
+body { font: var(--t-md)/1.65 var(--mono); padding: 0 var(--s4); overflow-wrap: break-word; }
+main { max-width: 600px; margin: 0 auto; padding: var(--s8) 0 var(--s7); }
+p { margin: 0 0 var(--s3); }
+a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.hidden { display: none !important; }
+.muted { color: var(--mute); }
+.err { color: var(--err); }
+.ok { color: var(--ok); }
+.small { font-size: var(--t-xs); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ── headings ── */
+h1 { font: 400 var(--t-h1)/.95 var(--serif); margin: var(--s4) 0 var(--s2); letter-spacing: -.01em; }
+h2 { font: 400 var(--t-h2)/1.15 var(--serif); margin: 0 0 var(--s4); }
+h3 { font: 400 var(--t-h3)/1.2 var(--serif); margin: var(--s6) 0 var(--s3); }
+.eyebrow { font: var(--t-xs)/1.4 var(--mono); color: var(--mute); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 var(--s2); }
+.block { margin: 0 0 var(--s8); }
+.block > h2 { padding-top: var(--s5); border-top: 1px solid var(--ink); }
+
+/* ── hero ── */
+.hero { margin: 0 0 var(--s7); }
+.hush { font-size: 104px; line-height: 1; display: block; }
+.tag { font: 400 26px/1.2 var(--serif); font-style: normal; margin: 0 0 var(--s5); }
+.lede { max-width: 52ch; }
+.hero-links { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s5); margin-top: var(--s5); }
+
+/* ── buttons ── */
+.btn { font: inherit; font-size: var(--t-md); color: var(--bg); background: var(--ink); border: 1px solid var(--ink); border-radius: 0;
+  min-height: var(--tap); padding: 10px 18px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: var(--s2); line-height: 1.3; text-align: left; }
+.btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
+.btn.quiet { background: transparent; color: var(--ink); border-color: var(--hair-strong); }
+.btn.quiet:hover:not(:disabled) { border-color: var(--ink); background: transparent; }
+.btn.sm { font-size: var(--t-xs); min-height: 36px; padding: 6px 12px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn[data-busy="1"] { opacity: .7; cursor: progress; }
+.btn .sub { color: inherit; opacity: .7; font-size: var(--t-xs); }
+.link-btn { font: inherit; font-size: var(--t-xs); color: var(--mute); background: none; border: 0; padding: 0 2px; min-height: 28px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.link-btn:hover { color: var(--ink); }
+.row { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin: 0 0 var(--s3); }
+.stack { display: grid; gap: var(--s2); margin: 0 0 var(--s4); }
+.stack .btn { width: 100%; justify-content: space-between; }
+
+/* ── fields ── */
+.field { display: grid; gap: var(--s1); margin: 0 0 var(--s4); }
+.field label, .label { color: var(--mute); font-size: var(--t-xs); }
+input[type=text], input[type=number], input[type=password] {
+  font: inherit; color: var(--ink); background: var(--card); border: 1px solid transparent; border-bottom-color: var(--ink);
+  min-height: var(--tap); padding: 10px 12px; width: 100%; border-radius: 0; -webkit-appearance: none; appearance: none; }
+input::placeholder { color: var(--mute); opacity: 1; }
+input:focus { outline: none; border-color: var(--ink); }
+input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.row input[type=text], .row input[type=number] { flex: 1 1 200px; width: auto; }
+
+/* ── status lines ── */
+.status { font-size: var(--t-sm); min-height: 1.65em; margin: 0 0 var(--s3); overflow-wrap: anywhere; }
+.status:empty { margin: 0; min-height: 0; }
+.status .err { color: var(--err); }
+.status .err::before { content: '× '; }
+#log { color: var(--mute); }
+#log > div:first-child { color: var(--ink); }
+#log > div.err:first-child { color: var(--err); }
+#log > div + div { font-size: var(--t-xs); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--mute); margin-right: var(--s2); vertical-align: 1px; }
 .dot.on { background: var(--orange); }
-footer { color: var(--mute); font-size: 12px; }
+
+/* ── lists with hairlines ── */
+.lines { list-style: none; margin: 0 0 var(--s4); padding: 0; border-top: 1px solid var(--hair); }
+.lines > li { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s4); padding: 10px 0; border-bottom: 1px solid var(--hair); }
+.lines > li > span:last-child { color: var(--mute); white-space: nowrap; font-size: var(--t-xs); }
+.lines > li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.lines.compact { font-size: var(--t-sm); }
+.lines.compact > li { padding: 6px 0; }
+
+/* ── the app ── */
+.panel { background: var(--card); padding: var(--s5); margin: 0 0 var(--s5); }
+.panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--s2) var(--s4); margin: 0 0 var(--s4); }
+.panel-head h2 { margin: 0; padding: 0; border: 0; font-size: 26px; }
+.seg { display: inline-flex; border: 1px solid var(--hair-strong); font-size: var(--t-xs); max-width: 100%; }
+.seg button { font: inherit; color: var(--mute); background: transparent; border: 0; min-height: 36px; padding: 6px 12px; cursor: pointer; text-align: left; line-height: 1.3; }
+.seg button + button { border-left: 1px solid var(--hair-strong); }
+.seg button[aria-pressed="true"] { color: var(--bg); background: var(--ink); }
+.seg button.mainnet[aria-pressed="true"] { background: var(--orange); color: #1A1A1A; }
+.note { font-size: var(--t-sm); color: var(--mute); margin: 0 0 var(--s4); }
+.kv { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: var(--s1) var(--s3); padding: 8px 0; border-bottom: 1px solid var(--hair); align-items: baseline; }
+.kv:first-child { border-top: 1px solid var(--hair); }
+.kv > span:first-child { color: var(--mute); font-size: var(--t-xs); }
+.kv b { font-weight: 400; overflow-wrap: anywhere; min-width: 0; }
+.kv .acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 0 var(--s3); margin-top: -2px; }
+.kv .acts a { font-size: var(--t-xs); color: var(--mute); display: inline-flex; align-items: center; min-height: 28px; }
+.addrs { margin: 0 0 var(--s4); }
+.callout { border-left: 2px solid var(--orange); padding: var(--s1) 0 var(--s1) var(--s4); margin: 0 0 var(--s4); font-size: var(--t-sm); }
+.callout p:last-child, .callout .row:last-child { margin-bottom: 0; }
+.secret-key { font-size: var(--t-xs); word-break: break-all; background: var(--bg); padding: var(--s2) var(--s3); cursor: pointer; }
+.activity { margin: var(--s4) 0 0; }
+
+/* tabs */
+.tabs { display: flex; gap: var(--s5); border-bottom: 1px solid var(--hair); margin: 0 0 var(--s5); overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs [role=tab] { font: inherit; color: var(--mute); background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  min-height: var(--tap); padding: 0 0 2px; cursor: pointer; white-space: nowrap; }
+.tabs [role=tab]:hover { color: var(--ink); }
+.tabs [role=tab][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.tabs [role=tab] .star { color: var(--orange); }
+[role=tabpanel] { outline-offset: 6px; }
+[role=tabpanel] > .lead { margin: 0 0 var(--s4); }
+.empty { color: var(--mute); border: 1px dashed var(--hair-strong); padding: var(--s4); margin: 0; font-size: var(--t-sm); display: none; }
+.hidden + .empty { display: block; }
+
+/* secret payment steps (markup built by secret.js; the static list below is its preview) */
+.steps { list-style: none; margin: 0 0 var(--s3); padding: 0; counter-reset: step; }
+.step { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 0 var(--s3); position: relative; padding: 0 0 var(--s4); }
+.step:not(:last-child)::before { content: ''; position: absolute; left: 13.5px; top: 30px; bottom: 2px; width: 1px; background: var(--hair-strong); }
+.step-n { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--hair-strong); display: grid; place-items: center; font-size: var(--t-xs); color: var(--mute); background: var(--bg); position: relative; z-index: 1; }
+.step-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 var(--s3); min-height: 28px; padding-top: 2px; }
+.step-title { color: var(--mute); }
+.step-status { font-size: var(--t-xs); color: var(--mute); }
+.step-body { font-size: var(--t-sm); color: var(--mute); overflow-wrap: anywhere; margin-top: var(--s1); }
+.step-body:empty { display: none; }
+.step-body > * + * { margin-top: var(--s2); }
+.step-body .row { margin: var(--s3) 0 0; }
+.step-body a { color: var(--ink); }
+.step-body .err { color: var(--err); }
+.step.is-done .step-n { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.step.is-done .step-title { color: var(--ink); }
+.step.is-done .step-status { color: var(--ok); }
+.step.is-active .step-n { border: 2px solid var(--orange); color: var(--ink); }
+.step.is-active .step-title { color: var(--ink); }
+.step.is-active .step-body { color: var(--ink); }
+.step.is-locked .step-n { border-style: dashed; }
+.step.is-soon .step-n { border-style: dotted; }
+.step.is-running .step-status::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--orange); animation: pulse 1s ease-in-out infinite; vertical-align: 1px; }
+@keyframes pulse { 50% { opacity: .2; } }
+
+/* ── how it works ── */
+.diagram { margin: var(--s5) 0 var(--s4); color: var(--ink); }
+.diagram svg { display: block; width: 100%; height: auto; }
+.diagram svg.narrow { display: none; }
+.diagram figcaption { font-size: var(--t-xs); color: var(--mute); margin-top: var(--s2); }
+.live { font-size: var(--t-sm); }
+.live .kv { grid-template-columns: 7.5em minmax(0, 1fr); }
+
+/* ── trust ── */
+.trust-grid { display: grid; gap: var(--s5); grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 var(--s5); }
+.trust-grid ul { margin: 0; padding: 0; list-style: none; font-size: var(--t-sm); }
+.trust-grid li { padding: 6px 0; border-top: 1px solid var(--hair); }
+.trust-grid .eyebrow { margin-bottom: var(--s2); }
+
+/* ── faq ── */
+details { border-bottom: 1px solid var(--hair); }
+details:first-of-type { border-top: 1px solid var(--hair); }
+summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: var(--s4); align-items: center; min-height: var(--tap); padding: 8px 0; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; color: var(--mute); font-size: 18px; line-height: 1; }
+details[open] summary::after { content: '−'; }
+details p { margin: 0 0 var(--s4); color: var(--mute); font-size: var(--t-sm); max-width: 60ch; }
+
+footer { color: var(--mute); font-size: var(--t-xs); border-top: 1px solid var(--hair); padding-top: var(--s5); line-height: 2.2; }
+footer a { color: var(--mute); }
+footer a:hover { color: var(--ink); }
+
+/* ── modals and toasts (driven by tacit.js) ── */
+.modal { position: fixed; inset: 0; background: var(--scrim); display: none; place-items: center; padding: var(--s4); z-index: 1000; }
+.modal form, .welcome-card { background: var(--bg); color: var(--ink); border: 1px solid var(--ink); padding: var(--s5); width: 100%; max-width: 420px; }
+.modal h3, .welcome-title { font: 400 24px/1.2 var(--serif); margin: 0 0 var(--s2); }
+.pass-hint { font-size: var(--t-xs); color: var(--mute); min-height: 1.65em; }
+.pass-hint.error { color: var(--err); }
+.pass-hint.ok { color: var(--ok); }
+.welcome-modal { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; padding: var(--s4); }
+.welcome-lede { color: var(--mute); margin: 0 0 var(--s3); }
+.welcome-options { display: grid; gap: var(--s2); margin: 0 0 var(--s3); }
+.welcome-option { font: inherit; color: var(--ink); text-align: left; background: var(--card); border: 1px solid var(--hair); padding: 10px 12px; min-height: var(--tap); cursor: pointer; display: grid; }
+.welcome-option:hover { border-color: var(--ink); }
+.welcome-option-meta { color: var(--mute); font-size: var(--t-xs); }
+.welcome-footer button { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--ink); padding: 6px 12px; min-height: 36px; cursor: pointer; }
+#toast-container { position: fixed; bottom: var(--s4); left: var(--s4); right: var(--s4); display: grid; gap: 6px; justify-items: center; z-index: 1100; pointer-events: none; }
+.toast { background: var(--ink); color: var(--bg); padding: 8px 14px; max-width: 520px; font-size: var(--t-xs); pointer-events: auto; }
+.toast.error { background: var(--err); color: #fff; }
+
+@media (max-width: 640px) {
+  :root { --t-h1: 52px; --t-h2: 26px; --s8: 56px; }
+  main { padding-top: var(--s7); }
+  .hush { font-size: 84px; }
+  .tag { font-size: 22px; }
+  .panel { padding: var(--s4); margin-left: calc(-1 * var(--s2)); margin-right: calc(-1 * var(--s2)); }
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .kv .acts { grid-column: 1; }
+  .trust-grid { grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+  .diagram svg.wide { display: none; }
+  .diagram svg.narrow { display: block; max-width: 400px; }
+  .btn.sm, .seg button { min-height: var(--tap); }
+  .link-btn, .kv .acts a { min-height: var(--tap); }
+  .tabs { gap: var(--s4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
 <main>
-  <div class="hush" aria-hidden="true">🤫</div>
-  <h1>Secret Sats</h1>
-  <p class="tag">Pay in bitcoin. Tell no one.</p>
+  <header class="hero">
+    <span class="hush" role="img" aria-label="Shushing face">🤫</span>
+    <h1>Secret Sats</h1>
+    <p class="tag">Pay in bitcoin. Tell no one.</p>
+    <p class="lede">Private payments in ordinary Bitcoin transactions. The amount, the sender and where the coins came from stay hidden, and every payment is a proof your own node can check. No sidechain, no federation.</p>
+    <p class="lede muted">Mainnet: send sats, or pay a silent address only the recipient can find. Signet: the full private pool.</p>
+    <div class="hero-links"><a href="#try">Try it ↓</a><a href="#how">How it works ↓</a><a href="/secret-sats">Read the paper →</a></div>
+  </header>
 
-  <p>Private payments on Bitcoin. Send bitcoin-backed cBTC with the amount hidden, and through a shielded pool with sender and receiver unlinked.</p>
-  <p>cBTC is minted against real BTC locked on Bitcoin. Every transfer hides its amount, and stealth addresses give each payment a one-time key only the recipient can find.</p>
-  <p>Shield it into Tacit's Bitcoin pool and zero-knowledge proofs hide where a payment came from too. Relayers post spends, so you need no Bitcoin wallet to send.</p>
-  <a class="paper" href="/secret-sats">Read the paper →</a>
+  <section class="block" id="try" aria-labelledby="try-h">
+    <h2 id="try-h">Try it</h2>
+    <div class="app" id="app">
+      <section class="panel" id="wallet" aria-labelledby="wallet-h">
+        <div class="panel-head">
+          <h2 id="wallet-h">Wallet</h2>
+          <div class="seg" id="net" role="group" aria-label="Network">
+            <button type="button" data-net="signet" aria-pressed="true">signet</button>
+            <button type="button" class="mainnet" data-net="mainnet" aria-pressed="false">mainnet: sats and silent payments</button>
+          </div>
+        </div>
+        <p class="note hidden" id="mainnet-note">Mainnet moves real bitcoin: send to any address, or to a silent address only the recipient can find. The private pool runs on signet.</p>
 
-  <h2>Live on signet</h2>
-  <ol>
-    <li><span><a href="https://mempool.space/signet/tx/56fcdf0f17cca0327bcbad1a11e4382c70fde3b178ac12e866b0764a8a405fa9">Alice shields 50,000</a></span><span>block 323662</span></li>
-    <li><span><a href="https://mempool.space/signet/tx/55d4cdb1147eaca47d27f1d0d62bd75f1ddc19588b44bfd4618c09fdbe278ea7">Alice pays Bob, amount and source hidden</a></span><span>block 323664</span></li>
-    <li><span>Bob scans and finds 30,000</span><span>off-chain</span></li>
-    <li><span><a href="https://mempool.space/signet/tx/7cb822352c6cbe9d94226892b9fde440d2552d552a529c65ee716da23208c20d">Bob exits to his own address</a></span><span>block 323665</span></li>
-  </ol>
+        <div id="connect">
+          <div class="stack">
+            <button class="btn" id="btn-create">Create a Tacit wallet</button>
+            <button class="btn quiet" id="btn-btc">Link a Bitcoin wallet</button>
+            <div class="row hidden" id="btc-choices"></div>
+            <button class="btn quiet" id="btn-eth">Link an Ethereum wallet</button>
+          </div>
+          <p class="note">A Tacit wallet lives in this browser, locked with your passphrase. A linked wallet derives the same key every time you sign in, on any device.</p>
+        </div>
 
-  <h2>The pool, live</h2>
-  <div class="live" id="live">
-    <div><span><i class="dot" id="dot"></i>signet</span><b id="st">connecting…</b></div>
-    <div><span>height</span><b id="h">—</b></div>
-    <div><span>notes</span><b id="n">—</b></div>
-    <div><span>root</span><b id="r">—</b></div>
-  </div>
+        <div class="hidden" id="connected">
+          <div class="addrs">
+            <div class="kv"><span>via</span><b id="w-via">—</b></div>
+            <div class="kv"><span>sats</span><b id="w-bal">—</b></div>
+            <div class="kv hidden" id="w-assets-row"><span>tokens</span><b id="w-assets">—</b></div>
+            <div class="kv"><span>address</span><b id="w-addr">—</b>
+              <span class="acts"><a href="#" id="copy-addr" role="button">copy</a><a id="view-addr" target="_blank" rel="noopener noreferrer">explorer ↗</a></span></div>
+            <div class="kv"><span>silent address</span><b id="w-sp">—</b>
+              <span class="acts" id="copy-sp-wrap"><a href="#" id="copy-sp" role="button">copy</a></span></div>
+          </div>
+          <div class="callout hidden" id="faucet-hint">
+            <p>Empty wallet. Get 10,000 test sats; the balance updates on its own.</p>
+            <div class="row"><button class="btn sm" id="faucet">Get signet sats</button><span class="small muted">or <a href="https://signetfaucet.com" target="_blank" rel="noopener noreferrer">signetfaucet.com</a></span></div>
+          </div>
+          <div class="row">
+            <button class="btn sm hidden" id="btn-unlock">Unlock</button>
+            <button class="btn quiet sm hidden" id="btn-fund">Fund from linked wallet</button>
+            <button class="btn quiet sm" id="btn-refresh">Refresh</button>
+            <button class="btn quiet sm hidden" id="btn-backup">Back up key</button>
+            <button class="btn quiet sm" id="btn-disconnect">Disconnect</button>
+          </div>
+          <div class="row hidden" id="fund-row"><input type="number" id="fund-amt" min="546" step="1" inputmode="numeric" placeholder="sats" aria-label="Sats to move from your linked wallet"><button class="btn sm" id="btn-fund-go">Move to Tacit</button></div>
+          <div class="callout hidden" id="backup">
+            <p>This key controls the wallet. Save it somewhere safe: clearing this browser loses it.</p>
+            <p class="secret-key" id="backup-key" title="Copy">—</p>
+            <div class="row"><button class="btn sm" id="btn-backup-copy">Copy key</button><button class="btn quiet sm" id="btn-backup-done">I saved it</button></div>
+          </div>
+          <ol class="lines compact activity hidden" id="activity" aria-label="Recent activity"></ol>
+        </div>
+        <div class="status" id="log" role="status" aria-live="polite"></div>
+      </section>
 
-  <footer>cBTC pilot live on mainnet · <a href="/">tacit.finance</a></footer>
+      <div class="tabs" role="tablist" aria-label="Payments">
+        <button role="tab" id="tab-send" aria-controls="panel-send" aria-selected="true" tabindex="0">Send</button>
+        <button role="tab" id="tab-receive" aria-controls="panel-receive" aria-selected="false" tabindex="-1">Receive</button>
+        <button role="tab" id="tab-secret" aria-controls="panel-secret" aria-selected="false" tabindex="-1"><span class="star" aria-hidden="true">●</span> Secret payment</button>
+      </div>
+
+      <section role="tabpanel" id="panel-send" aria-labelledby="tab-send" tabindex="0">
+        <div class="hidden" id="send">
+          <div class="field"><label for="to" id="to-label">To: a tb1… address or a silent address (tsp1…)</label><input type="text" id="to" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+          <div class="field"><label for="amt">Amount (sats)</label><input type="number" id="amt" min="546" step="1" inputmode="numeric" placeholder="546 or more"></div>
+          <div class="row"><button class="btn" id="btn-send">Send</button></div>
+          <div class="status" id="send-out" aria-live="polite"></div>
+          <div class="callout hidden" id="share">
+            <p>A silent payment leaves no address on chain. Send the recipient this link so their wallet finds it:</p>
+            <p class="secret-key" id="share-url">—</p>
+            <div class="row"><button class="btn sm" id="btn-share-copy">Copy link</button></div>
+          </div>
+        </div>
+        <p class="empty">Connect a wallet above to send sats to an address or a silent address.</p>
+      </section>
+
+      <section role="tabpanel" id="panel-receive" aria-labelledby="tab-receive" tabindex="0" hidden>
+        <div class="hidden" id="receive">
+          <p class="note" id="receive-note">Payments to your silent address can’t be looked up by address. Open the link the sender gives you, paste it here, or scan recent blocks.</p>
+          <div class="row"><input type="text" id="check-in" placeholder="Payment link or txid" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Payment link or txid"><button class="btn quiet" id="btn-check">Check</button></div>
+          <div class="row"><button class="btn" id="btn-scan">Scan for payments</button><button class="btn quiet hidden" id="btn-scan-stop">Stop</button><small class="muted" id="scan-depth"></small></div>
+          <div class="status" id="scan-out" aria-live="polite"></div>
+          <div id="found"></div>
+        </div>
+        <p class="empty">Connect a wallet above to find payments sent to your silent address.</p>
+      </section>
+
+      <section role="tabpanel" id="panel-secret" aria-labelledby="tab-secret" tabindex="0" hidden>
+        <div id="secret">
+          <p class="note" id="secret-placeholder">Connect a wallet above to start. Each step is one signet transaction.</p>
+          <!-- Mounted by /sats/secret.js. Until then, a preview of its steps (keep in step with STEPS there). -->
+          <div id="secret-steps">
+            <ol class="steps" aria-label="Secret payment steps">
+              <li class="step is-locked"><span class="step-n">1</span><div><div class="step-head"><span class="step-title">Get signet sats</span></div><div class="step-body">Free test sats for the fees and the cBTC price.</div></div></li>
+              <li class="step is-locked"><span class="step-n">2</span><div><div class="step-head"><span class="step-title">Get cBTC</span></div><div class="step-body">Buy a test cBTC lot from the faucet in one atomic swap.</div></div></li>
+              <li class="step is-locked"><span class="step-n">3</span><div><div class="step-head"><span class="step-title">Shield</span></div><div class="step-body">Move it into the pool, where amounts and owners are hidden.</div></div></li>
+              <li class="step is-soon"><span class="step-n">4</span><div><div class="step-head"><span class="step-title">Pay privately</span><span class="step-status">coming soon</span></div></div></li>
+              <li class="step is-soon"><span class="step-n">5</span><div><div class="step-head"><span class="step-title">Receive</span><span class="step-status">coming soon</span></div></div></li>
+              <li class="step is-soon"><span class="step-n">6</span><div><div class="step-head"><span class="step-title">Exit</span><span class="step-status">coming soon</span></div></div></li>
+            </ol>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <section class="block" id="how" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <p>The pool carries bitcoin-backed cBTC. Sats become cBTC by atomic swap, cBTC is shielded into the pool, paid privately inside it, and leaves the same way.</p>
+    <figure class="diagram">
+      <svg class="wide" viewBox="0 0 520 112" role="img" aria-labelledby="diagram-t" fill="none" stroke="currentColor" stroke-width="1">
+        <title id="diagram-t">sats swap to cBTC, cBTC is shielded into the pool, paid privately inside it, exited, and sold back to sats</title>
+        <g font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle" fill="currentColor" stroke="none">
+          <text x="55" y="31">sats</text><text x="122" y="31">⇄</text>
+          <text x="190" y="31">swap</text><text x="257" y="31">⇄</text>
+          <text x="325" y="31">cBTC</text><text x="392" y="31">→</text>
+          <text x="460" y="31">shield</text>
+          <text x="70" y="99">pool · pay</text><text x="152" y="99">→</text>
+          <text x="235" y="99">exit</text><text x="317" y="99">→</text>
+          <text x="400" y="99">sell</text>
+        </g>
+        <rect x="10.5" y="10.5" width="90" height="31"/><rect x="145.5" y="10.5" width="90" height="31"/>
+        <rect x="280.5" y="10.5" width="90" height="31"/><rect x="415.5" y="10.5" width="90" height="31"/>
+        <rect x="10.5" y="78.5" width="120" height="31" stroke="#f7931a" stroke-dasharray="3 2"/>
+        <rect x="190.5" y="78.5" width="90" height="31"/><rect x="355.5" y="78.5" width="90" height="31"/>
+        <path d="M460.5 42v18H70.5v14"/><path d="M66.5 70l4 6 4-6"/>
+      </svg>
+      <svg class="narrow" viewBox="0 0 330 150" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1">
+        <g font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle" fill="currentColor" stroke="none">
+          <text x="45" y="27">sats</text><text x="110" y="27">⇄</text><text x="175" y="27">swap</text><text x="240" y="27">⇄</text><text x="290" y="27" text-anchor="middle">cBTC</text>
+          <text x="45" y="81">shield</text><text x="110" y="81">→</text><text x="195" y="81">pool · pay</text>
+          <text x="45" y="135">exit</text><text x="110" y="135">→</text><text x="175" y="135">sell</text><text x="240" y="135">→</text><text x="290" y="135">sats</text>
+        </g>
+        <rect x="5.5" y="6.5" width="80" height="31"/><rect x="135.5" y="6.5" width="80" height="31"/><rect x="255.5" y="6.5" width="70" height="31"/>
+        <rect x="5.5" y="60.5" width="80" height="31"/><rect x="135.5" y="60.5" width="120" height="31" stroke="#f7931a" stroke-dasharray="3 2"/>
+        <rect x="5.5" y="114.5" width="80" height="31"/><rect x="135.5" y="114.5" width="80" height="31"/><rect x="255.5" y="114.5" width="70" height="31"/>
+        <path d="M290.5 38v10H45.5v8"/><path d="M41.5 52l4 6 4-6"/>
+        <path d="M195.5 92v6H45.5v12"/><path d="M41.5 106l4 6 4-6"/>
+      </svg>
+      <figcaption>Dashed: inside the pool, where amounts and owners are hidden.</figcaption>
+    </figure>
+
+    <h3>Live on signet</h3>
+    <ol class="lines">
+      <li><span><a href="https://mempool.space/signet/tx/56fcdf0f17cca0327bcbad1a11e4382c70fde3b178ac12e866b0764a8a405fa9">Alice shields 50,000 test units</a></span><span>block 323662</span></li>
+      <li><span><a href="https://mempool.space/signet/tx/55d4cdb1147eaca47d27f1d0d62bd75f1ddc19588b44bfd4618c09fdbe278ea7">Alice pays Bob, amount and source hidden</a></span><span>block 323664</span></li>
+      <li><span>Bob scans and finds 30,000</span><span>off-chain</span></li>
+      <li><span><a href="https://mempool.space/signet/tx/7cb822352c6cbe9d94226892b9fde440d2552d552a529c65ee716da23208c20d">Bob exits to his own address</a></span><span>block 323665</span></li>
+    </ol>
+
+    <h3>The pool right now</h3>
+    <div class="live" id="live" aria-live="polite">
+      <div class="kv"><span><i class="dot" id="dot"></i>signet</span><b id="st">connecting…</b></div>
+      <div class="kv"><span>height</span><b id="h">—</b></div>
+      <div class="kv"><span>notes</span><b id="n">—</b></div>
+      <div class="kv"><span>root</span><b id="r">—</b></div>
+    </div>
+  </section>
+
+  <section class="block" id="trust" aria-labelledby="trust-h">
+    <h2 id="trust-h">What’s hidden, what you trust</h2>
+    <div class="trust-grid">
+      <div>
+        <p class="eyebrow">Hidden</p>
+        <ul>
+          <li>Amounts inside the pool</li>
+          <li>Who paid whom</li>
+          <li>Which note was spent</li>
+          <li>The payer’s Bitcoin wallet: relayers post the spend</li>
+        </ul>
+      </div>
+      <div>
+        <p class="eyebrow">Visible</p>
+        <ul>
+          <li>That a pool transaction happened, and when</li>
+          <li>The shield input and the exit output</li>
+          <li>Their amounts, when the note’s opening is public (a bought lot, say)</li>
+        </ul>
+      </div>
+      <div>
+        <p class="eyebrow">You trust</p>
+        <ul>
+          <li>Bitcoin</li>
+          <li>SP1 and its Groth16 key, the one already securing Tacit’s mainnet verifier</li>
+          <li>The indexer you choose, or your own</li>
+          <li>cBTC’s backing: locked BTC plus a slashable escrow</li>
+        </ul>
+      </div>
+    </div>
+    <p class="eyebrow">Size on signet</p>
+    <ul class="lines compact">
+      <li><span>shield</span><span>268 vB</span></li>
+      <li><span>private payment</span><span>338 vB</span></li>
+      <li><span>+ commit, when self-broadcast (relayers batch it)</span><span>153 vB</span></li>
+      <li><span>exit</span><span>253 vB</span></li>
+    </ul>
+  </section>
+
+  <section class="block" id="faq" aria-labelledby="faq-h">
+    <h2 id="faq-h">Questions</h2>
+    <details><summary>Is this a sidechain?</summary><p>No. Every payment is an ordinary Bitcoin transaction, and indexers check it.</p></details>
+    <details><summary>Where are my sats?</summary><p>Inside the pool you hold cBTC, backed by locked BTC and a slashable escrow. Sats move in and out by atomic swap.</p></details>
+    <details><summary>What if Tacit disappears?</summary><p>Run the open-source indexer. The hosted one is optional.</p></details>
+    <details><summary>Is there a trusted setup?</summary><p>It uses the same SP1 Groth16 key that already secures Tacit’s mainnet verifier. There is no new ceremony.</p></details>
+    <details><summary>Why Ethereum?</summary><p>cBTC’s escrow and pool live there today. The Bitcoin pool itself has no Ethereum dependency, and a BitVM or covenant peg can back it.</p></details>
+  </section>
+
+  <footer>
+    <a href="/secret-sats">Paper</a> ·
+    <a href="https://github.com/src-company/tacit">GitHub</a> ·
+    <a href="https://github.com/src-company/tacit/blob/main/SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled">SPEC §3.10</a> ·
+    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool.md">Design</a> ·
+    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md">Security</a> ·
+    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-pool-native-peg.md">Native peg</a> ·
+    <a href="/">tacit.finance</a>
+  </footer>
 </main>
-<script>
-(async () => {
-  const $ = (id) => document.getElementById(id);
-  try {
-    const r = await fetch('https://tacit-btc-pool.onrender.com/btc-pool/status', { cache: 'no-store' });
-    if (!r.ok) throw new Error(r.status);
-    const s = await r.json();
-    $('h').textContent = s.height ?? '—';
-    $('n').textContent = s.leafCount ?? '—';
-    $('r').textContent = s.root ? s.root.slice(0, 10) + '…' + s.root.slice(-6) : '—';
-    $('st').textContent = s.halted ? 'paused' : 'replaying';
-    $('dot').classList.toggle('on', !s.halted);
-  } catch { $('st').textContent = 'offline'; }
-})();
-</script>
+
+<div class="modal" id="pass-modal">
+  <form id="pass-form" role="dialog" aria-modal="true" aria-labelledby="pass-title">
+    <h3 id="pass-title">set passphrase</h3>
+    <p class="muted" id="pass-reason"></p>
+    <div class="field"><label id="pass-label-1" for="pass-input-1">passphrase</label><input type="password" id="pass-input-1"><div class="pass-hint" id="pass-hint-1" aria-live="polite"></div></div>
+    <div class="field" id="pass-field-2"><label for="pass-input-2">repeat</label><input type="password" id="pass-input-2"><div class="pass-hint" id="pass-hint-2" aria-live="polite"></div></div>
+    <p class="note" id="pass-warn">There is no reset. Forget it and only your key backup gets you back in.</p>
+    <div class="row"><button class="btn" id="pass-submit" type="submit">set passphrase</button><button class="btn quiet" id="pass-cancel" type="button">cancel</button></div>
+  </form>
+</div>
+<div id="toast-container" aria-live="polite"></div>
+<script type="module" src="/sats/app.js?cb=e8f0fbe9"></script>
 </body>
 </html>
