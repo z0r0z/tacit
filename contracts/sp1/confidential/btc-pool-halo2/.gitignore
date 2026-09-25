@@ -1,0 +1,4 @@
+target/
+wasm/pkg/
+wasm/pkg-node/
+wasm/pkg-threads/

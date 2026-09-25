@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>btc-pool halo2 bench</title>
+<pre id="out"></pre>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const w = new Worker('./bench-worker.js', { type: 'module' });
+const out = document.getElementById('out');
+w.onmessage = (e) => {
+  out.textContent += e.data.line + '\n';
+  fetch('/log', { method: 'POST', body: JSON.stringify(e.data) });
+};
+w.postMessage({ mode: q.get('mode') || 'threads', runs: Number(q.get('runs') || 3), threads: Number(q.get('threads') || 0) });
+</script>
