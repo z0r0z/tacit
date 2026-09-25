@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-points.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co https://tacit-btc-pool.onrender.com https://tacit-sats-faucet.onrender.com http://localhost:8787 http://localhost:8788 http://localhost:8789; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://mempool.space https://*.mempool.space https://mempool.bisq.services https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-points.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co https://tacit-btc-pool.onrender.com https://tacit-sats-faucet.onrender.com https://tacit-sp-index.onrender.com http://localhost:8787 http://localhost:8788 http://localhost:8789; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>Secret Sats</title>
 <meta property="og:type" content="website">
@@ -354,7 +354,7 @@ footer a:hover { color: var(--ink); }
 
       <section role="tabpanel" id="panel-receive" aria-labelledby="tab-receive" tabindex="0" hidden>
         <div class="hidden" id="receive">
-          <p class="note" id="receive-note">Payments to your silent address can’t be looked up by address. Open the link the sender gives you, paste it here, or scan recent blocks.</p>
+          <p class="note" id="receive-note">Payments to your silent address can’t be looked up by address. To find one, paste its payment link or txid here.</p>
           <div class="row"><input type="text" id="check-in" placeholder="Payment link or txid" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Payment link or txid"><button class="btn quiet" id="btn-check">Check</button></div>
           <div class="row"><button class="btn" id="btn-scan">Scan for payments</button><button class="btn quiet hidden" id="btn-scan-stop">Stop</button><small class="muted" id="scan-depth"></small></div>
           <div class="status" id="scan-out" aria-live="polite"></div>
@@ -505,6 +505,6 @@ footer a:hover { color: var(--ink); }
   </form>
 </div>
 <div id="toast-container" aria-live="polite"></div>
-<script type="module" src="/sats/app.js?cb=56c40bfb"></script>
+<script type="module" src="/sats/app.js?cb=b2a97061"></script>
 </body>
 </html>

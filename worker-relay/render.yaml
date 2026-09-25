@@ -464,3 +464,70 @@ services:
         sync: false
       - key: PORT
         value: "10000"
+
+  # Always-on web service: BIP-352 silent-payment tweak index for signet (src/sp-tweak-index.js). Publishes, per
+  # block, input_hash·A_sum for every transaction with a taproot output; wallets match outputs locally with their
+  # scan key, so the index holds no keys and never learns which outputs matched. Serves GET /sp/tip,
+  # /sp/tweaks/:height, /sp/tweaks?from=&to= and /health. Reads signet from Esplora (block txs pages carry
+  # prevouts, scriptSig and witness). The disk keeps the SQLite index; START_HEIGHT applies to an empty database.
+  - type: web
+    name: tacit-sp-index
+    runtime: docker
+    rootDir: .
+    dockerfilePath: ./worker-relay/Dockerfile.sp-index
+    dockerContext: .
+    plan: starter
+    region: oregon
+    dockerCommand: node src/sp-tweak-index.js
+    healthCheckPath: /health
+    autoDeploy: false
+    disk:
+      name: sp-index-db
+      mountPath: /var/lib/tacit-sp-index
+      sizeGB: 1
+    envVars:
+      # DELIBERATELY NOT `fromGroup: tacit-relay-shared`: public, read-only, holds no secrets.
+      - key: SP_NETWORK
+        value: signet
+      - key: START_HEIGHT
+        value: "322688"
+      - key: SP_DB
+        value: /var/lib/tacit-sp-index/index.db
+      - key: PORT
+        value: "10000"
+
+  # Mainnet tweak index: NOT CREATED. Same service against bitcoind v25+ over BTC_RPC_URL: getblock
+  # verbosity 3 reads each input's prevout from the node's undo data, so the node must be unpruned (or still
+  # hold the blocks being indexed); txindex is not needed. Public Esplora is not used on mainnet: ~3,000 transactions a block means ~120 page
+  # requests per block, well past public rate limits. A full index from taproot activation (709632) needs
+  # roughly 10-20 GB of SQLite; wallets only scan back from their birth height, so a later START_HEIGHT works.
+  # - type: web
+  #   name: tacit-sp-index-mainnet
+  #   runtime: docker
+  #   rootDir: .
+  #   dockerfilePath: ./worker-relay/Dockerfile.sp-index
+  #   dockerContext: .
+  #   plan: standard
+  #   region: oregon
+  #   dockerCommand: node src/sp-tweak-index.js
+  #   healthCheckPath: /health
+  #   autoDeploy: false
+  #   disk:
+  #     name: sp-index-mainnet-db
+  #     mountPath: /var/lib/tacit-sp-index
+  #     sizeGB: 20
+  #   envVars:
+  #     - key: SP_NETWORK
+  #       value: mainnet
+  #     - key: START_HEIGHT         # mainnet tip at creation minus the scan window (e.g. 1008 blocks)
+  #       sync: false
+  #     - key: BTC_RPC_URL          # http://host:8332 of a bitcoind — set in the Render dashboard
+  #       sync: false
+  #     - key: BTC_RPC_USER
+  #       sync: false
+  #     - key: BTC_RPC_PASS
+  #       sync: false
+  #     - key: SP_DB
+  #       value: /var/lib/tacit-sp-index/index.db
+  #     - key: PORT
+  #       value: "10000"

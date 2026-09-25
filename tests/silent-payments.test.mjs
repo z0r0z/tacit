@@ -282,5 +282,60 @@ console.log('\nWallet round trip (P2WPKH + odd-y credit inputs → receiver → 
   check('change-label output found and its key opens it', !!csk && hex(secp.getPublicKey(csk, true).slice(1)) === hex(chg.xOnly) && cm[0].label === 0);
 }
 
+// ---------------------------------------------------------------- wallet key versions
+console.log('\nWallet key versions (v1 separate spend key, v0 legacy still received):');
+{
+  const walletPriv = sha256(new TextEncoder().encode('sp key versions wallet'));
+  const tagged = (tag, m) => { const t = sha256(new TextEncoder().encode(tag)); return sha256(new Uint8Array([...t, ...t, ...m])); };
+  const walletPub = secp.getPublicKey(walletPriv, true);
+  T.wallet.priv = walletPriv; T.wallet.pub = walletPub;
+  const v1 = T.deriveWalletSilentPaymentKeys(walletPriv, 1);
+  const v0 = T.deriveWalletSilentPaymentKeys(walletPriv, 0);
+  const addrNew = T.walletSilentPaymentAddress();
+  const addrOld = T.walletSilentPaymentAddress(0);
+  check('shown address is version 1', T.SP_KEY_VERSION === 1 && addrNew === T.encodeSilentPaymentAddress({ scanPub: v1.scanPub, spendPub: v1.spendPub, network: 'mainnet' }));
+  check('new address differs from the legacy one', addrNew !== addrOld);
+  check('legacy spend key is the wallet key', hex(v0.spendPub) === hex(walletPub) && hex(v0.spendPriv) === hex(walletPriv));
+  const d = T.decodeSilentPaymentAddress(addrNew);
+  const walletProg = hex(T.p2wpkhScript(walletPub).slice(2));
+  check('new address carries neither the wallet key nor anything hashing to its bc1q',
+    hex(d.spendPub) !== hex(walletPub) && hex(d.scanPub) !== hex(walletPub)
+    && hex(T.p2wpkhScript(d.spendPub).slice(2)) !== walletProg && hex(T.p2wpkhScript(d.scanPub).slice(2)) !== walletProg
+    && !hex(d.scanPub).includes(hex(walletPub).slice(2)) && hex(v1.scanPub) !== hex(v0.scanPub));
+  check('v1 keys are hardened: tagged hashes of the wallet key', hex(v1.spendPriv) === hex(b32(big(tagged('tacit/bip352/spend', walletPriv)) % N))
+    && hex(v1.scanPriv) === hex(b32(big(tagged('tacit/bip352/scan', walletPriv)) % N)));
+  // One payment to each address; both are found under their own version and spend with that version's key.
+  const senderPriv = unhex('22'.repeat(32));
+  const senderPub = secp.getPublicKey(senderPriv, true);
+  for (const [keys, ver] of [[v1, 1], [v0, 0]]) {
+    const inTxid = hex(sha256(new TextEncoder().encode(`in${ver}`)));
+    const [out] = T.senderComputeSilentPaymentOutputs({
+      inputPrivs: [senderPriv], inputOutpoints: [T.bip352OutpointBytes(inTxid, 3)],
+      recipients: [{ scanPub: T.decodeSilentPaymentAddress(ver ? addrNew : addrOld).scanPub, spendPub: T.decodeSilentPaymentAddress(ver ? addrNew : addrOld).spendPub }],
+    });
+    const tx = { vin: [{ txid: inTxid, vout: 3, witness: ['30'.repeat(71), hex(senderPub)], prevout: { scriptpubkey: hex(T.p2wpkhScript(senderPub)) } }] };
+    const inp = T.bip352ReceiverInputsFromEsploraTx(tx);
+    const outputs = [{ script: T.p2trScript(out.xOnly) }];
+    const hits = T.SP_KEY_VERSIONS.map((v) => {
+      const k = T.deriveWalletSilentPaymentKeys(walletPriv, v);
+      return [v, T.receiverScanTxForSilentPayments({ ...inp, outputs, scanPriv: k.scanPriv, spendPub: k.spendPub })];
+    }).filter(([, m]) => m.length);
+    const txid = hex(sha256(new TextEncoder().encode(`pay${ver}`)));
+    const ok1 = hits.length === 1 && hits[0][0] === ver;
+    if (ok1) T.recordSpCredit({ txidHex: txid, vout: 0, sats: 5000, tweakHex: hex(hits[0][1][0].tweak), keyVersion: ver });
+    const sk = ok1 ? T.spCreditSpendingKey(T.getSpCredit(txid, 0)) : null;
+    const opens = !!sk && hex(secp.getPublicKey(sk, true).slice(1)) === hex(out.xOnly);
+    const spendTx = { version: 2, locktime: 0, inputs: [{ txid, vout: 0, sequence: 0xfffffffd, witness: [] }], outputs: [{ value: 4000, script: T.p2wpkhScript(walletPub) }] };
+    const prevouts = [{ value: 5000, script: outputs[0].script }];
+    const verified = opens && T.verifySchnorr(T.signTaprootKeypathInput(spendTx, 0, prevouts, sk)[0], T.tapSighashKeyPath(spendTx, 0, prevouts, 0x00), out.xOnly);
+    check(`payment to the ${ver ? 'new' : 'legacy'} address found only as v${ver}, spent with a verifying key-path signature`, ok1 && verified);
+    check(`v${ver} output key is not the wallet key`, hex(out.xOnly) !== hex(walletPub.slice(1)) && (ver === 0 || hex(out.xOnly) !== hex(v1.spendPub.slice(1))));
+  }
+  // A credit recorded before versioning (no keyVersion) spends with the legacy key.
+  const legacyCredit = { sats: '5000', tweakHex: '00'.repeat(31) + '05' };
+  check('unversioned credit uses the legacy spend key', hex(T.spCreditSpendingKey(legacyCredit)) === hex(T.silentPaymentSpendingKey(walletPriv, 5n)));
+  T.wallet.priv = null; T.wallet.pub = null;
+}
+
 console.log(`\nFinal: ${pass} passed · ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

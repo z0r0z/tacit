@@ -1,0 +1,28 @@
+# tacit-sp-index: BIP-352 silent-payment tweak index (src/sp-tweak-index.js).
+# Build context is the repo root: the service imports dapp/bip352.js (the wallet's own input rules) and the
+# vendored crypto bundle, so the runtime image keeps the dapp/ and worker-relay/ layout side by side.
+#   docker build -f worker-relay/Dockerfile.sp-index .
+
+FROM node:20-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/bip352.js /app/dapp/bip352.js
+COPY dapp/vendor/tacit-deps.min.js /app/dapp/vendor/tacit-deps.min.js
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY worker-relay/src ./src
+
+# The shared input rules must load here, or the image is unusable.
+RUN node -e "import('./src/sp-tweak-index.js').then((m) => { if (typeof m.computeBlockTweaks !== 'function') process.exit(1); console.log('sp-index ok'); })"
+
+ENV NODE_ENV=production \
+    SP_NETWORK=signet \
+    SP_DB=/var/lib/tacit-sp-index/index.db \
+    PORT=10000
+EXPOSE 10000
+CMD ["node", "src/sp-tweak-index.js"]

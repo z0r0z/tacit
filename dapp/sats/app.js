@@ -1,7 +1,7 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=5b41e38c';
+const TACIT_URL = '/tacit.js?cb=5c98d635';
 const SECRET_URL = '/sats/secret.js?cb=e5fb1df1';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
@@ -19,7 +19,9 @@ const PREV_NET = 'tacit-sats-prev-net-v1';
 const SESSION = 'tacit-sats-session-v1';
 const IDENTITY = (net) => `tacit-sats-id-v1:${net}`;
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1'];
-const SCAN_BLOCKS = { signet: 50 };
+// Silent-payment tweak index per network. The wallet fetches public tweaks
+// and matches them locally; the index never sees a key.
+const SP_INDEX_URL = { signet: 'https://tacit-sp-index.onrender.com', mainnet: null };
 const DUST = 546;
 const POLL_MS = 20_000;
 
@@ -129,7 +131,7 @@ function releaseSharedNet() {
 
 function switchNet(net) {
   store.set(NET_PREF, net);
-  if (!T) { renderNet(); refreshCreateLabel(); resume(); return; }
+  if (!T) { renderNet(); probeIndex(); refreshCreateLabel(); resume(); return; }
   releaseSharedNet();
   // A #…&net= in the URL would switch the page straight back on reload.
   if (location.hash) history.replaceState(null, '', location.pathname + location.search);
@@ -140,11 +142,7 @@ function renderNet() {
   const net = curNet();
   for (const b of document.querySelectorAll('#net [data-net]')) b.setAttribute('aria-pressed', String(b.dataset.net === net));
   show('mainnet-note', net === 'mainnet');
-  $('scan-depth').textContent = SCAN_BLOCKS[net] ? `last ${SCAN_BLOCKS[net]} blocks` : '';
-  show('btn-scan', !!SCAN_BLOCKS[net]);
-  $('receive-note').textContent = SCAN_BLOCKS[net]
-    ? 'Payments to your silent address can’t be looked up by address. Open the link the sender gives you, paste it or the txid here, or scan recent blocks.'
-    : 'Payments to your silent address can’t be looked up by address. To find one, paste its payment link or txid here.';
+  renderScan();
   $('to-label').textContent = net === 'mainnet'
     ? 'To: a bc1q… address or a silent address (sp1…)'
     : 'To: a tb1q… address or a silent address (tsp1…)';
@@ -153,6 +151,33 @@ function renderNet() {
   if (ph) ph.textContent = net === 'mainnet'
     ? 'The private pool runs on signet. Switch the wallet to signet to try it.'
     : 'Connect a wallet above to start. Each step is one signet transaction.';
+}
+
+// Scan is offered when this network has an index and it answered.
+const indexState = { net: null, tip: null, ok: false };
+async function probeIndex() {
+  const net = curNet();
+  const url = SP_INDEX_URL[net];
+  indexState.net = net; indexState.ok = false; indexState.tip = null;
+  if (url) {
+    try {
+      const r = await fetch(`${url}/sp/tip`, { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+      const j = r.ok ? await r.json() : null;
+      if (curNet() !== net) return;
+      if (Number.isInteger(j?.height)) { indexState.ok = true; indexState.tip = j.height; }
+    } catch {}
+  }
+  renderScan();
+}
+
+function renderScan() {
+  const on = indexState.ok && indexState.net === curNet();
+  show('btn-scan', on);
+  const last = on && T?.wallet.pub ? T.spIndexLastScanned() : null;
+  $('scan-depth').textContent = !on ? '' : last ? `new blocks since ${last}` : 'about the last week of blocks';
+  $('receive-note').textContent = on
+    ? 'Payments to your silent address can’t be looked up by address. Scan to find them: this device checks every recent payment itself, so the index never learns which are yours. A payment link or txid works too.'
+    : 'Payments to your silent address can’t be looked up by address. To find one, paste its payment link or txid here.';
 }
 
 // ---------- tacit.js ----------
@@ -346,7 +371,7 @@ function openBackup() {
   show('backup', true);
 }
 
-function spCacheKey() { return `tacit-sats-sp-v1:${T.NET.name}:${T.bytesToHex(T.wallet.pub)}`; }
+function spCacheKey() { return `tacit-sats-sp-v2:${T.NET.name}:${T.bytesToHex(T.wallet.pub)}`; }
 
 function silentAddress() {
   if (T.wallet.priv) {
@@ -364,6 +389,7 @@ async function connected() {
   show('send', true);
   show('receive', true);
   renderActivity();
+  renderScan();
   await refresh();
   startPoll();
   checkHashPayment();
@@ -734,71 +760,38 @@ async function getJson(path, signal) {
   throw last;
 }
 
-function scanTx(tx, keys) {
-  if (!tx.vin?.length || tx.vin[0].is_coinbase) return [];
-  if (!tx.vout?.some((o) => o.scriptpubkey_type === 'v1_p2tr')) return [];
-  const inp = T.bip352ReceiverInputsFromEsploraTx(tx);
-  if (!inp) return [];
-  const { classifiedInputs, allOutpoints } = inp;
-  const outputs = tx.vout.map((o) => ({ script: T.hexToBytes(o.scriptpubkey || ''), value: o.value }));
-  const matches = T.receiverScanTxForSilentPayments({ classifiedInputs, allOutpoints, outputs, ...keys });
-  return matches.map((m) => {
-    T.recordSpCredit({
-      txidHex: tx.txid, vout: m.voutIndex, sats: outputs[m.voutIndex].value,
-      tweakHex: T.bytesToHex(m.tweak), blockTime: tx.status?.block_time || null,
-    });
-    return { txid: tx.txid, vout: m.voutIndex, sats: outputs[m.voutIndex].value };
-  });
-}
-
 async function scan() {
-  const depth = SCAN_BLOCKS[T.NET.name];
-  if (!depth) return;
+  const url = SP_INDEX_URL[T.NET.name];
+  if (!url || !indexState.ok) throw fail('The payment index is not reachable. Paste the payment link or txid instead.');
   await ensureKey();
-  const { scanPriv, spendPub } = T.deriveSilentPaymentKeys(T.wallet.priv);
-  const keys = { scanPriv, spendPub };
   const ctl = new AbortController();
   scanAbort = ctl;
   show('btn-scan-stop', true);
   $('btn-scan-stop').disabled = false;
   const out = $('scan-out');
-  let found = 0, txCount = 0, done = 0;
   out.textContent = 'Starting scan…';
+  let res = null, prog = null;
   try {
-    const tip = Number(await getJson('/blocks/tip/height', ctl.signal));
-    if (!Number.isFinite(tip)) throw fail('could not read the chain tip');
-    const blocks = [];
-    for (let h = tip; blocks.length < depth && h >= 0;) {
-      const page = await getJson(`/blocks/${h}`, ctl.signal);
-      if (!Array.isArray(page) || !page.length) break;
-      for (const b of page) if (b.height <= h && blocks.length < depth && !blocks.some((x) => x.id === b.id)) blocks.push(b);
-      h = Math.min(...page.map((b) => b.height)) - 1;
-    }
-    for (const b of blocks) {
-      if (ctl.signal.aborted) break;
-      out.textContent = `Scanning block ${b.height} (${done + 1}/${blocks.length}) · ${found} found…`;
-      const pages = [];
-      for (let s = 0; s < b.tx_count; s += 25) pages.push(s);
-      for (let i = 0; i < pages.length && !ctl.signal.aborted; i += 3) {
-        const got = await Promise.all(pages.slice(i, i + 3).map((s) => getJson(`/block/${b.id}/txs/${s}`, ctl.signal)));
-        for (const txs of got) {
-          for (const tx of txs) {
-            txCount++;
-            try { found += scanTx(tx, keys).length; } catch {}
-          }
-        }
-      }
-      if (!ctl.signal.aborted) done++;
-    }
-    out.textContent = `${ctl.signal.aborted ? 'Stopped' : 'Done'}: ${done} block${done === 1 ? '' : 's'}, ${txCount.toLocaleString('en-US')} transactions, ${found} payment${found === 1 ? '' : 's'} found.`;
+    res = await T.scanSilentPaymentsViaIndex({
+      baseUrl: url,
+      signal: ctl.signal,
+      onProgress: (p) => { prog = p; out.textContent = `Scanned to block ${p.height} of ${p.to} · ${p.found} found…`; },
+    });
+    const n = res.found.length;
+    const total = res.found.reduce((s, f) => s + Number(f.sats || 0), 0);
+    const span = res.blocks ? `${res.blocks.toLocaleString('en-US')} block${res.blocks === 1 ? '' : 's'}` : 'no new blocks';
+    out.textContent = `${ctl.signal.aborted ? 'Stopped' : 'Done'}: ${span}, ${res.txs.toLocaleString('en-US')} transactions checked, ${n ? `${fmtSats(total)} found for you` : 'none for you'}.`;
+    for (const f of res.found) track(f.txid, `Received ${fmtSats(f.sats)}`);
   } catch (e) {
+    const found = prog?.found || 0;
     out.textContent = ctl.signal.aborted
-      ? `Stopped after ${done} block${done === 1 ? '' : 's'}. ${found} found.`
-      : `Scan stopped at block ${done + 1}: ${errMsg(e)} ${found} found so far.`;
+      ? `Stopped${prog ? ` at block ${prog.height}` : ''}. ${found} found.`
+      : `Scan stopped${prog ? ` at block ${prog.height}` : ''}: ${errMsg(e)} ${found} found so far.`;
   } finally {
     scanAbort = null;
     show('btn-scan-stop', false);
-    if (found) await refresh(); else renderFound();
+    renderScan();
+    if (res?.found.length || prog?.found) await refresh(); else renderFound();
   }
 }
 
@@ -894,7 +887,7 @@ function wire() {
     const { net, sp } = parseHash();
     if (net && net !== curNet()) {
       store.set(NET_PREF, net);
-      if (T) { releaseSharedNet(); location.reload(); } else { renderNet(); refreshCreateLabel(); resume(); }
+      if (T) { releaseSharedNet(); location.reload(); } else { renderNet(); probeIndex(); refreshCreateLabel(); resume(); }
       return;
     }
     hashChecked = null;
@@ -961,6 +954,7 @@ async function boot() {
   renderNet();
   refreshCreateLabel();
   poolStatus();
+  probeIndex();
   setInterval(() => { if (!document.hidden) poolStatus(); }, 60_000);
   await resume();
 }

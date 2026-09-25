@@ -88,6 +88,11 @@ import { CONFIDENTIAL_DEPLOYMENTS as CROSSLANE_DEPLOYMENTS, setActiveNetwork as 
 import { makeCrossLaneGuard } from './confidential-crosslane-guard.js';
 import { makeCrossChainAssets } from './cross-chain-asset-resolver.js';
 import { makeTacitAddress } from './tacit-address.js';
+import {
+  bip352U32be as _bip352U32be, bip352OutpointBytes as _bip352OutpointBytes,
+  bip352SmallestOutpoint as _bip352SmallestOutpoint, bip352InputPubkey,
+  bip352ReceiverInputsFromEsploraTx, bip352PublicTweakPoint, bip352PublicTweakFromEsploraTx,
+} from './bip352.js';
 import { makeEvmLaneReader } from './evm-lane-reader.js';
 import { scanHoldingsUnified } from './unified-holdings.js';
 import { makeEvmAccount } from './evm-account.js';
@@ -5215,9 +5220,8 @@ function recipientScanTxForStealth({
 // on chain. The recipient gets the win: every payment to their reusable
 // sp1… lands at a fresh, unlinkable P2TR.
 //
-// Receive-side: manual txid discovery via discoverSilentPaymentFromTxid.
-// Passive detection (worker pre-filter or SP light-client poll) is not
-// implemented.
+// Receive-side: scanSilentPaymentsViaIndex (per-block public tweaks from a
+// tweak index, matched locally) and discoverSilentPaymentFromTxid (one tx).
 
 const BIP352_HRP_BY_NETWORK = {
   mainnet: 'sp',
@@ -5265,35 +5269,8 @@ function decodeSilentPaymentAddress(addr) {
   return { hrp, network, version, scanPub, spendPub };
 }
 
-// BIP-352 uses big-endian for the per-output k counter; most other 4-byte
-// counters in this file are LE — kept local to avoid confusion.
-function _bip352U32be(n) {
-  const b = new Uint8Array(4);
-  new DataView(b.buffer).setUint32(0, n >>> 0, false);
-  return b;
-}
-
-// Canonical 36-byte outpoint: chain-order txid (display order reversed) ‖
-// little-endian vout uint32. Matches the wire format used in tx serialization.
-function _bip352OutpointBytes(txidHexDisplay, vout) {
-  const txidLE = reverseBytes(hexToBytes(txidHexDisplay));
-  const voutLE = new Uint8Array(4);
-  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
-  return concatBytes(txidLE, voutLE);
-}
-
-function _bip352SmallestOutpoint(outpoints) {
-  if (!outpoints.length) throw new Error('no outpoints');
-  let best = outpoints[0];
-  for (let i = 1; i < outpoints.length; i++) {
-    const o = outpoints[i];
-    for (let j = 0; j < 36; j++) {
-      if (o[j] < best[j]) { best = o; break; }
-      if (o[j] > best[j]) break;
-    }
-  }
-  return best;
-}
+// The outpoint codec, input-key rules and public tweak live in ./bip352.js so
+// the tweak index computes exactly what this wallet computes.
 
 // allInputOutpoints (optional) — outpoints of every transaction input, used
 // to compute the lex-smallest outpoint per BIP-352 (which mandates "lex-
@@ -5448,9 +5425,37 @@ function encodeSilentPaymentAddress({ scanPub, spendPub, network }) {
   return out;
 }
 
-function walletSilentPaymentAddress() {
+// The wallet's silent-payment identities. Version 1, the one the wallet
+// shows: scan and spend keys are hardened children of the wallet key under
+// their own tags, so the address reveals nothing about wallet.address(), and
+// b_spend reaches the chain only inside tweaked outputs. Version 0, the
+// earlier one: spend = wallet key, scan = BIP0352/ScanKey of it; still scanned
+// and spendable so payments to addresses handed out before keep arriving.
+// Credits record the version they were found under.
+const SP_KEY_VERSION = 1;
+const SP_KEY_VERSIONS = [1, 0];
+function _spChildPriv(tag, walletPriv) {
+  const s = bytes32ToBigint(_taggedHash(tag, walletPriv)) % SECP_N;
+  if (s === 0n) throw new Error('silent-payment key derived as zero');
+  return bigintToBytes32(s);
+}
+function deriveWalletSilentPaymentKeys(walletPriv, version = SP_KEY_VERSION) {
+  if (version === 0) {
+    return { version, spendPriv: walletPriv, ...deriveSilentPaymentKeys(walletPriv) };
+  }
+  if (version !== 1) throw new Error(`unknown silent-payment key version ${version}`);
+  const spendPriv = _spChildPriv('tacit/bip352/spend', walletPriv);
+  const scanPriv = _spChildPriv('tacit/bip352/scan', walletPriv);
+  return {
+    version, spendPriv, scanPriv,
+    scanPub: secp.getPublicKey(scanPriv, true),
+    spendPub: secp.getPublicKey(spendPriv, true),
+  };
+}
+
+function walletSilentPaymentAddress(version = SP_KEY_VERSION) {
   if (!wallet.priv) throw new Error('wallet locked');
-  const { scanPub, spendPub } = deriveSilentPaymentKeys(wallet.priv);
+  const { scanPub, spendPub } = deriveWalletSilentPaymentKeys(wallet.priv, version);
   return encodeSilentPaymentAddress({ scanPub, spendPub, network: NET.name });
 }
 
@@ -5466,78 +5471,6 @@ function bip352LabelTweak(scanPriv, m) {
   return t;
 }
 
-// The public key one input contributes to the shared secret, per BIP-352
-// "Inputs For Shared Secret Derivation", or null when the input contributes
-// none. Covers P2TR (key path and script path, annex stripped, NUMS-H internal
-// key skipped), P2WPKH, P2SH-P2WPKH and P2PKH (malleated scriptSigs searched
-// from the end); only compressed and x-only keys count. These rules are the
-// BIP's own and differ from classifyStealthInput's.
-function bip352InputPubkey({ prevoutScript, scriptSig, witness }) {
-  const spk = prevoutScript || new Uint8Array(0);
-  const ss = scriptSig || new Uint8Array(0);
-  const wit = witness || [];
-  const compressed = (b) => {
-    if (!b || b.length !== 33 || (b[0] !== 0x02 && b[0] !== 0x03)) return null;
-    try { bytesToPoint(b); return b; } catch { return null; }
-  };
-  const isP2wpkh = (s) => s.length === 22 && s[0] === 0x00 && s[1] === 0x14;
-  if (spk.length === 25 && spk[0] === 0x76 && spk[1] === 0xa9 && spk[2] === 0x14 && spk[23] === 0x88 && spk[24] === 0xac) {
-    const h = spk.slice(3, 23);
-    for (let i = ss.length; i >= 33; i--) {
-      const cand = ss.slice(i - 33, i);
-      const ch = hash160(cand);
-      let eq = true;
-      for (let j = 0; j < 20; j++) if (ch[j] !== h[j]) { eq = false; break; }
-      if (eq) { const pk = compressed(cand); if (pk) return pk; }
-    }
-  }
-  if (spk.length === 23 && spk[0] === 0xa9 && spk[1] === 0x14 && spk[22] === 0x87) {
-    if (isP2wpkh(ss.slice(1)) && wit.length > 0) {
-      const pk = compressed(wit[wit.length - 1]);
-      if (pk) return pk;
-    }
-  }
-  if (isP2wpkh(spk) && wit.length > 0) {
-    const pk = compressed(wit[wit.length - 1]);
-    if (pk) return pk;
-  }
-  if (spk.length === 34 && spk[0] === 0x51 && spk[1] === 0x20 && wit.length >= 1) {
-    let stack = wit;
-    if (stack.length > 1 && stack[stack.length - 1].length > 0 && stack[stack.length - 1][0] === 0x50) {
-      stack = stack.slice(0, -1);
-    }
-    if (stack.length > 1) {
-      const internal = stack[stack.length - 1].slice(1, 33);
-      if (internal.length === 32 && internal.every((b, i) => b === TAP_NUMS[i])) return null;
-    }
-    return compressed(concatBytes(new Uint8Array([0x02]), spk.slice(2, 34)));
-  }
-  return null;
-}
-
-// A prevout of witness version 2..16 makes the whole tx ineligible for v0.
-function _bip352IsUnknownSegwit(spk) {
-  if (!spk || spk.length < 4 || spk.length > 42) return false;
-  return spk[0] >= 0x52 && spk[0] <= 0x60 && spk[1] >= 2 && spk[1] <= 40 && spk[1] === spk.length - 2;
-}
-
-// Esplora tx → receiver inputs. Returns null when BIP-352 says the tx is not
-// scanned (coinbase, or an input spending witness version > 1).
-function bip352ReceiverInputsFromEsploraTx(tx) {
-  if (!tx || !Array.isArray(tx.vin) || tx.vin.length === 0) return null;
-  const classifiedInputs = [];
-  for (const vin of tx.vin) {
-    if (vin.is_coinbase) return null;
-    const prevoutScript = vin.prevout?.scriptpubkey ? hexToBytes(vin.prevout.scriptpubkey) : null;
-    if (_bip352IsUnknownSegwit(prevoutScript)) return null;
-    const scriptSig = vin.scriptsig ? hexToBytes(vin.scriptsig) : null;
-    const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
-    classifiedInputs.push({ kind: 'bip352', pub: bip352InputPubkey({ prevoutScript, scriptSig, witness }) });
-  }
-  const allOutpoints = tx.vin.map(vin => _bip352OutpointBytes(vin.txid, vin.vout));
-  return { classifiedInputs, allOutpoints };
-}
-
 // Scan one tx for outputs paying (scanPriv, spendPub). `classifiedInputs`
 // entries carry { kind, pub }; a pub counts when kind is 'bip352' (from
 // bip352InputPubkey) or a stealth-eligible kind. `labels` lists the label
@@ -5548,20 +5481,21 @@ function bip352ReceiverInputsFromEsploraTx(tx) {
 function receiverScanTxForSilentPayments({
   classifiedInputs, allOutpoints, outputs, scanPriv, spendPub, labels = [],
 }) {
-  let A_sum = ZERO, eligibleCount = 0;
+  const pubs = [];
   for (const inp of classifiedInputs || []) {
     if (!inp || !inp.pub || inp.pub.length !== 33) continue;
     if (inp.kind !== 'bip352' && !isStealthEligibleKind(inp.kind)) continue;
-    A_sum = A_sum.add(bytesToPoint(inp.pub));
-    eligibleCount++;
+    pubs.push(inp.pub);
   }
-  if (eligibleCount === 0 || A_sum.equals(ZERO)) return [];
-  const aggregatePub = A_sum.toRawBytes(true);
-  const op_L = _bip352SmallestOutpoint(allOutpoints);
-  const input_hash = _taggedHash('BIP0352/Inputs', op_L, aggregatePub);
-  const ih = bytes32ToBigint(input_hash);
-  if (ih === 0n || ih >= SECP_N) return [];
-  const tweakedA = A_sum.multiply(ih);
+  const tweak = bip352PublicTweakPoint(pubs, allOutpoints);
+  if (!tweak) return [];
+  return receiverScanOutputsWithTweak({ tweak, outputs, scanPriv, spendPub, labels });
+}
+
+// The same match, given the public tweak input_hash·A_sum (a point, or its
+// 33-byte compressed form as a tweak index serves it) instead of the inputs.
+function receiverScanOutputsWithTweak({ tweak, outputs, scanPriv, spendPub, labels = [] }) {
+  const tweakedA = tweak instanceof Uint8Array ? bytesToPoint(tweak) : tweak;
   const scanScalar = bytes32ToBigint(scanPriv);
   const ecdh = tweakedA.multiply(scanScalar);
   const ecdhBytes = ecdh.toRawBytes(true);
@@ -5655,11 +5589,32 @@ function _scheduleSpCreditsFlush() {
   if (_spCreditsFlushTimer) clearTimeout(_spCreditsFlushTimer);
   _spCreditsFlushTimer = setTimeout(() => { _spCreditsFlushTimer = null; _writeSpCreditsNow(); }, 50);
 }
-function recordSpCredit({ txidHex, vout, sats, tweakHex, blockTime }) {
+// keyVersion: the silent-payment identity the credit was found under; a
+// record without one predates versioning and belongs to version 0.
+function recordSpCredit({ txidHex, vout, sats, tweakHex, blockTime, keyVersion = 0 }) {
   const o = loadSpCredits();
-  o[`${txidHex}:${vout}`] = { sats: String(sats), tweakHex, blockTime: blockTime || null };
+  o[`${txidHex}:${vout}`] = { sats: String(sats), tweakHex, blockTime: blockTime || null, keyVersion };
   _spCreditsCache = o;
   _scheduleSpCreditsFlush();
+}
+// Private key for a recorded credit: its version's b_spend plus the tweak.
+function spCreditSpendingKey(credit, walletPriv = wallet.priv) {
+  const { spendPriv } = deriveWalletSilentPaymentKeys(walletPriv, Number(credit.keyVersion || 0));
+  return silentPaymentSpendingKey(spendPriv, bytes32ToBigint(hexToBytes(credit.tweakHex)) % SECP_N);
+}
+// Run a receiver match under every identity the wallet scans; matches carry
+// keyVersion, and an output claimed by one version is not reported twice.
+function _spMatchAllVersions(walletPriv, match) {
+  const out = [], seen = new Set();
+  for (const version of SP_KEY_VERSIONS) {
+    const keys = deriveWalletSilentPaymentKeys(walletPriv, version);
+    for (const m of match({ scanPriv: keys.scanPriv, spendPub: keys.spendPub })) {
+      if (seen.has(m.voutIndex)) continue;
+      seen.add(m.voutIndex);
+      out.push({ ...m, keyVersion: version });
+    }
+  }
+  return out;
 }
 function getSpCredit(txidHex, vout) {
   const o = loadSpCredits();
@@ -5743,10 +5698,9 @@ async function discoverSilentPaymentFromTxid(txidHex) {
     script: hexToBytes(o.scriptpubkey || ''),
     value: o.value,
   }));
-  const { scanPriv, spendPub } = deriveSilentPaymentKeys(wallet.priv);
-  const matches = receiverScanTxForSilentPayments({
-    classifiedInputs, allOutpoints, outputs, scanPriv, spendPub,
-  });
+  const matches = _spMatchAllVersions(wallet.priv, (keys) => receiverScanTxForSilentPayments({
+    classifiedInputs, allOutpoints, outputs, ...keys,
+  }));
   if (matches.length === 0) return [];
   const discovered = [];
   for (const m of matches) {
@@ -5757,6 +5711,7 @@ async function discoverSilentPaymentFromTxid(txidHex) {
       sats,
       tweakHex: bytesToHex(m.tweak),
       blockTime: tx.status?.block_time || null,
+      keyVersion: m.keyVersion,
     });
     discovered.push({
       txid: txidHex,
@@ -5765,9 +5720,121 @@ async function discoverSilentPaymentFromTxid(txidHex) {
       tweakHex: bytesToHex(m.tweak),
       tweakScalar: m.tweakScalar,
       outputXonly: m.outputXonly,
+      keyVersion: m.keyVersion,
     });
   }
   return discovered;
+}
+
+// ---------------------------------------------------------------------------
+// Silent-payment scanning through a tweak index. The index publishes, per
+// block, input_hash·A_sum for every transaction with a taproot output; the
+// wallet multiplies each by its own scan keys and compares outputs locally.
+// The index never sees a key and cannot tell which outputs matched. It can
+// omit transactions (a missed payment is still found by txid) but cannot
+// forge a match, and a wrong value only makes the spend fail to verify.
+const SP_INDEX_URLS = { signet: 'https://tacit-sp-index.onrender.com', mainnet: null };
+const SP_INDEX_DEFAULT_DEPTH = { signet: 1008, mainnet: 144 };
+const SP_INDEX_RANGE_MAX = 100;
+
+function _spScanProgressKey() {
+  if (!wallet.pub) return null;
+  return `tacit-sp-scan-v1:${NET.name}:${bytesToHex(wallet.pub)}`;
+}
+function spIndexLastScanned() {
+  const k = _spScanProgressKey();
+  if (!k) return null;
+  try { const n = Number(localStorage.getItem(k)); return Number.isInteger(n) && n > 0 ? n : null; } catch { return null; }
+}
+function _spSetLastScanned(h) {
+  const k = _spScanProgressKey();
+  if (!k) return;
+  try { if (h > (spIndexLastScanned() || 0)) localStorage.setItem(k, String(h)); } catch {}
+}
+
+async function _spIndexGet(base, path, signal) {
+  let last;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const r = await fetch(base + path, { signal, cache: 'no-store' });
+      if (r.ok) return await r.json();
+      last = new Error(`silent-payment index: HTTP ${r.status} for ${path}`);
+      if (r.status !== 429 && r.status < 500) throw last;
+    } catch (e) {
+      if (signal?.aborted || e === last) throw e;
+      last = e;
+    }
+    await new Promise((res) => setTimeout(res, 500 * 2 ** attempt));
+  }
+  throw last;
+}
+
+// Match one index entry ({ txid, tweak, outputs: [{ vout, xonly, value }] })
+// against the wallet's scan keys (every key version). Pure given the keys.
+function spMatchIndexedTx(entry, keySets) {
+  const tweak = hexToBytes(entry.tweak);
+  const outs = entry.outputs || [];
+  let maxVout = -1;
+  for (const o of outs) if (o.vout > maxVout) maxVout = o.vout;
+  const outputs = Array.from({ length: maxVout + 1 }, () => ({ script: new Uint8Array(0) }));
+  for (const o of outs) outputs[o.vout] = { script: concatBytes(new Uint8Array([0x51, 0x20]), hexToBytes(o.xonly)), value: o.value };
+  const found = [], seen = new Set();
+  for (const keys of keySets) {
+    for (const m of receiverScanOutputsWithTweak({ tweak, outputs, scanPriv: keys.scanPriv, spendPub: keys.spendPub })) {
+      if (seen.has(m.voutIndex)) continue;
+      seen.add(m.voutIndex);
+      found.push({ ...m, keyVersion: keys.version, sats: outputs[m.voutIndex].value });
+    }
+  }
+  return found;
+}
+
+// Scan blocks fromHeight..toHeight (defaults: resume after the last scanned
+// height, or the network's default depth below the index tip). Records every
+// match as a credit and returns { from, to, blocks, txs, found }.
+async function scanSilentPaymentsViaIndex({ baseUrl = SP_INDEX_URLS[NET.name], fromHeight, toHeight, onProgress, signal } = {}) {
+  if (!baseUrl) throw new Error(`no silent-payment index configured for ${NET.name}`);
+  await ensurePrivkey();
+  const base = String(baseUrl).replace(/\/+$/, '');
+  const tip = await _spIndexGet(base, '/sp/tip', signal);
+  if (!Number.isInteger(tip?.height)) throw new Error('silent-payment index: bad /sp/tip');
+  const floor = Number.isInteger(tip.startHeight) ? tip.startHeight : 0;
+  const to = Math.min(Number.isInteger(toHeight) ? toHeight : tip.height, tip.height);
+  let from = Number.isInteger(fromHeight) ? fromHeight
+    : (spIndexLastScanned() ? spIndexLastScanned() + 1 : to - (SP_INDEX_DEFAULT_DEPTH[NET.name] || 144) + 1);
+  from = Math.max(from, floor);
+  const keySets = SP_KEY_VERSIONS.map((v) => deriveWalletSilentPaymentKeys(wallet.priv, v));
+  const result = { from, to, blocks: 0, txs: 0, found: [] };
+  for (let lo = from; lo <= to; lo += SP_INDEX_RANGE_MAX) {
+    if (signal?.aborted) break;
+    const hi = Math.min(to, lo + SP_INDEX_RANGE_MAX - 1);
+    const page = await _spIndexGet(base, `/sp/tweaks?from=${lo}&to=${hi}`, signal);
+    const blocks = Array.isArray(page?.blocks) ? page.blocks : [];
+    for (const b of blocks) {
+      for (const entry of b.tweaks || []) {
+        result.txs++;
+        let hits;
+        try { hits = spMatchIndexedTx(entry, keySets); } catch { continue; }
+        for (const m of hits) {
+          recordSpCredit({
+            txidHex: entry.txid, vout: m.voutIndex, sats: m.sats,
+            tweakHex: bytesToHex(m.tweak), blockTime: b.time || null, keyVersion: m.keyVersion,
+          });
+          result.found.push({ txid: entry.txid, vout: m.voutIndex, sats: m.sats, height: b.height, keyVersion: m.keyVersion });
+        }
+      }
+      result.blocks++;
+    }
+    // Only heights the index returned count as scanned; a gap is retried next time.
+    const covered = blocks.length ? Math.max(...blocks.map((b) => b.height)) : lo - 1;
+    if (covered >= lo) _spSetLastScanned(covered);
+    if (typeof onProgress === 'function') {
+      try { onProgress({ height: covered, from, to, blocks: result.blocks, txs: result.txs, found: result.found.length }); } catch {}
+    }
+    if (covered < hi) { result.to = covered; break; }
+  }
+  if (result.found.length) _spRenderBalance();
+  return result;
 }
 
 // On-chain encrypted recipient amount + blinding for atomic intents.
@@ -35666,8 +35733,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
       }
     } catch { /* lookup failed — include optimistically; a stale record is
                  rejected at broadcast, a silent drop reads as missing sats */ }
-    const tweakScalar = bytes32ToBigint(hexToBytes(credit.tweakHex)) % SECP_N;
-    const sk = silentPaymentSpendingKey(wallet.priv, tweakScalar);
+    const sk = spCreditSpendingKey(credit);
     const pub = secp.getPublicKey(sk, true);
     const xonly = pub.slice(1);
     spUtxos.push({
@@ -35817,11 +35883,11 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     if (u._sp) removeSpCredit(u.txid, u.vout);
   }
   if (recipientIsSilent) {
-    const myKeys = deriveSilentPaymentKeys(wallet.priv);
-    const isSelfSend = sp.scanPub.length === 33 && sp.spendPub.length === 33
-      && myKeys.scanPub.every((b, i) => b === sp.scanPub[i])
-      && myKeys.spendPub.every((b, i) => b === sp.spendPub[i]);
-    if (isSelfSend) {
+    const myKeys = SP_KEY_VERSIONS.map((v) => deriveWalletSilentPaymentKeys(wallet.priv, v)).find((k) =>
+      sp.scanPub.length === 33 && sp.spendPub.length === 33
+      && k.scanPub.every((b, i) => b === sp.scanPub[i])
+      && k.spendPub.every((b, i) => b === sp.spendPub[i]));
+    if (myKeys) {
       const allOutpoints = picked.map(u => _bip352OutpointBytes(u.txid, u.vout));
       const classifiedInputs = picked.map(u => u._sp
         ? { kind: 'p2tr-keypath', pub: concatBytes(new Uint8Array([0x02]), u._spScript.slice(2)) }
@@ -35834,7 +35900,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
       for (const m of matches) {
         recordSpCredit({
           txidHex: sentTxid, vout: m.voutIndex, sats: amt,
-          tweakHex: bytesToHex(m.tweak), blockTime: null,
+          tweakHex: bytesToHex(m.tweak), blockTime: null, keyVersion: myKeys.version,
         });
       }
     }
@@ -92157,6 +92223,9 @@ export {
   senderComputeSilentPaymentOutputs, bip352SenderInputPrivs,
   discoverSilentPaymentFromTxid,
   loadSpCredits, getSpCredit, removeSpCredit, recordSpCredit,
+  SP_KEY_VERSION, SP_KEY_VERSIONS, deriveWalletSilentPaymentKeys, spCreditSpendingKey,
+  receiverScanOutputsWithTweak, bip352PublicTweakPoint, bip352PublicTweakFromEsploraTx,
+  SP_INDEX_URLS, scanSilentPaymentsViaIndex, spMatchIndexedTx, spIndexLastScanned,
   // Wire format encoders / decoders
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,
