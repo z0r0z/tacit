@@ -126,6 +126,29 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
   return { changed: true, token, prebootToken };
 }
 
+// dapp/sats/ is its own page with its own module graph. Every `"/<path>.js?cb=<token>"` it references
+// carries a sha256 prefix of the file it names, rewritten importer-last (secret.js, then app.js, then the
+// page that loads app.js) so each token covers bytes already final. Returns the drift it found; writes only
+// when asked, so --verify-only reuses the same walk.
+const SATS_CB_FILES = ['sats/secret.js', 'sats/app.js', 'sats/index.html'];
+function satsCacheBust(write) {
+  const drift = [];
+  for (const rel of SATS_CB_FILES) {
+    const file = join(DAPP_DIR, rel);
+    if (!existsSync(file)) continue;
+    const before = readFileSync(file, 'utf8');
+    const after = before.replace(/(["'])(\/[\w./-]+\.js)\?cb=([A-Za-z0-9_-]+)\1/g, (m, q, path, got) => {
+      const src = join(DAPP_DIR, path);
+      if (!existsSync(src)) return m;
+      const want = createHash('sha256').update(readFileSync(src)).digest('hex').slice(0, 8);
+      if (got !== want) drift.push(`${rel} ${path} ?cb=${got} but sha256(dapp${path})=${want}`);
+      return `${q}${path}?cb=${want}${q}`;
+    });
+    if (write && after !== before) writeFileSync(file, after);
+  }
+  return drift;
+}
+
 // Unlike tacit.js/preboot.js (fingerprinted via their own `?cb=` URL param),
 // vendor/tacit-deps.min.js (the crypto bundle) and prf-wallet.js (passkey/PRF
 // key derivation) are imported by dozens of dapp/*.js files at their bare
@@ -221,6 +244,7 @@ async function main() {
     if (gotCb !== wantCb) drift.push(`index.html tacit.js ?cb=${gotCb} but sha256(dapp/tacit.js)=${wantCb}`);
     if (gotPreboot !== wantPreboot) drift.push(`index.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
+    drift.push(...satsCacheBust(false));
     if (drift.length) {
       console.error('✗ cache-bust tokens are stale — run `npm run build` and commit the result:');
       for (const d of drift) console.error(`    ${d}`);
@@ -243,6 +267,8 @@ async function main() {
     cb = updateCacheBust(html, appJs, preboot);
     console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'} · preboot ?cb=${cb.prebootToken}`);
     if (cb.changed) html = readFileSync(HTML);
+    const satsDrift = satsCacheBust(true);
+    console.log(`• sats page cache-bust: ${satsDrift.length ? `${satsDrift.length} token(s) updated` : 'unchanged'}`);
 
     if (existsSync(VERIFY_HTML)) {
       const v = updateVerifyCsp(readFileSync(VERIFY_HTML).toString('utf8'));

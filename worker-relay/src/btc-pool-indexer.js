@@ -10,7 +10,9 @@ import {
   BtcPoolState, ReorgTooDeepError, VerifierUnavailableError, parseEnvelope, carrierPoolEnvelopes,
   ANCHOR_WINDOW, UNDO_DEPTH, bytesToHex,
 } from '../../worker/src/btc-shielded-pool.js';
-import { makeEsplora, parseBlock, txEnvelopes } from './lib/btc-pool-chain.js';
+import {
+  makeEsplora, parseBlock, parseHeader, txEnvelopes, checkProofOfWork, retargetBits, bitsToTarget, RETARGET_INTERVAL, CHAIN_PARAMS,
+} from './lib/btc-pool-chain.js';
 import { makeShieldInputResolver } from './lib/btc-pool-transparent.js';
 import { openBtcPoolStore } from './lib/btc-pool-store.js';
 import { makeBtcPoolVerifier } from './lib/btc-pool-verify.js';
@@ -18,36 +20,117 @@ import { makeBtcPoolVerifier } from './lib/btc-pool-verify.js';
 const x0 = (b) => '0x' + bytesToHex(b);
 const pre = (s) => (s == null ? null : '0x' + s);
 
+export class ChainIntegrityError extends Error {
+  constructor(msg) { super(msg); this.name = 'ChainIntegrityError'; }
+}
+
 // `resolveShieldInput` defaults to the canonical transparent validator (lib/btc-pool-transparent.js).
-export function createIndexer({ store, esplora, verifier, network, startHeight, confirmations = 1, log = console.log, resolveShieldInput = null }) {
+// `chain` ({ powLimitBits, checkpoint: { height, hash } | null }) defaults to CHAIN_PARAMS[network].
+export function createIndexer({ store, esplora, verifier, network, startHeight, confirmations = 1, log = console.log, resolveShieldInput = null, aheadDepth = 12, chain = null }) {
   if (!Number.isInteger(startHeight) || startHeight < 1) throw new Error('startHeight must be a positive integer');
+  const params = chain || CHAIN_PARAMS[network];
+  if (!params) throw new Error(`no chain parameters for ${network}`);
+  const checkpoint = params.checkpoint || null;
   const metaNet = store.meta('network'), metaStart = store.meta('start_height');
   if (metaNet && metaNet !== network) throw new Error(`database is for ${metaNet}, not ${network}`);
   if (metaStart && Number(metaStart) !== startHeight) throw new Error(`database starts at ${metaStart}, not ${startHeight}`);
   store.setMeta('network', network);
   store.setMeta('start_height', startHeight);
+  if (checkpoint) {
+    const b = store.block(checkpoint.height);
+    if (b && b.hash !== checkpoint.hash) throw new ChainIntegrityError(`database block ${checkpoint.height} is ${b.hash}, not checkpoint ${checkpoint.hash}`);
+  }
 
   const self = {
     state: BtcPoolState.restore(store.snapshot()),
     chainTip: null,
+    // Spends in blocks past the replayed tip, kept while `trackAhead` (tx → Map nf → body) is set.
+    trackAhead: null,
+    ahead: new Map(), // height → { hash, nfs: Map nf → { txid, body } }
+    aheadTip: null,
     halted: null,
     lastError: null,
     network, startHeight, verifier,
   };
   const resolveNote = resolveShieldInput || makeShieldInputResolver({ esplora, network, exits: () => self.state.exits });
+  // A note bound to a pool deployment (T_CXFER_BOUND output) is not a shield input (design §5 step 4).
   const resolveInput = async (op, assetHex) => {
-    const n = await resolveNote(op.txid, op.vout);
-    return n && n.asset === assetHex ? { cx: n.Cx, cy: n.Cy } : null;
+    const n = await resolveNote(op.txid, op.vout, { height: self.state.pending ? self.state.pending.height : null });
+    return n && n.asset === assetHex && !n.bound ? { cx: n.Cx, cy: n.Cy } : null;
   };
+
+  // Headers of replayed blocks: height → { hash, time, bits }.
+  const headers = new Map();
+  const readHeader = async (hash) => parseHeader(esplora.header ? await esplora.header(hash) : (await esplora.rawBlock(hash)).subarray(0, 80));
+  async function headerAt(h) {
+    if (headers.has(h)) return headers.get(h);
+    const b = store.block(h);
+    if (!b) return null;
+    const hd = await readHeader(b.hash);
+    if (hd.hash !== b.hash) throw new Error(`header for ${h} does not hash to ${b.hash}`);
+    headers.set(h, hd);
+    return hd;
+  }
+
+  // Header chain from the checkpoint to the block before the start height, walked back by hash.
+  const MAX_ANCHOR_WALK = 10000;
+  let anchored = null; // { prevHash, header }
+  async function anchorBelowStart(block) {
+    if (!checkpoint || checkpoint.height >= startHeight) return null;
+    if (anchored && anchored.prevHash === block.prevHash) return anchored.header;
+    const header = await walkToCheckpoint(block);
+    anchored = { prevHash: block.prevHash, header };
+    return header;
+  }
+  async function walkToCheckpoint(block) {
+    if (startHeight - 1 - checkpoint.height > MAX_ANCHOR_WALK) throw new ChainIntegrityError(`checkpoint ${checkpoint.height} is too far below start ${startHeight}`);
+    let hash = block.prevHash, first = null;
+    for (let h = startHeight - 1; ; h--) {
+      const hd = await readHeader(hash);
+      if (hd.hash !== hash) throw new Error(`header for ${h} does not hash to ${hash}`);
+      if (h === checkpoint.height) {
+        if (hash !== checkpoint.hash) throw new ChainIntegrityError(`block ${h} is ${hash}, not checkpoint ${checkpoint.hash}`);
+        return first || hd;
+      }
+      checkProofOfWork(hash, hd.bits, params.powLimitBits);
+      if (!first) first = hd;
+      hash = hd.prevHash;
+    }
+  }
+
+  // Proof of work, difficulty transitions and the checkpoint. Linkage to h − 1 is checked by the caller.
+  async function checkHeader(h, block) {
+    try {
+      checkProofOfWork(block.hash, block.bits, params.powLimitBits);
+    } catch (e) { throw new ChainIntegrityError(e.message); }
+    if (checkpoint && h === checkpoint.height && block.hash !== checkpoint.hash) {
+      throw new ChainIntegrityError(`block ${h} is ${block.hash}, not checkpoint ${checkpoint.hash}`);
+    }
+    const prev = h > startHeight ? await headerAt(h - 1) : await anchorBelowStart(block);
+    if (!prev) return;
+    if (h % RETARGET_INTERVAL !== 0) {
+      if (block.bits !== prev.bits) throw new ChainIntegrityError(`block ${h} changes difficulty off a retarget boundary`);
+      return;
+    }
+    const first = h - RETARGET_INTERVAL >= startHeight ? await headerAt(h - RETARGET_INTERVAL) : null;
+    if (first) {
+      if (block.bits !== retargetBits(prev.bits, first.time, prev.time, params.powLimitBits)) throw new ChainIntegrityError(`block ${h} has the wrong retarget`);
+      return;
+    }
+    const t = bitsToTarget(block.bits), p = bitsToTarget(prev.bits);
+    if (t * 4n < p || t > p * 4n) throw new ChainIntegrityError(`block ${h} retargets by more than a factor of 4`);
+  }
 
   function rescan(why) {
     log(`full rescan from ${startHeight}: ${why}`);
     store.wipe();
     self.state = new BtcPoolState();
+    headers.clear();
   }
 
   function rollback(from) {
     log(`reorg: rolling back to ${from - 1}`);
+    for (const h of [...headers.keys()]) if (h >= from) headers.delete(h);
     try {
       self.state.rollbackFrom(from);
     } catch (e) {
@@ -67,12 +150,13 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
     return null;
   }
 
+  // A source whose tip is below ours is behind, not a reorg: compare at the lower of the two tips.
   async function checkReorg() {
     const tip = self.state.tip;
-    if (tip === null) return;
-    const local = store.block(tip);
-    const remote = tip <= self.chainTip ? await esplora.blockHash(tip) : null;
-    if (local && remote === local.hash) return;
+    if (tip === null || self.chainTip < startHeight) return;
+    const at = Math.min(tip, self.chainTip);
+    const local = store.block(at);
+    if (local && (await esplora.blockHash(at)) === local.hash) return;
     const fork = await findFork();
     if (fork === null) rescan(`fork deeper than ${UNDO_DEPTH} blocks`);
     else rollback(fork);
@@ -143,9 +227,43 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
         const prev = store.block(h - 1);
         if (!prev || prev.hash !== block.prevHash) { log(`block ${h} does not extend ${h - 1}; rechecking`); break; }
       }
+      try {
+        await checkHeader(h, block);
+      } catch (e) {
+        if (e instanceof ChainIntegrityError) self.halted = { height: h, txid: null, reason: e.message };
+        throw e;
+      }
       await processBlock(h, block);
+      headers.set(h, { hash: block.hash, prevHash: block.prevHash, time: block.time, bits: block.bits });
+      headers.delete(h - RETARGET_INTERVAL - 1);
     }
+    if (self.trackAhead) await syncAhead();
     return done;
+  };
+
+  // Blocks in (replayed tip, chain tip], at most `aheadDepth` of them, re-fetched when their hash changes.
+  async function syncAhead() {
+    const next = self.state.tip === null ? startHeight : self.state.tip + 1;
+    if (self.chainTip - next + 1 > aheadDepth) { self.ahead.clear(); return; }
+    const from = next;
+    for (const h of [...self.ahead.keys()]) if (h < from || h > self.chainTip) self.ahead.delete(h);
+    for (let h = from; h <= self.chainTip; h++) {
+      const hash = await esplora.blockHash(h);
+      if (self.ahead.get(h)?.hash === hash) continue;
+      const block = parseBlock(await esplora.rawBlock(hash), hash);
+      const nfs = new Map();
+      for (const tx of block.txs.slice(1)) for (const [nf, body] of self.trackAhead(tx)) nfs.set(nf, { txid: tx.txid, body });
+      self.ahead.set(h, { hash, nfs });
+    }
+    self.aheadTip = self.chainTip;
+  }
+
+  // True when every block past the replayed tip up to the chain tip has been scanned.
+  self.aheadComplete = () => {
+    if (!self.trackAhead) return true;
+    if (self.chainTip === null || self.aheadTip !== self.chainTip) return false;
+    for (let h = (self.state.tip === null ? startHeight : self.state.tip + 1); h <= self.chainTip; h++) if (!self.ahead.has(h)) return false;
+    return true;
   };
 
   self.status = () => {
@@ -203,6 +321,19 @@ export function createHandler(ix, store) {
       if ((m = p.match(/^\/btc-pool\/path\/(\d+)$/))) {
         if (st.pending) return send(503, { error: 'block in progress' }, { 'Retry-After': '1' });
         const i = Number(m[1]);
+        const atParam = url.searchParams.get('at');
+        if (atParam !== null) {
+          // The path over the tree as it stood at the end of block `at`, for any height with a retained root.
+          if (!/^\d+$/.test(atParam)) return send(400, { error: 'at must be a block height' });
+          const at = Number(atParam);
+          const R = st.roots.get(at);
+          if (!R) return send(404, { error: 'no root retained for that height' });
+          const n = st.leafCountAt(at);
+          if (i >= n) return send(404, { error: 'no such leaf at that height' });
+          const { root, path } = st.tree.rootAndPathAt(i, n);
+          if (bytesToHex(root) !== bytesToHex(R)) return send(500, { error: `root at ${at} does not match the retained root` });
+          return send(200, { leafIndex: i, leaf: x0(st.tree.leaf(i)), height: st.tip, hAnchor: at, root: x0(root), path: path.map(x0) });
+        }
         if (i >= st.tree.size) return send(404, { error: 'no such leaf' });
         const { root, path } = st.tree.rootAndPath(i);
         return send(200, { leafIndex: i, leaf: x0(st.tree.leaf(i)), height: st.tip, root: x0(root), path: path.map(x0) });
@@ -248,12 +379,23 @@ async function main() {
   const pollMs = Number(env.BTC_POOL_POLL_SECS || 30) * 1000;
   const log = (...a) => console.log(`[btc-pool ${network} ${new Date().toISOString()}]`, ...a);
 
+  // BTC_POOL_CHECKPOINT "height:hash" pins the header chain; signet has a built-in one, mainnet needs it set.
+  const chain = { ...CHAIN_PARAMS[network] };
+  if (env.BTC_POOL_CHECKPOINT) {
+    const [ch, hash] = String(env.BTC_POOL_CHECKPOINT).split(':');
+    if (!/^\d+$/.test(ch || '') || !/^[0-9a-f]{64}$/.test(hash || '')) throw new Error('BTC_POOL_CHECKPOINT must be <height>:<block hash>');
+    chain.checkpoint = { height: Number(ch), hash };
+  }
+  if (!chain.checkpoint) throw new Error(`BTC_POOL_CHECKPOINT is required on ${network}`);
+  // BTC_POOL_HASH_QUORUM: how many of the esplora sources must agree on each block hash (default 1).
+  const hashQuorum = Number(env.BTC_POOL_HASH_QUORUM || 1);
+
   const store = openBtcPoolStore(env.BTC_POOL_DB || '/var/lib/tacit-btc-pool/btc-pool.db');
   const verifier = makeBtcPoolVerifier({ log: (...a) => console.error(...a) });
-  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases), verifier, network, startHeight, confirmations, log });
+  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum }), verifier, network, startHeight, confirmations, log, chain });
   log(`resuming at ${ix.state.tip ?? `(empty, start ${startHeight})`}; verifier ${verifier.enabled ? 'enabled' : `DISABLED: ${verifier.reason}`}`);
 
-  createServer(await withRelayer(createHandler(ix, store), { ix, verifier, network, esploraBases, log })).listen(Number(env.PORT || 10000), () => log(`listening on ${env.PORT || 10000}`));
+  createServer(await withRelayer(createHandler(ix, store), { ix, store, verifier, network, esploraBases, log })).listen(Number(env.PORT || 10000), () => log(`listening on ${env.PORT || 10000}`));
 
   for (;;) {
     try {

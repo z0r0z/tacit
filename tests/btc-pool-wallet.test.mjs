@@ -5,10 +5,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
-import { makeBtcShieldedPool, T_BTC_SHIELD, SHIELD_ENVELOPE_LEN } from '../dapp/btc-shielded-pool.js';
+import { ripemd160 } from '@noble/hashes/ripemd160';
+import { makeBtcShieldedPool, defaultAnchor, T_BTC_SHIELD, SHIELD_ENVELOPE_LEN } from '../dapp/btc-shielded-pool.js';
 import { H as TACIT_H } from './bulletproofs.mjs';
 
-const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
+const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256, ripemd160 });
 const Pt = secp.ProjectivePoint, G = Pt.BASE, N = secp.CURVE.n;
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const unhex = (h) => Uint8Array.from(String(h).replace(/^0x/, '').match(/../g).map((x) => parseInt(x, 16)));
@@ -41,7 +42,34 @@ assert.strictEqual(dec.network, 'signet');
 assert.throws(() => pool.decodeAddress(w1.addressString, 'mainnet'));
 const flipped = w1.addressString.slice(0, -1) + (w1.addressString.endsWith('q') ? 'p' : 'q');
 assert.throws(() => pool.decodeAddress(flipped));
-ok('seed → (v, a, n) is deterministic and domain-separated; 99-byte address; bech32m tbp/bp round-trips, checksum enforced');
+{
+  const m = pool.walletFromSeed(seed, 'mainnet');
+  for (const key of ['v', 'a', 'n', 'vInt', 'exitRoot']) assert.notStrictEqual(m[key], w1[key], key);
+  assert.throws(() => pool.walletFromSeed(seed, 'regtest'));
+  assert.notStrictEqual(w1.vInt, w1.v);
+  assert.strictEqual(w1.internalAddress.slice(68), w1.address.slice(68));
+  assert.notStrictEqual(w1.internalAddress, w1.address);
+}
+ok('seed → (v, a, n, v_int) is deterministic, domain-separated and bound to the network; 99-byte address; bech32m tbp/bp round-trips, checksum enforced');
+
+// ── network separation ──
+assert.throws(() => pool.decodeAddress(w1.address), /explicit network/);
+assert.throws(() => pool.decodeAddress(unhex(w1.address)), /explicit network/);
+assert.strictEqual(pool.decodeAddress(w1.address, 'signet').network, 'signet');
+assert.throws(() => pool.decodeAddress(w1.address, 'testnet'));
+assert.throws(() => pool.createNote(w1.address, ASSET, 1n), /explicit network/);
+assert.ok(pool.createNote(w1.address, ASSET, 1n, undefined, { network: 'signet' }).leaf);
+assert.throws(() => pool.createNote(w1.addressString, ASSET, 1n, undefined, { network: 'mainnet' }), /expected mainnet/);
+{
+  const v = 5n, r = 77n, C = pool.commitXY(v, r);
+  const inputs = [{ txid: hex(rnd(32)), vout: 0, Cx: C.cx, Cy: C.cy, value: v, blinding: r }];
+  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs, recipientAddress: w1.address }), /explicit network/);
+  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs, recipientAddress: w1.addressString, network: 'mainnet' }));
+  assert.ok(pool.buildShieldEnvelope({ asset: ASSET, inputs, recipientAddress: w1.address, network: 'signet' }).payload);
+  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs: [inputs[0], inputs[0]], recipientAddress: w1.addressString }), /repeated/);
+  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs: [{ ...inputs[0], vout: 1.5 }], recipientAddress: w1.addressString }), /vout/);
+}
+ok('raw 99-byte addresses need an explicit network; createNote / buildShieldEnvelope reject a mismatched one');
 
 // ── Alice → Bob ──
 const VALUE = 123_456_789n;
@@ -86,15 +114,15 @@ assert.strictEqual(pool.scan(bob, [{ ...pub, cy: '0x' + negC.y.toString(16).padS
 assert.strictEqual(pool.scan(bob, [{ ...pub, cx: tweak(pub.cx, 31) }]).length, 0);
 ok('tampered commitment (re-committed, negated, off-curve) is not received');
 
-assert.strictEqual(pool.scan(bob, [{ ...pub, spendKey: pool.createNote(bob.address, ASSET, 1n).spendKey }]).length, 0);
-assert.strictEqual(pool.scan(bob, [{ ...pub, nkPub: pool.createNote(bob.address, ASSET, 1n).nkPub }]).length, 0);
+assert.strictEqual(pool.scan(bob, [{ ...pub, spendKey: pool.createNote(bob.addressString, ASSET, 1n).spendKey }]).length, 0);
+assert.strictEqual(pool.scan(bob, [{ ...pub, nkPub: pool.createNote(bob.addressString, ASSET, 1n).nkPub }]).length, 0);
 assert.strictEqual(pool.scan(bob, [{ ...pub, leaf: '0x' + '11'.repeat(32) }]).length, 0);
 ok('substituted spend_key / nk_pub / leaf is not received');
 
 // Payer seals 1 BTC in ct_note while C commits 1 sat.
 {
   const e = 7777n + BigInt(Date.now());
-  const honest = pool.createNote(bob.address, ASSET, 100_000_000n, 42n, { e });
+  const honest = pool.createNote(bob.addressString, ASSET, 100_000_000n, 42n, { e });
   const small = pool.commitXY(1n, 42n);
   const lie = { asset: ASSET, cx: small.cx, cy: small.cy, spendKey: honest.spendKey, nkPub: honest.nkPub, pkEph: honest.pkEph, ctNote: honest.ctNote };
   assert.strictEqual(pool.scan(bob, [lie]).length, 0);
@@ -105,7 +133,7 @@ ok('amount sealed in ct_note that does not open C (1 BTC sealed, 1 sat committed
 // ── sender cannot compute nf ──
 {
   const e = BigInt('0x' + hex(rnd(31))) + 1n;
-  const nt = pool.createNote(bob.address, ASSET, 5n, undefined, { e });
+  const nt = pool.createNote(bob.addressString, ASSET, 5n, undefined, { e });
   const bobNote = pool.scan(bob, [{ ...nt, leafIndex: 3 }])[0];
   const V = Pt.fromHex(bob.V.slice(2));
   const s = V.multiply(e).toRawBytes(true);
@@ -138,7 +166,7 @@ ok('view-only wallet (v) detects and reads the note but has no nk_note, nf or sk
 {
   let odd = 0, even = 0;
   const notes = [];
-  for (let i = 0; i < 200; i++) notes.push(pool.createNote(bob.address, ASSET, BigInt(i + 1)));
+  for (let i = 0; i < 200; i++) notes.push(pool.createNote(bob.addressString, ASSET, BigInt(i + 1)));
   for (const x of notes) (unhex(x.pkEph)[0] === 0x03 ? odd++ : even++);
   const rec = pool.scan(bob, notes);
   const recovered = rec.length;
@@ -194,7 +222,7 @@ function bip340VerifyIndependent(sig, msg, px) {
   }
   assert.strictEqual(eParity.size, 2);
   const v = 500n, r = 99n, C = pool.commitXY(v, r);
-  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs: [{ txid: hex(rnd(32)), vout: 1, Cx: C.cx, Cy: C.cy, value: 501n, blinding: r }], recipientAddress: alice.address }));
+  assert.throws(() => pool.buildShieldEnvelope({ asset: ASSET, inputs: [{ txid: hex(rnd(32)), vout: 1, Cx: C.cx, Cy: C.cy, value: 501n, blinding: r }], recipientAddress: alice.addressString }));
 }
 ok('shield: 316 bytes, kernel verifies by an independent BIP-340 check under x(C_pool − ΣC_in), odd-y E included; tamper fails; recipient scans the exact total');
 
@@ -216,9 +244,9 @@ function fakeTree(leaves) {
   return { root: '0x' + hex(layers[32][0]), path };
 }
 {
-  const n1 = pool.createNote(bob.address, ASSET, 700n);
-  const n2 = pool.createNote(bob.address, ASSET, 300n);
-  const filler = pool.createNote(eve.address, ASSET, 1n);
+  const n1 = pool.createNote(bob.addressString, ASSET, 700n);
+  const n2 = pool.createNote(bob.addressString, ASSET, 300n);
+  const filler = pool.createNote(eve.addressString, ASSET, 1n);
   const tree = fakeTree([filler.leaf, n1.leaf, n2.leaf]);
   const mine = pool.scan(bob, [filler, n1, n2].map((x, i) => ({ ...x, leafIndex: i }))).map((x) => ({ ...x, path: tree.path(x.leafIndex) }));
   assert.strictEqual(mine.length, 2);
@@ -260,8 +288,8 @@ function fakeTree(leaves) {
     ['no output, no exit', (b) => new Uint8Array([...b.slice(0, 38 + 64), 0, 0])],
     ['truncated', (b) => b.slice(0, b.length - 1)],
   ]) assert.throws(() => pool.parseSpend(mutate(pay.body)), undefined, label);
-  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: mine, outputs: [{ address: alice.address, value: 999n }] }));
-  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, root: '0x' + '00'.repeat(32), inputs: mine, outputs: [{ address: alice.address, value: 1000n }] }));
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: mine, outputs: [{ address: alice.addressString, value: 999n }] }));
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, root: '0x' + '00'.repeat(32), inputs: mine, outputs: [{ address: alice.addressString, value: 1000n }] }));
 
   const spk = new Uint8Array([0x00, 0x14, ...rnd(20)]);
   const ex = pool.buildSpendBody({ asset: ASSET, hAnchor: 7, root: tree.root, inputs: [mine[0]], exit: { exitVout: 2, scriptPubKey: spk } });
@@ -273,15 +301,15 @@ function fakeTree(leaves) {
   assert.strictEqual(ex.body.length, 1 + 32 + 4 + 1 + 32 + 1 + 1 + 100);
   assert.deepStrictEqual(ex.witness.outputs, [{ value: '700', blinding: ex.exit.blinding }]);
 
-  const part = pool.buildSpendBody({ asset: ASSET, hAnchor: 8, root: tree.root, inputs: mine, outputs: [{ address: alice.address, value: 100n }, { address: bob.address, value: 200n }, { address: eve.address, value: 300n }], exit: { exitVout: 0, scriptPubKey: spk } });
+  const part = pool.buildSpendBody({ asset: ASSET, hAnchor: 8, root: tree.root, inputs: mine, outputs: [{ address: alice.addressString, value: 100n }, { address: bob.addressString, value: 200n }, { address: eve.addressString, value: 300n }], exit: { exitVout: 0, scriptPubKey: spk } });
   const pp = pool.parseSpend(part.body);
   assert.strictEqual(pp.outputs.length, 3);
   assert.strictEqual(part.exit.value, 400n);
   assert.deepStrictEqual(part.witness.outputs.map((o) => o.value), ['100', '200', '300', '400']);
   assert.strictEqual(part.witness.outputs[3].blinding, part.exit.blinding);
   assert.strictEqual('0x' + hex(pool.encodeSpendBody({ asset: ASSET, hAnchor: 8, nullifiers: pp.nullifiers, outputs: pp.outputs, exit: pp.exit })), part.bodyHex);
-  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 8, inputs: mine, outputs: [1, 2, 3, 4].map(() => ({ address: alice.address, value: 250n })) }));
-  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 8, inputs: mine, outputs: [{ address: alice.address, value: 100n }], exit: { exitVout: 0, scriptPubKey: spk, value: 1n } }));
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 8, inputs: mine, outputs: [1, 2, 3, 4].map(() => ({ address: alice.addressString, value: 250n })) }));
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 8, inputs: mine, outputs: [{ address: alice.addressString, value: 100n }], exit: { exitVout: 0, scriptPubKey: spk, value: 1n } }));
 
   const proof = rnd(260);
   const full = pool.assembleSpendEnvelope(ex.body, proof);
@@ -292,6 +320,164 @@ function fakeTree(leaves) {
   assert.throws(() => pool.assembleSpendEnvelope(ex.body, rnd(513)));
 }
 ok('spend body: canonical LE layout, parse/encode round-trip, per-input BIP-340 over keccak(domain ‖ body), witness JSON shape; exit binds SHA-256(spk); partial exit with 3 outputs; proof_len LE');
+
+// ── wallet defaults: anchor policy ──
+assert.strictEqual(pool.defaultAnchor, defaultAnchor);
+assert.strictEqual(defaultAnchor(1000), 990);
+assert.strictEqual(defaultAnchor(1002), 996);
+assert.strictEqual(defaultAnchor(6), 0);
+for (let t = 6; t < 400; t++) { const a = defaultAnchor(t); assert.ok(a % 6 === 0 && a <= t - 6 && a > t - 12, `tip ${t}`); }
+for (const bad of [5, -1, 1.5, 2 ** 32, '1000', null]) assert.throws(() => defaultAnchor(bad));
+ok('defaultAnchor(tip) = floor((tip − 6) / 6) · 6');
+
+// ── wallet defaults: input selection, 2-in / 3-out, internal change, view tiers ──
+const carol = pool.walletFromSeed(rnd(32), 'signet');
+{
+  const n700 = pool.createNote(carol.addressString, ASSET, 700n);
+  const nZero = pool.createNote(carol.internalAddress, ASSET, 0n, undefined, { network: 'signet' });
+  const n300 = pool.createNote(carol.addressString, ASSET, 300n);
+  const filler = pool.createNote(eve.addressString, ASSET, 1n);
+  const tree = fakeTree([filler.leaf, n700.leaf, nZero.leaf, n300.leaf]);
+  const all = [filler, n700, nZero, n300].map((x, i) => ({ ...x, leafIndex: i }));
+  const mine = pool.scan(carol, all).map((x) => ({ ...x, path: tree.path(x.leafIndex) }));
+  assert.strictEqual(mine.length, 3);
+  assert.deepStrictEqual(mine.map((x) => !!x.internal), [false, true, false]);
+  assert.strictEqual(pool.scan(pool.viewWallet(carol), all).length, 2);
+
+  const sel = pool.selectInputs(mine, 600n, { asset: ASSET });
+  assert.deepStrictEqual(sel.inputs.map((x) => x.value), [700n, 0n]);
+  assert.strictEqual(sel.total, 700n);
+  assert.deepStrictEqual(pool.selectInputs(mine, 900n).inputs.map((x) => x.value), [700n, 300n]);
+  assert.deepStrictEqual(pool.selectInputs([mine[0], mine[0]], 5n).inputs.length, 1);
+  assert.deepStrictEqual(pool.selectInputs([mine[2]], 5n).inputs.map((x) => x.value), [300n]);
+  assert.throws(() => pool.selectInputs(mine, 1001n), /cannot cover/);
+  assert.throws(() => pool.selectInputs(mine, 1n, { asset: '0x' + 'cd'.repeat(32) }), /no spendable/);
+  assert.throws(() => pool.selectInputs(pool.scan(pool.viewWallet(carol), all), 1n), /no spendable/);
+
+  const TIP = 250_010;
+  const pay = pool.buildSpendBody({ asset: ASSET, tip: TIP, root: tree.root, inputs: sel.inputs, outputs: [{ address: alice.addressString, value: 600n }], wallet: carol });
+  const pp = pool.parseSpend(pay.body);
+  assert.strictEqual(pp.nullifiers.length, 2);
+  assert.strictEqual(pp.outputs.length, 3);
+  assert.strictEqual(pp.hAnchor, defaultAnchor(TIP));
+  assert.strictEqual(pay.hAnchor, 250_002);
+  assert.strictEqual(pay.witness.outputs.length, 3);
+  assert.deepStrictEqual(pool.scan(alice, pp.outputs).map((x) => x.value), [600n]);
+  const outsIdx = pp.outputs.map((o, i) => ({ ...o, leafIndex: 100 + i }));
+  const own = pool.scan(carol, outsIdx);
+  assert.deepStrictEqual(own.map((x) => x.value).sort(), [0n, 100n]);
+  assert.ok(own.every((x) => x.internal && x.nf && x.skSpend));
+  assert.strictEqual(pool.scan(pool.viewWallet(carol), outsIdx).length, 0);
+  const iv = pool.scan(pool.viewWallet(carol, { internal: true }), outsIdx);
+  assert.deepStrictEqual(iv.map((x) => x.value), own.map((x) => x.value));
+  assert.ok(iv.every((x) => x.internal && x.nf === undefined));
+  const fv = pool.fullViewWallet(carol);
+  assert.strictEqual(fv.a, undefined);
+  const seen = pool.scan(fv, outsIdx);
+  assert.deepStrictEqual(seen.map((x) => x.nf), own.map((x) => x.nf));
+  assert.ok(seen.every((x) => x.skSpend === undefined));
+  assert.throws(() => pool.fullViewWallet(pool.viewWallet(carol)));
+
+  const single = pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [mine[2]], outputs: [{ address: alice.addressString, value: 10n }], wallet: carol });
+  assert.strictEqual(pool.parseSpend(single.body).outputs.length, 3);
+  const nopad = pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [mine[2]], outputs: [{ address: alice.addressString, value: 10n }], wallet: carol, pad: false });
+  assert.strictEqual(pool.parseSpend(nopad.body).outputs.length, 2);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [mine[2]], outputs: [1, 2, 3].map(() => ({ address: alice.addressString, value: 10n })), wallet: carol }), /n_out/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [mine[2]], outputs: [{ address: alice.address, value: 300n }] }), /explicit network/);
+  assert.ok(pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [mine[2]], outputs: [{ address: alice.address, value: 300n }], network: 'signet' }).body);
+}
+ok('selectInputs pads to 2 inputs with a zero-value note (1 when only one note exists); pays pad to 3 outputs; change and padding go to the internal address: v misses them, (v, v_int) reads them, (v, v_int, n) also sees their nf');
+
+// ── fresh exit keys ──
+{
+  const k0 = pool.deriveExitKey(carol, 0), k0b = pool.deriveExitKey(carol, 0), k1 = pool.deriveExitKey(carol, 1);
+  assert.deepStrictEqual(k0, k0b);
+  assert.notStrictEqual(k0.scriptPubKey, k1.scriptPubKey);
+  const spk = unhex(k0.scriptPubKey);
+  assert.strictEqual(spk.length, 34); assert.strictEqual(spk[0], 0x51); assert.strictEqual(spk[1], 0x20);
+  const P = Pt.fromHex(k0.pub.slice(2));
+  const px = P.toRawBytes(true).slice(1);
+  const th = (tag, m) => { const t = sha256(te.encode(tag)); return sha256(new Uint8Array([...t, ...t, ...m])); };
+  const Q = Pt.fromHex('02' + hex(px)).add(G.multiply(big(hex(th('TapTweak', px))) % N));
+  assert.strictEqual(hex(Q.toRawBytes(true).slice(1)), hex(spk.slice(2)));
+  assert.strictEqual(hex(G.multiply(big(k0.outputPriv)).toRawBytes(true).slice(1)), hex(spk.slice(2)));
+  assert.strictEqual(k0.destSpkHash, '0x' + hex(sha256(spk)));
+  const w = pool.deriveExitKey(carol, 0, 'p2wpkh');
+  assert.strictEqual(w.scriptPubKey, '0x0014' + hex(ripemd160(sha256(unhex(w.pub)))));
+  assert.throws(() => makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 }).deriveExitKey(carol, 0, 'p2wpkh'), /ripemd160/);
+  assert.throws(() => pool.deriveExitKey(pool.viewWallet(carol), 0));
+  assert.throws(() => pool.deriveExitKey(carol, -1));
+  assert.notStrictEqual(pool.deriveExitKey(pool.walletFromSeed(seed, 'mainnet'), 0).scriptPubKey, pool.deriveExitKey(pool.walletFromSeed(seed, 'signet'), 0).scriptPubKey);
+
+  const n = pool.createNote(carol.addressString, ASSET, 50n);
+  const [note] = pool.scan(carol, [{ ...n, leafIndex: 7 }]);
+  const used = new Set();
+  const f0 = pool.freshExitKey(carol, used);
+  assert.strictEqual(f0.counter, 0);
+  pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, scriptPubKey: f0.scriptPubKey }, usedScripts: used });
+  assert.ok(used.has(f0.destSpkHash));
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, scriptPubKey: f0.scriptPubKey }, usedScripts: used }), /already used/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, destSpkHash: f0.destSpkHash }, usedScripts: used }), /already used/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, scriptPubKey: f0.scriptPubKey }, usedScripts: [f0.scriptPubKey] }), /already used/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, scriptPubKey: f0.scriptPubKey }, wallet: { ...carol, usedScripts: used } }), /already used/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 12, inputs: [note], exit: { exitVout: 0, scriptPubKey: f0.scriptPubKey, destSpkHash: k1.destSpkHash } }), /does not match/);
+  assert.strictEqual(pool.freshExitKey(carol, used).counter, 1);
+}
+ok('exit keys: seed + counter → BIP-86 P2TR (tweak checked independently) or P2WPKH, per network; a used exit script is refused and the next fresh key skips it');
+
+// ── validation ──
+{
+  const n = pool.createNote(carol.addressString, ASSET, 50n);
+  const [note] = pool.scan(carol, [{ ...n, leafIndex: 8 }]);
+  const outs = [{ address: alice.addressString, value: 50n }];
+  for (const bad of [1.5, -1, 2 ** 32, '5', 5n, NaN]) {
+    assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: bad, inputs: [note], outputs: outs }), /h_anchor/, String(bad));
+    assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: [note], exit: { exitVout: bad, scriptPubKey: '0014' + '11'.repeat(20) } }), /exit_vout/, String(bad));
+  }
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, inputs: [note], outputs: outs }), /h_anchor or tip/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, h_anchor: 5, inputs: [note], outputs: outs }), /h_anchor or tip/);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: [note], exit: { exit_vout: 1, scriptPubKey: '0014' + '11'.repeat(20) } }), /exit_vout/);
+  assert.ok(pool.buildSpendBody({ asset: ASSET, hAnchor: 2 ** 32 - 1, inputs: [note], exit: { exitVout: 2 ** 32 - 1, scriptPubKey: '0014' + '11'.repeat(20) } }).body);
+  assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: [note, { ...note }], outputs: [{ address: alice.addressString, value: 100n }] }), /repeated input/);
+  const nf = note.nf;
+  const good = pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: [note], outputs: outs });
+  assert.throws(() => pool.encodeSpendBody({ asset: ASSET, hAnchor: 1, nullifiers: [nf, nf.toUpperCase().replace('0X', '0x')], outputs: good.outputs }), /repeated nullifier/);
+  assert.throws(() => pool.encodeSpendBody({ asset: ASSET, hAnchor: -1, nullifiers: [nf], outputs: good.outputs }), /h_anchor/);
+}
+ok('h_anchor and exit_vout must be integers in [0, 2^32) (no coercion, no aliases); repeated inputs or nullifiers are rejected');
+
+// ── exit recovery from seed and chain data ──
+{
+  const seedD = rnd(32);
+  const dave = pool.walletFromSeed(seedD, 'signet');
+  const a1 = pool.createNote(dave.addressString, ASSET, 1_000n), a2 = pool.createNote(dave.addressString, ASSET, 234n);
+  const tree = fakeTree([a1.leaf, a2.leaf]);
+  const inputs = pool.scan(dave, [a1, a2].map((x, i) => ({ ...x, leafIndex: i }))).map((x) => ({ ...x, path: tree.path(x.leafIndex) }));
+  const dest = pool.deriveExitKey(dave, 0);
+  const pure = pool.buildSpendBody({ asset: ASSET, hAnchor: 90, root: tree.root, inputs, exit: { exitVout: 1, scriptPubKey: dest.scriptPubKey } });
+  const partial = pool.buildSpendBody({ asset: ASSET, hAnchor: 90, root: tree.root, inputs, outputs: [{ address: alice.addressString, value: 100n }, { address: dave.addressString, value: 34n }], exit: { exitVout: 0, scriptPubKey: pool.deriveExitKey(dave, 1).scriptPubKey } });
+  const payload = pool.assembleSpendEnvelope(partial.body, rnd(64));
+
+  // Only the seed and public chain data from here on.
+  const fresh = pool.walletFromSeed(seedD, 'signet');
+  const chainNotes = [a1, a2].map(({ value, blinding, ...pub }, i) => ({ ...pub, leafIndex: i }));
+  const scanned = pool.scan(fresh, chainNotes);
+  const r1 = pool.recoverExit(fresh, pure.body, scanned);
+  assert.strictEqual(r1.value, 1_234n);
+  assert.strictEqual(r1.blinding, pure.exit.blinding);
+  assert.strictEqual(r1.exitVout, 1);
+  const r2 = pool.recoverExit(fresh, payload, scanned);
+  assert.strictEqual(r2.value, 1_100n);
+  assert.strictEqual(r2.blinding, partial.exit.blinding);
+  assert.strictEqual(pool.recoverExit(fresh, partial.body, scanned, { addresses: [alice.addressString], maxSearch: 0 }).value, 1_100n);
+  assert.throws(() => pool.recoverExit(fresh, partial.body, scanned, { maxSearch: 50 }), /not recovered/);
+  assert.throws(() => pool.recoverExit(eve, partial.body, scanned.map((x) => ({ ...x, nkNote: eve.n }))), /not recovered/);
+  assert.throws(() => pool.recoverExit(fresh, partial.body, []), /not among/);
+  const again = pool.buildSpendBody({ asset: ASSET, hAnchor: 90, inputs, outputs: [{ address: alice.addressString, value: 100n }, { address: dave.addressString, value: 34n }], exit: { exitVout: 0, scriptPubKey: pool.deriveExitKey(dave, 1).scriptPubKey } });
+  assert.notStrictEqual(again.exit.blinding, partial.exit.blinding);
+  assert.notStrictEqual(again.outputs[0].pkEph, partial.outputs[0].pkEph);
+}
+ok('exit opening recovered from the seed and the on-chain body alone (pure exit, partial exit via address or bounded search); a rebuilt body gets fresh e and r_exit');
 
 // ── cross-check against the Rust-generated vectors, when present ──
 const VEC = new URL('./vectors/btc-pool-vectors.json', import.meta.url);

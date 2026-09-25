@@ -3,7 +3,8 @@
 //   node tests/btc-pool-e2e-signet.mjs [etch|split|shield|pay|exit|all]   (default: all, resumable)
 //
 // Stages: etch a demo asset → T_CXFER 50,000 units to Alice's transparent key → T_BTC_SHIELD that note
-// into Alice's pool address → T_BTC_SPEND pay Alice→Bob → T_BTC_SPEND exit Bob's note to his own script.
+// into Alice's pool address → T_BTC_SPEND pay Alice→Bob (change and padding to Alice's internal address)
+// → T_BTC_SPEND exit Bob's note to a fresh exit key derived from his pool seed.
 // pay/exit need the pool indexer (BTC_POOL_API, default http://localhost:8787) for leaf index, root and
 // path, and a proof from the separate prover: set PROOF_FILE to its {"proof": "0x.."} output.
 //
@@ -64,15 +65,18 @@ const N = secp.CURVE.n;
 const loadState = () => { try { return JSON.parse(readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } };
 const saveState = (s) => { mkdirSync(path.dirname(STATE_FILE), { recursive: true }); writeFileSync(STATE_FILE, JSON.stringify(s, (k, v) => (typeof v === 'bigint' ? v.toString() : v), 2), { mode: 0o600 }); };
 const state = loadState();
-if (!state.demoSeed) { state.demoSeed = bytesToHex(crypto.getRandomValues(new Uint8Array(32))); saveState(state); }
+if (!state.demoSeed) { state.demoSeed = bytesToHex(crypto.getRandomValues(new Uint8Array(32))); state.derivation = 2; saveState(state); }
+if (state.derivation !== 2) {
+  if (state.shield) throw new Error(`${STATE_FILE} was made with the earlier wallet derivation; set a new STATE_FILE`);
+  state.derivation = 2; saveState(state);
+}
 
-// Demo identities, all from DEMO_SEED: Alice/Bob pool wallets and their transparent P2WPKH keys.
+// Demo identities, all from DEMO_SEED: Alice/Bob pool wallets and Alice's transparent P2WPKH key.
 const sub = (label) => sha256(concatBytes(te.encode('tacit-btc-pool-e2e:' + label + ':'), hexToBytes(state.demoSeed)));
 const scalarKey = (label) => { const x = BigInt('0x' + bytesToHex(sub(label))) % N; return hexToBytes(x.toString(16).padStart(64, '0')); };
 const alice = pool.walletFromSeed(sub('alice-pool'), 'signet');
 const bob = pool.walletFromSeed(sub('bob-pool'), 'signet');
 const aliceT = { priv: scalarKey('alice-transparent') }; aliceT.pub = secp.getPublicKey(aliceT.priv, true);
-const bobT = { priv: scalarKey('bob-transparent') }; bobT.pub = secp.getPublicKey(bobT.priv, true);
 const wpkh = (pub) => concatBytes(new Uint8Array([0x00, 0x14]), dapp.hash160(pub));
 const WALLET_SPK = wpkh(PUB);
 
@@ -251,6 +255,7 @@ async function stageShield() {
       asset: '0x' + state.etch.assetId,
       inputs: [{ txid: input.txid, vout: input.vout, Cx: input.Cx, Cy: input.Cy, value: BigInt(input.value), blinding: BigInt(input.blinding) }],
       recipientAddress: alice.addressString,
+      network: 'signet',
     });
     if (!pool.verifyShield(sh.payload, [{ txid: input.txid, vout: input.vout, Cx: input.Cx, Cy: input.Cy }])) throw new Error('shield kernel self-check failed');
     const r = await broadcastCarrier({
@@ -279,7 +284,7 @@ async function spendStage(stage, buildArgs, carrierOutputs) {
     st.outputs = built.outputs;
     st.exit = built.exit;
     st.hAnchor = built.hAnchor;
-    writeFileSync(witnessFile(stage), JSON.stringify(built.witness, null, 2));
+    writeFileSync(witnessFile(stage), JSON.stringify(built.witness, null, 2), { mode: 0o600 });
     saveState(state);
   }
   log(`witness: ${witnessFile(stage)}`);
@@ -307,11 +312,15 @@ async function stagePay() {
     const [note] = pool.scan(alice, [{ ...state.shield.note, leafIndex }]);
     const { root, path: p, hAnchor } = await fetchPath(leafIndex);
     log(`Alice's note at leaf ${leafIndex}, root ${root} @ ${hAnchor}`);
+    // Alice holds one note, so this first spend after a shield has 1 input; outputs pad to 3.
     const built = pool.buildSpendBody({
       asset: '0x' + state.etch.assetId, hAnchor, root,
       inputs: [{ ...note, path: p }],
-      outputs: [{ address: bob.addressString, value: PAY_TO_BOB }, { address: alice.addressString, value: SPLIT_AMOUNT - PAY_TO_BOB }],
+      outputs: [{ address: bob.addressString, value: PAY_TO_BOB }],
+      wallet: alice,
     });
+    const change = pool.scan(alice, built.outputs);
+    if (change.reduce((t, x) => t + x.value, 0n) !== SPLIT_AMOUNT - PAY_TO_BOB || !change.every((x) => x.internal)) throw new Error('Alice does not receive her internal change');
     const toBob = pool.scan(bob, built.outputs);
     if (toBob.length !== 1 || toBob[0].value !== PAY_TO_BOB) throw new Error('Bob does not receive the pay output');
     log(`Bob scans the pay body: ${toBob[0].value} ${TICKER}; nf ${built.nullifiers[0]}`);
@@ -321,19 +330,26 @@ async function stagePay() {
 
 async function stageExit() {
   console.log('\n--- exit ---');
-  const bobSpk = wpkh(bobT.pub);
+  const st = state.exit || (state.exit = {});
+  if (!st.exitSpk) { st.exitSpk = pool.freshExitKey(bob, st.usedScripts || []).scriptPubKey; saveState(state); }
+  const bobSpk = hexToBytes(st.exitSpk.slice(2));
   return spendStage('exit', async () => {
     const outs = state.pay.outputs.map(({ value, blinding, ...f }) => f);
-    const leafIndex = await findLeafIndex(outs[0].leaf, 'EXIT_LEAF_INDEX');
-    const [note] = pool.scan(bob, [{ ...outs[0], leafIndex }]);
-    if (!note) throw new Error('Bob cannot find his pay note');
+    const mineOut = outs.find((o) => pool.scan(bob, [o]).length);
+    if (!mineOut) throw new Error('Bob cannot find his pay note');
+    const leafIndex = await findLeafIndex(mineOut.leaf, 'EXIT_LEAF_INDEX');
+    const [note] = pool.scan(bob, [{ ...mineOut, leafIndex }]);
     const { root, path: p, hAnchor } = await fetchPath(leafIndex);
     log(`Bob's note at leaf ${leafIndex}, root ${root} @ ${hAnchor}`);
     const built = pool.buildSpendBody({
       asset: '0x' + state.etch.assetId, hAnchor, root,
       inputs: [{ ...note, path: p }],
       exit: { exitVout: 0, scriptPubKey: bobSpk },
+      usedScripts: st.usedScripts || [],
     });
+    st.usedScripts = [...new Set([...(st.usedScripts || []), built.exit.destSpkHash])];
+    const rec = pool.recoverExit(bob, built.body, [note]);
+    if (rec.value !== built.exit.value || rec.blinding !== built.exit.blinding) throw new Error('exit opening does not recover from the seed');
     return { ...built, hAnchor };
   }, async () => [{ value: dapp.DUST, script: bobSpk }]);
 }

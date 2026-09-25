@@ -7,7 +7,16 @@ import { secp, sha256, keccak_256, hexToBytes, bytesToHex, concatBytes } from '.
 import { makeBtcShieldedPool } from '../../dapp/btc-shielded-pool.js';
 import { makeBtcWallet } from '../../dapp/bitcoin-taproot-wallet.js';
 import { parseTx } from '../src/lib/btc-pool-chain.js';
-import { createRelayer, tapScriptSighash, spendNullifiersOfTx, parseFees, spendPublicValues } from '../src/lib/btc-pool-relayer.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  createRelayer, tapScriptSighash, spendNullifiersOfTx, parseFees, spendPublicValues, poolViewFromIndexer,
+  makeMempoolWatch, makeBitcoindMempool, makeBitcoindRpc,
+} from '../src/lib/btc-pool-relayer.js';
+import { spendsOfTx } from '../src/lib/btc-pool-relayer.js';
+import { openBtcPoolStore } from '../src/lib/btc-pool-store.js';
+import { createIndexer } from '../src/btc-pool-indexer.js';
 
 const bp = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
 const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
@@ -41,9 +50,14 @@ function payloadFor({ notes, outputs, exit = null, hAnchor = ANCHOR, proof = Uin
 }
 
 function setup(over = {}) {
-  const roots = new Map([[ANCHOR, 'aa'.repeat(32)], [990, 'bb'.repeat(32)], [860, 'cc'.repeat(32)]]);
+  const roots = new Map([[ANCHOR, 'aa'.repeat(32)], [990, 'bb'.repeat(32)], [860, 'cc'.repeat(32)], [870, 'c1'.repeat(32)], [875, 'c2'.repeat(32)]]);
   const spent = new Set();
-  const pool = { t: TIP, tip() { return this.t; }, rootAt: (h) => roots.get(h) || null, isSpent: (nf) => spent.has(strip(nf)) };
+  const pending = new Map();
+  const pool = {
+    t: TIP, ct: null, complete: true,
+    tip() { return this.t; }, chainTip() { return this.ct ?? this.t; }, rootAt: (h) => roots.get(h) || null, isSpent: (nf) => spent.has(strip(nf)),
+    pendingSpend: (nf) => pending.get(strip(nf)) || null, aheadComplete() { return this.complete; },
+  };
   const verifyCalls = [];
   const verifier = {
     enabled: true,
@@ -54,11 +68,21 @@ function setup(over = {}) {
     },
   };
   const broadcasts = [];
+  const attempts = [];
+  const failQueue = [];
   const statuses = new Map();
+  const txidOf = (hex) => parseTx(hexToBytes(hex)).tx.txid;
   const chain = {
     utxos: async () => [{ txid: 'ee'.repeat(32), vout: 1, value: 200_000 }, { txid: 'dd'.repeat(32), vout: 0, value: 50_000 }],
     feeRate: async () => 2,
-    broadcast: async (hex) => { broadcasts.push(hex); return 'ok'; },
+    broadcast: async (hex) => {
+      attempts.push(hex);
+      const f = failQueue.shift();
+      if (f === 'lost') throw new Error('socket hang up');
+      if (f === 'landed') { statuses.set(txidOf(hex), { confirmed: false }); throw new Error('socket hang up'); }
+      broadcasts.push(hex);
+      return 'ok';
+    },
     txStatus: async (txid) => statuses.get(txid) || null,
   };
   const mempoolNfs = new Map();
@@ -71,7 +95,7 @@ function setup(over = {}) {
     network: 'signet', btcKey: BTC_KEY, poolSeed: POOL_SEED, fees: { [ASSET]: FEE }, pool, verifier, chain, mempool,
     batchMs: 60_000, now: () => clock, ...over,
   });
-  return { relayer, pool, roots, spent, verifier, verifyCalls, chain, broadcasts, statuses, mempoolNfs, advance: (ms) => { clock += ms; } };
+  return { relayer, pool, roots, spent, pending, verifier, verifyCalls, chain, broadcasts, attempts, failQueue, statuses, mempoolNfs, advance: (ms) => { clock += ms; } };
 }
 
 const tests = [];
@@ -199,14 +223,14 @@ test('stale or unknown anchor is rejected', async () => {
   await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs, hAnchor: 990 }).hex });
 });
 
-test('exit must use its quoted slot and script', async () => {
+test('exit binds a free slot at submit and must match its quoted script', async () => {
   const s = setup();
   const spk = p2tr('exit-a');
   const q = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) });
   assert.equal(q.exitVout, 0);
   const outs = [{ address: relayerWallet.addressString, value: 10n }];
   const wrongVout = payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 1, scriptPubKey: spk } });
-  await rejects(s.relayer.submit({ payload: wrongVout.hex, quoteId: q.quoteId }), /assigned slot/);
+  await assert.rejects(s.relayer.submit({ payload: wrongVout.hex, quoteId: q.quoteId }), (e) => { assert.match(e.message, /not free/); assert.equal(e.extra.exitVout, 0); return true; });
   const wrongSpk = payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 0, scriptPubKey: p2tr('other') } });
   await rejects(s.relayer.submit({ payload: wrongSpk.hex, quoteId: q.quoteId }), /dest_spk_hash/);
   const noQuote = payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 0, scriptPubKey: spk } });
@@ -283,39 +307,39 @@ test('script-path sighash matches the dapp signer at input 0', () => {
 test('layout stays fixed when a sender drops out: its slot pays the relayer', async () => {
   const s = setup();
   const [sa, sb, sc, sd] = ['a', 'b', 'c', 'd'].map((t) => p2tr('exit-' + t));
-  const qa = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(sa) });
-  const qb = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(sb) });
-  const qc = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(sc) });
-  const qd = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(sd) });
-  assert.deepEqual([qa, qb, qc, qd].map((q) => q.exitVout), [0, 1, 2, 3]);
-  assert.equal(new Set([qa, qb, qc, qd].map((q) => q.batchId)).size, 1);
   const outs = [{ address: relayerWallet.addressString, value: 10n }];
-  const ex = (q, spk) => payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: q.exitVout, scriptPubKey: spk } });
-  const pa = ex(qa, sa), pc = ex(qc, sc), pd = ex(qd, sd);
-  const ra = await s.relayer.submit({ payload: pa.hex, quoteId: qa.quoteId });
-  // qb never submits.
-  const rc = await s.relayer.submit({ payload: pc.hex, quoteId: qc.quoteId });
-  const rd = await s.relayer.submit({ payload: pd.hex, quoteId: qd.quoteId });
-  // d's nullifier is spent elsewhere before the carrier is built.
+  const bind = async (spk, vout) => {
+    const q = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) });
+    assert.equal(q.exitVout, vout);
+    const p = payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: q.exitVout, scriptPubKey: spk } });
+    return [p, await s.relayer.submit({ payload: p.hex, quoteId: q.quoteId })];
+  };
+  const [pa, ra] = await bind(sa, 0);
+  const [pb, rb] = await bind(sb, 1);
+  const [pc, rc] = await bind(sc, 2);
+  const [pd, rd] = await bind(sd, 3);
+  assert.equal(new Set([ra, rb, rc, rd].map((r) => r.batchId)).size, 1);
+  // b and d are spent elsewhere before the carrier is built.
+  s.spent.add(pb.nullifiers[0]);
   s.spent.add(pd.nullifiers[0]);
   s.advance(61_000);
   await s.relayer.tick();
+  assert.equal(s.relayer.status(rb.id).state, 'dropped');
   assert.equal(s.relayer.status(rd.id).state, 'dropped');
   assert.equal(s.relayer.status(ra.id).state, 'broadcast');
   const reveal = parseTx(hexToBytes(s.broadcasts[1])).tx;
   assert.equal(reveal.vin.length, 2);
   const { prims } = makeBtcWallet({ priv: BTC_KEY, hrp: 'tb' });
   const relayerSpk = bytesToHex(prims.p2wpkhScript(prims.wallet.pub));
-  // Slot 1 (never submitted) pays the relayer; trailing slot 3 (dropped) is trimmed; a and c keep their vouts.
+  // Slot 1 (dropped) pays the relayer; trailing slot 3 (dropped) is trimmed; a and c keep their vouts.
   assert.deepEqual(reveal.vout.map((o) => bytesToHex(o.scriptPubKey)), [bytesToHex(sa), relayerSpk, bytesToHex(sc)]);
   assert.ok(reveal.vout.every((o) => o.value === 546n));
   for (const p of [pa, pc]) {
     assert.equal(bytesToHex(sha256(reveal.vout[p.exit.exitVout].scriptPubKey)), strip(p.exit.destSpkHash));
   }
-  // Quotes of a closed carrier are no longer accepted.
-  const late = ex(qb, sb);
-  await rejects(s.relayer.submit({ payload: late.hex, quoteId: qb.quoteId }), /unknown quote|expired/);
   assert.equal(s.relayer.status(rc.id).carrier, reveal.txid);
+  // The next carrier starts its slots from 0 again.
+  assert.equal(s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(sb) }).exitVout, 0);
 });
 
 test('carrier retries after a funding or broadcast failure, dropping payloads whose anchor expired', async () => {
@@ -368,6 +392,396 @@ test('fee config parsing', () => {
   assert.deepEqual([...parseFees(`${a}:5,${b}:7`)], [['11'.repeat(32), 5n], [b, 7n]]);
   assert.deepEqual([...parseFees(JSON.stringify({ [a]: '9' }))], [['11'.repeat(32), 9n]]);
   assert.throws(() => parseFees('xyz:1'), /bad asset/);
+});
+
+// ── admission bounds ──
+const payOuts = () => [{ address: relayerWallet.addressString, value: 10n }, { address: bob.addressString, value: 90n }];
+const settle = () => new Promise((r) => setTimeout(r, 1));
+
+test('flood: in-flight proof checks count toward maxPending and run at most maxVerify at a time', async () => {
+  const s = setup({ maxPending: 4, maxVerify: 2 });
+  let active = 0, peak = 0;
+  const gates = [];
+  s.verifier.verify = async () => { active++; peak = Math.max(peak, active); await new Promise((r) => gates.push(r)); active--; return true; };
+  const ps = Array.from({ length: 6 }, () => payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }));
+  const results = ps.map((p) => s.relayer.submit({ payload: p.hex }).then(() => 'ok', (e) => e.message));
+  await settle();
+  assert.equal(s.relayer.info().pending, 4);
+  assert.equal(s.relayer._state.verifyActive(), 2);
+  while (gates.length || active) { gates.shift()?.(); await settle(); }
+  const out = await Promise.all(results);
+  assert.equal(peak, 2);
+  assert.equal(out.filter((r) => r === 'ok').length, 4);
+  assert.equal(out.filter((r) => /busy/.test(r)).length, 2);
+});
+
+test('rate limit: per-client token bucket on /quote and /submit, keyed by the proxy-appended x-forwarded-for hop', async () => {
+  const s = setup({ rateLimit: { perMin: 1, burst: 2 } });
+  const server = createServer(s.relayer.wrap((req, res) => { res.writeHead(418); res.end(); }));
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const q = (ip) => fetch(base + '/btc-pool/relay/quote', { method: 'POST', headers: { 'x-forwarded-for': `${Math.random()}, ${ip}` }, body: JSON.stringify({ asset: ASSET }) });
+  try {
+    assert.equal((await q('1.1.1.1')).status, 200);
+    assert.equal((await q('1.1.1.1')).status, 200);
+    assert.equal((await q('1.1.1.1')).status, 429);
+    assert.equal((await q('2.2.2.2')).status, 200);
+    const sub = (ip) => fetch(base + '/btc-pool/relay/submit', { method: 'POST', headers: { 'x-forwarded-for': ip }, body: '{}' });
+    assert.equal((await sub('3.3.3.3')).status, 400);
+    assert.equal((await sub('3.3.3.3')).status, 400);
+    assert.equal((await sub('3.3.3.3')).status, 429);
+    assert.equal((await fetch(base + '/btc-pool/relay/info')).status, 200);
+    s.advance(60_000);
+    assert.equal((await q('1.1.1.1')).status, 200);
+  } finally { server.close(); }
+});
+
+test('slot squatting: quotes reserve nothing, are capped per client and globally; submit binds or names the free vout', async () => {
+  const s = setup({ maxQuotes: 20, maxQuotesPerClient: 3 });
+  const spk = p2tr('exit-q');
+  for (let i = 0; i < 10; i++) assert.equal(s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) }, 'x').exitVout, 0);
+  assert.equal(s.relayer._state.batch, null, 'no batch opened, no slot bound');
+  assert.equal([...s.relayer._state.quotes.values()].filter((q) => q.client === 'x').length, 3);
+  for (let i = 0; i < 17; i++) s.relayer.quote({ asset: ASSET }, 'c' + i);
+  assert.throws(() => s.relayer.quote({ asset: ASSET }, 'late'), (e) => e.status === 503);
+  s.advance(600_001);
+  s.relayer.quote({ asset: ASSET }, 'late');
+  assert.equal(s.relayer._state.quotes.size, 1, 'expired quotes pruned on insert');
+
+  // Two senders sign against the same provisional vout: the second is told the free one and re-signs.
+  const outs = [{ address: relayerWallet.addressString, value: 10n }];
+  const [s1, s2] = [p2tr('e1'), p2tr('e2')];
+  const q1 = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(s1) });
+  const q2 = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(s2) });
+  assert.equal(q1.exitVout, 0); assert.equal(q2.exitVout, 0);
+  await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 0, scriptPubKey: s1 } }).hex, quoteId: q1.quoteId });
+  const n2 = ownedNote(100n);
+  let free;
+  await assert.rejects(s.relayer.submit({ payload: payloadFor({ notes: [n2], outputs: outs, exit: { exitVout: 0, scriptPubKey: s2 } }).hex, quoteId: q2.quoteId }),
+    (e) => { assert.equal(e.status, 409); free = e.extra.exitVout; return true; });
+  assert.equal(free, 1);
+  await s.relayer.submit({ payload: payloadFor({ notes: [n2], outputs: outs, exit: { exitVout: free, scriptPubKey: s2 } }).hex, quoteId: q2.quoteId });
+  assert.equal(s.relayer._state.batch.slots.filter(Boolean).length, 2);
+  // A failed proof check frees its slot.
+  const q3 = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(p2tr('e3')) });
+  assert.equal(q3.exitVout, 2);
+  await rejects(s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 2, scriptPubKey: p2tr('e3') }, proof: Uint8Array.of(9) }).hex, quoteId: q3.quoteId }), /does not verify/);
+  assert.equal(s.relayer._state.batch.slots.length, 2);
+});
+
+// ── chain view ──
+test('blind spot: nullifier spent in a block past the replayed tip is rejected at submit and before carrying', async () => {
+  const s = setup();
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  s.pending.set(a.nullifiers[0], { txid: '55'.repeat(32), body: null });
+  await rejects(s.relayer.submit({ payload: a.hex }), /recent block/);
+  s.pool.complete = false;
+  const b = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  await assert.rejects(s.relayer.submit({ payload: b.hex }), (e) => e.status === 503);
+  s.pool.complete = true;
+  const rb = await s.relayer.submit({ payload: b.hex });
+  s.pending.set(b.nullifiers[0], { txid: '56'.repeat(32), body: null });
+  const c = await s.relayer.flush();
+  assert.equal(c.state, 'empty');
+  assert.equal(s.relayer.status(rb.id).state, 'dropped');
+  assert.equal(s.broadcasts.length, 0);
+});
+
+const sha256d = (b) => sha256(sha256(b));
+const le32 = (v) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+function merkle(level) {
+  while (level.length > 1) { const n = []; for (let i = 0; i < level.length; i += 2) n.push(sha256d(concatBytes(level[i], level[i + 1] || level[i]))); level = n; }
+  return level[0];
+}
+function buildBlock(txHexes, nonce = 0) {
+  const { prims } = makeBtcWallet({ priv: BTC_KEY, hrp: 'tb' });
+  const txs = txHexes.map((h) => hexToBytes(h));
+  const parsed = txs.map((b) => parseTx(b).tx);
+  const reserved = new Uint8Array(32);
+  const commit = sha256d(concatBytes(merkle([new Uint8Array(32), ...parsed.map((t) => t.wtxid || hexToBytes(t.txid).reverse())]), reserved));
+  const cb = prims.serializeTx({ version: 2, locktime: 0, inputs: [{ txid: '00'.repeat(32), vout: 0xffffffff, sequence: 0xffffffff, scriptSig: Uint8Array.of(1, nonce), witness: [reserved] }], outputs: [{ value: 0, script: concatBytes(Uint8Array.of(0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed), commit) }] });
+  const root = merkle([parseTx(cb).tx, ...parsed].map((t) => hexToBytes(t.txid).reverse()));
+  const header = concatBytes(le32(2), new Uint8Array(32), root, le32(nonce), le32(0x207fffff), le32(0));
+  return { raw: concatBytes(header, Uint8Array.of(1 + txs.length), cb, ...txs), hash: bytesToHex(sha256d(header).reverse()) };
+}
+
+test('indexer tracks spends in blocks between the replayed tip and the chain tip', async () => {
+  const s = setup();
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  await s.relayer.submit({ payload: a.hex });
+  const c = await s.relayer.flush();
+  const withSpend = buildBlock([c.revealHex], 1), empty = buildBlock([], 2);
+  const chainBlocks = new Map([[100, empty], [101, withSpend]]);
+  const esplora = {
+    tipHeight: async () => 101,
+    blockHash: async (h) => chainBlocks.get(h).hash,
+    rawBlock: async (hash) => [...chainBlocks.values()].find((b) => b.hash === hash).raw,
+  };
+  const store = openBtcPoolStore(':memory:');
+  const ix = createIndexer({ store, esplora, verifier: { enabled: true, verify: async () => true }, network: 'signet', startHeight: 100, confirmations: 3, log: () => {} });
+  ix.trackAhead = spendsOfTx;
+  const view = poolViewFromIndexer(ix);
+  assert.equal(view.aheadComplete(), false);
+  await ix.syncOnce();
+  assert.equal(ix.state.tip, null, 'nothing confirmed deep enough to replay');
+  assert.equal(view.aheadComplete(), true);
+  assert.equal(view.chainTip(), 101);
+  const hit = view.pendingSpend(a.nullifiers[0]);
+  assert.equal(hit.txid, c.revealTxid);
+  assert.equal(hit.body, bytesToHex(keccak_256(a.body)));
+  // Reorged away: re-fetched and cleared.
+  chainBlocks.set(101, buildBlock([], 3));
+  await ix.syncOnce();
+  assert.equal(view.pendingSpend(a.nullifiers[0]), null);
+  store.close();
+});
+
+test('mempool sources: esplora skips an oversized mempool and backs off on 429; bitcoind RPC', async () => {
+  const s = setup();
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  await s.relayer.submit({ payload: a.hex });
+  const c = await s.relayer.flush();
+  let t = 0, calls = [], mode = 'big';
+  const res = (status, body) => ({ ok: status === 200, status, headers: new Headers(), text: async () => body });
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (mode === '429') return res(429, '');
+    if (url.endsWith('/mempool/txids')) return res(200, JSON.stringify(mode === 'big' ? ['01'.repeat(32), '02'.repeat(32), '03'.repeat(32)] : [c.revealTxid]));
+    return res(200, c.revealHex);
+  };
+  const w = makeMempoolWatch({ bases: ['http://x'], fetchImpl, maxTxids: 2, now: () => t });
+  await w.refresh();
+  assert.equal(calls.length, 1, 'no per-tx fetches for an oversized mempool');
+  assert.equal(w.complete, false);
+  mode = '429';
+  await assert.rejects(w.refresh());
+  calls = [];
+  t += 10_000;
+  await w.refresh();
+  assert.equal(calls.length, 0, 'backing off');
+  mode = 'ok';
+  t += 30_000;
+  await w.refresh();
+  assert.equal(w.conflict(a.nullifiers), c.revealTxid);
+  assert.equal(w.spender(a.nullifiers[0]).body, bytesToHex(keccak_256(a.body)));
+
+  const rpcCalls = [];
+  const rpc = makeBitcoindRpc({
+    url: 'http://u:p@127.0.0.1:8332',
+    fetchImpl: async (url, init) => {
+      const { method, params } = JSON.parse(init.body);
+      rpcCalls.push([url, init.headers.Authorization, method]);
+      const result = method === 'getrawmempool' ? [c.revealTxid] : method === 'getrawtransaction' && params[0] === c.revealTxid ? c.revealHex : null;
+      return { status: 200, json: async () => ({ result, error: null }) };
+    },
+  });
+  const m = makeBitcoindMempool({ rpc });
+  await m.refresh();
+  assert.equal(m.conflict(a.nullifiers), c.revealTxid);
+  assert.equal(m.conflict(a.nullifiers, new Set([c.revealTxid])), null);
+  assert.equal(rpcCalls[0][0], 'http://127.0.0.1:8332/');
+  assert.equal(rpcCalls[0][1], 'Basic ' + Buffer.from('u:p').toString('base64'));
+});
+
+test('anchor freshness is measured from the chain tip with a margin', async () => {
+  const s = setup();
+  s.pool.ct = 1010; // replay at 1000
+  assert.equal(s.relayer.info().minAnchor, 1010 + 1 - 144 + 6);
+  await rejects(s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts(), hAnchor: 870 }).hex }), /too old/);
+  await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts(), hAnchor: 875 }).hex });
+  s.pool.ct = 1013;
+  await assert.rejects(s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex }), (e) => e.status === 503 && /behind/.test(e.message));
+  const t = setup({ anchorMargin: 0 });
+  t.pool.ct = 1010;
+  await t.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts(), hAnchor: 870 }).hex });
+});
+
+const txOf = (hex) => parseTx(hexToBytes(hex)).tx;
+const inputsOf = (hex) => txOf(hex).vin.map((i) => `${i.txid}:${i.vout}`).sort();
+
+test('carrier near anchor expiry is fee-bumped by replacing its commit, then returned to the relayer', async () => {
+  const s = setup();
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  const ra = await s.relayer.submit({ payload: a.hex });
+  const c = await s.relayer.flush();
+  const first = { commit: c.commitHex, fee: c.commitFee + c.revealFee, rate: c.rate };
+  s.statuses.set(c.commitTxid, { confirmed: false });
+  s.statuses.set(c.revealTxid, { confirmed: false });
+  await s.relayer.tick();
+  assert.equal(c.commitHex, first.commit, 'not near expiry yet');
+  s.pool.ct = ANCHOR + 144 - 3;
+  await s.relayer.tick();
+  assert.notEqual(c.commitHex, first.commit);
+  assert.deepEqual(s.broadcasts.slice(-2), [c.commitHex, c.revealHex]);
+  assert.deepEqual(inputsOf(c.commitHex), inputsOf(first.commit), 'replacement spends the same inputs');
+  assert.ok(c.rate > first.rate);
+  assert.ok(c.commitFee > first.fee, 'replacement pays more than commit + reveal it evicts');
+  assert.equal(txOf(c.revealHex).vin[0].txid, c.commitTxid);
+  assert.equal(s.relayer.status(ra.id).carrier, c.revealTxid);
+  const bumped = c.commitHex;
+  s.statuses.set(c.revealTxid, { confirmed: false });
+  await s.relayer.tick();
+  assert.equal(c.commitHex, bumped, 'one bump per block');
+  s.pool.ct = ANCHOR + 144;
+  await s.relayer.tick();
+  const cancel = txOf(s.broadcasts.at(-1));
+  assert.equal(c.state, 'cancelled');
+  assert.deepEqual(inputsOf(s.broadcasts.at(-1)), inputsOf(first.commit));
+  const { prims } = makeBtcWallet({ priv: BTC_KEY, hrp: 'tb' });
+  assert.deepEqual(cancel.vout.map((o) => bytesToHex(o.scriptPubKey)), [bytesToHex(prims.p2wpkhScript(prims.wallet.pub))]);
+  assert.equal(s.relayer.status(ra.id).state, 'dropped');
+  assert.ok(!s.relayer._state.holds.has(a.nullifiers[0]));
+
+  // At maxFeeRate there is no bump left: cancel.
+  const t = setup({ maxFeeRate: 2 });
+  const rb = await t.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex });
+  const cb = await t.relayer.flush();
+  t.pool.ct = ANCHOR + 144 - 2;
+  await t.relayer.tick();
+  assert.equal(cb.state, 'cancelled');
+  assert.equal(t.relayer.status(rb.id).state, 'dropped');
+});
+
+test('foreign spend of a carried nullifier: payload leaves the carrier, commit replaced or returned', async () => {
+  const s = setup();
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  const b = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  const ra = await s.relayer.submit({ payload: a.hex });
+  const rb = await s.relayer.submit({ payload: b.hex });
+  const c = await s.relayer.flush();
+  const firstCommit = c.commitHex, firstReveal = c.revealTxid;
+  s.pending.set(a.nullifiers[0], { txid: '77'.repeat(32), body: bytesToHex(keccak_256(a.body)) });
+  await s.relayer.tick();
+  const sa = s.relayer.status(ra.id);
+  assert.equal(sa.state, 'replayed-elsewhere');
+  assert.equal(sa.foreignTxid, '77'.repeat(32));
+  assert.equal(sa.feeViaForeign, true);
+  assert.ok(!s.relayer._state.holds.has(a.nullifiers[0]));
+  assert.deepEqual(inputsOf(c.commitHex), inputsOf(firstCommit));
+  assert.equal(txOf(c.revealHex).vin.length, 1);
+  assert.deepEqual([...spendNullifiersOfTx(txOf(c.revealHex))], b.nullifiers);
+  assert.equal(s.relayer.status(rb.id).carrier, c.revealTxid);
+  // The replaced reveal is still recognized as the relayer's own.
+  s.mempoolNfs.set(firstReveal, new Set(b.nullifiers));
+  await s.relayer.tick();
+  assert.equal(s.relayer.status(rb.id).state, 'broadcast');
+  s.mempoolNfs.set('88'.repeat(32), new Set(b.nullifiers));
+  await s.relayer.tick();
+  assert.equal(s.relayer.status(rb.id).state, 'replayed-elsewhere');
+  assert.equal(s.relayer.status(rb.id).feeViaForeign, null);
+  assert.equal(c.state, 'cancelled');
+  assert.equal(txOf(s.broadcasts.at(-1)).vout.length, 1);
+
+  // Commit already confirmed: nothing to replace, payload still marked.
+  const t = setup();
+  const d = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+  const rd = await t.relayer.submit({ payload: d.hex });
+  const cd = await t.relayer.flush();
+  t.statuses.set(cd.commitTxid, { confirmed: true, block_height: 1001 });
+  t.pending.set(d.nullifiers[0], { txid: '99'.repeat(32), body: null });
+  const n = t.broadcasts.length;
+  await t.relayer.tick();
+  assert.equal(t.relayer.status(rd.id).state, 'replayed-elsewhere');
+  assert.equal(t.broadcasts.length, n);
+});
+
+// ── broadcast ──
+test('ambiguous broadcast: identical bytes are rebroadcast; a landed commit is not rebuilt', async () => {
+  const s = setup();
+  await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex });
+  s.failQueue.push('lost');
+  const c = await s.relayer.flush();
+  assert.equal(c.state, 'signed');
+  const commit = c.commitHex;
+  await s.relayer.tick();
+  assert.equal(c.state, 'broadcast');
+  assert.deepEqual(s.attempts, [commit, commit, c.revealHex]);
+
+  const t = setup();
+  await t.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex });
+  t.failQueue.push('landed');
+  const d = await t.relayer.flush();
+  assert.equal(d.state, 'broadcast');
+  assert.equal(t.attempts.length, 2);
+  t.failQueue.push(undefined, 'lost');
+  const e = await (async () => { await t.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex }); return t.relayer.flush(); })();
+  assert.equal(e.state, 'committed');
+  const revealE = e.revealHex;
+  await t.relayer.tick();
+  assert.equal(e.state, 'broadcast');
+  assert.equal(t.attempts.at(-1), revealE);
+
+  // Rebuilt only when absent, inputs unspent, and an identical rebroadcast also failed; on the same inputs.
+  const u = setup();
+  const spends = [];
+  u.chain.outspend = async (txid, vout) => { spends.push(`${txid}:${vout}`); return { spent: false }; };
+  await u.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex });
+  u.failQueue.push('lost', 'lost');
+  const f = await u.relayer.flush();
+  assert.equal(f.state, 'signed');
+  assert.equal(spends.length, 0, 'first failure never rebuilds');
+  const firstCommit = f.commitHex;
+  await u.relayer.tick();
+  assert.equal(f.state, 'building');
+  await u.relayer.tick();
+  assert.equal(f.state, 'broadcast');
+  assert.deepEqual(inputsOf(f.commitHex), inputsOf(firstCommit));
+});
+
+test('dust: 546-sat coins fund a carrier', async () => {
+  const s = setup();
+  s.chain.utxos = async () => Array.from({ length: 30 }, (_, i) => ({ txid: (i + 16).toString(16).padStart(2, '0').repeat(32), vout: 0, value: 546 }));
+  await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() }).hex });
+  const c = await s.relayer.flush();
+  assert.equal(c.state, 'broadcast', c.lastError);
+  assert.ok(c.picked.every((u) => u.value === 546));
+});
+
+// ── persistence ──
+test('restart resumes carriers, held payloads, slots and nullifier holds from the store', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'btc-pool-relay-'));
+  const path = join(dir, 'pool.db');
+  try {
+    const store = openBtcPoolStore(path);
+    const s = setup({ persist: store.relay });
+    const a = payloadFor({ notes: [ownedNote(100n)], outputs: payOuts() });
+    const ra = await s.relayer.submit({ payload: a.hex });
+    const spk = p2tr('exit-r');
+    const q = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) });
+    const b = payloadFor({ notes: [ownedNote(100n)], outputs: [{ address: relayerWallet.addressString, value: 10n }], exit: { exitVout: q.exitVout, scriptPubKey: spk } });
+    const rb = await s.relayer.submit({ payload: b.hex, quoteId: q.quoteId });
+    s.failQueue.push('lost');
+    const c = await s.relayer.flush();
+    assert.equal(c.state, 'signed');
+    const signedCommit = c.commitHex, signedReveal = c.revealHex;
+    const q2 = s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) });
+    const d = payloadFor({ notes: [ownedNote(100n)], outputs: [{ address: relayerWallet.addressString, value: 10n }], exit: { exitVout: q2.exitVout, scriptPubKey: spk } });
+    const rd = await s.relayer.submit({ payload: d.hex, quoteId: q2.quoteId });
+    store.close();
+
+    const store2 = openBtcPoolStore(path);
+    const r = setup({ persist: store2.relay });
+    assert.equal(r.relayer.status(ra.id).state, 'carried');
+    assert.equal(r.relayer.status(rb.id).state, 'carried');
+    assert.equal(r.relayer.status(rd.id).state, 'held');
+    for (const nf of [...a.nullifiers, ...b.nullifiers, ...d.nullifiers]) assert.ok(r.relayer._state.holds.has(nf));
+    await rejects(r.relayer.submit({ payload: a.hex }), /held by another/);
+    assert.equal(r.relayer._state.batch.slots[0].payloadId, rd.id, 'held exit keeps its slot');
+    assert.equal(r.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) }).exitVout, 1);
+    await r.relayer.tick();
+    assert.deepEqual(r.attempts.slice(0, 2), [signedCommit, signedReveal], 'resumed with the stored bytes');
+    assert.equal(r.relayer.status(ra.id).state, 'broadcast');
+    const rc = r.relayer._state.carriers[0];
+    const reveal = txOf(rc.revealHex);
+    assert.equal(bytesToHex(reveal.vout[0].scriptPubKey), bytesToHex(spk));
+    store2.close();
+
+    // Replay tables are untouched by relayer state, and a replay rescan leaves relayer state alone.
+    const store3 = openBtcPoolStore(path);
+    store3.wipe();
+    assert.ok(store3.relay.load().carriers.length >= 1);
+    store3.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 let passed = 0;

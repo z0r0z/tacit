@@ -178,12 +178,22 @@ function coinbase(height, txs) {
   outputs.push({ spk: concat(Uint8Array.of(0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed), sha256d(concat(wroot, new Uint8Array(32)))) });
   return serTx({ inputs: [{ txid: '00'.repeat(32), vout: 0xffffffff }], outputs, witness0: [new Uint8Array(32)] });
 }
-function buildBlock(prevHash, height, txs) {
+// Regtest-style proof-of-work limit, so headers are ground in a couple of tries.
+const TEST_BITS = 0x207fffff;
+const TEST_CHAIN = { powLimitBits: TEST_BITS, checkpoint: null };
+const meetsTarget = (header, bits = TEST_BITS) => BigInt('0x' + bytesToHex(sha256d(header).reverse())) <= BigInt(bits & 0x7fffff) << BigInt(8 * ((bits >>> 24) - 3));
+function mineHeader(prevHash, root, time, bits = TEST_BITS) {
+  for (;;) {
+    const header = concat(u32le(0x20000000), hexToBytes(prevHash).reverse(), root, u32le(time), u32le(bits), u32le(nonceCtr++));
+    if (meetsTarget(header, bits)) return header;
+  }
+}
+function buildBlock(prevHash, height, txs, { bits = TEST_BITS } = {}) {
   const all = [coinbase(height, txs), ...txs];
   const level = merkle(all.map((t) => hexToBytes(t.txid).reverse()));
-  const header = concat(u32le(0x20000000), hexToBytes(prevHash).reverse(), level[0], u32le(1700000000 + height), u32le(0x1d00ffff), u32le(nonceCtr++));
+  const header = mineHeader(prevHash, level[0], 1700000000 + height, bits);
   const raw = concat(header, varint(all.length), ...all.map((t) => t.raw));
-  return { raw, hash: bytesToHex(sha256d(header).reverse()), txs: all };
+  return { raw, hash: bytesToHex(sha256d(header).reverse()), txs: all, header };
 }
 
 // Transparent Tacit txs built with the dapp's own encoders and a real range prover, so they pass (or, when
@@ -698,14 +708,16 @@ test('transparent: a parent that declares a commitment but fails validation is n
   assert.ok(await resolve(ANC.target.txid, 0), 'the real parent itself still validates');
 });
 
-test('transparent: an unreachable source throws; an unknown tx is not a note; own exits resolve first', async () => {
+test('transparent: an unreachable source throws; an unknown tx is unavailable, not absent; own exits resolve first', async () => {
   const deepest = Object.keys(ANC.txs).find((t) => !ANC.txs[t].status || ANC.txs[t].status.block_height === Math.min(...Object.values(ANC.txs).map((v) => v.status.block_height)));
   const down = makeShieldInputResolver({ esplora: recordedEsplora({ down: new Set([deepest]) }), network: 'signet', exits: noExits });
   await assert.rejects(down(ANC.target.txid, 0), TransparentUnavailableError, 'ancestor unreachable');
   const top = makeShieldInputResolver({ esplora: recordedEsplora({ down: new Set([ANC.target.txid]) }), network: 'signet', exits: noExits });
   await assert.rejects(top(ANC.target.txid, 0), TransparentUnavailableError, 'note itself unreachable');
+  // The root outpoint is always a shield's own spent Bitcoin input, so a source not knowing it means the
+  // source is behind or wrong, not that the note doesn't exist — the same rule as any other ancestor.
   const resolve = makeShieldInputResolver({ esplora: recordedEsplora(), network: 'signet', exits: noExits });
-  assert.equal(await resolve('ab'.repeat(32), 0), null);
+  await assert.rejects(resolve('ab'.repeat(32), 0), TransparentUnavailableError, 'unknown root outpoint');
   const x = { txid: 'cd'.repeat(32), vout: 1, asset: ASSET, ...pointXY(bp.pedersen(5n, scalar('x'))) };
   const esplora = recordedEsplora();
   const withExit = makeShieldInputResolver({ esplora, network: 'signet', exits: () => new Map([[`${x.txid}:1`, x]]) });
@@ -807,13 +819,13 @@ async function scenario() {
   return { ch, shTx, pay, exit, sh, creator, etch };
 }
 const trueVerifier = { enabled: true, verify: async () => true };
-const newIndexer = (ch, extra = {}) => createIndexer({ store: openBtcPoolStore(':memory:'), esplora: ch.esplora, verifier: trueVerifier, network: 'signet', startHeight: 500, log: () => {}, ...extra });
+const newIndexer = (ch, extra = {}) => createIndexer({ store: openBtcPoolStore(':memory:'), esplora: ch.esplora, verifier: trueVerifier, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {}, ...extra });
 
 test('indexer: replays shields, pays and exits; persists; serves HTTP', async () => {
   const { ch, exit, sh } = await scenario();
   const store = openBtcPoolStore(':memory:');
   const verifier = { enabled: true, verify: async () => true };
-  const ix = createIndexer({ store, esplora: ch.esplora, verifier, network: 'signet', startHeight: 500, log: () => {} });
+  const ix = createIndexer({ store, esplora: ch.esplora, verifier, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await ix.syncOnce();
   assert.equal(ix.state.tip, 503);
   assert.equal(ix.state.tree.size, 3);
@@ -837,17 +849,17 @@ test('indexer: replays shields, pays and exits; persists; serves HTTP', async ()
   const envs = store.db.prepare('SELECT * FROM envelopes ORDER BY height, tx_index').all();
   assert.deepEqual(envs.map((e) => e.accepted), [0, 1, 1, 1]);
   // Restart from the database reproduces the live state, undo records included.
-  const ix2 = createIndexer({ store, esplora: ch.esplora, verifier, network: 'signet', startHeight: 500, log: () => {} });
+  const ix2 = createIndexer({ store, esplora: ch.esplora, verifier, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   assert.equal(fingerprint(ix2.state), fingerprint(ix.state));
   ix2.state.rollbackFrom(502); ix.state.rollbackFrom(502);
   assert.equal(fingerprint(ix2.state), fingerprint(ix.state));
-  assert.throws(() => createIndexer({ store, esplora: ch.esplora, verifier, network: 'mainnet', startHeight: 500, log: () => {} }), /signet/);
+  assert.throws(() => createIndexer({ store, esplora: ch.esplora, verifier, network: 'mainnet', startHeight: 500, chain: TEST_CHAIN, log: () => {} }), /signet/);
 });
 
 test('indexer: reorg rolls back to the fork point and replays the new branch', async () => {
   const { ch } = await scenario();
   const store = openBtcPoolStore(':memory:');
-  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: true, verify: async () => true }, network: 'signet', startHeight: 500, log: () => {} });
+  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: true, verify: async () => true }, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await ix.syncOnce();
   // Replace 502..503 with a branch that has no spends.
   ch.blocks.length = 2;
@@ -859,7 +871,7 @@ test('indexer: reorg rolls back to the fork point and replays the new branch', a
   assert.equal(ix.state.exits.size, 0);
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM nullifiers').get().n, 0);
   assert.equal(store.block(502).hash, ch.blocks[2].hash);
-  const fresh = createIndexer({ store: openBtcPoolStore(':memory:'), esplora: ch.esplora, verifier: { enabled: true, verify: async () => true }, network: 'signet', startHeight: 500, log: () => {} });
+  const fresh = createIndexer({ store: openBtcPoolStore(':memory:'), esplora: ch.esplora, verifier: { enabled: true, verify: async () => true }, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await fresh.syncOnce();
   assert.equal(fingerprint(fresh.state), fingerprint(ix.state));
 });
@@ -867,7 +879,7 @@ test('indexer: reorg rolls back to the fork point and replays the new branch', a
 test('indexer: without a verifier, shields replay and the first spend halts the indexer', async () => {
   const { ch } = await scenario();
   const store = openBtcPoolStore(':memory:');
-  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: false, reason: 'missing', verify: null }, network: 'signet', startHeight: 500, log: () => {} });
+  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: false, reason: 'missing', verify: null }, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await assert.rejects(ix.syncOnce(), bp.VerifierUnavailableError);
   assert.equal(ix.state.tip, 501);
   assert.equal(ix.state.tree.size, 1);
@@ -879,7 +891,7 @@ test('indexer: without a verifier, shields replay and the first spend halts the 
 test('indexer: verifier internal error stops the block without applying it', async () => {
   const { ch } = await scenario();
   const store = openBtcPoolStore(':memory:');
-  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: true, verify: async () => { throw new Error('exit 101'); } }, network: 'signet', startHeight: 500, log: () => {} });
+  const ix = createIndexer({ store, esplora: ch.esplora, verifier: { enabled: true, verify: async () => { throw new Error('exit 101'); } }, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await assert.rejects(ix.syncOnce(), /exit 101/);
   assert.equal(ix.state.tip, 501);
   assert.equal(store.tip().height, 501);
@@ -910,7 +922,7 @@ test('indexer: an unreachable ancestor halts the block, and it replays once the 
   const { ch, etch } = await scenario();
   ch.down.add(etch.txid);
   const store = openBtcPoolStore(':memory:');
-  const ix = createIndexer({ store, esplora: ch.esplora, verifier: trueVerifier, network: 'signet', startHeight: 500, log: () => {} });
+  const ix = createIndexer({ store, esplora: ch.esplora, verifier: trueVerifier, network: 'signet', startHeight: 500, chain: TEST_CHAIN, log: () => {} });
   await assert.rejects(ix.syncOnce(), TransparentUnavailableError);
   assert.equal(ix.state.tip, 500);
   assert.equal(ix.state.tree.size, 0);
@@ -1112,15 +1124,19 @@ test('dapp validateOutpoint: T_CROSSOUT_MINT is a note only when the mint record
     assert.deepEqual(pd, { assetIdHex: bytesToHex(ASSET), commitment: compress(bp.pedersen(12n, rM)) });
     assert.equal(await tacit.getParentEnvelopeData(tacit.txOutputEnvelope(espTx(other)), 0, other.txid), null);
 
+    // The pool refuses any T_CROSSOUT_MINT ancestry outright, in strict mode, with no worker call: a
+    // deterministic reject rather than a halt, until proof-verified cross-out mints ship (design §9).
     const extra = new Map([minted, other, undecided, next].map((t) => [t.txid, t]));
+    seen.length = 0;
     const resolve = makeShieldInputResolver({ esplora: recordedEsplora({ extra }), network: 'signet', exits: noExits });
-    assert.deepEqual(await resolve(minted.txid, 0), { asset: bytesToHex(ASSET), Cx: cx, Cy: cy });
+    assert.equal(await resolve(minted.txid, 0), null, 'refused even though the worker would say minted');
     assert.equal(await resolve(other.txid, 0), null);
-    await assert.rejects(resolve(undecided.txid, 0), TransparentUnavailableError, 'unknown halts');
+    assert.equal(await resolve(undecided.txid, 0), null, 'refused, not a halt');
     const nextU = cxferTx(ASSET, [{ outpoint: { txid: undecided.txid, vout: 0 }, value: 12n, r: rM }], [{ value: 12n, r: scalar('co-u') }]);
     extra.set(nextU.txid, nextU);
-    await assert.rejects(resolve(nextU.txid, 0), TransparentUnavailableError, 'unknown ancestor halts');
-    assert.ok(await resolve(next.txid, 0), 'minted ancestor');
+    assert.equal(await resolve(nextU.txid, 0), null, 'a descendant of a refused mint is refused, not shielded');
+    assert.equal(await resolve(next.txid, 0), null, 'a descendant of a minted crossout is refused too');
+    assert.equal(seen.length, 0, 'no worker call: the ancestry is refused before it would be consulted');
   });
   // No reachable status service: unknown.
   const lone = mintTx('offline');

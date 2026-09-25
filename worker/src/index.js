@@ -5914,6 +5914,13 @@ function atomicFulfilmentKey(network, aid, intentIdHex) {
     : `axfulfil:${network}:${aid}:${intentIdHex}`;
 }
 function lastScannedKey(network)       { return network === 'signet' ? 'meta:last_scanned' : `meta:last_scanned:${network}`; }
+// The scan cursor, reported by credit reads so a client can tell a final negative from one not yet scanned.
+async function readScannedHeight(env, network) {
+  try {
+    const n = parseInt(await env.REGISTRY_KV.get(lastScannedKey(network)), 10);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch { return null; }
+}
 // Block hash of the highest contiguously-scanned block. Lets the cron detect a
 // reorg below its forward-only cursor: if the canonical hash at last_scanned no
 // longer matches, blocks were re-mined and any pmint/poolleaf keys written for
@@ -14038,26 +14045,23 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     // deployed (buildCrossoutConsumer returns null while CONFIDENTIAL_POOL_DEPLOYMENTS pool=null).
     const cm = decodeCrossoutMint(decoded.payload);
     if (!cm) return jsonResponse({ error: 'invalid crossout-mint payload' }, 400, cors);
+    if (vout !== 0) return jsonResponse({ error: 'a T_CROSSOUT_MINT note is vout 0' }, 400, cors);
     const cc = buildCrossoutConsumer(env, { network, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
     if (!cc) return jsonResponse({ error: 'crossout bridge not active', network }, 400, cors);
-    // The minted Bitcoin note leaf = btc_note_leaf(asset, Cx, Cy, x-only key of vout 0) — must equal the recorded
-    // destCommitment. A mint whose vout 0 is not P2TR has no leaf (the reflection fold rejects it too).
-    const leaf = crossoutMintLeaf(keccak_256, { ...cm, destScriptPubKey: tx?.vout?.[0]?.scriptpubkey });
-    const bind = leaf
-      ? await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf })
-      : { bound: false, rejected: 'non-p2tr-mint-output' };
-    const status = bind.bound ? 'minted' : (bind.rejected ? 'rejected' : 'pending-reflection');
-    const mintedKey = crossoutMintedKey(network, cm.assetId, cm.claimId);
-    // A claim mints once: a later hint (the same tx again, or another tx naming the claim) never replaces it.
-    const prevMinted = await env.REGISTRY_KV.get(mintedKey, 'json').catch(() => null);
-    if (!(prevMinted && prevMinted.status === 'minted')) {
-      await env.REGISTRY_KV.put(mintedKey, JSON.stringify({
-        claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,
-        txid: txidHex, vout, height: blockHeight, status, bound: !!bind.bound, network,
-      }));
-    }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
-    return jsonResponse({ ok: true, source: 'hint', opcode: T_CROSSOUT_MINT, crossoutMint: { claimId: cm.claimId, leaf, status, bound: !!bind.bound }, network }, 200, cors);
+    // Only a confirmed tx has a chain position to order by; the block scan records it once it confirms.
+    if (!confirmed || !Number.isInteger(blockHeight) || !tx.status?.block_hash) {
+      return jsonResponse({ ok: true, source: 'hint', opcode: T_CROSSOUT_MINT, crossoutMint: { claimId: cm.claimId, status: 'unconfirmed' }, network }, 202, cors);
+    }
+    let txIndex = null;
+    try {
+      const txids = await apiJson(env, `/block/${tx.status.block_hash}/txids`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
+      const i = Array.isArray(txids) ? txids.indexOf(txidHex) : -1;
+      if (i >= 0) txIndex = i;
+    } catch { /* recorded by the block scan */ }
+    if (txIndex === null) return jsonResponse({ error: 'block position unavailable' }, 503, cors);
+    const r = await recordCrossoutMint(env, network, cc, { cm, txidHex, tx, height: blockHeight, txIndex });
+    return jsonResponse({ ok: true, source: 'hint', opcode: T_CROSSOUT_MINT, crossoutMint: { claimId: cm.claimId, leaf: r.leaf, status: r.status, bound: r.status === 'minted' }, network }, 200, cors);
   }
 
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
@@ -14066,23 +14070,59 @@ async function handleAssetHint(req, env, network, cors, ctx) {
 const crossoutMintedKey = (network, assetId, claimId) =>
   `crossout-minted:${network}:${String(assetId).toLowerCase()}:${String(claimId).toLowerCase()}`;
 
+// One record per claim: the confirmed T_CROSSOUT_MINT earliest in chain order (height, then block position)
+// whose vout-0 leaf equals the recorded cross-out's destCommitment, which is the one the reflection fold takes.
+// A later tx never replaces an earlier one; an earlier one replaces a later one. Returns { status, leaf }.
+async function recordCrossoutMint(env, network, cc, { cm, txidHex, tx, height, txIndex }) {
+  const leaf = crossoutMintLeaf(keccak_256, { ...cm, destScriptPubKey: tx?.vout?.[0]?.scriptpubkey });
+  const recorded = leaf ? await cc.consumer.getRecorded(network, cm.claimId) : null;
+  const status = !leaf ? 'rejected'
+    : !recorded ? 'pending-reflection'
+    : String(recorded.destCommitment).toLowerCase() !== String(leaf).toLowerCase() ? 'rejected'
+    : 'minted';
+  if (status === 'minted' && recorded.status !== 'consumed') await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf }).catch(() => null);
+  const key = crossoutMintedKey(network, cm.assetId, cm.claimId);
+  const prev = await env.REGISTRY_KV.get(key, 'json').catch(() => null);
+  const earlier = !prev || !Number.isInteger(prev.height) || !Number.isInteger(prev.txIndex)
+    || height < prev.height || (height === prev.height && txIndex < prev.txIndex);
+  const same = prev && String(prev.txid).toLowerCase() === txidHex;
+  let write;
+  if (!prev) write = true;
+  else if (same) write = prev.status !== status || prev.height !== height || prev.txIndex !== txIndex;
+  else if (status === 'minted') write = prev.status !== 'minted' || earlier;
+  else write = prev.status !== 'minted' && earlier;
+  if (write) {
+    await env.REGISTRY_KV.put(key, JSON.stringify({
+      claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,
+      txid: txidHex, vout: 0, height, txIndex, status, bound: status === 'minted', network,
+    }));
+  }
+  return { status, leaf };
+}
+
 // GET /crossout/minted?network=&asset=0x..&claim=0x..&txid=<hex>
-// Mint status of one T_CROSSOUT_MINT outpoint (txid:0). `decided` is false while the claim has no minted
-// record and nothing rejected this tx; `minted` is true only for the tx the claim minted at.
+// Mint status of one T_CROSSOUT_MINT outpoint (txid:0). `minted` is true only for the tx recorded for the
+// claim. `decided` is true once the block scan has passed the recorded mint (and this tx) by the credit depth,
+// so no earlier mint for the claim can still be recorded; a rejected record for this tx is decided at once.
 async function handleCrossoutMinted(url, env, cors) {
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
   const norm = (v) => String(v || '').replace(/^0x/, '').toLowerCase();
   const asset = norm(url.searchParams.get('asset')), claim = norm(url.searchParams.get('claim')), txid = norm(url.searchParams.get('txid'));
   if (![asset, claim, txid].every((h) => /^[0-9a-f]{64}$/.test(h))) return jsonResponse({ error: 'asset, claim and txid must be 32-byte hex' }, 400, cors);
+  const scanned = await readScannedHeight(env, network);
   const rec = await env.REGISTRY_KV.get(crossoutMintedKey(network, '0x' + asset, '0x' + claim), 'json');
   const recTxid = rec ? norm(rec.txid) : null;
+  const scannedPast = (h) => Number.isInteger(scanned) && Number.isInteger(h) && scanned >= h + PMINT_CONFIRMATION_DEPTH - 1;
   let decided = false, minted = false;
-  if (rec && rec.status === 'minted') { decided = true; minted = recTxid === txid && Number(rec.vout) === 0; }
-  else if (rec && rec.status === 'rejected' && recTxid === txid) decided = true;
+  if (rec && rec.status === 'minted') {
+    minted = recTxid === txid && Number(rec.vout) === 0;
+    decided = scannedPast(rec.height);
+  } else if (rec && rec.status === 'rejected' && recTxid === txid) decided = true;
   return jsonResponse({
     network, txid, vout: 0, decided, minted, status: rec ? rec.status : null,
     mintedTxid: rec && rec.status === 'minted' ? recTxid : null,
+    scanned_height: scanned,
   }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
@@ -14553,6 +14593,8 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   // any) keeps serving and the next tick retries with a fresh tip. Matches
   // loadCanonicalPmints's `unknown_depth` semantics applied to the aggregate.
   if (!Number.isInteger(tipHeight)) return null;
+  // Read before the key scan: every mint at or below it is already keyed.
+  const scannedAtUpdate = await readScannedHeight(env, network);
   const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
   const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
   const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
@@ -14667,6 +14709,7 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
     last_credited_tx_index: lastCreditedTi,
     last_credited_txid: lastCreditedTxid,
     tip_at_update: Number.isInteger(tipHeight) ? tipHeight : null,
+    scanned_at_update: Number.isInteger(scannedAtUpdate) ? Math.min(scannedAtUpdate, tipHeight) : null,
     updated_at: Math.floor(Date.now() / 1000),
     truncated,
     // Snapshot KV scan completed without hitting its page/key caps. Distinct
@@ -15247,7 +15290,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     // mints by membership, and consumers past SAFETY_CAP fall back to the
     // position-comparison path (compare their (h, ti, txid) against
     // last_credited_(h, ti, txid)).
-    const [tip, snap] = await Promise.all([tipP, snapP]);
+    const [tip, snap, scanned_height] = await Promise.all([tipP, snapP, readScannedHeight(env, network)]);
     const orphanPrefixStr = pmintPrefix(network, assetIdHex) + '0000000000:';
     const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
     const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
@@ -15302,6 +15345,8 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         slim: true,                                // signal to consumers that the list is empty by design
         truncated: true,                           // the list IS truncated (to zero); use last_credited_* for membership
         list_complete: false,
+        // The scan cursor when the snapshot was computed; mints at or below it are covered by the snapshot.
+        scanned_height: snap?.scanned_at_update ?? null,
       }, 200, cors);
     }
     for (let page = 0; page < 200; page++) {
@@ -15362,6 +15407,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
       tip_unavailable: !Number.isInteger(tip),
       truncated,
       list_complete: !truncated,
+      scanned_height,
     }, 200, cors);
   }
   // Full event list path. Aggregate fields (cumulative_minted, credited_count,
@@ -24723,6 +24769,17 @@ async function scanForEtches(env, network) {
         // per dirty drop_id (mirrors the petch dirty-set pattern).
         if (typeof _dirtyDropIds === 'object' && _dirtyDropIds) _dirtyDropIds.add(dropId);
         found++;
+      } else if (decoded.opcode === T_CROSSOUT_MINT) {
+        const cm = decodeCrossoutMint(decoded.payload);
+        if (!cm) continue;
+        const cc = buildCrossoutConsumer(env, { network, keccak256: keccak_256, rpcsForNetwork: (n) => _TETH_ETH_RPCS[n] });
+        if (!cc) continue;
+        try {
+          await recordCrossoutMint(env, network, cc, { cm, txidHex: String(tx.txid).toLowerCase(), tx, height: h, txIndex });
+        } catch (e) {
+          _stallReason = `crossout mint ${tx.txid}: ${String(e?.message || e)}`;
+          break;
+        }
       } else if (decoded.opcode === T_WRAPPER_ATTEST) {
         // Optional on-chain wrapper attestation. Three-case dedup
         // against (asset_id, issuer_pubkey, as_of_height): first-confirmed
@@ -24795,6 +24852,8 @@ async function scanForEtches(env, network) {
       _stallReason = `${_txStatus.source || 'paged'} read failed after ${_txStatus.pages || 0} pages, ${_txStatus.retries || 0} retries${_txStatus.error ? `: ${_txStatus.error}` : ''}`;
       break;
     }
+    // A record write failed mid-block: hold the cursor so the block is re-read.
+    if (_stallReason) break;
     _subreqEstimate += _txStatus.pages || 0;
     lastContiguous = h;
   }
@@ -25726,6 +25785,8 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse({ error: 'txid must be 64 hex chars' }, 400, cors);
       }
       try {
+        // Cursor first: a record for any tx at or below it is already written.
+        const scanned_height = await readScannedHeight(env, network);
         const rec = await ammSwapAcceptedGet(env, network, txid);
         // `outcome`: 'execute' | 'passthrough'. Records written before
         // the scan resolved the swap (or by older worker builds) lack the
@@ -25742,6 +25803,7 @@ async function _routeFetch(req, env, ctx) {
           refund_amount: rec?.refund_amount ?? null,
           receipt: rec?.receipt ?? null,
           change: rec?.change ?? null,
+          scanned_height,
         }, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'amm swap-accepted lookup failed', detail: String(e?.message || e) }, 500, cors);
@@ -26738,6 +26800,7 @@ async function _routeFetch(req, env, ctx) {
       // depth ≥ 3 only. tip gates by confirmation depth; the Set de-dups a
       // reorg re-confirm (two keys, one claim). Display-only — never a credit
       // decision — and degrades to a raw count if tip is unavailable.
+      const scannedHeight = await readScannedHeight(env, network);
       const dropTip = await fetchTipHeight(env, network);
       let totalSeen = 0;          // raw confirmed claim keys (incl. pending / overflow / dups)
       let eligible = 0;           // distinct claims at depth ≥ 3 (credit-eligible, pre-cap)
@@ -26773,6 +26836,8 @@ async function _routeFetch(req, env, ctx) {
       v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
       v.claims_remaining = String(remainingAmount > 0n ? remainingAmount / perClaim : 0n);
       v.list_complete = listComplete;
+      // Read before the claim scan, so every claim at or below it at depth ≥ 3 is counted.
+      v.scanned_height = Number.isInteger(dropTip) && Number.isInteger(scannedHeight) ? Math.min(scannedHeight, dropTip) : null;
       const reclaimKey = network === 'signet'
         ? `drop-reclaim:${dropId}`
         : `drop-reclaim:${network}:${dropId}`;
@@ -26807,6 +26872,7 @@ async function _routeFetch(req, env, ctx) {
         if (!drop || drop.cap_amount == null || drop.per_claim == null) {
           return jsonResponse({ error: 'parent drop not indexed' }, 503, cors);
         }
+        const scanned_height = await readScannedHeight(env, network);
         const res = await loadCreditedDclaims(env, network, dropId, tip, drop.cap_amount, drop.per_claim);
         if (!res.resolvable) {
           return jsonResponse({ error: 'cap not resolvable (tip unavailable or claim set exceeds scan guard)' }, 503, cors);
@@ -26819,6 +26885,7 @@ async function _routeFetch(req, env, ctx) {
           cursor: null,
           list_complete: true,
           truncated: false,
+          scanned_height,
         }, 200, cors);
       }
       const list = await env.REGISTRY_KV.list({

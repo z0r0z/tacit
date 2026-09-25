@@ -16383,6 +16383,38 @@ async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500
 // matches the spec's posture that the worker is operational, not trust-
 // bearing for non-cap-bound envelopes. Without the worker the dapp cannot
 // enforce cap-overflow rejection on T_PMINT inputs to ancestry walks.
+// Strict validation, set by a replay that must reach the same verdict on every run. While set, worker-derived
+// answers are fetched fresh per resolution, never credited optimistically, and an answer that is unavailable,
+// pending or not yet final throws instead of returning false. Only a decided negative rejects. The dapp never
+// sets it.
+let _strictValidation = null; // { failures: string[] } while set
+const STRICT_DECIDED_DEPTH = 3;
+function setStrictValidation(ctx) {
+  _strictValidation = ctx || null;
+  if (_strictValidation) clearValidatorCaches();
+}
+function clearValidatorCaches() {
+  _pmintCreditedCache.clear();
+  _dclaimCreditedCache.clear();
+  _ammSwapAcceptedCache.clear();
+  _crossoutMintedCache.clear();
+  _btcPoolExitCache.clear();
+  _btcPoolExitMatched.clear();
+}
+class ValidationUnavailableError extends Error {
+  constructor(msg) { super(msg); this.name = 'ValidationUnavailableError'; this.unavailable = true; }
+}
+function _strictUnavailable(msg) {
+  if (!_strictValidation) return;
+  _strictValidation.failures.push(msg);
+  throw new ValidationUnavailableError(msg);
+}
+// A worker negative is final once the worker has scanned the tx's block to the credit depth.
+function _strictDecided(workerHeight, txHeight) {
+  return Number.isInteger(workerHeight) && Number.isFinite(txHeight) && txHeight > 0 && workerHeight >= txHeight + STRICT_DECIDED_DEPTH - 1;
+}
+const _confirmedHeight = (tx) => (tx?.status?.confirmed ? Number(tx.status.block_height) : NaN);
+
 const _pmintCreditedCache = new Map();
 const PMINT_CREDITED_TTL_MS = 30 * 1000;
 function invalidatePmintCreditedCache() { _pmintCreditedCache.clear(); }
@@ -16445,6 +16477,8 @@ async function _fetchPmintCredited(assetIdHex) {
       lastCreditedTxIndex: Number.isInteger(j.last_credited_tx_index) ? j.last_credited_tx_index : null,
       lastCreditedTxid: typeof j.last_credited_txid === 'string' ? j.last_credited_txid : null,
       snapshotBootstrapped: !!j.snapshot_bootstrapped,
+      snapshotTip: Number.isInteger(j.tip) ? j.tip : null,
+      scannedHeight: Number.isInteger(j.scanned_height) ? j.scanned_height : null,
       workerAvailable: true,
       fetchedAt: Date.now(),
     };
@@ -16491,6 +16525,7 @@ async function _fetchDclaimCredited(dropIdHex) {
     let cursor = null;
     let truncated = false;
     let pages = 0;
+    let scannedHeight = null;
     const PAGE_GUARD = 16;
     do {
       const params = new URLSearchParams({
@@ -16510,6 +16545,7 @@ async function _fetchDclaimCredited(dropIdHex) {
       }
       cursor = (typeof j.cursor === 'string' && j.cursor.length > 0) ? j.cursor : null;
       truncated = !!j.truncated;
+      if (Number.isInteger(j.scanned_height)) scannedHeight = j.scanned_height;
       pages++;
     } while (cursor && truncated && pages < PAGE_GUARD);
     const entry = {
@@ -16521,6 +16557,7 @@ async function _fetchDclaimCredited(dropIdHex) {
       // path. For a drop that fits in one page (the common case), this is
       // false and the credited set is authoritative.
       truncated: truncated && pages >= PAGE_GUARD,
+      scannedHeight,
       workerAvailable: true,
       fetchedAt: Date.now(),
     };
@@ -16575,6 +16612,7 @@ async function _fetchSwapAccepted(txidHex) {
       refundAmount: j.refund_amount != null ? BigInt(j.refund_amount) : null,
       receipt: j.receipt || null,
       change: j.change || null,
+      scannedHeight: Number.isInteger(j.scanned_height) ? j.scanned_height : null,
     };
     _ammSwapAcceptedCache.set(txidHex, entry);
     return entry;
@@ -16612,7 +16650,7 @@ async function _fetchBtcPoolExit(txidHex, vout) {
     const asset = h(j.asset, 64), cx = h(j.Cx, 64), cy = h(j.Cy, 64);
     if (j.exists === true && String(j.txid).toLowerCase() === txidHex && Number(j.vout) === vout && asset && cx && cy) {
       const commitment = concatBytes(new Uint8Array([(parseInt(cy.slice(-2), 16) & 1) ? 0x03 : 0x02]), hexToBytes(cx));
-      exit = { assetIdHex: asset, commitment };
+      exit = { assetIdHex: asset, commitment, cx, cy };
     }
     const entry = { exit, available: true, fetchedAt: Date.now() };
     _btcPoolExitCache.set(k, entry);
@@ -16621,10 +16659,68 @@ async function _fetchBtcPoolExit(txidHex, vout) {
     return { exit: null, available: false, fetchedAt: Date.now() };
   }
 }
-// The recorded exit at txid:vout.
-async function _btcPoolExitNote(txidHex, vout) {
+// Exit fields of a T_BTC_SPEND payload (layout of worker/src/btc-shielded-pool.js parseSpend), or null.
+const _BTC_SPEND_OUTPUT_LEN = 218;
+function _btcSpendExit(payload) {
+  if (!payload || payload.length < 38 || payload[0] !== T_BTC_SPEND) return null;
+  const n = payload.length;
+  let p = 37;
+  const nIn = payload[p]; p += 1;
+  if (nIn < 1 || nIn > 2) return null;
+  p += 32 * nIn;
+  if (p >= n) return null;
+  const nOut = payload[p]; p += 1;
+  if (nOut > 3) return null;
+  p += nOut * _BTC_SPEND_OUTPUT_LEN;
+  if (p >= n || payload[p] !== 1) return null;
+  p += 1;
+  if (p + 100 > n) return null;
+  return {
+    assetIdHex: bytesToHex(payload.slice(1, 33)),
+    exitVout: (payload[p] | (payload[p + 1] << 8) | (payload[p + 2] << 16) | (payload[p + 3] << 24)) >>> 0,
+    cx: bytesToHex(payload.slice(p + 4, p + 36)),
+    cy: bytesToHex(payload.slice(p + 36, p + 68)),
+    destSpkHash: bytesToHex(payload.slice(p + 68, p + 100)),
+  };
+}
+// The service is trusted only for proof validity and nullifier freshness: its exit must equal, field for field,
+// an exit a T_BTC_SPEND on the carrier declares at this vout, paying the output its dest_spk_hash names, with
+// (Cx, Cy) on the curve. `envs` are the carrier's T_BTC_SPEND envelopes.
+function _btcPoolExitMatches(rec, vout, envs, voutSpkHex) {
+  if (!rec || typeof voutSpkHex !== 'string') return false;
+  try {
+    secp.ProjectivePoint.fromAffine({ x: BigInt('0x' + rec.cx), y: BigInt('0x' + rec.cy) }).assertValidity();
+  } catch { return false; }
+  const spkHash = bytesToHex(sha256(hexToBytes(voutSpkHex)));
+  return envs.some((e) => {
+    const x = _btcSpendExit(e.payload);
+    return !!x && x.exitVout === vout && x.assetIdHex === rec.assetIdHex && x.cx === rec.cx && x.cy === rec.cy && x.destSpkHash === spkHash;
+  });
+}
+function _carrierSpendEnvelopes(tx) {
+  const envs = (tx?.vin || []).map((i) => _witnessEnvelope(i?.witness));
+  if (envs[0] && envs[0].opcode === T_BTC_SHIELD_OP) return [];
+  return envs.filter((e) => e && e.opcode === T_BTC_SPEND);
+}
+const T_BTC_SHIELD_OP = 0x6C;
+// Exits matched against their carrier this session: "txid:vout" → note.
+const _btcPoolExitMatched = new Map();
+// The recorded exit at txid:vout, credited only when it matches the carrier's own exit. With `tx` every
+// T_BTC_SPEND on the carrier is checked; without it, `env` (the carrier's output envelope) is.
+async function _btcPoolExitNote(txidHex, vout, { tx = null, env = null } = {}) {
+  const k = `${txidHex}:${vout}`;
   const rec = await _fetchBtcPoolExit(txidHex, vout);
-  return { note: rec.exit, available: rec.available };
+  if (!rec.exit) { _btcPoolExitMatched.delete(k); return { note: null, available: rec.available }; }
+  const hit = _btcPoolExitMatched.get(k);
+  if (!tx && hit && hit.cx === rec.exit.cx && hit.cy === rec.exit.cy && hit.assetIdHex === rec.exit.assetIdHex) return { note: hit, available: true };
+  const envs = tx ? _carrierSpendEnvelopes(tx) : (env && env.opcode === T_BTC_SPEND ? [env] : []);
+  const spk = tx ? tx.vout?.[vout]?.scriptpubkey : null;
+  const ok = tx
+    ? _btcPoolExitMatches(rec.exit, vout, envs, spk)
+    : envs.some((e) => { const x = _btcSpendExit(e.payload); return !!x && x.exitVout === vout && x.assetIdHex === rec.exit.assetIdHex && x.cx === rec.exit.cx && x.cy === rec.exit.cy; });
+  if (!ok) return { note: null, available: true };
+  if (tx) _btcPoolExitMatched.set(k, rec.exit);
+  return { note: rec.exit, available: true };
 }
 
 function _witnessEnvelope(w) {
@@ -16688,6 +16784,8 @@ async function _crossoutMintNote(env, txidHex, vout, tx = null) {
     const spk = String(tx.vout?.[0]?.scriptpubkey ?? '').toLowerCase();
     if (!/^5120[0-9a-f]{64}$/.test(spk) || /^51200{64}$/.test(spk)) return { note: null, available: true };
   }
+  // Strict mode credits no cross-out mint: its validity rests on the reflection's fold, not on chain data here.
+  if (_strictValidation) return { note: null, available: true };
   const st = await _fetchCrossoutMinted(bytesToHex(d.asset), bytesToHex(d.claimId), txidHex);
   if (!st.decided) return { note: null, available: false };
   return { note: st.minted ? { assetIdHex: bytesToHex(d.asset), commitment } : null, available: true };
@@ -16762,7 +16860,14 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
       const { tx, env } = decodedMap.get(node.txid) || { tx: null, env: null };
       if (!tx || !env) continue;
       if (env.opcode === T_CXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_CXFER_BOUND) {
-        for (let i = 1; i < tx.vin.length; i++) enqueue(tx.vin[i].txid, tx.vin[i].vout);
+        // Only walk asset-input ancestry once the payload actually decodes as this opcode — a byte that
+        // merely matches the opcode isn't enough to know vin[1..] are asset inputs at all (pass 2 rejects a
+        // malformed payload without needing them), matching every other branch below.
+        const dec = env.opcode === T_BURN ? decodeCBurnPayload(env.payload)
+                  : env.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload)
+                  : env.opcode === T_CXFER_BOUND ? decodeCXferBoundPayload(env.payload)
+                  : decodeCXferPayload(env.payload);
+        if (dec) for (let i = 1; i < tx.vin.length; i++) enqueue(tx.vin[i].txid, tx.vin[i].vout);
       } else if (env.opcode === T_AXFER || env.opcode === T_AXFER_BPP) {
         const dec = env.opcode === T_AXFER_BPP
           ? decodeAxferBppPayload(env.payload)
@@ -16860,7 +16965,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
   }
   const outEnv = _txOutputEnvelope(tx);
   if (outEnv && outEnv.opcode === T_BTC_SPEND) {
-    const { note, available } = await _btcPoolExitNote(txidHex, vout);
+    const { note, available } = await _btcPoolExitNote(txidHex, vout, { tx });
     if (!note) { _markInvalid(validatedSet, validatedReasons, key, available ? _REASON_INVALID : _REASON_FETCH_FAILED); return false; }
     validatedSet.set(key, true);
     return true;
@@ -17355,7 +17460,11 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // (scanHoldings) use this tag to render pending mints distinct from
     // genuine inflation attempts.
     const tagInvalid = () => { if (pmintStatusOut) pmintStatusOut.set(key, 'invalid'); };
-    const tagPending = () => { if (pmintStatusOut) pmintStatusOut.set(key, 'pending'); };
+    let strictWorkerHeight = null;
+    const tagPending = () => {
+      if (_strictValidation && !_strictDecided(strictWorkerHeight, _confirmedHeight(tx))) _strictUnavailable(`T_PMINT ${txidHex}: credit not decided`);
+      if (pmintStatusOut) pmintStatusOut.set(key, 'pending');
+    };
     if (vout !== 0) { tagInvalid(); validatedSet.set(key, false); return false; }
     const dec = decodeCPmintPayload(env.payload);
     if (!dec) { tagInvalid(); validatedSet.set(key, false); return false; }
@@ -17420,6 +17529,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // is on its way, refresh in a few minutes" and "your mint failed,
     // these tokens never existed."
     const credit = await _fetchPmintCredited(bytesToHex(dec.assetId));
+    if (_strictValidation) {
+      if (!credit.workerAvailable) _strictUnavailable(`T_PMINT ${txidHex}: credit index unavailable`);
+      if (Number.isInteger(credit.snapshotTip) && Number.isInteger(credit.scannedHeight)) strictWorkerHeight = Math.min(credit.snapshotTip, credit.scannedHeight);
+    }
     if (credit.workerAvailable) {
       if (credit.capOverflow && credit.capOverflow.has(txidHex)) {
         tagInvalid(); validatedSet.set(key, false); return false;
@@ -17479,7 +17592,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         } else {
           // Snapshot has no last_credited yet (asset still bootstrapping).
           // Pending — auto-heal hint below.
-          if (Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
+          if (!_strictValidation && Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
             _pmintHealAttempted.add(txidHex);
             postHint(txidHex, 0);
           }
@@ -17496,7 +17609,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         // on-chain envelope, validates it the same way the
         // cron would, and writes the canonical KV entry. Fire-and-forget;
         // bounded by _pmintHealAttempted so we don't spam on every rescan.
-        if (Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
+        if (!_strictValidation && Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
           _pmintHealAttempted.add(txidHex);
           postHint(txidHex, 0);
         }
@@ -17692,6 +17805,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         if (r.ok) dropMeta = await r.json();
       } catch { /* worker unavailable; dropMeta stays null */ }
     }
+    if (!dropMeta) _strictUnavailable(`T_DROP reclaim ${txidHex}: drop record unavailable`);
     if (!dropMeta || dropMeta.kind !== 'drop') {
       // Worker unreachable or drop not indexed. Refuse to credit — this is
       // the safety-critical case where a malicious reclaim could over-declare
@@ -17712,6 +17826,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       // way, not yet creditable. Don't permanently mark false — a re-scan
       // after confirmation past expiry should promote it.
       return false;
+    }
+    if (_strictValidation && !(dropMeta.list_complete === true && _strictDecided(dropMeta.scanned_height, expiry))) {
+      _strictUnavailable(`T_DROP reclaim ${txidHex}: claim count not final`);
     }
     // 4. cap_amount equality: declared MUST equal drop.cap_amount - (claim_count * per_claim).
     //    The worker's remaining_amount field is exactly this.
@@ -17901,6 +18018,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // is credited optimistically, without the one-per-nullifier guarantee.
     const dropIdHex = bytesToHex(dropIdFromRevealTxid(dropTxidHex));
     const credit = await _fetchDclaimCredited(dropIdHex);
+    if (_strictValidation) {
+      if (!credit.workerAvailable || !credit.credited || credit.truncated) _strictUnavailable(`T_DCLAIM ${txidHex}: credit index unavailable`);
+      if (!credit.credited.has(txidHex) && !_strictDecided(credit.scannedHeight, _confirmedHeight(tx))) _strictUnavailable(`T_DCLAIM ${txidHex}: credit not decided`);
+    }
     if (credit.workerAvailable && credit.credited && !credit.truncated) {
       // The credited set is fully paginated and authoritative. A txid not in
       // the set is either a rewrap (cron's nullifier check dropped it) OR a
@@ -18055,6 +18176,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // range, not that delta_out follows the curve at the pool's real reserves.
     // Gate credit on the worker's accepted-swap set (offline → optimistic).
     const accSv = await _fetchSwapAccepted(txidHex);
+    if (_strictValidation && !(accSv.workerAvailable && (accSv.accepted || _strictDecided(accSv.scannedHeight, _confirmedHeight(tx))))) {
+      _strictUnavailable(`T_SWAP_VAR ${txidHex}: acceptance not decided`);
+    }
     if (accSv.workerAvailable && !accSv.accepted) {
       _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED);
       return false;
@@ -18077,6 +18201,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // Virtual mint — gate credit on the worker's accepted-swap set, same as
     // T_SWAP_VAR above (offline → optimistic).
     const accSr = await _fetchSwapAccepted(txidHex);
+    if (_strictValidation && !(accSr.workerAvailable && (accSr.accepted || _strictDecided(accSr.scannedHeight, _confirmedHeight(tx))))) {
+      _strictUnavailable(`T_SWAP_ROUTE ${txidHex}: acceptance not decided`);
+    }
     if (accSr.workerAvailable && !accSr.accepted) {
       _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED);
       return false;
@@ -18229,7 +18356,7 @@ async function definingCommitmentForOutpoint(txidHex, vout) {
 async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
   if (parentEnv.opcode === T_BTC_SPEND) {
     if (!parentTxid) return null;
-    const { note } = await _btcPoolExitNote(parentTxid, vout);
+    const { note } = await _btcPoolExitNote(parentTxid, vout, { env: parentEnv });
     return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
   }
   if (parentEnv.opcode === T_CROSSOUT_MINT) {
@@ -38144,7 +38271,7 @@ function _startWorkerHealthLoop() {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) _pingWorkerHealth(); });
   }
 }
-if (typeof document !== 'undefined') {
+if (typeof document !== 'undefined' && !globalThis.__TACIT_NO_INIT__) {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startWorkerHealthLoop);
   else _startWorkerHealthLoop();
 }
@@ -91766,8 +91893,10 @@ function openInlineForm(triggerBtn, { content, submitLabel = 'Confirm', submitCl
 // refresh button + tab-click auto-refresh. The full builder surface
 // lives in dapp/amm-farm-actions.js; the UI render logic lives in
 // dapp/amm-farm-ui.js. We import dynamically here so the rest of the
-// dapp loads even if the farm modules aren't bundled.
-if (typeof document !== 'undefined') {
+// dapp loads even if the farm modules aren't bundled. Skipped under
+// __TACIT_NO_INIT__: amm-farm-ui.js imports './tacit.js' by bare path, so a
+// page that imports this module under another URL would evaluate a second copy.
+if (typeof document !== 'undefined' && !globalThis.__TACIT_NO_INIT__) {
   const _initFarms = async () => {
     try {
       const { initFarmsTab } = await import('./amm-farm-ui.js');
@@ -91899,6 +92028,7 @@ export {
   validateOutpoint,
   // (asset, commitment) of a validated outpoint, and the pool-exit cache; used by the shielded-pool replay.
   getParentEnvelopeData, clearBtcPoolExitCache, _txOutputEnvelope as txOutputEnvelope,
+  setStrictValidation, clearValidatorCaches, ValidationUnavailableError,
   // Tx negative-cache helpers — exported for the mixer owner-conflict test so
   // it can simulate a clean 404 (reorged-out / forged owner-txid) vs a
   // transient fetch failure, the distinction verifyWithdrawOwnerOnChain relies

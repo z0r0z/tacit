@@ -3,6 +3,8 @@
 // T_BTC_SPEND body, spend signatures and prover witness.
 //
 // Address strings are bech32m over the 99-byte (V ‖ A ‖ N), HRP "bp" on mainnet and "tbp" on signet.
+// Wallet keys are derived per network, so one seed's signet and mainnet addresses are unlinkable. Change and
+// padding go to an internal address (V_int ‖ A ‖ N); v alone does not see them, (v, v_int, n) does.
 
 export const T_BTC_SHIELD = 0x6c;
 export const T_BTC_SPEND = 0x6d;
@@ -19,8 +21,22 @@ export const ADDRESS_LEN = 99;
 export const ADDRESS_HRP = { mainnet: 'bp', signet: 'tbp' };
 
 const U64_MAX = (1n << 64n) - 1n;
+const U32_LIMIT = 2 ** 32;
+export const ANCHOR_STEP = 6;
 
-export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
+const checkU32 = (x, name) => {
+  if (!Number.isInteger(x) || x < 0 || x >= U32_LIMIT) throw new Error(`btc-pool: ${name} must be an integer in [0, 2^32)`);
+  return x;
+};
+
+// Shared anchor policy (§6): tip − 6, rounded down to a multiple of 6.
+export function defaultAnchor(tip) {
+  checkU32(tip, 'tip');
+  if (tip < ANCHOR_STEP) throw new Error('btc-pool: tip below the anchor offset');
+  return Math.floor((tip - ANCHOR_STEP) / ANCHOR_STEP) * ANCHOR_STEP;
+}
+
+export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripemd160 }) {
   const Pt = secp.ProjectivePoint;
   const G = Pt.BASE;
   const ZERO = Pt.ZERO;
@@ -41,6 +57,11 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
     keyV: te.encode('tacit-btc-pool-wallet-view-v1'),
     keyA: te.encode('tacit-btc-pool-wallet-spend-v1'),
     keyN: te.encode('tacit-btc-pool-wallet-nk-v1'),
+    keyVInt: te.encode('tacit-btc-pool-wallet-view-internal-v1'),
+    keyX: te.encode('tacit-btc-pool-wallet-exit-v1'),
+    exitKey: te.encode('tacit-btc-pool-exit-key-v1'),
+    exitBlind: te.encode('tacit-btc-pool-exit-v1'),
+    eph: te.encode('tacit-btc-pool-eph-v1'),
   };
 
   // ── bytes ──
@@ -186,28 +207,60 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
   }
 
   // ── wallet keys and addresses ──
+  const checkNetwork = (network) => { if (!ADDRESS_HRP[network]) throw new Error(`btc-pool: unknown network ${network}`); return network; };
+
+  // Every scalar is bound to the network, so one seed yields unlinkable signet and mainnet wallets.
   function walletFromSeed(seed, network = 'signet') {
     const sd = toBytes(seed, 32);
-    const v = Hs(D.keyV, sd), a = Hs(D.keyA, sd), n = Hs(D.keyN, sd);
-    return walletFromScalars({ v, a, n }, network);
+    const net = te.encode(checkNetwork(network));
+    const v = Hs(D.keyV, net, sd), a = Hs(D.keyA, net, sd), n = Hs(D.keyN, net, sd);
+    const vInt = Hs(D.keyVInt, net, sd);
+    const exitRoot = k(D.keyX, net, sd);
+    return walletFromScalars({ v, a, n, vInt, exitRoot }, network);
   }
-  function walletFromScalars({ v, a, n }, network = 'signet') {
+  // vInt and exitRoot are optional: without vInt the wallet has no internal address, without exitRoot no exit keys.
+  function walletFromScalars({ v, a, n, vInt, exitRoot }, network = 'signet') {
+    checkNetwork(network);
     const V = G.multiply(BigInt(v)), A = G.multiply(BigInt(a)), Nk = G.multiply(BigInt(n));
     const address = concat(compress(V), compress(A), compress(Nk));
-    return {
+    const w = {
       network,
       v: hx(be(v, 32)), a: hx(be(a, 32)), n: hx(be(n, 32)),
       V: hx(compress(V)), A: hx(compress(A)), N: hx(compress(Nk)),
       address: hx(address), addressString: encodeAddress(address, network),
     };
+    if (vInt != null) {
+      const VInt = G.multiply(BigInt(vInt));
+      w.vInt = hx(be(vInt, 32));
+      w.VInt = hx(compress(VInt));
+      w.internalAddress = hx(concat(compress(VInt), compress(A), compress(Nk)));
+    }
+    if (exitRoot != null) w.exitRoot = hx(toBytes(exitRoot, 32));
+    return w;
   }
-  const viewWallet = (w) => ({ network: w.network, v: w.v, V: w.V, A: w.A, N: w.N, address: w.address, addressString: w.addressString });
+  // Incoming-only tier: v finds and reads notes paid to the external address; change and padding stay hidden.
+  // { internal: true } gives the (v, v_int) tier, which also reads change and padding.
+  const viewWallet = (w, { internal = false } = {}) => {
+    const out = { network: w.network, v: w.v, V: w.V, A: w.A, N: w.N, address: w.address, addressString: w.addressString };
+    if (internal) {
+      if (w.vInt == null) throw new Error('btc-pool: wallet has no v_int');
+      Object.assign(out, { vInt: w.vInt, VInt: w.VInt, internalAddress: w.internalAddress });
+    }
+    return out;
+  };
+  // Full-view tier: (v, v_int, n) sees every note, internal ones included, and which are spent. Cannot spend.
+  const fullViewWallet = (w) => {
+    if (w.vInt == null || w.n == null) throw new Error('btc-pool: full view needs v_int and n');
+    return { ...viewWallet(w, { internal: true }), n: w.n };
+  };
   function encodeAddress(address, network = 'signet') {
     const hrp = ADDRESS_HRP[network];
     if (!hrp) throw new Error(`btc-pool: unknown network ${network}`);
     return bech32mEncode(hrp, toBytes(address, ADDRESS_LEN));
   }
+  // A raw 99-byte address carries no network, so it is accepted only with an explicit one.
   function decodeAddress(input, network) {
+    if (network != null) checkNetwork(network);
     let bytes, net = network;
     if (typeof input === 'string' && !/^(0x)?[0-9a-f]{198}$/i.test(input)) {
       const d = bech32mDecode(input);
@@ -215,7 +268,10 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
       if (!net) throw new Error(`btc-pool: unknown address prefix ${d.hrp}`);
       if (network && network !== net) throw new Error(`btc-pool: address is for ${net}, expected ${network}`);
       bytes = d.bytes;
-    } else bytes = toBytes(input, ADDRESS_LEN);
+    } else {
+      if (network == null) throw new Error('btc-pool: raw address needs an explicit network');
+      bytes = toBytes(input, ADDRESS_LEN);
+    }
     if (bytes.length !== ADDRESS_LEN) throw new Error('btc-pool: address must be 99 bytes');
     const V = pointFromCompressed(bytes.slice(0, 33));
     const A = pointFromCompressed(bytes.slice(33, 66));
@@ -260,9 +316,10 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
     return hx(k(D.nf, toBytes(leaf, 32), nk, be(idx, 8)));
   }
 
-  // opts.e / opts.blinding pin the otherwise fresh randomness (tests and vectors).
+  // opts.e pins the otherwise fresh ephemeral scalar (tests and vectors). opts.network is required for a raw
+  // address and, when given, must match a bech32m one.
   function createNote(address, asset, value, blinding, opts = {}) {
-    const addr = decodeAddress(address);
+    const addr = decodeAddress(address, opts.network);
     const v = BigInt(value);
     if (v < 0n || v > U64_MAX) throw new Error('btc-pool: value must be a u64');
     const r = blinding != null ? modN(BigInt(blinding)) : randomScalar();
@@ -297,9 +354,17 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
 
   // Receipt (§2): decrypts, the opening matches (Cx, Cy), spend_key and nk_pub are the ones (A, N, s) give.
   // v alone yields value and blinding; n adds nk_note, and nf once the note's leafIndex is known; a adds sk_spend.
+  // A wallet holding v_int also receives notes paid to its internal address; those carry internal: true.
   function tryReceive(wallet, f) {
+    const got = receiveUnder(wallet, wallet.v, f);
+    if (got || wallet.vInt == null) return got;
+    const own = receiveUnder(wallet, wallet.vInt, f);
+    if (own) own.internal = true;
+    return own;
+  }
+  function receiveUnder(wallet, viewKey, f) {
     try {
-      const vScalar = bToBig(toBytes(wallet.v, 32));
+      const vScalar = bToBig(toBytes(viewKey, 32));
       const A = pointFromCompressed(wallet.A), Nk = pointFromCompressed(wallet.N);
       const E = pointFromCompressed(f.pkEph);
       const s = compress(E.multiply(vScalar));
@@ -344,14 +409,16 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
   // ── T_BTC_SHIELD (§3) ──
   function shieldKernelMsg({ asset, inputs, note }) {
     const parts = [D.shield, toBytes(asset, 32), Uint8Array.of(inputs.length)];
-    for (const i of inputs) parts.push(reverse(toBytes(i.txid, 32)), le(i.vout >>> 0, 4));
+    for (const i of inputs) parts.push(reverse(toBytes(i.txid, 32)), le(checkU32(i.vout, 'vout'), 4));
     parts.push(toBytes(note.cx, 32), toBytes(note.cy, 32), toBytes(note.spendKey, 32), toBytes(note.nkPub, 33), toBytes(note.pkEph, 33), toBytes(note.ctNote, CT_NOTE_LEN));
     return sha256(concat(...parts));
   }
 
   // inputs[i].txid is the display (RPC) txid; the kernel message carries it byte-reversed, as T_CXFER's does.
-  function buildShieldEnvelope({ asset, inputs, recipientAddress, rPool, e, aux }) {
+  function buildShieldEnvelope({ asset, inputs, recipientAddress, network, rPool, e, aux }) {
     if (!inputs || inputs.length < 1 || inputs.length > BTC_POOL_SHIELD_MAX_IN) throw new Error('btc-pool: shield n_in must be 1..8');
+    const outpoints = new Set(inputs.map((i) => `${hx(toBytes(i.txid, 32))}:${checkU32(i.vout, 'vout')}`));
+    if (outpoints.size !== inputs.length) throw new Error('btc-pool: repeated shield input');
     let total = 0n, rIn = 0n, Cin = ZERO;
     for (const i of inputs) {
       const v = BigInt(i.value);
@@ -365,7 +432,7 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
     while (r === rIn && rPool == null) r = randomScalar();
     const excess = modN(r - rIn);
     if (excess === 0n) throw new Error('btc-pool: kernel excess is zero');
-    const note = createNote(recipientAddress, asset, total, r, { e });
+    const note = createNote(recipientAddress, asset, total, r, { e, network });
     const E = pointFromXY(note.cx, note.cy).add(Cin.negate());
     if (!E.equals(G.multiply(excess))) throw new Error('btc-pool: kernel excess mismatch');
     const msg = shieldKernelMsg({ asset, inputs, note });
@@ -411,12 +478,15 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
     if (!nullifiers.length || nullifiers.length > BTC_POOL_MAX_IN) throw new Error('btc-pool: n_in must be 1..2');
     if (outputs.length > BTC_POOL_MAX_OUT) throw new Error('btc-pool: n_out must be 0..3');
     if (!outputs.length && !exit) throw new Error('btc-pool: a spend needs an output or an exit');
-    const parts = [Uint8Array.of(T_BTC_SPEND), toBytes(asset, 32), le(hAnchor >>> 0, 4), Uint8Array.of(nullifiers.length)];
+    checkU32(hAnchor, 'h_anchor');
+    if (exit) checkU32(exit.exitVout, 'exit_vout');
+    if (new Set(nullifiers.map((nf) => hx(toBytes(nf, 32)))).size !== nullifiers.length) throw new Error('btc-pool: repeated nullifier');
+    const parts = [Uint8Array.of(T_BTC_SPEND), toBytes(asset, 32), le(hAnchor, 4), Uint8Array.of(nullifiers.length)];
     for (const nf of nullifiers) parts.push(toBytes(nf, 32));
     parts.push(Uint8Array.of(outputs.length));
     for (const o of outputs) parts.push(noteBytes(o));
     parts.push(Uint8Array.of(exit ? 1 : 0));
-    if (exit) parts.push(le(exit.exitVout >>> 0, 4), toBytes(exit.cx, 32), toBytes(exit.cy, 32), toBytes(exit.destSpkHash, 32));
+    if (exit) parts.push(le(exit.exitVout, 4), toBytes(exit.cx, 32), toBytes(exit.cy, 32), toBytes(exit.destSpkHash, 32));
     return concat(...parts);
   }
 
@@ -458,13 +528,143 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
     return out;
   }
 
+  const spkKey = (spk) => hx(toBytes(spk)).toLowerCase();
+  const usedHas = (used, spkHex, hashHex) => {
+    if (!used) return false;
+    const list = used instanceof Set ? used : new Set([...used].map((x) => hx(toBytes(x)).toLowerCase()));
+    return (spkHex != null && list.has(spkHex)) || list.has(hashHex);
+  };
+
+  // Seed-recoverable randomness of a spend, keyed by the first input's nk_note (secret) and bound to public
+  // body data, so a wallet can rebuild the exit opening from chain data and its seed.
+  //   e_j    = Hs("tacit-btc-pool-eph-v1"  ‖ nk_note_0 ‖ nf_0 ‖ j(1) ‖ Cx_j ‖ Cy_j)
+  //   r_exit = Hs("tacit-btc-pool-exit-v1" ‖ nk_note_0 ‖ body with the exit's Cx, Cy zeroed)
+  const ZERO32 = new Uint8Array(32);
+  const outputEph = (nk0, nf0, j, C) => Hs(D.eph, toBytes(nk0, 32), toBytes(nf0, 32), Uint8Array.of(j), toBytes(C.cx, 32), toBytes(C.cy, 32));
+  const exitBlinding = (nk0, bodyZeroedExitC) => Hs(D.exitBlind, toBytes(nk0, 32), toBytes(bodyZeroedExitC));
+
+  // Rebuilds the exit opening of a spend this wallet signed, from the body (or full payload), the wallet and
+  // its scanned notes (the inputs, with nf). Outputs the wallet receives are read by scanning; another
+  // recipient's output is read when its address is in `addresses`. Any remaining third-party value is found
+  // by search up to `maxSearch`.
+  function recoverExit(wallet, bytes, ownNotes, { addresses = [], maxSearch = 1 << 16 } = {}) {
+    let sp;
+    try { sp = parseSpend(bytes); } catch { sp = parseSpend(bytes, { full: true }); }
+    if (!sp.exit) throw new Error('btc-pool: spend has no exit');
+    const byNf = new Map(ownNotes.filter((x) => x && x.nf).map((x) => [x.nf.toLowerCase(), x]));
+    const ins = sp.nullifiers.map((nf) => byNf.get(nf.toLowerCase()));
+    if (ins.some((x) => !x || !x.nkNote)) throw new Error('btc-pool: spend inputs are not among the wallet\'s notes');
+    const nk0 = ins[0].nkNote, nf0 = sp.nullifiers[0];
+    const zeroed = Uint8Array.from(sp.body);
+    zeroed.fill(0, zeroed.length - 96, zeroed.length - 32);
+    const r = exitBlinding(nk0, zeroed);
+    const cands = addresses.map((a) => decodeAddress(a, wallet.network));
+    let known = ins.reduce((t, x) => t + BigInt(x.value), 0n), unknown = 0;
+    sp.outputs.forEach((o, j) => {
+      const own = tryReceive(wallet, o);
+      if (own) { known -= own.value; return; }
+      const e = outputEph(nk0, nf0, j, o);
+      for (const c of cands) {
+        const pt = aeadOpen(tweaks(compress(c.V.multiply(e))).key, toBytes(o.ctNote, CT_NOTE_LEN));
+        if (!pt) continue;
+        const v = bToBig(pt.subarray(0, 8)), rr = bToBig(pt.subarray(8, 40));
+        if (rr < N && commitPoint(v, rr).equals(pointFromXY(o.cx, o.cy))) { known -= v; return; }
+      }
+      unknown++;
+    });
+    if (known < 0n) throw new Error('btc-pool: outputs exceed inputs');
+    const target = pointFromXY(sp.exit.cx, sp.exit.cy).add(mul(G, r).negate());
+    const negH = H.negate();
+    let T = mul(H, known);
+    const limit = unknown ? BigInt(maxSearch) : 0n;
+    for (let s = 0n; s <= limit && s <= known; s++, T = T.add(negH)) {
+      if (T.equals(target)) return { exitVout: sp.exit.exitVout, value: known - s, blinding: hx(be(r, 32)), cx: sp.exit.cx, cy: sp.exit.cy, destSpkHash: sp.exit.destSpkHash };
+    }
+    throw new Error('btc-pool: exit opening not recovered');
+  }
+
+  // Picks up to two inputs of `asset` covering `amount`. When one note covers it and another exists, the
+  // smallest other note (a zero-value padding note when there is one) is added so the spend has 2 inputs;
+  // a wallet holding a single note spends it alone.
+  function selectInputs(notes, amount, { asset } = {}) {
+    const want = BigInt(amount);
+    if (want < 0n || want > U64_MAX) throw new Error('btc-pool: amount must be a u64');
+    const assetHex = asset != null ? hx(toBytes(asset, 32)) : null;
+    const seen = new Set();
+    const pool = [];
+    for (const x of notes) {
+      if (!x || !x.skSpend || !x.nkNote || x.leafIndex == null) continue;
+      if (assetHex && hx(toBytes(x.asset, 32)) !== assetHex) continue;
+      const id = x.nf ?? nullifier(x.leaf, x.nkNote, x.leafIndex);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      pool.push(x);
+    }
+    if (!pool.length) throw new Error('btc-pool: no spendable notes');
+    const byValue = [...pool].sort((p, q) => (BigInt(p.value) < BigInt(q.value) ? -1 : BigInt(p.value) > BigInt(q.value) ? 1 : 0));
+    const single = byValue.find((x) => BigInt(x.value) >= want);
+    if (single) {
+      const pad = byValue.find((x) => x !== single);
+      const inputs = pad ? [single, pad] : [single];
+      return { inputs, total: inputs.reduce((t, x) => t + BigInt(x.value), 0n) };
+    }
+    let best = null;
+    for (let i = 0; i < byValue.length; i++) {
+      for (let j = i + 1; j < byValue.length; j++) {
+        const t = BigInt(byValue[i].value) + BigInt(byValue[j].value);
+        if (t >= want && (!best || t < best.total)) best = { inputs: [byValue[j], byValue[i]], total: t };
+      }
+    }
+    if (!best) throw new Error(`btc-pool: two notes cannot cover ${want}`);
+    return best;
+  }
+
+  // Exit key `counter` of a wallet: d = Hs(domain ‖ exit_root ‖ counter(4, BE)). P2TR is BIP-86 (key path,
+  // no script tree); outputPriv signs for the tweaked key. P2WPKH needs ripemd160 in the factory deps.
+  function deriveExitKey(wallet, counter, type = 'p2tr') {
+    if (!wallet || wallet.exitRoot == null) throw new Error('btc-pool: wallet has no exit root');
+    checkU32(counter, 'exit key counter');
+    const d = Hs(D.exitKey, toBytes(wallet.exitRoot, 32), be(counter, 4));
+    const P = G.multiply(d);
+    const out = { counter, type, priv: hx(be(d, 32)), pub: hx(compress(P)) };
+    if (type === 'p2tr') {
+      const px = xOnly(P);
+      const t = modN(bToBig(tagged('TapTweak', px)));
+      const dEven = compress(P)[0] === 0x02 ? d : N - d;
+      const Q = liftX(px).add(mul(G, t));
+      if (Q.equals(ZERO)) throw new Error('btc-pool: degenerate taproot key');
+      out.outputKey = hx(xOnly(Q));
+      out.outputPriv = hx(be(modN(dEven + t), 32));
+      out.scriptPubKey = hx(concat(Uint8Array.of(0x51, 0x20), xOnly(Q)));
+    } else if (type === 'p2wpkh') {
+      if (!ripemd160) throw new Error('btc-pool: p2wpkh exit keys need ripemd160');
+      out.scriptPubKey = hx(concat(Uint8Array.of(0x00, 0x14), ripemd160(sha256(compress(P)))));
+    } else throw new Error(`btc-pool: unknown exit key type ${type}`);
+    out.destSpkHash = exitDestHash(out.scriptPubKey);
+    return out;
+  }
+  // First exit key from `from` whose script is not in `used` (scripts or their SHA-256, hex).
+  function freshExitKey(wallet, used, { type = 'p2tr', from = 0 } = {}) {
+    for (let c = from; c < U32_LIMIT; c++) {
+      const x = deriveExitKey(wallet, c, type);
+      if (!usedHas(used, spkKey(x.scriptPubKey), x.destSpkHash)) return x;
+    }
+    throw new Error('btc-pool: exit keys exhausted');
+  }
+
   // inputs: owned notes from scan(), each with leafIndex and, for the witness, path (32 siblings).
-  // outputs: [{ address, value }] pool notes (payment, change, fee). exit: { exitVout, scriptPubKey | destSpkHash,
+  // outputs: [{ address, value }] pool notes (payment, fee). exit: { exitVout, scriptPubKey | destSpkHash,
   // value?, blinding? }, paying to the exiter's own script. Outputs plus exit must equal the inputs.
-  function buildSpendBody({ asset, hAnchor, h_anchor, root, inputs, outputs = [], exit = null, aux }) {
-    const anchor = hAnchor ?? h_anchor;
-    if (anchor == null) throw new Error('btc-pool: h_anchor required');
-    if (!inputs.length || inputs.length > BTC_POOL_MAX_IN) throw new Error('btc-pool: n_in must be 1..2');
+  // hAnchor defaults to defaultAnchor(tip). With `wallet`: change of a pay goes to its internal address and
+  // a pay is padded to 3 outputs with zero-value internal notes (pad: false disables padding), outputs are
+  // shuffled, and an exit to a script in `usedScripts` (default wallet.usedScripts) is refused; a Set is
+  // updated with the new exit script's hash.
+  function buildSpendBody({ asset, hAnchor, tip, root, inputs, outputs = [], exit = null, aux, wallet, network, usedScripts, pad = true }) {
+    const anchor = hAnchor != null ? hAnchor : tip != null ? defaultAnchor(tip) : null;
+    if (anchor == null) throw new Error('btc-pool: h_anchor or tip required');
+    checkU32(anchor, 'h_anchor');
+    const net = network ?? wallet?.network;
+    if (!inputs || !inputs.length || inputs.length > BTC_POOL_MAX_IN) throw new Error('btc-pool: n_in must be 1..2');
     const assetHex = hx(toBytes(asset, 32));
     let total = 0n;
     for (const i of inputs) {
@@ -474,17 +674,39 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
       total += BigInt(i.value);
     }
     const nullifiers = inputs.map((i) => nullifier(i.leaf, i.nkNote, i.leafIndex));
-    const outSum = outputs.reduce((s, o) => s + BigInt(o.value), 0n);
-    let exitRec = null;
+    if (new Set(nullifiers).size !== nullifiers.length) throw new Error('btc-pool: repeated input');
+    const outs = outputs.map((o) => ({ ...o }));
+    let outSum = outs.reduce((s, o) => s + BigInt(o.value), 0n);
+    let exitRec = null, spkHex = null;
     if (exit) {
+      checkU32(exit.exitVout, 'exit_vout');
+      spkHex = exit.scriptPubKey != null ? spkKey(exit.scriptPubKey) : null;
+      const destSpkHash = spkHex != null ? exitDestHash(spkHex) : hx(toBytes(exit.destSpkHash, 32));
+      if (spkHex != null && exit.destSpkHash != null && hx(toBytes(exit.destSpkHash, 32)) !== destSpkHash) throw new Error('btc-pool: destSpkHash does not match scriptPubKey');
+      if (usedHas(usedScripts ?? wallet?.usedScripts, spkHex, destSpkHash)) throw new Error('btc-pool: exit script already used by this wallet');
       const value = exit.value != null ? BigInt(exit.value) : total - outSum;
       if (value < 0n || value > U64_MAX) throw new Error('btc-pool: exit value out of range');
-      const r = exit.blinding != null ? modN(BigInt(exit.blinding)) : randomScalar();
-      const { cx, cy } = commitXY(value, r);
-      exitRec = { exitVout: exit.exitVout ?? exit.exit_vout, cx, cy, destSpkHash: exit.destSpkHash ?? exitDestHash(exit.scriptPubKey), value, blinding: hx(be(r, 32)) };
+      exitRec = { exitVout: exit.exitVout, destSpkHash, value };
+    }
+    const defaults = wallet != null && !exitRec;
+    if (defaults) {
+      if (wallet.internalAddress == null) throw new Error('btc-pool: wallet has no internal address');
+      const self = { address: wallet.internalAddress, network: wallet.network };
+      if (outSum < total) { outs.push({ ...self, value: total - outSum }); outSum = total; }
+      if (pad) while (outs.length < BTC_POOL_MAX_OUT) outs.push({ ...self, value: 0n });
+      for (let i = outs.length - 1; i > 0; i--) { const j = Number(bToBig(rand(4)) % BigInt(i + 1)); [outs[i], outs[j]] = [outs[j], outs[i]]; }
     }
     if (outSum + (exitRec ? exitRec.value : 0n) !== total) throw new Error(`btc-pool: outputs ${outSum} + exit ${exitRec ? exitRec.value : 0n} != inputs ${total}`);
-    const outNotes = outputs.map((o) => createNote(o.address, assetHex, o.value, o.blinding, { e: o.e }));
+    const nk0 = inputs[0].nkNote, nf0 = nullifiers[0];
+    const outNotes = outs.map((o, j) => {
+      const r = o.blinding != null ? modN(BigInt(o.blinding)) : randomScalar();
+      const e = o.e ?? outputEph(nk0, nf0, j, commitXY(BigInt(o.value), r));
+      return createNote(o.address, assetHex, o.value, r, { e, network: o.network ?? net });
+    });
+    if (exitRec) {
+      const r = exit.blinding != null ? modN(BigInt(exit.blinding)) : exitBlinding(nk0, encodeSpendBody({ asset: assetHex, hAnchor: anchor, nullifiers, outputs: outNotes, exit: { ...exitRec, cx: ZERO32, cy: ZERO32 } }));
+      Object.assign(exitRec, commitXY(exitRec.value, r), { blinding: hx(be(r, 32)) });
+    }
     const openings = [...outNotes, ...(exitRec ? [exitRec] : [])].map((o) => ({ value: o.value, blinding: o.blinding }));
 
     const body = encodeSpendBody({ asset: assetHex, hAnchor: anchor, nullifiers, outputs: outNotes, exit: exitRec });
@@ -513,7 +735,9 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
         outputs: openings.map((o) => ({ value: BigInt(o.value).toString(10), blinding: hx(toBytes(o.blinding, 32)) })),
       };
     }
-    return { body, bodyHex: hx(body), msg, sigs, nullifiers, outputs: outNotes, exit: exitRec, witness };
+    const used = usedScripts ?? wallet?.usedScripts;
+    if (exitRec && used instanceof Set) used.add(exitRec.destSpkHash);
+    return { body, bodyHex: hx(body), msg, sigs, nullifiers, hAnchor: anchor, outputs: outNotes, exit: exitRec, witness };
   }
 
   function assembleSpendEnvelope(body, proof) {
@@ -525,8 +749,9 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes }) {
   }
 
   return {
-    H, G, commitXY, Hs,
-    walletFromSeed, walletFromScalars, viewWallet, encodeAddress, decodeAddress,
+    H, G, commitXY, Hs, defaultAnchor,
+    walletFromSeed, walletFromScalars, viewWallet, fullViewWallet, encodeAddress, decodeAddress,
+    selectInputs, deriveExitKey, freshExitKey, recoverExit,
     createNote, noteLeaf, nullifier, tryReceive, scan,
     shieldKernelMsg, buildShieldEnvelope, parseShieldEnvelope, verifyShield,
     encodeSpendBody, parseSpend, buildSpendBody, assembleSpendEnvelope, spendMsg, exitDestHash, merkleRootFrom,

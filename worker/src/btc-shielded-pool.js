@@ -308,6 +308,20 @@ export class KeccakTree {
     }
     return { root: this.root(), path };
   }
+  // Root and path of leaf `index` in the tree of the first `n` leaves. A node whose span lies inside the
+  // first n leaves is unchanged by later appends; one straddling n is recomputed.
+  rootAndPathAt(index, n) {
+    if (!(index < n && n <= this.size)) throw new Error('leaf outside the prefix');
+    const node = (i, j) => {
+      const lo = j * 2 ** i;
+      if (lo >= n) return ZEROS[i];
+      if (lo + 2 ** i <= n) return this.levels[i][j];
+      return keccak_256(concat(node(i - 1, 2 * j), node(i - 1, 2 * j + 1)));
+    };
+    const path = [];
+    for (let i = 0; i < TREE_DEPTH; i++) path.push(node(i, Math.floor(index / 2 ** i) ^ 1));
+    return { root: node(TREE_DEPTH, 0), path };
+  }
 }
 
 export function rootFromPath(leaf, index, path) {
@@ -341,6 +355,13 @@ export class BtcPoolState {
     this.tip = null;
     this.pending = null;
     this.maxLeaves = MAX_LEAVES;
+  }
+
+  // Leaves appended in blocks at or below `height`.
+  leafCountAt(height) {
+    let lo = 0, hi = this.leafHeights.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (this.leafHeights[m] <= height) lo = m + 1; else hi = m; }
+    return lo;
   }
 
   beginBlock(height) {

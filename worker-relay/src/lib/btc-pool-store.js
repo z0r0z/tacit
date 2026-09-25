@@ -9,6 +9,10 @@ import { bytesToHex, hexToBytes } from '../../../worker/src/btc-shielded-pool.js
 const h = (b) => bytesToHex(b);
 const SCHEMA = '2';
 const TABLES = ['blocks', 'leaves', 'nullifiers', 'exits', 'envelopes'];
+// Relayer state has its own version; replay rescans and rollbacks leave it alone.
+const RELAY_SCHEMA = '1';
+const RELAY_TABLES = ['relay_payloads', 'relay_carriers'];
+const RELAY_TERMINAL = "('confirmed', 'dropped', 'rejected', 'replayed-elsewhere', 'empty', 'cancelled')";
 
 export function openBtcPoolStore(dbPath) {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
@@ -23,6 +27,16 @@ export function openBtcPoolStore(dbPath) {
       db.prepare("INSERT INTO meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(SCHEMA);
     })();
   }
+  if ((db.prepare("SELECT v FROM meta WHERE k = 'relay_schema'").get()?.v ?? null) !== RELAY_SCHEMA) {
+    db.transaction(() => {
+      for (const t of RELAY_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
+      db.prepare("INSERT INTO meta (k, v) VALUES ('relay_schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(RELAY_SCHEMA);
+    })();
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS relay_payloads (id TEXT PRIMARY KEY, state TEXT NOT NULL, updated INTEGER NOT NULL, rec TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS relay_carriers (id TEXT PRIMARY KEY, state TEXT NOT NULL, updated INTEGER NOT NULL, rec TEXT NOT NULL);
+  `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, root TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS leaves (
@@ -77,6 +91,24 @@ export function openBtcPoolStore(dbPath) {
     for (const x of delta.exits) st.insExit.run(x.txid, x.vout, x.height, h(x.asset), h(x.cx), h(x.cy));
     for (const e of envelopes) st.insEnv.run(delta.height, e.txIndex, e.vin, e.txid, e.opcode, e.accepted ? 1 : 0, e.reason ?? null);
   });
+  const rl = {
+    putP: db.prepare('INSERT INTO relay_payloads (id, state, updated, rec) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated = excluded.updated, rec = excluded.rec'),
+    putC: db.prepare('INSERT INTO relay_carriers (id, state, updated, rec) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated = excluded.updated, rec = excluded.rec'),
+    allP: db.prepare('SELECT rec FROM relay_payloads ORDER BY updated'),
+    allC: db.prepare('SELECT rec FROM relay_carriers ORDER BY updated'),
+    pruneP: db.prepare(`DELETE FROM relay_payloads WHERE updated < ? AND state IN ${RELAY_TERMINAL}`),
+    pruneC: db.prepare(`DELETE FROM relay_carriers WHERE updated < ? AND state IN ${RELAY_TERMINAL}`),
+  };
+  const relaySave = db.transaction((ps, cs) => {
+    for (const r of ps) rl.putP.run(r.id, r.state, r.updatedAt ?? Date.now(), JSON.stringify(r));
+    for (const r of cs) rl.putC.run(r.id, r.state, r.updatedAt ?? Date.now(), JSON.stringify(r));
+  });
+  const relay = {
+    save: (ps, cs) => relaySave(ps, cs),
+    load: () => ({ payloads: rl.allP.all().map((r) => JSON.parse(r.rec)), carriers: rl.allC.all().map((r) => JSON.parse(r.rec)) }),
+    prune: (before) => { rl.pruneP.run(before); rl.pruneC.run(before); },
+  };
+
   const rollbackFrom = db.transaction((height) => { for (const d of delFrom) d.run(height); });
   const wipe = db.transaction(() => { for (const d of delFrom) d.run(-1); });
 
@@ -105,6 +137,7 @@ export function openBtcPoolStore(dbPath) {
         roots: st.rootsFrom.all(t.height - 288 - 144).map((r) => [r.height, hexToBytes(r.root)]),
       };
     },
+    relay,
     close: () => db.close(),
   };
 }
