@@ -147,6 +147,7 @@ export function openStore(dbPath) {
     SELECT address, points, deposit_count, amount_wei FROM totals ORDER BY points DESC LIMIT ?
   `);
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
+  const countByActivityStmt = db.prepare(`SELECT COUNT(*) AS n FROM deposits WHERE activity = ?`);
   const depositsForStmt = db.prepare(`
     SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
@@ -239,6 +240,10 @@ export function openStore(dbPath) {
 
   function totalFor(address) {
     return totalForStmt.get(address.toLowerCase()) || null;
+  }
+
+  function countByActivity(activity) {
+    return countByActivityStmt.get(activity).n;
   }
 
   function depositsFor(address, limit) {
@@ -334,7 +339,7 @@ export function openStore(dbPath) {
   }
 
   return {
-    db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor,
+    db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
     dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,

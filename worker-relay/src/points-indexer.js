@@ -135,13 +135,19 @@ async function scanPrivacyPoolCycle(store) {
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.savePpCursor(newestSeen);
 }
 
-function pointsForCbtcEscrow(amountWei) {
-  return (Number(amountWei) / 1e18) * CFG.pointsBasePerCbtc;
+// Same decaying early-adopter bonus as ETH wraps (pointsForDeposit above) — every deposit gets it, not just
+// the first; it just shrinks as more of the SAME activity accumulates. Reuses pointsBonusScale/HalfLife
+// rather than a separate knob per activity, so all three curves shrink at the same relative pace.
+function earlyAdopterBonus(priorCount) {
+  return 1 + CFG.pointsBonusScale / (1 + priorCount / CFG.pointsBonusHalfLife);
+}
+function pointsForCbtcEscrow(amountWei, priorCount) {
+  return (Number(amountWei) / 1e18) * CFG.pointsBasePerCbtc * earlyAdopterBonus(priorCount);
 }
 // debtValue is tacitDecimals=8-scaled (unitScale=1e10, decimals=18 — see confidential-deployments.js), so
 // dividing by 1e8 gives the real dollar amount minted.
-function pointsForCusdMint(debtValueRaw) {
-  return (Number(debtValueRaw) / 1e8) * CFG.pointsBasePerCusd * CFG.cusdMintBonusMultiplier;
+function pointsForCusdMint(debtValueRaw, priorCount) {
+  return (Number(debtValueRaw) / 1e8) * CFG.pointsBasePerCusd * CFG.cusdMintBonusMultiplier * earlyAdopterBonus(priorCount);
 }
 
 // Two more ways to earn points, both on CollateralEngine: EscrowPosted (wstETH collateral posted toward a
@@ -149,11 +155,18 @@ function pointsForCusdMint(debtValueRaw) {
 // scanPrivacyPoolCycle and for the same reason — this address's own eth_getLogs range would hit the same
 // 10-block RPC cap on a cold-start backfill. Volume here is even lower than Privacy Pools' (a handful of
 // transactions total as of writing), so a caught-up run costs one request either way.
+//
+// Blockscout pages NEWEST-first, but the early-adopter bonus needs each activity's items scored OLDEST-
+// first (so "prior count" only ever counts what genuinely came before it) — so this collects candidates
+// across all pages first and scores them in a second, ascending-order pass, seeded from how many of each
+// activity already exist in the store.
 async function scanCollateralEngineCycle(store) {
   const priorCursor = store.loadCeCursor();
   const deployBlock = BigInt(CFG.collateralEngineDeployBlock);
   let newestSeen = null;
   let params = '';
+  const cbtcCandidates = [];
+  const cusdCandidates = [];
 
   // EscrowPosted's own `from` is the real depositor UNLESS the call was routed through CbtcEscrowHelper, in
   // which case `from` is the helper's own address and the helper's OWN event (HelperEscrowPosted, same tx)
@@ -193,21 +206,9 @@ async function scanCollateralEngineCycle(store) {
       const blockTime = Math.floor(new Date(item.block_timestamp).getTime() / 1000);
 
       if (method.startsWith('EscrowPosted(')) {
-        const depositor = (await realCbtcDepositor(item.transaction_hash, p.from)).toLowerCase();
-        store.recordDeposit({
-          txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
-          depositor, amountWei: String(p.amount), priorDepositCount: 0,
-          points: pointsForCbtcEscrow(p.amount), activity: 'cbtcmint',
-        });
+        cbtcCandidates.push({ item, p, blockNumber, blockTime });
       } else if (method.startsWith('CdpMinted(')) {
-        // No borrower address on this event — same convention as the wrap scanner: the transaction's own
-        // signer, not any confidential note owner (which isn't public anyway).
-        const tx = await publicClient.getTransaction({ hash: item.transaction_hash });
-        store.recordDeposit({
-          txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
-          depositor: tx.from.toLowerCase(), amountWei: String(p.debtValue), priorDepositCount: 0,
-          points: pointsForCusdMint(p.debtValue), activity: 'cusdmint',
-        });
+        cusdCandidates.push({ item, p, blockNumber, blockTime });
       }
     }
 
@@ -215,6 +216,33 @@ async function scanCollateralEngineCycle(store) {
     params = '?' + new URLSearchParams(
       Object.fromEntries(Object.entries(data.next_page_params).map(([k, v]) => [k, String(v)])),
     ).toString();
+  }
+
+  cbtcCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
+  cusdCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
+
+  let cbtcCount = store.countByActivity('cbtcmint');
+  for (const { item, p, blockNumber, blockTime } of cbtcCandidates) {
+    const depositor = (await realCbtcDepositor(item.transaction_hash, p.from)).toLowerCase();
+    const wrote = store.recordDeposit({
+      txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+      depositor, amountWei: String(p.amount), priorDepositCount: cbtcCount,
+      points: pointsForCbtcEscrow(p.amount, cbtcCount), activity: 'cbtcmint',
+    });
+    if (wrote) cbtcCount += 1;
+  }
+
+  let cusdCount = store.countByActivity('cusdmint');
+  for (const { item, p, blockNumber, blockTime } of cusdCandidates) {
+    // No borrower address on CdpMinted — same convention as the wrap scanner: the transaction's own
+    // signer, not any confidential note owner (which isn't public anyway).
+    const tx = await publicClient.getTransaction({ hash: item.transaction_hash });
+    const wrote = store.recordDeposit({
+      txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+      depositor: tx.from.toLowerCase(), amountWei: String(p.debtValue), priorDepositCount: cusdCount,
+      points: pointsForCusdMint(p.debtValue, cusdCount), activity: 'cusdmint',
+    });
+    if (wrote) cusdCount += 1;
   }
 
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.saveCeCursor(newestSeen);
