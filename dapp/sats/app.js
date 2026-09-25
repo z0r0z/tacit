@@ -1,8 +1,8 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=5c98d635';
-const SECRET_URL = '/sats/secret.js?cb=e5fb1df1';
+const TACIT_URL = '/tacit.js?cb=34f214b7';
+const SECRET_URL = '/sats/secret.js?cb=dc883c5a';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
 // tacit.js reads its network from this shared key once, at import. This page
@@ -24,6 +24,11 @@ const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-a
 const SP_INDEX_URL = { signet: 'https://tacit-sp-index.onrender.com', mainnet: null };
 const DUST = 546;
 const POLL_MS = 20_000;
+// Tokens always scanned for shielded receipts, beside the ones the wallet holds (signet test cBTC).
+const KNOWN_ASSETS = { signet: ['17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5'], mainnet: [] };
+// Sats a token send needs on hand for its commit and reveal fees.
+const TOKEN_SEND_SATS = 3000;
+const PRF_MAP = 'tacit-prf-v1';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -108,8 +113,13 @@ async function busy(btns, fn, out = null) {
 function parseHash() {
   const h = new URLSearchParams(location.hash.replace(/^#/, ''));
   const sp = (h.get('sp') || '').toLowerCase();
+  const st = (h.get('st') || '').toLowerCase();
   const net = h.get('net');
-  return { sp: /^[0-9a-f]{64}$/.test(sp) ? sp : null, net: net === 'mainnet' || net === 'signet' ? net : null };
+  return {
+    sp: /^[0-9a-f]{64}$/.test(sp) ? sp : null,
+    st: /^[0-9a-f]{64}$/.test(st) ? st : null,
+    net: net === 'mainnet' || net === 'signet' ? net : null,
+  };
 }
 
 function netPref() { return store.get(NET_PREF) === 'mainnet' ? 'mainnet' : 'signet'; }
@@ -143,9 +153,7 @@ function renderNet() {
   for (const b of document.querySelectorAll('#net [data-net]')) b.setAttribute('aria-pressed', String(b.dataset.net === net));
   show('mainnet-note', net === 'mainnet');
   renderScan();
-  $('to-label').textContent = net === 'mainnet'
-    ? 'To: a bc1q… address or a silent address (sp1…)'
-    : 'To: a tb1q… address or a silent address (tsp1…)';
+  renderSendLabels();
   const ph = $('secret-placeholder');
   if (ph) show('secret-steps', net !== 'mainnet');
   if (ph) ph.textContent = net === 'mainnet'
@@ -170,14 +178,12 @@ async function probeIndex() {
   renderScan();
 }
 
+// Scan always covers shielded token payments; silent payments join when the index answers.
 function renderScan() {
   const on = indexState.ok && indexState.net === curNet();
-  show('btn-scan', on);
   const last = on && T?.wallet.pub ? T.spIndexLastScanned() : null;
-  $('scan-depth').textContent = !on ? '' : last ? `new blocks since ${last}` : 'about the last week of blocks';
-  $('receive-note').textContent = on
-    ? 'Payments to your silent address can’t be looked up by address. Scan to find them: this device checks every recent payment itself, so the index never learns which are yours. A payment link or txid works too.'
-    : 'Payments to your silent address can’t be looked up by address. To find one, paste its payment link or txid here.';
+  $('scan-depth').textContent = !on ? 'tokens only; sats index offline' : last ? `sats since block ${last}, and tokens` : 'sats from about the last week, and tokens';
+  $('receive-note').textContent = 'Private payments can’t be looked up by address. Scan, and this device checks recent payments itself, so no server learns which are yours. Or paste the link the sender gives you.';
 }
 
 // ---------- tacit.js ----------
@@ -245,6 +251,9 @@ function restore() {
   } else if (rec.mode === 'local') {
     const pub = blobPub();
     if (pub) { w.pub = pub; w.mode = null; }
+  } else if (rec.mode === 'passkey' && okPub(rec.pubkey) && rec.label && T.prfWallet) {
+    T.prfWallet.state = { label: rec.label, credentialId: rec.credentialId, pubkey: rec.pubkey };
+    w.pub = T.hexToBytes(rec.pubkey); w.mode = 'passkey';
   }
   return !!w.pub;
 }
@@ -258,7 +267,82 @@ async function ensureKey() {
 
 // ---------- wallet paths ----------
 
-function connectButtons() { return [$('btn-create'), $('btn-btc'), $('btn-eth'), ...$('btc-choices').querySelectorAll('button')]; }
+const CONNECT_IDS = ['btn-passkey', 'btn-passkey-restore', 'btn-create', 'btn-import', 'btn-import-go', 'btn-eth', 'btn-xverse', 'btn-unisat', 'btn-btc'];
+function connectButtons() { return CONNECT_IDS.map($).filter(Boolean); }
+
+function clearSession() {
+  const w = T.wallet;
+  w.priv = null; w.pub = null; w.mode = null;
+  T.extWallet.state = null; T.ethWallet.state = null; T.btcWallet.state = null;
+  if (T.prfWallet) T.prfWallet.state = null;
+}
+
+// Passkeys: the same PRF key as tacit.finance, so the same passkey opens the same wallet there.
+const passkeyOk = () => !!(window.isSecureContext && window.PublicKeyCredential);
+function savedPasskey() {
+  const m = store.json(PRF_MAP) || {};
+  const labels = Object.keys(m).sort((a, b) => (m[b]?.lastUsed || 0) - (m[a]?.lastUsed || 0));
+  return labels.length ? labels[0] : null;
+}
+
+async function usePasskey({ restore = false } = {}) {
+  await loadTacit();
+  if (!passkeyOk() || !T.prfWallet) throw fail('Passkeys need a secure (https) page and a browser that supports them.');
+  await keepShared(async () => {
+    clearSession();
+    const label = savedPasskey();
+    if (restore) await T.prfWallet.login({});
+    else if (label) await T.prfWallet.login({ label });
+    else await T.prfWallet.register('Tacit');
+    const s = T.prfWallet.state;
+    saveIdentity({ mode: 'passkey', label: s.label, credentialId: s.credentialId, pubkey: s.pubkey });
+  });
+  unlocked();
+  log('Passkey wallet ready. Your passkey is the backup.');
+  await connected();
+}
+
+async function importKey() {
+  const hex = $('import-key').value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hex)) throw fail('A Tacit key is 64 hex characters.');
+  await loadTacit();
+  if (blobPub() && !confirm(`This replaces the wallet saved in this browser for ${T.NET.name}. Continue?`)) return;
+  clearSession();
+  await T.wallet.setPriv(hex);
+  store.set('tacit-backup-ack-v1:' + T.bytesToHex(T.wallet.pub), '1');
+  saveIdentity({ mode: 'local' });
+  $('import-key').value = '';
+  show('import-row', false);
+  log('Wallet restored.');
+  await connected();
+}
+
+// Xverse / Leather / UniSat as a funding wallet: Tacit keeps its own key, bound to the linked address.
+async function linkExt(connect) {
+  await loadTacit();
+  const av = T.extWallet.available();
+  if (connect === 'unisat' ? !av.unisat : !av.satsConnect) {
+    throw fail(`${connect === 'unisat' ? 'UniSat' : 'Xverse or Leather'} isn’t installed in this browser.`);
+  }
+  await keepShared(async () => {
+    clearSession();
+    const st = connect === 'unisat' ? await T.extWallet.connectUnisat() : await T.extWallet.connectSatsConnect();
+    assertWalletNet(st);
+    const ext = { ...T.extWallet.state };
+    await T.wallet.load(st.address);
+    saveIdentity({ mode: 'ext', ext });
+  });
+  log('Linked. Your wallet funds a Tacit key kept in this browser.');
+  await connected();
+  if (!isBackedUp()) openBackup();
+}
+
+async function linkBtcId() {
+  await loadTacit();
+  const av = T.extWallet.available();
+  if (!av.unisat && !av.satsConnect) throw fail('No Bitcoin wallet found in this browser. Install Xverse, Leather or UniSat, or use a passkey.');
+  await linkBtc(() => T.extWallet.connectDefault());
+}
 
 async function createWallet() {
   await loadTacit();
@@ -270,28 +354,6 @@ async function createWallet() {
   log(existed ? 'Wallet unlocked.' : 'Wallet created. Back up its key.');
   await connected();
   if (!isBackedUp()) openBackup();
-}
-
-function btcChoices() {
-  const box = $('btc-choices');
-  box.replaceChildren();
-  const av = T.extWallet.available();
-  const add = (label, fn) => {
-    const b = document.createElement('button');
-    b.className = 'btn quiet';
-    b.textContent = label;
-    b.onclick = () => busy(connectButtons(), () => linkBtc(fn));
-    box.append(b);
-  };
-  if (av.unisat) add('UniSat', () => T.extWallet.connectUnisat());
-  if (av.satsConnect) add('Xverse · Leather · OKX', () => T.extWallet.connectSatsConnect());
-  if (!box.children.length) {
-    const p = document.createElement('span');
-    p.className = 'muted';
-    p.textContent = 'No Bitcoin wallet found in this browser. Install UniSat, Xverse, Leather or OKX, or create a Tacit wallet instead.';
-    box.append(p);
-  }
-  show('btc-choices', true);
 }
 
 function assertWalletNet(st) {
@@ -328,7 +390,6 @@ async function linkBtc(connect) {
       saveIdentity({ mode: 'ext', ext });
     }
   });
-  show('btc-choices', false);
   await connected();
   if (!isBackedUp()) openBackup();
 }
@@ -355,6 +416,7 @@ function via() {
   const w = T.wallet;
   if (w.mode === 'eth') return `Ethereum 0x${short(T.ethWallet.state?.address || '', 6)}`;
   if (w.mode === 'btc') return `Bitcoin wallet ${short(T.btcWallet.state?.address || '', 6)}`;
+  if (w.mode === 'passkey') return 'Passkey';
   if (w.ext?.address) return `Tacit key, funded by ${short(w.ext.address, 6)}`;
   return 'Tacit key in this browser';
 }
@@ -384,7 +446,6 @@ function silentAddress() {
 
 async function connected() {
   show('connect', false);
-  show('btc-choices', false);
   show('connected', true);
   show('send', true);
   show('receive', true);
@@ -415,12 +476,24 @@ function renderIdentity() {
   spEl.title = sp || '';
   if (sp) spEl.dataset.full = sp; else delete spEl.dataset.full;
   show('copy-sp-wrap', !!sp);
+  const st = stealthAddress();
+  const stEl = $('w-st');
+  stEl.textContent = st ? short(st, 14) : '—';
+  stEl.title = st || '';
+  if (st) stEl.dataset.full = st; else delete stEl.dataset.full;
+  show('copy-st-wrap', !!st);
   show('btn-unlock', !w.priv);
   show('btn-fund', !!w.ext);
-  show('btn-backup', !(w.mode === 'eth' || w.mode === 'btc'));
+  show('btn-backup', !(w.mode === 'eth' || w.mode === 'btc' || w.mode === 'passkey'));
+}
+
+// Shielded (stealth) address for tokens, as the main app shows it: the wallet key, single mode.
+function stealthAddress() {
+  try { return T.encodeStealthAddress({ network: T.NET.name, recipientPub: T.wallet.pub }); } catch { return null; }
 }
 
 let satsTotal = null;
+let faucetPending = null; // { txid, sats, t } of a faucet payout not yet listed by the indexer
 async function refresh() {
   const w = T?.wallet;
   if (!w?.pub) return;
@@ -445,12 +518,15 @@ async function refreshSats() {
       if (u.status?.confirmed) conf += u.value; else pend += u.value;
     }
     const silent = await unspentSilent();
-    let txt = fmtSats(conf);
-    if (pend) txt += ` · ${fmtSats(pend)} unconfirmed`;
+    let txt = conf || !pend ? fmtSats(conf) : '';
+    if (pend) txt += `${txt ? ' · ' : ''}${fmtSats(pend)} unconfirmed`;
     if (silent) txt += ` · ${fmtSats(silent)} in silent payments`;
-    $('w-bal').textContent = txt;
     satsTotal = conf + pend + silent;
-    show('faucet-hint', T.NET.name === 'signet' && satsTotal === 0);
+    // A faucet payout the indexer hasn't listed yet: say it is on its way rather than showing an empty wallet.
+    const arriving = satsTotal === 0 && faucetPending && Date.now() - faucetPending.t < 20 * 60_000;
+    if (satsTotal > 0) faucetPending = null;
+    $('w-bal').textContent = arriving ? `${fmtSats(faucetPending.sats)} arriving…` : txt;
+    show('faucet-hint', T.NET.name === 'signet' && satsTotal === 0 && !arriving);
   } catch (e) {
     $('w-bal').textContent = 'unavailable · try Refresh';
     log('Balance lookup failed: ' + errMsg(e), 'error');
@@ -476,6 +552,7 @@ async function unspentSilent() {
 
 // Token balances need the unlocked key (amounts are hidden on chain).
 let assetsBusy = false;
+let held = []; // tokens with a balance: { id, ticker, decimals, balance }
 async function refreshAssets() {
   const w = T?.wallet;
   if (!w?.priv || assetsBusy) { if (w && !w.priv) { show('w-assets-row', true); $('w-assets').textContent = 'unlock to show'; } return; }
@@ -485,11 +562,15 @@ async function refreshAssets() {
   try {
     const h = await T.scanHoldings();
     const rows = [];
-    for (const x of (h instanceof Map ? h.values() : [])) {
+    held = [];
+    for (const [id, x] of (h instanceof Map ? h.entries() : [])) {
       const bal = typeof x.balance === 'bigint' ? x.balance : 0n;
       if (bal <= 0n) continue;
-      rows.push(`${fmtUnits(bal, Number.isInteger(x.decimals) ? x.decimals : 0)} ${x.ticker || short(x.assetIdHex, 4)}`);
+      const a = { id: x.assetIdHex || id, ticker: x.ticker && x.ticker !== '???' ? x.ticker : short(x.assetIdHex || id, 4), decimals: Number.isInteger(x.decimals) ? x.decimals : 0, balance: bal };
+      held.push(a);
+      rows.push(`${fmtUnits(bal, a.decimals)} ${a.ticker}`);
     }
+    renderAssetPicker();
     $('w-assets').textContent = rows.length ? rows.join(' · ') : 'none';
     $('w-assets').dataset.known = '1';
   } catch (e) {
@@ -506,11 +587,11 @@ async function unlock() {
 function signOut() {
   if (scanAbort) scanAbort.abort();
   stopPoll();
-  const w = T.wallet;
-  w.priv = null; w.pub = null; w.mode = null;
-  T.extWallet.state = null; T.ethWallet.state = null; T.btcWallet.state = null;
+  clearSession();
   store.del(SESSION);
   satsTotal = null;
+  held = [];
+  renderAssetPicker();
   show('connected', false); show('send', false); show('receive', false);
   show('backup', false); show('share', false); show('fund-row', false);
   show('connect', true);
@@ -547,8 +628,10 @@ async function faucetSats() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.txid) throw fail(j.error ? `Faucet: ${j.error}` : `Faucet unavailable (HTTP ${r.status}). Try signetfaucet.com.`);
   track(j.txid, 'Signet sats from the faucet');
-  log(`Sent ${fmtSats(j.sats || 10000)} to your address. It counts right away, unconfirmed.`);
+  faucetPending = { txid: j.txid, sats: j.sats || 10000, t: Date.now() };
+  log(`${fmtSats(j.sats || 10000)} on the way. You can use them before they confirm.`);
   await refresh();
+  for (const ms of [4000, 10000, 20000]) setTimeout(() => { if (faucetPending && T?.wallet.pub) refreshSats(); }, ms);
 }
 
 // ---------- activity (this page's transactions, with confirmation status) ----------
@@ -612,9 +695,92 @@ async function poll() {
 
 function isSilent(addr) { return /^t?sp1/i.test(addr); }
 
-function shareUrl(txid) {
+// #sp= carries a silent sats payment, #st= a shielded token payment.
+function shareUrl(txid, kind = 'sp') {
   const base = /^https?:$/.test(location.protocol) ? location.origin + location.pathname : 'https://tacit.finance/sats/';
-  return `${base}#sp=${txid}&net=${T.NET.name}`;
+  return `${base}#${kind}=${txid}&net=${T.NET.name}`;
+}
+
+function showShare(txid, kind) {
+  $('share-lead').textContent = kind === 'st'
+    ? 'A shielded payment hides who received it. Send the recipient this link so their wallet finds it:'
+    : 'A silent payment leaves no reusable address on chain. Send the recipient this link so their wallet finds it:';
+  $('share-url').textContent = shareUrl(txid, kind);
+  show('share', true);
+}
+
+// ---------- send: sats or a token ----------
+
+function sendAsset() {
+  const v = $('send-asset').value;
+  return v === 'sats' ? null : held.find((a) => a.id === v) || null;
+}
+
+function renderAssetPicker() {
+  const sel = $('send-asset');
+  const cur = sel.value;
+  const opts = [new Option('sats', 'sats')];
+  for (const a of held) opts.push(new Option(`${a.ticker} · ${fmtUnits(a.balance, a.decimals)} held`, a.id));
+  sel.replaceChildren(...opts);
+  sel.value = opts.some((o) => o.value === cur) ? cur : 'sats';
+  renderSendLabels();
+}
+
+function renderSendLabels() {
+  const net = curNet();
+  const a = T ? sendAsset() : null;
+  if (!a) {
+    $('to-label').textContent = net === 'mainnet'
+      ? 'To: a bc1q… address or a silent address (sp1…)'
+      : 'To: a tb1q… address or a silent address (tsp1…)';
+    $('amt-label').textContent = 'Amount (sats)';
+    $('amt').placeholder = `${DUST} or more`;
+    $('amt').inputMode = 'numeric';
+  } else {
+    $('to-label').textContent = `To: a shielded address (${net === 'mainnet' ? 'tcs1' : 'tcsts1'}…) or a public key`;
+    $('amt-label').textContent = `Amount (${a.ticker})`;
+    $('amt').placeholder = fmtUnits(a.balance, a.decimals);
+    $('amt').inputMode = 'decimal';
+  }
+}
+
+function parseUnits(s, decimals) {
+  const m = String(s || '').trim().match(/^(\d*)(?:\.(\d*))?$/);
+  if (!m || (!m[1] && !m[2]) || (m[2] || '').length > decimals) throw fail(`Enter an amount with at most ${decimals} decimals.`);
+  return BigInt((m[1] || '0') + (m[2] || '').padEnd(decimals, '0'));
+}
+
+async function sendToken(a) {
+  const out = $('send-out');
+  const raw = $('to').value.trim().toLowerCase().replace(/\s/g, '');
+  if (!raw) throw fail('Enter a shielded address or a public key.');
+  if (isSilent(raw) || T.decodeP2wpkhAddress(raw) || T.decodeP2trAddress(raw)) {
+    throw fail('Tokens go to a shielded address or a public key. Silent and plain addresses take sats.');
+  }
+  const r = T.parseRecipientInput(raw);
+  if (r.kind === 'error') throw fail(r.message.charAt(0).toUpperCase() + r.message.slice(1) + '.');
+  const amount = parseUnits($('amt').value, a.decimals);
+  if (amount <= 0n) throw fail('Enter an amount above zero.');
+  if (amount > a.balance) throw fail(`You hold ${fmtUnits(a.balance, a.decimals)} ${a.ticker}.`);
+  if (satsTotal !== null && satsTotal < TOKEN_SEND_SATS) throw fail(`A token send needs about ${fmtSats(TOKEN_SEND_SATS)} for fees. Add sats first.`);
+  if (!isBackedUp()) { await ensureKey(); openBackup(); throw fail('Back up your key first (above), then send.'); }
+  const amt = `${fmtUnits(amount, a.decimals)} ${a.ticker}`;
+  if (T.NET.name === 'mainnet' && !confirm(`Send ${amt} to ${short(raw, 12)}?`)) return;
+  show('share', false);
+  await ensureKey();
+  out.textContent = 'Building the transfer…';
+  const stage = { 'commit-start': 'Sending the fee transaction…', 'reveal-start': 'Sending the transfer…' };
+  const res = await T.buildAndBroadcastCXfer({
+    assetIdHex: a.id, amount,
+    ...(r.kind === 'stealth' ? { stealthAddress: r.stealthAddress } : { recipientPubHex: r.pubHex }),
+    onProgress: (s) => { if (stage[s]) out.textContent = stage[s]; },
+  });
+  out.replaceChildren(`Sent ${amt}${r.kind === 'stealth' ? ', recipient hidden' : ''} · `, txLink(res.revealTxid));
+  track(res.revealTxid, `${r.kind === 'stealth' ? 'Shielded payment' : 'Sent'} ${amt}`);
+  if (r.kind === 'stealth') showShare(res.revealTxid, 'st');
+  $('amt').value = '';
+  try { T.invalidateHoldingsCache?.(); } catch {}
+  setTimeout(() => { refreshSats(); refreshAssets(); }, 3000);
 }
 
 function txLink(txid, n = 10) {
@@ -640,6 +806,8 @@ function checkRecipient(to) {
 }
 
 async function send() {
+  const token = sendAsset();
+  if (token) return sendToken(token);
   const out = $('send-out');
   const to = $('to').value.trim();
   const amt = Math.floor(Number($('amt').value));
@@ -659,10 +827,7 @@ async function send() {
   }
   out.replaceChildren(`Sent ${fmtSats(r.recipientValue)} · fee ${fmtSats(r.fee)} · `, txLink(r.txid));
   track(r.txid, `${silent ? 'Silent payment' : 'Sent'} ${fmtSats(r.recipientValue)}`);
-  if (silent) {
-    $('share-url').textContent = shareUrl(r.txid);
-    show('share', true);
-  }
+  if (silent) showShare(r.txid, 'sp');
   $('amt').value = '';
   setTimeout(refreshSats, 3000);
 }
@@ -673,49 +838,94 @@ function renderFound() {
   const box = $('found');
   box.replaceChildren();
   const credits = Object.entries(T?.wallet.pub ? T.loadSpCredits() || {} : {});
-  if (!credits.length) return;
+  let tokens = [];
+  try { tokens = T?.wallet.priv ? Object.entries(T.loadStealthCredits() || {}) : []; } catch {}
+  if (!credits.length && !tokens.length) return;
   const ol = document.createElement('ol');
   ol.className = 'lines compact';
-  for (const [key, c] of credits) {
+  const row = (key, amount) => {
     const [txid, vout] = key.split(':');
     const li = document.createElement('li');
     const a = txLink(txid);
     a.textContent = `${short(txid, 8)}:${vout}`;
     const l = document.createElement('span'); l.append(a);
-    const r = document.createElement('span'); r.textContent = fmtSats(c.sats) + (spentChecked.get(key) ? ' · spent' : '');
+    const r = document.createElement('span'); r.textContent = amount;
     li.append(l, r);
     ol.append(li);
-  }
+  };
+  for (const [key, c] of credits) row(key, fmtSats(c.sats) + (spentChecked.get(key) ? ' · spent' : ''));
+  for (const [key, c] of tokens) row(key, tokenAmount(c.assetIdHex, c.amount));
   const h = document.createElement('p');
   h.className = 'muted';
-  h.textContent = 'Silent payments found (Send spends them like any sats):';
+  h.textContent = 'Found for you. Send spends them like anything else you hold:';
   box.append(h, ol);
 }
 
-async function checkPayment(txid) {
+function tokenAmount(assetIdHex, amount) {
+  const m = held.find((a) => a.id === assetIdHex) || (() => { try { return T.getAssetMeta(assetIdHex); } catch { return null; } })() || {};
+  const d = Number.isInteger(m.decimals) ? m.decimals : 0;
+  return `${fmtUnits(BigInt(amount), d)} ${m.ticker && m.ticker !== '???' ? m.ticker : short(assetIdHex, 4)}`;
+}
+
+// Shielded token payments in one transaction, credited to this wallet.
+async function checkToken(txid) {
+  const found = await T.discoverStealthFromTxid(txid, { merge: true });
+  for (const f of found) track(txid, `Received ${tokenAmount(f.assetIdHex, f.amount)}`);
+  return found;
+}
+
+// Shielded receipts for the tokens this wallet holds or knows of, via the worker's per-token transfer index.
+async function scanTokens(line) {
+  const ids = [...new Set([...(KNOWN_ASSETS[T.NET.name] || []), ...held.map((a) => a.id)])];
+  let found = 0, txs = 0;
+  for (const id of ids) {
+    const r = await T.scanAssetForStealthReceipts(id, {
+      onProgress: (p) => { line.textContent = `Tokens: ${txs + p.txsScanned + p.txsSkipped} transfers checked · ${found + p.found} found…`; },
+    });
+    found += r.discovered.length;
+    txs += r.txsScanned + r.txsSkipped;
+    for (const f of r.discovered) track(f.txid, `Received ${tokenAmount(f.assetIdHex, f.amount)}`);
+  }
+  line.textContent = `Tokens: ${txs.toLocaleString('en-US')} transfers checked, ${found ? `${found} payment${found === 1 ? '' : 's'} found for you` : 'none for you'}.`;
+  return found;
+}
+
+// kind: 'sp' (silent sats), 'st' (shielded token) or null (try both).
+async function checkPayment(txid, kind = null) {
   const out = $('scan-out');
   await ensureKey();
   out.textContent = `Checking ${short(txid, 8)}…`;
-  let found;
-  try { found = await T.discoverSilentPaymentFromTxid(txid); }
-  catch (e) {
-    if (/missing or malformed/.test(e?.message || '')) throw fail(`Transaction ${short(txid, 8)} was not found on ${T.NET.name}.`);
-    if (/not fully indexed/.test(e?.message || '')) throw fail(`Transaction ${short(txid, 8)} is not indexed yet. Try again in a minute.`);
-    throw e;
+  let found = [];
+  if (kind !== 'st') {
+    try { found = await T.discoverSilentPaymentFromTxid(txid); }
+    catch (e) {
+      if (/missing or malformed/.test(e?.message || '')) throw fail(`Transaction ${short(txid, 8)} was not found on ${T.NET.name}.`);
+      if (/not fully indexed/.test(e?.message || '')) throw fail(`Transaction ${short(txid, 8)} is not indexed yet. Try again in a minute.`);
+      if (kind === 'sp') throw e;
+    }
   }
-  if (!found.length) {
-    out.replaceChildren('That payment is not addressed to this wallet. ', txLink(txid));
-  } else {
+  if (found.length) {
     const total = found.reduce((s, f) => s + Number(f.sats), 0);
     out.replaceChildren(`Found ${fmtSats(total)} for you in `, txLink(txid), '.');
     track(txid, `Received ${fmtSats(total)}`);
+  } else {
+    const tokens = kind === 'sp' ? [] : await checkToken(txid).catch((e) => {
+      if (/missing or malformed/.test(e?.message || '')) return [];
+      throw e;
+    });
+    if (tokens.length) out.replaceChildren(`Found ${tokens.map((f) => tokenAmount(f.assetIdHex, f.amount)).join(' + ')} for you in `, txLink(txid), '.');
+    else out.replaceChildren('That payment is not addressed to this wallet. ', txLink(txid));
   }
+  try { T.invalidateHoldingsCache?.(); } catch {}
   await refresh();
 }
 
 let hashChecked = null;
 async function checkHashPayment() {
-  const { sp, net } = parseHash();
+  const h = parseHash();
+  const net = h.net;
+  const sp = h.sp || h.st;
+  const kind = h.sp ? 'sp' : 'st';
   if (!sp || !T?.wallet.pub || hashChecked === sp) return;
   if (net && net !== T.NET.name) return;
   const out = $('scan-out');
@@ -729,16 +939,16 @@ async function checkHashPayment() {
     return;
   }
   hashChecked = sp;
-  await busy([$('btn-check'), $('btn-scan')], () => checkPayment(sp), out);
+  await busy([$('btn-check'), $('btn-scan')], () => checkPayment(sp, kind), out);
 }
 
 function parseCheckInput(s) {
   s = s.trim();
-  const m = s.match(/[#&?]sp=([0-9a-fA-F]{64})/) || s.match(/^([0-9a-fA-F]{64})$/);
+  const m = s.match(/[#&?](sp|st)=([0-9a-fA-F]{64})/) || s.match(/^()([0-9a-fA-F]{64})$/);
   if (!m) throw fail('Paste a payment link or a 64-character txid.');
   const n = s.match(/[#&?]net=(mainnet|signet)/);
   if (n && n[1] !== T.NET.name) throw fail(`That link is for ${n[1]}. Switch the network above first.`);
-  return m[1].toLowerCase();
+  return { txid: m[2].toLowerCase(), kind: m[1] || null };
 }
 
 async function getJson(path, signal) {
@@ -762,36 +972,49 @@ async function getJson(path, signal) {
 
 async function scan() {
   const url = SP_INDEX_URL[T.NET.name];
-  if (!url || !indexState.ok) throw fail('The payment index is not reachable. Paste the payment link or txid instead.');
   await ensureKey();
   const ctl = new AbortController();
   scanAbort = ctl;
   show('btn-scan-stop', true);
   $('btn-scan-stop').disabled = false;
   const out = $('scan-out');
-  out.textContent = 'Starting scan…';
-  let res = null, prog = null;
+  const satsLine = document.createElement('div');
+  const tokLine = document.createElement('div');
+  out.replaceChildren(satsLine, tokLine);
+  satsLine.textContent = 'Sats: starting…';
+  let res = null, prog = null, tokens = 0;
   try {
-    res = await T.scanSilentPaymentsViaIndex({
-      baseUrl: url,
-      signal: ctl.signal,
-      onProgress: (p) => { prog = p; out.textContent = `Scanned to block ${p.height} of ${p.to} · ${p.found} found…`; },
-    });
-    const n = res.found.length;
-    const total = res.found.reduce((s, f) => s + Number(f.sats || 0), 0);
-    const span = res.blocks ? `${res.blocks.toLocaleString('en-US')} block${res.blocks === 1 ? '' : 's'}` : 'no new blocks';
-    out.textContent = `${ctl.signal.aborted ? 'Stopped' : 'Done'}: ${span}, ${res.txs.toLocaleString('en-US')} transactions checked, ${n ? `${fmtSats(total)} found for you` : 'none for you'}.`;
-    for (const f of res.found) track(f.txid, `Received ${fmtSats(f.sats)}`);
-  } catch (e) {
-    const found = prog?.found || 0;
-    out.textContent = ctl.signal.aborted
-      ? `Stopped${prog ? ` at block ${prog.height}` : ''}. ${found} found.`
-      : `Scan stopped${prog ? ` at block ${prog.height}` : ''}: ${errMsg(e)} ${found} found so far.`;
+    if (!url || !indexState.ok) {
+      satsLine.textContent = 'Sats: the silent-payment index is offline. Paste the payment link instead.';
+    } else {
+      try {
+        res = await T.scanSilentPaymentsViaIndex({
+          baseUrl: url,
+          signal: ctl.signal,
+          onProgress: (p) => { prog = p; satsLine.textContent = `Sats: block ${p.height} of ${p.to} · ${p.found} found…`; },
+        });
+        const n = res.found.length;
+        const total = res.found.reduce((s, f) => s + Number(f.sats || 0), 0);
+        const span = res.blocks ? `${res.blocks.toLocaleString('en-US')} block${res.blocks === 1 ? '' : 's'}` : 'no new blocks';
+        satsLine.textContent = `Sats: ${ctl.signal.aborted ? 'stopped, ' : ''}${span}, ${res.txs.toLocaleString('en-US')} transactions checked, ${n ? `${fmtSats(total)} found for you` : 'none for you'}.`;
+        for (const f of res.found) track(f.txid, `Received ${fmtSats(f.sats)}`);
+      } catch (e) {
+        const found = prog?.found || 0;
+        satsLine.textContent = ctl.signal.aborted
+          ? `Sats: stopped${prog ? ` at block ${prog.height}` : ''}. ${found} found.`
+          : `Sats: stopped${prog ? ` at block ${prog.height}` : ''}: ${errMsg(e)} ${found} found so far.`;
+      }
+    }
+    if (ctl.signal.aborted) return;
+    tokLine.textContent = 'Tokens: checking…';
+    try { tokens = await scanTokens(tokLine); }
+    catch (e) { tokLine.textContent = `Tokens: ${errMsg(e)}`; }
   } finally {
     scanAbort = null;
     show('btn-scan-stop', false);
     renderScan();
-    if (res?.found.length || prog?.found) await refresh(); else renderFound();
+    if (tokens) { try { T.invalidateHoldingsCache?.(); } catch {} }
+    if (res?.found.length || prog?.found || tokens) await refresh(); else renderFound();
   }
 }
 
@@ -859,9 +1082,18 @@ function wire() {
       if (net !== curNet()) switchNet(net);
     };
   }
+  $('btn-passkey').onclick = () => busy(connectButtons(), () => usePasskey());
+  $('btn-passkey-restore').onclick = () => busy(connectButtons(), () => usePasskey({ restore: true }));
   $('btn-create').onclick = () => busy(connectButtons(), createWallet);
-  $('btn-btc').onclick = () => busy(connectButtons(), async () => { await loadTacit(); btcChoices(); });
+  $('btn-import').onclick = () => { show('import-row', $('import-row').classList.contains('hidden')); $('import-key').focus(); };
+  $('btn-import-go').onclick = () => busy(connectButtons(), importKey);
+  $('import-key').onkeydown = (e) => { if (e.key === 'Enter') $('btn-import-go').click(); };
   $('btn-eth').onclick = () => busy(connectButtons(), linkEth);
+  $('btn-xverse').onclick = () => busy(connectButtons(), () => linkExt('xverse'));
+  $('btn-unisat').onclick = () => busy(connectButtons(), () => linkExt('unisat'));
+  $('btn-btc').onclick = () => busy(connectButtons(), linkBtcId);
+  $('send-asset').onchange = () => { renderSendLabels(); show('share', false); $('send-out').textContent = ''; };
+  $('copy-st').onclick = (e) => { e.preventDefault(); copy($('w-st').dataset.full); };
   $('faucet').onclick = () => busy($('faucet'), faucetSats);
   $('btn-refresh').onclick = () => busy($('btn-refresh'), async () => { spentChecked.clear(); try { T.invalidateHoldingsCache?.(); } catch {} await refresh(); });
   $('btn-unlock').onclick = () => busy($('btn-unlock'), unlock);
@@ -880,11 +1112,12 @@ function wire() {
   $('copy-sp').onclick = (e) => { e.preventDefault(); copy($('w-sp').dataset.full); };
   $('btn-send').onclick = () => busy($('btn-send'), send, $('send-out'));
   $('btn-share-copy').onclick = () => copy($('share-url').textContent);
-  $('btn-check').onclick = () => busy([$('btn-check'), $('btn-scan')], () => checkPayment(parseCheckInput($('check-in').value)), $('scan-out'));
+  $('btn-check').onclick = () => busy([$('btn-check'), $('btn-scan')], () => { const p = parseCheckInput($('check-in').value); return checkPayment(p.txid, p.kind); }, $('scan-out'));
   $('btn-scan').onclick = () => busy([$('btn-scan'), $('btn-check')], scan, $('scan-out'));
   $('btn-scan-stop').onclick = () => { scanAbort?.abort(); $('btn-scan-stop').disabled = true; };
   window.addEventListener('hashchange', () => {
-    const { net, sp } = parseHash();
+    const { net } = parseHash();
+    const sp = parseHash().sp || parseHash().st;
     if (net && net !== curNet()) {
       store.set(NET_PREF, net);
       if (T) { releaseSharedNet(); location.reload(); } else { renderNet(); probeIndex(); refreshCreateLabel(); resume(); }
@@ -927,11 +1160,25 @@ function wireTabs() {
       selectTab(all[(j + all.length) % all.length].id.slice(4), { focus: true, remember: true });
     };
   });
-  selectTab(parseHash().sp ? 'receive' : store.get(TAB_PREF) || (netPref() === 'signet' ? 'secret' : 'send'));
+  selectTab(parseHash().sp || parseHash().st ? 'receive' : store.get(TAB_PREF) || (netPref() === 'signet' ? 'secret' : 'send'));
 }
 
 function refreshCreateLabel() {
-  $('btn-create').textContent = hasLocalWallet() ? 'Unlock your Tacit wallet' : 'Create a Tacit wallet';
+  const has = hasLocalWallet();
+  $('create-t').textContent = has ? 'Unlock your local wallet' : 'Generate a local wallet';
+  $('create-m').textContent = has
+    ? 'The wallet saved in this browser. Enter its passphrase.'
+    : 'Works in every browser. A new key, locked with a passphrase you set next. Back it up.';
+  // Passkey leads where the browser supports it, as on tacit.finance; otherwise the local wallet does.
+  const pk = passkeyOk();
+  const b = $('btn-passkey');
+  b.disabled = !pk;
+  b.title = pk ? '' : 'Passkeys need https and a supporting browser';
+  b.classList.toggle('primary', pk);
+  $('btn-create').classList.toggle('primary', !pk);
+  show('passkey-rec', pk);
+  show('local-rec', !pk);
+  show('passkey-alt', pk && !savedPasskey());
 }
 
 // Test-only: ?debug=errors collects uncaught errors into a hidden DOM node.
@@ -961,7 +1208,7 @@ async function boot() {
 
 // Reconnect a previous session on this network, or load the wallet code for a payment link.
 async function resume() {
-  const sp = parseHash().sp;
+  const sp = parseHash().sp || parseHash().st;
   if (!(store.get(SESSION) === '1' && readIdentity()) && !sp) return;
   try {
     await loadTacit();

@@ -323,19 +323,21 @@ export const STEPS = [
     ? [{ id: 'join', title: 'Get private cBTC' }]
     : [{ id: 'get', title: 'Get cBTC' }, { id: 'shield', title: 'Shield' }]),
   { id: 'pay', title: 'Pay privately' }, { id: 'receive', title: 'Receive' }, { id: 'exit', title: 'Exit' },
+  { id: 'sell', title: 'Back to sats', soon: true },
 ];
 
 const POOL_STEPS = new Set(['pay', 'receive', 'exit']);
 
 // What each step does, shown while it is still ahead.
 const ABOUT = {
-  sats: 'Free test sats for the fees and the cBTC price.',
-  get: 'Buy a test cBTC lot from the faucet in one atomic swap.',
+  sats: 'Free test sats for fees and the cBTC price.',
+  get: 'Swap sats for a test cBTC lot in one atomic swap.',
   shield: 'Move it into the pool, where amounts and owners are hidden.',
-  join: 'Buy a test cBTC lot straight into the pool in one atomic swap, proved on your device.',
-  pay: 'Pay another pool address. The amount and where your coins came from stay hidden.',
-  receive: 'Find private payments sent to your pool address.',
-  exit: 'Leave the pool to an ordinary cBTC note in your wallet.',
+  join: 'Swap sats for test cBTC straight into the pool, in one transaction.',
+  pay: 'Pay a pool address. Amount and source stay hidden.',
+  receive: 'Find pool payments sent to you.',
+  exit: 'Leave the pool as ordinary cBTC in your wallet.',
+  sell: 'Swap cBTC for sats in one atomic swap.',
 };
 
 // takePreauthSale progress stages, in words.
@@ -453,7 +455,7 @@ export function mount(root, ctx) {
     const st = faucet.status;
     if (!st) return null;
     const k = (st.open_sales || []).length;
-    return el('div', {}, `Pay ${n(st.price_sats)} signet sats for ${fmt(st.lot)} ${ticker()}, a test token standing in for bitcoin-backed cBTC. ${k} lot${k === 1 ? '' : 's'} open.`);
+    return el('div', {}, `Swap ${n(st.price_sats)} signet sats for ${fmt(st.lot)} test ${ticker()}. ${k} lot${k === 1 ? '' : 's'} open.`);
   }
 
   // done | active | locked, in order: the first open step is the active one. Pay, Receive and Exit open together
@@ -470,7 +472,8 @@ export function mount(root, ctx) {
     };
     const out = {};
     let open = !!who?.connected;
-    for (const { id } of STEPS) {
+    for (const { id, soon } of STEPS) {
+      if (soon && !hooks.has(id)) { out[id] = 'soon'; continue; }
       const impl = hooks.get(id);
       const d = impl?.done ? !!impl.done(state) : done[id];
       if (POOL_STEPS.has(id)) out[id] = running === id ? 'active' : !who?.connected || !state.poolNote ? 'locked' : d ? 'done' : 'active';
@@ -699,12 +702,14 @@ export function mount(root, ctx) {
   function render() {
     autoscan();
     intro.textContent = who?.connected
-      ? 'Each step is one signet transaction from your wallet above. Progress is saved in this browser.'
+      ? 'Each step is one signet transaction. Progress is saved in this browser.'
       : 'Connect a wallet above to start. Each step is one signet transaction.';
     const ph = phases();
     renderSats(ph.sats);
     if (SINGLE_ACTION_JOIN) renderJoin(ph.join); else { renderGet(ph.get); renderShield(ph.shield); }
     for (const id of ['pay', 'receive', 'exit']) renderHook(id, ph[id]);
+    if (ph.sell === 'soon') put(setPhase('sell', 'soon').body, el('div', {}, ABOUT.sell));
+    else renderHook('sell', ph.sell);
   }
 
   async function refreshFaucet() {

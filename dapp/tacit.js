@@ -92248,7 +92248,7 @@ export {
   // BTC determinism guard (enroll signs twice, refuses to derive a drifting
   // identity at login) is a load-bearing recovery-safety property and gets
   // dedicated coverage in tests/btc-wallet.test.mjs.
-  btcWallet, ethWallet, extWallet, setActiveWalletMode, getActiveWalletMode,
+  btcWallet, ethWallet, extWallet, prfWallet, setActiveWalletMode, getActiveWalletMode,
   // Onboarding wiring entry points — exported so tests/btc-wallet-welcome.test.mjs
   // can drive the real welcome-modal choice handler and the lazy sign-time
   // unlock against a minimal DOM, without booting the full app init().
