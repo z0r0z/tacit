@@ -1672,7 +1672,7 @@ const only = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {
   if (only && !only.test(name)) continue;
   const ts = performance.now();
-  try { await fn(); passed++; console.log('  ok -', name, process.env.TIMING ? `(${((performance.now() - ts) / 1000).toFixed(1)} s)` : ''); }
+  try { await fn(); passed++; console.log('  ok -', name + (process.env.TIMING ? ` (${((performance.now() - ts) / 1000).toFixed(1)} s)` : '')); }
   catch (e) { console.error('  FAIL -', name); console.error(e); process.exitCode = 1; }
 }
 console.log(`${passed}/${only ? tests.filter(([n]) => only.test(n)).length : tests.length} passed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
