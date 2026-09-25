@@ -410,7 +410,7 @@ services:
       - key: BTC_POOL_NETWORK
         value: signet
       - key: BTC_POOL_START_HEIGHT
-        value: "323678"
+        value: "323686"
       - key: BTC_POOL_ESPLORA
         value: https://mempool.space/signet/api
       - key: BTC_POOL_CONFIRMATIONS
@@ -418,12 +418,12 @@ services:
       - key: BTC_POOL_POLL_SECS
         value: "30"
       - key: BTC_POOL_DB
-        value: /var/lib/tacit-btc-pool/btc-pool-zk.db
+        value: /var/lib/tacit-btc-pool/btc-pool-relay-zk-323686.db
       - key: BTC_POOL_RELAYER_MEMPOOL
         value: esplora
       # <asset hex>:<fee units>, comma-separated. Signet cBTC.
       - key: BTC_POOL_RELAYER_FEES
-        value: "17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5:100"
+        value: "17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5:10"
       - key: BTC_POOL_RELAYER_BTC_KEY      # signet P2WPKH key, hex — set in the Render dashboard
         sync: false
       - key: BTC_POOL_RELAYER_POOL_SEED    # 32-byte hex pool wallet seed — set in the Render dashboard
