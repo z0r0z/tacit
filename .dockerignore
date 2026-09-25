@@ -9,7 +9,5 @@
 !dapp/package.json
 !dapp/*.js
 !dapp/vendor/*.js
-!contracts/sp1/confidential/elf-vkey-pin.json
-!contracts/sp1/confidential/btc-pool-verify/Cargo.toml
-!contracts/sp1/confidential/btc-pool-verify/Cargo.lock
-!contracts/sp1/confidential/btc-pool-verify/src
+!dapp/btc-pool/pin.json
+!dapp/btc-pool/spend_dev_signet_vk.json
