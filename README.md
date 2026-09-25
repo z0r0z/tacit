@@ -25,7 +25,7 @@ or attestor set signs a bridge message.
 
 - **App:** [tacit.finance](https://tacit.finance)
 - **Spec:** [`SPEC.md`](./SPEC.md), the normative protocol
-- **Whitepaper:** [`whitepaper/`](./whitepaper/WHITEPAPER.md), design and rationale
+- **Whitepaper:** [tacit.finance/tacit-v1.pdf](https://tacit.finance/tacit-v1.pdf) (source in [`whitepaper/`](./whitepaper/WHITEPAPER.md)), design and rationale
 - **Contracts:** [`docs/DEPLOYMENTS.md`](./docs/DEPLOYMENTS.md), mainnet addresses and verifying keys
 - **Verify it yourself:** [`docs/VERIFY-LIVE.md`](./docs/VERIFY-LIVE.md), `node tools/verify-live.mjs` checks the
   live deployment against this repository
