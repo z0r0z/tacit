@@ -152,6 +152,14 @@ regular Tacit etch (`17619b4c…66c5`, ticker cBTC, 8 decimals, fixed supply, no
 keeps small lots listed as pre-authorized sales at 1,000 signet sats each, so getting test cBTC is itself
 an atomic swap, and it also drips signet sats for fees. Pool spends are proved in the browser.
 
+Seen on signet: a
+[buy-and-shield](https://mempool.space/signet/tx/9f3b6498622614ca101d6f2f7a51aa961ed13952a0b72ef9c699623da8c2c0c1),
+a [relayed private payment](https://mempool.space/signet/tx/9ea3d9d7c4b01bb0cae585df666ed963ed05c74409fad8f702cb622819ca03d3)
+and an [exit to sats](https://mempool.space/signet/tx/a5f32822bd9927305585b40efc7a39cec70e713354ce026b652e4ab2ecf0ea41),
+each proved on the payer's device, and a
+[silent payment](https://mempool.space/signet/tx/a5c4b2a02883550cfe06fec646fe6569a0e92823c972700a729d080c7187c899)
+found through the tweak index with no txid shared.
+
 Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled). Design:
 [pool](./contracts/sp1/confidential/DESIGN-btc-shielded-pool.md),
 [security](./contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md),
