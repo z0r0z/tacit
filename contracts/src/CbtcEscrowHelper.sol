@@ -165,6 +165,30 @@ contract CbtcEscrowHelper is ReentrancyGuard {
         if (stray != 0) SafeTransferLib.safeTransferETH(msg.sender, stray);
     }
 
+    /// @notice Same as `postEscrowWithETHAndSettle`, but for a contract relaying a user's ETH and proof on
+    ///         their behalf (e.g. a tip-splitting forwarder): credits the given `depositor` in
+    ///         `helperEscrowOf` instead of `msg.sender`, which from this contract's perspective is the
+    ///         relaying contract, not the person who actually funded the stake. Without this, only the
+    ///         relayer — never the real depositor, and if the relayer holds no matching reclaim function,
+    ///         nobody — could ever call `reclaimEscrow` for this escrow. The stray-ETH sweep below still
+    ///         pays `msg.sender` (the relayer), which is correct: it is the relayer's job to forward that
+    ///         on to its own caller, exactly as it forwards a tip.
+    function postEscrowWithETHAndSettleFor(
+        bytes32 outpoint,
+        address depositor,
+        bytes calldata publicValues,
+        bytes calldata proof,
+        bytes[] calldata memos
+    ) external payable nonReentrant {
+        if (outpoint == bytes32(0) || msg.value == 0 || depositor == address(0)) revert BadAmount();
+        uint256 got = _stake();
+        emit HelperEscrowStaked(outpoint, depositor, msg.value, got);
+        _postToEngine(outpoint, depositor, got);
+        POOL.settle(publicValues, proof, memos);
+        uint256 stray = address(this).balance;
+        if (stray != 0) SafeTransferLib.safeTransferETH(msg.sender, stray);
+    }
+
     /// @notice Trustlessly reclaim your OWN tracked share of this contract's escrow for `outpoint`, once
     ///         CollateralEngine will release it (reflection-proven honest redeem, or no cBTC ever minted
     ///         against the lock) — permissionless, no owner, refund always goes to the caller's own tracked

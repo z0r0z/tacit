@@ -4,11 +4,14 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {CbtcEscrowHelperTipForwarder} from "../src/CbtcEscrowHelperTipForwarder.sol";
 
-/// Stands in for CbtcEscrowHelper.postEscrowWithETHAndSettle: stakes the ENTIRE value it receives (mirroring
-/// the real helper's own "no partial stake" invariant), and can optionally pay msg.sender (the forwarder)
-/// to simulate a batch whose settle carries a native-ETH payout the real helper would auto-sweep back.
+/// Stands in for CbtcEscrowHelper.postEscrowWithETHAndSettleFor: stakes the ENTIRE value it receives
+/// (mirroring the real helper's own "no partial stake" invariant), records the `depositor` argument
+/// separately from `msg.sender` (the forwarder) so tests can assert the forwarder passes the real caller
+/// through rather than crediting itself, and can optionally pay msg.sender (the forwarder) to simulate a
+/// batch whose settle carries a native-ETH payout the real helper would auto-sweep back.
 contract MockCbtcEscrowHelper {
     bytes32 public lastOutpoint;
+    address public lastDepositor;
     uint256 public lastValue;
     uint256 public callCount;
     uint256 public payToCaller;
@@ -22,9 +25,13 @@ contract MockCbtcEscrowHelper {
         shouldRevert = v;
     }
 
-    function postEscrowWithETHAndSettle(bytes32 outpoint, bytes calldata, bytes calldata, bytes[] calldata) external payable {
+    function postEscrowWithETHAndSettleFor(bytes32 outpoint, address depositor, bytes calldata, bytes calldata, bytes[] calldata)
+        external
+        payable
+    {
         if (shouldRevert) revert("mock: escrow settle reverted");
         lastOutpoint = outpoint;
+        lastDepositor = depositor;
         lastValue = msg.value;
         callCount++;
         if (payToCaller != 0) {
@@ -97,6 +104,16 @@ contract CbtcEscrowHelperTipForwarderTest is Test {
         assertEq(relay.balance, relayBefore + tip, "relay didn't receive exactly the tip");
         assertEq(caller.balance, callerBefore - stakeAmount - tip, "caller paid more than stake + tip");
         assertEq(address(fwd).balance, 0, "forwarder should custody nothing between calls");
+    }
+
+    /// This forwarder is stateless and has no reclaim function of its own, so the helper must credit the
+    /// real caller, never this contract's own address.
+    function test_creditsRealCallerNotTheForwarderItself() public {
+        uint256 stakeAmount = 1 ether;
+        vm.prank(caller);
+        fwd.postEscrowWithETHAndSettleWithTip{value: stakeAmount}(outpoint, stakeAmount, _feelessPv(), "proof", new bytes[](0), relay);
+        assertEq(helper.lastDepositor(), caller, "helper must credit the real caller, not the forwarder");
+        assertTrue(helper.lastDepositor() != address(fwd), "escrow must never be attributed to the forwarder");
     }
 
     function test_zeroTipIsValidLossLeader() public {

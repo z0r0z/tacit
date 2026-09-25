@@ -33,11 +33,22 @@ the dapp's deployment config, which the API also imports.
 | BtcCallExecutor | [`0x00000000Df8263Ac5810C53B31AaE20ee53C247f`](https://etherscan.io/address/0x00000000Df8263Ac5810C53B31AaE20ee53C247f) |
 | WstEthUsdFeed (the engine's BTC-per-wstETH price feed) | [`0x000000005010E4A43e83a658D36BF3ADb38ed62c`](https://etherscan.io/address/0x000000005010E4A43e83a658D36BF3ADb38ed62c) |
 | EthCallOutbox (Ethereum→Bitcoin message outbox; pinned in the Bitcoin reflection guest) | [`0x00000000a26a6E291972666a9687741dBa11Af46`](https://etherscan.io/address/0x00000000a26a6E291972666a9687741dBa11Af46) |
-| CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x00000000689c71e690e5842df088af97f9d4f71b`](https://etherscan.io/address/0x00000000689c71e690e5842df088af97f9d4f71b) |
+| CbtcEscrowHelper (one-transaction wstETH escrow; bound to this engine) | [`0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA`](https://etherscan.io/address/0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA) |
+| CbtcEscrowHelperTipForwarder (splits a tip off a self-proved escrow+settle call to the helper above) | [`0x000000006fcb52Aa67AC4A420a4D43A0e48F136F`](https://etherscan.io/address/0x000000006fcb52Aa67AC4A420a4D43A0e48F136F) |
 
-Every row but CbtcEscrowHelper matches `contracts/deployments/1-createx.json` exactly. CbtcEscrowHelper is
-deployed by a separate script, `DeployCbtcEscrowHelperCreateX.s.sol`, and its address lives in
-`contracts/deployments/1.json` instead.
+Every row but CbtcEscrowHelper/CbtcEscrowHelperTipForwarder matches `contracts/deployments/1-createx.json`
+exactly. Both are deployed by their own scripts (`DeployCbtcEscrowHelperCreateX.s.sol`,
+`DeployCbtcEscrowHelperTipForwarderCreateX.s.sol`), and their addresses live in `contracts/deployments/1.json`
+instead.
+
+An earlier CbtcEscrowHelper (`0x00000000689c71e690e5842df088af97f9d4f71b`) and an earlier
+CbtcEscrowHelperTipForwarder pointed at it (`0x000000fB551f7Ef4936a59ECdD431ae253139E8d`) remain deployed and
+fully reachable — `reclaimEscrow` on the old helper still works for any escrow already posted through it —
+but neither should be used for new deposits: the old forwarder credits its own address rather than the real
+depositor for `helperEscrowOf`, so any NEW escrow posted through it would be unreachable by anyone. The
+current helper adds `postEscrowWithETHAndSettleFor(outpoint, depositor, …)`, which the current forwarder
+calls with the real caller as `depositor`, so new deposits routed through either helper's other entry points
+or the current forwarder credit correctly.
 
 Shared infrastructure outside the CreateX manifest:
 

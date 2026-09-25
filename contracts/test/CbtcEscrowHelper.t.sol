@@ -405,6 +405,52 @@ contract CbtcEscrowHelperForkTest is Test {
         assertEq(depositor.balance, 1 ether, "ETH fully refunded by the revert");
     }
 
+    /// postEscrowWithETHAndSettleFor exists for a relaying contract (e.g. CbtcEscrowHelperTipForwarder)
+    /// calling on a real user's behalf: the caller (a stand-in relayer here) pays the ETH, but the named
+    /// `depositor` — not the relayer — must be the one credited and later able to reclaim. Without this,
+    /// a stateless relayer with no reclaim function would strand the escrow permanently (it becomes the
+    /// engine's funder-of-record but can never call reclaimEscrow for itself).
+    function test_postEscrowWithETHAndSettleFor_creditsNamedDepositorNotCaller() public {
+        _skipUnlessForked();
+        address relayer = address(0xBEEF); // stands in for a forwarder contract
+        address depositor = address(0xD0F0); // the real user
+        bytes32 outpoint = keccak256("outpoint-settle-for");
+        uint64 vBtc = 1_000_000;
+        pool.setLock(outpoint, vBtc);
+        pool.setPendingSettleCheck(outpoint, vBtc, 0);
+
+        vm.deal(relayer, 1 ether);
+        vm.prank(relayer);
+        helper.postEscrowWithETHAndSettleFor{value: 1 ether}(outpoint, depositor, "", "", new bytes[](0));
+
+        assertTrue(pool.lastSettleCalled());
+        assertGt(helper.helperEscrowOf(outpoint, depositor), 0, "depositor must be credited");
+        assertEq(helper.helperEscrowOf(outpoint, relayer), 0, "relayer must NOT be credited");
+
+        // The named depositor — not the relayer — can reclaim once the lock is un-minted.
+        pool.setMinted(outpoint, false);
+        uint256 posted = helper.helperEscrowOf(outpoint, depositor);
+        uint256 before = wsteth.balanceOf(depositor);
+        vm.prank(depositor);
+        helper.reclaimEscrow(outpoint);
+        assertEq(wsteth.balanceOf(depositor), before + posted, "depositor recovers exactly its posted amount");
+
+        // The relayer holds no share and cannot reclaim anything for this outpoint.
+        vm.prank(relayer);
+        vm.expectRevert(CbtcEscrowHelper.NothingToRelease.selector);
+        helper.reclaimEscrow(outpoint);
+    }
+
+    function test_postEscrowWithETHAndSettleFor_zeroDepositorReverts() public {
+        _skipUnlessForked();
+        bytes32 outpoint = keccak256("outpoint-settle-for-zero");
+        address relayer = address(0xBEEF);
+        vm.deal(relayer, 1 ether);
+        vm.prank(relayer);
+        vm.expectRevert(CbtcEscrowHelper.BadAmount.selector);
+        helper.postEscrowWithETHAndSettleFor{value: 1 ether}(outpoint, address(0), "", "", new bytes[](0));
+    }
+
     /// Defense-in-depth: if the settle call causes the pool to pay native ETH back to the helper (e.g. a
     /// same-batch withdrawal), the helper must sweep it to the original caller in the same transaction rather
     /// than stranding it.
