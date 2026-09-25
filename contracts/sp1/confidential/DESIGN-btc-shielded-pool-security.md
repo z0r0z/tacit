@@ -1,455 +1,533 @@
 # Security and privacy analysis: Bitcoin-native shielded pool
 
-Status: DRAFT (Phase 1 of `DESIGN-btc-shielded-pool.md` §12). Companion to that design, not a
-replacement — read it first for the opcodes, note model, and proof relation this analyzes.
+Status: DESIGN, companion to `DESIGN-btc-shielded-pool.md` (the design), which defines the keys, notes,
+opcodes, relation and replay analyzed here. Section references of the form "design §N" point there.
 
-§3 below states each security goal as a formal experiment with a named advantage term and reduces it to
-the assumptions in §1 (A1–A8, A5a, and two assumptions this analysis adds — A9, A10 — that the earlier
-informal sketch relied on implicitly without naming). This gives an external cryptographer or auditor
-concrete reductions to check, at the rigor level of SPEC.md's own analyses and the competitor paper's
-Theorem 1/2, not a substitute for that review.
+Each security goal is stated as an experiment with a named advantage term and reduced to the assumptions
+in §1. The reductions are worked by hand and are the object of the external review listed in §7.
+
+## 0. Scope and custody boundary
+
+The pool conserves Tacit asset value. It does not create, hold or release BTC. Value enters only by
+spending transparent Tacit notes that already exist and leaves only as new transparent notes of the same
+asset, so the pool's backing is whatever already backs the asset. BTC exposure inside the pool is exposure
+to cBTC and inherits cBTC's model exactly (SPEC §5.7): the lock is self-custodied, and its enforcement is
+economic, not a Bitcoin script constraint.
+
+A transferable note that anyone holding it can trustlessly redeem for locked sats is not achievable on
+today's Bitcoin. Without a covenant, the lock's key holder can always spend the lock outside the protocol,
+and without a bridge nothing else can pay the holder. This design does not claim that property. What it
+claims is privacy for value that already exists: hidden amounts, sources and counterparties, with exact
+conservation across the boundary.
 
 ## 1. Assumptions
 
-**A1. Bitcoin ledger.** Confirmed Bitcoin history above a chosen depth is stable with overwhelming
-probability, per ordinary Bitcoin security assumptions. Reorgs below that depth are handled by §10's
-rebuild rule, not assumed away.
+**A1. Ledger.** Confirmed Bitcoin history is a common prefix among honest nodes except with negligible
+probability, at a depth the indexer and wallet choose. Shallower reorgs are handled by the undo log
+(design §5), not assumed away.
 
-**A2. Data availability.** Accepted envelope bytes are retrievable from confirmed Bitcoin transactions.
-An indexer or wallet that cannot retrieve an envelope treats it as absent from its replay input.
+**A2. Data availability.** Every accepted envelope's bytes, and the transactions its rules read (shield
+inputs and their transparent ancestry, exit outputs), are retrievable from confirmed Bitcoin data. An
+indexer that cannot retrieve something halts and retries; it never rejects on unavailability. Blocks from
+an untrusted source are checked against the header's merkle root and the coinbase witness commitment, so a
+source can withhold data but cannot substitute it. A2 is therefore a liveness assumption: its failure
+stops an indexer and never changes its result.
 
-**A3. Proof system.** The SP1 zkVM, wrapped to Groth16 output, is knowledge-sound for the relation in
-`DESIGN-btc-shielded-pool.md` §4: an accepting proof implies the prover knew a witness satisfying it,
-except with the negligible advantage of forging an SP1/Groth16 proof. It is zero-knowledge for that
-statement: proof bytes reveal nothing about the witness beyond the public statement. Both properties are
-inherited from SP1's own soundness/zero-knowledge claims, not re-derived here — this design adds no new
-proof-system assumption, only a new relation proved inside the existing one. This assumption does **not**
-include non-malleability of the proof bytes themselves — Groth16 proofs are re-randomizable, and nothing
-here relies on a specific proof's bytes as an identity (design doc §4 argues why that's safe: replay
-protection is nullifier-based, not proof-identity-based).
+**A3. Proof system.** SP1 with its Groth16 wrap is knowledge-sound for the relation `R` of design §4,
+with advantage `Adv^ks_R`: from any prover that outputs an accepting proof for public values `x`, an
+extractor recovers a witness `w` with `R(x, w) = 1`. It is zero-knowledge, with advantage `Adv^zk_R`: a
+simulator `Sim(x)` produces proofs indistinguishable from real ones. Non-malleability of proof bytes is
+not assumed. Groth16 proofs can be re-randomized, and nothing here treats a proof's bytes as an identity.
 
-**A4. Hash and leaf binding.** `keccak` is collision-resistant, so the leaf function in §2 is
-position-binding: no two distinct `(asset, Cx, Cy, spend_key)` tuples produce the same leaf, and no two
-distinct leaves produce the same nullifier, except by a keccak collision.
+**A4. Hash.** `keccak` is collision-resistant (`Adv^cr`). The privacy and nullifier-secrecy arguments
+model `keccak`, including the scalar hash `Hs`, as a random oracle, with `q_H` the adversary's oracle
+queries. `SHA-256`, used in the shield kernel message and `dest_spk_hash`, is collision-resistant.
 
-**A5. Spend-key binding.** The discrete logarithm problem is hard on secp256k1: given `spend_key`, no PPT
-adversary can find `sk_note` such that `spend_key = sk_note·G`, except with negligible probability. This is
-what the relation's authorization check (§4 of the design doc: witness `sk_note`, constrain
-`spend_key = sk_note·G`) reduces to. Direct witnessing is both simpler and
-the more standard construction for this kind of relation than a detached signature (it's what makes the nullifier formula
-in A5a possible at all). Non-malleability (no field can be altered after proof generation) is not this
-assumption's job — it follows from A3 instead, since `h_body` is itself a public input the proof is bound
-to.
+**A5. secp256k1.**
+- **A5a.** Discrete log is hard (`Adv^dl`).
+- **A5b.** BIP-340 is existentially unforgeable under chosen-message attack, including for keys with a
+  known additive tweak `A + t·G`, the same related-key setting BIP-341 key tweaks rely on
+  (`Adv^euf`). Schnorr signatures are also proofs of knowledge of the signing key, extractable in the
+  random-oracle model by forking.
+- **A5c.** Decisional Diffie–Hellman is hard (`Adv^ddh`). This makes the stealth secret `s = e·V`
+  pseudorandom to anyone without `e` or `v`.
 
-**Canonical witness requirement.** Since `spend_key` is x-only, both `sk_note = d` and `sk_note = n−d` (curve order minus
-`d`) satisfy `spend_key = sk_note·G` for the same `spend_key` — they produce points with the same
-x-coordinate. `nf_secret` (A5a) hashes the *full* scalar, so `d` and `n−d` produce **different**
-`nf_secret` values and therefore different nullifiers for the same note, meaning its owner could spend it
-twice under two distinct, individually-valid proofs — a genuine double-mint path, not just a linkability
-issue. The relation must additionally constrain `sk_note·G` to have even y (rejecting
-otherwise), the same canonicalization BIP-340 signing already performs implicitly — with it, only one of
-`{d, n−d}` is ever an accepted witness for a given `spend_key`, and the ambiguity closes completely. Every
-downstream claim about `sk_note` (A5a, G2, G4) assumes this canonicalization holds.
+**A6. Pedersen commitments.** `C = v·H + r·G`, with `H` from SPEC §2.1 and `log_G H` unknown, is
+perfectly hiding and computationally binding. A second opening yields `log_G H`, so
+`Adv^bind ≤ Adv^dl`.
 
-**A5a. Nullifier-secret privacy.** `nf_secret = keccak("tacit-btc-pool-nf-v1" ‖ sk_note)` is a value only
-the note's owner can compute, because computing it requires `sk_note`, which A5 says is infeasible to
-recover from the public `spend_key` alone. This is the assumption `nullifier = keccak(leaf‖nf_secret‖
-"spent")`'s unlinkability rests on, stated as its own assumption because it is a distinct requirement from
-A4/A5: with
-`leaf` fully public at creation time, a nullifier formula that depended on `leaf` alone would let anyone
-precompute it without knowing any secret at all (see design doc §2's formula, which folds in `nf_secret`
-for exactly this reason).
+**A7. Canonical implementation.** Every correct indexer uses the same parser, acceptance order (block,
+transaction, then input), leaf and nullifier derivation, anchor window, root retention, undo log, verifier
+and pinned key. Shield inputs are validated by Tacit's canonical transparent validator
+(`validateOutpoint`), and every transparent validator applies the same seam rule for outputs of
+`T_BTC_SPEND` (design §5). No acceptance rule is implementation-defined.
 
-**A6. Pedersen commitment binding and hiding.** `C = v·H + r·G` is computationally binding (opening to two
-different values requires solving discrete log) and perfectly hiding (for a uniformly random `r`, `C`
-reveals nothing about `v`) — the same assumption already relied on throughout Tacit's existing Bitcoin
-metaprotocol, not new to this design.
+**A8. Wallet freshness.** Honest wallets sample `e` (and so `pk_eph`, `s`, the tweaks and `k`) and the
+blinding `r` fresh and uniformly for every note, and never reuse them. BIP-340 signing nonces follow
+BIP-340. This is a precondition on honest behavior, not a computational term.
 
-**A7. Canonical implementation.** Every correct indexer uses the same parser, acceptance order (§10 of
-the design doc), leaf/nullifier derivation, and proof-verification algorithm. There is no
-implementation-defined acceptance rule — the same assumption the competitor paper names as A8, adopted
-here for the identical reason: without it, replay agreement (G1 below) doesn't hold.
+## 2. Goals
 
-**A9. Random oracle.** `keccak` behaves as a random oracle: on any input not previously queried, it returns
-a value drawn uniformly from `{0,1}^256`, independent of every other output. A4 (collision resistance) is
-strictly weaker and does not by itself give pseudorandomness — the hybrid reduction for G6 (§3) needs the
-stronger property, specifically that `nf_secret = keccak("tacit-btc-pool-nf-v1"‖sk_note)` and
-`H(shared)` (the stealth-derivation hash in the design doc's §2) are indistinguishable from uniform
-strings to anyone without the corresponding secret, not merely that they're hard to collide. Stated as its
-own assumption because it's genuinely stronger than A4, not a restatement of it.
+- **G1. Replay agreement.** Two correct indexers that process the same confirmed prefix derive the same
+  leaves, nullifier set, root history and recorded exits.
+- **G2. Double-spend resistance.** Each appended note has exactly one position and exactly one
+  nullifier, and no nullifier is accepted twice, including across envelopes in one transaction.
+- **G3. Conservation.** Shields and spends (pay, exit, or both) neither create nor destroy value of any
+  asset, and every value that any party can later open is a `u64`.
+- **G4. Spend authorization.** A note is consumed only by a body its owner signed, including when the
+  adversary is the note's sender or holds a delegated witness.
+- **G5. Body binding.** A proof accepted for one body cannot be accepted for any other body, and a signed
+  body cannot be redirected by whoever carries it.
+- **G6. Transcript privacy.** Two histories that agree on the leakage function (§4) produce
+  indistinguishable envelopes and replayed state.
+- **G7. Recovery completeness.** A wallet holding `v` finds every note paid to its address and accepts no
+  note it cannot spend.
+- **G8. Delegated-party safety.** A prover given the full witness for one spend, or a relayer given the
+  finished payload, cannot redirect funds, cannot spend the owner's other notes and cannot link them.
+- **G9. Batch independence.** Envelopes sharing a carrier are accepted or rejected independently, and
+  batching weakens none of G1–G5.
 
-**A10. DDH on secp256k1.** The Decisional Diffie-Hellman problem is hard on secp256k1: given `(G, a·G,
-b·G)`, no PPT adversary distinguishes `ab·G` from a uniformly random group element with non-negligible
-advantage. This is what the ECDH shared secret in the design doc's §2 stealth derivation
-(`shared = ECDH(eph, pk_recv)`) rests on for indistinguishability from random, not just A5's plain
-discrete-log hardness — DDH is what makes `spend_key`/`pk_eph`/the AEAD key indistinguishable from
-independent random values to an observer who holds neither `eph` nor `sk_recv`. The same assumption
-already underlies Tacit's shipped EVM stealth-send construction (README); this design adds no new trust
-here, only names the assumption the existing construction was always relying on.
-
-**A8. Wallet behavior.** Honest wallets sample fresh randomness for every note (`r` in `C`, the ephemeral
-secret feeding `pk_eph`), never reuse it across notes, and choose an anchor depth they're willing to trust
-against reorg risk before building a proof. Load-bearing specifically: **the sending wallet derives a
-fresh one-time `spend_key` per note via the §2 stealth construction and never publishes a raw, reused
-`spend_key`.** Because `spend_key` is necessarily public (the indexer derives `leaf` from it), reuse across
-notes is a real linkability break, not a hygiene nice-to-have — G6 (transcript privacy) holds only under
-this assumption, not merely under A3/A5/A6.
-
-## 2. Security goals
-
-**G1. Replay agreement.** Any two correct indexers (A7) that process the same confirmed Bitcoin prefix
-derive the same tree, nullifier set, and root history.
-
-**G2. Double-spend resistance.** No two accepted `T_BTC_SPEND` envelopes publish the same nullifier, and
-no envelope contains a repeated nullifier internally. This depends on the same note always producing the
-same nullifier regardless of which valid witness spends it — which in turn depends on the canonical-witness
-requirement above (A5's addendum). Without it, G2 fails outright: the note's own owner could produce two
-different nullifiers for the same note by witnessing `d` in one proof and `n−d` in another.
-
-**G3. Value conservation.** For every accepted spend, the sum of input values equals the sum of output
-values (pay) or the exit output's real Bitcoin value (exit), and every value is a canonical amount in
-range — no accepted spend can mint or destroy value. No fee term exists at this layer (design doc §3);
-Bitcoin carrier fees are paid from unrelated coins, entirely outside this relation.
-
-**G3 for exit depends on an acceptance-order check, not the proof alone.** `exit_value` is a constrained
-public input (so a proof cannot verify against a tampered `exit_value`), and design doc §10 step (2a)
-checks `outputs[exit_vout]`'s real value against it, closing "claim any amount." Value alone is not
-sufficient, though: nothing would then bind *who* `exit_vout` pays, so a validly-signed envelope and proof
-could be rebroadcast inside a different carrier transaction whose `exit_vout` paid the right amount to an
-attacker's own script — value-correct, recipient-wrong. `dest_spk_hash` closes that: bound
-into `h_body` (so it's signed, not just claimed) and checked against the real output's scriptPubKey by
-step (2a) alongside the value. G3 for exit therefore depends on step (2a) checking **both** halves — value and
-destination — neither alone is sufficient.
-
-**G4. Spend authorization.** An accepted spend of a note implies the prover held `sk_note`, the secret
-committed (via `spend_key = sk_note·G`) at that note's shield time — proven by witnessing it directly in
-the relation rather than by a detached signature, which is simpler and is also what the nullifier formula
-(A5a) requires anyway.
-
-**G5. Envelope binding.** A proof accepted for one published envelope cannot be repointed to a different
-one — changing *any* field of the envelope (not a hand-picked subset) invalidates the proof, because
-`h_body`, a hash of the whole canonical envelope, is itself one of the proof's public inputs, and a
-Groth16/SP1 proof is only valid for the exact public-input vector it was generated against (A3). Binding
-the whole envelope rather than an enumerated field list (e.g. "nullifiers, output leaves, fee, `h_anchor`")
-matters: leaving `pk_eph` and `ct_note` unbound would let a relayer swap them post-signature without
-invalidating the proof — the note would stay spendable but become silently undiscoverable to its intended
-recipient. `h_body` covers everything by construction, not by remembering to list it — and needs no
-signature layer on top, since the proof's own public-input binding already does this job.
-
-**G6. Transcript privacy.** For two valid histories that agree on everything a passive observer already
-sees (arity, timing, `h_anchor` age, fee metadata — the leakage function in §4), the published envelopes
-and replayed state are indistinguishable between them.
-
-**G7. Recovery completeness.** A wallet holding the recipient secret `sk_recv` and replaying accepted
-history recovers every note paid to it and no others — i.e. scanning (§6 of the design doc: trial ECDH
-against each published `pk_eph`) is both complete (misses nothing genuinely addressed to it) and sound
-(never mistakes another recipient's note for its own). Not covered elsewhere in G1–G6, which are all about
-spend-side correctness; this is the corresponding receive-side guarantee.
-
-## 3. Formal security and privacy analysis
+## 3. Proofs
 
 ### 3.0 Setup
 
-Fix a security parameter `λ`. Let `negl(λ)` denote an unspecified negligible function. Let `C` denote a
-finite prefix of the Bitcoin ledger (a sequence of confirmed blocks), and let `Replay(C)` denote the
-deterministic function the design doc's §10 acceptance order computes over `C`: a tree, a nullifier set,
-and a root history, per a fixed canonical implementation (A7). All experiments below are run against a
-PPT adversary `A`, who either outputs a candidate prefix `C` directly (for statements about what a
-prefix can contain) or interacts with an **honest-party oracle** `O` that, on request, runs the honest
-`T_BTC_SHIELD`/`T_BTC_SPEND` wallet construction (design doc §2–§3) using freshly sampled randomness (A8)
-and appends the resulting envelope to a prefix `A` controls the assembly of. An experiment `Exp` returns a
-bit; `A`'s advantage is `Adv(A) = |Pr[Exp^A = 1] - c|` for the experiment's stated baseline `c` (0 for a
-"bad event" experiment, 1/2 for a distinguishing experiment).
+`Replay(C)` is the deterministic function of design §5 over a confirmed prefix `C`. The adversary `A` is
+PPT. It assembles prefixes and interacts with an honest-party oracle `O` that, on request, creates honest
+addresses; shields, pays or exits honestly on their behalf; signs a body for an honest note; hands `A` a
+delegated witness for a named spend; or hands `A`, as relayer, a finished payload that pays `A` a fee. `A` may also act as the sender of any note, in which case it
+learns `(e, s, t_a, t_n, k, v_amt, r)` for that note but not the recipient's `v`, `a` or `n`. Advantage is
+`Pr[win]` for a bad-event game and `|Pr[b' = b] − 1/2|` for a distinguishing game.
 
-The proof system is treated as a black box per A3, with two named advantage terms for the relation `R`
-defined in `DESIGN-btc-shielded-pool.md` §4 (`verify_btc_pool_spend` in `btc_pool.rs`):
+### 3.1 G1: Replay agreement
 
-- `Adv^ks_R(λ)` — the probability a PPT adversary produces an accepting proof `π` for a public statement
-  `x` without the extractor recovering a witness `w` such that `R(x, w) = 1`. (Knowledge soundness.)
-- `Adv^zk_R(λ)` — the maximum distinguishing advantage between a real proof for `(x, w)` and a proof
-  produced by SP1/Groth16's zero-knowledge simulator `Sim(x)` given only the public statement. (Zero-
-  knowledge.)
+**Claim.** `Adv^repl = 0` under A7.
 
-Both are inherited from SP1's own security claims (A3) and are not re-derived here; this analysis only
-uses them as reduction targets.
+**Proof.** Design §5 processes envelopes in block, transaction and input order. Each check (parse, shield
+input validation and kernel, anchor window, nullifier freshness, exit output claim and hash, proof
+verification) is a pure predicate of `C` and the state so far, and a failing envelope changes nothing.
+The state so far includes the effects of earlier envelopes in the same transaction, which is the only
+coupling between envelopes (§3.9). Shield inputs are decided by the one canonical transparent validator.
+Verification is local against a pinned key, so no network response enters the predicate. The anchor
+window depends only on the envelope's block height `H`, not on a node's view of the tip. An indexer
+missing data halts rather than deciding (A2), so incomplete data delays it and never diverts it. After a
+reorg, the undo log restores the state at the fork point, and replaying the new branch yields `Replay` of
+the new prefix. Two implementations of one total function agree on every input, so any disagreement is a
+violation of A7 and not a cryptographic event. ∎
 
-### 3.1 G1 — Replay agreement
+### 3.2 G2: Double-spend resistance
 
-**Experiment `Exp^{repl}_A(λ)`:** `A` outputs a prefix `C`. Two honest indexer implementations `I1`, `I2`
-(both instantiating A7's canonical parser/acceptance-order/derivation/verification) each compute
-`Replay(C)` independently. The experiment returns 1 if `I1`'s output differs from `I2`'s.
+**Lemma 1 (one nullifier key per leaf).** For a fixed `nk_pub`, at most one 32-byte string `nk` satisfies
+`0 < nk < n` and `compress(nk·G) = nk_pub`.
 
-**Claim.** `Pr[Exp^{repl}_A(λ) = 1] = 0` given A7.
+*Proof.* On `[1, n−1]`, `nk ↦ nk·G` is a bijection onto the non-identity points, and `compress` is
+injective on those points because the 33-byte encoding fixes both `x` and the parity of `y`. The
+canonical big-endian encoding with the range check gives each scalar exactly one byte string. ∎
 
-**Proof.** The acceptance order in the design doc's §10 is a total function of `C`: every candidate
-envelope is processed in a fixed, block-and-transaction-index-determined order, each step (parse, opening
-proof, anchor-window/root check, nullifier-absence check, SP1 verification) is a pure predicate over `C`
-and the state accumulated so far, and rejection mutates nothing. A7 states this exact algorithm is what
-every correct indexer runs. Two implementations of the same deterministic total function over the same
-input produce the same output by definition; any observed difference would mean at least one of `I1`,
-`I2` is not, in fact, running the canonical algorithm — i.e. A7 is violated, not that G1 has a
-cryptographic counterexample. `Adv^{repl}_A(λ) = 0` unconditionally under A7 (not merely negligible — this
-goal has no cryptographic reduction at all, only a correctness-of-specification one). ∎
+The two aliasing routes that break x-only constructions are therefore closed:
 
-### 3.2 G2 — Double-spend resistance
+- **`d` vs `n − d`.** `(n−d)·G = −(d·G)` has the same `x` and the opposite parity, so its compression
+  differs in the prefix byte (`02` vs `03`). The leaf commits the full point, parity included, so only
+  one of the two matches.
+- **`d` vs `d + n`.** The same point, but `d + n ≥ n` fails the range check. A 32-byte encoding of a
+  value at or above `n` is rejected rather than reduced.
 
-**Experiment `Exp^{ds}_A(λ)`:** `A` interacts with `O` and assembles a prefix `C`. The experiment computes
-`Replay(C)` and returns 1 if either (a) two distinct accepted `T_BTC_SPEND` envelopes in `C` publish the
-same nullifier, or (b) one accepted envelope publishes a repeated nullifier internally.
+**Lemma 2 (one position per leaf).** For an appended leaf at position `p`, exactly one `leaf_index`
+passes relation step 2, namely `p`.
 
-**Claim.** `Adv^{ds}_A(λ) ≤ Adv^{ks}_R(λ) + q·Adv^{cr}_{keccak}(λ)`, where `q` is the number of accepted
-`T_BTC_SPEND` envelopes and `Adv^{cr}_{keccak}` is the keccak collision-finding advantage (A4).
+*Proof.* The tree has depth 32, so a membership path reads only the low 32 bits of the index: an index
+`p + k·2^32` authenticates the same leaf along the same path. Relation step 2 requires
+`leaf_index < 2^32`, which leaves each position one index. An index `q ≠ p` below `2^32` passes only if
+the same leaf bytes sit at `q`, which makes it a spend of the note at `q`, not of the note at `p`;
+otherwise passing is a keccak collision (A4). ∎
 
-**Proof.** Case (b) is caught directly by the relation: `verify_btc_pool_spend` computes each input's
-nullifier and checks it against the ones already pushed for that same proof (`nullifiers.contains(&nf)`,
-`btc_pool.rs`), so an accepting proof cannot contain an internal repeat except via `Adv^{ks}_R` (a proof
-accepted without a satisfying witness). Case (a) is caught by the acceptance order's nullifier-absence
-check against the replayed set (design doc §10 step 3) — the second of two envelopes publishing an
-already-present nullifier is rejected outright. The only way (a) succeeds is if the *same note* produces
-**two different** accepted nullifiers across two proofs, letting its owner (or anyone who obtained the
-witness) spend it twice each time past the absence check. `nullifier = keccak(leaf‖nf_secret‖"spent")`
-(A4) is deterministic in `(leaf, nf_secret)`, and `leaf` is fixed once a note's `(asset, Cx, Cy,
-spend_key)` is fixed (A4's position-binding). So two different nullifiers for the same note require two
-different accepted `nf_secret` values for the same `leaf` — i.e. two different accepted `sk_note` values
-satisfying `spend_key = sk_note·G` for the same `spend_key`.
+Without the range check, `p + 2^32` would satisfy membership and hash to a different nullifier, giving the
+note a second nullifier. The range check is part of nullifier uniqueness, not an encoding detail.
 
-This is exactly where the canonical-witness requirement (A5's addendum) is load-bearing, not decorative.
-`spend_key` is x-only: for any scalar `d` with `spend_key = compress(d·G)`, the negation `n−d` (mod curve
-order `n`) satisfies the same x-only equality, `compress((n−d)·G)` sharing the same x-coordinate but odd
-y. `nf_secret = keccak(domain‖sk_note)` hashes the *full* scalar, so `d` and `n−d` hash to different
-`nf_secret` and therefore different nullifiers for the same `leaf`. **Without** the even-y constraint, the
-reduction does not go through at all: an adversary who knows any valid `sk_note = d` for a note trivially
-computes `sk_note' = n−d`, which also satisfies `spend_key = sk_note'·G` (A5), gets a distinct accepting
-proof, and double-spends with zero cryptographic break — `Adv^{ds}_A(λ) = 1` in that variant, not
-negligible. `verify_btc_pool_spend` closes this by rejecting any witnessed `sk_note` whose point is not
-the even-y representative (`btc_pool.rs`'s `c[0] != 0x02` check) before the equality check even runs, so
-only one of `{d, n−d}` is ever an accepted witness for a given `spend_key`. **With** that constraint, the
-map from `spend_key` to its unique accepted `sk_note` is injective, so `leaf → nf_secret` is a
-deterministic function (not merely a relation), and two different accepted `nf_secret` values for the same
-`leaf` require either an `A3` knowledge-soundness break (a proof accepted with an `sk_note` that isn't
-actually the even-y witness for that `spend_key`) or a keccak collision on `leaf`'s own preimage fields
-(A4, since the same `leaf` bit-string would then have to arise from two different `(asset, Cx, Cy,
-spend_key)` tuples for the case where the attacker instead tries to forge a second `leaf` colliding with
-the first). Unioning the knowledge-soundness failure once (a single break suffices to forge a bad witness
-anywhere in the `q`-envelope prefix) with a keccak-collision search across the `q` accepted leaves gives
-`Adv^{ds}_A(λ) ≤ Adv^{ks}_R(λ) + q·Adv^{cr}_{keccak}(λ)`, both negligible in `λ` by A3 and A4. Structurally
-this is the same shape as the competitor's own Lemma 1 (a knowledge-soundness term plus a `q`-way
-collision term), with the canonicalization step making the reduction's second half hold at all. ∎
+By Lemmas 1 and 2, `nf = keccak("tacit-btc-pool-nf-v1" ‖ leaf ‖ nk_note ‖ leaf_index)` is a function of
+the appended note alone, meaning its bytes and its position, whoever proves the spend. The signing key does
+not enter the nullifier, so its x-only ambiguity (BIP-340 negates `sk_spend` internally when `P` has odd
+`y`) cannot create a second nullifier.
 
-### 3.3 G3 — Value conservation
+**Experiment.** `A` wins if `Replay(C)` accepts two spends that consume the same appended note, or one
+spend that lists a nullifier twice.
 
-**Experiment `Exp^{cons}_A(λ)`:** `A` interacts with `O` and assembles `C`. The experiment returns 1 if
-`Replay(C)` accepts a `T_BTC_SPEND` envelope for which `Σ v_in ≠ Σ v_out` (pay) or `Σ v_in ≠
-value(outputs[exit_vout])` (exit).
+**Claim.** `Adv^ds ≤ Adv^ks_R + Adv^cr`.
 
-**Claim.** `Adv^{cons}_A(λ) ≤ Adv^{ks}_R(λ) + Adv^{bind}_{Ped}(λ)`, where `Adv^{bind}_{Ped}` is the
-Pedersen-binding-break advantage (A6, itself a discrete-log reduction, A5).
+**Proof.** A repeat within one envelope violates relation step 3 and acceptance step 3. Across envelopes,
+the nullifier set rejects any nullifier already present. This includes envelopes in the same transaction:
+they are processed one at a time in input order, and an accepted envelope's nullifiers are in the set
+before the next envelope is checked. Two accepted spends of one note must therefore publish different
+nullifiers. Extracting both witnesses (A3) yields either two valid nullifier keys for one `nk_pub`, which
+Lemma 1 rules out, or two indices for one position, which Lemma 2 rules out up to `Adv^cr`, or a nullifier
+not computed as specified, which is a knowledge-soundness failure. ∎
 
-**Proof.** `R` constrains `Σv_in = Σv_out` (pay) or `Σv_in = exit_value` (exit) directly over the
-witnessed openings, and constrains `exit_value` itself as a public input the design doc's §10 step 2a
-checks against the real chain output (closing the "claim any amount" and "claim any destination" gaps
-separately, per G3's own exit clause). An accepting proof without a witness satisfying this equality
-requires `Adv^{ks}_R`. A witness satisfying the *in-circuit* equality but opening a commitment `C` to two
-different values (e.g. the value used to build `C` publicly differs from the value the witness supplies)
-requires breaking Pedersen binding, which reduces to discrete log (A5/A6). Summing these two disjoint
-failure modes gives the bound; the exit destination half of G3 (`dest_spk_hash`) is argued under G5 below,
-since it's a special case of envelope-binding rather than a conservation property per se. ∎
+**Identical leaves.** Every leaf is fully funded when appended: a shield by its kernel inputs, a pay by
+conservation. Two byte-identical leaves at different positions are two notes and carry different
+nullifiers, so both are spendable and neither destroys the other's value.
 
-### 3.4 G4 — Spend authorization
+**Nullifier squatting.** Publishing an honest note's nullifier ahead of its owner requires either
+computing it (querying the oracle on `nk_note`, which is `log_G nk_pub`, so `≤ q_H·Adv^dl` under the
+random-oracle model) or an accepted spend of a different leaf whose nullifier collides with it
+(`Adv^cr`).
 
-**Experiment `Exp^{auth}_A(λ)`:** `A` interacts with `O` and assembles `C`, without ever querying `O` to
-spend a specific target note `nt` created by an earlier `O` call. The experiment returns 1 if `Replay(C)`
-accepts a `T_BTC_SPEND` envelope whose nullifier corresponds to `nt`.
+### 3.3 G3: Conservation
 
-**Claim.** `Adv^{auth}_A(λ) ≤ Adv^{ks}_R(λ) + Adv^{dl}_{secp256k1}(λ)`, where `Adv^{dl}` is the discrete-
-log-solving advantage (A5).
+Define, per asset, supply as the sum of the values of unspent transparent notes plus the sum of the values
+of unspent pool leaves. G3 says every accepted envelope leaves supply unchanged and every note it creates
+opens to a `u64` (or, for the shield case below, is provably unspendable if it cannot). Batching does not
+change this: supply is additive over envelopes, and each accepted envelope is checked on its own (§3.9).
 
-**Proof.** By A3, an accepting proof implies a witness `sk_note` satisfying `spend_key = sk_note·G` for
-`nt`'s committed `spend_key` (the relation's authorization check, `btc_pool.rs`). `A` never received
-`sk_note` from `O` (it did not query a spend of `nt`), so either `A` forged an accepting proof without
-such a witness (`Adv^{ks}_R`) or `A` itself computed `sk_note` from the public `spend_key`, which is
-exactly the DL problem A5 assumes hard. No detached-signature forgery term is needed — this design proves
-authorization by direct witnessing (design doc §2), so the only two failure paths are proof-system break
-or DL break, one term each. ∎
-
-### 3.5 G5 — Envelope binding
-
-**Experiment `Exp^{bind}_A(λ)`:** `A` interacts with `O`. `O` accepts one query, produces `(π, x)` for
-some honestly-assembled envelope `env`, and gives both to `A`. `A` outputs an envelope `env' ≠ env` and
-resubmits `π` against `env'`'s recomputed public statement `x'`. The experiment returns 1 if the
-recomputed `x'` verifies against `π`.
-
-**Claim.** `Adv^{bind}_A(λ) ≤ Adv^{ks}_R(λ)` (in fact `= 0` given exact SP1/Groth16 public-input binding,
-with `Adv^{ks}_R` covering only the degenerate case `x' = x` under a field the indexer doesn't recompute).
-
-**Proof.** The guest commits every raw field of `canonical_body` — `asset`, every nullifier, `out_kind`,
-every output's full contents for a pay or `exit_vout`/`dest_spk_hash` for an exit, and `h_anchor` —
-directly as `BtcPoolSpendValues`, the proof's public statement (`btc_pool.rs`, design doc §4). A
-Groth16/SP1 proof verifies only against the exact public-input vector it was generated for; changing any
-field the guest commits changes that vector, so `π` fails verification against `x' ≠ x` by the proof
-system's own completeness/soundness (not a reduction to any assumption in §1 — this is SP1's binding
-property directly, inherited via A3). The only residual risk is a field the guest does *not* commit but
-the indexer still trusts from the envelope bytes — there is none by construction (§4's "whole envelope,
-not an enumerated list" design), so `Adv^{bind}_A(λ) = 0` for every field the relation commits, with no
-term beyond A3 itself. ∎
-
-### 3.6 G6 — Transcript privacy
-
-This is the property the design exists to provide, and is argued here as a hybrid-game sequence in the
-style of the competitor's own Theorem 2, mirroring their `G0 → G1 → G2 → G3` structure.
-
-**Experiment `Exp^{priv}_{A,b}(λ)`:** `A` selects two equal-shape spend histories `h_0`, `h_1` that agree
-on every field the leakage function (§4) already makes public — arity, timing, `h_anchor` age, fee
-metadata, per-note asset — and differ only in which real notes are spent/created and to whom. The
-challenger runs history `h_b` through the honest construction, publishes the resulting envelopes and
-replayed state to `A`, and `A` outputs a guess `b'`. `Adv^{priv}_A(λ) = |Pr[b' = b] - 1/2|`.
-
-- **G0 (real game).** Exactly `Exp^{priv}_{A,b}`, honest proofs, honest ciphertexts, honest nullifiers.
-- **G1.** Replace every proof `π` with `Sim(x)`, the SP1 zero-knowledge simulator, given only the public
-  statement. `|Pr[G0 = 1] - Pr[G1 = 1]| ≤ Adv^{zk}_R(λ)` (A3), applied once per spend in the challenge
-  history (a standard hybrid over the number of spends, still bounded by a single `Adv^{zk}_R` term up to
-  a polynomial factor the reduction absorbs).
-- **G2.** For every output note in the challenge history, replace `ct_note` with an AEAD encryption of an
-  all-zero plaintext under an independently-sampled key, and replace `pk_eph`/`spend_key` with
-  independently-sampled uniform values (instead of the DH-derived ones). `pk_eph = eph·G` for freshly
-  sampled `eph` (A8) is already uniform on its own — no gap there. The gap is `spend_key = pk_recv +
-  H(shared)·G` and the AEAD key, both derived from `shared = ECDH(eph, pk_recv)`: distinguishing these
-  from independent uniform values reduces to distinguishing `shared` from a random group element, which is
-  exactly DDH (**A10**), composed with `keccak`/the AEAD key-derivation function behaving as a random
-  oracle (**A9**) to carry that indistinguishability through the hash. `|Pr[G1 = 1] - Pr[G2 = 1]| ≤
-  Adv^{ddh}_{secp256k1}(λ) + Adv^{ro}_{keccak}(λ)` (A10, A9), unioned over the polynomially many output
-  notes in the challenge history.
-- **G3.** For every input note in the challenge history, replace the published `nullifier` with a
-  uniformly random 256-bit string. `nullifier = keccak(leaf‖nf_secret‖"spent")` with `leaf` already public
-  (it was published at the note's creation, possibly outside the challenge window) and `nf_secret =
-  keccak(domain‖sk_note)`. This step needs `nf_secret` itself to be indistinguishable from uniform, which
-  needs `sk_note` to carry enough entropy into a random-oracle `keccak` (A9) — not automatic, since
-  `sk_note = sk_recv + H(shared) mod n` is a *specific* value, not sampled fresh at spend time. Under A9,
-  `H(shared)` is itself uniform over `Z_n` (a fresh `keccak` query on an input `A` cannot have queried
-  without breaking A10 first), and adding a uniform value mod `n` to any fixed `sk_recv` yields a value
-  uniform over `Z_n`; restricting to the even-y canonical representative (the note-creation-time
-  canonicalization the design doc's §2 already requires of the *sender*) halves the support but preserves
-  uniformity over it. So `sk_note` has full min-entropy over its actual support given A9/A10, and a fresh
-  `keccak` query on it under A9 is uniform and independent of every other oracle output. `|Pr[G2 = 1] -
-  Pr[G3 = 1]| ≤ Adv^{ro}_{keccak}(λ) + Adv^{ddh}_{secp256k1}(λ)` (A9, A10 again, for the `sk_note` entropy
-  argument this time rather than the ciphertext argument in G2).
-
-`G3` is independent of `b`: every proof is simulated from public data alone, every ciphertext is an
-encryption of zero under an independent key, every `spend_key`/`pk_eph` pair is independently uniform, and
-every nullifier is an independent uniform string — none of these depend on which real notes `h_0`/`h_1`
-actually spent or created, only on the public shape both histories share by construction. So `Pr[G3 = 1] =
-1/2` exactly, and
+**Shield.** The kernel is the `T_CXFER` kernel (SPEC §2.4) with the pool note as its only output. Let
+`E = C_pool − ΣC_in`. A valid `kernel_sig` under `x(E)` is, under A5b and forking in the random-oracle
+model, a proof that the signer knows `x` with `±E = x·G`. Write `C_pool = w·H + ρ·G` for any opening the
+signer or a later spender uses. Then
 
 ```
-Adv^{priv}_A(λ) ≤ Adv^{zk}_R(λ) + 2·Adv^{ddh}_{secp256k1}(λ) + 2·Adv^{ro}_{keccak}(λ)
+(w − Σ v_in)·H = ±x·G + (Σ r_in − ρ)·G
 ```
 
-each term negligible in `λ` under A3, A9, A10. This bound holds **given A8** (fresh randomness per note):
-if a wallet reuses `spend_key` across two notes in `h_0` or `h_1`, `A` distinguishes trivially by
-inspection (`Adv^{priv}_A(λ) = 1`) with no game-hop needed — A8 is not folded into the advantage terms
-above because it is not a computational assumption the reduction bounds against a negligible term, it is a
-behavioral precondition on the challenge histories themselves: this theorem is only meaningful for
-histories `A` submits that respect it, the same way the competitor's own Theorem 2 is stated over
-"admissible" challenge pairs. ∎
+so `w ≠ Σ v_in (mod n)` yields `log_G H`. Hence `Adv^cons_shield ≤ Adv^ext_kernel + Adv^dl`, where
+`Adv^ext_kernel` is the forking extractor's failure probability, as for every `T_CXFER` today.
 
-### 3.7 G7 — Recovery completeness
+Values stay range-valid without a range proof on `C_pool`. Each input is a valid transparent note of
+`asset` as the canonical `validateOutpoint` decides it, over full ancestry (acceptance step 2), and every
+valid transparent note has a value in `[0, 2^64)` (SPEC §2.2–§2.3):
+by its creating op's range proof or public amount, or, for a note created by an exit, by relation step 4's
+`u64` opening. With `n_in ≤ 8`, `Σ v_in < 2^67 < n`, so the H-component is the exact integer sum with no wrap. If
+the sum reaches `2^64`, no `u64` opens `C_pool` (A6), so the leaf can never satisfy relation step 2 and is
+unspendable. Its `ct_note` also cannot carry the amount, so no wallet receives it (§3.7). That outcome is
+self-inflicted by the shielder, removes value rather than creating it, and is refused by the canonical
+wallet.
 
-**Experiment `Exp^{rec}_A(λ)`:** the challenger runs `O` honestly to produce a set of notes, some
-addressed to an honest recipient key pair `(sk_recv, pk_recv)` unknown to `A`, some to keys `A` controls.
-`A` outputs a prefix `C ⊇` the honestly-produced envelopes plus anything else `A` assembled. The
-experiment returns 1 if the honest recipient's scan over `Replay(C)` either misses a note genuinely
-addressed to `pk_recv` (completeness failure) or recovers a note not addressed to `pk_recv` (soundness
-failure).
+The shield's inputs are Bitcoin-spent by the carrier, so the transparent layer cannot spend them again.
+The kernel binds each `txid:vout` and every field of the new note, so the signature cannot be moved to
+another carrier or another note.
 
-**Claim.** `Adv^{rec}_A(λ) ≤ Adv^{ro}_{keccak}(λ)` (A9; A4's weaker collision bound also suffices for this
-goal specifically, since it only needs the two `H(shared)` evaluations to disagree, not to individually
-look random).
+**Spend.** A pay, a full exit and a partial exit are one equation. Relation step 2 opens each input `C_i`
+to a `u64 v_i`. Step 4 opens each output commitment and, if `has_exit = 1`, the exit commitment to a
+`u64`. Step 5 requires `Σ v_in = Σ v_out + v_exit` over `u128`, with `v_exit = 0` when there is no exit.
+With `n_in ≤ 2` and `n_out ≤ 3`, both sides stay below `2^66`, so neither wraps. The input leaves are
+fixed by membership in `root`, so their commitments are the ones created on-chain. An accepted spend that
+breaks conservation either lacks a satisfying witness (`Adv^ks_R`) or opens a committed value two ways
+(`Adv^bind`). So `Adv^cons_spend ≤ Adv^ks_R + Adv^dl`.
 
-**Proof.** Completeness: for a note genuinely addressed to `pk_recv`, the sender computed `shared =
-ECDH(eph, pk_recv)` and `spend_key = pk_recv + H(shared)·G`; the recipient computes `shared' =
-ECDH(sk_recv, pk_eph)`. Standard DH shared-secret equality (`eph·pk_recv = eph·sk_recv·G = sk_recv·pk_eph`
-as group elements) gives `shared = shared'` exactly, so the recipient's derived `sk_note = sk_recv +
-H(shared')` reproduces the sender's `spend_key` bit-for-bit; the scan always succeeds for every note
-actually addressed to `pk_recv`, with probability 1, no assumption needed for this half. Soundness: the
-recipient misattributes a note addressed to someone else's `pk_recv''` only if `H(ECDH(sk_recv,
-pk_eph''))·G` happens to reconstruct that other note's `spend_key`, i.e. a `keccak`-output collision
-between two distinct DH outputs (A4) or, for a random-oracle-style bound on the false-positive rate
-itself, A9. `Adv^{rec}_A(λ) ≤ Adv^{cr}_{keccak}(λ)` unconditionally suffices for a bound; A9 gives a
-tighter, birthday-style bound if wanted, but is not required — G7 is the one goal in this section whose
-weaker A4-only bound is enough on its own. ∎
+The exit's `u64` opening is what makes the resulting transparent note range-valid for the transparent
+layer and for a later shield of it. A relayer's fee is an ordinary output, inside the same equation, so
+relaying adds no value term. The parse rule `n_out + has_exit ≥ 1` excludes a spend that creates nothing.
 
-### 3.8 Summary of assumption dependencies
+**Asset separation.** Every input leaf and every output leaf is computed with the body's `asset`, and the
+exit records `(asset, Cx, Cy)`. The shield requires every input to be of `asset` and signs `asset` into the
+kernel. No envelope can move value between assets.
+
+**Seam.** An exit's transparent note exists exactly when the pool's replay recorded it, and transparent
+validators consult that record for outputs of `T_BTC_SPEND` carriers (A7). An output of such a carrier
+that the pool did not record is not a Tacit note. The seam rule is load-bearing: a transparent validator
+that treated those outputs as ordinary notes without the record would admit unrecorded value.
+
+**Exit claims.** Within one transaction each carrier output is claimed by at most one accepted exit.
+Without that rule two exits in one carrier could record two notes at one outpoint. Bitcoin spends an
+outpoint once, so one record's value would be unspendable and the seam would have no single answer for
+that outpoint. With it, each recorded exit note has its own outpoint.
+
+Every term is negligible, so `Adv^cons ≤ Adv^ext_kernel + Adv^ks_R + 2·Adv^dl`.
+
+### 3.4 G4: Spend authorization
+
+**Experiment.** `O` creates a target note `nt` for an honest address. `A` may act as its sender, may
+request signatures from `O` on any body for any honest note, and may request delegated witnesses, which
+include signatures. `A` wins if `Replay(C)` accepts a spend of `nt` whose body `O` never signed for `nt`.
+
+**Claim.** `Adv^auth ≤ Adv^ks_R + Adv^euf + Adv^cr`.
+
+**Proof.** Extract the witness of the winning spend (A3). It contains a BIP-340 signature valid under
+`nt`'s `spend_key` `P = A + t_a·G` on `msg = keccak("tacit-btc-pool-spend-v1" ‖ body)`. If `O` signed a
+different body with the same `msg`, that is a keccak collision. Otherwise the signature is a forgery
+under a known-tweak key of the honest `A`: a sender knows `t_a` but not `a`, and a delegated prover holds
+signatures only on the bodies `O` chose (A5b). The fresh `P` per note (A8) means a signature for one note
+is not a signature for another. ∎
+
+The nullifier key is a second, independent secret. A signature without `nk_note` cannot produce the
+nullifier, and `nk_note` without a signature on the new body does not satisfy relation step 2.
+
+### 3.5 G5: Body binding
+
+The public values are `(version, root, keccak(body))`, and the indexer recomputes the last two from the
+envelope bytes and its own root history. `body` is every byte before `proof_len`, so it covers `asset`,
+`h_anchor` (and through it `root`), every nullifier, `n_out`, every output field (`pk_eph` and `ct_note`
+included, and so any relayer fee output), `has_exit`, and for an exit `exit_vout`, its commitment and
+`dest_spk_hash`.
+
+**Claim.** A proof accepted for a body `b' ≠ b` that `O` did not sign is bounded by `Adv^auth`.
+
+**Proof.** Binding does not depend on proof non-malleability. Suppose `A` turns a proof for `b` into an
+accepting proof for `b'`. Knowledge soundness extracts a witness for `b'`, which contains signatures by
+every input's `spend_key` over `b'`. For an honest input that is a G4 forgery. Changing a field that no
+input owner signed is therefore impossible, whether the field is an output, a ciphertext or the anchor. ∎
+
+**Carriage.** Anyone may place a signed body and its proof in a different carrier, or at any input of a
+batched one. The effect is identical (the same nullifiers and leaves), so the only consequence is that the
+owner's own carrier then fails the freshness check. An exit binds its destination through `exit_vout` and
+`dest_spk_hash`. A re-carried exit must place, at `exit_vout`, an output whose scriptPubKey hashes to that
+value, so the new transparent note is controlled by the owner's script at the carrier's expense. Because
+`h_anchor` is signed, a signed body expires once its anchor leaves the 144-block window. Relaying is this
+case with the owner's consent (§3.8).
+
+The shield has the same property through its kernel. The kernel message covers every field of the pool
+note, so no relayer can swap `pk_eph`, `ct_note`, `spend_key` or `nk_pub` and keep the signature.
+
+### 3.6 G6: Transcript privacy
+
+**Experiment.** `A` chooses two histories `h_0`, `h_1` of honest shields, pays and exits that have equal
+leakage `L(h_0) = L(h_1)` (§4). The notes in both histories are between honest addresses whose `v` and `n`
+`A` does not hold, and none of them is delegated to `A` for proving. `A` may relay any of the spends; the
+fee outputs then paid to `A` are `A`'s own notes and are part of `L`. The challenger runs `h_b` under A8,
+and `A` sees every envelope, the replayed state and the oracle, and outputs `b'`. `A` may run any other
+activity of its own alongside.
+
+Let `q_s` be the spends and `q_n` the notes created in the challenge history, excluding fee notes paid to
+`A`. A relayed payload reaches `A` before broadcast, but it is the same bytes that go on chain, so it adds
+nothing to the view beyond its arrival time and origin, which are network-layer and outside `L`.
+
+- **Game 0.** The real experiment.
+- **Game 1.** Replace each proof by `Sim(x)`. The spend signatures, openings, paths and nullifier keys
+  appear only in the witness, so they vanish from the view. Loss: `q_s·Adv^zk_R`.
+- **Game 2.** For each note, replace `s = compress(e·V)` with the compression of an independent uniform
+  point. `(G, V, E, s)` is a DDH tuple, and `E = e·G` stays published. Loss: `q_n·Adv^ddh`.
+- **Game 3.** Replace `t_a`, `t_n` and `k` with independent uniform values. `s` is now uniform and never
+  queried by `A` except with probability `q_H·q_n/2^255`, and the three domain tags separate the queries.
+  Then `P = A + t_a·G` and `NK = N + t_n·G` are uniform points independent of the address, so
+  `spend_key` and `nk_pub` are uniform. The keystream and tag are uniform, so `ct_note` is uniform. Loss:
+  `O(q_H·q_n/2^255)`.
+- **Game 4.** `r` is fresh and uniform (A8), and after Game 3 its only other appearance, `ct_note`, is
+  independent of it. So `(Cx, Cy)` is a uniform point independent of `v_amt` (A6, perfect hiding). At a
+  shield, `E = C_pool − ΣC_in` is then uniform, and `kernel_sig` is simulated by programming the oracle
+  (Schnorr HVZK). Loss: `O(q_H·q_n/2^256)`.
+- **Game 5.** Replace each published nullifier with a uniform 256-bit string. After Game 3,
+  `nk_note = n + t_n` is uniform and independent of everything else in the view except
+  `nk_pub = nk_note·G`. `A` distinguishes only by querying the oracle at `nk_note`, which is computing a
+  discrete log. Loss: `q_s·Adv^dl` (random-oracle model).
+
+Game 5 depends on `b` only through `L`. Proofs are simulated from `(version, root, keccak(body))`, and
+every nullifier, commitment, `spend_key`, `nk_pub`, `pk_eph`, `ct_note` and kernel signature is
+independently uniform. Which leaf a spend consumed, the amounts and the parties do not appear. Therefore
+
+```
+Adv^priv ≤ q_s·Adv^zk_R + q_n·Adv^ddh + q_s·Adv^dl + O(q_H·(q_n + q_s)/2^255).
+```
+
+A8 is a precondition on admissible histories, not a term. A reused `e` repeats `pk_eph` and the tweaks,
+and a reused `r` makes `ct_note` and the commitment correlate, either of which `A` detects by inspection.
+
+### 3.7 G7: Recovery completeness
+
+**Completeness.** The recipient computes `compress(v·E) = compress(v·e·G) = compress(e·V) = s`, so it
+derives the same `t_a`, `t_n` and `k` as the sender, decrypts `ct_note`, checks the opening against
+`(Cx, Cy)`, and recomputes `spend_key` and `nk_pub` from `(A, N)`. An honest note paid to it passes all of
+these with probability 1. Because every output field is signed (G5), no relayer can make an honest
+payment undeliverable.
+
+**Soundness.** A note that passes receipt is spendable. The wallet knows `sk_spend = a + t_a`, whose key is
+`spend_key`, and `nk_note = n + t_n` with `compress(nk_note·G) = nk_pub` (range-checked as in Lemma 1),
+along with a `u64` opening of the committed amount. With the leaf's path from replay, that is a full
+witness. A note meant for another address passes only if its tag verifies under this wallet's `k` and
+its keys match this wallet's tweaks, which happens with probability `O(q_H/2^128)` from the 16-byte tag.
+A sender who seals a wrong amount or a malformed key makes only its own payment undeliverable.
+
+**Viewing tiers.** `v` alone finds and reads notes but cannot compute nullifiers, so it cannot tell which
+received notes are spent. `(v, n)` computes every nullifier and sees the balance net of spends, and still
+cannot spend. `(v, a, n)` spends.
+
+### 3.8 G8: Delegated-party safety
+
+**Delegated prover.** A delegated prover receives the witness for one spend: the body, each input's opening, leaf, path,
+`nk_note` and signature, and each output's opening. It does not receive `v`, `a`, `n`, `s` or the tweaks.
+
+- **No redirection.** It holds signatures on one body only. Any other accepted spend of those inputs is a
+  G4 forgery, and any change to the body invalidates the proof it was given (G5). It can submit the body
+  as signed, which is what the owner asked for, or withhold it. Withholding is a liveness failure only,
+  since the owner can sign and prove elsewhere, and the signed body lapses when its anchor ages out.
+- **No spending of other notes.** Each other note has its own `P`, whose discrete log is `a + t_a'` with
+  `t_a'` pseudorandom (A5c, A4). The prover's signatures are under different keys, so spending another
+  note needs a forgery (A5b).
+- **No linking.** `nk_note = n + t_n` is `n` masked by a pseudorandom `t_n` that the prover does not know,
+  and each note's mask is independent. Knowing `nk_note` for delegated notes reveals nothing about `n` or
+  about any other note's `t_n'`. Deciding whether another leaf belongs to the same address requires
+  distinguishing its `(spend_key, nk_pub, pk_eph)` from uniform given `(V, A, N)`. That is Game 2–3 of §3.6
+  with the delegated notes' secrets as extra, independent information, so the advantage is bounded by
+  `q_n·Adv^ddh + O(q_H·q_n/2^255)`. Signatures under `P` reveal nothing about `a` beyond `P` (Schnorr
+  zero-knowledge in the random-oracle model).
+- **What it does learn.** It learns everything about the spend it proves: which leaves are consumed, their
+  amounts, the output openings and the nullifiers. That spend is not private from the prover, and a
+  wallet that needs it to be proves locally.
+
+**Relayer.** A relayer (design §6) receives the finished payload, `body ‖ proof_len ‖ proof`, after the
+sender has signed and proved. It is strictly weaker than a delegated prover: its view is a function of the
+prover's view with the witness removed, and it is exactly the bytes that go on chain. Every bound above
+therefore holds for it, and its linking advantage is the chain observer's (§3.6).
+
+- **No redirection.** The body is signed, so the relayer cannot change any output, the fee output
+  included, nor move an exit (G5). For a relayed exit it assigns `exit_vout` before the sender signs, and
+  it builds the carrier, but the exit is accepted only if that output's scriptPubKey hashes to the signed
+  `dest_spk_hash`. It can pay the sender's script or make the exit fail, nothing else.
+- **No spending.** It never sees `sk_spend`, `nk_note` or any opening.
+- **What it does learn.** Its own fee note, which it receives like any payment, and the payload's arrival
+  time and network origin. The sender needs no Bitcoin wallet, so no fee-paying input of the sender's
+  appears on chain. Submission over an anonymizing transport removes the origin.
+- **What it can do.** Withhold, delay, or choose the batch. These are liveness failures only: the owner
+  can submit elsewhere, and the body lapses when its anchor leaves the window.
+- **Relayer's own safety.** Before paying the Bitcoin fee it checks locally that the proof verifies
+  against its own replayed root, that the nullifiers are unspent, and that an output is received under
+  its viewing key (design §2) for at least its quoted fee. An envelope that passes these and is then
+  accepted pays the relayer. Its remaining exposure is a conflicting spend of the same nullifiers
+  confirming first, which costs it that carrier's fee share and nothing more (§6).
+
+### 3.9 G9: Batching
+
+A `T_BTC_SPEND` may ride any input of a carrier whose witness is a Tacit envelope leaf, so one Bitcoin
+transaction carries many spends. `T_BTC_SHIELD` stays at `vin[0]`, since its shielded notes are
+`vin[1..n_in]`. Envelopes in one transaction are processed one at a time in input order.
+
+- **Independent acceptance.** Each envelope is accepted or rejected on its own checks against the state
+  left by the envelopes before it, and a rejected envelope changes nothing. One invalid envelope does not
+  invalidate the others.
+- **Nullifier distinctness.** An accepted envelope's nullifiers are inserted before the next envelope is
+  checked, so two envelopes in one transaction that share a nullifier cannot both be accepted: the later
+  one fails freshness (§3.2).
+- **Exit-output uniqueness.** Each carrier output is claimed by at most one accepted exit in the
+  transaction (§3.3).
+- **No carrier term in the proof.** Public values are `(version, root, keccak(body))`, none of which
+  depends on the carrier, its input position or its other envelopes. Batching changes no proof and no
+  signature.
+- **Anchors.** Every spend in block `H` anchors to a root of a block at or below `H − 1`, so intra-block
+  order never changes which roots an envelope may use.
+
+**Claim.** G1–G5 hold for batched carriers with the same bounds. G1 holds because input order is part of
+the canonical order (A7). G2 and G3 hold by the sequential nullifier and exit-claim rules. G4 and G5 do not
+reference the carrier. ∎
+
+### 3.10 Local verification
+
+Indexers verify with `sp1_verifier::Groth16Verifier` against the SP1 Groth16 key. That key is
+byte-identical to the one embedded by the immutable mainnet leaf
+`0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2`: `VERIFIER_HASH 0x4388a21c…ee696` and
+`VK_ROOT 0x002f850e…5352`. A proof produced by the SP1 prover network for the `btc-pool-prover` guest was
+accepted by both the local verifier and the mainnet leaf, and a copy with one byte changed was rejected by
+both. Local acceptance is therefore the acceptance mainnet already relies on, and A3 is one assumption
+shared with the settle and reflection guests, not a second one.
+
+### 3.11 Assumption dependencies
 
 | Goal | Reduces to |
 |---|---|
-| G1 replay agreement | A7 (no cryptographic term) |
-| G2 double-spend resistance | A3, A4, A5 (canonical-witness addendum) |
-| G3 value conservation | A3, A5, A6 |
-| G4 spend authorization | A3, A5 |
-| G5 envelope binding | A3 |
-| G6 transcript privacy | A3, A8 (behavioral precondition), A9, A10 |
-| G7 recovery completeness | A4 (A9 for a tighter bound) |
-
-No goal above required an assumption this analysis could not state precisely, and no genuine new
-vulnerability turned up while working the reductions through — the one real gap the exercise found was a
-missing formalization (A9, A10 were implicit in the informal sketch's "look independently random" and
-"unlinkable" language but never named), not a hole in the design itself. The even-y canonicalization
-already implemented in `btc_pool.rs` is what makes G2's reduction go through at all; had it been absent,
-this section would report a genuine break rather than a proof.
+| G1 replay agreement | A7 (no cryptographic term), A1 for input agreement, A2 for liveness |
+| G2 double-spend resistance | A3, A4; A5a for squatting |
+| G3 conservation | A3, A5a, A5b (kernel extraction), A6, A7 (seam, transparent validator) |
+| G4 spend authorization | A3, A4, A5b, A8 |
+| G5 body binding | A3, A4, A5b |
+| G6 transcript privacy | A3, A4 (random oracle), A5a, A5c, A6, A8 |
+| G7 recovery completeness | A4, A5c, A8 |
+| G8 delegated-party safety | A4 (random oracle), A5b, A5c, A8 |
+| G9 batching | A7, and the goals it preserves |
 
 ## 4. Leakage function
 
-Mirrors the shape of the competitor's own `Leak(X)` (their §20.1), stated precisely so §12's Phase 1
-sign-off has something concrete to check implementations against:
+`L(h)` of a history is exactly the design §7 table's public column, stated precisely:
 
-- **Bitcoin publication metadata** — block height, transaction order, carrier-transaction fee behavior,
-  and whatever wallet-clustering the fee-paying inputs expose (§9's fee-linkage caveat, unresolved here).
-- **Envelope shape** — `n_in`, `n_out`, envelope size, opcode (shield vs. spend).
-- **`h_anchor` age** — how far behind the chain tip the referenced root is; unusually old anchors can
-  fingerprint a wallet's proving delay, same observation the competitor makes about their own `hanchor`.
-- **Replay schedule** — which block accepted the envelope, and the ordinal position of the new leaf(ves)
-  in the tree, though not which position was *spent*.
-- **Shield-time boundary data** — the locked amount is public (it's a real Bitcoin output's value) and so
-  is the lock's own output/script, same as every other design's peg-in leakage, including the
-  competitor's.
-- **Exit-time boundary data.** `exit_value` (the full redeemed amount) and
-  `exit_vout`'s destination script are both public, checked directly against real chain data (§10 step
-  2a). Symmetric with shield-time leakage, not a smaller or larger surface — cashing out reveals amount
-  and destination the same way locking in does.
+- **Bitcoin metadata.** Block height, transaction order and fee of each carrier, and which envelopes share
+  a carrier at which inputs.
+- **Fee-paying inputs, when self-broadcast.** A sender who broadcasts its own carrier exposes its fee
+  inputs and any clustering they carry. A relayed carrier's inputs are the relayer's and say nothing about
+  the sender.
+- **Shape.** The opcode, `n_in`, `n_out`, `has_exit`, the envelope size, and the positions of appended
+  leaves. Under the wallet defaults every pay is 2-in/3-out with zero-value padding, so shape carries no
+  per-wallet signal for pays.
+- **Anchor age.** `H − h_anchor` for each spend. Under the shared anchor policy (`tip − 6`, rounded down to
+  a multiple of 6), the age reveals only the proving-to-confirmation delay to within six blocks, the same
+  for every wallet following the policy.
+- **Shield boundary.** Which transparent notes were shielded (their outpoints and so their transparent
+  history), and the asset. Not their amounts.
+- **Exit boundary.** The exit's carrier output and its script, the asset, and the new transparent note's
+  outpoint. Not its amount. Under the wallet defaults each exit pays to a fresh key, so the script links to
+  nothing else.
+- **Relayer's fee notes.** To a relayer only: its own fee notes, received as ordinary payments, and the
+  arrival time and origin of each payload it relays.
 
-**Not leaked**, given A3/A5/**A5a**/A6/**A8** hold: spent-note value, which leaf a spend's nullifier
-closes (this specifically depends on A5a: a nullifier formula depending on `leaf` alone would make this
-*trivially* leaked, since `leaf` is fully public at creation time and anyone could precompute the
-nullifier without any secret at all; A5a's `nf_secret`, derivable only from `sk_note`, is what actually
-closes this, not `h_body` or A8), recipient identity beyond a one-time `spend_key`/`pk_eph` pair (unlinkable
-to any other note paid to the same recipient, or to any real-world identity, absent other metadata — but
-*only* because A8 requires it be fresh; a reused `spend_key` reopens this immediately), and the
-input→output mapping within a spend.
+Not in `L`: any amount, at shield, pay or exit; which leaf a spend consumes; sender and recipient; whether
+two notes were paid to one address; and, when relayed, the sender's Bitcoin wallet.
 
-**Privacy set caveat**, same one the competitor names in their own §20.6: the *nominal* anonymity set for
-a spend under anchor root `h_anchor` is every leaf appended to the tree by that height, but the *effective*
-set shrinks with any auxiliary information an observer has (leaves they control, timing correlation via
-`h_anchor` age, fee-wallet clustering). This design doesn't claim a uniform lower bound on real-world
-privacy any more than the competitor's does — that depends on adoption and wallet policy, not on the
-proof system.
+**Anonymity set.** The nominal set for a spend is every leaf of `asset` in the anchor root. The effective
+set is smaller by whatever an observer knows beyond `L`: leaves it created or received, timing, and the
+transparent history of shielded notes, since a shield followed shortly by an exit of the same asset
+narrows it. A wallet that departs from the defaults (odd arity, its own anchor rule, a reused exit script,
+self-broadcast) adds its own fingerprint. Relaying removes the sender's fee inputs, and batching many
+senders into one carrier removes the one-carrier-per-spend timing signal. Network-layer observation
+(mempool, broadcast origin) is outside `L` and outside this analysis.
 
-## 5. What Phase 1 does not close
+## 5. Comparison with "Shielded Bitcoin" (allocinit, Sep 2026)
 
-- **Independent verification of the reductions in §3.** These are worked by hand, not machine-checked or
-  externally reviewed — the same bar every other Tacit mainnet component clears before launch (Pashov/
-  Astra-style review, `DESIGN-btc-shielded-pool.md` §12 step 5) still applies to this section specifically
-  before Phase 5 sign-off.
-- **A9 (random oracle) and A10 (DDH on secp256k1) are new assumptions this analysis introduced**, not
-  present in the design doc's own informal treatment. Neither is unusual — A9 is the standard modeling
-  choice for hash-based nullifier/PRF arguments, A10 is what every stealth-address scheme already reduces
-  to, including Tacit's shipped EVM construction — but they are additions a reviewer should scrutinize
-  specifically, since they weren't named before this pass.
-- No treatment of network-layer privacy (mempool observation, broadcast timing) — out of scope here, same
-  as it's out of scope for the competitor's own paper (their §20.7).
-- No fuzzing/formal-verification plan for the SP1 guest itself — that belongs to Phase 2, once code
-  exists to verify.
+That paper states a transfer layer with a canonical-implementation assumption, a double-spend lemma
+(knowledge soundness plus a collision term), a hybrid-game privacy theorem over admissible challenge
+pairs, and an explicit leakage function. It defers peg-in and peg-out to a follow-up paper and does not
+claim trustless entry or exit.
 
-This closes Phase 1's rigor bar: G1–G7 now have named experiments, advantage terms, and reductions to the
-assumptions in §1 (including the two, A9/A10, this pass added), at the same level SPEC.md's other analyses
-and the competitor's Theorem 1/2 use. What remains is independent review of those reductions, not writing
-them for the first time. Phase 2 (the guest implementation) is next.
+| Goal | Shielded Bitcoin | This design |
+|---|---|---|
+| Replay agreement | Canonical implementation assumed | Same (A7), with local verification, height-based anchor window and an undo log |
+| Double-spend resistance | Knowledge soundness plus collision term | Knowledge soundness. Nullifier uniqueness is proved (Lemma 1) and not left to a collision bound |
+| Conservation, in-pool | Proved | Proved (§3.3) |
+| Conservation, boundary | Deferred | Proved: the `T_CXFER` kernel at shield, an in-circuit `u64` opening at exit, and the seam rule |
+| Spend authorization | Proved for its relation | Proved, against the note's sender and a delegated prover (§3.4) |
+| Body binding | Public-input binding | Every body byte is hashed into the public values and signed by each input owner, so binding holds without proof non-malleability (§3.5) |
+| Transcript privacy | Hybrid argument | Hybrid argument (§3.6) |
+| Boundary amounts | No working boundary | Hidden at both shield and exit |
+| Boundary custody | Not claimed trustless | Not claimed trustless. The pool adds no custody, and BTC exposure is cBTC's (§0) |
+| Setup | The paper's own instantiation | No new ceremony: the SP1 Groth16 key already relied on by mainnet, confirmed byte-identical (§3.10) |
+| Delegated proving | Not addressed as a goal | G8: redirect-proof and unlinkable, with the prover's view stated |
+| Batching | Out of scope | Many spends per carrier, each accepted independently, with sequential nullifier and exit-output rules (§3.9) |
+| Fee payment | Left to future PIPE fee vaults | A relayer paid by an in-pool fee output; the sender needs no Bitcoin wallet and exposes no fee inputs (§3.8) |
+
+**Where this design goes further.** Boundary amounts are hidden. The boundary works today through
+existing Tacit assets, rather than being deferred. No new trusted setup is introduced. Proving can be
+delegated without handing over spend authority or linkability. Spends batch into shared carriers, and fees
+are paid inside the pool through relayers, so a sender needs no Bitcoin wallet.
+
+**Where the paper is more rigorous.** It is a standalone formal treatment, and this analysis is not yet
+independently reviewed. This design's soundness base is SP1 end to end (a zkVM, its recursion and the
+Groth16 wrap), which is larger and less formally analyzed than a dedicated circuit. The related-key
+unforgeability of tweaked BIP-340 is assumed here, not proved (A5b). The kernel's knowledge extraction is
+the non-tight forking argument that already underlies `T_CXFER`.
+
+## 6. Residual risks
+
+- **Self-inflicted loss.** A shield whose sum reaches `2^64`, a note with an invalid `spend_key` or
+  `nk_pub`, a wrong amount in `ct_note`, and a duplicate leaf each strand only the value of the party that
+  created them. The canonical wallet refuses to build them.
+- **Seam divergence.** A transparent validator that mishandles outputs of `T_BTC_SPEND` carriers either
+  rejects valid exit notes (liveness) or accepts unrecorded ones (supply). Both validators must share the
+  pool's record (A7).
+- **Reorgs deeper than retained undo history** require a replay from an earlier checkpoint. They do not
+  change the result, only the cost.
+- **Data unavailability** halts an indexer until the data is found (A2). It is a liveness risk, not a
+  divergence risk.
+- **Relayer exposure.** A relayer pays the Bitcoin fee before the spend confirms. If a conflicting spend of
+  the same nullifiers confirms first, its envelope is rejected and it loses that carrier's fee share.
+  Tracking nullifiers seen in the mempool bounds this. It affects only the relayer.
+- **Relayer liveness.** A relayer can withhold or delay a payload. The owner can submit elsewhere until the
+  anchor lapses.
+- **Viewing-key scope.** `v` reveals every received note and its amount, but not which are spent.
+
+## 7. For external review
+
+- The reductions in §3, in particular Lemmas 1 and 2, the kernel extraction at the shield, the Game 3 and
+  Game 5 hops, and the G8 linking argument.
+- A3 as instantiated: that the pinned SP1 version's Groth16 wrap samples fresh blinding for every proof
+  (zero-knowledge of the published proof rests on it, since the inner STARK is part of the wrap's
+  witness), and that the wrap is knowledge-sound for the guest's committed public values.
+- A5b's related-key clause for `A + t·G` with an even-`y` adjustment, as used for `spend_key`.
+- The guest's parser and range checks against design §3–§4: canonical `nk_note` below `n`,
+  `leaf_index < 2^32`, compressed point validity for `nk_pub` and `pk_eph`, x-only validity for
+  `spend_key`, the `n_out`/`has_exit` bounds, `u64` openings of every output and the exit, and the `u128`
+  sum with the exit term.
+- The indexer's acceptance order within a transaction, exit-output claims, root retention at the window
+  edge, undo log, and the transparent seam, under adversarial replay and reorg tests, including a carrier
+  whose `vin[0]` holds a transparent op whose outputs could coincide with an `exit_vout`.

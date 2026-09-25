@@ -1,448 +1,308 @@
-# Bitcoin-native shielded pool: source-hidden payment, no second chain
+# Bitcoin-native shielded pool: private payments on Bitcoin, no second chain
 
-Status: DESIGN (not implemented). Fixes the gap in `DESIGN-btc-only-wrap.md`: `T_CXFER` hides amount but
-not source, because its kernel signature is bound to the literal spent `txid:vout`. This proposes a
-decoupled note — not a spendable Bitcoin UTXO — so spending never requires the carrying transaction to
-reference the note's own prior output at all. Reuses Tacit's own toolkit throughout: Pedersen/Bulletproofs+
-for variable amounts, the existing note-leaf/nullifier shape, the existing viewing-key scanning pattern,
-and SP1 for the proof — deliberately not a circom+Groth16 circuit, for the reason in §4.
+Status: DESIGN, reference implementation in progress. Opcodes `0x6C`/`0x6D` are reserved in SPEC §3.10
+and not enabled on mainnet. Companion analysis: `DESIGN-btc-shielded-pool-security.md`.
 
-## 1. What actually leaks today, and why
+A shielded pool over Tacit's Bitcoin assets. Alice pays Bob: the amount, the note that funded the
+payment, and the link between the two parties are hidden from everyone else. The pool lives entirely on
+Bitcoin. Its state is a Merkle tree of note leaves and a nullifier set, derived by any indexer from
+Bitcoin data alone, and its proofs are verified locally with no Ethereum dependency.
 
-Bitcoin consensus requires every transaction input to name a specific prior output. Tacit's Bitcoin-side
-kernel signature (SPEC §2.4) hashes those outpoints directly into the signed message, so there is no way
-to make a `T_CXFER` spend without revealing which earlier output it consumed — this is a design choice
-(notes are real UTXOs, interoperable with ordinary Bitcoin tooling), not an oversight, but it means
-`T_CXFER` alone can't give Bob a way to pay Alice without a chain observer tracing the payment back to
-whichever output funded it. SPEC §11 says as much itself: "Public: Bitcoin addresses and the transaction
-graph." Genuine source-hiding needs the note's existence and spend to be decoupled from Bitcoin's UTXO
-graph — exactly the trick shielded-note designs (including the "Shielded Bitcoin" paper this responds to)
-use: the note is an opaque commitment, spending publishes a nullifier instead of consuming a matching
-input, and the transaction's real Bitcoin inputs can be whatever coins the wallet uses to pay fees.
+The pool holds Tacit asset value, not raw BTC. Value enters by spending transparent Tacit UTXO notes into
+it and leaves by creating new ones, and the pool conserves it exactly as the rest of the Bitcoin
+metaprotocol does. BTC exposure comes from cBTC, Tacit's BTC-backed asset (SPEC §5.7), or from any
+`T_CETCH` asset. The pool adds privacy and no custody: on today's Bitcoin, a transferable note cannot be
+trustlessly redeemed against locked sats without a covenant or a bridge, so the pool does not pretend to
+hold sats. It carries claims whose backing is whatever already backs the asset.
 
-## 2. Note model
+## 1. Why a new note model
 
-New domain, distinct from the existing Bitcoin-homed note (which *is* a real UTXO and stays exactly as
-specified for its own purpose — cross-chain spend authority, `DESIGN-btc-note-authority.md`):
+A `T_CXFER` note is a real UTXO, and its kernel signs the spent `txid:vout` (SPEC §2.4), so a chain
+observer sees which output funded every transfer. Hiding the source needs a note that is not a UTXO: an
+opaque leaf in a tree, spent by publishing a nullifier that no observer can link to the leaf. The carrying
+transaction's real inputs are then only the coins that pay its fee.
 
-```
-leaf       = keccak(asset ‖ Cx ‖ Cy ‖ spend_key ‖ "tacit-btc-pool-note-v1")
-nf_secret  = keccak("tacit-btc-pool-nf-v1" ‖ sk_note)
-nullifier  = keccak(leaf ‖ nf_secret ‖ "spent")
-```
+## 2. Keys, addresses and notes
 
-`leaf` follows the same shape as the existing Bitcoin-homed formula, but `nullifier` deliberately does
-not: reusing Bitcoin-homed's `nullifier = keccak(leaf‖"spent")` verbatim is fine there but breaks here.
-The difference matters: a Bitcoin-homed
-note's `auth_key` is already a real, publicly observable Bitcoin UTXO key, so that formula was never
-claiming strong unlinkability to begin with. This note's `spend_key` is *not* tied to any real UTXO — the
-entire point is decoupling — and every field `leaf` depends on (`asset, Cx, Cy, spend_key`) is published in
-plaintext at creation. If `nullifier` were a function of `leaf` alone, **any passive chain observer could
-precompute it the moment the note is created** and then simply watch for that exact value reappearing —
-zero unlinkability, not partial. Folding in `nf_secret`, a value derived from the recipient's private
-`sk_note` (§2 below) and never published, closes this: only the note's actual owner can ever compute the
-right `nullifier`, the same role Zcash's `ρ`/`sknf` play and the same reason the competitor paper's own
-nullifier depends on a private `sknf`, not on public note fields alone.
+**Wallet keys.** Three secp256k1 scalars, each with a public point:
 
-Spend authorization is proven **inside the circuit** by witnessing `sk_note` directly and constraining
-`spend_key = sk_note·G` — not by a detached signature. This is simpler, not just different: once `h_body`
-(§4) is itself a public input the proof is verified against, the proof already can't be repointed to a
-different envelope (Groth16/SP1 proofs are bound to their exact public-input vector), so a separate
-signature was never adding non-malleability — only authorization, and witnessing the secret directly proves
-that more directly than signing something with it does.
+| Secret | Public | Role |
+|---|---|---|
+| `v` | `V = v·G` | Viewing. Detects incoming notes and decrypts their amounts. |
+| `a` | `A = a·G` | Spend authority. Signs spends. |
+| `n` | `N = n·G` | Nullifier base. Derives each note's nullifier key. |
 
-**The circuit must also constrain `sk_note·G` to have an even y-coordinate, rejecting otherwise — this is
-load-bearing, not a style choice.** `spend_key` is
-x-only: for any scalar `d`, both `d` and `n−d` (the curve order minus `d`) produce points sharing the same
-x-coordinate, so both pass an x-only equality check against the same `spend_key`. Since `nf_secret` (above)
-hashes the *full* scalar, not the x-only key, `d` and `n−d` produce **different nullifiers for the same
-note** — meaning the note's own owner could spend it twice, each time with a different valid nullifier,
-duplicating real value. BIP-340 avoids this by canonicalizing to a single even-y representative during
-signing; direct scalar-witnessing needs the same canonicalization enforced explicitly, since nothing else
-provides it once there's no signature scheme's own convention to lean on. With the even-y constraint, only
-one of `{d, n−d}` is ever accepted, closing the ambiguity entirely.
+A pool address is `(V, A, N)`, each a 33-byte compressed point, given out once and reused freely. `v`
+alone finds and reads incoming notes. `(v, n)` also sees which of them are spent. Only `a` can spend.
 
-**`spend_key` must be a fresh one-time key per note, never a reused address — this is load-bearing, not
-optional wallet hygiene.** Because the indexer derives `leaf` from public envelope fields, `spend_key` is
-necessarily public. Publishing the *same* `spend_key` across two notes would make them trivially linkable
-by anyone grepping the chain, independent of everything else this design hides — a real break, not a
-theoretical one. The fix reuses a mechanism Tacit has already shipped rather than inventing one: the
-one-time-key construction behind "pay by stealth" for the EVM pool (README). A recipient publishes a
-stable receiving key `pk_recv` (their address, given out once, reused across many payments). For each
-note, the sender picks a fresh ephemeral secret, publishes `pk_eph = eph·G`, and computes
+**Creating a note for an address.** The sender picks a fresh scalar `e` and computes:
 
 ```
-shared  = ECDH(eph, pk_recv)
-spend_key = pk_recv + H(shared)·G
+E       = e·G                       pk_eph, 33-byte compressed, published
+s       = compress(e·V)             33-byte shared secret, never published
+t_a     = Hs("tacit-btc-pool-auth-tweak-v1" ‖ s)
+t_n     = Hs("tacit-btc-pool-nk-tweak-v1"   ‖ s)
+k       = keccak("tacit-btc-pool-aead-v1"   ‖ s)
+P       = A + t_a·G                 spend_key = x(P), 32 bytes, published
+NK      = N + t_n·G                 nk_pub = compress(NK), 33 bytes, published
+C       = v_amt·H + r·G             Pedersen commitment, (Cx, Cy) published
+ct_note = AEAD_k(v_amt(8, BE) ‖ r(32))   56 bytes, published
+leaf    = keccak(asset ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub ‖ "tacit-btc-pool-note-v1")
 ```
 
-The recipient recomputes the same `shared` from their own `sk_recv` and the published `pk_eph`, and can
-therefore derive the one-time spend secret `sk_note = sk_recv + H(shared) (mod n)` to spend the note
-later — witnessed directly in the proof (§4), never revealed — but no outside observer, seeing only
-`spend_key` and `pk_eph`, can link this note to `pk_recv` or to any other note paid to the same recipient,
-and (with the nullifier formula above, folding in `nf_secret`) cannot precompute its nullifier either, since that also
-requires `sk_note`. `spend_key` is now a fresh, unlinkable-looking public value on every note, which is
-what makes publishing it safe. `T_BTC_SHIELD` uses the same construction, self-directed (the depositor is
-their own recipient) — no special-cased path, one derivation rule everywhere.
-
-## 3. Two opcodes
-
-Claims the next free Bitcoin bytes after `DESIGN-btc-only-wrap.md`'s `0x6A`/`0x6B` (SPEC §3.9, §10).
-
-**`T_BTC_SHIELD` (0x6C) — deposit, same transaction as the lock, no escrow.**
-```
-0x6C ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖ pk_eph(32) ‖ spend_key(32) ‖ opening_proof(64)
-```
-Identical atomicity trick as `T_BTC_WRAP`: `lock_vout` names this transaction's own self-custody output,
-and its value is read directly from that output — public, same as any peg-in amount is public in every
-design including the competitor's (their own §20.4 admits boundary amounts are never hidden). `Cx‖Cy` is
-the note's Pedersen commitment, matching the two-coordinate encoding every other Bitcoin op already uses
-(e.g. `T_CBTC_LOCK`), not a compressed point — one encoding convention across the whole metaprotocol.
-`opening_proof` is the same Schnorr NIZK from `T_BTC_WRAP` binding `C` to the lock's public value.
-`pk_eph`/`spend_key` are the one-time-key pair from §2. `asset` names which Tacit Bitcoin asset this note
-holds (raw BTC or any `T_CETCH`-issued asset — §8 of this doc). The indexer derives `leaf` from
-`(asset, Cx, Cy, spend_key)` and appends it to a Bitcoin-only Merkle tree it maintains purely by replaying
-accepted envelopes — the same category of indexer-derived state Tacit's Bitcoin metaprotocol already
-maintains for every other op (README: "any indexer running the spec reaches the same state from the chain
-alone"). This is not a new trust model, just a new tree.
-
-**`T_BTC_SPEND` (0x6D) — pay or exit, never mixed; source and amount both hidden for a pay.**
-```
-0x6D ‖ asset(32) ‖ n_in(1) ‖ nf[32 × n_in] ‖ out_kind(1)
-     ‖ out_kind = 0x00 (pay):  n_out(1) ‖ (Cx(32)‖Cy(32)‖pk_eph(32)‖spend_key(32)‖ct_note(56)) × n_out
-     ‖ out_kind = 0x01 (exit): exit_vout(4 LE) ‖ exit_value(8 LE) ‖ dest_spk_hash(32)
-     ‖ h_anchor(4 LE) ‖ proof
-```
-One opcode, two mutually exclusive output shapes, picked by `out_kind` — simpler than a separate exit
-opcode, and it's the only way `T_BTC_UNWRAP`'s "same-tx burn" pattern (§5) actually gets implemented rather
-than gestured at. `n_in` capped at 2 for v1, `n_out` (pay case) capped at 2 — covers pay-with-change and
-simple consolidation without the padding question the competitor's own §22.1 leaves open for larger
-arities. For `out_kind = 0x01`, `exit_vout` names this same transaction's real Bitcoin output the redeemed
-value pays to, and the envelope carries both the claimed `exit_value` (u64) and `dest_spk_hash` (a hash of
-the scriptPubKey that output must pay). All three must match — the indexer checks `outputs[exit_vout]`'s
-real value against `exit_value` **and** its real scriptPubKey hash against `dest_spk_hash`, exactly (§10
-step 2a). Both checks are load-bearing, not just the value one: binding value alone leaves the destination free
-for anyone reassembling the signed envelope into a different carrier transaction to redirect the payout —
-value-correct, recipient-wrong. `dest_spk_hash` closes that and is part of the canonical envelope body, covered
-by `h_body` (§4), so it's signed the same way every other field is — the proof alone still doesn't
-establish the real chain-data match (the guest can't see the carrying transaction's other outputs), that
-part is still §10 step 2a's job, same as `T_BTC_SHIELD`'s `opening_proof`/`lock_vout` pairing.
-
-`h_anchor` is a Bitcoin block height selecting which retained tree root the membership proof is checked
-against — the sliding anchor window from the competitor's paper (their §8) is a genuinely good idea worth
-taking outright: it decouples proof construction from the live chain tip the same way their
-`hanchor`/valid-root window does, so a wallet doesn't have to race the chain tip to get a proof included.
-`proof` is a Groth16-wrapped SP1 proof (§4); its exact byte width is fixed once the guest is compiled, not
-asserted here — canonical parsing (§10) needs a real fixed width, not an approximate one, so this stays an
-open field until then. `ct_note = AEAD(key derived from the §2 shared secret, plaintext = v(8) ‖ r(32),
-16-byte tag)`, 56 bytes exact — just the Pedersen opening the recipient needs to later spend the note.
-
-No fee field. Miner fees for the carrying Bitcoin transaction come from whatever unrelated coins the
-wallet uses to pay them (next paragraph) — never from the pool relation itself. `Σ v_in = Σ v_out` (pay) or
-`Σ v_in = value(outputs[exit_vout])` (exit) must hold exactly; the relation has no notion of a fee to skim,
-which is simpler than defining one and gets the same result for v1.
-
-**Critically: the transaction's real Bitcoin inputs/outputs are whatever coins the sender uses to pay
-miner fees.** They are unrelated to the note being spent. Nothing in this envelope requires consuming a
-specific prior output — that's what makes source-hiding real instead of asserted.
-
-## 4. The proof: a fourth SP1 guest, not a new ceremony
-
-**Whole-envelope tamper-evidence instead of enumerating fields.** Naming which specific fields need
-protecting risks missing one (e.g. `pk_eph`/`ct_note` or the exit destination left unbound), so instead the
-guest commits every raw envelope field — `asset`,
-every nullifier, every output's full contents (`Cx, Cy, pk_eph, spend_key, ct_note` for a pay;
-`exit_vout, dest_spk_hash` for an exit), and `h_anchor` — directly as its public statement (the
-`BtcPoolSpendValues` the guest ABI-encodes and commits). Because a Groth16/SP1 proof is only valid for the
-exact public-input vector it was generated against, this alone makes the whole envelope tamper-evident —
-the same anti-malleability idea as the existing `btc_note_spend_msg` in `DESIGN-btc-note-authority.md`,
-generalized to "commit the whole envelope" instead of signing a hand-picked field list. `h_body` (the hash
-defined below) is a useful *concept* for reasoning about this — "one hash covers everything" — but the
-guest doesn't need to commit it as a separate discrete field to get the property; committing the raw
-fields directly is a strictly equivalent (if not tighter) binding, and is what the implementation actually
-does. An indexer verifies by comparing the guest's committed values field-by-field against the parsed
-envelope, not by recomputing and comparing a single `h_body` hash.
-
-**Exact `canonical_body` encoding**, the one authoritative reference for it:
+`Hs(x)` is `keccak(x)` read as a big-endian integer and reduced mod the curve order, rejected if zero.
+A blinding `r` is read as a 32-byte big-endian integer reduced mod the curve order, as in the other
+guests. Only `nk_note` must be canonical, because it enters a hash.
+The recipient recomputes `s = compress(v·E)` and the same tweaks, then holds:
 
 ```
-canonical_body := 0x6D ‖ asset(32) ‖ n_in(1) ‖ nf[32×n_in]  ‖ out_kind(1)
-     ‖ out_kind = 0x00: n_out(1) ‖ (Cx(32)‖Cy(32)‖pk_eph(32)‖spend_key(32)‖ct_note(56)) × n_out
-     ‖ out_kind = 0x01: exit_vout(4, big-endian) ‖ dest_spk_hash(32)
-     ‖ h_anchor(4, big-endian)
+sk_spend = a + t_a (mod n)          signs spends (BIP-340 negates it internally when P has odd y)
+nk_note  = n + t_n (mod n)          canonical 32-byte big-endian, 0 < nk_note < n
 ```
 
-Multi-byte integers inside `canonical_body` are big-endian — this differs from the envelope's own
-**on-wire** encoding (§3 uses little-endian for `lock_vout`, `exit_vout`, `h_anchor`, matching the rest of
-this metaprotocol's field convention), and that's deliberate, not a bug: big-endian internal hashing
-alongside little-endian wire fields is the same split `T_CXFER`'s own kernel message already uses (`txid`
-big-endian, `vout` little-endian, SPEC §2.4) — one more place this design reuses an existing convention
-rather than inventing a new one. **`exit_value` is deliberately absent from `canonical_body`** — it doesn't
-need `h_body` coverage to be tamper-resistant, because the relation already constrains it directly as a
-public input via `Σv_in = exit_value` (§10 step 2a's job is checking that public input against real chain
-data, not re-deriving it from `h_body`). Every count field (`n_in`, `n_out`) is a single byte, matching the
-envelope's own count widths; there is no separate length prefix on any fixed-width list, since every
-element in every list here has a fixed width already — nothing about this encoding is ambiguous to parse.
+Because `e` is fresh, `spend_key`, `nk_pub` and `pk_eph` are fresh on every note and cannot be linked to
+the address or to each other without `v`. The sender knows `P` and `NK` but not `a` or `n`, so it cannot
+spend the note or compute its nullifier.
 
-The indexer recomputes `leaf` (and, for exit, checks step 2a's real-chain-data fields) from the published
-bytes before verifying — it does not need to separately recompute `h_body`, since the guest's committed
-statement already carries the raw fields to compare against directly.
+**Nullifier.**
 
-Per spent input: leaf membership under the root at `h_anchor` (the indexer supplies `root` as a public
-input, the same `spendRoot` pattern the existing settle guest already uses — the guest doesn't derive
-`root` from `h_anchor` itself, the indexer's own replay does, and independently verifies the two match);
-`spend_key = sk_note·G` for a witnessed `sk_note`, **with `sk_note·G` constrained to even y** (§2 — this is
-the authorization check, done by directly witnessing the secret rather than a detached signature; the
-even-y constraint is what stops the same note being spent twice under `sk_note` and its negation);
-correct nullifier derivation,
-`nullifier = keccak(leaf ‖ keccak("tacit-btc-pool-nf-v1" ‖ sk_note) ‖ "spent")` (§2 — this is why `sk_note`
-has to be witnessed regardless of how authorization is proven: the nullifier formula needs it).
-Per created output (pay case): leaf correctly derived from `(asset, Cx, Cy, spend_key)`. Value conservation
-as stated in §3, range-checked, no fee term.
+```
+nf = keccak("tacit-btc-pool-nf-v1" ‖ leaf ‖ nk_note(32, BE) ‖ leaf_index(8, BE))
+```
 
-Write this as a Rust SP1 guest — a fourth program alongside the settle, Bitcoin-reflection, and
-Ethereum-reflection guests already in production — instead of a circom circuit. `docs/CEREMONY.md` states
-plainly: "Tacit's transparent stack (SP1, Bulletproofs+, Schnorr kernels) needs no trusted setup." The two
-existing Groth16 ceremonies (`amm_swap_batch`, the legacy mixer) exist because those two circuits were
-written in circom, not because compact proofs inherently require a bespoke multi-party ceremony. SP1
-already wraps STARK proofs down to Groth16-sized output using its own shared setup — the same mechanism
-already producing the settle and reflection guests' proofs today. Writing this relation as an SP1 program
-means: no new ceremony, same GPU proving box, same ELF-hash pinning and reproducible-build process already
-in place (`docs/REPRODUCIBLE-BUILDS.md`). This is the concrete "hanging fruit": reuse the prover
-infrastructure Tacit already operates instead of standing up new ceremony machinery to match a competitor
-who also needs one.
+`nk_note` is secret, so no observer can precompute `nf` from the public leaf. It is also unique per note:
+the leaf commits the full point `nk_pub` including its parity, and the relation requires
+`0 < nk_note < n` with `compress(nk_note·G) = nk_pub`, so exactly one byte string satisfies it. With the
+position included, each appended leaf has exactly one nullifier, whoever proves the spend. Every leaf is
+fully funded when created, so two byte-identical leaves are two notes and both are spendable.
 
-To be precise about what this does *not* eliminate: it's not zero trust. It trades a bespoke multi-party
-ceremony for trusting Succinct's SP1 Groth16-wrapping setup — the same trust Tacit already extends to
-every other guest's proofs, not a new assumption.
+**AEAD.** Encrypt-then-MAC over keccak: keystream block `i` is `keccak(k ‖ i(2, LE))`, the ciphertext is
+the 40-byte plaintext XOR the keystream, and the tag is `keccak("tacit-btc-pool-aead-tag-v1" ‖ k ‖ ct)`
+truncated to 16 bytes and compared in constant time. `k` is used for exactly one note.
 
-**Proof malleability is a non-issue here.** Groth16 proofs
-are known to be re-randomizable — a valid proof can be transformed into a different, still-valid proof for
-the same statement (SPEC itself flags this elsewhere for other circuits). That would matter if anything
-here treated a *specific proof's bytes* as an identity. Nothing does: replay protection is nullifier-based
-(§10), and the statement a re-randomized proof verifies against — nullifiers, output leaves, `h_anchor` —
-is unchanged by re-randomization. A re-randomized copy of an already-accepted envelope just republishes
-the same nullifiers and gets rejected as a repeat, the same conclusion the competitor's own analysis
-reaches for the identical reason (their §19.5).
+**Receipt.** A note belongs to a wallet when it decrypts under that wallet's `s`, the decrypted
+`(v_amt, r)` opens `(Cx, Cy)`, and `spend_key` and `nk_pub` equal the values derived from `(A, N)` and
+`s`. A note that fails any of these is not received. A sender who seals the wrong amount only makes their
+own payment undeliverable.
 
-## 5. Exit
+## 3. Opcodes
 
-`T_BTC_SPEND` with `out_kind = 0x01` (§3): the spent note's nullifier is published with no replacement
-leaf, and its value pays out through `exit_vout` — a real output of the same transaction, read directly,
-no separate destination field. Same same-transaction atomicity as `T_BTC_UNWRAP`, same signature scheme,
-no separate opcode.
+All integers on the wire are little-endian unless marked otherwise. Both envelopes ride the standard
+Tacit carrier (SPEC §3.1). Canonical parsing requires every `(Cx, Cy)` to be an on-curve point with both
+coordinates below `p`, every 33-byte `nk_pub` and `pk_eph` to be a valid compressed point, and every
+`spend_key` to be a valid x-only key.
 
-## 6. Recipient detection
+**`T_BTC_SHIELD` (0x6C): move transparent notes into the pool.** 316 bytes:
 
-Unmodified reuse of the pool's existing pattern: scan accepted envelopes, attempt ECDH decryption of each
-`ct_note` with the viewing key, verify the recovered plaintext re-derives the published leaf. Exactly
-`DESIGN-btc-note-authority.md`'s spend-authorization discipline, mirrored for detection.
+```
+0x6C ‖ asset(32) ‖ n_in(1) ‖ Cx(32) ‖ Cy(32) ‖ spend_key(32) ‖ nk_pub(33) ‖ pk_eph(33)
+     ‖ ct_note(56) ‖ kernel_sig(64)
+```
 
-## 7. Complementary, not competing: confidential CoinJoin
+The carrier's `vin[1..n_in]` are the transparent notes being shielded, all of `asset`, with
+`1 ≤ n_in ≤ 8`. The kernel proves the pool note carries exactly their value without revealing it. With
+`C_pool = (Cx, Cy)`, the excess is `E = C_pool − ΣC_in`, it must not be the point at infinity, and
+`kernel_sig` is a BIP-340 signature under `x(E)` over:
 
-None of the above is needed to get *some* source-hiding shippable sooner: batch several independent
-`T_CXFER` envelopes into one Bitcoin transaction (randomized input/output order), the way ordinary CoinJoin
-does. Because `T_CXFER` amounts are already hidden by Bulletproofs+, this batch resists the value-
-correlation attack that undermines most real-world CoinJoins needing equal-value outputs — a genuine
-synergy from already having amount-hiding before adding batching. Anonymity set is bounded by batch size,
-not by the whole tree, so it's strictly weaker than §2–§6 above, but it's zero new cryptography and could
-run through the existing relay (`worker-relay`) today. The two are not exclusive: `T_BTC_SHIELD`/`T_BTC_SPEND`
-envelopes could themselves be CoinJoin-batched for extra timing decorrelation against network-layer
-observation, the one leakage surface neither design closes (§8).
+```
+SHA-256("tacit-btc-pool-shield-v1" ‖ asset ‖ n_in(1) ‖ (txid ‖ vout_LE)×n_in
+        ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub ‖ pk_eph ‖ ct_note)
+```
 
-## 8. What's reused vs. genuinely new
+This is the `T_CXFER` kernel (SPEC §2.4) with the pool note as its only output. Each `txid` uses the same
+byte order that kernel uses, the order a transaction input serializes it (the reverse of display hex). The carrier creates no
+transparent outputs of `asset`. To shield part of a note, split it with `T_CXFER` first.
 
-Reused unmodified: Pedersen/Bulletproofs+ amount hiding, the note-leaf shape (though not the nullifier
-formula — §2 explains why the pool needed a different one than `DESIGN-btc-note-authority.md`'s), the
-anchor-window idea (credited to the competitor paper, worth taking), the pool's note-encryption/scanning
-pattern, `T_BTC_WRAP`'s atomic-lock trick for entry, `T_BTC_UNWRAP`'s same-tx burn for exit, SP1's
-existing proving pipeline.
+**`T_BTC_SPEND` (0x6D): pay, exit, or both.**
 
-Genuinely new: a Bitcoin-only Merkle tree and nullifier set maintained purely by the indexer (a new state
-machine, even if the same trust category as existing indexer-derived state); a fourth SP1 guest and its
-own audit; wallet-side scanning wired to Bitcoin witness data instead of EVM calldata.
+```
+0x6D ‖ asset(32) ‖ h_anchor(4) ‖ n_in(1) ‖ nf(32)×n_in ‖ n_out(1) ‖ output(218)×n_out
+     ‖ has_exit(1) ‖ [exit(100)] ‖ proof_len(2) ‖ proof
 
-## Relationship to the EVM confidential pool
+output = Cx(32) ‖ Cy(32) ‖ spend_key(32) ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)
+exit   = exit_vout(4) ‖ Cx(32) ‖ Cy(32) ‖ dest_spk_hash(32)          present iff has_exit = 1
+```
 
-This pool and the EVM confidential pool are not two views of the same thing — they give different
-guarantees, and deliberately don't interoperate directly. Stated here on purpose, not left for someone to
-discover as a missing feature later.
+The constraints are `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `n_out + has_exit ≥ 1`, and
+`proof_len ≤ 512`. `body` is every byte of the payload before `proof_len`.
 
-**Why they're separate, not just separately implemented.** Tacit already has a way for Bitcoin-origin
-value to be spent confidentially inside the EVM pool: a Bitcoin-homed note (`DESIGN-btc-note-authority.md`),
-whose `auth_key` is derived from a *real* Bitcoin UTXO's scriptPubKey — reflection carries that note's
-spend authority into the EVM guest precisely because the note **is** a real, spendable Bitcoin output.
-This pool's `spend_key` is deliberately **not** tied to any real UTXO (§1–§2) — that decoupling is the
-entire mechanism that makes source-hiding real rather than asserted. A note can be reflectable, or it can
-be UTXO-decoupled; it can't be both, because reflection's own trust model requires the thing it reflects to
-literally be a Bitcoin output. This is a property tradeoff, not a gap either design failed to close.
+- Each **output** appends a leaf: a payment, change, or a relayer's fee.
+- An **exit** creates a transparent Tacit note `(asset, Cx, Cy)` at the carrier's output `exit_vout`, whose
+  amount stays hidden. It requires `SHA-256(scriptPubKey of exit_vout) = dest_spk_hash`. The body is
+  signed, so nobody can move the exit to another output or another carrier. The exit carries no
+  `ct_note`, since only the exiter knows its opening, so it pays to a script the exiter controls. Paying
+  someone else afterwards is an ordinary `T_CXFER`.
+- **Outputs and an exit together** give a partial exit: take part of a note out and keep the change
+  shielded, in one spend.
 
-**What this means in practice.** A note shielded here can pay another note in this same pool, or exit back
-to plain BTC (§5) — that's the complete set of things it can do while staying inside this pool. Getting
-that value into DeFi (AMM, CDP, farms) means exiting first (public amount and destination, §9's leakage
-already covers this) and re-entering through the existing, separate `T_CBTC_LOCK` → reflection →
-`OP_CBTC_MINT` path. There is no silent bridge between "maximally private, Bitcoin-only" and
-"DeFi-capable" — crossing between them is always a public boundary event on one side or the other. That's
-the accepted cost of this pool's core property, not an oversight to fix in a later revision.
+**Carriers.** A `T_BTC_SHIELD` rides `vin[0]`, because its shielded notes are `vin[1..n_in]`. In a
+carrier with a shield, only `vin[0]` is read. A `T_BTC_SPEND` may ride any input whose witness is a Tacit
+envelope leaf, so one Bitcoin transaction can carry many users' spends. The indexer processes a
+transaction's pool envelopes in input order, each accepted or rejected on its own. Within one transaction,
+each output can be claimed by at most one accepted exit. An exit is rejected when the carrier's `vin[0]`
+holds a transparent Tacit op, so an exit never claims an output that op creates.
 
-**What is shared, genuinely, not just superficially:** the cryptographic toolkit (Pedersen/Bulletproofs+,
-BIP-340, keccak leaves), the note-encryption and viewing-key scanning pattern, and — via the `asset` field
-(§2–§3) — the same multi-asset model the rest of the metaprotocol already uses: this pool shields any
-`T_CETCH`-issued Bitcoin asset, not only raw BTC, the same way the EVM pool holds ETH, ERC-20s, and cBTC
-alike. The three privacy surfaces Tacit now has — `T_CXFER` (amount-hidden, source-visible, cheap), this
-pool (amount- and source-hidden, Bitcoin-only, no DeFi), and the EVM confidential pool (amount- and
-source-hidden, DeFi-capable, bridge-dependent) — are a real menu of different tradeoffs, not three
-attempts at the same thing.
+## 4. The relation
 
-## Fit with the rest of Tacit V1
+A fourth SP1 guest (`btc-pool-prover`, pinned in `elf-vkey-pin.json` as `btc_pool_vkey`) reads `body` and a
+private witness, and proves:
 
-**Nothing here touches the immutable core.** Every deployed EVM contract — `ConfidentialPool.sol`,
-`CollateralEngine.sol`, the settle/reflection guests and their pinned verifying keys — stays exactly as it
-is today. This design adds two new Bitcoin opcodes, a fourth SP1 guest, and new indexer/wallet state; it
-does not touch, extend, or depend on anything already live. Whatever this pool's own risk turns out to be,
-it's additive risk on top of the existing immutable core, not new risk introduced *into* it — the
-distinction the V1 security philosophy already draws between "the immutable core protects the pot" and
-everything built alongside it.
+1. `body` parses canonically as a `T_BTC_SPEND` body (§3).
+2. For each input `i`:
+   - `C_i = v_i·H + r_i·G` with `v_i` a `u64`;
+   - `leaf_i` from §2 is a member of `root` at `index_i`, under the depth-32 keccak tree, with
+     `index_i < 2^32` (a larger index would pass the same membership check under a different nullifier);
+   - `0 < nk_note_i < n` and `compress(nk_note_i·G) = nk_pub_i`;
+   - `nf_i = keccak("tacit-btc-pool-nf-v1" ‖ leaf_i ‖ nk_note_i ‖ index_i)` equals the body's `i`-th
+     nullifier;
+   - `sig_i` is a valid BIP-340 signature under `spend_key_i` over
+     `msg = keccak("tacit-btc-pool-spend-v1" ‖ body)`.
+3. The nullifiers are pairwise distinct.
+4. Each output commitment and, if present, the exit commitment opens to a `u64` the prover knows. Each
+   output's `spend_key` is a valid x-only key, and its `nk_pub` and `pk_eph` are valid compressed points.
+5. `Σ v_in = Σ v_out + v_exit` over `u128`, with `v_exit = 0` when there is no exit. There is no public
+   fee term. The carrier's Bitcoin fee is paid by whoever broadcasts it (§6).
 
-**Upgrade path, stated now rather than assumed later.** SPEC's own deployment-lineage model (§8: successor
-pools, exits from a retired pool always stay open) is the right frame for this pool too, and should be
-adopted explicitly rather than left to whichever future guest change forces the question. If the guest
-relation ever needs to change — a bug, a better proof system, a new arity — that's a new leaf domain and a
-new opcode pair, not a mutation of `0x6C`/`0x6D` or the deployed verifying key. Old notes remain provably
-spendable against the old, immutable guest forever; nothing about a new pool version should ever require
-touching a note that already exists.
+The guest commits `abi.encode(uint16 version = 1, bytes32 root, bytes32 bodyHash)` with
+`bodyHash = keccak(body)`. Every public field is inside `body`, so one hash binds them all.
 
-**No new governance surface.** The anchor window (`W = 144`, `Kmin = 1`, §10) and the arity caps (§3) are
-protocol constants baked into indexer/guest logic, not parameters the ops multisig or any other governed
-piece can adjust — consistent with this design's whole point of needing no escrow, no economic security,
-and (unlike cBTC's `CollateralEngine`) no governed knob at all.
+**What a prover learns.** A delegated prover learns everything about the note it proves, including which
+leaf is spent. It holds a signature and `nk_note` but never `sk_spend`, so it cannot redirect the spend: any
+change to the body invalidates the signature. It also cannot link the owner's other notes, because each
+note's `nk_note` is independent without `n`.
 
-**Claiming the opcode bytes is a real, specified step, not implicit.** SPEC §3.9 already states the
-procedure: "A new opcode is claimed by updating this table together with `dapp/tacit.js`,
-`worker/src/index.js` and, if it folds into the pool, `cxfer-core` and the reflection guest." `0x6A–0xFF`
-is confirmed free today (SPEC §3.9); `0x6A`/`0x6B` (`T_BTC_WRAP`/`T_BTC_UNWRAP`) and `0x6C`/`0x6D`
-(`T_BTC_SHIELD`/`T_BTC_SPEND`) don't collide with anything live. Updating SPEC.md's own opcode table is
-part of Phase 3 (§12), not optional documentation cleanup — until it's updated there, this pool isn't
-actually claimed, just proposed.
+## 5. Replay and acceptance
 
-## 9. Limitations, stated plainly
+An indexer keeps a keccak tree of leaves, a nullifier set, the root after each block, and an undo log per
+block. It processes envelopes block by block in canonical transaction order. An envelope that fails any
+check changes nothing. Envelopes live in witness data, so an indexer that fetches blocks from an untrusted
+source checks each block against its header's merkle root and its coinbase witness commitment.
 
-- **New attack surface.** A new circuit is a new place to get soundness or circuit-correctness wrong — the
-  same category of risk the competitor's own Theorem 1/2 exist to bound formally. This design needs the
-  same kind of security and privacy write-up before anyone should trust it, not just a working prototype.
-- **No covenant on the lock**, same as `T_BTC_WRAP`: self-inflicted footgun for the depositor alone, not a
-  fund-safety risk to anyone else, closes once a covenant primitive lands.
-- **Fee-wallet linkage.** If the sender always pays Bitcoin fees from the same visible wallet, that alone
-  can fingerprint them regardless of how well the note layer hides everything else — the competitor's own
-  §20.5 admits the identical limitation. Not solved here either.
-- **Engineering lift is real.** This is not a documentation change; it's a new guest, new indexer state,
-  and new wallet code, on the scale of the existing settle/reflection guests, not a small patch.
+**`T_BTC_SHIELD` in block `H`:**
 
-## 10. Replay and acceptance order
+1. Canonical parse. The carrier has at least `n_in + 1` inputs.
+2. Each `vin[1..n_in]` is a valid transparent note of `asset`, and its commitment is resolved. "Valid"
+   means exactly what Tacit's transparent validator `validateOutpoint` decides (full ancestry, every
+   opcode's rules), or the pool's own record for an output created by an accepted exit. If data is
+   unavailable, the indexer halts and retries; it never rejects on unavailability.
+3. Neither `E = C_pool − ΣC_in` nor `(Cx, Cy)` is the point at infinity, and `kernel_sig` verifies.
+4. Append the leaf.
 
-Same discipline as the rest of Tacit's Bitcoin metaprotocol (the `validateOutpoint` recursive-ancestry
-pattern already in `dapp/tacit.js`). For a
-candidate envelope in block `H`, an indexer mutates its Bitcoin-only tree and nullifier set only after, in
-order, **processing candidate envelopes within a block in that block's own canonical transaction-index
-order** (the order Bitcoin itself records them in — deterministic, no separate tie-break rule needed): (1)
-canonical parse — fixed widths, counts match `n_in`/`n_out`, no trailing bytes; (2) for
-`T_BTC_SHIELD`, `lock_vout` names a real output of this same transaction, is a recognized self-custody
-lock script, and `opening_proof` verifies `C` against that output's value; (2a) for `T_BTC_SPEND` with
-`out_kind = 0x01` (exit), `exit_vout` names a real output of this same transaction, and **that output's
-actual value must equal the envelope's `exit_value` exactly, and its actual scriptPubKey must hash to
-`dest_spk_hash` exactly** — the same class of check as (2), and just as load-bearing: nothing about the
-proof itself constrains either against real chain data, because the guest has no visibility into the
-carrying transaction's other outputs (it only sees the note witness and the anchor root). Without both
-halves of this check, a prover could claim any `exit_value` (silent value destruction if claimed-high,
-free extraction if claimed-low), and separately, a valid signed envelope and proof could be
-lifted whole and rebroadcast inside a *different* carrier transaction whose `exit_vout` pays the right
-amount to an attacker's own script instead of the intended destination. Value-only binding closes the
-first problem but leaves the second wide open; checking the script hash too closes both, because
-`dest_spk_hash` is itself covered by `h_body` (§3), so it's signed exactly like every other field, and step
-2a confirms the real transaction actually honors what was signed. `h_body` and step 2a are doing two
-different jobs, not one: `h_body` proves the envelope wasn't tampered with after signing; step 2a proves
-the envelope's claims about real chain data are true. Neither alone is sufficient. (3) for `T_BTC_SPEND`, every `nf` is absent from the replayed nullifier set and
-pairwise distinct within the envelope; (4) `h_anchor` falls inside the valid-root window (below) and the
-indexer derives the corresponding root from its own replayed history; (5) the proof verifies against that
-root, and the guest's committed statement matches the published envelope field-by-field (nullifiers, every
-output's contents for a pay, `exit_vout`/`dest_spk_hash` for an exit); (6) only then:
-append new leaves (pay) or none (exit), insert nullifiers, and — after the whole block has been replayed,
-not per-envelope — record the block-level root. A rejected envelope mutates nothing.
+**`T_BTC_SPEND` in block `H`:**
 
-Two indexers replaying the same active chain with the same rules converge to the same state; a reorg
-invalidates roots for the replaced heights and anything after them, and any spend anchored there must be
-rebuilt against the new active chain before it can be accepted — the same reorg handling the competitor's
-own §15 specifies, adopted directly because it's correct. **Exit-specific case:** if a block containing an accepted exit is reorged out, the nullifier it
-published rolls back along with the rest of that block's state mutation (§8's `Definition 2`-style
-atomicity: nothing about acceptance is partial, and neither is its rollback) — the spent note becomes
-spendable again on the new active chain, exactly as if the exit had never been accepted. There is no leaf
-to reinsert (an exit creates none), so "rebuild" here means the wallet resubmits a fresh exit envelope
-against the new chain, not that anything needs repairing. If the underlying carrier transaction itself
-reorgs into a different block but keeps the same `exit_vout` value and script, replay simply reprocesses
-it at its new height; if it vanishes from the active chain entirely, it was never accepted there and this
-case doesn't arise.
+1. Canonical parse, and `proof_len ≤ 512`.
+2. `H − 144 ≤ h_anchor ≤ H − 1`, and a root is retained for `h_anchor`.
+3. No nullifier is already in the set, and they are pairwise distinct.
+4. **With an exit:** the carrier's `vin[0]` holds no transparent Tacit op, `exit_vout` names an output of
+   the carrier that no earlier accepted exit in this transaction claimed, and `SHA-256` of its scriptPubKey
+   equals `dest_spk_hash`.
+5. **Capacity:** the tree has room for the spend's outputs. At `2^32` leaves, leaf-creating envelopes are
+   rejected, and the pool continues as a successor (SPEC §8).
+6. The proof verifies locally against `btc_pool_vkey`, with public values
+   `abi.encode(1, R[h_anchor], keccak(body))`.
+7. Insert the nullifiers. For a pay, append the output leaves. For an exit, record the transparent note
+   `(asset, Cx, Cy)` at `(txid, exit_vout)`.
 
-**Anchor window:** `W = 144` blocks (~1 day — more generous than the competitor's 100-block/~16h choice,
-because SP1 proving can run longer than a circom-native prove), `Kmin = 1` (smallest depth at which a root
-is already defined when the anchor block is replayed).
+**End of block.** Record `R[H]` for the block, carrying the previous root forward if nothing changed.
+Roots `R[H−144]` through `R[H−1]` stay available while block `H` is processed. Prune older roots only
+after the block commits. A reorg replays from the fork point by undoing each rolled-back block's leaves,
+nullifiers, recorded exits and root. The undo log covers 288 blocks, and a deeper reorg rescans from the
+pool's start height.
 
-## 11. Security goals
+**Verification is local.** `sp1_verifier::Groth16Verifier` checks the proof against the SP1 Groth16 key.
+That is the same key the immutable mainnet leaf `0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2` embeds, and the
+proof's 4-byte selector must match it. No network call is on the acceptance path, so two indexers replaying
+the same chain agree.
 
-Stated as goals here, not proved — a full write-up in the style of the competitor's own Theorem 1/2 is
-Phase 1 of §12, a prerequisite for code, not an afterthought.
+**Seam with the transparent layer.** A shield consumes transparent notes, which Bitcoin already marks as
+spent. An exit creates one, which is valid exactly when the pool's replay accepted that exit. Transparent
+validators, meaning the indexer's outpoint validation and the dapp's `validateOutpoint`, consult the pool's
+record for outputs created by `T_BTC_SPEND`.
 
-- **No double-spend.** A nullifier already in the replayed set, or repeated within one envelope, is
-  rejected — same nullifier-set mechanism already live for Bitcoin-homed notes, unmodified.
-- **Value conservation.** The proof enforces `Σ v_in = Σ v_out` over range-checked canonical amounts; no
-  transfer with unbalanced or out-of-range values can produce an accepting proof.
-- **Spend authorization.** An accepting proof requires a valid BIP-340 signature under the spent note's
-  `spend_key`, bound into the leaf at shield time. Forging a spend means breaking BIP-340 or SP1/Groth16
-  soundness — not something an indexer, relay, or the fee-paying wallet can do on its own.
-- **Replay agreement.** One canonical parser, one acceptance order, no implementation-defined behavior —
-  any two correct indexers replaying the same active chain derive the same tree and nullifier set.
-- **Transcript privacy (informal, needs a real leakage function before launch).** Once accepted, the only
-  public data are nullifiers (unlinkable to the spent leaf without the witness), fresh commitments, and
-  encrypted ciphertexts. Arity, timing, `h_anchor` age, and fee-transaction metadata stay public — the
-  same leakage class the competitor's own `Leak()` function names, not something this design avoids
-  either.
+## 6. Relaying and wallet defaults
 
-## 12. Path to mainnet
+**Relayed spends.** Anyone may broadcast their own carrier, but then their fee-paying inputs show that
+they sent a pool spend. A relayer removes that: it holds a pool address and BTC for fees, and quotes a fee
+in the spend's asset. The sender adds an output paying that fee to the relayer's address, signs, proves,
+and hands the relayer the payload. Before paying anything, the relayer checks locally that:
 
-This is new cryptography touching real BTC custody, so it follows the same bar every other Tacit mainnet
-component has cleared, not a shortcut past it — the immutable-core-first-time philosophy already applied
-elsewhere in this codebase (`SPEC.md`'s own launch history) applies here too.
+- the proof verifies against its own replayed root;
+- the nullifiers are unspent, in its replayed set and among payloads it already holds;
+- one output is fully received by the relayer under §2: it decrypts under the relayer's viewing key, its
+  opening matches `(Cx, Cy)`, its `spend_key` and `nk_pub` match the relayer's derived keys, and its value
+  is at least the quoted fee.
 
-1. **Formal write-up.** Turn §10/§11 into an actual security and privacy analysis at the rigor level of
-   `SPEC.md` itself — assumptions, goals, and a leakage function, reviewed before any code is written.
-   Draft: [`DESIGN-btc-shielded-pool-security.md`](./DESIGN-btc-shielded-pool-security.md).
-2. **Guest implementation.** The SP1 Rust program for the relation in §4, with test vectors, ELF-hash
-   pinning, and reproducible builds — same process as the existing three guests
-   (`docs/REPRODUCIBLE-BUILDS.md`).
-3. **Indexer and wallet wiring.** The Bitcoin-only tree/nullifier state machine in the worker/indexer, and
-   shield/spend construction plus note scanning in the dapp — including formally claiming `0x6C`/`0x6D` by
-   updating SPEC §3.9's opcode table itself, per its own stated procedure ("Fit with the rest of Tacit
-   V1" above), not just shipping code against unclaimed bytes.
-4. **Signet/testnet dry run.** Real locks, real spends, and adversarial testing — double-spend attempts,
-   malformed envelopes, reorg handling — before any real value touches it.
-5. **Independent security review**, same bar as the Pashov and Astra rounds every other mainnet component
-   went through, before real BTC is at risk. Not optional: the lock has no covenant yet (§9), and this is
-   new proof-system surface, so it gets the same scrutiny as everything else that's ever gone live here.
-6. **Mainnet, value-capped initially**, scaling up as the design accrues live usage without incident — the
-   same posture Tacit already takes with new surfaces (e.g. cBTC's escrow ratio, OP_BID's guest-verified
-   but UI-less rollout).
+It then wraps the payload in a carrier funded from its own coins, batching many senders' spends into one
+transaction where it can. The relayer cannot change the body (signed), cannot spend the inputs (it never
+sees `sk_spend`), and learns only its own fee note. The sender needs no Bitcoin wallet and leaves no
+fee-input trail.
 
-## Resolved for v1
+For a relayed exit, the relayer assigns `exit_vout` before the sender signs and keeps the carrier's
+output layout fixed. If a sender in the batch drops out, its exit output stays in place, paid to the
+relayer's own change, so every other signed `exit_vout` still names the right output. A sender who hands
+the same nullifiers to two relayers makes one of them pay a fee for a rejected envelope. The relayer bounds
+this by holding each payload's nullifiers until its carrier confirms or is replaced, and by rejecting
+payloads that conflict with the mempool. Submission to a relayer should go over an anonymizing transport,
+since the relayer sees when and from where a payload arrives.
 
-- **Arity:** 2-in/2-out, covers pay-with-change and simple consolidation. Larger arities are a later
-  extension, not a blocker.
-- **`spend_key` disclosure:** publishing it in plaintext is fine *given* the one-time stealth derivation in
-  §2 is mandatory, not optional — that mandatory derivation is what closes the reuse problem publishing it
-  in plaintext would otherwise open.
-- **Within-block ordering** for conflicting envelopes: canonical transaction-index order (§10), combined
-  with the existing nullifier-absence check — no separate tie-break rule needed.
+**Wallet defaults.** Each of these narrows what §7's public columns reveal:
 
-## Still open
+- **Uniform arity.** Every pay has 2 inputs and 3 outputs, padded with zero-value notes to the sender's
+  own address.
+- **Shared anchor policy.** `h_anchor` is the tip minus 6, rounded down to a multiple of 6, so anchor age
+  does not fingerprint a wallet.
+- **Fresh exit keys.** Each exit pays to a new key the wallet derives, never a reused address.
 
-- Whether a future multi-asset version needs per-asset anchor windows or one shared tree suffices.
-- Exact wording of the leakage function (`DESIGN-btc-shielded-pool-security.md` §4) before Phase 1 closes.
-- Exact `proof` byte width — fixed once the guest is compiled (Phase 2), not before.
+## 7. Leakage
+
+| Hidden | Public |
+|---|---|
+| Amounts, at shield, pay and exit alike | Block height and fee of each carrier |
+| Which leaf a spend consumes | Arity (uniform under the wallet defaults) |
+| Sender and recipient identity | The age of `h_anchor` (coarse under the wallet defaults) |
+| The link between two notes paid to one address | Which transparent notes were shielded |
+| The sender's Bitcoin wallet, when relayed | The script an exit pays to |
+| | Fee-paying inputs, when self-broadcast |
+
+## 8. What it reuses
+
+It reuses:
+
+- Pedersen commitments and the `T_CXFER` kernel (SPEC §2.2–§2.4);
+- BIP-340 signing;
+- the keccak tree shape of the confidential pool;
+- the stealth one-time-key construction behind pay-by-stealth;
+- the SP1 toolchain, and Succinct's shared Groth16 setup, so there is no new ceremony;
+- the standard Tacit carrier.
+
+It is new in three places: the note model and nullifier derivation above, the fourth guest, and the pool
+replay state.
+
+## 9. Relationship to the rest of Tacit
+
+- **The EVM confidential pool** stays unchanged. Neither pool touches the other's contracts or guests.
+- **Moving value between them** goes through the transparent layer. Inbound, a cBTC note crossed out of
+  the EVM pool (`T_CROSSOUT_MINT`) is shielded like any other transparent note. Outbound, an exited note
+  crosses to Ethereum once the reflection guest folds `T_BTC_SHIELD` and `T_BTC_SPEND` into its live set
+  (rollout step 5).
+- **Real sats in and out** use the existing Bitcoin-side pre-authorized sales, which sell an asset for BTC
+  in one transaction (README, "Trade atomically"). The seller signs only its own input and its BTC payout
+  (`SIGHASH_SINGLE|ANYONECANPAY`), and publishes the lot's opening. So the buyer's carrier can be the
+  shield itself: a `T_BTC_SHIELD` in `vin[0]` with the lot as `vin[1]`, the seller's payout untouched, and
+  the kernel signed from the published opening. The buyer pays BTC and receives a shielded note in one
+  transaction. To cash out, a holder exits to its own script and sells the resulting note the same way.
+- **The immutable core** (`ConfidentialPool.sol`, the settle and reflection guests, their keys) is not
+  touched.
+- **Governance** gains no new surface. The window, arity caps and proof cap are protocol constants.
+- **Upgrades** follow SPEC §8's lineage. A changed relation means a new leaf domain and new opcodes, while
+  old notes stay spendable under the old guest.
+
+## 10. Rollout
+
+1. The reference relation, guest, indexer, wallet and local verifier, each with adversarial tests.
+2. A signet run: shield, pay, scan, exit with real transactions and real proofs.
+3. The replay service on Render, serving roots, paths, the note feed and nullifier status.
+4. The transparent-layer seam in the indexer and the dapp: `validateOutpoint` covers `T_CROSSOUT_MINT`
+   and pool exits, the worker values exit outputs, and the dapp builds buy-and-shield carriers.
+5. A reflection fold for `T_BTC_SHIELD` and `T_BTC_SPEND`, so exited notes join the reflected live set.
+6. Independent review, then mainnet enablement with a value cap.
