@@ -51,7 +51,7 @@ or attestor set signs a bridge message.
   - **Atomic offers:** sell an asset directly for BTC in one transaction. A maker lists a lot, any taker
     completes it.
   - Bids that a watchtower fills while the buyer is offline, matched off-chain and settled atomically on
-    the first fill. The on-chain preauth opcode this could also use is reserved for now (signet only).
+    the first fill.
   - A native AMM: per-trade swaps, routes over up to four pools, and batch clearing at a uniform price.
   - LP farms.
 - **Lock BTC for cBTC.** A self-custody lock on Bitcoin backs fungible cBTC in the pool.
@@ -60,12 +60,10 @@ or attestor set signs a bridge message.
 
 **In the confidential pool (Ethereum)**
 - Wrap ETH or ERC-20s into notes, transfer privately, and unwrap to any address.
-- Trade on a confidential AMM: swaps, routes and liquidity. OTC also runs here. `OP_BID` is a real,
-  guest-verified op with a complete, tested wallet-side implementation (`confidential-bid.js`); it has no
-  dedicated UI tab yet.
+- Trade on a confidential AMM: swaps, routes, uniform-price batches and liquidity. OTC trades and
+  buyer-offline bids (`OP_BID`, client in `confidential-bid.js`) also run here.
 - Pay by stealth: the recipient gets a one-time key, claims it, and the sender can refund if unclaimed.
-- Use adaptor locks for atomic cross-chain swaps — the primitives are guest-verified; no dapp module
-  assembles the op yet.
+- Use adaptor locks for atomic swaps against the other chain.
 - Borrow **cUSD** against cBTC collateral. Mint **cBTC** against reflected BTC locks.
 - Earn farm rewards on LP positions, paid in wTAC (a 1:1 TAC wrapper).
 - Relay any op without gas, with the relayer's fee bound inside the proof. Anyone can also prove and
@@ -74,10 +72,12 @@ or attestor set signs a bridge message.
 **Between the chains**
 - **Bitcoin → Ethereum.** A full-proof-of-work header relay feeds an SP1 guest. The guest folds Tacit
   envelopes into roots that the pool accepts after 24 confirmations.
-- **Fast lane.** A Bitcoin-homed note can be spent directly on Ethereum right away, instead of waiting for
-  the header relay and reflection to confirm it first — the pool only needs to see that the note hasn't
-  already been reflected as spent. Bitcoin catches up later, through the same reverse-reflection proof, so
-  the note can never be spent twice. Proven live:
+- **Bridge burn.** Burn a note on Bitcoin in a standard transaction, paying only BTC, and the pool mints it
+  once, with the relayer's fee taken from the note (`bridgeBurnToPool`, then `bridgeMint`). A Bitcoin-only
+  user never needs ETH; only minting cBTC does, for its escrow.
+- **Fast lane.** A reflected Bitcoin note bound to the pool (`T_CXFER_BOUND`) is spent directly on
+  Ethereum, with no bridge burn. The proof shows the note is not already spent on Bitcoin, and reflection
+  later retires it there, so it can never be spent twice. Proven live:
   [`0x548d52cb…4940fd0c84`](https://etherscan.io/tx/0x548d52cbae38d8e60c278ec919e6cbe8bdb5a370d36a04fe5ca0e64940fd0c84).
 - **Ethereum → Bitcoin.** An SP1 light-client guest proves pool storage. The Bitcoin guest verifies that
   proof recursively, so crossed-out notes are re-minted on Bitcoin.
@@ -154,27 +154,24 @@ Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-reserved
 
 ## Privacy and trust
 
-- **Hidden:** amounts, which owned note a pool spend consumes, and stealth recipients.
-  `OP_SWAP_BLIND` also hides trade sizes from the SP1 prover; it is enabled in the guest, but no client
-  emits it yet.
+- **Hidden:** amounts, which owned note a pool spend consumes, and stealth recipients. Prover-blind
+  batches (`OP_SWAP_BLIND`) also hide trade sizes from the SP1 prover.
 - **Public:** Bitcoin addresses and the transaction graph, asset ids on Bitcoin, the pool's deposit and
   withdrawal boundary, AMM reserves and their changes, and CDP position amounts. A position's owner stays
   unlinkable.
 - **You trust:** Bitcoin and Ethereum consensus, SP1 and Groth16 soundness, the sp1-helios sync
   committee, and the ceremonies (only for the circuits that use them).
-  - cUSD relies on its oracle.
+  - cUSD and the cBTC escrow rely on price feeds (BTC/USD, and BTC per wstETH).
   - cBTC is secured economically, by the locker's wstETH escrow (at least the engine's escrow ratio,
     1.5× today).
   - The periphery (CollateralEngine, FarmManager) is governed by a 2-of-4 ops multisig with a built-in
     one-hour delay, within on-chain bounds.
+  - Walk-away bids on Bitcoin rely on a watchtower holding a capped, dedicated key.
 - **You don't trust:** relayers, the hosted API or IPFS gateways. The pool, its guests and their keys
   cannot be changed, and every balance recovers from your key plus chain data.
-- **You do depend on someone proving.** Nobody can take or forge a balance, but Bitcoin state only reaches
-  Ethereum when a prover runs, and once a cross-out has been recorded every Bitcoin-side attest carries an
-  Ethereum-state proof with it. If nothing is proving, Bitcoin-side folds wait rather than going wrong —
-  reflected state stops advancing instead of advancing incorrectly. Exits on the Ethereum side need no
-  prover but your own. The proving lane is permissionless by design: the inputs are public chain data, so
-  it is a liveness dependency on someone, not a trust dependency on us.
+- **You depend on someone proving, for liveness only.** Proofs are built from public chain data, so anyone
+  can run them. If nobody does, reflected state pauses rather than going wrong, and Ethereum-side exits
+  still work with your own proof. Nobody can take or forge a balance either way.
 
 The protocol evolves by deploying successor pools that users opt into by exiting one pool and entering
 the next. A retired pool keeps every exit open ([SPEC §8](./SPEC.md#8-deployment-lineage)).
