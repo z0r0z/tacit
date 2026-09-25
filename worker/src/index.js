@@ -15561,6 +15561,18 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
     if (!pm) throw new Error('invalid T_PMINT payload');
     return { commitment: pm.commitment, asset_id: pm.asset_id };
   }
+  if (decoded.opcode === T_CROSSOUT_MINT) {
+    // ETH→BTC cross-out mint note. The minted note lives at vout 0 (see the T_CROSSOUT_MINT hint
+    // handler above); its Pedersen commitment rides the envelope as separate (cx, cy) field elements
+    // rather than a pre-compressed point, so reconstruct the standard 02/03-prefixed compressed form
+    // from cy's parity before returning it — the same encoding every other branch here returns.
+    if (vout !== 0) throw new Error('T_CROSSOUT_MINT note lives at vout 0 only');
+    const cm = decodeCrossoutMint(decoded.payload);
+    if (!cm) throw new Error('invalid T_CROSSOUT_MINT payload');
+    const prefix = (BigInt(cm.cy) % 2n === 0n) ? 0x02 : 0x03;
+    const commitment = bytesToHex(concatBytes(new Uint8Array([prefix]), hexToBytes(cm.cx.slice(2))));
+    return { commitment, asset_id: cm.assetId.slice(2) };
+  }
   throw new Error('unsupported envelope opcode');
 }
 
