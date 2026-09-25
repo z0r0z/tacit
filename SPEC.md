@@ -229,6 +229,8 @@ bytes are rejected.
 **Input and output roles.**
 - `vin[0]` carries the envelope. Asset inputs are `vin[1..]`. For atomic-trade ops, only the first
   `asset_input_count` of them are asset inputs; the rest are ordinary BTC inputs.
+- A `T_BTC_SPEND` (§3.10) may ride any input whose witness is an envelope leaf, so one transaction can
+  carry several.
 - Output `i` carries note `i`, unless the opcode defines an interleaved layout: variable-amount atomic
   trades and bids place BTC payment, change and an 80-byte `OP_RETURN` at fixed positions.
 - `OP_RETURN` never carries a payload. It appears only as an auxiliary binding output: a payload hash, or
@@ -239,6 +241,10 @@ bytes are rejected.
 A Tacit UTXO is valid iff:
 - the transaction that created it carries a well-formed envelope whose rules pass, and
 - each of its asset inputs is itself a valid Tacit UTXO of the same `asset_id`.
+
+**Pool seam.** In a transaction whose `vin[0]` holds no transparent op and some input of which carries a
+`T_BTC_SPEND` (§3.10), an output is a Tacit UTXO iff the shielded pool's replay recorded an accepted exit
+at it. Pool spends may ride inputs other than `vin[0]`, so the rule looks at every input.
 
 This is checked recursively over the ancestry DAG ([`validateOutpoint`](./dapp/tacit.js)).
 
@@ -396,8 +402,9 @@ security and privacy analysis is
 
 The pool holds Tacit asset value, not BTC. A shield spends transparent notes of one asset into a pool
 leaf. A spend publishes nullifiers and a proof, appends up to three new leaves, and optionally exits to a
-new transparent note; a partial exit is one spend. Amounts stay hidden throughout, including at the
-boundary. BTC exposure comes through cBTC (§5.7), and the pool adds no custody.
+new transparent note; a partial exit is one spend. Amounts stay hidden inside the pool, and at the
+boundary unless the transparent note's opening is public. BTC exposure comes through cBTC (§5.7), and the
+pool adds no custody.
 
 - **Addresses and notes.** An address is `(V, A, N)`. Each note carries a one-time `spend_key` and
   nullifier key `nk_pub`, tweaked from `A` and `N` by an ECDH secret with `pk_eph`, and a 56-byte
@@ -409,23 +416,28 @@ boundary. BTC exposure comes through cBTC (§5.7), and the pool adds no custody.
   openings of every input, output and exit, and `Σ v_in = Σ v_out + v_exit` over `u128` (`v_exit = 0`
   without an exit). Its public values are `abi.encode(uint16 1, root, keccak(body))`, where `body` is the
   payload before `proof_len`.
-- **Acceptance.** The indexer replays leaves, nullifiers and per-block roots from Bitcoin alone,
-  processing envelopes in block, transaction and input order, each accepted or rejected on its own. It
-  requires `H − 144 ≤ h_anchor ≤ H − 1`, nullifiers fresh against the set (including earlier envelopes in
-  the same transaction), `proof_len ≤ 512`, and for an exit an output not claimed by an earlier accepted
-  exit in the transaction, in a carrier whose `vin[0]` holds no transparent op. In a carrier with a
-  `T_BTC_SHIELD`, only `vin[0]` is read. Leaf-creating envelopes are rejected once the tree holds `2^32`
-  leaves. Shield inputs are validated by `validateOutpoint`; on unavailable data the indexer halts,
-  never rejects. It verifies the proof locally against the SP1 Groth16 key with no Ethereum dependency.
-  Reorgs roll back through a per-block undo log.
-- **Relaying.** A carrier may be built by a relayer paid by a pool output of the spend; it requires
-  full receipt of its fee note, assigns `exit_vout` for a relayed exit before the sender signs, and keeps
-  the carrier's output layout fixed.
+- **Acceptance.** The indexer replays leaves, nullifiers and per-block roots from Bitcoin, processing
+  envelopes in block, transaction and input order, each accepted or rejected on its own. It validates the
+  header chain by proof of work from a pinned checkpoint and checks each block against its merkle root and
+  witness commitment; missing data, a block or an ancestor, halts it and never causes a rejection. A
+  spend requires `H − 144 ≤ h_anchor ≤ H − 1`, a carrier input spending `bind` when `bind` is non-zero,
+  nullifiers fresh against the set (including earlier envelopes in the same transaction),
+  `proof_len ≤ 512`, and for an exit an output not claimed by an earlier accepted exit in the
+  transaction, in a carrier whose `vin[0]` holds no transparent op. In a carrier with a `T_BTC_SHIELD`,
+  only `vin[0]` is read. Leaf-creating envelopes are rejected once the tree holds `2^32` leaves. Shield
+  inputs are validated by `validateOutpoint`, and a note bound to a pool deployment (`T_CXFER_BOUND`) is
+  not a valid shield input. For ancestry through `T_CROSSOUT_MINT` or AMM outputs, `validateOutpoint` reads
+  the worker's acceptance records for those ops. The indexer verifies each proof locally against the SP1
+  Groth16 key with no Ethereum dependency. Reorgs roll back through a per-block undo log.
+- **Relaying.** A carrier may be built by a relayer paid by a pool output of the spend. The relayer
+  quotes one of its UTXOs as `bind`, so only it can post the payload; it requires full receipt of its fee
+  note, assigns `exit_vout` for a relayed exit before the sender signs, and keeps the carrier's output
+  layout fixed.
 
 | Byte | Op | Rule summary |
 |---|---|---|
-| 0x6C | `T_BTC_SHIELD` | 316 bytes: `0x6C ‖ asset ‖ n_in(1) ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56) ‖ kernel_sig(64)`. Rides `vin[0]` only. Spends the transparent notes `vin[1..n_in]` (`1 ≤ n_in ≤ 8`) of `asset` into one pool leaf. `kernel_sig` is the §2.4 kernel under `x(C_pool − ΣC_in)` in domain `tacit-btc-pool-shield-v1`. It creates no transparent outputs of `asset`. |
-| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(218)×n_out ‖ has_exit(1) ‖ [exit(100)] ‖ proof_len(2) ‖ proof`, with `output = Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)` and `exit = exit_vout(4) ‖ Cx ‖ Cy ‖ dest_spk_hash`, present iff `has_exit = 1`. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `n_out + has_exit ≥ 1`. Integers are little-endian. Each output appends a leaf. The exit creates the transparent note `(asset, Cx, Cy)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. May ride any envelope input of a carrier. |
+| 0x6C | `T_BTC_SHIELD` | 316 bytes: `0x6C ‖ asset ‖ n_in(1) ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56) ‖ kernel_sig(64)`. Rides `vin[0]` only. Spends the transparent notes `vin[1..n_in]` (`1 ≤ n_in ≤ 8`) of `asset` into one pool leaf. `kernel_sig` is the §2.4 kernel under `x(E)`, `E = C_pool − ΣC_in`, in domain `tacit-btc-pool-shield-v1`; `E ≠ ∞` and `C_pool ≠ ∞`. It creates no transparent outputs of `asset`. |
+| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(218)×n_out ‖ has_exit(1) ‖ [exit(100)] ‖ proof_len(2) ‖ proof`, with `output = Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)` and `exit = exit_vout(4) ‖ Cx ‖ Cy ‖ dest_spk_hash`, present iff `has_exit = 1`. `bind = txid ‖ vout_LE` of an outpoint the carrier must spend at any input, or all zero for none. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `n_out + has_exit ≥ 1`. Integers are little-endian. Each output appends a leaf. The exit creates the transparent note `(asset, Cx, Cy)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. May ride any envelope input of a carrier. |
 
 ---
 

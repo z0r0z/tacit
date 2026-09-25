@@ -4,12 +4,14 @@ Status: DESIGN. Proposes opcodes `0x6E`–`0x71` from the free range (SPEC §3.9
 Depends on `DESIGN-btc-shielded-pool.md` ("pool §N") and SPEC §2–§3.
 
 The shielded pool holds Tacit asset value, not BTC (pool introduction; security analysis §0). This
-document specifies how real sats meet it. There is no multisig, federation or attestor set anywhere in it
-(SPEC §1). The boundary has two layers, each stated with the trust it actually needs:
+document specifies how real sats meet it. No multisig, federation or attestor set holds or releases BTC in
+it (SPEC §1). The peg has a fixed roster whose every member must co-sign each peg-in: the roster cannot
+release reserves and the peg is safe with one honest member, and any member can halt peg-ins. The boundary
+has two layers, each stated with the trust it needs:
 
 | Layer | What moves | Custody | Status |
 |---|---|---|---|
-| **No-custody boundary** (§1) | BTC for pool value, by atomic trade between two parties | None. Sats never leave their owner except as the paid side of a trade. | Built from existing ops |
+| **No-custody boundary** (§1) | BTC for pool value, by atomic trade between two parties | None. Sats never leave their owner except as the paid side of a trade. | Design, on existing ops |
 | **BitVM2 peg** (§2) | BTC for pBTC 1:1, minus a fee | An n-of-n presigned graph. Safe if one presigner is honest; claims are open to any challenger. | Design |
 
 Covenant soft forks would remove the presigners and the operators (§3.1); none is active on mainnet.
@@ -24,7 +26,7 @@ Value crosses between BTC and the pool only by trades that settle atomically on 
 on anyone's behalf.
 
 **Trust.** Bitcoin consensus, SP1 and Groth16 soundness for the pool relation, and the pool's own
-assumptions (A1–A8 of `DESIGN-btc-shielded-pool-security.md`). No third party.
+assumptions (A1–A10 of `DESIGN-btc-shielded-pool-security.md`). No third party holds value.
 
 **Limit.** It is a market. Price and depth come from makers. It gives no right to redeem a note for a
 fixed number of sats.
@@ -32,7 +34,8 @@ fixed number of sats.
 ### 1.1 Buy-and-shield and exit-then-sell
 
 Both use the pre-authorized sale: a `T_AXFER` (0x26) lot whose seller signs only its own input and its BTC
-payout under `SIGHASH_SINGLE|ANYONECANPAY`, and publishes the lot's opening (SPEC §3.5).
+payout under `SIGHASH_SINGLE|ANYONECANPAY`, and publishes the lot's opening. The Tacit worker lists sales
+and the buyer completes one alone (`publishPreauthSale` and `takePreauthSale` in `dapp/tacit.js`).
 
 - **Buy-and-shield** (pool §9). The buyer's carrier is a `T_BTC_SHIELD`: the envelope at `vin[0]`, the lot
   at `vin[1]`, the seller's signed payout at `vout[1]`, the buyer's BTC inputs after. The shield kernel is
@@ -45,8 +48,8 @@ outpoint. The pool path between shield and exit stays hidden.
 
 ### 1.2 Key-share swap: pool note for BTC, no exit
 
-A two-party atomic swap of a pool note for BTC. The pool leg never leaves the pool, and nothing on Bitcoin
-links the BTC leg to it. It needs no new opcode and no change to the relation.
+A two-party atomic swap of a pool note for BTC. The pool leg never leaves the pool, and the BTC leg is
+plain P2TR key-path spends with no Tacit envelope. It needs no new opcode and no change to the relation.
 
 **Why the direct adaptor form does not work.** In the EVM pool, `OP_ADAPTOR_CLAIM` (SPEC §5.3) commits the
 completed kernel scalar `s` as a public value, and its lock set enforces a deadline. The Bitcoin pool has
@@ -95,20 +98,24 @@ Each party proves knowledge of its pool share with a BIP-340 signature over
 `X_B`. Completing a pre-signature under `X` with its secret `x` gives `s = s' + x`, so whoever sees the
 completed signature and holds `s'` learns `x`.
 
+Each presigned transaction carries an anchor output that either party can spend, so its fee is raised by
+child-pays-for-parent (CPFP) without re-signing.
+
 **Protocol.**
 
-1. Exchange `X_N`, `X_B`, `K_N`, `K_B`, the proofs of knowledge, `nk`; agree the note amount `v`, the
-   price, `t1` and `t2`.
+1. Exchange `X_N`, `X_B`, `K_N`, `K_B`, the proofs of knowledge, `nk`; agree the asset, the note amount
+   `v`, the price, `t1`, `t2` and a margin `Δ`. `N`'s redeem deadline is `t_r = t1 − Δ`.
 2. `N` gives `B` its partial signature on `cancel` and a pre-signature on `refund` under `X_B`. `B` gives
    `N` its partial signatures on `cancel` and `punish`.
 3. `B` broadcasts `lock`. `N` waits for it to confirm to its chosen depth.
 4. `N` spends its note with an ordinary `T_BTC_SPEND` into the **joint note**: `spend_key = x(X_N + X_B)`,
    `nk_pub = compress(NK)`, commitment to `v`, with change to itself. `N` sends `B` the opening `(v, r)`
    and the leaf index.
-5. `B` checks, from its own replay, that the leaf is accepted at its chosen depth, opens to `v`, and carries
-   exactly the agreed `spend_key` and `nk_pub`. `B` then gives `N` a pre-signature on `redeem` under `X_N`.
-6. `N` completes it with `x_N`, adds its own partial signature, and broadcasts `redeem` before `t1` with a
-   margin.
+5. `B` checks, from its own replay, that the leaf is accepted at its chosen depth, is of the agreed asset,
+   opens to `v`, and carries exactly the agreed `spend_key` and `nk_pub`. `B` then gives `N` a
+   pre-signature on `redeem` under `X_N`.
+6. `N` completes it with `x_N`, adds its own partial signature, and broadcasts `redeem` before `t_r`. After
+   `t_r`, `N` never broadcasts `redeem`, and treats a missing pre-signature as an abort.
 7. `B` reads the completed signature, extracts `x_N`, and spends the joint note with `x_N + x_B` into its
    own address.
 
@@ -119,21 +126,27 @@ completed signature and holds `s'` learns `x`.
 |---|---|
 | `B` never locks | Nothing is at stake. |
 | `N` never funds the joint note | After `t1`, `B` broadcasts `cancel` then `refund`. Revealing `x_B` is harmless: no joint note exists. |
-| `B` never sends the `redeem` pre-signature | After `t1`, either party broadcasts `cancel`. `B` refunds, revealing `x_B`. `N` spends the joint note back with `x_N + x_B`. |
+| `B` never sends the `redeem` pre-signature before `t_r` | `N` aborts. After `t1`, either party broadcasts `cancel`. `B` refunds, revealing `x_B`. `N` spends the joint note back with `x_N + x_B`. |
 | `B` cancels but never refunds | After `t2`, `N` broadcasts `punish` and takes the BTC. The joint note stays locked. `N` has in effect sold it. |
 | `N` redeems | `N` has the BTC. `B` learns `x_N` and alone holds `x_N + x_B`. `N` cannot spend the joint note: it lacks `x_B`. |
+| `redeem` races `cancel` | Both spend `lock`, and one confirms. A broadcast `redeem` reveals `x_N` even if `cancel` wins, after which `B` can both refund and sweep the joint note. `t_r` and fee-bumping `redeem` keep `N` out of this race: `redeem` confirms before `cancel` is valid. |
 
-`B` has no deadline for step 7: once `redeem` confirms, only `B` can sign for the joint note. `N` must stay
-online to redeem before `t1`, and to punish after `t2` if `B` cancels without refunding.
+`B` has no deadline for step 7: once `redeem` confirms, only `B` can sign for the joint note.
+
+**Liveness duties.** `N` stays online to redeem before `t_r`, and to punish after `t2` if `B` cancels
+without refunding. `B` stays online from `lock` until `redeem` or `refund` confirms: once `cancel`
+confirms, `B` broadcasts `refund` before `t2`, fee-bumping it through its anchor output, or `N` may punish.
 
 **Soundness.** Spending the joint note without both shares is a BIP-340 forgery under `X_N + X_B` (A5b),
 and the proofs of knowledge rule out a rogue share. Conservation of the joint note's value is the pool's own
 (G3). Everything on Bitcoin is standard two-party adaptor-signature swap reasoning under BIP-340.
 
 **Leakage.** The pool side is two ordinary spends, funding and sweep, with hidden amounts; either can be
-relayed (pool §6). The counterparty learns `v`. On Bitcoin, `lock` and `redeem` are single-key P2TR outputs
-and key-path spends, and the price is public but tied to no pool envelope. The failure paths show a
-relative-timelocked spend. This is the most private way BTC meets the pool.
+relayed (pool §6). The counterparty learns `v`. Both parties know the joint note's leaf and nullifier, so
+each sees its funding and its sweep. On Bitcoin, `lock` and `redeem` are single-key P2TR outputs and
+key-path spends carrying no envelope, and the price is public. The timing of `lock`, the funding spend
+and `redeem` can correlate them. The failure paths show a relative-timelocked spend. Neither leg's
+amount appears in a pool envelope, and the BTC leg names no pool leaf.
 
 **Wallet state.** The joint note is not received under pool §2's receipt rule. Each wallet keeps a swap
 record (keys, transactions, pre-signatures, opening) until it ends. After the sweep, the note is ordinary
@@ -482,9 +495,10 @@ broadcast. Every timelock in the graph protects a challenger or an operator, and
 that releases a reserve output to a fixed party.
 
 Mitigations are structural. A depositor names itself as an operator, so it can always redeem its own
-deposit: burning pBTC against it to itself and paying itself needs only a UTXO of that size, not new
-capital. Deposits name many operators. Anyone may run an operator and be named on new deposits. Existing
-outputs' operator sets are fixed. The canonical wallet names, in each burn, a free output whose operators
+deposit: it burns pBTC against it to itself, pays itself, and reclaims the output. That fronts `owed` from
+pay to take, about `d_tip + w_chal` blocks (about 7 days at the proposed parameters), plus `op_bond` for
+the kickoff. Deposits name many operators. Anyone may run an operator and be named on new deposits.
+Existing outputs' operator sets are fixed. The canonical wallet names, in each burn, a free output whose operators
 are live.
 
 ### 2.10 Fees and capital
@@ -497,8 +511,9 @@ are live.
 | Pay, kickoff and take carriers | Operator | Covered by `fee[j]` |
 | Challenge | Challenger, crowdfundable | Pays the operator's assertion cost. A successful disprove pays the disprover from `op_bond`. |
 
-**Operator capital.** An operator fronts `owed` from pay to take: `d_tip + w_chal` blocks unchallenged, plus
-`w_assert + w_disprove` when challenged. Its margin is `fee[j] − carrier fees − capital cost over that
+**Operator capital.** An operator fronts `owed` from pay to take: `d_tip + w_chal` blocks unchallenged
+(about 7 days at the proposed parameters), plus `w_assert + w_disprove` when challenged. Each kickoff also
+locks `op_bond` for the same period. Its margin is `fee[j] − carrier fees − capital cost over that
 period`. The unhappy path's assertion is large, so its cost at the fee rate the parameters assume sets a
 floor on `denom[0]`: below it, a challenge costs more than the output it protects.
 
@@ -607,12 +622,13 @@ soundness; ciphertext availability; and the `min_work` bound.
 | Liveness needs | A counterparty | One live operator of the named output, with capital | The locker to redeem | Nobody |
 | Redemption | Market price | 1:1 minus a fixed fee, in denominations | None for holders; escrow slashed on a breach | 1:1 minus a fixed fee, in denominations |
 | Ethereum dependency | None | None | Yes | None |
-| Status | Existing ops | Design | Live | Needs a soft fork |
+| Status | Design | Design | Live | Needs a soft fork |
 
 The document introduces no multisig, federation, attestor set or `k`-of-`n` key that holds or releases BTC.
 The committee is `n`-of-`n` and safe with one honest member. Its shares are deleted before any BTC is at
 risk, and its identity keys only endorse mints. Neither can move a reserve output outside the presigned
-graph.
+graph. The roster is fixed by the declaration and every member co-signs each `T_PEG_IN`, so any member can
+halt peg-ins; it cannot release reserves.
 
 ---
 
