@@ -27682,6 +27682,88 @@ async function _routeFetch(req, env, ctx) {
         return jsonResponse({ result: 'accept', gates }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message, stack: e.stack?.slice(0, 200) }, 500, cors); }
     }
+    // /debug/poolinit?txid=<reveal_txid> — one-shot synchronous T_LP_ADD variant-1 (POOL_INIT) validator
+    // replay, same shape as /debug/route: pinpoints the gate a confirmed POOL_INIT fails at, live, without
+    // waiting on the cron's forward-only cursor. Debug-only.
+    if (url.pathname === '/debug/poolinit' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const txid = (url.searchParams.get('txid') || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'bad txid' }, 400, cors);
+        const tx = await apiJson(env, `/tx/${txid}`, {}, network);
+        if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) return jsonResponse({ result: 'no_script_path_witness' }, 200, cors);
+        const decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1]));
+        if (!decoded) return jsonResponse({ result: 'decodeEnvelopeScript_null' }, 200, cors);
+        const gates = [];
+        const stage = (s, info) => gates.push({ s, info });
+        stage('decodeEnvelopeScript', { opcode_hex: '0x' + decoded.opcode.toString(16) });
+        if (decoded.opcode !== T_LP_ADD) return jsonResponse({ result: 'wrong_opcode', gates }, 200, cors);
+        const lp = decodeTLpAddPayload(decoded.payload);
+        if (!lp) return jsonResponse({ result: 'decodeTLpAddPayload_null', gates }, 200, cors);
+        stage('decodeTLpAddPayload', { variant: lp.variant, fee_bps: lp.fee_bps });
+        if (lp.variant !== 1) return jsonResponse({ result: 'not_variant_1', gates }, 200, cors);
+        if (network === 'mainnet' && lp.vk_cid !== CANONICAL_AMM_VK_CID) return jsonResponse({ result: 'vk_cid_mismatch', gates, on_chain: lp.vk_cid, expected: CANONICAL_AMM_VK_CID }, 200, cors);
+        stage('vk_cid', 'ok');
+        let canon;
+        try { canon = ammCanonicalAssetPair(lp.asset_a, lp.asset_b); }
+        catch (e) { return jsonResponse({ result: 'canonical_pair_throw', gates, msg: e.message }, 200, cors); }
+        const aBytesPi = canon[0], bBytesPi = canon[1];
+        const swappedPi = bytesToHex(aBytesPi) !== lp.asset_a;
+        const deltaAPi = swappedPi ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
+        const deltaBPi = swappedPi ? BigInt(lp.delta_a) : BigInt(lp.delta_b);
+        stage('canonical_pair', { swapped: swappedPi });
+        if ((lp.pool_capability_flags ?? 0) !== 0) return jsonResponse({ result: 'nonzero_capability_flags', gates }, 200, cors);
+        if ((lp.arbiter_pubkeys?.length ?? 0) !== 0) return jsonResponse({ result: 'nonzero_arbiter_pubkeys', gates }, 200, cors);
+        if ((lp.arbiter_threshold_m ?? 0) !== 0) return jsonResponse({ result: 'nonzero_arbiter_threshold', gates }, 200, cors);
+        stage('arbiter_and_flags', 'ok');
+        let poolIdBytesPi;
+        try {
+          poolIdBytesPi = ammDerivePoolId(aBytesPi, bBytesPi, lp.fee_bps, lp.pool_capability_flags ?? 0, lp.protocol_fee_address, lp.protocol_fee_bps);
+        } catch (e) { return jsonResponse({ result: 'pool_id_derive_throw', gates, msg: e.message }, 200, cors); }
+        const poolIdHexPi = bytesToHex(poolIdBytesPi);
+        stage('pool_id', poolIdHexPi);
+        const existingPi = await ammPoolGet(env, network, poolIdHexPi);
+        if (existingPi) return jsonResponse({ result: 'pool_already_exists', gates, pool_id: poolIdHexPi }, 200, cors);
+        let initPi;
+        try { initPi = ammLpInitShares(deltaAPi, deltaBPi); }
+        catch (e) { return jsonResponse({ result: 'lp_init_shares_throw', gates, msg: e.message }, 200, cors); }
+        if (initPi.founder_shares !== BigInt(lp.share_amount)) return jsonResponse({ result: 'founder_shares_mismatch', gates, computed: initPi.founder_shares.toString(), envelope: lp.share_amount }, 200, cors);
+        stage('founder_shares', initPi.founder_shares.toString());
+        const gateAPi = await ammFetchLauncherPubkeyForAsset(env, network, bytesToHex(aBytesPi));
+        const gateBPi = await ammFetchLauncherPubkeyForAsset(env, network, bytesToHex(bBytesPi));
+        if (gateAPi.status === 'fetch-failed' || gateBPi.status === 'fetch-failed') return jsonResponse({ result: 'launcher_gate_fetch_failed', gates, gateA: gateAPi.status, gateB: gateBPi.status }, 200, cors);
+        stage('launcher_gates', { a: gateAPi.status, b: gateBPi.status });
+        const shareXcurveOkPi = verifyXCurve(hexToBytes(lp.share_xcurve_sigma), hexToBytes(lp.share_c_secp), hexToBytes(lp.share_c_bjj));
+        if (!shareXcurveOkPi) return jsonResponse({ result: 'xcurve_sigma_fail', gates }, 200, cors);
+        stage('xcurve_sigma', 'ok');
+        const initInputsByAssetPi = await ammCollectAssetInputs(env, tx, network, 1);
+        const initASidePi = initInputsByAssetPi.get(bytesToHex(aBytesPi));
+        const initBSidePi = initInputsByAssetPi.get(bytesToHex(bBytesPi));
+        stage('collect_asset_inputs', { n_assets_found: initInputsByAssetPi.size, assetA_found: !!initASidePi, assetB_found: !!initBSidePi });
+        if (!initASidePi || initASidePi.inputs.length === 0) return jsonResponse({ result: 'no_inputs_for_asset_a', gates }, 200, cors);
+        if (!initBSidePi || initBSidePi.inputs.length === 0) return jsonResponse({ result: 'no_inputs_for_asset_b', gates }, 200, cors);
+        const initRefundsPi = ammPoolInitRefunds(tx, lp, swappedPi);
+        const initKernelOkAPi = ammLpAddKernelVerify({
+          variant: 1, poolId: poolIdBytesPi, assetX: aBytesPi, deltaX: deltaAPi, shareAmount: BigInt(lp.share_amount),
+          shareCSecpBytes: hexToBytes(lp.share_c_secp), inputsX: initASidePi.inputs, inputCommitments: initASidePi.commitments,
+          sig64: hexToBytes(lp.kernel_sig_a), expiryHeight: initRefundsPi.expiryHeight,
+          refundDestXonly: initRefundsPi.refundXonlyA, refundBlinding: initRefundsPi.refundBlindingA,
+        });
+        if (!initKernelOkAPi) return jsonResponse({ result: 'kernel_sig_a_fail', gates }, 200, cors);
+        stage('kernel_sig_a', 'ok');
+        const initKernelOkBPi = ammLpAddKernelVerify({
+          variant: 1, poolId: poolIdBytesPi, assetX: bBytesPi, deltaX: deltaBPi, shareAmount: BigInt(lp.share_amount),
+          shareCSecpBytes: hexToBytes(lp.share_c_secp), inputsX: initBSidePi.inputs, inputCommitments: initBSidePi.commitments,
+          sig64: hexToBytes(lp.kernel_sig_b), expiryHeight: initRefundsPi.expiryHeight,
+          refundDestXonly: initRefundsPi.refundXonlyB, refundBlinding: initRefundsPi.refundBlindingB,
+        });
+        if (!initKernelOkBPi) return jsonResponse({ result: 'kernel_sig_b_fail', gates }, 200, cors);
+        stage('kernel_sig_b', 'ok');
+        if (!ammVerifyMinLiqVoutStructural(tx, poolIdBytesPi)) return jsonResponse({ result: 'min_liq_vout_fail', gates }, 200, cors);
+        stage('min_liq_vout', 'ok');
+        return jsonResponse({ result: 'accept', gates, pool_id: poolIdHexPi }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message, stack: e.stack?.slice(0, 300) }, 500, cors); }
+    }
     // POST /admin/sweep-phantoms?network=...[&max=200]
     // One-shot phantom-listing drain. The scheduled cron runs the same
     // sweep at PREAUTH_PHANTOM_SWEEP_LIMIT=60/network/tick, so a deep
