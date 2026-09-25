@@ -49,8 +49,8 @@ custodian. Tacit is a confidential asset layer for Bitcoin that needs none of th
 Tacit assets live on Bitcoin in Taproot envelopes, with amounts hidden in Pedersen commitments, and any
 indexer derives the same state from the chain alone. The same notes extend into an immutable pool on
 Ethereum that accepts private transactions only with an SP1 zero-knowledge proof. Each chain proves its
-state to the other, Bitcoin by proof-of-work and Ethereum by its light client, so value crosses between
-them with no signer, multisig or custodian.
+state to the other, Bitcoin by proof-of-work and Ethereum by its light client, so value and calls cross
+between them with no signer, multisig or custodian.
 
 In the pool, users send, swap, borrow and earn with amounts hidden, and never need ETH for gas. cBTC
 brings in real BTC from self-custody locks, and every balance recovers from a single key. The core is
@@ -97,7 +97,7 @@ Tacit delivers all five by combining existing systems, with no new consensus:
 \midrule
 Bitcoin metaprotocol (\S2, \S3) & Issue, send and trade Bitcoin assets with hidden amounts. \\
 Confidential pool (\S4, \S6) & Private sends, swaps, loans and farms on Ethereum, gas-free. \\
-Reflection (\S5) & The same note moves between chains by proof, with no signer. \\
+Reflection (\S5) & Notes and calls move between chains by proof, with no signer. \\
 cBTC (\S6) & Real BTC in self-custody locks, private on both chains. \\
 Lineage (\S8, \S11) & An immutable core that improves by succession, toward covenants. \\
 \bottomrule
@@ -247,8 +247,27 @@ verifies this proof recursively, then:
 \item retires fast-lane notes.
 \end{itemize}
 
-\textbf{Calls.} A value-free Bitcoin envelope can authorize an Ethereum call, which an executor contract runs
-once it is reflected. Ethereum can post messages that reflection delivers to Bitcoin.
+\textbf{Cross-chain calls.} Beside value, reflection carries authenticated calls in both directions, so each
+chain can act on the other. Neither channel carries value: a call commits no amount, so it can authorize
+no mint and no transfer.
+
+\begin{itemize}
+\item \textbf{Bitcoin to Ethereum.} A \op{T\_BTC\_\allowbreak{}CALL} envelope is a Bitcoin key's Schnorr-signed authorization of one
+  Ethereum call: a target contract and its calldata. The reflection guest checks the signature, and the
+  pool records the call in its inbox of pending calls. \op{BtcCallExecutor}, a separate contract with no
+  privileges, fires it exactly once, and anyone may trigger it. The target sees which Bitcoin key signed
+  and gates on it, so a Bitcoin key can own and operate an Ethereum contract, such as a smart account, a
+  vault or a governance module, with no Ethereum key at all.
+\item \textbf{Ethereum to Bitcoin.} Any Ethereum contract can post a message to \op{EthCallOutbox} under a handler
+  namespace. The light-client proof carries it to Bitcoin, where a \op{T\_ETH\_\allowbreak{}CALL} envelope delivers it into
+  Bitcoin's inbox of honored messages, stamped with the sending contract's address. A timelock, a DAO or
+  an oracle on Ethereum becomes an authority that Bitcoin-side logic can follow, with no new keys.
+\end{itemize}
+
+These channels let Bitcoin keys run Ethereum accounts and governance, let TAC holders on Bitcoin act on
+Ethereum, and let Ethereum contracts push attestations, parameters and data to Bitcoin applications.
+Ethereum-to-Bitcoin delivery is at least once: a sender confirms its message landed and resends if not,
+which suits idempotent actions.
 
 The bridge rests on Bitcoin proof-of-work, the Ethereum sync committee and SP1, with no multisig,
 attestor set or IOU. It needs only someone to run the provers. Anyone may, and Ethereum-side notes stay
@@ -312,8 +331,11 @@ within capped, delayed bounds, but can never cut a running reward stream short o
 \textbf{Gasless.} Any op may be relayed. The relayer's fee is part of what the proof commits to, bound by the
 kernel, the opening proof or the note's spend signature. The relayer pays gas and collects exactly that
 fee. It cannot redirect a payout, raise the fee or submit after the user's deadline. Once value is in the
-pool, a user never needs ETH. Entering takes one Ethereum transaction, which can also tip a relayer to
-settle the deposit.
+pool, a user never needs ETH. Entering from Ethereum takes one transaction, which can also tip a relayer
+to settle the deposit. A Bitcoin-only user needs no ETH at all: it enters by bridge burn or the fast lane
+paying only BTC, acts through relayers, and exits to Bitcoin paying only BTC or to any Ethereum address.
+Minting cBTC is the one exception, because its escrow is posted on Ethereum, by the locker or any
+backer.
 
 \textbf{Self-sovereign.} The relayer is optional. Anyone can call \op{settle}, proofs can be made locally or on
 an open prover network, and all three guest programs rebuild byte for byte from source. A user can prove
@@ -439,7 +461,7 @@ Tacit is an asset layer on Bitcoin with no bridge signer and no custodian:
 \begin{itemize}
 \item a deterministic metaprotocol with hidden amounts;
 \item an immutable, proof-gated pool that carries the same notes into confidential DeFi;
-\item a bridge made of proofs in both directions;
+\item a bridge made of proofs in both directions, for value and for calls;
 \item cBTC, which carries real BTC into that DeFi and back to Bitcoin;
 \item a lineage of immutable pools that improves as its market grows and hands off to V2 when Bitcoin gains
   covenants.
