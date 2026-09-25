@@ -1,8 +1,8 @@
 // OP_BRIDGE_MINT box harness (not part of the crate build). Mints an Ethereum note for a note BURNED FOR THE
-// BRIDGE on Bitcoin (BTC→ETH). FEE-LESS BY NECESSITY: the destination note is PRE-COMMITTED at burn time on
-// Bitcoin (dest_leaf is pinned in the bridge-burn set, v_out == v_in), so the mint must produce exactly that
-// note — there is no room to carve `v_in − fee`. The relay still ROUTES it (box-settled, no user EOA) and the
-// fee rides the follow-up spend of the minted note. Reads fixtures/bridgemint_op.json. stdin order = the
+// BRIDGE on Bitcoin (BTC→ETH). The destination note is PRE-COMMITTED at burn time on Bitcoin (dest_leaf is
+// pinned in the bridge-burn set), and the guest checks v_burn == v_out + fee, paying `fee` to the settler. A
+// burn that commits its destination to v_burn − fee therefore mints with that relay fee (box-settled, no user
+// EOA); one committed to the full value mints with fee 0. Reads fixtures/bridgemint_op.json. stdin order = the
 // guest's OP_BRIDGE_MINT io::read (main.rs): header roots (bitcoinBurnRoot NON-zero: bridge-burn-set
 // membership), then asset(32) ‖ poolRoot(32) ‖ inCx(32) ‖ inCy(32) ‖ inOwner(32) ‖ sourceClass(u32) ‖
 // spentTxid(32) ‖ spentVout(u32) ‖ inLeafIndex(u64) ‖ inPath[] ‖ outCx(32) ‖ outCy(32) ‖ outOwner(32) ‖

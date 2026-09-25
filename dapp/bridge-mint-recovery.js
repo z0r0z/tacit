@@ -1,8 +1,8 @@
 // Recoverable blinding for an OP_BRIDGE_MINT destination note (the Ethereum-side re-mint of a Bitcoin-side
 // burn-deposit — see contracts/sp1/confidential/harnesses/exec-bridgemint.rs). The destination note is
 // PRE-COMMITTED at burn time on Bitcoin (the guest pins dest_leaf into the bridge-burn set; the Ethereum mint
-// must reproduce that exact (cx, cy, owner), fee-less by necessity), and Bitcoin envelopes carry no memo
-// channel the way an Ethereum-side settle() does — so whatever blinding the burn envelope commits to is the
+// must reproduce that exact (cx, cy, owner), opening to the burned value net of any relay fee), and Bitcoin
+// envelopes carry no memo channel the way an Ethereum-side settle() does — so whatever blinding the burn envelope commits to is the
 // ONLY chance to make this note recoverable. As cbtc-note-recovery.js does for cBTC locks and
 // confidential-pool-ux.js's crossOut() does for fast-lane cross-outs, the blinding is derived from the
 // identity key + the burned note's own nullifier (unique per spend, already computed by whatever builds the

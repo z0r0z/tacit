@@ -267,10 +267,12 @@ it sealed (`verifyEmittedMemos`) and throws, keeping the sealed memos locally, i
 `wait: true` can report `settled` from the relay's acknowledgement or from the note leaving the wallet scan, so
 confirm an exit by the recipient's balance (or the settle receipt) rather than by that status alone.
 
-Which ops need a fee: an op that carries a fee leg (`transfer`, `unwrap`, LP ops, routes) must offer at least
-the floor from `GET /confidential/quote`, or the relay refuses it at submit. The static cUSD floor is
-30,000,000 units. Ops with no fee (`wrap`, `cbtcmint`, `bridgemint`, `farmbond`, adaptor and stealth locks,
-`cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed: it needs
+Which ops need a fee: an op that carries a fee leg (`transfer`, `unwrap`, LP ops, routes, a `bridgemint` with a
+nonzero fee) must offer at least the floor from `GET /confidential/quote`, or the relay refuses it at submit. The
+static cUSD floor is 30,000,000 units. A fee in an asset with no direct price feed is valued from a public AMM pool
+that pairs it with cETH, a USD asset or cBTC, when that pool is deep enough; with no such pool the fee is relayed
+as unpriced work. Ops with no fee (`wrap`, `cbtcmint`, `farmbond`, a zero-fee `bridgemint`, adaptor and stealth
+locks, `cdptopup`) relay for free within a daily budget. Pool founding cannot be relayed: it needs
 `createPairAndSettle`, so use `selfRelay: true`.
 
 ### Bitcoin-backed cBTC and CDPs
@@ -866,24 +868,31 @@ builder makes on the user's behalf, not something the protocol can decide.
 The settle lane does not share this shape: `OP_SWAP_BLIND` proves the excess with a Schnorr proof of
 knowledge rather than publishing a residue.
 
-**Bitcoin → Ethereum** is not a single wallet call today. A Bitcoin-side spend into a bridge-burn envelope
-(`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops)) is what reflection watches for; once it's
-confirmed and proven, the pool mints the note once via `OP_BRIDGE_MINT`, keyed by the burn's own id. TAC is
-the one asset whose Bitcoin-side transfers reflect unbound already ([SPEC §6.2](../SPEC.md#62-bitcoin--ethereum)),
-so a plain Bitcoin-side send needs no separate onboarding step before it can bridge; other assets onboard
-through `T_CXFER_BOUND`, a bridge burn, or as AMM/farm/bid outputs first.
+**Bitcoin → Ethereum** is two steps: a Bitcoin-side bridge burn, then a relayed mint on Ethereum. A
+Bitcoin-side spend into a bridge-burn envelope (`0x2B`, [SPEC §3.7](../SPEC.md#37-bridge-and-cross-chain-ops))
+is what reflection watches for; once it's confirmed and proven, the pool mints the note once via
+`OP_BRIDGE_MINT`, keyed by the burn's own id. TAC is the one asset whose Bitcoin-side transfers reflect unbound
+already ([SPEC §6.2](../SPEC.md#62-bitcoin--ethereum)), so a plain Bitcoin-side send needs no separate
+onboarding step before it can bridge; other assets onboard through `T_CXFER_BOUND`, a bridge burn, or as
+AMM/farm/bid outputs first.
 
-**This direction's reveal needs a private-submission relay, not ordinary Bitcoin p2p relay.** The guest
-identifies the burned note as the burn tx's own first spent input, and reads its ~161-byte envelope from
-that same input's witness — the two can't be split across separate inputs, and the envelope can't be
-pre-committed into the note's own home script ahead of time either, since it names that note's own outpoint,
-which doesn't exist yet when the note is created. Either way, the witness item carrying the envelope ends up
-well over Bitcoin Core's 80-byte standardness cap for witness arguments, so mempool.space / blockstream.info
-and other ordinary relay won't carry it — it's still a perfectly valid, minable Bitcoin transaction, just not
-a *policy-standard* one. This is a structural property of the current, immutable guest, not a sign of a
-badly-built transaction. [MARA Slipstream](https://slipstream.mara.com/docs/) accepts exactly this kind of
-non-standard-but-consensus-valid transaction directly into a miner-side queue, which is how every
-burn-deposit that has actually landed got broadcast, including the round trip linked above.
+The reflection reads every envelope from the burn transaction's first input, as a Taproot script-path spend
+(`vin[0]`'s witness is `[signature, script, control block]`, with the envelope pushed inside the script). How
+the burn is broadcast depends on where the burned note comes from:
+
+- **A reflected note** (one the reflection already holds — the common case, and every note a Bitcoin wallet
+  received through the pool) is found by its outpoint among *any* of the burn's inputs, and the burn must
+  spend exactly one such note. The envelope therefore rides a separate commit output spent as `vin[0]`, with
+  the note spent by a normal key-path input alongside it: an ordinary commit/reveal pair. Both transactions
+  are policy-standard and broadcast through any node or explorer.
+- **A burn-deposit** (a never-reflected note onboarded by the burn itself) is different: the guest takes the
+  burned note to be the burn's first input, so the note's own input must carry the envelope. The envelope
+  names that note, so it cannot sit in the note's pre-committed Taproot tree, and the witness item carrying it
+  ends up over Bitcoin Core's 80-byte standardness limit. The transaction is consensus-valid but ordinary
+  relay (mempool.space, blockstream.info) refuses it. This is a property of the current guest, not a
+  badly-built transaction. [MARA Slipstream](https://slipstream.mara.com/docs/) accepts exactly this kind of
+  transaction into a miner-side queue, which is how every burn-deposit that has landed was broadcast,
+  including the round trip linked above.
 
 `dapp/burndep-broadcast.js` (`makeBurnDepositBroadcaster`) wraps that path: `submitToSlipstream(txHex)` posts
 the reveal to MARA's queue, `waitForBurnDepositMined({ txid, checkConfirmed, ... })` polls until an injected,
@@ -893,6 +902,48 @@ posts the provenance to `POST /reflection/burndep` (permissionless — the guest
 in-zkVM regardless, so this is a liveness convenience, not a trust boundary) so the reflection worker's
 batch-builder finds it without blindly rescanning every block. `completeBurnDepositToEthereum({ ... })` runs
 all three in order, registering only once real confirmation is observed.
+
+**Minting on Ethereum, gasless.** The burn fixes the Ethereum destination note: its envelope carries
+`destLeaf = leaf(asset, Cx, Cy, owner)`, and the mint proves `v_burn == v_out + fee`, paying `fee` in the burned
+asset to whoever settles it. So the relay fee is chosen *when the burn is built*: commit the destination to
+`destValueFor({ burnValue, fee })` (the burned value minus a fee on the two-significant-digit ladder, e.g.
+`ladderFee(await tacit.quoteOpFee(ticker, 'bridgemint'))`, or the floor from `GET /confidential/quote`). A
+destination committed to the full value mints with fee 0, which the relay settles within its free daily budget.
+A holder with no ETH can therefore complete the whole direction through the hosted relay.
+
+For a reflected note, `buildBridgeBurnEnvelope({ asset, bitcoinPoolRoot, chainBinding, burned, fee, dest })`
+returns the 161-byte `0x2B` payload with the destination already net of the fee, the burned note's nullifier
+and the destination opening to keep for the mint. Pass `deriveDestBlinding: (nu) => deriveBridgeMintBlinding(priv, nu)`
+(from `confidential-recovery.js`) rather than a random `dest.blinding`, so the minted note is recoverable from the
+seed, with `dest.owner = nkToOwner(deriveNote(priv, asset, i).secret)` for a small index `i`; then wrap the payload
+in the usual commit/reveal envelope and spend the note in another input of the reveal. The seed walk finds a minted
+note by trying round amounts and the values it is given, and a destination net of a fee is usually not round, so
+also seal a memo at mint time (`recovery: { ownerPub, secret }` below) whenever the fee is nonzero.
+
+Once the reflection has folded the burn, `dapp/confidential-bridge-mint.js` builds and submits the mint
+(`tacit.bridgeMint` is the same instance, wired to the dapp's relay):
+
+```js
+import { txidInternal } from './confidential-bridge-mint.js';
+
+const r = await tacit.bridgeMint.bridgeMint({
+  chainBinding: tacit.chainBindingHex(),        // the deployment the burn envelope targeted
+  asset,                                        // the pool asset id of the burned note
+  spentTxid: txidInternal(burnedNoteTxidDisplay), spentVout, // the burned note's outpoint
+  burned: { value, blinding, owner: taprootXonly },          // the burned note's opening
+  dest:   { value: destValue, blinding: destBlinding, owner: destOwner }, // the committed destination
+  recovery: { ownerPub, secret: destNk },       // seal a memo; or { seedDerived: true } if destBlinding came
+});                                             // from deriveBridgeMintBlinding (bridge-mint-recovery.js)
+```
+
+It reads the note tree and the bridge-burn set from the relay's public `GET /reflection/dump`, detects the
+burned note's source class (reflected, reflected and bound, or burn-deposit), checks that the burn committed
+to exactly the given destination, and signs the conservation kernel with the implied fee. It refuses a fee off
+the ladder and a burn the reflection has not folded yet. The op is posted to `POST /confidential/submit` as
+type `bridgemint`, with the same shape as `contracts/sp1/confidential/harnesses/exec-bridgemint.rs`;
+`buildBridgeMintOp` returns it without submitting, for a caller that proves elsewhere. The mint proves against
+the burn root the pool holds at settle time, so a mint built just before a newer reflection lands is refused
+as stale; rebuild it from a fresh dump and resubmit.
 
 The TAC round trip linked above is a real, fully independent-verified example of exactly this: an Ethereum
 crossOut, its Bitcoin-side re-mint, a Bitcoin-side return burn, and the mint back on Ethereum — four
