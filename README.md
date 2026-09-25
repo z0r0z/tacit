@@ -98,6 +98,11 @@ or attestor set signs a bridge message.
         secp256k1 Pedersen · BP+ range proofs · Schnorr kernels · keccak IMTs
 ```
 
+**Three layers, not two.** The Bitcoin metaprotocol and the Ethereum confidential pool are each a full,
+independently-derivable ledger; reflection is the zero-knowledge layer that reconciles them, not a
+custody bridge. Bitcoin-homed notes carry their own leaf and nullifier, derived from the note's actual
+Bitcoin output key, so Bitcoin-side state stands on its own before any reflection proof runs.
+
 **Three SP1 programs:**
 - the **settle guest**, which proves pool ops;
 - the **Bitcoin reflection guest**, which proves Bitcoin blocks;
