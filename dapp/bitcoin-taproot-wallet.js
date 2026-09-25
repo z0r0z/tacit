@@ -458,6 +458,7 @@ export function makeBtcWallet({ priv, hrp = 'bc', fetchUtxos, broadcastTx, fetch
     getFeeRate,
     getUtxos,
     signCommitInputs,
+    signP2wpkhInput,
     signTaprootScriptPathInput,
     serializeTx,
     txid,

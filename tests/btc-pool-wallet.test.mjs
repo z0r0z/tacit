@@ -263,8 +263,11 @@ function fakeTree(leaves) {
   }
   const re = pool.encodeSpendBody({ asset: ASSET, hAnchor: parsed.hAnchor, nullifiers: parsed.nullifiers, outputs: parsed.outputs, exit: parsed.exit });
   assert.strictEqual(hex(re), hex(pay.body));
-  assert.strictEqual(pay.body.length, 1 + 32 + 4 + 1 + 64 + 1 + 2 * 218 + 1);
+  assert.strictEqual(pay.body.length, 1 + 32 + 4 + 36 + 1 + 64 + 1 + 2 * 218 + 1 + 1);
   assert.strictEqual(pay.body[pay.body.length - 1], 0);
+  assert.strictEqual(pay.body[pay.body.length - 2], 0);
+  assert.ok(pay.body.slice(37, 73).every((x) => x === 0), 'bind defaults to zero');
+  assert.strictEqual(parsed.bind, null); assert.strictEqual(parsed.want, null);
   assert.deepStrictEqual([...pay.body.slice(33, 37)], [0x90, 0xd0, 0x03, 0x00]);
   const msg = keccak_256(new Uint8Array([...te.encode('tacit-btc-pool-spend-v1'), ...pay.body]));
   mine.forEach((m, i) => assert.ok(bip340VerifyIndependent(unhex(pay.sigs[i]), msg, unhex(m.spendKey))));
@@ -282,11 +285,14 @@ function fakeTree(leaves) {
 
   for (const [label, mutate] of [
     ['trailing byte', (b) => new Uint8Array([...b, 0])],
-    ['n_in 3', (b) => { const c = Uint8Array.from(b); c[37] = 3; return c; }],
-    ['has_exit 2', (b) => { const c = Uint8Array.from(b); c[c.length - 1] = 2; return c; }],
-    ['n_out 4', (b) => { const c = Uint8Array.from(b); c[38 + 64] = 4; return c; }],
-    ['no output, no exit', (b) => new Uint8Array([...b.slice(0, 38 + 64), 0, 0])],
+    ['n_in 3', (b) => { const c = Uint8Array.from(b); c[73] = 3; return c; }],
+    ['has_exit 2', (b) => { const c = Uint8Array.from(b); c[c.length - 2] = 2; return c; }],
+    ['has_want 2', (b) => { const c = Uint8Array.from(b); c[c.length - 1] = 2; return c; }],
+    ['has_want 1 without want', (b) => { const c = Uint8Array.from(b); c[c.length - 1] = 1; return c; }],
+    ['n_out 4', (b) => { const c = Uint8Array.from(b); c[74 + 64] = 4; return c; }],
+    ['no output, no exit', (b) => new Uint8Array([...b.slice(0, 74 + 64), 0, 0, 0])],
     ['truncated', (b) => b.slice(0, b.length - 1)],
+    ['truncated in bind', (b) => b.slice(0, 60)],
   ]) assert.throws(() => pool.parseSpend(mutate(pay.body)), undefined, label);
   assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, inputs: mine, outputs: [{ address: alice.addressString, value: 999n }] }));
   assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 1, root: '0x' + '00'.repeat(32), inputs: mine, outputs: [{ address: alice.addressString, value: 1000n }] }));
@@ -298,7 +304,7 @@ function fakeTree(leaves) {
   assert.strictEqual(pe.exit.exitVout, 2);
   assert.strictEqual(pe.exit.destSpkHash, '0x' + hex(sha256(spk)));
   assert.ok(Pt.fromAffine({ x: big(pe.exit.cx), y: big(pe.exit.cy) }).equals(TACIT_H.multiply(700n).add(G.multiply(big(ex.exit.blinding)))));
-  assert.strictEqual(ex.body.length, 1 + 32 + 4 + 1 + 32 + 1 + 1 + 100);
+  assert.strictEqual(ex.body.length, 1 + 32 + 4 + 36 + 1 + 32 + 1 + 1 + 100 + 1);
   assert.deepStrictEqual(ex.witness.outputs, [{ value: '700', blinding: ex.exit.blinding }]);
 
   const part = pool.buildSpendBody({ asset: ASSET, hAnchor: 8, root: tree.root, inputs: mine, outputs: [{ address: alice.addressString, value: 100n }, { address: bob.addressString, value: 200n }, { address: eve.addressString, value: 300n }], exit: { exitVout: 0, scriptPubKey: spk } });
@@ -318,6 +324,42 @@ function fakeTree(leaves) {
   assert.strictEqual(pf.proof, '0x' + hex(proof));
   assert.strictEqual(hex(pf.body), hex(ex.body));
   assert.throws(() => pool.assembleSpendEnvelope(ex.body, rnd(513)));
+
+  // bind and want: encoded on the wire, round-trip, signed like every field.
+  const bindTxid = 'a1' + '00'.repeat(30) + 'ff';
+  const payoutSpk = new Uint8Array([0x51, 0x20, ...rnd(32)]);
+  const bw = pool.buildSpendBody({ asset: ASSET, hAnchor: 9, root: tree.root, inputs: mine, outputs: [{ address: alice.addressString, value: 250n }], exit: { exitVout: 0, scriptPubKey: spk }, bind: { txid: bindTxid, vout: 5 }, want: { vout: 1, value: 12_345n, scriptPubKey: payoutSpk } });
+  assert.deepStrictEqual([...bw.body.slice(37, 69)], [...unhex(bindTxid)].reverse(), 'bind txid in input byte order');
+  assert.deepStrictEqual([...bw.body.slice(69, 73)], [5, 0, 0, 0]);
+  const pw = pool.parseSpend(bw.body);
+  assert.deepStrictEqual(pw.bind, { txid: bindTxid, vout: 5 });
+  assert.deepStrictEqual(pw.want, { vout: 1, value: 12_345n, spkHash: '0x' + hex(sha256(payoutSpk)) });
+  assert.deepStrictEqual(bw.want, pw.want);
+  assert.deepStrictEqual([...bw.body.slice(bw.body.length - 44, bw.body.length - 40)], [1, 0, 0, 0]);
+  assert.strictEqual(bw.body[bw.body.length - 45], 1);
+  assert.strictEqual('0x' + hex(pool.encodeSpendBody({ asset: ASSET, hAnchor: 9, bind: pw.bind, nullifiers: pw.nullifiers, outputs: pw.outputs, exit: pw.exit, want: pw.want })), bw.bodyHex);
+  mine.forEach((m, i) => assert.ok(bip340VerifyIndependent(unhex(bw.sigs[i]), keccak_256(new Uint8Array([...te.encode('tacit-btc-pool-spend-v1'), ...bw.body])), unhex(m.spendKey))));
+  assert.strictEqual(bw.exit.value, 750n, 'the want moves no pool value');
+  const pwFull = pool.parseSpend(pool.assembleSpendEnvelope(bw.body, rnd(10)), { full: true });
+  assert.deepStrictEqual(pwFull.want, pw.want);
+  for (const [label, args, re] of [
+    ['want on the exit output', { want: { vout: 0, value: 1n, scriptPubKey: payoutSpk } }, /same output/],
+    ['want value string', { want: { vout: 1, value: '5', scriptPubKey: payoutSpk } }, /want value/],
+    ['want value fraction', { want: { vout: 1, value: 1.5, scriptPubKey: payoutSpk } }, /want value/],
+    ['want value 2^64', { want: { vout: 1, value: 2n ** 64n, scriptPubKey: payoutSpk } }, /want value/],
+    ['want value negative', { want: { vout: 1, value: -1n, scriptPubKey: payoutSpk } }, /want value/],
+    ['want vout string', { want: { vout: '1', value: 1n, scriptPubKey: payoutSpk } }, /want vout/],
+    ['want vout 2^32', { want: { vout: 2 ** 32, value: 1n, scriptPubKey: payoutSpk } }, /want vout/],
+    ['want without script', { want: { vout: 1, value: 1n } }, /spkHash or scriptPubKey/],
+    ['want hash mismatch', { want: { vout: 1, value: 1n, scriptPubKey: payoutSpk, spkHash: '0x' + '00'.repeat(32) } }, /does not match/],
+    ['bind vout string', { bind: { txid: bindTxid, vout: '5' } }, /bind vout/],
+    ['bind vout negative', { bind: { txid: bindTxid, vout: -1 } }, /bind vout/],
+    ['bind txid short', { bind: { txid: 'ab', vout: 1 } }, /32 bytes/],
+    ['bind as a string', { bind: bindTxid + ':1' }, /bind must be/],
+  ]) assert.throws(() => pool.buildSpendBody({ asset: ASSET, hAnchor: 9, inputs: mine, outputs: [{ address: alice.addressString, value: 250n }], exit: { exitVout: 0, scriptPubKey: spk }, ...args }), re, label);
+  assert.strictEqual(pool.buildSpendBody({ asset: ASSET, hAnchor: 9, inputs: mine, outputs: [{ address: alice.addressString, value: 1000n }], want: { vout: 0, value: 2 ** 53 - 1, spkHash: sha256(payoutSpk) } }).want.value, 2n ** 53n - 1n, 'a want on a pay, safe-integer value');
+  assert.throws(() => pool.parseSpend(new Uint8Array([...bw.body.slice(0, bw.body.length - 45), 3, ...bw.body.slice(bw.body.length - 44)])), /has_want/);
+  assert.throws(() => pool.parseSpend(bw.body.slice(0, bw.body.length - 1)), /truncated/);
 }
 ok('spend body: canonical LE layout, parse/encode round-trip, per-input BIP-340 over keccak(domain ‖ body), witness JSON shape; exit binds SHA-256(spk); partial exit with 3 outputs; proof_len LE');
 
@@ -505,8 +547,11 @@ if (existsSync(VEC)) {
     assert.deepStrictEqual(parsed.nullifiers, f.nullifiers.map(lc));
     assert.strictEqual(parsed.outputs.length, f.outputs.length);
     assert.strictEqual(!!parsed.exit, !!Number(f.has_exit));
-    const re = pool.encodeSpendBody({ asset: f.asset, hAnchor: parsed.hAnchor, nullifiers: parsed.nullifiers, outputs: parsed.outputs, exit: parsed.exit });
+    const re = pool.encodeSpendBody({ asset: f.asset, hAnchor: parsed.hAnchor, bind: parsed.bind, nullifiers: parsed.nullifiers, outputs: parsed.outputs, exit: parsed.exit, want: parsed.want });
     assert.strictEqual('0x' + hex(re), lc(f.body));
+    assert.strictEqual('0x' + hex(unhex(f.body).slice(37, 73)), lc(f.bind));
+    if (f.has_want) assert.deepStrictEqual([parsed.want.vout, String(parsed.want.value), parsed.want.spkHash], [f.want.vout, f.want.value, lc(f.want.spk_hash)]);
+    else assert.strictEqual(parsed.want, null);
     f.outputs.forEach((o, j) => { assert.strictEqual(parsed.outputs[j].leaf, lc(o.leaf)); assert.strictEqual(parsed.outputs[j].pkEph, lc(o.pk_eph)); });
     if (f.exit) { assert.strictEqual(parsed.exit.exitVout, Number(f.exit.exit_vout)); assert.strictEqual(parsed.exit.destSpkHash, lc(f.exit.dest_spk_hash)); assert.strictEqual(parsed.exit.cx, lc(f.exit.cx)); }
     assert.strictEqual('0x' + hex(keccak_256(unhex(f.body))), lc(f.body_hash));

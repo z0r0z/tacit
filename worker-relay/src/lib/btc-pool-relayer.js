@@ -1,6 +1,7 @@
 // Relayer for the Bitcoin-native shielded pool (DESIGN-btc-shielded-pool.md §6, SPEC §3.10).
-// Quotes a per-asset fee, binds exit_vout slots of a fixed carrier layout at submit time, admits payloads only
-// when the proof verifies against the local replayed root, the nullifiers are free, and one output is fully
+// Quotes a per-asset fee and the batch's bind outpoint (a confirmed relayer UTXO the carrier spends), binds
+// exit_vout slots of a fixed carrier layout at submit time, admits payloads only when their bind is the quoted
+// outpoint, the proof verifies against the local replayed root, the nullifiers are free, and one output is fully
 // received by the relayer's pool wallet, then carries them in one commit/reveal pair funded from its own BTC.
 //
 // Keys: BTC_POOL_RELAYER_BTC_KEY (funding + envelope signing) and BTC_POOL_RELAYER_POOL_SEED (pool wallet).
@@ -17,11 +18,13 @@ if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256
 
 export const ANCHOR_WINDOW = 144;
 const T_BTC_SPEND = 0x6d;
+const NF_AT = 1 + 32 + 4 + 36 + 1; // opcode ‖ asset ‖ h_anchor ‖ bind ‖ n_in
 const ENVELOPE_DUST = 330;
-const OP_RETURN_EMPTY = Uint8Array.of(0x6a);
 const MAX_BODY_BYTES = 16 * 1024;
 const P2WPKH_IN_VB = 68;
 const P2WPKH_OUT_VB = 31;
+const P2WPKH_IN_BASE = 41;
+const P2WPKH_IN_WIT = 1 + 1 + 72 + 1 + 33;
 const TERMINAL = new Set(['confirmed', 'dropped', 'rejected', 'replayed-elsewhere']);
 const CARRIER_DONE = new Set(['confirmed', 'dropped', 'empty', 'cancelled']);
 
@@ -78,11 +81,11 @@ export function spendsOfTx(tx) {
     const env = decodeEnvelopeScript(i.witness[1]);
     if (!env || env.opcode !== T_BTC_SPEND) continue;
     const p = env.payload;
-    if (p.length < 38) continue;
+    if (p.length < NF_AT) continue;
     let body = null;
     try { body = bytesToHex(keccak_256(bpm.parseSpend(p, { full: true }).body)); } catch { /* nullifiers still count */ }
-    const n = p[37];
-    for (let j = 0; j < n && 38 + 32 * (j + 1) <= p.length; j++) out.set(bytesToHex(p.subarray(38 + 32 * j, 70 + 32 * j)), body);
+    const n = p[NF_AT - 1];
+    for (let j = 0; j < n && NF_AT + 32 * (j + 1) <= p.length; j++) out.set(bytesToHex(p.subarray(NF_AT + 32 * j, NF_AT + 32 * (j + 1))), body);
   }
   return out;
 }
@@ -277,23 +280,29 @@ export function createRelayer({
   const feeTable = new Map([...(fees instanceof Map ? fees : Object.entries(fees || {}))].map(([a, f]) => [strip(a), BigInt(f)]));
   const verifySlot = makeSemaphore(Math.max(1, maxVerify));
 
-  const quotes = new Map();   // quoteId → { asset, fee, spk, client, used, expiresAt }
+  const quotes = new Map();   // quoteId → { asset, fee, spk, client, used, expiresAt, batchId, bind }
   const payloads = new Map(); // id → record
   const holds = new Map();    // nf hex → payload id
   const reservedUtxos = new Set();
   const carriers = [];
-  let batch = null;
+  let batch = null;           // the batch taking quotes
+  const draining = [];        // past closesAt: no new quotes, still takes submits for its unexpired quotes
+  let opening = null;
+  const opKey = (o) => `${o.txid}:${o.vout}`;
+  const sameBind = (a, b) => !!a && !!b && a.txid === b.txid && a.vout === b.vout;
+  const bindOut = (b) => ({ txid: b.txid, vout: b.vout });
+  const releaseBind = (b) => { if (b) reservedUtxos.delete(opKey(b)); };
 
   // ── persistence ──
   const pRec = (p) => ({
     id: p.id, state: p.state, reason: p.reason || null, nullifiers: p.nullifiers, payload: bytesToHex(p.payload),
     hAnchor: p.hAnchor, root: p.root, asset: p.asset, bodyHash: p.bodyHash, fee: String(p.fee), feeLeaf: toHex(p.feeLeaf),
-    slot: p.slot ? { vout: p.slot.vout, spk: bytesToHex(p.slot.spk) } : null, quoteId: p.quoteId, receivedAt: p.receivedAt,
+    slot: p.slot ? { vout: p.slot.vout, spk: bytesToHex(p.slot.spk) } : null, bind: p.bind || null, quoteId: p.quoteId, receivedAt: p.receivedAt,
     batchId: p.batch?.id || null, carrierId: p.carrier?.id || null, foreignTxid: p.foreignTxid || null,
     feeViaForeign: p.feeViaForeign ?? null, updatedAt: now(),
   });
   const cRec = (c) => ({
-    id: c.id, state: c.state, createdAt: c.createdAt, updatedAt: now(),
+    id: c.id, state: c.state, createdAt: c.createdAt, updatedAt: now(), bind: c.bind || null,
     slots: c.slots.map((sl, v) => (sl ? { vout: v, spk: bytesToHex(sl.spk), payloadId: sl.payloadId } : null)).filter(Boolean),
     payloadIds: c.payloads.map((p) => p.id), live: c.live || [],
     commitHex: c.commitHex || null, revealHex: c.revealHex || null, commitTxid: c.commitTxid || null, revealTxid: c.revealTxid || null,
@@ -305,10 +314,33 @@ export function createRelayer({
   });
   const save = (c, ...ps) => { if (persist) persist.save(ps.filter(Boolean).map(pRec), c ? [cRec(c)] : []); };
 
-  const openBatch = () => {
-    if (!batch || batch.closed) batch = { id: newId(), openedAt: now(), closesAt: now() + batchMs, slots: [], payloads: [], closed: false };
-    return batch;
-  };
+  // The bind of a batch: the smallest confirmed relayer coin not otherwise reserved. The carrier spends it.
+  async function reserveBind() {
+    const spkHex = bytesToHex(changeSpk);
+    const free = (await chain.utxos(fundAddress))
+      .filter((u) => u.value >= prims.DUST && u.status?.confirmed !== false && !reservedUtxos.has(opKey(u))
+        && (!u.scriptpubkey || strip(u.scriptpubkey) === spkHex))
+      .sort((a, b) => a.value - b.value);
+    if (!free.length) throw new RelayError(503, 'no confirmed relayer UTXO free to bind');
+    reservedUtxos.add(opKey(free[0]));
+    return { txid: free[0].txid, vout: free[0].vout, value: free[0].value };
+  }
+  async function openBatch() {
+    if (batch && !batch.closed && !batch.draining) return batch;
+    if (!opening) {
+      opening = (async () => {
+        try {
+          const bind = await reserveBind();
+          batch = { id: newId(), openedAt: now(), closesAt: now() + batchMs, slots: [], payloads: [], closed: false, draining: false, bind };
+          return batch;
+        } finally { opening = null; }
+      })();
+    }
+    return opening;
+  }
+  const drain = (b) => { b.draining = true; if (batch === b) batch = null; if (!draining.includes(b)) draining.push(b); };
+  const outstanding = (b) => { const t = now(); for (const q of quotes.values()) if (q.batchId === b.id && !q.used && t < q.expiresAt) return true; return false; };
+  const batchOf = (bind) => [batch, ...draining].find((b) => b && !b.closed && sameBind(b.bind, bind)) || null;
   const feeFor = (asset) => {
     const f = feeTable.get(strip(asset));
     if (f == null) throw bad('asset not relayed');
@@ -351,12 +383,12 @@ export function createRelayer({
   }
 
   function info() {
-    const b = batch && !batch.closed ? batch : null;
+    const b = batch && !batch.closed && !batch.draining ? batch : null;
     return {
       network, address: wallet.addressString, fundAddress,
       fees: Object.fromEntries([...feeTable].map(([a, f]) => ['0x' + a, f.toString()])),
       exitSats, minAnchor: minAnchor(), anchorPolicy: 'tip - 6, rounded down to a multiple of 6',
-      batch: b ? { id: b.id, closesAt: b.closesAt, exitVout: freeVout(b), slotsLeft: maxSlots - b.slots.filter(Boolean).length } : null,
+      batch: b ? { id: b.id, closesAt: b.closesAt, bind: bindOut(b.bind), exitVout: freeVout(b), slotsLeft: maxSlots - b.slots.filter(Boolean).length } : null,
       verifierEnabled: !!verifier?.enabled, pending: heldCount(),
     };
   }
@@ -366,8 +398,9 @@ export function createRelayer({
     for (const [id, q] of quotes) if (t >= q.expiresAt) quotes.delete(id);
   }
 
-  // { asset, exitScriptPubKey? } → quote. exitVout is provisional; the slot is bound at submit.
-  function quote({ asset, exitScriptPubKey } = {}, client = null) {
+  // { asset, exitScriptPubKey? } → quote. `bind` is the outpoint the sender signs into the body; exitVout is
+  // provisional, the slot is bound at submit.
+  async function quote({ asset, exitScriptPubKey } = {}, client = null) {
     if (!/^(0x)?[0-9a-fA-F]{64}$/.test(String(asset || ''))) throw bad('asset must be 32 bytes hex');
     const fee = feeFor(asset);
     let spk = null;
@@ -384,14 +417,15 @@ export function createRelayer({
     let open = 0;
     for (const q of quotes.values()) if (!q.used) open++;
     if (open >= maxQuotes) throw new RelayError(503, 'quote table full, retry shortly');
-    const q = { id: newId(), asset: strip(asset), fee, spk, client, used: false, expiresAt: now() + quoteTtlMs };
+    let b = await openBatch();
+    if (b.payloads.length >= maxPayloads) { drain(b); b = await openBatch(); }
+    const q = { id: newId(), asset: strip(asset), fee, spk, client, used: false, expiresAt: now() + quoteTtlMs, batchId: b.id, bind: bindOut(b.bind) };
     quotes.set(q.id, q);
-    const b = batch && !batch.closed ? batch : null;
     const v = spk ? freeVout(b) : null;
     return {
-      quoteId: q.id, asset: '0x' + q.asset, fee: fee.toString(), address: wallet.addressString,
+      quoteId: q.id, asset: '0x' + q.asset, fee: fee.toString(), address: wallet.addressString, bind: bindOut(b.bind),
       exitVout: spk ? (v ?? 0) : null, exitSats: spk ? exitSats : null,
-      batchId: b ? b.id : null, expiresAt: q.expiresAt, minAnchor: minAnchor(),
+      batchId: b.id, closesAt: b.closesAt, expiresAt: q.expiresAt, minAnchor: minAnchor(),
     };
   }
 
@@ -404,6 +438,8 @@ export function createRelayer({
     if (heldCount() >= maxPending) throw new RelayError(503, 'relayer busy');
     const asset = strip(s.asset);
     const nfs = s.nullifiers.map(strip);
+    if (s.want) throw bad('a spend with a want is not relayed');
+    if (!s.bind) throw bad('payload has no bind: sign over the quoted bind');
 
     let q = null;
     if (quoteId != null) {
@@ -412,6 +448,7 @@ export function createRelayer({
       if (q.used) throw bad('quote already used');
       if (now() >= q.expiresAt) throw bad('quote expired');
       if (q.asset !== asset) throw bad('quote is for another asset');
+      if (!sameBind(q.bind, s.bind)) throw bad('bind is not the quoted outpoint');
     }
     const fee = q ? q.fee : feeFor(asset);
 
@@ -446,11 +483,12 @@ export function createRelayer({
     if (!verifier || !verifier.enabled || typeof verifier.verify !== 'function') throw new RelayError(503, 'proof verifier unavailable');
 
     // Bind the batch, exit slot, nullifiers and quote before the async proof check.
-    let b = openBatch();
-    if (b.payloads.length >= maxPayloads) throw new RelayError(503, `carrier full until ${b.closesAt}`);
+    const b = batchOf(s.bind);
+    if (!b) throw new RelayError(409, 'bind names no open carrier of this relayer; request a new quote');
+    if (b.payloads.length >= maxPayloads) throw new RelayError(503, 'carrier full; request a new quote');
     const p = {
       id: newId(), state: 'verifying', nullifiers: nfs, payload: bytes, hAnchor: s.hAnchor, root, asset,
-      bodyHash: bytesToHex(keccak_256(s.body)), slot: null, quoteId: q ? q.id : null, fee: feeNote.value,
+      bodyHash: bytesToHex(keccak_256(s.body)), slot: null, bind: { ...b.bind }, quoteId: q ? q.id : null, fee: feeNote.value,
       feeLeaf: feeNote.leaf, receivedAt: now(), batch: b,
     };
     if (s.exit) {
@@ -486,14 +524,7 @@ export function createRelayer({
     if (ok === null) fail(503, 'proof verifier error');
     if (ok !== true) fail(400, 'proof does not verify against the replayed root');
     if (pool.rootAt(s.hAnchor) !== root) fail(409, 'root changed during verification');
-    if (b.closed) {
-      if (p.slot) fail(409, 'carrier closed during verification; request a new quote');
-      const i = b.payloads.indexOf(p); if (i >= 0) b.payloads.splice(i, 1);
-      b = openBatch();
-      if (b.payloads.length >= maxPayloads) fail(503, 'carrier full, retry after it is broadcast');
-      b.payloads.push(p);
-      p.batch = b;
-    }
+    if (b.closed) fail(409, 'carrier closed during verification; request a new quote');
     p.state = 'held';
     save(null, p);
     log(`payload ${p.id} held for batch ${b.id}`);
@@ -520,7 +551,7 @@ export function createRelayer({
   }
 
   // Outputs keep every signed exit_vout in place. A slot without a live exit pays the relayer; trailing
-  // unused slots are trimmed, which moves no live exit.
+  // unused slots are trimmed, which moves no live exit. The bind's value returns to the relayer after them.
   function layout(slots, live) {
     const liveIds = new Set(live.map((p) => p.id));
     const outs = [];
@@ -530,7 +561,6 @@ export function createRelayer({
       outs.push({ value: exitSats, script: on ? sl.spk : changeSpk, live: on });
     }
     while (outs.length && !outs[outs.length - 1].live) outs.pop();
-    if (!outs.length) return [{ value: 0, script: OP_RETURN_EMPTY }];
     return outs.map(({ value, script }) => ({ value, script }));
   }
 
@@ -541,10 +571,14 @@ export function createRelayer({
   }
 
   // Commit: relayer UTXOs → one P2TR envelope output per payload (+ change). Reveal: those outputs as
-  // vin[0..k-1], each a script-path spend of its Tacit envelope leaf, paying the fixed layout.
+  // vin[0..k-1], each a script-path spend of its Tacit envelope leaf, then the bind as vin[k], paying the
+  // fixed layout and the bind's value back to the relayer. The commit funds the whole reveal fee.
   // `force` inputs are always spent (a replacement conflicts with every input of the one it replaces);
   // `replaces` is the fee of the replaced commit + reveal, which the new commit exceeds by 1 sat/vB.
-  async function buildCarrier(live, outputs, { rate = null, force = null, replaces = 0 } = {}) {
+  async function buildCarrier(live, outputs, { bind, rate = null, force = null, replaces = 0 } = {}) {
+    if (!bind) throw new Error('carrier has no bind');
+    const slotSum = outputs.reduce((a, o) => a + o.value, 0);
+    outputs = [...outputs, { value: bind.value, script: changeSpk }];
     const envs = live.map((p) => {
       const script = prims.encodeEnvelopeScript(envKey, p.payload);
       const leaf = prims.tapLeafHash(script);
@@ -553,13 +587,12 @@ export function createRelayer({
     });
     if (rate == null) rate = await currentRate();
 
-    const base = 4 + 1 + 41 * envs.length + compact(outputs.length).length + outputs.reduce((a, o) => a + 8 + compact(o.script.length).length + o.script.length, 0) + 4;
-    const wit = 2 + envs.reduce((a, e) => a + 1 + 65 + compact(e.script.length).length + e.script.length + 1 + e.cb.length, 0);
+    const base = 4 + 1 + 41 * envs.length + P2WPKH_IN_BASE + compact(outputs.length).length + outputs.reduce((a, o) => a + 8 + compact(o.script.length).length + o.script.length, 0) + 4;
+    const wit = 2 + envs.reduce((a, e) => a + 1 + 65 + compact(e.script.length).length + e.script.length + 1 + e.cb.length, 0) + P2WPKH_IN_WIT;
     const revealVb = Math.ceil((base * 4 + wit) / 4) + 2;
     const revealFee = Math.ceil(revealVb * rate);
-    const outSum = outputs.reduce((a, o) => a + o.value, 0);
     const envVals = envs.map((_, i) => (i === 0 ? 0 : ENVELOPE_DUST));
-    envVals[0] = Math.max(ENVELOPE_DUST, outSum + revealFee - ENVELOPE_DUST * (envs.length - 1));
+    envVals[0] = Math.max(ENVELOPE_DUST, slotSum + revealFee - ENVELOPE_DUST * (envs.length - 1));
     const commitNeed = envVals.reduce((a, v) => a + v, 0);
 
     const forced = force || [];
@@ -589,23 +622,27 @@ export function createRelayer({
 
     const revealTx = {
       version: 2, locktime: 0,
-      inputs: envs.map((_, i) => ({ txid: commitTxid, vout: i, sequence: 0xfffffffd, witness: [] })),
+      inputs: [
+        ...envs.map((_, i) => ({ txid: commitTxid, vout: i, sequence: 0xfffffffd, witness: [] })),
+        { txid: bind.txid, vout: bind.vout, sequence: 0xfffffffd, witness: [] },
+      ],
       outputs,
     };
-    const prevouts = envs.map((e, i) => ({ value: envVals[i], script: e.spk }));
+    const prevouts = [...envs.map((e, i) => ({ value: envVals[i], script: e.spk })), { value: bind.value, script: changeSpk }];
     envs.forEach((e, i) => {
       const sig = bp.schnorrSign(tapScriptSighash(revealTx, i, prevouts, e.leaf), btcPriv);
       revealTx.inputs[i].witness = [sig, e.script, e.cb];
     });
+    revealTx.inputs[envs.length].witness = prims.signP2wpkhInput(revealTx, envs.length, bind.value);
     return {
-      commitTxid, revealTxid: prims.txid(revealTx), rate,
+      commitTxid, revealTxid: prims.txid(revealTx), rate, outputs,
       picked: picked.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, ...(u.scriptpubkey ? { scriptpubkey: u.scriptpubkey } : {}) })),
       commitHex: bytesToHex(prims.serializeTx(commitTx)), revealHex: bytesToHex(prims.serializeTx(revealTx)),
-      revealFee: (commitNeed - outSum), commitFee,
+      revealFee: (commitNeed - slotSum), commitFee,
     };
   }
 
-  function adopt(c, built, live, outputs) {
+  function adopt(c, built, live, outputs = built.outputs) {
     if (c.revealTxid && c.revealTxid !== built.revealTxid) (c.replaced ||= []).push(c.revealTxid);
     for (const k of c.utxos || []) reservedUtxos.delete(k);
     Object.assign(c, {
@@ -662,6 +699,7 @@ export function createRelayer({
     if (c.state === 'cancelling') {
       await pushTx(c.cancelHex, c.cancelTxid);
       c.state = 'cancelled';
+      releaseBind(c.bind);
       save(c);
       log(`carrier ${c.id}: commit returned to the relayer by ${c.cancelTxid}`);
     }
@@ -675,10 +713,9 @@ export function createRelayer({
       if (why) release(p, 'dropped', why);
     }
     const live = c.payloads.filter((p) => p.state === 'carried');
-    if (!live.length) { c.state = 'empty'; save(c); return c; }
-    const outputs = layout(c.slots, live);
-    const built = await buildCarrier(live, outputs, c.picked?.length ? { force: c.picked } : {});
-    adopt(c, built, live, outputs);
+    if (!live.length) { c.state = 'empty'; releaseBind(c.bind); save(c); return c; }
+    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, ...(c.picked?.length ? { force: c.picked } : {}) });
+    adopt(c, built, live);
     save(c, ...live);
     await advance(c);
     return c;
@@ -686,9 +723,8 @@ export function createRelayer({
 
   // Replaces the unconfirmed commit (and so the reveal) with one carrying `live` at `rate`.
   async function replace(c, live, rate) {
-    const outputs = layout(c.slots, live);
-    const built = await buildCarrier(live, outputs, { rate, force: c.picked, replaces: (c.commitFee || 0) + (c.revealFee || 0) });
-    adopt(c, built, live, outputs);
+    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, rate, force: c.picked, replaces: (c.commitFee || 0) + (c.revealFee || 0) });
+    adopt(c, built, live);
     save(c, ...live);
     log(`carrier ${c.id}: replaced at ${rate} sat/vB`);
     await advance(c);
@@ -738,6 +774,7 @@ export function createRelayer({
     const rest = live.filter((p) => p.state === 'broadcast');
     if (!changed && !rest.length) {
       for (const k of c.utxos) reservedUtxos.delete(k);
+      releaseBind(c.bind);
       c.state = 'confirmed';
       save(c);
       return;
@@ -762,6 +799,7 @@ export function createRelayer({
       if (now() - c.broadcastAt > dropAfterMs) {
         for (const p of rest) release(p, 'dropped', 'carrier not confirmed');
         for (const k of c.utxos) reservedUtxos.delete(k);
+        releaseBind(c.bind);
         c.state = 'dropped';
         save(c);
       } else {
@@ -787,20 +825,22 @@ export function createRelayer({
       }
     }
     for (const k of c.utxos) reservedUtxos.delete(k);
+    releaseBind(c.bind);
     c.state = 'confirmed';
     c.height = st.block_height;
     save(c);
   }
 
-  // Closes the open batch and carries its payloads.
-  async function flush() {
-    const b = batch;
+  // Closes a batch (the open one by default) and carries its payloads.
+  async function flush(target = null) {
+    const b = target || batch || draining[0] || null;
     if (!b || b.closed) return null;
     b.closed = true;
-    batch = null;
+    if (batch === b) batch = null;
+    const i = draining.indexOf(b); if (i >= 0) draining.splice(i, 1);
     const held = b.payloads.filter((p) => p.state === 'held');
-    if (!held.length) return null;
-    const c = { id: b.id, slots: b.slots, payloads: held, state: 'building', createdAt: now() };
+    if (!held.length) { releaseBind(b.bind); return null; }
+    const c = { id: b.id, slots: b.slots, payloads: held, bind: b.bind, state: 'building', createdAt: now() };
     for (const p of held) { p.state = 'carried'; p.carrier = c; }
     carriers.push(c);
     save(c, ...held);
@@ -823,8 +863,10 @@ export function createRelayer({
   // longer confirm as built, finalizes confirmed ones once the replay has passed them.
   async function tick() {
     if (mempool) { try { await mempool.refresh(); } catch (e) { log(`mempool refresh failed: ${e?.message || e}`); } }
-    if (batch && !batch.closed && now() >= batch.closesAt) await flush();
+    // A batch past closesAt stops quoting; it is carried once no unexpired quote for its bind is outstanding.
+    if (batch && !batch.closed && now() >= batch.closesAt) drain(batch);
     pruneQuotes();
+    for (const b of [...draining]) if (!outstanding(b)) await flush(b);
     for (const c of carriers) {
       try {
         if (c.state === 'building') await attempt(c);
@@ -847,7 +889,7 @@ export function createRelayer({
       const p = {
         id: r.id, state: r.state, reason: r.reason || undefined, nullifiers: r.nullifiers, payload: hexToBytes(r.payload),
         hAnchor: r.hAnchor, root: r.root, asset: r.asset, bodyHash: r.bodyHash, fee: BigInt(r.fee), feeLeaf: r.feeLeaf,
-        slot: r.slot ? { vout: r.slot.vout, spk: hexToBytes(r.slot.spk), payloadId: r.id } : null,
+        slot: r.slot ? { vout: r.slot.vout, spk: hexToBytes(r.slot.spk), payloadId: r.id } : null, bind: r.bind || null,
         quoteId: r.quoteId, receivedAt: r.receivedAt, updatedAt: r.updatedAt, foreignTxid: r.foreignTxid || undefined,
         feeViaForeign: r.feeViaForeign, _batchId: r.batchId,
       };
@@ -865,17 +907,26 @@ export function createRelayer({
       for (const k of ['commitHex', 'revealHex', 'commitTxid', 'revealTxid', 'cancelHex', 'cancelTxid', 'lastError']) if (c[k] == null) delete c[k];
       for (const p of c.payloads) p.carrier = c;
       carriers.push(c);
-      if (c.state !== 'confirmed' && c.state !== 'dropped' && c.state !== 'empty') for (const k of c.utxos) reservedUtxos.add(k);
+      if (!CARRIER_DONE.has(c.state)) { for (const k of c.utxos) reservedUtxos.add(k); if (c.bind) reservedUtxos.add(opKey(c.bind)); }
     }
+    // Held payloads regroup by bind into draining batches, carried on the next tick.
     const held = [...payloads.values()].filter((p) => p.state === 'held');
-    if (held.length) {
-      const b = openBatch();
-      b.id = held[0]._batchId || b.id;
-      for (const p of held) {
+    const groups = new Map();
+    for (const p of held) {
+      if (!p.bind || p.bind.value == null) { release(p, 'dropped', 'no bind on resume'); continue; }
+      const k = opKey(p.bind);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(p);
+    }
+    for (const [k, ps] of groups) {
+      const b = { id: ps[0]._batchId || newId(), openedAt: now(), closesAt: now(), slots: [], payloads: [], closed: false, draining: true, bind: { ...ps[0].bind } };
+      reservedUtxos.add(k);
+      for (const p of ps) {
         if (p.slot) { if (b.slots[p.slot.vout]) { release(p, 'dropped', 'slot conflict on resume'); continue; } b.slots[p.slot.vout] = p.slot; }
         p.batch = b;
         b.payloads.push(p);
       }
+      draining.push(b);
     }
     for (const p of payloads.values()) delete p._batchId;
     if (pr.length || cr.length) log(`resumed ${held.length} held payload(s), ${carriers.filter((c) => !CARRIER_DONE.has(c.state)).length} open carrier(s)`);
@@ -912,7 +963,7 @@ export function createRelayer({
       const client = clientKey(req);
       const limited = (route) => { if (!limiter(`${route} ${client}`)) throw new RelayError(429, 'rate limited'); };
       if (p === `${PREFIX}/info` && req.method === 'GET') send(200, info());
-      else if (p === `${PREFIX}/quote` && req.method === 'POST') { limited('quote'); send(200, quote(await readBody(req), client)); }
+      else if (p === `${PREFIX}/quote` && req.method === 'POST') { limited('quote'); send(200, await quote(await readBody(req), client)); }
       else if (p === `${PREFIX}/submit` && req.method === 'POST') { limited('submit'); send(200, await submit(await readBody(req), client)); }
       else if ((m = p.match(/^\/btc-pool\/relay\/status\/([0-9a-f]{32})$/)) && req.method === 'GET') {
         const s = status(m[1]);
@@ -938,7 +989,7 @@ export function createRelayer({
   return {
     info, quote, submit, status, flush, tick, handle, wrap, start, stop, setRateLimit,
     address: wallet.addressString, fundAddress,
-    _state: { payloads, holds, carriers, quotes, reservedUtxos, get batch() { return batch; }, verifyActive: () => verifySlot.active() },
+    _state: { payloads, holds, carriers, quotes, reservedUtxos, draining, get batch() { return batch; }, verifyActive: () => verifySlot.active() },
   };
 }
 

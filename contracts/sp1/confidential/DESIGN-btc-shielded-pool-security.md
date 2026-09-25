@@ -97,9 +97,10 @@ assumption of the protocol.
   indistinguishable envelopes and replayed state.
 - **G7. Recovery completeness.** A wallet holding its seed finds every note paid to its addresses and every
   exit it made, with openings, from chain data, and accepts no note it cannot spend.
-- **G8. Delegated-party safety.** A prover given the full witness for one spend, or a relayer given the
-  finished payload, cannot redirect funds, cannot spend the owner's other notes and cannot link them. A
-  payload bound to a relayer's UTXO can be posted by that relayer alone.
+- **G8. Delegated-party safety.** A prover given the full witness for one spend, or a relayer or maker given
+  the finished payload, cannot redirect funds, cannot spend the owner's other notes and cannot link them. A
+  payload bound to a relayer's UTXO can be posted by that relayer alone. A payload with a want is accepted
+  only in a carrier that pays the want, so no one takes its exit without paying for it.
 - **G9. Batch independence.** Envelopes sharing a carrier are accepted or rejected independently, and
   batching weakens none of G1–G5.
 
@@ -243,10 +244,11 @@ op, whichever inputs carry the spends (A7). An output of such a carrier that the
 not a Tacit note. The seam rule is load-bearing: a transparent validator
 that treated those outputs as ordinary notes without the record would admit unrecorded value.
 
-**Exit claims.** Within one transaction each carrier output is claimed by at most one accepted exit.
-Without that rule two exits in one carrier could record two notes at one outpoint. Bitcoin spends an
+**Output claims.** Within one transaction each carrier output is claimed by at most one accepted exit or
+want. Without that rule two exits in one carrier could record two notes at one outpoint. Bitcoin spends an
 outpoint once, so one record's value would be unspendable and the seam would have no single answer for
-that outpoint. With it, each recorded exit note has its own outpoint.
+that outpoint. With it, each recorded exit note has its own outpoint. A want moves no pool value, so G3
+does not rest on it; its claim keeps one payment from satisfying two wants (§3.8).
 
 **Hosted records.** A shield input's validity is decided over its full ancestry. Where that ancestry
 includes a `T_CROSSOUT_MINT` or AMM output, the validator uses the A9 records for those ops, and
@@ -282,8 +284,8 @@ nullifier, and `nk_note` without a signature on the new body does not satisfy re
 The public values are `(version, root, keccak(body))`, and the indexer recomputes the last two from the
 envelope bytes and its own root history. `body` is every byte before `proof_len`, so it covers `asset`,
 `h_anchor` (and through it `root`), `bind`, every nullifier, `n_out`, every output field (`pk_eph` and `ct_note`
-included, and so any relayer fee output), `has_exit`, and for an exit `exit_vout`, its commitment and
-`dest_spk_hash`.
+included, and so any relayer fee output), `has_exit`, for an exit `exit_vout`, its commitment and
+`dest_spk_hash`, `has_want`, and for a want its `vout`, `value` and `spk_hash`.
 
 **Claim.** A proof accepted for a body `b' ≠ b` that `O` did not sign is bounded by `Adv^auth`.
 
@@ -299,7 +301,8 @@ nullifiers and leaves), and the owner's own carrier then fails the freshness che
 `dest_spk_hash`. A re-carried exit must place, at `exit_vout`, an output whose scriptPubKey hashes to that
 value, so the new transparent note is controlled by the owner's script at the carrier's expense. Because
 `h_anchor` is signed, a signed body expires once its anchor leaves the 144-block window. Relaying is this
-case with the owner's consent (§3.8).
+case with the owner's consent (§3.8). A want binds its carrier the same way: a re-carried body is accepted
+only where the output at `vout` pays at least `value` to the owner's `spk_hash`.
 
 The shield has the same property through its kernel. The kernel message covers every field of the pool
 note, so no relayer can swap `pk_eph`, `ct_note`, `spend_key` or `nk_pub` and keep the signature.
@@ -427,6 +430,28 @@ above therefore holds for it, and on chain data alone its linking advantage is t
   Its remaining exposure is a conflicting spend of the same nullifiers, in another body, confirming first,
   which costs it that carrier's fee share (§6). The relayer duties of design §6 bound it.
 
+**Maker (exit to sats, design §9).** A maker receives the finished payload of a spend that exits `amount` to
+the maker's script at `exit_vout` and wants `sats` at `vout` to the owner's script, plus the exit's opening.
+
+- **No exit without payment.** Suppose a carrier `T` accepted by `Replay` records the exit of a body `b` with
+  a want `(vout, value, spk_hash)`. Acceptance (design §5 step 6) required `T.vout[vout]` to exist with
+  value at least `value` and `SHA-256(scriptPubKey) = spk_hash`, and `b` is the signed body (G5): a maker
+  that edits `want` in `b'` needs a signature by every input's `spend_key` over `b'`, which is a G4 forgery.
+  A carrier omitting or underpaying the output, or paying another script, is rejected whole, so the
+  nullifiers stay unspent and no exit is recorded. The claim rule gives each output of `T` to at most one
+  accepted exit or want, so one payment cannot satisfy two wants, nor double as the exit it pays for.
+  Finding a second script with the same SHA-256 is a collision (A4).
+- **No redirection.** The exit's `exit_vout` and `dest_spk_hash` are signed, so the maker can pay only its
+  own agreed script. The pool outputs (change, padding) are signed like any output.
+- **What it does learn.** The exit's opening, which it needs to spend the resulting transparent note; the
+  payout script, a fresh key of the owner's (design §6); the payload's arrival time and origin. The change
+  stays under the owner's internal address.
+- **Maker's own safety.** Before building the carrier it checks that the exit opens to the agreed amount at
+  its script and index, that the want asks at most the agreed sats to the script it was given, that `bind`
+  is the outpoint it chose (or zero), and optionally the proof against its replayed root. With `bind` zero,
+  a third party may carry the payload; it then pays the owner the want and delivers the exit to the maker,
+  which moves value only from that third party.
+
 ### 3.9 G9: Batching
 
 A `T_BTC_SPEND` may ride any input of a carrier whose witness is a Tacit envelope leaf, so one Bitcoin
@@ -439,18 +464,18 @@ transaction carries many spends. `T_BTC_SHIELD` stays at `vin[0]`, since its shi
 - **Nullifier distinctness.** An accepted envelope's nullifiers are inserted before the next envelope is
   checked, so two envelopes in one transaction that share a nullifier cannot both be accepted: the later
   one fails freshness (§3.2).
-- **Exit-output uniqueness.** Each carrier output is claimed by at most one accepted exit in the
-  transaction (§3.3).
-- **No carrier position in the proof.** Public values are `(version, root, keccak(body))`. The one
-  carrier term, `bind`, is inside `body` and names an outpoint the carrier spends at any input, so it
-  does not depend on the envelope's input position or on the other envelopes. Batching changes no proof
+- **Output-claim uniqueness.** Each carrier output is claimed by at most one accepted exit or want in the
+  transaction (§3.3, §3.8).
+- **No carrier position in the proof.** Public values are `(version, root, keccak(body))`. The carrier
+  terms, `bind` and `want`, are inside `body` and name an outpoint the carrier spends at any input and an
+  output index, so they do not depend on the envelope's input position or on the other envelopes. Batching changes no proof
   and no signature, and spends bound to one UTXO share a carrier.
 - **Anchors.** Every spend in block `H` anchors to a root of a block at or below `H − 1`, so intra-block
   order never changes which roots an envelope may use.
 
 **Claim.** G1–G5 hold for batched carriers with the same bounds. G1 holds because input order is part of
-the canonical order (A7). G2 and G3 hold by the sequential nullifier and exit-claim rules. G4 and G5
-reference the carrier only through the signed `bind`. ∎
+the canonical order (A7). G2 and G3 hold by the sequential nullifier and output-claim rules. G4 and G5
+reference the carrier only through the signed `bind` and `want`. ∎
 
 ### 3.10 Local verification
 
@@ -473,7 +498,7 @@ shared with the settle and reflection guests, not a second one.
 | G5 body binding | A3, A4, A5b |
 | G6 transcript privacy | A3, A4 (random oracle), A5a, A5c, A6, A8 |
 | G7 recovery completeness | A4, A5c, A8, A10 |
-| G8 delegated-party safety | A4 (random oracle), A5b, A5c, A8 |
+| G8 delegated-party safety | A4 (random oracle, SHA-256 collision resistance for `spk_hash`), A5b, A5c, A8 |
 | G9 batching | A7, and the goals it preserves |
 
 ## 4. Leakage function
@@ -485,7 +510,7 @@ shared with the settle and reflection guests, not a second one.
 - **Fee-paying inputs, when self-broadcast.** A sender who broadcasts its own carrier exposes its fee
   inputs and any clustering they carry. A relayed carrier's inputs are the relayer's and say nothing about
   the sender.
-- **Shape.** The opcode, `n_in`, `n_out`, `has_exit`, whether `bind` is set, the envelope size, and the
+- **Shape.** The opcode, `n_in`, `n_out`, `has_exit`, `has_want`, whether `bind` is set, the envelope size, and the
   positions of appended leaves. Under the wallet defaults every pay has 3 outputs with zero-value padding,
   and 2 inputs when the wallet holds a second note of the asset, else 1. A wallet's first spend after a
   shield is therefore 1-in.
@@ -498,6 +523,9 @@ shared with the settle and reflection guests, not a second one.
   outpoint. Under the wallet defaults each exit pays to a fresh key, so the script links to nothing else.
 - **Public openings.** The amount of any shielded transparent note whose opening is public (sale lots,
   public mints, published etch supply), and of any exit later sold.
+- **Wants.** A want's output index, sats and payout script, so the price of an exit to sats and the
+  carrier that paid it. Under the wallet defaults the payout script is a fresh key. To the maker only: the
+  exit's opening.
 - **Relayer.** Which relayer carried each spend, since its envelope key and change script recur across
   its carriers. To the relayer only: its own fee notes, received as ordinary payments, the arrival time
   and origin of each payload it relays, and which origin owns which exit script.
@@ -535,7 +563,7 @@ claim trustless entry or exit.
 | Boundary custody | Not claimed trustless | Not claimed trustless. The pool adds no custody, and BTC exposure is cBTC's (§0) |
 | Setup | The paper's own instantiation | No new ceremony: the SP1 Groth16 key already relied on by mainnet, confirmed byte-identical (§3.10) |
 | Delegated proving | Not addressed as a goal | G8: redirect-proof and unlinkable, with the prover's view stated |
-| Batching | Out of scope | Many spends per carrier, each accepted independently, with sequential nullifier and exit-output rules (§3.9) |
+| Batching | Out of scope | Many spends per carrier, each accepted independently, with sequential nullifier and output-claim rules (§3.9) |
 | Fee payment | Left to future PIPE fee vaults | A relayer paid by an in-pool fee output; the sender needs no Bitcoin wallet and exposes no fee inputs (§3.8) |
 
 **Where this design goes further.** Boundary amounts are hidden unless the transparent note's opening is
@@ -574,6 +602,8 @@ the non-tight forking argument that already underlies `T_CXFER`.
   bound this. It affects only the relayer.
 - **Relayer liveness.** A relayer can withhold or delay a payload. The owner can submit a new body
   elsewhere; the old one lapses with its anchor or its bound UTXO.
+- **Maker liveness.** A maker can withhold an exit-to-sats payload. The owner signs another body elsewhere;
+  the old one lapses with its anchor, and cannot be carried without paying its want.
 - **Viewing-key scope.** `v` reveals every note received at the external address and its amount; `v_int`
   adds change and padding; neither shows which notes are spent.
 
@@ -587,8 +617,8 @@ the non-tight forking argument that already underlies `T_CXFER`.
 - A5b's related-key clause for `A + t·G` with an even-`y` adjustment, as used for `spend_key`.
 - The guest's parser and range checks against design §3–§4: canonical `nk_note` below `n`,
   `leaf_index < 2^32`, compressed point validity for `nk_pub` and `pk_eph`, x-only validity for
-  `spend_key`, the `n_out`/`has_exit` bounds, `u64` openings of every output and the exit, and the `u128`
+  `spend_key`, the `n_out`/`has_exit`/`has_want` bounds, `u64` openings of every output and the exit, and the `u128`
   sum with the exit term.
-- The indexer's acceptance order within a transaction, carrier binding, exit-output claims, root
+- The indexer's acceptance order within a transaction, carrier binding, exit and want output claims, root
   retention at the window edge, undo log, header-chain validation, and the transparent seam, under adversarial replay and reorg tests, including a carrier
   whose `vin[0]` holds a transparent op whose outputs could coincide with an `exit_vout`.

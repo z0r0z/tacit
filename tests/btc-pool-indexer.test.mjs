@@ -93,16 +93,21 @@ function payOut(tag, value) {
   const { cx, cy } = pointXY(C);
   return concat(cx, cy, k.spendKey, k.nkPub, k.pkEph, k.ctNote);
 }
-// 0x6D ‖ asset ‖ h_anchor ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖ has_exit ‖ [exit] ‖ proof_len ‖ proof.
-function spendBytes({ asset = ASSET, hAnchor, nfs, pay = [], exit = null, proof = new Uint8Array(260).fill(7), proofLen }) {
-  const parts = [Uint8Array.of(0x6d), asset, u32le(hAnchor), Uint8Array.of(nfs.length), ...nfs, Uint8Array.of(pay.length), ...pay];
+// 0x6D ‖ asset ‖ h_anchor ‖ bind ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖ has_exit ‖ [exit] ‖ has_want ‖ [want] ‖
+// proof_len ‖ proof. `bind` is { txid (display hex), vout }; `want` is { vout, value, spkHash }.
+const bindBytes = (b) => (b ? concat(hexToBytes(b.txid).reverse(), u32le(b.vout)) : new Uint8Array(36));
+function spendBytes({ asset = ASSET, hAnchor, bind = null, nfs, pay = [], exit = null, want = null, proof = new Uint8Array(260).fill(7), proofLen }) {
+  const parts = [Uint8Array.of(0x6d), asset, u32le(hAnchor), bindBytes(bind), Uint8Array.of(nfs.length), ...nfs, Uint8Array.of(pay.length), ...pay];
   if (exit) {
     const { cx, cy } = pointXY(bp.pedersen(exit.value ?? 5n, exit.r ?? scalar('exit')));
     parts.push(Uint8Array.of(1), u32le(exit.vout), cx, cy, exit.destHash);
   } else parts.push(Uint8Array.of(0));
+  if (want) parts.push(Uint8Array.of(1), u32le(want.vout), u64le(want.value), want.spkHash);
+  else parts.push(Uint8Array.of(0));
   parts.push(u16le(proofLen ?? proof.length), proof);
   return concat(...parts);
 }
+const PRE = 1 + 32 + 4 + 36;
 const nf = (t) => keccak(new TextEncoder().encode('nf' + t));
 
 // ── raw tx / block builders ──
@@ -318,7 +323,8 @@ test('parseSpend: valid pay (1/1, 2/2, 1/3), exit, partial exit; body excludes p
   assert.equal(p1.outputs.length, 1);
   assert.equal(p1.exit, null);
   assert.equal(p1.body.length, one.length - 2 - 260);
-  assert.equal(p1.body.length, 1 + 32 + 4 + 1 + 32 + 1 + 218 + 1);
+  assert.equal(p1.body.length, PRE + 1 + 32 + 1 + 218 + 1 + 1);
+  assert.equal(p1.bind, null); assert.equal(p1.want, null);
   assert.equal(p1.proof.length, 260);
   const two = bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1), nf(2)], pay: [payOut('p', 1n), payOut('q', 2n)] }));
   assert.equal(two.nullifiers.length, 2); assert.equal(two.outputs.length, 2);
@@ -327,31 +333,47 @@ test('parseSpend: valid pay (1/1, 2/2, 1/3), exit, partial exit; body excludes p
   const ex = bp.parseSpend(spendBytes({ hAnchor: 7, nfs: [nf(1)], exit: { vout: 3, destHash: sha256(Uint8Array.of(1)) } }));
   assert.equal(ex.outputs.length, 0); assert.equal(ex.exit.exitVout, 3);
   assert.deepEqual(ex.exit.destSpkHash, sha256(Uint8Array.of(1)));
-  assert.equal(ex.body.length, 1 + 32 + 4 + 1 + 32 + 1 + 1 + 100);
+  assert.equal(ex.body.length, PRE + 1 + 32 + 1 + 1 + 100 + 1);
   const partial = bp.parseSpend(spendBytes({ hAnchor: 7, nfs: [nf(1), nf(2)], pay: [payOut('p', 1n)], exit: { vout: 70000, destHash: new Uint8Array(32) } }));
   assert.equal(partial.outputs.length, 1); assert.equal(partial.exit.exitVout, 70000);
   assert.ok(bp.parseSpend(spendBytes({ hAnchor: 7, nfs: [nf(1)], exit: { vout: 0, destHash: new Uint8Array(32) }, proof: new Uint8Array(512) })));
   assert.ok(bp.parseSpend(spendBytes({ hAnchor: 7, nfs: [nf(1)], exit: { vout: 0, destHash: new Uint8Array(32) }, proof: new Uint8Array(0) })));
+  // bind in display order; want with a u64 value.
+  const bound = bp.parseSpend(spendBytes({ hAnchor: 7, bind: { txid: '12'.repeat(31) + '34', vout: 70001 }, nfs: [nf(1)], pay: [payOut('p', 1n)] }));
+  assert.deepEqual(bound.bind, { txid: '12'.repeat(31) + '34', vout: 70001 });
+  assert.equal(bound.body[37], 0x34, 'txid in input byte order on the wire');
+  const w = bp.parseSpend(spendBytes({ hAnchor: 7, nfs: [nf(1)], pay: [payOut('p', 1n)], exit: { vout: 0, destHash: new Uint8Array(32) }, want: { vout: 2, value: 2n ** 64n - 1n, spkHash: sha256(Uint8Array.of(9)) } }));
+  assert.deepEqual([w.want.vout, w.want.value], [2, 2n ** 64n - 1n]);
+  assert.deepEqual(w.want.spkHash, sha256(Uint8Array.of(9)));
+  assert.equal(w.body.length, PRE + 1 + 32 + 1 + 218 + 1 + 100 + 1 + 44);
 });
 
 test('parseSpend: every malformed case', () => {
   const pay = [payOut('p', 3n)];
   const good = spendBytes({ hAnchor: 100, nfs: [nf(1)], pay });
   const mut = (off, val) => { const b = good.slice(); b[off] = val; return b; };
-  const HAS_EXIT = 1 + 32 + 4 + 1 + 32 + 1 + 218;
+  const HAS_EXIT = PRE + 1 + 32 + 1 + 218, HAS_WANT = HAS_EXIT + 1;
   assert.equal(bp.parseSpend(mut(0, 0x6c)), null, 'opcode');
-  assert.equal(bp.parseSpend(mut(37, 0)), null, 'n_in 0');
+  assert.equal(bp.parseSpend(mut(PRE, 0)), null, 'n_in 0');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1), nf(2), nf(3)], pay })), null, 'n_in 3');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay: [pay[0], pay[0], pay[0], pay[0]] })), null, 'n_out 4');
-  assert.equal(bp.parseSpend(mut(70, 4)), null, 'n_out byte 4');
+  assert.equal(bp.parseSpend(mut(PRE + 33, 4)), null, 'n_out byte 4');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)] })), null, 'no output and no exit');
   assert.equal(bp.parseSpend(mut(HAS_EXIT, 2)), null, 'has_exit 2');
   assert.equal(bp.parseSpend(mut(HAS_EXIT, 1)), null, 'has_exit 1 without exit bytes');
+  assert.equal(bp.parseSpend(mut(HAS_WANT, 2)), null, 'has_want 2');
+  assert.equal(bp.parseSpend(mut(HAS_WANT, 0xff)), null, 'has_want 0xff');
+  assert.equal(bp.parseSpend(mut(HAS_WANT, 1)), null, 'has_want 1 without want bytes');
+  const withWant = spendBytes({ hAnchor: 1, nfs: [nf(1)], pay, want: { vout: 1, value: 5n, spkHash: new Uint8Array(32) }, proof: new Uint8Array(0) });
+  for (let cut = 3; cut <= 2 + 44; cut++) assert.equal(bp.parseSpend(concat(withWant.slice(0, withWant.length - cut), u16le(0))), null, `want truncated by ${cut - 2}`);
+  const wantOff = withWant.slice(); wantOff[HAS_WANT] = 0;
+  assert.equal(bp.parseSpend(wantOff), null, 'want bytes after has_want = 0');
+  assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], want: { vout: 0, value: 1n, spkHash: new Uint8Array(32) } })), null, 'a want alone is not an output');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay, proof: new Uint8Array(513) })), null, 'proof 513');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay, proofLen: 259 })), null, 'proof_len short of proof');
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay, proofLen: 261 })), null, 'proof_len beyond proof');
   assert.equal(bp.parseSpend(concat(good, Uint8Array.of(0))), null, 'trailing');
-  for (const cut of [1, 36, 38, 70, 71, 100, 71 + 218, HAS_EXIT + 1, HAS_EXIT + 2, good.length - 261]) assert.equal(bp.parseSpend(good.slice(0, cut)), null, `truncated at ${cut}`);
+  for (const cut of [1, 36, 38, 60, 73, 74, 106, 107, 136, 107 + 218, HAS_EXIT + 1, HAS_WANT + 1, HAS_WANT + 2, good.length - 261]) assert.equal(bp.parseSpend(good.slice(0, cut)), null, `truncated at ${cut}`);
   const badOut = pay[0].slice(); badOut[32 + 31] ^= 1;
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay: [badOut] })), null, 'pay C off curve');
   const badNk = pay[0].slice(); badNk[96] = 0x05;
@@ -362,9 +384,9 @@ test('parseSpend: every malformed case', () => {
   const badSk = pay[0].slice(); badSk.set(b32(nonX), 64);
   assert.equal(bp.parseSpend(spendBytes({ hAnchor: 1, nfs: [nf(1)], pay: [badSk] })), null, 'pay spend_key');
   const ex = spendBytes({ hAnchor: 7, nfs: [nf(1)], exit: { vout: 0, destHash: new Uint8Array(32) } });
-  const exBad = ex.slice(); exBad[1 + 32 + 4 + 1 + 32 + 1 + 1 + 4 + 63] ^= 1;
+  const exBad = ex.slice(); exBad[PRE + 1 + 32 + 1 + 1 + 4 + 63] ^= 1;
   assert.equal(bp.parseSpend(exBad), null, 'exit C off curve');
-  const exCxP = ex.slice(); exCxP.set(b32(P + 1n), 1 + 32 + 4 + 1 + 32 + 1 + 1 + 4);
+  const exCxP = ex.slice(); exCxP.set(b32(P + 1n), PRE + 1 + 32 + 1 + 1 + 4);
   assert.equal(bp.parseSpend(exCxP), null, 'exit Cx >= p');
 });
 
@@ -530,6 +552,58 @@ test('spend: within one carrier each output is claimed by at most one accepted e
   assert.ok((await st.acceptSpend(ex('c4', 0, spkA), spendCtx({ txid: 'cc'.repeat(32), outputs: ctx.outputs }))).accepted, 'another carrier');
   assert.deepEqual([...st.exits.keys()].sort(), [`${'bb'.repeat(32)}:0`, `${'bb'.repeat(32)}:1`, `${'cc'.repeat(32)}:0`]);
   assert.equal(st.nullifiers.size, 3);
+});
+
+test('spend: bind requires the carrier to spend the outpoint at some input', async () => {
+  const st = await stateWithLeaf(1000, 1001);
+  st.beginBlock(1002);
+  const bind = { txid: 'ab'.repeat(32), vout: 3 };
+  let called = 0;
+  const verifyProof = async () => { called++; return true; };
+  const s = (t, b = bind) => bp.parseSpend(spendBytes({ hAnchor: 1001, bind: b, nfs: [nf(t)], pay: [payOut('b' + t, 1n)] }));
+  const ins = (...ops) => spendCtx({ inputs: ops, verifyProof });
+  assert.match((await st.acceptSpend(s('b1'), ins({ txid: 'ab'.repeat(32), vout: 2 }))).reason, /bound outpoint/, 'another vout');
+  assert.match((await st.acceptSpend(s('b1'), ins({ txid: 'ba'.repeat(32), vout: 3 }))).reason, /bound outpoint/, 'another txid');
+  assert.match((await st.acceptSpend(s('b1'), spendCtx({ verifyProof }))).reason, /bound outpoint/, 'no inputs');
+  assert.equal(called, 0, 'bind checked before the proof');
+  assert.ok((await st.acceptSpend(s('b1'), ins({ txid: '11'.repeat(32), vout: 0 }, { txid: 'ab'.repeat(32), vout: 3 }))).accepted, 'bound outpoint at vin[1]');
+  assert.ok((await st.acceptSpend(s('b2', null), ins({ txid: '11'.repeat(32), vout: 0 }))).accepted, 'zero bind: any carrier');
+  // Bind is checked before the nullifiers: a replayed nullifier in the wrong carrier reports the bind.
+  assert.match((await st.acceptSpend(s('b1'), ins({ txid: '22'.repeat(32), vout: 0 }))).reason, /bound outpoint/);
+});
+
+test('spend: want requires the named output to pay at least its value to its script; claims are exclusive', async () => {
+  const st = await stateWithLeaf(1000, 1001);
+  st.beginBlock(1002);
+  const maker = Uint8Array.of(0x51, 0x20, ...new Uint8Array(32).fill(0x4d)), user = Uint8Array.of(0x51, 0x20, ...new Uint8Array(32).fill(0x55));
+  const outputs = [{ value: 546n, scriptPubKey: maker }, { value: 20_000n, scriptPubKey: user }, { value: 30_000n, scriptPubKey: user }];
+  let called = 0;
+  const ctx = spendCtx({ outputs, verifyProof: async () => { called++; return true; } });
+  const ew = (t, { exitVout = 0, wantVout = 1, value = 20_000n, spk = user, exitSpk = maker, pay = [] } = {}) =>
+    bp.parseSpend(spendBytes({ hAnchor: 1001, nfs: [nf(t)], pay, exit: exitVout == null ? null : { vout: exitVout, destHash: sha256(exitSpk) }, want: { vout: wantVout, value, spkHash: sha256(spk) } }));
+  assert.match((await st.acceptSpend(ew('w1', { value: 20_001n }), ctx)).reason, /pays less/, 'underpaid');
+  assert.match((await st.acceptSpend(ew('w1', { spk: maker }), ctx)).reason, /spk_hash/, 'other script');
+  assert.match((await st.acceptSpend(ew('w1', { wantVout: 3 }), ctx)).reason, /not an output/, 'missing output');
+  assert.match((await st.acceptSpend(ew('w1', { wantVout: 0, spk: maker }), ctx)).reason, /same output/, 'exit and want on one output');
+  assert.equal(called, 0, 'want checked before the proof');
+  assert.equal(st.nullifiers.size, 0);
+  const ok = await st.acceptSpend(ew('w1'), ctx);
+  assert.ok(ok.accepted, ok.reason);
+  assert.deepEqual(ok.want, { txid: 'bb'.repeat(32), vout: 1, value: 20_000n });
+  // Output 1 is now claimed: neither a second want nor an exit may take it.
+  assert.match((await st.acceptSpend(ew('w2', { exitVout: null, pay: [payOut('w2', 1n)] }), ctx)).reason, /already claimed/, 'second want');
+  assert.match((await st.acceptSpend(bp.parseSpend(spendBytes({ hAnchor: 1001, nfs: [nf('w3')], exit: { vout: 1, destHash: sha256(user) } })), ctx)).reason, /already claimed/, 'exit onto a wanted output');
+  // An exit's output cannot be wanted by a later envelope either.
+  assert.match((await st.acceptSpend(ew('w4', { exitVout: null, wantVout: 0, spk: maker, value: 1n, pay: [payOut('w4', 1n)] }), ctx)).reason, /already claimed/, 'want onto an exit output');
+  assert.ok((await st.acceptSpend(ew('w5', { exitVout: null, wantVout: 2, value: 30_000n, pay: [payOut('w5', 1n)] }), ctx)).accepted, 'a distinct output');
+  // Claims are per carrier.
+  assert.ok((await st.acceptSpend(ew('w6', { exitVout: null, pay: [payOut('w6', 1n)] }), spendCtx({ txid: 'cc'.repeat(32), outputs }))).accepted, 'another carrier');
+  // A want on a carrier whose vin[0] holds a transparent op is still read (it creates no note).
+  assert.ok((await st.acceptSpend(ew('w7', { exitVout: null, wantVout: 2, value: 1n, pay: [payOut('w7', 1n)] }), spendCtx({ txid: 'dd'.repeat(32), outputs, vin0TacitOp: true }))).accepted);
+  st.endBlock();
+  // Want claims do not outlive their block.
+  st.beginBlock(1003);
+  assert.equal(st.pending.wants.size, 0);
 });
 
 test('capacity: a full tree rejects leaf-creating envelopes and still takes an exit-only spend', async () => {
@@ -1185,6 +1259,12 @@ test('reference vectors (tests/vectors/btc-pool-vectors.json) match byte for byt
     assert.equal(X(s.body), f.body);
     assert.equal(X(s.asset), f.asset);
     assert.equal(s.hAnchor, f.h_anchor);
+    assert.equal(X(s.body.subarray(37, 73)), f.bind);
+    assert.equal(s.bind === null, /^0x0+$/.test(f.bind), v.name);
+    if (s.bind) assert.equal(s.bind.txid, bytesToHex(hexToBytes(f.bind).subarray(0, 32).reverse()));
+    assert.equal(s.want ? 1 : 0, f.has_want, v.name);
+    if (f.has_want) assert.deepEqual([s.want.vout, String(s.want.value), X(s.want.spkHash)], [f.want.vout, f.want.value, f.want.spk_hash]);
+    else assert.equal(f.want, null);
     assert.deepEqual(s.nullifiers.map(X), f.nullifiers);
     assert.equal(s.outputs.length, f.outputs.length, v.name);
     f.outputs.forEach((o, i) => {
@@ -1211,7 +1291,7 @@ test('reference vectors (tests/vectors/btc-pool-vectors.json) match byte for byt
     n++;
   }
   assert.equal(n, V.spends.length);
-  assert.deepEqual(V.spends.map((v) => [v.fields.outputs.length, v.fields.has_exit]), [[1, 0], [3, 0], [0, 1], [2, 1]]);
+  assert.deepEqual(V.spends.map((v) => [v.fields.outputs.length, v.fields.has_exit, v.fields.has_want]), [[1, 0, 0], [3, 0, 0], [0, 1, 0], [2, 1, 0], [2, 0, 0], [1, 1, 1]]);
 });
 
 for (const [name, fn] of tests) {

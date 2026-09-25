@@ -32,6 +32,10 @@ pub const BTC_POOL_PV_VERSION: u16 = 1;
 pub const BTC_POOL_OUTPUT_LEN: usize = 32 + 32 + 32 + 33 + 33 + 56;
 /// exit_vout ‖ Cx ‖ Cy ‖ dest_spk_hash.
 pub const BTC_POOL_EXIT_LEN: usize = 4 + 32 + 32 + 32;
+/// txid ‖ vout: an outpoint the carrier must spend, all zero for none.
+pub const BTC_POOL_BIND_LEN: usize = 32 + 4;
+/// vout ‖ value ‖ spk_hash.
+pub const BTC_POOL_WANT_LEN: usize = 4 + 8 + 32;
 
 /// leaf = keccak(asset ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub ‖ "tacit-btc-pool-note-v1").
 pub fn btc_pool_note_leaf(
@@ -80,14 +84,26 @@ pub struct BtcPoolExit {
     pub dest_spk_hash: [u8; 32],
 }
 
+/// A want: the carrier's output `vout` pays at least `value` sats to a script whose SHA-256 is `spk_hash`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcPoolWant {
+    pub vout: u32,
+    pub value: u64,
+    pub spk_hash: [u8; 32],
+}
+
 /// A `T_BTC_SPEND` body: every payload byte before `proof_len` (design §3). Integers little-endian.
+/// `bind` is `txid ‖ vout` of an outpoint the carrier must spend, all zero for none; `bind` and `want` are
+/// acceptance rules on the carrier, covered by the spend signatures and `keccak(body)` like every field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtcPoolSpendBody {
     pub asset: [u8; 32],
     pub h_anchor: u32,
+    pub bind: [u8; BTC_POOL_BIND_LEN],
     pub nullifiers: Vec<[u8; 32]>,
     pub outputs: Vec<BtcPoolOutput>,
     pub exit: Option<BtcPoolExit>,
+    pub want: Option<BtcPoolWant>,
 }
 
 struct Reader<'a> {
@@ -112,6 +128,9 @@ impl<'a> Reader<'a> {
     }
     fn u32_le(&mut self) -> Result<u32, &'static str> {
         Ok(u32::from_le_bytes(self.arr::<4>()?))
+    }
+    fn u64_le(&mut self) -> Result<u64, &'static str> {
+        Ok(u64::from_le_bytes(self.arr::<8>()?))
     }
     /// (Cx, Cy): an on-curve affine point, both coordinates below p.
     fn point_xy(&mut self) -> Result<([u8; 32], [u8; 32]), &'static str> {
@@ -142,9 +161,9 @@ impl<'a> Reader<'a> {
 
 impl BtcPoolSpendBody {
     /// Canonical parse (design §3): opcode 0x6D, 1 ≤ n_in ≤ 2, 0 ≤ n_out ≤ 3, has_exit ∈ {0, 1},
-    /// n_out + has_exit ≥ 1, every (Cx, Cy) on the curve with coordinates below p, every nk_pub/pk_eph a
-    /// compressed point, every spend_key an x-only key, no trailing bytes. Fields are fixed-width, so
-    /// `parse(b)?.encode() == b`.
+    /// has_want ∈ {0, 1}, n_out + has_exit ≥ 1, every (Cx, Cy) on the curve with coordinates below p, every
+    /// nk_pub/pk_eph a compressed point, every spend_key an x-only key, no trailing bytes. Fields are
+    /// fixed-width, so `parse(b)?.encode() == b`.
     pub fn parse(body: &[u8]) -> Result<Self, &'static str> {
         let mut r = Reader { buf: body, pos: 0 };
         if r.u8()? != T_BTC_SPEND_OPCODE {
@@ -152,6 +171,7 @@ impl BtcPoolSpendBody {
         }
         let asset = r.arr::<32>()?;
         let h_anchor = r.u32_le()?;
+        let bind = r.arr::<BTC_POOL_BIND_LEN>()?;
         let n_in = r.u8()? as usize;
         if n_in == 0 || n_in > BTC_POOL_MAX_IN {
             return Err("btc-pool: n_in out of range");
@@ -185,22 +205,29 @@ impl BtcPoolSpendBody {
             }
             _ => return Err("btc-pool: bad has_exit"),
         };
+        let want = match r.u8()? {
+            0 => None,
+            1 => Some(BtcPoolWant { vout: r.u32_le()?, value: r.u64_le()?, spk_hash: r.arr()? }),
+            _ => return Err("btc-pool: bad has_want"),
+        };
         if n_out == 0 && exit.is_none() {
             return Err("btc-pool: spend has no outputs");
         }
         if r.pos != body.len() {
             return Err("btc-pool: trailing bytes in body");
         }
-        Ok(Self { asset, h_anchor, nullifiers, outputs, exit })
+        Ok(Self { asset, h_anchor, bind, nullifiers, outputs, exit, want })
     }
 
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(
-            1 + 32 + 4 + 1 + 32 * self.nullifiers.len() + 1 + BTC_POOL_OUTPUT_LEN * self.outputs.len() + 1 + BTC_POOL_EXIT_LEN,
+            1 + 32 + 4 + BTC_POOL_BIND_LEN + 1 + 32 * self.nullifiers.len() + 1 + BTC_POOL_OUTPUT_LEN * self.outputs.len()
+                + 1 + BTC_POOL_EXIT_LEN + 1 + BTC_POOL_WANT_LEN,
         );
         b.push(T_BTC_SPEND_OPCODE);
         b.extend_from_slice(&self.asset);
         b.extend_from_slice(&self.h_anchor.to_le_bytes());
+        b.extend_from_slice(&self.bind);
         b.push(self.nullifiers.len() as u8);
         for nf in &self.nullifiers {
             b.extend_from_slice(nf);
@@ -222,6 +249,15 @@ impl BtcPoolSpendBody {
                 b.extend_from_slice(&e.cx);
                 b.extend_from_slice(&e.cy);
                 b.extend_from_slice(&e.dest_spk_hash);
+            }
+        }
+        match &self.want {
+            None => b.push(0),
+            Some(w) => {
+                b.push(1);
+                b.extend_from_slice(&w.vout.to_le_bytes());
+                b.extend_from_slice(&w.value.to_le_bytes());
+                b.extend_from_slice(&w.spk_hash);
             }
         }
         b
@@ -486,6 +522,9 @@ mod tests {
         path
     }
 
+    /// opcode ‖ asset ‖ h_anchor ‖ bind: the fixed prefix before n_in.
+    const PRE: usize = 1 + 32 + 4 + BTC_POOL_BIND_LEN;
+
     /// A tree with `pad` filler leaves then `notes`, and a body spending them into `outputs` and `exit`,
     /// fully signed.
     fn assemble(
@@ -495,15 +534,29 @@ mod tests {
         exit: Option<BtcPoolExit>,
         openings: Vec<BtcPoolOpening>,
     ) -> BtcPoolSpendWitness {
+        assemble_full(notes, pad, outputs, exit, openings, [0u8; BTC_POOL_BIND_LEN], None)
+    }
+
+    fn assemble_full(
+        notes: &[Note],
+        pad: usize,
+        outputs: Vec<BtcPoolOutput>,
+        exit: Option<BtcPoolExit>,
+        openings: Vec<BtcPoolOpening>,
+        bind: [u8; BTC_POOL_BIND_LEN],
+        want: Option<BtcPoolWant>,
+    ) -> BtcPoolSpendWitness {
         let mut leaves: Vec<[u8; 32]> = (0..pad).map(|k| h(b"filler", k as u8)).collect();
         leaves.extend(notes.iter().map(Note::leaf));
         let root = cxfer_core::keccak_merkle_root(&leaves);
         let body = BtcPoolSpendBody {
             asset: ASSET,
             h_anchor: H_ANCHOR,
+            bind,
             nullifiers: notes.iter().enumerate().map(|(k, n)| n.nf((pad + k) as u64)).collect(),
             outputs,
             exit,
+            want,
         }
         .encode();
         let msg = btc_pool_spend_msg(&body);
@@ -555,6 +608,33 @@ mod tests {
         (assemble(&notes, 2, vec![a, b], Some(e), vec![oa, ob, oe]), notes)
     }
 
+    fn bind_outpoint(seed: u8, vout: u32) -> [u8; BTC_POOL_BIND_LEN] {
+        let mut b = [0u8; BTC_POOL_BIND_LEN];
+        b[..32].copy_from_slice(&h(b"bind-txid", seed));
+        b[32..].copy_from_slice(&vout.to_le_bytes());
+        b
+    }
+
+    fn want_of(vout: u32, value: u64, seed: u8) -> BtcPoolWant {
+        BtcPoolWant { vout, value, spk_hash: h(b"want-spk", seed) }
+    }
+
+    /// A pay whose carrier must spend a bound outpoint.
+    fn pay_bound() -> (BtcPoolSpendWitness, Vec<Note>) {
+        let notes = vec![Note::new(50_000, 6)];
+        let (a, oa) = pay_output(49_000, 17);
+        let (b, ob) = pay_output(1_000, 18);
+        (assemble_full(&notes, 4, vec![a, b], None, vec![oa, ob], bind_outpoint(1, 7), None), notes)
+    }
+
+    /// Exit to a maker's script with a want paying sats back, change kept shielded.
+    fn exit_want_partial() -> (BtcPoolSpendWitness, Vec<Note>) {
+        let notes = vec![Note::new(40_000, 7), Note::new(5_000, 8)];
+        let (a, oa) = pay_output(15_000, 19);
+        let (e, oe) = exit_output(30_000, 23);
+        (assemble_full(&notes, 3, vec![a], Some(e), vec![oa, oe], bind_outpoint(2, 0), Some(want_of(2, 29_500, 1))), notes)
+    }
+
     /// Re-sign every input after the body changed, so a test isolates the check it targets.
     fn resign(w: &mut BtcPoolSpendWitness, notes: &[Note]) {
         let msg = btc_pool_spend_msg(&w.body);
@@ -576,7 +656,7 @@ mod tests {
         expect_ok(&w);
         let body = BtcPoolSpendBody::parse(&w.body).unwrap();
         assert_eq!(body.nullifiers, vec![notes[0].nf(3)]);
-        assert_eq!(w.body.len(), 1 + 32 + 4 + 1 + 32 + 1 + BTC_POOL_OUTPUT_LEN + 1);
+        assert_eq!(w.body.len(), PRE + 1 + 32 + 1 + BTC_POOL_OUTPUT_LEN + 1 + 1);
         assert_eq!(body.encode(), w.body);
     }
 
@@ -586,7 +666,7 @@ mod tests {
         expect_ok(&w);
         let body = BtcPoolSpendBody::parse(&w.body).unwrap();
         assert_eq!((body.outputs.len(), body.exit.is_none()), (3, true));
-        assert_eq!(w.body.len(), 1 + 32 + 4 + 1 + 64 + 1 + 3 * BTC_POOL_OUTPUT_LEN + 1);
+        assert_eq!(w.body.len(), PRE + 1 + 64 + 1 + 3 * BTC_POOL_OUTPUT_LEN + 1 + 1);
         assert_eq!(body.encode(), w.body);
     }
 
@@ -596,7 +676,7 @@ mod tests {
         expect_ok(&w);
         let body = BtcPoolSpendBody::parse(&w.body).unwrap();
         assert!(body.outputs.is_empty() && body.exit.is_some());
-        assert_eq!(w.body.len(), 1 + 32 + 4 + 1 + 32 + 1 + 1 + BTC_POOL_EXIT_LEN);
+        assert_eq!(w.body.len(), PRE + 1 + 32 + 1 + 1 + BTC_POOL_EXIT_LEN + 1);
         assert_eq!(body.encode(), w.body);
     }
 
@@ -606,7 +686,7 @@ mod tests {
         expect_ok(&w);
         let body = BtcPoolSpendBody::parse(&w.body).unwrap();
         assert_eq!((body.outputs.len(), body.exit.is_some()), (2, true));
-        assert_eq!(w.body.len(), 1 + 32 + 4 + 1 + 64 + 1 + 2 * BTC_POOL_OUTPUT_LEN + 1 + BTC_POOL_EXIT_LEN);
+        assert_eq!(w.body.len(), PRE + 1 + 64 + 1 + 2 * BTC_POOL_OUTPUT_LEN + 1 + BTC_POOL_EXIT_LEN + 1);
         assert_eq!(body.encode(), w.body);
     }
 
@@ -724,7 +804,7 @@ mod tests {
         let (w0, _) = pay_1in1out();
         // Every byte outside the nullifier field is covered only by the signature, so flipping it (while
         // keeping the body parseable and every other check satisfied where possible) must fail.
-        let nf_range = 38..70;
+        let nf_range = PRE + 1..PRE + 33;
         for pos in 0..w0.body.len() {
             if nf_range.contains(&pos) {
                 continue;
@@ -733,16 +813,16 @@ mod tests {
             w.body[pos] ^= 0x01;
             assert!(verify_btc_pool_spend(&w).is_err(), "tamper at byte {pos} accepted");
         }
-        // Changing h_anchor, pk_eph's parity (still a valid point) or ct_note fails on the signature.
-        let pk_eph_at = 71 + 32 + 32 + 32 + 33;
-        for pos in [33usize, pk_eph_at, w0.body.len() - 2] {
+        // Changing h_anchor, bind, pk_eph's parity (still a valid point) or ct_note fails on the signature.
+        let pk_eph_at = PRE + 34 + 32 + 32 + 32 + 33;
+        for pos in [33usize, 37, PRE - 1, pk_eph_at, w0.body.len() - 3] {
             let mut w = w0.clone();
             w.body[pos] ^= 0x01;
             assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: spend signature"), "byte {pos}");
         }
         // Exit: moving the exit to another vout or destination.
         let (w0, _) = exit_1in();
-        let base = 1 + 32 + 4 + 1 + 32 + 1 + 1;
+        let base = PRE + 1 + 32 + 1 + 1;
         for pos in [base, base + 4 + 64 + 3] {
             let mut w = w0.clone();
             w.body[pos] ^= 0x01;
@@ -750,7 +830,24 @@ mod tests {
         }
         // Partial exit: every byte outside the nullifiers.
         let (w0, _) = partial_exit_2in();
-        let nf_range = 38..102;
+        let nf_range = PRE + 1..PRE + 65;
+        for pos in 0..w0.body.len() {
+            if nf_range.contains(&pos) {
+                continue;
+            }
+            let mut w = w0.clone();
+            w.body[pos] ^= 0x01;
+            assert!(verify_btc_pool_spend(&w).is_err(), "tamper at byte {pos} accepted");
+        }
+        // Bind and want: moving the bound outpoint, the want's output, its amount or its script.
+        let (w0, _) = exit_want_partial();
+        let want_at = w0.body.len() - BTC_POOL_WANT_LEN;
+        for pos in [37usize, 68, 72, want_at, want_at + 4, want_at + 11, want_at + 12, w0.body.len() - 1] {
+            let mut w = w0.clone();
+            w.body[pos] ^= 0x01;
+            assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: spend signature"), "byte {pos}");
+        }
+        let nf_range = PRE + 1..PRE + 65;
         for pos in 0..w0.body.len() {
             if nf_range.contains(&pos) {
                 continue;
@@ -891,9 +988,11 @@ mod tests {
             let body = BtcPoolSpendBody {
                 asset: ASSET,
                 h_anchor: H_ANCHOR,
+                bind: [0u8; BTC_POOL_BIND_LEN],
                 nullifiers: vec![n.nf(idx as u64)],
                 outputs: vec![o],
                 exit: None,
+                want: None,
             }
             .encode();
             let sig = sign(&n.sk, &btc_pool_spend_msg(&body), &[5u8; 32]);
@@ -969,23 +1068,32 @@ mod tests {
         check(&|b| b.push(0), "btc-pool: trailing bytes in body");
         check(&|b| b.truncate(b.len() - 1), "btc-pool: body truncated");
         check(&|b| b[0] = 0x6C, "btc-pool: body opcode");
-        check(&|b| b[37] = 0, "btc-pool: n_in out of range");
-        check(&|b| b[37] = 3, "btc-pool: n_in out of range");
-        check(&|b| b[70] = 4, "btc-pool: n_out out of range");
-        check(&|b| b[70] = 0xFF, "btc-pool: n_out out of range");
-        check(&|b| b[289] = 2, "btc-pool: bad has_exit");
-        check(&|b| b[289] = 0xFF, "btc-pool: bad has_exit");
-        // has_exit = 1 with no exit bytes.
-        check(&|b| b[289] = 1, "btc-pool: body truncated");
+        let (n_in_at, n_out_at) = (PRE, PRE + 33);
+        let has_exit_at = n_out_at + 1 + BTC_POOL_OUTPUT_LEN;
+        let has_want_at = has_exit_at + 1;
+        assert_eq!(w0.body.len(), has_want_at + 1);
+        check(&|b| b[n_in_at] = 0, "btc-pool: n_in out of range");
+        check(&|b| b[n_in_at] = 3, "btc-pool: n_in out of range");
+        check(&|b| b[n_out_at] = 4, "btc-pool: n_out out of range");
+        check(&|b| b[n_out_at] = 0xFF, "btc-pool: n_out out of range");
+        check(&|b| b[has_exit_at] = 2, "btc-pool: bad has_exit");
+        check(&|b| b[has_exit_at] = 0xFF, "btc-pool: bad has_exit");
+        check(&|b| b[has_want_at] = 2, "btc-pool: bad has_want");
+        check(&|b| b[has_want_at] = 0xFF, "btc-pool: bad has_want");
+        // has_exit = 1 with no exit bytes; has_want = 1 with no want bytes.
+        check(&|b| b[has_exit_at] = 1, "btc-pool: body truncated");
+        check(&|b| b[has_want_at] = 1, "btc-pool: body truncated");
+        // A body cut inside bind.
+        check(&|b| b.truncate(1 + 32 + 4 + 20), "btc-pool: body truncated");
         // n_in = 2 declared over a single nullifier re-frames every later field.
         let mut w = w0.clone();
-        w.body[37] = 2;
+        w.body[n_in_at] = 2;
         assert!(BtcPoolSpendBody::parse(&w.body).is_err());
         check(&|b| b.clear(), "btc-pool: body truncated");
 
-        // Truncated exit, at every length short of the full 100 bytes.
+        // Truncated exit, at every length short of the full 100 bytes (plus has_want).
         let (w0, notes) = partial_exit_2in();
-        for cut in 1..=BTC_POOL_EXIT_LEN {
+        for cut in 1..=BTC_POOL_EXIT_LEN + 1 {
             let mut w = w0.clone();
             w.body.truncate(w0.body.len() - cut);
             resign(&mut w, &notes);
@@ -998,11 +1106,11 @@ mod tests {
         assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: body truncated"));
         // Exit bytes after has_exit = 0: with no pool output the spend is empty, otherwise the exit trails.
         let mut w = w0.clone();
-        w.body[71] = 0;
+        w.body[PRE + 34] = 0;
         resign(&mut w, &notes);
         assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: spend has no outputs"));
         let (w0, notes) = partial_exit_2in();
-        let has_exit_at = 1 + 32 + 4 + 1 + 64 + 1 + 2 * BTC_POOL_OUTPUT_LEN;
+        let has_exit_at = PRE + 1 + 64 + 1 + 2 * BTC_POOL_OUTPUT_LEN;
         assert_eq!(w0.body[has_exit_at], 1);
         let mut w = w0.clone();
         w.body[has_exit_at] = 0;
@@ -1020,9 +1128,95 @@ mod tests {
         // n_out = 0 and has_exit = 0: a spend that only burns its inputs.
         let notes = vec![Note::new(0, 1)];
         let w = assemble(&notes, 0, vec![], None, vec![]);
-        assert_eq!(w.body.len(), 1 + 32 + 4 + 1 + 32 + 1 + 1);
+        assert_eq!(w.body.len(), PRE + 1 + 32 + 1 + 1 + 1);
         assert_eq!(BtcPoolSpendBody::parse(&w.body), Err("btc-pool: spend has no outputs"));
         assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: spend has no outputs"));
+    }
+
+    #[test]
+    fn btc_pool_valid_bind_and_want() {
+        let (w, _) = pay_bound();
+        expect_ok(&w);
+        let body = BtcPoolSpendBody::parse(&w.body).unwrap();
+        assert_eq!(body.bind, bind_outpoint(1, 7));
+        assert_eq!(&w.body[37..73], &bind_outpoint(1, 7));
+        assert!(body.want.is_none());
+        assert_eq!(body.encode(), w.body);
+
+        let (w, _) = exit_want_partial();
+        expect_ok(&w);
+        let body = BtcPoolSpendBody::parse(&w.body).unwrap();
+        let want = body.want.clone().unwrap();
+        assert_eq!(want, want_of(2, 29_500, 1));
+        assert_eq!(w.body.len(), PRE + 1 + 64 + 1 + BTC_POOL_OUTPUT_LEN + 1 + BTC_POOL_EXIT_LEN + 1 + BTC_POOL_WANT_LEN);
+        let at = w.body.len() - BTC_POOL_WANT_LEN;
+        assert_eq!(w.body[at - 1], 1);
+        assert_eq!(&w.body[at..at + 4], &2u32.to_le_bytes());
+        assert_eq!(&w.body[at + 4..at + 12], &29_500u64.to_le_bytes());
+        assert_eq!(&w.body[at + 12..], &want.spk_hash);
+        assert_eq!(body.encode(), w.body);
+
+        // A want on a pay with no exit, and u64::MAX sats: parsing places no bound on the value.
+        let notes = vec![Note::new(10_000, 9)];
+        let (o, op) = pay_output(10_000, 20);
+        let w = assemble_full(&notes, 0, vec![o], None, vec![op], [0u8; BTC_POOL_BIND_LEN], Some(want_of(0, u64::MAX, 2)));
+        expect_ok(&w);
+    }
+
+    #[test]
+    fn btc_pool_rejects_malformed_want() {
+        let (w0, notes) = exit_want_partial();
+        let has_want_at = w0.body.len() - BTC_POOL_WANT_LEN - 1;
+        let check = |mutate: &dyn Fn(&mut Vec<u8>), err: &str| {
+            let mut w = w0.clone();
+            mutate(&mut w.body);
+            resign(&mut w, &notes);
+            assert_eq!(BtcPoolSpendBody::parse(&w.body), Err(err));
+            assert_eq!(verify_btc_pool_spend(&w), Err(err));
+        };
+        for v in [2u8, 3, 0x80, 0xFF] {
+            check(&|b| b[has_want_at] = v, "btc-pool: bad has_want");
+        }
+        // Want bytes after has_want = 0.
+        check(&|b| b[has_want_at] = 0, "btc-pool: trailing bytes in body");
+        // Truncated want, at every length short of the full 44 bytes.
+        for cut in 1..=BTC_POOL_WANT_LEN {
+            check(&|b| b.truncate(b.len() - cut), "btc-pool: body truncated");
+        }
+        // Missing has_want byte altogether.
+        let (w1, n1) = partial_exit_2in();
+        let mut w = w1.clone();
+        w.body.pop();
+        resign(&mut w, &n1);
+        assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: body truncated"));
+        // Extra byte after a want.
+        check(&|b| b.push(0), "btc-pool: trailing bytes in body");
+        // A want alone is not a spend output: no pool output and no exit is still empty.
+        let notes = vec![Note::new(0, 1)];
+        let w = assemble_full(&notes, 0, vec![], None, vec![], [0u8; BTC_POOL_BIND_LEN], Some(want_of(1, 1_000, 3)));
+        assert_eq!(BtcPoolSpendBody::parse(&w.body), Err("btc-pool: spend has no outputs"));
+        assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: spend has no outputs"));
+    }
+
+    #[test]
+    fn btc_pool_bind_and_want_do_not_touch_conservation() {
+        // The want's sats are outside the pool: exit plus outputs still equal the inputs exactly.
+        let notes = vec![Note::new(40_000, 7), Note::new(5_000, 8)];
+        for v_exit in [30_001u64, 29_999] {
+            let (a, oa) = pay_output(15_000, 19);
+            let (e, oe) = exit_output(v_exit, 23);
+            let w = assemble_full(&notes, 3, vec![a], Some(e), vec![oa, oe], bind_outpoint(2, 0), Some(want_of(2, 30_000, 1)));
+            assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: conservation"));
+        }
+        // Signing a body with bind zero and carrying it with a bind set (or the reverse) fails.
+        let (w, notes) = pay_1in1out();
+        let mut body = BtcPoolSpendBody::parse(&w.body).unwrap();
+        body.bind = bind_outpoint(3, 1);
+        let mut w2 = w.clone();
+        w2.body = body.encode();
+        assert_eq!(verify_btc_pool_spend(&w2), Err("btc-pool: spend signature"));
+        resign(&mut w2, &notes);
+        expect_ok(&w2);
     }
 
     #[test]
@@ -1036,7 +1230,7 @@ mod tests {
             None,
             outs.iter().map(|o| o.1.clone()).collect(),
         );
-        assert_eq!(w.body[70], 4);
+        assert_eq!(w.body[PRE + 33], 4);
         assert_eq!(BtcPoolSpendBody::parse(&w.body), Err("btc-pool: n_out out of range"));
         assert_eq!(verify_btc_pool_spend(&w), Err("btc-pool: n_out out of range"));
         // Three outputs and an exit is within bounds.
@@ -1225,13 +1419,19 @@ mod tests {
                 "exit_vout": e.exit_vout, "cx": hx(&e.cx), "cy": hx(&e.cy), "dest_spk_hash": hx(&e.dest_spk_hash),
             })
         });
+        let want = body.want.as_ref().map(|w| {
+            serde_json::json!({ "vout": w.vout, "value": w.value.to_string(), "spk_hash": hx(&w.spk_hash) })
+        });
         serde_json::json!({
             "asset": hx(&body.asset),
             "h_anchor": body.h_anchor,
+            "bind": hx(&body.bind),
             "nullifiers": body.nullifiers.iter().map(|n| hx(n)).collect::<Vec<_>>(),
             "outputs": outputs,
             "has_exit": body.exit.is_some() as u8,
             "exit": exit,
+            "has_want": body.want.is_some() as u8,
+            "want": want,
             "body": hx(&body.encode()),
             "body_hash": hx(&cxfer_core::keccak_bytes(&body.encode())),
             "spend_msg": hx(&btc_pool_spend_msg(&body.encode())),
@@ -1275,8 +1475,10 @@ mod tests {
         let (pay2, n2) = pay_2in3out();
         let (exit, n3) = exit_1in();
         let (partial, n4) = partial_exit_2in();
+        let (bound, n5) = pay_bound();
+        let (want, n6) = exit_want_partial();
         serde_json::json!({
-            "description": "DESIGN-btc-shielded-pool.md §2-§4 vectors from btc-pool-core. Hex is big-endian bytes as they appear on the wire or in the hash preimage; on-wire integers (h_anchor, exit_vout) are little-endian inside `body`. Values are u64 decimal strings. witness.outputs holds one opening per pool output in body order, then the exit's opening when has_exit = 1.",
+            "description": "DESIGN-btc-shielded-pool.md §2-§4 vectors from btc-pool-core. Hex is big-endian bytes as they appear on the wire or in the hash preimage; on-wire integers (h_anchor, bind's vout, exit_vout, want's vout and value) are little-endian inside `body`. `bind` is the 36 raw body bytes txid ‖ vout, all zero for none. Values are u64 decimal strings. witness.outputs holds one opening per pool output in body order, then the exit's opening when has_exit = 1.",
             "domains": {
                 "note": "tacit-btc-pool-note-v1",
                 "nullifier": "tacit-btc-pool-nf-v1",
@@ -1297,6 +1499,8 @@ mod tests {
                 spend_case("pay_2in_3out", &pay2, &n2),
                 spend_case("exit_1in", &exit, &n3),
                 spend_case("partial_exit_2in", &partial, &n4),
+                spend_case("pay_bind", &bound, &n5),
+                spend_case("exit_want_partial", &want, &n6),
             ],
         })
     }

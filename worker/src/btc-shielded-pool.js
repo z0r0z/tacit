@@ -22,6 +22,8 @@ export const PV_VERSION = 1;
 
 export const OUTPUT_LEN = 32 + 32 + 32 + 33 + 33 + 56;
 export const EXIT_LEN = 4 + 32 + 32 + 32;
+export const BIND_LEN = 32 + 4;
+export const WANT_LEN = 4 + 8 + 32;
 
 const enc = (s) => new TextEncoder().encode(s);
 const NOTE_DOMAIN = enc('tacit-btc-pool-note-v1');
@@ -55,6 +57,7 @@ export const sha256 = (...parts) => sha256Hash(concat(...parts.map(toBytes)));
 const bytesToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);
 const bigTo32 = (n) => hexToBytes(n.toString(16).padStart(64, '0'));
 const u32le = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] * 0x1000000)) >>> 0;
+const u64le = (b, o) => { let x = 0n; for (let k = 7; k >= 0; k--) x = (x << 8n) | BigInt(b[o + k]); return x; };
 const u32leBytes = (v) => Uint8Array.of(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
 const beBytes = (v, len) => {
   const out = new Uint8Array(len);
@@ -189,15 +192,18 @@ export function parseShield(bytes) {
   return s;
 }
 
-// 0x6D ‖ asset ‖ h_anchor(4) ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖ has_exit ‖ [exit] ‖ proof_len(2) ‖ proof.
-// `body` is every byte before proof_len.
+// 0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖ has_exit ‖ [exit] ‖ has_want ‖
+// [want] ‖ proof_len(2) ‖ proof. `body` is every byte before proof_len. `bind` is null when all zero; its txid
+// is returned in display hex (the byte order reversed), as carrier inputs name their outpoints.
 export function parseSpend(bytes) {
   const e = toBytes(bytes);
-  if (!e || e.length < 1 + 32 + 4 + 1 || e[0] !== T_BTC_SPEND) return null;
+  if (!e || e.length < 1 + 32 + 4 + BIND_LEN + 1 || e[0] !== T_BTC_SPEND) return null;
   let p = 1;
   const s = { kind: 'spend' };
   s.asset = e.slice(p, p + 32); p += 32;
   s.hAnchor = u32le(e, p); p += 4;
+  const bind = e.slice(p, p + BIND_LEN); p += BIND_LEN;
+  s.bind = bind.every((x) => x === 0) ? null : { txid: bytesToHex(bind.slice(0, 32).reverse()), vout: u32le(bind, 32) };
   s.nIn = e[p]; p += 1;
   if (s.nIn < 1 || s.nIn > SPEND_MAX_IN) return null;
   if (e.length < p + 32 * s.nIn + 1) return null;
@@ -228,6 +234,15 @@ export function parseSpend(bytes) {
     x.destSpkHash = e.slice(p, p + 32); p += 32;
     if (!pointFromXY(x.cx, x.cy)) return null;
     s.exit = x;
+  }
+  if (e.length < p + 1) return null;
+  const hasWant = e[p]; p += 1;
+  if (hasWant > 1) return null;
+  s.want = null;
+  if (hasWant) {
+    if (e.length < p + WANT_LEN) return null;
+    s.want = { vout: u32le(e, p), value: u64le(e, p + 4), spkHash: e.slice(p + 12, p + WANT_LEN) };
+    p += WANT_LEN;
   }
   if (nOut + hasExit < 1) return null;
   s.body = e.slice(0, p);
@@ -367,7 +382,8 @@ export class BtcPoolState {
   beginBlock(height) {
     if (this.pending) throw new Error('block already open');
     if (this.tip !== null && height !== this.tip + 1) throw new Error(`expected block ${this.tip + 1}, got ${height}`);
-    this.pending = { height, leafStart: this.tree.size, leaves: [], nullifiers: [], exits: [] };
+    // `wants` holds the outputs claimed by accepted wants in this block; a want binds only its own carrier.
+    this.pending = { height, leafStart: this.tree.size, leaves: [], nullifiers: [], exits: [], wants: new Set() };
   }
 
   abortBlock() {
@@ -421,10 +437,11 @@ export class BtcPoolState {
     return { accepted: true, leaves: [note] };
   }
 
-  // ctx.txid; ctx.outputs [{ scriptPubKey: Uint8Array }]; ctx.vin0TacitOp, true when the carrier's vin[0]
-  // holds a transparent Tacit op; ctx.verifyProof({ proof, publicValues }) → bool. Earlier accepted envelopes
-  // of the same carrier are already applied, so their nullifiers and exit outputs count as taken. A missing
-  // verifier throws instead of rejecting, so an indexer without one halts rather than diverges.
+  // ctx.txid; ctx.inputs [{ txid, vout }] (every carrier input, txid in display hex); ctx.outputs
+  // [{ value: bigint, scriptPubKey: Uint8Array }]; ctx.vin0TacitOp, true when the carrier's vin[0] holds a
+  // transparent Tacit op; ctx.verifyProof({ proof, publicValues }) → bool. Earlier accepted envelopes of the
+  // same carrier are already applied, so their nullifiers, exit outputs and want outputs count as taken. A
+  // missing verifier throws instead of rejecting, so an indexer without one halts rather than diverges.
   async acceptSpend(s, ctx) {
     const b = this.pending;
     if (!b) throw new Error('no open block');
@@ -433,15 +450,25 @@ export class BtcPoolState {
     if (s.hAnchor < H_ - ANCHOR_WINDOW || s.hAnchor > H_ - 1) return reject('h_anchor outside window');
     const root = this.roots.get(s.hAnchor);
     if (!root) return reject('no root retained for h_anchor');
+    if (s.bind && !(ctx.inputs || []).some((i) => i.txid === s.bind.txid && i.vout === s.bind.vout)) return reject('carrier does not spend the bound outpoint');
     const nfHex = s.nullifiers.map(bytesToHex);
     if (new Set(nfHex).size !== nfHex.length) return reject('duplicate nullifier in body');
     for (const nf of nfHex) if (this.nullifiers.has(nf)) return reject('nullifier already spent');
+    const claimed = (vout) => this.exits.has(outKey(ctx.txid, vout)) || b.wants.has(outKey(ctx.txid, vout));
     if (s.exit) {
       if (ctx.vin0TacitOp) return reject('exit in a carrier whose vin[0] holds a transparent Tacit op');
       const out = ctx.outputs && ctx.outputs[s.exit.exitVout];
       if (!out) return reject('exit_vout is not an output of the carrier');
-      if (this.exits.has(outKey(ctx.txid, s.exit.exitVout))) return reject('exit_vout already claimed by an earlier exit');
+      if (claimed(s.exit.exitVout)) return reject('exit_vout already claimed by an earlier exit or want');
       if (!eqBytes(sha256(out.scriptPubKey), s.exit.destSpkHash)) return reject('exit scriptPubKey does not match dest_spk_hash');
+    }
+    if (s.want) {
+      const out = ctx.outputs && ctx.outputs[s.want.vout];
+      if (!out) return reject('want vout is not an output of the carrier');
+      if (s.exit && s.exit.exitVout === s.want.vout) return reject('want and exit name the same output');
+      if (claimed(s.want.vout)) return reject('want vout already claimed by an earlier exit or want');
+      if (BigInt(out.value) < s.want.value) return reject('want output pays less than the want value');
+      if (!eqBytes(sha256(out.scriptPubKey), s.want.spkHash)) return reject('want scriptPubKey does not match spk_hash');
     }
     if (this.tree.size + s.outputs.length > this.maxLeaves) return reject('note tree is full');
     if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
@@ -453,7 +480,7 @@ export class BtcPoolState {
       this.nullifiers.set(nf, rec);
       b.nullifiers.push(rec);
     }
-    const res = { accepted: true, nullifiers: nfHex, leaves: [], exit: null };
+    const res = { accepted: true, nullifiers: nfHex, leaves: [], exit: null, want: null };
     for (const o of s.outputs) {
       res.leaves.push(this._appendLeaf({
         leaf: noteLeaf({ asset: s.asset, ...o }), txid: ctx.txid, asset: s.asset, cx: o.cx, cy: o.cy,
@@ -465,6 +492,10 @@ export class BtcPoolState {
       this.exits.set(outKey(x.txid, x.vout), x);
       b.exits.push(x);
       res.exit = x;
+    }
+    if (s.want) {
+      b.wants.add(outKey(ctx.txid, s.want.vout));
+      res.want = { txid: ctx.txid, vout: s.want.vout, value: s.want.value };
     }
     return res;
   }

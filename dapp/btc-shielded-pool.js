@@ -12,6 +12,8 @@ export const BTC_POOL_SHIELD_MAX_IN = 8;
 export const BTC_POOL_MAX_IN = 2;
 export const BTC_POOL_MAX_OUT = 3;
 export const EXIT_LEN = 100; // exit_vout ‖ Cx ‖ Cy ‖ dest_spk_hash
+export const BIND_LEN = 36; // txid ‖ vout, all zero for none
+export const WANT_LEN = 44; // vout ‖ value ‖ spk_hash
 export const BTC_POOL_MAX_PROOF = 512;
 export const BTC_POOL_TREE_DEPTH = 32;
 export const SHIELD_ENVELOPE_LEN = 316;
@@ -27,6 +29,12 @@ export const ANCHOR_STEP = 6;
 const checkU32 = (x, name) => {
   if (!Number.isInteger(x) || x < 0 || x >= U32_LIMIT) throw new Error(`btc-pool: ${name} must be an integer in [0, 2^32)`);
   return x;
+};
+// A u64 given as a bigint or a safe integer; strings and fractions are refused.
+const checkU64 = (x, name) => {
+  const v = typeof x === 'bigint' ? x : Number.isSafeInteger(x) ? BigInt(x) : null;
+  if (v === null || v < 0n || v > U64_MAX) throw new Error(`btc-pool: ${name} must be a u64 (bigint or safe integer)`);
+  return v;
 };
 
 // Shared anchor policy (§6): tip − 6, rounded down to a multiple of 6.
@@ -474,19 +482,44 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
   const exitDestHash = (scriptPubKey) => hx(sha256(toBytes(scriptPubKey)));
   const spendMsg = (body) => hx(k(D.spend, toBytes(body)));
 
-  function encodeSpendBody({ asset, hAnchor, nullifiers, outputs = [], exit = null }) {
+  // bind: null, or { txid (display hex), vout }: an outpoint the carrier must spend. Encoded as the txid in
+  // the byte order a transaction input serializes it, then vout LE.
+  function bindBytes(bind) {
+    if (bind == null) return new Uint8Array(BIND_LEN);
+    if (typeof bind !== 'object') throw new Error('btc-pool: bind must be { txid, vout } or null');
+    return concat(reverse(toBytes(bind.txid, 32)), le(checkU32(bind.vout, 'bind vout'), 4));
+  }
+  // want: null, or { vout, value, spkHash | scriptPubKey }: the carrier's output vout pays at least value sats
+  // to that script.
+  function normalizeWant(want) {
+    if (want == null) return null;
+    if (typeof want !== 'object') throw new Error('btc-pool: want must be { vout, value, spkHash | scriptPubKey } or null');
+    const vout = checkU32(want.vout, 'want vout');
+    const value = checkU64(want.value, 'want value');
+    const fromSpk = want.scriptPubKey != null ? exitDestHash(want.scriptPubKey) : null;
+    if (fromSpk == null && want.spkHash == null) throw new Error('btc-pool: want needs spkHash or scriptPubKey');
+    const spkHash = want.spkHash != null ? hx(toBytes(want.spkHash, 32)) : fromSpk;
+    if (fromSpk != null && spkHash !== fromSpk) throw new Error('btc-pool: want spkHash does not match scriptPubKey');
+    return { vout, value, spkHash };
+  }
+
+  function encodeSpendBody({ asset, hAnchor, bind = null, nullifiers, outputs = [], exit = null, want = null }) {
     if (!nullifiers.length || nullifiers.length > BTC_POOL_MAX_IN) throw new Error('btc-pool: n_in must be 1..2');
     if (outputs.length > BTC_POOL_MAX_OUT) throw new Error('btc-pool: n_out must be 0..3');
     if (!outputs.length && !exit) throw new Error('btc-pool: a spend needs an output or an exit');
     checkU32(hAnchor, 'h_anchor');
     if (exit) checkU32(exit.exitVout, 'exit_vout');
+    const w = normalizeWant(want);
+    if (w && exit && w.vout === exit.exitVout) throw new Error('btc-pool: want and exit name the same output');
     if (new Set(nullifiers.map((nf) => hx(toBytes(nf, 32)))).size !== nullifiers.length) throw new Error('btc-pool: repeated nullifier');
-    const parts = [Uint8Array.of(T_BTC_SPEND), toBytes(asset, 32), le(hAnchor, 4), Uint8Array.of(nullifiers.length)];
+    const parts = [Uint8Array.of(T_BTC_SPEND), toBytes(asset, 32), le(hAnchor, 4), bindBytes(bind), Uint8Array.of(nullifiers.length)];
     for (const nf of nullifiers) parts.push(toBytes(nf, 32));
     parts.push(Uint8Array.of(outputs.length));
     for (const o of outputs) parts.push(noteBytes(o));
     parts.push(Uint8Array.of(exit ? 1 : 0));
     if (exit) parts.push(le(exit.exitVout, 4), toBytes(exit.cx, 32), toBytes(exit.cy, 32), toBytes(exit.destSpkHash, 32));
+    parts.push(Uint8Array.of(w ? 1 : 0));
+    if (w) parts.push(le(w.vout, 4), le(w.value, 8), toBytes(w.spkHash, 32));
     return concat(...parts);
   }
 
@@ -498,6 +531,8 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
     if (take(1)[0] !== T_BTC_SPEND) throw new Error('btc-pool: not a spend envelope');
     const asset = hx(take(32));
     const hAnchor = Number(leToBig(take(4)));
+    const bindRaw = take(BIND_LEN);
+    const bind = bindRaw.every((x) => x === 0) ? null : { txid: bytesToHex(reverse(bindRaw.slice(0, 32))), vout: Number(leToBig(bindRaw.slice(32))) };
     const nIn = take(1)[0];
     if (nIn < 1 || nIn > BTC_POOL_MAX_IN) throw new Error('btc-pool: n_in out of range');
     const nullifiers = [];
@@ -505,7 +540,7 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
     if (new Set(nullifiers).size !== nIn) throw new Error('btc-pool: repeated nullifier');
     const nOut = take(1)[0];
     if (nOut > BTC_POOL_MAX_OUT) throw new Error('btc-pool: n_out out of range');
-    const out = { asset, hAnchor, nullifiers, outputs: [], exit: null };
+    const out = { asset, hAnchor, bind, nullifiers, outputs: [], exit: null, want: null };
     for (let j = 0; j < nOut; j++) {
       const f = parseNoteBytes(take(POOL_NOTE_LEN), asset);
       pointFromXY(f.cx, f.cy); liftX(f.spendKey); pointFromCompressed(f.nkPub); pointFromCompressed(f.pkEph);
@@ -517,6 +552,9 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
       out.exit = { exitVout: Number(leToBig(take(4))), cx: hx(take(32)), cy: hx(take(32)), destSpkHash: hx(take(32)) };
       pointFromXY(out.exit.cx, out.exit.cy);
     }
+    const hasWant = take(1)[0];
+    if (hasWant > 1) throw new Error('btc-pool: has_want must be 0 or 1');
+    if (hasWant) out.want = { vout: Number(leToBig(take(4))), value: leToBig(take(8)), spkHash: hx(take(32)) };
     if (nOut + hasExit < 1) throw new Error('btc-pool: spend has no output and no exit');
     out.body = b.slice(0, p);
     if (full) {
@@ -556,7 +594,8 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
     if (ins.some((x) => !x || !x.nkNote)) throw new Error('btc-pool: spend inputs are not among the wallet\'s notes');
     const nk0 = ins[0].nkNote, nf0 = sp.nullifiers[0];
     const zeroed = Uint8Array.from(sp.body);
-    zeroed.fill(0, zeroed.length - 96, zeroed.length - 32);
+    const exitEnd = zeroed.length - 1 - (sp.want ? WANT_LEN : 0);
+    zeroed.fill(0, exitEnd - 96, exitEnd - 32);
     const r = exitBlinding(nk0, zeroed);
     const cands = addresses.map((a) => decodeAddress(a, wallet.network));
     let known = ins.reduce((t, x) => t + BigInt(x.value), 0n), unknown = 0;
@@ -654,12 +693,14 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
 
   // inputs: owned notes from scan(), each with leafIndex and, for the witness, path (32 siblings).
   // outputs: [{ address, value }] pool notes (payment, fee). exit: { exitVout, scriptPubKey | destSpkHash,
-  // value?, blinding? }, paying to the exiter's own script. Outputs plus exit must equal the inputs.
+  // value?, blinding? }. Outputs plus exit must equal the inputs. bind: { txid, vout } the carrier must spend
+  // (a relayer's quoted UTXO), default none. want: { vout, value, scriptPubKey | spkHash }, sats the carrier
+  // must pay back, default none.
   // hAnchor defaults to defaultAnchor(tip). With `wallet`: change of a pay goes to its internal address and
   // a pay is padded to 3 outputs with zero-value internal notes (pad: false disables padding), outputs are
   // shuffled, and an exit to a script in `usedScripts` (default wallet.usedScripts) is refused; a Set is
   // updated with the new exit script's hash.
-  function buildSpendBody({ asset, hAnchor, tip, root, inputs, outputs = [], exit = null, aux, wallet, network, usedScripts, pad = true }) {
+  function buildSpendBody({ asset, hAnchor, tip, root, inputs, outputs = [], exit = null, bind = null, want = null, aux, wallet, network, usedScripts, pad = true }) {
     const anchor = hAnchor != null ? hAnchor : tip != null ? defaultAnchor(tip) : null;
     if (anchor == null) throw new Error('btc-pool: h_anchor or tip required');
     checkU32(anchor, 'h_anchor');
@@ -675,6 +716,8 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
     }
     const nullifiers = inputs.map((i) => nullifier(i.leaf, i.nkNote, i.leafIndex));
     if (new Set(nullifiers).size !== nullifiers.length) throw new Error('btc-pool: repeated input');
+    bindBytes(bind);
+    const wantRec = normalizeWant(want);
     const outs = outputs.map((o) => ({ ...o }));
     let outSum = outs.reduce((s, o) => s + BigInt(o.value), 0n);
     let exitRec = null, spkHex = null;
@@ -704,12 +747,12 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
       return createNote(o.address, assetHex, o.value, r, { e, network: o.network ?? net });
     });
     if (exitRec) {
-      const r = exit.blinding != null ? modN(BigInt(exit.blinding)) : exitBlinding(nk0, encodeSpendBody({ asset: assetHex, hAnchor: anchor, nullifiers, outputs: outNotes, exit: { ...exitRec, cx: ZERO32, cy: ZERO32 } }));
+      const r = exit.blinding != null ? modN(BigInt(exit.blinding)) : exitBlinding(nk0, encodeSpendBody({ asset: assetHex, hAnchor: anchor, bind, nullifiers, outputs: outNotes, exit: { ...exitRec, cx: ZERO32, cy: ZERO32 }, want: wantRec }));
       Object.assign(exitRec, commitXY(exitRec.value, r), { blinding: hx(be(r, 32)) });
     }
     const openings = [...outNotes, ...(exitRec ? [exitRec] : [])].map((o) => ({ value: o.value, blinding: o.blinding }));
 
-    const body = encodeSpendBody({ asset: assetHex, hAnchor: anchor, nullifiers, outputs: outNotes, exit: exitRec });
+    const body = encodeSpendBody({ asset: assetHex, hAnchor: anchor, bind, nullifiers, outputs: outNotes, exit: exitRec, want: wantRec });
     const msg = spendMsg(body);
     const sigs = inputs.map((i) => hx(schnorrSign(msg, bToBig(toBytes(i.skSpend, 32)), aux)));
 
@@ -737,7 +780,7 @@ export function makeBtcShieldedPool({ secp, keccak256, sha256, randomBytes, ripe
     }
     const used = usedScripts ?? wallet?.usedScripts;
     if (exitRec && used instanceof Set) used.add(exitRec.destSpkHash);
-    return { body, bodyHex: hx(body), msg, sigs, nullifiers, hAnchor: anchor, outputs: outNotes, exit: exitRec, witness };
+    return { body, bodyHex: hx(body), msg, sigs, nullifiers, hAnchor: anchor, bind: bind ?? null, outputs: outNotes, exit: exitRec, want: wantRec, witness };
   }
 
   function assembleSpendEnvelope(body, proof) {

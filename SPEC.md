@@ -422,22 +422,31 @@ pool adds no custody.
   witness commitment; missing data, a block or an ancestor, halts it and never causes a rejection. A
   spend requires `H − 144 ≤ h_anchor ≤ H − 1`, a carrier input spending `bind` when `bind` is non-zero,
   nullifiers fresh against the set (including earlier envelopes in the same transaction),
-  `proof_len ≤ 512`, and for an exit an output not claimed by an earlier accepted exit in the
-  transaction, in a carrier whose `vin[0]` holds no transparent op. In a carrier with a `T_BTC_SHIELD`,
+  `proof_len ≤ 512`, for an exit an output not claimed by an earlier accepted exit or want in the
+  transaction, in a carrier whose `vin[0]` holds no transparent op, and for a want an output, other than
+  the exit's, not claimed by an earlier accepted exit or want, paying at least `value` sats to a script
+  hashing to `spk_hash`. In a carrier with a `T_BTC_SHIELD`,
   only `vin[0]` is read. Leaf-creating envelopes are rejected once the tree holds `2^32` leaves. Shield
   inputs are validated by `validateOutpoint`, and a note bound to a pool deployment (`T_CXFER_BOUND`) is
   not a valid shield input. For ancestry through `T_CROSSOUT_MINT` or AMM outputs, `validateOutpoint` reads
   the worker's acceptance records for those ops. The indexer verifies each proof locally against the SP1
   Groth16 key with no Ethereum dependency. Reorgs roll back through a per-block undo log.
 - **Relaying.** A carrier may be built by a relayer paid by a pool output of the spend. The relayer
-  quotes one of its UTXOs as `bind`, so only it can post the payload; it requires full receipt of its fee
-  note, assigns `exit_vout` for a relayed exit before the sender signs, and keeps the carrier's output
-  layout fixed.
+  quotes one confirmed UTXO per batch as `bind`, so only it can post the payload; the carrier spends it
+  and returns its value after the exit outputs. The relayer requires full receipt of its fee note,
+  assigns `exit_vout` for a relayed exit before the sender signs, and keeps the carrier's output layout
+  fixed.
+- **Buy and shield.** A pre-authorized sale's lot is the shield's one input: `T_BTC_SHIELD` on `vin[0]`,
+  the lot on `vin[1]` under the seller's `SIGHASH_SINGLE|ANYONECANPAY` signature, the seller's payout on
+  `vout[1]`, the buyer's change on `vout[0]`. The kernel is signed from the sale's published opening.
+- **Exit to sats.** One spend exits to a maker's script with a want of the quoted sats to a fresh key of the
+  spender's, keeping the change shielded. The maker checks the exit's opening and the want, then carries it
+  from its own coins; a carrier that underpays or omits the want output is rejected.
 
 | Byte | Op | Rule summary |
 |---|---|---|
 | 0x6C | `T_BTC_SHIELD` | 316 bytes: `0x6C ‖ asset ‖ n_in(1) ‖ Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56) ‖ kernel_sig(64)`. Rides `vin[0]` only. Spends the transparent notes `vin[1..n_in]` (`1 ≤ n_in ≤ 8`) of `asset` into one pool leaf. `kernel_sig` is the §2.4 kernel under `x(E)`, `E = C_pool − ΣC_in`, in domain `tacit-btc-pool-shield-v1`; `E ≠ ∞` and `C_pool ≠ ∞`. It creates no transparent outputs of `asset`. |
-| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(218)×n_out ‖ has_exit(1) ‖ [exit(100)] ‖ proof_len(2) ‖ proof`, with `output = Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)` and `exit = exit_vout(4) ‖ Cx ‖ Cy ‖ dest_spk_hash`, present iff `has_exit = 1`. `bind = txid ‖ vout_LE` of an outpoint the carrier must spend at any input, or all zero for none. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `n_out + has_exit ≥ 1`. Integers are little-endian. Each output appends a leaf. The exit creates the transparent note `(asset, Cx, Cy)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. May ride any envelope input of a carrier. |
+| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(218)×n_out ‖ has_exit(1) ‖ [exit(100)] ‖ has_want(1) ‖ [want(44)] ‖ proof_len(2) ‖ proof`, with `output = Cx ‖ Cy ‖ spend_key ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)`, `exit = exit_vout(4) ‖ Cx ‖ Cy ‖ dest_spk_hash`, present iff `has_exit = 1`, and `want = vout(4) ‖ value(8) ‖ spk_hash(32)`, present iff `has_want = 1`. `bind = txid ‖ vout_LE` of an outpoint the carrier must spend at any input, or all zero for none. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `has_want ∈ {0, 1}`, `n_out + has_exit ≥ 1`. Integers are little-endian. Each output appends a leaf. The exit creates the transparent note `(asset, Cx, Cy)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. The want requires the carrier's output `vout` to pay at least `value` sats to a script hashing (SHA-256) to `spk_hash`; within a transaction each output is claimed by at most one accepted exit or want. May ride any envelope input of a carrier. |
 
 ---
 

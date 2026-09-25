@@ -140,14 +140,16 @@ transparent outputs of `asset`. To shield part of a note, split it with `T_CXFER
 
 ```
 0x6D ‖ asset(32) ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf(32)×n_in ‖ n_out(1) ‖ output(218)×n_out
-     ‖ has_exit(1) ‖ [exit(100)] ‖ proof_len(2) ‖ proof
+     ‖ has_exit(1) ‖ [exit(100)] ‖ has_want(1) ‖ [want(44)] ‖ proof_len(2) ‖ proof
 
+bind   = txid(32) ‖ vout(4)                                          all zero for none
 output = Cx(32) ‖ Cy(32) ‖ spend_key(32) ‖ nk_pub(33) ‖ pk_eph(33) ‖ ct_note(56)
 exit   = exit_vout(4) ‖ Cx(32) ‖ Cy(32) ‖ dest_spk_hash(32)          present iff has_exit = 1
+want   = vout(4) ‖ value(8) ‖ spk_hash(32)                           present iff has_want = 1
 ```
 
-The constraints are `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `n_out + has_exit ≥ 1`, and
-`proof_len ≤ 512`. `body` is every byte of the payload before `proof_len`.
+The constraints are `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `has_want ∈ {0, 1}`,
+`n_out + has_exit ≥ 1`, and `proof_len ≤ 512`. `body` is every byte of the payload before `proof_len`.
 
 - **`bind`** is `txid ‖ vout_LE` of an outpoint the carrier must spend, at any input, or 36 zero bytes for
   none. `txid` is in the kernel's byte order. A relayer quotes one of its own UTXOs as `bind`, so only that
@@ -161,6 +163,9 @@ The constraints are `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1
   someone else afterwards is an ordinary `T_CXFER`.
 - **Outputs and an exit together** give a partial exit: take part of a note out and keep the change
   shielded, in one spend.
+- A **want** requires the carrier's output `vout` to pay at least `value` sats to a script whose SHA-256 is
+  `spk_hash`. It moves no pool value. It lets whoever carries the spend pay the spender in sats for it:
+  exit to a maker's script with a want of the price (§9).
 
 **Derived openings.** A wallet derives a spend's secrets from the seed and the spend's first input, so
 they are recoverable without local state. With `nk_note_0` and `nf_0` the first input's nullifier key and
@@ -183,15 +188,16 @@ fresh per output, since `C_j` carries a fresh blinding, and a body rebuilt from 
 carrier with a shield, only `vin[0]` is read. A `T_BTC_SPEND` may ride any input whose witness is a Tacit
 envelope leaf, so one Bitcoin transaction can carry many users' spends. The indexer processes a
 transaction's pool envelopes in input order, each accepted or rejected on its own. Within one transaction,
-each output can be claimed by at most one accepted exit. An exit is rejected when the carrier's `vin[0]`
-holds a transparent Tacit op, so an exit never claims an output that op creates.
+each output can be claimed by at most one accepted exit or want. An exit is rejected when the carrier's
+`vin[0]` holds a transparent Tacit op, so an exit never claims an output that op creates.
 
 ## 4. The relation
 
 A fourth SP1 guest (`btc-pool-prover`, pinned in `elf-vkey-pin.json` as `btc_pool_vkey`) reads `body` and a
 private witness, and proves:
 
-1. `body` parses canonically as a `T_BTC_SPEND` body (§3).
+1. `body` parses canonically as a `T_BTC_SPEND` body (§3). `bind` and `want` are carrier rules checked at
+   acceptance (§5); the relation binds them only through the signatures and `keccak(body)`.
 2. For each input `i`:
    - `C_i = v_i·H + r_i·G` with `v_i` a `u64`;
    - `leaf_i` from §2 is a member of `root` at `index_i`, under the depth-32 keccak tree, with
@@ -251,14 +257,17 @@ check changes nothing.
 3. **Carrier binding:** if `bind` is non-zero, some input of the carrier spends that outpoint.
 4. No nullifier is already in the set, and they are pairwise distinct.
 5. **With an exit:** the carrier's `vin[0]` holds no transparent Tacit op, `exit_vout` names an output of
-   the carrier that no earlier accepted exit in this transaction claimed, and `SHA-256` of its scriptPubKey
-   equals `dest_spk_hash`.
-6. **Capacity:** the tree has room for the spend's outputs. At `2^32` leaves, leaf-creating envelopes are
+   the carrier that no earlier accepted exit or want in this transaction claimed, and `SHA-256` of its
+   scriptPubKey equals `dest_spk_hash`.
+6. **With a want:** `vout` names an output of the carrier, differs from `exit_vout`, and no earlier accepted
+   exit or want in this transaction claimed it; its value is at least `value`, and `SHA-256` of its
+   scriptPubKey equals `spk_hash`.
+7. **Capacity:** the tree has room for the spend's outputs. At `2^32` leaves, leaf-creating envelopes are
    rejected, and the pool continues as a successor (SPEC §8).
-7. The proof verifies locally against `btc_pool_vkey`, with public values
+8. The proof verifies locally against `btc_pool_vkey`, with public values
    `abi.encode(1, R[h_anchor], keccak(body))`.
-8. Insert the nullifiers. For a pay, append the output leaves. For an exit, record the transparent note
-   `(asset, Cx, Cy)` at `(txid, exit_vout)`.
+9. Insert the nullifiers. For a pay, append the output leaves. For an exit, record the transparent note
+   `(asset, Cx, Cy)` at `(txid, exit_vout)`. A want claims its output for the rest of the transaction.
 
 **End of block.** Record `R[H]` for the block, carrying the previous root forward if nothing changed.
 Roots `R[H−144]` through `R[H−1]` stay available while block `H` is processed. Prune older roots only
@@ -292,11 +301,17 @@ they sent a pool spend. A relayer removes that: it holds a pool address and BTC 
 in the spend's asset and one of its own UTXOs as `bind`. The sender puts that outpoint in `bind`, adds an
 output paying the fee to the relayer's address, signs, proves, and hands the relayer the payload. Only a
 carrier that spends the bound UTXO can carry the payload, so no one else can post it ahead of the relayer.
+
+The bind is per batch: one confirmed relayer UTXO, reserved when the batch opens and quoted to every sender
+in it. The carrier spends it after the envelope inputs and returns its value to the relayer after the exit
+outputs, so it moves no signed `exit_vout`. A batch past its close time takes no new quotes; it is carried
+once every quote it issued is used or expired, so a sender who proves slowly still lands in it.
+
 Before paying anything, the relayer checks locally that:
 
 - the proof verifies against its own replayed root;
 - the nullifiers are unspent, in its replayed set and among payloads it already holds;
-- `bind` is its quoted UTXO;
+- `bind` is its quoted UTXO, and the spend has no want;
 - one output is fully received by the relayer under §2: it decrypts under the relayer's viewing key, its
   opening matches `(Cx, Cy)`, its `spend_key` and `nk_pub` match the relayer's derived keys, and its value
   is at least the quoted fee.
@@ -330,7 +345,8 @@ payload arrives.
   shield is 1-in.
 - **Internal change.** Change and padding go to the internal address (§2), so `v` alone does not show
   what a spend sent out.
-- **Fresh exit keys.** Each exit pays to a new key derived from the seed by a counter,
+- **Fresh exit keys.** Each exit, and each want the wallet is paid through, pays to a new key derived from
+  the seed by a counter,
   `Hs("tacit-btc-pool-exit-key-v1" ‖ exit_root ‖ counter(4, BE))`, paid as a BIP-86 key-path P2TR
   output (or P2WPKH), and never to a reused script.
 - **Network binding.** Every key derivation includes the network (§2).
@@ -347,6 +363,7 @@ payload arrives.
 | The sender's Bitcoin wallet, when relayed | The script an exit pays to |
 | | Which relayer built a carrier, by its envelope key and change script |
 | | Fee-paying inputs, when self-broadcast |
+| | A want's output and value, so the price of an exit to sats and the maker that paid it |
 
 ## 8. What it reuses
 
@@ -370,17 +387,41 @@ replay state.
   crosses to Ethereum once the reflection guest folds `T_BTC_SHIELD` and `T_BTC_SPEND`. The reflection
   guest's key is immutable in a deployment, so that fold ships in a successor deployment (SPEC §8). In the
   current deployment, exited notes stay on Bitcoin.
-- **Real sats in and out** use the existing Bitcoin-side pre-authorized sales, which sell an asset for BTC
-  in one transaction (README, "Trade atomically"). The seller signs only its own input and its BTC payout
-  (`SIGHASH_SINGLE|ANYONECANPAY`), and publishes the lot's opening. So the buyer's carrier can be the
-  shield itself: a `T_BTC_SHIELD` in `vin[0]` with the lot as `vin[1]`, the seller's payout untouched, and
-  the kernel signed from the published opening. The buyer pays BTC and receives a shielded note in one
-  transaction. To cash out, a holder exits to its own script and sells the resulting note the same way.
+- **Real sats in and out** each take one transaction: buy and shield, and exit to sats, below.
 - **The immutable core** (`ConfidentialPool.sol`, the settle and reflection guests, their keys) is not
   touched.
 - **Governance** gains no new surface. The window, arity caps and proof cap are protocol constants.
 - **Upgrades** follow SPEC §8's lineage. A changed relation means a new leaf domain and new opcodes, while
   old notes stay spendable under the old guest.
+
+**Buy and shield.** A pre-authorized sale (README, "Trade atomically") sells a transparent lot for BTC. The
+seller signs its lot input and its payout `SIGHASH_SINGLE|ANYONECANPAY` and publishes the lot's opening. The
+buyer's carrier is the shield:
+
+| | Index 0 | Index 1 |
+|---|---|---|
+| Input | `T_BTC_SHIELD` envelope (buyer), `n_in = 1` | the lot, with the seller's signature |
+| Output | the buyer's change | the seller's payout, exactly as signed |
+
+The shield's input is `vin[1]` and the sale's signature is for `vin[1]`/`vout[1]`, so the two layouts
+coincide. The BIP-143 preimage of a `SINGLE|ANYONECANPAY` signature covers the input's outpoint, value and
+`nSequence` and the output at the same index, not the index itself. The kernel is signed from the published
+opening, which the buyer first checks against the lot's validated on-chain commitment. The buyer's envelope
+output funds the price and the fee. The buyer pays BTC and receives a shielded note in one transaction.
+Reference: `dapp/btc-pool-zap.js` `buyAndShield`.
+
+**Exit to sats.** A maker quotes `sats` for `amount` of an asset. The user signs one spend:
+
+- an exit of `amount` to the maker's script at `exit_vout`;
+- a want of `sats` at the maker's chosen `vout`, to a fresh key of the user's (§6);
+- change to the user's internal address, padded to three outputs.
+
+The user hands the maker the payload, the exit's opening and the payout script. The maker checks that the
+exit opens to `amount` at its script and index, that the want asks at most `sats` to the given script, and
+optionally the proof. It then builds the carrier from its own coins, paying both outputs. The body is
+signed, so a carrier that does not pay the want is rejected whole, and the exit is recorded only in a carrier
+that pays it.
+Reference: `dapp/btc-pool-zap.js` `exitToSats`, `validateExitToSats`.
 
 **Proof-verified cross-out mints.** A `T_CROSSOUT_MINT` envelope, or a companion envelope in the same
 carrier, carries an SP1 Groth16 proof that the cross-out it re-mints is final on Ethereum: a sync-committee
@@ -395,7 +436,8 @@ data, and shields of that ancestry need no hosted record.
 2. A signet run: shield, pay, scan, exit with real transactions and real proofs.
 3. The replay service on Render, serving roots, paths, the note feed and nullifier status.
 4. The transparent-layer seam in the indexer and the dapp: `validateOutpoint` covers `T_CROSSOUT_MINT`
-   and pool exits, the worker values exit outputs, and the dapp builds buy-and-shield carriers.
+   and pool exits, the worker values exit outputs, and the dapp builds buy-and-shield and exit-to-sats
+   carriers.
 5. A reflection fold for `T_BTC_SHIELD` and `T_BTC_SPEND` in a successor deployment (SPEC §8), so exited
    notes join the reflected live set.
 6. Independent review, then mainnet enablement with a value cap.

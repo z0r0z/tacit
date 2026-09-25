@@ -188,7 +188,7 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
             }
           } else {
             try {
-              res = await st.acceptSpend(parsed, { txid: tx.txid, outputs: tx.vout, vin0TacitOp, verifyProof: verifier.verify });
+              res = await st.acceptSpend(parsed, { txid: tx.txid, inputs: tx.vin, outputs: tx.vout, vin0TacitOp, verifyProof: verifier.verify });
             } catch (e) {
               if (e instanceof VerifierUnavailableError) self.halted = { height, txid: tx.txid, reason: verifier.reason };
               throw e;
