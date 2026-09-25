@@ -186,6 +186,20 @@ audit/           security reviews
 whitepaper/      whitepaper (.md, .tex, .pdf)
 ```
 
+## Brand assets
+
+32×32 SVG marks, each the same file already used on-chain or in a token listing — published as static
+assets under `dapp/`, so they deploy with the app and resolve at a stable URL for external submissions
+(exchange listings, token-logo registries, etc.).
+
+| Asset | Live URL | Source in repo |
+| --- | --- | --- |
+| TAC | [tacit.finance/brand/logo.svg](https://tacit.finance/brand/logo.svg) | [`assets/tac-onchain.svg`](./assets/tac-onchain.svg) — mirrors the mark inlined on-chain in [TAC's token.list.wei listing](https://token.list.wei.limo) |
+| tETH / cETH | [tacit.finance/brand/teth.svg](https://tacit.finance/brand/teth.svg) | [`contracts/teth-icon.svg`](./contracts/teth-icon.svg) |
+| cBTC | [tacit.finance/brand/cbtc.svg](https://tacit.finance/brand/cbtc.svg) | [`contracts/tokenlist-drafts/cbtc-zk-icon.svg`](./contracts/tokenlist-drafts/cbtc-zk-icon.svg) |
+| cUSD | [tacit.finance/brand/cusd.svg](https://tacit.finance/brand/cusd.svg) | [`contracts/tokenlist-drafts/cusd-zk-icon.svg`](./contracts/tokenlist-drafts/cusd-zk-icon.svg) |
+| Tacit (protocol mark, 48×48) | [tacit.finance/brand/mark.svg](https://tacit.finance/brand/mark.svg) | [`assets/tacit-mark.svg`](./assets/tacit-mark.svg) |
+
 ## Points and farms
 
 A time-limited launch program, not a protocol feature.
