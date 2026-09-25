@@ -165,8 +165,8 @@ spent: it hides among every owned note of its asset. Notes that came from Bitcoi
 Bitcoin key.
 
 \textbf{Entry and exit.} \op{wrap} deposits ETH or any ERC-20, and one transaction can wrap and immediately send,
-swap, add liquidity or borrow. TAC, cBTC and cUSD have ERC-20s that only the pool mints: unwrapping mints
-them and wrapping burns them. A note can exit in full or in part, leaving hidden change.
+swap, add liquidity or borrow (\S6). TAC, cBTC and cUSD have ERC-20s that only the pool mints:
+unwrapping mints them and wrapping burns them. A note can exit in full or in part, leaving hidden change.
 
 \textbf{Settlement.} Every change to notes and positions is a batch of up to 256 ops proven by one SP1
 program. The program checks membership, range proofs, balances and each op's rules, then commits only the
@@ -223,11 +223,11 @@ one curve.
 
 \textbf{Prover-blind swaps.} \op{OP\_SWAP\_\allowbreak{}BLIND} hides trade sizes even from the SP1 prover. Traders commit to
 their inputs on a curve suited to a Groth16 circuit, which proves the batch's price and fills over hidden
-amounts; only the batcher that builds the proof sees them. The circuit's key comes from a public ceremony
-of over 5,000 contributions.
+amounts; only the batcher that builds the proof sees them. The circuit's key comes from a public ceremony of over 5,000 contributions, and the same circuit clears
+the equivalent batch trade on Bitcoin.
 
-\textbf{Trades without a pool.} \op{OP\_OTC} swaps two parties' notes directly. \op{OP\_BID} is a limit order that
-fills while the buyer is offline. Adaptor locks give atomic swaps with the other chain.
+\textbf{Trades without a pool.} \op{OP\_OTC} swaps two parties' notes directly. \op{OP\_BID} is a limit order that a
+watchtower fills while the buyer is offline. Adaptor locks give atomic swaps with the other chain.
 
 \textbf{Stealth payments.} A payer locks a note to a one-time key only the recipient can derive. The recipient
 claims it, or the payer takes it back after a deadline.
@@ -235,8 +235,7 @@ claims it, or the payer takes it back after a deadline.
 \textbf{cBTC.} A user locks BTC on Bitcoin with a \op{T\_CBTC\_\allowbreak{}LOCK}, and the pool mints exactly that much cBTC,
 once. The locker keeps the lock's key. An escrow in wstETH worth at least 1.5$\times$ the lock, which anyone may
 fund, makes spending the lock a loss: a lock spent without a redeem shows up in reflection and anyone can
-slash its escrow. The amount minted never depends on an oracle; a price
-feed only sizes the escrow.
+slash its escrow. The amount minted never depends on an oracle; a price feed only sizes the escrow.
 
 \textbf{cUSD.} A loan locks cBTC and mints cUSD, with 150\% collateral to mint and liquidation below 130\%. The
 borrower is hidden; the position's amounts are public so they can be priced. Policy lives in a governed
@@ -318,12 +317,10 @@ locally keeps the witness on one device.
 
 \section{Covenants, V2 and the road ahead}
 
-Bitcoin cannot yet restrict where an output may be spent. Once it can, through CTV, \op{OP\_CAT},
-\op{OP\_CHECKSIGFROMSTACK}, \op{OP\_VAULT} or an equivalent, three constructions Tacit reserves room for
-become trustless:
-cBTC locks whose sats can leave only through a redemption, bids escrowed on-chain instead of by a
-watchtower, and BTC split into
-fungible shares with no shared vault.
+Bitcoin cannot yet restrict where an output may be spent. Once it can, through CTV, \op{OP\_CAT}, \op{OP\_CHECKSIGFROMSTACK}, \op{OP\_VAULT} or an equivalent, three
+constructions Tacit reserves room for become trustless: cBTC locks whose sats can leave only through a
+redemption, bids escrowed on-chain instead of by a watchtower, and BTC split into fungible shares with no
+shared vault.
 
 \textbf{V2.} V1 is built to hand off to this covenant generation, which it deploys through its own
 \op{createNextGen} and hands the Bitcoin lane to. cBTC then moves to enforced custody one lock at a time: a
@@ -333,8 +330,8 @@ V2 with no escrow. Every V1 note keeps its exits throughout.
 \textbf{A shielded pool on Bitcoin.} The companion paper \emph{Secret Sats} describes a shielded pool that lives on
 Bitcoin alone. It holds Tacit assets, not BTC, so nobody holds the pool. Each payment carries a small
 zero-knowledge proof, made on the payer's own device, that hides the amount and unlinks sender from
-receiver, and every node checks it from Bitcoin alone. cBTC is its path
-to BTC, and sats also move in and out by atomic swap, and by covenant once Bitcoin allows one.
+receiver, and every node checks it from Bitcoin alone. cBTC is its path to BTC, and sats also move in and
+out by atomic swap, and by covenant once Bitcoin allows one.
 
 \section{Conclusion}
 
