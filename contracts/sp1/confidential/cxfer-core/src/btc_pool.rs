@@ -9,6 +9,7 @@ use crate::{
     compress, decompress, from_affine_xy, keccak_bytes, keccak_merkle_verify, kn, scalar_reduce_be,
     verify_pedersen_opening,
 };
+use k256::elliptic_curve::group::Group; // ProjectivePoint::generator() needs this in scope on the RISC-V target (sp1-lib)
 use k256::ProjectivePoint;
 
 /// Leaf domain for a shielded-pool note (design §2). Disjoint from the Bitcoin-homed `btc_note_leaf`
@@ -253,7 +254,7 @@ pub fn verify_btc_pool_spend(w: &BtcPoolSpendWitness) -> Result<BtcPoolSpendStat
             return Err("btc-pool: input opening");
         }
         let expected_spend_key = {
-            let p = ProjectivePoint::GENERATOR * scalar_reduce_be(&i.sk_note);
+            let p = ProjectivePoint::generator() * scalar_reduce_be(&i.sk_note);
             let c = compress(&p);
             // `spend_key` is x-only, so both `sk_note = d` and `sk_note = n-d` satisfy the equality check
             // below (same x-coordinate, same spend_key) but hash to different `nf_secret`/nullifiers for the

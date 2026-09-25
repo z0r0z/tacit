@@ -53,10 +53,15 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   # (ETH_REFLECTION_VKEY in reflect.rs), and the eth guest ELF has its own sha256 pin below. So only reflect.rs
   # belongs to the reflection prover's own source set.
   RELF_ONLY_SRC="src/reflect.rs"                        # reflection prover only
+  # btc-pool-prover ([[bin]] in Cargo.toml, DESIGN-btc-shielded-pool.md) has no built/pinned ELF yet —
+  # tracked here so the coverage guard below doesn't fail closed, but deliberately excluded from every
+  # freshness check: there is nothing yet for it to be stale against. Move it to ELF_ONLY_SRC-style
+  # tracking (with its own pin entry) once it has a real committed ELF.
+  UNPINNED_SRC="src/btc_pool.rs"                        # btc-pool-prover: no ELF built/pinned yet
 
   # Coverage guard: every file under src/ must be claimed by exactly one list above.
   for f in src/*; do
-    case " $SHARED_SRC $ELF_ONLY_SRC $RELF_ONLY_SRC " in
+    case " $SHARED_SRC $ELF_ONLY_SRC $RELF_ONLY_SRC $UNPINNED_SRC " in
       *" $f "*) ;;
       *) echo "FAIL: $f is under src/ but belongs to no ELF's source set — add it to SHARED_SRC," \
               "ELF_ONLY_SRC or RELF_ONLY_SRC in $0 so its changes are gated"; exit 1;;
