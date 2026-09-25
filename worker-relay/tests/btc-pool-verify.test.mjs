@@ -1,100 +1,80 @@
-// Coverage for worker-relay/src/lib/btc-pool-verify.js flagged missing in review: an ABI round-trip smoke
-// test (would catch a struct field-order/type slip that a live proof wouldn't surface until it silently
-// failed to verify) and a mocked-RPC test for the revert-vs-network-error classification (would catch a
-// regression that makes a transport failure look like a definitive reject, or vice versa).
-//
-// Run from worker-relay/ (not the repo root) so Node resolves this workspace's own viem: `node
-// tests/btc-pool-verify.test.mjs`. Needs RPC_URL/CHAIN_ID set (any value) even though every case here
-// mocks its own client — importing chain.js (transitively, via btc-pool-verify.js) requires it at
-// module-load time, before any test body runs.
+// btc-pool-verify wrapper against a mock verifier binary.
+//   node tests/btc-pool-verify.test.mjs   (from worker-relay/)
 
 import assert from 'node:assert/strict';
-import { decodeAbiParameters } from 'viem';
-import { encodeBtcPoolSpendPublicValues, verifyBtcPoolSpendProof, SP1_VERIFIER_ADDRESS } from '../src/lib/btc-pool-verify.js';
+import { mkdtempSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { makeBtcPoolVerifier, loadBtcPoolVkey, runVerifier, DEFAULT_PIN_PATH } from '../src/lib/btc-pool-verify.js';
+
+const dir = mkdtempSync(join(tmpdir(), 'btc-pool-verify-'));
+const seen = join(dir, 'stdin.json');
+const bin = join(dir, 'btc-pool-verify');
+writeFileSync(bin, `#!/usr/bin/env node
+let s = '';
+process.stdin.on('data', (c) => { s += c; });
+process.stdin.on('end', () => {
+  require('fs').writeFileSync(${JSON.stringify(seen)}, s);
+  const mode = JSON.parse(s).proof.slice(2, 4);
+  if (mode === '01') { process.stdout.write('{"ok":true}\\n'); }
+  else if (mode === '02') { process.stdout.write(JSON.stringify({ ok: false, reason: 'selector mismatch' })); }
+  else if (mode === '03') { process.stderr.write('panic'); process.exit(101); }
+  else if (mode === '04') { process.stdout.write('not json'); }
+  else if (mode === '05') { process.stdout.write('{"ok":"yes"}'); }
+  else if (mode === '06') { setTimeout(() => {}, 10000); }
+});
+`);
+chmodSync(bin, 0o755);
+writeFileSync(join(dir, 'package.json'), '{"type":"commonjs"}');
+
+const tests = [];
+const test = (n, f) => tests.push([n, f]);
+const VKEY = '0x' + 'ab'.repeat(32);
+const pv = new Uint8Array(96).fill(2);
+
+test('pinned vkey is read from elf-vkey-pin.json', () => {
+  const pin = JSON.parse(readFileSync(DEFAULT_PIN_PATH, 'utf8')).btc_pool_vkey;
+  assert.equal(loadBtcPoolVkey({ env: {} }), pin.toLowerCase());
+  assert.equal(loadBtcPoolVkey({ env: { BTC_POOL_VKEY: VKEY } }), VKEY);
+  assert.throws(() => loadBtcPoolVkey({ env: { BTC_POOL_VKEY: '0x12' } }), /malformed/);
+});
+
+test('accept: ok true, stdin carries proof, public_values and vkey as 0x-hex', async () => {
+  const v = makeBtcPoolVerifier({ bin, vkey: VKEY, log: () => {} });
+  assert.ok(v.enabled);
+  assert.equal(await v.verify({ proof: Uint8Array.of(1, 9), publicValues: pv }), true);
+  const got = JSON.parse(readFileSync(seen, 'utf8'));
+  assert.deepEqual(got, { proof: '0x0109', public_values: '0x' + '02'.repeat(96), vkey: VKEY });
+});
+
+test('reject: ok false is a verdict, not an error', async () => {
+  const v = makeBtcPoolVerifier({ bin, vkey: VKEY, log: () => {} });
+  assert.equal(await v.verify({ proof: Uint8Array.of(2), publicValues: pv }), false);
+  assert.deepEqual(await runVerifier(bin, { proof: '0x02', public_values: '0x', vkey: VKEY }), { ok: false, reason: 'selector mismatch' });
+});
+
+test('internal errors throw: non-zero exit, non-JSON, unexpected shape, timeout', async () => {
+  const v = makeBtcPoolVerifier({ bin, vkey: VKEY, log: () => {}, timeoutMs: 1500 });
+  await assert.rejects(v.verify({ proof: Uint8Array.of(3), publicValues: pv }), /exited 101: panic/);
+  await assert.rejects(v.verify({ proof: Uint8Array.of(4), publicValues: pv }), /non-JSON/);
+  await assert.rejects(v.verify({ proof: Uint8Array.of(5), publicValues: pv }), /unexpected shape/);
+  await assert.rejects(v.verify({ proof: Uint8Array.of(6), publicValues: pv }), /timed out/);
+});
+
+test('fails closed when the binary is missing or unset', () => {
+  const logs = [];
+  const a = makeBtcPoolVerifier({ bin: join(dir, 'nope'), vkey: VKEY, log: (m) => logs.push(m) });
+  assert.equal(a.enabled, false); assert.equal(a.verify, null); assert.match(a.reason, /missing/);
+  const b = makeBtcPoolVerifier({ bin: '', vkey: VKEY, log: (m) => logs.push(m) });
+  assert.equal(b.enabled, false); assert.match(b.reason, /not set/);
+  const c = makeBtcPoolVerifier({ bin: seen, vkey: VKEY, log: (m) => logs.push(m) });
+  assert.equal(c.enabled, false, 'not executable');
+  assert.equal(logs.length, 3);
+  assert.ok(logs.every((m) => /DISABLED/.test(m)));
+});
 
 let passed = 0;
-function ok(name) { passed++; console.log('  ok -', name); }
-
-const BTC_POOL_SPEND_VALUES_TUPLE = {
-  type: 'tuple',
-  components: [
-    { name: 'version', type: 'uint16' },
-    { name: 'asset', type: 'bytes32' },
-    { name: 'root', type: 'bytes32' },
-    { name: 'hAnchor', type: 'uint32' },
-    { name: 'outKind', type: 'uint8' },
-    { name: 'nullifiers', type: 'bytes32[]' },
-    { name: 'outputs', type: 'tuple[]', components: [
-      { name: 'cx', type: 'bytes32' }, { name: 'cy', type: 'bytes32' },
-      { name: 'pkEph', type: 'bytes32' }, { name: 'spendKey', type: 'bytes32' }, { name: 'ctNote', type: 'bytes' },
-    ] },
-    { name: 'hasExitVout', type: 'bool' },
-    { name: 'exitVout', type: 'uint32' },
-    { name: 'exitValue', type: 'uint64' },
-    { name: 'destSpkHash', type: 'bytes32' },
-  ],
-};
-
-// ── ABI round-trip: encode a realistic pay statement, decode it back independently (a second,
-// hand-written tuple descriptor, not the module's own internal one — a slip in the module's own type list
-// would decode wrong here too, since decodeAbiParameters would fail or return garbage for a real mismatch).
-{
-  const stmt = {
-    version: 1,
-    asset: '0x' + 'ab'.repeat(32),
-    root: '0x' + 'cd'.repeat(32),
-    hAnchor: 900123,
-    outKind: 0,
-    nullifiers: ['0x' + '11'.repeat(32), '0x' + '22'.repeat(32)],
-    outputs: [
-      { cx: '0x' + '33'.repeat(32), cy: '0x' + '44'.repeat(32), pkEph: '0x' + '55'.repeat(32), spendKey: '0x' + '66'.repeat(32), ctNote: '0x' + '77'.repeat(56) },
-    ],
-    hasExitVout: false,
-    exitVout: 0,
-    exitValue: 0n,
-    destSpkHash: '0x' + '00'.repeat(32),
-  };
-  const encoded = encodeBtcPoolSpendPublicValues(stmt);
-  const [decoded] = decodeAbiParameters([BTC_POOL_SPEND_VALUES_TUPLE], encoded);
-  assert.equal(decoded.version, stmt.version);
-  assert.equal(decoded.asset.toLowerCase(), stmt.asset.toLowerCase());
-  assert.equal(decoded.hAnchor, stmt.hAnchor);
-  assert.equal(decoded.nullifiers.length, 2);
-  assert.equal(decoded.nullifiers[1].toLowerCase(), stmt.nullifiers[1].toLowerCase());
-  assert.equal(decoded.outputs.length, 1);
-  assert.equal(decoded.outputs[0].ctNote.toLowerCase(), stmt.outputs[0].ctNote.toLowerCase());
-  assert.equal(decoded.exitValue, 0n);
-  ok('encodeBtcPoolSpendPublicValues round-trips through an independent decoder (pay shape)');
+for (const [n, f] of tests) {
+  try { await f(); passed++; console.log('  ok -', n); } catch (e) { console.error('  FAIL -', n); console.error(e); process.exitCode = 1; }
 }
-
-// ── Same round-trip for an exit statement (empty outputs, exit fields populated) — the two `outKind`
-// shapes are exactly where a conditional-field mistake would hide.
-{
-  const stmt = {
-    version: 1, asset: '0x' + 'ab'.repeat(32), root: '0x' + 'cd'.repeat(32), hAnchor: 1, outKind: 1,
-    nullifiers: ['0x' + '99'.repeat(32)], outputs: [],
-    hasExitVout: true, exitVout: 3, exitValue: 12345678901234n, destSpkHash: '0x' + 'ee'.repeat(32),
-  };
-  const [decoded] = decodeAbiParameters([BTC_POOL_SPEND_VALUES_TUPLE], encodeBtcPoolSpendPublicValues(stmt));
-  assert.equal(decoded.outputs.length, 0);
-  assert.equal(decoded.hasExitVout, true);
-  assert.equal(decoded.exitVout, 3);
-  assert.equal(decoded.exitValue, 12345678901234n);
-  ok('encodeBtcPoolSpendPublicValues round-trips through an independent decoder (exit shape, large exitValue)');
-}
-
-// ── Revert-vs-network-error classification, mocked: a real on-chain revert (viem's structured shape)
-// resolves to `false`; a transport failure re-throws rather than being silently treated as "invalid".
-{
-  const stmt = { version: 1, asset: '0x' + '00'.repeat(32), root: '0x' + '00'.repeat(32), hAnchor: 1, outKind: 0, nullifiers: [], outputs: [], hasExitVout: false, exitVout: 0, exitValue: 0n, destSpkHash: '0x' + '00'.repeat(32) };
-
-  const revertingClient = { call: async () => { const e = new Error('execution reverted'); e.name = 'ContractFunctionExecutionError'; e.cause = { data: '0xdeadbeef' }; throw e; } };
-  assert.equal(await verifyBtcPoolSpendProof(stmt, '0x00', { client: revertingClient }), false);
-  ok('a structured on-chain revert (cause.data set) resolves to false, not a throw');
-
-  const timingOutClient = { call: async () => { const e = new Error('timeout of 10000ms exceeded'); e.name = 'TimeoutError'; throw e; } };
-  await assert.rejects(() => verifyBtcPoolSpendProof(stmt, '0x00', { client: timingOutClient }), /timeout/i);
-  ok('a transport timeout re-throws rather than being silently treated as an invalid proof');
-}
-
-console.log(`btc-pool-verify: all ${passed} checks passed`);
+console.log(`${passed}/${tests.length} passed`);

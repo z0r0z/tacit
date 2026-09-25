@@ -620,7 +620,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/farm/program', '/farm/health']);
+const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/crossout/minted', '/farm/program', '/farm/health']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -14040,15 +14040,43 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       ? await cc.consumer.bindBitcoinOutput({ network, claimId: cm.claimId, outputLeaf: leaf })
       : { bound: false, rejected: 'non-p2tr-mint-output' };
     const status = bind.bound ? 'minted' : (bind.rejected ? 'rejected' : 'pending-reflection');
-    await env.REGISTRY_KV.put(`crossout-minted:${network}:${cm.assetId.toLowerCase()}:${cm.claimId.toLowerCase()}`, JSON.stringify({
-      claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,
-      txid: txidHex, vout, height: blockHeight, status, bound: !!bind.bound, network,
-    }));
+    const mintedKey = crossoutMintedKey(network, cm.assetId, cm.claimId);
+    // A claim mints once: a later hint (the same tx again, or another tx naming the claim) never replaces it.
+    const prevMinted = await env.REGISTRY_KV.get(mintedKey, 'json').catch(() => null);
+    if (!(prevMinted && prevMinted.status === 'minted')) {
+      await env.REGISTRY_KV.put(mintedKey, JSON.stringify({
+        claimId: cm.claimId, assetId: cm.assetId, cx: cm.cx, cy: cm.cy, owner: cm.owner, leaf,
+        txid: txidHex, vout, height: blockHeight, status, bound: !!bind.bound, network,
+      }));
+    }
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
     return jsonResponse({ ok: true, source: 'hint', opcode: T_CROSSOUT_MINT, crossoutMint: { claimId: cm.claimId, leaf, status, bound: !!bind.bound }, network }, 200, cors);
   }
 
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
+}
+
+const crossoutMintedKey = (network, assetId, claimId) =>
+  `crossout-minted:${network}:${String(assetId).toLowerCase()}:${String(claimId).toLowerCase()}`;
+
+// GET /crossout/minted?network=&asset=0x..&claim=0x..&txid=<hex>
+// Mint status of one T_CROSSOUT_MINT outpoint (txid:0). `decided` is false while the claim has no minted
+// record and nothing rejected this tx; `minted` is true only for the tx the claim minted at.
+async function handleCrossoutMinted(url, env, cors) {
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const norm = (v) => String(v || '').replace(/^0x/, '').toLowerCase();
+  const asset = norm(url.searchParams.get('asset')), claim = norm(url.searchParams.get('claim')), txid = norm(url.searchParams.get('txid'));
+  if (![asset, claim, txid].every((h) => /^[0-9a-f]{64}$/.test(h))) return jsonResponse({ error: 'asset, claim and txid must be 32-byte hex' }, 400, cors);
+  const rec = await env.REGISTRY_KV.get(crossoutMintedKey(network, '0x' + asset, '0x' + claim), 'json');
+  const recTxid = rec ? norm(rec.txid) : null;
+  let decided = false, minted = false;
+  if (rec && rec.status === 'minted') { decided = true; minted = recTxid === txid && Number(rec.vout) === 0; }
+  else if (rec && rec.status === 'rejected' && recTxid === txid) decided = true;
+  return jsonResponse({
+    network, txid, vout: 0, decided, minted, status: rec ? rec.status : null,
+    mintedTxid: rec && rec.status === 'minted' ? recTxid : null,
+  }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 async function handleAssetGet(assetIdHex, env, network, cors) {
@@ -25297,6 +25325,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/burndep' && req.method === 'POST') return handleReflectionBurndep(req, env, url, cors);
     if (url.pathname === '/reflection/consumed-source' && req.method === 'POST') return handleReflectionConsumedSource(req, env, url, cors);
     if (url.pathname === '/reflection/burndep-list' && req.method === 'GET') return handleReflectionBurndepList(req, env, url, cors);
+    if (url.pathname === '/crossout/minted' && req.method === 'GET') return handleCrossoutMinted(url, env, cors);
     // Mode-B eth-side state: the eth-state sidecar POSTs eth_prove's output here.
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);

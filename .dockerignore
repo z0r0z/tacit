@@ -1,0 +1,14 @@
+# Repo-root build context is used only by worker-relay/Dockerfile.btc-pool; everything else is excluded.
+*
+!worker-relay/package.json
+!worker-relay/src
+!worker/package.json
+!worker/package-lock.json
+!worker/src/btc-shielded-pool.js
+!dapp/package.json
+!dapp/*.js
+!dapp/vendor/*.js
+!contracts/sp1/confidential/elf-vkey-pin.json
+!contracts/sp1/confidential/btc-pool-host/Cargo.toml
+!contracts/sp1/confidential/btc-pool-host/Cargo.lock
+!contracts/sp1/confidential/btc-pool-host/src

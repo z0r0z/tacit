@@ -1,0 +1,45 @@
+# tacit-btc-pool: Bitcoin-native shielded pool replay (src/btc-pool-indexer.js).
+# Build context is the repo root: the service imports worker/src/btc-shielded-pool.js and dapp/tacit.js and
+# reads contracts/sp1/confidential/elf-vkey-pin.json by relative path, so the runtime image keeps that layout.
+#   docker build -f worker-relay/Dockerfile.btc-pool .
+
+FROM rust:1.95-bookworm AS verify
+ARG CARGO_BUILD_JOBS=4
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+WORKDIR /build/btc-pool-host
+COPY contracts/sp1/confidential/btc-pool-host/Cargo.toml contracts/sp1/confidential/btc-pool-host/Cargo.lock ./
+COPY contracts/sp1/confidential/btc-pool-host/src ./src
+RUN cargo build --release --locked --bin btc-pool-verify \
+ && install -D -m 0755 target/release/btc-pool-verify /out/btc-pool-verify \
+ && rm -rf target
+
+FROM node:20-bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+COPY --from=verify /out/btc-pool-verify /app/prover/bin/btc-pool-verify
+# Malformed input must exit 2; anything else means the binary cannot run here.
+RUN echo '{}' | /app/prover/bin/btc-pool-verify; test $? -eq 2
+
+COPY contracts/sp1/confidential/elf-vkey-pin.json /app/contracts/sp1/confidential/elf-vkey-pin.json
+
+COPY worker/package.json worker/package-lock.json /app/worker/
+RUN cd /app/worker && npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY worker/src/btc-shielded-pool.js /app/worker/src/btc-shielded-pool.js
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/*.js /app/dapp/
+COPY dapp/vendor/*.js /app/dapp/vendor/
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY worker-relay/src ./src
+
+ENV NODE_ENV=production \
+    BTC_POOL_VERIFY_BIN=/app/prover/bin/btc-pool-verify \
+    BTC_POOL_DB=/var/lib/tacit-btc-pool/btc-pool.db \
+    PORT=10000
+EXPOSE 10000
+CMD ["node", "src/btc-pool-indexer.js"]

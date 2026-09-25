@@ -16585,6 +16585,114 @@ async function _fetchSwapAccepted(txidHex) {
   }
 }
 
+// Bitcoin-native shielded pool exits (T_BTC_SPEND with an exit). An exit output is a transparent note of
+// (asset, Cx, Cy) exactly when the pool's replay recorded an accepted exit at txid:exit_vout, so its validity
+// comes from the pool service's exit record. No service configured, or none reachable → no record → not
+// credited. A T_BTC_SPEND may ride any input of its carrier; an exit is only accepted when the carrier's vin[0]
+// holds no transparent Tacit op.
+const T_BTC_SPEND = 0x6D;
+const BTC_POOL_API = String((typeof globalThis !== 'undefined' && typeof globalThis.__TACIT_BTC_POOL_API__ === 'string' && globalThis.__TACIT_BTC_POOL_API__)
+  || (typeof process !== 'undefined' && process.env?.TACIT_BTC_POOL_API)
+  || '').replace(/\/$/, '');
+const _btcPoolExitCache = new Map();
+const BTC_POOL_EXIT_TTL_MS = 30 * 1000;
+function clearBtcPoolExitCache() { _btcPoolExitCache.clear(); }
+// → { exit: { assetIdHex, commitment } | null, available }. Only answers from the service are cached.
+async function _fetchBtcPoolExit(txidHex, vout) {
+  const k = `${txidHex}:${vout}`;
+  const c = _btcPoolExitCache.get(k);
+  if (c && (Date.now() - c.fetchedAt) < BTC_POOL_EXIT_TTL_MS) return c;
+  if (!BTC_POOL_API) return { exit: null, available: false, fetchedAt: Date.now() };
+  try {
+    const r = await fetch(`${BTC_POOL_API}/btc-pool/exit/${txidHex}/${vout}`);
+    if (!r.ok) return { exit: null, available: false, fetchedAt: Date.now() };
+    const j = await r.json();
+    let exit = null;
+    const h = (s, n) => typeof s === 'string' && new RegExp(`^(0x)?[0-9a-fA-F]{${n}}$`).test(s) ? s.replace(/^0x/, '').toLowerCase() : null;
+    const asset = h(j.asset, 64), cx = h(j.Cx, 64), cy = h(j.Cy, 64);
+    if (j.exists === true && String(j.txid).toLowerCase() === txidHex && Number(j.vout) === vout && asset && cx && cy) {
+      const commitment = concatBytes(new Uint8Array([(parseInt(cy.slice(-2), 16) & 1) ? 0x03 : 0x02]), hexToBytes(cx));
+      exit = { assetIdHex: asset, commitment };
+    }
+    const entry = { exit, available: true, fetchedAt: Date.now() };
+    _btcPoolExitCache.set(k, entry);
+    return entry;
+  } catch {
+    return { exit: null, available: false, fetchedAt: Date.now() };
+  }
+}
+// The recorded exit at txid:vout.
+async function _btcPoolExitNote(txidHex, vout) {
+  const rec = await _fetchBtcPoolExit(txidHex, vout);
+  return { note: rec.exit, available: rec.available };
+}
+
+function _witnessEnvelope(w) {
+  if (!Array.isArray(w) || w.length < 3) return null;
+  try { return decodeEnvelopeScript(hexToBytes(w[1])); } catch { return null; }
+}
+// The envelope that defines a tx's outputs: vin[0]'s, or, when vin[0] carries none, a T_BTC_SPEND on a later
+// input (whose outputs are notes only through the pool's exit record).
+function _txOutputEnvelope(tx) {
+  const env = _witnessEnvelope(tx?.vin?.[0]?.witness);
+  if (env) return env;
+  for (let i = 1; i < (tx?.vin?.length || 0); i++) {
+    const e = _witnessEnvelope(tx.vin[i]?.witness);
+    if (e && e.opcode === T_BTC_SPEND) return e;
+  }
+  return null;
+}
+
+// T_CROSSOUT_MINT (0x65): asset(32) ‖ claim_id(32) ‖ Cx(32) ‖ Cy(32) ‖ owner(32); the note is vout 0, owned by
+// that output's P2TR key. Reflection folds it only for a cross-out recorded on Ethereum, once per claim, so it
+// is credited only when the worker's mint record names this tx for the claim. No record either way → unknown.
+const T_CROSSOUT_MINT = 0x65;
+const _crossoutMintedCache = new Map();
+const CROSSOUT_MINTED_TTL_MS = 30 * 1000;
+function _decodeCrossoutMintEnv(payload) {
+  if (!payload || payload.length !== 161 || payload[0] !== T_CROSSOUT_MINT) return null;
+  return { asset: payload.slice(1, 33), claimId: payload.slice(33, 65), cx: payload.slice(65, 97), cy: payload.slice(97, 129) };
+}
+function _crossoutCommitment(d) {
+  try {
+    const P = secp.ProjectivePoint.fromAffine({ x: BigInt('0x' + bytesToHex(d.cx)), y: BigInt('0x' + bytesToHex(d.cy)) });
+    P.assertValidity();
+    return P.toRawBytes(true);
+  } catch { return null; }
+}
+// → { minted: bool, decided: bool }. Only decided answers are cached.
+async function _fetchCrossoutMinted(assetHex, claimHex, txidHex) {
+  const k = `${assetHex}:${claimHex}:${txidHex}`;
+  const c = _crossoutMintedCache.get(k);
+  if (c && (Date.now() - c.fetchedAt) < CROSSOUT_MINTED_TTL_MS) return c;
+  if (!WORKER_BASE) return { minted: false, decided: false, fetchedAt: Date.now() };
+  try {
+    const r = await fetch(`${WORKER_BASE}/crossout/minted?network=${NET.name}&asset=${assetHex}&claim=${claimHex}&txid=${txidHex}`);
+    if (!r.ok) return { minted: false, decided: false, fetchedAt: Date.now() };
+    const j = await r.json();
+    const entry = { minted: j.decided === true && j.minted === true, decided: j.decided === true, fetchedAt: Date.now() };
+    if (entry.decided) _crossoutMintedCache.set(k, entry);
+    return entry;
+  } catch {
+    return { minted: false, decided: false, fetchedAt: Date.now() };
+  }
+}
+// The minted note at txid:vout, or null. `available` is false when validity cannot be decided now.
+// `tx` (optional) adds the vout-0 P2TR check the fold applies.
+async function _crossoutMintNote(env, txidHex, vout, tx = null) {
+  const d = _decodeCrossoutMintEnv(env.payload);
+  if (vout !== 0 || !d) return { note: null, available: true };
+  const commitment = _crossoutCommitment(d);
+  if (!commitment) return { note: null, available: true };
+  if (tx) {
+    const spk = String(tx.vout?.[0]?.scriptpubkey ?? '').toLowerCase();
+    if (!/^5120[0-9a-f]{64}$/.test(spk) || /^51200{64}$/.test(spk)) return { note: null, available: true };
+  }
+  const st = await _fetchCrossoutMinted(bytesToHex(d.asset), bytesToHex(d.claimId), txidHex);
+  if (!st.decided) return { note: null, available: false };
+  return { note: st.minted ? { assetIdHex: bytesToHex(d.asset), commitment } : null, available: true };
+}
+
 // pmintStatusOut (optional, last positional) is a Map<"txid:vout", 'pending' | 'invalid'>
 // scanHoldings populates so it can distinguish T_PMINT failures that may
 // promote later (mempool, depth < 3, worker says not credited yet) from
@@ -16749,6 +16857,13 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // "couldn't verify · retry" instead of an inflation warning.
     _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED);
     return false;
+  }
+  const outEnv = _txOutputEnvelope(tx);
+  if (outEnv && outEnv.opcode === T_BTC_SPEND) {
+    const { note, available } = await _btcPoolExitNote(txidHex, vout);
+    if (!note) { _markInvalid(validatedSet, validatedReasons, key, available ? _REASON_INVALID : _REASON_FETCH_FAILED); return false; }
+    validatedSet.set(key, true);
+    return true;
   }
   const wit = tx.vin[0].witness;
   // Witness-missing / empty / very-short cases. mempool.space sometimes
@@ -16945,10 +17060,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
       if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
-      const pwit = parent.vin?.[0]?.witness;
-      if (!pwit || pwit.length < 3) { markAll(Math.max(N, 1), false); return false; }
-      let parentEnv;
-      try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+      const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
       const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
       if (!pd) { markAll(Math.max(N, 1), false); return false; }
@@ -17025,10 +17137,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
       if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
-      const pwit = parent.vin?.[0]?.witness;
-      if (!pwit || pwit.length < 3) { markAll(Math.max(N, 1), false); return false; }
-      let parentEnv;
-      try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+      const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
       const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
       if (!pd) { markAll(Math.max(N, 1), false); return false; }
@@ -17104,10 +17213,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
       if (!parent) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
-      const pwit = parent.vin?.[0]?.witness;
-      if (!pwit || pwit.length < 3) { markAll(N, false); return false; }
-      let parentEnv;
-      try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+      const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(N, false); return false; }
       const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
       if (!pd) { markAll(N, false); return false; }
@@ -17197,10 +17303,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // Resolve the parent's input commitment for kernel-sig math.
     const parent = await fetchTx(inp.txid);
     if (!parent) { markBothTacitVouts(false, _REASON_FETCH_FAILED); return false; }
-    const pwit = parent.vin?.[0]?.witness;
-    if (!pwit || pwit.length < 3) { markBothTacitVouts(false); return false; }
-    let parentEnv;
-    try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+    const parentEnv = _txOutputEnvelope(parent);
     if (!parentEnv) { markBothTacitVouts(false); return false; }
     const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
     if (!pd) { markBothTacitVouts(false); return false; }
@@ -18023,10 +18126,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
       if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
-      const pwit = parent.vin?.[0]?.witness;
-      if (!pwit || pwit.length < 3) { markAll(Math.max(N, 1), false); return false; }
-      let parentEnv;
-      try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+      const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
       const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
       if (!pd) { markAll(Math.max(N, 1), false); return false; }
@@ -18048,6 +18148,63 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return kernelOk;
   }
 
+  if (env.opcode === T_CXFER_BOUND) {
+    // T_CXFER behind a 32-byte target binding: identity vout layout, same kernel message, and a range proof
+    // that is BP+ or classic by its length (cxfer-core verify_range).
+    const dec = decodeCXferBoundPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    const N = dec.outputs.length;
+    if (vout >= N) { validatedSet.set(key, false); return false; }
+    if (tx.vin.length < 2 || tx.vin.length - 1 > 255) { markAll(N, false); return false; }
+    for (let i = 1; i < tx.vin.length; i++) {
+      const parentKey = `${tx.vin[i].txid}:${tx.vin[i].vout}`;
+      if (validatedSet.get(parentKey) !== true) {
+        const parentReason = validatedReasons?.get(parentKey);
+        markAll(N, false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+        return false;
+      }
+    }
+    let Cpts;
+    try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
+    catch { markAll(N, false); return false; }
+    const bppLen = 99 + 96 + Math.log2(64 * N) * 66;
+    if (dec.rangeproof.length === bppLen) {
+      if (!bppEnabled() || !bppRangeVerify(Cpts, dec.rangeproof)) { markAll(N, false); return false; }
+    } else if (rpBatch) {
+      rpBatch.push({ commitments: Cpts, proof: dec.rangeproof });
+    } else if (!bpRangeAggVerify(Cpts, dec.rangeproof)) { markAll(N, false); return false; }
+    const ourAssetIdHex = bytesToHex(dec.assetId);
+    const inputCommitments = [];
+    for (let i = 1; i < tx.vin.length; i++) {
+      const inp = tx.vin[i];
+      const parent = await fetchTx(inp.txid);
+      if (!parent) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
+      const parentEnv = _txOutputEnvelope(parent);
+      if (!parentEnv) { markAll(N, false); return false; }
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
+      if (!pd || pd.assetIdHex !== ourAssetIdHex) { markAll(N, false); return false; }
+      inputCommitments.push(pd.commitment);
+    }
+    let EPrime = secp.ProjectivePoint.ZERO;
+    try {
+      for (const o of dec.outputs) EPrime = EPrime.add(bytesToPoint(o.commitment));
+      for (const c of inputCommitments) EPrime = EPrime.add(bytesToPoint(c).negate());
+    } catch { markAll(N, false); return false; }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markAll(N, false); return false; }
+    const inputOutpoints = tx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout }));
+    const msg = computeKernelMsg(dec.assetId, inputOutpoints, dec.outputs.map(o => o.commitment), 0n);
+    const kernelOk = verifySchnorr(dec.kernelSig, msg, EPrime.toRawBytes(true).slice(1));
+    markAll(N, kernelOk);
+    return kernelOk;
+  }
+
+  if (env.opcode === T_CROSSOUT_MINT) {
+    const { note, available } = await _crossoutMintNote(env, txidHex, vout, tx);
+    if (!note) { _markInvalid(validatedSet, validatedReasons, key, available ? _REASON_INVALID : _REASON_FETCH_FAILED); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -18062,12 +18219,7 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
 // instead of relying on the worker's POST-time outpoint validation.
 async function definingCommitmentForOutpoint(txidHex, vout) {
   const parent = await apiJson(`/tx/${txidHex}`);
-  const pwit = parent?.vin?.[0]?.witness;
-  if (!Array.isArray(pwit) || pwit.length < 3) {
-    throw new Error(`outpoint ${shorten(txidHex, 8)}:${vout} parent has no taproot script-path witness`);
-  }
-  let penv;
-  try { penv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { penv = null; }
+  const penv = _txOutputEnvelope(parent);
   if (!penv) throw new Error(`outpoint ${shorten(txidHex, 8)}:${vout} parent is not a tacit envelope`);
   const pd = await getParentEnvelopeData(penv, vout, txidHex);
   if (!pd) throw new Error(`outpoint ${shorten(txidHex, 8)}:${vout} is not a tacit-asset output`);
@@ -18075,6 +18227,16 @@ async function definingCommitmentForOutpoint(txidHex, vout) {
 }
 
 async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
+  if (parentEnv.opcode === T_BTC_SPEND) {
+    if (!parentTxid) return null;
+    const { note } = await _btcPoolExitNote(parentTxid, vout);
+    return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
+  }
+  if (parentEnv.opcode === T_CROSSOUT_MINT) {
+    if (!parentTxid) return null;
+    const { note } = await _crossoutMintNote(parentEnv, parentTxid, vout);
+    return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
+  }
   if (parentEnv.opcode === T_CETCH) {
     if (vout !== 0) return null;
     const d = decodeCEtchPayload(parentEnv.payload);
@@ -91735,6 +91897,8 @@ export {
   // a confirmed T_WITHDRAW is creditable (runs the full gate chain incl. the
   // owner-conflict re-verify) without depending on scanHoldings' address-scan timing.
   validateOutpoint,
+  // (asset, commitment) of a validated outpoint, and the pool-exit cache; used by the shielded-pool replay.
+  getParentEnvelopeData, clearBtcPoolExitCache, _txOutputEnvelope as txOutputEnvelope,
   // Tx negative-cache helpers — exported for the mixer owner-conflict test so
   // it can simulate a clean 404 (reorged-out / forged owner-txid) vs a
   // transient fetch failure, the distinction verifyWithdrawOwnerOnChain relies

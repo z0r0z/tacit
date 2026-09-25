@@ -1,438 +1,527 @@
-// Bitcoin-native shielded pool — Phase 3 indexer wiring (NEW, INERT module).
-//
-// Implements DESIGN-btc-shielded-pool.md's T_BTC_SHIELD (0x6C) / T_BTC_SPEND (0x6D): canonical envelope
-// parsing, leaf/nullifier derivation, a Bitcoin-only Merkle tree + nullifier set maintained purely by
-// replaying accepted envelopes, and the §10 acceptance-order state machine. Mirrors
-// contracts/sp1/confidential/cxfer-core/src/btc_pool.rs field-for-field — see that file (ground truth) and
-// DESIGN-btc-shielded-pool-security.md (the formal goals this acceptance order is required to uphold).
-//
-// NOT WIRED IN. This module is not imported by worker/src/index.js and nothing in the worker's request
-// handlers, cron scan, or startup path references it. The fourth SP1 guest now has a real, pinned
-// verifying key (contracts/sp1/confidential/elf-vkey-pin.json:btc_pool_vkey, ELF built and committed) and
-// a real off-chain verifier (worker-relay/src/lib/btc-pool-verify.js — a free `eth_call` against the live,
-// immutable SP1 Groth16 verifier every settle/reflection proof already trusts; this pool has no EVM
-// contract of its own to call it from). `verifyBtcPoolSpendProof` below is still a deliberate stub that
-// always fails closed: `acceptBtcSpendEnvelope`'s `verifyProof` option is how a caller supplies the real
-// implementation, and this plain `worker` module (no EVM deps by design) is not that caller. Wiring this
-// in for real still needs: (1) hook `parseBtcPoolEnvelope`/`BtcShieldedPoolState` into the same per-block
-// replay loop `worker/src/index.js` already runs for every other opcode, in the same canonical
-// transaction-index order (§10), passing `verifyProof: verifyBtcPoolSpendProof` from
-// worker-relay/src/lib/btc-pool-verify.js at the call site, (2) claim 0x6C/0x6D in SPEC.md's opcode table
-// per its own stated procedure (SPEC §3.9) — deliberately not done here (see DESIGN doc "Fit with the
-// rest of Tacit V1"; out of scope for this phase).
-//
-// Crypto: @noble/secp256k1 + @noble/hashes, the same libraries worker/src/index.js itself imports (not
-// dependency-injected — this module is worker-side, unlike the dapp's DI'd confidential-pool.js).
+// Bitcoin-native shielded pool: envelope parsing, note/nullifier hashing, the keccak note tree and the
+// block-by-block replay state (contracts/sp1/confidential/DESIGN-btc-shielded-pool.md §2, §3, §5).
+// Pure logic: no I/O. Transparent-note resolution and proof verification are injected by the caller.
 
 import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
+import { sha256 as sha256Hash } from '@noble/hashes/sha256';
 
 export const T_BTC_SHIELD = 0x6c;
 export const T_BTC_SPEND = 0x6d;
 
-export const BTC_POOL_OUT_PAY = 0x00;
-export const BTC_POOL_OUT_EXIT = 0x01;
-export const BTC_POOL_MAX_IN = 2;
-export const BTC_POOL_MAX_OUT = 2;
-
-// Anchor window (design §10): W blocks of retained roots, Kmin the shallowest depth already defined when
-// the anchor block is replayed.
-export const BTC_POOL_ANCHOR_WINDOW = 144;
-export const BTC_POOL_ANCHOR_KMIN = 1;
-
+export const SHIELD_LEN = 316;
+export const SHIELD_MAX_IN = 8;
+export const SPEND_MAX_IN = 2;
+export const SPEND_MAX_OUT = 3;
+export const PROOF_MAX = 512;
+export const ANCHOR_WINDOW = 144;
+export const UNDO_DEPTH = 288;
 export const TREE_DEPTH = 32;
+export const MAX_LEAVES = 2 ** TREE_DEPTH;
+export const PV_VERSION = 1;
 
-const BTC_POOL_NOTE_DOMAIN = new TextEncoder().encode('tacit-btc-pool-note-v1');
-const BTC_POOL_NF_DOMAIN = new TextEncoder().encode('tacit-btc-pool-nf-v1');
+export const OUTPUT_LEN = 32 + 32 + 32 + 33 + 33 + 56;
+export const EXIT_LEN = 4 + 32 + 32 + 32;
 
-// ── byte helpers (mirror the style already used throughout worker/src/index.js and dapp/*.js) ──
-const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
-const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-const hx = (b) => '0x' + bytesToHex(b);
-const concat = (arr) => { const t = arr.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of arr) { o.set(x, p); p += x.length; } return o; };
-const keccak256 = (b) => keccak_256(b);
-const kn = (parts) => keccak256(concat(parts));
+const enc = (s) => new TextEncoder().encode(s);
+const NOTE_DOMAIN = enc('tacit-btc-pool-note-v1');
+const NF_DOMAIN = enc('tacit-btc-pool-nf-v1');
+const SPEND_DOMAIN = enc('tacit-btc-pool-spend-v1');
+const SHIELD_DOMAIN = enc('tacit-btc-pool-shield-v1');
 
-function u32le(bytes, off) {
-  return (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] * 0x1000000)) >>> 0;
-}
-function u32beBytes(v) {
-  const x = Number(v) >>> 0;
-  return Uint8Array.of((x >>> 24) & 0xff, (x >>> 16) & 0xff, (x >>> 8) & 0xff, x & 0xff);
-}
+const Point = secp.ProjectivePoint;
+const P_FIELD = secp.CURVE.p;
+const N_ORDER = secp.CURVE.n;
 
-// ── leaf / nullifier (design §2, cxfer-core btc_pool.rs — byte-exact mirror) ──
+// ── bytes ──
+export const hexToBytes = (h) => {
+  const s = String(h).replace(/^0x/, '');
+  if (s.length % 2 || /[^0-9a-fA-F]/.test(s)) throw new Error('bad hex');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16);
+  return out;
+};
+export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+export const hx = (b) => '0x' + bytesToHex(b);
+export const concat = (...arr) => {
+  const out = new Uint8Array(arr.reduce((s, x) => s + x.length, 0));
+  let p = 0;
+  for (const x of arr) { out.set(x, p); p += x.length; }
+  return out;
+};
+const toBytes = (v) => (typeof v === 'string' ? hexToBytes(v) : v);
+export const keccak = (...parts) => keccak_256(concat(...parts.map(toBytes)));
+export const sha256 = (...parts) => sha256Hash(concat(...parts.map(toBytes)));
+const bytesToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);
+const bigTo32 = (n) => hexToBytes(n.toString(16).padStart(64, '0'));
+const u32le = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] * 0x1000000)) >>> 0;
+const u32leBytes = (v) => Uint8Array.of(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+const beBytes = (v, len) => {
+  const out = new Uint8Array(len);
+  let x = BigInt(v);
+  for (let i = len - 1; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
+  return out;
+};
+const eqBytes = (a, b) => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
 
-// leaf = keccak(asset ‖ Cx ‖ Cy ‖ spend_key ‖ "tacit-btc-pool-note-v1")
-export function btcPoolNoteLeaf(assetHex, cxHex, cyHex, spendKeyHex) {
-  return hx(kn([hexToBytes(assetHex), hexToBytes(cxHex), hexToBytes(cyHex), hexToBytes(spendKeyHex), BTC_POOL_NOTE_DOMAIN]));
-}
-
-// nf_secret = keccak("tacit-btc-pool-nf-v1" ‖ sk_note) — indexer-side callers never have sk_note; this
-// exists only for tests/fixtures that need to derive a nullifier the way a spending wallet would.
-export function btcPoolNfSecret(skNoteHex) {
-  return hx(kn([BTC_POOL_NF_DOMAIN, hexToBytes(skNoteHex)]));
-}
-
-// nullifier = keccak(leaf ‖ nf_secret ‖ "spent")
-export function btcPoolNullifier(leafHex, nfSecretHex) {
-  return hx(kn([hexToBytes(leafHex), hexToBytes(nfSecretHex), new TextEncoder().encode('spent')]));
-}
-
-// ── canonical_body / h_body (design §4 — the exact bytes the guest commits over; big-endian internal
-// integers, matching T_CXFER's own kernel-message split of big-endian txid / little-endian vout). The
-// indexer does not need this to accept an envelope (design §4: "the indexer... does not need to
-// separately recompute h_body"), but the wallet needs it to build the witness and it is useful for tests
-// asserting field coverage, so it is exported here too.
-export function btcPoolCanonicalBody({ asset, nullifiers, outKind, outputs, exitVout, destSpkHash, hAnchor }) {
-  const parts = [Uint8Array.of(T_BTC_SPEND), hexToBytes(asset), Uint8Array.of(nullifiers.length)];
-  for (const nf of nullifiers) parts.push(hexToBytes(nf));
-  parts.push(Uint8Array.of(outKind));
-  if (outKind === BTC_POOL_OUT_PAY) {
-    parts.push(Uint8Array.of(outputs.length));
-    for (const o of outputs) {
-      parts.push(hexToBytes(o.cx), hexToBytes(o.cy), hexToBytes(o.pkEph), hexToBytes(o.spendKey), hexToBytes(o.ctNote));
-    }
-  } else {
-    parts.push(u32beBytes(exitVout || 0), hexToBytes(destSpkHash || '0x' + '00'.repeat(32)));
+// ── curve ──
+// SPEC §2.1: H = first valid 0x02 ‖ SHA-256(SHA-256("tacit-generator-H-v1") ‖ ctr).
+export const H = (() => {
+  const seed = sha256Hash(enc('tacit-generator-H-v1'));
+  for (let ctr = 0; ctr < 256; ctr++) {
+    try { return Point.fromHex(concat(Uint8Array.of(0x02), sha256Hash(concat(seed, Uint8Array.of(ctr))))); } catch {}
   }
-  parts.push(u32beBytes(hAnchor));
-  return concat(parts);
+  throw new Error('no H');
+})();
+export const G = Point.BASE;
+export const ZERO = Point.ZERO;
+
+// Scalar multiply tolerating 0 and reducing mod n (noble rejects 0).
+export const mulPoint = (P, k) => {
+  const s = ((BigInt(k) % N_ORDER) + N_ORDER) % N_ORDER;
+  return s === 0n ? ZERO : P.multiply(s);
+};
+export const pedersen = (value, blinding) => mulPoint(H, value).add(mulPoint(G, blinding));
+
+// (Cx, Cy) as a curve point, both coordinates < p; null otherwise.
+export function pointFromXY(cx, cy) {
+  const x = bytesToBig(toBytes(cx)), y = bytesToBig(toBytes(cy));
+  if (x >= P_FIELD || y >= P_FIELD) return null;
+  try { return Point.fromAffine({ x, y }).assertValidity(); } catch { return null; }
 }
-export function btcPoolHBody(fields) {
-  return hx(keccak256(btcPoolCanonicalBody(fields)));
+export function pointFromCompressed(b) {
+  b = toBytes(b);
+  if (b.length !== 33 || (b[0] !== 0x02 && b[0] !== 0x03)) return null;
+  if (bytesToBig(b.subarray(1)) >= P_FIELD) return null;
+  try { return Point.fromHex(b); } catch { return null; }
+}
+export function liftX(x32) {
+  x32 = toBytes(x32);
+  if (x32.length !== 32) return null;
+  return pointFromCompressed(concat(Uint8Array.of(0x02), x32));
+}
+export const pointXY = (P) => {
+  const { x, y } = P.toAffine();
+  return { cx: bigTo32(x), cy: bigTo32(y) };
+};
+
+const taggedHash = (tag, ...parts) => {
+  const t = sha256Hash(enc(tag));
+  return sha256Hash(concat(t, t, ...parts));
+};
+
+// BIP-340 verification over a 32-byte message.
+export function bip340Verify(sig, msg, pubX) {
+  sig = toBytes(sig); msg = toBytes(msg); pubX = toBytes(pubX);
+  if (sig.length !== 64 || msg.length !== 32 || pubX.length !== 32) return false;
+  const P = liftX(pubX);
+  if (!P) return false;
+  const r = bytesToBig(sig.subarray(0, 32));
+  const s = bytesToBig(sig.subarray(32));
+  if (r >= P_FIELD || s >= N_ORDER) return false;
+  const e = bytesToBig(taggedHash('BIP0340/challenge', sig.subarray(0, 32), pubX, msg)) % N_ORDER;
+  const R = mulPoint(G, s).add(mulPoint(P, e).negate());
+  if (R.equals(ZERO)) return false;
+  const { x, y } = R.toAffine();
+  return (y & 1n) === 0n && x === r;
 }
 
-// ── canonical envelope parsing (design §3, §10 step 1: fixed widths, counts match, no trailing bytes) ──
-//
-// T_BTC_SHIELD (0x6C), fixed length: 0x6C ‖ asset(32) ‖ lock_vout(4 LE) ‖ Cx(32) ‖ Cy(32) ‖ pk_eph(32) ‖
-// spend_key(32) ‖ opening_proof(64) = 1+32+4+32+32+32+32+64 = 229 bytes exact (no count fields — single
-// note per shield envelope).
-export const T_BTC_SHIELD_LEN = 229;
-export function parseBtcShieldEnvelope(envBytesOrHex) {
-  const e = typeof envBytesOrHex === 'string' ? hexToBytes(envBytesOrHex) : envBytesOrHex;
-  if (!e || e.length !== T_BTC_SHIELD_LEN || e[0] !== T_BTC_SHIELD) return null;
+// ── note, nullifier, messages (§2, §3, §4) ──
+export function noteLeaf({ asset, cx, cy, spendKey, nkPub }) {
+  return keccak(asset, cx, cy, spendKey, nkPub, NOTE_DOMAIN);
+}
+
+// nf = keccak("tacit-btc-pool-nf-v1" ‖ leaf ‖ nk_note(32, BE) ‖ leaf_index(8, BE)). Wallet/test side only:
+// the indexer never sees nk_note, it takes nf from the body.
+export function nullifier(leaf, nkNote, leafIndex) {
+  const nk = typeof nkNote === 'bigint' ? bigTo32(nkNote) : toBytes(nkNote);
+  return keccak(NF_DOMAIN, leaf, nk, beBytes(leafIndex, 8));
+}
+
+export const spendMsg = (body) => keccak(SPEND_DOMAIN, body);
+
+// Outpoint txids are given in display hex; the message carries the byte order the transaction's input
+// serializes, exactly as the T_CXFER kernel does.
+export function shieldKernelMsg(s, outpoints) {
+  const parts = [SHIELD_DOMAIN, s.asset, Uint8Array.of(s.nIn)];
+  for (const op of outpoints) parts.push(hexToBytes(op.txid).reverse(), u32leBytes(op.vout >>> 0));
+  parts.push(s.cx, s.cy, s.spendKey, s.nkPub, s.pkEph, s.ctNote);
+  return sha256(...parts);
+}
+
+// abi.encode(uint16 1, bytes32 root, bytes32 keccak(body)): three static words.
+export function spendPublicValues(root, body) {
+  const v = new Uint8Array(32);
+  v[31] = PV_VERSION;
+  return concat(v, toBytes(root), keccak(body));
+}
+
+// ── canonical parsers (§3) ──
+function readNoteKeys(e, p, out) {
+  out.spendKey = e.slice(p, p + 32); p += 32;
+  out.nkPub = e.slice(p, p + 33); p += 33;
+  out.pkEph = e.slice(p, p + 33); p += 33;
+  return p;
+}
+function noteKeysValid(n) {
+  return !!(liftX(n.spendKey) && pointFromCompressed(n.nkPub) && pointFromCompressed(n.pkEph));
+}
+
+export function parseShield(bytes) {
+  const e = toBytes(bytes);
+  if (!e || e.length !== SHIELD_LEN || e[0] !== T_BTC_SHIELD) return null;
   let p = 1;
-  const asset = hx(e.slice(p, p + 32)); p += 32;
-  const lockVout = u32le(e, p); p += 4;
-  const cx = hx(e.slice(p, p + 32)); p += 32;
-  const cy = hx(e.slice(p, p + 32)); p += 32;
-  const pkEph = hx(e.slice(p, p + 32)); p += 32;
-  const spendKey = hx(e.slice(p, p + 32)); p += 32;
-  const openingProof = hx(e.slice(p, p + 64)); p += 64;
-  if (p !== e.length) return null; // no trailing bytes (§10 step 1)
-  return { type: 'btc_shield', opcode: T_BTC_SHIELD, asset, lockVout, cx, cy, pkEph, spendKey, openingProof };
+  const s = { kind: 'shield' };
+  s.asset = e.slice(p, p + 32); p += 32;
+  s.nIn = e[p]; p += 1;
+  if (s.nIn < 1 || s.nIn > SHIELD_MAX_IN) return null;
+  s.cx = e.slice(p, p + 32); p += 32;
+  s.cy = e.slice(p, p + 32); p += 32;
+  p = readNoteKeys(e, p, s);
+  s.ctNote = e.slice(p, p + 56); p += 56;
+  s.kernelSig = e.slice(p, p + 64); p += 64;
+  if (p !== e.length) return null;
+  if (!pointFromXY(s.cx, s.cy) || !noteKeysValid(s)) return null;
+  return s;
 }
 
-// T_BTC_SPEND (0x6D), variable length per out_kind (design §3):
-//   0x6D ‖ asset(32) ‖ n_in(1) ‖ nf[32×n_in] ‖ out_kind(1)
-//     pay  (0x00): n_out(1) ‖ (Cx‖Cy‖pk_eph‖spend_key‖ct_note(56)) × n_out
-//     exit (0x01): exit_vout(4 LE) ‖ exit_value(8 LE) ‖ dest_spk_hash(32)
-//   ‖ h_anchor(4 LE) ‖ proof
-//
-// `proof`'s byte width is not yet fixed (design §"Still open" — pinned once the guest is compiled, Phase
-// 2). This parser therefore takes the trailing bytes after h_anchor as `proof` verbatim and defers
-// asserting an exact width to whoever wires in the real guest; every fixed-width field before it is
-// still validated exactly, so a malformed header/count is still rejected here.
-export function parseBtcSpendEnvelope(envBytesOrHex) {
-  const e = typeof envBytesOrHex === 'string' ? hexToBytes(envBytesOrHex) : envBytesOrHex;
-  if (!e || e.length < 1 || e[0] !== T_BTC_SPEND) return null;
+// 0x6D ‖ asset ‖ h_anchor(4) ‖ n_in ‖ nf×n_in ‖ n_out ‖ output×n_out ‖ has_exit ‖ [exit] ‖ proof_len(2) ‖ proof.
+// `body` is every byte before proof_len.
+export function parseSpend(bytes) {
+  const e = toBytes(bytes);
+  if (!e || e.length < 1 + 32 + 4 + 1 || e[0] !== T_BTC_SPEND) return null;
   let p = 1;
-  if (e.length < p + 32 + 1) return null;
-  const asset = hx(e.slice(p, p + 32)); p += 32;
-  const nIn = e[p]; p += 1;
-  if (nIn < 1 || nIn > BTC_POOL_MAX_IN) return null;
-  if (e.length < p + nIn * 32 + 1) return null;
-  const nullifiers = [];
-  for (let i = 0; i < nIn; i++) { nullifiers.push(hx(e.slice(p, p + 32))); p += 32; }
-  const outKind = e[p]; p += 1;
-  if (outKind !== BTC_POOL_OUT_PAY && outKind !== BTC_POOL_OUT_EXIT) return null;
-
-  let outputs = [], exitVout = null, exitValue = null, destSpkHash = null;
-  if (outKind === BTC_POOL_OUT_PAY) {
-    if (e.length < p + 1) return null;
-    const nOut = e[p]; p += 1;
-    if (nOut < 1 || nOut > BTC_POOL_MAX_OUT) return null;
-    const OUT_W = 32 + 32 + 32 + 32 + 56; // Cx,Cy,pk_eph,spend_key,ct_note
-    if (e.length < p + nOut * OUT_W) return null;
-    for (let i = 0; i < nOut; i++) {
-      const cx = hx(e.slice(p, p + 32)); p += 32;
-      const cy = hx(e.slice(p, p + 32)); p += 32;
-      const pkEph = hx(e.slice(p, p + 32)); p += 32;
-      const spendKey = hx(e.slice(p, p + 32)); p += 32;
-      const ctNote = hx(e.slice(p, p + 56)); p += 56;
-      outputs.push({ cx, cy, pkEph, spendKey, ctNote });
-    }
-  } else {
-    if (e.length < p + 4 + 8 + 32) return null;
-    exitVout = u32le(e, p); p += 4;
-    let v = 0n; for (let j = 7; j >= 0; j--) v = (v << 8n) | BigInt(e[p + j]); p += 8;
-    exitValue = v;
-    destSpkHash = hx(e.slice(p, p + 32)); p += 32;
+  const s = { kind: 'spend' };
+  s.asset = e.slice(p, p + 32); p += 32;
+  s.hAnchor = u32le(e, p); p += 4;
+  s.nIn = e[p]; p += 1;
+  if (s.nIn < 1 || s.nIn > SPEND_MAX_IN) return null;
+  if (e.length < p + 32 * s.nIn + 1) return null;
+  s.nullifiers = [];
+  for (let i = 0; i < s.nIn; i++) { s.nullifiers.push(e.slice(p, p + 32)); p += 32; }
+  const nOut = e[p]; p += 1;
+  if (nOut > SPEND_MAX_OUT) return null;
+  if (e.length < p + nOut * OUTPUT_LEN + 1) return null;
+  s.outputs = [];
+  for (let i = 0; i < nOut; i++) {
+    const o = {};
+    o.cx = e.slice(p, p + 32); p += 32;
+    o.cy = e.slice(p, p + 32); p += 32;
+    p = readNoteKeys(e, p, o);
+    o.ctNote = e.slice(p, p + 56); p += 56;
+    if (!pointFromXY(o.cx, o.cy) || !noteKeysValid(o)) return null;
+    s.outputs.push(o);
   }
-  if (e.length < p + 4) return null;
-  const hAnchor = u32le(e, p); p += 4;
-  const proof = hx(e.slice(p));
-  if (nullifiers.length !== new Set(nullifiers.map((x) => x.toLowerCase())).size) return null; // pairwise distinct within envelope (§10 step 3)
-
-  return {
-    type: 'btc_spend', opcode: T_BTC_SPEND, asset, nIn, nullifiers, outKind,
-    outputs, exitVout, exitValue: exitValue == null ? null : exitValue.toString(), destSpkHash, hAnchor, proof,
-  };
+  const hasExit = e[p]; p += 1;
+  if (hasExit > 1) return null;
+  s.exit = null;
+  if (hasExit) {
+    if (e.length < p + EXIT_LEN) return null;
+    const x = {};
+    x.exitVout = u32le(e, p); p += 4;
+    x.cx = e.slice(p, p + 32); p += 32;
+    x.cy = e.slice(p, p + 32); p += 32;
+    x.destSpkHash = e.slice(p, p + 32); p += 32;
+    if (!pointFromXY(x.cx, x.cy)) return null;
+    s.exit = x;
+  }
+  if (nOut + hasExit < 1) return null;
+  s.body = e.slice(0, p);
+  if (e.length < p + 2) return null;
+  s.proofLen = e[p] | (e[p + 1] << 8); p += 2;
+  if (s.proofLen > PROOF_MAX) return null;
+  if (e.length !== p + s.proofLen) return null;
+  s.proof = e.slice(p);
+  return s;
 }
 
-export function parseBtcPoolEnvelope(envBytesOrHex) {
-  const e = typeof envBytesOrHex === 'string' ? hexToBytes(envBytesOrHex) : envBytesOrHex;
-  if (!e || e.length === 0) return null;
-  if (e[0] === T_BTC_SHIELD) return parseBtcShieldEnvelope(e);
-  if (e[0] === T_BTC_SPEND) return parseBtcSpendEnvelope(e);
+export function parseEnvelope(payload) {
+  const e = toBytes(payload);
+  if (!e || !e.length) return null;
+  if (e[0] === T_BTC_SHIELD) return parseShield(e);
+  if (e[0] === T_BTC_SPEND) return parseSpend(e);
   return null;
 }
 
-// ── Schnorr NIZK opening proof (T_BTC_SHIELD's `opening_proof`, design §3/§10 step 2) ──
-//
-// GENUINE GAP, flagged explicitly rather than silently assumed: the design doc says this reuses "the same
-// Schnorr NIZK from T_BTC_WRAP" (DESIGN-btc-only-wrap.md, 0x6A/0x6B), but T_BTC_WRAP has no implementation
-// anywhere in this repo yet (grepped dapp/*.js and worker/src/*.js — no T_BTC_WRAP/T_BTC_UNWRAP constants,
-// no builder, no parser). There is therefore no existing NIZK to reuse byte-for-byte. What follows is a
-// concrete, self-contained construction that satisfies the design's requirement ("binding C to the lock's
-// public value") using the same sigma-protocol shape as everything else in this codebase's Bitcoin lane
-// (BIP-340-style x-only point encoding, Fiat-Shamir via keccak) — but it has NOT been cross-checked against
-// whatever T_BTC_WRAP eventually ships, and needs its own review before anything relies on it. If/when
-// T_BTC_WRAP lands with its own opening-proof format, this should be reconciled with it, not left to
-// silently diverge.
-//
-// Relation proved: knowledge of r such that C - v·H = r·G, for public commitment C=(Cx,Cy), public value
-// v (the lock output's sats), and the module's fixed generator H (Pedersen `H` — see verifyPedersenOpening
-// convention in cxfer-core: C = v·H + r·G). Standard Schnorr sigma protocol, Fiat-Shamir non-interactive:
-//   k random, R = k·G, canonicalized to even y (negate k if R's y is odd — same x-only-encoding
-//     requirement as sk_note's even-y canonicalization elsewhere in this design; R is only ever carried
-//     as its x-coordinate below, so an odd-y R could never be reconstructed by the verifier)
-//   e = keccak(dom ‖ Cx ‖ Cy ‖ v_be8 ‖ Rx) mod n         (R's x-only, even-y canonical form, BIP-340 style)
-//   s = k + e·r  (mod n)
-//   opening_proof = Rx(32) ‖ s(32)                        — 64 bytes, matching design §3's fixed width
-// Verifier recomputes e from the public C, v, and the proof's Rx (assuming R has even y, same
-// canonicalization the pool's own spend_key already requires — see cxfer-core btc_pool.rs), then checks
-// s·G == R + e·(C - v·H).
-const OPENING_PROOF_DOMAIN = new TextEncoder().encode('tacit-btc-pool-opening-v1');
-
-// Pedersen H (NUMS point) — MUST match whatever generator cxfer-core's verify_pedersen_opening uses.
-// Genuinely unresolved here: this module has no access to the Rust crate's exact H constant, and hardcoding
-// a placeholder would be worse than leaving the gap explicit. `verifyBtcShieldOpeningProof` below therefore
-// takes H as a required parameter rather than a baked-in constant, so a caller (or a future patch, once the
-// real H is threaded through from cxfer-core) supplies the real value instead of this module silently using
-// a wrong one.
-export function verifyBtcShieldOpeningProof({ cxHex, cyHex, valueSats, openingProofHex, hPointHex }) {
-  if (!hPointHex) throw new Error('btc-shielded-pool: verifyBtcShieldOpeningProof requires the real Pedersen H point (not baked in here — see comment above)');
-  const proof = hexToBytes(openingProofHex);
-  if (proof.length !== 64) return false;
-  const rX = proof.slice(0, 32);
-  const s = proof.slice(32, 64);
-  const n = secp.CURVE.n;
-  const sScalar = BigInt('0x' + bytesToHex(s)) % n;
-
-  let C, H;
-  try {
-    H = secp.ProjectivePoint.fromHex(hPointHex.replace(/^0x/, ''));
-  } catch { return false; }
-  try {
-    const cxBig = BigInt(cxHex), cyBig = BigInt(cyHex);
-    C = new secp.ProjectivePoint(cxBig, cyBig, 1n);
-    C.assertValidity();
-  } catch { return false; }
-
-  const vBe8 = (() => { const b = new Uint8Array(8); let v = BigInt(valueSats); for (let i = 7; i >= 0; i--) { b[i] = Number(v & 0xffn); v >>= 8n; } return b; })();
-  const e = BigInt('0x' + bytesToHex(kn([OPENING_PROOF_DOMAIN, hexToBytes(cxHex), hexToBytes(cyHex), vBe8, rX]))) % n;
-
-  let R;
-  try { R = secp.ProjectivePoint.fromHex('02' + bytesToHex(rX)); } catch { return false; }
-
-  if (sScalar === 0n) return false;
-  const CminusVH = BigInt(valueSats) === 0n ? C : C.add(H.multiply(BigInt(valueSats)).negate());
-  const lhs = secp.ProjectivePoint.BASE.multiply(sScalar);
-  if (e === 0n) return lhs.equals(R);
-  const rhs = R.add(CminusVH.multiply(e));
-  return lhs.equals(rhs);
+// Which of a carrier's envelopes the pool reads (§3 Carriers). `envs[i]` is the Tacit envelope on vin[i]
+// ({ opcode, payload }) or null. A T_BTC_SHIELD rides vin[0], and then only vin[0] is read. Otherwise every
+// T_BTC_SPEND is read in input order. A T_BTC_SHIELD on a later input is returned so it can be recorded as
+// rejected. `vin0TacitOp` is true when vin[0] holds a transparent Tacit op.
+export function carrierPoolEnvelopes(envs) {
+  const e0 = envs[0] || null;
+  const isPool = (e) => e && (e.opcode === T_BTC_SHIELD || e.opcode === T_BTC_SPEND);
+  const vin0TacitOp = !!e0 && !isPool(e0);
+  if (e0 && e0.opcode === T_BTC_SHIELD) return { vin0TacitOp, items: [{ vin: 0, ...e0 }] };
+  const items = [];
+  envs.forEach((e, vin) => { if (isPool(e)) items.push({ vin, ...e }); });
+  return { vin0TacitOp, items };
 }
 
-// ── Bitcoin-only Merkle tree (mirrors dapp/confidential-pool.js's `Tree`/`merkleRootFrom`, keccak
-// incremental tree, zero-filled subtrees) — a fresh instance, disjoint from every other tree this codebase
-// already maintains (design §2 domain separation; genuinely new state, design doc §8). ──
+// ── depth-32 keccak tree ──
+// Same shape as dapp/confidential-pool.js Tree: zero leaf 0, zeros[i+1] = keccak(zeros[i] ‖ zeros[i]), an
+// absent sibling at level i is zeros[i]. Kept incrementally (every level materialized) so append, root and
+// path are O(depth) and truncate restores the exact prior tree.
 const ZERO32 = new Uint8Array(32);
-const zeros = (() => {
+export const ZEROS = (() => {
   const z = [ZERO32];
-  for (let i = 1; i < TREE_DEPTH; i++) z.push(keccak256(concat([z[i - 1], z[i - 1]])));
+  for (let i = 1; i <= TREE_DEPTH; i++) z.push(keccak_256(concat(z[i - 1], z[i - 1])));
   return z;
 })();
 
-export class BtcPoolTree {
-  constructor() { this.leaves = []; }
-  insert(leafHex) { this.leaves.push(hexToBytes(leafHex)); return this.leaves.length - 1; }
+export class KeccakTree {
+  constructor() { this.levels = Array.from({ length: TREE_DEPTH + 1 }, () => []); }
+  get size() { return this.levels[0].length; }
+  append(leaf) {
+    const idx = this.levels[0].length;
+    this.levels[0].push(toBytes(leaf).slice());
+    this._rehash(idx);
+    return idx;
+  }
+  _rehash(idx) {
+    let k = idx;
+    for (let i = 0; i < TREE_DEPTH; i++) {
+      const pk = k >>> 1;
+      const lv = this.levels[i];
+      const l = lv[2 * pk];
+      const r = 2 * pk + 1 < lv.length ? lv[2 * pk + 1] : ZEROS[i];
+      this.levels[i + 1][pk] = keccak_256(concat(l, r));
+      k = pk;
+    }
+  }
+  truncate(n) {
+    if (n > this.size) throw new Error('truncate beyond size');
+    for (let i = 0; i <= TREE_DEPTH; i++) this.levels[i].length = Math.ceil(n / 2 ** i);
+    if (n > 0) this._rehash(n - 1);
+  }
+  leaf(i) { return this.levels[0][i]; }
+  root() { return this.size ? this.levels[TREE_DEPTH][0] : ZEROS[TREE_DEPTH]; }
   rootAndPath(index) {
-    let level = this.leaves.slice();
     const path = [];
     for (let i = 0; i < TREE_DEPTH; i++) {
-      const pos = index >>> i;
-      const sib = pos ^ 1;
-      path.push(hx(sib < level.length ? level[sib] : zeros[i]));
-      const next = [];
-      for (let k = 0; k * 2 < level.length; k++) {
-        const l = level[2 * k];
-        const r = 2 * k + 1 < level.length ? level[2 * k + 1] : zeros[i];
-        next.push(keccak256(concat([l, r])));
-      }
-      level = next.length ? next : [zeros[i + 1] || ZERO32];
+      const sib = Math.floor(index / 2 ** i) ^ 1;
+      const lv = this.levels[i];
+      path.push(sib < lv.length ? lv[sib] : ZEROS[i]);
     }
-    return { root: hx(level[0]), path };
+    return { root: this.root(), path };
   }
-  root() { return this.rootAndPath(0).root; } // rootAndPath already zero-fills correctly for an empty tree
-  nextIndex() { return this.leaves.length; }
 }
 
-export function btcPoolMerkleRootFrom(leafHex, index, path) {
-  let h = hexToBytes(leafHex);
+export function rootFromPath(leaf, index, path) {
+  let h = toBytes(leaf);
   for (let i = 0; i < TREE_DEPTH; i++) {
-    const sib = hexToBytes(path[i]);
-    h = ((index >>> i) & 1) ? keccak256(concat([sib, h])) : keccak256(concat([h, sib]));
+    const sib = toBytes(path[i]);
+    h = Math.floor(index / 2 ** i) % 2 ? keccak_256(concat(sib, h)) : keccak_256(concat(h, sib));
   }
-  return hx(h);
+  return h;
 }
 
-// ── SP1/Groth16 proof verification stub (design §4/§12 step 2) ──
-//
-// EXPLICIT GAP, not papered over: there is no fourth SP1 guest built, no ELF hash pinned, and no
-// Groth16 verifying key for this relation anywhere in this repo (Phase 2 of DESIGN-btc-shielded-pool.md
-// §12 has not run). This function is the one place that gap is allowed to live — it is structured exactly
-// like a real verifier would be called (proof bytes + the public statement fields the guest would commit,
-// `BtcPoolSpendValues` per contracts/sp1/confidential/src/btc_pool.rs), but its body cannot do anything
-// real yet. It always returns false (fails closed) rather than returning true or throwing an opaque error,
-// so a caller that forgets to check the return value still rejects the envelope instead of accepting an
-// unverified spend.
-//
-// The real implementation now exists (worker-relay/src/lib/btc-pool-verify.js:verifyBtcPoolSpendProof) —
-// this stub remains the DEFAULT for `acceptBtcSpendEnvelope`'s injectable `verifyProof` option, since this
-// plain `worker` module has no EVM/network access by design. Same (statement, proofHex) argument order as
-// the real implementation, so swapping one for the other at a call site is a drop-in — never returns true.
-export async function verifyBtcPoolSpendProof(_publicStatement, _proofHex) {
-  return false; // STUB — this module never verifies for real. See comment above.
+// ── replay state (§5) ──
+export class VerifierUnavailableError extends Error {
+  constructor() { super('spend proof verifier unavailable'); this.name = 'VerifierUnavailableError'; }
+}
+export class ReorgTooDeepError extends Error {
+  constructor(h) { super(`no undo record for height ${h}`); this.name = 'ReorgTooDeepError'; }
 }
 
-// ── §10 acceptance-order state machine ──
-//
-// `chainCtx` is the per-transaction real chain data the indexer already has available while replaying a
-// block (mirrors the shape worker/src/index.js's own per-tx decode loop already carries for other ops):
-//   { txOutputs: [{ valueSats: bigint, scriptPubKeyHash: '0x...' }, ...] }  — this transaction's own outputs
-export function makeBtcShieldedPoolState() {
-  return {
-    tree: new BtcPoolTree(),
-    nullifierSet: new Set(), // hex nullifier -> present means spent
-    // Retained root history, keyed by the Bitcoin block height at which that root became the tree's root
-    // (design §10 step 6: "record the block-level root" after the whole block is replayed). Anchor-window
-    // lookups (§10 step 4) read from this map, never from `tree.root()` directly, so a spend's `h_anchor`
-    // is checked against the root AS OF that height, not the indexer's live tip.
-    rootsByHeight: new Map(),
-  };
-}
+const outKey = (txid, vout) => `${txid}:${vout}`;
+const reject = (reason) => ({ accepted: false, reason });
 
-export function acceptBtcShieldEnvelope(state, parsedShield, { chainCtx, hPointHex } = {}) {
-  if (!parsedShield || parsedShield.type !== 'btc_shield') return { accepted: false, reason: 'not a shield envelope' };
-  const outputs = chainCtx && chainCtx.txOutputs;
-  if (!outputs || parsedShield.lockVout >= outputs.length) {
-    return { accepted: false, reason: 'lock_vout not a real output of this transaction' };
+export class BtcPoolState {
+  constructor() {
+    this.tree = new KeccakTree();
+    this.leafHeights = [];
+    this.nullifiers = new Map(); // hex nf -> { height, txid }
+    this.exits = new Map(); // "txid:vout" -> { txid, vout, asset, cx, cy, height }
+    this.roots = new Map(); // height -> root bytes
+    this.undo = new Map(); // height -> undo record
+    this.tip = null;
+    this.pending = null;
+    this.maxLeaves = MAX_LEAVES;
   }
-  const lockOutput = outputs[parsedShield.lockVout];
-  if (!lockOutput) return { accepted: false, reason: 'lock_vout not a real output of this transaction' };
 
-  // §10 step 2: opening_proof verifies C against that output's real value.
-  let openingOk = false;
-  try {
-    openingOk = verifyBtcShieldOpeningProof({
-      cxHex: parsedShield.cx, cyHex: parsedShield.cy, valueSats: lockOutput.valueSats,
-      openingProofHex: parsedShield.openingProof, hPointHex,
+  beginBlock(height) {
+    if (this.pending) throw new Error('block already open');
+    if (this.tip !== null && height !== this.tip + 1) throw new Error(`expected block ${this.tip + 1}, got ${height}`);
+    this.pending = { height, leafStart: this.tree.size, leaves: [], nullifiers: [], exits: [] };
+  }
+
+  abortBlock() {
+    const b = this.pending;
+    if (!b) return;
+    this.tree.truncate(b.leafStart);
+    this.leafHeights.length = b.leafStart;
+    for (const n of b.nullifiers) this.nullifiers.delete(n.nf);
+    for (const x of b.exits) this.exits.delete(outKey(x.txid, x.vout));
+    this.pending = null;
+  }
+
+  _appendLeaf(rec) {
+    const b = this.pending;
+    const leafIndex = this.tree.append(rec.leaf);
+    this.leafHeights.push(b.height);
+    const full = { ...rec, leafIndex, height: b.height };
+    b.leaves.push(full);
+    return full;
+  }
+
+  // ctx.txid, ctx.inputs [{txid, vout}] (every carrier input), ctx.resolveInput(outpoint, assetHex) →
+  // { cx, cy } for a valid transparent note of that asset, null when it is not one; throws on I/O failure.
+  async acceptShield(s, ctx) {
+    const b = this.pending;
+    if (!b) throw new Error('no open block');
+    if (!s || s.kind !== 'shield') return reject('not a shield');
+    if (this.tree.size + 1 > this.maxLeaves) return reject('note tree is full');
+    if (!ctx.inputs || ctx.inputs.length < s.nIn + 1) return reject('carrier has too few inputs');
+    const outpoints = ctx.inputs.slice(1, 1 + s.nIn);
+    const assetHex = bytesToHex(s.asset);
+    let sum = ZERO;
+    for (const op of outpoints) {
+      const note = await ctx.resolveInput(op, assetHex);
+      if (!note) return reject(`input ${op.txid}:${op.vout} is not a valid note of the asset`);
+      const C = pointFromXY(note.cx, note.cy);
+      if (!C) return reject(`input ${op.txid}:${op.vout} commitment is not a curve point`);
+      sum = sum.add(C);
+    }
+    const Cpool = pointFromXY(s.cx, s.cy);
+    if (!Cpool || Cpool.equals(ZERO)) return reject('pool commitment is infinity');
+    const E = Cpool.add(sum.negate());
+    if (E.equals(ZERO)) return reject('excess is infinity');
+    const ex = pointXY(E).cx;
+    if (!bip340Verify(s.kernelSig, shieldKernelMsg(s, outpoints), ex)) return reject('kernel signature does not verify');
+    const leaf = noteLeaf(s);
+    const note = this._appendLeaf({
+      leaf, txid: ctx.txid, asset: s.asset, cx: s.cx, cy: s.cy,
+      spendKey: s.spendKey, nkPub: s.nkPub, pkEph: s.pkEph, ctNote: s.ctNote,
     });
-  } catch (_e) { openingOk = false; }
-  if (!openingOk) return { accepted: false, reason: 'opening_proof does not verify against the lock output value' };
-
-  // Only now: append the new leaf (§10 step 6). Nothing above mutated `state`.
-  const leaf = btcPoolNoteLeaf(parsedShield.asset, parsedShield.cx, parsedShield.cy, parsedShield.spendKey);
-  const index = state.tree.insert(leaf);
-  return { accepted: true, leaf, leafIndex: index };
-}
-
-export async function acceptBtcSpendEnvelope(state, parsedSpend, { chainCtx, verifyProof = verifyBtcPoolSpendProof } = {}) {
-  if (!parsedSpend || parsedSpend.type !== 'btc_spend') return { accepted: false, reason: 'not a spend envelope' };
-
-  // §10 step 2a (exit only): exit_vout names a real output of this transaction, and its real value/script
-  // must match exit_value/dest_spk_hash exactly. Both halves load-bearing (design §3/§10, security doc G3).
-  if (parsedSpend.outKind === BTC_POOL_OUT_EXIT) {
-    const outputs = chainCtx && chainCtx.txOutputs;
-    const out = outputs && outputs[parsedSpend.exitVout];
-    if (!out) return { accepted: false, reason: 'exit_vout not a real output of this transaction' };
-    if (String(out.valueSats) !== String(parsedSpend.exitValue)) {
-      return { accepted: false, reason: 'exit_vout value does not match exit_value' };
-    }
-    if (String(out.scriptPubKeyHash).toLowerCase() !== String(parsedSpend.destSpkHash).toLowerCase()) {
-      return { accepted: false, reason: 'exit_vout scriptPubKey does not match dest_spk_hash' };
-    }
+    return { accepted: true, leaves: [note] };
   }
 
-  // §10 step 3: every nf absent from the replayed nullifier set (pairwise-distinct-within-envelope was
-  // already checked by the parser).
-  for (const nf of parsedSpend.nullifiers) {
-    if (state.nullifierSet.has(nf.toLowerCase())) {
-      return { accepted: false, reason: 'nullifier already spent' };
+  // ctx.txid; ctx.outputs [{ scriptPubKey: Uint8Array }]; ctx.vin0TacitOp, true when the carrier's vin[0]
+  // holds a transparent Tacit op; ctx.verifyProof({ proof, publicValues }) → bool. Earlier accepted envelopes
+  // of the same carrier are already applied, so their nullifiers and exit outputs count as taken. A missing
+  // verifier throws instead of rejecting, so an indexer without one halts rather than diverges.
+  async acceptSpend(s, ctx) {
+    const b = this.pending;
+    if (!b) throw new Error('no open block');
+    if (!s || s.kind !== 'spend') return reject('not a spend');
+    const H_ = b.height;
+    if (s.hAnchor < H_ - ANCHOR_WINDOW || s.hAnchor > H_ - 1) return reject('h_anchor outside window');
+    const root = this.roots.get(s.hAnchor);
+    if (!root) return reject('no root retained for h_anchor');
+    const nfHex = s.nullifiers.map(bytesToHex);
+    if (new Set(nfHex).size !== nfHex.length) return reject('duplicate nullifier in body');
+    for (const nf of nfHex) if (this.nullifiers.has(nf)) return reject('nullifier already spent');
+    if (s.exit) {
+      if (ctx.vin0TacitOp) return reject('exit in a carrier whose vin[0] holds a transparent Tacit op');
+      const out = ctx.outputs && ctx.outputs[s.exit.exitVout];
+      if (!out) return reject('exit_vout is not an output of the carrier');
+      if (this.exits.has(outKey(ctx.txid, s.exit.exitVout))) return reject('exit_vout already claimed by an earlier exit');
+      if (!eqBytes(sha256(out.scriptPubKey), s.exit.destSpkHash)) return reject('exit scriptPubKey does not match dest_spk_hash');
     }
-  }
+    if (this.tree.size + s.outputs.length > this.maxLeaves) return reject('note tree is full');
+    if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
+    const ok = await ctx.verifyProof({ proof: s.proof, publicValues: spendPublicValues(root, s.body) });
+    if (ok !== true) return reject('proof does not verify');
 
-  // §10 step 4: h_anchor inside the valid-root window; root derived from the indexer's own replayed
-  // history (not supplied by the envelope).
-  const heights = [...state.rootsByHeight.keys()].filter((h) => h <= parsedSpend.hAnchor);
-  if (heights.length === 0) return { accepted: false, reason: 'h_anchor has no retained root (below Kmin or unknown height)' };
-  const anchorHeight = Math.max(...heights);
-  if (anchorHeight < parsedSpend.hAnchor - BTC_POOL_ANCHOR_WINDOW) {
-    return { accepted: false, reason: 'h_anchor outside the retained anchor window' };
-  }
-  const root = state.rootsByHeight.get(anchorHeight);
-  if (!root) return { accepted: false, reason: 'no root retained at h_anchor' };
-
-  // §10 step 5: proof verifies against that root, and the guest's committed statement matches the
-  // published envelope field-by-field. `verifyProof` may be a real, async on-chain check (see
-  // worker-relay/src/lib/btc-pool-verify.js) or the fail-closed stub below — always awaited, since a real
-  // check is inherently a network call and awaiting a non-Promise value from the stub is a no-op.
-  const publicStatement = {
-    asset: parsedSpend.asset, root, hAnchor: parsedSpend.hAnchor, outKind: parsedSpend.outKind,
-    nullifiers: parsedSpend.nullifiers, outputs: parsedSpend.outputs,
-    hasExitVout: parsedSpend.outKind === BTC_POOL_OUT_EXIT,
-    exitVout: parsedSpend.exitVout, exitValue: parsedSpend.exitValue, destSpkHash: parsedSpend.destSpkHash,
-  };
-  const proofOk = await verifyProof(publicStatement, parsedSpend.proof);
-  if (!proofOk) return { accepted: false, reason: 'proof does not verify' };
-
-  // §10 step 6, only now: append new leaves (pay) or none (exit), insert nullifiers.
-  const newLeaves = [];
-  if (parsedSpend.outKind === BTC_POOL_OUT_PAY) {
-    for (const o of parsedSpend.outputs) {
-      const leaf = btcPoolNoteLeaf(parsedSpend.asset, o.cx, o.cy, o.spendKey);
-      state.tree.insert(leaf);
-      newLeaves.push(leaf);
+    for (const nf of nfHex) {
+      const rec = { nf, height: H_, txid: ctx.txid };
+      this.nullifiers.set(nf, rec);
+      b.nullifiers.push(rec);
     }
+    const res = { accepted: true, nullifiers: nfHex, leaves: [], exit: null };
+    for (const o of s.outputs) {
+      res.leaves.push(this._appendLeaf({
+        leaf: noteLeaf({ asset: s.asset, ...o }), txid: ctx.txid, asset: s.asset, cx: o.cx, cy: o.cy,
+        spendKey: o.spendKey, nkPub: o.nkPub, pkEph: o.pkEph, ctNote: o.ctNote,
+      }));
+    }
+    if (s.exit) {
+      const x = { txid: ctx.txid, vout: s.exit.exitVout, asset: s.asset, cx: s.exit.cx, cy: s.exit.cy, height: H_ };
+      this.exits.set(outKey(x.txid, x.vout), x);
+      b.exits.push(x);
+      res.exit = x;
+    }
+    return res;
   }
-  for (const nf of parsedSpend.nullifiers) state.nullifierSet.add(nf.toLowerCase());
 
-  return { accepted: true, newLeaves, nullifiers: parsedSpend.nullifiers };
-}
+  // Records R[H]. Roots stay available through the block; after it commits only R[H−143..H] are needed
+  // by the next block's window, so older ones are pruned here.
+  endBlock() {
+    const b = this.pending;
+    if (!b) throw new Error('no open block');
+    const root = this.tree.root();
+    this.roots.set(b.height, root);
+    const pruned = [];
+    for (const [h, r] of this.roots) if (h < b.height + 1 - ANCHOR_WINDOW) pruned.push([h, r]);
+    for (const [h] of pruned) this.roots.delete(h);
+    this.undo.set(b.height, { leafStart: b.leafStart, nullifiers: b.nullifiers.map((n) => n.nf), exits: b.exits.map((x) => outKey(x.txid, x.vout)), pruned });
+    for (const h of this.undo.keys()) if (h <= b.height - UNDO_DEPTH) this.undo.delete(h);
+    this.tip = b.height;
+    this.pending = null;
+    return { height: b.height, root, leaves: b.leaves, nullifiers: b.nullifiers, exits: b.exits, pruned };
+  }
 
-// Called once after a whole block has been replayed (§10 step 6: "record the block-level root... after the
-// whole block has been replayed, not per-envelope"). A reorg simply drops every entry at/after the
-// invalidated height (§10 "Two indexers replaying... a reorg invalidates roots for the replaced heights").
-export function commitBtcPoolBlockRoot(state, height) {
-  state.rootsByHeight.set(height, state.tree.root());
-}
-export function rollbackBtcPoolFromHeight(state, height) {
-  for (const h of [...state.rootsByHeight.keys()]) if (h >= height) state.rootsByHeight.delete(h);
-  // NOTE: this only rolls back the retained root INDEX, not the tree/nullifier-set contents themselves —
-  // a real integration needs to rebuild `tree`/`nullifierSet` from a full re-replay of the new active chain
-  // from the fork point, the same reorg-handling requirement every other opcode's indexer state already has
-  // (worker/src/index.js's own reorg handling is the pattern to follow here; not duplicated in this module
-  // since it is chain-scan infrastructure, not pool-specific logic).
+  // Undo every block at or above `height`. Throws ReorgTooDeepError (state untouched) when any of them has
+  // no undo record; the caller then rescans from the start height.
+  rollbackFrom(height) {
+    if (this.pending) this.abortBlock();
+    if (this.tip === null || height > this.tip) return;
+    for (let h = this.tip; h >= height; h--) if (!this.undo.has(h)) throw new ReorgTooDeepError(h);
+    for (let h = this.tip; h >= height; h--) {
+      const u = this.undo.get(h);
+      this.tree.truncate(u.leafStart);
+      this.leafHeights.length = u.leafStart;
+      for (const nf of u.nullifiers) this.nullifiers.delete(nf);
+      for (const k of u.exits) this.exits.delete(k);
+      this.roots.delete(h);
+      for (const [ph, r] of u.pruned) this.roots.set(ph, r);
+      this.undo.delete(h);
+    }
+    this.tip = height - 1;
+  }
+
+  // Rebuild from persisted rows. `roots` must include every recorded height at least back to
+  // tip − UNDO_DEPTH − ANCHOR_WINDOW so undo records can restore pruned roots.
+  static restore({ tip, leaves, nullifiers, exits, roots }) {
+    const st = new BtcPoolState();
+    if (tip === null || tip === undefined) return st;
+    st.tip = tip;
+    const sorted = [...leaves].sort((a, b) => a.leafIndex - b.leafIndex);
+    sorted.forEach((l, i) => {
+      if (l.leafIndex !== i) throw new Error(`leaf index gap at ${i}`);
+      st.tree.append(l.leaf);
+      st.leafHeights.push(l.height);
+    });
+    const rootMap = new Map(roots.map(([h, r]) => [h, toBytes(r)]));
+    for (const n of nullifiers) st.nullifiers.set(n.nf, { nf: n.nf, height: n.height, txid: n.txid });
+    for (const x of exits) st.exits.set(outKey(x.txid, x.vout), x);
+    for (const [h, r] of rootMap) if (h >= tip + 1 - ANCHOR_WINDOW && h <= tip) st.roots.set(h, r);
+    const firstLeafAt = (h) => {
+      let lo = 0, hi = st.leafHeights.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (st.leafHeights[m] < h) lo = m + 1; else hi = m; }
+      return lo;
+    };
+    const byHeight = (arr, key) => {
+      const m = new Map();
+      for (const x of arr) { if (!m.has(x.height)) m.set(x.height, []); m.get(x.height).push(key(x)); }
+      return m;
+    };
+    const nfBy = byHeight(nullifiers, (n) => n.nf);
+    const exBy = byHeight(exits, (x) => outKey(x.txid, x.vout));
+    for (let h = tip; h > tip - UNDO_DEPTH; h--) {
+      if (!rootMap.has(h)) break;
+      const ph = h - ANCHOR_WINDOW;
+      st.undo.set(h, {
+        leafStart: firstLeafAt(h),
+        nullifiers: nfBy.get(h) || [],
+        exits: exBy.get(h) || [],
+        pruned: rootMap.has(ph) ? [[ph, rootMap.get(ph)]] : [],
+      });
+    }
+    return st;
+  }
 }
