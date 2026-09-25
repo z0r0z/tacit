@@ -19,6 +19,7 @@ cd "$(dirname "$0")"
 PIN="elf-vkey-pin.json"
 ELF="elf/cxfer-guest"
 RELF="elf/reflection-prover"
+BPELF="elf/btc-pool-prover"
 
 [ -f "$PIN" ] || { echo "FAIL: missing $PIN"; exit 1; }
 [ -f "$ELF" ] || { echo "FAIL: missing $ELF"; exit 1; }
@@ -53,15 +54,14 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   # (ETH_REFLECTION_VKEY in reflect.rs), and the eth guest ELF has its own sha256 pin below. So only reflect.rs
   # belongs to the reflection prover's own source set.
   RELF_ONLY_SRC="src/reflect.rs"                        # reflection prover only
-  # btc-pool-prover ([[bin]] in Cargo.toml, DESIGN-btc-shielded-pool.md) has no built/pinned ELF yet —
-  # tracked here so the coverage guard below doesn't fail closed, but deliberately excluded from every
-  # freshness check: there is nothing yet for it to be stale against. Move it to ELF_ONLY_SRC-style
-  # tracking (with its own pin entry) once it has a real committed ELF.
-  UNPINNED_SRC="src/btc_pool.rs"                        # btc-pool-prover: no ELF built/pinned yet
+  # btc-pool-prover ([[bin]] in Cargo.toml, DESIGN-btc-shielded-pool.md) — an independent third guest,
+  # not part of the settle/reflection lockstep group. Has a real committed ELF + pin (elf/btc-pool-prover,
+  # btc_pool_elf_sha256/btc_pool_vkey) but no deployed on-chain verifier yet.
+  BP_ONLY_SRC="src/btc_pool.rs"                         # btc-pool-prover only
 
   # Coverage guard: every file under src/ must be claimed by exactly one list above.
   for f in src/*; do
-    case " $SHARED_SRC $ELF_ONLY_SRC $RELF_ONLY_SRC $UNPINNED_SRC " in
+    case " $SHARED_SRC $ELF_ONLY_SRC $RELF_ONLY_SRC $BP_ONLY_SRC " in
       *" $f "*) ;;
       *) echo "FAIL: $f is under src/ but belongs to no ELF's source set — add it to SHARED_SRC," \
               "ELF_ONLY_SRC or RELF_ONLY_SRC in $0 so its changes are gated"; exit 1;;
@@ -101,6 +101,7 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   }
   check_elf_freshness "$ELF" "$ELF_ONLY_SRC" "elf_built_from_src_commit"
   check_elf_freshness "$RELF" "$RELF_ONLY_SRC" "reflection_elf_built_from_src_commit"
+  [ -f "$BPELF" ] && check_elf_freshness "$BPELF" "$BP_ONLY_SRC" "btc_pool_elf_built_from_src_commit"
 else
   echo "INFO: not a git checkout — skipping ELF<->source coherence"
 fi
@@ -134,6 +135,22 @@ if [ "$rpin" != "$ract" ]; then
   exit 1
 fi
 echo "PASS: reflection ELF sha256 matches pin ($ract)"
+
+# btc-pool-prover (DESIGN-btc-shielded-pool.md): an independent third guest, not part of the
+# settle/reflection lockstep group — checked the same way, but its own pass/fail, never gating
+# ConfidentialPool deploy readiness (nothing reads btc_pool_vkey at deploy time yet).
+if [ -f "$BPELF" ]; then
+  if command -v shasum >/dev/null 2>&1; then bpact=$(shasum -a 256 "$BPELF" | cut -d' ' -f1); else bpact=$(sha256sum "$BPELF" | cut -d' ' -f1); fi
+  bppin=$(grep -oE '"btc_pool_elf_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$PIN" | grep -oE '[0-9a-f]{64}' | head -1)
+  if [ -n "$bppin" ] && [ "$bppin" != "$bpact" ]; then
+    echo "FAIL: btc-pool-prover ELF sha256 mismatch"
+    echo "  pinned:   $bppin"
+    echo "  computed: $bpact"
+    echo "  If you rebuilt this guest, regenerate its vkey and update $PIN in the SAME commit."
+    exit 1
+  fi
+  echo "PASS: btc-pool-prover ELF sha256 matches pin ($bpact)"
+fi
 
 # ── Three-way git coherence (drift guard) ──────────────────────────────────────────────────────
 # The sha checks above only bind the WORKING-TREE ELF to the pin. They do NOT catch:

@@ -380,10 +380,25 @@ These stay in the validator so existing UTXOs keep their meaning. New flows use 
 | 0x5B–0x5E | Pre-authorized bids; 0x5D and 0x5E reserved (§10) |
 | 0x60–0x64 | Legacy bridge |
 | 0x65–0x69 | Cross-chain and cBTC (§3.6–3.7) |
-| 0x6A–0xFF | Free |
+| 0x6C, 0x6D | Bitcoin-native shielded pool, DESIGN only — not enabled (§3.10) |
+| 0x6A, 0x6B, 0x6E–0xFF | Free |
 
 A new opcode is claimed by updating this table together with `dapp/tacit.js`, `worker/src/index.js` and,
 if it folds into the pool, `cxfer-core` and the reflection guest.
+
+### 3.10 Bitcoin-native shielded pool (design, not enabled)
+
+Reserves `0x6C`/`0x6D`; not enabled on mainnet. Full spec, formal security/privacy analysis, and a
+reference guest implementation are in `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md` and its
+companion `DESIGN-btc-shielded-pool-security.md`. Neither opcode is parsed by the live indexer or dapp yet
+(the wiring in `worker/src/btc-shielded-pool.js` / `dapp/btc-shielded-pool.js` exists but is not imported
+from either entry point), and no SP1 guest ELF is built or pinned for it. A note here so this table stays
+the single source of truth for opcode ownership even while the feature is still pre-launch.
+
+| Byte | Op | Rule summary |
+|---|---|---|
+| 0x6C | `T_BTC_SHIELD` | 229 bytes: `asset ‖ lock_vout ‖ Cx ‖ Cy ‖ pk_eph ‖ spend_key ‖ opening_proof`. Registers a self-custody lock and a decoupled shielded note bound to it in the same transaction, mirroring `T_CBTC_LOCK`'s atomicity but staying entirely on Bitcoin. |
+| 0x6D | `T_BTC_SPEND` | Variable length (proof width fixed once the guest ELF is built): `asset ‖ n_in ‖ nf[] ‖ out_kind ‖ {outputs \| exit_vout+exit_value+dest_spk_hash} ‖ h_anchor ‖ proof`. Pays into new shielded notes or exits to a real Bitcoin output, both source- and amount-hidden for a pay. |
 
 ---
 
