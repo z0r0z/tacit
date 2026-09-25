@@ -8,17 +8,22 @@
 // transaction: the T_BTC_SHIELD envelope rides vin[0], the faucet's lot is vin[1] with the seller's pre-signed
 // SIGHASH_SINGLE|ANYONECANPAY witness, and vout[1] is the seller's payout. (SINGLE_ACTION_JOIN = false shows the
 // two-step Get cBTC / Shield flow instead.)
+// "Back to sats" sells private cBTC to the faucet's maker in one transaction (btc-pool-zap.js exitToSats): the
+// spend exits the amount to the maker and wants sats paid to a fresh key of the pool wallet; the faucet checks
+// it and posts the carrier from its own coins. The change stays in the pool.
 // "Pay privately", "Receive" and "Exit" spend and scan pool notes. Every shield and spend is proved in this
 // browser (btc-pool-client.js: the pinned circuit and key, downloaded once and cached); the carrier is posted
 // by the pool's relayer when one is configured, else from this wallet's signet sats.
 
 import { secp, sha256, keccak_256, hmac, bytesToHex, hexToBytes } from '../vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../btc-shielded-pool.js';
+import { makeBtcPoolZap } from '../btc-pool-zap.js';
 import { makePoolClient } from '../btc-pool-client.js';
 
 export const FAUCET_URL = (globalThis.__SATS_FAUCET_URL__ || 'https://tacit-sats-faucet.onrender.com').replace(/\/$/, '');
 export const WORKER_BASE = (globalThis.__TACIT_WORKER_BASE__ || 'https://api.tacit.finance').replace(/\/$/, '');
 export const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
+export const zap = makeBtcPoolZap({ secp, sha256, keccak256: keccak_256 });
 export const poolClient = makePoolClient({ base: '/btc-pool/' });
 
 const te = new TextEncoder();
@@ -307,6 +312,47 @@ export async function exitToWallet(tacit, { poolWallet, amount, asset, anchor = 
   return { ...r, exit: { vout: 0, value: amount.toString(), blinding: built.exit.blinding, cx: built.exit.cx, cy: built.exit.cy }, anchor: a.hAnchor };
 }
 
+// ── back to sats ──
+async function faucetCall(url, init) {
+  let r;
+  try { r = await fetch(url, { cache: 'no-store', ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } }); }
+  catch { throw new Error('The faucet is unreachable; try again in a minute.'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Faucet: ${j.error || `HTTP ${r.status}`}`);
+  return j;
+}
+export const makerQuote = (units, faucetUrl = FAUCET_URL) => faucetCall(`${faucetUrl}/faucet/maker/quote?units=${BigInt(units)}`);
+
+// Sells `amount` of `asset` to the faucet's maker for sats. The quote names the maker's script, the sats and a
+// bind coin; the spend exits `amount` to that script and wants the sats paid to a fresh exit key of the pool
+// wallet (recoverable from the same backup). `usedScripts` (a Set) keeps exit keys from being reused.
+export async function sellForSats(tacit, { poolWallet, amount, asset, anchor = null, usedScripts = new Set(), say = () => {}, prove = proveHere, faucetUrl = FAUCET_URL }) {
+  const assetHex = String(asset).replace(/^0x/, '').toLowerCase();
+  say('finding your notes…');
+  const a = await prepare(poolWallet, assetHex, amount, anchor);
+  if (a.wait) return { wait: a.wait, tip: a.tip };
+  say('asking the faucet for a price…');
+  const q = await makerQuote(amount, faucetUrl);
+  if (BigInt(q.units) !== BigInt(amount) || String(q.asset).replace(/^0x/, '').toLowerCase() !== assetHex) throw new Error('the faucet quoted other terms');
+  const r = zap.exitToSats({
+    pool, wallet: poolWallet, notes: a.notes, amount, asset: '0x' + assetHex, hAnchor: a.hAnchor, root: a.root, usedScripts,
+    maker: { spk: '0x' + String(q.makerSpk).replace(/^0x/, ''), sats: BigInt(q.sats), vout: q.wantVout, exitVout: q.exitVout, bind: q.bind },
+  });
+  const { payloadHex } = await prove(r.spend, say);
+  say('the faucet is checking and posting the swap…');
+  const f = await faucetCall(`${faucetUrl}/faucet/maker/fill`, {
+    method: 'POST',
+    body: JSON.stringify({
+      quoteId: q.quoteId, payload: payloadHex,
+      offer: { exitOpening: { value: r.offer.exitOpening.value.toString(), blinding: r.offer.exitOpening.blinding }, payoutScriptPubKey: r.offer.payoutScriptPubKey },
+    }),
+  });
+  return {
+    revealTxid: f.txid, commitTxid: f.commitTxid, sats: Number(f.sats), units: BigInt(amount),
+    payout: { counter: r.payout.counter, scriptPubKey: r.payout.scriptPubKey, vout: q.wantVout }, anchor: a.hAnchor,
+  };
+}
+
 // ── UI ──
 // One-line switch: true shows a single "Get private cBTC" step (buy and shield in one transaction) in place of
 // the separate Get cBTC and Shield steps. The zap module can replace the local buyAndShield by import.
@@ -324,10 +370,10 @@ export const STEPS = [
     ? [{ id: 'join', title: 'Get private cBTC' }]
     : [{ id: 'get', title: 'Get cBTC' }, { id: 'shield', title: 'Shield' }]),
   { id: 'pay', title: 'Pay privately' }, { id: 'receive', title: 'Receive' }, { id: 'exit', title: 'Exit' },
-  { id: 'sell', title: 'Back to sats', soon: true },
+  { id: 'sell', title: 'Back to sats' },
 ];
 
-const POOL_STEPS = new Set(['pay', 'receive', 'exit']);
+const POOL_STEPS = new Set(['pay', 'receive', 'exit', 'sell']);
 
 // What each step does, shown while it is still ahead.
 const ABOUT = {
@@ -338,7 +384,7 @@ const ABOUT = {
   pay: 'Pay a pool address. Amount and source stay hidden.',
   receive: 'Find pool payments sent to you.',
   exit: 'Leave the pool as ordinary cBTC in your wallet.',
-  sell: 'Swap cBTC for sats in one atomic swap.',
+  sell: 'Swap private cBTC for sats in one transaction. Change stays in the pool.',
 };
 
 // takePreauthSale progress stages, in words.
@@ -470,6 +516,7 @@ export function mount(root, ctx) {
       pay: !!state.pays?.length,
       receive: !!state.received?.length,
       exit: !!state.exits?.length,
+      sell: !!state.sells?.length,
     };
     const out = {};
     let open = !!who?.connected;
@@ -592,7 +639,7 @@ export function mount(root, ctx) {
     say?.('scanning the pool…');
     notes = await poolNotes(pw, asset());
     const seen = new Set((state.received || []).map((x) => x.leafIndex));
-    const own = new Set([...(state.pays || []), ...(state.exits || [])].map((x) => x.txid));
+    const own = new Set([...(state.pays || []), ...(state.exits || []), ...(state.sells || [])].map((x) => x.txid));
     for (const x of notes) {
       if (!x.internal && !seen.has(x.leafIndex) && x.txid !== state.shield?.revealTxid && !own.has(x.txid)) {
         (state.received ||= []).push({ leafIndex: x.leafIndex, txid: x.txid, value: x.value.toString(), height: x.height });
@@ -686,9 +733,65 @@ export function mount(root, ctx) {
       errLine('exit'));
   }
 
+  // The faucet's buy-back terms, from /faucet/status.
+  const maker = () => (faucet.status?.maker?.enabled ? faucet.status.maker : null);
+  const sellQuote = (u) => {
+    const m = maker(), st = faucet.status;
+    if (!m || !st) return null;
+    return Number((BigInt(u) * BigInt(st.price_sats) * BigInt(10_000 - m.spread_bps)) / (BigInt(st.lot) * 10_000n));
+  };
+
+  function renderSell(ph) {
+    const S = setPhase('sell', ph, ph === 'done' ? 'done' : '');
+    if (ph === 'locked') { put(S.body, el('div', {}, ABOUT.sell)); return; }
+    const last = state.sells?.[state.sells.length - 1];
+    if (running === 'sell') return;
+    const m = maker();
+    const lastLine = last
+      ? el('div', {}, `Sold ${fmt(last.units)} ${ticker()} for ${n(last.sats)} signet sats in `, txLink(last.txid), '. The sats went to a fresh address of your pool wallet, recoverable from the same backup; the change stayed in the pool.')
+      : el('div', {}, ABOUT.sell);
+    if (!m) {
+      put(S.body, lastLine, el('div', {}, faucet.loading ? 'Checking the faucet…' : 'The faucet is not buying cBTC back right now. Try again in a few minutes.'), errLine('sell'));
+      return;
+    }
+    const amt = field('pool-sell-amt', `Amount (${ticker()})`, { inputmode: 'decimal', placeholder: notes ? fmt(balance()) : fmt(faucet.status.lot) });
+    const est = el('span', { class: 'small muted' });
+    const estimate = () => {
+      let u = null;
+      try { u = units(amt.input.value); } catch { u = null; }
+      est.textContent = u && u > 0n ? `≈ ${n(sellQuote(u))} signet sats` : `${n(m.sats_per_lot)} sats per ${fmt(faucet.status.lot)} ${ticker()}`;
+    };
+    amt.input.value = state.sellDraft || '';
+    amt.input.addEventListener('input', () => { state.sellDraft = amt.input.value; estimate(); });
+    estimate();
+    const go = (anchor = null) => run('sell', async (say) => {
+      const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
+      const value = units(state.sellDraft);
+      if (value <= 0n) throw new Error('Enter an amount above zero.');
+      if (value < BigInt(m.min_units)) throw new Error(`The faucet buys at least ${fmt(m.min_units)} ${ticker()}.`);
+      if (value > BigInt(m.max_units)) throw new Error(`The faucet buys at most ${fmt(m.max_units)} ${ticker()} per swap.`);
+      const used = new Set(state.sellUsed || []);
+      let r;
+      try { r = await sellForSats(tacit, { poolWallet: pw, amount: value, asset: asset(), anchor, usedScripts: used, say }); }
+      finally { state.sellUsed = [...used]; save(); }
+      if (r.wait) { pending.sell = { ...r }; return; }
+      (state.sells ||= []).push({ txid: r.revealTxid, units: value.toString(), sats: r.sats, payout: r.payout });
+      state.sellDraft = ''; save();
+      ctx.track?.(r.revealTxid, `Sold ${fmt(value)} ${ticker()} for ${n(r.sats)} sats`);
+      log(`Sold ${fmt(value)} ${ticker()} for ${n(r.sats)} signet sats.`);
+      notes = null;
+      refreshFaucet();
+    });
+    put(S.body, lastLine,
+      el('div', {}, `The faucet buys ${ticker()} back at ${n(m.sats_per_lot)} signet sats per ${fmt(faucet.status.lot)}, from ${fmt(m.min_units)} to ${fmt(m.max_units)} per swap.`),
+      balanceLine(), waitBox('sell', go) || el('div', {}, amt.node,
+        el('div', { class: 'row' }, button('Swap for sats', () => go()), est)),
+      errLine('sell'));
+  }
+
   function renderHook(id, ph) {
     const impl = hooks.get(id);
-    if (!impl) return ({ pay: renderPay, receive: renderReceive, exit: renderExit })[id](ph);
+    if (!impl) return ({ pay: renderPay, receive: renderReceive, exit: renderExit, sell: renderSell })[id](ph);
     const S = setPhase(id, ph, ph === 'done' ? 'done' : '');
     impl.render(S.body, { ctx, state, save, log, poolWallet, pool, setStatus: (m) => { S.status.textContent = m; }, rerender: render });
   }
@@ -708,9 +811,7 @@ export function mount(root, ctx) {
     const ph = phases();
     renderSats(ph.sats);
     if (SINGLE_ACTION_JOIN) renderJoin(ph.join); else { renderGet(ph.get); renderShield(ph.shield); }
-    for (const id of ['pay', 'receive', 'exit']) renderHook(id, ph[id]);
-    if (ph.sell === 'soon') put(setPhase('sell', 'soon').body, el('div', {}, ABOUT.sell));
-    else renderHook('sell', ph.sell);
+    for (const id of ['pay', 'receive', 'exit', 'sell']) renderHook(id, ph[id]);
   }
 
   async function refreshFaucet() {
