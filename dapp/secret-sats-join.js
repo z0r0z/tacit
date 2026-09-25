@@ -998,29 +998,48 @@ export async function openTopicsAcross(boards, { network, d, fr }) {
   return all.sort((a, b) => b.joins - a.joins);
 }
 
-// Esplora chain source.
-export function makeEsploraChain(bases, { fetch: f = globalThis.fetch, minGapMs = 0 } = {}) {
+// Esplora chain source: several bases in turn, a few rounds with backoff (a public Esplora rate-limits), and
+// confirmed transactions cached, since formation reads the same prevouts for every JOIN.
+export function makeEsploraChain(bases, { fetch: f = globalThis.fetch, minGapMs = 0, rounds = 4, outspendTtlMs = 15_000 } = {}) {
   const list = (Array.isArray(bases) ? bases : [bases]).map((b) => b.replace(/\/$/, ''));
+  const txCache = new Map();
+  const spendCache = new Map();
   let last = 0;
   const call = async (path, init) => {
     let err;
-    for (const b of list) {
-      const wait = last + minGapMs - Date.now();
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      last = Date.now();
-      try {
-        const r = await f(b + path, init);
-        const text = await r.text();
-        if (!r.ok) { err = new Error(`${path}: HTTP ${r.status} ${text.slice(0, 200)}`); if (r.status === 400) throw err; continue; }
-        return text;
-      } catch (e) { err = e; if (/HTTP 400/.test(e.message)) throw e; }
+    for (let round = 0; round < rounds; round++) {
+      if (round) await new Promise((r) => setTimeout(r, 1000 * 2 ** round));
+      for (const b of list) {
+        const wait = last + minGapMs - Date.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        last = Date.now();
+        try {
+          const r = await f(b + path, init);
+          const text = await r.text();
+          if (r.ok) return text;
+          err = new Error(`${path}: HTTP ${r.status} ${text.slice(0, 200)}`);
+          if (r.status === 400 || r.status === 404) throw err;
+        } catch (e) { err = e; if (/HTTP 40[04]/.test(e.message)) throw e; }
+      }
     }
     throw err;
   };
   return {
     tipHeight: async () => Number(await call('/blocks/tip/height')),
-    getTx: async (txid) => JSON.parse(await call(`/tx/${txid}`)),
-    getOutspend: async (txid, vout) => JSON.parse(await call(`/tx/${txid}/outspend/${vout}`)),
+    getTx: async (txid) => {
+      if (txCache.has(txid)) return JSON.parse(txCache.get(txid));
+      const text = await call(`/tx/${txid}`);
+      if (JSON.parse(text).status?.confirmed) txCache.set(txid, text);
+      return JSON.parse(text);
+    },
+    // Several participants of one client share this source; an unspent answer is reused for a few seconds.
+    getOutspend: async (txid, vout) => {
+      const key = `${txid}:${vout}`, hit = spendCache.get(key);
+      if (hit && Date.now() - hit.at < outspendTtlMs) return hit.v;
+      const v = JSON.parse(await call(`/tx/${txid}/outspend/${vout}`));
+      if (!v.spent) spendCache.set(key, { v, at: Date.now() });
+      return v;
+    },
     broadcast: async (hexTx) => call('/tx', { method: 'POST', body: hexTx }),
   };
 }
