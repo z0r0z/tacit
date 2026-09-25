@@ -374,7 +374,7 @@ services:
       # Replay starts here; set to the first block that can carry a pool envelope. Changing it requires a
       # fresh database.
       - key: BTC_POOL_START_HEIGHT
-        value: "323600"
+        value: "323678"
       - key: BTC_POOL_ESPLORA
         value: https://mempool.space/signet/api
       - key: BTC_POOL_CONFIRMATIONS
@@ -382,7 +382,7 @@ services:
       - key: BTC_POOL_POLL_SECS
         value: "30"
       - key: BTC_POOL_DB
-        value: /var/lib/tacit-btc-pool/btc-pool.db
+        value: /var/lib/tacit-btc-pool/btc-pool-bind.db
       - key: BTC_POOL_VERIFY_BIN
         value: /app/prover/bin/btc-pool-verify
       - key: PORT
