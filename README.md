@@ -74,6 +74,11 @@ or attestor set signs a bridge message.
 **Between the chains**
 - **Bitcoin → Ethereum.** A full-proof-of-work header relay feeds an SP1 guest. The guest folds Tacit
   envelopes into roots that the pool accepts after 24 confirmations.
+- **Fast lane.** A Bitcoin-homed note can be spent directly on Ethereum right away, instead of waiting for
+  the header relay and reflection to confirm it first — the pool only needs to see that the note hasn't
+  already been reflected as spent. Bitcoin catches up later, through the same reverse-reflection proof, so
+  the note can never be spent twice. Proven live:
+  [`0x548d52cb…4940fd0c84`](https://etherscan.io/tx/0x548d52cbae38d8e60c278ec919e6cbe8bdb5a370d36a04fe5ca0e64940fd0c84).
 - **Ethereum → Bitcoin.** An SP1 light-client guest proves pool storage. The Bitcoin guest verifies that
   proof recursively, so crossed-out notes are re-minted on Bitcoin.
 - **One note, two chains.** The note commitment is the same secp256k1 Pedersen commitment on both sides.
