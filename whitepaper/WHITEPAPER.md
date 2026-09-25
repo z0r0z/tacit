@@ -60,248 +60,156 @@ $$
 \langle P \rangle\ \mathtt{OP\_CHECKSIG}\ \mathtt{OP\_FALSE}\ \mathtt{OP\_IF}\ \texttt{"TACIT"}\ \mathtt{0x01}\ \langle \mathit{payload} \rangle\ \mathtt{OP\_ENDIF}
 $$
 
-The reveal spends the commit by script path, so the payload rides in witness data. Bitcoin nodes ignore
-it. Indexers read it: a Tacit UTXO is valid iff the op that created it passes its rules and each of its
-asset inputs is itself valid.
+The reveal spends it, so the payload rides in witness data. Bitcoin nodes ignore it; indexers read it. A
+Tacit UTXO is valid iff the op that created it follows the rules and each of its inputs is itself valid.
 
-The rules are deterministic, so two indexers that see the same bytes reach the same verdict. There is no
-quorum, vote or leader, the same trust model as Ordinals and Runes. Users trust only the published
-specification and its open implementations. The Bitcoin reflection guest (§5) checks the rules a second
-time, independently, under a verifying key that cannot change.
+The rules are deterministic, so every indexer that reads the same chain reaches the same state. There is
+no quorum, vote or leader, the same trust model as Ordinals and Runes. The reflection guest (§5) checks
+the rules a second time, under a verifying key that cannot change.
 
-Ops cover:
-- **Issuance:** confidential supply, or fair-launch mints against a public cap. TAC, the native asset,
-  has a fixed supply of 21 million.
-- **Transfers:** hidden amounts, with optional stealth addresses.
-- **Trades:** atomic trades against BTC, bids that fill while the buyer is offline, and a native AMM with
-  swaps, routes, uniform-price batches and LP farms.
-- **cBTC:** locks and redeems of real BTC.
-- **Cross-chain:** bridge burns, re-mints of notes returning from Ethereum, and value-free calls in both
-  directions.
-
-An unknown opcode creates no state, so the protocol grows by adding opcodes.
+Ops cover issuance (TAC, the native asset, has a fixed supply of 21 million), transfers with optional
+stealth addresses, atomic trades against BTC, bids that fill while the buyer is offline, a native AMM,
+cBTC locks, and cross-chain burns, re-mints and calls. An unknown opcode creates no state, so the
+protocol grows by adding opcodes.
 
 ## 3. Confidential value
 
 Every amount is a Pedersen commitment on secp256k1:
-
 $$
 C = v\cdot H + r\cdot G,
 $$
-where $G$ is Bitcoin's generator and $H$ is a nothing-up-my-sleeve point hashed from the tag
-`tacit-generator-H-v1`. Commitments hide the value perfectly and add homomorphically. A transaction
-balances iff its excess
+where $G$ is Bitcoin's generator and $H$ is a second generator nobody knows the discrete log of.
+Commitments hide the value and add up. A transaction balances iff its excess
 $$
 E = \textstyle\sum C_{\text{out}} + b\cdot H - \sum C_{\text{in}}
 $$
-has no $H$ component, where $b$ is any public burn. Tacit proves this with a BIP-340 signature under $E$,
-a Mimblewimble-style kernel. Only someone who knows every blinding can sign, and nobody can sign for an
-excess that hides value.
+has no $H$ component, where $b$ is any public burn. A Schnorr signature under $E$ proves it: only someone
+who knows every blinding can sign, and nobody can sign for an excess that hides value.
 
-Range proofs bound every output to $[0, 2^{64})$, aggregated over up to eight outputs, using
-Bulletproofs+ (classic Bulletproofs remain valid). The recipient's blinding and the key that encrypts its
-amount come from an ECDH secret between sender and recipient, so a recipient finds and opens every payment from its own key and
-the chain, with no share link and no sync server.
+Range proofs (Bulletproofs+) keep every amount in $[0, 2^{64})$. The recipient's blinding and encrypted
+amount come from a shared secret between sender and recipient, so a recipient finds every payment with its
+own key and the chain alone.
 
-The Ethereum pool uses the very same commitment. One note format on both chains lets value cross between
-them unchanged.
+The Ethereum pool uses the same commitment, so value crosses between the chains unchanged.
 
 ## 4. The confidential pool
 
-The pool is one immutable contract with no owner and no pause. It holds three depth-32 keccak Merkle
-trees, for notes, locks and CDP positions, each with its own spent set. It escrows ETH and outside tokens,
-and holds the reflected state of Bitcoin.
+The pool is one immutable contract with no owner and no pause. It keeps Merkle trees of notes, locks and
+loan positions, a spent set for each, escrow for ETH and outside tokens, and the reflected state of
+Bitcoin.
 
-**Notes.** A note is $(\mathit{asset}, C, \mathit{owner})$, stored as a keccak leaf. A note that came
-from Bitcoin commits instead to its Bitcoin key and to the pool it is bound to. Spending a note reveals
-its nullifier. An owned note's nullifier includes the owner's secret key, so no observer can tell which
-leaf a spend consumes. Bearer and Bitcoin-homed notes use a nullifier derived from the leaf alone.
+**Notes.** A note is $(\mathit{asset}, C, \mathit{owner})$. Spending one reveals its nullifier, which
+marks it spent. An owned note's nullifier uses the owner's secret key, so nobody can tell which note was
+spent: it hides among every owned note of its asset. Notes that came from Bitcoin stay bound to their
+Bitcoin key.
 
-**Entry and exit.** `wrap` escrows ETH or any ERC-20 as a deposit that only its depositor's proof can
-claim, and one transaction can wrap and immediately transfer, swap, add liquidity or borrow. TAC, cBTC
-and cUSD have ERC-20s that only the pool mints: unwrapping mints them, and wrapping burns them. A
-note can also exit partway, as a public payout plus hidden change.
+**Entry and exit.** `wrap` deposits ETH or any ERC-20, and one transaction can wrap and immediately send,
+swap, add liquidity or borrow. TAC, cBTC and cUSD have ERC-20s that only the pool mints: unwrapping mints
+them and wrapping burns them. A note can exit in full or in part, leaving hidden change.
 
-**Settlement.** Every change to notes, locks and positions is a batch of up to 256 ops, proven by one
-SP1 program. For each op, the program checks:
-- that each input is in a known root, without revealing which leaf;
-- the range proofs;
-- the kernel or opening proofs;
-- the op's own rules.
-
-It then commits the public effects: nullifiers, new leaves, payouts, fees, swaps, liquidity changes,
-bridge claims and memos. The contract verifies the proof against a pinned verifying key and applies
-exactly those effects.
-
-A spend may prove membership against any root the tree has ever had. Proofs never go stale, and an owned
-note hides among every owned note of its asset. Costs never grow with use:
-- an insert is 32 hashes at any size;
-- nullifier and root sets are constant-time maps, never iterated;
-- the guest reaches history only through fixed-depth proofs.
-
-As a floor against inflation that holds independently of the proof, the contract never records more
-spent notes than it has created. Every proof is bound to
-$$
-\mathit{CHAIN\_BINDING} = \mathrm{keccak}(\mathit{chainid} \Vert \mathit{address}),
-$$
-so it is invalid in any other deployment.
+**Settlement.** Every change to notes and positions is a batch of up to 256 ops proven by one SP1 program. The program checks
+membership, range proofs, balances and each op's rules, then commits only the public effects:
+nullifiers, new notes, payouts and fees. The contract verifies the proof and applies exactly those
+effects. Proofs never go stale, costs do not grow with use, and every proof is bound to one deployment.
 
 ## 5. Reflection: a bridge without signers
 
 **Bitcoin to Ethereum.** Anyone may extend `BitcoinLightRelay`, a header relay that checks full
-proof-of-work and follows the heaviest chain. The reflection guest proves a run of blocks on top of it.
-For each block it:
+proof-of-work and follows the heaviest chain. The reflection guest proves a run of blocks on top of it:
+it re-hashes every transaction, marks spent any input that spends a Tacit note, and re-verifies every
+Tacit envelope. The pool accepts the result once it is buried 24 blocks deep. Value then enters in two
+ways:
+- **Bridge burn.** A note is destroyed on Bitcoin under an id naming the target pool, which mints it
+  exactly once.
+- **Fast lane.** A Bitcoin note bound to the pool is spent directly on Ethereum, with a signature from its
+  Bitcoin key and proof that it is unspent on Bitcoin. Reflection then retires it on Bitcoin.
 
-1. re-hashes every transaction to the header's Merkle root;
-2. marks spent every input that spends a reflected note;
-3. re-verifies and folds each Tacit envelope it understands, and skips the rest;
-4. extends a digest chain over the result.
+**Ethereum to Bitcoin.** A second guest, built on the sp1-helios light client, proves the pool's
+finalized state. The Bitcoin guest verifies that proof inside its own and acts on it: notes that left the
+pool are re-minted on Bitcoin, and fast-lane notes are retired.
 
-The pool accepts this proof only if it extends the last one, its tip is buried at least 24 blocks under
-the relay tip, and its counters match the pool's own. The pool then holds Bitcoin's Tacit note roots,
-spent set, bridge burns, cBTC locks and pending calls.
+**Cross-chain calls.** Reflection also carries calls, which move no value:
+- **Bitcoin to Ethereum.** A Bitcoin key signs a `T_BTC_CALL`: a target contract and its calldata. The
+  pool records it in an inbox, and `BtcCallExecutor` fires it once. The target sees which Bitcoin key
+  signed, so a Bitcoin key can run an Ethereum smart account, vault or governance module with no
+  Ethereum key.
+- **Ethereum to Bitcoin.** Any Ethereum contract can post to `EthCallOutbox`. Reflection delivers the
+  message to Bitcoin's inbox as a `T_ETH_CALL`, stamped with the sender's address, so an Ethereum DAO,
+  timelock or oracle can direct Bitcoin-side applications.
 
-Value enters the pool from Bitcoin in two ways:
-- **Bridge burn.** The note is destroyed on Bitcoin under a burn id that names the target pool, and that
-  pool mints it exactly once.
-- **Fast lane.** A Bitcoin note bound to this pool is spent directly on Ethereum. Its proof shows the note
-  is absent from Bitcoin's reflected spent set and carries a signature from its Bitcoin key. Reflection
-  later retires the note on Bitcoin.
-
-**Ethereum to Bitcoin.** A second guest, built on the sp1-helios sync-committee light client, proves the
-pool's finalized storage: cross-outs, fast-lane spends and outbox messages. The Bitcoin reflection guest
-verifies this proof recursively, then:
-- re-mints on Bitcoin the notes that crossed out of the pool;
-- delivers outbox messages;
-- retires fast-lane notes.
-
-**Cross-chain calls.** Beside value, reflection carries authenticated calls in both directions, so each
-chain can act on the other. Neither channel carries value: a call commits no amount, so it can authorize
-no mint and no transfer.
-- **Bitcoin to Ethereum.** A `T_BTC_CALL` envelope is a Bitcoin key's Schnorr-signed authorization of one
-  Ethereum call: a target contract and its calldata. The reflection guest checks the signature, and the
-  pool records the call in its inbox of pending calls. `BtcCallExecutor`, a separate contract with no
-  privileges, fires it exactly once, and anyone may trigger it. The target sees which Bitcoin key signed
-  and gates on it, so a Bitcoin key can own and operate an Ethereum contract, such as a smart account, a
-  vault or a governance module, with no Ethereum key at all.
-- **Ethereum to Bitcoin.** Any Ethereum contract can post a message to `EthCallOutbox` under a handler
-  namespace. The light-client proof carries it to Bitcoin, where a `T_ETH_CALL` envelope delivers it into
-  Bitcoin's inbox of honored messages, stamped with the sending contract's address. A timelock, a DAO or
-  an oracle on Ethereum becomes an authority that Bitcoin-side logic can follow, with no new keys.
-
-These channels let Bitcoin keys run Ethereum accounts and governance, let TAC holders on Bitcoin act on
-Ethereum, and let Ethereum contracts push attestations, parameters and data to Bitcoin applications.
-Ethereum-to-Bitcoin delivery is at least once: a sender confirms its message landed and resends if not,
-which suits idempotent actions.
-
-The bridge rests on Bitcoin proof-of-work, the Ethereum sync committee and SP1, with no multisig,
-attestor set or IOU. It needs only someone to run the provers. Anyone may, and Ethereum-side notes stay
-spendable even if nobody does. A full round trip has settled on mainnet: a note left the pool, was
-re-minted on Bitcoin, was burned there, and was minted back, proven in both directions.
+The bridge rests on Bitcoin proof-of-work, the Ethereum sync committee and SP1. There is no multisig,
+attestor set or IOU. Anyone may run the provers, and Ethereum-side notes stay spendable even if nobody
+does. A full round trip, from the pool to Bitcoin and back, has settled on mainnet.
 
 ## 6. Confidential DeFi
 
-**Swaps.** Pools are constant-product curves with a fee tier and an optional protocol fee, and their
-reserves are public. `TacitPublicAmm` trades against the same reserves in the clear, so public and
-private liquidity share one curve.
-- `OP_SWAP_ROUTE` swaps a hidden note through up to four pools, with an end-to-end minimum output.
-- `OP_SWAP` clears many hidden orders at one uniform price. Everyone in a batch pays the same price, so
-  nobody can sandwich anyone, and the batch reveals only its net change to reserves.
+**Swaps.** Pools are constant-product curves with public reserves. `OP_SWAP_ROUTE` swaps a hidden note
+through up to four pools. `OP_SWAP` clears many hidden orders at one price, so nobody in a batch can be
+sandwiched. `TacitPublicAmm` trades the same reserves in the clear, so public and private liquidity share
+one curve.
 
-**Prover-blind swaps.** Whoever proves an ordinary swap sees its amounts. `OP_SWAP_BLIND` hides them from
-the SP1 prover as well. Each trader commits to its input on BabyJubJub, the curve native to BN254, and a
-169-byte cross-curve proof ties that commitment to its secp256k1 note. One Groth16 proof of the
-`amm_swap_batch` circuit shows, over hidden amounts, that the price, every fill and every minimum output
-are correct. Only the batcher sees the amounts; the SP1 prover and the chain never do.
+**Prover-blind swaps.** `OP_SWAP_BLIND` hides trade sizes even from the SP1 prover. Traders commit to
+their inputs on a curve suited to a Groth16 circuit, which proves the batch's price and fills over hidden
+amounts; only the batcher that builds the proof sees them. The circuit's key comes from a public ceremony
+of over 5,000 contributions.
 
-Uniform-price clearing over hidden amounts is cheap as a circuit and costly as a zkVM program, so this
-one step uses a circuit. Its key comes from a trusted-setup ceremony (Hermez Phase 1, then a Phase 2 of
-5,018 contributions sealed by a Bitcoin-block beacon) and is compiled into both SP1 guests, so their own
-verifying keys fix it. The same circuit clears `T_SWAP_BATCH` on Bitcoin.
+**Trades without a pool.** `OP_OTC` swaps two parties' notes directly. `OP_BID` is a limit order that
+fills while the buyer is offline. Adaptor locks give atomic swaps with the other chain.
 
-**Trades without a pool.** `OP_OTC` swaps two parties' notes directly. `OP_BID` is a limit order with a
-pre-signed grid of partial fills, so the buyer need not be online. Adaptor locks release a note when a
-Schnorr signature is revealed, which gives atomic swaps with the other chain.
+**Stealth payments.** A payer locks a note to a one-time key only the recipient can derive. The recipient
+claims it, or the payer takes it back after a deadline.
 
-**Stealth payments.** A payer locks a note under a one-time key derived from the recipient's public key.
-The recipient claims it with a signature, and the payer can take it back after a deadline. A Bitcoin
-bridge burn can mint straight into such a lock.
+**cBTC.** A user locks BTC on Bitcoin with a `T_CBTC_LOCK`, and the pool mints exactly that much cBTC,
+once. The locker keeps the lock's key. An escrow in wstETH worth at least 1.5× the lock, which anyone may
+fund, makes spending the lock a loss: a lock spent without a redeem shows up in reflection and anyone can
+slash its escrow. The amount minted never depends on an oracle; a price feed only sizes the escrow. cBTC crosses
+to Bitcoin like any other Tacit note.
 
-**cBTC.** A user locks BTC on Bitcoin with a `T_CBTC_LOCK` envelope that names the note it will mint.
-Reflection records the lock's value, and the pool mints exactly that much cBTC, once. The locker keeps the
-lock's key. An escrow in wstETH of at least 1.5× the lock's value, which anyone may fund, makes spending
-the lock a loss: a minted lock spent without a matching redeem shows up in reflection and anyone can
-slash the escrow, while a proper redeem returns it. The amount minted never depends on an oracle; a price feed
-only sizes the escrow. Custody is economic until covenants make it absolute (§11).
+**cUSD.** A loan locks cBTC and mints cUSD, with 150% collateral to mint and liquidation below 130%. The
+borrower is hidden; the position's amounts are public so they can be priced. Policy lives in a governed
+`CollateralEngine` with on-chain caps, and a delay before a feed change or a stricter liquidation ratio
+applies.
 
-cBTC is a Tacit asset on both chains. It crosses out of the pool and is re-minted on Bitcoin by
-light-client proof (§5), where it moves with hidden amounts like any other Tacit note.
-
-**cUSD.** A CDP locks cBTC and mints cUSD. The borrower is hidden; the position's amounts are public,
-because the controller prices them against a BTC/USD feed. Minting needs 150% collateral, and below 130%
-anyone can liquidate by repaying the debt and taking the collateral. A stability fee and a savings rate
-are built in. Policy lives in a governed `CollateralEngine` that the pool only asks to accept or reject,
-with on-chain caps on its ratios and fee, and a cooling-off period before a feed change or a stricter
-liquidation ratio takes effect.
-
-**Farms.** LP shares bond into a receipt note that earns rewards. A farm controller pays harvests from a
-treasury the pool escrows for it and returns the shares on unbonding. Its governor can reweight pools
-within capped, delayed bounds, but can never cut a running reward stream short or lower its total rate.
+**Farms.** LP shares bond into a receipt note that earns rewards. A running reward program can never be
+cut short or have its total rate lowered.
 
 ## 7. Gasless, self-sovereign, recoverable
 
-**Gasless.** Any op may be relayed. The relayer's fee is part of what the proof commits to, bound by the
-kernel, the opening proof or the note's spend signature. The relayer pays gas and collects exactly that
-fee. It cannot redirect a payout, raise the fee or submit after the user's deadline. Once value is in the
-pool, a user never needs ETH. Entering from Ethereum takes one transaction, which can also tip a relayer
-to settle the deposit. A Bitcoin-only user needs no ETH at all: it enters by bridge burn or the fast lane
-paying only BTC, acts through relayers, and exits to Bitcoin paying only BTC or to any Ethereum address.
-Minting cBTC is the one exception, because its escrow is posted on Ethereum, by the locker or any
-backer.
+**Gasless.** Any op may be relayed. The relayer's fee is bound inside the proof, so it cannot redirect a
+payout, raise the fee or act after the user's deadline. Once value is in the pool, a user never needs
+ETH. A Bitcoin-only user needs none at all: they enter and exit paying only BTC and act through
+relayers. Minting cBTC is the one exception, because its escrow is posted on Ethereum.
 
-**Self-sovereign.** The relayer is optional. Anyone can call `settle`, proofs can be made locally or on
-an open prover network, and all three guest programs rebuild byte for byte from source. A user can prove
-locally, settle directly, and involve no one.
+**Self-sovereign.** The relayer is optional. Anyone can call `settle`, proofs can be made locally, and all
+three guest programs rebuild byte for byte from source.
 
-**Recoverable.** A wallet rebuilds every balance and position from its key and public chain data.
-Bitcoin payments are found by trial derivation (§3). Pool notes carry memos encrypted to their owner and
-committed in the proof that created them, and positions are read back from the pool's events. There is no
-backup file to lose and no server to ask.
+**Recoverable.** A wallet rebuilds every balance and position from its key and public chain data. There
+is no backup file to lose and no server to ask.
 
 ## 8. An immutable core that keeps improving
 
 The pool, its guests and their verifying keys cannot be upgraded, so nobody can change the rules under a
-note that already exists. The protocol still improves, in two ways that never touch the core.
+note that already exists. The protocol still improves in two ways.
 
-**At the edges.** New Bitcoin opcodes are additive, so indexers adopt them without disturbing old ones.
-Anyone can bring an ERC-20 into the pool. New debt assets and reward programs plug in as controllers
-that the pool only asks to accept or reject. Clients, relayers and provers improve freely, because they
-only produce proofs the fixed guests already check. V1 deepens as its market grows, with no migration.
+**At the edges.** New Bitcoin opcodes, new tokens, new debt assets and reward programs, and better
+clients, relayers and provers all plug in without touching the core. V1 deepens as its market grows,
+with no migration.
 
-**By succession.** The pool live today is the root of the V1 lineage. Each pool can deploy its own
-successor through `createNextGen`, its one privileged call, held by the ops multisig. The call runs once,
-from the pool's own address, and a successor accepts only the predecessor that deployed it. The steward
-chooses the successor's code and nothing else: it cannot touch escrow, freeze an exit or redirect a
-payout. Succession carries state forward:
-- **The Bitcoin lane continues without a gap.** The successor's first reflection proof builds on the
-  predecessor's last attested state, read live from its contract. Value on Bitcoin never has to move.
-- **Assets keep their identity.** Asset ids are shared across chains and pools, so TAC, tETH and every
-  Bitcoin asset are the same asset in each pool.
-- **The old pool keeps its promises.** It takes no new value, but every exit, every release of value
-  already committed, and its reflection stay open.
-- **Users move on their own schedule,** by exiting one pool and entering the next. Nothing moves their
-  value for them, and a pool deployed by anyone else cannot touch the lineage.
+**By succession.** The pool live today is the root of the V1 lineage. Each pool can deploy its successor
+once, through `createNextGen`, held by the ops multisig, which chooses the new code and nothing else: it
+cannot touch escrow, freeze an exit or redirect a payout. The successor continues the Bitcoin lane with no
+gap and keeps every asset's identity. The old pool takes no new value but keeps every exit open, and users
+move on their own schedule.
 
 ## 9. Privacy
 
 | | Hidden | Public |
 |---|---|---|
-| Bitcoin | amounts; stealth recipients; trade sizes in `T_SWAP_BATCH` | addresses, the transaction graph, asset ids, burn amounts, AMM reserves |
-| Pool | amounts; which owned note a spend consumes | the deposit and withdrawal boundary, AMM reserves and their changes, CDP amounts |
-| Relay | your key, seed and blindings | the witness of the ops it proves |
+| Bitcoin | amounts; stealth recipients; batch trade sizes | addresses, the transaction graph, asset ids, burn amounts, AMM reserves |
+| Pool | amounts; which owned note a spend consumes | deposits and withdrawals, AMM reserves, loan amounts |
+| Relay | your key and blindings | the witness of the ops it proves |
 
-An owned note hides among every owned note of its asset, not one fixed denomination. Proving locally
-keeps a witness on one device, and `OP_SWAP_BLIND` keeps trade sizes from the prover too.
+Proving locally keeps the witness on one device.
 
 ## 10. Trust and limits
 
@@ -309,64 +217,45 @@ keeps a witness on one device, and `OP_SWAP_BLIND` keeps trade sizes from the pr
 - Bitcoin and Ethereum consensus;
 - the soundness of SP1 and Groth16;
 - the sp1-helios sync committee;
-- for the swap circuit only, at least one honest ceremony contributor;
+- for the swap circuit only, one honest ceremony contributor;
 - the `CollateralEngine` price feeds: BTC/USD for cUSD, and BTC per wstETH for cBTC escrow;
-- the ops multisig (2-of-4, with a one-hour delay unless all four sign), within the on-chain bounds of
-  the collateral and farm controllers;
-- for a walk-away bid on Bitcoin only, a watchtower holding a capped, dedicated key over the sats the
-  buyer commits.
+- the ops multisig (2-of-4, one-hour delay), within on-chain bounds;
+- for walk-away bids on Bitcoin only, a watchtower holding a capped, dedicated key.
 
-**Not relied on:** relayers, the hosted API, gateways and explorers. The reference indexer reads Bitcoin
-from public endpoints, and any other source gives the same state.
+**Not relied on:** relayers, the hosted API, gateways and explorers.
 
 **Limits:**
-- Reflection halts, rather than rewrites, on a Bitcoin reorg deeper than its confirmation depth.
-- Anyone can submit a relayed proof first and collect its fee. The user's outcome is the same, because
-  the proof works for any relayer.
+- Reflection halts, rather than rewrites, on a Bitcoin reorg deeper than 24 blocks.
 - cBTC custody is economic until covenants.
-- Bitcoin transfers carry a large witness, so Tacit on Bitcoin suits settlement, and the pool is where
-  frequent activity belongs.
+- Bitcoin transfers carry a large witness, so Bitcoin suits settlement and the pool suits frequent
+  activity.
 
 ## 11. Covenants, V2 and the road ahead
 
 Bitcoin cannot yet restrict where an output may be spent. Once it can, through CTV, `OP_CAT`,
-`OP_CHECKSIGFROMSTACK`, `OP_VAULT` or an equivalent, three constructions become fully trustless. Tacit
-reserves room for each:
-- **Covenant cBTC.** A lock whose sats can leave only through a redemption. Pool op 5,
-  `OP_COVENANT_MINT`, is held for its mint, which needs no escrow.
-- **On-chain bid escrow.** A buyer's pre-signed input bound to its bid on-chain, replacing the
-  watchtower.
-- **Fractional slots.** Reserved opcodes that split a BTC slot into fungible shares and recombine them,
-  with no shared vault.
+`OP_CHECKSIGFROMSTACK`, `OP_VAULT` or an equivalent, Tacit's reserved slots become fully trustless:
+cBTC locks whose sats can leave only through a redemption, bids escrowed on-chain instead of by a
+watchtower, and BTC split into fungible shares with no shared vault.
 
-**V2.** V1 is built to hand off to this covenant generation. V2's Bitcoin opcodes arrive additively, and
-its settle logic uses op codes V1 keeps free. V2 deploys through V1's own `createNextGen` and inherits
-the Bitcoin lane (§8). cBTC then moves from economic to enforced custody one lock at a time: a locker
-redeems a V1 lock, which frees its escrow, and re-locks the sats in a covenant vault that mints in V2
-with no escrow at all. Every V1 note keeps its exits throughout.
+**V2.** V1 is built to hand off to this covenant generation, which it deploys through its own
+`createNextGen` and hands the Bitcoin lane to. cBTC then moves to enforced custody one lock at a time: a locker redeems a
+V1 lock, which frees its escrow, and re-locks the sats in a covenant vault that mints in V2 with no escrow.
+Every V1 note keeps its exits throughout.
 
 **A shielded pool on Bitcoin.** Bitcoin opcodes `0x6C` and `0x6D` carry a shielded pool that lives on
 Bitcoin alone, described in the companion paper *Secret Sats*. It holds Tacit assets, not BTC, so it adds
-no custody. Notes shield in and exit as ordinary Tacit notes. Each spend proves membership, nullifiers,
-its owner's signature and conservation in one SP1 proof, so sender and receiver are unlinked and amounts
-stay hidden. Indexers verify each proof locally with no Ethereum dependency, and relayers post spends, so
-a sender needs no Bitcoin wallet. cBTC is the pool's path to BTC: locked sats mint cBTC in the Ethereum
-pool, cBTC crosses back to Bitcoin by light-client proof, and there it shields. Sats also move in and out
-by atomic swap, and by covenant once Bitcoin allows one.
-
-Cryptography evolves the same way. A better range proof is added alongside the old one, as
-Bulletproofs+ was, and proof systems verifiable in Bitcoin script could move parts of indexer validation
-into consensus.
+no custody. Each spend is one SP1 proof that unlinks sender from receiver and hides the amount, verified
+by indexers with no Ethereum dependency. cBTC is its path to BTC, and sats also move in and out by atomic
+swap, and by covenant once Bitcoin allows one.
 
 ## 12. Conclusion
 
 Tacit is an asset layer on Bitcoin with no bridge signer and no custodian:
-- a deterministic metaprotocol with hidden amounts;
+- a metaprotocol with hidden amounts;
 - an immutable, proof-gated pool that carries the same notes into confidential DeFi;
-- a bridge made of proofs in both directions, for value and for calls;
+- a bridge of proofs in both directions, for value and for calls;
 - cBTC, which carries real BTC into that DeFi and back to Bitcoin;
-- a lineage of immutable pools that improves as its market grows and hands off to V2 when Bitcoin gains
-  covenants.
+- a lineage of pools that improves as its market grows and hands off to V2 when Bitcoin gains covenants.
 
 Where cryptography can enforce a property, it does. Where Bitcoin cannot yet enforce one, the gap is
 stated, bounded, and reserved for a covenant to close.
