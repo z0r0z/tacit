@@ -29,6 +29,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned alongside forge-std/solady below: on v1.8.3, vm.getNonce(address(this)) increments
+          # by 1 when a call FROM this test contract triggers ANOTHER contract's CREATE2, even though
+          # the deploying contract (not the caller) is the one whose nonce should move under normal EVM
+          # semantics — confirmed with an isolated probe: a plain external call leaves the nonce
+          # unchanged, but one that triggers a CREATE2 elsewhere does not. That desyncs
+          # CanonicalMinters.t.sol's predict-then-deploy address check (test_fixed_adopts_predeployed_token)
+          # from the real deploy address. Not a Tacit bug — v1.5.1 passes the full suite cleanly. Revisit
+          # the pin once this is understood/fixed upstream, not by chasing the newest toolchain automatically.
+          version: v1.5.1
       - name: Install forge deps (lib/ is gitignored; pinned to the local versions)
         working-directory: contracts
         run: |
@@ -57,6 +67,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1 # bytecode identity depends on the compiler build too; see forge-suite job above
       - name: Install forge deps (lib/ is gitignored; pinned — bytecode identity depends on these versions)
         working-directory: contracts
         run: |
@@ -77,6 +89,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1 # see forge-suite job above
       - name: Install forge deps (lib/ is gitignored; pinned to the local versions)
         working-directory: contracts
         run: |
