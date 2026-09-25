@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import { bytesToHex, hexToBytes } from '../../../worker/src/btc-shielded-pool.js';
 
 const h = (b) => bytesToHex(b);
-const SCHEMA = '2';
+const SCHEMA = '3';
 const TABLES = ['blocks', 'leaves', 'nullifiers', 'exits', 'envelopes'];
 // Relayer state has its own version; replay rescans and rollbacks leave it alone.
 const RELAY_SCHEMA = '1';
@@ -41,8 +41,7 @@ export function openBtcPoolStore(dbPath) {
     CREATE TABLE IF NOT EXISTS blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, root TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS leaves (
       idx INTEGER PRIMARY KEY, height INTEGER NOT NULL, txid TEXT NOT NULL, leaf TEXT NOT NULL,
-      asset TEXT NOT NULL, cx TEXT NOT NULL, cy TEXT NOT NULL, spend_key TEXT NOT NULL,
-      nk_pub TEXT NOT NULL, pk_eph TEXT NOT NULL, ct_note TEXT NOT NULL
+      asset TEXT NOT NULL, pk_eph TEXT NOT NULL, ct_note TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS leaves_height ON leaves(height);
     CREATE TABLE IF NOT EXISTS nullifiers (nf TEXT PRIMARY KEY, height INTEGER NOT NULL, txid TEXT NOT NULL);
@@ -64,8 +63,8 @@ export function openBtcPoolStore(dbPath) {
     tip: db.prepare('SELECT height, hash, root FROM blocks ORDER BY height DESC LIMIT 1'),
     block: db.prepare('SELECT height, hash, root FROM blocks WHERE height = ?'),
     insBlock: db.prepare('INSERT INTO blocks (height, hash, root) VALUES (?, ?, ?)'),
-    insLeaf: db.prepare(`INSERT INTO leaves (idx, height, txid, leaf, asset, cx, cy, spend_key, nk_pub, pk_eph, ct_note)
-                         VALUES (@idx, @height, @txid, @leaf, @asset, @cx, @cy, @spend_key, @nk_pub, @pk_eph, @ct_note)`),
+    insLeaf: db.prepare(`INSERT INTO leaves (idx, height, txid, leaf, asset, pk_eph, ct_note)
+                         VALUES (@idx, @height, @txid, @leaf, @asset, @pk_eph, @ct_note)`),
     insNf: db.prepare('INSERT INTO nullifiers (nf, height, txid) VALUES (?, ?, ?)'),
     insExit: db.prepare('INSERT INTO exits (txid, vout, height, asset, cx, cy) VALUES (?, ?, ?, ?, ?, ?)'),
     insEnv: db.prepare('INSERT INTO envelopes (height, tx_index, vin, txid, opcode, accepted, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'),
@@ -83,8 +82,7 @@ export function openBtcPoolStore(dbPath) {
     st.insBlock.run(delta.height, hash, h(delta.root));
     for (const l of delta.leaves) {
       st.insLeaf.run({
-        idx: l.leafIndex, height: l.height, txid: l.txid, leaf: h(l.leaf), asset: h(l.asset), cx: h(l.cx), cy: h(l.cy),
-        spend_key: h(l.spendKey), nk_pub: h(l.nkPub), pk_eph: h(l.pkEph), ct_note: h(l.ctNote),
+        idx: l.leafIndex, height: l.height, txid: l.txid, leaf: h(l.leaf), asset: h(l.asset), pk_eph: h(l.pkEph), ct_note: h(l.ctNote),
       });
     }
     for (const n of delta.nullifiers) st.insNf.run(n.nf, n.height, n.txid);

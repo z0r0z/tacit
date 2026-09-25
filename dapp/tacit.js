@@ -16832,8 +16832,9 @@ async function _fetchBtcPoolExit(txidHex, vout) {
     return { exit: null, available: false, fetchedAt: Date.now() };
   }
 }
-// Exit fields of a T_BTC_SPEND payload (layout of worker/src/btc-shielded-pool.js parseSpend), or null.
-const _BTC_SPEND_OUTPUT_LEN = 218;
+// Exit fields of a T_BTC_SPEND payload (layout of worker/src/btc-shielded-pool.js parseSpend), or null:
+// exit = exit_vout(4) ‖ dest_spk_hash(32) ‖ boundary, whose first 33 bytes are the new note's commitment.
+const _BTC_SPEND_OUTPUT_LEN = 89;
 function _btcSpendExit(payload) {
   if (!payload || payload.length < 74 || payload[0] !== T_BTC_SPEND) return null;
   const n = payload.length;
@@ -16847,13 +16848,12 @@ function _btcSpendExit(payload) {
   p += nOut * _BTC_SPEND_OUTPUT_LEN;
   if (p >= n || payload[p] !== 1) return null;
   p += 1;
-  if (p + 100 > n) return null;
+  if (p + 69 > n) return null;
   return {
     assetIdHex: bytesToHex(payload.slice(1, 33)),
     exitVout: (payload[p] | (payload[p + 1] << 8) | (payload[p + 2] << 16) | (payload[p + 3] << 24)) >>> 0,
-    cx: bytesToHex(payload.slice(p + 4, p + 36)),
-    cy: bytesToHex(payload.slice(p + 36, p + 68)),
-    destSpkHash: bytesToHex(payload.slice(p + 68, p + 100)),
+    destSpkHash: bytesToHex(payload.slice(p + 4, p + 36)),
+    commitmentHex: bytesToHex(payload.slice(p + 36, p + 69)),
   };
 }
 // The service is trusted only for proof validity and nullifier freshness: its exit must equal, field for field,
@@ -16865,9 +16865,10 @@ function _btcPoolExitMatches(rec, vout, envs, voutSpkHex) {
     secp.ProjectivePoint.fromAffine({ x: BigInt('0x' + rec.cx), y: BigInt('0x' + rec.cy) }).assertValidity();
   } catch { return false; }
   const spkHash = bytesToHex(sha256(hexToBytes(voutSpkHex)));
+  const recC = bytesToHex(rec.commitment);
   return envs.some((e) => {
     const x = _btcSpendExit(e.payload);
-    return !!x && x.exitVout === vout && x.assetIdHex === rec.assetIdHex && x.cx === rec.cx && x.cy === rec.cy && x.destSpkHash === spkHash;
+    return !!x && x.exitVout === vout && x.assetIdHex === rec.assetIdHex && x.commitmentHex === recC && x.destSpkHash === spkHash;
   });
 }
 function _carrierSpendEnvelopes(tx) {
@@ -16890,7 +16891,7 @@ async function _btcPoolExitNote(txidHex, vout, { tx = null, env = null } = {}) {
   const spk = tx ? tx.vout?.[vout]?.scriptpubkey : null;
   const ok = tx
     ? _btcPoolExitMatches(rec.exit, vout, envs, spk)
-    : envs.some((e) => { const x = _btcSpendExit(e.payload); return !!x && x.exitVout === vout && x.assetIdHex === rec.exit.assetIdHex && x.cx === rec.exit.cx && x.cy === rec.exit.cy; });
+    : envs.some((e) => { const x = _btcSpendExit(e.payload); return !!x && x.exitVout === vout && x.assetIdHex === rec.exit.assetIdHex && x.commitmentHex === bytesToHex(rec.exit.commitment); });
   if (!ok) return { note: null, available: true };
   if (tx) _btcPoolExitMatched.set(k, rec.exit);
   return { note: rec.exit, available: true };

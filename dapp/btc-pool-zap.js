@@ -9,9 +9,11 @@
 //   names and the one the shield needs. The buyer's envelope output funds the price and the fee; vout[0]
 //   returns the buyer's change.
 //
-// exitToSats: the user signs a spend that exits `amount` to a maker's script and wants `sats` paid to a fresh
-//   key of the user's; the maker builds the carrier from its own coins. The want is signed and checked at
-//   acceptance, so the maker cannot take the exit without paying it.
+// exitToSats: the user builds and proves a spend that exits `amount` to a maker's script and wants `sats` paid
+//   to a fresh key of the user's; the maker builds the carrier from its own coins. The want is in the proved
+//   body and checked at acceptance, so the maker cannot take the exit without paying it.
+//
+// Proofs come from a proof system (btc-pool-zk-prover.js makeGroth16System), run on the user's device.
 //
 // Pure: no network. `tacit` is the dapp's transaction toolkit (tacit.js exports or makeBtcWallet prims) bound
 // to the buyer's Bitcoin key; `pool` is makeBtcShieldedPool(...).
@@ -130,8 +132,9 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
   //          resolveNote(txid, vout) → { assetIdHex, commitment(33) } for a note the transparent validator accepts,
 //          e.g. makeNoteResolver over tacit.js }
   // wallet: { utxos: [{ txid, vout, value }] of tacit.wallet's P2WPKH, feeRate (sat/vB) }
+  // system: the proof system; onProgress(stage) reports 'loading' / 'proving'.
   // Returns the signed commit and carrier; the caller broadcasts commit then carrier.
-  async function buyAndShield({ tacit, pool, sale, wallet, recipientAddress, rPool, e, aux, nowSec = Math.floor(Date.now() / 1000) }) {
+  async function buyAndShield({ tacit, pool, sale, wallet, recipientAddress, system, onProgress, rPool, e, aux, nowSec = Math.floor(Date.now() / 1000) }) {
     const s = readSale(sale, nowSec);
     const assetHex = strip(sale.asset_id ?? '');
     const lot = await tacit.resolveNote(s.outpoint.txid, s.outpoint.vout);
@@ -146,14 +149,18 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
     const compact = derToCompact(s.sig.slice(0, -1));
     if (!compact || !secp.verify(compact, sighash, s.sellerPub, { lowS: true })) throw new Error('btc-pool-zap: seller signature does not verify');
 
+    if (!system) throw new Error('btc-pool-zap: a proof system is required');
     // buildShieldEnvelope checks the published opening against the on-chain commitment.
     const shield = pool.buildShieldEnvelope({
       asset: '0x' + strip(lot.assetIdHex),
       inputs: [{ txid: s.outpoint.txid, vout: s.outpoint.vout, value: s.amount, blinding: s.blinding, Cx, Cy }],
       recipientAddress, rPool, e, aux,
     });
+    const { payload } = await pool.prove(shield, system, { onProgress });
+    shield.payload = payload;
+    shield.payloadHex = hx(payload);
 
-    const script = tacit.encodeEnvelopeScript(tacit.wallet.xonly(), shield.payload);
+    const script = tacit.encodeEnvelopeScript(tacit.wallet.xonly(), payload);
     const { Q_xonly, parity } = tacit.tweakedOutputKey(tacit.TAP_NUMS, tacit.tapLeafHash(script));
     const commitSpk = tacit.p2trScript(Q_xonly);
     const cb = tacit.controlBlock(tacit.TAP_NUMS, parity);
@@ -220,11 +227,12 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
     return { spk, wantVout, exitVout, sats, bind };
   }
 
-  // Signs a spend exiting `amount` to the maker's script with a want of `maker.sats` to a fresh key of the
+  // Builds a spend exiting `amount` to the maker's script with a want of `maker.sats` to a fresh key of the
   // wallet (seed + counter, design §6). Change goes to the internal address; `pad` fills the pool outputs to 3
-  // with zero-value internal notes. The maker needs `offer`: the payload (after proving), the exit opening and
-  // the payout script. Inputs are chosen from `notes` by pool.selectInputs.
-  function exitToSats({ pool, wallet, notes, note, amount, maker, asset, hAnchor, tip, root, usedScripts, pad = true, aux }) {
+  // with zero-value internal notes. Prove `spend` with pool.prove; the maker needs `offer`: the payload, the
+  // exit opening and the payout script. Inputs are chosen from `notes` by pool.selectInputs and carry the
+  // paths served at the anchor.
+  function exitToSats({ pool, wallet, notes, note, amount, maker, asset, hAnchor, tip, root, usedScripts, pad = true }) {
     const m = makerTerms(maker);
     const v = checkSats(amount, 'amount');
     if (!wallet || wallet.internalAddress == null) throw new Error('btc-pool-zap: wallet has no internal address');
@@ -239,7 +247,7 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
     const outputs = change > 0n ? [{ ...self, value: change }] : [];
     if (pad) while (outputs.length < 3) outputs.push({ ...self, value: 0n });
     const spend = pool.buildSpendBody({
-      asset: assetHex, hAnchor, tip, root, inputs, outputs, aux, network: wallet.network, usedScripts: new Set(),
+      asset: assetHex, hAnchor, tip, root, inputs, outputs, network: wallet.network, usedScripts: new Set(),
       exit: { exitVout: m.exitVout, scriptPubKey: hx(m.spk), value: v },
       bind: m.bind,
       want: { vout: m.wantVout, value: m.sats, scriptPubKey: payout.scriptPubKey },
@@ -260,7 +268,7 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
 
   // Maker-side check of an exit-to-sats offer before building the carrier. `payload` is the full envelope
   // (body ‖ proof_len ‖ proof) or a bare body. Throws on any mismatch; returns the parsed spend and the output
-  // plan. `verify({ proof, publicValues })` with `root` checks the proof locally when given.
+  // plan. `verify({ proof, publics })` with `root` checks the exit boundary and the proof natively when given.
   async function validateExitToSats({ pool, payload, offer, maker, amount, asset, root, verify }) {
     const m = makerTerms(maker);
     const v = checkSats(amount, 'amount');
@@ -287,8 +295,9 @@ export function makeBtcPoolZap({ secp, sha256, keccak256 }) {
     if (verify) {
       if (!full) throw new Error('btc-pool-zap: offer carries no proof');
       if (root == null) throw new Error('btc-pool-zap: root required to verify');
-      const pv = concat(new Uint8Array(31), Uint8Array.of(1), toBytes(root), keccak256(toBytes(sp.body)));
-      if ((await verify({ proof: toBytes(sp.proof), publicValues: pv })) !== true) throw new Error('btc-pool-zap: proof does not verify');
+      let publics;
+      try { ({ publics } = pool.payloadPublics(payload, { root })); } catch { throw new Error('btc-pool-zap: exit boundary does not verify'); }
+      if ((await verify({ proof: toBytes(sp.proof), publics })) !== true) throw new Error('btc-pool-zap: proof does not verify');
     }
     return { spend: sp, exitVout: m.exitVout, wantVout: m.wantVout, wantValue: sp.want.value, payoutScriptPubKey: hx(payoutSpk) };
   }

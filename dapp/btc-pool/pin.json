@@ -1,0 +1,14 @@
+{
+  "note": "DEV phase-2 key, single contributor: signet only. Mainnet uses the multi-party ceremony key.",
+  "network": "signet",
+  "system": "groth16-bn254",
+  "circuit": "dapp/circuits/btc-pool/spend.circom",
+  "vk": "spend_dev_signet_vk.json",
+  "vk_hash": "975f1a3ac4719463894e54ff80a4adfc1ebbcf858ad2bf8681d335ac37424a15",
+  "wasm": "spend.wasm",
+  "wasm_sha256": "d3b2e7875f07f82b78886e4daf9852e930498dc7fa1a2652bbb07a5630f213bc",
+  "wasm_bytes": 3775269,
+  "zkey": "spend_dev_signet.zkey",
+  "zkey_sha256": "c8bf89c00a4780de28877c2b341345fd9437bd5cf145fac467a8c2f545920a72",
+  "zkey_bytes": 19586881
+}

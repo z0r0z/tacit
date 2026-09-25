@@ -1,64 +1,41 @@
-// Local Groth16 verification of T_BTC_SPEND proofs (DESIGN-btc-shielded-pool.md §5) through the
-// btc-pool-verify binary (contracts/sp1/confidential/btc-pool-host).
+// Native verification of Bitcoin shielded-pool proofs (DESIGN-btc-shielded-pool.md §5): Groth16 over
+// spend.circom against the pinned verification key, in process, through the same snarkjs bundle the dapp proves
+// with (dapp/vendor/tacit-mixer.min.js). No network call and no external binary.
 //
-// Binary contract: stdin {"proof","public_values","vkey"} (0x-hex); stdout {"ok":true} or
-// {"ok":false,"reason":…}, exit 0 either way. Any other exit status or output is an internal error and
-// throws: it is never read as a rejection, so a broken verifier stalls the indexer instead of forking it.
+// Pin: dapp/btc-pool/pin.json names the key file and its vk_hash (btc-pool-zk-prover.js vkHash, the same bytes
+// btc-pool-zk-core vk_hash hashes). BTC_POOL_VK / BTC_POOL_VK_HASH override both; a key whose hash differs from
+// the pin, or a pin for another network, disables verification, and the indexer halts at the first pool
+// envelope instead of diverging.
 
-import { spawn } from 'node:child_process';
-import { accessSync, constants, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeGroth16System } from '../../../dapp/btc-pool-zk-prover.js';
 
-export const DEFAULT_PIN_PATH = fileURLToPath(new URL('../../../contracts/sp1/confidential/elf-vkey-pin.json', import.meta.url));
+export const DEFAULT_PIN_PATH = fileURLToPath(new URL('../../../dapp/btc-pool/pin.json', import.meta.url));
 
-const toHex = (b) => (typeof b === 'string' ? (b.startsWith('0x') ? b : '0x' + b) : '0x' + Buffer.from(b).toString('hex'));
-
-export function loadBtcPoolVkey({ env = process.env, pinPath = env.BTC_POOL_VKEY_PIN || DEFAULT_PIN_PATH } = {}) {
-  const v = env.BTC_POOL_VKEY || JSON.parse(readFileSync(pinPath, 'utf8')).btc_pool_vkey;
-  if (!/^0x[0-9a-fA-F]{64}$/.test(v || '')) throw new Error(`btc_pool_vkey malformed: ${v}`);
-  return v.toLowerCase();
+export function loadBtcPoolKey({ env = process.env, network = 'signet', pinPath = env.BTC_POOL_PIN || DEFAULT_PIN_PATH } = {}) {
+  const pin = JSON.parse(readFileSync(pinPath, 'utf8'));
+  if (pin.network !== network && !env.BTC_POOL_VK_HASH) throw new Error(`pin ${pinPath} is for ${pin.network}, not ${network}`);
+  const vkFile = env.BTC_POOL_VK || join(dirname(pinPath), pin.vk);
+  const vk = JSON.parse(readFileSync(vkFile, 'utf8'));
+  const want = String(env.BTC_POOL_VK_HASH || pin.vk_hash || '').replace(/^0x/, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(want)) throw new Error('vk_hash pin malformed');
+  return { vk, vkHash: want, vkFile };
 }
 
-export function runVerifier(bin, input, { timeoutMs = 60000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '', err = '', done = false;
-    const finish = (fn, v) => { if (!done) { done = true; clearTimeout(timer); fn(v); } };
-    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(reject, new Error(`btc-pool-verify timed out after ${timeoutMs}ms`)); }, timeoutMs);
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { err += c; });
-    child.on('error', (e) => finish(reject, e));
-    child.on('close', (code, signal) => {
-      if (code !== 0) return finish(reject, new Error(`btc-pool-verify exited ${code ?? signal}: ${err.trim().slice(0, 500)}`));
-      let res;
-      try { res = JSON.parse(out.trim()); } catch { return finish(reject, new Error(`btc-pool-verify printed non-JSON: ${out.slice(0, 200)}`)); }
-      if (res && res.ok === true) return finish(resolve, { ok: true });
-      if (res && res.ok === false) return finish(resolve, { ok: false, reason: String(res.reason ?? '') });
-      finish(reject, new Error(`btc-pool-verify returned an unexpected shape: ${out.slice(0, 200)}`));
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(JSON.stringify(input));
-  });
-}
-
-// { enabled, reason, vkey, verify } — verify is null when disabled, which acceptSpend treats as
-// "cannot decide" (the indexer halts at that spend) rather than as a rejection.
-export function makeBtcPoolVerifier({ bin = process.env.BTC_POOL_VERIFY_BIN, vkey, timeoutMs, log = console.error } = {}) {
-  let reason = null;
-  if (!bin) reason = 'BTC_POOL_VERIFY_BIN is not set';
-  else {
-    try { accessSync(bin, constants.X_OK); } catch { reason = `BTC_POOL_VERIFY_BIN ${bin} is missing or not executable`; }
-  }
-  if (!reason && !vkey) {
-    try { vkey = loadBtcPoolVkey(); } catch (e) { reason = `btc_pool_vkey unavailable: ${e.message}`; }
-  }
+// { enabled, reason, vkHash, system, verify({ proof, publics }) → bool } — verify is null when disabled, which
+// acceptSpend / acceptShield treat as "cannot decide" (the indexer halts there) rather than as a rejection.
+export function makeBtcPoolVerifier({ network = 'signet', env = process.env, vk = null, vkHash = null, log = console.error } = {}) {
+  let system = null, reason = null;
+  try {
+    if (!vk) ({ vk, vkHash } = loadBtcPoolKey({ env, network }));
+    system = makeGroth16System({ vk, pinnedVkHash: vkHash });
+  } catch (e) { reason = `verification key unavailable: ${e.message}`; }
   if (reason) {
-    log(`!!! btc-pool: spend verification DISABLED (${reason}). Shields replay; the first T_BTC_SPEND halts the indexer.`);
-    return { enabled: false, reason, vkey: vkey || null, verify: null };
+    log(`!!! btc-pool: proof verification DISABLED (${reason}). The first pool envelope halts the indexer.`);
+    return { enabled: false, reason, vkHash: vkHash || null, system: null, verify: null };
   }
-  const verify = async ({ proof, publicValues }) => {
-    const r = await runVerifier(bin, { proof: toHex(proof), public_values: toHex(publicValues), vkey }, { timeoutMs });
-    return r.ok;
-  };
-  return { enabled: true, reason: null, vkey, verify };
+  const verify = async ({ proof, publics }) => (await system.verify(publics, proof)) === true;
+  return { enabled: true, reason: null, vkHash: system.vkHash, system, verify };
 }

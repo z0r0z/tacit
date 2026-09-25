@@ -1,20 +1,25 @@
-// Shielded-pool relayer (DESIGN-btc-shielded-pool.md §6) with mocked pool view, verifier, chain and mempool.
-//   node tests/btc-pool-relayer.test.mjs   (from worker-relay/)
+// Shielded-pool relayer (DESIGN-btc-shielded-pool.md §6) with mocked pool view, chain and mempool. Most tests
+// use a stub verifier (a wire whose first byte is 1 verifies) and check the publics the relayer derives; the
+// "real proof" tests prove spend.circom and verify natively through makeBtcPoolVerifier.
+//   node worker-relay/tests/btc-pool-relayer.test.mjs
 
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import * as snarkjs from 'snarkjs';
 import { secp, sha256, keccak_256, hexToBytes, bytesToHex, concatBytes } from '../../dapp/vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../../dapp/btc-shielded-pool.js';
+import { makeGroth16System, PROOF_WIRE_LEN } from '../../dapp/btc-pool-zk-prover.js';
 import { makeBtcWallet } from '../../dapp/bitcoin-taproot-wallet.js';
+import { PoseidonTree } from '../../worker/src/btc-shielded-pool.js';
 import { parseTx } from '../src/lib/btc-pool-chain.js';
-import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  createRelayer, tapScriptSighash, spendNullifiersOfTx, parseFees, spendPublicValues, poolViewFromIndexer,
-  makeMempoolWatch, makeBitcoindMempool, makeBitcoindRpc,
+  createRelayer, tapScriptSighash, spendNullifiersOfTx, parseFees, spendPublics, poolViewFromIndexer,
+  makeMempoolWatch, makeBitcoindMempool, makeBitcoindRpc, spendsOfTx,
 } from '../src/lib/btc-pool-relayer.js';
-import { spendsOfTx } from '../src/lib/btc-pool-relayer.js';
+import { makeBtcPoolVerifier, DEFAULT_PIN_PATH } from '../src/lib/btc-pool-verify.js';
 import { openBtcPoolStore } from '../src/lib/btc-pool-store.js';
 import { createIndexer } from '../src/btc-pool-indexer.js';
 
@@ -40,7 +45,7 @@ let leafCounter = 0;
 function ownedNote(value = 100n) {
   const n = bp.createNote(alice.addressString, ASSET, value);
   const r = bp.tryReceive(alice, { ...n, leafIndex: leafCounter++ });
-  assert.ok(r && r.nf);
+  assert.ok(r && r.nf && r.skNote);
   return r;
 }
 // Relayer coins; the smallest free confirmed one becomes a batch's bind.
@@ -50,14 +55,26 @@ const COINS = [
   { txid: 'aa'.repeat(32), vout: 4, value: 25_000 },
 ];
 const FIRST_BIND = { txid: 'bb'.repeat(32), vout: 3 };
-// Proof byte 0x01 verifies under the mock verifier; anything else does not.
-function payloadFor({ notes, outputs, exit = null, bind = FIRST_BIND, want = null, hAnchor = ANCHOR, proof = Uint8Array.of(1, 2, 3) }) {
+// Stub wires: first byte 1 verifies under the stub verifier, anything else does not.
+const wire = (b0) => { const w = new Uint8Array(PROOF_WIRE_LEN); w[0] = b0; w[1] = 2; return w; };
+const OK_PROOF = wire(1);
+const BAD_PROOF = wire(9);
+function payloadFor({ notes, outputs, exit = null, bind = FIRST_BIND, want = null, hAnchor = ANCHOR, proof = OK_PROOF }) {
   const b = bp.buildSpendBody({ asset: ASSET, hAnchor, inputs: notes, outputs, exit, bind, want });
   return { hex: bytesToHex(bp.assembleSpendEnvelope(b.body, proof)), nullifiers: b.nullifiers.map(strip), body: b.body, exit: b.exit };
 }
+// Flips one byte inside the exit boundary's sigma proof; the body still parses.
+function corruptBoundary(hex) {
+  const bytes = hexToBytes(hex);
+  const s = bp.parseSpend(bytes, { full: true });
+  const at = s.body.length - 1 - 825 + 65 + 40; // has_want is the last body byte; boundary precedes it
+  bytes[at] ^= 1;
+  return bytesToHex(bytes);
+}
+const ANCHOR_ROOT = '0a'.repeat(32);
 
 async function setup(over = {}, { open = true } = {}) {
-  const roots = new Map([[ANCHOR, 'aa'.repeat(32)], [990, 'bb'.repeat(32)], [860, 'cc'.repeat(32)], [870, 'c1'.repeat(32)], [875, 'c2'.repeat(32)]]);
+  const roots = new Map([[ANCHOR, ANCHOR_ROOT], [990, '0b'.repeat(32)], [860, '0c'.repeat(32)], [870, '01'.repeat(32)], [875, '02'.repeat(32)]]);
   const spent = new Set();
   const pending = new Map();
   const pool = {
@@ -66,10 +83,10 @@ async function setup(over = {}, { open = true } = {}) {
     pendingSpend: (nf) => pending.get(strip(nf)) || null, aheadComplete() { return this.complete; },
   };
   const verifyCalls = [];
-  const verifier = {
+  const verifier = over.verifier || {
     enabled: true,
-    verify: async ({ proof, publicValues }) => {
-      verifyCalls.push({ proof, publicValues });
+    verify: async ({ proof, publics }) => {
+      verifyCalls.push({ proof, publics });
       await new Promise((r) => setTimeout(r, 5));
       return proof[0] === 1;
     },
@@ -132,7 +149,12 @@ test('accept: fee note fully received, proof checked against the replayed root',
   assert.equal(s.relayer.status(r.id).state, 'held');
   assert.equal(s.verifyCalls.length, 1);
   assert.ok(s.relayer._state.reservedUtxos.has(`${FIRST_BIND.txid}:${FIRST_BIND.vout}`));
-  assert.equal(bytesToHex(s.verifyCalls[0].publicValues), bytesToHex(spendPublicValues('aa'.repeat(32), p.body)));
+  const want = bp.payloadPublics(p.hex, { root: '0x' + ANCHOR_ROOT }).publics;
+  assert.equal(want.length, 12);
+  assert.deepEqual(s.verifyCalls[0].publics, want, 'publics against the root at h_anchor');
+  assert.deepEqual(spendPublics(hexToBytes(p.hex), ANCHOR_ROOT), want);
+  assert.equal(want[0], BigInt('0x' + ANCHOR_ROOT).toString());
+  assert.equal(bytesToHex(s.verifyCalls[0].proof), bytesToHex(OK_PROOF));
   for (const nf of p.nullifiers) assert.equal(s.relayer._state.holds.get(nf), r.id);
 });
 
@@ -216,26 +238,31 @@ test('fee note to the wrong key is rejected', async () => {
   assert.equal(s.verifyCalls.length, 0);
 });
 
-test('fee note whose opening does not match (Cx, Cy) is rejected', async () => {
+test('fee note whose leaf does not match its sealed opening is rejected', async () => {
   const s = await setup();
   const note = ownedNote(100n);
+  assert.equal(note.nf, bp.nullifier(note.nkNote, note.leaf, note.leafIndex));
   const fee = bp.createNote(relayerWallet.addressString, ASSET, 10n);
   const other = bp.createNote(relayerWallet.addressString, ASSET, 500n);
-  const forged = { ...fee, cx: other.cx, cy: other.cy };
   const change = bp.createNote(bob.addressString, ASSET, 90n);
-  const body = bp.encodeSpendBody({ asset: ASSET, hAnchor: ANCHOR, bind: FIRST_BIND, nullifiers: [bp.nullifier(note.leaf, note.nkNote, note.leafIndex)], outputs: [forged, change] });
-  const hex = bytesToHex(bp.assembleSpendEnvelope(body, Uint8Array.of(1)));
-  await rejects(s.relayer.submit({ payload: hex }), /no output is received/);
+  const env = (outputs) => bytesToHex(bp.assembleSpendEnvelope(bp.encodeSpendBody({ asset: ASSET, hAnchor: ANCHOR, bind: FIRST_BIND, nullifiers: [note.nf], outputs }), OK_PROOF));
+  // Leaf of a 500-sat note under a ciphertext sealing 10.
+  await rejects(s.relayer.submit({ payload: env([{ ...fee, leaf: other.leaf }, change]) }), /no output is received/);
+  // Ciphertext of another note under this note's ephemeral key.
+  await rejects(s.relayer.submit({ payload: env([{ ...fee, ctNote: other.ctNote }, change]) }), /no output is received/);
+  // Note of another asset.
+  const foreign = bp.createNote(relayerWallet.addressString, '0x' + 'cd'.repeat(32), 10n);
+  await rejects(s.relayer.submit({ payload: env([foreign, change]) }), /no output is received/);
+  assert.equal(s.verifyCalls.length, 0);
   // Control: the untouched note is received.
-  const ok = bp.encodeSpendBody({ asset: ASSET, hAnchor: ANCHOR, bind: FIRST_BIND, nullifiers: [bp.nullifier(note.leaf, note.nkNote, note.leafIndex)], outputs: [fee, change] });
-  await s.relayer.submit({ payload: bytesToHex(bp.assembleSpendEnvelope(ok, Uint8Array.of(1))) });
+  await s.relayer.submit({ payload: env([fee, change]) });
 });
 
 test('proof that does not verify is rejected and releases its nullifiers', async () => {
   const s = await setup();
   const note = ownedNote(100n);
   const outs = [{ address: relayerWallet.addressString, value: 10n }, { address: bob.addressString, value: 90n }];
-  const bad = payloadFor({ notes: [note], outputs: outs, proof: Uint8Array.of(9) });
+  const bad = payloadFor({ notes: [note], outputs: outs, proof: BAD_PROOF });
   await rejects(s.relayer.submit({ payload: bad.hex }), /proof does not verify/);
   assert.equal(s.relayer._state.holds.size, 0);
   const good = payloadFor({ notes: [note], outputs: outs });
@@ -247,6 +274,26 @@ test('verifier unavailable fails closed', async () => {
   s.verifier.enabled = false;
   const p = payloadFor({ notes: [ownedNote(100n)], outputs: [{ address: relayerWallet.addressString, value: 10n }, { address: bob.addressString, value: 90n }] });
   await assert.rejects(s.relayer.submit({ payload: p.hex }), (e) => e.status === 503);
+});
+
+test('exit whose boundary does not verify is rejected before the proof check and frees its slot', async () => {
+  const s = await setup();
+  const spk = p2tr('exit-bd');
+  const q = await s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(spk) });
+  const note = ownedNote(100n);
+  const p = payloadFor({ notes: [note], outputs: [{ address: relayerWallet.addressString, value: 10n }], exit: { exitVout: q.exitVout, scriptPubKey: spk } });
+  await rejects(s.relayer.submit({ payload: corruptBoundary(p.hex), quoteId: q.quoteId }), /exit boundary does not verify/);
+  assert.equal(s.verifyCalls.length, 0);
+  assert.equal(s.relayer._state.holds.size, 0);
+  assert.equal(s.relayer._state.batch.slots.length, 0);
+  // The quote is released with the slot; the intact payload is accepted under it.
+  await s.relayer.submit({ payload: p.hex, quoteId: q.quoteId });
+  const call = s.verifyCalls[0];
+  assert.deepEqual(call.publics, bp.payloadPublics(p.hex, { root: '0x' + ANCHOR_ROOT }).publics);
+  // root, body_hash, asset, nf×2, out_leaf×3, exit_C, dep_C
+  assert.notDeepEqual(call.publics.slice(8, 10), ['0', '1'], 'exit commitment is the boundary point');
+  assert.deepEqual(call.publics.slice(10), ['0', '1'], 'no deposit on a spend');
+  assert.deepEqual(call.publics.slice(3, 5), [BigInt(note.nf).toString(), '0']);
 });
 
 test('duplicate nullifier across payloads, sequential and concurrent', async () => {
@@ -538,7 +585,7 @@ test('slot squatting: quotes bind no slot and reserve one coin per batch, are ca
   // A failed proof check frees its slot.
   const q3 = await s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(p2tr('e3')) });
   assert.equal(q3.exitVout, 2);
-  await rejects(s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 2, scriptPubKey: p2tr('e3') }, proof: Uint8Array.of(9) }).hex, quoteId: q3.quoteId }), /does not verify/);
+  await rejects(s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs, exit: { exitVout: 2, scriptPubKey: p2tr('e3') }, proof: BAD_PROOF }).hex, quoteId: q3.quoteId }), /does not verify/);
   assert.equal(s.relayer._state.batch.slots.length, 2);
 });
 
@@ -864,8 +911,111 @@ test('restart resumes carriers, held payloads, slots and nullifier holds from th
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ── real proofs: spend.circom proved in process, verified natively against the pinned key ──
+// Two notes in a real Poseidon tree; a fee-paying pay and a fee-paying exit, both bound to FIRST_BIND (the bind
+// of a fresh setup) with exit_vout 0 (its first free slot). Proved once per run.
+const REAL_EXIT_SPK = p2tr('exit-real');
+let realCache = null;
+async function realCases() {
+  if (realCache) return realCache;
+  const pinDir = DEFAULT_PIN_PATH.replace(/pin\.json$/, '');
+  const pin = JSON.parse(readFileSync(DEFAULT_PIN_PATH, 'utf8'));
+  const system = makeGroth16System({
+    vk: JSON.parse(readFileSync(pinDir + pin.vk, 'utf8')), wasm: readFileSync(pinDir + pin.wasm), zkey: readFileSync(pinDir + pin.zkey),
+    snarkjs, pinnedVkHash: pin.vk_hash,
+  });
+  const tree = new PoseidonTree();
+  for (let i = 0; i < 5; i++) tree.append(bp.createNote(eve.addressString, ASSET, 7n).leaf);
+  const mine = [120n, 100n].map((v) => {
+    const n = bp.createNote(alice.addressString, ASSET, v);
+    return bp.tryReceive(alice, { ...n, leafIndex: tree.append(n.leaf) });
+  });
+  const root = tree.root();
+  const withPath = (n) => ({ ...n, path: tree.rootAndPath(n.leafIndex).path });
+  const t0 = performance.now();
+  const payB = bp.buildSpendBody({ asset: ASSET, hAnchor: ANCHOR, root, bind: FIRST_BIND, inputs: [withPath(mine[0])], outputs: [{ address: relayerWallet.addressString, value: 12n }, { address: bob.addressString, value: 108n }] });
+  const pay = await bp.prove(payB, system);
+  const exitB = bp.buildSpendBody({ asset: ASSET, hAnchor: ANCHOR, root, bind: FIRST_BIND, inputs: [withPath(mine[1])], outputs: [{ address: relayerWallet.addressString, value: 10n }], exit: { exitVout: 0, scriptPubKey: REAL_EXIT_SPK } });
+  const exit = await bp.prove(exitB, system);
+  realCache = {
+    root: bytesToHex(root), notes: mine,
+    pay: { hex: bytesToHex(pay.payload), nullifiers: payB.nullifiers.map(strip), proof: pay.proof },
+    exit: { hex: bytesToHex(exit.payload), nullifiers: exitB.nullifiers.map(strip), proof: exit.proof },
+    ms: performance.now() - t0,
+  };
+  console.log(`    (proved 2 spends in ${(realCache.ms / 1000).toFixed(1)} s)`);
+  return realCache;
+}
+async function realSetup() {
+  const r = await realCases();
+  const native = makeBtcPoolVerifier({ network: 'signet', env: {}, log: () => {} });
+  assert.equal(native.enabled, true, native.reason);
+  const calls = [];
+  const verifier = { enabled: true, verify: async (x) => { const ok = await native.verify(x); calls.push({ ...x, ok }); return ok; } };
+  const s = await setup({ verifier });
+  s.roots.set(ANCHOR, r.root);
+  return { s, r, calls };
+}
+
+test('real proof: a fee-paying spend is accepted by the native verifier and carried', async () => {
+  const { s, r, calls } = await realSetup();
+  const q = await s.relayer.quote({ asset: ASSET });
+  assert.deepEqual(q.bind, FIRST_BIND);
+  const res = await s.relayer.submit({ payload: r.pay.hex, quoteId: q.quoteId });
+  assert.equal(s.relayer.status(res.id).state, 'held');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].ok, true);
+  assert.deepEqual(calls[0].publics, bp.payloadPublics(r.pay.hex, { root: '0x' + r.root }).publics);
+  assert.equal(bytesToHex(calls[0].proof), bytesToHex(r.pay.proof));
+  assert.equal(s.relayer._state.payloads.get(res.id).fee, 12n);
+  const c = await s.relayer.flush();
+  assert.equal(c.state, 'broadcast');
+  assert.deepEqual([...spendNullifiersOfTx(txOf(c.revealHex))], r.pay.nullifiers);
+});
+
+test('real proof: tampered proof, another root, or a proof of another body is rejected', async () => {
+  const { s, r, calls } = await realSetup();
+  const bytes = hexToBytes(r.pay.hex);
+  const tampered = Uint8Array.from(bytes);
+  tampered[tampered.length - 1 - 100] ^= 1;
+  await rejects(s.relayer.submit({ payload: bytesToHex(tampered) }), /proof does not verify/);
+  assert.equal(s.relayer._state.holds.size, 0);
+  // The proof of the exit spliced onto the pay body.
+  const pay = bp.parseSpend(bytes, { full: true });
+  const spliced = bp.assembleSpendEnvelope(pay.body, r.exit.proof);
+  await rejects(s.relayer.submit({ payload: bytesToHex(spliced) }), /proof does not verify/);
+  // The replayed root at h_anchor differs from the one proved against.
+  s.roots.set(ANCHOR, '0d'.repeat(32));
+  await rejects(s.relayer.submit({ payload: r.pay.hex }), /proof does not verify/);
+  assert.ok(calls.length === 3 && calls.every((x) => x.ok === false));
+  s.roots.set(ANCHOR, r.root);
+  await s.relayer.submit({ payload: r.pay.hex });
+});
+
+test('real proof: an exit is accepted under its quote; with its boundary corrupted it is rejected', async () => {
+  const { s, r, calls } = await realSetup();
+  const q = await s.relayer.quote({ asset: ASSET, exitScriptPubKey: bytesToHex(REAL_EXIT_SPK) });
+  assert.equal(q.exitVout, 0);
+  await rejects(s.relayer.submit({ payload: corruptBoundary(r.exit.hex), quoteId: q.quoteId }), /exit boundary does not verify/);
+  assert.equal(calls.length, 0);
+  const res = await s.relayer.submit({ payload: r.exit.hex, quoteId: q.quoteId });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].ok, true);
+  assert.equal(s.relayer._state.payloads.get(res.id).fee, 10n);
+  const c = await s.relayer.flush();
+  const reveal = txOf(c.revealHex);
+  assert.equal(bytesToHex(reveal.vout[0].scriptPubKey), bytesToHex(REAL_EXIT_SPK));
+  assert.equal(reveal.vout[0].value, 546n);
+  // The exit's opening is recoverable from the payload and the wallet's notes.
+  const rec = bp.recoverExit(alice, hexToBytes(r.exit.hex), r.notes);
+  assert.equal(rec.value, 90n);
+});
+
 let passed = 0;
+const t0 = performance.now();
 for (const [n, f] of tests) {
   try { await f(); passed++; console.log('  ok -', n); } catch (e) { console.error('  FAIL -', n); console.error(e); process.exitCode = 1; }
 }
-console.log(`${passed}/${tests.length} passed`);
+console.log(`${passed}/${tests.length} passed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+// snarkjs keeps worker threads alive after proving.
+process.exit(process.exitCode ?? 0);

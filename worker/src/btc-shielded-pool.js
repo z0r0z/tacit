@@ -1,35 +1,35 @@
-// Bitcoin-native shielded pool: envelope parsing, note/nullifier hashing, the keccak note tree and the
-// block-by-block replay state (contracts/sp1/confidential/DESIGN-btc-shielded-pool.md §2, §3, §5).
-// Pure logic: no I/O. Transparent-note resolution and proof verification are injected by the caller.
+// Bitcoin-native shielded pool: envelope parsing, the Poseidon note tree and the block-by-block replay state
+// (contracts/sp1/confidential/DESIGN-btc-shielded-pool.md §3, §5). Client-proved relation: spend.circom, verified
+// natively. Pure logic: no I/O. Transparent-note resolution and proof verification are injected by the caller.
 
 import * as secp from '@noble/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 as sha256Hash } from '@noble/hashes/sha256';
+import { poseidon2 } from '../../dapp/vendor/tacit-poseidon.min.js';
+import { spendPublics, P_FR } from '../../dapp/btc-pool-zk.js';
+import { verifyBoundary, decodeBoundary, BOUNDARY_LEN } from '../../dapp/btc-pool-zk-boundary.js';
 
 export const T_BTC_SHIELD = 0x6c;
 export const T_BTC_SPEND = 0x6d;
 
-export const SHIELD_LEN = 316;
 export const SHIELD_MAX_IN = 8;
 export const SPEND_MAX_IN = 2;
 export const SPEND_MAX_OUT = 3;
-export const PROOF_MAX = 512;
+export const PROOF_MAX = 4096;
 export const ANCHOR_WINDOW = 144;
 export const UNDO_DEPTH = 288;
 export const TREE_DEPTH = 32;
 export const MAX_LEAVES = 2 ** TREE_DEPTH;
-export const PV_VERSION = 1;
 
-export const OUTPUT_LEN = 32 + 32 + 32 + 33 + 33 + 56;
-export const EXIT_LEN = 4 + 32 + 32 + 32;
+export const CT_NOTE_LEN = 24;
+export const OUTPUT_LEN = 32 + 33 + CT_NOTE_LEN;
 export const BIND_LEN = 32 + 4;
 export const WANT_LEN = 4 + 8 + 32;
+export const EXIT_LEN = 4 + 32 + BOUNDARY_LEN;
+export const KERNEL_SIG_LEN = 64;
+export { BOUNDARY_LEN };
 
 const enc = (s) => new TextEncoder().encode(s);
-const NOTE_DOMAIN = enc('tacit-btc-pool-note-v1');
-const NF_DOMAIN = enc('tacit-btc-pool-nf-v1');
-const SPEND_DOMAIN = enc('tacit-btc-pool-spend-v1');
-const SHIELD_DOMAIN = enc('tacit-btc-pool-shield-v1');
+const SHIELD_DOMAIN = enc('tacit-btc-pool-zk-shield-v1');
 
 const Point = secp.ProjectivePoint;
 const P_FIELD = secp.CURVE.p;
@@ -52,55 +52,31 @@ export const concat = (...arr) => {
   return out;
 };
 const toBytes = (v) => (typeof v === 'string' ? hexToBytes(v) : v);
-export const keccak = (...parts) => keccak_256(concat(...parts.map(toBytes)));
 export const sha256 = (...parts) => sha256Hash(concat(...parts.map(toBytes)));
-const bytesToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);
-const bigTo32 = (n) => hexToBytes(n.toString(16).padStart(64, '0'));
+export const bytesToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);
+export const bigTo32 = (n) => hexToBytes(BigInt(n).toString(16).padStart(64, '0'));
 const u32le = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] * 0x1000000)) >>> 0;
 const u64le = (b, o) => { let x = 0n; for (let k = 7; k >= 0; k--) x = (x << 8n) | BigInt(b[o + k]); return x; };
 const u32leBytes = (v) => Uint8Array.of(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
-const beBytes = (v, len) => {
-  const out = new Uint8Array(len);
-  let x = BigInt(v);
-  for (let i = len - 1; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
-  return out;
-};
 const eqBytes = (a, b) => {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 };
 
-// ── curve ──
-// SPEC §2.1: H = first valid 0x02 ‖ SHA-256(SHA-256("tacit-generator-H-v1") ‖ ctr).
-export const H = (() => {
-  const seed = sha256Hash(enc('tacit-generator-H-v1'));
-  for (let ctr = 0; ctr < 256; ctr++) {
-    try { return Point.fromHex(concat(Uint8Array.of(0x02), sha256Hash(concat(seed, Uint8Array.of(ctr))))); } catch {}
-  }
-  throw new Error('no H');
-})();
+// ── secp256k1 (transparent side) ──
 export const G = Point.BASE;
 export const ZERO = Point.ZERO;
-
-// Scalar multiply tolerating 0 and reducing mod n (noble rejects 0).
-export const mulPoint = (P, k) => {
-  const s = ((BigInt(k) % N_ORDER) + N_ORDER) % N_ORDER;
-  return s === 0n ? ZERO : P.multiply(s);
-};
-export const pedersen = (value, blinding) => mulPoint(H, value).add(mulPoint(G, blinding));
-
-// (Cx, Cy) as a curve point, both coordinates < p; null otherwise.
-export function pointFromXY(cx, cy) {
-  const x = bytesToBig(toBytes(cx)), y = bytesToBig(toBytes(cy));
-  if (x >= P_FIELD || y >= P_FIELD) return null;
-  try { return Point.fromAffine({ x, y }).assertValidity(); } catch { return null; }
-}
 export function pointFromCompressed(b) {
   b = toBytes(b);
   if (b.length !== 33 || (b[0] !== 0x02 && b[0] !== 0x03)) return null;
   if (bytesToBig(b.subarray(1)) >= P_FIELD) return null;
   try { return Point.fromHex(b); } catch { return null; }
+}
+export function pointFromXY(cx, cy) {
+  const x = bytesToBig(toBytes(cx)), y = bytesToBig(toBytes(cy));
+  if (x >= P_FIELD || y >= P_FIELD) return null;
+  try { return Point.fromAffine({ x, y }).assertValidity(); } catch { return null; }
 }
 export function liftX(x32) {
   x32 = toBytes(x32);
@@ -111,13 +87,14 @@ export const pointXY = (P) => {
   const { x, y } = P.toAffine();
   return { cx: bigTo32(x), cy: bigTo32(y) };
 };
-
+const mulPoint = (P, k) => {
+  const s = ((BigInt(k) % N_ORDER) + N_ORDER) % N_ORDER;
+  return s === 0n ? ZERO : P.multiply(s);
+};
 const taggedHash = (tag, ...parts) => {
   const t = sha256Hash(enc(tag));
   return sha256Hash(concat(t, t, ...parts));
 };
-
-// BIP-340 verification over a 32-byte message.
 export function bip340Verify(sig, msg, pubX) {
   sig = toBytes(sig); msg = toBytes(msg); pubX = toBytes(pubX);
   if (sig.length !== 64 || msg.length !== 32 || pubX.length !== 32) return false;
@@ -133,62 +110,59 @@ export function bip340Verify(sig, msg, pubX) {
   return (y & 1n) === 0n && x === r;
 }
 
-// ── note, nullifier, messages (§2, §3, §4) ──
-export function noteLeaf({ asset, cx, cy, spendKey, nkPub }) {
-  return keccak(asset, cx, cy, spendKey, nkPub, NOTE_DOMAIN);
-}
-
-// nf = keccak("tacit-btc-pool-nf-v1" ‖ leaf ‖ nk_note(32, BE) ‖ leaf_index(8, BE)). Wallet/test side only:
-// the indexer never sees nk_note, it takes nf from the body.
-export function nullifier(leaf, nkNote, leafIndex) {
-  const nk = typeof nkNote === 'bigint' ? bigTo32(nkNote) : toBytes(nkNote);
-  return keccak(NF_DOMAIN, leaf, nk, beBytes(leafIndex, 8));
-}
-
-export const spendMsg = (body) => keccak(SPEND_DOMAIN, body);
-
-// Outpoint txids are given in display hex; the message carries the byte order the transaction's input
-// serializes, exactly as the T_CXFER kernel does.
-export function shieldKernelMsg(s, outpoints) {
-  const parts = [SHIELD_DOMAIN, s.asset, Uint8Array.of(s.nIn)];
+// Kernel message of a shield: SHA-256(domain ‖ (txid ‖ vout_LE) × n_in ‖ body). Outpoint txids are given in
+// display hex and carried in the byte order a transaction input serializes them, as the T_CXFER kernel does.
+export function shieldKernelMsg(body, outpoints) {
+  const parts = [SHIELD_DOMAIN];
   for (const op of outpoints) parts.push(hexToBytes(op.txid).reverse(), u32leBytes(op.vout >>> 0));
-  parts.push(s.cx, s.cy, s.spendKey, s.nkPub, s.pkEph, s.ctNote);
+  parts.push(toBytes(body));
   return sha256(...parts);
 }
 
-// abi.encode(uint16 1, bytes32 root, bytes32 keccak(body)): three static words.
-export function spendPublicValues(root, body) {
-  const v = new Uint8Array(32);
-  v[31] = PV_VERSION;
-  return concat(v, toBytes(root), keccak(body));
-}
-
 // ── canonical parsers (§3) ──
-function readNoteKeys(e, p, out) {
-  out.spendKey = e.slice(p, p + 32); p += 32;
-  out.nkPub = e.slice(p, p + 33); p += 33;
-  out.pkEph = e.slice(p, p + 33); p += 33;
+// A field element on the wire: 32 bytes big-endian, below p.
+const fieldOk = (b) => bytesToBig(b) < P_FR;
+
+function readOutputs(e, p, n, out) {
+  for (let i = 0; i < n; i++) {
+    const o = {};
+    o.leaf = e.slice(p, p + 32); p += 32;
+    o.pkEph = e.slice(p, p + 33); p += 33;
+    o.ctNote = e.slice(p, p + CT_NOTE_LEN); p += CT_NOTE_LEN;
+    if (!fieldOk(o.leaf) || bytesToBig(o.leaf) === 0n || !pointFromCompressed(o.pkEph)) return -1;
+    out.push(o);
+  }
   return p;
 }
-function noteKeysValid(n) {
-  return !!(liftX(n.spendKey) && pointFromCompressed(n.nkPub) && pointFromCompressed(n.pkEph));
+function readBoundary(e, p) {
+  const bd = decodeBoundary(e.slice(p, p + BOUNDARY_LEN));
+  if (!bd || !pointFromCompressed(bd.cSecp)) return null;
+  return bd;
 }
 
+// 0x6C ‖ asset ‖ n_in ‖ n_out ‖ output×n_out ‖ boundary ‖ kernel_sig ‖ proof_len(2) ‖ proof.
+// `body` is every byte before kernel_sig.
 export function parseShield(bytes) {
   const e = toBytes(bytes);
-  if (!e || e.length !== SHIELD_LEN || e[0] !== T_BTC_SHIELD) return null;
+  if (!e || e.length < 35 || e[0] !== T_BTC_SHIELD) return null;
   let p = 1;
   const s = { kind: 'shield' };
   s.asset = e.slice(p, p + 32); p += 32;
   s.nIn = e[p]; p += 1;
   if (s.nIn < 1 || s.nIn > SHIELD_MAX_IN) return null;
-  s.cx = e.slice(p, p + 32); p += 32;
-  s.cy = e.slice(p, p + 32); p += 32;
-  p = readNoteKeys(e, p, s);
-  s.ctNote = e.slice(p, p + 56); p += 56;
-  s.kernelSig = e.slice(p, p + 64); p += 64;
-  if (p !== e.length) return null;
-  if (!pointFromXY(s.cx, s.cy) || !noteKeysValid(s)) return null;
+  const nOut = e[p]; p += 1;
+  if (nOut < 1 || nOut > SPEND_MAX_OUT) return null;
+  if (e.length < p + nOut * OUTPUT_LEN + BOUNDARY_LEN + KERNEL_SIG_LEN + 2) return null;
+  s.outputs = [];
+  p = readOutputs(e, p, nOut, s.outputs);
+  if (p < 0) return null;
+  s.boundary = readBoundary(e, p); p += BOUNDARY_LEN;
+  if (!s.boundary) return null;
+  s.body = e.slice(0, p);
+  s.kernelSig = e.slice(p, p + KERNEL_SIG_LEN); p += KERNEL_SIG_LEN;
+  s.proofLen = e[p] | (e[p + 1] << 8); p += 2;
+  if (s.proofLen > PROOF_MAX || e.length !== p + s.proofLen) return null;
+  s.proof = e.slice(p);
   return s;
 }
 
@@ -208,20 +182,17 @@ export function parseSpend(bytes) {
   if (s.nIn < 1 || s.nIn > SPEND_MAX_IN) return null;
   if (e.length < p + 32 * s.nIn + 1) return null;
   s.nullifiers = [];
-  for (let i = 0; i < s.nIn; i++) { s.nullifiers.push(e.slice(p, p + 32)); p += 32; }
+  for (let i = 0; i < s.nIn; i++) {
+    const nf = e.slice(p, p + 32); p += 32;
+    if (!fieldOk(nf) || bytesToBig(nf) === 0n) return null;
+    s.nullifiers.push(nf);
+  }
   const nOut = e[p]; p += 1;
   if (nOut > SPEND_MAX_OUT) return null;
   if (e.length < p + nOut * OUTPUT_LEN + 1) return null;
   s.outputs = [];
-  for (let i = 0; i < nOut; i++) {
-    const o = {};
-    o.cx = e.slice(p, p + 32); p += 32;
-    o.cy = e.slice(p, p + 32); p += 32;
-    p = readNoteKeys(e, p, o);
-    o.ctNote = e.slice(p, p + 56); p += 56;
-    if (!pointFromXY(o.cx, o.cy) || !noteKeysValid(o)) return null;
-    s.outputs.push(o);
-  }
+  p = readOutputs(e, p, nOut, s.outputs);
+  if (p < 0) return null;
   const hasExit = e[p]; p += 1;
   if (hasExit > 1) return null;
   s.exit = null;
@@ -229,10 +200,9 @@ export function parseSpend(bytes) {
     if (e.length < p + EXIT_LEN) return null;
     const x = {};
     x.exitVout = u32le(e, p); p += 4;
-    x.cx = e.slice(p, p + 32); p += 32;
-    x.cy = e.slice(p, p + 32); p += 32;
     x.destSpkHash = e.slice(p, p + 32); p += 32;
-    if (!pointFromXY(x.cx, x.cy)) return null;
+    x.boundary = readBoundary(e, p); p += BOUNDARY_LEN;
+    if (!x.boundary) return null;
     s.exit = x;
   }
   if (e.length < p + 1) return null;
@@ -262,6 +232,20 @@ export function parseEnvelope(payload) {
   return null;
 }
 
+// Public inputs of spend.circom for a parsed envelope. `root` is R[h_anchor] (32 bytes); a shield proves
+// against root 0 with every input slot empty. The boundary's BabyJub commitment enters as depC (shield) or
+// exitC (exit); pass it once the boundary has verified.
+export function envelopePublics(s, { root = null, boundaryC = null } = {}) {
+  const leaves = s.outputs.map((o) => bytesToBig(o.leaf));
+  if (s.kind === 'shield') {
+    return spendPublics({ root: 0n, body: s.body, asset: s.asset, nullifiers: [], outLeaves: leaves, depC: boundaryC });
+  }
+  return spendPublics({
+    root: bytesToBig(toBytes(root)), body: s.body, asset: s.asset,
+    nullifiers: s.nullifiers.map(bytesToBig), outLeaves: leaves, exitC: s.exit ? boundaryC : null,
+  });
+}
+
 // Which of a carrier's envelopes the pool reads (§3 Carriers). `envs[i]` is the Tacit envelope on vin[i]
 // ({ opcode, payload }) or null. A T_BTC_SHIELD rides vin[0], and then only vin[0] is read. Otherwise every
 // T_BTC_SPEND is read in input order. A T_BTC_SHIELD on a later input is returned so it can be recorded as
@@ -276,23 +260,26 @@ export function carrierPoolEnvelopes(envs) {
   return { vin0TacitOp, items };
 }
 
-// ── depth-32 keccak tree ──
-// Same shape as dapp/confidential-pool.js Tree: zero leaf 0, zeros[i+1] = keccak(zeros[i] ‖ zeros[i]), an
-// absent sibling at level i is zeros[i]. Kept incrementally (every level materialized) so append, root and
-// path are O(depth) and truncate restores the exact prior tree.
-const ZERO32 = new Uint8Array(32);
-export const ZEROS = (() => {
-  const z = [ZERO32];
-  for (let i = 1; i <= TREE_DEPTH; i++) z.push(keccak_256(concat(z[i - 1], z[i - 1])));
+// ── depth-32 Poseidon tree ──
+// circomlib Poseidon(2) nodes, zero leaf 0, zeros[i+1] = H(zeros[i], zeros[i]); an absent sibling at level i
+// is zeros[i]. Every level is materialized, so append, root and path are O(depth) and truncate restores the
+// exact prior tree. Leaves, roots and path entries are 32-byte big-endian field elements at the API.
+const H2 = (a, b) => poseidon2([a, b]);
+export const ZEROS_F = (() => {
+  const z = [0n];
+  for (let i = 1; i <= TREE_DEPTH; i++) z.push(H2(z[i - 1], z[i - 1]));
   return z;
 })();
+export const ZEROS = ZEROS_F.map(bigTo32);
 
-export class KeccakTree {
+export class PoseidonTree {
   constructor() { this.levels = Array.from({ length: TREE_DEPTH + 1 }, () => []); }
   get size() { return this.levels[0].length; }
   append(leaf) {
+    const v = bytesToBig(toBytes(leaf));
+    if (v >= P_FR) throw new Error('leaf is not a field element');
     const idx = this.levels[0].length;
-    this.levels[0].push(toBytes(leaf).slice());
+    this.levels[0].push(v);
     this._rehash(idx);
     return idx;
   }
@@ -302,8 +289,8 @@ export class KeccakTree {
       const pk = k >>> 1;
       const lv = this.levels[i];
       const l = lv[2 * pk];
-      const r = 2 * pk + 1 < lv.length ? lv[2 * pk + 1] : ZEROS[i];
-      this.levels[i + 1][pk] = keccak_256(concat(l, r));
+      const r = 2 * pk + 1 < lv.length ? lv[2 * pk + 1] : ZEROS_F[i];
+      this.levels[i + 1][pk] = H2(l, r);
       k = pk;
     }
   }
@@ -312,14 +299,15 @@ export class KeccakTree {
     for (let i = 0; i <= TREE_DEPTH; i++) this.levels[i].length = Math.ceil(n / 2 ** i);
     if (n > 0) this._rehash(n - 1);
   }
-  leaf(i) { return this.levels[0][i]; }
-  root() { return this.size ? this.levels[TREE_DEPTH][0] : ZEROS[TREE_DEPTH]; }
+  leaf(i) { return bigTo32(this.levels[0][i]); }
+  rootF() { return this.size ? this.levels[TREE_DEPTH][0] : ZEROS_F[TREE_DEPTH]; }
+  root() { return bigTo32(this.rootF()); }
   rootAndPath(index) {
     const path = [];
     for (let i = 0; i < TREE_DEPTH; i++) {
       const sib = Math.floor(index / 2 ** i) ^ 1;
       const lv = this.levels[i];
-      path.push(sib < lv.length ? lv[sib] : ZEROS[i]);
+      path.push(bigTo32(sib < lv.length ? lv[sib] : ZEROS_F[i]));
     }
     return { root: this.root(), path };
   }
@@ -329,23 +317,23 @@ export class KeccakTree {
     if (!(index < n && n <= this.size)) throw new Error('leaf outside the prefix');
     const node = (i, j) => {
       const lo = j * 2 ** i;
-      if (lo >= n) return ZEROS[i];
+      if (lo >= n) return ZEROS_F[i];
       if (lo + 2 ** i <= n) return this.levels[i][j];
-      return keccak_256(concat(node(i - 1, 2 * j), node(i - 1, 2 * j + 1)));
+      return H2(node(i - 1, 2 * j), node(i - 1, 2 * j + 1));
     };
     const path = [];
-    for (let i = 0; i < TREE_DEPTH; i++) path.push(node(i, Math.floor(index / 2 ** i) ^ 1));
-    return { root: node(TREE_DEPTH, 0), path };
+    for (let i = 0; i < TREE_DEPTH; i++) path.push(bigTo32(node(i, Math.floor(index / 2 ** i) ^ 1)));
+    return { root: bigTo32(node(TREE_DEPTH, 0)), path };
   }
 }
 
 export function rootFromPath(leaf, index, path) {
-  let h = toBytes(leaf);
+  let h = bytesToBig(toBytes(leaf));
   for (let i = 0; i < TREE_DEPTH; i++) {
-    const sib = toBytes(path[i]);
-    h = Math.floor(index / 2 ** i) % 2 ? keccak_256(concat(sib, h)) : keccak_256(concat(h, sib));
+    const sib = bytesToBig(toBytes(path[i]));
+    h = Math.floor(index / 2 ** i) % 2 ? H2(sib, h) : H2(h, sib);
   }
-  return h;
+  return bigTo32(h);
 }
 
 // ── replay state (§5) ──
@@ -361,7 +349,7 @@ const reject = (reason) => ({ accepted: false, reason });
 
 export class BtcPoolState {
   constructor() {
-    this.tree = new KeccakTree();
+    this.tree = new PoseidonTree();
     this.leafHeights = [];
     this.nullifiers = new Map(); // hex nf -> { height, txid }
     this.exits = new Map(); // "txid:vout" -> { txid, vout, asset, cx, cy, height }
@@ -396,22 +384,25 @@ export class BtcPoolState {
     this.pending = null;
   }
 
-  _appendLeaf(rec) {
+  _appendLeaves(s, txid) {
     const b = this.pending;
-    const leafIndex = this.tree.append(rec.leaf);
-    this.leafHeights.push(b.height);
-    const full = { ...rec, leafIndex, height: b.height };
-    b.leaves.push(full);
-    return full;
+    return s.outputs.map((o) => {
+      const leafIndex = this.tree.append(o.leaf);
+      this.leafHeights.push(b.height);
+      const full = { leaf: o.leaf, txid, asset: s.asset, pkEph: o.pkEph, ctNote: o.ctNote, leafIndex, height: b.height };
+      b.leaves.push(full);
+      return full;
+    });
   }
 
   // ctx.txid, ctx.inputs [{txid, vout}] (every carrier input), ctx.resolveInput(outpoint, assetHex) →
   // { cx, cy } for a valid transparent note of that asset, null when it is not one; throws on I/O failure.
+  // ctx.verifyProof({ proof, publics }) → bool; missing, it throws so the indexer halts rather than diverges.
   async acceptShield(s, ctx) {
     const b = this.pending;
     if (!b) throw new Error('no open block');
     if (!s || s.kind !== 'shield') return reject('not a shield');
-    if (this.tree.size + 1 > this.maxLeaves) return reject('note tree is full');
+    if (this.tree.size + s.outputs.length > this.maxLeaves) return reject('note tree is full');
     if (!ctx.inputs || ctx.inputs.length < s.nIn + 1) return reject('carrier has too few inputs');
     const outpoints = ctx.inputs.slice(1, 1 + s.nIn);
     const assetHex = bytesToHex(s.asset);
@@ -423,25 +414,23 @@ export class BtcPoolState {
       if (!C) return reject(`input ${op.txid}:${op.vout} commitment is not a curve point`);
       sum = sum.add(C);
     }
-    const Cpool = pointFromXY(s.cx, s.cy);
-    if (!Cpool || Cpool.equals(ZERO)) return reject('pool commitment is infinity');
+    const Cpool = pointFromCompressed(s.boundary.cSecp);
     const E = Cpool.add(sum.negate());
     if (E.equals(ZERO)) return reject('excess is infinity');
-    const ex = pointXY(E).cx;
-    if (!bip340Verify(s.kernelSig, shieldKernelMsg(s, outpoints), ex)) return reject('kernel signature does not verify');
-    const leaf = noteLeaf(s);
-    const note = this._appendLeaf({
-      leaf, txid: ctx.txid, asset: s.asset, cx: s.cx, cy: s.cy,
-      spendKey: s.spendKey, nkPub: s.nkPub, pkEph: s.pkEph, ctNote: s.ctNote,
-    });
-    return { accepted: true, leaves: [note] };
+    if (!bip340Verify(s.kernelSig, shieldKernelMsg(s.body, outpoints), pointXY(E).cx)) return reject('kernel signature does not verify');
+    const depC = verifyBoundary(s.boundary);
+    if (!depC) return reject('boundary does not verify');
+    if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
+    const ok = await ctx.verifyProof({ proof: s.proof, publics: envelopePublics(s, { boundaryC: depC }) });
+    if (ok !== true) return reject('proof does not verify');
+    return { accepted: true, leaves: this._appendLeaves(s, ctx.txid) };
   }
 
   // ctx.txid; ctx.inputs [{ txid, vout }] (every carrier input, txid in display hex); ctx.outputs
   // [{ value: bigint, scriptPubKey: Uint8Array }]; ctx.vin0TacitOp, true when the carrier's vin[0] holds a
-  // transparent Tacit op; ctx.verifyProof({ proof, publicValues }) → bool. Earlier accepted envelopes of the
-  // same carrier are already applied, so their nullifiers, exit outputs and want outputs count as taken. A
-  // missing verifier throws instead of rejecting, so an indexer without one halts rather than diverges.
+  // transparent Tacit op; ctx.verifyProof({ proof, publics }) → bool. Earlier accepted envelopes of the same
+  // carrier are already applied, so their nullifiers, exit outputs and want outputs count as taken. A missing
+  // verifier throws instead of rejecting, so an indexer without one halts rather than diverges.
   async acceptSpend(s, ctx) {
     const b = this.pending;
     if (!b) throw new Error('no open block');
@@ -471,8 +460,13 @@ export class BtcPoolState {
       if (!eqBytes(sha256(out.scriptPubKey), s.want.spkHash)) return reject('want scriptPubKey does not match spk_hash');
     }
     if (this.tree.size + s.outputs.length > this.maxLeaves) return reject('note tree is full');
+    let exitC = null;
+    if (s.exit) {
+      exitC = verifyBoundary(s.exit.boundary);
+      if (!exitC) return reject('exit boundary does not verify');
+    }
     if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
-    const ok = await ctx.verifyProof({ proof: s.proof, publicValues: spendPublicValues(root, s.body) });
+    const ok = await ctx.verifyProof({ proof: s.proof, publics: envelopePublics(s, { root, boundaryC: exitC }) });
     if (ok !== true) return reject('proof does not verify');
 
     for (const nf of nfHex) {
@@ -480,15 +474,10 @@ export class BtcPoolState {
       this.nullifiers.set(nf, rec);
       b.nullifiers.push(rec);
     }
-    const res = { accepted: true, nullifiers: nfHex, leaves: [], exit: null, want: null };
-    for (const o of s.outputs) {
-      res.leaves.push(this._appendLeaf({
-        leaf: noteLeaf({ asset: s.asset, ...o }), txid: ctx.txid, asset: s.asset, cx: o.cx, cy: o.cy,
-        spendKey: o.spendKey, nkPub: o.nkPub, pkEph: o.pkEph, ctNote: o.ctNote,
-      }));
-    }
+    const res = { accepted: true, nullifiers: nfHex, leaves: this._appendLeaves(s, ctx.txid), exit: null, want: null };
     if (s.exit) {
-      const x = { txid: ctx.txid, vout: s.exit.exitVout, asset: s.asset, cx: s.exit.cx, cy: s.exit.cy, height: H_ };
+      const { cx, cy } = pointXY(pointFromCompressed(s.exit.boundary.cSecp));
+      const x = { txid: ctx.txid, vout: s.exit.exitVout, asset: s.asset, cx, cy, height: H_ };
       this.exits.set(outKey(x.txid, x.vout), x);
       b.exits.push(x);
       res.exit = x;

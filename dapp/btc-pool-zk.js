@@ -72,9 +72,41 @@ export function hsL(tag, ...parts) {
 }
 export function hsP(tag, ...parts) { return wide(tag, ...parts) % P_FR; }
 
-export const mulB8 = (k) => mulScalar(BASE8, BigInt(k) % L_BJJ);
+// Projective twisted-Edwards arithmetic (add-2008-bbjlp, complete on BabyJub), one inversion per multiply.
+const A_TE = 168700n, D_TE = 168696n;
+const fm = (x) => { const r = x % P_FR; return r < 0n ? r + P_FR : r; };
+function pAdd([X1, Y1, Z1], [X2, Y2, Z2]) {
+  const A = fm(Z1 * Z2), B = fm(A * A), C = fm(X1 * X2), D = fm(Y1 * Y2);
+  const E = fm(D_TE * C % P_FR * D), F = fm(B - E), G = fm(B + E);
+  return [fm(A * F % P_FR * fm((X1 + Y1) * (X2 + Y2) - C - D)), fm(A * G % P_FR * fm(D - A_TE * C)), fm(F * G)];
+}
+function inv(x) {
+  let [a, b, u, v] = [fm(x), P_FR, 1n, 0n];
+  while (a !== 0n) { const q = b / a; [a, b] = [b - q * a, a]; [u, v] = [v - q * u, u]; }
+  return fm(v);
+}
+const toAffine = ([X, Y, Z]) => { const zi = inv(Z); return [fm(X * zi), fm(Y * zi)]; };
+// k·P for an affine curve point P and k ≥ 0.
+export function mulPoint(P, k) {
+  let e = BigInt(k);
+  if (e < 0n) throw new Error('btc-pool-zk: negative scalar');
+  let r = [0n, 1n, 1n], acc = [P[0], P[1], 1n];
+  while (e > 0n) {
+    if (e & 1n) r = pAdd(r, acc);
+    acc = pAdd(acc, acc);
+    e >>= 1n;
+  }
+  return toAffine(r);
+}
+const B8_TABLE = (() => { const t = [[BASE8[0], BASE8[1], 1n]]; for (let i = 1; i < 253; i++) t.push(pAdd(t[i - 1], t[i - 1])); return t; })();
+export const mulB8 = (k) => {
+  let e = BigInt(k) % L_BJJ, r = [0n, 1n, 1n];
+  for (let i = 0; e > 0n; i++, e >>= 1n) if (e & 1n) r = pAdd(r, B8_TABLE[i]);
+  return toAffine(r);
+};
 export const assetField = (asset) => bytesToBig(sha(TAG.asset, checkLen(asset, 32, 'asset'))) % P_FR;
 export const bodyHash = (body) => bytesToBig(sha(TAG.body, body)) % P_FR;
+export { P_FR };
 
 function checkLen(b, n, name) {
   if (!(b instanceof Uint8Array) || b.length !== n) throw new Error(`btc-pool-zk: ${name} must be ${n} bytes`);
@@ -189,7 +221,7 @@ export function makeBtcPoolZk({ poseidon }) {
   function verify(A, M, { R8, S }) {
     if (BigInt(S) >= L_BJJ || !onCurve(A) || !onCurve(R8)) return false;
     const h = H([R8[0], R8[1], A[0], A[1], BigInt(M)]);
-    return ptEq(mulB8(BigInt(S)), addPoint(R8, mulScalar(A, 8n * h)));
+    return ptEq(mulB8(BigInt(S)), addPoint(R8, mulPoint(A, (8n * h) % (8n * L_BJJ))));
   }
 
   // ── witness ──
@@ -255,6 +287,18 @@ export function publicsAcceptable({ nf, shield = false }) {
 // Public signal order of spend.circom: root, bodyHash, asset, nf[2], outLeaf[3], exitC[2], depC[2].
 export function publicSignals({ root, bodyHash: bh, asset, nf, outLeaf, exitC, depC }) {
   return [root, bh, asset, ...nf, ...outLeaf, ...exitC, ...depC].map((x) => BigInt(x).toString());
+}
+
+// Public signals for an envelope as the indexer reads it: nullifiers and output leaves as on the wire, padded
+// with 0 (empty slots); exitC / depC the boundary's BabyJub point, identity when absent. A shield passes
+// root 0 and no nullifiers.
+export function spendPublics({ root, body, asset, nullifiers = [], outLeaves = [], exitC = null, depC = null }) {
+  if (nullifiers.length > ZK_N_IN || outLeaves.length > ZK_N_OUT) throw new Error('btc-pool-zk: arity');
+  const pad = (xs, n) => [...xs.map(BigInt), ...Array(n - xs.length).fill(0n)];
+  return publicSignals({
+    root: BigInt(root), bodyHash: bodyHash(body), asset: assetField(asset),
+    nf: pad(nullifiers, ZK_N_IN), outLeaf: pad(outLeaves, ZK_N_OUT), exitC: exitC || ID, depC: depC || ID,
+  });
 }
 
 function stringify(x) {

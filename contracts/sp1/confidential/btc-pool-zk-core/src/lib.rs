@@ -68,9 +68,10 @@ pub fn pt_eq(a: &Pt, b: &Pt) -> bool {
     a.0 == b.0 && a.1 == b.1
 }
 
+/// Canonical big-endian bytes. `Fr::to_big_endian` serializes the Montgomery form, so go through U256.
 pub fn fr_to_be(x: &Fr) -> [u8; 32] {
     let mut b = [0u8; 32];
-    x.to_big_endian(&mut b).expect("32 bytes");
+    (*x).into_u256().to_big_endian(&mut b).expect("32 bytes");
     b
 }
 pub fn fr_from_big(x: &BigUint) -> Fr {

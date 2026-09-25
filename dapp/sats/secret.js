@@ -4,19 +4,22 @@
 //   onWallet(fn) reports connect/unlock/balance changes.
 //
 // "Get signet sats" funds the fees and the lot price from the faucet.
-// "Get cBTC" takes one of the faucet's pre-authorized sales (worker-relay/src/sats-faucet.js):
-// one transaction that pays FAUCET price in signet sats and returns a cBTC note to the wallet.
-// "Shield" moves that note into the Bitcoin pool with a T_BTC_SHIELD carrier. buyAndShield does both
-// in one transaction (SINGLE_ACTION_JOIN): the shield envelope rides vin[0], the faucet's lot is vin[1] with
-// the seller's pre-signed SIGHASH_SINGLE|ANYONECANPAY witness, and vout[1] is the seller's payout.
-// Pay, Receive and Exit are registered through registerStep(id, impl) and show as coming soon until then.
+// "Get private cBTC" buys one of the faucet's pre-authorized cBTC lots straight into the pool in one
+// transaction: the T_BTC_SHIELD envelope rides vin[0], the faucet's lot is vin[1] with the seller's pre-signed
+// SIGHASH_SINGLE|ANYONECANPAY witness, and vout[1] is the seller's payout. (SINGLE_ACTION_JOIN = false shows the
+// two-step Get cBTC / Shield flow instead.)
+// "Pay privately", "Receive" and "Exit" spend and scan pool notes. Every shield and spend is proved in this
+// browser (btc-pool-client.js: the pinned circuit and key, downloaded once and cached); the carrier is posted
+// by the pool's relayer when one is configured, else from this wallet's signet sats.
 
 import { secp, sha256, keccak_256, hmac, bytesToHex, hexToBytes } from '../vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../btc-shielded-pool.js';
+import { makePoolClient } from '../btc-pool-client.js';
 
 export const FAUCET_URL = (globalThis.__SATS_FAUCET_URL__ || 'https://tacit-sats-faucet.onrender.com').replace(/\/$/, '');
 export const WORKER_BASE = (globalThis.__TACIT_WORKER_BASE__ || 'https://api.tacit.finance').replace(/\/$/, '');
 export const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
+export const poolClient = makePoolClient({ base: '/btc-pool/' });
 
 const te = new TextEncoder();
 const SEQ = 0xfffffffd;
@@ -149,7 +152,7 @@ export async function broadcastCarrier(tacit, { payload, inputs = [], outputs })
 }
 
 // Step 2: shield a transparent note the wallet holds (P2WPKH to wallet.pub) into poolWallet's address.
-export async function shieldNote(tacit, { note, poolWallet }) {
+export async function shieldNote(tacit, { note, poolWallet, say = () => {} }) {
   const amount = BigInt(note.amount), blinding = BigInt('0x' + note.blinding);
   const c = await onChainNote(tacit, note.assetId, note.txid, note.vout, amount, blinding);
   const sh = pool.buildShieldEnvelope({
@@ -157,8 +160,10 @@ export async function shieldNote(tacit, { note, poolWallet }) {
     inputs: [{ txid: note.txid, vout: note.vout, Cx: c.Cx, Cy: c.Cy, value: amount, blinding }],
     recipientAddress: poolWallet.addressString, network: poolWallet.network,
   });
+  const { payload } = await proveHere(sh, say);
+  say('sending…');
   const r = await broadcastCarrier(tacit, {
-    payload: sh.payload,
+    payload,
     inputs: [{ txid: note.txid, vout: note.vout, value: c.value, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
     outputs: [{ value: tacit.DUST, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
   });
@@ -167,7 +172,7 @@ export async function shieldNote(tacit, { note, poolWallet }) {
 
 // Buy and shield in one transaction. The seller's signature commits to vin[1] and vout[1] only, so the
 // envelope in vin[0] can be the shield; the kernel is signed from the sale's published opening.
-export async function buyAndShield(tacit, { status, sale, poolWallet } = {}) {
+export async function buyAndShield(tacit, { status, sale, poolWallet, say = () => {} } = {}) {
   status = status || await fetchFaucet();
   sale = sale || await pickSale(tacit, status);
   const assetId = status.asset_id;
@@ -181,8 +186,10 @@ export async function buyAndShield(tacit, { status, sale, poolWallet } = {}) {
     inputs: [{ txid: lot.txid, vout: lot.vout, Cx: c.Cx, Cy: c.Cy, value: amount, blinding }],
     recipientAddress: poolWallet.addressString, network: poolWallet.network,
   });
+  const { payload } = await proveHere(sh, say);
+  say('buying into the pool…');
   const r = await broadcastCarrier(tacit, {
-    payload: sh.payload,
+    payload,
     inputs: [{ txid: lot.txid, vout: lot.vout, value: c.value, script: tacit.p2wpkhScript(sellerPub), witness: [hexToBytes(sale.seller_asset_spend_sig), sellerPub] }],
     outputs: [
       { value: tacit.DUST, script: tacit.p2wpkhScript(tacit.wallet.pub) },
@@ -193,15 +200,117 @@ export async function buyAndShield(tacit, { status, sale, poolWallet } = {}) {
 }
 
 function poolNoteRecord(note, txid) {
-  const { value, blinding, ...fields } = note;
+  const { value, npk, rho, ...fields } = note;
   return { ...fields, txid, value: value.toString() };
+}
+
+// ── proving on the device ──
+const mb = (n) => (n / 1e6).toFixed(1);
+// Proves a built shield or spend here, reporting the one-time download and then the elapsed proving time.
+export async function proveHere(built, say = () => {}) {
+  const pin = await poolClient.pin();
+  const total = (pin.wasm_bytes || 0) + (pin.zkey_bytes || 0);
+  const got = new Map();
+  let t0 = 0, timer = null;
+  const system = await poolClient.system({
+    onProgress: ({ name, loaded, cached }) => {
+      got.set(name, loaded);
+      if (cached) return;
+      const sum = [...got.values()].reduce((a, b) => a + b, 0);
+      say(`Downloading the prover (${mb(total)} MB, once)… ${Math.min(99, Math.floor((100 * sum) / (total || 1)))}%`);
+    },
+  });
+  try {
+    return await pool.prove(built, system, {
+      onProgress: (stage) => {
+        if (stage !== 'proving') return;
+        t0 = Date.now();
+        say('Proving on your device… 0 s');
+        timer = setInterval(() => say(`Proving on your device… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
+      },
+    });
+  } finally {
+    if (timer) clearInterval(timer);
+  }
+}
+
+// ── pool spends ──
+const DUST_SATS = 546;
+const eqAsset = (a, b) => String(a).replace(/^0x/, '').toLowerCase() === String(b).replace(/^0x/, '').toLowerCase();
+
+// The wallet's pool notes of `asset`, scanned from the replay service's feed.
+export async function poolNotes(poolWallet, asset) {
+  const all = await poolClient.walletNotes(pool, poolWallet);
+  return asset ? all.filter((x) => eqAsset(x.asset, asset)) : all;
+}
+
+// Inputs covering `need`, with the anchor, root and paths. { wait } when the wallet's anchor policy has not
+// reached the newest input yet; `anchor` overrides the policy with a retained height.
+async function prepare(poolWallet, asset, need, anchor) {
+  const unspent = (await poolNotes(poolWallet, asset)).filter((x) => !x.spent);
+  const { inputs, total } = pool.selectInputs(unspent, need, { asset: '0x' + String(asset).replace(/^0x/, '') });
+  const a = await poolClient.anchorAndPaths(inputs, anchor != null ? { anchor } : {});
+  return { ...a, total };
+}
+
+// Pays `amount` of `asset` to a pool address. Relayed when the replay service runs a relayer that quotes the
+// asset (fee paid as an extra pool output); otherwise this wallet posts the carrier from its signet sats.
+export async function payPrivately(tacit, { poolWallet, to, amount, asset, anchor = null, say = () => {} }) {
+  pool.decodeAddress(to, poolWallet.network);
+  const info = await poolClient.relayInfo().catch(() => null);
+  const fee = info?.fees?.['0x' + String(asset).replace(/^0x/, '').toLowerCase()];
+  const q = fee != null ? await poolClient.quote({ asset: '0x' + String(asset).replace(/^0x/, '') }) : null;
+  say('finding your notes…');
+  const a = await prepare(poolWallet, asset, amount + (q ? BigInt(q.fee) : 0n), anchor);
+  if (a.wait) return { wait: a.wait, tip: a.tip };
+  const outputs = [{ address: to, value: amount }];
+  if (q) outputs.push({ address: q.address, value: BigInt(q.fee) });
+  const built = pool.buildSpendBody({ asset: '0x' + String(asset).replace(/^0x/, ''), hAnchor: a.hAnchor, root: a.root, inputs: a.notes, outputs, wallet: poolWallet, bind: q ? q.bind : null });
+  const { payload, payloadHex } = await proveHere(built, say);
+  if (q) {
+    say('handing it to the relayer…');
+    const sub = await poolClient.submit({ payload: payloadHex, quoteId: q.quoteId });
+    for (let i = 0; i < 60; i++) {
+      const stt = await poolClient.relayStatus(sub.id).catch(() => null);
+      if (stt?.carrier) return { revealTxid: stt.carrier, relayed: true, anchor: a.hAnchor };
+      if (stt && ['dropped', 'rejected'].includes(stt.state)) throw new Error(`the relayer dropped the payment: ${stt.reason || stt.state}`);
+      say('waiting for the relayer’s batch…');
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    throw new Error('the relayer has not posted the payment yet; check back shortly');
+  }
+  say('sending…');
+  const own = tacit.p2wpkhScript(tacit.wallet.pub);
+  const r = await broadcastCarrier(tacit, { payload, outputs: [{ value: tacit.DUST, script: own }] });
+  return { ...r, relayed: false, anchor: a.hAnchor };
+}
+
+// Exits `amount` of `asset` to this wallet's own address as an ordinary Tacit note (vout 0 of the carrier), the
+// rest staying shielded as internal change. Returns the new note's opening.
+export async function exitToWallet(tacit, { poolWallet, amount, asset, anchor = null, say = () => {} }) {
+  say('finding your notes…');
+  const a = await prepare(poolWallet, asset, amount, anchor);
+  if (a.wait) return { wait: a.wait, tip: a.tip };
+  const self = { address: poolWallet.internalAddress, network: poolWallet.network };
+  const change = a.total - amount;
+  const outputs = change > 0n ? [{ ...self, value: change }] : [];
+  while (outputs.length < 3) outputs.push({ ...self, value: 0n });
+  const own = tacit.p2wpkhScript(tacit.wallet.pub);
+  const built = pool.buildSpendBody({
+    asset: '0x' + String(asset).replace(/^0x/, ''), hAnchor: a.hAnchor, root: a.root, inputs: a.notes, outputs, network: poolWallet.network,
+    exit: { exitVout: 0, scriptPubKey: '0x' + bytesToHex(own), value: amount },
+  });
+  const { payload } = await proveHere(built, say);
+  say('sending…');
+  const r = await broadcastCarrier(tacit, { payload, outputs: [{ value: Math.max(tacit.DUST, DUST_SATS), script: own }] });
+  return { ...r, exit: { vout: 0, value: amount.toString(), blinding: built.exit.blinding, cx: built.exit.cx, cy: built.exit.cy }, anchor: a.hAnchor };
 }
 
 // ── UI ──
 // One-line switch: true shows a single "Get private cBTC" step (buy and shield in one transaction) in place of
 // the separate Get cBTC and Shield steps. The zap module can replace the local buyAndShield by import.
 // index.html carries a static preview of STEPS for before this module loads; merge its rows too when flipping.
-const SINGLE_ACTION_JOIN = false;
+const SINGLE_ACTION_JOIN = true;
 const joinImpl = buyAndShield;
 
 const hooks = new Map();
@@ -216,18 +325,17 @@ export const STEPS = [
   { id: 'pay', title: 'Pay privately' }, { id: 'receive', title: 'Receive' }, { id: 'exit', title: 'Exit' },
 ];
 
-const SOON = {
-  pay: 'Pay another pool address with the amount and your coins’ history hidden. Opens when the proving service goes live.',
-  receive: 'Find private payments sent to your pool address. Opens with the relayer.',
-  exit: 'Leave the pool to an ordinary Bitcoin output, then sell back to sats.',
-};
+const POOL_STEPS = new Set(['pay', 'receive', 'exit']);
 
 // What each step does, shown while it is still ahead.
 const ABOUT = {
   sats: 'Free test sats for the fees and the cBTC price.',
   get: 'Buy a test cBTC lot from the faucet in one atomic swap.',
   shield: 'Move it into the pool, where amounts and owners are hidden.',
-  join: 'Buy a test cBTC lot straight into the pool in one atomic swap.',
+  join: 'Buy a test cBTC lot straight into the pool in one atomic swap, proved on your device.',
+  pay: 'Pay another pool address. The amount and where your coins came from stay hidden.',
+  receive: 'Find private payments sent to your pool address.',
+  exit: 'Leave the pool to an ordinary cBTC note in your wallet.',
 };
 
 // takePreauthSale progress stages, in words.
@@ -348,22 +456,25 @@ export function mount(root, ctx) {
     return el('div', {}, `Pay ${n(st.price_sats)} signet sats for ${fmt(st.lot)} ${ticker()}, a test token standing in for bitcoin-backed cBTC. ${k} lot${k === 1 ? '' : 's'} open.`);
   }
 
-  // done | active | locked | soon, in order: the first open step is the active one.
+  // done | active | locked, in order: the first open step is the active one. Pay, Receive and Exit open together
+  // once the wallet holds a pool note, and stay usable after they are done.
   function phases() {
     const done = {
       sats: !!(state.note || state.poolNote) || (satsKnown() && who.sats >= need()),
       get: !!(state.note || state.poolNote),
       shield: !!state.poolNote,
       join: !!state.poolNote,
+      pay: !!state.pays?.length,
+      receive: !!state.received?.length,
+      exit: !!state.exits?.length,
     };
     const out = {};
     let open = !!who?.connected;
     for (const { id } of STEPS) {
       const impl = hooks.get(id);
-      const isHook = id in SOON;
-      if (isHook && !impl) { out[id] = 'soon'; continue; }
-      const d = isHook ? !!impl.done?.(state) : done[id];
-      if (running === id) { out[id] = 'active'; open = false; }
+      const d = impl?.done ? !!impl.done(state) : done[id];
+      if (POOL_STEPS.has(id)) out[id] = running === id ? 'active' : !who?.connected || !state.poolNote ? 'locked' : d ? 'done' : 'active';
+      else if (running === id) { out[id] = 'active'; open = false; }
       else if (d) out[id] = 'done';
       else if (open) { out[id] = 'active'; open = false; }
       else out[id] = 'locked';
@@ -433,8 +544,8 @@ export function mount(root, ctx) {
     put(S.body, el('div', {}, `Move your ${fmt(state.note.amount)} ${ticker()} into the pool. One transaction, paid from your signet sats.`),
       el('div', { class: 'row' }, button('Shield', () => run('shield', async (say) => {
         const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
-        say('shielding…');
-        const r = await shieldNote(tacit, { note: state.note, poolWallet: pw });
+        say('building the shield…');
+        const r = await shieldNote(tacit, { note: state.note, poolWallet: pw, say });
         state.poolNote = r.poolNote; state.shield = { commitTxid: r.commitTxid, revealTxid: r.revealTxid }; save();
         ctx.track?.(r.revealTxid, `Shielded ${fmt(r.poolNote.value)} ${ticker()}`);
         log('Shielded.');
@@ -452,8 +563,8 @@ export function mount(root, ctx) {
     put(S.body, offerLine(), block ? el('div', {}, block) : null,
       el('div', { class: 'row' }, button(`Get private ${ticker()}`, () => run('join', async (say) => {
         const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
-        say('buying into the pool…');
-        const r = await joinImpl(tacit, { status: faucet.status, poolWallet: pw });
+        say('building the shield…');
+        const r = await joinImpl(tacit, { status: faucet.status, poolWallet: pw, say });
         state.poolNote = r.poolNote; state.shield = { commitTxid: r.commitTxid, revealTxid: r.revealTxid, bought: true }; save();
         ctx.track?.(r.revealTxid, `Bought ${fmt(r.poolNote.value)} private ${ticker()}`);
         refreshFaucet();
@@ -462,14 +573,131 @@ export function mount(root, ctx) {
       errLine('join'));
   }
 
+  // ── pool steps ──
+  const asset = () => faucet.status?.asset_id || null;
+  const units = (str) => {
+    const d = Number.isInteger(faucet.status?.decimals) ? faucet.status.decimals : 8;
+    const m = String(str || '').trim().match(/^(\d*)(?:\.(\d*))?$/);
+    if (!m || (!m[1] && !m[2]) || (m[2] || '').length > d) throw new Error(`Enter an amount with at most ${d} decimals.`);
+    return BigInt((m[1] || '0') + (m[2] || '').padEnd(d, '0'));
+  };
+  let notes = null; // last scan: [{ value, spent, internal, txid, height, leafIndex }]
+  const balance = () => (notes || []).filter((x) => !x.spent).reduce((t, x) => t + BigInt(x.value), 0n);
+  async function scanNotes(say) {
+    const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
+    say?.('scanning the pool…');
+    notes = await poolNotes(pw, asset());
+    const seen = new Set((state.received || []).map((x) => x.leafIndex));
+    const own = new Set([...(state.pays || []), ...(state.exits || [])].map((x) => x.txid));
+    for (const x of notes) {
+      if (!x.internal && !seen.has(x.leafIndex) && x.txid !== state.shield?.revealTxid && !own.has(x.txid)) {
+        (state.received ||= []).push({ leafIndex: x.leafIndex, txid: x.txid, value: x.value.toString(), height: x.height });
+      }
+    }
+    save();
+  }
+  const waitLine = (w) => `Your newest note is too recent for the wallet's anchor policy: it needs ${w.wait} more signet block${w.wait === 1 ? '' : 's'} (about ${w.wait * 10} min). Spending sooner anchors at the latest block, which tells an observer your note is new.`;
+  const pending = {}; // step id → { wait, retry }
+  function waitBox(id, retry) {
+    const w = pending[id];
+    if (!w) return null;
+    return el('div', {}, waitLine(w), el('div', { class: 'row' },
+      button('Spend now at the latest block', () => { delete pending[id]; retry(w.tip); }),
+      button('Wait', () => { delete pending[id]; render(); })));
+  }
+  function field(id, label, attrs = {}) {
+    const input = el('input', { type: 'text', id, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', ...attrs });
+    return { input, node: el('div', { class: 'field' }, el('label', { for: id }, label), input) };
+  }
+  const balanceLine = () => (notes ? el('div', {}, `Private balance: ${fmt(balance())} ${ticker()}${notes.some((x) => !x.spent && x.internal) ? ' (change included)' : ''}.`) : null);
+
+  function renderPay(ph) {
+    const S = setPhase('pay', ph, ph === 'done' ? 'done' : '');
+    if (ph === 'locked') { put(S.body, el('div', {}, ABOUT.pay)); return; }
+    const last = state.pays?.[state.pays.length - 1];
+    if (running === 'pay') { if (last) put(S.body, el('div', {}, 'Last payment ', txLink(last.txid), '.')); return; }
+    const to = field('pool-pay-to', 'To: a pool address (tbp1…)', { placeholder: 'tbp1…' });
+    const amt = field('pool-pay-amt', `Amount (${ticker()})`, { inputmode: 'decimal', placeholder: '0.0001' });
+    const go = (anchor = null) => run('pay', async (say) => {
+      const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
+      const address = (state.payDraft?.to || '').trim();
+      const value = units(state.payDraft?.amount);
+      if (value <= 0n) throw new Error('Enter an amount above zero.');
+      const r = await payPrivately(tacit, { poolWallet: pw, to: address, amount: value, asset: asset(), anchor, say });
+      if (r.wait) { pending.pay = { ...r }; return; }
+      (state.pays ||= []).push({ txid: r.revealTxid, to: address.slice(0, 16) + '…', value: value.toString(), relayed: r.relayed });
+      state.payDraft = null; save();
+      ctx.track?.(r.revealTxid, `Paid ${fmt(value)} private ${ticker()}`);
+      log(`Paid ${fmt(value)} ${ticker()} privately.`);
+      notes = null;
+    });
+    to.input.value = state.payDraft?.to || ''; amt.input.value = state.payDraft?.amount || '';
+    const keep = () => { state.payDraft = { to: to.input.value, amount: amt.input.value }; };
+    to.input.addEventListener('input', keep); amt.input.addEventListener('input', keep);
+    put(S.body,
+      last ? el('div', {}, `Paid ${fmt(last.value)} ${ticker()} to ${last.to} in `, txLink(last.txid), last.relayed ? ' (relayed).' : '.') : el('div', {}, ABOUT.pay),
+      balanceLine(), waitBox('pay', go) || el('div', {}, to.node, amt.node,
+        el('div', { class: 'row' }, button('Pay privately', () => { keep(); go(); }), el('span', { class: 'small muted' }, 'Proved on your device; the first proof downloads the prover once.'))),
+      errLine('pay'));
+  }
+
+  function renderReceive(ph) {
+    const S = setPhase('receive', ph, ph === 'done' ? `${state.received.length} received` : '');
+    if (ph === 'locked') { put(S.body, el('div', {}, ABOUT.receive)); return; }
+    if (running === 'receive') return;
+    const pw = poolWallet();
+    const addr = pw ? el('div', { class: 'small' }, 'Your pool address: ', el('code', {}, pw.addressString.slice(0, 20) + '…' + pw.addressString.slice(-8)), ' ',
+      el('a', { href: '#', onclick: (e) => { e.preventDefault(); navigator.clipboard?.writeText(pw.addressString); log('Pool address copied.'); } }, 'copy')) : null;
+    const got = (state.received || []).slice(-5).reverse().map((x) => el('div', {}, `${fmt(x.value)} ${ticker()} received in `, txLink(x.txid), ` (block ${x.height}).`));
+    put(S.body, addr, ...got, balanceLine(),
+      el('div', { class: 'row' }, button('Scan the pool', () => run('receive', async (say) => { await scanNotes(say); }))),
+      errLine('receive'));
+  }
+
+  function renderExit(ph) {
+    const S = setPhase('exit', ph, ph === 'done' ? 'done' : '');
+    if (ph === 'locked') { put(S.body, el('div', {}, ABOUT.exit)); return; }
+    const last = state.exits?.[state.exits.length - 1];
+    if (running === 'exit') return;
+    const amt = field('pool-exit-amt', `Amount (${ticker()})`, { inputmode: 'decimal', placeholder: notes ? fmt(balance()) : '0.0001' });
+    amt.input.value = state.exitDraft || '';
+    amt.input.addEventListener('input', () => { state.exitDraft = amt.input.value; });
+    const go = (anchor = null) => run('exit', async (say) => {
+      const pw = poolWallet(); if (!pw) throw new Error('Unlock the wallet first.');
+      const value = units(state.exitDraft);
+      if (value <= 0n) throw new Error('Enter an amount above zero.');
+      const r = await exitToWallet(tacit, { poolWallet: pw, amount: value, asset: asset(), anchor, say });
+      if (r.wait) { pending.exit = { ...r }; return; }
+      (state.exits ||= []).push({ txid: r.revealTxid, ...r.exit });
+      state.exitDraft = ''; save();
+      ctx.track?.(r.revealTxid, `Exited ${fmt(value)} ${ticker()}`);
+      log(`Exited ${fmt(value)} ${ticker()} to your wallet.`);
+      notes = null;
+      ctx.refresh?.();
+    });
+    put(S.body,
+      last ? el('div', {}, `${fmt(last.value)} ${ticker()} left the pool to your wallet in `, txLink(last.txid), '. It is an ordinary cBTC note once the pool records the exit.') : el('div', {}, ABOUT.exit),
+      balanceLine(), waitBox('exit', go) || el('div', {}, amt.node,
+        el('div', { class: 'row' }, button('Exit to my wallet', () => go()), el('span', { class: 'small muted' }, 'The amount stays hidden on chain.'))),
+      errLine('exit'));
+  }
+
   function renderHook(id, ph) {
     const impl = hooks.get(id);
-    const S = setPhase(id, ph, !impl ? 'coming soon' : ph === 'done' ? 'done' : '');
-    if (!impl) { put(S.body, el('div', {}, SOON[id])); return; }
+    if (!impl) return ({ pay: renderPay, receive: renderReceive, exit: renderExit })[id](ph);
+    const S = setPhase(id, ph, ph === 'done' ? 'done' : '');
     impl.render(S.body, { ctx, state, save, log, poolWallet, pool, setStatus: (m) => { S.status.textContent = m; }, rerender: render });
   }
 
+  let scanning = false;
+  function autoscan() {
+    if (notes || scanning || running || !state.poolNote || !who?.unlocked || !poolWallet()) return;
+    scanning = true;
+    scanNotes().catch(() => {}).finally(() => { scanning = false; if (!running && notes) render(); });
+  }
+
   function render() {
+    autoscan();
     intro.textContent = who?.connected
       ? 'Each step is one signet transaction from your wallet above. Progress is saved in this browser.'
       : 'Connect a wallet above to start. Each step is one signet transaction.';

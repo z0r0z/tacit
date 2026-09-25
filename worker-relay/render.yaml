@@ -346,11 +346,11 @@ services:
 
   # Always-on web service: Bitcoin-native shielded pool replay (src/btc-pool-indexer.js). Replays 0x6C/0x6D
   # envelopes from raw blocks and serves roots, Merkle paths, the note feed, nullifier and exit status.
-  # Spend proofs are checked locally by the btc-pool-verify binary; without it the service replays shields
-  # and halts at the first spend rather than diverge.
+  # Client proofs are verified natively in process against the key pinned in dapp/btc-pool/pin.json; without
+  # it the service halts at the first pool envelope rather than diverge.
   #
-  # Built from the repo root with its own Dockerfile: the image needs worker/, dapp/ and contracts/ files that
-  # the worker-relay context cannot reach, and compiles btc-pool-verify in a builder stage.
+  # Built from the repo root with its own Dockerfile: the image needs worker/ and dapp/ files that the
+  # worker-relay context cannot reach.
   - type: web
     name: tacit-btc-pool
     runtime: docker
@@ -382,9 +382,7 @@ services:
       - key: BTC_POOL_POLL_SECS
         value: "30"
       - key: BTC_POOL_DB
-        value: /var/lib/tacit-btc-pool/btc-pool-bind.db
-      - key: BTC_POOL_VERIFY_BIN
-        value: /app/prover/bin/btc-pool-verify
+        value: /var/lib/tacit-btc-pool/btc-pool-zk.db
       - key: PORT
         value: "10000"
 

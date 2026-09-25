@@ -22,6 +22,7 @@ const VENDOR_DIR = join(DAPP_DIR, 'vendor');
 const BUNDLE_OUT = join(VENDOR_DIR, 'tacit-deps.min.js');
 const MIXER_OUT  = join(VENDOR_DIR, 'tacit-mixer.min.js'); // separate bundle, lazy-loaded
 const SATSCONNECT_OUT = join(VENDOR_DIR, 'tacit-satsconnect.min.js'); // separate bundle, lazy-loaded
+const POSEIDON_OUT = join(VENDOR_DIR, 'tacit-poseidon.min.js'); // separate bundle, lazy-loaded (Bitcoin pool)
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
 const PREBOOT    = join(DAPP_DIR, 'preboot.js');             // head-loaded, SW-cached like tacit.js
@@ -100,6 +101,26 @@ async function bundleSatsConnect() {
     platform: 'browser',
   });
   return readFileSync(SATSCONNECT_OUT);
+}
+
+// Poseidon bundle for the Bitcoin shielded pool (dapp/btc-pool-zk.js). Loaded only by pool pages.
+async function bundlePoseidon() {
+  if (verifyOnly) {
+    if (!existsSync(POSEIDON_OUT)) throw new Error(`bundle missing: ${POSEIDON_OUT}`);
+    return readFileSync(POSEIDON_OUT);
+  }
+  await build({
+    entryPoints: [join(HERE, 'entry-poseidon.mjs')],
+    bundle: true,
+    format: 'esm',
+    target: 'es2020',
+    minify: true,
+    legalComments: 'inline',
+    outfile: POSEIDON_OUT,
+    logLevel: 'info',
+    platform: 'neutral',
+  });
+  return readFileSync(POSEIDON_OUT);
 }
 
 const sha384b64 = buf => 'sha384-' + createHash('sha384').update(buf).digest('base64');
@@ -210,6 +231,11 @@ async function main() {
   const satsConnectBundle = await bundleSatsConnect();
   console.log(`  ${SATSCONNECT_OUT}`);
   console.log(`  ${satsConnectBundle.length.toLocaleString()} bytes · ${sha384b64(satsConnectBundle)}`);
+
+  console.log(verifyOnly ? '• Reading existing poseidon bundle...' : '• Bundling poseidon (Bitcoin pool)...');
+  const poseidonBundle = await bundlePoseidon();
+  console.log(`  ${POSEIDON_OUT}`);
+  console.log(`  ${poseidonBundle.length.toLocaleString()} bytes · ${sha384b64(poseidonBundle)}`);
 
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);

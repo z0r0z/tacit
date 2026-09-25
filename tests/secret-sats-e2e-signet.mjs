@@ -1,12 +1,13 @@
-// Secret Sats end to end on signet with real transactions and real proofs (DESIGN-btc-shielded-pool.md §3–§9,
-// carrier binding and payout condition).
+// Secret Sats end to end on signet with real transactions and client proofs (DESIGN-btc-shielded-pool.md §3–§9,
+// carrier binding and payout condition). Every proof is made here, with the wallet and client modules the
+// browser runs (dapp/btc-shielded-pool.js, dapp/btc-pool-client.js) and the pinned signet key.
 //
 //   node tests/secret-sats-e2e-signet.mjs [fund|join|pay|exit|report|all]   (default: all, resumable)
 //
 // fund  the funding wallet sends Alice's transparent key ~20,000 sats, and in a separate transaction funds a
 //       fresh relay key with a carrier coin and a bind coin.
 // join  buyAndShield: Alice takes one faucet sale and shields its lot in one carrier (vin[0] shield envelope,
-//       vin[1]/vout[1] the seller's SIGHASH_SINGLE|ANYONECANPAY lot and payout).
+//       vin[1]/vout[1] the seller's SIGHASH_SINGLE|ANYONECANPAY lot and payout); the shield carries its proof.
 // pay   Alice pays Bob 6,000 units under the wallet defaults (anchor policy, internal change, padding to 3).
 //       The relay key posts the carrier; bind names the relay's bind coin, which the carrier spends.
 // exit  Bob exits 4,000 units via exitToSats to the funding wallet acting as maker, wanting 2,000 sats to a
@@ -14,14 +15,13 @@
 //       want. Bob keeps 2,000 units as an internal change note.
 // Every stage is confirmed against the pool indexer (BTC_POOL_API).
 //
-// Proofs: the btc-pool-prove host, PROVE_MODE=execute first, then network. NETKEY_FILE points to a file holding
-// NETWORK_PRIVATE_KEY; it is passed to the prover only through its environment.
+// Anchor: ANCHOR=policy uses the wallet default (tip − 6 rounded down to 6, so a fresh note waits 6–11 blocks);
+// ANCHOR=latest (default) anchors at the replayed tip, which the indexer accepts the same way.
 //
-// Env: BTC_POOL_API, ESPLORA (default blockstream signet), STATE_FILE, NETKEY_FILE, PROVER_BIN, VERIFY_BIN,
-// CONFIRM_TIMEOUT_MIN (default 90), FEE_RATE (sat/vB, default 2).
+// Env: BTC_POOL_API, ESPLORA (default blockstream signet), STATE_FILE, ANCHOR, CONFIRM_TIMEOUT_MIN (default 90),
+// FEE_RATE (sat/vB, default 2).
 import { JSDOM } from 'jsdom';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +29,11 @@ import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import * as snarkjs from 'snarkjs';
 import { makeBtcShieldedPool, defaultAnchor } from '../dapp/btc-shielded-pool.js';
 import { makeBtcPoolZap, makeNoteResolver } from '../dapp/btc-pool-zap.js';
+import { makePoolClient } from '../dapp/btc-pool-client.js';
+import { makeBtcPoolVerifier } from '../worker-relay/src/lib/btc-pool-verify.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOME_V = path.join(os.homedir(), '.tacit-validation');
@@ -39,9 +42,7 @@ const WALLET_FILE = path.join(HOME_V, 'signet.json');
 const POOL_API = (process.env.BTC_POOL_API || 'https://tacit-btc-pool.onrender.com').replace(/\/$/, '');
 const FAUCET = (process.env.SATS_FAUCET || 'https://tacit-sats-faucet.onrender.com').replace(/\/$/, '');
 const ESPLORA = (process.env.ESPLORA || 'https://blockstream.info/signet/api').replace(/\/$/, '');
-const PROVER_BIN = process.env.PROVER_BIN || path.join(ROOT, 'contracts/sp1/confidential/btc-pool-host/target/release/btc-pool-prove');
-const VERIFY_BIN = process.env.VERIFY_BIN || path.join(ROOT, 'contracts/sp1/confidential/btc-pool-host/target/release/btc-pool-verify');
-const NETKEY_FILE = process.env.NETKEY_FILE || null;
+const ANCHOR = process.env.ANCHOR || 'latest';
 const CONFIRM_TIMEOUT_MS = Number(process.env.CONFIRM_TIMEOUT_MIN || 90) * 60_000;
 
 const ASSET = '17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5';
@@ -83,6 +84,10 @@ if (bytesToHex(FUND.pub) !== String(W.pub_hex).toLowerCase()) throw new Error('f
 const dapp = await import('../dapp/tacit.js');
 const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
 const zap = makeBtcPoolZap({ secp, sha256, keccak256: keccak_256 });
+const ART = path.join(ROOT, 'dapp/btc-pool');
+const client = makePoolClient({ api: POOL_API, readFile: (n) => readFileSync(path.join(ART, n)), snarkjs, fetchImpl: (...a) => realFetch(...a) });
+const verifier = makeBtcPoolVerifier({ network: 'signet', log: () => {} });
+if (!verifier.enabled) throw new Error(`verifier: ${verifier.reason}`);
 
 const log = (m) => console.log(`  ${m}`);
 const link = (txid) => `https://mempool.space/signet/tx/${txid}`;
@@ -177,46 +182,44 @@ async function poolGet(p) {
   }
 }
 const poolStatus = () => poolGet('/btc-pool/status');
-async function allNotes() {
-  const out = [];
-  for (let from = 0, guard = 0; guard < 1000; guard++) {
-    const j = await poolGet(`/btc-pool/notes?from=${from}&limit=1000`);
-    for (const x of j.notes) {
-      out.push({ leafIndex: x.leafIndex, txid: x.txid, height: x.height, leaf: x.leaf, asset: x.asset, cx: x.Cx, cy: x.Cy, spendKey: x.spend_key, nkPub: x.nk_pub, pkEph: x.pk_eph, ctNote: x.ct_note });
-    }
-    if (!j.notes.length || j.next === from) break;
-    from = j.next;
-  }
-  return out;
-}
+const allNotes = () => client.allNotes();
 async function waitIndexed(height, label) {
   const t0 = Date.now();
   for (;;) {
     const s = await poolStatus();
     if (s.halted) throw new Error(`pool indexer halted: ${JSON.stringify(s.halted)}`);
-    if (s.tip != null && s.tip >= height) return s;
+    if (s.height != null && s.height >= height) return s;
     if (Date.now() - t0 > CONFIRM_TIMEOUT_MS) throw new Error(`indexer did not reach ${height} for ${label}`);
     await sleep(20_000);
   }
 }
-// Waits for the wallet anchor policy to reach the block that added the note; returns the anchor, root and path.
-async function anchorAndPath(note, label) {
+// Anchor, root and paths for `notes`: the replayed tip (ANCHOR=latest) or the wallet policy, waiting for it.
+async function anchorAndPaths(notes, label) {
   const t0 = Date.now();
   for (;;) {
     const s = await poolStatus();
-    if (s.halted) throw new Error(`pool indexer halted: ${JSON.stringify(s.halted)}`);
-    const hAnchor = defaultAnchor(s.tip);
-    if (hAnchor >= note.height) {
-      const j = await poolGet(`/btc-pool/path/${note.leafIndex}?at=${hAnchor}`);
-      if (j.hAnchor !== hAnchor || strip(j.leaf) !== strip(note.leaf) || j.path.length !== 32) throw new Error(`unexpected path response ${JSON.stringify(j).slice(0, 300)}`);
-      if (strip(pool.merkleRootFrom(note.leaf, note.leafIndex, j.path)) !== strip(j.root)) throw new Error('indexer path does not reach its root');
-      log(`${label}: tip ${s.tip}, anchor ${hAnchor}, root ${j.root}`);
-      return { hAnchor, root: j.root, path: j.path, tip: s.tip };
+    const r = await client.anchorAndPaths(notes, ANCHOR === 'latest' ? { anchor: s.height } : {});
+    if (!r.wait) {
+      for (const n of r.notes) if (strip(pool.merkleRootFrom(n.leaf, n.leafIndex, n.path)) !== strip(r.root)) throw new Error('indexer path does not reach its root');
+      log(`${label}: tip ${r.tip}, anchor ${r.hAnchor} (${ANCHOR}), root ${r.root}`);
+      return r;
     }
-    if (Date.now() - t0 > 4 * CONFIRM_TIMEOUT_MS) throw new Error(`anchor policy did not reach ${note.height}`);
-    log(`${label}: tip ${s.tip}, anchor ${hAnchor} < note block ${note.height}; waiting`);
+    if (Date.now() - t0 > 4 * CONFIRM_TIMEOUT_MS) throw new Error(`anchor policy did not reach ${r.need}`);
+    log(`${label}: tip ${r.tip}, the policy anchor needs ${r.wait} more block(s); waiting`);
     await sleep(60_000);
   }
+}
+async function proveTimed(label, built, st) {
+  const system = await client.system();
+  const t0 = performance.now();
+  const r = await pool.prove(built, system);
+  st.proveSeconds = Number(((performance.now() - t0) / 1000).toFixed(2));
+  st.proofBytes = r.proof.length;
+  st.system = system.id;
+  st.vkHash = system.vkHash;
+  saveState();
+  log(`${label}: proved in ${st.proveSeconds} s (${system.id}, ${r.proof.length}-byte proof, payload ${r.payload.length} bytes)`);
+  return r;
 }
 
 // ── transactions ──
@@ -303,60 +306,6 @@ async function broadcastPair(st, label) {
   st.broadcast = true; saveState();
 }
 
-// ── prover ──
-function run(bin, input, env) {
-  return new Promise((resolve) => {
-    const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env } });
-    let out = '', err = '';
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { err += c; });
-    child.on('close', (code) => resolve({ code, out, err }));
-    child.on('error', (e) => resolve({ code: -1, out, err: String(e) }));
-    child.stdin.on('error', () => {});
-    child.stdin.end(input);
-  });
-}
-const expectedPublicValues = (root, bodyHex) => '0x' + '00'.repeat(31) + '01' + strip(root) + bytesToHex(keccak_256(hexToBytes(strip(bodyHex))));
-async function prove(stage, st) {
-  const proofFile = path.join(HOME_V, `secret-sats-${stage}-proof.json`);
-  if (existsSync(proofFile)) {
-    const j = JSON.parse(readFileSync(proofFile, 'utf8'));
-    if (j.public_values === expectedPublicValues(st.root, st.bodyHex)) return j;
-    throw new Error(`${proofFile} is for another body; move it aside`);
-  }
-  const witness = readFileSync(st.witnessFile, 'utf8');
-  const want = expectedPublicValues(st.root, st.bodyHex);
-  if (!st.execute) {
-    const t0 = Date.now();
-    const r = await run(PROVER_BIN, witness, { PROVE_MODE: 'execute' });
-    if (r.code !== 0) throw new Error(`${stage}: execute failed (${r.code}): ${r.err.trim().slice(-800)}`);
-    const j = JSON.parse(r.out.trim().split('\n').pop());
-    if (j.public_values !== want) throw new Error(`${stage}: execute public values ${j.public_values} != ${want}`);
-    st.execute = { cycles: j.cycles, seconds: Math.round((Date.now() - t0) / 1000) };
-    saveState();
-    log(`${stage}: execute ok, ${j.cycles} cycles, public values match abi.encode(1, root, keccak(body))`);
-  }
-  if (!NETKEY_FILE || !existsSync(NETKEY_FILE)) throw new Error(`${stage}: execute passed; set NETKEY_FILE for the network proof`);
-  const key = readFileSync(NETKEY_FILE, 'utf8').trim();
-  for (let attempt = 1; ; attempt++) {
-    const t0 = Date.now();
-    log(`${stage}: network Groth16 proof, attempt ${attempt}`);
-    const r = await run(PROVER_BIN, witness, { PROVE_MODE: 'network', NETWORK_PRIVATE_KEY: key, NETWORK_RPC_URL: 'https://rpc.mainnet.succinct.xyz', RUST_LOG: 'warn' });
-    if (r.code === 0) {
-      const j = JSON.parse(r.out.trim().split('\n').pop());
-      if (j.public_values !== want) throw new Error(`${stage}: proof public values ${j.public_values} != ${want}`);
-      writeFileSync(proofFile, JSON.stringify(j, null, 2), { mode: 0o600 });
-      st.proveSeconds = Math.round((Date.now() - t0) / 1000);
-      saveState();
-      return j;
-    }
-    const msg = r.err.replace(new RegExp(key.replace(/^0x/, ''), 'gi'), '<redacted>').trim().slice(-1200);
-    if (/guest rejected|witness json|missing|must be/.test(msg) || attempt >= 5) throw new Error(`${stage}: network proving failed (${r.code}): ${msg}`);
-    log(`${stage}: prover error, retrying: ${msg.split('\n').slice(-3).join(' | ')}`);
-    await sleep(20_000 * attempt);
-  }
-}
-
 // ── stages ──
 async function stageFund() {
   console.log('\n--- fund ---');
@@ -400,20 +349,24 @@ async function stageJoin() {
     useKey(aliceT);
     const resolveNote = makeNoteResolver({ validateOutpoint: dapp.validateOutpoint, txOutputEnvelope: dapp.txOutputEnvelope, getParentEnvelopeData: dapp.getParentEnvelopeData, fetchTx: dapp.getTx });
     const utxos = (await utxosOf(aliceT.spk)).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
+    const system = await client.system();
+    const t0 = performance.now();
     const r = await zap.buyAndShield({
       tacit: { ...dapp, wallet: dapp.wallet, resolveNote },
-      pool, sale, wallet: { utxos, feeRate: await feeRate() }, recipientAddress: alice.addressString,
+      pool, sale, wallet: { utxos, feeRate: await feeRate() }, recipientAddress: alice.addressString, system,
     });
-    const { value, blinding, ...fields } = r.note;
+    const { value, ...fields } = r.note;
     Object.assign(st, {
       saleId: sale.sale_id, lot: sale.asset_outpoint, price: sale.min_price_sats, sellerPayout: sale.seller_payout_script, faucetTakesBefore: status.taken_total,
       commitTxid: r.commitTxid, commitHex: r.commitHex, revealTxid: r.carrierTxid, revealHex: r.carrierHex,
-      commitFee: r.commitFee, revealFee: r.revealFee, shieldPayload: r.shield.payloadHex, note: fields, noteValue: value,
+      commitFee: r.commitFee, revealFee: r.revealFee, payloadBytes: r.shield.payload.length, note: fields, noteValue: value,
+      buildAndProveSeconds: Number(((performance.now() - t0) / 1000).toFixed(2)), system: system.id, vkHash: system.vkHash,
     });
     saveState();
     const mine = pool.scan(alice, [r.note]);
     if (mine.length !== 1 || mine[0].value !== BigInt(sale.asset_opening.amount)) throw new Error('Alice does not receive her shield note');
-    log(`Alice receives the shield note: ${mine[0].value} units`);
+    if (!(await pool.verifyPayload(system, r.shield.payload))) throw new Error('shield payload does not verify');
+    log(`shield built and proved in ${st.buildAndProveSeconds} s, payload ${st.payloadBytes} bytes; Alice receives ${mine[0].value} units`);
   }
   if (!st.broadcast) await broadcastPair(st, 'join');
   if (!st.height) { st.height = await waitConfirmed(st.revealTxid, 'join carrier'); saveState(); }
@@ -428,50 +381,39 @@ async function stageJoin() {
   log(`indexer accepted the shield: leaf ${row.leafIndex} at ${row.height}; leafCount ${st.indexer.leafCount}, root ${st.indexer.root}`);
 }
 
-// Scans the feed for a wallet's notes, each with its nullifier.
-async function walletNotes(w) {
-  const notes = await allNotes();
-  const mine = pool.scan(w, notes).map((x) => ({ ...x, height: notes.find((n) => n.leafIndex === x.leafIndex).height, txid: notes.find((n) => n.leafIndex === x.leafIndex).txid }));
-  for (const x of mine) x.spent = (await poolGet(`/btc-pool/nullifier/${strip(x.nf)}`)).spent;
-  return mine;
-}
+// Scans the feed for a wallet's notes, each with its nullifier and spent flag.
+const walletNotes = (w) => client.walletNotes(pool, w);
 
 async function stagePay() {
   console.log('\n--- pay (Alice → Bob, relay carrier with bind) ---');
   const st = state.pay || (state.pay = {});
-  if (!st.bodyHex) {
+  if (!st.revealHex) {
     const unspent = (await walletNotes(alice)).filter((x) => !x.spent);
     const { inputs } = pool.selectInputs(unspent, PAY_TO_BOB, { asset: '0x' + ASSET });
     if (inputs.length !== 1) throw new Error(`expected Alice's first spend to have 1 input, got ${inputs.length}`);
-    const a = await anchorAndPath(inputs[0], 'pay');
+    const a = await anchorAndPaths(inputs, 'pay');
     const built = pool.buildSpendBody({
-      asset: '0x' + ASSET, tip: a.tip, root: a.root,
-      inputs: [{ ...inputs[0], path: a.path }],
+      asset: '0x' + ASSET, hAnchor: a.hAnchor, root: a.root,
+      inputs: a.notes,
       outputs: [{ address: bob.addressString, value: PAY_TO_BOB }],
       wallet: alice,
       bind: { txid: state.fund.relay.bind.txid, vout: state.fund.relay.bind.vout },
     });
-    if (built.hAnchor !== a.hAnchor) throw new Error('anchor drift');
     const toBob = pool.scan(bob, built.outputs);
     const own = pool.scan(alice, built.outputs);
     if (toBob.length !== 1 || toBob[0].value !== PAY_TO_BOB) throw new Error('Bob does not receive the pay output');
     if (own.length !== 2 || !own.every((x) => x.internal) || own.reduce((t, x) => t + x.value, 0n) !== inputs[0].value - PAY_TO_BOB) throw new Error('Alice does not receive change and padding internally');
     if (pool.scan(pool.viewWallet(alice), built.outputs).length !== 0) throw new Error('change is visible to the incoming-only view key');
-    st.witnessFile = path.join(HOME_V, 'secret-sats-pay-witness.json');
-    writeFileSync(st.witnessFile, jsonOut(built.witness), { mode: 0o600 });
     Object.assign(st, {
       bodyHex: built.bodyHex, root: a.root, hAnchor: built.hAnchor, tipAtBuild: a.tip, bind: built.bind,
       nIn: inputs.length, nOut: built.outputs.length, nullifiers: built.nullifiers,
-      outputs: built.outputs.map(({ value, blinding, ...f }) => f), inputLeaf: inputs[0].leafIndex,
+      outputs: built.outputs.map(({ value, npk, rho, ...f }) => f), inputLeaf: inputs[0].leafIndex,
     });
     saveState();
-    log(`pay body ${hexToBytes(strip(built.bodyHex)).length} bytes: 1 input, ${built.outputs.length} outputs (Bob 6000, change ${inputs[0].value - PAY_TO_BOB}, one zero pad), bind ${built.bind.txid}:${built.bind.vout}`);
-  }
-  if (!st.revealHex) {
-    const proof = await prove('pay', st);
-    st.proofBytes = hexToBytes(strip(proof.proof)).length; st.vkey = proof.vkey; saveState();
-    log(`pay proof ${st.proofBytes} bytes, vkey ${proof.vkey}`);
-    const payload = pool.assembleSpendEnvelope(st.bodyHex, proof.proof);
+    log(`pay body ${hexToBytes(strip(built.bodyHex)).length} bytes: 1 input, ${built.outputs.length} outputs (Bob ${PAY_TO_BOB}, change ${inputs[0].value - PAY_TO_BOB}, one zero pad), bind ${built.bind.txid}:${built.bind.vout}`);
+    const { payload } = await proveTimed('pay', built, st);
+    const pp = pool.payloadPublics(payload, { root: a.root });
+    if (!(await verifier.verify({ proof: hexToBytes(strip(pp.parsed.proof)), publics: pp.publics }))) throw new Error('pay payload does not verify natively');
     const coins = (await utxosOf(relay.spk)).filter((u) => !(u.txid === st.bind.txid && u.vout === st.bind.vout));
     const r = await buildCarrier({
       signer: relay, coins, payload,
@@ -502,49 +444,38 @@ async function stageExit() {
   const st = state.exit || (state.exit = {});
   const makerBind = state.fund.alice.makerBind;
   const maker = { spk: '0x' + bytesToHex(FUND.spk), sats: EXIT_SATS, vout: 1, exitVout: 0, bind: { txid: makerBind.txid, vout: makerBind.vout } };
-  if (!st.bodyHex) {
+  if (!st.revealHex) {
     const unspent = (await walletNotes(bob)).filter((x) => !x.spent);
     if (unspent.length !== 1) throw new Error(`Bob should hold one note, has ${unspent.length}`);
-    const a = await anchorAndPath(unspent[0], 'exit');
+    const a = await anchorAndPaths(unspent, 'exit');
     const used = new Set(st.usedScripts || []);
-    const r = zap.exitToSats({ pool, wallet: bob, notes: [{ ...unspent[0], path: a.path }], amount: EXIT_AMOUNT, maker, asset: '0x' + ASSET, tip: a.tip, root: a.root, usedScripts: used });
-    if (r.spend.hAnchor !== a.hAnchor) throw new Error('anchor drift');
+    const r = zap.exitToSats({ pool, wallet: bob, notes: a.notes, amount: EXIT_AMOUNT, maker, asset: '0x' + ASSET, hAnchor: a.hAnchor, root: a.root, usedScripts: used });
     const change = pool.scan(bob, r.spend.outputs);
     if (change.reduce((t, x) => t + x.value, 0n) !== unspent[0].value - EXIT_AMOUNT || !change.every((x) => x.internal)) throw new Error('Bob does not keep his change internally');
-    st.witnessFile = path.join(HOME_V, 'secret-sats-exit-witness.json');
-    writeFileSync(st.witnessFile, jsonOut(r.spend.witness), { mode: 0o600 });
     Object.assign(st, {
       bodyHex: r.spend.bodyHex, root: a.root, hAnchor: r.spend.hAnchor, tipAtBuild: a.tip, bind: r.spend.bind,
       nIn: 1, nOut: r.spend.outputs.length, nullifiers: r.spend.nullifiers,
-      outputs: r.spend.outputs.map(({ value, blinding, ...f }) => f),
+      outputs: r.spend.outputs.map(({ value, npk, rho, ...f }) => f),
       exit: { exitVout: r.spend.exit.exitVout, cx: r.spend.exit.cx, cy: r.spend.exit.cy, destSpkHash: r.spend.exit.destSpkHash },
       want: r.spend.want, offer: r.offer, payout: { counter: r.payout.counter, scriptPubKey: r.payout.scriptPubKey, outputKey: r.payout.outputKey },
       usedScripts: [...used],
     });
     saveState();
     log(`exit body ${hexToBytes(strip(r.spend.bodyHex)).length} bytes: exit ${EXIT_AMOUNT} at vout 0 to the maker, want ${EXIT_SATS} sats at vout 1 to Bob's exit key #${r.payout.counter}, ${r.spend.outputs.length} internal outputs`);
-  }
-  if (!st.revealHex) {
-    const proof = await prove('exit', st);
-    st.proofBytes = hexToBytes(strip(proof.proof)).length; st.vkey = proof.vkey; saveState();
-    log(`exit proof ${st.proofBytes} bytes, vkey ${proof.vkey}`);
-    const payload = pool.assembleSpendEnvelope(st.bodyHex, proof.proof);
-    // Maker side: check the offer and the proof before paying anything.
-    const { makeBtcPoolVerifier } = await import('../worker-relay/src/lib/btc-pool-verify.js');
-    const verifier = makeBtcPoolVerifier({ bin: VERIFY_BIN, log: () => {} });
-    const verify = verifier.verify;
-    const v = await zap.validateExitToSats({ pool, payload, offer: st.offer, maker, amount: EXIT_AMOUNT, asset: '0x' + ASSET, root: st.root, verify: verify || undefined });
-    st.makerVerifiedProof = !!verify;
-    log(`maker validated the offer${verify ? ' and verified the proof locally' : ''}`);
+    const { payload } = await proveTimed('exit', r.spend, st);
+    // Maker side: check the offer, the exit boundary and the proof natively before paying anything.
+    const v = await zap.validateExitToSats({ pool, payload, offer: st.offer, maker, amount: EXIT_AMOUNT, asset: '0x' + ASSET, root: st.root, verify: verifier.verify });
+    st.makerVerifiedProof = true;
+    log('maker validated the offer, the exit boundary and the proof natively');
     const outputs = zap.makerCarrierOutputs({ exitVout: v.exitVout, wantVout: v.wantVout, wantValue: v.wantValue, payoutScriptPubKey: v.payoutScriptPubKey, makerSpk: FUND.spk, exitSats: dapp.DUST })
       .map((o) => ({ value: Number(o.value), script: o.script }));
     const coins = await fundingCoins([`${makerBind.txid}:${makerBind.vout}`]);
-    const r = await buildCarrier({
+    const c = await buildCarrier({
       signer: FUND, coins, payload,
       extraInputs: [{ txid: makerBind.txid, vout: makerBind.vout, value: makerBind.value, priv: FUND.priv, pub: FUND.pub }],
       outputs,
     });
-    Object.assign(st, r, { payloadBytes: payload.length });
+    Object.assign(st, c, { payloadBytes: payload.length });
     saveState();
   }
   if (!st.broadcast) await broadcastPair(st, 'exit');

@@ -1,8 +1,9 @@
 // Replay service for the Bitcoin-native shielded pool (contracts/sp1/confidential/DESIGN-btc-shielded-pool.md §5).
 // Follows Bitcoin from BTC_POOL_START_HEIGHT, replays 0x6C/0x6D envelopes in block and input order, persists one SQLite
 // transaction per block, rolls back on reorgs, and serves roots, paths, the note feed, nullifier and exit
-// status over read-only HTTP. The replay signs nothing and holds no keys; the optional relayer, mounted only
-// when BTC_POOL_RELAYER_* keys are set, does.
+// status over read-only HTTP. Proofs are verified natively against the pinned key (lib/btc-pool-verify.js). The
+// replay signs nothing and holds no keys; the optional relayer, mounted only when BTC_POOL_RELAYER_* keys are
+// set, does.
 
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
@@ -180,9 +181,9 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
             if (env.vin !== 0) res = { accepted: false, reason: 'T_BTC_SHIELD must ride vin[0]' };
             else {
               try {
-                res = await st.acceptShield(parsed, { txid: tx.txid, inputs: tx.vin, resolveInput });
+                res = await st.acceptShield(parsed, { txid: tx.txid, inputs: tx.vin, resolveInput, verifyProof: verifier.verify });
               } catch (e) {
-                self.halted = { height, txid: tx.txid, reason: `shield input unresolved: ${e?.message || e}` };
+                self.halted = { height, txid: tx.txid, reason: e instanceof VerifierUnavailableError ? verifier.reason : `shield input unresolved: ${e?.message || e}` };
                 throw e;
               }
             }
@@ -276,6 +277,8 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
       root: st.tip === null ? null : x0(st.roots.get(st.tip)),
       verifierEnabled: !!verifier.enabled,
       verifierReason: verifier.reason || null,
+      proofSystem: verifier.system?.id || null,
+      vkHash: verifier.vkHash || null,
       halted: self.halted,
       shieldInputValidation: 'canonical',
       lastError: self.lastError,
@@ -287,8 +290,7 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
 // ── HTTP ──
 function noteRow(r) {
   return {
-    leafIndex: r.idx, txid: r.txid, height: r.height, leaf: pre(r.leaf), asset: pre(r.asset), Cx: pre(r.cx), Cy: pre(r.cy),
-    spend_key: pre(r.spend_key), nk_pub: pre(r.nk_pub), pk_eph: pre(r.pk_eph), ct_note: pre(r.ct_note),
+    leafIndex: r.idx, txid: r.txid, height: r.height, leaf: pre(r.leaf), asset: pre(r.asset), pk_eph: pre(r.pk_eph), ct_note: pre(r.ct_note),
   };
 }
 
@@ -391,7 +393,7 @@ async function main() {
   const hashQuorum = Number(env.BTC_POOL_HASH_QUORUM || 1);
 
   const store = openBtcPoolStore(env.BTC_POOL_DB || '/var/lib/tacit-btc-pool/btc-pool.db');
-  const verifier = makeBtcPoolVerifier({ log: (...a) => console.error(...a) });
+  const verifier = makeBtcPoolVerifier({ network, log: (...a) => console.error(...a) });
   const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum }), verifier, network, startHeight, confirmations, log, chain });
   log(`resuming at ${ix.state.tip ?? `(empty, start ${startHeight})`}; verifier ${verifier.enabled ? 'enabled' : `DISABLED: ${verifier.reason}`}`);
 
@@ -403,7 +405,7 @@ async function main() {
       ix.lastError = null;
     } catch (e) {
       ix.lastError = String(e?.message || e);
-      if (e instanceof VerifierUnavailableError) console.error(`!!! btc-pool halted at ${ix.halted?.height} (${ix.halted?.txid}): spend verifier unavailable`);
+      if (e instanceof VerifierUnavailableError) console.error(`!!! btc-pool halted at ${ix.halted?.height} (${ix.halted?.txid}): proof verifier unavailable`);
       else log(`sync failed: ${ix.lastError}`);
     }
     await new Promise((r) => setTimeout(r, ix.state.tip !== null && ix.chainTip !== null && ix.state.tip < ix.chainTip - confirmations ? 1000 : pollMs));

@@ -1,8 +1,9 @@
 // Relayer for the Bitcoin-native shielded pool (DESIGN-btc-shielded-pool.md §6, SPEC §3.10).
 // Quotes a per-asset fee and the batch's bind outpoint (a confirmed relayer UTXO the carrier spends), binds
 // exit_vout slots of a fixed carrier layout at submit time, admits payloads only when their bind is the quoted
-// outpoint, the proof verifies against the local replayed root, the nullifiers are free, and one output is fully
-// received by the relayer's pool wallet, then carries them in one commit/reveal pair funded from its own BTC.
+// outpoint, the client's proof (and an exit's boundary) verifies natively against the local replayed root, the
+// nullifiers are free, and one output is fully received by the relayer's pool wallet, then carries them in one
+// commit/reveal pair funded from its own BTC.
 //
 // Keys: BTC_POOL_RELAYER_BTC_KEY (funding + envelope signing) and BTC_POOL_RELAYER_POOL_SEED (pool wallet).
 // Both are read once and removed from process.env.
@@ -38,11 +39,9 @@ export class RelayError extends Error {
 }
 const bad = (m) => new RelayError(400, m);
 
-// abi.encode(uint16 1, bytes32 root, bytes32 keccak(body)).
-export function spendPublicValues(root, body) {
-  const v = new Uint8Array(32);
-  v[31] = 1;
-  return concatBytes(v, typeof root === 'string' ? hexToBytes(strip(root)) : root, keccak_256(body));
+// Public signals of a spend payload against `root` (hex), the exit boundary checked; throws when it fails.
+export function spendPublics(payload, root) {
+  return bpm.payloadPublics(payload, { root: typeof root === 'string' ? '0x' + strip(root) : root }).publics;
 }
 
 // ── BIP-341 script-path sighash, SIGHASH_DEFAULT, any input index ──
@@ -256,7 +255,7 @@ function makeSemaphore(n) {
 //             outspend?(txid, vout) → { spent } }
 // pool:     { tip(), rootAt(h) → hex|null, isSpent(nfHex), chainTip?(), spentBy?(nf) → txid|null,
 //             pendingSpend?(nf) → { txid, body }|null, aheadComplete?() }
-// verifier: { enabled, verify({ proof, publicValues }) → bool }
+// verifier: { enabled, verify({ proof, publics }) → bool }  (lib/btc-pool-verify.js)
 // mempool:  { refresh(), conflict(nfs, ignoreTxids) → txid|null, spender?(nf, ignoreTxids) → { txid, body }|null }
 // persist:  { save(payloadRecs, carrierRecs), load() → { payloads, carriers } } (optional)
 export function createRelayer({
@@ -505,9 +504,10 @@ export function createRelayer({
     if (q) q.used = true;
     payloads.set(p.id, p);
 
-    let ok;
+    let ok, publics = null;
+    try { publics = spendPublics(bytes, root); } catch { ok = false; }
     try {
-      ok = await verifySlot(() => verifier.verify({ proof: hexToBytes(strip(s.proof)), publicValues: spendPublicValues(root, s.body) }));
+      if (publics) ok = await verifySlot(() => verifier.verify({ proof: hexToBytes(strip(s.proof)), publics }));
     } catch (e) {
       ok = null;
       log(`verifier error: ${e?.message || e}`);
@@ -522,7 +522,7 @@ export function createRelayer({
       throw new RelayError(status, m);
     };
     if (ok === null) fail(503, 'proof verifier error');
-    if (ok !== true) fail(400, 'proof does not verify against the replayed root');
+    if (ok !== true) fail(400, publics ? 'proof does not verify against the replayed root' : 'exit boundary does not verify');
     if (pool.rootAt(s.hAnchor) !== root) fail(409, 'root changed during verification');
     if (b.closed) fail(409, 'carrier closed during verification; request a new quote');
     p.state = 'held';
