@@ -98,7 +98,9 @@ export const SP_HRP_BY_NETWORK = { mainnet: 'sp', signet: 'tsp', testnet: 'tsp',
 export function encodeSilentPayment({ network = 'mainnet', scanPub, spendPub, version = 0 } = {}) {
   if (!scanPub || scanPub.length !== 33) throw new Error('silent payment: scan pubkey must be 33 compressed bytes');
   if (!spendPub || spendPub.length !== 33) throw new Error('silent payment: spend pubkey must be 33 compressed bytes');
-  const hrp = SP_HRP_BY_NETWORK[network] || 'sp';
+  const hrp = SP_HRP_BY_NETWORK[network];
+  if (!hrp) throw new Error(`silent payment: unknown network ${network}`);
+  if (!Number.isInteger(version) || version < 0 || version > 30) throw new Error('silent payment: version must be 0..30');
   const payload = new Uint8Array(66);
   payload.set(scanPub, 0);
   payload.set(spendPub, 33);

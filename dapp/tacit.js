@@ -265,7 +265,7 @@ const POINTS_BASE = 'https://tacit-points.onrender.com';
 // 'wasm-unsafe-eval' only). Registration runs after page load so the
 // install/activate work doesn't compete with first-render network fetches;
 // any failure is silently swallowed — the dapp works without a SW.
-if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && !globalThis.__TACIT_NO_INIT__) {
   const _registerSW = () => {
     navigator.serviceWorker.register('./sw.js', { scope: './' })
       .catch(err => {
@@ -5225,13 +5225,16 @@ const BIP352_HRP_BY_NETWORK = {
 };
 
 // Decode a silent-payment address. Returns { hrp, network, version, scanPub,
-// spendPub } or null. Strict: rejects unknown HRPs, non-v0 versions, wrong
+// spendPub } or null. Strict: rejects unknown HRPs, mixed case, v31, wrong
 // payload lengths, and pubkeys that don't decode to valid compressed points.
+// Versions follow BIP-352: v0 carries exactly 66 bytes; v1–v30 are read as
+// their first 66 bytes (forward compatible); v31 is refused. Addresses may run
+// to 1023 characters.
 // Cannot reuse _bech32mDecode because BIP-352 prepends a 5-bit version word
 // (segwit-style); the existing decoder packs the entire payload as bytes,
 // which would mis-align on the version word.
 function decodeSilentPaymentAddress(addr) {
-  if (typeof addr !== 'string' || addr.length < 14 || addr.length > 130) return null;
+  if (typeof addr !== 'string' || addr.length < 14 || addr.length > 1023) return null;
   const lower = addr.toLowerCase();
   if (addr !== lower && addr !== addr.toUpperCase()) return null;
   const sep = lower.lastIndexOf('1');
@@ -5250,11 +5253,11 @@ function decodeSilentPaymentAddress(addr) {
   const data5 = d5.slice(0, d5.length - 6);
   if (data5.length < 1) return null;
   const version = data5[0];
-  if (version !== 0) return null;
+  if (version === 31) return null;
   let payload;
   try { payload = new Uint8Array(_bech32mConvertBits(data5.slice(1), 5, 8, false)); }
   catch { return null; }
-  if (payload.length !== 66) return null;
+  if (version === 0 ? payload.length !== 66 : payload.length < 66) return null;
   const scanPub  = payload.slice(0, 33);
   const spendPub = payload.slice(33, 66);
   try { bytesToPoint(scanPub); bytesToPoint(spendPub); }
@@ -5295,9 +5298,9 @@ function _bip352SmallestOutpoint(outpoints) {
 // allInputOutpoints (optional) — outpoints of every transaction input, used
 // to compute the lex-smallest outpoint per BIP-352 (which mandates "lex-
 // smallest of all transaction inputs", not just the eligible subset).
-// Tacit's wallet only spends P2WPKH inputs under one key, so the eligible
-// set == the full input set and callers can omit this; the function falls
-// back to inputOutpoints. BIP-352 reference vectors with mixed eligibility
+// Tacit's wallet spends only eligible inputs (its P2WPKH key and P2TR
+// silent-payment credits), so the eligible set == the full input set and
+// callers can omit this; the function falls back to inputOutpoints. BIP-352 reference vectors with mixed eligibility
 // (uncompressed keys, NUMS-tag taproot, etc.) need it.
 function senderComputeSilentPaymentOutput({
   inputPrivs, inputOutpoints, allInputOutpoints = null, scanPub, spendPub, k = 0,
@@ -5322,16 +5325,73 @@ function senderComputeSilentPaymentOutput({
   const A_bytes = G.multiply(a).toRawBytes(true);
   const op_L = _bip352SmallestOutpoint(opsForSmallest);
   const input_hash = _taggedHash('BIP0352/Inputs', op_L, A_bytes);
-  const ih = bytes32ToBigint(input_hash) % SECP_N;
-  if (ih === 0n) throw new Error('input_hash mod n is zero');
+  const ih = bytes32ToBigint(input_hash);
+  if (ih === 0n || ih >= SECP_N) throw new Error('input_hash is not a valid scalar');
   const scalar = (a * ih) % SECP_N;
   const ecdh_bytes = bytesToPoint(scanPub).multiply(scalar).toRawBytes(true);
   const t_k = _taggedHash('BIP0352/SharedSecret', ecdh_bytes, _bip352U32be(k));
-  const tBig = bytes32ToBigint(t_k) % SECP_N;
-  if (tBig === 0n) throw new Error('tweak is zero (BIP-352: skip this output)');
+  const tBig = bytes32ToBigint(t_k);
+  if (tBig === 0n || tBig >= SECP_N) throw new Error('shared-secret tweak is not a valid scalar');
   const P = bytesToPoint(spendPub).add(G.multiply(tBig));
   if (P.equals(ZERO)) throw new Error('output point is identity');
   return { xOnly: P.toRawBytes(true).slice(1) };
+}
+
+// Every output for a list of silent-payment recipients ({ scanPub, spendPub },
+// one entry per output, repeats allowed), in recipient order. Recipients are
+// grouped by scan key and k counts up within each group; a group larger than
+// K_max fails. For one recipient this equals senderComputeSilentPaymentOutput
+// at k = 0.
+function senderComputeSilentPaymentOutputs({
+  inputPrivs, inputOutpoints, allInputOutpoints = null, recipients,
+}) {
+  if (!Array.isArray(recipients) || recipients.length === 0) throw new Error('recipients must be non-empty');
+  if (!Array.isArray(inputPrivs) || inputPrivs.length === 0) throw new Error('inputPrivs must be non-empty');
+  if (!Array.isArray(inputOutpoints) || inputOutpoints.length !== inputPrivs.length) {
+    throw new Error('inputOutpoints length must equal inputPrivs length');
+  }
+  let a = 0n;
+  for (const p of inputPrivs) {
+    if (!(p instanceof Uint8Array) || p.length !== 32) throw new Error('priv must be 32 bytes');
+    const d = bytes32ToBigint(p);
+    if (d <= 0n || d >= SECP_N) throw new Error('priv scalar out of range');
+    a = (a + d) % SECP_N;
+  }
+  if (a === 0n) throw new Error('input priv sum is zero');
+  const ops = Array.isArray(allInputOutpoints) && allInputOutpoints.length > 0 ? allInputOutpoints : inputOutpoints;
+  const input_hash = _taggedHash('BIP0352/Inputs', _bip352SmallestOutpoint(ops), G.multiply(a).toRawBytes(true));
+  const ih = bytes32ToBigint(input_hash);
+  if (ih === 0n || ih >= SECP_N) throw new Error('input_hash is not a valid scalar');
+  const groups = new Map();
+  for (const r of recipients) {
+    const key = bytesToHex(r.scanPub);
+    if (!groups.has(key)) groups.set(key, { ecdh: null, k: 0, size: 0 });
+    groups.get(key).size++;
+  }
+  for (const g of groups.values()) if (g.size > BIP352_K_MAX) throw new Error(`more than ${BIP352_K_MAX} outputs for one scan key`);
+  const scalar = (a * ih) % SECP_N;
+  return recipients.map((r) => {
+    const g = groups.get(bytesToHex(r.scanPub));
+    if (!g.ecdh) g.ecdh = bytesToPoint(r.scanPub).multiply(scalar).toRawBytes(true);
+    const tBig = bytes32ToBigint(_taggedHash('BIP0352/SharedSecret', g.ecdh, _bip352U32be(g.k++)));
+    if (tBig === 0n || tBig >= SECP_N) throw new Error('shared-secret tweak is not a valid scalar');
+    const P = bytesToPoint(r.spendPub).add(G.multiply(tBig));
+    if (P.equals(ZERO)) throw new Error('output point is identity');
+    return { xOnly: P.toRawBytes(true).slice(1) };
+  });
+}
+
+// The private key each wallet input contributes to the shared secret. A P2TR
+// input (a spent silent-payment credit, `_sp`) counts with the key of its
+// even-y output point, so an odd-y key is negated; P2WPKH inputs use the
+// wallet key as is.
+function bip352SenderInputPrivs(picked, walletPriv) {
+  return picked.map((u) => {
+    if (!u._sp) return walletPriv;
+    const raw = u._spPriv;
+    if (secp.getPublicKey(raw, true)[0] === 0x03) return bigintToBytes32(SECP_N - bytes32ToBigint(raw));
+    return raw;
+  });
 }
 
 // 32-byte ECDH keystream used to encrypt the maker's recipient_blinding to the
@@ -5351,7 +5411,7 @@ function deriveAxintentBlindingKeystream(myPriv, theirPubBytes, intentIdBytes, a
 // BIP-352 silent payments — receiver side
 // ============================================================================
 // Mirror of the sender derivation above. Given a transaction, the receiver:
-//   1. Classifies inputs → extracts pubkeys → computes A_sum (same as stealth)
+//   1. Extracts input pubkeys (bip352InputPubkey) → computes A_sum
 //   2. Finds lex-smallest outpoint op_L
 //   3. input_hash = H_tag("BIP0352/Inputs", op_L ‖ ser_P(A_sum))
 //   4. ecdh = b_scan · (input_hash · A_sum)
@@ -5394,18 +5454,114 @@ function walletSilentPaymentAddress() {
   return encodeSilentPaymentAddress({ scanPub, spendPub, network: NET.name });
 }
 
+// Per-group output limit K_max: a sender never makes more outputs for one scan
+// key, and a receiver stops at k == K_max.
+const BIP352_K_MAX = 2323;
+
+// Label tweak for label m: H_tag("BIP0352/Label", ser256(b_scan) ‖ ser32(m)).
+// m = 0 is the change label.
+function bip352LabelTweak(scanPriv, m) {
+  const t = bytes32ToBigint(_taggedHash('BIP0352/Label', scanPriv, _bip352U32be(m)));
+  if (t === 0n || t >= SECP_N) throw new Error('label tweak is not a valid scalar');
+  return t;
+}
+
+// The public key one input contributes to the shared secret, per BIP-352
+// "Inputs For Shared Secret Derivation", or null when the input contributes
+// none. Covers P2TR (key path and script path, annex stripped, NUMS-H internal
+// key skipped), P2WPKH, P2SH-P2WPKH and P2PKH (malleated scriptSigs searched
+// from the end); only compressed and x-only keys count. These rules are the
+// BIP's own and differ from classifyStealthInput's.
+function bip352InputPubkey({ prevoutScript, scriptSig, witness }) {
+  const spk = prevoutScript || new Uint8Array(0);
+  const ss = scriptSig || new Uint8Array(0);
+  const wit = witness || [];
+  const compressed = (b) => {
+    if (!b || b.length !== 33 || (b[0] !== 0x02 && b[0] !== 0x03)) return null;
+    try { bytesToPoint(b); return b; } catch { return null; }
+  };
+  const isP2wpkh = (s) => s.length === 22 && s[0] === 0x00 && s[1] === 0x14;
+  if (spk.length === 25 && spk[0] === 0x76 && spk[1] === 0xa9 && spk[2] === 0x14 && spk[23] === 0x88 && spk[24] === 0xac) {
+    const h = spk.slice(3, 23);
+    for (let i = ss.length; i >= 33; i--) {
+      const cand = ss.slice(i - 33, i);
+      const ch = hash160(cand);
+      let eq = true;
+      for (let j = 0; j < 20; j++) if (ch[j] !== h[j]) { eq = false; break; }
+      if (eq) { const pk = compressed(cand); if (pk) return pk; }
+    }
+  }
+  if (spk.length === 23 && spk[0] === 0xa9 && spk[1] === 0x14 && spk[22] === 0x87) {
+    if (isP2wpkh(ss.slice(1)) && wit.length > 0) {
+      const pk = compressed(wit[wit.length - 1]);
+      if (pk) return pk;
+    }
+  }
+  if (isP2wpkh(spk) && wit.length > 0) {
+    const pk = compressed(wit[wit.length - 1]);
+    if (pk) return pk;
+  }
+  if (spk.length === 34 && spk[0] === 0x51 && spk[1] === 0x20 && wit.length >= 1) {
+    let stack = wit;
+    if (stack.length > 1 && stack[stack.length - 1].length > 0 && stack[stack.length - 1][0] === 0x50) {
+      stack = stack.slice(0, -1);
+    }
+    if (stack.length > 1) {
+      const internal = stack[stack.length - 1].slice(1, 33);
+      if (internal.length === 32 && internal.every((b, i) => b === TAP_NUMS[i])) return null;
+    }
+    return compressed(concatBytes(new Uint8Array([0x02]), spk.slice(2, 34)));
+  }
+  return null;
+}
+
+// A prevout of witness version 2..16 makes the whole tx ineligible for v0.
+function _bip352IsUnknownSegwit(spk) {
+  if (!spk || spk.length < 4 || spk.length > 42) return false;
+  return spk[0] >= 0x52 && spk[0] <= 0x60 && spk[1] >= 2 && spk[1] <= 40 && spk[1] === spk.length - 2;
+}
+
+// Esplora tx → receiver inputs. Returns null when BIP-352 says the tx is not
+// scanned (coinbase, or an input spending witness version > 1).
+function bip352ReceiverInputsFromEsploraTx(tx) {
+  if (!tx || !Array.isArray(tx.vin) || tx.vin.length === 0) return null;
+  const classifiedInputs = [];
+  for (const vin of tx.vin) {
+    if (vin.is_coinbase) return null;
+    const prevoutScript = vin.prevout?.scriptpubkey ? hexToBytes(vin.prevout.scriptpubkey) : null;
+    if (_bip352IsUnknownSegwit(prevoutScript)) return null;
+    const scriptSig = vin.scriptsig ? hexToBytes(vin.scriptsig) : null;
+    const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
+    classifiedInputs.push({ kind: 'bip352', pub: bip352InputPubkey({ prevoutScript, scriptSig, witness }) });
+  }
+  const allOutpoints = tx.vin.map(vin => _bip352OutpointBytes(vin.txid, vin.vout));
+  return { classifiedInputs, allOutpoints };
+}
+
+// Scan one tx for outputs paying (scanPriv, spendPub). `classifiedInputs`
+// entries carry { kind, pub }; a pub counts when kind is 'bip352' (from
+// bip352InputPubkey) or a stealth-eligible kind. `labels` lists the label
+// integers m to check besides the plain address; the change label m = 0 is
+// always checked, as BIP-352 requires. A labeled match reports the combined
+// tweak t_k + label, so silentPaymentSpendingKey(b_spend, tweakScalar) spends
+// every match alike.
 function receiverScanTxForSilentPayments({
-  classifiedInputs, allOutpoints, outputs, scanPriv, spendPub,
+  classifiedInputs, allOutpoints, outputs, scanPriv, spendPub, labels = [],
 }) {
-  const { aggregatePub, eligibleCount } = aggregateStealthEligibleInputPubkeys(classifiedInputs);
-  if (!aggregatePub || eligibleCount === 0) return [];
+  let A_sum = ZERO, eligibleCount = 0;
+  for (const inp of classifiedInputs || []) {
+    if (!inp || !inp.pub || inp.pub.length !== 33) continue;
+    if (inp.kind !== 'bip352' && !isStealthEligibleKind(inp.kind)) continue;
+    A_sum = A_sum.add(bytesToPoint(inp.pub));
+    eligibleCount++;
+  }
+  if (eligibleCount === 0 || A_sum.equals(ZERO)) return [];
+  const aggregatePub = A_sum.toRawBytes(true);
   const op_L = _bip352SmallestOutpoint(allOutpoints);
   const input_hash = _taggedHash('BIP0352/Inputs', op_L, aggregatePub);
-  const ih = bytes32ToBigint(input_hash) % SECP_N;
-  if (ih === 0n) return [];
-  const A_sum = bytesToPoint(aggregatePub);
+  const ih = bytes32ToBigint(input_hash);
+  if (ih === 0n || ih >= SECP_N) return [];
   const tweakedA = A_sum.multiply(ih);
-  if (tweakedA.equals(ZERO)) return [];
   const scanScalar = bytes32ToBigint(scanPriv);
   const ecdh = tweakedA.multiply(scanScalar);
   const ecdhBytes = ecdh.toRawBytes(true);
@@ -5418,23 +5574,44 @@ function receiverScanTxForSilentPayments({
     }
   }
   if (taprootOutputs.length === 0) return [];
+  // Labels are few, so each k adds every label point to P_k and compares
+  // x-coordinates: equivalent to BIP-352's subtract-and-look-up (which must
+  // also try the negated output), at a cost independent of the output count.
+  const labelPoints = [];
+  for (const m of new Set([0, ...(labels || [])])) {
+    const t = bip352LabelTweak(scanPriv, m);
+    labelPoints.push({ m, t, L: G.multiply(t) });
+  }
+  const xEq = (a, b) => { for (let i = 0; i < 32; i++) if (a[i] !== b[i]) return false; return true; };
   const matched = new Set();
   const matches = [];
-  for (let k = 0; k < taprootOutputs.length; k++) {
+  for (let k = 0; k < BIP352_K_MAX && matched.size < taprootOutputs.length; k++) {
     const t_k = _taggedHash('BIP0352/SharedSecret', ecdhBytes, _bip352U32be(k));
-    const tBig = bytes32ToBigint(t_k) % SECP_N;
-    if (tBig === 0n) continue;
+    const tBig = bytes32ToBigint(t_k);
+    if (tBig === 0n || tBig >= SECP_N) break;
     const P_k = B_spend.add(G.multiply(tBig));
-    if (P_k.equals(ZERO)) continue;
     const pkXonly = P_k.toRawBytes(true).slice(1);
+    const labeled = [];
+    for (const lp of labelPoints) {
+      const Q = P_k.add(lp.L);
+      if (!Q.equals(ZERO)) labeled.push({ x: Q.toRawBytes(true).slice(1), label: lp });
+    }
     let found = false;
     for (const to of taprootOutputs) {
       if (matched.has(to.voutIndex)) continue;
-      let eq = true;
-      for (let i = 0; i < 32; i++) { if (pkXonly[i] !== to.xonly[i]) { eq = false; break; } }
-      if (!eq) continue;
+      let label = null;
+      if (!xEq(pkXonly, to.xonly)) {
+        const hit = labeled.find(c => xEq(c.x, to.xonly));
+        if (!hit) continue;
+        label = hit.label;
+      }
       matched.add(to.voutIndex);
-      matches.push({ voutIndex: to.voutIndex, tweak: t_k, tweakScalar: tBig, outputXonly: to.xonly });
+      if (label) {
+        const tw = (tBig + label.t) % SECP_N;
+        matches.push({ voutIndex: to.voutIndex, tweak: bigintToBytes32(tw), tweakScalar: tw, outputXonly: to.xonly, label: label.m });
+      } else {
+        matches.push({ voutIndex: to.voutIndex, tweak: t_k, tweakScalar: tBig, outputXonly: to.xonly });
+      }
       found = true;
       break;
     }
@@ -5555,17 +5732,13 @@ async function discoverSilentPaymentFromTxid(txidHex) {
     throw new Error(`tx ${txidHex.slice(0, 16)}… missing or malformed`);
   }
   if (!tx.vout || tx.vout.length === 0) return [];
-  const classifiedInputs = tx.vin.map((vin) => {
-    const witness = (vin.witness || []).map(h => {
-      try { return hexToBytes(h); } catch { return new Uint8Array(0); }
-    });
-    const prevoutScript = vin.prevout?.scriptpubkey
-      ? hexToBytes(vin.prevout.scriptpubkey) : null;
-    return classifyStealthInput({ witness, prevoutScript });
-  });
-  const allOutpoints = tx.vin.map(vin =>
-    _bip352OutpointBytes(vin.txid, vin.vout),
-  );
+  // Input keys come from witnesses; without them the derivation cannot match.
+  if (_txLooksWitnessPartial(tx)) {
+    throw new Error(`tx ${txidHex.slice(0, 16)}… is not fully indexed yet (witness data missing). Try again in a minute.`);
+  }
+  const scanInputs = bip352ReceiverInputsFromEsploraTx(tx);
+  if (!scanInputs) return [];
+  const { classifiedInputs, allOutpoints } = scanInputs;
   const outputs = tx.vout.map(o => ({
     script: hexToBytes(o.scriptpubkey || ''),
     value: o.value,
@@ -16662,9 +16835,9 @@ async function _fetchBtcPoolExit(txidHex, vout) {
 // Exit fields of a T_BTC_SPEND payload (layout of worker/src/btc-shielded-pool.js parseSpend), or null.
 const _BTC_SPEND_OUTPUT_LEN = 218;
 function _btcSpendExit(payload) {
-  if (!payload || payload.length < 38 || payload[0] !== T_BTC_SPEND) return null;
+  if (!payload || payload.length < 74 || payload[0] !== T_BTC_SPEND) return null;
   const n = payload.length;
-  let p = 37;
+  let p = 73; // opcode ‖ asset ‖ h_anchor(4) ‖ bind(36)
   const nIn = payload[p]; p += 1;
   if (nIn < 1 || nIn > 2) return null;
   p += 32 * nIn;
@@ -35264,6 +35437,31 @@ function decodeP2wpkhAddress(addr) {
   return { hrp: decoded.prefix, version: 0, program: new Uint8Array(program) };
 }
 
+// Strict P2TR (segwit v1, bech32m) decoder. Returns { hrp, version: 1, program: 32 bytes } or null.
+// The program must be a valid x-only key, so a typo can't send to an unspendable output.
+function decodeP2trAddress(addr) {
+  if (typeof addr !== 'string' || addr.length < 14 || addr.length > 90) return null;
+  const lower = addr.toLowerCase();
+  if (addr !== lower && addr !== addr.toUpperCase()) return null;
+  const sep = lower.lastIndexOf('1');
+  if (sep < 1 || sep + 7 > lower.length) return null;
+  const hrp = lower.slice(0, sep);
+  const d5 = [];
+  for (let i = sep + 1; i < lower.length; i++) {
+    const idx = _BECH32M_ALPHABET.indexOf(lower[i]);
+    if (idx === -1) return null;
+    d5.push(idx);
+  }
+  if (_bech32mPolymod(_bech32mExpandHrp(hrp).concat(d5)) !== _BECH32M_CONST) return null;
+  const data = d5.slice(0, d5.length - 6);
+  if (data.length < 1 || data[0] !== 1) return null;
+  let program;
+  try { program = new Uint8Array(_bech32mConvertBits(data.slice(1), 5, 8, false)); } catch { return null; }
+  if (program.length !== 32) return null;
+  try { secp.ProjectivePoint.fromHex(concatBytes(new Uint8Array([0x02]), program)); } catch { return null; }
+  return { hrp, version: 1, program };
+}
+
 // Build the script for an arbitrary P2WPKH address. Used to construct the
 // recipient output of a sats-send. Network HRP is checked against current NET
 // at the call site, not here.
@@ -35413,11 +35611,12 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   if (sp) {
     if (sp.network !== NET.name) throw new Error(`silent-payment address is for ${sp.network}, current network is ${NET.name}`);
   } else {
-    decoded = decodeP2wpkhAddress(recipientAddr);
-    if (!decoded) throw new Error('recipient is not a valid P2WPKH bech32 or silent-payment (sp1…) address');
+    decoded = decodeP2wpkhAddress(recipientAddr) || decodeP2trAddress(recipientAddr);
+    if (!decoded) throw new Error('recipient is not a valid bc1q…, bc1p… or silent-payment (sp1…) address');
     if (decoded.hrp !== NET.hrp) throw new Error(`recipient address is for ${decoded.hrp === 'bc' ? 'mainnet' : decoded.hrp === 'tb' ? 'signet/testnet' : decoded.hrp}, current network is ${NET.name}`);
   }
   const recipientIsSilent = !!sp;
+  const recipientIsP2tr = recipientIsSilent || decoded?.version === 1; // fee sizing: both pay a P2TR output
 
   // (2) Amount validation. Positive integer at minimum DUST.
   const amt = Number.isFinite(amountSats) ? Math.floor(amountSats) : NaN;
@@ -35498,14 +35697,14 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   for (let i = 0; i < allSats.length; i++) {
     picked.push(allSats[i]); total += allSats[i].value;
     const nP2tr = _numP2tr();
-    const feeWithChange = feeFor(estSatsSendVb(picked.length, true, recipientIsSilent, nP2tr), feeRate);
+    const feeWithChange = feeFor(estSatsSendVb(picked.length, true, recipientIsP2tr, nP2tr), feeRate);
     if (total >= amt + feeWithChange + DUST) {
       fee = feeWithChange;
       change = total - amt - fee;
       hasChange = true;
       break;
     }
-    const feeNoChange = feeFor(estSatsSendVb(picked.length, false, recipientIsSilent, nP2tr), feeRate);
+    const feeNoChange = feeFor(estSatsSendVb(picked.length, false, recipientIsP2tr, nP2tr), feeRate);
     if (total >= amt + feeNoChange) {
       fee = feeNoChange;
       change = 0;
@@ -35515,7 +35714,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   }
   if (fee === 0) {
     const have = total;
-    throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange, recipientIsSilent, _numP2tr()), feeRate)})`);
+    throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange, recipientIsP2tr, _numP2tr()), feeRate)})`);
   }
 
   // (6) Belt-and-suspenders re-classification on the FINAL picked set. Catches
@@ -35546,17 +35745,6 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   for (const u of picked) {
     if (!u._sp && (u.value || 0) <= DUST) {
       throw new Error(`refusing to send: picked input ${u.txid.slice(0, 10)}…:${u.vout} is ${u.value} sats (≤ ${DUST} dust band where tacit asset UTXOs live). Internal classifier bug suspected — aborted.`);
-// Holdings-classified plain-sats picker for commit/funding inputs. Wraps
-// scanHoldings (fail-closed) -> selectSatsUtxosSafe -> sortSatsForCommit so the
-// asset-UTXO exclusion is ground-truth (holdings), not just the dust band.
-async function pickSafeCommitSats(allUtxos) {
-  const holdings = await scanHoldings();
-  if (!holdings || !(holdings instanceof Map)) {
-    throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to fund this transaction (asset UTXOs could be spent as fees). Try again or hit ↻ Refresh first.');
-  }
-  return sortSatsForCommit(selectSatsUtxosSafe(allUtxos, holdings));
-}
-
     }
   }
 
@@ -35567,19 +35755,13 @@ async function pickSafeCommitSats(allUtxos) {
   let recipientScript;
   if (recipientIsSilent) {
     const inputOutpoints = picked.map(u => _bip352OutpointBytes(u.txid, u.vout));
-    const inputPrivs = picked.map(u => {
-      const raw = u._sp ? u._spPriv : wallet.priv;
-      if (!u._sp) return raw;
-      const pub = secp.getPublicKey(raw, true);
-      if (pub[0] === 0x03) return bigintToBytes32(SECP_N - bytes32ToBigint(raw));
-      return raw;
-    });
+    const inputPrivs = bip352SenderInputPrivs(picked, wallet.priv);
     const out = senderComputeSilentPaymentOutput({
       inputPrivs, inputOutpoints, scanPub: sp.scanPub, spendPub: sp.spendPub, k: 0,
     });
     recipientScript = p2trScript(out.xOnly);
   } else {
-    recipientScript = p2wpkhScriptFromProgram(decoded.program);
+    recipientScript = decoded.version === 1 ? p2trScript(decoded.program) : p2wpkhScriptFromProgram(decoded.program);
   }
 
   // (7) Assemble + sign + broadcast. Mixed P2WPKH + P2TR keypath inputs:
@@ -51043,11 +51225,12 @@ function setupSatsSendForm() {
       if (sp) {
         if (sp.network !== NET.name) throw new Error(`silent-payment address is for ${sp.network}, current network is ${NET.name}`);
       } else {
-        decoded = decodeP2wpkhAddress(recipient);
-        if (!decoded) throw new Error('recipient is not a valid P2WPKH bech32 or silent-payment (sp1…) address');
+        decoded = decodeP2wpkhAddress(recipient) || decodeP2trAddress(recipient);
+        if (!decoded) throw new Error('recipient is not a valid bc1q…, bc1p… or silent-payment (sp1…) address');
         if (decoded.hrp !== NET.hrp) throw new Error(`address is for ${decoded.hrp === 'bc' ? 'mainnet' : 'signet/testnet'}, current network is ${NET.name}`);
       }
       const recipientIsSilent = !!sp;
+      const recipientIsP2tr = recipientIsSilent || decoded?.version === 1;
       const amtStr = $('#s-amount').value.trim().replace(/[\s,]/g, '');
       const amtSats = Number(amtStr);
       if (!Number.isInteger(amtSats) || amtSats <= 0) throw new Error('enter a positive integer (sats)');
@@ -51079,11 +51262,11 @@ function setupSatsSendForm() {
       for (let i = 0; i < sats.length; i++) {
         picked.push(sats[i]); total += sats[i].value;
         const nP2tr = _nP2tr();
-        const feeWith = feeFor(estSatsSendVb(picked.length, true, recipientIsSilent, nP2tr), feeRate);
+        const feeWith = feeFor(estSatsSendVb(picked.length, true, recipientIsP2tr, nP2tr), feeRate);
         if (total >= amtSats + feeWith + DUST) {
           fee = feeWith; change = total - amtSats - fee; hasChange = true; break;
         }
-        const feeNo = feeFor(estSatsSendVb(picked.length, false, recipientIsSilent, nP2tr), feeRate);
+        const feeNo = feeFor(estSatsSendVb(picked.length, false, recipientIsP2tr, nP2tr), feeRate);
         if (total >= amtSats + feeNo) {
           fee = feeNo; change = 0; hasChange = false; break;
         }
@@ -91957,7 +92140,7 @@ export {
   // Sats-send safety primitives (exported for unit tests). The asset-UTXO
   // exclusion logic is the primary defense against accidentally destroying
   // tacit holdings via plain-Bitcoin spends, so it gets dedicated test coverage.
-  decodeP2wpkhAddress, selectSatsUtxosSafe, sortSatsForCommit, estSatsSendVb, buildSatsSendTx,
+  decodeP2wpkhAddress, decodeP2trAddress, selectSatsUtxosSafe, sortSatsForCommit, estSatsSendVb, buildSatsSendTx,
   inspectSatsFragmentation, computeSatsFragmentation, buildAndBroadcastSatsConsolidate,
   SATS_DUST_SHAPE_THRESHOLD, SATS_CONSOLIDATE_MIN_INPUTS,
   // BIP-352 silent payments — sender-side primitives. Exported for unit
@@ -91969,6 +92152,8 @@ export {
   BIP352_HRP_BY_NETWORK,
   deriveSilentPaymentKeys, encodeSilentPaymentAddress, walletSilentPaymentAddress,
   receiverScanTxForSilentPayments, silentPaymentSpendingKey,
+  bip352InputPubkey, bip352ReceiverInputsFromEsploraTx, bip352LabelTweak, BIP352_K_MAX,
+  senderComputeSilentPaymentOutputs, bip352SenderInputPrivs,
   discoverSilentPaymentFromTxid,
   loadSpCredits, getSpCredit, removeSpCredit, recordSpCredit,
   // Wire format encoders / decoders
