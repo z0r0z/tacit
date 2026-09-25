@@ -15,9 +15,14 @@
 //   FAUCET_STATE            state file (default /var/lib/tacit-sats-faucet/state.json)
 //   FAUCET_NETWORK          signet only
 //   TACIT_WORKER_BASE       control-plane worker (tacit.js default when unset)
-//   PORT                    HTTP port for GET /faucet/status and /health (default 10000)
+//   FAUCET_DRIP_SATS        signet sats sent per POST /faucet/sats (default 10,000)
+//   FAUCET_DRIP_DAILY       drips per rolling 24h across all clients (default 50)
+//   FAUCET_DRIP_FLOOR_SATS  sats balance kept back for the faucet's own listings (default 50,000)
+//   FAUCET_CORS_ORIGINS     origins allowed to POST (default https://tacit.finance,http://localhost:8765)
+//   PORT                    HTTP port for GET /faucet/status, GET /health, POST /faucet/sats (default 10000)
 
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,12 +53,99 @@ export function configFromEnv(env = process.env) {
     pollSecs: int(env.FAUCET_POLL_SECS, 60),
     statePath: env.FAUCET_STATE || '/var/lib/tacit-sats-faucet/state.json',
     port: int(env.PORT, 10000),
+    dripSats: int(env.FAUCET_DRIP_SATS, 10_000),
+    dripDaily: int(env.FAUCET_DRIP_DAILY, 50),
+    dripFloorSats: int(env.FAUCET_DRIP_FLOOR_SATS, 50_000),
+    corsOrigins: (env.FAUCET_CORS_ORIGINS || 'https://tacit.finance,http://localhost:8765').split(',').map((s) => s.trim()).filter(Boolean),
   };
   if (cfg.network !== 'signet') throw new Error('sats-faucet runs on signet only');
   if (cfg.assetId && !/^[0-9a-f]{64}$/.test(cfg.assetId)) throw new Error('FAUCET_ASSET_ID must be 32-byte hex');
   if (cfg.lot <= 0n || cfg.supply < cfg.lot) throw new Error('FAUCET_LOT must be positive and at most FAUCET_SUPPLY');
   if (cfg.target > 50) throw new Error('FAUCET_TARGET_LISTINGS above 50');
+  if (cfg.dripSats <= 546) throw new Error('FAUCET_DRIP_SATS must be above dust');
   return cfg;
+}
+
+// ── signet address decoding (BIP-173 / BIP-350) ──
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32_CONST = 1;
+const BECH32M_CONST = 0x2bc830a3;
+
+function bech32Polymod(values) {
+  const G = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >>> i) & 1) chk ^= G[i];
+  }
+  return chk >>> 0;
+}
+
+function convertBits(data, from, to) {
+  let acc = 0, bits = 0;
+  const out = [];
+  const maxv = (1 << to) - 1;
+  for (const v of data) {
+    acc = (acc << from) | v;
+    bits += from;
+    while (bits >= to) { bits -= to; out.push((acc >> bits) & maxv); }
+  }
+  if (bits >= from || ((acc << (to - bits)) & maxv)) return null;
+  return out;
+}
+
+export class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+// A signet segwit address (tb1q… P2WPKH/P2WSH, tb1p… P2TR) to its output script. Throws HttpError(400).
+export function decodeSignetAddress(address) {
+  const bad = (m) => new HttpError(400, m);
+  const raw = String(address ?? '').trim();
+  if (raw.length < 14 || raw.length > 90) throw bad('address must be a signet tb1q… or tb1p… address');
+  if (raw !== raw.toLowerCase() && raw !== raw.toUpperCase()) throw bad('address has mixed case');
+  const a = raw.toLowerCase();
+  if (!a.startsWith('tb1')) throw bad('address must be a signet tb1q… or tb1p… address');
+  const data = [];
+  for (const c of a.slice(3)) {
+    const v = BECH32_CHARSET.indexOf(c);
+    if (v < 0) throw bad('address is not valid bech32');
+    data.push(v);
+  }
+  if (data.length < 7) throw bad('address is not valid bech32');
+  const version = data[0];
+  const hrp = [...'tb'].map((c) => c.charCodeAt(0));
+  const check = bech32Polymod([...hrp.map((c) => c >> 5), 0, ...hrp.map((c) => c & 31), ...data]);
+  if (check !== (version === 0 ? BECH32_CONST : BECH32M_CONST)) throw bad('address checksum is invalid');
+  const prog = convertBits(data.slice(1, -6), 5, 8);
+  if (!prog) throw bad('address is not valid bech32');
+  if (version === 0 && (prog.length === 20 || prog.length === 32)) return { address: a, script: Uint8Array.from([0x00, prog.length, ...prog]) };
+  if (version === 1 && prog.length === 32) return { address: a, script: Uint8Array.from([0x51, 0x20, ...prog]) };
+  throw bad('only tb1q… and tb1p… addresses are supported');
+}
+
+// Right-most X-Forwarded-For hop: the one the fronting proxy appended, which a client cannot set.
+export function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(xff) ? xff.join(',') : xff;
+  if (raw) {
+    const hops = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+const ipTag = (ip) => createHash('sha256').update('sats-faucet:' + ip).digest('hex').slice(0, 32);
+
+// Serialises everything that spends from the faucet key, so two spends never select the same UTXOs.
+export function makeLock() {
+  let tail = Promise.resolve();
+  return (fn) => {
+    const run = tail.then(fn, fn);
+    tail = run.catch(() => {});
+    return run;
+  };
 }
 
 // tacit.js is a browser module: DOM globals and the network must exist before it is imported.
@@ -108,10 +200,17 @@ export function openStateFile(statePath) {
 const hex32 = (x) => BigInt(x).toString(16).padStart(64, '0');
 const opKey = (o) => `${o.txid}:${o.vout}`;
 
-export function makeFaucet({ tacit, deps, cfg, store, logger = log }) {
+const DRIP_WINDOW_SECS = 86400;
+const DRIP_MAX_QUEUED = 5;
+const SPENT_MEMORY_SECS = 3600;
+
+export function makeFaucet({ tacit, deps, cfg, store, logger = log, now = () => Math.floor(Date.now() / 1000), dripWaitMs = 30_000 }) {
   const state = store.load();
   const esplora = tacit.NET.api;
+  const locked = makeLock();
+  const recentlySpent = new Map(); // outpoint -> time, until the indexer stops listing it
   let busy = false;
+  let dripsQueued = 0;
   let lastError = null;
   let lastTick = null;
 
@@ -278,24 +377,94 @@ export function makeFaucet({ tacit, deps, cfg, store, logger = log }) {
     if (busy) return false;
     busy = true;
     try {
-      await ensureAsset();
-      await refreshLots();
-      await split();
-      await reconcileListings();
-      lastError = null;
-      return true;
-    } catch (e) {
-      lastError = String(e?.message || e).slice(0, 500);
-      logger(`tick failed: ${lastError}`);
-      return false;
+      return await locked(async () => {
+        try {
+          await ensureAsset();
+          await refreshLots();
+          await split();
+          await reconcileListings();
+          lastError = null;
+          return true;
+        } catch (e) {
+          lastError = String(e?.message || e).slice(0, 500);
+          logger(`tick failed: ${lastError}`);
+          return false;
+        }
+      });
     } finally {
       lastTick = Math.floor(Date.now() / 1000);
       busy = false;
     }
   }
 
+  const recentDrips = (t) => (state.drips || []).filter((d) => t - d.at < DRIP_WINDOW_SECS);
+
+  // Plain send of `amount` sats to `script` from the faucet key's non-asset UTXOs. Caller holds the lock.
+  async function sendSats(script, amount) {
+    const t = now();
+    for (const [k, at] of recentlySpent) if (t - at > SPENT_MEMORY_SECS) recentlySpent.delete(k);
+    const holdings = await tacit.scanHoldings(true);
+    if (!(holdings instanceof Map)) throw new HttpError(503, 'faucet could not classify its UTXOs; try again shortly');
+    const utxos = tacit.selectSatsUtxosSafe(await tacit.getUtxos(tacit.wallet.address()), holdings)
+      .filter((u) => u.value > tacit.DUST && !recentlySpent.has(opKey(u)))
+      .sort((a, b) => ((b.status?.confirmed ? 1 : 0) - (a.status?.confirmed ? 1 : 0)) || b.value - a.value);
+    const balance = utxos.reduce((s, u) => s + u.value, 0);
+    const feeRate = await tacit.getFeeRate();
+    const picked = [];
+    let total = 0, fee = 0;
+    for (const u of utxos) {
+      picked.push(u);
+      total += u.value;
+      fee = tacit.feeFor(11 + 68 * picked.length + 43 + 31, feeRate);
+      if (total >= amount + fee) break;
+    }
+    if (total < amount + fee || balance - amount - fee < cfg.dripFloorSats) {
+      throw new HttpError(503, 'the faucet is low on signet sats; try a public signet faucet');
+    }
+    const change = total - amount - fee;
+    const outputs = [{ value: amount, script }];
+    if (change > tacit.DUST) outputs.push({ value: change, script: tacit.p2wpkhScript(tacit.wallet.pub) });
+    const tx = {
+      version: 2, locktime: 0,
+      inputs: picked.map((u) => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+      outputs,
+    };
+    picked.forEach((u, i) => { tx.inputs[i].witness = tacit.signP2wpkhInput(tx, i, u.value); });
+    await tacit.broadcast(deps.bytesToHex(tacit.serializeTx(tx)));
+    const txid = tacit.txid(tx);
+    for (const u of picked) recentlySpent.set(opKey(u), t);
+    if (dripWaitMs > 0) { try { await waitVisible(txid, dripWaitMs); } catch {} }
+    return txid;
+  }
+
+  // POST /faucet/sats: one drip per address and per client per 24h, within a global 24h budget.
+  async function drip({ address, ip }) {
+    const { address: addr, script } = decodeSignetAddress(address);
+    const tag = ipTag(ip || 'unknown');
+    if (dripsQueued >= DRIP_MAX_QUEUED) throw new HttpError(503, 'the faucet is busy; try again in a minute');
+    dripsQueued++;
+    try {
+      return await locked(async () => {
+        const t = now();
+        const recent = recentDrips(t);
+        if (recent.some((d) => d.address === addr)) throw new HttpError(429, 'this address already received signet sats in the last 24 hours');
+        if (recent.some((d) => d.ip === tag)) throw new HttpError(429, 'one drip per client every 24 hours');
+        if (recent.length >= cfg.dripDaily) throw new HttpError(429, 'the faucet has given out its daily budget; try again later');
+        const txid = await sendSats(script, cfg.dripSats);
+        state.drips = [...recent, { address: addr, ip: tag, txid, at: t }];
+        state.dripTotal = (state.dripTotal || 0) + 1;
+        save();
+        logger(`dripped ${cfg.dripSats} sats to ${addr} in ${txid}`);
+        return { txid, sats: cfg.dripSats };
+      });
+    } finally {
+      dripsQueued--;
+    }
+  }
+
   function status() {
-    const open = state.lots.filter((l) => l.saleId);
+    const lots = state.lots || [];
+    const open = lots.filter((l) => l.saleId);
     return {
       network: tacit.NET.name,
       asset_id: state.assetId || null,
@@ -307,30 +476,80 @@ export function makeFaucet({ tacit, deps, cfg, store, logger = log }) {
       seller_pubkey: tacit.wallet.pub ? sellerPub() : null,
       worker_base: WORKER_BASE,
       open_sales: open.map((l) => ({ sale_id: l.saleId, txid: l.txid, vout: l.vout, amount: l.amount, expiry: l.expiry })),
-      buffered_lots: state.lots.length - open.length,
+      buffered_lots: lots.length - open.length,
       reserve: state.reserve ? state.reserve.amount : '0',
       taken_total: state.takenTotal || 0,
       recent_takes: (state.taken || []).slice(0, 10),
+      drip_sats: cfg.dripSats,
+      drips_left_today: Math.max(0, cfg.dripDaily - recentDrips(now()).length),
       last_tick: lastTick,
       last_error: lastError,
     };
   }
 
-  return { tick, status, state };
+  return { tick, status, drip, state };
 }
 
-export function serve(faucet, port) {
-  const server = createServer((req, res) => {
+const MAX_BODY = 1024;
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { req.removeAllListeners('data'); req.resume(); reject(new HttpError(413, 'body too large')); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+// GET routes are public read-only data (any origin). POST /faucet/sats is limited to corsOrigins.
+export function makeHandler(faucet, { corsOrigins = [], logger = log } = {}) {
+  const allowed = new Set(corsOrigins);
+  return async (req, res) => {
+    const origin = req.headers.origin;
+    const url = new URL(req.url, 'http://x');
+    const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+    if (url.pathname === '/faucet/sats') {
+      if (origin && allowed.has(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Max-Age', '600');
+      }
+      if (req.method === 'OPTIONS') { res.writeHead(origin && allowed.has(origin) ? 204 : 403); return res.end(); }
+      if (req.method !== 'POST') return send(405, { error: 'method not allowed' });
+      if (origin && !allowed.has(origin)) return send(403, { error: 'origin not allowed' });
+      try {
+        let body;
+        try { body = JSON.parse(await readBody(req)); } catch (e) { throw e instanceof HttpError ? e : new HttpError(400, 'body must be JSON {"address": "tb1…"}'); }
+        return send(200, await faucet.drip({ address: body?.address, ip: clientIp(req) }));
+      } catch (e) {
+        if (e instanceof HttpError) return send(e.status, { error: e.message });
+        logger(`drip failed: ${String(e?.message || e).slice(0, 300)}`);
+        return send(502, { error: 'the faucet could not send right now; try again shortly' });
+      }
+    }
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-    const url = new URL(req.url, 'http://x');
-    const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
     if (req.method !== 'GET') return send(405, { error: 'method not allowed' });
     if (url.pathname === '/health') return send(200, { ok: true });
     if (url.pathname === '/faucet/status') return send(200, faucet.status());
     return send(404, { error: 'not found' });
-  });
+  };
+}
+
+export function serve(faucet, port, opts = {}) {
+  const handler = makeHandler(faucet, opts);
+  const server = createServer((req, res) => handler(req, res).catch((e) => {
+    log(`request failed: ${String(e?.message || e).slice(0, 300)}`);
+    if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":"internal error"}'); }
+  }));
   server.listen(port, () => log(`listening on :${port}`));
   return server;
 }
@@ -342,7 +561,7 @@ async function main() {
   const pub = setWalletKey(loaded, process.env.FAUCET_KEY);
   log(`faucet seller ${pub} on ${cfg.network}; lot ${cfg.lot}, price ${cfg.priceSats} sats, target ${cfg.target}`);
   const faucet = makeFaucet({ ...loaded, cfg, store: openStateFile(cfg.statePath) });
-  serve(faucet, cfg.port);
+  serve(faucet, cfg.port, { corsOrigins: cfg.corsOrigins });
   for (;;) {
     await faucet.tick();
     await sleep(cfg.pollSecs * 1000);

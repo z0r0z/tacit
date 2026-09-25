@@ -387,3 +387,37 @@ services:
         value: /app/prover/bin/btc-pool-verify
       - key: PORT
         value: "10000"
+
+  # Always-on web service: Secret Sats signet faucet (src/sats-faucet.js). Keeps FAUCET_TARGET_LISTINGS
+  # pre-authorized cBTC sales listed on the control-plane worker (relisting before expiry and after takes), serves
+  # GET /faucet/status, and drips signet sats on POST /faucet/sats. Signet only.
+  #
+  # Built from the repo root: it loads dapp/tacit.js headlessly. The disk keeps the lot ledger and drip history
+  # (per-address/per-client limits) across restarts; with an empty disk it rebuilds lots from the key's holdings.
+  - type: web
+    name: tacit-sats-faucet
+    runtime: docker
+    rootDir: .
+    dockerfilePath: ./worker-relay/Dockerfile.sats-faucet
+    dockerContext: .
+    plan: starter
+    region: oregon
+    dockerCommand: node src/sats-faucet.js
+    healthCheckPath: /health
+    autoDeploy: false
+    disk:
+      name: sats-faucet-state
+      mountPath: /var/lib/tacit-sats-faucet
+      sizeGB: 1
+    envVars:
+      # DELIBERATELY NOT `fromGroup: tacit-relay-shared`: public, signet-only. It holds only its own signet key.
+      - key: FAUCET_NETWORK
+        value: signet
+      - key: FAUCET_ASSET_ID
+        value: "17619b4c65ad462481b74a59dbd566730a4376f07fb0e6ff8beca216044466c5"
+      - key: FAUCET_STATE
+        value: /var/lib/tacit-sats-faucet/state.json
+      - key: FAUCET_KEY            # signet P2WPKH key, hex — set in the Render dashboard
+        sync: false
+      - key: PORT
+        value: "10000"

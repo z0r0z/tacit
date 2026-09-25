@@ -1,0 +1,25 @@
+# tacit-sats-faucet: signet cBTC + signet sats faucet for Secret Sats (src/sats-faucet.js).
+# Build context is the repo root: the service loads dapp/tacit.js headlessly, so the runtime image keeps the
+# dapp/ and worker-relay/ layout side by side.
+#   docker build -f worker-relay/Dockerfile.sats-faucet .
+
+FROM node:20-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/*.js /app/dapp/
+COPY dapp/vendor/*.js /app/dapp/vendor/
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY worker-relay/src ./src
+
+ENV NODE_ENV=production \
+    FAUCET_NETWORK=signet \
+    FAUCET_STATE=/var/lib/tacit-sats-faucet/state.json \
+    PORT=10000
+EXPOSE 10000
+CMD ["node", "src/sats-faucet.js"]

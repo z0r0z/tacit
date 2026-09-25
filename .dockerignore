@@ -1,4 +1,5 @@
-# Repo-root build context is used only by worker-relay/Dockerfile.btc-pool; everything else is excluded.
+# Repo-root build context is used only by worker-relay/Dockerfile.btc-pool and worker-relay/Dockerfile.sats-faucet;
+# everything else is excluded.
 *
 !worker-relay/package.json
 !worker-relay/src
