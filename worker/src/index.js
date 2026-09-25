@@ -21238,9 +21238,19 @@ function* parseRawBlockTxs(d) {
     let segwit = false;
     if (d[p] === 0x00 && d[p + 1] === 0x01) { segwit = true; p += 2; }
     const [vinN, vl] = _rvarint(d, p); p += vl;
-    // Inputs are walked for their lengths only — the scan never reads a
-    // prevout, which is most of what the JSON form spends its bytes on.
-    for (let i = 0; i < vinN; i++) { p += 36; const [sl, sll] = _rvarint(d, p); p += sll + sl + 4; }
+    // Each input's 36-byte prevout (32-byte txid + 4-byte vout) IS read here, into
+    // prevTxids/prevVouts below — needed by any opcode whose validator walks
+    // tx.vin[i].{txid,vout} to resolve a funding input's own commitment (e.g. AMM
+    // LP_ADD kernel-sig verification via ammCollectAssetInputs). A prior version of
+    // this loop only walked the lengths and left every vin[i].txid/vout unset, which
+    // silently starved that lookup for every raw-block-scanned tx (the primary path;
+    // the paged esplora-JSON fallback already carried these fields).
+    const prevTxids = new Array(vinN), prevVouts = new Array(vinN);
+    for (let i = 0; i < vinN; i++) {
+      prevTxids[i] = bytesToHex(Uint8Array.from(d.subarray(p, p + 32)).reverse()); p += 32;
+      prevVouts[i] = _u32le(d, p); p += 4;
+      const [sl, sll] = _rvarint(d, p); p += sll + sl + 4;
+    }
     const [voutN, ol] = _rvarint(d, p); p += ol;
     const vout = [];
     for (let i = 0; i < voutN; i++) {
@@ -21252,7 +21262,7 @@ function* parseRawBlockTxs(d) {
     }
     const voutEnd = p;
     const vin = new Array(vinN);
-    for (let i = 0; i < vinN; i++) vin[i] = {};
+    for (let i = 0; i < vinN; i++) vin[i] = { txid: prevTxids[i], vout: prevVouts[i] };
     if (segwit) {
       for (let i = 0; i < vinN; i++) {
         const [wc, wl] = _rvarint(d, p); p += wl;
@@ -24857,7 +24867,7 @@ export {
   // a handler read `ax.assetInputCount` (camelCase) against a snake_case
   // `asset_input_count` was silent in JS — this surface lets a test fail loudly
   // if any decoder's return-shape contract drifts.
-  decodeEnvelopeScript,
+  decodeEnvelopeScript, parseRawBlockTxs,
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeCXferBppPayload, decodeAxferPayload, decodeAxferVarPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
