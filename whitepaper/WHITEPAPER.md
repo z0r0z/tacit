@@ -2,20 +2,20 @@
 
 **z0r0z** · <https://tacit.finance> · Version 1 · 2026
 
-> **Abstract.** Bitcoin holds value without a trusted party, but issuing assets on it, hiding amounts or
-> trading them has meant trusting one: a proof courier, a federation, a rollup operator or a custodian.
-> Tacit removes that party.
+> **Abstract.** Bitcoin secures value without a trusted party, yet every way to issue assets on it, hide
+> their amounts or trade them has brought one back: a proof courier, a federation, a rollup operator or a
+> custodian. Tacit is a confidential asset layer for Bitcoin that needs none of them.
 >
-> Tacit is one confidential asset layer across Bitcoin and Ethereum. On Bitcoin, assets live in Taproot
-> envelopes with amounts hidden in Pedersen commitments, and any indexer derives the same state from the
-> chain alone. On Ethereum, an immutable pool settles every private transaction with an SP1
-> zero-knowledge proof. The chains share one note format and prove their state to each other, so value
-> moves between them with no signer in between.
+> Tacit assets live on Bitcoin in Taproot envelopes, with amounts hidden in Pedersen commitments, and any
+> indexer derives the same state from the chain alone. The same notes extend into an immutable pool on
+> Ethereum that accepts private transactions only with an SP1 zero-knowledge proof. Each chain proves its
+> state to the other, Bitcoin by proof-of-work and Ethereum by its light client, so value crosses between
+> them with no signer, multisig or custodian.
 >
-> Inside the pool, users send, swap, borrow and earn with amounts hidden, and never need ETH for gas.
-> cBTC brings in real BTC from self-custody locks. Every balance recovers from a key. The core is
-> immutable yet keeps improving: it grows at its edges and by succession, toward a V2 built on Bitcoin
-> covenants.
+> In the pool, users send, swap, borrow and earn with amounts hidden, and never need ETH for gas. cBTC
+> brings in real BTC from self-custody locks, and every balance recovers from a single key. The core is
+> immutable, so nobody can change the rules under a user's funds, yet the protocol keeps improving, pool
+> by pool, toward a V2 built on Bitcoin covenants.
 
 ---
 
@@ -88,15 +88,12 @@ Every amount is a Pedersen commitment on secp256k1:
 $$
 C = v\cdot H + r\cdot G,
 $$
-
 where $G$ is Bitcoin's generator and $H$ is a nothing-up-my-sleeve point hashed from the tag
 `tacit-generator-H-v1`. Commitments hide the value perfectly and add homomorphically. A transaction
 balances iff its excess
-
 $$
 E = \textstyle\sum C_{\text{out}} + b\cdot H - \sum C_{\text{in}}
 $$
-
 has no $H$ component, where $b$ is any public burn. Tacit proves this with a BIP-340 signature under $E$,
 a Mimblewimble-style kernel. Only someone who knows every blinding can sign, and nobody can sign for an
 excess that hides value.
@@ -144,8 +141,10 @@ note hides among every owned note of its asset. Costs never grow with use:
 
 As a floor against inflation that holds independently of the proof, the contract never records more
 spent notes than it has created. Every proof is bound to
-$\mathit{CHAIN\_BINDING} = \mathrm{keccak}(\mathit{chainid} \Vert \mathit{address})$, so it is invalid in
-any other deployment.
+$$
+\mathit{CHAIN\_BINDING} = \mathrm{keccak}(\mathit{chainid} \Vert \mathit{address}),
+$$
+so it is invalid in any other deployment.
 
 ## 5. Reflection: a bridge without signers
 

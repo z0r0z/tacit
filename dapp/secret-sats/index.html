@@ -22,11 +22,14 @@
 <meta name="twitter:description" content="Send bitcoin-backed cBTC with the amount hidden, and through a shielded pool with sender and receiver unlinked. The Secret Sats lite paper.">
 <meta name="twitter:image" content="https://tacit.finance/secret-sats-card.png">
 <meta name="theme-color" content="#0b0c0e">
-<meta http-equiv="refresh" content="0; url=/secret-sats.pdf">
-<style>html,body{margin:0;background:#0b0c0e;color:#f4efe6;font:15px/1.6 ui-monospace,monospace}main{max-width:560px;margin:0 auto;padding:96px 16px}a{color:#f7931a}</style>
+<style>html,body{margin:0;height:100%;background:#0b0c0e;color:#f4efe6;font:15px/1.6 ui-monospace,monospace}iframe{display:block;border:0;width:100%;height:100%}a{color:#f7931a}noscript p{padding:24px 16px;margin:0}</style>
 </head>
 <body>
-<main><p>Opening <a href="/secret-sats.pdf">Secret Sats: Private Payments on Bitcoin</a>&hellip;</p></main>
-<script>location.replace('/secret-sats.pdf');</script>
+<script>
+  // Phones render embedded PDFs poorly (first page only, or a download prompt): open the file directly there.
+  if (!navigator.pdfViewerEnabled || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) location.replace('/secret-sats.pdf');
+</script>
+<iframe src="/secret-sats.pdf#view=FitH" title="Secret Sats: Private Payments on Bitcoin"></iframe>
+<noscript><p><a href="/secret-sats.pdf">Open the PDF</a></p></noscript>
 </body>
 </html>

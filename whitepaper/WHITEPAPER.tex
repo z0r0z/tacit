@@ -8,6 +8,7 @@
 \usepackage{microtype}
 \usepackage{parskip}
 \usepackage{enumitem}
+\usepackage{needspace}
 
 \setlist{nosep,leftmargin=1.5em}
 \emergencystretch=3em
@@ -24,6 +25,14 @@
 
 \newcommand{\op}[1]{\texttt{#1}}
 
+% Abstract: indented block, spaced paragraphs without first-line indents (matching the body).
+\renewenvironment{abstract}{%
+  \begin{center}\bfseries\abstractname\end{center}%
+  \small
+  \list{}{\leftmargin=2.5em\rightmargin=2.5em\listparindent=0pt\itemindent=0pt
+    \parsep=0.6\baselineskip\topsep=0pt}%
+  \item\relax}{\endlist\vspace{0.5em}}
+
 \title{Tacit: Confidential Assets and DeFi on Bitcoin,\\ Bridged by Zero-Knowledge Reflection}
 \author{z0r0z \\ \small\texttt{https://tacit.finance}}
 \date{Version 1 \quad 2026}
@@ -33,20 +42,20 @@
 
 \begin{abstract}
 \noindent
-Bitcoin holds value without a trusted party, but issuing assets on it, hiding amounts or
-trading them has meant trusting one: a proof courier, a federation, a rollup operator or a custodian.
-Tacit removes that party.
+Bitcoin secures value without a trusted party, yet every way to issue assets on it, hide
+their amounts or trade them has brought one back: a proof courier, a federation, a rollup operator or a
+custodian. Tacit is a confidential asset layer for Bitcoin that needs none of them.
 
-Tacit is one confidential asset layer across Bitcoin and Ethereum. On Bitcoin, assets live in Taproot
-envelopes with amounts hidden in Pedersen commitments, and any indexer derives the same state from the
-chain alone. On Ethereum, an immutable pool settles every private transaction with an SP1
-zero-knowledge proof. The chains share one note format and prove their state to each other, so value
-moves between them with no signer in between.
+Tacit assets live on Bitcoin in Taproot envelopes, with amounts hidden in Pedersen commitments, and any
+indexer derives the same state from the chain alone. The same notes extend into an immutable pool on
+Ethereum that accepts private transactions only with an SP1 zero-knowledge proof. Each chain proves its
+state to the other, Bitcoin by proof-of-work and Ethereum by its light client, so value crosses between
+them with no signer, multisig or custodian.
 
-Inside the pool, users send, swap, borrow and earn with amounts hidden, and never need ETH for gas.
-cBTC brings in real BTC from self-custody locks. Every balance recovers from a key. The core is
-immutable yet keeps improving: it grows at its edges and by succession, toward a V2 built on Bitcoin
-covenants.
+In the pool, users send, swap, borrow and earn with amounts hidden, and never need ETH for gas. cBTC
+brings in real BTC from self-custody locks, and every balance recovers from a single key. The core is
+immutable, so nobody can change the rules under a user's funds, yet the protocol keeps improving, pool
+by pool, toward a V2 built on Bitcoin covenants.
 \end{abstract}
 
 \section{Introduction}
@@ -61,10 +70,11 @@ A useful asset layer on Bitcoin needs five properties:
 \item a user can recover everything from a key.
 \end{enumerate}
 
+\needspace{9\baselineskip}
 Existing designs each give up one:
 
-\begin{center}
-\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{0.64\linewidth}@{}}
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
 \toprule
 \textbf{Design} & \textbf{What it gives up} \\
 \midrule
@@ -77,10 +87,11 @@ Wrapped BTC & Relies on a custodian or a threshold group. \\
 \end{tabular}
 \end{center}
 
+\needspace{9\baselineskip}
 Tacit delivers all five by combining existing systems, with no new consensus:
 
-\begin{center}
-\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{0.64\linewidth}@{}}
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
 \toprule
 \textbf{Part} & \textbf{What it offers} \\
 \midrule
@@ -135,15 +146,12 @@ Every amount is a Pedersen commitment on secp256k1:
 \[
 C = v\cdot H + r\cdot G,
 \]
-
 where $G$ is Bitcoin's generator and $H$ is a nothing-up-my-sleeve point hashed from the tag
 \op{tacit-generator-H-v1}. Commitments hide the value perfectly and add homomorphically. A transaction
 balances iff its excess
-
 \[
 E = \textstyle\sum C_{\text{out}} + b\cdot H - \sum C_{\text{in}}
 \]
-
 has no $H$ component, where $b$ is any public burn. Tacit proves this with a BIP-340 signature under $E$,
 a Mimblewimble-style kernel. Only someone who knows every blinding can sign, and nobody can sign for an
 excess that hides value.
@@ -197,8 +205,10 @@ note hides among every owned note of its asset. Costs never grow with use:
 
 As a floor against inflation that holds independently of the proof, the contract never records more
 spent notes than it has created. Every proof is bound to
-$\mathit{CHAIN\_BINDING} = \mathrm{keccak}(\mathit{chainid} \Vert \mathit{address})$, so it is invalid in
-any other deployment.
+\[
+\mathit{CHAIN\_BINDING} = \mathrm{keccak}(\mathit{chainid} \Vert \mathit{address}),
+\]
+so it is invalid in any other deployment.
 
 \section{Reflection: a bridge without signers}
 
@@ -252,21 +262,21 @@ reserves are public. \op{TacitPublicAmm} trades against the same reserves in the
 private liquidity share one curve.
 
 \begin{itemize}
-\item \op{OP\_SWAP\_ROUTE} swaps a hidden note through up to four pools, with an end-to-end minimum output.
+\item \op{OP\_SWAP\_\allowbreak{}ROUTE} swaps a hidden note through up to four pools, with an end-to-end minimum output.
 \item \op{OP\_SWAP} clears many hidden orders at one uniform price. Everyone in a batch pays the same price, so
   nobody can sandwich anyone, and the batch reveals only its net change to reserves.
 \end{itemize}
 
-\textbf{Prover-blind swaps.} Whoever proves an ordinary swap sees its amounts. \op{OP\_SWAP\_BLIND} hides them from
+\textbf{Prover-blind swaps.} Whoever proves an ordinary swap sees its amounts. \op{OP\_SWAP\_\allowbreak{}BLIND} hides them from
 the SP1 prover as well. Each trader commits to its input on BabyJubJub, the curve native to BN254, and a
 169-byte cross-curve proof ties that commitment to its secp256k1 note. One Groth16 proof of the
-\op{amm\_swap\_batch} circuit shows, over hidden amounts, that the price, every fill and every minimum output
+\op{amm\_\allowbreak{}swap\_\allowbreak{}batch} circuit shows, over hidden amounts, that the price, every fill and every minimum output
 are correct. Only the batcher sees the amounts; the SP1 prover and the chain never do.
 
 Uniform-price clearing over hidden amounts is cheap as a circuit and costly as a zkVM program, so this
 one step uses a circuit. Its key comes from a trusted-setup ceremony (Hermez Phase 1, then a Phase 2 of
 5,018 contributions sealed by a Bitcoin-block beacon) and is compiled into both SP1 guests, so their own
-verifying keys fix it. The same circuit clears \op{T\_SWAP\_BATCH} on Bitcoin.
+verifying keys fix it. The same circuit clears \op{T\_SWAP\_\allowbreak{}BATCH} on Bitcoin.
 
 \textbf{Trades without a pool.} \op{OP\_OTC} swaps two parties' notes directly. \op{OP\_BID} is a limit order with a
 pre-signed grid of partial fills, so the buyer need not be online. Adaptor locks release a note when a
@@ -276,7 +286,7 @@ Schnorr signature is revealed, which gives atomic swaps with the other chain.
 The recipient claims it with a signature, and the payer can take it back after a deadline. A Bitcoin
 bridge burn can mint straight into such a lock.
 
-\textbf{cBTC.} A user locks BTC on Bitcoin with a \op{T\_CBTC\_LOCK} envelope that names the note it will mint.
+\textbf{cBTC.} A user locks BTC on Bitcoin with a \op{T\_CBTC\_\allowbreak{}LOCK} envelope that names the note it will mint.
 Reflection records the lock's value, and the pool mints exactly that much cBTC, once. The locker keeps the
 lock's key. An escrow in wstETH of at least 1.5$\times$ the lock's value, which anyone may fund, makes spending
 the lock a loss: a minted lock spent without a matching redeem shows up in reflection and anyone can
@@ -343,12 +353,12 @@ payout. Succession carries state forward:
 
 \section{Privacy}
 
-\begin{center}
+\begin{center}\small
 \begin{tabular}{@{}l>{\raggedright}p{0.36\linewidth}>{\raggedright\arraybackslash}p{0.38\linewidth}@{}}
 \toprule
  & \textbf{Hidden} & \textbf{Public} \\
 \midrule
-Bitcoin & amounts; stealth recipients; trade sizes in \op{T\_SWAP\_BATCH} & addresses, the transaction graph, asset ids, burn amounts, AMM reserves \\
+Bitcoin & amounts; stealth recipients; trade sizes in \op{T\_SWAP\_\allowbreak{}BATCH} & addresses, the transaction graph, asset ids, burn amounts, AMM reserves \\
 Pool & amounts; which owned note a spend consumes & the deposit and withdrawal boundary, AMM reserves and their changes, CDP amounts \\
 Relay & your key, seed and blindings & the witness of the ops it proves \\
 \bottomrule
@@ -356,7 +366,7 @@ Relay & your key, seed and blindings & the witness of the ops it proves \\
 \end{center}
 
 An owned note hides among every owned note of its asset, not one fixed denomination. Proving locally
-keeps a witness on one device, and \op{OP\_SWAP\_BLIND} keeps trade sizes from the prover too.
+keeps a witness on one device, and \op{OP\_SWAP\_\allowbreak{}BLIND} keeps trade sizes from the prover too.
 
 \section{Trust and limits}
 
@@ -396,7 +406,7 @@ reserves room for each:
 
 \begin{itemize}
 \item \textbf{Covenant cBTC.} A lock whose sats can leave only through a redemption. Pool op 5,
-  \op{OP\_COVENANT\_MINT}, is held for its mint, which needs no escrow.
+  \op{OP\_COVENANT\_\allowbreak{}MINT}, is held for its mint, which needs no escrow.
 \item \textbf{On-chain bid escrow.} A buyer's pre-signed input bound to its bid on-chain, replacing the
   watchtower.
 \item \textbf{Fractional slots.} Reserved opcodes that split a BTC slot into fungible shares and recombine them,
