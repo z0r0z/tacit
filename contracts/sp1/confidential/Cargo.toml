@@ -20,6 +20,11 @@ path = "src/main.rs"
 name = "reflection-prover"
 path = "src/reflect.rs"
 
+# Bitcoin-native shielded pool: proves one T_BTC_SPEND (DESIGN-btc-shielded-pool.md §4).
+[[bin]]
+name = "btc-pool-prover"
+path = "src/btc_pool.rs"
+
 [dependencies]
 sp1-zkvm = { version = "6.2", features = ["verify"] } # provides syscall_verify_sp1_proof (Mode B recursion)
 sp1-lib = { version = "6.2", features = ["verify"] } # verify_sp1_proof (Mode B recursion in reflect.rs)

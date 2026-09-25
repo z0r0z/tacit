@@ -1,8 +1,15 @@
 # Bitcoin-only private transfer: same-tx wrap/unwrap
 
-Status: DESIGN (not implemented). Proposes two new Bitcoin opcodes so a holder can move BTC privately
-using only `T_CXFER`, without ever touching reflection or the Ethereum pool. Reuses the Bitcoin-homed note
-scheme and the CXFER kernel unmodified; claims free opcode space (`0x6A`–`0xFF`, SPEC §3.9).
+Status: DESIGN (not implemented). Proposes two new Bitcoin opcodes for trustless, no-escrow entry and exit
+of a Bitcoin-only wrapped-BTC asset. Reuses the Bitcoin-homed note scheme and the CXFER kernel unmodified;
+claims free opcode space (`0x6A`–`0xFF`, SPEC §3.9).
+
+Scope note: `T_CXFER` transfers of the wrapped note hide amount, not source — its kernel signature hashes
+the literal spent `txid:vout` into its signed message (SPEC §2.4), so a chain observer can trace which
+prior output funded any given transfer. That's fine for cheap, amount-hidden movement of the wrapped
+asset. Payments that also need to hide source and sender are a separate note model — see
+[`DESIGN-btc-shielded-pool.md`](./DESIGN-btc-shielded-pool.md), which this design's atomic lock/redeem
+pattern feeds directly.
 
 ## Why this differs from cBTC
 
