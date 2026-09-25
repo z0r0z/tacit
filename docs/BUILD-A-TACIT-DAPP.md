@@ -915,10 +915,48 @@ For a reflected note, `buildBridgeBurnEnvelope({ asset, bitcoinPoolRoot, chainBi
 returns the 161-byte `0x2B` payload with the destination already net of the fee, the burned note's nullifier
 and the destination opening to keep for the mint. Pass `deriveDestBlinding: (nu) => deriveBridgeMintBlinding(priv, nu)`
 (from `confidential-recovery.js`) rather than a random `dest.blinding`, so the minted note is recoverable from the
-seed, with `dest.owner = nkToOwner(deriveNote(priv, asset, i).secret)` for a small index `i`; then wrap the payload
-in the usual commit/reveal envelope and spend the note in another input of the reveal. The seed walk finds a minted
-note by trying round amounts and the values it is given, and a destination net of a fee is usually not round, so
-also seal a memo at mint time (`recovery: { ownerPub, secret }` below) whenever the fee is nonzero.
+seed, with `dest.owner = nkToOwner(deriveNote(priv, asset, i).secret)` for a small index `i`. The seed walk finds a
+minted note by trying round amounts and the values it is given, and a destination net of a fee is usually not round,
+so also seal a memo at mint time (`recovery: { ownerPub, secret }` below) whenever the fee is nonzero.
+
+**Burning it on Bitcoin.** `dapp/bridge-burn-broadcast.js` (`makeBridgeBurnBroadcaster`; `tacit.bridgeBurnToPool` is
+the same thing aimed at the pool's own chain binding) wraps that payload into the transaction pair and broadcasts
+it. The commit pays a Taproot output whose single leaf carries the envelope. The reveal spends that output by
+script path as `vin[0]` and the note by key path as `vin[1]`, and returns the note's sats and the commit's value,
+net of the fee, to the wallet. Both are ordinary transactions, relayed by any node or explorer, paid in BTC:
+
+```js
+import { makeBtcWallet } from './bitcoin-taproot-wallet.js';
+
+const { prims } = makeBtcWallet({ priv: btcPriv, fetchUtxos, broadcastTx, fetchFeeRate }); // esplora-style I/O
+const b = await tacit.bridgeBurnToPool({
+  prims,
+  note: { txid, vout, sats, asset, value, blinding }, // the wallet-held reflected note: display txid, its UTXO's sats
+  notePriv,                                           // the key of the note's P2TR output (its auth key)
+  fee: ladderFee(await tacit.quoteOpFee(ticker, 'bridgemint')), // or 0n to mint at no fee
+  dest: { owner: destOwner },
+  deriveDestBlinding: (nu) => deriveBridgeMintBlinding(priv, nu),
+});
+// b.revealTxid, b.burnId, b.dest (the destination opening), b.mintArgs
+```
+
+Before signing anything it checks the note against the relay's reflected state (`GET /reflection/dump`) and
+refuses what the reflection would not record as a bridge-out. A note that is not in the reflected live set yet (wait
+for its block to fold), an opening, asset or key that differs from the reflected note, a class that differs from
+the note's own (unbound class 1, bound class 2, read from the live set), and a bound note aimed at a deployment it is
+not bound to are all refused. So are a fee off the ladder or a destination not net of it, and a fee rate under
+1 sat/vB. That matters because the reflection nullifies any reflected note a transaction spends: a burn it cannot
+record still spends the note. For the same reason coin selection for the commit never takes a reflected note, a cBTC
+lock or a protected outpoint. Before broadcasting it reads the reveal back with the reflection's own parser: the
+envelope must be at `vin[0]`, and the burned note must be the only reflected note spent. `buildBridgeBurnTxs` returns
+the signed pair without broadcasting. If the reveal fails to broadcast after the commit went out, the error carries
+`commitTxid` and the signed `revealHex` to retry.
+
+So a holder with only Bitcoin enters the pool in three steps: burn with `bridgeBurnToPool`, paying BTC through
+standard relay; wait until the reflection has folded the reveal's block (`REFLECTION_CONFIRMATIONS` deep, then
+proven; `GET /reflection/status` shows the attested height); then `bridgeMint({ ...b.mintArgs, recovery })`, which
+the relay settles and pays itself from the note. MARA is needed only for a burn-deposit of a never-reflected note
+(above).
 
 Once the reflection has folded the burn, `dapp/confidential-bridge-mint.js` builds and submits the mint
 (`tacit.bridgeMint` is the same instance, wired to the dapp's relay):
