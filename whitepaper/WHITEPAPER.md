@@ -242,11 +242,11 @@ watchtower, and BTC split into fungible shares with no shared vault.
 V1 lock, which frees its escrow, and re-locks the sats in a covenant vault that mints in V2 with no escrow.
 Every V1 note keeps its exits throughout.
 
-**A shielded pool on Bitcoin.** Bitcoin opcodes `0x6C` and `0x6D` carry a shielded pool that lives on
-Bitcoin alone, described in the companion paper *Secret Sats*. It holds Tacit assets, not BTC, so it adds
-no custody. Each spend is one SP1 proof that unlinks sender from receiver and hides the amount, verified
-by indexers with no Ethereum dependency. cBTC is its path to BTC, and sats also move in and out by atomic
-swap, and by covenant once Bitcoin allows one.
+**A shielded pool on Bitcoin.** The companion paper *Secret Sats* describes a shielded pool that lives on
+Bitcoin alone. It holds Tacit assets, not BTC, so nobody holds the pool. Each payment carries a small
+zero-knowledge proof, made on the payer's own device, that hides the amount and unlinks sender from
+receiver, and every node checks it while replaying Bitcoin, with no Ethereum dependency. cBTC is its path
+to BTC, and sats also move in and out by atomic swap, and by covenant once Bitcoin allows one.
 
 ## 12. Conclusion
 
