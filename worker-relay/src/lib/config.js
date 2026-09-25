@@ -81,9 +81,14 @@ export const ADDR = {
   // The cUSD CDP controller — EscrowPosted (wstETH collateral, cBTC-mint side) and CdpMinted (cUSD debt
   // minted) both live here. See points-indexer.js's scanCollateralEngineCycle.
   collateralEngine: opt('COLLATERAL_ENGINE_ADDR', '0x000000003f608BDdF0ca45934003ffb9DbDF70DB'),
-  // Routes an EscrowPosted whose `from` is this helper back to the real depositor via its own
-  // HelperEscrowPosted event — see points-indexer.js.
-  cbtcEscrowHelper: opt('CBTC_ESCROW_HELPER_ADDR', '0x00000000689C71E690E5842dF088AF97F9d4f71b'),
+  // Routes an EscrowPosted whose `from` is any of these helpers back to the real depositor via the
+  // helper's own HelperEscrowPosted event — see points-indexer.js. Comma-separated: every CbtcEscrowHelper
+  // ever deployed stays here, since old ones keep taking reclaimEscrow calls (and, in principle, further
+  // escrow) for as long as anyone still holds a position there.
+  cbtcEscrowHelpers: opt(
+    'CBTC_ESCROW_HELPER_ADDR',
+    '0x00000000689C71E690E5842dF088AF97F9d4f71b,0x000000008eCD09f922C9FbbDD9ACA5aE8F0beBfA',
+  ).split(',').map((a) => a.trim()).filter(Boolean),
 };
 
 export const CFG = {

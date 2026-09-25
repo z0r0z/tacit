@@ -168,11 +168,12 @@ async function scanCollateralEngineCycle(store) {
   const cbtcCandidates = [];
   const cusdCandidates = [];
 
-  // EscrowPosted's own `from` is the real depositor UNLESS the call was routed through CbtcEscrowHelper, in
-  // which case `from` is the helper's own address and the helper's OWN event (HelperEscrowPosted, same tx)
+  // EscrowPosted's own `from` is the real depositor UNLESS the call was routed through a CbtcEscrowHelper, in
+  // which case `from` is that helper's own address and the helper's OWN event (HelperEscrowPosted, same tx)
   // names the real one — same tx-hash cross-reference points-indexer.js already does for wrap tips.
+  const cbtcEscrowHelperSet = new Set(ADDR.cbtcEscrowHelpers.map((a) => a.toLowerCase()));
   async function realCbtcDepositor(txHash, rawFrom) {
-    if (rawFrom.toLowerCase() !== ADDR.cbtcEscrowHelper.toLowerCase()) return rawFrom;
+    if (!cbtcEscrowHelperSet.has(rawFrom.toLowerCase())) return rawFrom;
     const res = await fetch(`${PP_BLOCKSCOUT_BASE}/transactions/${txHash}/logs`);
     if (!res.ok) return rawFrom; // fail open to the helper's own address rather than lose the row
     const data = await res.json();
