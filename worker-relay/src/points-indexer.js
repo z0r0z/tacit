@@ -432,6 +432,7 @@ function startHttp(store) {
       if (url.pathname === '/health') {
         const cursor = store.loadCursor();
         const ppCursor = store.loadPpCursor();
+        const ceCursor = store.loadCeCursor();
         res.end(JSON.stringify({
           ok: true,
           lastScannedBlock: cursor ? cursor.lastScannedBlock.toString() : null,
@@ -439,6 +440,8 @@ function startHttp(store) {
           // Privacy Pools scan is a separate backfill (see scanPrivacyPoolCycle) — surfaced here so a stalled
           // or still-catching-up scan is visible without a dedicated endpoint.
           ppLastScannedBlock: ppCursor != null ? ppCursor.toString() : null,
+          // CollateralEngine scan (cBTC escrow + cUSD mint activity — see scanCollateralEngineCycle).
+          ceLastScannedBlock: ceCursor != null ? ceCursor.toString() : null,
         }));
         return;
       }
