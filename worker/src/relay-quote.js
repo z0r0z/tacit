@@ -52,13 +52,15 @@ export function feeLegsOf(type, op) {
     case 'otc':
       return [{ value: v(op.feeA) }, { value: v(op.feeB) }].filter((x) => x.value > 0n);
     // fee-less by design (value-locking / on-ramp / pre-committed destination / t-reveal)
-    case 'wrap': case 'bridgemint': case 'cbtcmint': case 'farmbond':
+    case 'wrap': case 'cbtcmint': case 'farmbond':
     case 'adaptorlock': case 'adaptorclaim': case 'cdptopup': case 'stealthlock':
     case 'bridgestealthmint':
       return [];
     case 'fastlane':
       return v(op.transfer?.fee) > 0n ? [{ value: v(op.transfer.fee) }] : [];
-    // single fee leg: transfer/route/lp/bid/unwrap/bridgeburn/adaptorrefund/cdpmint/cdpclose/cdpliquidate/farmharvest/farmunbond
+    // single fee leg: transfer/route/lp/bid/unwrap/bridgeburn/bridgemint/adaptorrefund/cdpmint/cdpclose/cdpliquidate/farmharvest/farmunbond.
+    // bridgemint's fee is v_burn - v_out (the destination fixed at burn time opens to the burned value net of
+    // it); fee 0 is a self-mint and returns no leg, so it stays on the subsidised path below.
     default:
       return v(op.fee) > 0n ? [{ value: v(op.fee) }] : [];
   }
@@ -81,6 +83,7 @@ export function feeAssetOf(type, op) {
     // deliberately falls through to null rather than guess: wrong here means "pass through ungated", never
     // a wrong rejection, but an unverified guess is still worse than an honest "don't know".
     case 'transfer': case 'unwrap': case 'sendunwrap': case 'bridgeburn':
+    case 'bridgemint': // exec-bridgemint.rs: the burned and minted notes share `asset`, and the fee is paid in it
       return op.asset || null;
     case 'lp': case 'lpremove': case 'lpbond':
       return op.assetA || null; // the relay fee is carved from the A side (see quoteLpAdd in confidential-pool-ux.js)
@@ -104,4 +107,71 @@ export function passesFloor({ type, op, gasPriceWei, weiPerFeeUnit, marginBps = 
   // Every fee leg must individually cover its share; the simplest sound rule is the SUM clears one settle.
   const valueWei = legs.reduce((s, x, i) => s + x.value * wpu(i), 0n);
   return valueWei >= floorWei({ gasPriceWei, effects: BigInt(Math.max(2, legs.length + 1)), marginBps });
+}
+
+// ── Pricing a fee asset from a public AMM pool ──
+// An asset with no direct feed can still be valued against one that has a feed, through a confidential AMM
+// pool pairing the two: the pool's reserves are public (`pools(bytes32)`), and both reserves are in in-pool
+// units, so reserveRef / reserveFee is the spot value of one fee unit in reference units without needing the
+// fee asset's decimals or scale. Everything here fails closed: an answer that is missing, malformed, shallow
+// or out of range is null ("unpriced"), never a guess.
+
+// Defaults, overridable per call. A pool is only trusted when its reference side holds at least
+// `minDepthUsd`, and the value is taken `haircutBps` below spot so a nudged pool cannot flatter a fee.
+export const AMM_PRICE_DEFAULTS = { minDepthUsd: 2000, haircutBps: 2000 };
+const U64_LIMIT = 1n << 64n;
+
+// Decode a `pools(bytes32)` return: (init, assetA, assetB, reserveA, reserveB, feeBps, totalShares, ...).
+// Null for a short or malformed answer and for an uninitialized pool.
+export function decodePoolState(hex) {
+  const h = String(hex || '').replace(/^0x/, '');
+  if (h.length < 64 * 7 || !/^[0-9a-fA-F]*$/.test(h)) return null;
+  const word = (i) => h.slice(i * 64, i * 64 + 64);
+  const big = (i) => BigInt('0x' + word(i));
+  if (big(0) === 0n) return null;
+  return {
+    assetA: '0x' + word(1).toLowerCase(), assetB: '0x' + word(2).toLowerCase(),
+    reserveA: big(3), reserveB: big(4), feeBps: Number(big(5)), totalShares: big(6),
+  };
+}
+
+// USD per in-pool unit of `feeAsset`, read from one pool pairing it with `refAsset` (worth `refUsdPerUnit`
+// dollars per in-pool unit). Null unless the pool is exactly that pair, both reserves are live u64 values, it
+// has outstanding shares, and its reference side is at least `minDepthUsd` deep.
+export function ammUsdPerUnit({ state, feeAsset, refAsset, refUsdPerUnit, minDepthUsd = AMM_PRICE_DEFAULTS.minDepthUsd, haircutBps = AMM_PRICE_DEFAULTS.haircutBps }) {
+  try {
+    if (!state) return null;
+    const ref = Number(refUsdPerUnit);
+    if (!Number.isFinite(ref) || ref <= 0) return null;
+    const hb = Number(haircutBps);
+    if (!Number.isInteger(hb) || hb < 0 || hb >= 10000) return null;
+    const minDepth = Number(minDepthUsd);
+    if (!Number.isFinite(minDepth) || minDepth <= 0) return null;
+    const lc = (x) => String(x || '').toLowerCase();
+    const f = lc(feeAsset), r = lc(refAsset);
+    if (!f || !r || f === r) return null;
+    let rFee, rRef;
+    if (lc(state.assetA) === f && lc(state.assetB) === r) { rFee = state.reserveA; rRef = state.reserveB; }
+    else if (lc(state.assetA) === r && lc(state.assetB) === f) { rFee = state.reserveB; rRef = state.reserveA; }
+    else return null;
+    if (typeof rFee !== 'bigint' || typeof rRef !== 'bigint') return null;
+    if (rFee <= 0n || rRef <= 0n || rFee >= U64_LIMIT || rRef >= U64_LIMIT) return null;
+    if (typeof state.totalShares !== 'bigint' || state.totalShares <= 0n) return null;
+    const depthUsd = Number(rRef) * ref;
+    if (!Number.isFinite(depthUsd) || depthUsd < minDepth) return null;
+    const usd = ((Number(rRef) / Number(rFee)) * ref * (10000 - hb)) / 10000;
+    return Number.isFinite(usd) && usd > 0 ? usd : null;
+  } catch { return null; }
+}
+
+// The value to use across several candidate pools (different reference assets or fee tiers): the LOWEST
+// qualifying reading, so a fee is never valued above what every deep enough pool supports. Null when none
+// qualifies.
+export function ammUsdPerUnitBest({ feeAsset, candidates = [], minDepthUsd, haircutBps }) {
+  let best = null;
+  for (const c of candidates || []) {
+    const v = ammUsdPerUnit({ state: c && c.state, feeAsset, refAsset: c && c.refAsset, refUsdPerUnit: c && c.refUsdPerUnit, minDepthUsd, haircutBps });
+    if (v != null && (best == null || v < best)) best = v;
+  }
+  return best;
 }

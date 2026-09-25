@@ -90,7 +90,7 @@ import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { handleFarm } from './farm-program.js';
 import { buildConfidentialSettler } from './confidential-settle.js';
-import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee } from './relay-quote.js';
+import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
@@ -1739,10 +1739,10 @@ async function handleReflectionAck(req, env, cors) {
 //
 // Profitability gate — OFF BY DEFAULT (env.RELAY_FEE_FLOOR must be '1'). Without it, submitJob's `feeGate &&
 // ...` check is skipped entirely and a relayed (mode:'settle') submit is accepted at ANY offered fee,
-// including zero. Scoped to transfer/unwrap/sendunwrap/bridgeburn/lp/lpremove/
-// lpbond/route paid in cETH specifically — feeAssetOf/relay-quote.js only resolves a single verified fee-leg
-// asset for those types (see its own comment), and only cETH's wei conversion is a fixed constant (unitScale)
-// rather than needing a USD price oracle server-side; every other type or fee asset passes through UNGATED.
+// including zero. Scoped to transfer/unwrap/sendunwrap/bridgeburn/bridgemint/lp/lpremove/lpbond/route —
+// feeAssetOf/relay-quote.js only resolves a single verified fee-leg asset for those types (see its own
+// comment) — paid in an asset the worker can value: directly (cETH, USD-pegged, cBTC, cTAC with a reference)
+// or through a deep enough public AMM pool (ammFeeAsset). Every other type or fee asset passes through UNGATED.
 // RELAY_FEE_MARGIN_BPS defaults to 1000 (10%) — comfortably under the dapp's own 35%
 // client-side quote margin (confidential-pool-ux.js gasAwareMinFee), so the dapp's self-quoted fee should
 // keep clearing this floor; a third-party integrator quoting a thinner margin may not. Fails OPEN (passes the op through) on an RPC outage or an unpriceable fee leg — a
@@ -1755,8 +1755,11 @@ async function handleReflectionAck(req, env, cors) {
 //                data): value is units x unitScale / 10^decimals dollars, converted to wei at the live ETH
 //                price when the gate needs a wei figure.
 //
-// Anything else (cBTC, cTAC, an unregistered asset) returns null: we hold no oracle for it, so it is neither
-// gated nor priced — and the relay counts it as unpaid work rather than as free permission.
+//   kind 'btc' — cBTC (1:1 with BTC), and cTAC when TAC_PRICE_SATS is configured.
+//
+// Anything else (cTAC without a reference, an unregistered asset) returns null here. Such an asset is not
+// verifiable for the paid bucket; the gate and the pricer then fall back to `ammFeeAsset` below, which values
+// it through a public AMM pool against one of the assets above, and treat it as unpriced when no pool qualifies.
 const USD_PEGGED_FEE_TICKERS = ['cUSD', 'cUSDC', 'cUSDT'];
 // cTAC has no reliable on-chain oracle, so its reference price is operator-supplied: TAC_PRICE_SATS, in sats
 // per TAC. There is deliberately NO default here. The value is a pricing judgement, it belongs in the
@@ -1784,6 +1787,17 @@ function feeAssetForRow(row, env = {}) {
     return { row, kind: 'usd', usdPerUnit: perUnit };
   } catch { return null; }
 }
+// Fallback for an op whose fee asset has no direct valuation: price it from a public AMM pool pairing it with a
+// directly valued asset (see `_ammUsdPerUnit`). Null when the op names no single fee asset or the fallback is
+// switched off (RELAY_AMM_PRICING=0).
+function ammFeeAsset(type, op, env = {}) {
+  try {
+    if (!op || typeof op !== 'object' || (env && env.RELAY_AMM_PRICING === '0')) return null;
+    const assetId = feeAssetOf(type, op);
+    if (!assetId || !/^0x[0-9a-fA-F]{64}$/.test(String(assetId))) return null;
+    return { kind: 'amm', assetId: String(assetId).toLowerCase(), env };
+  } catch { return null; }
+}
 function feeAssetRow(type, op, env = {}) {
   try {
     if (!op || typeof op !== 'object') return null;
@@ -1805,6 +1819,9 @@ async function usdPerUnitOf(p) {
     const btcUsd = await _btcUsdPrice().catch(() => null);
     return btcUsd ? p.btcPerUnit * btcUsd : null;
   }
+  if (p.kind === 'amm') {
+    try { return (await _ammUsdPerUnit(p.assetId, p.env)) || null; } catch { return null; }
+  }
   return null;
 }
 
@@ -1824,7 +1841,7 @@ function buildRelayFeeGate(env) {
   if (env.RELAY_FEE_FLOOR !== '1') return null;
   const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
   return async ({ type, op }) => {
-    const p = feeAssetRow(type, op, env);
+    const p = feeAssetRow(type, op, env) || ammFeeAsset(type, op, env);
     if (!p) return true; // can't price it — pass through
     const weiPerFeeUnit = await weiPerFeeUnitOf(p);
     if (!weiPerFeeUnit) return true; // no price to value the fee with — fail open rather than stall the whole relay
@@ -1847,21 +1864,22 @@ function hasVerifiableFee(type, op, env = {}) {
 // enforces, so the number here is the fee the op genuinely carries. A caller cannot inflate it, and the
 // one field a caller could have set (`op.feeUsd`) is stripped in submitJob before the op is stored.
 //
-// What is priceable is decided by `feeAssetRow`: cETH (exact, `unitScale` is wei-per-unit) and USD-pegged
-// pool assets (units x unitScale / 10^decimals dollars). Everything else returns feeUsd: null, which the
-// relay reads as "unpaid work" and logs, rather than as permission to relay for free. Widening it means
-// registering the asset with a peg or an oracle, not a guess.
+// What is priceable is decided by `feeAssetRow`: cETH (exact, `unitScale` is wei-per-unit), USD-pegged
+// pool assets (units x unitScale / 10^decimals dollars) and the BTC-denominated rows; failing that,
+// `ammFeeAsset` values the fee through a deep enough public AMM pool against one of those. Everything else
+// returns feeUsd: null, which the relay reads as "unpaid work" and logs, rather than as permission to relay
+// for free.
 function buildFeePricer(env) {
   return async ({ type, op }) => {
     let units;
     try { units = totalFee(type, op); } catch { return null; }
-    // No fee leg at all is NOT a $0 fee. Some ops are fee-less by design (wrap, cbtcmint, bridgemint, adaptor
-    // and stealth locks …) and are relayed as a deliberate subsidy; reporting $0 made the relay's gate compare
+    // No fee leg at all is NOT a $0 fee. Some ops are fee-less by design (wrap, cbtcmint, adaptor and stealth
+    // locks …) or chose fee 0 (a self-minted bridgemint) and are relayed as a deliberate subsidy; reporting $0 made the relay's gate compare
     // zero against cost and refuse every one of them. Unpriced is the honest value: the relay logs it as
     // subsidised work, and the daily free-relay budget below is what bounds it.
     if (!units || units <= 0n) return { feeUnits: '0', feeUsd: null };
     const out = { feeUnits: units.toString(), feeUsd: null };
-    const p = feeAssetRow(type, op, env);
+    const p = feeAssetRow(type, op, env) || ammFeeAsset(type, op, env);
     if (!p) return out; // carried a fee, can't price it
     if (p.kind === 'eth') {
       const ethUsd = await _ethUsdPrice().catch(() => null);
@@ -2136,7 +2154,7 @@ async function spendDailyBudget(env, name) {
 }
 const proveBudget = (env) => dailyBudget(env, 'prove', Number(env.PROVE_MODE_DAILY_CAP || 400));
 const spendProveBudget = (env) => spendDailyBudget(env, 'prove');
-// Relayed ops that carry NO fee at all (fee-less by design: wrap, cbtcmint, bridgemint …) are a deliberate
+// Relayed ops that carry NO fee at all (fee-less by design: wrap, cbtcmint …, or a zero-fee bridgemint) are a deliberate
 // subsidy, and the per-IP bucket bounds one source, not many. Same two rules as the prove budget: spent only on
 // an ACCEPTED, non-deduped job (junk can't drain it), and refusal says what to do instead.
 const freeRelayBudget = (env) => dailyBudget(env, 'free', Number(env.FREE_RELAY_DAILY_CAP || 300));
@@ -2812,6 +2830,61 @@ async function _chainlinkUsd(feed, network = 'mainnet') {
 }
 const _ethUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_ETH_USD, network);
 const _btcUsdPrice = (network = 'mainnet') => _chainlinkUsd(CHAINLINK_BTC_USD, network);
+
+// Dollars per in-pool unit of an asset with no direct feed, read from the confidential AMM: every pool pairing
+// it with a directly valued asset (cETH, the USD-pegged assets, cBTC; never a privately referenced one) at the
+// standard fee tiers is read from the public `pools(bytes32)` mapping, and `ammUsdPerUnitBest` takes the
+// lowest reading among those deep enough to trust (AMM_PRICE_MIN_DEPTH_USD of reference-side liquidity,
+// valued AMM_PRICE_HAIRCUT_BPS below spot). Null when nothing qualifies or a read fails. Cached ~1 min per
+// asset, like the Chainlink reads.
+const AMM_PRICE_FEE_TIERS = [30, 100, 5];
+const _POOLS_SELECTOR = bytesToHex(keccak_256(new TextEncoder().encode('pools(bytes32)'))).slice(0, 8);
+const _ammPxCache = new Map();
+function _ammPoolId(a, b, feeBps) {
+  const [lo, hi] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
+  const fee = new Uint8Array(32); // feeBps as a full 32-byte word, as ConfidentialPool._poolId hashes it
+  new DataView(fee.buffer).setUint32(28, feeBps, false);
+  return bytesToHex(keccak_256(concatBytes(hexToBytes(lo.slice(2)), hexToBytes(hi.slice(2)), fee)));
+}
+async function _ammUsdPerUnit(assetId, env = {}) {
+  const want = String(assetId || '').toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(want)) return null;
+  const poolAddr = _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.pool;
+  if (!poolAddr) return null;
+  const hit = _ammPxCache.get(want);
+  if (hit && Date.now() - hit.at < 60_000) return hit.v;
+  const num = (v, d) => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) ? n : d; };
+  const minDepthUsd = num(env.AMM_PRICE_MIN_DEPTH_USD, AMM_PRICE_DEFAULTS.minDepthUsd);
+  const haircutBps = num(env.AMM_PRICE_HAIRCUT_BPS, AMM_PRICE_DEFAULTS.haircutBps);
+  const refs = [];
+  for (const row of _CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || []) {
+    const id = String(row.assetId || '').toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(id) || id === want || refs.some((r) => r.id === id)) continue;
+    const p = feeAssetForRow(row, env);
+    if (!p || p.private) continue;
+    let usd = null;
+    if (p.kind === 'eth') {
+      const ethUsd = await _ethUsdPrice().catch(() => null);
+      usd = ethUsd ? (Number(BigInt(row.unitScale)) / 1e18) * ethUsd : null;
+    } else {
+      usd = await usdPerUnitOf(p);
+    }
+    if (usd) refs.push({ id, usd });
+  }
+  const reads = [];
+  for (const r of refs) {
+    for (const tier of AMM_PRICE_FEE_TIERS) {
+      const data = '0x' + _POOLS_SELECTOR + _ammPoolId(want, r.id, tier);
+      reads.push(_ethCall('mainnet', poolAddr, data)
+        .then((hex) => ({ state: decodePoolState(hex), refAsset: r.id, refUsdPerUnit: r.usd }))
+        .catch(() => null));
+    }
+  }
+  const candidates = (await Promise.all(reads)).filter((c) => c && c.state);
+  const v = ammUsdPerUnitBest({ feeAsset: want, candidates, minDepthUsd, haircutBps });
+  _ammPxCache.set(want, { at: Date.now(), v });
+  return v;
+}
 
 // Live PROVE/USD via zQuoter.buildBestSwap(PROVE -> ETH) — the same quoter address and function
 // worker-relay's own provePriceUsd() uses (see worker-relay/src/lib/chain.js's ZQUOTER_ABI comment: the

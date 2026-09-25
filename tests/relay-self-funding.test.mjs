@@ -219,11 +219,12 @@ test('the fee floor cannot switch off metering', () => {
 const rq = await import(join(ROOT, 'worker/src/relay-quote.js'));
 const { CONFIDENTIAL_DEPLOYMENTS: DEPLOY } = await import(join(ROOT, 'dapp/confidential-deployments.js'));
 const gateSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf('function buildFeePricer('));
-function loadGate({ gasWei = 60_000_000n, ethUsd = 2570, btcUsd = 80000, env = {} } = {}) {
-  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'ENV',
-    gateSrc + '; return { feeAssetRow, hasVerifiableFee, usdPerUnitOf, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1", ...ENV }) };');
+// `amm` stubs the AMM fallback read (_ammUsdPerUnit): (assetId, env) => dollars per in-pool unit, or null.
+function loadGate({ gasWei = 60_000_000n, ethUsd = 2570, btcUsd = 80000, env = {}, amm = async () => null } = {}) {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'ENV', '_ammUsdPerUnit',
+    gateSrc + '; return { feeAssetRow, ammFeeAsset, hasVerifiableFee, usdPerUnitOf, gate: buildRelayFeeGate({ RELAY_FEE_FLOOR: "1", ...ENV }) };');
   return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x' + gasWei.toString(16), async () => ethUsd,
-    async () => { if (btcUsd === null) throw new Error('btc feed down'); return btcUsd; }, env);
+    async () => { if (btcUsd === null) throw new Error('btc feed down'); return btcUsd; }, env, amm);
 }
 const ASSET = (t) => DEPLOY.mainnet.assets.filter((a) => a.ticker === t)[0];
 const cEth = ASSET('cETH'), cUsd = ASSET('cUSD'), cBtc = ASSET('cBTC');
@@ -437,10 +438,10 @@ test('prove-mode is not counted against the free-relay budget', async () => {
 
 // ── the pricer: no fee is UNPRICED, never $0 ─────────────────────────────────
 const pricerSrc = worker.slice(worker.indexOf('const USD_PEGGED_FEE_TICKERS'), worker.indexOf('\n}\n', worker.indexOf('function buildFeePricer')) + 3);
-function loadPricer() {
-  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice',
-    pricerSrc + '; return buildFeePricer({});');
-  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => 2570, async () => 80000);
+function loadPricer({ env = {}, amm = async () => null } = {}) {
+  const mk = new Function('passesFloor', 'feeAssetOf', 'totalFee', '_CONFIDENTIAL_DEPLOYMENTS', '_ethGasPrice', '_ethUsdPrice', '_btcUsdPrice', 'ENV', '_ammUsdPerUnit',
+    pricerSrc + '; return buildFeePricer(ENV);');
+  return mk(rq.passesFloor, rq.feeAssetOf, rq.totalFee, DEPLOY, async () => '0x3938700', async () => 2570, async () => 80000, env, amm);
 }
 test('an op with no fee is priced as unpriced (null), not as $0', async () => {
   // $0 made the relay compare zero against cost and refuse every fee-less-by-design op (wrap, cbtcmint, …).
@@ -449,6 +450,69 @@ test('an op with no fee is priced as unpriced (null), not as $0', async () => {
   ok(none.feeUsd === null, `no fee must be unpriced (null), got ${none.feeUsd}`);
   const paid = await pr({ type: 'transfer', op: transfer(cEth, 10000) });
   ok(typeof paid.feeUsd === 'number' && paid.feeUsd > 0, 'a real fee must still be priced');
+});
+
+// ── AMM fallback: an asset with no direct feed is valued through a public pool ─────
+test('with no cTAC reference, cTAC is valued from the AMM and held to the same floor', async () => {
+  const floor = usdFloorAt(60_000_000n);
+  const TAC_USD_PER_UNIT = 1e-8; // an arbitrary AMM reading for the test, dollars per in-pool unit
+  const seen = [];
+  const amm = async (id, env) => { seen.push({ id, env }); return TAC_USD_PER_UNIT; };
+  const { gate } = loadGate({ amm });
+  const units = (usd) => BigInt(Math.ceil(usd / TAC_USD_PER_UNIT));
+  ok(await gate({ type: 'transfer', op: transfer(cTac, units(floor * 1.5)) }) === true, 'a cTAC fee worth 1.5x the floor at the AMM price must pass');
+  ok(await gate({ type: 'transfer', op: transfer(cTac, units(floor * 0.5)) }) === false, 'a cTAC fee worth half the floor at the AMM price must be rejected');
+  ok(seen.length > 0 && seen[0].id === cTac.assetId.toLowerCase(), 'the AMM read is keyed by the fee asset id');
+  // A configured reference still wins: the AMM is only the fallback.
+  const direct = [];
+  const { gate: g2 } = loadGate({ env: TAC_ENV, amm: async (id) => { direct.push(id); return 1; } });
+  await g2({ type: 'transfer', op: transfer(cTac, 1) });
+  ok(direct.length === 0, 'the AMM must not be consulted when a direct reference exists');
+});
+
+test('an AMM fallback that finds no qualifying pool leaves the fee unpriced, as before', async () => {
+  const { gate, hasVerifiableFee } = loadGate({ amm: async () => null });
+  ok(await gate({ type: 'transfer', op: transfer(cTac, 1) }) === true, 'no pool must fail open, not refuse');
+  const { gate: g2 } = loadGate({ amm: async () => { throw new Error('rpc down'); } });
+  ok(await g2({ type: 'transfer', op: transfer(cTac, 1) }) === true, 'a failing AMM read must fail open, not throw');
+  ok(hasVerifiableFee('transfer', transfer(cTac, 1_000_000)) === false, 'an AMM-only asset stays on the strict bucket');
+});
+
+test('RELAY_AMM_PRICING=0 switches the fallback off', async () => {
+  const seen = [];
+  const { gate, ammFeeAsset } = loadGate({ env: { RELAY_AMM_PRICING: '0' }, amm: async (id) => { seen.push(id); return 1e-8; } });
+  ok(await gate({ type: 'transfer', op: transfer(cTac, 1) }) === true, 'switched off, an unpriced fee passes through');
+  ok(seen.length === 0, 'and the AMM is never read');
+  ok(ammFeeAsset('transfer', transfer(cTac, 1), { RELAY_AMM_PRICING: '0' }) === null, 'ammFeeAsset honours the switch');
+  ok(ammFeeAsset('swap', { intents: [] }, {}) === null, 'no single fee asset, no fallback');
+});
+
+test('a fee-paying bridgemint is priced like any other fee leg (AMM fallback included)', async () => {
+  const floor = usdFloorAt(60_000_000n);
+  const px = 1e-8;
+  const { gate } = loadGate({ amm: async () => px });
+  const mint = (fee) => ({ asset: cTac.assetId, fee: String(fee) });
+  ok(await gate({ type: 'bridgemint', op: mint(BigInt(Math.ceil((floor * 1.5) / px))) }) === true, 'a bridgemint fee above the floor must pass');
+  ok(await gate({ type: 'bridgemint', op: mint(BigInt(Math.floor((floor * 0.5) / px))) }) === false, 'a bridgemint fee below the floor must be rejected');
+  ok(await gate({ type: 'bridgemint', op: mint(0) }) === true, 'a zero-fee bridgemint is still accepted (free budget)');
+  const pr = loadPricer({ amm: async () => px });
+  const priced = await pr({ type: 'bridgemint', op: mint(1_000_000) });
+  ok(priced.feeUnits === '1000000' && Math.abs(priced.feeUsd - 1_000_000 * px) < 1e-12, `a bridgemint fee must be priced, got ${JSON.stringify(priced)}`);
+  const unpriced = await pr({ type: 'bridgemint', op: mint(0) });
+  ok(unpriced.feeUsd === null, 'a zero-fee bridgemint is unpriced, not $0');
+  const direct = await loadPricer({ amm: async () => px })({ type: 'bridgemint', op: { asset: cEth.assetId, fee: '10000' } });
+  ok(typeof direct.feeUsd === 'number' && direct.feeUsd > 0, 'a cETH bridgemint fee is priced directly');
+});
+
+test('the AMM pool id the worker reads is the pool id the contract and farm use', async () => {
+  const src = worker.slice(worker.indexOf('function _ammPoolId('), worker.indexOf('async function _ammUsdPerUnit('));
+  const { keccak_256 } = await import(join(ROOT, 'node_modules/@noble/hashes/sha3.js'));
+  const u = await import(join(ROOT, 'node_modules/@noble/hashes/utils.js'));
+  const poolId = new Function('keccak_256', 'bytesToHex', 'hexToBytes', 'concatBytes', src + '; return _ammPoolId;')(keccak_256, u.bytesToHex, u.hexToBytes, u.concatBytes);
+  const farmTacEth = DEPLOY.mainnet.farm.pools.find((p) => p.pair === 'TAC/cETH');
+  ok('0x' + poolId(cTac.assetId, cEth.assetId, 30) === farmTacEth.poolId, 'TAC/cETH @30 must match the farm\'s pool id');
+  ok(poolId(cEth.assetId, cTac.assetId, 30) === poolId(cTac.assetId, cEth.assetId, 30), 'order-independent');
+  ok(poolId(cTac.assetId, cEth.assetId, 100) !== poolId(cTac.assetId, cEth.assetId, 30), 'fee tier is part of the id');
 });
 
 // ── the relay's gate, run for real under real env ───────────────────────────
