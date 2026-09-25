@@ -1,0 +1,20 @@
+[package]
+name = "btc-pool-verify"
+version = "0.1.0"
+edition = "2021"
+
+# Local verifier for btc-pool-prover Groth16 proofs (DESIGN-btc-shielded-pool.md §5). Standalone and
+# light: it links only sp1-verifier, whose groth16_vk.bin hashes to the VERIFIER_HASH of the mainnet SP1
+# Groth16 verifier (0x4388a21c...) and whose VK_ROOT_BYTES equals its VK_ROOT; the tests assert both.
+[workspace]
+
+[dependencies]
+sp1-verifier = "=6.2.4"
+serde_json = "1"
+hex = "0.4"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[profile.release]
+overflow-checks = true
