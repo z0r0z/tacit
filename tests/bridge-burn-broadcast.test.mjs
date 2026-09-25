@@ -127,7 +127,7 @@ async function roundTrip({ bound }) {
   const burner = makeBridgeBurnBroadcaster({ pool, bridgeMint: bm, prims: w.prims });
   const r = await burner.broadcastBridgeBurn({
     note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot,
-    dest: { owner: DEST_OWNER, blinding: destBlinding },
+    dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true,
   });
   const tag = bound ? 'class 2' : 'class 1';
 
@@ -224,7 +224,7 @@ const { snapshot: snap2 } = await roundTrip({ bound: true });
 
 // ── refusals: nothing is built or broadcast ──
 {
-  const base = { note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, dest: { owner: DEST_OWNER, blinding: destBlinding } };
+  const base = { note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true };
   const w = testWallet();
   const refuse = async (over, re, what) => {
     await assert.rejects(() => burner.broadcastBridgeBurn({ ...base, prims: w.prims, ...over }), re, what);
@@ -259,8 +259,12 @@ const { snapshot: snap2 } = await roundTrip({ bound: true });
   const liveFunding = { txid: '77'.repeat(32), vout: 0, value: 90_000, status: { confirmed: true } };
   const noteAsFunding = { txid: NOTE_TXID, vout: NOTE_VOUT, value: 90_000, status: { confirmed: true } };
   const w = testWallet({ utxos: [liveFunding, noteAsFunding] });
-  await assert.rejects(() => burner.broadcastBridgeBurn({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims: w.prims, dest: { owner: DEST_OWNER, blinding: destBlinding } }), /insufficient plain sats/, 'only reflected notes available');
+  await assert.rejects(() => burner.broadcastBridgeBurn({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims: w.prims, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true }), /insufficient plain sats/, 'only reflected notes available');
   assert.strictEqual(w.sent.length, 0);
+  // Without an explicit list or a plain-sats filter, funding is refused rather than guessed.
+  const w3 = testWallet();
+  await assert.rejects(() => burner.broadcastBridgeBurn({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims: w3.prims, dest: { owner: DEST_OWNER, blinding: destBlinding } }), /isSpendable/, 'no funding filter');
+  assert.strictEqual(w3.sent.length, 0);
   const w2 = testWallet({ utxos: [liveFunding] });
   const b = await burner.buildBridgeBurnTxs({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims: w2.prims, dest: { owner: DEST_OWNER, blinding: destBlinding }, fundingUtxos: [{ txid: '6f'.repeat(32), vout: 3, value: 20_000, scriptpubkey: w2.spk }, liveFunding] });
   assert.strictEqual(b.commitTx.inputs.length, 1);
@@ -273,7 +277,7 @@ const { snapshot: snap2 } = await roundTrip({ bound: true });
   const w = testWallet();
   let calls = 0;
   const prims = { ...w.prims, broadcastWithRetry: async () => { calls++; throw new Error('mempool full'); } };
-  const e = await burner.broadcastBridgeBurn({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims, dest: { owner: DEST_OWNER, blinding: destBlinding } }).catch((x) => x);
+  const e = await burner.broadcastBridgeBurn({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true }).catch((x) => x);
   assert.ok(e instanceof Error && /reveal failed/.test(e.message) && e.revealHex && e.commitTxid, 'error carries the commit txid and the signed reveal');
   assert.strictEqual(calls, 1);
   ok('a failed reveal broadcast surfaces the commit txid and the signed reveal for a retry');
@@ -286,7 +290,7 @@ const { snapshot: snap2 } = await roundTrip({ bound: true });
   const fetchImpl = async (u) => { urls.push(String(u)); return { ok: true, json: async () => ({ attestedHeight: 100, snapshot: snap1 }) }; };
   const ux = makeConfidentialPoolUx({ secp, keccak256, sha256, network: 'mainnet', fetchImpl });
   const w = testWallet();
-  const r = await ux.bridgeBurnToPool({ prims: w.prims, note, notePriv: NOTE_PRIV, fee: FEE, dest: { owner: DEST_OWNER, blinding: destBlinding } });
+  const r = await ux.bridgeBurnToPool({ prims: w.prims, note, notePriv: NOTE_PRIV, fee: FEE, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true });
   assert.ok(urls.some((u) => /\/reflection\/dump\?network=mainnet$/.test(u)), 'reads GET /reflection/dump');
   assert.strictEqual(r.mintArgs.chainBinding, ux.chainBindingHex(), 'targets this pool');
   assert.strictEqual(w.sent.length, 2);

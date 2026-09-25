@@ -936,6 +936,7 @@ const b = await tacit.bridgeBurnToPool({
   fee: ladderFee(await tacit.quoteOpFee(ticker, 'bridgemint')), // or 0n to mint at no fee
   dest: { owner: destOwner },
   deriveDestBlinding: (nu) => deriveBridgeMintBlinding(priv, nu),
+  isSpendable: (u) => isPlainSats(u),                 // required (or pass fundingUtxos): which UTXOs are plain sats
 });
 // b.revealTxid, b.burnId, b.dest (the destination opening), b.mintArgs
 ```
@@ -947,7 +948,10 @@ the note's own (unbound class 1, bound class 2, read from the live set), and a b
 not bound to are all refused. So are a fee off the ladder or a destination not net of it, and a fee rate under
 1 sat/vB. That matters because the reflection nullifies any reflected note a transaction spends: a burn it cannot
 record still spends the note. For the same reason coin selection for the commit never takes a reflected note, a cBTC
-lock or a protected outpoint. Before broadcasting it reads the reveal back with the reflection's own parser: the
+lock or a protected outpoint. Notes the reflection does not track (an unbound non-TAC note, a note whose block has
+not folded) and inscription or rune sats are invisible to that check, so the caller must say which sats are plain:
+pass `isSpendable`, a filter that excludes them (the dapp's safe sats selector), or an explicit `fundingUtxos` list.
+Without either, the burn is refused rather than funded from a guess. Before broadcasting it reads the reveal back with the reflection's own parser: the
 envelope must be at `vin[0]`, and the burned note must be the only reflected note spent. `buildBridgeBurnTxs` returns
 the signed pair without broadcasting. If the reveal fails to broadcast after the commit went out, the error carries
 `commitTxid` and the signed `revealHex` to retry.

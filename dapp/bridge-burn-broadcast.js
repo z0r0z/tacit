@@ -221,7 +221,12 @@ export function makeBridgeBurnBroadcaster({ pool, bridgeMint, prims: defaultPrim
     revealTx.outputs[0].value = commitValue + plan.sats - revealFee;
 
     // Fund the commit from plain sats only: never the note, another reflected note, a cBTC lock or a protected
-    // outpoint — the reflection nullifies any live note a transaction spends, envelope or not.
+    // outpoint — the reflection nullifies any live note a transaction spends, envelope or not. Notes the
+    // reflection does not track (unbound non-TAC notes, notes not yet folded) and inscription or rune sats are
+    // invisible here, so the caller must say which sats are plain: an explicit list, or a filter.
+    if (!fundingUtxos && typeof isSpendable !== 'function') {
+      throw new Error('bridge-burn: pass fundingUtxos or an isSpendable filter that excludes Tacit notes, inscriptions and runes');
+    }
     const candidates = (fundingUtxos || await P.getUtxos(wallet.address())).filter((u) => {
       const k = h32(pool.outpointKey(txidInternal(u.txid), u.vout));
       if (k === plan.noteKey || liveIndex.live.has(k) || liveIndex.locks.has(k)) return false;
