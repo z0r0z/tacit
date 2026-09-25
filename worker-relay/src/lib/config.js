@@ -78,6 +78,12 @@ export const ADDR = {
   // Privacy Pools (privacypools.com) Entrypoint — third-party protocol, not ours. Its own WithdrawalRelayed
   // event names the real recipient of a relayed ETH withdrawal; see points-indexer.js's ppBoostMultiplier.
   ppEntrypoint: opt('PP_ENTRYPOINT_ADDR', '0x6818809EefCe719E480a7526D76bD3e561526b46'),
+  // The cUSD CDP controller — EscrowPosted (wstETH collateral, cBTC-mint side) and CdpMinted (cUSD debt
+  // minted) both live here. See points-indexer.js's scanCollateralEngineCycle.
+  collateralEngine: opt('COLLATERAL_ENGINE_ADDR', '0x000000003f608BDdF0ca45934003ffb9DbDF70DB'),
+  // Routes an EscrowPosted whose `from` is this helper back to the real depositor via its own
+  // HelperEscrowPosted event — see points-indexer.js.
+  cbtcEscrowHelper: opt('CBTC_ESCROW_HELPER_ADDR', '0x00000000689C71E690E5842dF088AF97F9d4f71b'),
 };
 
 export const CFG = {
@@ -390,6 +396,23 @@ export const CFG = {
   // address and claim the multiplier on unrelated ETH wrapped there.
   ppEntrypointDeployBlock: num('PP_ENTRYPOINT_DEPLOY_BLOCK', 22153713),
   ppBoostMultiplier: num('PP_BOOST_MULTIPLIER', 1.2),
+
+  // ── cBTC/cUSD mint activity (src/points-indexer.js's scanCollateralEngineCycle) ──
+  // Two more ways to earn points, alongside the ETH wrap above: posting wstETH collateral toward a cBTC
+  // mint, and opening a cUSD loan against it. Same "not a protocol parameter" status as pointsBasePerEth —
+  // tune freely, no on-chain meaning.
+  //
+  // cBTC: points per whole wstETH posted as escrow (EscrowPosted's own amount, 18 decimals) — same rate as
+  // wrapping ETH, since wstETH tracks ETH's value roughly 1:1 and both are "committing value to the system".
+  pointsBasePerCbtc: num('POINTS_BASE_PER_CBTC', 1000),
+  // cUSD: points per whole dollar of cUSD minted (CdpMinted's debtValue, tacitDecimals=8 scaled — divide by
+  // 1e8 for the real dollar amount), BEFORE the bonus below.
+  pointsBasePerCusd: num('POINTS_BASE_PER_CUSD', 1),
+  // z's explicit ask: favor cUSD minters over cBTC posters. Applied on top of pointsBasePerCusd, not
+  // pointsBasePerCbtc — a dollar of cUSD minted ends up worth several times a dollar-equivalent of wstETH
+  // posted, by design.
+  cusdMintBonusMultiplier: num('CUSD_MINT_BONUS_MULTIPLIER', 2),
+  collateralEngineDeployBlock: num('COLLATERAL_ENGINE_DEPLOY_BLOCK', 25998747),
 
   // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
   // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC

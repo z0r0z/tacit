@@ -135,6 +135,91 @@ async function scanPrivacyPoolCycle(store) {
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.savePpCursor(newestSeen);
 }
 
+function pointsForCbtcEscrow(amountWei) {
+  return (Number(amountWei) / 1e18) * CFG.pointsBasePerCbtc;
+}
+// debtValue is tacitDecimals=8-scaled (unitScale=1e10, decimals=18 — see confidential-deployments.js), so
+// dividing by 1e8 gives the real dollar amount minted.
+function pointsForCusdMint(debtValueRaw) {
+  return (Number(debtValueRaw) / 1e8) * CFG.pointsBasePerCusd * CFG.cusdMintBonusMultiplier;
+}
+
+// Two more ways to earn points, both on CollateralEngine: EscrowPosted (wstETH collateral posted toward a
+// cBTC mint) and CdpMinted (a cUSD loan opened). Same Blockscout-pagination approach as
+// scanPrivacyPoolCycle and for the same reason — this address's own eth_getLogs range would hit the same
+// 10-block RPC cap on a cold-start backfill. Volume here is even lower than Privacy Pools' (a handful of
+// transactions total as of writing), so a caught-up run costs one request either way.
+async function scanCollateralEngineCycle(store) {
+  const priorCursor = store.loadCeCursor();
+  const deployBlock = BigInt(CFG.collateralEngineDeployBlock);
+  let newestSeen = null;
+  let params = '';
+
+  // EscrowPosted's own `from` is the real depositor UNLESS the call was routed through CbtcEscrowHelper, in
+  // which case `from` is the helper's own address and the helper's OWN event (HelperEscrowPosted, same tx)
+  // names the real one — same tx-hash cross-reference points-indexer.js already does for wrap tips.
+  async function realCbtcDepositor(txHash, rawFrom) {
+    if (rawFrom.toLowerCase() !== ADDR.cbtcEscrowHelper.toLowerCase()) return rawFrom;
+    const res = await fetch(`${PP_BLOCKSCOUT_BASE}/transactions/${txHash}/logs`);
+    if (!res.ok) return rawFrom; // fail open to the helper's own address rather than lose the row
+    const data = await res.json();
+    for (const item of data.items || []) {
+      if (item.decoded && item.decoded.method_call.startsWith('HelperEscrowPosted(')) {
+        const p = Object.fromEntries(item.decoded.parameters.map((x) => [x.name, x.value]));
+        if (p.depositor) return p.depositor;
+      }
+    }
+    return rawFrom;
+  }
+
+  for (;;) {
+    const res = await fetch(`${PP_BLOCKSCOUT_BASE}/addresses/${ADDR.collateralEngine}/logs${params}`);
+    if (!res.ok) throw new Error(`blockscout address-logs ${res.status}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) break;
+    if (newestSeen === null) newestSeen = BigInt(items[0].block_number);
+
+    let reachedCoverage = false;
+    for (const item of items) {
+      const blockNumber = BigInt(item.block_number);
+      if (blockNumber < deployBlock || (priorCursor != null && blockNumber <= priorCursor)) {
+        reachedCoverage = true;
+        break;
+      }
+      if (!item.decoded) continue;
+      const method = item.decoded.method_call;
+      const p = Object.fromEntries(item.decoded.parameters.map((x) => [x.name, x.value]));
+      const blockTime = Math.floor(new Date(item.block_timestamp).getTime() / 1000);
+
+      if (method.startsWith('EscrowPosted(')) {
+        const depositor = (await realCbtcDepositor(item.transaction_hash, p.from)).toLowerCase();
+        store.recordDeposit({
+          txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+          depositor, amountWei: String(p.amount), priorDepositCount: 0,
+          points: pointsForCbtcEscrow(p.amount), activity: 'cbtcmint',
+        });
+      } else if (method.startsWith('CdpMinted(')) {
+        // No borrower address on this event — same convention as the wrap scanner: the transaction's own
+        // signer, not any confidential note owner (which isn't public anyway).
+        const tx = await publicClient.getTransaction({ hash: item.transaction_hash });
+        store.recordDeposit({
+          txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+          depositor: tx.from.toLowerCase(), amountWei: String(p.debtValue), priorDepositCount: 0,
+          points: pointsForCusdMint(p.debtValue), activity: 'cusdmint',
+        });
+      }
+    }
+
+    if (reachedCoverage || !data.next_page_params) break;
+    params = '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(data.next_page_params).map(([k, v]) => [k, String(v)])),
+    ).toString();
+  }
+
+  if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.saveCeCursor(newestSeen);
+}
+
 async function scanCycle(store) {
   const cursor = store.loadCursor() ?? {
     lastScannedBlock: BigInt(CFG.pointsStartBlock) - 1n,
@@ -462,6 +547,11 @@ async function main() {
       await scanPrivacyPoolCycle(store);
     } catch (err) {
       log('privacy pool scan cycle failed:', err?.message || err);
+    }
+    try {
+      await scanCollateralEngineCycle(store);
+    } catch (err) {
+      log('collateral engine scan cycle failed:', err?.message || err);
     }
     try {
       await scanCycle(store);

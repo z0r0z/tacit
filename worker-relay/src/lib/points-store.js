@@ -99,19 +99,33 @@ export function openStore(dbPath) {
       id                 INTEGER PRIMARY KEY CHECK (id = 1),
       last_scanned_block INTEGER NOT NULL
     );
+
+    -- CollateralEngine scan cursor (EscrowPosted + CdpMinted — see scanCollateralEngineCycle). One shared
+    -- cursor: both events live on the same contract and are scanned in the same block range each cycle.
+    CREATE TABLE IF NOT EXISTS ce_cursor (
+      id                 INTEGER PRIMARY KEY CHECK (id = 1),
+      last_scanned_block INTEGER NOT NULL
+    );
   `);
 
-  // Migration for a store created before tip tracking / the Privacy Pools boost existed — CREATE TABLE IF
-  // NOT EXISTS above only covers a fresh database. SQLite has no ADD COLUMN IF NOT EXISTS on the version
-  // better-sqlite3 bundles, so this just swallows the "duplicate column" error a second run throws.
-  for (const col of ['tip_wei TEXT', 'tip_recipient TEXT', 'pp_boosted INTEGER NOT NULL DEFAULT 0']) {
+  // Migration for a store created before tip tracking / the Privacy Pools boost / cBTC+cUSD mint activity
+  // existed — CREATE TABLE IF NOT EXISTS above only covers a fresh database. SQLite has no ADD COLUMN IF NOT
+  // EXISTS on the version better-sqlite3 bundles, so this just swallows the "duplicate column" error a
+  // second run throws.
+  for (const col of [
+    'tip_wei TEXT', 'tip_recipient TEXT', 'pp_boosted INTEGER NOT NULL DEFAULT 0',
+    // What earned these points: 'wrap' (the original ETH-wrap program), 'cbtcmint' (wstETH escrow posted
+    // toward a cBTC mint), 'cusdmint' (a cUSD CDP loan opened). amount_wei's UNITS depend on this: ETH wei
+    // for 'wrap'/'cbtcmint' (wstETH, 18 decimals), tacitDecimals=8-scaled dollars for 'cusdmint'.
+    "activity TEXT NOT NULL DEFAULT 'wrap'",
+  ]) {
     try { db.exec(`ALTER TABLE deposits ADD COLUMN ${col}`); } catch {}
   }
 
   const insertDeposit = db.prepare(`
     INSERT OR IGNORE INTO deposits
-      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted)
-    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted)
+      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity)
+    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted, @activity)
   `);
   const bumpTotals = db.prepare(`
     INSERT INTO totals (address, points, deposit_count, amount_wei)
@@ -134,7 +148,7 @@ export function openStore(dbPath) {
   `);
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
   const depositsForStmt = db.prepare(`
-    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted
+    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
   const dayPointsStmt = db.prepare(`
@@ -178,6 +192,11 @@ export function openStore(dbPath) {
     INSERT INTO pp_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
     ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
+  const loadCeCursorStmt = db.prepare(`SELECT last_scanned_block FROM ce_cursor WHERE id = 1`);
+  const saveCeCursorStmt = db.prepare(`
+    INSERT INTO ce_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
+    ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
+  `);
 
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
@@ -189,7 +208,7 @@ export function openStore(dbPath) {
   // way `depositor` (tx.from, the transaction's own signer) is what earns points — a forwarder tip never
   // changes who that is.
   const recordDeposit = db.transaction((dep) => {
-    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, ...dep });
+    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, activity: 'wrap', ...dep });
     if (wrote.changes === 0) return false; // already recorded (safe to re-scan a chunk after a crash)
     bumpTotals.run({ address: dep.depositor, points: dep.points, amountWei: dep.amountWei });
     return true;
@@ -305,10 +324,20 @@ export function openStore(dbPath) {
     savePpCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
   }
 
+  function loadCeCursor() {
+    const row = loadCeCursorStmt.get();
+    return row ? BigInt(row.last_scanned_block) : null;
+  }
+
+  function saveCeCursor(lastScannedBlock) {
+    saveCeCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
+  }
+
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor,
     dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
+    loadCeCursor, saveCeCursor,
   };
 }
