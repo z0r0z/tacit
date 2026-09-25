@@ -1957,24 +1957,29 @@ function handleConfidentialQuote(req, env, url, cors) {
           out.gasAwareFloorUnits = floorUnits.toString();
         } catch { /* leave gasAwareFloorUnits null on any conversion hiccup */ }
       }
-      // Recommended tip (raw wei — NOT fee-asset units) for WrapTipForwarder.wrapWithTip: covers this
-      // relay's real cost to settle a wrap afterward (settle gas + the SP1 network-prove cost) plus the
-      // same margin as worker-relay's own fee model, so integrators (zFi's zSwap, tacit's own dapp) have
-      // one number to attach as `msg.value - amount` instead of guessing. cETH-only: the forwarder only
-      // ever wraps native ETH. WRAP_SETTLE_GAS mirrors worker-relay's OP_GAS.wrap (593000) and OP_PROVE
-      // mirrors its OP_PROVE (0.39) — kept in sync by convention like MIN_FLOOR_USD above, not by a shared
-      // source of truth. A wrap is NEVER refused for an insufficient tip (ConfidentialRouter's feeLegsOf
-      // treats 'wrap' as fee-less by design and both fee gates unconditionally pass it through — see
+      // Recommended tip (raw wei — NOT fee-asset units) for WrapTipForwarder.wrapWithTip (cETH) or
+      // WrapTokenTipForwarder (every other asset here): covers this relay's real cost to settle a wrap
+      // afterward (settle gas + the SP1 network-prove cost) plus the same margin as worker-relay's own fee
+      // model, so integrators (zFi's zSwap, tacit's own dapp) have one number to attach as the tip instead
+      // of guessing. Both forwarders' tips are plain ETH regardless of which asset is wrapped —
+      // WrapTokenTipForwarder's own NatSpec: "an ETH tip needs no price conversion to be useful (the
+      // relay's own costs — gas, PROVE — are ETH-denominated)" — so the same cost formula applies asset-
+      // independently. WRAP_SETTLE_GAS mirrors worker-relay's OP_GAS.wrap (593000) and OP_PROVE mirrors its
+      // OP_PROVE (0.39) — kept in sync by convention like MIN_FLOOR_USD above, not by a shared source of
+      // truth. A wrap is NEVER refused for an insufficient tip (ConfidentialRouter's feeLegsOf treats
+      // 'wrap' as fee-less by design and both fee gates unconditionally pass it through — see
       // relay-quote.js's passesFloor), so an integrator that under-tips costs the relay margin, never a
       // stuck deposit: this is a recommendation for healthy economics, not a precondition for service.
       //
       // The cost-based number above is flat in USD, so as a fraction of the deposit it is regressive: fine
-      // on a 1 ETH wrap, disproportionate on a 0.001 ETH one. `amountWei`, when passed, caps the
+      // on a 1 ETH wrap, disproportionate on a 0.001 ETH one. For cETH, `amountWei` (when passed) caps the
       // recommendation at WRAP_TIP_CAP_BPS of the deposit (default 300 = 3%, matching zSwap's own cpFeeOk
       // ceiling on relay fees) — a client sizing a real deposit gets a tip that is never a double-digit
       // share of it, at the cost of only partial cost recovery on very small wraps. Omit `amountWei` to get
-      // the plain cost-based number uncapped, unchanged from before this parameter existed.
-      if (ticker === 'cETH' && gasPriceHex) {
+      // the plain cost-based number uncapped, unchanged from before this parameter existed. The cap is
+      // cETH-only: for every other asset `amountWei` would be in that asset's own units, not wei of ETH, so
+      // capping the ETH tip against it would need a price this endpoint may not have for every asset.
+      if (gasPriceHex) {
         try {
           const wrapSettleGas = BigInt(env.WRAP_SETTLE_GAS || '593000');
           const gasCostWei = wrapSettleGas * BigInt(gasPriceHex);
@@ -1985,11 +1990,13 @@ function handleConfidentialQuote(req, env, url, cors) {
           const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
           const base = gasCostWei + proveCostWei;
           let tipWei = base + (base * marginBps) / 10000n;
-          const amountParam = url.searchParams.get('amountWei') || '';
-          if (/^\d+$/.test(amountParam)) {
-            const capBps = BigInt(env.WRAP_TIP_CAP_BPS || '300');
-            const cap = (BigInt(amountParam) * capBps) / 10000n;
-            if (cap < tipWei) tipWei = cap;
+          if (ticker === 'cETH') {
+            const amountParam = url.searchParams.get('amountWei') || '';
+            if (/^\d+$/.test(amountParam)) {
+              const capBps = BigInt(env.WRAP_TIP_CAP_BPS || '300');
+              const cap = (BigInt(amountParam) * capBps) / 10000n;
+              if (cap < tipWei) tipWei = cap;
+            }
           }
           out.recommendedWrapTipWei = tipWei.toString();
           // Self-settle (SettleTipForwarder.settleWithTip) carries no gas leg: the caller is already
