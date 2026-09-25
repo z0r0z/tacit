@@ -147,6 +147,11 @@ replace it.
   allows them, covenants can back the same pool unchanged. Secret Sats Join mixes real sats in an
   equal-amount join to silent-payment outputs, with no coordinator and no custody.
 
+**Try it on signet** at [tacit.finance/sats](https://tacit.finance/sats). There, cBTC is a test token: a
+regular Tacit etch (`17619b4c…66c5`, ticker cBTC, 8 decimals, fixed supply, no BTC behind it). A faucet
+keeps small lots listed as pre-authorized sales at 1,000 signet sats each, so getting test cBTC is itself
+an atomic swap, and it also drips signet sats for fees. Pool spends are proved in the browser.
+
 Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled). Design:
 [pool](./contracts/sp1/confidential/DESIGN-btc-shielded-pool.md),
 [security](./contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md),
