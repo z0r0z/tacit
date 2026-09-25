@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src https://tacit-btc-pool.onrender.com">
 <title>Secret Sats</title>
-<meta name="description" content="Pay in bitcoin without revealing who paid whom, or how much.">
+<meta name="description" content="Pay in bitcoin-backed cBTC on Bitcoin without revealing how much, or who paid whom.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤫</text></svg>">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('../fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -49,15 +49,15 @@ footer { color: var(--mute); font-size: 12px; }
   <h1>Secret Sats</h1>
   <p class="tag">Pay in bitcoin. Tell no one.</p>
 
-  <p>Secret Sats lets you pay in bitcoin without revealing who paid whom, or how much.</p>
-  <p>BTC becomes cBTC, a Tacit asset on Bitcoin whose transfers hide their amounts and pay one-time addresses only the recipient can find.</p>
-  <p>Shield it into Tacit's Bitcoin pool and a payment also hides where it came from. Relayers post it, so you need no Bitcoin wallet to send.</p>
+  <p>Secret Sats lets you pay in cBTC, a bitcoin-backed Tacit asset, on Bitcoin without revealing how much, and inside a shielded pool without revealing who paid whom.</p>
+  <p>Locked BTC backs cBTC, which moves to Bitcoin as a Tacit asset whose transfers hide their amounts. Send to a stealth address and only the recipient can find it.</p>
+  <p>Shield it into Tacit's Bitcoin pool and a payment also hides where it came from. Relayers can post pool spends, so after shielding you need no Bitcoin wallet to send.</p>
   <a class="paper" href="/secret-sats.pdf">Read the paper →</a>
 
-  <h2>Done on signet</h2>
+  <h2>Done on signet, with a test asset</h2>
   <ol>
     <li><span><a href="https://mempool.space/signet/tx/56fcdf0f17cca0327bcbad1a11e4382c70fde3b178ac12e866b0764a8a405fa9">Alice shields 50,000</a></span><span>block 323662</span></li>
-    <li><span><a href="https://mempool.space/signet/tx/55d4cdb1147eaca47d27f1d0d62bd75f1ddc19588b44bfd4618c09fdbe278ea7">Alice pays Bob, privately</a></span><span>block 323664</span></li>
+    <li><span><a href="https://mempool.space/signet/tx/55d4cdb1147eaca47d27f1d0d62bd75f1ddc19588b44bfd4618c09fdbe278ea7">Alice pays Bob, amount and source hidden</a></span><span>block 323664</span></li>
     <li><span>Bob scans and finds 30,000</span><span>off-chain</span></li>
     <li><span><a href="https://mempool.space/signet/tx/7cb822352c6cbe9d94226892b9fde440d2552d552a529c65ee716da23208c20d">Bob exits to his own address</a></span><span>block 323665</span></li>
   </ol>
