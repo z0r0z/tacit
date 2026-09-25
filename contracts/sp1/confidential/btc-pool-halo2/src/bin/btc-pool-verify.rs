@@ -1,6 +1,6 @@
 //! btc-pool-verify [--params FILE] [--vk FILE] [PROOF.json | -]
 //! PROOF.json = {"proof": hex, "publics": [dec; 12]}. Exit 0 valid, 1 invalid, 2 error.
-//! Defaults: artifacts/params-k12.bin and artifacts/vk.bin; --expect-vk HEX checks the vk digest first.
+//! Defaults: artifacts/params-k13.bin and artifacts/vk.bin; --expect-vk HEX checks the vk digest first.
 
 use btc_pool_halo2::*;
 use std::path::Path;

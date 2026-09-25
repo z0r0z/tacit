@@ -1,4 +1,4 @@
-//! btc-pool-halo2 srs    [--ptau FILE]              convert + check the pinned ptau, write artifacts/params-k12.bin
+//! btc-pool-halo2 srs    [--ptau FILE]              convert + check the pinned ptau, write artifacts/params-k13.bin
 //! btc-pool-halo2 keygen                            write artifacts/vk.bin and print its digest
 //! btc-pool-halo2 prove  INPUT.json [OUT.json]      INPUT = btc-pool-zk.js buildWitness(...).input
 //! btc-pool-halo2 check  INPUT.json                 constraint check (MockProver), failures by region

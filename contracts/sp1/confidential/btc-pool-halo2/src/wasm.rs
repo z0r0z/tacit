@@ -25,7 +25,7 @@ pub struct Prover {
 
 #[wasm_bindgen]
 impl Prover {
-    /// `params`: the pinned params file (artifacts/params-k12.bin).
+    /// `params`: the pinned params file (artifacts/params-k13.bin).
     #[wasm_bindgen(constructor)]
     pub fn new(params: &[u8]) -> Result<Prover, JsError> {
         let params = srs::read_params(params).map_err(err)?;

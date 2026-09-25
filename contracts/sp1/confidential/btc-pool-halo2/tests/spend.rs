@@ -183,6 +183,12 @@ fn valid_proofs() {
     bad[1] = body_hash(b"another body");
     assert!(!verify(params, vk, &bad, &proof));
     println!("  ok - body-hash tamper: a valid proof does not verify for another body");
+    for i in 0..N_PUBLIC {
+        let mut bad = w.publics();
+        bad[i] += Fr::ONE;
+        assert!(!verify(params, vk, &bad, &proof), "public {i} is not bound");
+    }
+    println!("  ok - each of the {N_PUBLIC} public inputs is bound: changing any one rejects the proof");
     let tampered = cases.iter().find(|c| c["name"] == "pay-tampered-bodyHash").unwrap();
     let doc = serde_json::json!({ "proof": hex::encode(&proof), "publics": tampered["publics"] });
     assert!(!verify_json(params, vk, &doc).unwrap());

@@ -1,14 +1,25 @@
 //! spend.circom as a Halo2 circuit over BN254 Fr.
 //!
-//! Chips (disjoint columns, so the floor planner lays them side by side):
-//!   Arith     a, b, c; ql·a + qr·b + qo·c + qm·a·b + qc = 0. Range checks are MSB-first bit
-//!             decompositions in (a, b): a_next = 2·a + b, b boolean, from a = 0 to a = x.
-//!   Poseidon  one row per round; lanes s_j, sq_j = (s_j + rc_j)², sbox = sq_j²·(s_j + rc_j). Inputs load
-//!             from the io column (rotations 0..t−2), the output returns through io; io is the only
-//!             equality column. Merkle levels chain on s_0 of the previous row, sibling in s_3, bit in io.
-//!             Chip A: widths 3–6; chip B: width 3 (the second Merkle path).
-//!   Ec        one BabyAdd per row (circomlib formula); fixed-base LSB-first, variable-base MSB-first,
-//!             scalar accumulated in z. Second operands and bases load from the row above.
+//! Every chip shares one set of 12 advice columns (s0..s5, q0..q5) and 6 fixed columns (f0..f5), and the
+//! regions stack vertically. Only s0..s2 take part in equality (one permutation product). Rotations:
+//! s0, s1 {−2, −1, 0, 1}; s2 {−1, 0, 1}; s3..s5 {0, 1}; q0..q5 {0}. Public inputs are bound by a gate
+//! (s0 of rows 0..12 equals the instance column), and the starting values of the bit decompositions and
+//! the EC accumulators by gates, so there is no constants column.
+//!
+//!   Arith     a = s0, b = s1, c = s2; ql·a + qr·b + qo·c + qm·a·b + qc = 0 with (ql, qr, qo, qm, qc) in
+//!             f0..f4. Range checks are MSB-first bit decompositions in (s0, s1): z_next = 2·z + b, b
+//!             boolean, from z = 0 to z = x.
+//!   Poseidon  one row per round; lanes s_j, squares q_j = (s_j + rc_j)², round constants f_j. A hash loads
+//!             its inputs from the two rows above (s0..s2 of the row above, s0, s1 of the row before),
+//!             and the output is s0 of the row after the last round.
+//!   Merkle    both input paths in the same rows: path A in lanes s0..s2, path B in lanes s3..s5 (width 3
+//!             each, shared round constants). The row between levels holds the running nodes (s4, s5),
+//!             the index bits (s0, s1) and the siblings (q0, q1); the leaves enter and the roots leave
+//!             through s0, s1.
+//!   Ec        one BabyAdd per row (circomlib formula): x = s0, y = s1, z = s2, px = s3, py = s4,
+//!             x2 = s5, y2 = q0, t = q1, b = q2; fixed-base tables in f0..f2. Fixed-base LSB-first,
+//!             variable-base MSB-first, scalar accumulated in z. Second operands and bases load from the
+//!             row above.
 //!
 //! Public inputs (instance column, rows 0..12): root, bodyHash, asset, nf[2], outLeaf[3], exitC[2], depC[2].
 
@@ -17,7 +28,7 @@ use ff::Field;
 use halo2_proofs::{
     circuit::{AssignedCell, Layouter, Region, SimpleFloorPlanner, Value},
     halo2curves::bn256::Fr,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Constraints, Error, Expression, Fixed, Instance, Selector},
+    plonk::{Advice, Circuit, Column, ConstraintSystem, Constraints, Error, Expression, Fixed, Selector, VirtualCells},
     poly::Rotation,
 };
 use num_bigint::BigUint;
@@ -25,7 +36,7 @@ use std::sync::OnceLock;
 
 pub type AC = AssignedCell<Fr, Fr>;
 
-pub const K: u32 = 12;
+pub const K: u32 = 13;
 
 fn c(x: Fr) -> Expression<Fr> {
     Expression::Constant(x)
@@ -48,6 +59,82 @@ fn set_tag(t: String) {
     TAG.with(|x| *x.borrow_mut() = t);
 }
 
+/// The shared columns.
+#[derive(Clone, Copy, Debug)]
+pub struct Cols {
+    s: [Column<Advice>; 6],
+    q: [Column<Advice>; 6],
+    f: [Column<Fixed>; 6],
+}
+
+impl Cols {
+    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self {
+        let s = [(); 6].map(|_| meta.advice_column());
+        let q = [(); 6].map(|_| meta.advice_column());
+        let f = [(); 6].map(|_| meta.fixed_column());
+        for col in &s[..3] {
+            meta.enable_equality(*col);
+        }
+        Cols { s, q, f }
+    }
+}
+
+/// All selectors, allocated by gate degree (then by rows they share) so that halo2's greedy selector
+/// compression packs them into few fixed columns.
+#[derive(Clone, Copy, Debug)]
+pub struct Sels {
+    add: Selector,
+    arith: Selector,
+    full: [Selector; 3],
+    part: [Selector; 3],
+    pfull: Selector,
+    ppart: Selector,
+    plast: Selector,
+    bits: Selector,
+    mk: Selector,
+    fix: Selector,
+    var: Selector,
+    load: Selector,
+    ldp: Selector,
+    dbl: Selector,
+    ld2: Selector,
+    vdbl: Selector,
+    public: Selector,
+    ecs: Selector,
+    z0: Selector,
+    mvin: Selector,
+    mvout: Selector,
+}
+
+impl Sels {
+    fn new(meta: &mut ConstraintSystem<Fr>) -> Self {
+        let mut s = || meta.selector();
+        Sels {
+            add: s(),
+            arith: s(),
+            full: [s(), s(), s()],
+            part: [s(), s(), s()],
+            pfull: s(),
+            ppart: s(),
+            plast: s(),
+            bits: s(),
+            mk: s(),
+            fix: s(),
+            var: s(),
+            load: s(),
+            ldp: s(),
+            dbl: s(),
+            ld2: s(),
+            vdbl: s(),
+            public: s(),
+            ecs: s(),
+            z0: s(),
+            mvin: s(),
+            mvout: s(),
+        }
+    }
+}
+
 // ── Arith ──
 
 #[derive(Clone, Debug)]
@@ -56,28 +143,32 @@ pub struct ArithConfig {
     b: Column<Advice>,
     c: Column<Advice>,
     q: [Column<Fixed>; 5], // ql, qr, qo, qm, qc
+    q_arith: Selector,
     q_bits: Selector,
+    q_z0: Selector,
 }
 
 impl ArithConfig {
-    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self {
-        let (a, b, cc) = (meta.advice_column(), meta.advice_column(), meta.advice_column());
-        for col in [a, b, cc] {
-            meta.enable_equality(col);
-        }
-        let q = [(); 5].map(|_| meta.fixed_column());
-        let q_bits = meta.selector();
+    fn configure(meta: &mut ConstraintSystem<Fr>, cols: &Cols, sel: &Sels) -> Self {
+        let (a, b, cc) = (cols.s[0], cols.s[1], cols.s[2]);
+        let q = [cols.f[0], cols.f[1], cols.f[2], cols.f[3], cols.f[4]];
+        let (q_arith, q_bits, q_z0) = (sel.arith, sel.bits, sel.z0);
         meta.create_gate("arith", |m| {
+            let s = m.query_selector(q_arith);
             let (va, vb, vc) = (m.query_advice(a, Rotation::cur()), m.query_advice(b, Rotation::cur()), m.query_advice(cc, Rotation::cur()));
             let f = q.map(|x| m.query_fixed(x, Rotation::cur()));
-            vec![f[0].clone() * va.clone() + f[1].clone() * vb.clone() + f[2].clone() * vc + f[3].clone() * va * vb + f[4].clone()]
+            Constraints::with_selector(s, vec![f[0].clone() * va.clone() + f[1].clone() * vb.clone() + f[2].clone() * vc + f[3].clone() * va * vb + f[4].clone()])
         });
         meta.create_gate("bits", |m| {
             let s = m.query_selector(q_bits);
             let (z, bb, zn) = (m.query_advice(a, Rotation::cur()), m.query_advice(b, Rotation::cur()), m.query_advice(a, Rotation::next()));
             Constraints::with_selector(s, vec![bb.clone() * (cu(1) - bb.clone()), zn - (z * cu(2) + bb)])
         });
-        ArithConfig { a, b, c: cc, q, q_bits }
+        meta.create_gate("bits start", |m| {
+            let s = m.query_selector(q_z0);
+            Constraints::with_selector(s, vec![m.query_advice(a, Rotation::cur())])
+        });
+        ArithConfig { a, b, c: cc, q, q_arith, q_bits, q_z0 }
     }
 }
 
@@ -102,25 +193,23 @@ impl<'c> Arith<'c> {
 
     /// One gate row; returns the three cells (unused slots hold 0).
     fn row(&self, ly: &mut impl Layouter<Fr>, ops: [Op; 3], coeff: [Fr; 5]) -> Result<[AC; 3], Error> {
-        ly.assign_region(
-            tag,
-            |mut r| {
-                let cols = [self.cfg.a, self.cfg.b, self.cfg.c];
-                let mut out = Vec::with_capacity(3);
-                for (i, op) in ops.iter().enumerate() {
-                    let cell = match op {
-                        Op::Cell(x) => x.copy_advice(|| "", &mut r, cols[i], 0)?,
-                        Op::Val(v) => r.assign_advice(|| "", cols[i], 0, || *v)?,
-                        Op::None => r.assign_advice(|| "", cols[i], 0, || Value::known(Fr::ZERO))?,
-                    };
-                    out.push(cell);
-                }
-                for (i, q) in self.cfg.q.iter().enumerate() {
-                    r.assign_fixed(|| "", *q, 0, || Value::known(coeff[i]))?;
-                }
-                Ok([out[0].clone(), out[1].clone(), out[2].clone()])
-            },
-        )
+        ly.assign_region(tag, |mut r| {
+            self.cfg.q_arith.enable(&mut r, 0)?;
+            let cols = [self.cfg.a, self.cfg.b, self.cfg.c];
+            let mut out = Vec::with_capacity(3);
+            for (i, op) in ops.iter().enumerate() {
+                let cell = match op {
+                    Op::Cell(x) => x.copy_advice(|| "", &mut r, cols[i], 0)?,
+                    Op::Val(v) => r.assign_advice(|| "", cols[i], 0, || *v)?,
+                    Op::None => r.assign_advice(|| "", cols[i], 0, || Value::known(Fr::ZERO))?,
+                };
+                out.push(cell);
+            }
+            for (i, q) in self.cfg.q.iter().enumerate() {
+                r.assign_fixed(|| "", *q, 0, || Value::known(coeff[i]))?;
+            }
+            Ok([out[0].clone(), out[1].clone(), out[2].clone()])
+        })
     }
 
     pub fn witness(&self, ly: &mut impl Layouter<Fr>, v: Value<Fr>) -> Result<AC, Error> {
@@ -170,8 +259,8 @@ impl<'c> Arith<'c> {
         ly.assign_region(
             || format!("{name} range"),
             |mut r| {
-                let z0 = r.assign_advice(|| "z0", self.cfg.a, 0, || Value::known(Fr::ZERO))?;
-                r.constrain_constant(z0.cell(), Fr::ZERO)?;
+                self.cfg.q_z0.enable(&mut r, 0)?;
+                r.assign_advice(|| "z0", self.cfg.a, 0, || Value::known(Fr::ZERO))?;
                 let mut z = Value::known(Fr::ZERO);
                 for i in 0..n {
                     self.cfg.q_bits.enable(&mut r, i)?;
@@ -191,107 +280,143 @@ impl<'c> Arith<'c> {
 
 // ── Poseidon ──
 
+/// Standalone hash widths (inputs + 1). The Merkle paths use width 3 in the paired layout.
+const WIDTHS: [usize; 3] = [4, 5, 6];
+
 #[derive(Clone, Debug)]
 pub struct PoseidonConfig {
-    widths: Vec<usize>,
-    s: Vec<Column<Advice>>,
-    sq: Vec<Column<Advice>>,
-    io: Column<Advice>,
-    rc: Vec<Column<Fixed>>,
-    q_full: Vec<Selector>,
-    q_part: Vec<Selector>,
-    q_load: Vec<Selector>,
-    q_in0: Selector,
-    q_out: Selector,
+    cols: Cols,
+    q_full: [Selector; 3],
+    q_part: [Selector; 3],
+    q_load: Selector,
+    q_pfull: Selector,
+    q_ppart: Selector,
+    q_plast: Selector,
     q_mk: Selector,
+    q_mvin: Selector,
+    q_mvout: Selector,
+}
+
+/// x_j = s_j + rc for lane j, with the round constant of lane j mod w.
+fn lanes(m: &mut VirtualCells<'_, Fr>, cols: &Cols, n: usize, w: usize) -> Vec<Expression<Fr>> {
+    (0..n).map(|j| m.query_advice(cols.s[j], Rotation::cur()) + m.query_fixed(cols.f[j % w], Rotation::cur())).collect()
 }
 
 impl PoseidonConfig {
-    fn configure(meta: &mut ConstraintSystem<Fr>, widths: &[usize]) -> Self {
-        let maxw = *widths.iter().max().unwrap();
-        let s: Vec<_> = (0..maxw.max(4)).map(|_| meta.advice_column()).collect();
-        let sq: Vec<_> = (0..maxw).map(|_| meta.advice_column()).collect();
-        let io = meta.advice_column();
-        meta.enable_equality(io);
-        let rc: Vec<_> = (0..maxw).map(|_| meta.fixed_column()).collect();
-        let q_full: Vec<_> = widths.iter().map(|_| meta.selector()).collect();
-        let q_part: Vec<_> = widths.iter().map(|_| meta.selector()).collect();
-        let q_load: Vec<_> = widths.iter().map(|_| meta.selector()).collect();
-        let (q_in0, q_out, q_mk) = (meta.selector(), meta.selector(), meta.selector());
+    fn configure(meta: &mut ConstraintSystem<Fr>, cols: &Cols, sel: &Sels) -> Self {
+        let (q_full, q_part, q_load) = (sel.full, sel.part, sel.load);
+        let (q_pfull, q_ppart, q_plast, q_mk, q_mvin, q_mvout) = (sel.pfull, sel.ppart, sel.plast, sel.mk, sel.mvin, sel.mvout);
+        let cl = *cols;
 
-        for (wi, &t) in widths.iter().enumerate() {
-            for full in [true, false] {
-                let sel = if full { q_full[wi] } else { q_part[wi] };
-                meta.create_gate(if full { "poseidon full" } else { "poseidon partial" }, |m| {
-                    let q = m.query_selector(sel);
-                    let x: Vec<_> = (0..t).map(|j| m.query_advice(s[j], Rotation::cur()) + m.query_fixed(rc[j], Rotation::cur())).collect();
-                    let sqv: Vec<_> = (0..t).map(|j| if full || j == 0 { m.query_advice(sq[j], Rotation::cur()) } else { c(Fr::ZERO) }).collect();
-                    let nx: Vec<_> = (0..t).map(|j| m.query_advice(s[j], Rotation::next())).collect();
-                    let sbox = |j: usize| -> Expression<Fr> {
-                        if full || j == 0 {
-                            sqv[j].clone() * sqv[j].clone() * x[j].clone()
-                        } else {
-                            x[j].clone()
-                        }
-                    };
-                    let mut cs = Vec::new();
-                    for j in 0..t {
-                        if full || j == 0 {
-                            cs.push(sqv[j].clone() - x[j].clone() * x[j].clone());
-                        }
-                    }
-                    for i in 0..t {
-                        let mut acc = c(Fr::ZERO);
-                        for j in 0..t {
-                            acc = acc + c(model::mds(t, i, j)) * sbox(j);
-                        }
-                        cs.push(nx[i].clone() - acc);
-                    }
-                    Constraints::with_selector(q, cs)
-                });
-            }
-            meta.create_gate("poseidon load", |m| {
-                let q = m.query_selector(q_load[wi]);
-                let mut cs = vec![m.query_advice(s[0], Rotation::cur())];
-                for j in 1..t {
-                    cs.push(m.query_advice(s[j], Rotation::cur()) - m.query_advice(io, Rotation((j - 1) as i32)));
+        // One round over `groups` independent states of width t laid side by side. `sbox_all`: full round.
+        // `out_lanes`: Some(dst) constrains only lane 0 of each group, into column s[dst[g]].
+        let round = move |m: &mut VirtualCells<'_, Fr>, t: usize, groups: usize, sbox_all: bool, out_lanes: Option<&[usize]>| -> Vec<Expression<Fr>> {
+            let x = lanes(m, &cl, t * groups, t);
+            let mut cs = Vec::new();
+            let mut sb = Vec::with_capacity(t * groups);
+            for (j, xj) in x.iter().enumerate() {
+                if sbox_all || j % t == 0 {
+                    let sq = m.query_advice(cl.q[j], Rotation::cur());
+                    cs.push(sq.clone() - xj.clone() * xj.clone());
+                    sb.push(sq.clone() * sq * xj.clone());
+                } else {
+                    sb.push(xj.clone());
                 }
-                Constraints::with_selector(q, cs)
+            }
+            for g in 0..groups {
+                let rows: Vec<usize> = match out_lanes {
+                    Some(_) => vec![0],
+                    None => (0..t).collect(),
+                };
+                for i in rows {
+                    let mut acc = c(Fr::ZERO);
+                    for j in 0..t {
+                        acc = acc + c(model::mds(t, i, j)) * sb[g * t + j].clone();
+                    }
+                    let dst = match out_lanes {
+                        Some(d) => d[g],
+                        None => g * t + i,
+                    };
+                    cs.push(m.query_advice(cl.s[dst], Rotation::next()) - acc);
+                }
+            }
+            cs
+        };
+
+        for (wi, &t) in WIDTHS.iter().enumerate() {
+            meta.create_gate("poseidon full", |m| {
+                let q = m.query_selector(q_full[wi]);
+                Constraints::with_selector(q, round(m, t, 1, true, None))
+            });
+            meta.create_gate("poseidon partial", |m| {
+                let q = m.query_selector(q_part[wi]);
+                Constraints::with_selector(q, round(m, t, 1, false, None))
             });
         }
-        meta.create_gate("poseidon io", |m| {
-            let (qi, qo) = (m.query_selector(q_in0), m.query_selector(q_out));
-            let d = m.query_advice(s[0], Rotation::cur()) - m.query_advice(io, Rotation::cur());
-            vec![qi * d.clone(), qo * d]
+        // every width: lanes 1..3 from s0..s2 of the row above, lanes 4, 5 from s0, s1 two rows above
+        // (unused lanes and their input cells hold 0)
+        meta.create_gate("poseidon load", |m| {
+            let q = m.query_selector(q_load);
+            let mut v = vec![m.query_advice(cl.s[0], Rotation::cur())];
+            for j in 1..6 {
+                let src = if j <= 3 { m.query_advice(cl.s[j - 1], Rotation::prev()) } else { m.query_advice(cl.s[j - 4], Rotation(-2)) };
+                v.push(m.query_advice(cl.s[j], Rotation::cur()) - src);
+            }
+            Constraints::with_selector(q, v)
+        });
+        meta.create_gate("poseidon pair full", |m| {
+            let q = m.query_selector(q_pfull);
+            Constraints::with_selector(q, round(m, 3, 2, true, None))
+        });
+        meta.create_gate("poseidon pair partial", |m| {
+            let q = m.query_selector(q_ppart);
+            Constraints::with_selector(q, round(m, 3, 2, false, None))
+        });
+        meta.create_gate("poseidon pair last", |m| {
+            let q = m.query_selector(q_plast);
+            Constraints::with_selector(q, round(m, 3, 2, true, Some(&[4, 5])))
         });
         meta.create_gate("merkle level", |m| {
             let q = m.query_selector(q_mk);
-            let prev = m.query_advice(s[0], Rotation::prev());
-            let b = m.query_advice(io, Rotation::cur());
-            let sb = m.query_advice(s[3], Rotation::cur());
-            let (s0, s1, s2) = (m.query_advice(s[0], Rotation::cur()), m.query_advice(s[1], Rotation::cur()), m.query_advice(s[2], Rotation::cur()));
+            let cur = |m: &mut VirtualCells<'_, Fr>, col| m.query_advice(col, Rotation::cur());
+            let (pa, pb, ba, bb, sa, sbb) = (cur(m, cl.s[4]), cur(m, cl.s[5]), cur(m, cl.s[0]), cur(m, cl.s[1]), cur(m, cl.q[0]), cur(m, cl.q[1]));
+            let nx: Vec<_> = (0..6).map(|j| m.query_advice(cl.s[j], Rotation::next())).collect();
             Constraints::with_selector(
                 q,
                 vec![
-                    b.clone() * (cu(1) - b.clone()),
-                    s0,
-                    s1 - (prev.clone() + b.clone() * (sb.clone() - prev.clone())),
-                    s2 - (sb.clone() + b * (prev - sb)),
+                    ba.clone() * (cu(1) - ba.clone()),
+                    bb.clone() * (cu(1) - bb.clone()),
+                    nx[0].clone(),
+                    nx[1].clone() - (pa.clone() + ba.clone() * (sa.clone() - pa.clone())),
+                    nx[2].clone() - (sa.clone() + ba * (pa - sa)),
+                    nx[3].clone(),
+                    nx[4].clone() - (pb.clone() + bb.clone() * (sbb.clone() - pb.clone())),
+                    nx[5].clone() - (sbb.clone() + bb * (pb - sbb)),
                 ],
             )
         });
-        PoseidonConfig { widths: widths.to_vec(), s, sq, io, rc, q_full, q_part, q_load, q_in0, q_out, q_mk }
+        // the running nodes live in s4, s5; the leaves enter from s0, s1 and the roots leave through them
+        for (sel, from, to, rot) in [(q_mvin, [0, 1], [4, 5], 1), (q_mvout, [4, 5], [0, 1], 1)] {
+            meta.create_gate("merkle move", |m| {
+                let q = m.query_selector(sel);
+                let v = (0..2).map(|i| m.query_advice(cl.s[to[i]], Rotation(rot)) - m.query_advice(cl.s[from[i]], Rotation::cur())).collect::<Vec<_>>();
+                Constraints::with_selector(q, v)
+            });
+        }
+        PoseidonConfig { cols: *cols, q_full, q_part, q_load, q_pfull, q_ppart, q_plast, q_mk, q_mvin, q_mvout }
     }
 
     fn rounds(t: usize) -> usize {
         model::FULL_ROUNDS + model::partial_rounds(t)
     }
 
-    /// Rounds at rows off..off+R, output state at off+R (s_0 also copied to io there). The caller has
-    /// assigned the lanes at `off`.
-    fn permute(&self, r: &mut Region<'_, Fr>, off: usize, t: usize, init: Vec<Value<Fr>>) -> Result<AC, Error> {
-        let wi = self.widths.iter().position(|&w| w == t).expect("width");
-        let mut st: Value<Vec<Fr>> = init.iter().fold(Value::known(Vec::with_capacity(t)), |acc, v| {
+    /// Rounds at rows off..off+R of `groups` width-t states side by side; the caller has assigned the lanes
+    /// at `off`. `last`: the final round writes only lane 0 of each group, into s0, s1, ….
+    fn permute(&self, r: &mut Region<'_, Fr>, off: usize, t: usize, init: Vec<Value<Fr>>, paired: bool) -> Result<Vec<AC>, Error> {
+        let n = init.len();
+        let groups = n / t;
+        let wi = WIDTHS.iter().position(|&w| w == t);
+        let mut st: Value<Vec<Fr>> = init.iter().fold(Value::known(Vec::with_capacity(n)), |acc, v| {
             acc.zip(*v).map(|(mut a, b)| {
                 a.push(b);
                 a
@@ -301,81 +426,117 @@ impl PoseidonConfig {
         for rd in 0..rounds {
             let row = off + rd;
             let full = model::is_full_round(t, rd);
-            if full {
-                self.q_full[wi].enable(r, row)?;
-            } else {
-                self.q_part[wi].enable(r, row)?;
-            }
+            let sel = match (paired, full, rd + 1 == rounds) {
+                (true, true, true) => self.q_plast,
+                (true, true, false) => self.q_pfull,
+                (true, false, _) => self.q_ppart,
+                (false, true, _) => self.q_full[wi.expect("width")],
+                (false, false, _) => self.q_part[wi.expect("width")],
+            };
+            sel.enable(r, row)?;
             for j in 0..t {
                 let k = model::round_constant(t, rd, j);
-                r.assign_fixed(|| "rc", self.rc[j], row, || Value::known(k))?;
+                r.assign_fixed(|| "rc", self.cols.f[j], row, || Value::known(k))?;
+            }
+            for j in 0..n {
+                let k = model::round_constant(t, rd, j % t);
                 if rd > 0 {
-                    r.assign_advice(|| "s", self.s[j], row, || st.as_ref().map(|s| s[j]))?;
+                    r.assign_advice(|| "s", self.cols.s[j], row, || st.as_ref().map(|s| s[j]))?;
                 }
-                if full || j == 0 {
-                    r.assign_advice(|| "sq", self.sq[j], row, || st.as_ref().map(|s| (s[j] + k).square()))?;
+                if full || j % t == 0 {
+                    r.assign_advice(|| "sq", self.cols.q[j], row, || st.as_ref().map(|s| (s[j] + k).square()))?;
                 }
             }
             st = st.map(|mut s| {
-                model::poseidon_round(t, rd, &mut s);
+                for g in 0..groups {
+                    model::poseidon_round(t, rd, &mut s[g * t..(g + 1) * t]);
+                }
                 s
             });
         }
         let row = off + rounds;
-        for j in 0..t {
-            r.assign_advice(|| "s out", self.s[j], row, || st.as_ref().map(|s| s[j]))?;
+        if paired {
+            (0..groups).map(|g| r.assign_advice(|| "out", self.cols.s[4 + g], row, || st.as_ref().map(|s| s[g * t]))).collect()
+        } else {
+            let out = r.assign_advice(|| "out", self.cols.s[0], row, || st.as_ref().map(|s| s[0]))?;
+            for j in 1..t {
+                r.assign_advice(|| "s out", self.cols.s[j], row, || st.as_ref().map(|s| s[j]))?;
+            }
+            Ok(vec![out])
         }
-        self.q_out.enable(r, row)?;
-        r.assign_advice(|| "out", self.io, row, || st.as_ref().map(|s| s[0]))
     }
 
-    /// circomlib Poseidon(inputs).
+    /// circomlib Poseidon(inputs), 3 ≤ inputs + 1 ≤ 6.
     pub fn hash(&self, ly: &mut impl Layouter<Fr>, inputs: &[&AC]) -> Result<AC, Error> {
         let t = inputs.len() + 1;
-        let wi = self.widths.iter().position(|&w| w == t).expect("width");
+        assert!(WIDTHS.contains(&t));
         ly.assign_region(
             || format!("{} poseidon", tag()),
             |mut r| {
-                self.q_load[wi].enable(&mut r, 0)?;
-                let mut init = vec![Value::known(Fr::ZERO)];
-                r.assign_advice(|| "cap", self.s[0], 0, || Value::known(Fr::ZERO))?;
-                for (j, x) in inputs.iter().enumerate() {
-                    x.copy_advice(|| "in", &mut r, self.io, j)?;
-                    r.assign_advice(|| "lane", self.s[j + 1], 0, || x.value().copied())?;
-                    init.push(x.value().copied());
+                // inputs 0..2 in s0..s2 of row 1, inputs 3, 4 in s0, s1 of row 0; round 0 at row 2
+                let zero = Value::known(Fr::ZERO);
+                for j in 0..5 {
+                    let (col, row) = if j < 3 { (self.cols.s[j], 1) } else { (self.cols.s[j - 3], 0) };
+                    match inputs.get(j) {
+                        Some(x) => x.copy_advice(|| "in", &mut r, col, row)?,
+                        None => r.assign_advice(|| "unused", col, row, || zero)?,
+                    };
                 }
-                self.permute(&mut r, 0, t, init)
+                self.q_load.enable(&mut r, 2)?;
+                let mut init = vec![zero];
+                r.assign_advice(|| "cap", self.cols.s[0], 2, || zero)?;
+                for j in 1..6 {
+                    let v = inputs.get(j - 1).map(|x| x.value().copied()).unwrap_or(zero);
+                    r.assign_advice(|| "lane", self.cols.s[j], 2, || v)?;
+                    if j < t {
+                        init.push(v);
+                    }
+                }
+                Ok(self.permute(&mut r, 2, t, init, false)?.remove(0))
             },
         )
     }
 
-    /// Poseidon(2) path of fixed depth from `leaf`; returns the root and the per-level index bits.
-    pub fn merkle(&self, ly: &mut impl Layouter<Fr>, leaf: &AC, path: &[Value<Fr>; TREE_DEPTH], bits: &[Value<Fr>; TREE_DEPTH]) -> Result<(AC, Vec<AC>), Error> {
+    /// Both Poseidon(2) paths of fixed depth, side by side. Returns the two roots and the per-level index
+    /// bits of each path.
+    #[allow(clippy::type_complexity)]
+    pub fn merkle2(&self, ly: &mut impl Layouter<Fr>, leaf: [&AC; 2], path: [&[Value<Fr>; TREE_DEPTH]; 2], bits: [&[Value<Fr>; TREE_DEPTH]; 2]) -> Result<([AC; 2], [Vec<AC>; 2]), Error> {
         ly.assign_region(
             || format!("{} merkle", tag()),
             |mut r| {
-                self.q_in0.enable(&mut r, 0)?;
-                leaf.copy_advice(|| "leaf", &mut r, self.io, 0)?;
-                let mut prev = leaf.value().copied();
-                r.assign_advice(|| "leaf", self.s[0], 0, || prev)?;
-                let mut bit_cells = Vec::with_capacity(TREE_DEPTH);
-                let rows = Self::rounds(3) + 1;
-                let mut out = None;
-                for d in 0..TREE_DEPTH {
-                    let off = 1 + d * rows;
-                    self.q_mk.enable(&mut r, off)?;
-                    r.assign_advice(|| "sib", self.s[3], off, || path[d])?;
-                    bit_cells.push(r.assign_advice(|| "bit", self.io, off, || bits[d])?);
-                    let l = prev.zip(path[d]).zip(bits[d]).map(|((p, s), b)| p + b * (s - p));
-                    let rr = prev.zip(path[d]).zip(bits[d]).map(|((p, s), b)| s + b * (p - s));
-                    r.assign_advice(|| "cap", self.s[0], off, || Value::known(Fr::ZERO))?;
-                    r.assign_advice(|| "L", self.s[1], off, || l)?;
-                    r.assign_advice(|| "R", self.s[2], off, || rr)?;
-                    let o = self.permute(&mut r, off, 3, vec![Value::known(Fr::ZERO), l, rr])?;
-                    prev = o.value().copied();
-                    out = Some(o);
+                let s = self.cols.s;
+                // row 0: the leaves; level d at row 1 + 66·d: nodes (s4, s5), bits (s0, s1), siblings (q0, q1)
+                leaf[0].copy_advice(|| "leaf", &mut r, s[0], 0)?;
+                leaf[1].copy_advice(|| "leaf", &mut r, s[1], 0)?;
+                self.q_mvin.enable(&mut r, 0)?;
+                let mut node: Vec<Value<Fr>> = vec![leaf[0].value().copied(), leaf[1].value().copied()];
+                for p in 0..2 {
+                    r.assign_advice(|| "node", s[4 + p], 1, || node[p])?;
                 }
-                Ok((out.unwrap(), bit_cells))
+                let mut bit_cells = [Vec::with_capacity(TREE_DEPTH), Vec::with_capacity(TREE_DEPTH)];
+                let rows = Self::rounds(3) + 1;
+                for d in 0..TREE_DEPTH {
+                    let m = 1 + d * rows;
+                    self.q_mk.enable(&mut r, m)?;
+                    let mut init = Vec::with_capacity(6);
+                    for p in 0..2 {
+                        r.assign_advice(|| "sib", self.cols.q[p], m, || path[p][d])?;
+                        bit_cells[p].push(r.assign_advice(|| "bit", s[p], m, || bits[p][d])?);
+                        let prev = node[p];
+                        let l = prev.zip(path[p][d]).zip(bits[p][d]).map(|((p, s), b)| p + b * (s - p));
+                        let rr = prev.zip(path[p][d]).zip(bits[p][d]).map(|((p, s), b)| s + b * (p - s));
+                        r.assign_advice(|| "cap", s[3 * p], m + 1, || Value::known(Fr::ZERO))?;
+                        r.assign_advice(|| "L", s[3 * p + 1], m + 1, || l)?;
+                        r.assign_advice(|| "R", s[3 * p + 2], m + 1, || rr)?;
+                        init.extend([Value::known(Fr::ZERO), l, rr]);
+                    }
+                    let o = self.permute(&mut r, m + 1, 3, init, true)?;
+                    node = o.iter().map(|c| c.value().copied()).collect();
+                }
+                let end = 1 + TREE_DEPTH * rows;
+                self.q_mvout.enable(&mut r, end)?;
+                let roots = [r.assign_advice(|| "root", s[0], end + 1, || node[0])?, r.assign_advice(|| "root", s[1], end + 1, || node[1])?];
+                Ok((roots, bit_cells))
             },
         )
     }
@@ -402,21 +563,19 @@ pub struct EcConfig {
     q_fix: Selector,
     q_var: Selector,
     q_vdbl: Selector,
-    q_chain: Selector,
     q_ld2: Selector,
     q_ldp: Selector,
+    q_ecs: Selector,
 }
 
 pub type ECell = [AC; 2];
 
 impl EcConfig {
-    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self {
-        let [x, y, x2, y2, t, b, z, px, py] = [(); 9].map(|_| meta.advice_column());
-        for col in [x, y, z] {
-            meta.enable_equality(col);
-        }
-        let (gx, gy, pw) = (meta.fixed_column(), meta.fixed_column(), meta.fixed_column());
-        let [q_add, q_dbl, q_fix, q_var, q_vdbl, q_chain, q_ld2, q_ldp] = [(); 8].map(|_| meta.selector());
+    fn configure(meta: &mut ConstraintSystem<Fr>, cols: &Cols, sel: &Sels) -> Self {
+        let [x, y, z, px, py, x2] = cols.s;
+        let [y2, t, b, _, _, _] = cols.q;
+        let (gx, gy, pw) = (cols.f[0], cols.f[1], cols.f[2]);
+        let (q_add, q_dbl, q_fix, q_var, q_vdbl, q_ld2, q_ldp, q_ecs) = (sel.add, sel.dbl, sel.fix, sel.var, sel.vdbl, sel.ld2, sel.ldp, sel.ecs);
         let (a, d) = (cu(model::BJJ_A), cu(model::BJJ_D));
 
         meta.create_gate("babyadd", |m| {
@@ -462,33 +621,35 @@ impl EcConfig {
                 ],
             )
         });
+        // base carried to the next row in both variable-base row kinds
+        let chain = |m: &mut VirtualCells<'_, Fr>| {
+            vec![
+                m.query_advice(px, Rotation::next()) - m.query_advice(px, Rotation::cur()),
+                m.query_advice(py, Rotation::next()) - m.query_advice(py, Rotation::cur()),
+            ]
+        };
         meta.create_gate("variable-base step", |m| {
             let q = m.query_selector(q_var);
             let vb = m.query_advice(b, Rotation::cur());
             let (vpx, vpy) = (m.query_advice(px, Rotation::cur()), m.query_advice(py, Rotation::cur()));
-            Constraints::with_selector(
-                q,
-                vec![
-                    vb.clone() * (cu(1) - vb.clone()),
-                    m.query_advice(x2, Rotation::cur()) - vb.clone() * vpx,
-                    m.query_advice(y2, Rotation::cur()) - (cu(1) + vb.clone() * (vpy - cu(1))),
-                    m.query_advice(z, Rotation::next()) - (cu(2) * m.query_advice(z, Rotation::cur()) + vb),
-                ],
-            )
+            let mut v = vec![
+                vb.clone() * (cu(1) - vb.clone()),
+                m.query_advice(x2, Rotation::cur()) - vb.clone() * vpx,
+                m.query_advice(y2, Rotation::cur()) - (cu(1) + vb.clone() * (vpy - cu(1))),
+                m.query_advice(z, Rotation::next()) - (cu(2) * m.query_advice(z, Rotation::cur()) + vb),
+            ];
+            v.extend(chain(m));
+            Constraints::with_selector(q, v)
         });
         meta.create_gate("variable-base double", |m| {
             let q = m.query_selector(q_vdbl);
-            Constraints::with_selector(q, vec![m.query_advice(z, Rotation::next()) - m.query_advice(z, Rotation::cur())])
-        });
-        meta.create_gate("base chain", |m| {
-            let q = m.query_selector(q_chain);
-            Constraints::with_selector(
-                q,
-                vec![
-                    m.query_advice(px, Rotation::next()) - m.query_advice(px, Rotation::cur()),
-                    m.query_advice(py, Rotation::next()) - m.query_advice(py, Rotation::cur()),
-                ],
-            )
+            let mut v = vec![
+                m.query_advice(x2, Rotation::cur()) - m.query_advice(x, Rotation::cur()),
+                m.query_advice(y2, Rotation::cur()) - m.query_advice(y, Rotation::cur()),
+                m.query_advice(z, Rotation::next()) - m.query_advice(z, Rotation::cur()),
+            ];
+            v.extend(chain(m));
+            Constraints::with_selector(q, v)
         });
         for (sel, cx, cy) in [(q_ld2, x2, y2), (q_ldp, px, py)] {
             meta.create_gate("load from row above", |m| {
@@ -502,7 +663,12 @@ impl EcConfig {
                 )
             });
         }
-        EcConfig { x, y, x2, y2, t, b, z, px, py, gx, gy, pw, q_add, q_dbl, q_fix, q_var, q_vdbl, q_chain, q_ld2, q_ldp }
+        // accumulator start: the identity (0, 1) and z = 0
+        meta.create_gate("ec start", |m| {
+            let q = m.query_selector(q_ecs);
+            Constraints::with_selector(q, vec![m.query_advice(x, Rotation::cur()), m.query_advice(y, Rotation::cur()) - cu(1), m.query_advice(z, Rotation::cur())])
+        });
+        EcConfig { x, y, x2, y2, t, b, z, px, py, gx, gy, pw, q_add, q_dbl, q_fix, q_var, q_vdbl, q_ld2, q_ldp, q_ecs }
     }
 
     /// Assigns the second operand (when `assign_q`) and t at `row`; returns the sum.
@@ -521,9 +687,10 @@ impl EcConfig {
     }
 
     fn start(&self, r: &mut Region<'_, Fr>, row: usize) -> Result<(), Error> {
-        r.assign_advice_from_constant(|| "x0", self.x, row, Fr::ZERO)?;
-        r.assign_advice_from_constant(|| "y0", self.y, row, Fr::ONE)?;
-        r.assign_advice_from_constant(|| "z0", self.z, row, Fr::ZERO)?;
+        self.q_ecs.enable(r, row)?;
+        r.assign_advice(|| "x0", self.x, row, || Value::known(Fr::ZERO))?;
+        r.assign_advice(|| "y0", self.y, row, || Value::known(Fr::ONE))?;
+        r.assign_advice(|| "z0", self.z, row, || Value::known(Fr::ZERO))?;
         Ok(())
     }
 
@@ -581,9 +748,7 @@ impl EcConfig {
                 for j in 0..n {
                     let bi = bitv(k, n - 1 - j);
                     let (rd, ra) = (1 + 2 * j, 2 + 2 * j);
-                    self.q_dbl.enable(&mut r, rd)?;
                     self.q_vdbl.enable(&mut r, rd)?;
-                    self.q_chain.enable(&mut r, rd)?;
                     if j > 0 {
                         self.put(&mut r, rd, acc)?;
                         let zc = r.assign_advice(|| "z", self.z, rd, || z)?;
@@ -598,7 +763,6 @@ impl EcConfig {
                     acc = self.add_row(&mut r, rd, acc, acc, false)?;
 
                     self.q_var.enable(&mut r, ra)?;
-                    self.q_chain.enable(&mut r, ra)?;
                     self.put(&mut r, ra, acc)?;
                     r.assign_advice(|| "z", self.z, ra, || z)?;
                     r.assign_advice(|| "px", self.px, ra, || pv.map(|p| p[0]))?;
@@ -663,10 +827,10 @@ impl EcConfig {
 
 #[derive(Clone, Debug)]
 pub struct SpendConfig {
-    pi: Column<Instance>,
+    q_pub: Selector,
+    cols: Cols,
     arith: ArithConfig,
-    pos_a: PoseidonConfig,
-    pos_b: PoseidonConfig,
+    pos: PoseidonConfig,
     ec: EcConfig,
 }
 
@@ -699,22 +863,20 @@ impl Circuit<Fr> for SpendCircuit {
 
     fn configure(meta: &mut ConstraintSystem<Fr>) -> SpendConfig {
         let pi = meta.instance_column();
-        meta.enable_equality(pi);
-        let constants = meta.fixed_column();
-        meta.enable_constant(constants);
-        SpendConfig {
-            pi,
-            arith: ArithConfig::configure(meta),
-            pos_a: PoseidonConfig::configure(meta, &[3, 4, 5, 6]),
-            pos_b: PoseidonConfig::configure(meta, &[3]),
-            ec: EcConfig::configure(meta),
-        }
+        let cols = Cols::configure(meta);
+        let sel = Sels::new(meta);
+        // public input i sits in s0 of row i (the first region) and equals instance row i
+        meta.create_gate("public input", |m| {
+            let q = m.query_selector(sel.public);
+            Constraints::with_selector(q, vec![m.query_advice(cols.s[0], Rotation::cur()) - m.query_instance(pi, Rotation::cur())])
+        });
+        SpendConfig { q_pub: sel.public, cols, arith: ArithConfig::configure(meta, &cols, &sel), pos: PoseidonConfig::configure(meta, &cols, &sel), ec: EcConfig::configure(meta, &cols, &sel) }
     }
 
     fn synthesize(&self, cfg: SpendConfig, mut ly: impl Layouter<Fr>) -> Result<(), Error> {
         let ar = Arith { cfg: &cfg.arith };
         let ec = &cfg.ec;
-        let pa = &cfg.pos_a;
+        let pa = &cfg.pos;
         let [tb8, th, tg] = tables();
         let (tb8, th, tg): (&'static [Pt], &'static [Pt], &'static [Pt]) = (tb8, th, tg);
         let w = self.w.as_ref();
@@ -729,21 +891,35 @@ impl Circuit<Fr> for SpendCircuit {
         let two128f = model::fr(&two128);
 
         ar.at("public");
-        let root = ar.witness(ly, val(&|w| w.root))?;
-        let body = ar.witness(ly, val(&|w| w.body_hash))?;
-        let asset = ar.witness(ly, val(&|w| w.asset))?;
-        let nf: Vec<AC> = (0..N_IN).map(|i| ar.witness(ly, val(&|w| w.nf[i]))).collect::<Result<_, _>>()?;
-        let out_leaf: Vec<AC> = (0..N_OUT).map(|k| ar.witness(ly, val(&|w| w.out_leaf[k]))).collect::<Result<_, _>>()?;
-        let exit_c: Vec<AC> = (0..2).map(|j| ar.witness(ly, val(&|w| w.exit_c[j]))).collect::<Result<_, _>>()?;
-        let dep_c: Vec<AC> = (0..2).map(|j| ar.witness(ly, val(&|w| w.dep_c[j]))).collect::<Result<_, _>>()?;
-        let pubs: Vec<&AC> = [&root, &body, &asset].into_iter().chain(nf.iter()).chain(out_leaf.iter()).chain(exit_c.iter()).chain(dep_c.iter()).collect();
-        for (row, cell) in pubs.iter().enumerate() {
-            ly.constrain_instance(cell.cell(), cfg.pi, row)?;
-        }
+        let pv: [Value<Fr>; crate::model::N_PUBLIC] = std::array::from_fn(|i| val(&|w| w.publics()[i]));
+        let pubs: Vec<AC> = ly.assign_region(
+            || "public",
+            |mut r| {
+                (0..pv.len())
+                    .map(|i| {
+                        cfg.q_pub.enable(&mut r, i)?;
+                        r.assign_advice(|| "public", cfg.cols.s[0], i, || pv[i])
+                    })
+                    .collect()
+            },
+        )?;
+        let (root, body, asset) = (pubs[0].clone(), pubs[1].clone(), pubs[2].clone());
+        let nf: Vec<AC> = pubs[3..3 + N_IN].to_vec();
+        let out_leaf: Vec<AC> = pubs[3 + N_IN..3 + N_IN + N_OUT].to_vec();
+        let exit_c: Vec<AC> = pubs[3 + N_IN + N_OUT..5 + N_IN + N_OUT].to_vec();
+        let dep_c: Vec<AC> = pubs[5 + N_IN + N_OUT..7 + N_IN + N_OUT].to_vec();
 
-        let mut sum_in: Option<AC> = None;
+        // per input: emptiness, value, nk, note leaf
+        struct In {
+            e: AC,
+            en: AC,
+            v: AC,
+            nk: AC,
+            ak: ECell,
+            leaf: AC,
+        }
+        let mut ins = Vec::with_capacity(N_IN);
         for i in 0..N_IN {
-            let pm = if i == 0 { &cfg.pos_a } else { &cfg.pos_b };
             // slot i is empty iff nf = 0; an empty slot carries value 0
             ar.at(format!("in{i} empty"));
             let e = ar.is_zero(ly, &nf[i])?;
@@ -765,15 +941,22 @@ impl Circuit<Fr> for SpendCircuit {
             let npk = pa.hash(ly, &[&ak[0], &ak[1], &nk_pt[0], &nk_pt[1]])?;
             let rho = ar.witness(ly, val(&|w| w.in_rho[i]))?;
             let leaf = pa.hash(ly, &[&asset, &v, &npk, &rho])?;
+            ins.push(In { e, en, v, nk, ak, leaf });
+        }
 
+        // both membership paths in one region
+        ar.at("in index");
+        let path: [[Value<Fr>; TREE_DEPTH]; N_IN] = std::array::from_fn(|i| std::array::from_fn(|d| val(&|w| w.in_path[i][d])));
+        let bits: [[Value<Fr>; TREE_DEPTH]; N_IN] = std::array::from_fn(|i| std::array::from_fn(|d| bitv(val(&|w| w.in_index[i]), d)));
+        let (roots, bit_cells) = pa.merkle2(ly, [&ins[0].leaf, &ins[1].leaf], [&path[0], &path[1]], [&bits[0], &bits[1]])?;
+
+        let mut sum_in: Option<AC> = None;
+        for (i, In { e, en, v, nk, ak, leaf }) in ins.into_iter().enumerate() {
             // index = Σ bit_d·2^d over the 32 path bits
             ar.at(format!("in{i} index"));
-            let path: [Value<Fr>; TREE_DEPTH] = std::array::from_fn(|d| val(&|w| w.in_path[i][d]));
-            let bits: [Value<Fr>; TREE_DEPTH] = std::array::from_fn(|d| bitv(val(&|w| w.in_index[i]), d));
-            let (root_i, bit_cells) = pm.merkle(ly, &leaf, &path, &bits)?;
             let index = ar.witness(ly, val(&|w| w.in_index[i]))?;
-            let mut acc = bit_cells[0].clone();
-            for (d, b) in bit_cells.iter().enumerate().skip(1) {
+            let mut acc = bit_cells[i][0].clone();
+            for (d, b) in bit_cells[i].iter().enumerate().skip(1) {
                 acc = ar.lin(ly, &acc, Fr::ONE, Some(b), Fr::from(1u64 << d), Fr::ZERO)?;
             }
             ar.eq(ly, &acc, &index)?;
@@ -781,7 +964,7 @@ impl Circuit<Fr> for SpendCircuit {
             // membership unless v = 0
             ar.at(format!("in{i} membership"));
             let zv = ar.is_zero(ly, &v)?;
-            let droot = ar.sub(ly, &root_i, &root)?;
+            let droot = ar.sub(ly, &roots[i], &root)?;
             ar.assert_zero_unless(ly, &droot, &zv)?;
 
             // nf = Poseidon(nk, leaf, index) unless empty

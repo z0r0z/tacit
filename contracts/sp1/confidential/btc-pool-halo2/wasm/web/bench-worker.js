@@ -10,7 +10,7 @@ self.onmessage = async (e) => {
     if (mode === 'threads') await m.initThreadPool(n);
     say(`mode ${mode}, rayon threads ${m.numThreads()}, hardwareConcurrency ${navigator.hardwareConcurrency}`);
     const get = async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer());
-    const [params, vk] = [await get('../../artifacts/params-k12.bin'), await get('../../artifacts/vk.bin')];
+    const [params, vk] = [await get('../../artifacts/params-k13.bin'), await get('../../artifacts/vk.bin')];
     let t = performance.now();
     const p = m.Prover.withVk(params, vk);
     say(`keygen_pk from vk ${((performance.now() - t) / 1000).toFixed(2)} s, vk ${p.vkDigest().slice(0, 16)}`);
