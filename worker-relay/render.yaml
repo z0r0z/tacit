@@ -374,7 +374,7 @@ services:
       # Replay starts here; set to the first block that can carry a pool envelope. Changing it requires a
       # fresh database.
       - key: BTC_POOL_START_HEIGHT
-        value: "323678"
+        value: "323699"
       - key: BTC_POOL_ESPLORA
         value: https://mempool.space/signet/api
       - key: BTC_POOL_CONFIRMATIONS
@@ -382,7 +382,7 @@ services:
       - key: BTC_POOL_POLL_SECS
         value: "30"
       - key: BTC_POOL_DB
-        value: /var/lib/tacit-btc-pool/btc-pool-zk.db
+        value: /var/lib/tacit-btc-pool/btc-pool-halo2-323699.db
       - key: PORT
         value: "10000"
 
@@ -410,7 +410,7 @@ services:
       - key: BTC_POOL_NETWORK
         value: signet
       - key: BTC_POOL_START_HEIGHT
-        value: "323686"
+        value: "323699"
       - key: BTC_POOL_ESPLORA
         value: https://mempool.space/signet/api
       - key: BTC_POOL_CONFIRMATIONS
@@ -418,7 +418,7 @@ services:
       - key: BTC_POOL_POLL_SECS
         value: "30"
       - key: BTC_POOL_DB
-        value: /var/lib/tacit-btc-pool/btc-pool-relay-zk-323686.db
+        value: /var/lib/tacit-btc-pool/btc-pool-relay-halo2-323699.db
       - key: BTC_POOL_RELAYER_MEMPOOL
         value: esplora
       # <asset hex>:<fee units>, comma-separated. Signet cBTC.
