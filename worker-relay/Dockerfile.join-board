@@ -1,0 +1,29 @@
+# tacit-join-board: Secret Sats Join bulletin board (src/join-board.js). Stores and forwards signed round
+# messages; holds no funds and no participant key. Anyone can run it.
+# Build context is the repo root: the board verifies messages with dapp/secret-sats-join.js (the client's own
+# code) and the vendored crypto bundle, so the runtime image keeps the dapp/ and worker-relay/ layout.
+#   docker build -f worker-relay/Dockerfile.join-board .
+#   docker run -p 10000:10000 -e JOIN_NETWORK=signet <image>
+
+FROM node:20-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+
+COPY dapp/package.json /app/dapp/package.json
+COPY dapp/secret-sats-join.js dapp/bip352.js /app/dapp/
+COPY dapp/vendor/tacit-deps.min.js /app/dapp/vendor/tacit-deps.min.js
+
+WORKDIR /app/worker-relay
+COPY worker-relay/package.json ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY worker-relay/src ./src
+
+# The shared message rules must load here, or the image is unusable.
+RUN node -e "import('./src/join-board.js').then((m) => { if (typeof m.createBoard !== 'function') process.exit(1); console.log('join-board ok'); })"
+
+ENV NODE_ENV=production \
+    JOIN_NETWORK=signet \
+    PORT=10000
+EXPOSE 10000
+CMD ["node", "src/join-board.js"]
