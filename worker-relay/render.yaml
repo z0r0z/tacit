@@ -491,6 +491,8 @@ services:
         value: signet
       - key: START_HEIGHT
         value: "322688"
+      - key: PREFETCH
+        value: "8"
       - key: SP_DB
         value: /var/lib/tacit-sp-index/index.db
       - key: PORT
