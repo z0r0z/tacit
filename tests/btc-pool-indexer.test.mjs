@@ -1,7 +1,7 @@
 // Bitcoin-native shielded pool indexer: parsers, the Poseidon tree, shield kernel and boundary, spend
 // acceptance, undo/rollback/restore, the SQLite store, raw block parsing, canonical shield-input validation
 // (recorded signet ancestry + synthetic Tacit txs), an end-to-end replay over synthetic blocks, and real
-// Groth16 proofs of spend.circom through the wallet and the pinned verifier. No network.
+// Halo2 proofs of the spend relation through the wallet and the pinned verifier. No network.
 //   node tests/btc-pool-indexer.test.mjs        (ONLY=<regex> selects tests, TIMING=1 prints per-test time)
 
 import assert from 'node:assert/strict';
@@ -12,7 +12,6 @@ import { execFileSync } from 'node:child_process';
 import * as rootSecp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 as nobleSha256 } from '@noble/hashes/sha256';
-import * as snarkjs from 'snarkjs';
 import * as bp from '../worker/src/btc-shielded-pool.js';
 import {
   parseBlock, parseTx, decodeEnvelopeScript, txEnvelope, txEnvelopes,
@@ -22,7 +21,7 @@ import { makeBtcPoolVerifier } from '../worker-relay/src/lib/btc-pool-verify.js'
 import { createIndexer, createHandler } from '../worker-relay/src/btc-pool-indexer.js';
 import { loadTacit, makeShieldInputResolver, TransparentUnavailableError } from '../worker-relay/src/lib/btc-pool-transparent.js';
 import { makeBtcShieldedPool } from '../dapp/btc-shielded-pool.js';
-import { makeGroth16System, vkHash } from '../dapp/btc-pool-zk-prover.js';
+import { makeHalo2System, HALO2_PROOF_LEN } from '../dapp/btc-pool-halo2-prover.js';
 import { proveBoundary, encodeBoundary } from '../dapp/btc-pool-zk-boundary.js';
 import { bodyHash, assetField, P_FR, L_BJJ } from '../dapp/btc-pool-zk.js';
 import { unpackPoint } from '../dapp/amm-bjj.js';
@@ -1529,12 +1528,12 @@ test('dapp validateOutpoint: an exit riding a later input, with no envelope on v
   assert.equal(await r3(spender.txid, 0), null, 'record does not match the carrier');
 });
 
-// ── real Groth16 proofs of spend.circom ──
+// ── real Halo2 proofs of the spend relation ──
 const PIN_DIR = new URL('../dapp/btc-pool/', import.meta.url);
 const PIN = JSON.parse(readFileSync(new URL('pin.json', PIN_DIR), 'utf8'));
-const VK = JSON.parse(readFileSync(new URL(PIN.vk, PIN_DIR), 'utf8'));
+const art = (n) => new Uint8Array(readFileSync(new URL(n, PIN_DIR)));
 let SYS = null;
-const system = () => (SYS ??= makeGroth16System({ vk: VK, wasm: readFileSync(new URL(PIN.wasm, PIN_DIR)), zkey: readFileSync(new URL(PIN.zkey, PIN_DIR)), snarkjs, pinnedVkHash: PIN.vk_hash }));
+const system = () => (SYS ??= makeHalo2System({ wasm: art(PIN.wasm), params: art(PIN.params), vk: art(PIN.vk), pinnedVkHash: PIN.vk_hash, worker: null }));
 
 test('real proofs: shield, pay + exit, pay with change; tampered proof, tampered body and wrong root rejected', async () => {
   const sys = system();
@@ -1554,11 +1553,11 @@ test('real proofs: shield, pay + exit, pay with change; tampered proof, tampered
   const { payload: shPayload } = await pool.prove(sh, sys);
   const shParsed = bp.parseEnvelope(shPayload);
   assert.equal(shParsed.kind, 'shield');
-  assert.equal(shParsed.proof.length, 256);
+  assert.equal(shParsed.proof.length, HALO2_PROOF_LEN);
   const st = new bp.BtcPoolState();
   st.beginBlock(100);
   const shCtx = { txid: 'ee'.repeat(32), inputs: shInputs, resolveInput, verifyProof };
-  const badShield = shPayload.slice(); badShield[badShield.length - 256 + 40] ^= 1;
+  const badShield = shPayload.slice(); badShield[badShield.length - HALO2_PROOF_LEN + 40] ^= 1;
   assert.match((await st.acceptShield(bp.parseEnvelope(badShield), shCtx)).reason, /proof does not verify/, 'tampered shield proof');
   const rs = await st.acceptShield(shParsed, shCtx);
   assert.ok(rs.accepted, rs.reason);
@@ -1594,7 +1593,7 @@ test('real proofs: shield, pay + exit, pay with change; tampered proof, tampered
   assert.match((await alt.acceptSpend(spParsed, spCtx())).reason, /proof does not verify/, 'wrong root');
 
   st.beginBlock(111);
-  const badProof = spPayload.slice(); badProof[badProof.length - 256 + 100] ^= 1;
+  const badProof = spPayload.slice(); badProof[badProof.length - HALO2_PROOF_LEN + 100] ^= 1;
   assert.match((await st.acceptSpend(bp.parseEnvelope(badProof), spCtx())).reason, /proof does not verify/, 'tampered proof');
   // A byte of an output's ct_note: still canonical, but the body hash the proof binds changes.
   const ctOff = PRE + 1 + 32 + 1 + 32 + 33;
@@ -1652,9 +1651,8 @@ test('verifier: pinned key loads; a mismatched pin disables it; garbage proofs f
   const v = makeBtcPoolVerifier({ network: 'signet', env: {}, log: () => {} });
   assert.equal(v.enabled, true, v.reason);
   assert.equal(v.vkHash, PIN.vk_hash);
-  assert.equal(vkHash(VK), PIN.vk_hash);
   const logs = [];
-  const off = makeBtcPoolVerifier({ network: 'signet', env: { BTC_POOL_VK_HASH: 'ab'.repeat(32) }, log: (m) => logs.push(m) });
+  const off = makeBtcPoolVerifier({ network: 'signet', env: { BTC_POOL_VK_HASH: 'ab'.repeat(64) }, log: (m) => logs.push(m) });
   assert.equal(off.enabled, false);
   assert.equal(off.verify, null);
   assert.match(off.reason, /not the pinned/);
@@ -1662,10 +1660,9 @@ test('verifier: pinned key loads; a mismatched pin disables it; garbage proofs f
   assert.equal(makeBtcPoolVerifier({ network: 'mainnet', env: {}, log: () => {} }).enabled, false, 'signet pin on mainnet');
   const pubs = Array(12).fill('0');
   assert.equal(await v.verify({ proof: PROOF, publics: pubs }), false);
-  assert.equal(await v.verify({ proof: new Uint8Array(255), publics: pubs }), false);
-  const V = JSON.parse(readFileSync(new URL('./vectors/btc-pool-zk-vectors.json', import.meta.url), 'utf8')).groth16;
-  const rv = makeBtcPoolVerifier({ vk: V.vk, vkHash: vkHash(V.vk), log: () => {} });
-  for (const c of V.cases) assert.equal(await rv.verify({ proof: hexToBytes(c.proof), publics: c.publics }), c.valid, c.name);
+  assert.equal(await v.verify({ proof: new Uint8Array(HALO2_PROOF_LEN - 1), publics: pubs }), false);
+  const V = JSON.parse(readFileSync(new URL('./vectors/btc-pool-halo2-proofs.json', import.meta.url), 'utf8'));
+  for (const c of V.cases) assert.equal(await v.verify({ proof: hexToBytes(c.proof), publics: c.publics }), c.valid, c.name);
 });
 
 const only = process.env.ONLY ? new RegExp(process.env.ONLY) : null;

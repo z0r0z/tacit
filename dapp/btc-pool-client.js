@@ -1,11 +1,11 @@
 // Client for the Bitcoin shielded pool: the proving artifacts, the proof system, and the replay service and
 // relayer APIs. Used by the browser (dapp/sats) and by Node drivers (tests/secret-sats-e2e-signet.mjs).
 //
-// Artifacts: /btc-pool/pin.json names the circuit wasm, the proving key and the verification key with their
-// SHA-256. They are fetched once, checked against the pin, and kept in the Cache API; later loads read the
-// cache. Nothing is fetched until a pool action needs a proof.
+// Artifacts: /btc-pool/pin.json names the prover wasm, the params and the verification key with their SHA-256,
+// and the key's BLAKE2b-512 (vk_hash). They are fetched once, checked against the pin, and kept in the Cache
+// API; later loads read the cache. Nothing is fetched until a pool action needs a proof.
 
-import { makeGroth16System } from './btc-pool-zk-prover.js';
+import { makeHalo2System } from './btc-pool-halo2-prover.js';
 import { defaultAnchor } from './btc-shielded-pool.js';
 
 export const POOL_API = String(globalThis.__TACIT_BTC_POOL_API__ || 'https://tacit-btc-pool.onrender.com').replace(/\/$/, '');
@@ -43,10 +43,9 @@ async function readWithProgress(resp, total, progress) {
 }
 
 // base: where pin.json and the artifacts are served. readFile(name) → bytes replaces fetch (Node).
-// snarkjs: pass the npm module in Node for multi-threaded proving; the browser loads the vendored bundle.
-export function makePoolClient({ api = POOL_API, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null, snarkjs = null } = {}) {
+export function makePoolClient({ api = POOL_API, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null } = {}) {
   const baseUrl = base.endsWith('/') ? base : base + '/';
-  let pinP = null, vkP = null;
+  let pinP = null;
   const cache = new Map();
 
   async function getJson(url, init) {
@@ -93,28 +92,28 @@ export function makePoolClient({ api = POOL_API, base = '/btc-pool/', fetchImpl 
     return bytes;
   }
 
-  async function vk() {
-    if (!vkP) vkP = (async () => { const p = await pin(); return readFile ? JSON.parse(new TextDecoder().decode(readFile(p.vk))) : getJson(baseUrl + p.vk); })();
-    return vkP;
-  }
+  const pinned = (p) => [[p.wasm, p.wasm_sha256, p.wasm_bytes], [p.params, p.params_sha256, p.params_bytes], [p.vk, p.vk_sha256, p.vk_bytes]];
+  // Download size of the prover artifacts, in bytes.
+  const artifactBytes = async () => pinned(await pin()).reduce((a, [, , n]) => a + (n || 0), 0);
 
-  // The proof system over the pinned key. The wasm and proving key load on the first prove.
+  // The proof system over the pinned key. The artifacts load on the first prove or verify.
   async function system({ onProgress } = {}) {
     const p = await pin();
-    return makeGroth16System({
-      vk: await vk(), pinnedVkHash: p.vk_hash, snarkjs,
+    return makeHalo2System({
+      pinnedVkHash: p.vk_hash,
       wasm: () => artifact(p.wasm, p.wasm_sha256, p.wasm_bytes, onProgress),
-      zkey: () => artifact(p.zkey, p.zkey_sha256, p.zkey_bytes, onProgress),
+      params: () => artifact(p.params, p.params_sha256, p.params_bytes, onProgress),
+      vk: () => artifact(p.vk, p.vk_sha256, p.vk_bytes, onProgress),
     });
   }
-  // True when both proving artifacts are already in the browser cache.
+  // True when every prover artifact is already in the browser cache.
   async function artifactsCached() {
     if (readFile) return true;
     try {
       const p = await pin();
       const store = await globalThis.caches?.open(CACHE_NAME);
       if (!store) return false;
-      for (const [n, s] of [[p.wasm, p.wasm_sha256], [p.zkey, p.zkey_sha256]]) if (!(await store.match(`${baseUrl}${n}?sha256=${s}`))) return false;
+      for (const [n, s] of pinned(p)) if (!(await store.match(`${baseUrl}${n}?sha256=${s}`))) return false;
       return true;
     } catch { return false; }
   }
@@ -176,5 +175,5 @@ export function makePoolClient({ api = POOL_API, base = '/btc-pool/', fetchImpl 
   const submit = (body) => getJson(`${api}/btc-pool/relay/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const relayStatus = (id) => getJson(`${api}/btc-pool/relay/status/${id}`);
 
-  return { pin, vk, system, artifactsCached, status, allNotes, path, nullifier, exit, walletNotes, anchorAndPaths, relayInfo, quote, submit, relayStatus, api };
+  return { pin, system, artifactBytes, artifactsCached, status, allNotes, path, nullifier, exit, walletNotes, anchorAndPaths, relayInfo, quote, submit, relayStatus, api };
 }

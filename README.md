@@ -141,8 +141,8 @@ replace it.
 - **The Bitcoin pool.** It carries bitcoin-backed Tacit assets, cBTC first. Shield and exit connect to
   ordinary Tacit notes through a cross-curve proof and a range proof. Joining is one step (buy-and-shield)
   and so is leaving (exit-to-sats, with the maker's payout bound into the signed spend). It runs on
-  signet; the mainnet proof system is Halo2 with KZG over the Hermez setup already pinned, so it needs no
-  new ceremony.
+  signet. Its proof system is Halo2 with KZG over the Hermez setup already pinned, so it needs no new
+  ceremony.
 - **Sats in and out.** Atomic swaps move sats in and out with no custodian. A BitVM peg and, once Bitcoin
   allows them, covenants can back the same pool unchanged. Secret Sats Join mixes real sats in an
   equal-amount join to silent-payment outputs, with no coordinator and no custody.

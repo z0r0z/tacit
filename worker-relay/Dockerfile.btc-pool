@@ -1,6 +1,6 @@
 # tacit-btc-pool: Bitcoin-native shielded pool replay (src/btc-pool-indexer.js).
 # Build context is the repo root: the service imports worker/src/btc-shielded-pool.js and the dapp's pool modules
-# (proof verification runs in process on dapp/vendor/tacit-mixer.min.js against the key pinned in
+# (proof verification runs in process on the Halo2 wasm in dapp/btc-pool/ against the key pinned in
 # dapp/btc-pool/pin.json), so the runtime image keeps that layout.
 #   docker build -f worker-relay/Dockerfile.btc-pool .
 
@@ -16,8 +16,8 @@ COPY worker/src/btc-shielded-pool.js /app/worker/src/btc-shielded-pool.js
 COPY dapp/package.json /app/dapp/package.json
 COPY dapp/*.js /app/dapp/
 COPY dapp/vendor/*.js /app/dapp/vendor/
-# Verification key and pin only; the proving key and circuit wasm are served to wallets, not needed here.
-COPY dapp/btc-pool/pin.json dapp/btc-pool/spend_dev_signet_vk.json /app/dapp/btc-pool/
+# Pin, verification key, params and the verifier wasm (the same files wallets prove with).
+COPY dapp/btc-pool/pin.json dapp/btc-pool/vk.bin dapp/btc-pool/params-k13.bin dapp/btc-pool/btc_pool_halo2.js dapp/btc-pool/btc_pool_halo2_bg.wasm /app/dapp/btc-pool/
 
 WORKDIR /app/worker-relay
 COPY worker-relay/package.json ./
@@ -25,7 +25,7 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY worker-relay/src ./src
 
 # The pinned key must load and verify here, or the image is unusable.
-RUN node -e "import('./src/lib/btc-pool-verify.js').then((m) => { const v = m.makeBtcPoolVerifier({ network: 'signet', log() {} }); if (!v.enabled) { console.error(v.reason); process.exit(1); } console.log('verifier', v.system.id, v.vkHash); })"
+RUN node -e "import('./src/lib/btc-pool-verify.js').then(async (m) => { const v = m.makeBtcPoolVerifier({ network: 'signet', log() {} }); if (!v.enabled) { console.error(v.reason); process.exit(1); } await v.ready(); console.log('verifier', v.system.id, v.vkHash.slice(0, 16)); })"
 
 ENV NODE_ENV=production \
     BTC_POOL_DB=/var/lib/tacit-btc-pool/btc-pool.db \

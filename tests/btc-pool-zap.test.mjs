@@ -6,11 +6,10 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as snarkjs from 'snarkjs';
 import { secp, sha256, keccak_256, hmac, concatBytes, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../dapp/btc-shielded-pool.js';
 import { makeBtcPoolZap, makeNoteResolver } from '../dapp/btc-pool-zap.js';
-import { makeGroth16System } from '../dapp/btc-pool-zk-prover.js';
+import { makeHalo2System, HALO2_PROOF_LEN } from '../dapp/btc-pool-halo2-prover.js';
 import { publicSignals } from '../dapp/btc-pool-zk.js';
 import { verifyBoundary } from '../dapp/btc-pool-zk-boundary.js';
 import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
@@ -29,10 +28,10 @@ const p2tr = (tag) => concatBytes(Uint8Array.of(0x51, 0x20), sha256(new TextEnco
 
 const D = new URL('../dapp/btc-pool/', import.meta.url).pathname;
 const pin = JSON.parse(readFileSync(D + 'pin.json', 'utf8'));
-const sys = makeGroth16System({ vk: JSON.parse(readFileSync(D + pin.vk, 'utf8')), wasm: readFileSync(D + pin.wasm), zkey: readFileSync(D + pin.zkey), pinnedVkHash: pin.vk_hash, snarkjs });
+const sys = makeHalo2System({ wasm: readFileSync(D + pin.wasm), params: readFileSync(D + pin.params), vk: readFileSync(D + pin.vk), pinnedVkHash: pin.vk_hash, worker: null });
 const verifyProof = async ({ proof, publics }) => sys.verify(publics, proof);
 // Stand-in: returns the witness publics with a dummy proof; the indexer side then uses verifyProof stubs.
-const standIn = { prove: async (input) => ({ wire: new Uint8Array(256), publicSignals: publicSignals(input) }) };
+const standIn = { prove: async (input) => ({ wire: new Uint8Array(HALO2_PROOF_LEN), publicSignals: publicSignals(input) }) };
 
 const tests = [];
 const test = (n, f) => tests.push([n, f]);

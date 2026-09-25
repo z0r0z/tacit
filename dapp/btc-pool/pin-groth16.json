@@ -1,5 +1,5 @@
 {
-  "note": "DEV phase-2 key, single contributor: signet only. Mainnet uses the multi-party ceremony key.",
+  "note": "Groth16 reference system (btc-pool-zk-prover.js), DEV phase-2 key, single contributor. Not on the signet path: dapp/btc-pool/pin.json (Halo2) is.",
   "network": "signet",
   "system": "groth16-bn254",
   "circuit": "dapp/circuits/btc-pool/spend.circom",

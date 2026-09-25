@@ -394,6 +394,8 @@ async function main() {
 
   const store = openBtcPoolStore(env.BTC_POOL_DB || '/var/lib/tacit-btc-pool/btc-pool.db');
   const verifier = makeBtcPoolVerifier({ network, log: (...a) => console.error(...a) });
+  // Load the wasm and params up front, so a broken image fails here rather than at the first envelope.
+  if (verifier.enabled) await verifier.ready().catch((e) => console.error(`!!! btc-pool: verifier failed to load: ${e.message}`));
   const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum }), verifier, network, startHeight, confirmations, log, chain });
   log(`resuming at ${ix.state.tip ?? `(empty, start ${startHeight})`}; verifier ${verifier.enabled ? 'enabled' : `DISABLED: ${verifier.reason}`}`);
 

@@ -10,4 +10,7 @@
 !dapp/*.js
 !dapp/vendor/*.js
 !dapp/btc-pool/pin.json
-!dapp/btc-pool/spend_dev_signet_vk.json
+!dapp/btc-pool/vk.bin
+!dapp/btc-pool/params-k13.bin
+!dapp/btc-pool/btc_pool_halo2.js
+!dapp/btc-pool/btc_pool_halo2_bg.wasm

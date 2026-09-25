@@ -207,9 +207,9 @@ function poolNoteRecord(note, txid) {
 // ── proving on the device ──
 const mb = (n) => (n / 1e6).toFixed(1);
 // Proves a built shield or spend here, reporting the one-time download and then the elapsed proving time.
+// One thread in a Web Worker: 12–15 s on a laptop, plus about 3 s of key setup on the first proof.
 export async function proveHere(built, say = () => {}) {
-  const pin = await poolClient.pin();
-  const total = (pin.wasm_bytes || 0) + (pin.zkey_bytes || 0);
+  const total = await poolClient.artifactBytes();
   const got = new Map();
   let t0 = 0, timer = null;
   const system = await poolClient.system({
@@ -223,10 +223,11 @@ export async function proveHere(built, say = () => {}) {
   try {
     return await pool.prove(built, system, {
       onProgress: (stage) => {
+        if (stage === 'loading') { say('Preparing the prover…'); return; }
         if (stage !== 'proving') return;
         t0 = Date.now();
-        say('Proving on your device… 0 s');
-        timer = setInterval(() => say(`Proving on your device… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
+        say('Proving on your device (~15 s)… 0 s');
+        timer = setInterval(() => say(`Proving on your device (~15 s)… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
       },
     });
   } finally {

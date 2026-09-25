@@ -67,6 +67,32 @@ impl Prover {
     }
 }
 
+/// Holds the pinned params and vk for repeated verification (indexers, relayers).
+#[wasm_bindgen]
+pub struct Verifier {
+    params: Params,
+    vk: crate::Vk,
+}
+
+#[wasm_bindgen]
+impl Verifier {
+    #[wasm_bindgen(constructor)]
+    pub fn new(params: &[u8], vk: &[u8]) -> Result<Verifier, JsError> {
+        Ok(Verifier { params: srs::read_params(params).map_err(err)?, vk: vk_from_bytes(vk).map_err(err)? })
+    }
+
+    #[wasm_bindgen(js_name = vkDigest)]
+    pub fn vk_digest(&self) -> String {
+        vk_digest(&self.vk)
+    }
+
+    /// `doc`: {"proof": hex, "publics": [dec; 12]}.
+    pub fn verify(&self, doc: &str) -> Result<bool, JsError> {
+        let v: serde_json::Value = serde_json::from_str(doc).map_err(err)?;
+        verify_json(&self.params, &self.vk, &v).map_err(err)
+    }
+}
+
 /// Stand-alone verify against pinned params and vk bytes.
 #[wasm_bindgen(js_name = verifySpend)]
 pub fn verify_spend(params: &[u8], vk: &[u8], doc: &str) -> Result<bool, JsError> {

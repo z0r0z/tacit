@@ -9,7 +9,9 @@
 // join  buyAndShield: Alice takes one faucet sale and shields its lot in one carrier (vin[0] shield envelope,
 //       vin[1]/vout[1] the seller's SIGHASH_SINGLE|ANYONECANPAY lot and payout); the shield carries its proof.
 // pay   Alice pays Bob 6,000 units under the wallet defaults (anchor policy, internal change, padding to 3).
-//       The relay key posts the carrier; bind names the relay's bind coin, which the carrier spends.
+//       PAY_VIA=relayer (default): the pool relayer (RELAY_API) quotes a fee and a bind, Alice adds the fee
+//       output, proves, and submits; the relayer posts the carrier. PAY_VIA=key: a fresh relay key funded here
+//       posts the carrier; bind names its bind coin, which the carrier spends.
 // exit  Bob exits 4,000 units via exitToSats to the funding wallet acting as maker, wanting 2,000 sats to a
 //       fresh exit key; the maker validates the offer, builds the carrier with makerCarrierOutputs and pays the
 //       want. Bob keeps 2,000 units as an internal change note.
@@ -18,8 +20,8 @@
 // Anchor: ANCHOR=policy uses the wallet default (tip − 6 rounded down to 6, so a fresh note waits 6–11 blocks);
 // ANCHOR=latest (default) anchors at the replayed tip, which the indexer accepts the same way.
 //
-// Env: BTC_POOL_API, ESPLORA (default blockstream signet), STATE_FILE, ANCHOR, CONFIRM_TIMEOUT_MIN (default 90),
-// FEE_RATE (sat/vB, default 2).
+// Env: BTC_POOL_API, RELAY_API, PAY_VIA, ESPLORA (default blockstream signet), STATE_FILE, ANCHOR,
+// CONFIRM_TIMEOUT_MIN (default 90), FEE_RATE (sat/vB, default 2).
 import { JSDOM } from 'jsdom';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -29,7 +31,6 @@ import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
-import * as snarkjs from 'snarkjs';
 import { makeBtcShieldedPool, defaultAnchor } from '../dapp/btc-shielded-pool.js';
 import { makeBtcPoolZap, makeNoteResolver } from '../dapp/btc-pool-zap.js';
 import { makePoolClient } from '../dapp/btc-pool-client.js';
@@ -42,6 +43,9 @@ const WALLET_FILE = path.join(HOME_V, 'signet.json');
 const POOL_API = (process.env.BTC_POOL_API || 'https://tacit-btc-pool.onrender.com').replace(/\/$/, '');
 const FAUCET = (process.env.SATS_FAUCET || 'https://tacit-sats-faucet.onrender.com').replace(/\/$/, '');
 const ESPLORA = (process.env.ESPLORA || 'https://blockstream.info/signet/api').replace(/\/$/, '');
+const RELAY_API = (process.env.RELAY_API || 'https://tacit-btc-pool-relay.onrender.com').replace(/\/$/, '');
+const PAY_VIA = process.env.PAY_VIA || 'relayer';
+if (!['relayer', 'key'].includes(PAY_VIA)) throw new Error('PAY_VIA must be relayer or key');
 const ANCHOR = process.env.ANCHOR || 'latest';
 const CONFIRM_TIMEOUT_MS = Number(process.env.CONFIRM_TIMEOUT_MIN || 90) * 60_000;
 
@@ -85,7 +89,8 @@ const dapp = await import('../dapp/tacit.js');
 const pool = makeBtcShieldedPool({ secp, keccak256: keccak_256, sha256 });
 const zap = makeBtcPoolZap({ secp, sha256, keccak256: keccak_256 });
 const ART = path.join(ROOT, 'dapp/btc-pool');
-const client = makePoolClient({ api: POOL_API, readFile: (n) => readFileSync(path.join(ART, n)), snarkjs, fetchImpl: (...a) => realFetch(...a) });
+const client = makePoolClient({ api: POOL_API, readFile: (n) => readFileSync(path.join(ART, n)), fetchImpl: (...a) => realFetch(...a) });
+const relayClient = makePoolClient({ api: RELAY_API, readFile: (n) => readFileSync(path.join(ART, n)), fetchImpl: (...a) => realFetch(...a) });
 const verifier = makeBtcPoolVerifier({ network: 'signet', log: () => {} });
 if (!verifier.enabled) throw new Error(`verifier: ${verifier.reason}`);
 
@@ -317,15 +322,15 @@ async function stageFund() {
     saveState();
   }
   await broadcastHex(st.alice.hex, st.alice.txid, 'fund Alice');
-  if (!st.relay) {
+  if (PAY_VIA === 'key' && !st.relay) {
     // A separate, later transaction: the relay's coins share nothing with Alice's funding.
     const r = await fundingSend([{ value: RELAY_CARRIER_COIN, script: relay.spk }, { value: RELAY_BIND_COIN, script: relay.spk }]);
     st.relay = { ...r, bind: { txid: r.txid, vout: 1, value: RELAY_BIND_COIN } };
     saveState();
   }
-  await broadcastHex(st.relay.hex, st.relay.txid, 'fund relay');
+  if (st.relay) await broadcastHex(st.relay.hex, st.relay.txid, 'fund relay');
   if (!st.aliceHeight) { st.aliceHeight = await waitConfirmed(st.alice.txid, 'fund Alice'); saveState(); }
-  if (!st.relayHeight) { st.relayHeight = await waitConfirmed(st.relay.txid, 'fund relay'); saveState(); }
+  if (st.relay && !st.relayHeight) { st.relayHeight = await waitConfirmed(st.relay.txid, 'fund relay'); saveState(); }
 }
 
 async function pickSale() {
@@ -385,43 +390,64 @@ async function stageJoin() {
 const walletNotes = (w) => client.walletNotes(pool, w);
 
 async function stagePay() {
-  console.log('\n--- pay (Alice → Bob, relay carrier with bind) ---');
+  console.log(`\n--- pay (Alice → Bob, ${PAY_VIA === 'relayer' ? `relayed by ${RELAY_API}` : 'relay-key carrier with bind'}) ---`);
   const st = state.pay || (state.pay = {});
-  if (!st.revealHex) {
+  if (!st.revealHex && !st.submitId) {
+    const q = PAY_VIA === 'relayer' ? await relayClient.quote({ asset: '0x' + ASSET }) : null;
+    const fee = q ? BigInt(q.fee) : 0n;
     const unspent = (await walletNotes(alice)).filter((x) => !x.spent);
-    const { inputs } = pool.selectInputs(unspent, PAY_TO_BOB, { asset: '0x' + ASSET });
+    const { inputs } = pool.selectInputs(unspent, PAY_TO_BOB + fee, { asset: '0x' + ASSET });
     if (inputs.length !== 1) throw new Error(`expected Alice's first spend to have 1 input, got ${inputs.length}`);
     const a = await anchorAndPaths(inputs, 'pay');
+    const outputs = [{ address: bob.addressString, value: PAY_TO_BOB }];
+    if (q) outputs.push({ address: q.address, value: fee });
     const built = pool.buildSpendBody({
       asset: '0x' + ASSET, hAnchor: a.hAnchor, root: a.root,
-      inputs: a.notes,
-      outputs: [{ address: bob.addressString, value: PAY_TO_BOB }],
-      wallet: alice,
-      bind: { txid: state.fund.relay.bind.txid, vout: state.fund.relay.bind.vout },
+      inputs: a.notes, outputs, wallet: alice,
+      bind: q ? q.bind : { txid: state.fund.relay.bind.txid, vout: state.fund.relay.bind.vout },
     });
     const toBob = pool.scan(bob, built.outputs);
     const own = pool.scan(alice, built.outputs);
     if (toBob.length !== 1 || toBob[0].value !== PAY_TO_BOB) throw new Error('Bob does not receive the pay output');
-    if (own.length !== 2 || !own.every((x) => x.internal) || own.reduce((t, x) => t + x.value, 0n) !== inputs[0].value - PAY_TO_BOB) throw new Error('Alice does not receive change and padding internally');
+    if (!own.length || !own.every((x) => x.internal) || own.reduce((t, x) => t + x.value, 0n) !== inputs[0].value - PAY_TO_BOB - fee) throw new Error('Alice does not receive change and padding internally');
     if (pool.scan(pool.viewWallet(alice), built.outputs).length !== 0) throw new Error('change is visible to the incoming-only view key');
     Object.assign(st, {
+      via: PAY_VIA, quote: q, relayFee: fee,
       bodyHex: built.bodyHex, root: a.root, hAnchor: built.hAnchor, tipAtBuild: a.tip, bind: built.bind,
       nIn: inputs.length, nOut: built.outputs.length, nullifiers: built.nullifiers,
       outputs: built.outputs.map(({ value, npk, rho, ...f }) => f), inputLeaf: inputs[0].leafIndex,
     });
     saveState();
-    log(`pay body ${hexToBytes(strip(built.bodyHex)).length} bytes: 1 input, ${built.outputs.length} outputs (Bob ${PAY_TO_BOB}, change ${inputs[0].value - PAY_TO_BOB}, one zero pad), bind ${built.bind.txid}:${built.bind.vout}`);
-    const { payload } = await proveTimed('pay', built, st);
+    log(`pay body ${hexToBytes(strip(built.bodyHex)).length} bytes: 1 input, ${built.outputs.length} outputs (Bob ${PAY_TO_BOB}${q ? `, relayer fee ${fee}` : ''}, change ${inputs[0].value - PAY_TO_BOB - fee}), bind ${built.bind.txid}:${built.bind.vout}`);
+    const { payload, payloadHex } = await proveTimed('pay', built, st);
     const pp = pool.payloadPublics(payload, { root: a.root });
     if (!(await verifier.verify({ proof: hexToBytes(strip(pp.parsed.proof)), publics: pp.publics }))) throw new Error('pay payload does not verify natively');
-    const coins = (await utxosOf(relay.spk)).filter((u) => !(u.txid === st.bind.txid && u.vout === st.bind.vout));
-    const r = await buildCarrier({
-      signer: relay, coins, payload,
-      extraInputs: [{ txid: st.bind.txid, vout: st.bind.vout, value: state.fund.relay.bind.value, priv: relay.priv, pub: relay.pub }],
-      outputs: [{ value: dapp.DUST, script: relay.spk }],
-    });
-    Object.assign(st, r, { payloadBytes: payload.length });
-    saveState();
+    st.payloadBytes = payload.length;
+    if (q) {
+      const sub = await relayClient.submit({ payload: payloadHex, quoteId: q.quoteId });
+      st.submitId = sub.id; st.batchId = sub.batchId;
+      saveState();
+      log(`submitted to the relayer: payload ${sub.id}, batch ${sub.batchId}`);
+    } else {
+      const coins = (await utxosOf(relay.spk)).filter((u) => !(u.txid === st.bind.txid && u.vout === st.bind.vout));
+      const r = await buildCarrier({
+        signer: relay, coins, payload,
+        extraInputs: [{ txid: st.bind.txid, vout: st.bind.vout, value: state.fund.relay.bind.value, priv: relay.priv, pub: relay.pub }],
+        outputs: [{ value: dapp.DUST, script: relay.spk }],
+      });
+      Object.assign(st, r);
+      saveState();
+    }
+  }
+  if (st.submitId && !st.revealTxid) {
+    const t0 = Date.now();
+    for (;;) {
+      const s = await relayClient.relayStatus(st.submitId);
+      if (s.carrier) { st.revealTxid = s.carrier; st.commitTxid = s.commit; st.broadcast = true; saveState(); log(`relayer posted the carrier ${link(s.carrier)} (commit ${s.commit})`); break; }
+      if (['dropped', 'rejected'].includes(s.state)) throw new Error(`relayer ${s.state} the pay: ${s.reason}`);
+      if (Date.now() - t0 > CONFIRM_TIMEOUT_MS) throw new Error('relayer did not post the carrier');
+      await sleep(10_000);
+    }
   }
   if (!st.broadcast) await broadcastPair(st, 'pay');
   if (!st.height) { st.height = await waitConfirmed(st.revealTxid, 'pay carrier'); saveState(); }

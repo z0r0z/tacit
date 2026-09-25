@@ -37,14 +37,17 @@ data is missing. A2 is therefore a liveness assumption: its failure stops an ind
 its result.
 
 **A3. Proof system and circuit.**
-- **A3a. Groth16.** Groth16 over BN254 is knowledge-sound for the constraint system of `spend.circom`,
-  with advantage `Adv^ks`: from any prover that outputs an accepting proof for public inputs `x`, an
-  extractor recovers an assignment `w` satisfying the constraints at `x`. This holds for a key whose
-  phase 1 is the pinned Hermez `pot18` and whose phase 2 had at least one honest contributor. It is
-  zero-knowledge, with advantage `Adv^zk`: a simulator `Sim(x)` produces proofs indistinguishable from
-  real ones, since every proof samples fresh blinding. Non-malleability of proof bytes is not assumed.
-  Groth16 proofs can be re-randomized, and nothing here treats a proof's bytes as an identity.
-- **A3b. Circuit faithfulness.** An assignment satisfies the constraints of `spend.circom` at `x` iff it
+- **A3a. Halo2-KZG.** Halo2 with KZG commitments and SHPLONK over BN254, made non-interactive by a
+  BLAKE2b transcript (random oracle), is knowledge-sound for the pinned circuit, with advantage `Adv^ks`:
+  from any prover that outputs an accepting proof for public inputs `x`, an extractor recovers an
+  assignment `w` satisfying the constraints at `x`. This holds in the algebraic group model under q-DLOG
+  for an SRS whose trapdoor no one knows: the pinned Hermez `pot18` powers of tau, sound if one of its
+  contributors was honest. There is no circuit-specific setup. It is zero-knowledge, with advantage
+  `Adv^zk`: a simulator `Sim(x)` produces proofs indistinguishable from real ones, since every proof
+  blinds its advice columns and random polynomial. Non-malleability of proof bytes is not assumed, and
+  nothing here treats a proof's bytes as an identity.
+- **A3b. Circuit faithfulness.** An assignment satisfies the constraints of the pinned Halo2 circuit
+  (`btc-pool-halo2`, the relation of `spend.circom`) at `x` iff it
   is a witness of the relation `R` of design §4 at `x`. This is the circuit's correctness, with no
   cryptographic term: an under-constrained signal would admit witnesses outside `R`. It is established by
   review against design §4 and by adversarial witness tests (`tests/btc-pool-zk.test.mjs`) that the
@@ -377,7 +380,7 @@ that go on chain, so it adds nothing to the view beyond its arrival time and ori
 network-layer and outside `L`.
 
 - **Game 0.** The real experiment.
-- **Game 1.** Replace each Groth16 proof by `Sim(x)`, and each boundary's sigma and range proof by their
+- **Game 1.** Replace each Halo2 proof by `Sim(x)`, and each boundary's sigma and range proof by their
   simulators. Signatures, openings, paths, `rho` and nullifier keys appear only in the witness, so they
   vanish from the view. Loss: `q_s·Adv^zk + q_c·O(q_H/2^128)`.
 - **Game 2.** For each note, replace `s = compress(e·V)` with the compression of an independent uniform
@@ -540,18 +543,19 @@ reference the carrier only through the signed `bind` and `want`. ∎
 
 ### 3.10 Native verification and the key
 
-Indexers, relayers and makers verify every proof in process: a Groth16 BN254 check of the 256-byte wire
-proof against the verification key, with the twelve public inputs in circuit order. The JS verifier and
-the Rust twin (`btc-pool-zk-core`) read the same wire and the same public-input order. The key is pinned by
-`vk_hash`, SHA-256 over `alpha1 ‖ beta2 ‖ gamma2 ‖ delta2 ‖ IC` as 32-byte big-endian limbs, which both
-implementations compute. A key that does not match the pin, or a pin for another network, disables
-verification, and the indexer halts at the first pool envelope rather than deciding it (G1).
+Indexers, relayers and makers verify every proof in process: a Halo2-KZG check of the 2,080-byte wire
+proof against the verification key, with the twelve public inputs in circuit order. Wallets and verifiers
+run the same wasm build of `btc-pool-halo2`; the native `btc-pool-verify` binary reads the same wire and
+public-input order. A wire of any other length is rejected before verification. The key is pinned by
+`vk_hash = BLAKE2b-512(vk.bin)`, with the params file and the wasm pinned by SHA-256. A key or file that
+does not match its pin, or a pin for another network, disables verification, and the indexer halts at the
+first pool envelope rather than deciding it (G1).
 
-A3a rests on the key's setup. Phase 1 is Hermez `pot18`, already pinned for the AMM circuits. Phase 2 is
-specific to `spend.circom`. The mainnet key comes from a multi-party phase-2 ceremony on Tacit's
-coordinator, with a Bitcoin-block beacon, and is sound if one contributor was honest. Signet runs a
-single-contributor development key, pinned for signet only, which never carries mainnet value. The
-circuit is frozen before the ceremony, since any change to it needs a new phase 2.
+A3a rests only on the SRS. The params are Hermez `pot18` (already pinned for the AMM circuits) converted to
+halo2's format with no new randomness; the converter checks the ptau's BLAKE2b pin, the generators, the
+pairing relation between the G1 and G2 powers and every G1 power. The proving and verification keys are
+deterministic functions of the params and the circuit, so any change to the circuit is a new `vk_hash` and
+nothing else.
 
 ### 3.11 Assumption dependencies
 
@@ -629,7 +633,7 @@ claim trustless entry or exit.
 | Transcript privacy | Hybrid argument | Hybrid argument (§3.6) |
 | Boundary amounts | No working boundary | Hidden at shield and exit, except where the transparent note's opening is public |
 | Boundary custody | Not claimed trustless | Not claimed trustless. The pool adds no custody, and BTC exposure is cBTC's (§0) |
-| Setup | The paper's own instantiation | Hermez `pot18` and a public multi-party phase 2 for the one circuit (§3.10) |
+| Setup | The paper's own instantiation | Hermez `pot18` only; no circuit-specific setup (§3.10) |
 | Proving | Not addressed | On the user's device; delegation optional, redirect-proof and unlinkable, with the prover's view stated (G8) |
 | Batching | Out of scope | Many spends per carrier, each accepted independently, with sequential nullifier and output-claim rules (§3.9) |
 | Fee payment | Left to future PIPE fee vaults | A relayer paid by an in-pool fee output; the sender needs no Bitcoin wallet and exposes no fee inputs (§3.8) |
@@ -652,12 +656,11 @@ knowledge extraction is the non-tight forking argument that already underlies `T
   spent. An output leaf built from keys with no known preimage, a wrong amount in `ct_note`, and a
   duplicate leaf each strand only the value of the party that created them. The canonical wallet refuses
   to build them.
-- **Setup.** Groth16 soundness rests on the phase-2 ceremony having one honest contributor (A3a). The
-  mainnet key comes from a public multi-party ceremony; the signet development key is pinned for signet
-  only.
+- **Setup.** Halo2-KZG soundness rests on one honest contributor to Hermez `pot18` (A3a). No
+  circuit-specific ceremony exists or is needed.
 - **Circuit faithfulness.** An under-constrained signal would admit witnesses outside the relation (A3b).
-  The circuit is reviewed against design §4 and frozen before its ceremony, and the adversarial witness
-  suite runs against the compiled constraint system.
+  The circuit is reviewed against design §4, and the adversarial witness suite runs against both the
+  circom constraint system and the Halo2 circuit (`btc-pool-halo2/tests`).
 - **Seam divergence.** A transparent validator that mishandles outputs of `T_BTC_SPEND` carriers either
   rejects valid exit notes (liveness) or accepts unrecorded ones (supply). Both validators must share the
   pool's record (A7).
@@ -688,12 +691,13 @@ knowledge extraction is the non-tight forking argument that already underlies `T
 
 - The reductions in §3, in particular Lemmas 1 and 2, the boundary lemma, the kernel extraction at the
   shield, the Game 3 and Game 5 hops, and the G8 linking argument.
-- A3b: `spend.circom` against design §4, including canonical `nk_note < l` (251-bit decomposition and the
+- A3b: the Halo2 circuit (and `spend.circom`, which specifies it) against design §4, including canonical `nk_note < l` (251-bit decomposition and the
   `l − 1` comparison), `leaf_index < 2^32`, empty-slot semantics for inputs and outputs, the zero-value
   membership skip, the disabled signature on empty slots, the 64-bit and 251-bit ranges in the
   BabyJubJub Pedersen gadget, the identity forcing a zero value, the conservation equation, and the
   public-input order. The adversarial witness suite (`tests/btc-pool-zk.test.mjs`) as coverage evidence.
-- A3a as instantiated: the phase-2 transcript of the mainnet key, its beacon, and the pinned `vk_hash`.
+- A3a as instantiated: the ptau-to-params conversion (`btc-pool-halo2/src/srs.rs`), the halo2 v0.3.0
+  verifier, and the pinned `vk_hash`.
 - A5d's related-key clause for `A + t·B8`, as used for `Ak`.
 - A6b: the sigma's integer extraction under its 128-bit challenge and 320-bit response, and the lattice
   bound the boundary lemma uses for the fixed orders of secp256k1 and BabyJubJub.

@@ -184,13 +184,12 @@ integer.
 fixed-denomination pool (`T_DEPOSIT` / `T_WITHDRAW`, §3.8) and are available for any denominated
 anonymity pool built on Tacit.
 
+**Bitcoin shielded pool.** Needs no ceremony. Its circuit is Halo2 with KZG commitments over the pinned
+Hermez `pot18` powers of tau, with keys derived deterministically from those params and the circuit.
+
 | Circuit | Proves | Verified by |
 |---|---|---|
-| Bitcoin shielded pool (`btc-pool/spend.circom`) | One `T_BTC_SHIELD` or `T_BTC_SPEND` (§3.10), proved on the user's device. Not enabled. | Natively by pool indexers and relayers, Groth16 against the key pinned by `vk_hash` in [`dapp/btc-pool/pin.json`](./dapp/btc-pool/pin.json) |
-
-Its mainnet key comes from a multi-party phase-2 ceremony over the same Hermez `pot18`, with a
-Bitcoin-block beacon, before enablement. Signet runs a single-contributor development key that never
-carries mainnet value.
+| Bitcoin shielded pool (`btc-pool-halo2`, the relation of `btc-pool/spend.circom`) | One `T_BTC_SHIELD` or `T_BTC_SPEND` (§3.10), proved on the user's device. Not enabled. | Natively by pool indexers and relayers, Halo2-KZG against the key pinned by `vk_hash` (BLAKE2b-512 of `vk.bin`) in [`dapp/btc-pool/pin.json`](./dapp/btc-pool/pin.json) |
 
 Artifacts are content-addressed. [`docs/CEREMONY.md`](./docs/CEREMONY.md) lists every zkey, verifying key,
 r1cs and witness generator with its CID and hash, including the finalized `amm_swap_batch` zkey
@@ -420,7 +419,7 @@ pool adds no custody.
   `npk = Poseidon(Ak.x, Ak.y, NK.x, NK.y)`, `leaf = Poseidon(asset_f, v, npk, rho)` and
   `nf = Poseidon(nk_note, leaf, leaf_index)`, where `asset_f = SHA-256("tacit-btc-pool-zk-asset-v1" ‖
   asset) mod p`, `0 ≤ nk_note < l`, `NK = nk_note·B8` and `leaf_index < 2^32`.
-- **Proof.** One Groth16 circuit, `spend.circom` (§2.8), a join-split with two input and three output
+- **Proof.** One Halo2-KZG circuit over Hermez `pot18` (§2.8), specified by `spend.circom`, a join-split with two input and three output
   slots over the depth-32 Poseidon tree. It proves membership, the nullifiers, an EdDSA-Poseidon signature
   by each input's `Ak` over `bodyHash = SHA-256("tacit-btc-pool-zk-body-v1" ‖ body) mod p`, values below
   `2^64`, and `Σ v_in + v_dep = Σ v_out + v_exit`, where `v_exit` and `v_dep` open BabyJubJub commitments
@@ -464,7 +463,7 @@ pool adds no custody.
 | Byte | Op | Rule summary |
 |---|---|---|
 | 0x6C | `T_BTC_SHIELD` | `0x6C ‖ asset ‖ n_in(1) ‖ n_out(1) ‖ output(89)×n_out ‖ boundary(825) ‖ kernel_sig(64) ‖ proof_len(2) ‖ proof`, with `output = leaf ‖ pk_eph(33) ‖ ct_note(24)`, `1 ≤ n_in ≤ 8`, `1 ≤ n_out ≤ 3`. Rides `vin[0]` only. Spends the transparent notes `vin[1..n_in]` of `asset` into the output leaves. `kernel_sig` is the §2.4 kernel under `x(E)`, `E = C_secp − ΣC_in`, `E ≠ ∞`, over `SHA-256("tacit-btc-pool-zk-shield-v1" ‖ (txid ‖ vout_LE)×n_in ‖ body)`, where `body` is every byte before `kernel_sig`. The boundary verifies and the proof verifies with `root = 0`, no nullifiers and `depC = C_bjj`. It creates no transparent outputs of `asset`. |
-| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(89)×n_out ‖ has_exit(1) ‖ [exit(861)] ‖ has_want(1) ‖ [want(44)] ‖ proof_len(2) ‖ proof`, with `exit = exit_vout(4) ‖ dest_spk_hash ‖ boundary(825)`, present iff `has_exit = 1`, and `want = vout(4) ‖ value(8) ‖ spk_hash(32)`, present iff `has_want = 1`. `bind = txid ‖ vout_LE` of an outpoint the carrier must spend at any input, or all zero for none. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `has_want ∈ {0, 1}`, `n_out + has_exit ≥ 1`, `proof_len ≤ 4096` (256 for Groth16). Leaves and nullifiers are non-zero field elements below `p`; `pk_eph` and `C_secp` are valid compressed points. Integers are little-endian. `body` is every byte before `proof_len`. Each output appends a leaf. The exit creates the transparent note `(asset, C_secp)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. The want requires the carrier's output `vout` to pay at least `value` sats to a script hashing (SHA-256) to `spk_hash`; within a transaction each output is claimed by at most one accepted exit or want. May ride any envelope input of a carrier. |
+| 0x6D | `T_BTC_SPEND` | Variable: `0x6D ‖ asset ‖ h_anchor(4) ‖ bind(36) ‖ n_in(1) ‖ nf×n_in ‖ n_out(1) ‖ output(89)×n_out ‖ has_exit(1) ‖ [exit(861)] ‖ has_want(1) ‖ [want(44)] ‖ proof_len(2) ‖ proof`, with `exit = exit_vout(4) ‖ dest_spk_hash ‖ boundary(825)`, present iff `has_exit = 1`, and `want = vout(4) ‖ value(8) ‖ spk_hash(32)`, present iff `has_want = 1`. `bind = txid ‖ vout_LE` of an outpoint the carrier must spend at any input, or all zero for none. `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `has_want ∈ {0, 1}`, `n_out + has_exit ≥ 1`, `proof_len ≤ 4096` (2,080 for the pinned Halo2-KZG circuit). Leaves and nullifiers are non-zero field elements below `p`; `pk_eph` and `C_secp` are valid compressed points. Integers are little-endian. `body` is every byte before `proof_len`. Each output appends a leaf. The exit creates the transparent note `(asset, C_secp)` at `exit_vout`, whose scriptPubKey must hash (SHA-256) to `dest_spk_hash`. The want requires the carrier's output `vout` to pay at least `value` sats to a script hashing (SHA-256) to `spk_hash`; within a transaction each output is claimed by at most one accepted exit or want. May ride any envelope input of a carrier. |
 
 ---
 

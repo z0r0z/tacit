@@ -13,7 +13,7 @@
 //   to a fresh key of the user's; the maker builds the carrier from its own coins. The want is in the proved
 //   body and checked at acceptance, so the maker cannot take the exit without paying it.
 //
-// Proofs come from a proof system (btc-pool-zk-prover.js makeGroth16System), run on the user's device.
+// Proofs come from a proof system (btc-pool-halo2-prover.js makeHalo2System), run on the user's device.
 //
 // Pure: no network. `tacit` is the dapp's transaction toolkit (tacit.js exports or makeBtcWallet prims) bound
 // to the buyer's Bitcoin key; `pool` is makeBtcShieldedPool(...).

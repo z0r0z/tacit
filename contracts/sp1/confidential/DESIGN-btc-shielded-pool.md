@@ -190,8 +190,8 @@ want   = vout(4) ‖ value(8) ‖ spk_hash(32)                           present
 ```
 
 The constraints are `1 ≤ n_in ≤ 2`, `0 ≤ n_out ≤ 3`, `has_exit ∈ {0, 1}`, `has_want ∈ {0, 1}`,
-`n_out + has_exit ≥ 1`, and `proof_len ≤ 4096`. The pinned proof system fixes the proof's length (256
-bytes for Groth16), and a proof of any other length does not verify. `body` is every byte of the payload
+`n_out + has_exit ≥ 1`, and `proof_len ≤ 4096`. The pinned proof system fixes the proof's length (2,080
+bytes for Halo2-KZG), and a proof of any other length does not verify. `body` is every byte of the payload
 before `proof_len`.
 
 - **`bind`** is `txid ‖ vout_LE` of an outpoint the carrier must spend, at any input, or 36 zero bytes for
@@ -237,9 +237,10 @@ each output can be claimed by at most one accepted exit or want. An exit is reje
 
 ## 4. The relation
 
-One circuit, `dapp/circuits/btc-pool/spend.circom`, proves every shield and spend: a join-split with two
-input slots and three output slots over the depth-32 Poseidon tree. Its reference model is
-`dapp/btc-pool-zk.js`, with a Rust twin in `btc-pool-zk-core`.
+One relation proves every shield and spend: a join-split with two input slots and three output slots over
+the depth-32 Poseidon tree. It is specified by `dapp/circuits/btc-pool/spend.circom` and implemented as a
+Halo2 circuit in `btc-pool-halo2`, which proves the same statement over the same twelve public inputs. Its
+reference model is `dapp/btc-pool-zk.js`, with Rust twins in `btc-pool-zk-core` and `btc-pool-halo2`.
 
 **Public inputs**, twelve field elements in this order, each derived by the indexer from the envelope and
 its own state:
@@ -288,12 +289,14 @@ public field of the envelope is inside `body`, so `bodyHash` binds them all.
 requires non-zero nullifiers to be pairwise distinct, which stops it counting twice. A spend has at least
 one non-empty input, and a shield has none.
 
-**Proof system.** Groth16 over BN254. The wire proof is `A(64) ‖ B(128) ‖ C(64)`, 32-byte big-endian
-limbs, `B` in snarkjs order. The verification key is pinned by
-`vk_hash = SHA-256(alpha1 ‖ beta2 ‖ gamma2 ‖ delta2 ‖ IC)` over the same limbs, in
-`dapp/btc-pool/pin.json` together with the SHA-256 of the circuit wasm and proving key. The wallet proves on
-the user's device and checks its own proof before handing it out. A device that cannot prove may delegate
-the witness to a prover (a server running the same circuit, or an SP1 prover).
+**Proof system.** Halo2 with KZG commitments over BN254 (PSE `halo2_proofs` v0.3.0, SHPLONK multi-open,
+BLAKE2b transcript), k = 13. The SRS is the pinned Hermez `pot18` powers of tau, converted without new
+randomness; there is no circuit-specific setup. The wire proof is the transcript, exactly 2,080 bytes. The
+verification key is pinned by `vk_hash = BLAKE2b-512(vk.bin)` in `dapp/btc-pool/pin.json`, together with
+the SHA-256 of `vk.bin`, the params file and the prover wasm. Proving and verification keys are derived
+deterministically from the SRS and the circuit, so anyone can rebuild and check them. The wallet proves on
+the user's device (one browser thread, 12–15 s on a laptop) and checks its own proof before handing it out. A device
+that cannot prove may delegate the witness to a prover running the same circuit.
 
 **What a prover learns.** A delegated prover learns the openings, leaves and `nk_note` of the notes it
 proves, the output openings, and so which leaves are spent. It holds signatures and `nk_note` but never
@@ -361,7 +364,7 @@ after the block commits. A reorg replays from the fork point by undoing each rol
 nullifiers, recorded exits and root. The undo log covers 288 blocks, and a deeper reorg rescans from the
 pool's start height.
 
-**Verification is native.** The indexer verifies each Groth16 proof and each boundary in process, against
+**Verification is native.** The indexer verifies each Halo2 proof and each boundary in process, against
 the key pinned by `vk_hash`, with no network call, so two indexers replaying the same chain agree on every
 proof. An indexer whose key is missing or does not match the pin halts at the first shield or spend
 rather than deciding it.
@@ -461,13 +464,13 @@ It reuses:
 - BIP-340 signing, for the kernel;
 - BabyJubJub Pedersen commitments, the cross-curve sigma and a secp256k1-side Bulletproofs+ range proof,
   the boundary `T_SWAP_BATCH` already ships (SPEC §2.8, §3.5);
-- circomlib Poseidon and EdDSA-Poseidon, the circom and snarkjs Groth16 stack, the pinned Hermez `pot18`
-  phase 1 and Tacit's phase-2 ceremony coordinator (SPEC §2.8);
+- circomlib Poseidon and EdDSA-Poseidon (the relation's hash and signature), and the pinned Hermez `pot18`
+  powers of tau (SPEC §2.8) as the Halo2 SRS;
 - the stealth one-time-key construction behind pay-by-stealth;
 - the standard Tacit carrier.
 
-It is new in three places: the note model and nullifier derivation above, the spend circuit and its
-phase-2 key, and the pool replay state.
+It is new in three places: the note model and nullifier derivation above, the spend circuit, and the pool
+replay state.
 
 ## 9. Relationship to the rest of Tacit
 
@@ -484,7 +487,7 @@ phase-2 key, and the pool replay state.
 - **Governance** gains no new surface. The window, arity caps, proof cap and pinned key are protocol
   constants.
 - **Upgrades** follow SPEC §8's lineage. A changed relation means new domain tags, a new circuit and
-  phase-2 key, and new opcodes, while old notes stay spendable under the old circuit and key.
+  key, and new opcodes, while old notes stay spendable under the old circuit and key.
 
 **Buy and shield.** A pre-authorized sale (README, "Trade atomically") sells a transparent lot for BTC. The
 seller signs its lot input and its payout `SIGHASH_SINGLE|ANYONECANPAY` and publishes the lot's opening. The
@@ -527,16 +530,14 @@ that ancestry need no hosted record.
 
 1. The reference relation (circuit, JS model, Rust twin), boundary, indexer, wallet and native verifier,
    each with adversarial tests, including adversarial witnesses against the circuit.
-2. A signet run under a single-contributor development key: shield, pay, scan, exit with real
-   transactions and proofs made in the browser.
+2. A signet run: shield, pay, scan, exit with real transactions and Halo2 proofs made on the client.
 3. The replay service on Render, serving roots, paths, the note feed and nullifier status.
 4. The transparent-layer seam in the indexer and the dapp: `validateOutpoint` covers `T_CROSSOUT_MINT`
    and pool exits, the worker values exit outputs, and the dapp builds buy-and-shield and exit-to-sats
    carriers.
 5. A reflection fold for `T_BTC_SHIELD` and `T_BTC_SPEND` in a successor deployment (SPEC §8), so exited
    notes join the reflected live set.
-6. Independent review of the circuit and the boundary, then a multi-party phase-2 ceremony over the
-   pinned Hermez `pot18` with a Bitcoin-block beacon. The zkey, verification key and wasm are pinned by
-   hash and content address.
+6. Independent review of the Halo2 circuit and the boundary. The verification key, params and prover
+   wasm are pinned by hash and content address.
 7. Mainnet enablement with a value cap.
 8. Proof-verified cross-out mints (§9).

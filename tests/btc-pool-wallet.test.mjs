@@ -9,12 +9,11 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
-import * as snarkjs from 'snarkjs';
 import { poseidon2, poseidon3, poseidon4 } from 'poseidon-lite';
 import { makeBtcShieldedPool, defaultAnchor, T_BTC_SHIELD, T_BTC_SPEND, ADDRESS_LEN, CT_NOTE_LEN, POOL_NOTE_LEN, BOUNDARY_LEN, BTC_POOL_MAX_PROOF } from '../dapp/btc-shielded-pool.js';
 import { assetField, bodyHash, spendPublics, hsL, hsP, mulB8, pedersenBJJ, publicSignals, L_BJJ, P_FR } from '../dapp/btc-pool-zk.js';
 import { verifyBoundary, decodeBoundary } from '../dapp/btc-pool-zk-boundary.js';
-import { makeGroth16System } from '../dapp/btc-pool-zk-prover.js';
+import { makeHalo2System, HALO2_PROOF_LEN } from '../dapp/btc-pool-halo2-prover.js';
 import { addPoint, unpackPoint, packPoint, eq as bjjEq } from '../dapp/amm-bjj.js';
 import * as W from '../worker/src/btc-shielded-pool.js';
 import { H as TACIT_H } from './bulletproofs.mjs';
@@ -628,9 +627,11 @@ ok('selectInputs pads to 2 inputs with a zero-value note; wallet pays default to
 // ── one real pay proof ──
 const D = new URL('../dapp/btc-pool/', import.meta.url).pathname;
 const pin = JSON.parse(readFileSync(D + 'pin.json', 'utf8'));
-const sys = makeGroth16System({ vk: JSON.parse(readFileSync(D + pin.vk, 'utf8')), wasm: readFileSync(D + pin.wasm), zkey: readFileSync(D + pin.zkey), pinnedVkHash: pin.vk_hash, snarkjs });
+const arts = { wasm: readFileSync(D + pin.wasm), params: readFileSync(D + pin.params), vk: readFileSync(D + pin.vk) };
+const sys = makeHalo2System({ ...arts, pinnedVkHash: pin.vk_hash, worker: null });
 {
-  assert.throws(() => makeGroth16System({ vk: JSON.parse(readFileSync(D + pin.vk, 'utf8')), pinnedVkHash: '00'.repeat(32) }), /not the pinned/);
+  assert.throws(() => makeHalo2System({ ...arts, pinnedVkHash: '00'.repeat(32), worker: null }), /BLAKE2b-512/);
+  await assert.rejects(makeHalo2System({ ...arts, pinnedVkHash: '00'.repeat(64), worker: null }).verify(Array(12).fill('0'), new Uint8Array(HALO2_PROOF_LEN)), /not the pinned/);
   const dan = pool.walletFromSeed(rnd(32), 'signet');
   const a = pool.createNote(dan.addressString, ASSET, 5_000n), b = pool.createNote(dan.addressString, ASSET, 17n);
   const tree = treeOf([a.leaf, b.leaf]);
@@ -642,7 +643,7 @@ const sys = makeGroth16System({ vk: JSON.parse(readFileSync(D + pin.vk, 'utf8'))
   const { payload } = await pool.prove(built, sys, { onProgress: (s) => stages.push(s) });
   console.log(`    (pay proved in ${((performance.now() - t) / 1000).toFixed(1)} s, ${payload.length} bytes)`);
   assert.deepStrictEqual(stages, ['loading', 'proving']);
-  assert.strictEqual(payload.length, built.body.length + 2 + 256);
+  assert.strictEqual(payload.length, built.body.length + 2 + HALO2_PROOF_LEN);
   assert.ok(await pool.verifyPayload(sys, payload, { root: tree.root }));
   const { publics } = pool.payloadPublics(payload, { root: tree.root });
   assert.ok(await sys.verify(workerPublics(payload, tree.root), W.parseSpend(payload).proof));
@@ -660,7 +661,7 @@ const sys = makeGroth16System({ vk: JSON.parse(readFileSync(D + pin.vk, 'utf8'))
   const liar = { prove: async (input) => ({ wire: FAKE_PROOF, publicSignals: publicSignals({ ...input, root: '1' }) }) };
   await assert.rejects(pool.prove(built, liar), /differ from the witness/);
 }
-ok('real Groth16 pay: proves with the pinned key, verifies natively against wallet and indexer publics; tampered body, proof, root and publics fail; prove needs a witness and matching publics');
+ok('real Halo2 pay: proves with the pinned key, verifies natively against wallet and indexer publics; tampered body, proof, root and publics fail; prove needs a witness and matching publics');
 
 // ── exit keys ──
 {

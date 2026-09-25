@@ -6,10 +6,9 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
-import * as snarkjs from 'snarkjs';
 import { secp, sha256, keccak_256, hexToBytes, bytesToHex, concatBytes } from '../../dapp/vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../../dapp/btc-shielded-pool.js';
-import { makeGroth16System, PROOF_WIRE_LEN } from '../../dapp/btc-pool-zk-prover.js';
+import { makeHalo2System, HALO2_PROOF_LEN as PROOF_WIRE_LEN } from '../../dapp/btc-pool-halo2-prover.js';
 import { makeBtcWallet } from '../../dapp/bitcoin-taproot-wallet.js';
 import { PoseidonTree } from '../../worker/src/btc-shielded-pool.js';
 import { parseTx } from '../src/lib/btc-pool-chain.js';
@@ -920,9 +919,9 @@ async function realCases() {
   if (realCache) return realCache;
   const pinDir = DEFAULT_PIN_PATH.replace(/pin\.json$/, '');
   const pin = JSON.parse(readFileSync(DEFAULT_PIN_PATH, 'utf8'));
-  const system = makeGroth16System({
-    vk: JSON.parse(readFileSync(pinDir + pin.vk, 'utf8')), wasm: readFileSync(pinDir + pin.wasm), zkey: readFileSync(pinDir + pin.zkey),
-    snarkjs, pinnedVkHash: pin.vk_hash,
+  const system = makeHalo2System({
+    wasm: readFileSync(pinDir + pin.wasm), params: readFileSync(pinDir + pin.params), vk: readFileSync(pinDir + pin.vk),
+    pinnedVkHash: pin.vk_hash, worker: null,
   });
   const tree = new PoseidonTree();
   for (let i = 0; i < 5; i++) tree.append(bp.createNote(eve.addressString, ASSET, 7n).leaf);
@@ -1017,5 +1016,4 @@ for (const [n, f] of tests) {
   try { await f(); passed++; console.log('  ok -', n); } catch (e) { console.error('  FAIL -', n); console.error(e); process.exitCode = 1; }
 }
 console.log(`${passed}/${tests.length} passed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-// snarkjs keeps worker threads alive after proving.
 process.exit(process.exitCode ?? 0);

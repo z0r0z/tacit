@@ -1,0 +1,19 @@
+{
+  "note": "Halo2-KZG over the pinned Hermez pot18: no circuit-specific setup. Keys are derived from the SRS and the circuit.",
+  "network": "signet",
+  "system": "halo2-kzg-bn254",
+  "circuit": "contracts/sp1/confidential/btc-pool-halo2 (the dapp/circuits/btc-pool/spend.circom relation, 12 publics)",
+  "srs": "powersOfTau28_hez_final_18.ptau, BLAKE2b-512 7e6a9c2e5f05179ddfc923f38f917c9e6831d16922a902b0b4758b8e79c2ab8a81bb5f29952e16ee6c5067ed044d7857b5de120a90704c1d3b637fd94b95b13e",
+  "k": 13,
+  "proof_bytes": 2080,
+  "vk": "vk.bin",
+  "vk_hash": "bd1d3ebbdbf29520274c3bf3ffa5b3b34b5c629e49e06ce2c72935f41ddb1d9a0b70ebcea43829bf751b6f159f0952f8f9cebf3716bdfe80909e31ce2fd05b0f",
+  "vk_sha256": "81ec8357ff3e27901d27524f0207c464a3fc44dfb08c17caa201a7f027700cdc",
+  "vk_bytes": 26823,
+  "params": "params-k13.bin",
+  "params_sha256": "24807dc26cf87ee2700cb330e284f587335cebc1b5784867f60c236d67624bce",
+  "params_bytes": 524420,
+  "wasm": "btc_pool_halo2_bg.wasm",
+  "wasm_sha256": "9eb5c0402da84378b4b55d8c797ece0aefc4265aeb93725d7942c178b9df65b3",
+  "wasm_bytes": 1537745
+}

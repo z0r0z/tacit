@@ -2,7 +2,7 @@
 // (dapp/circuits/btc-pool/spend.circom; reference model dapp/btc-pool-zk.js; boundary dapp/btc-pool-zk-boundary.js).
 // Keys and addresses, note creation and scanning, the T_BTC_SHIELD and T_BTC_SPEND bodies with their circuit
 // witnesses, wallet defaults, and exit recovery. Proving goes through a proof system object
-// (btc-pool-zk-prover.js makeGroth16System): prove(input) → wire, verify(publics, wire) → bool.
+// (btc-pool-halo2-prover.js makeHalo2System): prove(input) → wire, verify(publics, wire) → bool.
 //
 // Address strings are bech32m over the 97-byte V(33, secp) ‖ A(32, BabyJub) ‖ N(32, BabyJub), HRP "bp" on mainnet
 // and "tbp" on signet. Every key is derived per network. Change and padding go to an internal address

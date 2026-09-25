@@ -1,4 +1,4 @@
-//! The signet key the indexers pin (dapp/btc-pool/pin.json) hashes to the pinned vk_hash here too, and the
+//! The Groth16 signet dev key (dapp/btc-pool/pin-groth16.json) hashes to the pinned vk_hash here too, and the
 //! stored Groth16 cases (tests/vectors/btc-pool-zk-vectors.json) verify natively as recorded.
 
 use btc_pool_zk_core::fr_from_big;
@@ -14,7 +14,7 @@ fn fr(s: &serde_json::Value) -> bn::Fr {
 
 #[test]
 fn pinned_vk_hash_matches() {
-    let pin: serde_json::Value = serde_json::from_str(&fs::read_to_string(format!("{ROOT}/dapp/btc-pool/pin.json")).unwrap()).unwrap();
+    let pin: serde_json::Value = serde_json::from_str(&fs::read_to_string(format!("{ROOT}/dapp/btc-pool/pin-groth16.json")).unwrap()).unwrap();
     let vk_json = fs::read_to_string(format!("{ROOT}/dapp/btc-pool/{}", pin["vk"].as_str().unwrap())).unwrap();
     let vk = vk_from_snarkjs_json(&vk_json).expect("vk parses");
     assert_eq!(hex::encode(vk_hash(&vk)), pin["vk_hash"].as_str().unwrap());
