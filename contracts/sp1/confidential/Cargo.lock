@@ -441,6 +441,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "btc-pool-core"
+version = "0.1.0"
+dependencies = [
+ "cxfer-core",
+ "k256",
+]
+
+[[package]]
 name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,6 +510,7 @@ name = "confidential-pool-prover"
 version = "0.1.0"
 dependencies = [
  "alloy-sol-types",
+ "btc-pool-core",
  "cxfer-core",
  "sp1-lib",
  "sp1-zkvm",

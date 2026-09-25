@@ -1,0 +1,36 @@
+[package]
+name = "btc-pool-host"
+version = "0.1.0"
+edition = "2021"
+
+# Host for the btc-pool-prover guest (DESIGN-btc-shielded-pool.md §4-§5): proves one T_BTC_SPEND and
+# verifies its Groth16 proof locally. Standalone workspace. Proving is execute (local emulator) or the
+# Succinct network; no native-gnark, so no Go/clang toolchain is needed to build.
+[workspace]
+
+[[bin]]
+name = "btc-pool-prove"
+path = "src/bin/btc_pool_prove.rs"
+
+[[bin]]
+name = "btc-pool-verify"
+path = "src/bin/btc_pool_verify.rs"
+
+[dependencies]
+sp1-sdk = { version = "=6.2.3", default-features = false, features = ["blocking", "network"] }
+# The sp1 stack is pinned so carets cannot drift past the 6.2 line the guest ELF is built against.
+sp1-prover = "=6.2.4"
+sp1-primitives = "=6.2.4"
+sp1-core-machine = "=6.2.4"
+sp1-core-executor = "=6.2.4"
+# groth16_vk.bin in this release hashes to the VERIFIER_HASH of the mainnet SP1 Groth16 verifier
+# (0x4388a21c...), and VK_ROOT_BYTES equals its VK_ROOT; the verify bin's tests assert both.
+sp1-verifier = "=6.2.4"
+serde_json = "1"
+hex = "0.4"
+
+[profile.release]
+overflow-checks = true
+
+[dev-dependencies]
+sha2 = "0.10"

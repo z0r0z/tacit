@@ -29,6 +29,7 @@ path = "src/btc_pool.rs"
 sp1-zkvm = { version = "6.2", features = ["verify"] } # provides syscall_verify_sp1_proof (Mode B recursion)
 sp1-lib = { version = "6.2", features = ["verify"] } # verify_sp1_proof (Mode B recursion in reflect.rs)
 cxfer-core = { path = "cxfer-core" }
+btc-pool-core = { path = "btc-pool-core" } # btc-pool-prover only
 alloy-sol-types = "0.8"
 # BN254 Groth16 verifier for T_SWAP_BATCH (src/groth16.rs, reflection bin only — settle's main.rs never
 # imports it, so it links into the reflection ELF only). SP1-precompile-accelerated `bn` API; the same crate

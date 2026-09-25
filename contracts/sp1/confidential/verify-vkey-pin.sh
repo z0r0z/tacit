@@ -54,10 +54,10 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
   # (ETH_REFLECTION_VKEY in reflect.rs), and the eth guest ELF has its own sha256 pin below. So only reflect.rs
   # belongs to the reflection prover's own source set.
   RELF_ONLY_SRC="src/reflect.rs"                        # reflection prover only
-  # btc-pool-prover ([[bin]] in Cargo.toml, DESIGN-btc-shielded-pool.md) — an independent third guest,
-  # not part of the settle/reflection lockstep group. Has a real committed ELF + pin (elf/btc-pool-prover,
-  # btc_pool_elf_sha256/btc_pool_vkey) but no deployed on-chain verifier yet.
-  BP_ONLY_SRC="src/btc_pool.rs"                         # btc-pool-prover only
+  # btc-pool-prover ([[bin]] in Cargo.toml, DESIGN-btc-shielded-pool.md): an independent guest, not part of
+  # the settle/reflection lockstep group. Its relation lives in btc-pool-core, which the other guests never
+  # link. Its proofs are verified off-chain by Bitcoin-side indexers against btc_pool_vkey.
+  BP_ONLY_SRC="src/btc_pool.rs btc-pool-core/src"       # btc-pool-prover only
 
   # Coverage guard: every file under src/ must be claimed by exactly one list above.
   for f in src/*; do
@@ -84,6 +84,13 @@ if git -C . rev-parse --git-dir >/dev/null 2>&1; then
         if [ -n "$newest_src" ] && git -C . merge-base --is-ancestor "$verified_at" "$newest_src" 2>/dev/null \
            && [ "$(git -C . rev-parse --short=12 "$verified_at" 2>/dev/null)" = "$(git -C . rev-parse --short=12 "$newest_src" 2>/dev/null)" ]; then
           echo "PASS: $e was rebuilt from the newest commit touching its sources ($verified_field=$verified_at)"
+          return 0
+        fi
+        # Later commits may touch the source set and leave it byte-identical (a module moved out and back).
+        # What matters is the content: unchanged since the build commit means the binary is current.
+        if git -C . cat-file -e "$verified_at^{commit}" 2>/dev/null \
+           && git -C . diff --quiet "$verified_at" -- $SHARED_SRC $own_src 2>/dev/null; then
+          echo "PASS: $e sources are unchanged since the commit it was built from ($verified_field=$verified_at)"
           return 0
         fi
       fi

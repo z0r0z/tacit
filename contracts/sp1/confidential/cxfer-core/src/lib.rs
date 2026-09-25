@@ -22,9 +22,6 @@ use tiny_keccak::{Hasher, Keccak};
 /// Bitcoin block/tx primitives for bridge_mint (BTC→ETH burn verification).
 pub mod bitcoin;
 pub mod bjj;
-/// Bitcoin-native shielded pool (T_BTC_SHIELD / T_BTC_SPEND): note leaf, spend message, spend relation.
-/// See DESIGN-btc-shielded-pool.md.
-pub mod btc_pool;
 /// Burn-and-mint onboarding of pre-existing fixed-supply Bitcoin assets (TAC): scan-free per-bridge
 /// provenance to the etch supply note. See ops/DESIGN-trustless-asset-onboarding.md.
 pub mod burn_deposit;
