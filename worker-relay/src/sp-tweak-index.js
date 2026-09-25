@@ -16,6 +16,7 @@
 //   REORG_DEPTH       deepest rollback attempted before halting (default 100)
 //   POLL_SECS         tip poll interval (default 30)
 //   ESPLORA_MIN_MS    minimum spacing between Esplora requests (default 120)
+//   PREFETCH          blocks fetched ahead in parallel (default 4)
 //   PORT              HTTP port (default 10000)
 //
 // HTTP (GET, CORS *):
@@ -71,25 +72,42 @@ export function computeBlockTweaks(txs) {
 
 // Esplora: /block/:hash/txs/:start pages carry prevout scripts, scriptSig and
 // witness for every input, which is all BIP-352 needs.
+// Requests are spaced minIntervalMs apart across all callers. A base that
+// answers 429 or 5xx cools down (doubling per strike, reset on success) and
+// requests go to the others meanwhile.
 export function makeEsploraSource({ bases, minIntervalMs = 120, fetchImpl = fetch } = {}) {
-  let next = 0, turn = 0;
-  async function get(p, { text = false } = {}) {
-    let last;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const wait = next - Date.now();
-      if (wait > 0) await sleep(wait);
-      next = Date.now() + minIntervalMs;
-      const base = bases[turn++ % bases.length];
-      try {
-        const r = await fetchImpl(base + p, { signal: AbortSignal.timeout(30_000) });
-        if (r.ok) return text ? (await r.text()).trim() : await r.json();
-        last = new Error(`${r.status} ${base}${p}`);
-        if (r.status === 404 || r.status === 400) { if (attempt >= bases.length - 1) throw last; continue; }
-      } catch (e) {
-        if (/^40[04] /.test(e.message) && attempt >= bases.length - 1) throw e;
-        last = e;
+  const state = bases.map((url) => ({ url, until: 0, strikes: 0 }));
+  let gate = Promise.resolve(), turn = 0;
+  const slot = () => { const g = gate.then(() => sleep(minIntervalMs)); gate = g; return gate; };
+  async function pick() {
+    for (;;) {
+      await slot();
+      const now = Date.now();
+      for (let i = 0; i < state.length; i++) {
+        const s = state[(turn + i) % state.length];
+        if (s.until <= now) { turn = (turn + i + 1) % state.length; return s; }
       }
-      await sleep(Math.min(30_000, 500 * 2 ** attempt));
+      await sleep(Math.max(50, Math.min(...state.map((s) => s.until)) - now));
+    }
+  }
+  async function get(p, { text = false } = {}) {
+    let last, notFound = 0;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const s = await pick();
+      try {
+        const r = await fetchImpl(s.url + p, { signal: AbortSignal.timeout(30_000) });
+        if (r.ok) { s.strikes = 0; return text ? (await r.text()).trim() : await r.json(); }
+        last = new Error(`${r.status} ${s.url}${p}`);
+        if (r.status === 404 || r.status === 400) { if (++notFound >= state.length) throw last; continue; }
+        s.strikes++;
+        s.until = Date.now() + Math.min(120_000, 2000 * 2 ** (s.strikes - 1));
+        if (s.strikes <= 2 || s.strikes % 5 === 0) log(`esplora ${r.status} from ${s.url}; cooling down (strike ${s.strikes})`);
+      } catch (e) {
+        if (e === last) throw e;
+        last = e;
+        s.strikes++;
+        s.until = Date.now() + Math.min(120_000, 2000 * 2 ** (s.strikes - 1));
+      }
     }
     throw last;
   }
@@ -196,7 +214,7 @@ export function openStore(file) {
 
 // ---------------------------------------------------------------- indexer
 
-export function createIndexer({ source, store, startHeight = null, reorgDepth = 100, network = 'signet' }) {
+export function createIndexer({ source, store, startHeight = null, reorgDepth = 100, network = 'signet', prefetch = 4 }) {
   let halted = null;
   async function start() {
     let s = store.meta('startHeight');
@@ -222,24 +240,40 @@ export function createIndexer({ source, store, startHeight = null, reorgDepth = 
       store.rollbackFrom(top.height);
     }
   }
-  // Index one height; returns false when the chain moved under us.
-  async function indexHeight(h) {
+  const fetchHeight = async (h) => {
     const hash = await source.blockHash(h);
     const b = await source.block(hash);
     if (b.height !== h || b.hash !== hash) throw new Error(`block ${h}: source returned ${b.height} ${b.hash}`);
+    return b;
+  };
+  // Store one fetched block; returns false when it does not extend the stored chain.
+  function commit(h, b) {
     const below = store.get(h - 1);
     if (below && b.prev !== below.hash) return false;
     store.put({ height: h, hash: b.hash, prev: b.prev, time: b.time, tweaks: computeBlockTweaks(b.txs) });
     return true;
   }
+  // Blocks are fetched `prefetch` ahead in parallel and committed strictly in height order.
   async function step({ maxBlocks = Infinity } = {}) {
     const startH = await start();
     await reconcile();
     const tip = await source.tipHeight();
     let h = (store.top()?.height ?? startH - 1) + 1;
     let n = 0;
+    const pending = new Map();
     while (h <= tip && n < maxBlocks) {
-      if (!(await indexHeight(h))) { await reconcile(); h = (store.top()?.height ?? startH - 1) + 1; continue; }
+      for (let k = h; k < h + prefetch && k <= tip; k++) {
+        if (!pending.has(k)) pending.set(k, fetchHeight(k).then((b) => ({ b }), (err) => ({ err })));
+      }
+      const r = await pending.get(h);
+      pending.delete(h);
+      if (r.err) throw r.err;
+      if (!commit(h, r.b)) {
+        pending.clear();
+        await reconcile();
+        h = (store.top()?.height ?? startH - 1) + 1;
+        continue;
+      }
       if (h % 50 === 0 || h === tip) log(`indexed ${h}/${tip}`);
       h++; n++;
     }
@@ -306,6 +340,7 @@ export function configFromEnv(env = process.env) {
     reorgDepth: int(env.REORG_DEPTH) ?? 100,
     pollSecs: int(env.POLL_SECS) ?? 30,
     esploraMinMs: int(env.ESPLORA_MIN_MS) ?? 120,
+    prefetch: Math.max(1, int(env.PREFETCH) ?? 4),
     port: int(env.PORT) ?? 10000,
   };
 }
@@ -316,7 +351,7 @@ async function main() {
     ? makeRpcSource({ url: cfg.rpcUrl, user: cfg.rpcUser, pass: cfg.rpcPass })
     : makeEsploraSource({ bases: cfg.esploraBases, minIntervalMs: cfg.esploraMinMs });
   const store = openStore(cfg.db);
-  const ix = createIndexer({ source, store, startHeight: cfg.startHeight, reorgDepth: cfg.reorgDepth, network: cfg.network });
+  const ix = createIndexer({ source, store, startHeight: cfg.startHeight, reorgDepth: cfg.reorgDepth, network: cfg.network, prefetch: cfg.prefetch });
   createServer(createHandler({ store, network: cfg.network, sourceName: source.name }))
     .listen(cfg.port, () => log(`${cfg.network} via ${source.name}, listening on ${cfg.port}`));
   for (;;) {
