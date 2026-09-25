@@ -148,10 +148,10 @@ function updateCacheBust(htmlBytes, appJsBytes, prebootBytes) {
 }
 
 // dapp/sats/ is its own page with its own module graph. Every `"/<path>.js?cb=<token>"` it references
-// carries a sha256 prefix of the file it names, rewritten importer-last (secret.js, then app.js, then the
-// page that loads app.js) so each token covers bytes already final. Returns the drift it found; writes only
+// carries a sha256 prefix of the file it names, rewritten importer-last (the join worker, mix.js and secret.js,
+// then app.js, then the page that loads app.js) so each token covers bytes already final. Returns the drift it found; writes only
 // when asked, so --verify-only reuses the same walk.
-const SATS_CB_FILES = ['sats/secret.js', 'sats/app.js', 'sats/index.html'];
+const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', 'sats/app.js', 'sats/index.html'];
 function satsCacheBust(write) {
   const drift = [];
   for (const rel of SATS_CB_FILES) {

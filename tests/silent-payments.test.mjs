@@ -334,6 +334,12 @@ console.log('\nWallet key versions (v1 separate spend key, v0 legacy still recei
   // A credit recorded before versioning (no keyVersion) spends with the legacy key.
   const legacyCredit = { sats: '5000', tweakHex: '00'.repeat(31) + '05' };
   check('unversioned credit uses the legacy spend key', hex(T.spCreditSpendingKey(legacyCredit)) === hex(T.silentPaymentSpendingKey(walletPriv, 5n)));
+  // A mixed coin keeps its class when a later scan records the same output again.
+  const mixTxid = 'cd'.repeat(32);
+  T.recordSpCredit({ txidHex: mixTxid, vout: 2, sats: 11000, tweakHex: '00'.repeat(31) + '07', keyVersion: 1, coinClass: 'mixed' });
+  T.recordSpCredit({ txidHex: mixTxid, vout: 2, sats: 11000, tweakHex: '00'.repeat(31) + '07', keyVersion: 1 });
+  check('a classed credit keeps its class across a rescan', T.getSpCredit(mixTxid, 2)?.coinClass === 'mixed');
+  T.removeSpCredit(mixTxid, 2);
   T.wallet.priv = null; T.wallet.pub = null;
 }
 

@@ -158,7 +158,9 @@ a [relayed private payment](https://mempool.space/signet/tx/9ea3d9d7c4b01bb0cae5
 and an [exit to sats](https://mempool.space/signet/tx/a5f32822bd9927305585b40efc7a39cec70e713354ce026b652e4ab2ecf0ea41),
 each proved on the payer's device, and a
 [silent payment](https://mempool.space/signet/tx/a5c4b2a02883550cfe06fec646fe6569a0e92823c972700a729d080c7187c899)
-found through the tweak index with no txid shared.
+found through the tweak index with no txid shared, and an
+[eight-wallet join](https://mempool.space/signet/tx/c792b4522a6da9a2877ff2568837c5e5434ae4503c186023922210d69961ab0f)
+that mixes plain sats into equal outputs.
 
 Specification: [SPEC §3.10](./SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled). Design:
 [pool](./contracts/sp1/confidential/DESIGN-btc-shielded-pool.md),

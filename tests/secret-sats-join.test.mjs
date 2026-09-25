@@ -805,6 +805,25 @@ test('a mixed output funds buy-and-shield alone; change returns to a fresh outpu
   assert.ok(carrier.outputs[0].value >= 330);
 });
 
+test('an async decoder (a Worker in the dapp) completes the round; an abort while gathering leaves no trace', async () => {
+  const chain = mockChain();
+  const { core } = await makeBoard(chain);
+  const clients = Array.from({ length: 3 }, () => makeClient(chain));
+  let calls = 0;
+  const decode = async (S) => { calls++; await new Promise((r) => setTimeout(r, 5)); return J.decodePowerSums(S); };
+  const { results } = await runRound({ chain, core, clients, opts: { decode } });
+  assert.deepEqual(results.map((r) => r.status), ['broadcast', 'broadcast', 'broadcast']);
+  assert.equal(calls, 3);
+
+  const c = makeClient(chain);
+  const fresh = await makeBoard(chain);
+  const ctl = new AbortController();
+  const p = J.runParticipant({ board: memoryTransport(fresh.core), chain, network: NET, d: D, fr: FR, coin: c.coin, keys: c.keys, hRef: chain.tip, ageMin: 1, signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 50));
+  ctl.abort();
+  assert.equal((await p).status, 'cancelled');
+});
+
 // ─────────────────────────────────────────────── the board over HTTP
 
 test('board HTTP: CORS, size and signature checks, rate limit on the right-most X-Forwarded-For hop, and a round through makeHttpBoard', async () => {

@@ -1107,12 +1107,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //   kMinClient, ageMin, tStepMs, jitter, joinDelayMs, closeTimeoutMs, maxRuns
 //   adversary                    test hooks { vector(r, v) → v, post(r, step, body) → body | null | body[] }
 //   onEvent                      progress callback ({ type, ... })
-// Returns { status: 'broadcast' | 'no-round' | 'failed' | 'refused', txid, hex, tx, own: [{ vout, xOnly,
-// tweak, spk, value }], runs, excluded, candidates }.
+//   decode                       power sums → keys, sync or async (default decodePowerSums; a Worker in the dapp)
+//   signal                       AbortSignal: leaves the round; nothing is signed or excluded after it fires
+// Returns { status: 'broadcast' | 'no-round' | 'failed' | 'refused' | 'cancelled', txid, hex, tx, own: [{ vout,
+// xOnly, tweak, spk, value }], runs, excluded, candidates }.
 export async function runParticipant(opts) {
   const {
     board, chain, network, d, fr, frOwn = fr, coin, keys = null, payTo = null, siblings = [],
-    exclusions = null, adversary = null, onEvent = () => {}, maxRuns = 16,
+    exclusions = null, adversary = null, onEvent = () => {}, maxRuns = 16, decode = decodePowerSums, signal = null,
   } = opts;
   const params = networkParams(network);
   const kMin = opts.kMin ?? params.kMin, kMax = opts.kMax ?? params.kMax;
@@ -1138,7 +1140,10 @@ export async function runParticipant(opts) {
 
   const inbox = new Inbox(board, topic, { pollMs: Math.min(20_000, Math.max(1000, tStep)) }).start();
   const jitter = () => (jitterMax > 0 ? sleep(Math.random() * jitterMax) : Promise.resolve());
+  const onAbort = () => inbox.stop();
+  signal?.addEventListener('abort', onAbort);
   try {
+    if (signal?.aborted) return { status: 'cancelled' };
     if (opts.joinDelayMs) await sleep(typeof opts.joinDelayMs === 'function' ? opts.joinDelayMs() : opts.joinDelayMs);
     const join = makeJoin({ network, d, fr, hRef, boardKey, coin, sessionPub: hexToBytes(session) });
     await board.post(topic, join);
@@ -1147,7 +1152,7 @@ export async function runParticipant(opts) {
     // Gathering: until the board's CLOSE.
     const closeDeadline = Date.now() + (opts.closeTimeoutMs ?? 3 * 3600_000);
     const closeMsg = () => inbox.msgs.find(({ msg }) => msg.t === 'CLOSE' && msg.topic === topic && verifyClose(msg, boardKey));
-    if (!(await inbox.until(() => !!closeMsg(), closeDeadline))) return { status: 'no-round', reason: 'no CLOSE' };
+    if (!(await inbox.until(() => !!closeMsg(), closeDeadline))) return { status: signal?.aborted ? 'cancelled' : 'no-round', reason: 'no CLOSE' };
     const close = closeMsg().msg;
     const joins = inbox.msgs.filter(({ seq, msg }) => seq <= close.lastSeq && msg.t === 'JOIN').map(({ msg }) => msg);
     const evidenceSet = new Set();
@@ -1169,8 +1174,10 @@ export async function runParticipant(opts) {
       ev('run', { r, n: members.length });
       const res = await runOnce({
         r, members, topic, session, sessionPriv, coin, keys, payTo, siblings, o, hRef, fr, frOwn, kMin,
-        kMinClient, ageMin, tStep, inbox, board, jitter, adversary, ev,
+        kMinClient, ageMin, tStep, inbox, board, jitter, adversary, ev, decode, signal,
       });
+      // Messages stop arriving once aborted, so every peer would look missing: exclude no one.
+      if (signal?.aborted) return { status: 'cancelled', runs: r, excluded: excludedAll, candidates: res.candidate ? [...candidates, res.candidate] : candidates };
       if (res.refused) return { status: 'refused', checks: res.checks, runs: r, excluded: excludedAll };
       if (res.candidate) candidates.push(res.candidate);
       if (res.ok) {
@@ -1190,6 +1197,7 @@ export async function runParticipant(opts) {
     }
     return { status: 'failed', runs: maxRuns, excluded: excludedAll, candidates };
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     inbox.stop();
   }
 }
@@ -1341,7 +1349,7 @@ async function runOnce(c) {
   // Decode, then OK or BLAME.
   const S = new Array(n).fill(0n);
   for (const v of vectors.values()) for (let j = 0; j < n; j++) S[j] = (S[j] + v[j]) % P;
-  const keys = decodePowerSums(S);
+  const keys = await c.decode(S);
   const okDecode = !!keys && keys.every((y) => liftX(y) && !inputKeys.has(y)) && keys.includes(x);
   const dcView = viewFrom(dc);
   await post(STEP.CONF, u8(okDecode ? 1 : 0), dcView);
@@ -1384,6 +1392,7 @@ async function runOnce(c) {
   const check = verifyBeforeSigning({ tx, members, own, coin: c.coin, o: c.o, hRef: c.hRef, fr: c.fr, frOwn: c.frOwn, kMin: c.kMin, kMinClient: c.kMinClient, ageMin: c.ageMin });
   c.ev('verify', { r, checks: check.checks });
   if (!check.ok) return { refused: true, checks: check.checks };
+  if (c.signal?.aborted) return fail();
   const byKey = new Map(members.map((m) => [outpointKey(m), m]));
   const prevouts = prevoutsOf(tx, byKey);
   const myIdx = tx.inputs.findIndex((i) => i.txid === c.coin.txid && i.vout === c.coin.vout);

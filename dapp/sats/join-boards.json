@@ -1,0 +1,12 @@
+{
+  "boards": [
+    {
+      "name": "tacit",
+      "network": "signet",
+      "url": "https://tacit-join-board.onrender.com",
+      "onion": null,
+      "boardKey": "545065df24a82331da9eb77e14685b6f2ace8389b012b77a69663a9c15403feb",
+      "tiers": [10000, 100000, 1000000]
+    }
+  ]
+}

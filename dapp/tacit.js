@@ -5713,9 +5713,14 @@ function _scheduleSpCreditsFlush() {
 }
 // keyVersion: the silent-payment identity the credit was found under; a
 // record without one predates versioning and belongs to version 0.
-function recordSpCredit({ txidHex, vout, sats, tweakHex, blockTime, keyVersion = 0 }) {
+// coinClass: a coin kept apart from plain sats ('entry' or 'mixed', Secret
+// Sats Join). It survives a later record of the same output by a scan, and the
+// sats send never picks it.
+function recordSpCredit({ txidHex, vout, sats, tweakHex, blockTime, keyVersion = 0, coinClass = null }) {
   const o = loadSpCredits();
-  o[`${txidHex}:${vout}`] = { sats: String(sats), tweakHex, blockTime: blockTime || null, keyVersion };
+  const key = `${txidHex}:${vout}`;
+  const cls = coinClass || o[key]?.coinClass || null;
+  o[key] = { sats: String(sats), tweakHex, blockTime: blockTime || null, keyVersion, ...(cls ? { coinClass: cls } : {}) };
   _spCreditsCache = o;
   _scheduleSpCreditsFlush();
 }
@@ -35736,6 +35741,7 @@ async function loadUnspentSpCredits(diag = null) {
     const satsVal = Number(credit.sats);
     if (!txidHex || !Number.isFinite(vout) || !Number.isFinite(satsVal) || satsVal <= 0) continue;
     if (!credit.tweakHex) { if (diag) diag.missingTweak = (diag.missingTweak || 0) + 1; continue; }
+    if (credit.coinClass) continue;
     try {
       const spendStatus = await apiJson(`/tx/${txidHex}/outspend/${vout}`);
       if (spendStatus?.spent) {
@@ -35846,7 +35852,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     const vout = Number(voutStr);
     const satsVal = Number(credit.sats);
     if (!txidHex || !Number.isFinite(vout) || !Number.isFinite(satsVal) || satsVal <= 0) continue;
-    if (!credit.tweakHex) continue;
+    if (!credit.tweakHex || credit.coinClass) continue;
     try {
       const spendStatus = await apiJson(`/tx/${txidHex}/outspend/${vout}`);
       if (spendStatus?.spent) {

@@ -1,8 +1,9 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=f6b62bf2';
+const TACIT_URL = '/tacit.js?cb=4d8b8ad4';
 const SECRET_URL = '/sats/secret.js?cb=16f44434';
+const MIX_URL = '/sats/mix.js?cb=52f7e8da';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
 // tacit.js reads its network from this shared key once, at import. This page
@@ -162,6 +163,12 @@ function renderNet() {
   if (ph) ph.textContent = net === 'mainnet'
     ? 'The private pool runs on signet. Switch the wallet to signet to try it.'
     : 'Connect a wallet above to start. Each step is one signet transaction.';
+  show('mix-hint', net !== 'mainnet');
+  const mp = $('mix-placeholder');
+  if (mp) show('mix-steps', net !== 'mainnet');
+  if (mp) mp.textContent = net === 'mainnet'
+    ? 'Mixing runs on signet for now. Switch the wallet to signet to try it.'
+    : 'Connect a wallet above to start. Mix turns your sats into a coin with no history.';
 }
 
 // Scan is offered when this network has an index and it answered.
@@ -202,6 +209,7 @@ function loadTacit() {
       log('');
       renderNet();
       mountSecret();
+      mountMix();
       return m;
     }).catch((e) => {
       loading = null;
@@ -548,7 +556,8 @@ async function unspentSilent() {
       try { spent = !!(await getJson(`/tx/${txid}/outspend/${vout}`)).spent; } catch { spent = false; }
       if (spent) spentChecked.set(key, true);
     }
-    if (!spent) sum += Number(c.sats || 0);
+    // Mix entries and mixed coins are kept apart from plain sats (the Mix tab shows them).
+    if (!spent && !c.coinClass) sum += Number(c.sats || 0);
   }
   return sum;
 }
@@ -856,7 +865,7 @@ function renderFound() {
     li.append(l, r);
     ol.append(li);
   };
-  for (const [key, c] of credits) row(key, fmtSats(c.sats) + (spentChecked.get(key) ? ' · spent' : ''));
+  for (const [key, c] of credits) row(key, fmtSats(c.sats) + (c.coinClass ? ` · ${c.coinClass === 'mixed' ? 'mixed' : 'mix entry'}, kept apart` : '') + (spentChecked.get(key) ? ' · spent' : ''));
   for (const [key, c] of tokens) row(key, tokenAmount(c.assetIdHex, c.amount));
   const h = document.createElement('p');
   h.className = 'muted';
@@ -1034,6 +1043,7 @@ function emit() {
 }
 
 let secretMounted = false;
+let secretHandle = null;
 async function mountSecret() {
   if (secretMounted) return;
   secretMounted = true;
@@ -1044,7 +1054,7 @@ async function mountSecret() {
   if (typeof mod.mount !== 'function') { ph.textContent = 'Secret payments are coming soon.'; return; }
   ph.remove();
   try {
-    await mod.mount($('secret-steps'), {
+    secretHandle = await mod.mount($('secret-steps'), {
       tacit: T,
       wallet: T.wallet,
       network: T.NET.name,
@@ -1058,6 +1068,30 @@ async function mountSecret() {
     });
     emit();
   } catch (e) { log('Secret payment failed to load: ' + errMsg(e), 'error'); }
+}
+
+// ---------- mix mount ----------
+
+let mixMounted = false;
+async function mountMix() {
+  if (mixMounted) return;
+  mixMounted = true;
+  const ph = $('mix-placeholder');
+  if (T.NET.name !== 'signet') { renderNet(); return; }
+  let mod;
+  try { mod = await import(MIX_URL); } catch (e) { console.warn('[sats] mix.js', e); ph.textContent = 'Mixing is coming soon.'; return; }
+  ph.remove();
+  try {
+    mod.mount($('mix-steps'), {
+      tacit: T, wallet: T.wallet, network: T.NET.name, log, refresh, ensureKey, track, errMsg,
+      onWallet(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+      secretModule: () => import(SECRET_URL),
+      secretHandle: () => secretHandle,
+      hintEl: $('mix-hint'),
+      openMix: () => selectTab('mix', { focus: true, remember: true }),
+    });
+    emit();
+  } catch (e) { log('Mix failed to load: ' + errMsg(e), 'error'); }
 }
 
 // ---------- pool panel ----------
@@ -1115,6 +1149,7 @@ function wire() {
   $('copy-sp').onclick = (e) => { e.preventDefault(); copy($('w-sp').dataset.full); };
   $('btn-send').onclick = () => busy($('btn-send'), send, $('send-out'));
   $('btn-share-copy').onclick = () => copy($('share-url').textContent);
+  $('btn-mix-hint').onclick = () => selectTab('mix', { focus: true, remember: true });
   $('btn-check').onclick = () => busy([$('btn-check'), $('btn-scan')], () => { const p = parseCheckInput($('check-in').value); return checkPayment(p.txid, p.kind); }, $('scan-out'));
   $('btn-scan').onclick = () => busy([$('btn-scan'), $('btn-check')], scan, $('scan-out'));
   $('btn-scan-stop').onclick = () => { scanAbort?.abort(); $('btn-scan-stop').disabled = true; };
