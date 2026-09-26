@@ -245,11 +245,12 @@ assets under `dapp/`, so they deploy with the app and resolve at a stable URL fo
 
 A time-limited launch program, not a protocol feature.
 
-- **Points.** Wrapping ETH, posting wstETH collateral toward a cBTC mint, and minting cUSD each earn points
-  toward 100,000 TAC distributed over 90 days (2026-09-23 to 2026-12-22). Every deposit gets an
-  early-adopter bonus that decays as more of that same activity accrues — not a one-time reward for
-  whoever is first. cUSD mints earn roughly 5x more per dollar than cBTC collateral posts; wrapping ETH
-  from an address that has ever received a Privacy Pools withdrawal earns an extra 1.2x. Claims run
+- **Points.** Wrapping ETH, posting wstETH collateral toward a cBTC mint, minting cUSD, and swapping ETH
+  through zSwap/zRouter each earn points toward 100,000 TAC distributed over 90 days (2026-09-23 to
+  2026-12-22). Every deposit gets an early-adopter bonus that decays as more of that same activity accrues
+  — not a one-time reward for whoever is first. cUSD mints earn roughly 5x more per dollar than cBTC
+  collateral posts; wrapping ETH from an address that has ever received a Privacy Pools withdrawal earns an
+  extra 1.2x. The zSwap activity counts forward from launch only, with no retroactive credit. Claims run
   through [`PointsDistributor`](https://etherscan.io/address/0x000000C918e44A3a443937fA7594eA4f7C95D6b9).
 - **Farms.** LP positions in the confidential pool earn wTAC from
   [`FarmManager`](https://etherscan.io/address/0x000031C47Cb61faB1CE2790a69625FABB71EDE24) — 99,700 TAC over
