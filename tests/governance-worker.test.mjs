@@ -41,14 +41,17 @@ const holderPriv = sha256(new TextEncoder().encode('gov-test-holder-seed'));
 const holderPub = secp.ProjectivePoint.BASE.multiply(BigInt('0x' + bytesToHex(holderPriv))).toRawBytes(true);
 const holderPubHex = bytesToHex(holderPub);
 const utxoDB = new Map(); // "txid:vout" -> { amount, blinding }
-function makeUtxo(txidHex, vout, amount) {
+const txHeight = new Map(); // txid -> confirmation height (default 900, before the snapshot)
+const outspends = new Map(); // "txid:vout" -> probe result (default unspent)
+function makeUtxo(txidHex, vout, amount, height = 900) {
   const blinding = modN(BigInt('0x' + bytesToHex(sha256(new TextEncoder().encode(txidHex + vout)))));
   utxoDB.set(`${txidHex}:${vout}`, { amount, blinding });
+  txHeight.set(txidHex, height);
   return { txid: hexToBytes(txidHex), txidHex, vout, amount, blinding };
 }
 const bigUtxo = makeUtxo('aa'.repeat(32), 0, 500n * TAC); // covers the 100-TAC propose floor
 
-function buildEnvelope({ utxos, scopeId, tier, sigDomain, expiryHeight = 2000 }) {
+function buildEnvelope({ utxos, scopeId, tier, sigDomain, expiryHeight = 2000, pub = holderPub, priv = holderPriv }) {
   let aggAmount = 0n, aggBlinding = 0n;
   for (const u of utxos) { aggAmount += u.amount; aggBlinding = modN(aggBlinding + modN(u.blinding)); }
   const { proof } = bpRangeAggProve([aggAmount - tier], [aggBlinding]);
@@ -57,9 +60,9 @@ function buildEnvelope({ utxos, scopeId, tier, sigDomain, expiryHeight = 2000 })
   utxos.forEach((u, i) => { outpoints.set(u.txid, i * 36); outpoints.set(u32LE(u.vout), i * 36 + 32); });
   const preceding = concatBytes(
     scopeId, hexToBytes(CANONICAL_TAC_ASSET_ID_HEX), u32LE(expiryHeight),
-    new Uint8Array([utxos.length]), outpoints, u16LE(attestation.length), attestation, holderPub,
+    new Uint8Array([utxos.length]), outpoints, u16LE(attestation.length), attestation, pub,
   );
-  const sig = signSchnorr(sha256(concatBytes(sigDomain, preceding)), holderPriv);
+  const sig = signSchnorr(sha256(concatBytes(sigDomain, preceding)), priv);
   return bytesToHex(concatBytes(preceding, sig));
 }
 
@@ -78,6 +81,11 @@ function kv() {
   };
 }
 const env = { REGISTRY_KV: kv(), UPLOAD_KV: kv(), PINATA_JWT: 'x', DAILY_LIMIT: '100' };
+const TIP = 1000;
+const ownerOf = new Map(); // txid -> pubkey that owns its outputs (default: the holder)
+let ethHead = 5000;
+const ethCalls = [];
+let ethBalanceAt = () => null;
 
 const gov = buildGovernance({
   jsonResponse: (obj, status = 200) => ({ status, body: obj }),
@@ -90,13 +98,16 @@ const gov = buildGovernance({
   },
   async apiJson(_e, path) {
     const m = path.match(/\/tx\/([0-9a-f]{64})/); const vouts = [];
-    for (let i = 0; i < 4; i++) vouts.push({ scriptpubkey: '0014' + bytesToHex(hash160(holderPub)) });
-    return { vout: vouts, _txid: m && m[1] };
+    const owner = ownerOf.get(m && m[1]) || holderPub;
+    for (let i = 0; i < 4; i++) vouts.push({ scriptpubkey: '0014' + bytesToHex(hash160(owner)) });
+    return { vout: vouts, _txid: m && m[1], status: { confirmed: true, block_height: txHeight.get(m && m[1]) ?? 900 } };
   },
-  async chainOutspendProbe() { return { spent: false }; },
-  async fetchTipHeight() { return 1000; },
+  async chainOutspendProbe(_e, _n, txid, vout) { return outspends.get(`${txid}:${vout}`) || { spent: false }; },
+  async fetchTipHeight() { return TIP; },
   hash160,
   ethCall: async () => null, keccak256: keccak_256,
+  ethBlockNumber: async () => ethHead,
+  ethCallAt: async (_env, _net, to, data, blockTag) => { ethCalls.push({ to, data, blockTag }); return ethBalanceAt(blockTag); },
   pinFileToIpfs: async () => ({ cid: 'bafyfake' }), filebaseConfigured: () => true,
   CANONICAL_TAC_ASSET_ID_HEX,
 });
@@ -110,7 +121,7 @@ test('governance lifecycle: create → vote → dedupe → finalize', async () =
   const content = {
     network: NET, title: 'Transfer Collateral Engine admin to 3/5 multisig',
     body: 'Rationale here.', choices: ['Yes', 'No', 'Abstain'], category: 'collateral-engine',
-    snapshot_height: 0, voting_ends_at: Math.floor(Date.now() / 1000) + 7 * 86400, quorum: '0',
+    snapshot_height: TIP, voting_ends_at: Math.floor(Date.now() / 1000) + 7 * 86400, quorum: '0',
     proposer_pubkey: holderPubHex, exec_target: '', exec_note: '',
   };
   const { idHex, contentHash } = govDeriveProposalId(content);
@@ -170,7 +181,7 @@ test('forged threshold (tier above actual holdings) is rejected by the bulletpro
   // range; bpRangeAggProve produces a proof for a wrapped value the verifier rejects.
   const content = {
     network: NET, title: 'Forgery probe', body: '', choices: ['Yes', 'No'], category: 'general',
-    snapshot_height: 0, voting_ends_at: Math.floor(Date.now() / 1000) + 86400, quorum: '0',
+    snapshot_height: TIP, voting_ends_at: Math.floor(Date.now() / 1000) + 86400, quorum: '0',
     proposer_pubkey: holderPubHex, exec_target: '', exec_note: '',
   };
   const { idHex, contentHash } = govDeriveProposalId(content);
@@ -186,4 +197,91 @@ test('forged threshold (tier above actual holdings) is rejected by the bulletpro
     assert.equal(res.status, 403);
     assert.match(res.body.error, /bulletproof verify failed/);
   }
+});
+
+// ---- snapshots -------------------------------------------------------------
+async function createAt(title, extra = {}) {
+  const content = {
+    network: NET, title, body: '', choices: ['Yes', 'No'], category: 'general',
+    snapshot_height: TIP, voting_ends_at: Math.floor(Date.now() / 1000) + 86400, quorum: '0',
+    proposer_pubkey: holderPubHex, exec_target: '', exec_note: '', ...extra,
+  };
+  const { idHex, contentHash } = govDeriveProposalId(content);
+  const proposeEnv = buildEnvelope({ utxos: [bigUtxo], scopeId: govProposeScopeId(contentHash), tier: GOV_TIERS[2], sigDomain: GOV_PROPOSE_DOMAIN });
+  const res = await gov.handle(mkReq('POST', { ...content, propose_envelope: proposeEnv }), env, mkUrl('/governance/proposals'), NET, {});
+  return { res, idHex };
+}
+const castPrivate = (idHex, utxos, extra = {}) => gov.handle(mkReq('POST', {
+  kind: 'private', choice: 0,
+  weight_envelope: buildEnvelope({ utxos, scopeId: govVoteScopeId(idHex, 0), tier: GOV_TIERS[1], sigDomain: GOV_VOTE_DOMAIN, ...extra }),
+}), env, mkUrl(`/governance/proposal/${idHex}/vote`), NET, {});
+
+test('snapshot: a proposal must snapshot the current tip', async () => {
+  for (const h of [TIP - 13, TIP + 1, 0]) {
+    const { res } = await createAt(`stale ${h}`, { snapshot_height: h });
+    assert.equal(res.status, 400, JSON.stringify(res.body));
+    assert.match(res.body.error, /current Bitcoin tip/);
+  }
+  const { res } = await createAt('fresh', { snapshot_height: TIP - 12 });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.proposal.eth_snapshot_block, ethHead - 12);
+});
+
+test('snapshot: coins confirmed after it do not vote, so moving TAC to a new key cannot vote twice', async () => {
+  const { idHex } = await createAt('double vote probe');
+  // The holder votes with coins held at the snapshot…
+  const first = await castPrivate(idHex, [bigUtxo]);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  // …then moves them to a second key. The new output is confirmed after the snapshot.
+  const priv2 = sha256(new TextEncoder().encode('gov-test-second-key'));
+  const pub2 = secp.ProjectivePoint.BASE.multiply(BigInt('0x' + bytesToHex(priv2))).toRawBytes(true);
+  const moved = makeUtxo('bb'.repeat(32), 0, 500n * TAC, TIP + 3);
+  ownerOf.set('bb'.repeat(32), pub2);
+  const second = await castPrivate(idHex, [moved], { pub: pub2, priv: priv2 });
+  assert.equal(second.status, 403, JSON.stringify(second.body));
+  assert.match(second.body.error, /not confirmed by the snapshot/);
+  // The same coins spent before the snapshot never counted; spent after it, the owner at the snapshot votes.
+  outspends.set(`${'aa'.repeat(32)}:0`, { spent: true, depth: 5, spent_at_height: TIP - 1 });
+  const spentBefore = await castPrivate(idHex, [bigUtxo]);
+  assert.equal(spentBefore.status, 403, JSON.stringify(spentBefore.body));
+  assert.match(spentBefore.body.error, /spent by the snapshot/);
+  outspends.set(`${'aa'.repeat(32)}:0`, { spent: true, depth: 2, spent_at_height: TIP + 3 });
+  assert.equal((await castPrivate(idHex, [bigUtxo])).status, 200);
+  outspends.set(`${'aa'.repeat(32)}:0`, { spent: true, depth: 0 });
+  assert.equal((await castPrivate(idHex, [bigUtxo])).status, 200, 'a mempool spend is after the snapshot');
+  outspends.set(`${'aa'.repeat(32)}:0`, { spent: true, depth: 1 });
+  assert.equal((await castPrivate(idHex, [bigUtxo])).status, 403, 'a confirmed spend of unknown height fails closed');
+  outspends.delete(`${'aa'.repeat(32)}:0`);
+});
+
+test('public votes: balance at the snapshot block, in the same units as private tiers', async () => {
+  env.GOV_TAC_ERC20_MAINNET = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
+  const { idHex } = await createAt('public probe');
+  const ethPriv = sha256(new TextEncoder().encode('gov-test-eth-voter'));
+  const ethPub = secp.getPublicKey(ethPriv, false);
+  const addr = '0x' + bytesToHex(keccak_256(ethPub.slice(1)).slice(12));
+  const msg = `Tacit governance vote\nProposal: ${idHex}\nChoice: 0 — Yes\nThis casts a vote weighted by your public TAC balance. No funds move.`;
+  const m = new TextEncoder().encode(msg);
+  const digest = keccak_256(concatBytes(new TextEncoder().encode(`\x19Ethereum Signed Message:\n${m.length}`), m));
+  const sig = await secp.signAsync(digest, ethPriv);
+  const ethSig = '0x' + sig.toCompactHex() + (27 + sig.recovery).toString(16);
+  const snapTag = '0x' + (ethHead - 12).toString(16);
+  ethBalanceAt = (tag) => (tag === snapTag ? '0x' + (2500n * 10n ** 18n).toString(16).padStart(64, '0') : null);
+
+  const res = await gov.handle(mkReq('POST', { kind: 'public', choice: 0, eth_sig: ethSig }), env, mkUrl(`/governance/proposal/${idHex}/vote`), NET, {});
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.weight, (2500n * TAC).toString(), '2,500 TAC counts as 2,500 TAC, not 2,500 × 10^10');
+  assert.equal(ethCalls.at(-1).blockTag, snapTag);
+  assert.ok(ethCalls.at(-1).data.endsWith(addr.slice(2)));
+
+  ethBalanceAt = () => null; // no archive answer: fail closed
+  const noArchive = await gov.handle(mkReq('POST', { kind: 'public', choice: 0, eth_sig: ethSig }), env, mkUrl(`/governance/proposal/${idHex}/vote`), NET, {});
+  assert.equal(noArchive.status, 502, JSON.stringify(noArchive.body));
+
+  ethHead = null; // no Ethereum snapshot recorded: public voting is refused for that proposal
+  const { idHex: id2 } = await createAt('public probe, no eth snapshot');
+  const refused = await gov.handle(mkReq('POST', { kind: 'public', choice: 0, eth_sig: ethSig }), env, mkUrl(`/governance/proposal/${id2}/vote`), NET, {});
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  ethHead = 5000;
+  delete env.GOV_TAC_ERC20_MAINNET;
 });

@@ -103,12 +103,13 @@ const mkUrl = (p) => new URL('https://w' + p);
 
 // Seed a proposal directly in KV (the BTC create path is covered elsewhere).
 const idHex = bytesToHex(sha256(enc('evm-proposal')));
-function seedProposal() {
+function seedProposal(extra = {}) {
   env.REGISTRY_KV._m.set(`gov:p:${NET}:${idHex}`, JSON.stringify({
     schema: 'tacit-governance-proposal-v1', id: idHex, network: NET, title: 'EVM probe',
     body: '', choices: ['Yes', 'No'], category: 'general', snapshot_height: 0,
     voting_ends_at: Math.floor(Date.now() / 1000) + 86400, quorum: '0', proposer_pubkey: bytesToHex(holderPub),
     created_at: Math.floor(Date.now() / 1000), tally: { totals: ['0', '0'], voters: 0, total_weight: '0', public_voters: 0, private_voters: 0 }, finalized: false,
+    ...extra,
   }));
 }
 
@@ -158,4 +159,24 @@ test('scope binding: a cTAC proof for choice 0 cannot vote choice 1', async () =
   const res = await gov.handle(mkReq({ kind: 'private-eth', choice: 1, weight_envelope: e.hex }), env, mkUrl(`/governance/proposal/${idHex}/vote`), NET, {});
   assert.equal(res.status, 403);
   assert.match(res.body.error, /scope_id mismatch/);
+});
+
+test('snapshot: only notes that existed at the snapshot count', async () => {
+  _spentNow = false;
+  const e = buildEvmEnv({ value: 500n * TAC, scopeId: govVoteScopeId(idHex, 0), tier: GOV_TIERS[1] }); // leaf 0
+  _curRoot = e.root.replace(/^0x/, '');
+  const vote = () => gov.handle(mkReq({ kind: 'private-eth', choice: 0, weight_envelope: e.hex }), env, mkUrl(`/governance/proposal/${idHex}/vote`), NET, {});
+
+  seedProposal({ snapshot_height: 1000, snapshot_leaf_count: 0 }); // the note is a later leaf
+  let res = await vote();
+  assert.equal(res.status, 403, JSON.stringify(res.body));
+  assert.match(res.body.error, /did not exist at the snapshot/);
+
+  seedProposal({ snapshot_height: 1000, snapshot_leaf_count: 1 });
+  res = await vote();
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  seedProposal({ snapshot_height: 1000, snapshot_leaf_count: null }); // snapshot without a note count
+  res = await vote();
+  assert.equal(res.status, 409, JSON.stringify(res.body));
 });

@@ -94,6 +94,7 @@ import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, am
 import { makeConfidentialIndex } from './confidential-index.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
+import { buildOversight } from './governance-oversight.js';
 import { validateConsumedSource, deriveConsumedSource } from './consumed-source.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
@@ -2778,6 +2779,45 @@ async function _ethCall(network, to, data) {
       if (!r.ok) continue;
       const j = await r.json();
       if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
+// eth_call at a past block, for governance snapshots. Public endpoints only serve recent state, so an
+// archive-capable GOV_ETH_ARCHIVE_RPC is tried first; null when nobody can answer.
+async function _ethCallAt(env, network, to, data, blockTag) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, blockTag] });
+  const rpcs = [...(network === 'mainnet' && env && env.GOV_ETH_ARCHIVE_RPC ? [env.GOV_ETH_ARCHIVE_RPC] : []), ...(_TETH_ETH_RPCS[network] || [])];
+  for (const rpc of rpcs) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return j.result;
+    } catch {}
+  }
+  return null;
+}
+async function _ethGetBalance(network, address) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, 'latest'] });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return BigInt(j.result);
+    } catch {}
+  }
+  return null;
+}
+async function _ethBlockNumber(network) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && typeof j.result === 'string') return parseInt(j.result, 16);
     } catch {}
   }
   return null;
@@ -25394,6 +25434,10 @@ async function handleDappBundle(req, env, url) {
 // NUMS H, and chain helpers (no generator re-derivation). Deps are stateless,
 // so one instance serves every request.
 let _governance = null;
+let _oversight = null;
+function _getOversight() {
+  return _oversight || (_oversight = buildOversight({ ethCall: _ethCall, ethGetBalance: _ethGetBalance, keccak256: keccak_256, jsonResponse }));
+}
 function _getGovernance() {
   if (_governance) return _governance;
   // Reuse the dapp's confidential-pool primitives (leaf/nullifier/verifyPath) so
@@ -25406,6 +25450,7 @@ function _getGovernance() {
     verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
     ethCall: _ethCall, ethGetStorageAt: _ethGetStorageAt, keccak256: keccak_256,
+    ethCallAt: _ethCallAt, ethBlockNumber: _ethBlockNumber,
     pinFileToIpfs: _pinFileToIpfs, filebaseConfigured: _filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool: _evmPool,
@@ -25495,7 +25540,8 @@ async function _routeFetch(req, env, ctx) {
     // is ?network= (defaults mainnet, where canonical TAC lives).
     if (url.pathname.startsWith('/governance/')) {
       const govNet = parseNetwork(url.searchParams.get('network'));
-      const govResp = await _getGovernance().handle(req, env, url, govNet, cors, ctx);
+      const govResp = (await _getOversight().handle(req, env, url, govNet, cors))
+        || (await _getGovernance().handle(req, env, url, govNet, cors, ctx));
       if (govResp) return govResp;
     }
     if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);

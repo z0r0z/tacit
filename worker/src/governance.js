@@ -74,6 +74,7 @@ export function buildGovernance(deps) {
     verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
     ethCall, ethGetStorageAt, keccak256,
+    ethCallAt, ethBlockNumber,          // snapshot reads (optional; public/cTAC snapshot voting needs them)
     pinFileToIpfs, filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool, confidentialPoolAddrFor,   // EVM-lane (cTAC) resolver — optional
@@ -102,6 +103,12 @@ export function buildGovernance(deps) {
   const GOV_MAX_DURATION_S = 60 * 24 * 3600;    // 60 days
   const GOV_MIN_DURATION_S = 60 * 60;           // 1 hour (test/quorum-fast)
   const GOV_MAX_VOTES_SNAPSHOT = 10000;         // bound the finalize snapshot
+  // A proposal's Bitcoin snapshot must be the tip it was created at, give or take a few blocks of propagation.
+  const GOV_SNAPSHOT_MAX_AGE = 12;
+  const GOV_ERC20_TO_BASE = 10n ** 10n;          // TAC ERC-20 wei (18 dp) per base unit (8 dp)
+  // Ethereum snapshot block: this many blocks behind head at creation, so it is settled before anyone votes.
+  const GOV_ETH_SNAPSHOT_LAG = 12;
+  const _SEL_NEXT_LEAF_INDEX = keccak256 ? bytesToHex(keccak256(enc('nextLeafIndex()'))).slice(0, 8) : null;
 
   // ---- KV key helpers (network-scoped) ----
   const pKey = (net, id) => `gov:p:${net}:${id}`;
@@ -140,7 +147,10 @@ export function buildGovernance(deps) {
   //     checked to be a recognised tier ≥ minTier — returned as the weight.
   // Returns { ok, status?, reason?, tier, holderPubkeyHex, outpoints }.
   // ----------------------------------------------------------------------------
-  async function verifyThresholdAttestation(env, envelopeBytes, sigDomain, expectedScope32, minTier, network) {
+  // snapshotHeight: when set (votes), every outpoint must have been confirmed at or before it and not spent by
+  // it; a later spend is fine, since the owner at the snapshot is who votes it. Null (proposing) keeps the
+  // plain "unspent now" rule.
+  async function verifyThresholdAttestation(env, envelopeBytes, sigDomain, expectedScope32, minTier, network, snapshotHeight = null) {
     const dec = decodeCeremonyEligibilityEnvelope(envelopeBytes);
     if (!dec.ok) return { ok: false, status: 400, reason: `weight_proof: ${dec.reason}` };
 
@@ -177,6 +187,12 @@ export function buildGovernance(deps) {
       let tx;
       try { tx = await apiJson(env, `/tx/${op.txid}`, {}, network); }
       catch (e) { return { ok: false, status: 502, reason: `weight_proof: failed to fetch ${op.txid}: ${e.message || 'unknown'}` }; }
+      if (snapshotHeight !== null) {
+        const h = tx?.status?.block_height;
+        if (tx?.status?.confirmed !== true || !Number.isInteger(h) || h > snapshotHeight) {
+          return { ok: false, status: 403, reason: `weight_proof: ${op.txid}:${op.vout} was not confirmed by the snapshot (height ${snapshotHeight})` };
+        }
+      }
       const voutObj = tx?.vout?.[op.vout];
       const spk = voutObj?.scriptpubkey ? hexToBytes(voutObj.scriptpubkey) : null;
       if (!spk || spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
@@ -187,7 +203,13 @@ export function buildGovernance(deps) {
       }
       const probe = await chainOutspendProbe(env, network, op.txid, op.vout, tip);
       if (!probe) return { ok: false, status: 502, reason: `weight_proof: outspend probe failed for ${op.txid}:${op.vout}` };
-      if (probe.spent) return { ok: false, status: 403, reason: `weight_proof: ${op.txid}:${op.vout} is spent` };
+      if (probe.spent) {
+        if (snapshotHeight === null) return { ok: false, status: 403, reason: `weight_proof: ${op.txid}:${op.vout} is spent` };
+        // A mempool spend (depth 0) is after the snapshot by definition. A confirmed one needs a known height.
+        if (probe.depth !== 0 && !(Number.isInteger(probe.spent_at_height) && probe.spent_at_height > snapshotHeight)) {
+          return { ok: false, status: 403, reason: `weight_proof: ${op.txid}:${op.vout} was spent by the snapshot` };
+        }
+      }
       try { sumC = sumC.add(secp.ProjectivePoint.fromHex(String(resolved.commitment))); }
       catch (e) { return { ok: false, status: 500, reason: `weight_proof: commitment decode failed: ${e.message || 'unknown'}` }; }
     }
@@ -262,7 +284,9 @@ export function buildGovernance(deps) {
     return { ok: true, scopeId, assetId, holderPubkey, poolRoot, count, notes, attestation, holderSig, preceding };
   }
 
-  async function verifyGovEvmAttestation(env, envelopeBytes, expectedScope32, minTier, network) {
+  // snapshotLeafCount: when set, only notes that existed at the snapshot (leafIndex below the pool's
+  // nextLeafIndex then) count. A note moved to a new owner afterwards is a new, later leaf.
+  async function verifyGovEvmAttestation(env, envelopeBytes, expectedScope32, minTier, network, snapshotLeafCount = null) {
     if (!evmPool || !confidentialPoolAddrFor) return { ok: false, status: 501, reason: 'evm shielded voting not wired' };
     const poolAddr = confidentialPoolAddrFor(network);
     if (!poolAddr) return { ok: false, status: 501, reason: 'evm shielded voting not enabled (no confidential pool on this network)' };
@@ -297,6 +321,9 @@ export function buildGovernance(deps) {
       if (seen.has(key)) return { ok: false, status: 400, reason: 'evm_weight: duplicate note' };
       seen.add(key);
       if (bytesToHex(n.owner) !== holderXonlyHex) return { ok: false, status: 403, reason: 'evm_weight: note owner != holder' };
+      if (snapshotLeafCount !== null && !(n.leafIndex < snapshotLeafCount)) {
+        return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} did not exist at the snapshot` };
+      }
       const leafHex = evmPool.leaf(assetHex, cxHex, cyHex, ownerHex);
       if (!evmPool.verifyPath(leafHex, n.leafIndex, n.path, poolRootHex)) {
         return { ok: false, status: 403, reason: `evm_weight: note ${n.leafIndex} not in pool tree` };
@@ -354,10 +381,17 @@ export function buildGovernance(deps) {
     if (!raw || !/^0x[0-9a-fA-F]{40}$/.test(raw)) return null;
     return raw.toLowerCase();
   }
-  async function readErc20Balance(env, network, token, addr) {
+  // At `blockNumber` when given (a proposal's snapshot, needs an archive-capable read), else latest.
+  async function readErc20Balance(env, network, token, addr, blockNumber = null) {
     // balanceOf(address) selector 0x70a08231
     const data = '0x70a08231' + '0'.repeat(24) + addr.replace(/^0x/, '').toLowerCase();
-    const res = await ethCall(network, token, data);
+    let res;
+    if (blockNumber !== null) {
+      if (!ethCallAt) return null;
+      res = await ethCallAt(env, network, token, data, '0x' + blockNumber.toString(16));
+    } else {
+      res = await ethCall(network, token, data);
+    }
     if (!res || !/^0x[0-9a-fA-F]+$/.test(res)) return null;
     try { return BigInt(res); } catch { return null; }
   }
@@ -371,7 +405,9 @@ export function buildGovernance(deps) {
       id: p.id, network: p.network, schema: p.schema,
       title: p.title, body: p.body, choices: p.choices, category: p.category,
       proposer_pubkey: p.proposer_pubkey,
-      snapshot_height: p.snapshot_height, created_at: p.created_at, voting_ends_at: p.voting_ends_at,
+      snapshot_height: p.snapshot_height, eth_snapshot_block: p.eth_snapshot_block ?? null,
+      snapshot_leaf_count: p.snapshot_leaf_count ?? null,
+      created_at: p.created_at, voting_ends_at: p.voting_ends_at,
       quorum: p.quorum, cid: p.cid || null,
       exec_target: p.exec_target || '', exec_note: p.exec_note || '',
       tally: p.tally, status: statusOf(p),
@@ -379,6 +415,22 @@ export function buildGovernance(deps) {
     };
     if (includeVotes) v.votes = votes || [];
     return v;
+  }
+
+  async function ethSnapshot(network) {
+    const out = { eth_snapshot_block: null, snapshot_leaf_count: null };
+    try {
+      const head = ethBlockNumber ? await ethBlockNumber(network) : null;
+      if (Number.isInteger(head) && head > GOV_ETH_SNAPSHOT_LAG) out.eth_snapshot_block = head - GOV_ETH_SNAPSHOT_LAG;
+    } catch {}
+    try {
+      const poolAddr = confidentialPoolAddrFor ? confidentialPoolAddrFor(network) : null;
+      if (poolAddr && _SEL_NEXT_LEAF_INDEX) {
+        const r = await ethCall(network, poolAddr, '0x' + _SEL_NEXT_LEAF_INDEX);
+        if (r && /^0x[0-9a-fA-F]+$/.test(r)) out.snapshot_leaf_count = Number(BigInt(r));
+      }
+    } catch {}
+    return out;
   }
 
   // ====================== route handlers ======================================
@@ -449,6 +501,15 @@ export function buildGovernance(deps) {
     }
     if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'propose_envelope (hex) required' }, 400, cors);
 
+    // Weight is judged at the snapshot, so it must be now: a proposal cannot pick a past height where some
+    // holder had more, or a future one nobody can prove against yet.
+    let tip = null;
+    for (let i = 0; i < 2 && tip === null; i++) { try { tip = await fetchTipHeight(env, network); } catch { tip = null; } }
+    if (tip === null) return jsonResponse({ error: 'chain tip unavailable, retry shortly' }, 502, cors);
+    if (!(snapshotHeight <= tip && snapshotHeight >= tip - GOV_SNAPSHOT_MAX_AGE)) {
+      return jsonResponse({ error: `snapshot_height must be the current Bitcoin tip (${tip}, within ${GOV_SNAPSHOT_MAX_AGE} blocks)` }, 400, cors);
+    }
+
     const content = {
       network, title, body: text, choices, category,
       snapshot_height: snapshotHeight, voting_ends_at: endsAt, quorum,
@@ -467,14 +528,19 @@ export function buildGovernance(deps) {
     const existing = await env.REGISTRY_KV.get(pKey(network, idHex), 'json');
     if (existing) return jsonResponse({ error: 'identical proposal already exists', id: idHex }, 409, cors);
 
+    // Ethereum-side snapshot, fixed at creation: the block public TAC balances are read at, and how many
+    // pool notes existed (cTAC votes count only those). Best-effort: when unreadable, those vote kinds are
+    // refused for this proposal rather than weighed without a snapshot.
+    const ethSnap = await ethSnapshot(network);
+
     // pin the canonical proposal blob to IPFS
-    const blob = { schema: 'tacit-governance-proposal-v1', id: idHex, ...content, created_at: nowS(), proposer_tier: v.tier.toString() };
+    const blob = { schema: 'tacit-governance-proposal-v1', id: idHex, ...content, ...ethSnap, created_at: nowS(), proposer_tier: v.tier.toString() };
     let pinned;
     try { pinned = await pinFileToIpfs(env, enc(JSON.stringify(blob)), 'application/json', 'tacit-gov-proposal'); }
     catch (e) { return jsonResponse({ error: e.msg || 'pin failed' }, e.status || 502, cors); }
 
     const record = {
-      schema: 'tacit-governance-proposal-v1', id: idHex, ...content,
+      schema: 'tacit-governance-proposal-v1', id: idHex, ...content, ...ethSnap,
       created_at: nowS(), cid: pinned.cid, proposer_tier: v.tier.toString(),
       tally: emptyTally(choices.length), finalized: false,
     };
@@ -503,7 +569,12 @@ export function buildGovernance(deps) {
       if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'weight_envelope (hex) required' }, 400, cors);
       let envBytes;
       try { envBytes = hexToBytes(envelopeHex); } catch { return jsonResponse({ error: 'bad envelope hex' }, 400, cors); }
-      const v = await verifyGovEvmAttestation(env, envBytes, voteScopeId(idHex, choice), GOV_TIERS[0], network);
+      // A proposal with a snapshot must have its note count; one created before snapshots existed has neither.
+      if (p.snapshot_height > 0 && !Number.isInteger(p.snapshot_leaf_count)) {
+        return jsonResponse({ error: 'shielded-TAC voting is unavailable for this proposal (no note snapshot was recorded)' }, 409, cors);
+      }
+      const v = await verifyGovEvmAttestation(env, envBytes, voteScopeId(idHex, choice), GOV_TIERS[0], network,
+        Number.isInteger(p.snapshot_leaf_count) ? p.snapshot_leaf_count : null);
       if (!v.ok) return jsonResponse({ error: v.reason }, v.status || 403, cors);
       voterId = v.holderPubkeyHex;
       voterKey = 'ceth-' + bytesToHex(sha256(enc(voterId))).slice(0, 32);
@@ -513,7 +584,8 @@ export function buildGovernance(deps) {
       if (!/^[0-9a-f]+$/.test(envelopeHex)) return jsonResponse({ error: 'weight_envelope (hex) required' }, 400, cors);
       let envBytes;
       try { envBytes = hexToBytes(envelopeHex); } catch { return jsonResponse({ error: 'bad envelope hex' }, 400, cors); }
-      const v = await verifyThresholdAttestation(env, envBytes, GOV_VOTE_DOMAIN, voteScopeId(idHex, choice), GOV_TIERS[0], network);
+      const v = await verifyThresholdAttestation(env, envBytes, GOV_VOTE_DOMAIN, voteScopeId(idHex, choice), GOV_TIERS[0], network,
+        p.snapshot_height > 0 ? p.snapshot_height : null);
       if (!v.ok) return jsonResponse({ error: v.reason }, v.status || 403, cors);
       voterId = v.holderPubkeyHex;
       voterKey = 'btc-' + bytesToHex(sha256(enc(voterId))).slice(0, 32);
@@ -526,12 +598,17 @@ export function buildGovernance(deps) {
       let addr;
       try { addr = recoverEthAddr(ethVoteMessage(idHex, choice, p.choices[choice]), ethSig); }
       catch (e) { return jsonResponse({ error: 'eth sig recover failed: ' + (e.message || 'unknown') }, 400, cors); }
-      const bal = await readErc20Balance(env, network, token, addr);
-      if (bal === null) return jsonResponse({ error: 'ERC20 balanceOf read failed' }, 502, cors);
-      if (bal <= 0n) return jsonResponse({ error: 'address holds no TAC' }, 403, cors);
+      if (!Number.isInteger(p.eth_snapshot_block)) {
+        return jsonResponse({ error: 'public voting is unavailable for this proposal (no Ethereum snapshot was recorded)' }, 409, cors);
+      }
+      const bal = await readErc20Balance(env, network, token, addr, p.eth_snapshot_block);
+      if (bal === null) return jsonResponse({ error: 'balance read at the snapshot block failed (needs an archive RPC: GOV_ETH_ARCHIVE_RPC)' }, 502, cors);
+      // The ERC-20 has 18 decimals; weights are in TAC base units (8 decimals), the same as the private tiers.
+      const w = bal / GOV_ERC20_TO_BASE;
+      if (w <= 0n) return jsonResponse({ error: 'address held no TAC at the snapshot' }, 403, cors);
       voterId = addr;
       voterKey = 'eth-' + addr.replace(/^0x/, '');
-      weight = bal;   // TAC ERC20 is 8-dec, unitScale 1 → base units already
+      weight = w;
     }
 
     const existing = await env.REGISTRY_KV.get(vKey(network, idHex, voterKey), 'json');
