@@ -166,7 +166,7 @@ async function renderDetail(body) {
     <h3 style="margin:0 0 10px;font-size:18px;line-height:1.25;">${esc(p.title)}</h3>
     <div style="font-size:13px;line-height:1.65;white-space:pre-wrap;margin-bottom:16px;">${esc(p.body)}</div>
     ${p.exec_target || p.exec_note ? `<div class="gov-soft" style="margin-bottom:16px;">
-      <b>Execution target:</b> ${esc(p.exec_target || '—')}${p.exec_note ? `<br>${esc(p.exec_note)}` : ''}</div>` : ''}
+      <b>${p.exec_target ? 'Execution target:' : 'Execution:'}</b> ${esc(p.exec_target || 'no on-chain action')}${p.exec_note ? `<br>${esc(p.exec_note)}` : ''}</div>` : ''}
 
     <div style="margin-bottom:18px;">${resultsHtml(p, totals, total)}</div>
 
@@ -213,7 +213,9 @@ async function renderVoteZone(p) {
       ? `<b class="gov-ok">Executed</b> by the ops multisig in
          <a href="https://etherscan.io/tx/${esc(p.execution.tx_hash)}" target="_blank" rel="noopener" class="gov-link">${esc(p.execution.tx_hash.slice(0, 10))}… ↗</a>
          (${new Date(p.execution.timestamp * 1000).toLocaleDateString()}).`
-      : (p.result?.passed ? 'Awaiting execution by the ops multisig.' : '');
+      : (p.result?.passed
+        ? (p.exec_target ? 'Awaiting execution by the ops multisig.' : 'No on-chain action is needed; the decision applies from finalization.')
+        : '');
     zone.innerHTML = `<div class="gov-soft">
       ${p.result?.passed ? `<b class="gov-ok">Passed</b> — “${esc(p.result.winner_choice)}” with ${fmtTac(p.result.winner_weight)} TAC.` : '<b>Did not pass.</b>'}
       Advisory result recorded${p.result_cid ? ' and pinned to IPFS' : ''}. ${exec}</div>`;
