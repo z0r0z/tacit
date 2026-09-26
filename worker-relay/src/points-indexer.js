@@ -504,6 +504,7 @@ function startHttp(store) {
         const cursor = store.loadCursor();
         const ppCursor = store.loadPpCursor();
         const ceCursor = store.loadCeCursor();
+        const zrouterCursor = store.loadZrouterCursor();
         res.end(JSON.stringify({
           ok: true,
           lastScannedBlock: cursor ? cursor.lastScannedBlock.toString() : null,
@@ -513,6 +514,8 @@ function startHttp(store) {
           ppLastScannedBlock: ppCursor != null ? ppCursor.toString() : null,
           // CollateralEngine scan (cBTC escrow + cUSD mint activity — see scanCollateralEngineCycle).
           ceLastScannedBlock: ceCursor != null ? ceCursor.toString() : null,
+          // zRouter ETH-swap scan (see scanZRouterCycle) — forward-only, null until its first cycle runs.
+          zrouterLastScannedBlock: zrouterCursor != null ? zrouterCursor.toString() : null,
         }));
         return;
       }
