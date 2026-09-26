@@ -1528,6 +1528,83 @@ test('dapp validateOutpoint: an exit riding a later input, with no envelope on v
   assert.equal(await r3(spender.txid, 0), null, 'record does not match the carrier');
 });
 
+// ── aggregates (T_BTC_AGG) ──
+// Stub aggregate verifier: a wrap-1 "proof" is valid iff its bytes equal the statement it must commit to, so these
+// tests exercise the indexer's statement binding (the wasm SP1 verifier is tested with a real proof separately).
+const AGG_VKD = 'cd'.repeat(64);
+const aggVerifier = { ...trueVerifier, vkHash: AGG_VKD, verifyAggregate: async ({ wrap, proof, statement }) => wrap === 1 && bytesToHex(proof) === bytesToHex(statement) };
+const aggEnv = (stmt, n, wrap = 1) => bp.encodeAggregate({ wrap, n, proof: stmt });
+
+test('aggregate: parse and encode; the statement is order-sensitive and bound to the key digest', () => {
+  const a = bp.parseEnvelope(aggEnv(new Uint8Array(32).fill(3), 2));
+  assert.deepEqual([a.kind, a.wrap, a.n, a.proofLen], ['aggregate', 1, 2, 32]);
+  assert.equal(bp.parseAggregate(Uint8Array.of(0x6e, 3, 1, 1, 0, 9)), null, 'unknown wrap');
+  assert.equal(bp.parseAggregate(Uint8Array.of(0x6e, 1, 0, 1, 0, 9)), null, 'n = 0');
+  assert.equal(bp.parseAggregate(Uint8Array.of(0x6e, 1, 1, 2, 0, 9)), null, 'length mismatch');
+  assert.equal(bp.parseAggregate(Uint8Array.of(0x6e, 1, 1, 0, 0)), null, 'empty proof');
+  const P = (k) => Array.from({ length: 12 }, (_, i) => String(k * 100 + i));
+  const s12 = bp.aggregateStatement(AGG_VKD, [P(1), P(2)]);
+  assert.notDeepEqual(s12, bp.aggregateStatement(AGG_VKD, [P(2), P(1)]));
+  assert.notDeepEqual(s12, bp.aggregateStatement('ce'.repeat(64), [P(1), P(2)]));
+  assert.notDeepEqual(bp.aggregateStatement(AGG_VKD, [P(1)]), bp.aggregateStatement(AGG_VKD, [P(1), P(1)]));
+});
+
+test('aggregate: a proofless spend with no aggregate verifier halts (throws), never rejects', async () => {
+  const st = await stateWithLeaf(1000, 1010);
+  st.beginBlock(1011);
+  const s = bp.parseSpend(spendBytes({ hAnchor: 1010, nfs: [nf('h1')], pay: [outBytes('h1')], proof: new Uint8Array(0) }));
+  await assert.rejects(st.aggregateFor([s, bp.parseEnvelope(aggEnv(new Uint8Array(32), 1))], { vkDigest: AGG_VKD }), bp.VerifierUnavailableError);
+  const agg = await st.aggregateFor([s], { vkDigest: AGG_VKD });
+  assert.match((await st.acceptSpend(s, spendCtx({ aggregate: agg }))).reason, /without an aggregate/);
+  assert.match((await st.acceptSpend(s, spendCtx())).reason, /no proof and no aggregate/);
+  st.abortBlock();
+});
+
+test('indexer: proofless spends under one T_BTC_AGG; mixed carriers; wrong, misplaced, doubled or replayed aggregates', async () => {
+  const { ch } = await scenario();
+  const store = openBtcPoolStore(':memory:');
+  const ix = newIndexer(ch, { store, verifier: aggVerifier });
+  ch.add([]); // 504
+  await ix.syncOnce();
+  const root = ix.state.roots.get(503);
+  const sp = (t, proofless = true) => spendBytes({ hAnchor: 503, nfs: [nf('ag' + t)], pay: [outBytes('ag' + t)], ...(proofless ? { proof: new Uint8Array(0) } : {}) });
+  const stmt = (...ts) => bp.aggregateStatement(AGG_VKD, ts.map((t) => bp.envelopePublics(bp.parseSpend(sp(t)), { root })));
+  const a1 = multiCarrier([sp('a'), sp('b'), aggEnv(stmt('a', 'b'), 2)]);
+  const a2 = multiCarrier([sp('c', false), sp('d'), aggEnv(stmt('d'), 1)]);
+  const a3 = multiCarrier([sp('e'), sp('f'), aggEnv(stmt('f', 'e'), 2)]);
+  const a4 = multiCarrier([sp('g')]);
+  const a5 = multiCarrier([sp('h'), sp('i'), aggEnv(stmt('a', 'b'), 2)]);
+  const a6 = multiCarrier([sp('a'), sp('b'), aggEnv(stmt('a', 'b'), 2)]);
+  const a7 = multiCarrier([aggEnv(stmt('j'), 1), sp('j')]);
+  const a8 = multiCarrier([sp('k'), aggEnv(stmt('k'), 2)]);
+  const a9 = multiCarrier([sp('l'), aggEnv(stmt('l'), 1), aggEnv(stmt('l'), 1)]);
+  const a10 = multiCarrier([null, sp('m'), aggEnv(stmt('m'), 1, 2)]);
+  ch.add([a1, a2, a3, a4, a5, a6, a7, a8, a9, a10]); // 505
+  await ix.syncOnce();
+  assert.equal(ix.state.tip, 505);
+  const envs = store.db.prepare('SELECT tx_index, vin, accepted, reason FROM envelopes WHERE height = 505 ORDER BY tx_index, vin').all();
+  const txIndex = (t) => ch.blocks[5].txs.findIndex((x) => x.txid === t.txid);
+  const rows = (t) => envs.filter((e) => e.tx_index === txIndex(t)).map((e) => [e.vin, e.accepted]);
+  const reason = (t, vin) => envs.find((e) => e.tx_index === txIndex(t) && e.vin === vin).reason;
+  assert.deepEqual(rows(a1), [[0, 1], [1, 1], [2, 1]], 'two proofless spends and their aggregate');
+  assert.deepEqual(rows(a2), [[0, 1], [1, 1], [2, 1]], 'a proved spend beside an aggregated one');
+  assert.deepEqual(rows(a3), [[0, 0], [1, 0], [2, 0]], 'statement over the spends in another order');
+  assert.match(reason(a3, 0), /does not verify/);
+  assert.deepEqual(rows(a4), [[0, 0]]);
+  assert.match(reason(a4, 0), /without an aggregate/);
+  assert.deepEqual(rows(a5), [[0, 0], [1, 0], [2, 0]], "a1's aggregate replayed over other spends");
+  assert.deepEqual(rows(a6), [[0, 0], [1, 0], [2, 1]], 'a1 replayed: the aggregate verifies, the nullifiers are spent');
+  assert.match(reason(a6, 0), /already spent/);
+  assert.deepEqual(rows(a7), [[1, 0]], 'an aggregate on vin[0] is not read');
+  assert.deepEqual(rows(a8), [[0, 0], [1, 0]]);
+  assert.match(reason(a8, 0), /n differs/);
+  assert.deepEqual(rows(a9), [[0, 0], [1, 0], [2, 0]]);
+  assert.match(reason(a9, 0), /more than one aggregate/);
+  assert.deepEqual(rows(a10), [[1, 0], [2, 0]], 'a wrap the verifier rejects');
+  for (const t of ['a', 'b', 'c', 'd']) assert.ok(ix.state.nullifiers.has(bytesToHex(nf('ag' + t))), t);
+  for (const t of ['e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm']) assert.ok(!ix.state.nullifiers.has(bytesToHex(nf('ag' + t))), t);
+});
+
 // ── real Halo2 proofs of the spend relation ──
 const PIN_DIR = new URL('../dapp/btc-pool/', import.meta.url);
 const PIN = JSON.parse(readFileSync(new URL('pin.json', PIN_DIR), 'utf8'));

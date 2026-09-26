@@ -1,0 +1,21 @@
+[package]
+name = "btc-pool-agg-verify"
+version = "0.1.0"
+edition = "2021"
+
+# wasm verifier for T_BTC_AGG aggregates (sp1-verifier PLONK and Groth16 against the keys of this release), run
+# in process by pool indexers and relayers. Build: ./build.sh (writes worker-relay/src/lib/btc-pool-agg-verify/).
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sp1-verifier = "=6.2.4"
+wasm-bindgen = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

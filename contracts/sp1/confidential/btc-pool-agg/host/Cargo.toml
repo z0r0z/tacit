@@ -1,0 +1,50 @@
+[package]
+name = "btc-pool-agg-host"
+version = "0.1.0"
+edition = "2021"
+
+# Host for the btc-pool-agg guest (DESIGN-btc-shielded-pool.md, Aggregation). Standalone workspace.
+#   cargo run --release --no-default-features -- pin [--check]   derive or check artifacts/ from btc-pool-halo2
+#   cargo run --release -- prove < spends.json                     PROVE_MODE=execute|network, AGG_WRAP=plonk|groth16
+#   cargo run --release -- verify < aggregate.json                 local check of a wrapped aggregate
+# `pin` and the tests need no SP1 SDK (--no-default-features). Proving is execute (local) or the Succinct
+# network; no native-gnark, so no Go toolchain is needed.
+[workspace]
+
+[[bin]]
+name = "btc-pool-agg"
+path = "src/main.rs"
+
+[features]
+default = ["sdk"]
+sdk = ["dep:sp1-sdk", "dep:sp1-prover", "dep:sp1-primitives", "dep:sp1-core-machine", "dep:sp1-core-executor"]
+
+[dependencies]
+btc-pool-halo2 = { path = "../../btc-pool-halo2" }
+btc-pool-agg-common = { path = "../common" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch"] }
+ff = "0.13"
+group = "0.13"
+blake2 = "0.10"
+sha2 = "0.10"
+serde_json = "1"
+hex = "0.4"
+num-bigint = "0.4"
+# PLONK_VK_BYTES and GROTH16_VK_BYTES of this release: the wraps indexers check against.
+sp1-verifier = "=6.2.4"
+sp1-sdk = { version = "=6.2.3", default-features = false, features = ["blocking", "network"], optional = true }
+sp1-prover = { version = "=6.2.4", optional = true }
+sp1-primitives = { version = "=6.2.4", optional = true }
+sp1-core-machine = { version = "=6.2.4", optional = true }
+sp1-core-executor = { version = "=6.2.4", optional = true }
+
+[patch."https://github.com/privacy-scaling-explorations/halo2"]
+halo2_proofs = { path = "../vendor/halo2_proofs" }
+
+[patch.crates-io]
+halo2curves = { path = "../vendor/halo2curves" }
+
+[profile.release]
+overflow-checks = true
+debug = 0
+incremental = false

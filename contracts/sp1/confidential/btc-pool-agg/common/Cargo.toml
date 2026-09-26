@@ -1,0 +1,13 @@
+[package]
+name = "btc-pool-agg-common"
+version = "0.1.0"
+edition = "2021"
+
+# Shared by the aggregation guest and host: the halo2 transcript reader with point hints, the captured
+# pairing input, the batch fold, the verifier params encoding and the aggregate statement.
+[dependencies]
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch"] }
+blake2b_simd = "1"
+ff = "0.13"
+group = "0.13"
+sha2 = "0.10"

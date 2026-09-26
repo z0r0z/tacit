@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeHalo2System } from '../../../dapp/btc-pool-halo2-prover.js';
 
+const AGG_DIR = fileURLToPath(new URL('./btc-pool-agg-verify/', import.meta.url));
 export const DEFAULT_PIN_PATH = fileURLToPath(new URL('../../../dapp/btc-pool/pin.json', import.meta.url));
 
 export const vkDigest = (bytes) => createHash('blake2b512').update(bytes).digest('hex');
@@ -37,7 +38,34 @@ export function loadBtcPoolKey({ env = process.env, network = 'signet', pinPath 
   return { vk, vkHash: want, vkFile, params: pinned(pin.params, pin.params_sha256), wasm: pinned(pin.wasm, pin.wasm_sha256), pin };
 }
 
-// { enabled, reason, vkHash, system, ready(), verify({ proof, publics }) → bool } — verify is null when disabled,
+// The aggregate verifier (T_BTC_AGG): the wasm build of sp1-verifier, pinned by SHA-256, against the guest vkey in
+// pin.agg. Returns { vkey, verify({ wrap, proof, statement }) → bool } or throws.
+export function loadAggregateVerifier(pin, { dir = AGG_DIR } = {}) {
+  const a = pin && pin.agg;
+  if (!a || !/^0x[0-9a-f]{64}$/.test(String(a.vkey || ''))) throw new Error('no aggregate key pinned');
+  const wasm = new Uint8Array(readFileSync(join(dir, 'btc_pool_agg_verify_bg.wasm')));
+  if (sha256(wasm) !== strip(a.verifier_wasm_sha256)) throw new Error('aggregate verifier wasm does not match its pinned SHA-256');
+  const wraps = new Set(a.wraps || []);
+  let mod = null;
+  const load = async () => {
+    if (!mod) {
+      const m = await import(new URL('./btc-pool-agg-verify/btc_pool_agg_verify.js', import.meta.url).href);
+      await m.default({ module_or_path: wasm });
+      mod = m;
+    }
+    return mod;
+  };
+  const verify = async ({ wrap, proof, statement }) => {
+    const name = wrap === 1 ? 'plonk' : wrap === 2 ? 'groth16' : null;
+    if (!name || !wraps.has(name)) return false;
+    const m = await load();
+    try { return m.verifyAggregate(wrap, proof, statement, a.vkey) === true; } catch { return false; }
+  };
+  return { vkey: a.vkey, wraps: [...wraps], ready: load, verify };
+}
+
+// { enabled, reason, vkHash, system, ready(), verify({ proof, publics }) → bool,
+//   verifyAggregate({ wrap, proof, statement }) → bool | undefined, aggReason } — verify is null when disabled,
 // which acceptSpend / acceptShield treat as "cannot decide" (the indexer halts there) rather than as a rejection.
 // ready() loads the wasm and params once; a failure there throws from verify too, which halts the replay.
 export function makeBtcPoolVerifier({ network = 'signet', env = process.env, key = null, log = console.error } = {}) {
@@ -52,5 +80,13 @@ export function makeBtcPoolVerifier({ network = 'signet', env = process.env, key
     return { enabled: false, reason, vkHash, system: null, ready: async () => false, verify: null };
   }
   const verify = async ({ proof, publics }) => (await system.verify(publics, proof)) === true;
-  return { enabled: true, reason: null, vkHash: system.vkHash, system, ready: () => system.ready().then(() => true), verify };
+  // Aggregates are optional: without a pinned aggregate key the indexer halts at the first aggregated carrier
+  // rather than deciding it.
+  let agg = null, aggReason = null;
+  try { agg = loadAggregateVerifier(key.pin); } catch (e) { aggReason = `aggregate verifier unavailable: ${e.message}`; }
+  return {
+    enabled: true, reason: null, vkHash: system.vkHash, system, verify,
+    ready: async () => { await system.ready(); if (agg) await agg.ready(); return true; },
+    verifyAggregate: agg ? agg.verify : undefined, aggVkey: agg ? agg.vkey : null, aggReason,
+  };
 }

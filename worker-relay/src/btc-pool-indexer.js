@@ -173,10 +173,21 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
         const tx = block.txs[i];
         if (i === 0) continue;
         const { vin0TacitOp, items } = carrierPoolEnvelopes(txEnvelopes(tx));
-        for (const env of items) {
-          const parsed = parseEnvelope(env.payload);
+        const parsedAll = items.map((env) => parseEnvelope(env.payload));
+        let aggregate = null;
+        try {
+          aggregate = await st.aggregateFor(parsedAll, { vkDigest: verifier.vkHash, verifyAggregate: verifier.verifyAggregate });
+        } catch (e) {
+          if (e instanceof VerifierUnavailableError) self.halted = { height, txid: tx.txid, reason: verifier.aggReason || 'aggregate verifier unavailable' };
+          throw e;
+        }
+        for (let k = 0; k < items.length; k++) {
+          const env = items[k], parsed = parsedAll[k];
           let res;
           if (!parsed) res = { accepted: false, reason: 'non-canonical envelope' };
+          else if (parsed.kind === 'aggregate') {
+            res = aggregate ? { accepted: aggregate.ok, reason: aggregate.reason } : { accepted: false, reason: 'aggregate covers no proofless spend' };
+          }
           else if (parsed.kind === 'shield') {
             if (env.vin !== 0) res = { accepted: false, reason: 'T_BTC_SHIELD must ride vin[0]' };
             else {
@@ -189,7 +200,7 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
             }
           } else {
             try {
-              res = await st.acceptSpend(parsed, { txid: tx.txid, inputs: tx.vin, outputs: tx.vout, vin0TacitOp, verifyProof: verifier.verify });
+              res = await st.acceptSpend(parsed, { txid: tx.txid, inputs: tx.vin, outputs: tx.vout, vin0TacitOp, verifyProof: verifier.verify, aggregate });
             } catch (e) {
               if (e instanceof VerifierUnavailableError) self.halted = { height, txid: tx.txid, reason: verifier.reason };
               throw e;

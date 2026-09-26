@@ -9,10 +9,12 @@
 // Both are read once and removed from process.env.
 
 import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { secp, sha256, keccak_256, hmac, hexToBytes, bytesToHex, concatBytes } from '../../../dapp/vendor/tacit-deps.min.js';
 import { makeBtcShieldedPool } from '../../../dapp/btc-shielded-pool.js';
 import { makeBtcWallet } from '../../../dapp/bitcoin-taproot-wallet.js';
 import { parseTx, decodeEnvelopeScript } from './btc-pool-chain.js';
+import { encodeAggregate, aggregateStatement, AGG_WRAP_PLONK, AGG_WRAP_GROTH16 } from '../../../worker/src/btc-shielded-pool.js';
 
 // RFC 6979 nonces for the ECDSA commit-input signatures.
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
@@ -258,13 +260,17 @@ function makeSemaphore(n) {
 // verifier: { enabled, verify({ proof, publics }) → bool }  (lib/btc-pool-verify.js)
 // mempool:  { refresh(), conflict(nfs, ignoreTxids) → txid|null, spender?(nf, ignoreTxids) → { txid, body }|null }
 // persist:  { save(payloadRecs, carrierRecs), load() → { payloads, carriers } } (optional)
+// aggregator: async ({ spends: [{ proof: hex, publics: [dec; 12] }] }) → { wrap: 'plonk'|'groth16', proof: hex }
+//           (optional). With it, a carrier of at least `aggMin` spends posts them proofless under one T_BTC_AGG,
+//           once the relayer's own verifier (verifier.verifyAggregate) accepts the aggregate; any failure posts
+//           the individual proofs instead.
 export function createRelayer({
   network = 'signet', btcKey, poolSeed, fees, pool, verifier, chain, mempool = null, persist = null,
   exitSats = 546, batchMs = 60_000, maxPayloads = 16, maxSlots = 8, anchorMargin = 6, anchorHeadroom,
   bumpWithin = 3, maxReplayLag = 12,
   maxFeeRate = 50, dropAfterMs = 6 * 3600_000, maxPending = 256, maxVerify = 2,
   maxQuotes = 1024, maxQuotesPerClient = 8, quoteTtlMs = 600_000, retainMs = 24 * 3600_000,
-  rateLimit = null, now = () => Date.now(), log = () => {},
+  rateLimit = null, now = () => Date.now(), log = () => {}, aggregator = null, aggMin = 2,
 } = {}) {
   if (!(btcKey instanceof Uint8Array) || btcKey.length !== 32) throw new Error('relayer BTC key must be 32 bytes');
   if (!(poolSeed instanceof Uint8Array) || poolSeed.length !== 32) throw new Error('relayer pool seed must be 32 bytes');
@@ -298,7 +304,7 @@ export function createRelayer({
     hAnchor: p.hAnchor, root: p.root, asset: p.asset, bodyHash: p.bodyHash, fee: String(p.fee), feeLeaf: toHex(p.feeLeaf),
     slot: p.slot ? { vout: p.slot.vout, spk: bytesToHex(p.slot.spk) } : null, bind: p.bind || null, quoteId: p.quoteId, receivedAt: p.receivedAt,
     batchId: p.batch?.id || null, carrierId: p.carrier?.id || null, foreignTxid: p.foreignTxid || null,
-    feeViaForeign: p.feeViaForeign ?? null, updatedAt: now(),
+    feeViaForeign: p.feeViaForeign ?? null, publics: p.publics || null, updatedAt: now(),
   });
   const cRec = (c) => ({
     id: c.id, state: c.state, createdAt: c.createdAt, updatedAt: now(), bind: c.bind || null,
@@ -309,7 +315,7 @@ export function createRelayer({
     outputs: (c.outputs || []).map((o) => ({ value: o.value, script: bytesToHex(o.script) })),
     utxos: c.utxos || [], picked: c.picked || [], rate: c.rate ?? null, commitFee: c.commitFee ?? null, revealFee: c.revealFee ?? null,
     broadcastAt: c.broadcastAt ?? null, height: c.height ?? null, replaced: c.replaced || [], failures: c.failures || 0,
-    bumpedAt: c.bumpedAt ?? null, needsReplace: !!c.needsReplace, lastError: c.lastError || null,
+    bumpedAt: c.bumpedAt ?? null, needsReplace: !!c.needsReplace, lastError: c.lastError || null, agg: c.agg || null,
   });
   const save = (c, ...ps) => { if (persist) persist.save(ps.filter(Boolean).map(pRec), c ? [cRec(c)] : []); };
 
@@ -525,6 +531,7 @@ export function createRelayer({
     if (ok !== true) fail(400, publics ? 'proof does not verify against the replayed root' : 'exit boundary does not verify');
     if (pool.rootAt(s.hAnchor) !== root) fail(409, 'root changed during verification');
     if (b.closed) fail(409, 'carrier closed during verification; request a new quote');
+    p.publics = publics;
     p.state = 'held';
     save(null, p);
     log(`payload ${p.id} held for batch ${b.id}`);
@@ -570,17 +577,47 @@ export function createRelayer({
     return Math.min(rate, maxFeeRate);
   }
 
+  // The aggregate for a carrier's live spends, proved once per live set and kept on the carrier; null when
+  // aggregation is off, the set is too small, a spend lacks its publics, or proving or the local check fails.
+  async function aggregateLive(c, live) {
+    if (!aggregator || live.length < aggMin || live.length > 255 || typeof verifier?.verifyAggregate !== 'function') return null;
+    if (live.some((p) => !Array.isArray(p.publics))) return null;
+    const ids = live.map((p) => p.id).join(',');
+    if (c.agg && c.agg.ids === ids) return c.agg;
+    if (c.aggFailed === ids) return null;
+    try {
+      const r = await aggregator({ spends: live.map((p) => ({ proof: strip(bp.parseSpend(p.payload, { full: true }).proof), publics: p.publics })) });
+      const wrap = r.wrap === 'plonk' ? AGG_WRAP_PLONK : r.wrap === 'groth16' ? AGG_WRAP_GROTH16 : null;
+      if (!wrap) throw new Error(`unknown wrap ${r.wrap}`);
+      const proof = hexToBytes(strip(r.proof));
+      const statement = aggregateStatement(verifier.vkHash, live.map((p) => p.publics));
+      if ((await verifier.verifyAggregate({ wrap, proof, statement })) !== true) throw new Error('aggregate does not verify locally');
+      c.agg = { ids, wrap: r.wrap, n: live.length, envelope: bytesToHex(encodeAggregate({ wrap, n: live.length, proof })), bytes: proof.length };
+      log(`carrier ${c.id}: ${live.length} spends aggregated (${r.wrap}, ${proof.length} B)`);
+      save(c);
+      return c.agg;
+    } catch (e) {
+      c.aggFailed = ids;
+      log(`carrier ${c.id}: aggregation failed, posting individual proofs: ${e?.message || e}`);
+      return null;
+    }
+  }
+
   // Commit: relayer UTXOs → one P2TR envelope output per payload (+ change). Reveal: those outputs as
   // vin[0..k-1], each a script-path spend of its Tacit envelope leaf, then the bind as vin[k], paying the
   // fixed layout and the bind's value back to the relayer. The commit funds the whole reveal fee.
   // `force` inputs are always spent (a replacement conflicts with every input of the one it replaces);
   // `replaces` is the fee of the replaced commit + reveal, which the new commit exceeds by 1 sat/vB.
-  async function buildCarrier(live, outputs, { bind, rate = null, force = null, replaces = 0 } = {}) {
+  async function buildCarrier(live, outputs, { bind, rate = null, force = null, replaces = 0, agg = null } = {}) {
     if (!bind) throw new Error('carrier has no bind');
     const slotSum = outputs.reduce((a, o) => a + o.value, 0);
     outputs = [...outputs, { value: bind.value, script: changeSpk }];
-    const envs = live.map((p) => {
-      const script = prims.encodeEnvelopeScript(envKey, p.payload);
+    // Aggregated: each spend proofless (body ‖ proof_len 0), then the T_BTC_AGG envelope after them.
+    const bodies = agg
+      ? [...live.map((p) => concatBytes(bp.parseSpend(p.payload, { full: true }).body, Uint8Array.of(0, 0))), hexToBytes(strip(agg.envelope))]
+      : live.map((p) => p.payload);
+    const envs = bodies.map((payload) => {
+      const script = prims.encodeEnvelopeScript(envKey, payload);
       const leaf = prims.tapLeafHash(script);
       const { Q_xonly, parity } = prims.tweakedOutputKey(prims.TAP_NUMS, leaf);
       return { script, leaf, spk: prims.p2trScript(Q_xonly), cb: prims.controlBlock(prims.TAP_NUMS, parity) };
@@ -714,7 +751,8 @@ export function createRelayer({
     }
     const live = c.payloads.filter((p) => p.state === 'carried');
     if (!live.length) { c.state = 'empty'; releaseBind(c.bind); save(c); return c; }
-    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, ...(c.picked?.length ? { force: c.picked } : {}) });
+    const agg = await aggregateLive(c, live);
+    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, agg, ...(c.picked?.length ? { force: c.picked } : {}) });
     adopt(c, built, live);
     save(c, ...live);
     await advance(c);
@@ -723,7 +761,8 @@ export function createRelayer({
 
   // Replaces the unconfirmed commit (and so the reveal) with one carrying `live` at `rate`.
   async function replace(c, live, rate) {
-    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, rate, force: c.picked, replaces: (c.commitFee || 0) + (c.revealFee || 0) });
+    const agg = c.agg && c.agg.ids === live.map((p) => p.id).join(',') ? c.agg : null;
+    const built = await buildCarrier(live, layout(c.slots, live), { bind: c.bind, rate, force: c.picked, replaces: (c.commitFee || 0) + (c.revealFee || 0), agg });
     adopt(c, built, live);
     save(c, ...live);
     log(`carrier ${c.id}: replaced at ${rate} sat/vB`);
@@ -891,7 +930,7 @@ export function createRelayer({
         hAnchor: r.hAnchor, root: r.root, asset: r.asset, bodyHash: r.bodyHash, fee: BigInt(r.fee), feeLeaf: r.feeLeaf,
         slot: r.slot ? { vout: r.slot.vout, spk: hexToBytes(r.slot.spk), payloadId: r.id } : null, bind: r.bind || null,
         quoteId: r.quoteId, receivedAt: r.receivedAt, updatedAt: r.updatedAt, foreignTxid: r.foreignTxid || undefined,
-        feeViaForeign: r.feeViaForeign, _batchId: r.batchId,
+        feeViaForeign: r.feeViaForeign, publics: r.publics || null, _batchId: r.batchId,
       };
       payloads.set(p.id, p);
       if (!TERMINAL.has(p.state)) for (const nf of p.nullifiers) holds.set(nf, p.id);
@@ -1031,6 +1070,28 @@ export function makeEsploraRelayChain(bases, { fetchImpl = fetch, feeTarget = '3
   };
 }
 
+// Aggregator over the btc-pool-agg host: `cmd prove` with the spends on stdin, the wrapped proof on stdout.
+export function makeCommandAggregator({ cmd, wrap = 'plonk', timeoutMs = 1_800_000, env = process.env, log = () => {} }) {
+  return ({ spends }) => new Promise((resolve, reject) => {
+    const child = spawn(cmd, ['prove'], { env: { ...env, PROVE_MODE: 'network', AGG_WRAP: wrap }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('aggregation timed out')); }, timeoutMs);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; if (err.length > 65536) err = err.slice(-32768); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(`aggregator exited ${code}: ${err.trim().split('\n').pop() || ''}`));
+      try {
+        const j = JSON.parse(out.trim().split('\n').pop());
+        log(`aggregate: ${j.n} spends, ${j.wrap} ${j.proof_bytes} B, request ${j.request}, gas ${j.gas_used ?? j.gas}`);
+        resolve({ wrap: j.wrap, proof: j.proof, meta: j });
+      } catch (e) { reject(new Error(`aggregator output: ${e.message}`)); }
+    });
+    child.stdin.end(JSON.stringify({ spends }));
+  });
+}
+
 // Returns null when the relayer keys are not configured. Removes the key variables from env.
 export function startBtcPoolRelayerFromEnv({ ix, store = null, verifier, network, esploraBases, log = console.log, env = process.env }) {
   const kHex = env.BTC_POOL_RELAYER_BTC_KEY, sHex = env.BTC_POOL_RELAYER_POOL_SEED;
@@ -1054,6 +1115,12 @@ export function startBtcPoolRelayerFromEnv({ ix, store = null, verifier, network
   } else if (source !== 'off') throw new Error('BTC_POOL_RELAYER_MEMPOOL must be esplora, bitcoind or off');
 
   ix.trackAhead = spendsOfTx;
+  // Optional aggregation: BTC_POOL_RELAYER_AGG_CMD is the btc-pool-agg host binary (contracts/sp1/confidential/
+  // btc-pool-agg/host), run with PROVE_MODE=network; it needs NETWORK_PRIVATE_KEY in its environment.
+  let aggregator = null;
+  if (env.BTC_POOL_RELAYER_AGG_CMD) {
+    aggregator = makeCommandAggregator({ cmd: env.BTC_POOL_RELAYER_AGG_CMD, wrap: env.BTC_POOL_RELAYER_AGG_WRAP || 'plonk', timeoutMs: num('BTC_POOL_RELAYER_AGG_TIMEOUT_SECS', 1800) * 1000, env, log });
+  }
   const r = createRelayer({
     network,
     btcKey: hexToBytes(strip(kHex)),
@@ -1077,6 +1144,8 @@ export function startBtcPoolRelayerFromEnv({ ix, store = null, verifier, network
     anchorMargin: num('BTC_POOL_RELAYER_ANCHOR_MARGIN', 6),
     bumpWithin: num('BTC_POOL_RELAYER_BUMP_WITHIN', 3),
     maxReplayLag: num('BTC_POOL_RELAYER_MAX_REPLAY_LAG', 12),
+    aggregator,
+    aggMin: num('BTC_POOL_RELAYER_AGG_MIN', 2),
     log,
   });
   r.setRateLimit({ perMin: num('BTC_POOL_RELAYER_RATE_PER_MIN', 30), burst: num('BTC_POOL_RELAYER_RATE_BURST', 10) });

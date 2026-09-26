@@ -1,0 +1,43 @@
+[package]
+name = "btc-pool-agg-guest"
+version = "0.1.0"
+edition = "2021"
+
+# SP1 guest: verifies N Halo2-KZG spend proofs (btc-pool-halo2) against the pinned key and commits the aggregate
+# statement (btc-pool-agg-common::statement). The verification key, its transcript hash and the verifier params
+# are compiled in, so the guest's vkey pins them. Build: `cargo prove build --output-directory ../../elf`
+# (writes elf/btc-pool-agg); pin in elf-vkey-pin.json (btc_pool_agg_*).
+#
+# vendor/halo2_proofs is halo2 v0.3.0 with: DualMSM and KZG strategy fields public, ParamsKZG::verifier_only,
+# a verifier-only selector compression (fast-vk-read), VerifyingKey::read_with_repr, serial rayon stand-ins,
+# and cycle-tracker markers. vendor/halo2curves is 0.6.1 with the bn256 Fr/Fq Montgomery multiply routed
+# through SP1's uint256_mulmod precompile (zkvm-mulmod). Diff each against its upstream release to review.
+[workspace]
+
+[[bin]]
+name = "btc-pool-agg"
+path = "src/main.rs"
+
+[dependencies]
+sp1-zkvm = "=6.2.3"
+sp1-lib = "=6.2.3"
+btc-pool-halo2 = { path = "../../btc-pool-halo2" }
+btc-pool-agg-common = { path = "../common" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch", "fast-vk-read"] }
+halo2curves = { version = "=0.6.1", default-features = false, features = ["zkvm-mulmod"] }
+ff = "0.13"
+group = "0.13"
+# SP1-patched substrate-bn: Fp/Fp2 arithmetic through the bn254 field precompiles (the final pairing).
+bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-6.2.0-substrate-bn", package = "substrate-bn" }
+
+[patch."https://github.com/privacy-scaling-explorations/halo2"]
+halo2_proofs = { path = "../vendor/halo2_proofs" }
+
+[patch.crates-io]
+halo2curves = { path = "../vendor/halo2curves" }
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.8-sp1-6.2.0" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

@@ -10,8 +10,9 @@ import { secp, sha256, keccak_256, hexToBytes, bytesToHex, concatBytes } from '.
 import { makeBtcShieldedPool } from '../../dapp/btc-shielded-pool.js';
 import { makeHalo2System, HALO2_PROOF_LEN as PROOF_WIRE_LEN } from '../../dapp/btc-pool-halo2-prover.js';
 import { makeBtcWallet } from '../../dapp/bitcoin-taproot-wallet.js';
-import { PoseidonTree } from '../../worker/src/btc-shielded-pool.js';
-import { parseTx } from '../src/lib/btc-pool-chain.js';
+import { PoseidonTree, aggregateStatement } from '../../worker/src/btc-shielded-pool.js';
+import * as bpW from '../../worker/src/btc-shielded-pool.js';
+import { parseTx, decodeEnvelopeScript } from '../src/lib/btc-pool-chain.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -911,6 +912,68 @@ test('restart resumes carriers, held payloads, slots and nullifier holds from th
 });
 
 // ── real proofs: spend.circom proved in process, verified natively against the pinned key ──
+// ── optional aggregation ──
+// Stub aggregate: the "proof" is the statement itself, and the stub verifier accepts exactly that, so the test
+// checks that the relayer aggregates the carrier's spends in input order and posts them proofless.
+const AGG_VKD = 'cd'.repeat(64);
+const aggStubVerifier = (base) => ({ ...base, vkHash: AGG_VKD, verifyAggregate: async ({ wrap, proof, statement }) => wrap === 1 && bytesToHex(proof) === bytesToHex(statement) });
+const envelopesOf = (hex) => parseTx(hexToBytes(hex)).tx.vin.map((i) => (i.witness && i.witness.length >= 3 ? decodeEnvelopeScript(i.witness[1]) : null));
+
+test('aggregation: a carrier of two spends posts both proofless under one T_BTC_AGG; the indexer rules accept it', async () => {
+  const calls = [];
+  const aggregator = async ({ spends }) => {
+    calls.push(spends);
+    return { wrap: 'plonk', proof: bytesToHex(aggregateStatement(AGG_VKD, spends.map((x) => x.publics))) };
+  };
+  const base = await setup();
+  const s = await setup({ verifier: aggStubVerifier(base.verifier), aggregator });
+  const outs = [{ address: relayerWallet.addressString, value: 10n }, { address: bob.addressString, value: 90n }];
+  const a = payloadFor({ notes: [ownedNote(100n)], outputs: outs });
+  const b = payloadFor({ notes: [ownedNote(100n)], outputs: outs });
+  await s.relayer.submit({ payload: a.hex });
+  await s.relayer.submit({ payload: b.hex });
+  const c = await s.relayer.flush();
+  assert.equal(c.state, 'broadcast');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].length, 2);
+  assert.equal(calls[0][0].proof.length, 2 * PROOF_WIRE_LEN);
+  const envs = envelopesOf(s.broadcasts[1]);
+  assert.deepEqual(envs.map((e) => e && e.opcode), [0x6d, 0x6d, 0x6e, null], 'two spends, the aggregate, then the bind');
+  for (const [k, p] of [[0, a], [1, b]]) {
+    const sp = bpW.parseSpend(envs[k].payload);
+    assert.equal(sp.proofLen, 0);
+    assert.equal(bytesToHex(sp.body), bytesToHex(bpW.parseSpend(hexToBytes(p.hex)).body), 'the signed body is unchanged');
+  }
+  const ag = bpW.parseAggregate(envs[2].payload);
+  assert.equal(ag.n, 2);
+  // What an indexer computes from the posted carrier.
+  const publics = [0, 1].map((k) => bpW.envelopePublics(bpW.parseSpend(envs[k].payload), { root: hexToBytes(ANCHOR_ROOT) }));
+  assert.equal(bytesToHex(ag.proof), bytesToHex(aggregateStatement(AGG_VKD, publics)));
+  // A rebuild of the same live set reuses the aggregate.
+  assert.equal(c.agg.n, 2);
+});
+
+test('aggregation falls back to individual proofs: aggregator failure, no local aggregate verifier, or a bad aggregate', async () => {
+  const outs = [{ address: relayerWallet.addressString, value: 10n }, { address: bob.addressString, value: 90n }];
+  const base = await setup();
+  const cases = [
+    ['aggregator throws', { verifier: aggStubVerifier(base.verifier), aggregator: async () => { throw new Error('network down'); } }],
+    ['no verifyAggregate', { verifier: base.verifier, aggregator: async () => ({ wrap: 'plonk', proof: '00' }) }],
+    ['aggregate does not verify', { verifier: aggStubVerifier(base.verifier), aggregator: async () => ({ wrap: 'plonk', proof: 'ab'.repeat(32) }) }],
+    ['one spend is below aggMin', { verifier: aggStubVerifier(base.verifier), aggregator: async () => { throw new Error('not called'); }, single: true }],
+  ];
+  for (const [name, over] of cases) {
+    const s = await setup(over);
+    const n = over.single ? 1 : 2;
+    for (let i = 0; i < n; i++) await s.relayer.submit({ payload: payloadFor({ notes: [ownedNote(100n)], outputs: outs }).hex });
+    const c = await s.relayer.flush();
+    assert.equal(c.state, 'broadcast', name);
+    const envs = envelopesOf(s.broadcasts[1]).filter(Boolean);
+    assert.equal(envs.length, n, name);
+    for (const e of envs) assert.equal(bpW.parseSpend(e.payload).proofLen, PROOF_WIRE_LEN, `${name}: individual proof`);
+  }
+});
+
 // Two notes in a real Poseidon tree; a fee-paying pay and a fee-paying exit, both bound to FIRST_BIND (the bind
 // of a fresh setup) with exit_vout 0 (its first free slot). Proved once per run.
 const REAL_EXIT_SPK = p2tr('exit-real');
@@ -1012,8 +1075,10 @@ test('real proof: an exit is accepted under its quote; with its boundary corrupt
 
 let passed = 0;
 const t0 = performance.now();
-for (const [n, f] of tests) {
+const only = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
+const run = only ? tests.filter(([n]) => only.test(n)) : tests;
+for (const [n, f] of run) {
   try { await f(); passed++; console.log('  ok -', n); } catch (e) { console.error('  FAIL -', n); console.error(e); process.exitCode = 1; }
 }
-console.log(`${passed}/${tests.length} passed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+console.log(`${passed}/${run.length} passed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 process.exit(process.exitCode ?? 0);

@@ -10,6 +10,12 @@ import { verifyBoundary, decodeBoundary, BOUNDARY_LEN } from '../../dapp/btc-poo
 
 export const T_BTC_SHIELD = 0x6c;
 export const T_BTC_SPEND = 0x6d;
+export const T_BTC_AGG = 0x6e;
+// T_BTC_AGG wraps: an SP1 proof of the btc-pool-agg guest, PLONK or Groth16 wrapped.
+export const AGG_WRAP_PLONK = 1;
+export const AGG_WRAP_GROTH16 = 2;
+export const AGG_PROOF_MAX = 4096;
+const AGG_DOMAIN = new TextEncoder().encode('tacit-btc-pool-agg-v1');
 
 export const SHIELD_MAX_IN = 8;
 export const SPEND_MAX_IN = 2;
@@ -224,11 +230,42 @@ export function parseSpend(bytes) {
   return s;
 }
 
+// 0x6E ‖ wrap(1) ‖ n(1) ‖ proof_len(2) ‖ proof: one aggregate proof covering the carrier's n proofless
+// T_BTC_SPEND envelopes (proof_len = 0), in input order.
+export function parseAggregate(bytes) {
+  const e = toBytes(bytes);
+  if (!e || e.length < 5 || e[0] !== T_BTC_AGG) return null;
+  const wrap = e[1], n = e[2];
+  if (wrap !== AGG_WRAP_PLONK && wrap !== AGG_WRAP_GROTH16) return null;
+  if (n < 1) return null;
+  const proofLen = e[3] | (e[4] << 8);
+  if (proofLen < 1 || proofLen > AGG_PROOF_MAX || e.length !== 5 + proofLen) return null;
+  return { kind: 'aggregate', wrap, n, proofLen, proof: e.slice(5) };
+}
+
+export function encodeAggregate({ wrap, n, proof }) {
+  const pf = toBytes(proof);
+  if (pf.length < 1 || pf.length > AGG_PROOF_MAX) throw new Error('aggregate proof length');
+  return concat(Uint8Array.of(T_BTC_AGG, wrap, n, pf.length & 0xff, pf.length >> 8), pf);
+}
+
+// The aggregate's public value: SHA-256("tacit-btc-pool-agg-v1" ‖ vk_digest(64) ‖ n(u32 LE) ‖ publics…), each
+// spend's twelve public inputs as 32-byte big-endian field elements (btc-pool-agg-common statement).
+export function aggregateStatement(vkDigest, publicsList) {
+  const parts = [AGG_DOMAIN, toBytes(vkDigest), u32leBytes(publicsList.length)];
+  for (const pubs of publicsList) {
+    if (pubs.length !== 12) throw new Error('twelve publics per spend');
+    for (const x of pubs) parts.push(bigTo32(BigInt(x)));
+  }
+  return sha256(...parts);
+}
+
 export function parseEnvelope(payload) {
   const e = toBytes(payload);
   if (!e || !e.length) return null;
   if (e[0] === T_BTC_SHIELD) return parseShield(e);
   if (e[0] === T_BTC_SPEND) return parseSpend(e);
+  if (e[0] === T_BTC_AGG) return parseAggregate(e);
   return null;
 }
 
@@ -248,15 +285,16 @@ export function envelopePublics(s, { root = null, boundaryC = null } = {}) {
 
 // Which of a carrier's envelopes the pool reads (§3 Carriers). `envs[i]` is the Tacit envelope on vin[i]
 // ({ opcode, payload }) or null. A T_BTC_SHIELD rides vin[0], and then only vin[0] is read. Otherwise every
-// T_BTC_SPEND is read in input order. A T_BTC_SHIELD on a later input is returned so it can be recorded as
+// T_BTC_SPEND is read in input order, and so is a T_BTC_AGG on any input but vin[0] (on vin[0] it is a foreign
+// op, as the transparent layer sees it). A T_BTC_SHIELD on a later input is returned so it can be recorded as
 // rejected. `vin0TacitOp` is true when vin[0] holds a transparent Tacit op.
 export function carrierPoolEnvelopes(envs) {
   const e0 = envs[0] || null;
-  const isPool = (e) => e && (e.opcode === T_BTC_SHIELD || e.opcode === T_BTC_SPEND);
-  const vin0TacitOp = !!e0 && !isPool(e0);
+  const isPool = (e, vin) => e && (e.opcode === T_BTC_SHIELD || e.opcode === T_BTC_SPEND || (e.opcode === T_BTC_AGG && vin > 0));
+  const vin0TacitOp = !!e0 && !isPool(e0, 0);
   if (e0 && e0.opcode === T_BTC_SHIELD) return { vin0TacitOp, items: [{ vin: 0, ...e0 }] };
   const items = [];
-  envs.forEach((e, vin) => { if (isPool(e)) items.push({ vin, ...e }); });
+  envs.forEach((e, vin) => { if (isPool(e, vin)) items.push({ vin, ...e }); });
   return { vin0TacitOp, items };
 }
 
@@ -426,6 +464,47 @@ export class BtcPoolState {
     return { accepted: true, leaves: this._appendLeaves(s, ctx.txid) };
   }
 
+  // Public inputs of a spend at the open block: null when its anchor is outside the window or not retained, or
+  // its exit boundary does not verify (acceptSpend rejects it then too).
+  spendPublicsNow(s) {
+    const b = this.pending;
+    if (!b || !s || s.kind !== 'spend') return null;
+    if (s.hAnchor < b.height - ANCHOR_WINDOW || s.hAnchor > b.height - 1) return null;
+    const root = this.roots.get(s.hAnchor);
+    if (!root) return null;
+    let exitC = null;
+    if (s.exit) {
+      exitC = verifyBoundary(s.exit.boundary);
+      if (!exitC) return null;
+    }
+    return envelopePublics(s, { root, boundaryC: exitC });
+  }
+
+  // The aggregate covering a carrier's proofless spends (`parsed`: the carrier's parsed pool envelopes in input
+  // order). Returns null when no spend is proofless; otherwise { ok, publics: Map(spend → publics), reason }.
+  // ok requires exactly one T_BTC_AGG, n equal to the number of proofless spends, every covered spend's publics
+  // derivable, and ctx.verifyAggregate({ wrap, proof, statement }) → true. Evaluated before any envelope of the
+  // carrier is applied, since the publics depend only on earlier blocks.
+  async aggregateFor(parsed, ctx) {
+    const covered = parsed.filter((s) => s && s.kind === 'spend' && s.proofLen === 0);
+    if (!covered.length) return null;
+    const aggs = parsed.filter((s) => s && s.kind === 'aggregate');
+    const no = (reason) => ({ ok: false, reason, publics: new Map() });
+    if (aggs.length !== 1) return no(aggs.length ? 'more than one aggregate in the carrier' : 'proofless spend without an aggregate');
+    const a = aggs[0];
+    if (a.n !== covered.length) return no('aggregate n differs from the proofless spends');
+    const publics = new Map();
+    for (const s of covered) {
+      const p = this.spendPublicsNow(s);
+      if (!p) return no('a covered spend has no derivable public inputs');
+      publics.set(s, p);
+    }
+    if (typeof ctx.verifyAggregate !== 'function') throw new VerifierUnavailableError();
+    const statement = aggregateStatement(ctx.vkDigest, covered.map((s) => publics.get(s)));
+    const ok = (await ctx.verifyAggregate({ wrap: a.wrap, proof: a.proof, statement })) === true;
+    return ok ? { ok, publics, reason: null } : no('aggregate does not verify');
+  }
+
   // ctx.txid; ctx.inputs [{ txid, vout }] (every carrier input, txid in display hex); ctx.outputs
   // [{ value: bigint, scriptPubKey: Uint8Array }]; ctx.vin0TacitOp, true when the carrier's vin[0] holds a
   // transparent Tacit op; ctx.verifyProof({ proof, publics }) → bool. Earlier accepted envelopes of the same
@@ -465,9 +544,19 @@ export class BtcPoolState {
       exitC = verifyBoundary(s.exit.boundary);
       if (!exitC) return reject('exit boundary does not verify');
     }
-    if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
-    const ok = await ctx.verifyProof({ proof: s.proof, publics: envelopePublics(s, { root, boundaryC: exitC }) });
-    if (ok !== true) return reject('proof does not verify');
+    const publics = envelopePublics(s, { root, boundaryC: exitC });
+    if (s.proofLen === 0) {
+      // Covered by the carrier's aggregate (aggregateFor), whose statement bound these same publics.
+      const agg = ctx.aggregate;
+      if (!agg) return reject('no proof and no aggregate');
+      if (!agg.ok) return reject(agg.reason || 'aggregate does not verify');
+      const bound = agg.publics.get(s);
+      if (!bound || bound.join() !== publics.join()) return reject('spend is not covered by the aggregate');
+    } else {
+      if (typeof ctx.verifyProof !== 'function') throw new VerifierUnavailableError();
+      const ok = await ctx.verifyProof({ proof: s.proof, publics });
+      if (ok !== true) return reject('proof does not verify');
+    }
 
     for (const nf of nfHex) {
       const rec = { nf, height: H_, txid: ctx.txid };
