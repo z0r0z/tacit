@@ -443,6 +443,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (ctac && ctac.assetId && o.fromBlock == null && o.toBlock == null) {
       const held = byAsset[String(ctac.assetId).toLowerCase()];
       _privateTacWei = held ? held.value * BigInt(ctac.unitScale || '1') : 0n;
+      if (ctac.underlying) {
+        try {
+          const owner = account(scanPriv).address.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+          _accountTacWei = BigInt((await ethCall(ctac.underlying, '0x70a08231' + owner)) || '0x0');
+        } catch { /* keep the last reading; a failed read only costs the discount, never the balance */ }
+      }
     }
     // `diag` travels with the result. _scanNotes swallows a failure in any one channel so a single dead
     // endpoint cannot blank the whole wallet — but a caller that sees only `notes` cannot tell a genuinely
@@ -2765,15 +2771,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // and broadcast settle themselves). The guest's OP_UNWRAP splits value → withdrawal(value−fee) +
   // fee, both public legs summing to the proven value (no separate fee proof).
   const RELAY_FEE_BPS = 30n;                                 // 0.30% of the exit
-  // TAC holders exit at a lower rate. Tiers are whole TAC held, private cTAC notes (seen by balance()) plus any
-  // public TAC the caller reports through setPublicTacHeld. The gas-aware floor still applies, so a discounted
-  // fee never drops below what the relay needs to settle.
+  // TAC holders exit at a lower rate. Tiers are whole TAC held: shielded cTAC notes and the public TAC on the
+  // wallet's own Ethereum account (both read by a full balance() scan), plus any public TAC held elsewhere that
+  // the caller reports through setPublicTacHeld. The gas-aware floor still applies, so a discounted fee never
+  // drops below what the relay needs to settle.
   const HOLDER_FEE_TIERS = [[10000n, 15n], [1000n, 20n], [100n, 25n]]; // [whole TAC, bps], highest first
   let _privateTacWei = 0n;
+  let _accountTacWei = 0n;
   let _publicTacWei = 0n;
   function setPublicTacHeld(wei) { _publicTacWei = BigInt(wei || 0); }
   function holderFeeBps() {
-    const whole = (_privateTacWei + _publicTacWei) / 10n ** 18n;
+    const whole = (_privateTacWei + _accountTacWei + _publicTacWei) / 10n ** 18n;
     for (const [min, bps] of HOLDER_FEE_TIERS) if (whole >= min) return bps;
     return RELAY_FEE_BPS;
   }

@@ -1051,3 +1051,34 @@ test('quoteUnwrapFee: TAC holders exit at a lower rate, never below the floor', 
   ux.setPublicTacHeld(0);
   assert.equal(ux.holderFeeBps(), 30n);
 });
+
+test('balance: a full scan counts the wallet account\'s public TAC toward the holder rate', async () => {
+  const TAC_ERC20 = getConfidentialDeployment('mainnet').assets.find((a) => a.ticker === 'cTAC').underlying.toLowerCase();
+  let tacWei = 5000n * 10n ** 18n, failCall = false, calls = 0;
+  const fetchImpl = async (_url, opts) => {
+    const { method, params, id } = JSON.parse(opts.body);
+    let result = [];
+    if (method === 'eth_blockNumber') result = '0x1';
+    if (method === 'eth_call' && params[0].to === TAC_ERC20 && params[0].data.startsWith('0x70a08231')) {
+      calls++;
+      if (failCall) return { ok: false, status: 500, json: async () => ({}) };
+      result = '0x' + tacWei.toString(16).padStart(64, '0');
+    }
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id, result }) };
+  };
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl });
+  const key = '0x' + '33'.repeat(32);
+  assert.equal(ux.holderFeeBps(), 30n);
+  await ux.balance(key, { cbtc: false, bridge: false });
+  assert.ok(calls > 0, 'read the TAC balance');
+  assert.equal(ux.holderFeeBps(), 20n, '5,000 TAC on the account -> the 1,000 tier');
+  tacWei = 50n * 10n ** 18n;
+  await ux.balance(key, { cbtc: false, bridge: false, fromBlock: 1 });
+  assert.equal(ux.holderFeeBps(), 20n, 'a windowed scan leaves the tier alone');
+  failCall = true;
+  await ux.balance(key, { cbtc: false, bridge: false });
+  assert.equal(ux.holderFeeBps(), 20n, 'a failed read keeps the last reading');
+  failCall = false;
+  await ux.balance(key, { cbtc: false, bridge: false });
+  assert.equal(ux.holderFeeBps(), 30n, 'below 100 TAC -> the standard rate');
+});
