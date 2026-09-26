@@ -2,7 +2,7 @@
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
 const TACIT_URL = '/tacit.js?cb=4d8b8ad4';
-const SECRET_URL = '/sats/secret.js?cb=84c75f2d';
+const SECRET_URL = '/sats/secret.js?cb=2e13e4ed';
 const MIX_URL = '/sats/mix.js?cb=52f7e8da';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
@@ -470,6 +470,7 @@ async function connected() {
 function unlocked() {
   renderIdentity();
   refreshAssets();
+  if (!exitSats.key) refreshSats();
   checkHashPayment();
   emit();
 }
@@ -529,15 +530,17 @@ async function refreshSats() {
       if (u.status?.confirmed) conf += u.value; else pend += u.value;
     }
     const silent = await unspentSilent();
+    const fromPool = await refreshExitSats();
     let txt = conf || !pend ? fmtSats(conf) : '';
     if (pend) txt += `${txt ? ' · ' : ''}${fmtSats(pend)} unconfirmed`;
     if (silent) txt += ` · ${fmtSats(silent)} in silent payments`;
+    if (fromPool) txt += ` · ${fmtSats(fromPool)} from the pool`;
     satsTotal = conf + pend + silent;
     // A faucet payout the indexer hasn't listed yet: say it is on its way rather than showing an empty wallet.
     const arriving = satsTotal === 0 && faucetPending && Date.now() - faucetPending.t < 20 * 60_000;
     if (satsTotal > 0) faucetPending = null;
     $('w-bal').textContent = arriving ? `${fmtSats(faucetPending.sats)} arriving…` : txt;
-    show('faucet-hint', T.NET.name === 'signet' && satsTotal === 0 && !arriving);
+    show('faucet-hint', T.NET.name === 'signet' && satsTotal === 0 && !fromPool && !arriving);
   } catch (e) {
     $('w-bal').textContent = 'unavailable · try Refresh';
     log('Balance lookup failed: ' + errMsg(e), 'error');
@@ -560,6 +563,51 @@ async function unspentSilent() {
     if (!spent && !c.coinClass) sum += Number(c.sats || 0);
   }
   return sum;
+}
+
+// Sats that Back to sats paid to the pool wallet's exit keys. They count in the
+// balance, and one sweep from the Send tab moves them to the wallet address.
+// The exit keys derive from the unlocked key; the scan is kept for a minute.
+const EXIT_TTL = 60_000;
+let exitSats = { key: null, t: 0, coins: [], feeRate: null };
+let exitStale = false;
+const exitSum = () => exitSats.coins.reduce((t, c) => t + c.value, 0);
+async function refreshExitSats() {
+  const w = T?.wallet;
+  if (!w?.priv || T.NET.name !== 'signet') { exitSats = { key: null, t: 0, coins: [], feeRate: null }; renderSweep(); return 0; }
+  const key = T.bytesToHex(w.pub);
+  if (exitStale || exitSats.key !== key || Date.now() - exitSats.t > EXIT_TTL) {
+    exitStale = false;
+    try {
+      const mod = await import(SECRET_URL);
+      const { coins } = await mod.exitCoins(T, mod.poolWalletFor(w.priv, T.NET.name), { known: mod.knownExitCount(T.NET.name, key) });
+      const feeRate = coins.length ? await mod.sweepFeeRate(T).catch(() => null) : null;
+      exitSats = { key, t: Date.now(), coins, feeRate, vb: mod.sweepVbytes(coins.length) };
+    } catch (e) { console.warn('[sats] exit keys', e); }
+  }
+  renderSweep();
+  return exitSats.key === key ? exitSum() : 0;
+}
+
+function renderSweep() {
+  const n = exitSats.coins.length;
+  show('sweep', n > 0);
+  if (!n) return;
+  $('sweep-lead').textContent = `${fmtSats(exitSum())} from the pool ${n === 1 ? 'is' : 'are'} at your pool wallet's payout ${n === 1 ? 'key' : 'keys'}. Move ${n === 1 ? 'it' : 'them'} to your wallet address to send ${n === 1 ? 'it' : 'them'} like any other sats.`;
+  $('sweep-fee').textContent = exitSats.feeRate ? `Network fee about ${fmtSats(Math.ceil(exitSats.vb * exitSats.feeRate))}.` : '';
+}
+
+async function sweep() {
+  if (!exitSats.coins.length) throw fail('Nothing to move.');
+  await ensureKey();
+  const out = $('sweep-out');
+  out.textContent = 'Moving…';
+  const mod = await import(SECRET_URL);
+  const r = await mod.sweepExitCoins(T, mod.poolWalletFor(T.wallet.priv, T.NET.name), exitSats.coins);
+  exitSats = { ...exitSats, t: Date.now(), coins: [] };
+  out.replaceChildren(`Moved ${fmtSats(r.total)} to your wallet${r.added ? ` (with ${fmtSats(r.added)} of your own sats)` : ''} · fee ${fmtSats(r.fee)} · `, txLink(r.txid));
+  track(r.txid, `Moved ${fmtSats(r.total)} from the pool`);
+  setTimeout(refreshSats, 3000);
 }
 
 // Token balances need the unlocked key (amounts are hidden on chain).
@@ -603,6 +651,9 @@ function signOut() {
   store.del(SESSION);
   satsTotal = null;
   held = [];
+  exitSats = { key: null, t: 0, coins: [], feeRate: null };
+  renderSweep();
+  $('sweep-out').textContent = '';
   renderAssetPicker();
   show('connected', false); show('send', false); show('receive', false);
   show('backup', false); show('share', false); show('fund-row', false);
@@ -1132,7 +1183,8 @@ function wire() {
   $('send-asset').onchange = () => { renderSendLabels(); show('share', false); $('send-out').textContent = ''; };
   $('copy-st').onclick = (e) => { e.preventDefault(); copy($('w-st').dataset.full); };
   $('faucet').onclick = () => busy($('faucet'), faucetSats);
-  $('btn-refresh').onclick = () => busy($('btn-refresh'), async () => { spentChecked.clear(); try { T.invalidateHoldingsCache?.(); } catch {} await refresh(); });
+  $('btn-refresh').onclick = () => busy($('btn-refresh'), async () => { spentChecked.clear(); exitStale = true; try { T.invalidateHoldingsCache?.(); } catch {} await refresh(); });
+  $('btn-sweep').onclick = () => busy([$('btn-sweep'), $('btn-send')], sweep, $('sweep-out'));
   $('btn-unlock').onclick = () => busy($('btn-unlock'), unlock);
   $('btn-fund').onclick = () => { show('fund-row', $('fund-row').classList.contains('hidden')); $('fund-amt').focus(); };
   $('btn-fund-go').onclick = () => busy($('btn-fund-go'), fund);

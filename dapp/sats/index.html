@@ -371,6 +371,12 @@ footer a:hover { color: var(--ink); }
 
       <section role="tabpanel" id="panel-send" aria-labelledby="tab-send" tabindex="0">
         <div class="hidden" id="send">
+          <div class="callout hidden" id="sweep">
+            <p id="sweep-lead"></p>
+            <p class="muted" id="sweep-fee"></p>
+            <div class="row"><button class="btn" id="btn-sweep">Move to your wallet</button></div>
+            <div class="status" id="sweep-out" aria-live="polite"></div>
+          </div>
           <div class="field"><label for="send-asset">Send</label><select id="send-asset"><option value="sats">sats</option></select></div>
           <div class="field"><label for="to" id="to-label">To: a tb1q… address or a silent address (tsp1…)</label><input type="text" id="to" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
           <div class="field"><label for="amt" id="amt-label">Amount (sats)</label><input type="text" id="amt" inputmode="decimal" autocomplete="off" placeholder="546 or more"></div>
@@ -544,6 +550,6 @@ footer a:hover { color: var(--ink); }
   </form>
 </div>
 <div id="toast-container" aria-live="polite"></div>
-<script type="module" src="/sats/app.js?cb=c7e18be0"></script>
+<script type="module" src="/sats/app.js?cb=b4d53373"></script>
 </body>
 </html>

@@ -374,6 +374,148 @@ export async function sellForSats(tacit, { poolWallet, amount, asset, anchor = n
   };
 }
 
+// ── sats at exit keys ──
+// Back to sats pays to fresh P2TR exit keys of the pool wallet. exitCoins finds the plain-sats outputs there;
+// sweepExitCoins moves them to the wallet's own address, where they are ordinary sats.
+
+const B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+function bech32mAddress(hrp, version, program) {
+  const poly = (vs) => {
+    const G = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let c = 1;
+    for (const v of vs) { const b = c >>> 25; c = ((c & 0x1ffffff) << 5) ^ v; for (let i = 0; i < 5; i++) if ((b >>> i) & 1) c ^= G[i]; }
+    return c >>> 0;
+  };
+  const words = [version];
+  let acc = 0, bits = 0;
+  for (const x of program) { acc = (acc << 8) | x; bits += 8; while (bits >= 5) { bits -= 5; words.push((acc >>> bits) & 31); } }
+  if (bits) words.push((acc << (5 - bits)) & 31);
+  const hx = [...hrp].map((ch) => ch.charCodeAt(0) >> 5).concat(0, [...hrp].map((ch) => ch.charCodeAt(0) & 31));
+  const pm = poly([...hx, ...words, 0, 0, 0, 0, 0, 0]) ^ 0x2bc830a3;
+  const cs = Array.from({ length: 6 }, (_, i) => (pm >>> (5 * (5 - i))) & 31);
+  return `${hrp}1${[...words, ...cs].map((w) => B32[w]).join('')}`;
+}
+export function p2trAddress(spkHex, network = 'signet') {
+  const spk = hexToBytes(String(spkHex).replace(/^0x/, ''));
+  if (spk.length !== 34 || spk[0] !== 0x51 || spk[1] !== 0x20) throw new Error('not a P2TR script');
+  return bech32mAddress(network === 'mainnet' ? 'bc' : 'tb', 1, spk.slice(2));
+}
+
+// Counters this browser knows were handed out, from the Secret payment progress of `pubHex`.
+export function knownExitCount(network, pubHex) {
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem(`tacit-sats-demo-v2:${network}:${pubHex}`) || '{}') || {}; } catch {}
+  const counters = (st.sells || []).map((x) => Number(x.payout?.counter)).filter(Number.isInteger);
+  return Math.max((st.sellUsed || []).length, counters.length ? Math.max(...counters) + 1 : 0);
+}
+
+// Whether txid:vout (at an exit key) is plain sats. Fails closed: dust-band outputs and anything a Tacit
+// envelope assigns a note to stay put. A pool spend's exit output is a cBTC note; its want output is sats.
+export async function isPlainSats(tacit, tx, vout) {
+  const out = tx.vout[vout];
+  if (!out) return false;
+  const env = tacit.txOutputEnvelope(tx);
+  if (env) {
+    if (env.opcode === 0x6d) {
+      let sp;
+      try { sp = pool.parseSpend(env.payload, { full: true }); } catch { return false; }
+      if (sp.exit && sp.exit.exitVout === vout) return false;
+      if (sp.want && sp.want.vout === vout) {
+        return String(sp.want.spkHash).replace(/^0x/, '') === pool.exitDestHash('0x' + out.scriptpubkey).replace(/^0x/, '');
+      }
+    } else {
+      const pd = await tacit.getParentEnvelopeData(env, vout, tx.txid).catch(() => 'unknown');
+      if (pd) return false;
+    }
+  }
+  return out.value > tacit.DUST;
+}
+
+const EXIT_GAP = 3;
+// Unspent plain-sats outputs at the wallet's exit keys: every counter below `known`, then on until EXIT_GAP keys
+// in a row have no history, so a wallet restored from its backup finds its payouts too.
+// Returns { coins: [{ txid, vout, value, confirmed, counter, spk }], held: [...] (outputs left alone) }.
+export async function exitCoins(tacit, poolWallet, { known = 0 } = {}) {
+  const coins = [], held = [];
+  const txs = new Map();
+  let quiet = 0;
+  for (let c = 0; c < known || quiet < EXIT_GAP; c++) {
+    const k = pool.deriveExitKey(poolWallet, c, 'p2tr');
+    const addr = p2trAddress(k.scriptPubKey, poolWallet.network);
+    const info = await esplora(tacit, `/address/${addr}`);
+    const s = info ? [info.chain_stats, info.mempool_stats] : [];
+    if (!s.some((x) => x?.tx_count > 0)) { quiet++; continue; }
+    quiet = 0;
+    const live = s.reduce((t, x) => t + (x?.funded_txo_count || 0) - (x?.spent_txo_count || 0), 0);
+    if (live <= 0) continue;
+    for (const u of (await esplora(tacit, `/address/${addr}/utxo`)) || []) {
+      if (!txs.has(u.txid)) txs.set(u.txid, await esplora(tacit, `/tx/${u.txid}`));
+      const tx = txs.get(u.txid);
+      const coin = { txid: u.txid, vout: u.vout, value: u.value, confirmed: !!u.status?.confirmed, counter: c, spk: String(k.scriptPubKey).replace(/^0x/, '') };
+      (tx && (await isPlainSats(tacit, tx, u.vout)) ? coins : held).push(coin);
+    }
+  }
+  return { coins, held };
+}
+
+// vbytes of a sweep: n P2TR key-path inputs and m P2WPKH inputs to one P2WPKH output.
+export const sweepVbytes = (n, m = 0) => Math.ceil(10.5 + 57.5 * n + 68 * m + 31);
+
+// Spends `coins` (from exitCoins) to `toScript` at `feeRate` sat/vB, each input signed with its exit key. The
+// output has to clear the dust band, where the wallet keeps token notes; `walletCoins` (plain sats at toScript,
+// signed by signWallet(tx, i, value)) top it up when the exit coins alone fall short.
+export function buildSweep({ poolWallet, coins, walletCoins = [], toScript, feeRate, signKeyPath, signWallet, serializeTx, txid, dust = 546 }) {
+  if (!coins.length) throw new Error('nothing to move');
+  const total = coins.reduce((t, c) => t + c.value, 0);
+  const added = walletCoins.reduce((t, c) => t + c.value, 0);
+  const fee = Math.ceil(sweepVbytes(coins.length, walletCoins.length) * feeRate);
+  const value = total + added - fee;
+  if (value <= dust) throw new Error(`${total} sats is too little to move at ${feeRate} sat/vB (fee ${fee}); add sats to your wallet or wait for more`);
+  const all = [...coins, ...walletCoins];
+  const tx = {
+    version: 2, locktime: 0,
+    inputs: all.map((c) => ({ txid: c.txid, vout: c.vout, sequence: SEQ, witness: [] })),
+    outputs: [{ value, script: toScript }],
+  };
+  const prevouts = [...coins.map((c) => ({ value: c.value, script: hexToBytes(c.spk) })), ...walletCoins.map((c) => ({ value: c.value, script: toScript }))];
+  coins.forEach((c, i) => {
+    const k = pool.deriveExitKey(poolWallet, c.counter, 'p2tr');
+    if (String(k.scriptPubKey).replace(/^0x/, '') !== c.spk) throw new Error('exit key does not match the coin');
+    tx.inputs[i].witness = signKeyPath(tx, i, prevouts, hexToBytes(String(k.outputPriv).replace(/^0x/, '')));
+  });
+  walletCoins.forEach((c, j) => { tx.inputs[coins.length + j].witness = signWallet(tx, coins.length + j, c.value); });
+  return { tx, hex: bytesToHex(serializeTx(tx)), txid: txid(tx), total, added, fee, value };
+}
+
+export async function sweepFeeRate(tacit) {
+  const r = Number(await tacit.getFeeRate(null, { fresh: true }));
+  return Math.max(1, Number.isFinite(r) ? r : 1);
+}
+
+// The sweep for `coins` at the current fee rate, topped up from the wallet's plain sats (token notes excluded
+// by the holdings scan) when the exit coins alone do not clear the dust band.
+export async function planSweep(tacit, poolWallet, coins, { feeRate = null } = {}) {
+  const rate = feeRate ?? await sweepFeeRate(tacit);
+  const deps = {
+    poolWallet, coins, toScript: tacit.p2wpkhScript(tacit.wallet.pub), feeRate: rate,
+    signKeyPath: tacit.signTaprootKeyPathInputWithKey, signWallet: tacit.signP2wpkhInput, serializeTx: tacit.serializeTx, txid: tacit.txid, dust: tacit.DUST,
+  };
+  const total = coins.reduce((t, c) => t + c.value, 0);
+  if (total - Math.ceil(sweepVbytes(coins.length) * rate) > tacit.DUST) return buildSweep(deps);
+  const own = tacit.selectSatsUtxosSafe(await tacit.getUtxos(tacit.wallet.address()), await tacit.scanHoldings()).sort((a, b) => a.value - b.value);
+  const need = tacit.DUST + 1 + Math.ceil(sweepVbytes(coins.length, 1) * rate) - total;
+  const top = own.find((u) => u.value >= need);
+  if (!top) return buildSweep(deps);
+  return buildSweep({ ...deps, walletCoins: [{ txid: top.txid, vout: top.vout, value: top.value }] });
+}
+
+// Moves every plain-sats coin at the exit keys to the wallet's own address.
+export async function sweepExitCoins(tacit, poolWallet, coins, { feeRate = null } = {}) {
+  const b = await planSweep(tacit, poolWallet, coins, { feeRate });
+  await tacit.broadcast(b.hex);
+  return { txid: b.txid, total: b.total, added: b.added, fee: b.fee, value: b.value };
+}
+
 // ── UI ──
 // One-line switch: true shows a single "Get private cBTC" step (buy and shield in one transaction) in place of
 // the separate Get cBTC and Shield steps. The zap module can replace the local buyAndShield by import.
