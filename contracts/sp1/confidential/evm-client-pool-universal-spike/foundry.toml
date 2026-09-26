@@ -1,0 +1,16 @@
+[profile.default]
+src = "sol"
+test = "test"
+out = "build/out"
+cache_path = "build/cache"
+libs = ["../../../lib"]
+remappings = ["forge-std/=../../../lib/forge-std/src/"]
+optimizer = true
+optimizer_runs = 200
+bytecode_hash = "none"
+cbor_metadata = false
+fs_permissions = [{ access = "read", path = "./build" }]
+
+[profile.viair]
+via_ir = true
+optimizer_runs = 1

@@ -1,7 +1,8 @@
 # EVM client-proved pool: a Secret Sats-shaped special-purpose pool on Ethereum
 
-Status: DESIGN. No code deployed; nothing in this document touches `ConfidentialPool.sol`, the settle
-guest or its pinned `PROGRAM_VKEY`. Companion: `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md`
+Status: IMPLEMENTED, DEV KEY ONLY (§10). Circuit, client module and contract are written and tested against
+real proofs; nothing is deployed and the production key awaits its phase-2 ceremony. Nothing in this
+document touches `ConfidentialPool.sol`, the settle guest or its pinned `PROGRAM_VKEY`. Companion: `contracts/sp1/confidential/DESIGN-btc-shielded-pool.md`
 (the Bitcoin analogue), `ops/research-btc-pool-client-proving.md` (the study this reuses), SPEC §2.8 and
 §3.10.
 
@@ -69,14 +70,35 @@ What changes is only the boundary — deposit/withdraw semantics replace shield/
 
 | | Bitcoin pool (§3.10) | This pool |
 |---|---|---|
-| Value enters | Spend a transparent secp256k1 UTXO note (`T_BTC_SHIELD`); kernel-signed, cross-curve sigma binds `C_secp` to `depC`, plus a 591 B BP+ range proof on the secp side | `Pool.deposit(asset, amount, commitment, …)`: an ERC-20/ETH `transferFrom`/`msg.value` for `amount`, and the depositor opens the *same* `depC` BabyJub Pedersen commitment the circuit already range-checks, in the same transaction. No second curve, so no sigma, no second range proof. |
-| Value leaves | `T_BTC_SPEND` publishes `exitC`; boundary carries `sigma(C_secp, C_exit_bjj)` + BP+; a maker checks the opening off-chain before broadcasting its own coins | `spend()` verifies the proof, then transfers `exitV` of `asset` to the exit recipient directly — the contract reads `exitV`/`exitR` from a plaintext opening argument (not hidden on-chain at the exit, exactly as `T_BTC_SPEND`'s exit is: the destination note's amount is publicly openable once it leaves the pool) and checks it against `exitC` with the same `PedersenBJJ` equation the circuit enforces, so the withdrawn amount is exactly what the proof committed to. |
+| Value enters | Spend a transparent secp256k1 UTXO note (`T_BTC_SHIELD`); kernel-signed, cross-curve sigma binds `C_secp` to `depC`, plus a 591 B BP+ range proof on the secp side | `Pool.deposit(amount, npk, rho, …)`: an ERC-20/ETH `transferFrom`/`msg.value` for `amount`; the deposit amount is public at the door, so the leaf `Poseidon(asset, amount, npk, rho)` is formed from public values with no commitment opening (§2a). |
+| Value leaves | `T_BTC_SPEND` publishes `exitC`; boundary carries `sigma(C_secp, C_exit_bjj)` + BP+; a maker checks the opening off-chain before broadcasting its own coins | `spend()` verifies the proof, then transfers `exitV` of `asset` to the exit recipient. `exitV` is a public input of the EVM circuit variant and the recipient is bound through `bodyHash` (§2a), so the contract does no curve arithmetic. |
 | Acceptance | Indexer replay convergence, no consensus primitive | `ecPairing`/`ecMul`/`ecAdd` under `spend()`, inside the transaction, final at inclusion |
 | Bind/relay carrier | A confirmed Bitcoin UTXO the carrier must spend (`bind`) | Ordinary Ethereum tx origination — no `bind` needed; an EVM transaction cannot be front-run into existence the way a UTXO carrier can be raced, and `spend()`'s nullifier check is atomic with proof verification in the same call |
 
 Everything downstream of "hidden amounts, fungible single-asset notes, 2-in/3-out, pay + exit with change
 in one spend, relayed fee note" carries over unchanged, because it's a property of the circuit, not of
 which chain verifies it.
+
+### 2a. EVM circuit variant (corrections to the table above as first drafted)
+
+Two facts make `spend.circom` as-is a poor fit for the contract, so the EVM pool uses a variant of it:
+
+- **BabyJubJub has no precompile.** EIP-196/197 operate on BN254's G1/G2. BabyJubJub is a different curve
+  defined over BN254's scalar field, so its points cannot be passed to `ecAdd`/`ecMul`. Opening `depC` or
+  `exitC` on-chain would mean BabyJub scalar multiplication in Solidity, far above the ≈12,300 gas this doc
+  first assumed. The variant drops the Pedersen boundary: the deposit leaf is `Poseidon(asset, amount, npk,
+  rho)` over the public deposit amount, and the exit publishes `exitV` directly with the recipient, relayer
+  and fee bound through `bodyHash`.
+- **On-chain tree insertion dominates gas.** `poseidon-solidity` benchmarks `Poseidon(2)` at 21,124 gas, so
+  appending one leaf at depth 32 costs ≈676k gas (≈422k at depth 20), more than the verifier. The variant
+  proves the insertion instead: public inputs carry the current root, the new root and the next index, and
+  the circuit shows the outputs fill empty slots on the same path. The contract stores roots and never
+  hashes. This adds a few thousand constraints and serializes updates against the current root; a spend
+  that loses the race re-proves against the new root. Membership of inputs is still proven against any
+  retained historical root.
+
+Both changes alter the circuit, which is free under a universal setup (PLONK/FFLONK on the Hermez powers of
+tau) and costs a new phase-2 ceremony under Groth16. See §3.
 
 ## 3. Solidity verifier
 
@@ -207,25 +229,22 @@ contract EvmClientPool {
 
     event LeavesInserted(uint256 firstIndex, bytes32[3] leaves, bytes[] memos);
 
-    // asset.transferFrom(msg.sender, address(this), amount); inserts one leaf whose Pedersen opening
-    // (amount, r) the depositor supplies and the contract checks against `commitment` with the same
-    // PedersenBJJ equation spend.circom enforces on depC — no proof needed for a deposit, exactly as
-    // T_BTC_SHIELD's depC is an opened commitment, not a hidden one, at the moment it's created.
-    function deposit(uint256 amount, uint256[2] calldata commitment, uint256 r, bytes calldata memo)
-        external;
+    // asset.transferFrom(msg.sender, address(this), amount); the leaf is Poseidon(asset, amount, npk,
+    // rho) over the public amount (§2a), inserted by a small insertion proof against the current root.
+    function deposit(uint256 amount, uint256 npk, uint256 rho, uint256 newRoot, bytes calldata proof,
+        bytes calldata memo) external;
 
-    // Verifies the proof against {root, bodyHash, asset, nf, outLeaf, exitC, depC}; on success, marks
-    // nullifiers spent, appends outLeaf entries, and if exitC opens (opening supplied alongside, checked
-    // on-chain the same way deposit's commitment is) pays `asset.transfer(exitRecipient, exitV)`. A
-    // relayer fee is just one more output leaf — an ordinary in-pool note the relayer's own key later
-    // spends — so gas can be sponsored the same way the Bitcoin pool's relayer is paid, but proving is
-    // always free and any wallet can call this directly with its own transaction.
+    // Verifies the proof against {membershipRoot, currentRoot, newRoot, nextIndex, bodyHash, asset, nf,
+    // exitV}; on success marks nullifiers spent, stores newRoot, and pays `asset.transfer(exitRecipient,
+    // exitV)`. bodyHash binds the recipient, relayer, fee, chain id and pool address. A relayer fee is
+    // public and paid to msg.sender, so gas can be sponsored, but proving is always free and any wallet
+    // can call this directly with its own transaction.
     function spend(
-        uint256[12] calldata publicInputs,
+        uint256[] calldata publicInputs,
         bytes calldata proof,
         bytes[] calldata memos,
         address exitRecipient,
-        uint256 exitOpeningR
+        uint256 fee
     ) external;
 }
 ```
@@ -265,55 +284,55 @@ to Ethereum.
   set, its own `CHAIN_BINDING`. A bug or a compromised verifying key in this pool cannot touch V1's pot,
   and vice versa.
 
-## 6. Entering from V1: composing the existing relay-withdraw primitive, no core change
+## 6. Moving value between V1 and this pool, no core change
 
-V1 already has a gasless relay path where a settle proof names an arbitrary payout address:
-`ConfidentialPool.sol`'s `Withdrawal{bytes32 assetId; address recipient; uint256 value;}` (line 570), paid
-out inside `settle()` by `_payoutCk(w.assetId, w.recipient, w.value)` (line 2177) — `recipient` is
-whatever address the withdrawal was proven against, not necessarily `msg.sender`, and any relayer can be
-the one who calls `settle()` and collects the batch's `pv.fees` (line 2181). This is the same "gasless
-exit, ~14 ops" mechanism already in production (`project_confidential_gasless_exit.md`), and it already has
-a live composition precedent in this exact position: `contracts/src/SettleTipForwarder.sol` calls
-`pool.settle(...)` unchanged and then, in the same transaction, forwards the payout it just received to a
-caller-named recipient — "no extra signature, no extra transaction," per that contract's own comment.
+The two pools do not share notes. V1's EVM notes are bearer notes in a Keccak tree; this pool uses the
+Bitcoin pool's BabyJub keys and a Poseidon tree. Value moves between them by leaving one pool publicly and
+entering the other publicly. `contracts/src/TacitEvmPoolRouter.sol` (client side `dapp/evm-pool-gateway.js`)
+provides every direction without touching `ConfidentialPool.sol`, its settle guest or `ConfidentialRouter`.
 
-**Entry path for any V1 confidential-pool asset (tETH, ETH, cUSD, cBTC).** A small forwarder contract,
-external to V1's core, does exactly what `SettleTipForwarder` already does, but forwards into
-`EvmClientPool.deposit(...)` instead of to a tip address:
+**What the hop hides and what it does not.** Both boundaries are public: V1 publishes each withdrawal's
+recipient and value, and this pool publishes each deposit's amount. A hop is therefore linkable end to end,
+by address once the box is completed and by amount in any case. What routing through V1 buys is that the
+funds' origin is any V1 note holder rather than a public wallet; privacy after the hop comes from this pool's
+own anonymity set. An earlier draft of this section claimed the entry was indistinguishable from V1's other
+relayed withdrawals; that was wrong.
 
-1. The user (or their relayer) submits a settle batch whose `Withdrawal.recipient` is the forwarder's
-   address, for the asset and amount they intend to move into the special pool.
-2. `ConfidentialPool.settle()` runs completely unchanged — nothing added, nothing new checked, the same
-   call every other relayed withdrawal makes.
-3. In the *same transaction*, the forwarder — having just received the withdrawn tokens — calls
-   `EvmClientPool.deposit(amount, commitment, r, memo)`, opening the BabyJub Pedersen commitment for the
-   note the user wants inside the new pool.
+**V1 → this pool: deposit boxes.** A deposit proof names the pool root it inserts into, so it goes stale as
+soon as any other transaction lands. A V1 settle is batched and SP1-proved and lands minutes after the user
+asks for it, so it cannot carry a deposit proof, and a forwarder that deposited inside `settle` would revert
+the whole batch whenever it raced. Instead:
 
-One relay/SP1 fee is paid, at the same cost any V1 withdrawal costs today — nothing new is priced in.
-This is buildable without touching V1 for the identical reason the Bitcoin buy-and-shield pattern
-(SPEC §3.10) is buildable without touching Bitcoin's protocol rules: both compose an *existing*, unmodified
-primitive (a pre-authorized sale; a relayed withdrawal-to-arbitrary-recipient) with a *new* contract call in
-the same transaction, rather than adding a new opcode or a new guest check. No new opcode. Nothing added to
-the settle guest. `ConfidentialPool.sol`'s bytecode does not change.
+1. The user fixes a `DepositIntent`: amount, both output leaves, both memo hashes, a refund address and a
+   deadline. `depositBoxOf(intent)` is a CREATE2 clone address that holds nothing but what is paid to it.
+2. The V1 withdrawal names the box as `recipient`. `settle` runs unchanged; paying an address with no code
+   cannot revert.
+3. Any keeper calls `completeDeposit(intent, tx)` with a proof against the pool's root at that moment. The
+   leaves and memos must match the intent, so the keeper can only deliver the notes the owner chose. The
+   keeper collects the pool's relayer fee, which the leaves fix at amount − Σ output values, and needs only the
+   outputs' (v, npk, rho), which reveal nothing the leaf does not already commit to.
+4. After the deadline, `reclaimDeposit` sends whatever the box holds to the refund address. Completion stays
+   open until then and after, while the box holds the amount.
 
-**Why this matters: it inherits V1's anonymity set for free.** A brand-new client-proved pool has a
-cold-start problem — a handful of early depositors give a thin anonymity set, and the deposit's very
-existence (a call into a pool nobody's heard of yet) may itself be a fingerprint. Composed this way, the
-deposit transaction is, on its face, *indistinguishable from any other V1 relayed withdrawal* — the same
-`settle()` call, the same event shape, the same relayer traffic V1 already has at volume. The special pool's
-entry point rides V1's large, mature set of possible withdrawal recipients instead of starting from zero.
+The box works for any source, not only V1: an exchange withdrawal, a bridge, a plain transfer. A V1 exit
+recipe (`ConfidentialRouter.exitAndExecute`) can also swap first and name the box as its `finalRecipient`,
+so a V1 note of one asset becomes a note here in another.
 
-**This path is optional, not required.** An asset that never touched V1 — raw ETH, or any ERC-20, held
-directly in a wallet — deposits into `EvmClientPool` directly via `deposit()`, with no V1 detour, no relay
-fee, and no forwarder in the loop. The V1-entry path exists specifically for users who already hold value
-in V1 and want to bring it into the special pool while inheriting V1's anon set; someone with no reason to
-route through V1 loses nothing by skipping it.
+**This pool → V1: wrap boxes and `withdrawToV1`.** `WrapIntent` fixes a V1 asset id, amount, keeper tip,
+V1 note commitment, refund and deadline. `completeWrap` calls `wrap(assetId, amount, commit)` on V1 from the
+box's funds. `withdrawToV1(tx, intent)` does the withdrawal and the wrap in one transaction: the proof binds the
+box as recipient, so the destination cannot be changed. The V1 note's leaf is inserted by V1's next settle,
+as for any wrap.
 
-**The asymmetry that makes this worth doing.** Entry costs one relay/SP1 fee, paid once, only if arriving
-via V1. Every transfer *inside* the special pool afterward is a client-proved `spend()` call — free to
-prove (§1), and the only cost is the on-chain verify gas of §3. The expensive, ceremony-and-zkVM-shaped
-proving cost is paid exactly once, at the door; everything after that is the cheap, user-proved relation
-this whole design is built around.
+**This pool → anything else.** Nothing new is needed. A withdrawal whose recipient is
+`ConfidentialRouter.escrowAddressFor(recipe)` is run by that router's permissionless `activateExit`, so every
+recipe V1 already supports (aggregator swaps, sweeps to any address) applies to this pool's withdrawals, as long
+as the pool's token is the underlying of a V1-registered asset.
+
+**Into this pool from a wallet.** `depositWithPermit` / `depositWithPermit2` replace the separate approve
+transaction. `zapETHToDeposit` and `zapTokenToDepositWithPermit2` swap through the pinned aggregator and
+deposit exactly the proven amount, refunding unspent input and surplus output. A native-ETH pool takes ETH
+directly through `transact`.
 
 ## 7. Cost, gas and comparison to relayer+SP1
 
@@ -323,7 +342,7 @@ this whole design is built around.
 | Prover sees | Nobody but the user | Nobody but the user | The hosted prover sees every amount and leaf-to-spend link (the G8 privacy hole the research note flags) |
 | Proof bytes | 2,080 B | 128–256 B | 256 B (SP1 Groth16-wrapped) |
 | On-chain verify | **504,095 gas — measured** (`contracts/sp1/confidential/evm-client-pool-spike/`, 2026-09-26: real proof, real pinned vk, real `snark-verifier` codegen, `revm`-executed), and the generated contract does not fit EIP-170 in any codegen path tried — a second, open blocker | ~255k gas (`45,000 + 34,000×4 + 12×6,150`, directly from the EIP-197 schedule and the circuit's 12 public inputs) | `ISP1Verifier.verifyProof` — SP1's own Groth16-wrapped verify, same order as 3b's pairing cost, plus the settle batch's own per-op checks |
-| Deposit cost | One `transferFrom`/`msg.value` + one `PedersenBJJ` check on-chain (2 `ecMul`+`ecAdd` pairs ≈ 12,300 gas) + one leaf append — materially cheaper than a proof-gated deposit | same | An SP1 batch settle amortizes its fixed proving cost over up to 256 ops, but each op still pays its share of that fixed cost even for a single wrap |
+| Deposit cost | One `transferFrom`/`msg.value` + the leaf insertion. With on-chain Poseidon insertion that is ≈676k gas at depth 32; with the §2a in-circuit insertion the deposit carries a small insertion proof and the contract only stores the new root | same | An SP1 batch settle amortizes its fixed proving cost over up to 256 ops, but each op still pays its share of that fixed cost even for a single wrap |
 | Who pays for proving | Nobody — the device proves for free | Nobody | A PROVE treasury, `PROVER_DAILY_BUDGET`, request-priced (`base fee + PGU × bid`), 1–2 min latency |
 
 **Comparison to relayer+SP1.** The existing path amortizes one expensive zkVM proof over a whole batch, but
@@ -588,3 +607,63 @@ launch verifier.** Track §9.2's SP1-aggregation path as real, concrete follow-u
 the Bitcoin pool's `btc-pool-agg` pattern is proven end-to-end, since it would let a relayer optionally
 amortize verify cost across users without touching `EvmClientPool.sol`'s core guarantee that a lone user's
 own proof is always sufficient on its own.
+
+## 10. Implementation (2026-09-26)
+
+§4's sketch (separate `deposit()`/`spend()`, BabyJub Pedersen openings) is superseded by what was built. The
+§2a variant collapsed deposit, transfer and withdraw into one relation, so the contract has one entry point.
+
+| Piece | File |
+|---|---|
+| Circuit | `dapp/circuits/evm-pool/transact.circom` (+ `build.sh`, `build-dev-zkey.sh`) |
+| Client model / witness | `dapp/evm-pool-zk.js`, prover wrapper `dapp/evm-pool-zk-prover.js` |
+| Contract | `contracts/src/TacitEvmPool.sol` |
+| Router, boxes, zaps (§6) | `contracts/src/TacitEvmPoolRouter.sol`, client `dapp/evm-pool-gateway.js` |
+| Tests | `tests/evm-pool-zk.test.mjs` (21 checks), `tests/evm-pool-gateway.test.mjs` (5), `contracts/test/TacitEvmPool.t.sol` (21), `contracts/test/TacitEvmPoolRouter.t.sol` (22) |
+| Real-proof fixture | `tests/gen-evm-pool-fixture.mjs` → `contracts/test/fixtures/evm_pool_transact.json` |
+
+**Relation.** `EvmPoolTransact(depth 32, 2 in, 2 out, 120-bit values)`, 44,410 constraints, 11 public
+inputs: `root, oldRoot, newRoot, startIndex, publicAmount, extDataHash, asset, nf[2], outLeaf[2]`. Keys,
+notes and nullifiers are the Bitcoin pool's unchanged. `Σ inV + publicAmount = Σ outV` with
+`publicAmount = extAmount − fee mod p`. Spend authority is EdDSA-Poseidon over
+`Poseidon(asset, nf, outLeaf, publicAmount, extDataHash)`; the message omits the tree position, so a proof
+that loses the race for `oldRoot` is re-proven without a new signature. The output pair is inserted
+in-circuit: one sibling path proves an empty pair under `oldRoot` and the new pair under `newRoot`.
+
+**Contract.** `transact(proof, publicInputs, recipient, extAmount, relayer, fee, memo0, memo1)`. It
+recomputes `asset` (bound to chain id, pool address and token), `extDataHash` (chain id, pool, recipient,
+signed `extAmount`, relayer, fee, memo hashes) and `publicAmount` itself, requires `oldRoot == root` and
+`startIndex == nextIndex`, accepts any historical root for membership, rejects reused or duplicated
+nullifiers, then verifies, stores the new root and settles: pull `extAmount > 0` from the caller, pay
+`-extAmount` to `recipient`, pay `fee` to `relayer`. Native ETH or one ERC-20 per pool; fee-on-transfer
+tokens are refused. No owner, no pause, no admin.
+
+**Measured (DEV key, real proofs, Foundry):**
+
+| | Gas |
+|---|---|
+| Deposit (ERC-20 pull, first writes) | 360,954 |
+| Private transfer (+ relayer fee) | 337,115 |
+| Withdraw (+ relayer fee) | 317,793 |
+
+Runtime size: pool 2,414 B, verifier 2,740 B. Proving: 4.8–10.9 s `fullProve` in node on a laptop
+(snarkjs, multi-threaded), proving key 28.5 MB. For scale, a production shielded pool that does its tree
+insertion with on-chain Poseidon measured 1.04–1.47M gas per transfer on mainnet the same day.
+
+A malformed proof whose points are off-curve makes the verifier's pairing call consume the gas it was given
+(≈1B in a Foundry test). Only the submitter pays; pool state and other users are unaffected.
+
+**Ceremony-free alternatives, measured and closed.** On the same ~30k-constraint Bitcoin pool circuit,
+snarkjs PLONK proved in 534.6 s at 4.25 GB peak memory (2^19 gates after its constraint expansion), and
+FFLONK's setup alone took 646 s, peaked at 11.7 GB and wrote a 2.13 GB proving key. Neither can run on a
+user's device. Reusing an existing audited circuit's public keys was also examined: the one with the right
+semantics carries no license grant, the permissively-licensed ones either had no public phase 2 or cannot
+transfer between owners, and a promising multi-asset transfer circuit has run its ceremony but not yet
+published source or final keys. Revisit that last one if it ships under a permissive license.
+
+**Before mainnet.**
+1. Phase-2 ceremony for `transact.circom` on the existing coordinator; replace `TransactVerifierDev`.
+2. Independent review of the circuit and contract.
+3. Browser/wasm and phone proving benchmarks.
+4. Wallet integration: note scanning from `Transact` events and memos, a keeper that watches deposit and
+   wrap boxes, and dapp flows for §6's router.

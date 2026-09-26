@@ -1,0 +1,28 @@
+[package]
+name = "evm-client-pool-gwc-spike"
+version = "0.1.0"
+edition = "2021"
+
+# Throwaway spike only: measures real on-chain gas for a snark-verifier-generated Solidity verifier of a
+# real btc-pool-halo2 (k=13, commit e3be20e1) proof using the GWC opening scheme instead of SHPLONK,
+# against the same pinned vk.bin/params-k13.bin. Companion to ../evm-client-pool-spike (SHPLONK). Not
+# wired into any product path.
+[workspace]
+
+[[bin]]
+name = "spike"
+path = "src/main.rs"
+
+[dependencies]
+btc-pool-halo2 = { path = "../btc-pool-halo2" }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0", default-features = false, features = ["batch"] }
+snark-verifier = { git = "https://github.com/privacy-scaling-explorations/snark-verifier", default-features = false, features = ["loader_evm", "system_halo2"] }
+snark-verifier-sdk = { git = "https://github.com/privacy-scaling-explorations/snark-verifier", default-features = false, features = ["loader_evm", "loader_halo2", "display"] }
+ff = "0.13"
+revm = { version = "3.5.0", default-features = false }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde_json = "1"
+hex = "0.4"
+
+[profile.release]
+opt-level = 3
