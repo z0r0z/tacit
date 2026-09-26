@@ -120,7 +120,7 @@ test('the settle service sweeps only its earner and never the sink as one', () =
 test('replenish in the settle loop runs only in idle time, off by default', () => {
   // Same wallet, same nonce as a settle — concurrency here would be a nonce race, so it is awaited only
   // where the loop would otherwise sleep.
-  ok(/if \(!worked\) \{ await maybeReplenish\(\); await sleep/.test(settle), 'replenish must run only when the loop is idle');
+  ok(/if \(!worked\) \{[^}]*await maybeReplenish\(\); await sleep/.test(settle), 'replenish must run only when the loop is idle');
   ok(/opt\('REPLENISH_IN_SETTLE', '0'\) === '1'/.test(config), 'REPLENISH_IN_SETTLE must default off');
   ok(/replenish failed \(settling continues\)/.test(settle), 'a replenish failure must not take the loop down');
 });
@@ -368,9 +368,10 @@ test('a gate that cannot read gas or ETH price fails OPEN, not closed', async ()
 const submitSrc = worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob'));
 function loadSubmit({ cap = '3', freeCap = '3', submitJob, kvStore = new Map(), feeOf = () => 0n }) {
   const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
-  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx',
+  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx', 'withKvKeyLock',
     submitSrc + '; return handleConfidentialSubmit;');
-  const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, (type, op) => feeOf(type, op), {});
+  const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, (type, op) => feeOf(type, op), {},
+    (_key, fn) => fn());
   const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap, FREE_RELAY_DAILY_CAP: freeCap }, {});
   return { call, kvStore };
 }
@@ -567,13 +568,17 @@ test('quote: cUSD and cBTC publish a live gas-aware floor (the gate enforces one
   }
 });
 
-test('quote: the published floor is the SAME number the gate enforces', async () => {
-  // A quote that says 100 while the gate wants 120 sends every integrator who follows it to a refusal.
-  const q = await loadQuote()('cBTC');
-  const floor = BigInt(q.gasAwareFloorUnits);
+test('quote: the published floor is the gate\'s floor, raised only by the relay\'s own minimum', async () => {
+  // A quote that says 100 while the gate wants 120 sends every integrator who follows it to a refusal. With no
+  // minimum the two are the same number; the published floor also carries MIN_FLOOR_USD, which the settle
+  // relay enforces, so by default it can only sit above the gate's, never below.
+  const q0 = await loadQuote({ env: { MIN_FLOOR_USD: '0' } })('cBTC');
+  const floor0 = BigInt(q0.gasAwareFloorUnits);
   const { gate } = loadGate({ btcUsd: 80000 });
-  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor + 1n) }) === true, 'a fee just above the published floor must pass the gate');
-  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor / 2n) }) === false, 'a fee at half the published floor must be refused by the gate');
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor0 + 1n) }) === true, 'a fee just above the published floor must pass the gate');
+  ok(await gate({ type: 'transfer', op: transfer(cBtc, floor0 / 2n) }) === false, 'a fee at half the published floor must be refused by the gate');
+  const q = await loadQuote()('cBTC');
+  ok(BigInt(q.gasAwareFloorUnits) >= floor0, 'the default published floor must never sit below what the gate enforces');
 });
 
 test('quote: cTAC NEVER publishes a live floor, even when the reference is configured (it would reveal the private price)', async () => {

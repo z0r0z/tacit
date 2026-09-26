@@ -1,6 +1,6 @@
 // A stub Ethereum JSON-RPC server, just faithful enough to drive worker-relay/src/replenish.js end to end.
 //
-// It answers the reads replenish makes (balances, ERC20 balanceOf/allowance/decimals, zQuoter.buildSwapAuto)
+// It answers the reads replenish makes (balances, ERC20 balanceOf/allowance/decimals, zQuoter.buildBestSwap)
 // from a fixed scenario, accepts signed transactions, and RECORDS every one: who signed it, where it went,
 // what it carried. The test then asserts on what the code actually sent rather than on what its source
 // says it does — which is the only kind of check that catches a swap delivered to the wrong recipient.
@@ -49,7 +49,9 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
               const { to, data } = params[0];
               const sel = data.slice(0, 10);
               if (lc(to) === lc(addr.zQuoter)) {
-                const { args } = decodeFunctionData({ abi: zQuoterAbi, data });
+                const { functionName, args } = decodeFunctionData({ abi: zQuoterAbi, data });
+                // Only the direct route quotes; the via-ETH hub route declines, so replenish keeps the direct one.
+                if (functionName !== 'buildBestSwap') return ok(id, '0x');
                 const [recipient, exactOut, tokenIn, tokenOut, amount] = args;
                 const marker = '0xa11ce000' + (exactOut ? '01' : '00') + lc(recipient).slice(2).padStart(64, '0');
                 // Realistic prices, so the code's own sanity checks are exercised rather than bypassed:
@@ -70,7 +72,7 @@ export async function startStub({ balances, tokenBalances, zQuoterAbi, addr, non
                 const amountIn = exactOut ? BigInt(Math.ceil(Number(amount) * outU / inU * (badGasCostFactor || 1))) + 1n : amount;
                 const amountOut = exactOut ? amount : BigInt(Math.floor(Number(amount) * inU / outU * skew));
                 const out = encodeFunctionResult({
-                  abi: zQuoterAbi, functionName: 'buildSwapAuto',
+                  abi: zQuoterAbi, functionName: 'buildBestSwap',
                   result: [{ source: 1, feeBps: 30n, amountIn, amountOut }, marker, 0n, tokenIn === '0x0000000000000000000000000000000000000000' ? amount : 0n],
                 });
                 return ok(id, out);

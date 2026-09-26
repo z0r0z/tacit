@@ -24,6 +24,8 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const keccak256 = (b) => keccak_256(b);
 const ct = makeConfidentialTransfer({ keccak256 });
 const pool = makeConfidentialPool({ secp, keccak256, sha256 });
+// Owned input notes: an owner commits to a nullifier key, which each op's verifier needs to derive the spend.
+const TEST_NK = '0x' + '07'.repeat(32);
 const route = makeConfidentialRoute({ keccak256, pool , kernelSign: ct.kernelSign, rangeProve: ct.rangeProve });
 const swap = makeConfidentialSwap({ keccak256, pool });
 const lp = makeConfidentialLp({ keccak256, pool , kernelSign: ct.kernelSign, rangeProve: ct.rangeProve });
@@ -68,11 +70,13 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 // ── 4. route with a relay fee: only amountIn − fee routes; the input opening binds gross amountIn ──
 {
   const A = '0x' + 'aa'.repeat(32), B = '0x' + 'bb'.repeat(32);
+  const ROUTE_NK = '0x' + '07'.repeat(32);
   const amountIn = 10_000, fee = 30n; // routes 9970
   const hops = [{ assetNext: B, feeBps: 30, reserveAPre: 1_000_000, reserveBPre: 1_000_000 }];
   const op = route.buildRoute({
     asset0: A, chainBinding: '0x' + '11'.repeat(32),
-    inNote: { owner: '0x' + '00'.repeat(31) + '01', leafIndex: 0, path: pool.zeros },
+    // An owned input note: its owner commits to a nullifier key, which verifyRoute needs to derive the spend.
+    inNote: { owner: pool.nkToOwner(ROUTE_NK), secret: ROUTE_NK, leafIndex: 0, path: pool.zeros },
     amountIn, rIn: randomScalar(), hops, minOut: 9000, outOwner: '0x' + '00'.repeat(31) + '02', rOut: randomScalar(), fee,
   });
   assert.strictEqual(op.fee, fee, 'op carries the fee');
@@ -108,7 +112,7 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const intent = swap.buildIntent({
     direction: 'A->B', amountIn, priceNum: price.priceNum, priceDen: price.priceDen, minOut: 0,
     rInSecp: randomScalar(), rOutSecp: randomScalar(),
-    inNote: { owner: '0x' + '00'.repeat(31) + '01', leafIndex: 0, path: pool.zeros },
+    inNote: { owner: pool.nkToOwner(TEST_NK), nk: TEST_NK, secret: TEST_NK, leafIndex: 0, path: pool.zeros },
     outOwner: '0x' + '00'.repeat(31) + '02', fee,
   });
   assert.strictEqual(intent.swapIn, amountIn - fee, 'only amountIn − fee swaps');
@@ -133,8 +137,8 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const reserveAPre = 1000n, reserveBPre = 2000n, sharesPre = 1000n, dA = 100n, dB = 200n, fee = 5n;
   const op = lp.buildAdd({
     assetA, assetB, chainBinding: '0x' + '11'.repeat(32), feeBps: 30, reserveAPre, reserveBPre, sharesPre,
-    aNote: { owner: '0x' + '00'.repeat(31) + '01', leafIndex: 0, path: pool.zeros },
-    bNote: { owner: '0x' + '00'.repeat(31) + '01', leafIndex: 1, path: pool.zeros },
+    aNote: { owner: pool.nkToOwner(TEST_NK), nk: TEST_NK, secret: TEST_NK, leafIndex: 0, path: pool.zeros },
+    bNote: { owner: pool.nkToOwner(TEST_NK), nk: TEST_NK, secret: TEST_NK, leafIndex: 1, path: pool.zeros },
     dA, dB, rA: randomScalar(), rB: randomScalar(), shareOwner: '0x' + '00'.repeat(31) + '02', rShares: randomScalar(), fee,
   });
   const tree = new pool.Tree();
@@ -160,7 +164,7 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
   const reserveAPre = 10000n, reserveBPre = 20000n, sharesPre = 10000n, dShares = 100n, fee = 3n; // dA = 100
   const op = lp.buildRemove({
     assetA, assetB, chainBinding: '0x' + '11'.repeat(32), feeBps: 30, reserveAPre, reserveBPre, sharesPre,
-    shareNote: { owner: '0x' + '00'.repeat(31) + '01', leafIndex: 0, path: pool.zeros },
+    shareNote: { owner: pool.nkToOwner(TEST_NK), nk: TEST_NK, secret: TEST_NK, leafIndex: 0, path: pool.zeros },
     dShares, rShares: randomScalar(), aOwner: '0x' + '00'.repeat(31) + '02', rA: randomScalar(), bOwner: '0x' + '00'.repeat(31) + '02', rB: randomScalar(), fee,
   });
   const LP_ASSET = lp.lpShareId(lp.poolId(assetA, assetB, 30));

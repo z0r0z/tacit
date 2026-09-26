@@ -27,7 +27,7 @@ const RELAY_PK = '0x' + '11'.repeat(32), SETTLE_PK = '0x' + '22'.repeat(32);
 const relay = privateKeyToAccount(RELAY_PK).address.toLowerCase();
 const settle = privateKeyToAccount(SETTLE_PK).address.toLowerCase();
 const A = {
-  zQuoter: '0x000000a7dfdd39f4d74c7b201501ead119f8b86c', zRouter: '0x000000000000fb114709235f1ccbffb925f600e4',
+  zQuoter: '0x000000bd2db80567c23e353ca95a251c573cbf9b', zRouter: '0x000000000000fb114709235f1ccbffb925f600e4',
   prove: '0x6bef15d938d4e72056ac92ea4bdd0d76b1c4ad29', vApp: '0x5ad5bc4b18f7c173dce17a57682cb0dc8788951f',
   usdc: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', usdt: '0xdac17f958d2ee523a2206206994597c13d831ec7', wsteth: '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0', eth: '0x0000000000000000000000000000000000000000',
 };
