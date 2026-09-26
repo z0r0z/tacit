@@ -264,7 +264,14 @@ async function scanZRouterCycle(store) {
   const cursorBlock = store.loadZrouterCursor();
   const latest = await publicClient.getBlockNumber();
   const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
-  const from = cursorBlock != null ? cursorBlock + 1n : confirmedTip + 1n;
+  // First-ever run: establish "now" as the starting line and stop — there is nothing before it to scan by
+  // design (no backfill). Without this, a from = confirmedTip + 1 would keep being 1 block ahead of the
+  // tip forever, since the cursor would never actually get saved to seed the next cycle.
+  if (cursorBlock == null) {
+    store.saveZrouterCursor(confirmedTip);
+    return;
+  }
+  const from = cursorBlock + 1n;
   if (confirmedTip < from) return;
 
   const candidates = [];
