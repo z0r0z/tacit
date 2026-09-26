@@ -153,9 +153,9 @@ keeps small lots listed as pre-authorized sales at 1,000 signet sats each, so ge
 an atomic swap, and it also drips signet sats for fees. Pool spends are proved in the browser.
 
 Seen on signet: a
-[buy-and-shield](https://mempool.space/signet/tx/9f3b6498622614ca101d6f2f7a51aa961ed13952a0b72ef9c699623da8c2c0c1),
-a [relayed private payment](https://mempool.space/signet/tx/9ea3d9d7c4b01bb0cae585df666ed963ed05c74409fad8f702cb622819ca03d3)
-and an [exit to sats](https://mempool.space/signet/tx/a5f32822bd9927305585b40efc7a39cec70e713354ce026b652e4ab2ecf0ea41),
+[buy-and-shield](https://mempool.space/signet/tx/300c35da02c324d777cbc46ee515c7b29f96b0b403c82fe7f171600317dab40a),
+a [relayed private payment](https://mempool.space/signet/tx/822485be7674e55c785aeddaab0b65c5fb2f64f11b49e6d37da35c4e8ed5c73a)
+and an [exit to sats](https://mempool.space/signet/tx/88e213ce5c8db508e73e3415c6517ed76b8e49acccd10b7523e7f5ebc391586c),
 each proved on the payer's device, and a
 [silent payment](https://mempool.space/signet/tx/a5c4b2a02883550cfe06fec646fe6569a0e92823c972700a729d080c7187c899)
 found through the tweak index with no txid shared, and an
