@@ -446,9 +446,6 @@ export const CFG = {
   baseWethAddr: opt('BASE_WETH_ADDR', '0x4200000000000000000000000000000000000006'),
   robinhoodRpcUrl: opt('ROBINHOOD_RPC_URL', 'https://rpc.mainnet.chain.robinhood.com'),
   robinhoodWethAddr: opt('ROBINHOOD_WETH_ADDR', '0x0Bd7D308F8E1639FaB988DF18A8011f41EAcaD73'),
-  // Off by default — see points-indexer.js's ZROUTER_CHAINS comment for why (a real OOM incident: Robinhood
-  // Chain's ~10 blocks/sec outran the per-block full-body fetch Signal 1 needs).
-  zrouterRobinhoodEnabled: opt('ZROUTER_ROBINHOOD_ENABLED', '0') === '1',
 
   // ── PM prediction-market activity (src/points-indexer.js's scanPmCycle) ──
   // A fifth way to earn points: creating or betting in an ETH-denominated PM market (asset == address(0) at

@@ -502,15 +502,17 @@ const WETH_DEPOSIT_EVENT = {
 // zRouter is deployed at the same address on all three of these chains (confirmed with zfi) — only the RPC
 // and canonical WETH differ, so scanZRouterCycle below is called once per entry here.
 //
-// Robinhood Chain is disabled by default (ZROUTER_ROBINHOOD_ENABLED=0): it produces ~10 blocks/sec, and its
-// own cursor fell ~31,000 blocks behind (Signal 1 needs a full block body per block, unlike mainnet/Base's
-// much lower throughput), which OOM-crashed this whole service in a loop before the block-scan chunk cap
-// below existed. Re-enable once a catch-up strategy is verified safe against this chain's real throughput —
-// mainnet and Base are unaffected either way.
+// Only mainnet runs Signal 1 (the full-block-body scan for direct top-level value transfers). A real OOM
+// incident traced to it: Robinhood Chain does ~10 blocks/sec, its cursor fell ~31,000 blocks behind, and
+// fetching a full body per block for that backlog crashed the whole service in a loop. getLogs (Signal 2)
+// costs the same regardless of chain throughput — only the match count matters, not the block span — so L2s
+// run Signal-2-only: cheaper, and scales with whatever block time these chains turn out to have, at the cost
+// of missing native-ETH-route swaps there (V4/zAMM/Lido — see scanZRouterCycle's own comment). Consistent
+// with this program's existing "good enough proxy" stance elsewhere, and mainnet's own detection is unchanged.
 const ZROUTER_CHAINS = [
-  { chainId: 1, client: publicClient, wethAddr: WETH_ADDR },
-  { chainId: 8453, client: clientForChain(8453, CFG.baseRpcUrl), wethAddr: CFG.baseWethAddr },
-  ...(CFG.zrouterRobinhoodEnabled ? [{ chainId: 4663, client: clientForChain(4663, CFG.robinhoodRpcUrl), wethAddr: CFG.robinhoodWethAddr }] : []),
+  { chainId: 1, client: publicClient, wethAddr: WETH_ADDR, signal1: true },
+  { chainId: 8453, client: clientForChain(8453, CFG.baseRpcUrl), wethAddr: CFG.baseWethAddr, signal1: false },
+  { chainId: 4663, client: clientForChain(4663, CFG.robinhoodRpcUrl), wethAddr: CFG.robinhoodWethAddr, signal1: false },
 ];
 
 // A fourth way to earn points: swapping ETH through zSwap/zRouter — treated as "ETH reaching zRouter" as a
@@ -538,7 +540,7 @@ const ZROUTER_CHAINS = [
 // mainnet chain this evaluates the boost as of the current confirmed MAINNET tip (already clamped to what
 // both replays cover, so it can never throw) rather than the swap's own chain-local block: with a multi-hour
 // trailing window, the skew between "at the swap" and "now" is immaterial.
-async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
+async function scanZRouterCycle(store, { chainId, client, wethAddr, signal1 = true }) {
   const cursorBlock = store.loadZrouterCursor(chainId);
   const latest = await client.getBlockNumber();
   let confirmedTip = latest - BigInt(CFG.pointsConfirmations);
@@ -552,11 +554,15 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
   }
   const from = cursorBlock + 1n;
   if (confirmedTip < from) return;
-  // Cap how much of [from, confirmedTip] this single call processes — Signal 1 below fetches a full block
-  // body per block, and a fast chain (or a chain recovering from a stall) can hand this an arbitrarily large
-  // backlog. Processing it in bounded chunks, saving the cursor after each, means an interrupted catch-up
-  // (crash, redeploy) resumes from where it left off instead of restarting the whole backlog from scratch.
-  const chunkTip = from + BigInt(CFG.zrouterBlockScanChunk) - 1n;
+  // Cap how much of [from, confirmedTip] this single call processes. Signal 1's chunk is small: it fetches a
+  // full block body per block, and a fast chain (or one recovering from a stall) can hand this an arbitrarily
+  // large backlog otherwise (a real OOM incident — Robinhood Chain's ~10 blocks/sec). getLogs-only chains use
+  // the same larger chunk as every other Blockscout-free scan in this file: a log-filtered query costs the
+  // same regardless of how many blocks it spans, only how many matches it returns, so there's no equivalent
+  // risk to cap tightly for. Either way, saving the cursor after each chunk means an interrupted catch-up
+  // resumes from where it left off instead of restarting the backlog from scratch.
+  const chunkSize = signal1 ? CFG.zrouterBlockScanChunk : CFG.pointsScanChunk;
+  const chunkTip = from + BigInt(chunkSize) - 1n;
   if (chunkTip < confirmedTip) confirmedTip = chunkTip;
 
   const blockCache = new Map();
@@ -572,16 +578,20 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
   };
 
   // Signal 1: direct top-level calls. Block-by-block, not eth_getLogs — a plain ETH transfer emits no
-  // event, so there is nothing to filter logs on for this signal.
+  // event, so there is nothing to filter logs on for this signal. Skipped on chains where fetching a full
+  // block body per block doesn't scale (see the chunk-size comment above) — Signal 2 alone still catches
+  // every wrap-based swap there, just not the native-ETH-route ones this signal exists for.
   const byTxHash = new Map(); // tx hash -> { blockNumber, blockTime, amountWei, depositor }
-  for (let b = from; b <= confirmedTip; b++) {
-    const block = await getBlock(b);
-    for (const tx of block.transactions) {
-      if (tx.to && tx.to.toLowerCase() === ADDR.zRouter.toLowerCase() && tx.value > 0n) {
-        byTxHash.set(tx.hash, {
-          blockNumber: tx.blockNumber, blockTime: Number(block.timestamp),
-          amountWei: tx.value, depositor: tx.from.toLowerCase(),
-        });
+  if (signal1) {
+    for (let b = from; b <= confirmedTip; b++) {
+      const block = await getBlock(b);
+      for (const tx of block.transactions) {
+        if (tx.to && tx.to.toLowerCase() === ADDR.zRouter.toLowerCase() && tx.value > 0n) {
+          byTxHash.set(tx.hash, {
+            blockNumber: tx.blockNumber, blockTime: Number(block.timestamp),
+            amountWei: tx.value, depositor: tx.from.toLowerCase(),
+          });
+        }
       }
     }
   }
