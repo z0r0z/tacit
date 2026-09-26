@@ -319,5 +319,43 @@ await test('drain: with consolidated keys there is nothing to move', async () =>
   ok(/already the relay wallet/.test(log), 'the no-op must say so');
 });
 
+const TAC = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
+const RESERVE = '0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2';
+const tacTransfers = (sent) => sent.filter((t) => t.to === TAC && t.data.startsWith('0xa9059cbb'))
+  .map((t) => ({ signer: t.from, to: '0x' + t.data.slice(34, 74), amount: BigInt('0x' + t.data.slice(74, 138)) }));
+
+await test('TAC reserve: collected TAC moves whole to the reserve and is never swapped', async () => {
+  const held = 526_926_800_000_000_000_000n;
+  const { sent } = await run({
+    feeAssets: A.usdc, extraEnv: { TAC_RESERVE_ADDR: RESERVE },
+    balances: { [settle]: ETH(0.02), [relay]: ETH(0.02) },
+    tokenBalances: { [TAC]: { [settle]: held } },
+  });
+  const t = tacTransfers(sent);
+  ok(t.length === 1 && t[0].signer === settle && t[0].to === RESERVE && t[0].amount === held, `unexpected TAC transfers: ${show(t)}`);
+  ok(!sent.some((x) => x.to === TAC && !x.data.startsWith('0xa9059cbb')), 'TAC must only ever be transferred, never approved for a swap');
+});
+
+await test('TAC reserve: below the threshold, or with no reserve set, TAC stays put', async () => {
+  const below = await run({
+    feeAssets: A.usdc, extraEnv: { TAC_RESERVE_ADDR: RESERVE },
+    balances: { [settle]: ETH(0.02), [relay]: ETH(0.02) }, tokenBalances: { [TAC]: { [settle]: 99n * 10n ** 18n } },
+  });
+  ok(tacTransfers(below.sent).length === 0, 'swept below TAC_RESERVE_MIN_WEI');
+  const unset = await run({
+    feeAssets: A.usdc,
+    balances: { [settle]: ETH(0.02), [relay]: ETH(0.02) }, tokenBalances: { [TAC]: { [settle]: 10n ** 24n } },
+  });
+  ok(tacTransfers(unset.sent).length === 0, 'swept with no TAC_RESERVE_ADDR');
+});
+
+await test('TAC reserve: runs in manual top-up mode too (FEE_ASSETS empty)', async () => {
+  const { sent } = await run({
+    feeAssets: '', extraEnv: { TAC_RESERVE_ADDR: RESERVE },
+    balances: { [settle]: ETH(0.02), [relay]: ETH(0.02) }, tokenBalances: { [TAC]: { [settle]: 200n * 10n ** 18n } },
+  });
+  ok(tacTransfers(sent).length === 1, 'manual top-up mode skipped the reserve sweep');
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);

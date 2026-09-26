@@ -225,6 +225,9 @@ services:
         value: "30"
       - key: FEE_ASSETS
         value: "0x0000000000000000000000000000000000000000,0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,0xdAC17F958D2ee523a2206206994597C13D831ec7,0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+      # TAC collected as relay fees is never sold; replenish moves it to the ops multisig once it reaches 100 TAC.
+      - key: TAC_RESERVE_ADDR
+        value: "0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2"
 
   # Inert. Replenish runs inside tacit-settle, in the loop's idle time (REPLENISH_IN_SETTLE), because that is
   # where the fee income lands and it serialises with settles on the one relayer key's nonce. Kept defined, inert

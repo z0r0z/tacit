@@ -13,7 +13,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getAddress, maxUint256 } from 'viem';
-import { CFG, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
+import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE, MAINTENANCE_RUNS_PER_DAY } from './lib/config.js';
 import { withNonceRetry as _withNonceRetry } from './lib/nonce-retry.js';
 import {
   publicClient, relayWallet, fundedWallets, ethUsdPrice, ERC20_ABI, VAPP_ABI, ZQUOTER_ABI, ZROUTER_ABI,
@@ -303,6 +303,28 @@ export async function drainToSink({ roles = ['settle'] } = {}) {
   return { moved };
 }
 
+// Move collected TAC off the hot wallets to the reserve. Separate from the fee-asset sweep so it runs even in
+// manual top-up mode, and never swaps: TAC is held, not sold.
+export async function sweepTacToReserve(wallets = fundedWallets) {
+  const reserve = CFG.tacReserveAddr;
+  if (!reserve) return [];
+  if (!/^0x[0-9a-fA-F]{40}$/.test(reserve)) { log(`TAC_RESERVE_ADDR ${reserve} is not an address — not sweeping`); return []; }
+  const moved = [];
+  for (const { address: owner, wallet } of wallets) {
+    if (owner.toLowerCase() === reserve.toLowerCase()) continue;
+    try {
+      const bal = await erc20Balance(ADDR.tacToken, owner);
+      if (bal < CFG.tacReserveMinWei) continue;
+      const h = await withNonceRetry('tac reserve', () => wallet.writeContract({ address: ADDR.tacToken, abi: ERC20_ABI, functionName: 'transfer', args: [reserve, bal] }));
+      const r = await publicClient.waitForTransactionReceipt({ hash: h });
+      if (r.status !== 'success') throw new Error(`transfer reverted ${h}`);
+      log(`  moved ${bal} TAC from ${owner} to the reserve ${reserve}`);
+      moved.push({ owner, amount: bal });
+    } catch (e) { log(`  TAC reserve sweep from ${owner} failed (continuing): ${e.message}`); }
+  }
+  return moved;
+}
+
 // One replenish pass: turn fee income into the two things the relay burns — ETH gas and PROVE.
 //
 // Two roles matter, and they are not the same wallet:
@@ -340,6 +362,7 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
     log('replenish done (deposit only)');
     return;
   }
+  await sweepTacToReserve(roles ? fundedWallets.filter((w) => w.roles.some((r) => roles.includes(r))) : fundedWallets);
   const buffer = CFG.ethGasBufferWei;
   const assets = feeAssets();
   if (assets.length === 0) { log('FEE_ASSETS empty — nothing to sweep (manual PROVE top-up mode)'); return; }

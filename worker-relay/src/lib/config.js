@@ -169,6 +169,10 @@ export const CFG = {
   // RELAY_KEY and the two roles are one wallet. A no-op when they already are.
   replenishDrainToSink: opt('REPLENISH_DRAIN_TO_SINK', '0') === '1',
   replenishIntervalMin: num('REPLENISH_INTERVAL_MIN', 30),
+  // Relay fees paid in cTAC are never sold (TAC is never in FEE_ASSETS), so they pile up on the earning wallet.
+  // When set, each replenish pass moves that TAC to this reserve once it reaches tacReserveMinWei. Empty = hold.
+  tacReserveAddr: opt('TAC_RESERVE_ADDR', ''),
+  tacReserveMinWei: BigInt(opt('TAC_RESERVE_MIN_WEI', '100000000000000000000')), // 100 TAC
   // Convert fee income to PROVE and deposit it. On by default; REPLENISH_DEPOSIT_PROVE=0 keeps a pass to gas.
   replenishDepositProve: opt('REPLENISH_DEPOSIT_PROVE', '1') !== '0',
   // Native ETH is only converted to PROVE above this. ETH that arrives as fee income is gas as much as it is
