@@ -139,6 +139,46 @@ async function cycle() {
     : 'no confirmed candidate yet (cold start)';
   log(`no live pending — producing a fresh candidate. on-chain crossOutCount=${crossOutCount} consumedCount=${consumedCount}; ${confirmedCounts}`);
 
+  // Resume-state staleness gate. eth_prove's own local committed state (out_dir()/eth_set_state.json)
+  // only ever advances via commitEthProveState(), which requires LOCAL_INFLIGHT_PATH to have survived from
+  // "candidate produced" to "candidate confirmed" (see readLocalInflight above and the code that calls
+  // commitEthProveState). LOCAL_INFLIGHT_PATH lives on the same ephemeral disk as everything else here, so
+  // a process restart in that narrow window loses it — the `if (local)` block above then never runs for
+  // that candidate, the commit is skipped, and every later cycle keeps rebuilding from the SAME stale
+  // committed file forever: each new candidate looks like it succeeds (it proves, it publishes), but its
+  // priorDigest can never again match what the Bitcoin guest actually has (which the confirmed candidate
+  // DID correctly advance), so every subsequent Bitcoin-side batch panics on reflect.rs's own digest-chain
+  // assert — invisible from here (this cycle's own log line has nothing wrong to show), and invisible from
+  // the network-proving path too if it never lives long enough to reach that assert (a cycle-limit or
+  // PROVE-balance rejection reports as unexecutable/insufficient-balance instead, which is what a lost
+  // commit looked like in practice on 2026-09-23 and 2026-09-25/26 before this check existed).
+  // On-chain attestedCrossOutCount/attestedBitcoinConsumedCount are exactly the cumulative counts a
+  // correctly up-to-date local committed file's own crossouts/consumeds arrays must match (they can only
+  // ever be behind, since a fresh candidate folds forward from committed, never ahead of it) — so compare
+  // against them directly instead of trying to infer staleness from a lost in-memory pointer.
+  try {
+    const committedPath = path.join(CFG.ethProveOutDir, 'eth_set_state.json');
+    const committed = JSON.parse(await readFile(committedPath, 'utf8'));
+    const localCrossouts = BigInt(committed.crossouts?.length ?? 0);
+    const localConsumeds = BigInt(committed.consumeds?.length ?? 0);
+    if ((typeof crossOutCount === 'bigint') && (typeof consumedCount === 'bigint')
+      && (localCrossouts < crossOutCount || localConsumeds < consumedCount)) {
+      const msg = `STALE RESUME STATE: local committed eth_set_state.json has ${localCrossouts} crossout(s)/`
+        + `${localConsumeds} consumed, but on-chain attestedCrossOutCount=${crossOutCount} `
+        + `attestedBitcoinConsumedCount=${consumedCount} — this process's local resume state fell behind `
+        + '(most likely a restart lost LOCAL_INFLIGHT_PATH between publishing a candidate and it landing, '
+        + 'skipping the commit that should have advanced it). Every candidate built from here will panic '
+        + "the Bitcoin guest's digest-chain assert without ever showing an error on this side. Refusing to "
+        + 'build a candidate — this needs the local committed file manually resynced from real on-chain '
+        + 'crossOut/consumed records (see the 2026-09-26 incident notes) before this sidecar can resume.';
+      log(msg);
+      await heartbeat('eth-state', msg);
+      throw new Error(msg);
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e; // ENOENT = no committed file yet (cold start) — nothing to compare
+  }
+
   if (CFG.ethStateDryRun) {
     log('DRY_RUN=1 — stopping here (would run eth_prove + POST /reflection/eth-state now)');
     return false;
