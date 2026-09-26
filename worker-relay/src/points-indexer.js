@@ -37,6 +37,26 @@ function capToBoostCoverage(tip) {
   return capped;
 }
 
+// Resolves an L2 swap's boost-eligibility block deterministically from its own blockTime, not from whatever
+// the mainnet tip happens to be when the scan runs — a scan replayed later (e.g. after a DB rebuild) must
+// reproduce the exact same multiplier for the exact same swap, the same property settle_state.knobs guards
+// for every other activity. Binary search over mainnet block timestamps (monotonic) for the last block at or
+// before `targetTime`, up to `tip` (a real, uncapped mainnet block number).
+async function mainnetBlockAtOrBefore(targetTime, tip) {
+  let lo = 0n;
+  let hi = tip;
+  if (hi <= lo) return hi;
+  const target = BigInt(targetTime);
+  const tipBlock = await publicClient.getBlock({ blockNumber: hi });
+  if (tipBlock.timestamp <= target) return hi;
+  while (lo < hi) {
+    const mid = lo + (hi - lo + 1n) / 2n;
+    const block = await publicClient.getBlock({ blockNumber: mid });
+    if (block.timestamp <= target) lo = mid; else hi = mid - 1n;
+  }
+  return lo;
+}
+
 // One-time fast catch-up for a freshly (re-)enabled boost, run once at startup before scanTacTransfers's
 // eth_getLogs-based incremental scan takes over. That scan chunks by block range, and this RPC caps
 // eth_getLogs ranges hard regardless of how few events are actually in them (the same limit
@@ -426,15 +446,31 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
 
   const candidates = [...byTxHash.entries()].sort((a, b) => (a[1].blockNumber < b[1].blockNumber ? -1 : a[1].blockNumber > b[1].blockNumber ? 1 : 0));
 
-  let boostEvalBlock = null;
+  // For an L2, resolve each candidate's own blockTime to a mainnet block via mainnetBlockAtOrBefore (cached
+  // per distinct blockTime — several candidates can share one). Gated on the LATEST candidate's resolved
+  // block first: since blockTime is non-decreasing across sorted candidates and the resolver is monotonic,
+  // every earlier candidate resolves to an equal-or-earlier mainnet block, so if the latest one is already
+  // within boost coverage, so is every other one — one cheap check covers the whole batch. If it is NOT yet
+  // covered, bail without recording or advancing the cursor: retried next cycle once the boost replay (which
+  // runs first in main()'s loop) has caught up far enough in real time.
+  const evalBlockCache = new Map();
+  let mainnetTip = null;
+  async function boostEvalBlockFor(blockTime) {
+    if (evalBlockCache.has(blockTime)) return evalBlockCache.get(blockTime);
+    const b = await mainnetBlockAtOrBefore(blockTime, mainnetTip);
+    evalBlockCache.set(blockTime, b);
+    return b;
+  }
   if (chainId !== 1 && candidates.length > 0) {
-    const mainnetTip = BigInt(await publicClient.getBlockNumber()) - BigInt(CFG.pointsConfirmations);
-    boostEvalBlock = capToBoostCoverage(mainnetTip);
+    mainnetTip = BigInt(await publicClient.getBlockNumber()) - BigInt(CFG.pointsConfirmations);
+    const latestBlockTime = candidates[candidates.length - 1][1].blockTime;
+    const gateBlock = await boostEvalBlockFor(latestBlockTime);
+    if (capToBoostCoverage(gateBlock) < gateBlock) return;
   }
 
   let priorCount = store.countByActivity('zswapeth');
   for (const [txHash, { blockNumber, blockTime, amountWei, depositor }] of candidates) {
-    const evalBlock = chainId === 1 ? blockNumber : boostEvalBlock;
+    const evalBlock = chainId === 1 ? blockNumber : await boostEvalBlockFor(blockTime);
     const tacB = tacMultiplier(depositor, evalBlock);
     const zShareB = zShareMultiplier(depositor, evalBlock);
     const wrote = store.recordDeposit({
