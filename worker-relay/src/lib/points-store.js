@@ -34,13 +34,22 @@ export function openStore(dbPath) {
   // existed — CREATE TABLE IF NOT EXISTS below is a no-op on an already-existing table regardless of its
   // column set, so this adds them explicitly. Safe even on a table with rows: both are NOT NULL with no
   // default, but no market could exist yet without them already being known at that point in the rollout.
-  const pmMarketsCols = db.prepare(`PRAGMA table_info(pm_markets)`).all().map((c) => c.name);
+  const pmMarketsInfo = db.prepare(`PRAGMA table_info(pm_markets)`).all();
+  const pmMarketsCols = pmMarketsInfo.map((c) => c.name);
   if (pmMarketsCols.length > 0 && !pmMarketsCols.includes('creator')) {
     db.exec(`
       ALTER TABLE pm_markets ADD COLUMN creator TEXT NOT NULL DEFAULT '';
       ALTER TABLE pm_markets ADD COLUMN created_tx_hash TEXT NOT NULL DEFAULT '';
       ALTER TABLE pm_markets ADD COLUMN creator_awarded INTEGER NOT NULL DEFAULT 0;
     `);
+  }
+  // market_id shipped as INTEGER PRIMARY KEY, which SQLite treats as a rowid alias -- real PM market ids are
+  // full uint256s (hash-derived), nowhere near fitting in a 64-bit rowid, so every insert against a real
+  // market failed at bind time ("datatype mismatch") and nothing was ever actually stored. Safe to drop and
+  // recreate as plain TEXT: this table has never held a row for a market with a real (huge) id.
+  const marketIdCol = db.prepare(`PRAGMA table_info(pm_markets)`).all().find((c) => c.name === 'market_id');
+  if (marketIdCol && marketIdCol.type.toUpperCase() !== 'TEXT') {
+    db.exec(`DROP TABLE pm_markets;`);
   }
 
   db.exec(`
@@ -161,8 +170,11 @@ export function openStore(dbPath) {
     -- creating a market costs nothing (no collateral, no bet required, any resolver including yourself), so a
     -- flat reward at Created alone would be free-to-farm at gas cost only, a strictly worse hole than the
     -- bet-then-Exit tradeoff this program already accepts (that one at least costs real capital + a fee).
+    -- market_id is TEXT, not INTEGER: PM's real ids are full uint256s (hash-derived, not small sequential
+    -- numbers) -- well past Number.MAX_SAFE_INTEGER, so anything that ran it through Number() would silently
+    -- corrupt it and fail to bind ("datatype mismatch"), a real bug this shape avoids by construction.
     CREATE TABLE IF NOT EXISTS pm_markets (
-      market_id       INTEGER PRIMARY KEY,
+      market_id       TEXT PRIMARY KEY,
       is_eth          INTEGER NOT NULL,
       creator         TEXT NOT NULL,
       -- Its own Created tx hash — a real, unique-per-market identifier the deferred creator reward can key

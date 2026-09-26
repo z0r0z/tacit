@@ -420,12 +420,16 @@ async function scanPmCycle(store) {
   createdItems.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
   // marketId -> { isEth, creator, createdTxHash } for markets created THIS cycle, since a market created
   // earlier in this same page walk isn't in the store yet when the bet-pairing pass below needs to look it up.
+  // marketId is kept as a STRING throughout (never Number()) — PM's real ids are full uint256s, hash-derived
+  // and nowhere near Number.MAX_SAFE_INTEGER, so downcasting one silently corrupts it (a real bug this
+  // avoided from the start would have caught before any real market existed).
   const marketsThisBatch = new Map();
   for (const { item, p } of createdItems) {
     const isEth = String(p.asset).toLowerCase() === ZERO_ADDRESS;
     const creator = String(p.creator).toLowerCase();
-    store.recordPmMarket(Number(p.marketId), isEth, creator, item.transaction_hash);
-    marketsThisBatch.set(Number(p.marketId), { isEth, creator, createdTxHash: item.transaction_hash });
+    const marketId = String(p.marketId);
+    store.recordPmMarket(marketId, isEth, creator, item.transaction_hash);
+    marketsThisBatch.set(marketId, { isEth, creator, createdTxHash: item.transaction_hash });
   }
 
   // Pair each Bet with the mint Transfer immediately before it in the same tx (index - 1), then resolve its
@@ -440,7 +444,7 @@ async function scanPmCycle(store) {
       if (!bet.method.startsWith('Bet(')) continue;
       if (!xfer.method.startsWith('Transfer(') || String(xfer.p.from).toLowerCase() !== ZERO_ADDRESS) continue;
       if (String(xfer.p.id) !== String(bet.p.id)) continue; // defensive: same share id on both halves of the pair
-      const marketId = Number(BigInt(bet.p.id) & ~1n);
+      const marketId = (BigInt(bet.p.id) & ~1n).toString();
       const market = marketsThisBatch.get(marketId) ?? store.getPmMarket(marketId);
       if (!market || !market.isEth) continue;
       const bettor = String(xfer.p.to).toLowerCase();
