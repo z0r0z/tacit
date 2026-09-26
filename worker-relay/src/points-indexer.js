@@ -253,13 +253,30 @@ function pointsForZswapEth(valueWei, priorCount) {
   return (Number(valueWei) / 1e18) * CFG.pointsBasePerZswapEth * earlyAdopterBonus(priorCount);
 }
 
+const WETH_ADDR = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+const WETH_DEPOSIT_EVENT = {
+  type: 'event',
+  name: 'Deposit',
+  inputs: [
+    { name: 'dst', type: 'address', indexed: true },
+    { name: 'wad', type: 'uint256', indexed: false },
+  ],
+};
+
 // A fourth way to earn points: swapping ETH through zSwap/zRouter. Deliberately forward-only (no
 // backfill) — the cursor starts at whatever block this service first sees live, not any deploy block.
-// zRouter's own event log carries nothing but OwnershipTransferred (the pools it routes through emit their
-// own Swap events, not zRouter), so this detects a swap by the plain on-chain fact of it instead: a
-// top-level transaction sending ETH directly to zRouter. `tx.from` on a top-level transaction already IS
-// the originating EOA — there's no separate tx.origin to fetch; that distinction only exists inside a
-// contract's own internal call chain, which a plain transaction object can't show.
+//
+// NOT "top-level tx sends ETH to zRouter": that misses a batched wallet call (EIP-5792/7702), where the
+// top-level tx goes to the user's own account and the call to zRouter is internal — a real gap a zfi peer
+// caught. zRouter's own event log carries nothing but OwnershipTransferred (the pools it routes through
+// emit their own Swap events, not zRouter), so there's no zRouter-level event to key on either. Instead
+// this watches canonical WETH's own `Deposit(dst, wad)` — confirmed against a real zRouter swap that it
+// wraps incoming ETH to WETH before routing it, naming zRouter as `dst` — which fires regardless of call
+// depth, since an event is part of the transaction's logs whether the emitting contract was called at the
+// top level or from inside a batch. `tx.from` on the resulting transaction is still the real signer either
+// way: for an EOA or an EIP-7702-delegated EOA it's the user themselves; the harder case (a true ERC-4337
+// smart-account transaction submitted by a separate bundler) would show the bundler instead, and closing
+// that needs bundler-specific handling this doesn't attempt yet.
 async function scanZRouterCycle(store) {
   const cursorBlock = store.loadZrouterCursor();
   const latest = await publicClient.getBlockNumber();
@@ -274,23 +291,33 @@ async function scanZRouterCycle(store) {
   const from = cursorBlock + 1n;
   if (confirmedTip < from) return;
 
-  const candidates = [];
-  for (let b = from; b <= confirmedTip; b++) {
-    const block = await publicClient.getBlock({ blockNumber: b, includeTransactions: true });
-    for (const tx of block.transactions) {
-      if (tx.to && tx.to.toLowerCase() === ADDR.zRouter.toLowerCase() && tx.value > 0n) {
-        candidates.push({ tx, blockTime: Number(block.timestamp) });
-      }
-    }
-  }
+  const logs = await publicClient.getLogs({
+    address: WETH_ADDR,
+    event: WETH_DEPOSIT_EVENT,
+    args: { dst: ADDR.zRouter },
+    fromBlock: from,
+    toBlock: confirmedTip,
+  });
 
   let priorCount = store.countByActivity('zswapeth');
-  for (const { tx, blockTime } of candidates) {
+  const blockCache = new Map();
+  const txCache = new Map();
+  for (const evt of logs) {
+    let block = blockCache.get(evt.blockNumber);
+    if (!block) {
+      block = await publicClient.getBlock({ blockNumber: evt.blockNumber });
+      blockCache.set(evt.blockNumber, block);
+    }
+    let tx = txCache.get(evt.transactionHash);
+    if (!tx) {
+      tx = await publicClient.getTransaction({ hash: evt.transactionHash });
+      txCache.set(evt.transactionHash, tx);
+    }
     const depositor = tx.from.toLowerCase();
     const wrote = store.recordDeposit({
-      txHash: tx.hash, blockNumber: Number(tx.blockNumber), blockTime,
-      depositor, amountWei: tx.value.toString(), priorDepositCount: priorCount,
-      points: pointsForZswapEth(tx.value, priorCount), activity: 'zswapeth',
+      txHash: evt.transactionHash, blockNumber: Number(evt.blockNumber), blockTime: Number(block.timestamp),
+      depositor, amountWei: evt.args.wad.toString(), priorDepositCount: priorCount,
+      points: pointsForZswapEth(evt.args.wad, priorCount), activity: 'zswapeth',
     });
     if (wrote) priorCount += 1;
   }
