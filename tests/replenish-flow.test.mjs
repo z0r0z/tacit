@@ -357,5 +357,30 @@ await test('TAC reserve: runs in manual top-up mode too (FEE_ASSETS empty)', asy
   ok(tacTransfers(sent).length === 1, 'manual top-up mode skipped the reserve sweep');
 });
 
+const BUYBACK = '0x6919cbef0e70affa02ae02c86c532a137154f250';
+const ethTo = (sent, to) => sent.filter((t) => t.to === to && t.data === '0x' && t.value > 0n);
+
+await test('buyback share: that fraction of the ETH surplus goes to TacBuyback, before any PROVE', async () => {
+  // Consolidated key, 0.6 ETH held, 0.1 ETH kept as the float -> 0.5 ETH surplus; 25% of it is 0.125 ETH.
+  const { sent } = await run({
+    splitKeys: false, feeAssets: A.eth, extraEnv: { BUYBACK_ADDR: BUYBACK, BUYBACK_SHARE_BPS: '2500' },
+    balances: { [relay]: ETH(0.6) }, tokenBalances: {},
+  });
+  const t = ethTo(sent, BUYBACK);
+  ok(t.length === 1 && t[0].from === relay && t[0].value === ETH(0.125), `unexpected buyback transfers: ${show(t)}`);
+  const firstSwap = sent.findIndex((x) => x.to === A.zRouter);
+  ok(firstSwap === -1 || sent.indexOf(t[0]) < firstSwap, 'the buyback share must leave before the surplus is swapped');
+});
+
+await test('buyback share: off by default, and nothing is sent without a real surplus', async () => {
+  const off = await run({ splitKeys: false, feeAssets: A.eth, balances: { [relay]: ETH(0.6) }, tokenBalances: {} });
+  ok(ethTo(off.sent, BUYBACK).length === 0, 'sent a buyback share with BUYBACK_SHARE_BPS unset');
+  const float = await run({
+    splitKeys: false, feeAssets: A.eth, extraEnv: { BUYBACK_ADDR: BUYBACK, BUYBACK_SHARE_BPS: '2500' },
+    balances: { [relay]: ETH(0.09) }, tokenBalances: {},
+  });
+  ok(ethTo(float.sent, BUYBACK).length === 0, 'took a buyback share out of the gas float');
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail ? 1 : 0);

@@ -228,6 +228,33 @@ services:
       # TAC collected as relay fees is never sold; replenish moves it to the ops multisig once it reaches 100 TAC.
       - key: TAC_RESERVE_ADDR
         value: "0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2"
+      # A quarter of the relay's genuine ETH surplus (what would otherwise become PROVE) goes to TacBuyback.
+      - key: BUYBACK_ADDR
+        value: "0x6919cbEf0e70AFFA02Ae02c86c532A137154f250"
+      - key: BUYBACK_SHARE_BPS
+        value: "2500"
+
+  # TacBuyback keeper (contracts/src/TacBuyback.sol). Hourly: if the contract holds ETH and its cooldown has passed,
+  # buys TAC for the ops reserve on whichever TAC/ETH venue quotes better, through private endpoints only. Its own
+  # key, never RELAY_KEY: the keeper can only buy into the reserve, and stays off the relay key's nonce.
+  - type: cron
+    name: tacit-buyback
+    runtime: docker
+    rootDir: worker-relay
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    schedule: "23 * * * *"
+    dockerCommand: node src/buyback-keeper.js
+    autoDeploy: false
+    envVars:
+      # BUYBACK_KEEPER_KEY lives in its own group, linked to this service only.
+      - fromGroup: tacit-buyback
+      - key: RPC_URL
+        value: "https://ethereum-rpc.publicnode.com"
+      - key: BUYBACK_ADDR
+        value: "0x6919cbEf0e70AFFA02Ae02c86c532A137154f250"
+      - key: SETTLE_RPC_URLS
+        value: "https://rpc.flashbots.net,https://rpc.mevblocker.io"
 
   # Inert. Replenish runs inside tacit-settle, in the loop's idle time (REPLENISH_IN_SETTLE), because that is
   # where the fee income lands and it serialises with settles on the one relayer key's nonce. Kept defined, inert

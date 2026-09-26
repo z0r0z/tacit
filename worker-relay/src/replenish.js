@@ -325,6 +325,23 @@ export async function sweepTacToReserve(wallets = fundedWallets) {
   return moved;
 }
 
+// Send BUYBACK_SHARE_BPS of an ETH surplus to TacBuyback. Returns what was sent (0 when off or on failure,
+// so the caller simply converts the whole surplus as before).
+async function sendBuybackShare(excess, wallet) {
+  const to = CFG.buybackAddr, bps = BigInt(Math.floor(CFG.buybackShareBps || 0));
+  if (!to || bps <= 0n) return 0n;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(to) || bps > 10000n) { log(`  buyback: BUYBACK_ADDR/BUYBACK_SHARE_BPS invalid — skipping`); return 0n; }
+  const share = (excess * bps) / 10000n;
+  if (share === 0n) return 0n;
+  try {
+    const h = await withNonceRetry('buyback share', () => wallet.sendTransaction({ to, value: share }));
+    const r = await publicClient.waitForTransactionReceipt({ hash: h });
+    if (r.status !== 'success') throw new Error(`transfer reverted ${h}`);
+    log(`  buyback: sent ${share} wei ETH -> ${to}`);
+    return share;
+  } catch (e) { log(`  buyback share failed (continuing): ${e.message}`); return 0n; }
+}
+
 // One replenish pass: turn fee income into the two things the relay burns — ETH gas and PROVE.
 //
 // Two roles matter, and they are not the same wallet:
@@ -403,10 +420,12 @@ export async function replenishOnce({ roles = null, convertToProve = true } = {}
           const keep = CFG.ethSweepAboveWei > buffer ? CFG.ethSweepAboveWei : buffer;
           const excess = remaining > keep ? remaining - keep : 0n;
           if (excess < MIN_ETH_SWEEP) { log(`  ETH ${remaining} within the gas float (<= ${keep} + dust) — keeping as gas`); continue; }
-          const q = await quote(ETH, PROVE, excess, sinkAddr); // PROVE lands on the sink, which deposits it
+          const toProve = excess - await sendBuybackShare(excess, wallet);
+          if (toProve < MIN_ETH_SWEEP) continue;
+          const q = await quote(ETH, PROVE, toProve, sinkAddr); // PROVE lands on the sink, which deposits it
           const ethUsd = await ethUsdPrice();
-          if (!(await provePlausible(q, (Number(excess) / 1e18) * ethUsd, ethUsd, 'ETH->PROVE'))) continue;
-          log(`  ETH excess ${excess} -> ~${q.amountOut} PROVE (to sink)`);
+          if (!(await provePlausible(q, (Number(toProve) / 1e18) * ethUsd, ethUsd, 'ETH->PROVE'))) continue;
+          log(`  ETH excess ${toProve} -> ~${q.amountOut} PROVE (to sink)`);
           await fireSwap(q, wallet);
           continue;
         }

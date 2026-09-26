@@ -178,6 +178,10 @@ export const CFG = {
   // When set, each replenish pass moves that TAC to this reserve once it reaches tacReserveMinWei. Empty = hold.
   tacReserveAddr: opt('TAC_RESERVE_ADDR', ''),
   tacReserveMinWei: BigInt(opt('TAC_RESERVE_MIN_WEI', '100000000000000000000')), // 100 TAC
+  // Share of the relay's genuine ETH surplus (what would otherwise be converted to PROVE) sent to TacBuyback,
+  // in bps. 0 = off. Set it only once fee income covers proving with room to spare.
+  buybackAddr: opt('BUYBACK_ADDR', ''),
+  buybackShareBps: num('BUYBACK_SHARE_BPS', 0),
   // Convert fee income to PROVE and deposit it. On by default; REPLENISH_DEPOSIT_PROVE=0 keeps a pass to gas.
   replenishDepositProve: opt('REPLENISH_DEPOSIT_PROVE', '1') !== '0',
   // Native ETH is only converted to PROVE above this. ETH that arrives as fee income is gas as much as it is
