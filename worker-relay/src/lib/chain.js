@@ -246,6 +246,13 @@ export async function readReflectionDigest(client = publicClient, blockNumber) {
 // roles — wrong, and silently so. SETTLE_ADDRESS says where the settle wallet really is, so the monitor can
 // watch it with nothing but a public address. Replenish still needs the actual key to sign the swaps, so it
 // keeps using fundedWallets.
+// A read-only client for a chain other than the one CFG.chainId points at (points-indexer.js's multichain
+// zRouter scan — mainnet, Base, Robinhood all run the same zRouter address). No wallet, no fallback list:
+// this is a single-purpose reader, not the relay's own chain.
+export function clientForChain(chainId, rpcUrl) {
+  return createPublicClient({ chain: { ...mainnet, id: chainId, name: `chain-${chainId}` }, transport: http(rpcUrl) });
+}
+
 export const watchedWallets = (() => {
   const out = fundedWallets.map((w) => ({ address: w.address, roles: [...w.roles] }));
   const declared = CFG.settleAddress;

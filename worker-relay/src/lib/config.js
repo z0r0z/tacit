@@ -430,6 +430,13 @@ export const CFG = {
   // starts counting from whichever block this service first sees it live. Same base rate as an ETH wrap
   // (kept as its own knob so it can be tuned independently later) and the same early-adopter decay curve.
   pointsBasePerZswapEth: num('POINTS_BASE_PER_ZSWAP_ETH', 1000),
+  // zRouter is the same address on all three chains it's deployed to (confirmed with zfi) — only the RPC and
+  // canonical WETH differ. Public defaults so this works with no extra setup; override with a tacit-owned
+  // endpoint if these ever rate-limit.
+  baseRpcUrl: opt('BASE_RPC_URL', 'https://mainnet.base.org'),
+  baseWethAddr: opt('BASE_WETH_ADDR', '0x4200000000000000000000000000000000000006'),
+  robinhoodRpcUrl: opt('ROBINHOOD_RPC_URL', 'https://rpc.mainnet.chain.robinhood.com'),
+  robinhoodWethAddr: opt('ROBINHOOD_WETH_ADDR', '0x0Bd7D308F8E1639FaB988DF18A8011f41EAcaD73'),
 
   // ── TAC-holder boost (src/lib/tac-holder-boost.js) ──
   // Every activity's points are multiplied by the depositor's TAC tier: "whole TAC:multiplier" pairs, judged

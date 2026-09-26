@@ -11,6 +11,24 @@ export function openStore(dbPath) {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
+  // zrouter_cursor started as a single mainnet-only row (id=1). Multichain scanning (Base, Robinhood — same
+  // zRouter address, different chains) needs one row per chain, so this migrates that shape to a chain_id
+  // primary key before the schema below (re-)creates the table. A fresh database never hits this: it only
+  // fires when an existing store still has the old single-row shape.
+  const zrouterCursorCols = db.prepare(`PRAGMA table_info(zrouter_cursor)`).all().map((c) => c.name);
+  if (zrouterCursorCols.length > 0 && !zrouterCursorCols.includes('chain_id')) {
+    db.exec(`
+      ALTER TABLE zrouter_cursor RENAME TO zrouter_cursor_old;
+      CREATE TABLE zrouter_cursor (
+        chain_id           INTEGER PRIMARY KEY,
+        last_scanned_block INTEGER NOT NULL
+      );
+      INSERT INTO zrouter_cursor (chain_id, last_scanned_block)
+        SELECT 1, last_scanned_block FROM zrouter_cursor_old WHERE id = 1;
+      DROP TABLE zrouter_cursor_old;
+    `);
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS deposits (
       tx_hash          TEXT PRIMARY KEY,
@@ -107,10 +125,12 @@ export function openStore(dbPath) {
       last_scanned_block INTEGER NOT NULL
     );
 
-    -- zRouter ETH-swap scan cursor (see scanZRouterCycle). Forward-only — no deploy-block floor, since this
-    -- activity deliberately starts counting from whenever the service first ran it, not from history.
+    -- zRouter ETH-swap scan cursor (see scanZRouterCycle), one row per chain (1 = mainnet, 8453 = Base,
+    -- 4663 = Robinhood — zRouter is the same address on all three). Forward-only per chain — no deploy-block
+    -- floor, since this activity deliberately starts counting from whenever the service first scanned that
+    -- chain, not from history.
     CREATE TABLE IF NOT EXISTS zrouter_cursor (
-      id                 INTEGER PRIMARY KEY CHECK (id = 1),
+      chain_id           INTEGER PRIMARY KEY,
       last_scanned_block INTEGER NOT NULL
     );
   `);
@@ -130,14 +150,17 @@ export function openStore(dbPath) {
     // Same, for the Z Shares holder multiplier — kept as its own column alongside tac_boost so either can be
     // audited independently even though both are already folded into `points`.
     'z_share_boost REAL NOT NULL DEFAULT 1',
+    // Which chain this deposit happened on (1 = mainnet, 8453 = Base, 4663 = Robinhood — see
+    // scanZRouterCycle). Every activity before this column existed was mainnet-only.
+    'chain_id INTEGER NOT NULL DEFAULT 1',
   ]) {
     try { db.exec(`ALTER TABLE deposits ADD COLUMN ${col}`); } catch {}
   }
 
   const insertDeposit = db.prepare(`
     INSERT OR IGNORE INTO deposits
-      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost, z_share_boost)
-    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted, @activity, @tacBoost, @zShareBoost)
+      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost, z_share_boost, chain_id)
+    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted, @activity, @tacBoost, @zShareBoost, @chainId)
   `);
   const bumpTotals = db.prepare(`
     INSERT INTO totals (address, points, deposit_count, amount_wei)
@@ -161,7 +184,7 @@ export function openStore(dbPath) {
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
   const countByActivityStmt = db.prepare(`SELECT COUNT(*) AS n FROM deposits WHERE activity = ?`);
   const depositsForStmt = db.prepare(`
-    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost, z_share_boost
+    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost, z_share_boost, chain_id
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
   const dayPointsStmt = db.prepare(`
@@ -210,10 +233,10 @@ export function openStore(dbPath) {
     INSERT INTO ce_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
     ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
-  const loadZrouterCursorStmt = db.prepare(`SELECT last_scanned_block FROM zrouter_cursor WHERE id = 1`);
+  const loadZrouterCursorStmt = db.prepare(`SELECT last_scanned_block FROM zrouter_cursor WHERE chain_id = ?`);
   const saveZrouterCursorStmt = db.prepare(`
-    INSERT INTO zrouter_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
-    ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
+    INSERT INTO zrouter_cursor (chain_id, last_scanned_block) VALUES (@chainId, @lastScannedBlock)
+    ON CONFLICT(chain_id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
 
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
@@ -226,7 +249,7 @@ export function openStore(dbPath) {
   // way `depositor` (tx.from, the transaction's own signer) is what earns points — a forwarder tip never
   // changes who that is.
   const recordDeposit = db.transaction((dep) => {
-    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, activity: 'wrap', tacBoost: 1, zShareBoost: 1, ...dep });
+    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, activity: 'wrap', tacBoost: 1, zShareBoost: 1, chainId: 1, ...dep });
     if (wrote.changes === 0) return false; // already recorded (safe to re-scan a chunk after a crash)
     bumpTotals.run({ address: dep.depositor, points: dep.points, amountWei: dep.amountWei });
     return true;
@@ -355,13 +378,13 @@ export function openStore(dbPath) {
     saveCeCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
   }
 
-  function loadZrouterCursor() {
-    const row = loadZrouterCursorStmt.get();
+  function loadZrouterCursor(chainId = 1) {
+    const row = loadZrouterCursorStmt.get(chainId);
     return row ? BigInt(row.last_scanned_block) : null;
   }
 
-  function saveZrouterCursor(lastScannedBlock) {
-    saveZrouterCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
+  function saveZrouterCursor(lastScannedBlock, chainId = 1) {
+    saveZrouterCursorStmt.run({ chainId, lastScannedBlock: lastScannedBlock.toString() });
   }
 
   return {

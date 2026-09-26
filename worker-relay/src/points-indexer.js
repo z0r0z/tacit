@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './lib/config.js';
-import { publicClient } from './lib/chain.js';
+import { publicClient, clientForChain } from './lib/chain.js';
 import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
@@ -332,11 +332,20 @@ const WETH_DEPOSIT_EVENT = {
   ],
 };
 
+// zRouter is deployed at the same address on all three of these chains (confirmed with zfi) — only the RPC
+// and canonical WETH differ, so scanZRouterCycle below is called once per entry here.
+const ZROUTER_CHAINS = [
+  { chainId: 1, client: publicClient, wethAddr: WETH_ADDR },
+  { chainId: 8453, client: clientForChain(8453, CFG.baseRpcUrl), wethAddr: CFG.baseWethAddr },
+  { chainId: 4663, client: clientForChain(4663, CFG.robinhoodRpcUrl), wethAddr: CFG.robinhoodWethAddr },
+];
+
 // A fourth way to earn points: swapping ETH through zSwap/zRouter — treated as "ETH reaching zRouter" as a
 // deliberate proxy for a swap, not an exhaustive decode of every route zRouter can take (z's call: AMM-style
 // swaps only, order-board fills excluded, and this proxy is "good enough" rather than chasing every pool's
 // own Swap event). Deliberately forward-only (no backfill) — the cursor starts at whatever block this
-// service first sees live, not any deploy block.
+// service first sees live, not any deploy block. Runs once per chain zRouter is deployed on — mainnet, Base
+// (8453), Robinhood (4663) — same zRouter address on each, `client`/`wethAddr` are the only things that vary.
 //
 // Two signals, merged and deduped by tx hash:
 //   1. A top-level transaction sending value directly to zRouter — catches a DIRECT call on any route,
@@ -350,15 +359,22 @@ const WETH_DEPOSIT_EVENT = {
 // both — that needs transaction tracing or the destination pool's own Swap event, neither of which this
 // attempts. `tx.from` is the real signer either way for an EOA or an EIP-7702-delegated EOA; a true
 // ERC-4337 smart-account transaction submitted by a separate bundler would show the bundler instead.
-async function scanZRouterCycle(store) {
-  const cursorBlock = store.loadZrouterCursor();
-  const latest = await publicClient.getBlockNumber();
-  const confirmedTip = capToBoostCoverage(latest - BigInt(CFG.pointsConfirmations));
+//
+// The TAC/Z-share boosts are only ever replayed against MAINNET transfers, so a Base/Robinhood block number
+// has no meaning to boostFor() — there is no cross-chain block correspondence to use instead. For a non-
+// mainnet chain this evaluates the boost as of the current confirmed MAINNET tip (already clamped to what
+// both replays cover, so it can never throw) rather than the swap's own chain-local block: with a multi-hour
+// trailing window, the skew between "at the swap" and "now" is immaterial.
+async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
+  const cursorBlock = store.loadZrouterCursor(chainId);
+  const latest = await client.getBlockNumber();
+  let confirmedTip = latest - BigInt(CFG.pointsConfirmations);
+  if (chainId === 1) confirmedTip = capToBoostCoverage(confirmedTip);
   // First-ever run: establish "now" as the starting line and stop — there is nothing before it to scan by
   // design (no backfill). Without this, a from = confirmedTip + 1 would keep being 1 block ahead of the
   // tip forever, since the cursor would never actually get saved to seed the next cycle.
   if (cursorBlock == null) {
-    store.saveZrouterCursor(confirmedTip);
+    store.saveZrouterCursor(confirmedTip, chainId);
     return;
   }
   const from = cursorBlock + 1n;
@@ -368,7 +384,9 @@ async function scanZRouterCycle(store) {
   const getBlock = async (blockNumber) => {
     let block = blockCache.get(blockNumber);
     if (!block) {
-      block = await publicClient.getBlock({ blockNumber });
+      // includeTransactions: true — viem defaults to hash-only transactions, and Signal 1 below needs each
+      // tx's own `to`/`value` to check without a second RPC round trip per transaction.
+      block = await client.getBlock({ blockNumber, includeTransactions: true });
       blockCache.set(blockNumber, block);
     }
     return block;
@@ -393,13 +411,13 @@ async function scanZRouterCycle(store) {
   // tx.value is 0 or unrelated — the value moved on an INNER call). `.set` here never overwrites an
   // already-found signal-1 entry for the same tx, so a direct wrap-based swap (caught by both signals)
   // keeps its signal-1 entry rather than being re-fetched.
-  const logs = await publicClient.getLogs({
-    address: WETH_ADDR, event: WETH_DEPOSIT_EVENT, args: { dst: ADDR.zRouter }, fromBlock: from, toBlock: confirmedTip,
+  const logs = await client.getLogs({
+    address: wethAddr, event: WETH_DEPOSIT_EVENT, args: { dst: ADDR.zRouter }, fromBlock: from, toBlock: confirmedTip,
   });
   for (const evt of logs) {
     if (byTxHash.has(evt.transactionHash)) continue;
     const block = await getBlock(evt.blockNumber);
-    const tx = await publicClient.getTransaction({ hash: evt.transactionHash });
+    const tx = await client.getTransaction({ hash: evt.transactionHash });
     byTxHash.set(evt.transactionHash, {
       blockNumber: evt.blockNumber, blockTime: Number(block.timestamp),
       amountWei: evt.args.wad, depositor: tx.from.toLowerCase(),
@@ -408,19 +426,27 @@ async function scanZRouterCycle(store) {
 
   const candidates = [...byTxHash.entries()].sort((a, b) => (a[1].blockNumber < b[1].blockNumber ? -1 : a[1].blockNumber > b[1].blockNumber ? 1 : 0));
 
+  let boostEvalBlock = null;
+  if (chainId !== 1 && candidates.length > 0) {
+    const mainnetTip = BigInt(await publicClient.getBlockNumber()) - BigInt(CFG.pointsConfirmations);
+    boostEvalBlock = capToBoostCoverage(mainnetTip);
+  }
+
   let priorCount = store.countByActivity('zswapeth');
   for (const [txHash, { blockNumber, blockTime, amountWei, depositor }] of candidates) {
-    const tacB = tacMultiplier(depositor, blockNumber);
-    const zShareB = zShareMultiplier(depositor, blockNumber);
+    const evalBlock = chainId === 1 ? blockNumber : boostEvalBlock;
+    const tacB = tacMultiplier(depositor, evalBlock);
+    const zShareB = zShareMultiplier(depositor, evalBlock);
     const wrote = store.recordDeposit({
       txHash, blockNumber: Number(blockNumber), blockTime,
       depositor, amountWei: amountWei.toString(), priorDepositCount: priorCount,
       points: pointsForZswapEth(amountWei, priorCount) * tacB * zShareB, activity: 'zswapeth', tacBoost: tacB, zShareBoost: zShareB,
+      chainId,
     });
     if (wrote) priorCount += 1;
   }
 
-  store.saveZrouterCursor(confirmedTip);
+  store.saveZrouterCursor(confirmedTip, chainId);
 }
 
 async function scanCycle(store) {
@@ -641,7 +667,12 @@ function startHttp(store) {
         const cursor = store.loadCursor();
         const ppCursor = store.loadPpCursor();
         const ceCursor = store.loadCeCursor();
-        const zrouterCursor = store.loadZrouterCursor();
+        // zRouter ETH-swap scan (see scanZRouterCycle), one cursor per chain — forward-only, null until each
+        // chain's first cycle runs.
+        const zrouterCursors = Object.fromEntries(ZROUTER_CHAINS.map(({ chainId }) => {
+          const c = store.loadZrouterCursor(chainId);
+          return [chainId, c != null ? c.toString() : null];
+        }));
         res.end(JSON.stringify({
           ok: true,
           lastScannedBlock: cursor ? cursor.lastScannedBlock.toString() : null,
@@ -651,8 +682,8 @@ function startHttp(store) {
           ppLastScannedBlock: ppCursor != null ? ppCursor.toString() : null,
           // CollateralEngine scan (cBTC escrow + cUSD mint activity — see scanCollateralEngineCycle).
           ceLastScannedBlock: ceCursor != null ? ceCursor.toString() : null,
-          // zRouter ETH-swap scan (see scanZRouterCycle) — forward-only, null until its first cycle runs.
-          zrouterLastScannedBlock: zrouterCursor != null ? zrouterCursor.toString() : null,
+          zrouterLastScannedBlock: zrouterCursors[1],
+          zrouterLastScannedBlockByChain: zrouterCursors,
           // TAC transfer replay behind the holder boost; every other scan waits for it. null when the boost is off.
           tacBoostLastScannedBlock: tacBoost ? String(tacBoost.coveredThrough()) : null,
           // Same, for the Z-share holder boost.
@@ -816,10 +847,12 @@ async function main() {
     } catch (err) {
       log('collateral engine scan cycle failed:', err?.message || err);
     }
-    try {
-      await scanZRouterCycle(store);
-    } catch (err) {
-      log('zRouter scan cycle failed:', err?.message || err);
+    for (const chain of ZROUTER_CHAINS) {
+      try {
+        await scanZRouterCycle(store, chain);
+      } catch (err) {
+        log(`zRouter scan cycle failed (chain ${chain.chainId}):`, err?.message || err);
+      }
     }
     try {
       await scanCycle(store);
