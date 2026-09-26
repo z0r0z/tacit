@@ -41939,6 +41939,12 @@ function governanceApi() {
       if (!r.ok) throw new Error(`list failed (${r.status})`);
       return (await r.json()).proposals || [];
     },
+    // Everything the ops multisig controls, with live values (read-only).
+    async oversight() {
+      const r = await fetch(q('/governance/oversight'));
+      if (!r.ok) throw new Error(`fetch failed (${r.status})`);
+      return r.json();
+    },
     async getProposal(id, withVotes) {
       const r = await fetch(q(`/governance/proposal/${id}${withVotes ? '?votes=1' : ''}`));
       if (!r.ok) throw new Error(`fetch failed (${r.status})`);
@@ -41950,9 +41956,11 @@ function governanceApi() {
     async createProposal(content) {
       if (!wallet?.priv) throw new Error('unlock a wallet to propose');
       const proposer = bytesToHex(wallet.pub);
-      const c = { ...content, network: net, proposer_pubkey: proposer, quorum: content.quorum || '0' };
-      const { contentHash } = _govDeriveProposalId(c);
+      // Votes are weighed at the snapshot, which the worker requires to be the current tip.
       const tip = await getTip().catch(() => 0);
+      if (!tip) throw new Error('could not read the Bitcoin tip for the snapshot; retry');
+      const c = { ...content, network: net, proposer_pubkey: proposer, quorum: content.quorum || '0', snapshot_height: tip };
+      const { contentHash } = _govDeriveProposalId(c);
       const envHex = _govBuildWeightEnvelope({
         scopeId: _govProposeScopeId(contentHash), sigDomain: _GOV_PROPOSE_DOMAIN,
         tier: GOV_TIERS[2], // ≥100 TAC to propose (matches worker default floor)

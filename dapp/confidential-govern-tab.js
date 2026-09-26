@@ -66,19 +66,22 @@ export async function renderGovernTab(wallet, gov) {
   if (_timer) { clearInterval(_timer); _timer = null; }
   if (_view.mode === 'detail' && _view.id) return renderDetail(body);
   if (_view.mode === 'create') return renderCreate(body);
+  if (_view.mode === 'protocol') return renderProtocol(body);
   return renderList(body);
 }
 
 // ============================ LIST ==========================================
 async function renderList(body) {
   body.innerHTML = `
-    <div class="note-concept" style="margin-bottom:14px;"><b>TAC governance.</b> Holders steer the governed
-      periphery — CollateralEngine and FarmManager parameters and the treasury. Vote with your TAC held on
-      <b>Bitcoin</b> (private threshold proof — your balance stays hidden) or on <b>Ethereum</b>
-      (public ERC20 balance). Results are advisory inputs the multisig executes.</div>
+    <div class="note-concept" style="margin-bottom:14px;"><b>TAC governance.</b> Holders oversee what the ops
+      multisig controls: CollateralEngine and FarmManager parameters, the treasury and reserve, and pool succession.
+      Vote with TAC held on <b>Bitcoin</b> by proving a balance tier, which keeps your exact balance hidden.
+      Weight is taken at a snapshot when a proposal opens, so TAC moved afterwards cannot vote twice. Results are
+      advisory; the multisig carries them out. See <b>Protocol</b> for everything under its control.</div>
     <div class="gov-toolbar">
       <div id="gov-filters" style="display:flex;gap:6px;"></div>
       <span style="flex:1;"></span>
+      <button id="gov-protocol-btn" class="btn">Protocol</button>
       <button id="gov-new-btn" class="btn">+ New proposal</button>
     </div>
     <div id="gov-list" class="muted" style="font-size:12px;">Loading proposals…</div>`;
@@ -91,7 +94,8 @@ async function renderList(body) {
     b.onclick = () => { _view.filter = k; renderGovernTab(_wallet, _gov); };
     filters.appendChild(b);
   });
-  el('gov-new-btn').onclick = () => { _view.mode = 'create'; renderGovernTab(_wallet, _gov); };
+  el('gov-new-btn').onclick = () => { _view.mode = 'create'; _view.prefill = null; renderGovernTab(_wallet, _gov); };
+  el('gov-protocol-btn').onclick = () => { _view.mode = 'protocol'; renderGovernTab(_wallet, _gov); };
 
   let proposals;
   try { proposals = await _gov.listProposals(_view.filter || undefined); }
@@ -174,6 +178,7 @@ async function renderDetail(body) {
       <span>${p.tally?.voters || 0} voters</span>
       <span>${p.tally?.private_voters || 0} private 🔒</span>
       <span>${p.tally?.public_voters || 0} public</span>
+      ${p.snapshot_height ? `<span>snapshot: Bitcoin block ${esc(p.snapshot_height)}${p.eth_snapshot_block ? ` · Ethereum block ${esc(p.eth_snapshot_block)}` : ''}</span>` : ''}
       ${p.cid ? `<a href="https://ipfs.io/ipfs/${esc(p.cid)}" target="_blank" rel="noopener" class="gov-link">proposal on IPFS ↗</a>` : ''}
       ${p.result_cid ? `<a href="https://ipfs.io/ipfs/${esc(p.result_cid)}" target="_blank" rel="noopener" class="gov-link">result snapshot ↗</a>` : ''}
     </div>
@@ -344,6 +349,57 @@ async function openBatchPopup(p, choice) {
   };
 }
 
+// ============================ PROTOCOL =======================================
+// Read-only view of everything the ops multisig controls, from the worker's /governance/oversight.
+const ETHERSCAN = 'https://etherscan.io/address/';
+const isAddr = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v);
+const shortAddr = (a) => `${a.slice(0, 8)}…${a.slice(-4)}`;
+const addrLink = (a) => `<a href="${ETHERSCAN}${esc(a)}" target="_blank" rel="noopener" class="gov-link">${esc(shortAddr(a))} ↗</a>`;
+
+async function renderProtocol(body) {
+  body.innerHTML = `<div style="margin-bottom:12px;"><a id="gov-back" class="gov-link">← All proposals</a></div>
+    <div class="note-concept" style="margin-bottom:14px;">What the ops multisig controls today, read live from chain.
+      Anyone holding 100 TAC can propose a change to any of it.</div>
+    <div id="gov-protocol" class="muted" style="font-size:12px;">Loading…</div>`;
+  el('gov-back').onclick = () => { _view.mode = 'list'; renderGovernTab(_wallet, _gov); };
+
+  let o;
+  try { o = await _gov.oversight(); }
+  catch (e) { el('gov-protocol').innerHTML = `<div class="gov-err">Could not load: ${esc(e.message)}</div>`; return; }
+  const wrap = el('gov-protocol'); if (!wrap) return;
+
+  wrap.innerHTML = `<div class="gov-soft" style="margin-bottom:14px;">Ops multisig: ${addrLink(o.ops_multisig)}.
+      Queued multisig actions are visible on its Etherscan page.</div>`
+    + o.sections.map((sec) => `
+    <div class="gov-card" style="cursor:default;">
+      <div class="gov-card-top">
+        ${catBadge(sec.category)}
+        <span style="flex:1;"></span>
+        <span style="font-size:11px;color:${sec.controllerIsOps ? 'var(--ink-mid)' : 'var(--red-warn)'};">
+          ${sec.controllerIsOps ? 'held by the ops multisig' : `held by ${isAddr(sec.controller) ? esc(shortAddr(sec.controller)) : 'unknown'}`}</span>
+      </div>
+      <div class="gov-ctitle">${esc(sec.title)} ${isAddr(sec.target) ? addrLink(sec.target) : ''}</div>
+      <div style="font-size:12px;line-height:1.55;color:var(--ink-mid);margin-bottom:8px;">${esc(sec.summary)}</div>
+      ${sec.items.map((it) => `<div class="gov-row" style="font-size:12px;padding:2px 0;">
+        <span>${esc(it.label)}</span>
+        <span style="color:var(--ink-mid);text-align:right;">${it.value == null ? '—' : (isAddr(it.value) ? addrLink(it.value) : esc(it.value))}${isAddr(it.address) && !isAddr(it.value) ? ' ' + addrLink(it.address) : ''}</span>
+      </div>`).join('')}
+      ${Array.isArray(sec.pending) && sec.pending.length ? `<div style="margin-top:8px;font-size:12px;"><b>Pending:</b>
+        ${sec.pending.map((q) => `<div class="gov-row" style="padding:2px 0;"><span>${esc(q.label)}</span><span style="color:var(--ink-mid);">${esc(q.value)}</span></div>`).join('')}</div>` : ''}
+      <div style="margin-top:10px;"><button class="btn gov-propose" data-sec="${esc(sec.id)}" style="font-size:11px;padding:4px 10px;">Propose a change</button></div>
+    </div>`).join('')
+    + `<div style="font-size:11px;color:var(--ink-mid);margin-top:8px;">${esc(o.note)} Updated ${new Date(o.generated_at * 1000).toLocaleString()}.</div>`;
+
+  wrap.querySelectorAll('.gov-propose').forEach((b) => {
+    b.onclick = () => {
+      const sec = o.sections.find((x) => x.id === b.dataset.sec);
+      _view.mode = 'create';
+      _view.prefill = { category: sec.category, execTarget: `${sec.title.split(' (')[0]} ${sec.target}`.slice(0, 80) };
+      renderGovernTab(_wallet, _gov);
+    };
+  });
+}
+
 // ============================ CREATE ========================================
 async function renderCreate(body) {
   body.innerHTML = `<div style="margin-bottom:12px;"><a id="gov-cancel" class="gov-link">← Cancel</a></div>
@@ -384,7 +440,11 @@ async function renderCreate(body) {
       <div id="gp-status" style="font-size:12px;color:var(--ink-mid);"></div>
     </div>`;
 
-  el('gov-cancel').onclick = () => { _view.mode = 'list'; renderGovernTab(_wallet, _gov); };
+  el('gov-cancel').onclick = () => { _view.mode = _view.prefill ? 'protocol' : 'list'; _view.prefill = null; renderGovernTab(_wallet, _gov); };
+  if (_view.prefill) {
+    if (_gov.categories.includes(_view.prefill.category)) el('gp-category').value = _view.prefill.category;
+    el('gp-exec-target').value = _view.prefill.execTarget || '';
+  }
 
   const choicesWrap = el('gp-choices');
   const choices = ['Yes', 'No', 'Abstain'];
