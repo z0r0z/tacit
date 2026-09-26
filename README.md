@@ -246,7 +246,9 @@ assets under `dapp/`, so they deploy with the app and resolve at a stable URL fo
 TAC is the protocol's native token: 21M fixed supply, issued on Bitcoin, bridged to Ethereum as an ERC-20.
 Holding it boosts points and lowers the dapp's private exit fee. TAC collected as relay fees is never sold,
 and [TacBuyback](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250) buys TAC on the open
-market for the protocol reserve. See [`docs/TAC.md`](./docs/TAC.md).
+market for the protocol reserve. Holders govern everything the ops multisig controls, with votes weighed at a
+snapshot taken when each proposal opens; the dapp's Govern tab shows all of it live. See
+[`docs/TAC.md`](./docs/TAC.md).
 
 ## Points and farms
 

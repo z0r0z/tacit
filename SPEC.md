@@ -822,6 +822,8 @@ all four owners executes immediately. It governs:
   changes a weight by at most ±25%, and can happen at most once every 30 days, adding a pool included.
   While a program runs, its total reward rate cannot be lowered and its end cannot move earlier.
 - `TacAirdrop`: a guardian that can pause and sweep. It cannot change the root, token or deadline.
+- The protocol reserve: TAC collected as relay fees and bought by `TacBuyback`, an immutable contract with
+  no owner whose ETH can only become TAC for the reserve or return to it.
 
 The pool consults each of them only through accept-or-reject callbacks.
 
@@ -829,7 +831,9 @@ The pool consults each of them only through accept-or-reject callbacks.
 
 TAC is the protocol's native asset. It was issued on Bitcoin with a fixed supply and a zero
 `mint_authority`, and it has an ERC-20 face minted by the pool. Holders govern through off-chain votes
-(Snapshot) that the ops multisig executes. Bitcoin governance opcodes are not assigned.
+that the ops multisig executes. A vote is weighed at the snapshot taken when its proposal opens: Bitcoin
+TAC counts only if it was confirmed by then and not yet spent, so TAC moved afterwards cannot vote again.
+Bitcoin governance opcodes are not assigned.
 
 ---
 

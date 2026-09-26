@@ -14,8 +14,7 @@ authority, and it is bridged to Ethereum as an ERC-20 minted only against a prov
 - **Cheaper private exits.** The dapp lowers the relayed exit fee for TAC holders from 0.30% to 0.25% /
   0.20% / 0.15% at the same tiers, counting shielded TAC and the public TAC on the wallet's own Ethereum
   account. The relay's cost floor still applies, so small exits pay the floor either way.
-- **Governance.** Holders vote on proposals, which the ops multisig executes. Bitcoin TAC holders vote by
-  proving a balance tier without revealing their exact holdings.
+- **Governance.** Holders vote on how the protocol's governed parts are run (see [Governance](#governance)).
 
 ## Where usage flows
 
@@ -30,6 +29,23 @@ authority, and it is bridged to Ethereum as an ERC-20 minted only against a prov
     to the reserve.
   - A keeper submits buys privately and holds off when a buy would be too small to be worth the gas.
 - **The reserve is not sold.** Reserve TAC is used for liquidity, rewards and grants.
+
+## Governance
+
+Governance oversees everything the ops multisig controls: the treasury and reserve, CollateralEngine
+(collateral ratios, price feeds, the cUSD stability fee), FarmManager (reward weights), the airdrop guardian
+and pool succession. The **Protocol** view in the dapp's Govern tab shows each of these with live on-chain
+values, who holds the role, and anything queued to change, with a button to propose a change to it.
+
+- **Proposing** takes proof of at least 100 TAC. Proposals and final results are pinned to IPFS.
+- **Voting** is by proving a balance tier (1 / 10 / 100 / 1,000 / 10,000 / 100,000 TAC) without revealing the
+  exact balance. It is available to Bitcoin TAC holders today.
+- **Snapshots.** Weight is fixed when a proposal opens: TAC counts only if it was held then and not yet
+  spent, so TAC moved afterwards cannot vote again.
+- **Execution.** Results are advisory. The ops multisig carries out passed proposals.
+
+The same data is available at `GET https://api.tacit.finance/governance/oversight?network=mainnet`, and
+proposals at `/governance/proposals`.
 
 ## Addresses (Ethereum)
 
