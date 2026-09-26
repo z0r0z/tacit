@@ -440,7 +440,7 @@ footer a:hover { color: var(--ink); }
 
   <section class="block" id="how" aria-labelledby="how-h">
     <h2 id="how-h">How it works</h2>
-    <p>The pool holds cBTC, a bitcoin-backed token. Sats swap into cBTC, cBTC is shielded into the pool, paid privately inside it, and leaves the same way.</p>
+    <p>The pool holds cBTC, a bitcoin-backed token. Sats can mix first, with no coordinator, then swap into cBTC. cBTC is shielded into the pool, paid privately inside it, and leaves the same way.</p>
     <figure class="diagram">
       <svg viewBox="0 0 340 178" role="img" aria-labelledby="diagram-t" fill="none" stroke="currentColor" stroke-width="1">
         <title id="diagram-t">sats swap to cBTC; cBTC is shielded into the pool and paid privately; it exits as cBTC and swaps back to sats</title>
@@ -495,16 +495,16 @@ footer a:hover { color: var(--ink); }
         <ul>
           <li>That a pool transaction happened, and when</li>
           <li>What entered and what exited</li>
-          <li>Their amounts, when already public (a bought lot)</li>
+          <li>Amounts, when already public (a bought lot)</li>
         </ul>
       </div>
       <div>
         <p class="eyebrow">You trust</p>
         <ul>
           <li>Bitcoin</li>
-          <li>The proof system: its circuit and setup</li>
+          <li>The proof system</li>
           <li>The indexer you use, or your own</li>
-          <li>cBTC’s backing, while you hold cBTC</li>
+          <li>cBTC’s backing, if you hold cBTC</li>
         </ul>
       </div>
     </div>
@@ -519,17 +519,17 @@ footer a:hover { color: var(--ink); }
 
   <section class="block" id="faq" aria-labelledby="faq-h">
     <h2 id="faq-h">Questions</h2>
-    <details><summary>What is this?</summary><p>A working demo of private payments on Bitcoin: send sats, pay a silent address, mix sats with other wallets into equal coins with no history, or move test cBTC through a shielded pool that hides amounts and owners.</p></details>
+    <details><summary>What is this?</summary><p>A working demo of private payments on Bitcoin. Send sats, pay a silent address, mix sats with other wallets into equal coins with no history, or move cBTC through a shielded pool that hides amounts and owners.</p></details>
     <details><summary>Is it a sidechain?</summary><p>No. Every step is an ordinary Bitcoin transaction. Indexers replay Bitcoin and check each proof; there is no other chain, federation or operator.</p></details>
-    <details><summary>Where are my sats? What is cBTC?</summary><p>Sats and silent payments stay sats in your wallet. The pool holds cBTC, a Tacit token backed by locked BTC and a slashable escrow; sats become cBTC and back by atomic swap. On signet it is a test token.</p></details>
+    <details><summary>Where are my sats? What is cBTC?</summary><p>Sats and silent payments stay sats in your wallet. The pool holds cBTC, a Tacit token backed by locked BTC and a slashable escrow. Sats turn into cBTC and back to sats by atomic swap, no custodian either way. On signet cBTC is a test token.</p></details>
     <details><summary>Who can see what?</summary><p>Anyone sees that a pool transaction happened. Only payer and payee know the amount and who paid whom. Silent and shielded addresses give each payment a fresh output only the recipient can find.</p></details>
-    <details><summary>Do I need to trust anyone?</summary><p>Bitcoin, the proof system and the indexer you use; run your own and it is Bitcoin and the proofs. No one holds the pool: a note moves only with its owner’s proof.</p></details>
+    <details><summary>Do I need to trust anyone?</summary><p>Bitcoin, the proof system, and the indexer you use — run your own and it is just Bitcoin and the proofs. No one holds the pool: a note moves only with its owner’s proof.</p></details>
     <details><summary>Does proving cost anything?</summary><p>No. Your device proves each shield, payment and exit in seconds, after a one-time download of the prover. You pay only the Bitcoin fee.</p></details>
     <details><summary>Mainnet or signet?</summary><p>Sends and silent payments run on mainnet today. The pool runs on signet, where cBTC is a test token: an ordinary Tacit asset with a fixed supply and no BTC behind it, sold by the faucet for signet sats. When the pool opens on mainnet it will carry real cBTC, and its proof system needs no new setup ceremony.</p></details>
   </section>
 
   <footer>
-    <a href="/secret-sats">Paper</a> ·
+    <a href="/secret-sats.pdf">Paper</a> ·
     <a href="https://github.com/src-company/tacit">GitHub</a> ·
     <a href="https://github.com/src-company/tacit/blob/main/SPEC.md#310-bitcoin-native-shielded-pool-reserved-not-enabled">SPEC §3.10</a> ·
     <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool.md">Design</a> ·
