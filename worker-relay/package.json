@@ -11,7 +11,8 @@
     "replenish": "node src/replenish.js",
     "monitor": "node src/balance-monitor.js",
     "points": "node src/points-indexer.js",
-    "btc-pool": "node src/btc-pool-indexer.js"
+    "btc-pool": "node src/btc-pool-indexer.js",
+    "evm-pool-keeper": "node src/evm-pool-keeper.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
