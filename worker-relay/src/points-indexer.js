@@ -368,6 +368,12 @@ function pointsForPmCreate(priorCount) {
 // can currently farm points cheaply (paying only the exit fee each cycle), a real gap a zfi peer flagged.
 // Accepted deliberately: points are an epoch allocation, not a fixed mint, so this can be tightened in a
 // later epoch without touching any TAC already claimed under an earlier one.
+//
+// The creator reward is a DIFFERENT hole, not the same tradeoff: creating a market costs nothing at all (no
+// collateral, no bet, any resolver including yourself), so a flat reward at Created alone is free-to-farm at
+// gas cost only — one script could mint unlimited creator points (a second zfi finding). This one IS closed:
+// the reward is deferred until the market's first Bet from an address other than the creator, gated by
+// pm_markets.creator_awarded so it only ever fires once per market regardless of how many further bets follow.
 async function scanPmCycle(store) {
   const priorCursor = store.loadPmCursor();
   const deployBlock = BigInt(CFG.pmDeployBlock);
@@ -410,26 +416,19 @@ async function scanPmCycle(store) {
   }
 
   createdItems.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
-  let createCount = store.countByActivity('pmcreate');
-  for (const { item, p, blockNumber, blockTime } of createdItems) {
+  // marketId -> { isEth, creator, createdTxHash } for markets created THIS cycle, since a market created
+  // earlier in this same page walk isn't in the store yet when the bet-pairing pass below needs to look it up.
+  const marketsThisBatch = new Map();
+  for (const { item, p } of createdItems) {
     const isEth = String(p.asset).toLowerCase() === ZERO_ADDRESS;
-    store.recordPmMarket(Number(p.marketId), isEth);
-    if (!isEth) continue;
     const creator = String(p.creator).toLowerCase();
-    const tacB = tacMultiplier(creator, blockNumber);
-    const zShareB = zShareMultiplier(creator, blockNumber);
-    const wrote = store.recordDeposit({
-      txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
-      depositor: creator, amountWei: '0', priorDepositCount: createCount,
-      points: pointsForPmCreate(createCount) * tacB * zShareB, activity: 'pmcreate', tacBoost: tacB, zShareBoost: zShareB,
-    });
-    if (wrote) createCount += 1;
+    store.recordPmMarket(Number(p.marketId), isEth, creator, item.transaction_hash);
+    marketsThisBatch.set(Number(p.marketId), { isEth, creator, createdTxHash: item.transaction_hash });
   }
 
-  // Pair each Bet with the mint Transfer immediately before it in the same tx (index - 1), then filter to
-  // markets pm_markets already knows are ETH-denominated (checking this cycle's own createdItems first, since
-  // a market created earlier in this same page walk isn't in the store yet).
-  const isEthThisBatch = new Map(createdItems.map((c) => [Number(c.p.marketId), String(c.p.asset).toLowerCase() === ZERO_ADDRESS]));
+  // Pair each Bet with the mint Transfer immediately before it in the same tx (index - 1), then resolve its
+  // market (this batch first, else the store) to filter to ETH-denominated markets and to check whether this
+  // is the market's first bet from someone other than its creator.
   const betCandidates = [];
   for (const list of byTxHash.values()) {
     list.sort((a, b) => a.index - b.index);
@@ -440,15 +439,21 @@ async function scanPmCycle(store) {
       if (!xfer.method.startsWith('Transfer(') || String(xfer.p.from).toLowerCase() !== ZERO_ADDRESS) continue;
       if (String(xfer.p.id) !== String(bet.p.id)) continue; // defensive: same share id on both halves of the pair
       const marketId = Number(BigInt(bet.p.id) & ~1n);
-      const isEth = isEthThisBatch.has(marketId) ? isEthThisBatch.get(marketId) : store.isEthMarket(marketId);
-      if (!isEth) continue;
-      betCandidates.push({ item: bet.item, marketId, bettor: String(xfer.p.to).toLowerCase(), amountWei: bet.p.amount, blockNumber: bet.blockNumber, blockTime: bet.blockTime });
+      const market = marketsThisBatch.get(marketId) ?? store.getPmMarket(marketId);
+      if (!market || !market.isEth) continue;
+      const bettor = String(xfer.p.to).toLowerCase();
+      betCandidates.push({
+        item: bet.item, marketId, bettor, amountWei: bet.p.amount, blockNumber: bet.blockNumber, blockTime: bet.blockTime,
+        creator: market.creator, createdTxHash: market.createdTxHash, creatorAlreadyAwarded: market.creatorAwarded === true,
+      });
     }
   }
   betCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
   let betCount = store.countByActivity('pmbet');
-  for (const { item, bettor, amountWei, blockNumber, blockTime } of betCandidates) {
+  let createCount = store.countByActivity('pmcreate');
+  const creatorAwardedThisCycle = new Set(); // marketId — belt-and-suspenders against awarding twice within one batch
+  for (const { item, marketId, bettor, amountWei, blockNumber, blockTime, creator, createdTxHash, creatorAlreadyAwarded } of betCandidates) {
     const tacB = tacMultiplier(bettor, blockNumber);
     const zShareB = zShareMultiplier(bettor, blockNumber);
     const wrote = store.recordDeposit({
@@ -457,6 +462,22 @@ async function scanPmCycle(store) {
       points: pointsForPmBet(amountWei, betCount) * tacB * zShareB, activity: 'pmbet', tacBoost: tacB, zShareBoost: zShareB,
     });
     if (wrote) betCount += 1;
+
+    if (bettor !== creator && !creatorAlreadyAwarded && !creatorAwardedThisCycle.has(marketId)) {
+      const creatorTacB = tacMultiplier(creator, blockNumber);
+      const creatorZShareB = zShareMultiplier(creator, blockNumber);
+      // Keyed on the market's own Created tx hash — real, unique per market, and never the triggering bet's
+      // own hash (which already keys the bettor's row above and would collide on deposits' tx_hash PK).
+      const wroteCreate = store.recordDeposit({
+        txHash: createdTxHash, blockNumber: Number(blockNumber), blockTime,
+        depositor: creator, amountWei: '0', priorDepositCount: createCount,
+        points: pointsForPmCreate(createCount) * creatorTacB * creatorZShareB, activity: 'pmcreate',
+        tacBoost: creatorTacB, zShareBoost: creatorZShareB,
+      });
+      if (wroteCreate) createCount += 1;
+      store.markPmCreatorAwarded(marketId);
+      creatorAwardedThisCycle.add(marketId);
+    }
   }
 
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.savePmCursor(newestSeen);

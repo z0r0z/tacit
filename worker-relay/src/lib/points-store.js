@@ -29,6 +29,20 @@ export function openStore(dbPath) {
     `);
   }
 
+  // pm_markets shipped first with just (market_id, is_eth); creator + created_tx_hash (needed to defer the
+  // creator reward to the market's first non-creator bet) were added right after, before any real market
+  // existed — CREATE TABLE IF NOT EXISTS below is a no-op on an already-existing table regardless of its
+  // column set, so this adds them explicitly. Safe even on a table with rows: both are NOT NULL with no
+  // default, but no market could exist yet without them already being known at that point in the rollout.
+  const pmMarketsCols = db.prepare(`PRAGMA table_info(pm_markets)`).all().map((c) => c.name);
+  if (pmMarketsCols.length > 0 && !pmMarketsCols.includes('creator')) {
+    db.exec(`
+      ALTER TABLE pm_markets ADD COLUMN creator TEXT NOT NULL DEFAULT '';
+      ALTER TABLE pm_markets ADD COLUMN created_tx_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE pm_markets ADD COLUMN creator_awarded INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS deposits (
       tx_hash          TEXT PRIMARY KEY,
@@ -142,10 +156,20 @@ export function openStore(dbPath) {
 
     -- Which markets are ETH-denominated (asset == address(0) at Created), recorded once so a later Bet can be
     -- filtered without re-fetching that market's Created event or calling the contract. Every market gets a
-    -- row, not just ETH ones, so "not eth" and "not yet scanned" are never confused.
+    -- row, not just ETH ones, so "not eth" and "not yet scanned" are never confused. creator_awarded gates the
+    -- flat creator reward on the market's first bet from a DIFFERENT address (see scanPmCycle) — otherwise
+    -- creating a market costs nothing (no collateral, no bet required, any resolver including yourself), so a
+    -- flat reward at Created alone would be free-to-farm at gas cost only, a strictly worse hole than the
+    -- bet-then-Exit tradeoff this program already accepts (that one at least costs real capital + a fee).
     CREATE TABLE IF NOT EXISTS pm_markets (
-      market_id INTEGER PRIMARY KEY,
-      is_eth    INTEGER NOT NULL
+      market_id       INTEGER PRIMARY KEY,
+      is_eth          INTEGER NOT NULL,
+      creator         TEXT NOT NULL,
+      -- Its own Created tx hash — a real, unique-per-market identifier the deferred creator reward can key
+      -- its deposits row on (the triggering bet's own tx hash isn't usable there: it already keys the
+      -- bettor's own row, and deposits.tx_hash is a primary key).
+      created_tx_hash TEXT NOT NULL,
+      creator_awarded INTEGER NOT NULL DEFAULT 0
     );
   `);
 
@@ -258,10 +282,11 @@ export function openStore(dbPath) {
     ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
   const recordPmMarketStmt = db.prepare(`
-    INSERT INTO pm_markets (market_id, is_eth) VALUES (@marketId, @isEth)
+    INSERT INTO pm_markets (market_id, is_eth, creator, created_tx_hash) VALUES (@marketId, @isEth, @creator, @createdTxHash)
     ON CONFLICT(market_id) DO NOTHING
   `);
-  const isEthMarketStmt = db.prepare(`SELECT is_eth FROM pm_markets WHERE market_id = ?`);
+  const getPmMarketStmt = db.prepare(`SELECT is_eth, creator, created_tx_hash, creator_awarded FROM pm_markets WHERE market_id = ?`);
+  const markPmCreatorAwardedStmt = db.prepare(`UPDATE pm_markets SET creator_awarded = 1 WHERE market_id = ?`);
 
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
@@ -420,16 +445,21 @@ export function openStore(dbPath) {
     savePmCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
   }
 
-  function recordPmMarket(marketId, isEth) {
-    recordPmMarketStmt.run({ marketId, isEth: isEth ? 1 : 0 });
+  function recordPmMarket(marketId, isEth, creator, createdTxHash) {
+    recordPmMarketStmt.run({ marketId, isEth: isEth ? 1 : 0, creator: creator.toLowerCase(), createdTxHash });
   }
 
-  // true/false once the market's Created event has been seen, null if it hasn't (a Bet arriving before its
-  // own market's Created is never expected in practice, since PM requires the market to exist first, but
-  // this stays undecided rather than guessing if the scan somehow saw one out of order).
-  function isEthMarket(marketId) {
-    const row = isEthMarketStmt.get(marketId);
-    return row ? !!row.is_eth : null;
+  // { isEth, creator, createdTxHash, creatorAwarded } once the market's Created event has been seen, null if
+  // it hasn't (a Bet arriving before its own market's Created is never expected in practice, since PM
+  // requires the market to exist first, but this stays undecided rather than guessing if the scan somehow
+  // saw one out of order).
+  function getPmMarket(marketId) {
+    const row = getPmMarketStmt.get(marketId);
+    return row ? { isEth: !!row.is_eth, creator: row.creator, createdTxHash: row.created_tx_hash, creatorAwarded: !!row.creator_awarded } : null;
+  }
+
+  function markPmCreatorAwarded(marketId) {
+    markPmCreatorAwardedStmt.run(marketId);
   }
 
   return {
@@ -438,6 +468,6 @@ export function openStore(dbPath) {
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
     loadCeCursor, saveCeCursor, loadZrouterCursor, saveZrouterCursor,
-    loadPmCursor, savePmCursor, recordPmMarket, isEthMarket,
+    loadPmCursor, savePmCursor, recordPmMarket, getPmMarket, markPmCreatorAwarded,
   };
 }
