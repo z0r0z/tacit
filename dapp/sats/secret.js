@@ -574,7 +574,7 @@ export function mount(root, ctx) {
     if (ph !== 'active') { put(S.body, el('div', {}, ABOUT.sats)); return; }
     const faucetLink = el('a', { href: 'https://signetfaucet.com', target: '_blank', rel: 'noopener noreferrer' }, 'signetfaucet.com');
     put(S.body,
-      el('div', {}, `The buy costs about ${n(need())} signet sats with fees${satsKnown() ? `; you have ${n(who.sats)}` : ''}. The faucet sends 10,000.`),
+      el('div', {}, `The buy costs about ${n(need())} signet sats with fees${satsKnown() ? `; you have ${n(who.sats)}` : ''}. The faucet sends 5,000.`),
       el('div', { class: 'row' },
         button('Get signet sats', () => run('sats', async (say) => { say('asking the faucet…'); await ctx.getSats(); }, { needKey: false }), !ctx.getSats),
         el('span', { class: 'small muted' }, 'or ', faucetLink)),

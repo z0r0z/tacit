@@ -2,7 +2,7 @@
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
 const TACIT_URL = '/tacit.js?cb=4d8b8ad4';
-const SECRET_URL = '/sats/secret.js?cb=4e33721b';
+const SECRET_URL = '/sats/secret.js?cb=84c75f2d';
 const MIX_URL = '/sats/mix.js?cb=52f7e8da';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
@@ -640,8 +640,8 @@ async function faucetSats() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !j.txid) throw fail(j.error ? `Faucet: ${j.error}` : `Faucet unavailable (HTTP ${r.status}). Try signetfaucet.com.`);
   track(j.txid, 'Signet sats from the faucet');
-  faucetPending = { txid: j.txid, sats: j.sats || 10000, t: Date.now() };
-  log(`${fmtSats(j.sats || 10000)} on the way. You can use them before they confirm.`);
+  faucetPending = { txid: j.txid, sats: j.sats || 5000, t: Date.now() };
+  log(`${fmtSats(j.sats || 5000)} on the way. You can use them before they confirm.`);
   await refresh();
   for (const ms of [4000, 10000, 20000]) setTimeout(() => { if (faucetPending && T?.wallet.pub) refreshSats(); }, ms);
 }
