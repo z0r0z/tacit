@@ -83,6 +83,9 @@ export const ADDR = {
   // The cUSD CDP controller — EscrowPosted (wstETH collateral, cBTC-mint side) and CdpMinted (cUSD debt
   // minted) both live here. See points-indexer.js's scanCollateralEngineCycle.
   collateralEngine: opt('COLLATERAL_ENGINE_ADDR', '0x000000003f608BDdF0ca45934003ffb9DbDF70DB'),
+  // PM — zfi's parimutuel prediction-market singleton (Created/Bet/Transfer — see points-indexer.js's
+  // scanPmCycle). Mainnet only.
+  pm: opt('PM_ADDR', '0x0000003b32cDD39bc950e56093df98aF220aB5C5'),
   // Routes an EscrowPosted whose `from` is any of these helpers back to the real depositor via the
   // helper's own HelperEscrowPosted event — see points-indexer.js. Comma-separated: every CbtcEscrowHelper
   // ever deployed stays here, since old ones keep taking reclaimEscrow calls (and, in principle, further
@@ -437,6 +440,18 @@ export const CFG = {
   baseWethAddr: opt('BASE_WETH_ADDR', '0x4200000000000000000000000000000000000006'),
   robinhoodRpcUrl: opt('ROBINHOOD_RPC_URL', 'https://rpc.mainnet.chain.robinhood.com'),
   robinhoodWethAddr: opt('ROBINHOOD_WETH_ADDR', '0x0Bd7D308F8E1639FaB988DF18A8011f41EAcaD73'),
+
+  // ── PM prediction-market activity (src/points-indexer.js's scanPmCycle) ──
+  // A fifth way to earn points: creating or betting in an ETH-denominated PM market (asset == address(0) at
+  // creation — a market using any other collateral earns nothing here). Scored at Bet/Created time with no
+  // wait for market resolution, so a bet-then-Exit round trip can currently farm points cheaply — accepted
+  // deliberately for launch-phase activity; points are an epoch allocation, not a fixed mint, so this can be
+  // tuned or clawed back in a later epoch without needing to touch anything already claimed.
+  pointsBasePerPmBet: num('POINTS_BASE_PER_PM_BET', 1000),
+  // Market creation itself is free (no bet required), so this is a flat reward rather than volume-based —
+  // otherwise creating markets would be a zero-cost way to mint points before any real activity exists.
+  pointsPerPmCreate: num('POINTS_PER_PM_CREATE', 50),
+  pmDeployBlock: num('PM_DEPLOY_BLOCK', 26033835),
 
   // ── TAC-holder boost (src/lib/tac-holder-boost.js) ──
   // Every activity's points are multiplied by the depositor's TAC tier: "whole TAC:multiplier" pairs, judged

@@ -133,6 +133,20 @@ export function openStore(dbPath) {
       chain_id           INTEGER PRIMARY KEY,
       last_scanned_block INTEGER NOT NULL
     );
+
+    -- PM (parimutuel prediction markets, src/PM.sol) scan cursor — see scanPmCycle.
+    CREATE TABLE IF NOT EXISTS pm_cursor (
+      id                 INTEGER PRIMARY KEY CHECK (id = 1),
+      last_scanned_block INTEGER NOT NULL
+    );
+
+    -- Which markets are ETH-denominated (asset == address(0) at Created), recorded once so a later Bet can be
+    -- filtered without re-fetching that market's Created event or calling the contract. Every market gets a
+    -- row, not just ETH ones, so "not eth" and "not yet scanned" are never confused.
+    CREATE TABLE IF NOT EXISTS pm_markets (
+      market_id INTEGER PRIMARY KEY,
+      is_eth    INTEGER NOT NULL
+    );
   `);
 
   // Migration for a store created before tip tracking / the Privacy Pools boost / cBTC+cUSD mint activity
@@ -238,6 +252,16 @@ export function openStore(dbPath) {
     INSERT INTO zrouter_cursor (chain_id, last_scanned_block) VALUES (@chainId, @lastScannedBlock)
     ON CONFLICT(chain_id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
+  const loadPmCursorStmt = db.prepare(`SELECT last_scanned_block FROM pm_cursor WHERE id = 1`);
+  const savePmCursorStmt = db.prepare(`
+    INSERT INTO pm_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
+    ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
+  `);
+  const recordPmMarketStmt = db.prepare(`
+    INSERT INTO pm_markets (market_id, is_eth) VALUES (@marketId, @isEth)
+    ON CONFLICT(market_id) DO NOTHING
+  `);
+  const isEthMarketStmt = db.prepare(`SELECT is_eth FROM pm_markets WHERE market_id = ?`);
 
   // amount_wei stays a TEXT decimal string throughout (SQLite integers are 64-bit and wei amounts for a
   // single ETH wrap never approach that, so CAST...AS INTEGER above is safe; this is not meant to survive
@@ -387,11 +411,33 @@ export function openStore(dbPath) {
     saveZrouterCursorStmt.run({ chainId, lastScannedBlock: lastScannedBlock.toString() });
   }
 
+  function loadPmCursor() {
+    const row = loadPmCursorStmt.get();
+    return row ? BigInt(row.last_scanned_block) : null;
+  }
+
+  function savePmCursor(lastScannedBlock) {
+    savePmCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
+  }
+
+  function recordPmMarket(marketId, isEth) {
+    recordPmMarketStmt.run({ marketId, isEth: isEth ? 1 : 0 });
+  }
+
+  // true/false once the market's Created event has been seen, null if it hasn't (a Bet arriving before its
+  // own market's Created is never expected in practice, since PM requires the market to exist first, but
+  // this stays undecided rather than guessing if the scan somehow saw one out of order).
+  function isEthMarket(marketId) {
+    const row = isEthMarketStmt.get(marketId);
+    return row ? !!row.is_eth : null;
+  }
+
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
     dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
     loadCeCursor, saveCeCursor, loadZrouterCursor, saveZrouterCursor,
+    loadPmCursor, savePmCursor, recordPmMarket, isEthMarket,
   };
 }

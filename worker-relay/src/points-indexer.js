@@ -153,6 +153,9 @@ const WRAPPED_WITH_TIP_EVENT = {
 // actually receives the funds.
 const PP_BLOCKSCOUT_BASE = 'https://eth.blockscout.com/api/v2';
 const NATIVE_ETH_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+// PM.sol's own convention for "this market's collateral is native ETH" — the real zero address, NOT the
+// 0xEeee...EEeE sentinel Privacy Pools uses above (a different third-party protocol's own convention).
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 function pointsForDeposit(amountWei, priorDepositCount) {
   const amountEth = Number(amountWei) / 1e18;
@@ -336,6 +339,127 @@ async function scanCollateralEngineCycle(store) {
   }
 
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.saveCeCursor(newestSeen);
+}
+
+function pointsForPmBet(amountWei, priorCount) {
+  return (Number(amountWei) / 1e18) * CFG.pointsBasePerPmBet * earlyAdopterBonus(priorCount);
+}
+function pointsForPmCreate(priorCount) {
+  return CFG.pointsPerPmCreate * earlyAdopterBonus(priorCount);
+}
+
+// A fifth way to earn points: creating or betting in an ETH-denominated PM market (zfi's parimutuel
+// prediction-market singleton, src/PM.sol — mainnet only). Same Blockscout-pagination approach as
+// scanPrivacyPoolCycle/scanCollateralEngineCycle, since this address's own history would hit the same
+// eth_getLogs range cap on a cold-start backfill.
+//
+// A market's collateral asset is fixed at Created and is address(0) for ETH — both a market's creator and
+// every bettor in it only earn points when that holds; a market funded in any other asset earns nothing
+// here. Every market's asset is persisted to pm_markets regardless (not just ETH ones), so a later Bet's
+// lookup is a definite "not eth" rather than an ambiguous "not yet scanned."
+//
+// A Bet event alone carries no trader — PM.sol mints the winning-side share to the bettor as its own
+// ERC-6909-style Transfer(caller, from=0x0, to, id, amount) in the SAME tx, immediately before the Bet log
+// (same index - 1). `to` is the real bettor (not `caller`, the tx signer — they differ when someone bets on
+// another address's behalf); `id` is the share id, and marketId = id with its low bit cleared (YES/NO share
+// ids are marketId and marketId|1).
+//
+// This is scored immediately at Bet time, not deferred to market resolution — a bet-then-Exited round trip
+// can currently farm points cheaply (paying only the exit fee each cycle), a real gap a zfi peer flagged.
+// Accepted deliberately: points are an epoch allocation, not a fixed mint, so this can be tightened in a
+// later epoch without touching any TAC already claimed under an earlier one.
+async function scanPmCycle(store) {
+  const priorCursor = store.loadPmCursor();
+  const deployBlock = BigInt(CFG.pmDeployBlock);
+  let newestSeen = null;
+  let params = '';
+  const byTxHash = new Map(); // tx_hash -> item[], every item this cycle saw for that tx (any event type)
+  const createdItems = [];
+
+  for (;;) {
+    const res = await fetch(`${PP_BLOCKSCOUT_BASE}/addresses/${ADDR.pm}/logs${params}`);
+    if (!res.ok) throw new Error(`blockscout address-logs ${res.status}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) break;
+    if (newestSeen === null) newestSeen = BigInt(items[0].block_number);
+
+    let reachedCoverage = false;
+    for (const item of items) {
+      const blockNumber = BigInt(item.block_number);
+      if (blockNumber < deployBlock || (priorCursor != null && blockNumber <= priorCursor)) {
+        reachedCoverage = true;
+        break;
+      }
+      if (!item.decoded) continue;
+      const method = item.decoded.method_call;
+      if (!method.startsWith('Bet(') && !method.startsWith('Transfer(') && !method.startsWith('Created(')) continue;
+      const p = Object.fromEntries(item.decoded.parameters.map((x) => [x.name, x.value]));
+      const blockTime = Math.floor(new Date(item.block_timestamp).getTime() / 1000);
+      const entry = { item, p, blockNumber, blockTime, index: item.index, method };
+      if (method.startsWith('Created(')) createdItems.push(entry);
+      const list = byTxHash.get(item.transaction_hash) ?? [];
+      list.push(entry);
+      byTxHash.set(item.transaction_hash, list);
+    }
+
+    if (reachedCoverage || !data.next_page_params) break;
+    params = '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(data.next_page_params).map(([k, v]) => [k, String(v)])),
+    ).toString();
+  }
+
+  createdItems.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
+  let createCount = store.countByActivity('pmcreate');
+  for (const { item, p, blockNumber, blockTime } of createdItems) {
+    const isEth = String(p.asset).toLowerCase() === ZERO_ADDRESS;
+    store.recordPmMarket(Number(p.marketId), isEth);
+    if (!isEth) continue;
+    const creator = String(p.creator).toLowerCase();
+    const tacB = tacMultiplier(creator, blockNumber);
+    const zShareB = zShareMultiplier(creator, blockNumber);
+    const wrote = store.recordDeposit({
+      txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+      depositor: creator, amountWei: '0', priorDepositCount: createCount,
+      points: pointsForPmCreate(createCount) * tacB * zShareB, activity: 'pmcreate', tacBoost: tacB, zShareBoost: zShareB,
+    });
+    if (wrote) createCount += 1;
+  }
+
+  // Pair each Bet with the mint Transfer immediately before it in the same tx (index - 1), then filter to
+  // markets pm_markets already knows are ETH-denominated (checking this cycle's own createdItems first, since
+  // a market created earlier in this same page walk isn't in the store yet).
+  const isEthThisBatch = new Map(createdItems.map((c) => [Number(c.p.marketId), String(c.p.asset).toLowerCase() === ZERO_ADDRESS]));
+  const betCandidates = [];
+  for (const list of byTxHash.values()) {
+    list.sort((a, b) => a.index - b.index);
+    for (let i = 1; i < list.length; i++) {
+      const bet = list[i];
+      const xfer = list[i - 1];
+      if (!bet.method.startsWith('Bet(')) continue;
+      if (!xfer.method.startsWith('Transfer(') || String(xfer.p.from).toLowerCase() !== ZERO_ADDRESS) continue;
+      if (String(xfer.p.id) !== String(bet.p.id)) continue; // defensive: same share id on both halves of the pair
+      const marketId = Number(BigInt(bet.p.id) & ~1n);
+      const isEth = isEthThisBatch.has(marketId) ? isEthThisBatch.get(marketId) : store.isEthMarket(marketId);
+      if (!isEth) continue;
+      betCandidates.push({ item: bet.item, marketId, bettor: String(xfer.p.to).toLowerCase(), amountWei: bet.p.amount, blockNumber: bet.blockNumber, blockTime: bet.blockTime });
+    }
+  }
+  betCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
+
+  let betCount = store.countByActivity('pmbet');
+  for (const { item, bettor, amountWei, blockNumber, blockTime } of betCandidates) {
+    const tacB = tacMultiplier(bettor, blockNumber);
+    const zShareB = zShareMultiplier(bettor, blockNumber);
+    const wrote = store.recordDeposit({
+      txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
+      depositor: bettor, amountWei: String(amountWei), priorDepositCount: betCount,
+      points: pointsForPmBet(amountWei, betCount) * tacB * zShareB, activity: 'pmbet', tacBoost: tacB, zShareBoost: zShareB,
+    });
+    if (wrote) betCount += 1;
+  }
+
+  if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.savePmCursor(newestSeen);
 }
 
 function pointsForZswapEth(valueWei, priorCount) {
@@ -703,6 +827,7 @@ function startHttp(store) {
         const cursor = store.loadCursor();
         const ppCursor = store.loadPpCursor();
         const ceCursor = store.loadCeCursor();
+        const pmCursor = store.loadPmCursor();
         // zRouter ETH-swap scan (see scanZRouterCycle), one cursor per chain — forward-only, null until each
         // chain's first cycle runs.
         const zrouterCursors = Object.fromEntries(ZROUTER_CHAINS.map(({ chainId }) => {
@@ -718,6 +843,8 @@ function startHttp(store) {
           ppLastScannedBlock: ppCursor != null ? ppCursor.toString() : null,
           // CollateralEngine scan (cBTC escrow + cUSD mint activity — see scanCollateralEngineCycle).
           ceLastScannedBlock: ceCursor != null ? ceCursor.toString() : null,
+          // PM prediction-market activity (see scanPmCycle).
+          pmLastScannedBlock: pmCursor != null ? pmCursor.toString() : null,
           zrouterLastScannedBlock: zrouterCursors[1],
           zrouterLastScannedBlockByChain: zrouterCursors,
           // TAC transfer replay behind the holder boost; every other scan waits for it. null when the boost is off.
@@ -882,6 +1009,11 @@ async function main() {
       await scanCollateralEngineCycle(store);
     } catch (err) {
       log('collateral engine scan cycle failed:', err?.message || err);
+    }
+    try {
+      await scanPmCycle(store);
+    } catch (err) {
+      log('PM scan cycle failed:', err?.message || err);
     }
     for (const chain of ZROUTER_CHAINS) {
       try {
