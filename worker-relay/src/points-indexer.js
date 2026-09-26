@@ -501,10 +501,16 @@ const WETH_DEPOSIT_EVENT = {
 
 // zRouter is deployed at the same address on all three of these chains (confirmed with zfi) — only the RPC
 // and canonical WETH differ, so scanZRouterCycle below is called once per entry here.
+//
+// Robinhood Chain is disabled by default (ZROUTER_ROBINHOOD_ENABLED=0): it produces ~10 blocks/sec, and its
+// own cursor fell ~31,000 blocks behind (Signal 1 needs a full block body per block, unlike mainnet/Base's
+// much lower throughput), which OOM-crashed this whole service in a loop before the block-scan chunk cap
+// below existed. Re-enable once a catch-up strategy is verified safe against this chain's real throughput —
+// mainnet and Base are unaffected either way.
 const ZROUTER_CHAINS = [
   { chainId: 1, client: publicClient, wethAddr: WETH_ADDR },
   { chainId: 8453, client: clientForChain(8453, CFG.baseRpcUrl), wethAddr: CFG.baseWethAddr },
-  { chainId: 4663, client: clientForChain(4663, CFG.robinhoodRpcUrl), wethAddr: CFG.robinhoodWethAddr },
+  ...(CFG.zrouterRobinhoodEnabled ? [{ chainId: 4663, client: clientForChain(4663, CFG.robinhoodRpcUrl), wethAddr: CFG.robinhoodWethAddr }] : []),
 ];
 
 // A fourth way to earn points: swapping ETH through zSwap/zRouter — treated as "ETH reaching zRouter" as a
@@ -546,6 +552,12 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr }) {
   }
   const from = cursorBlock + 1n;
   if (confirmedTip < from) return;
+  // Cap how much of [from, confirmedTip] this single call processes — Signal 1 below fetches a full block
+  // body per block, and a fast chain (or a chain recovering from a stall) can hand this an arbitrarily large
+  // backlog. Processing it in bounded chunks, saving the cursor after each, means an interrupted catch-up
+  // (crash, redeploy) resumes from where it left off instead of restarting the whole backlog from scratch.
+  const chunkTip = from + BigInt(CFG.zrouterBlockScanChunk) - 1n;
+  if (chunkTip < confirmedTip) confirmedTip = chunkTip;
 
   const blockCache = new Map();
   const getBlock = async (blockNumber) => {
