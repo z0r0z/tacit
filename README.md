@@ -241,6 +241,13 @@ assets under `dapp/`, so they deploy with the app and resolve at a stable URL fo
 | cUSD | [tacit.finance/brand/cusd.svg](https://tacit.finance/brand/cusd.svg) | [`contracts/tokenlist-drafts/cusd-zk-icon.svg`](./contracts/tokenlist-drafts/cusd-zk-icon.svg) |
 | Tacit (protocol mark, 48×48) | [tacit.finance/brand/mark.svg](https://tacit.finance/brand/mark.svg) | [`assets/tacit-mark.svg`](./assets/tacit-mark.svg) |
 
+## TAC
+
+TAC is the protocol's native token: 21M fixed supply, issued on Bitcoin, bridged to Ethereum as an ERC-20.
+Holding it boosts points and lowers the dapp's private exit fee. TAC collected as relay fees is never sold,
+and [TacBuyback](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250) buys TAC on the open
+market for the protocol reserve. See [`docs/TAC.md`](./docs/TAC.md).
+
 ## Points and farms
 
 A time-limited launch program, not a protocol feature.
@@ -250,7 +257,9 @@ A time-limited launch program, not a protocol feature.
   2026-12-22). Every deposit gets an early-adopter bonus that decays as more of that same activity accrues
   — not a one-time reward for whoever is first. cUSD mints earn roughly 5x more per dollar than cBTC
   collateral posts; wrapping ETH from an address that has ever received a Privacy Pools withdrawal earns an
-  extra 1.2x. The zSwap activity counts forward from launch only, with no retroactive credit. Claims run
+  extra 1.2x. Holding 100 / 1,000 / 10,000 TAC in the same wallet multiplies that wallet's points by 1.25x /
+  1.5x / 2x ([`docs/TAC.md`](./docs/TAC.md)). The zSwap activity counts forward from launch only, with no
+  retroactive credit. Claims run
   through [`PointsDistributor`](https://etherscan.io/address/0x000000C918e44A3a443937fA7594eA4f7C95D6b9).
 - **Farms.** LP positions in the confidential pool earn wTAC from
   [`FarmManager`](https://etherscan.io/address/0x000031C47Cb61faB1CE2790a69625FABB71EDE24) — 99,700 TAC over

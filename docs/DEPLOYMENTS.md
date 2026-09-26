@@ -84,6 +84,7 @@ untouched since.
 | Total supply | 21,000,000 TAC — the on-chain commitment opens to this exactly; the `(supply, blinding)` is disclosed and pinned at [its metadata CID](https://ipfs.filebase.io/ipfs/bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai), so anyone can re-derive and check it against the chain alone |
 | Logo | [PNG, pinned on IPFS](https://ipfs.filebase.io/ipfs/bafkreibwpxssdmoczx75vsqmk5vpdyztwwz3qmykpucn5xow64ku5ht46m) alongside the CETCH metadata (also `dapp/tac-logo.png` in this repo); the SVG mark inlined on-chain in [TAC's token.list.wei listing](https://token.list.wei.limo) is mirrored at [`assets/tac-onchain.svg`](../assets/tac-onchain.svg) |
 | Ethereum ERC-20 | [`0xA1313eb9f3A445606D9583bcAc3ebeB56a858279`](https://etherscan.io/address/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279) |
+| Buyback | [`TacBuyback` `0x6919cbEf0e70AFFA02Ae02c86c532A137154f250`](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250): buys TAC for the reserve (the ops multisig) on the public TAC/ETH market; see [`TAC.md`](./TAC.md) |
 | Bridged supply | the ERC-20's live `totalSupply()` — currently ~2.5M TAC, all of it minted only against a proven Bitcoin-side burn |
 | Bitcoin activity | ~1,957 holders; 4,166 confidential transfers; 229 orderbook trades against real BTC since 2026-05-24 |
 
