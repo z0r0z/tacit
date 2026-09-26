@@ -41,6 +41,12 @@ import { makeCbtcNoteRecovery } from './cbtc-note-recovery.js';
 // The confidential deployment + asset register live in confidential-deployments.js (the single source the
 // deploy sync patches); this module consumes a resolved record via getConfidentialDeployment(network).
 
+// Public TAC held outside the Tacit wallet's own account (a connected Ethereum wallet) also counts toward the
+// holder exit rate. Shared by every ux instance: the app registers one function returning those addresses,
+// and each balance() scan asks it.
+let _externalTacHolders = () => [];
+export function setExternalTacHolders(fn) { _externalTacHolders = typeof fn === 'function' ? fn : () => []; }
+
 export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network } = {}) {
   const cfg = getConfidentialDeployment(network);
   if (!cfg || !cfg.pool) throw new Error(`confidential pool not deployed on "${network || activeNetwork()}"`);
@@ -445,8 +451,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       _privateTacWei = held ? held.value * BigInt(ctac.unitScale || '1') : 0n;
       if (ctac.underlying) {
         try {
-          const owner = account(scanPriv).address.replace(/^0x/, '').toLowerCase().padStart(64, '0');
-          _accountTacWei = BigInt((await ethCall(ctac.underlying, '0x70a08231' + owner)) || '0x0');
+          let ext = [];
+          try { ext = _externalTacHolders() || []; } catch {}
+          const addrs = [...new Set([account(scanPriv).address, ...ext]
+            .map((a) => String(a || '').toLowerCase()).filter((a) => /^0x[0-9a-f]{40}$/.test(a)))];
+          let sum = 0n;
+          for (const a of addrs) sum += BigInt((await ethCall(ctac.underlying, '0x70a08231' + a.slice(2).padStart(64, '0'))) || '0x0');
+          _accountTacWei = sum;
         } catch { /* keep the last reading; a failed read only costs the discount, never the balance */ }
       }
     }

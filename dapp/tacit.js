@@ -73,7 +73,7 @@ import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-deps.min.js';
 import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore, prfBytesToScalar as toValidScalar } from './prf-wallet.js';
 import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';
-import { makeConfidentialPoolUx } from './confidential-pool-ux.js';
+import { makeConfidentialPoolUx, setExternalTacHolders } from './confidential-pool-ux.js';
 import { renderConfidentialPoolTab } from './confidential-pool-tab.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 import { renderCdpTab } from './confidential-defi-tab.js';
@@ -19687,6 +19687,8 @@ let _poolUx = null;
 function _poolUxSingleton() {
   return _poolUx || (_poolUx = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256 }));
 }
+// A connected Ethereum wallet's public TAC counts toward the holder exit rate in every pool tab.
+setExternalTacHolders(() => (ethWallet?.state?.address ? ['0x' + String(ethWallet.state.address).replace(/^0x/, '')] : []));
 
 async function scanHoldingsCrossChain(force = false) {
   const net = currentNetworkName();

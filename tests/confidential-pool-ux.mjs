@@ -5,7 +5,7 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
-import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
+import { makeConfidentialPoolUx, setExternalTacHolders } from '../dapp/confidential-pool-ux.js';
 import { getConfidentialDeployment } from '../dapp/confidential-deployments.js';
 import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 
@@ -1081,4 +1081,29 @@ test('balance: a full scan counts the wallet account\'s public TAC toward the ho
   failCall = false;
   await ux.balance(key, { cbtc: false, bridge: false });
   assert.equal(ux.holderFeeBps(), 30n, 'below 100 TAC -> the standard rate');
+});
+
+test('balance: a connected wallet\'s public TAC also counts toward the holder rate', async () => {
+  const TAC_ERC20 = getConfidentialDeployment('mainnet').assets.find((a) => a.ticker === 'cTAC').underlying.toLowerCase();
+  const EXT = '0x' + 'e1'.repeat(20);
+  const held = new Map([[EXT.slice(2), 1500n * 10n ** 18n]]); // only the connected wallet holds TAC
+  const fetchImpl = async (_url, opts) => {
+    const { method, params, id } = JSON.parse(opts.body);
+    let result = [];
+    if (method === 'eth_blockNumber') result = '0x1';
+    if (method === 'eth_call' && params[0].to === TAC_ERC20) {
+      const who = params[0].data.slice(-40);
+      result = '0x' + (held.get(who) ?? 0n).toString(16).padStart(64, '0');
+    }
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id, result }) };
+  };
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl });
+  try {
+    setExternalTacHolders(() => [EXT, 'not-an-address']);
+    await ux.balance('0x' + '44'.repeat(32), { cbtc: false, bridge: false });
+    assert.equal(ux.holderFeeBps(), 20n, '1,500 TAC in the connected wallet -> the 1,000 tier');
+    setExternalTacHolders(() => { throw new Error('wallet gone'); });
+    await ux.balance('0x' + '44'.repeat(32), { cbtc: false, bridge: false });
+    assert.equal(ux.holderFeeBps(), 30n, 'no connected wallet -> only the account\'s own TAC counts');
+  } finally { setExternalTacHolders(() => []); }
 });

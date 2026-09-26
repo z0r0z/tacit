@@ -12,8 +12,8 @@ authority, and it is bridged to Ethereum as an ERC-20 minted only against a prov
   after earns nothing. It applies to every points activity (ETH wraps, cBTC collateral posts, cUSD mints and
   zRouter ETH swaps on Ethereum, Base and Robinhood) from block 26061220 on.
 - **Cheaper private exits.** The dapp lowers the relayed exit fee for TAC holders from 0.30% to 0.25% /
-  0.20% / 0.15% at the same tiers, counting shielded TAC and the public TAC on the wallet's own Ethereum
-  account. The relay's cost floor still applies, so small exits pay the floor either way.
+  0.20% / 0.15% at the same tiers, counting shielded TAC, the public TAC on the wallet's own Ethereum account
+  and TAC in a connected Ethereum wallet. The relay's cost floor still applies, so small exits pay the floor either way.
 - **Governance.** Holders vote on how the protocol's governed parts are run (see [Governance](#governance)).
 
 ## Where usage flows
