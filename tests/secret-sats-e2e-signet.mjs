@@ -489,15 +489,20 @@ async function stageExit() {
     saveState();
     log(`exit body ${hexToBytes(strip(r.spend.bodyHex)).length} bytes: exit ${EXIT_AMOUNT} at vout 0 to the maker, want ${EXIT_SATS} sats at vout 1 to Bob's exit key #${r.payout.counter}, ${r.spend.outputs.length} internal outputs`);
     const { payload } = await proveTimed('exit', r.spend, st);
+    st.payloadHex = bytesToHex(payload);
+    saveState();
     // Maker side: check the offer, the exit boundary and the proof natively before paying anything.
     const v = await zap.validateExitToSats({ pool, payload, offer: st.offer, maker, amount: EXIT_AMOUNT, asset: '0x' + ASSET, root: st.root, verify: verifier.verify });
     st.makerVerifiedProof = true;
     log('maker validated the offer, the exit boundary and the proof natively');
     const outputs = zap.makerCarrierOutputs({ exitVout: v.exitVout, wantVout: v.wantVout, wantValue: v.wantValue, payoutScriptPubKey: v.payoutScriptPubKey, makerSpk: FUND.spk, exitSats: dapp.DUST })
       .map((o) => ({ value: Number(o.value), script: o.script }));
-    const coins = await fundingCoins([`${makerBind.txid}:${makerBind.vout}`]);
+    // The maker's commit is funded by the funding wallet, or by Alice's transparent change when the shared
+    // funding wallet is short; the maker's bind is signed by the funding key either way.
+    let signer = FUND, coins = await fundingCoins([`${makerBind.txid}:${makerBind.vout}`]);
+    if (coins.reduce((t, u) => t + u.value, 0) < 5_000) { signer = aliceT; coins = (await utxosOf(aliceT.spk)).sort((x, y) => y.value - x.value); log('funding wallet short; Alice\'s change funds the maker commit'); }
     const c = await buildCarrier({
-      signer: FUND, coins, payload,
+      signer, coins, payload,
       extraInputs: [{ txid: makerBind.txid, vout: makerBind.vout, value: makerBind.value, priv: FUND.priv, pub: FUND.pub }],
       outputs,
     });
