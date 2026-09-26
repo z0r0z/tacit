@@ -2783,11 +2783,13 @@ async function _ethCall(network, to, data) {
   }
   return null;
 }
-// eth_call at a past block, for governance snapshots. Public endpoints only serve recent state, so an
-// archive-capable GOV_ETH_ARCHIVE_RPC is tried first; null when nobody can answer.
+// eth_call at a past block, for governance snapshots. Many endpoints only serve recent state, so the
+// archive-capable GOV_ETH_ARCHIVE_RPC list (comma-separated) is tried first; null when nobody can answer.
 async function _ethCallAt(env, network, to, data, blockTag) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, blockTag] });
-  const rpcs = [...(network === 'mainnet' && env && env.GOV_ETH_ARCHIVE_RPC ? [env.GOV_ETH_ARCHIVE_RPC] : []), ...(_TETH_ETH_RPCS[network] || [])];
+  const archive = network === 'mainnet' && env && env.GOV_ETH_ARCHIVE_RPC
+    ? String(env.GOV_ETH_ARCHIVE_RPC).split(',').map((u) => u.trim()).filter((u) => /^https:\/\//.test(u)) : [];
+  const rpcs = [...archive, ...(_TETH_ETH_RPCS[network] || [])];
   for (const rpc of rpcs) {
     try {
       const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });

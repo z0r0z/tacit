@@ -40,8 +40,9 @@ and pool succession. The **Protocol** view in the dapp's Govern tab shows each o
 values, who holds the role, and anything queued to change, with a button to propose a change to it.
 
 - **Proposing** takes proof of at least 100 TAC. Proposals and final results are pinned to IPFS.
-- **Voting** is by proving a balance tier (1 / 10 / 100 / 1,000 / 10,000 / 100,000 TAC) without revealing the
-  exact balance. It is available to Bitcoin TAC holders today.
+- **Voting.** Bitcoin TAC holders vote by proving a balance tier (1 / 10 / 100 / 1,000 / 10,000 / 100,000 TAC)
+  without revealing the exact balance. Holders of the public ERC-20 vote by signing with their Ethereum
+  wallet, and their exact balance counts.
 - **Snapshots.** Weight is fixed when a proposal opens: TAC counts only if it was held then and not yet
   spent, so TAC moved afterwards cannot vote again.
 - **Execution.** Results are advisory. The ops multisig carries out passed proposals, and each one's page links

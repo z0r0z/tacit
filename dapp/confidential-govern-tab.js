@@ -75,7 +75,8 @@ async function renderList(body) {
   body.innerHTML = `
     <div class="note-concept" style="margin-bottom:14px;"><b>TAC governance.</b> Holders oversee what the ops
       multisig controls: CollateralEngine and FarmManager parameters, the treasury and reserve, and pool succession.
-      Vote with TAC held on <b>Bitcoin</b> by proving a balance tier, which keeps your exact balance hidden.
+      Vote with TAC held on <b>Bitcoin</b> by proving a balance tier, which keeps your exact balance hidden, or
+      with public TAC in a connected <b>Ethereum</b> wallet, where the exact balance counts.
       Weight is taken at a snapshot when a proposal opens, so TAC moved afterwards cannot vote twice. Results are
       advisory; the multisig carries them out. See <b>Protocol</b> for everything under its control.</div>
     <div class="gov-toolbar">
@@ -292,7 +293,7 @@ async function openBatchPopup(p, choice) {
     key: 'erc20', live: _gov.ethConnected(), kind: 'public',
     title: 'Public — Ethereum TAC (external wallet)',
     note: _gov.ethConnected()
-      ? `Sign with ${esc((_gov.ethAddress() || '').slice(0, 10))}… ; exact ERC20 balance counted.`
+      ? `Sign with ${esc((_gov.ethAddress() || '').slice(0, 10))}…; the wallet's exact TAC balance at the proposal's snapshot is counted.`
       : 'Connect an Ethereum wallet to use this source.',
   });
 
