@@ -371,11 +371,14 @@ await test('fill: a valid offer is checked natively and carried from the maker c
   if (commit.outputs[1]) assert.equal(hex(commit.outputs[1].script), MAKER_SPK);
   // Carrier: vin[0] the commit, vin[1] the bind; vout[0] the exit to the faucet key, vout[1] the want in full.
   assert.deepEqual(reveal.inputs.map((i) => [i.txid, i.vout]), [[r.commitTxid, 0], [q.bind.txid, q.bind.vout]]);
-  assert.equal(reveal.outputs.length, 2);
   assert.deepEqual([reveal.outputs[0].value, hex(reveal.outputs[0].script)], [546, MAIN_SPK]);
   assert.deepEqual([reveal.outputs[1].value, '0x' + hex(reveal.outputs[1].script)], [950, o.r.payout.scriptPubKey]);
+  // The bind coin is worth more than the carrier needs: the rest returns to the maker key after the signed indices.
+  assert.equal(reveal.outputs.length, 3);
+  assert.equal(hex(reveal.outputs[2].script), MAKER_SPK);
   const outSum = reveal.outputs.reduce((s, x) => s + x.value, 0);
-  assert.ok(commit.outputs[0].value + 3_000 > outSum, 'the carrier pays its outputs and a fee');
+  const revealFee = commit.outputs[0].value + 3_000 - outSum;
+  assert.ok(revealFee >= 500 && revealFee < 2_000, `the carrier pays a fee, not the bind coin (${revealFee})`);
   // The pool was asked about the anchor root and every nullifier; the proof was checked.
   assert.ok(b.ctl.calls.includes('/btc-pool/root/1000'));
   assert.equal(b.ctl.calls.filter((p) => p.startsWith('/btc-pool/nullifier/')).length, o.r.spend.nullifiers.length);

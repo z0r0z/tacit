@@ -313,13 +313,26 @@ export async function exitToWallet(tacit, { poolWallet, amount, asset, anchor = 
 }
 
 // ── back to sats ──
-async function faucetCall(url, init) {
+async function faucetCall(url, init, { timeoutMs = 60_000 } = {}) {
   let r;
-  try { r = await fetch(url, { cache: 'no-store', ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } }); }
-  catch { throw new Error('The faucet is unreachable; try again in a minute.'); }
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  try { r = await fetch(url, { cache: 'no-store', ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) }, signal: ctl?.signal }); }
+  catch { throw Object.assign(new Error('The faucet is unreachable; try again in a minute.'), { unreachable: true }); }
+  finally { if (timer) clearTimeout(timer); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Faucet: ${j.error || `HTTP ${r.status}`}`);
   return j;
+}
+async function findFill(faucetUrl, quoteId, say) {
+  for (let i = 0; i < 12; i++) {
+    say('checking with the faucet…');
+    const st = await fetchFaucet(faucetUrl).catch(() => null);
+    const hit = st?.maker?.recent_fills?.find((x) => x.quoteId === quoteId);
+    if (hit) return { txid: hit.txid, sats: hit.sats, commitTxid: null };
+    await new Promise((res) => setTimeout(res, 10_000));
+  }
+  return null;
 }
 export const makerQuote = (units, faucetUrl = FAUCET_URL) => faucetCall(`${faucetUrl}/faucet/maker/quote?units=${BigInt(units)}`);
 
@@ -340,13 +353,21 @@ export async function sellForSats(tacit, { poolWallet, amount, asset, anchor = n
   });
   const { payloadHex } = await prove(r.spend, say);
   say('the faucet is checking and posting the swap…');
-  const f = await faucetCall(`${faucetUrl}/faucet/maker/fill`, {
-    method: 'POST',
-    body: JSON.stringify({
-      quoteId: q.quoteId, payload: payloadHex,
-      offer: { exitOpening: { value: r.offer.exitOpening.value.toString(), blinding: r.offer.exitOpening.blinding }, payoutScriptPubKey: r.offer.payoutScriptPubKey },
-    }),
-  });
+  let f;
+  try {
+    f = await faucetCall(`${faucetUrl}/faucet/maker/fill`, {
+      method: 'POST',
+      body: JSON.stringify({
+        quoteId: q.quoteId, payload: payloadHex,
+        offer: { exitOpening: { value: r.offer.exitOpening.value.toString(), blinding: r.offer.exitOpening.blinding }, payoutScriptPubKey: r.offer.payoutScriptPubKey },
+      }),
+    }, { timeoutMs: 120_000 });
+  } catch (e) {
+    // The fill may have gone out with its answer lost on the way back: the faucet lists recent fills by quote.
+    if (!e.unreachable) throw e;
+    f = await findFill(faucetUrl, q.quoteId, say);
+    if (!f) throw new Error('The faucet did not answer. If the swap went out it shows in your activity within a few minutes.');
+  }
   return {
     revealTxid: f.txid, commitTxid: f.commitTxid, sats: Number(f.sats), units: BigInt(amount),
     payout: { counter: r.payout.counter, scriptPubKey: r.payout.scriptPubKey, vout: q.wantVout }, anchor: a.hAnchor,

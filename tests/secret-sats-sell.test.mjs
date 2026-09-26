@@ -166,5 +166,20 @@ await test('sellForSats: faucet errors surface as one line', async () => {
   } finally { globalThis.fetch = saved; }
 });
 
+await test('sellForSats: a fill whose answer is lost is found in the faucet\'s recent fills', async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes('/faucet/maker/fill')) throw new TypeError('network error');
+    if (u.endsWith('/faucet/status')) return json({ ...STATUS, maker: { ...STATUS.maker, recent_fills: [{ quoteId: 'q'.repeat(32), txid: 'f'.repeat(64), units: '10000', sats: 950 }] } });
+    return saved(url, init);
+  };
+  try {
+    const r = await secret.sellForSats({}, { poolWallet: pw, amount: 10_000n, asset: ASSET, anchor: 1006, faucetUrl: FAUCET, prove: (b) => bp.prove(b, standIn) });
+    assert.equal(r.revealTxid, 'f'.repeat(64));
+    assert.equal(r.sats, 950);
+  } finally { globalThis.fetch = saved; }
+});
+
 console.log(`\n${passed} passed`);
 process.exit(process.exitCode || 0);

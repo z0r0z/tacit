@@ -668,9 +668,14 @@ export function makeFaucet({ tacit, deps, cfg, store, logger = log, now = () => 
     const commitSpk = tacit.p2trScript(Q_xonly);
     const cb = tacit.controlBlock(tacit.TAP_NUMS, parity);
     const witnessLen = 1 + 65 + (env.length < 0xfd ? 1 : 3) + env.length + 1 + 33 + 108;
-    const baseLen = 4 + 1 + 41 * 2 + 1 + outputs.reduce((s, o) => s + 9 + o.script.length, 0) + 4;
-    const revealFee = tacit.feeFor(Math.ceil((baseLen * 4 + 2 + witnessLen) / 4) + 5, rate);
-    const outSum = outputs.reduce((s, o) => s + o.value, 0);
+    const feeOf = (outs) => tacit.feeFor(Math.ceil(((4 + 1 + 41 * 2 + 1 + outs.reduce((s, o) => s + 9 + o.script.length, 0) + 4) * 4 + 2 + witnessLen) / 4) + 5, rate);
+    const sum = (outs) => outs.reduce((s, o) => s + o.value, 0);
+    // A bind coin worth more than the carrier needs returns the rest to the maker key, after the signed indices.
+    const withChange = [...outputs, { value: 0, script: makerSpk }];
+    const spare = tacit.DUST + bind.value - sum(outputs) - feeOf(withChange);
+    if (spare >= tacit.DUST) { withChange[withChange.length - 1].value = spare; outputs.splice(0, outputs.length, ...withChange); }
+    const revealFee = feeOf(outputs);
+    const outSum = sum(outputs);
     const commitValue = Math.max(tacit.DUST, outSum + revealFee - bind.value);
     const picked = [];
     let total = 0, commitFee = 0;
@@ -934,6 +939,8 @@ async function loadMaker(loaded, privHex) {
   ]);
   const verifier = makeBtcPoolVerifier({ network: 'signet', log });
   if (!verifier.enabled) { log(`maker off: ${verifier.reason}`); return null; }
+  // Load the verifier before serving, so the first fill does not wait on it.
+  try { await verifier.ready?.(); } catch (e) { log(`maker off: verifier did not load: ${e.message}`); return null; }
   const hashes = { secp: deps.secp, sha256: deps.sha256, keccak256: deps.keccak_256 };
   return {
     key: makerKeyFor(loaded, privHex),
