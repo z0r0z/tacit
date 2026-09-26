@@ -134,7 +134,7 @@ function proposalCard(p) {
       <span>${p.tally?.voters || 0} voter${(p.tally?.voters || 0) === 1 ? '' : 's'}</span>
       <span>${fmtTac(totalW)} TAC</span>
       ${lead ? `<span>leading: <b>${esc(lead.label)}</b> · ${lead.pct}%</span>` : ''}
-      ${p.result?.passed ? '<span class="gov-ok" style="font-weight:600;">✓ passed</span>' : (p.status === 'closed' ? '<span style="color:var(--red-warn);">did not pass</span>' : '')}
+      ${p.result?.passed ? `<span class="gov-ok" style="font-weight:600;">✓ passed${p.execution ? ' · executed' : ''}</span>` : (p.status === 'closed' ? '<span style="color:var(--red-warn);">did not pass</span>' : '')}
     </div>
   </div>`;
 }
@@ -208,9 +208,14 @@ async function renderVoteZone(p) {
   if (!zone) return;
 
   if (p.status === 'closed') {
+    const exec = p.execution
+      ? `<b class="gov-ok">Executed</b> by the ops multisig in
+         <a href="https://etherscan.io/tx/${esc(p.execution.tx_hash)}" target="_blank" rel="noopener" class="gov-link">${esc(p.execution.tx_hash.slice(0, 10))}… ↗</a>
+         (${new Date(p.execution.timestamp * 1000).toLocaleDateString()}).`
+      : (p.result?.passed ? 'Awaiting execution by the ops multisig.' : '');
     zone.innerHTML = `<div class="gov-soft">
       ${p.result?.passed ? `<b class="gov-ok">Passed</b> — “${esc(p.result.winner_choice)}” with ${fmtTac(p.result.winner_weight)} TAC.` : '<b>Did not pass.</b>'}
-      Advisory result recorded${p.result_cid ? ' and pinned to IPFS' : ''}; the multisig executes accordingly.</div>`;
+      Advisory result recorded${p.result_cid ? ' and pinned to IPFS' : ''}. ${exec}</div>`;
     return;
   }
   if (p.status === 'ended') {

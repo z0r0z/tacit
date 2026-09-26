@@ -2798,6 +2798,19 @@ async function _ethCallAt(env, network, to, data, blockTag) {
   }
   return null;
 }
+// Generic read-only JSON-RPC call over the same fallback list; null when nobody answers.
+async function _ethRpc(network, method, params) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+  for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
+    try {
+      const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && 'result' in j && j.result !== null) return j.result;
+    } catch {}
+  }
+  return null;
+}
 async function _ethGetBalance(network, address) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, 'latest'] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
@@ -25450,7 +25463,7 @@ function _getGovernance() {
     verifySchnorr, decodeCeremonyEligibilityEnvelope, bpRangeAggVerify,
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
     ethCall: _ethCall, ethGetStorageAt: _ethGetStorageAt, keccak256: keccak_256,
-    ethCallAt: _ethCallAt, ethBlockNumber: _ethBlockNumber,
+    ethCallAt: _ethCallAt, ethBlockNumber: _ethBlockNumber, ethRpc: _ethRpc,
     pinFileToIpfs: _pinFileToIpfs, filebaseConfigured: _filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool: _evmPool,

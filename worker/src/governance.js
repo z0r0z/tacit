@@ -75,6 +75,7 @@ export function buildGovernance(deps) {
     commitmentForUtxo, apiJson, chainOutspendProbe, fetchTipHeight, hash160,
     ethCall, ethGetStorageAt, keccak256,
     ethCallAt, ethBlockNumber,          // snapshot reads (optional; public/cTAC snapshot voting needs them)
+    ethRpc,                             // generic Ethereum JSON-RPC read, for checking an execution tx
     pinFileToIpfs, filebaseConfigured,
     CANONICAL_TAC_ASSET_ID_HEX,
     evmPool, confidentialPoolAddrFor,   // EVM-lane (cTAC) resolver — optional
@@ -106,6 +107,8 @@ export function buildGovernance(deps) {
   // A proposal's Bitcoin snapshot must be the tip it was created at, give or take a few blocks of propagation.
   const GOV_SNAPSHOT_MAX_AGE = 12;
   const GOV_ERC20_TO_BASE = 10n ** 10n;          // TAC ERC-20 wei (18 dp) per base unit (8 dp)
+  // The multisig that carries out passed proposals; an execution link must be a transaction to it.
+  const GOV_EXEC_MULTISIG_DEFAULT = '0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2';
   // Ethereum snapshot block: this many blocks behind head at creation, so it is settled before anyone votes.
   const GOV_ETH_SNAPSHOT_LAG = 12;
   const _SEL_NEXT_LEAF_INDEX = keccak256 ? bytesToHex(keccak256(enc('nextLeafIndex()'))).slice(0, 8) : null;
@@ -412,6 +415,7 @@ export function buildGovernance(deps) {
       exec_target: p.exec_target || '', exec_note: p.exec_note || '',
       tally: p.tally, status: statusOf(p),
       finalized: !!p.finalized, result: p.result || null, result_cid: p.result_cid || null,
+      execution: p.execution || null,
     };
     if (includeVotes) v.votes = votes || [];
     return v;
@@ -691,6 +695,47 @@ export function buildGovernance(deps) {
     return jsonResponse({ ok: true, result, result_cid: resultCid, tally }, 200, cors);
   }
 
+  // Record the multisig transaction that carried out a passed proposal. Only the operator links it (bearer
+  // GOV_EXEC_TOKEN), and only a transaction the chain confirms: successful, sent to the ops multisig, mined
+  // after voting ended. So a proposal page can show "executed in <tx>" and nobody can attach an unrelated one.
+  function tokenOk(req, env) {
+    const want = env.GOV_EXEC_TOKEN;
+    if (!want || want.length < 16) return false;
+    const m = (req.headers.get('Authorization') || '').match(/^Bearer (.+)$/);
+    if (!m || m[1].length !== want.length) return false;
+    let diff = 0;
+    for (let i = 0; i < want.length; i++) diff |= m[1].charCodeAt(i) ^ want.charCodeAt(i);
+    return diff === 0;
+  }
+  async function recordExecution(req, env, network, idHex, cors) {
+    if (!tokenOk(req, env)) return jsonResponse({ error: 'unauthorized' }, 401, cors);
+    if (!ethRpc) return jsonResponse({ error: 'execution checks are not wired' }, 501, cors);
+    const p = await env.REGISTRY_KV.get(pKey(network, idHex), 'json');
+    if (!p) return jsonResponse({ error: 'proposal not found' }, 404, cors);
+    if (!p.finalized || !p.result?.passed) return jsonResponse({ error: 'only a finalized, passed proposal has an execution' }, 409, cors);
+    let body;
+    try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+    const txHash = String(body.tx_hash || '').toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(txHash)) return jsonResponse({ error: 'tx_hash must be a 32-byte hex hash' }, 400, cors);
+
+    const multisig = String(env.GOV_EXEC_MULTISIG || GOV_EXEC_MULTISIG_DEFAULT).toLowerCase();
+    const [tx, receipt] = await Promise.all([
+      ethRpc(network, 'eth_getTransactionByHash', [txHash]),
+      ethRpc(network, 'eth_getTransactionReceipt', [txHash]),
+    ]);
+    if (!tx || !receipt) return jsonResponse({ error: 'transaction not found (or not mined yet)' }, 404, cors);
+    if (receipt.status !== '0x1') return jsonResponse({ error: 'transaction reverted' }, 403, cors);
+    if (String(tx.to || '').toLowerCase() !== multisig) return jsonResponse({ error: 'transaction was not sent to the ops multisig' }, 403, cors);
+    const block = await ethRpc(network, 'eth_getBlockByNumber', [receipt.blockNumber, false]);
+    const ts = block && block.timestamp ? parseInt(block.timestamp, 16) : null;
+    if (!Number.isInteger(ts)) return jsonResponse({ error: 'block lookup failed, retry shortly' }, 502, cors);
+    if (ts < p.voting_ends_at) return jsonResponse({ error: 'transaction predates the end of voting' }, 403, cors);
+
+    p.execution = { tx_hash: txHash, block: parseInt(receipt.blockNumber, 16), timestamp: ts, recorded_at: nowS() };
+    await env.REGISTRY_KV.put(pKey(network, idHex), JSON.stringify(p));
+    return jsonResponse({ ok: true, execution: p.execution }, 200, cors);
+  }
+
   // ---- public router ---------------------------------------------------------
   async function handle(req, env, url, network, cors, ctx) {
     const path = url.pathname;
@@ -702,6 +747,8 @@ export function buildGovernance(deps) {
     if (m && req.method === 'POST') return castVote(req, env, network, m[1], cors);
     m = path.match(/^\/governance\/proposal\/([0-9a-f]{64})\/finalize$/);
     if (m && req.method === 'POST') return finalize(env, network, m[1], cors);
+    m = path.match(/^\/governance\/proposal\/([0-9a-f]{64})\/execution$/);
+    if (m && req.method === 'POST') return recordExecution(req, env, network, m[1], cors);
     return null;   // not a governance route — let index.js fall through
   }
 

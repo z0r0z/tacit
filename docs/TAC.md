@@ -44,7 +44,8 @@ values, who holds the role, and anything queued to change, with a button to prop
   exact balance. It is available to Bitcoin TAC holders today.
 - **Snapshots.** Weight is fixed when a proposal opens: TAC counts only if it was held then and not yet
   spent, so TAC moved afterwards cannot vote again.
-- **Execution.** Results are advisory. The ops multisig carries out passed proposals.
+- **Execution.** Results are advisory. The ops multisig carries out passed proposals, and each one's page links
+  the multisig transaction that did it, checked on-chain, or shows it as still awaiting execution.
 
 The same data is available at `GET https://api.tacit.finance/governance/oversight?network=mainnet`, and
 proposals at `/governance/proposals`.

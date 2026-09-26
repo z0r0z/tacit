@@ -86,6 +86,7 @@ const ownerOf = new Map(); // txid -> pubkey that owns its outputs (default: the
 let ethHead = 5000;
 const ethCalls = [];
 let ethBalanceAt = () => null;
+let rpcStub = () => null;
 
 const gov = buildGovernance({
   jsonResponse: (obj, status = 200) => ({ status, body: obj }),
@@ -107,6 +108,7 @@ const gov = buildGovernance({
   hash160,
   ethCall: async () => null, keccak256: keccak_256,
   ethBlockNumber: async () => ethHead,
+  ethRpc: async (_n, method, params) => rpcStub(method, params),
   ethCallAt: async (_env, _net, to, data, blockTag) => { ethCalls.push({ to, data, blockTag }); return ethBalanceAt(blockTag); },
   pinFileToIpfs: async () => ({ cid: 'bafyfake' }), filebaseConfigured: () => true,
   CANONICAL_TAC_ASSET_ID_HEX,
@@ -284,4 +286,45 @@ test('public votes: balance at the snapshot block, in the same units as private 
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   ethHead = 5000;
   delete env.GOV_TAC_ERC20_MAINNET;
+});
+
+test('execution: only a verified multisig transaction after the vote can be linked, and only by the operator', async () => {
+  env.GOV_EXEC_TOKEN = 'x'.repeat(32);
+  const OPS = '0x006cd14f36f65ecbb29b2519ccbe63a0dc8549f2';
+  const { idHex } = await createAt('execution probe');
+  const auth = (token) => ({ method: 'POST', headers: { get: (h) => (h === 'Authorization' ? `Bearer ${token}` : null) }, json: async () => ({ tx_hash: '0x' + 'ab'.repeat(32) }) });
+  const exec = (token = env.GOV_EXEC_TOKEN) => gov.handle(auth(token), env, mkUrl(`/governance/proposal/${idHex}/execution`), NET, {});
+
+  assert.equal((await exec('y'.repeat(32))).status, 401, 'a wrong token is refused');
+  assert.equal((await exec()).status, 409, 'an open proposal has no execution');
+
+  // Pass and finalize it.
+  await castPrivate(idHex, [bigUtxo]);
+  const rec = JSON.parse(env.REGISTRY_KV._m.get(`gov:p:${NET}:${idHex}`));
+  const endsAt = Math.floor(Date.now() / 1000) - 100;
+  rec.voting_ends_at = endsAt;
+  env.REGISTRY_KV._m.set(`gov:p:${NET}:${idHex}`, JSON.stringify(rec));
+  const fin = await gov.handle(mkReq('POST', {}), env, mkUrl(`/governance/proposal/${idHex}/finalize`), NET, {});
+  assert.equal(fin.body.result.passed, true);
+
+  const chain = { to: OPS, status: '0x1', ts: endsAt + 50 };
+  rpcStub = (method) => {
+    if (method === 'eth_getTransactionByHash') return { to: chain.to };
+    if (method === 'eth_getTransactionReceipt') return { status: chain.status, blockNumber: '0x10' };
+    if (method === 'eth_getBlockByNumber') return { timestamp: '0x' + chain.ts.toString(16) };
+    return null;
+  };
+  chain.status = '0x0'; assert.equal((await exec()).status, 403, 'a reverted transaction is refused');
+  chain.status = '0x1'; chain.to = '0x' + '11'.repeat(20);
+  assert.match((await exec()).body.error, /ops multisig/);
+  chain.to = OPS; chain.ts = endsAt - 1;
+  assert.match((await exec()).body.error, /predates/);
+  chain.ts = endsAt + 50;
+  const ok = await exec();
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.execution.tx_hash, '0x' + 'ab'.repeat(32));
+  const view = await gov.handle({ method: 'GET', headers: { get: () => null } }, env, mkUrl(`/governance/proposal/${idHex}`), NET, {});
+  assert.equal(view.body.proposal.execution.block, 16);
+  rpcStub = () => null;
+  delete env.GOV_EXEC_TOKEN;
 });
