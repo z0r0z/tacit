@@ -17,17 +17,24 @@ import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
 
 const log = (...a) => console.log(`[points ${new Date().toISOString()}]`, ...a);
 
-// TAC-holder boost (lib/tac-holder-boost.js). Null when TAC_BOOST_TIERS is empty: every multiplier is then 1
-// and no scan is held back.
+// TAC-holder and Z-share-holder boosts (lib/tac-holder-boost.js, the second opened under the 'zshare'
+// namespace). Null when their *_BOOST_TIERS is empty: that multiplier is then 1 and it holds no scan back.
+// The two stack multiplicatively.
 let tacBoost = null;
+let zShareBoost = null;
 function tacMultiplier(address, blockNumber) {
   return tacBoost ? tacBoost.boostFor(address, Number(blockNumber)).multiplier : 1;
 }
-// An activity can only be scored once the TAC transfer replay covers its block, so each scan stops there.
-function capToTacCoverage(tip) {
-  if (!tacBoost) return tip;
-  const covered = BigInt(tacBoost.coveredThrough());
-  return covered < tip ? covered : tip;
+function zShareMultiplier(address, blockNumber) {
+  return zShareBoost ? zShareBoost.boostFor(address, Number(blockNumber)).multiplier : 1;
+}
+// An activity can only be scored once BOTH transfer replays cover its block, so each scan stops at whichever
+// is behind.
+function capToBoostCoverage(tip) {
+  let capped = tip;
+  if (tacBoost) { const c = BigInt(tacBoost.coveredThrough()); if (c < capped) capped = c; }
+  if (zShareBoost) { const c = BigInt(zShareBoost.coveredThrough()); if (c < capped) capped = c; }
+  return capped;
 }
 
 const DISTRIBUTOR_ABI = [
@@ -237,19 +244,20 @@ async function scanCollateralEngineCycle(store) {
   cbtcCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
   cusdCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
-  // Blockscout serves blocks the TAC replay hasn't reached yet. Score nothing and keep the cursor, so the
-  // whole page is retried next cycle rather than recording those activities unboosted.
+  // Blockscout serves blocks a boost's transfer replay hasn't reached yet. Score nothing and keep the cursor,
+  // so the whole page is retried next cycle rather than recording those activities unboosted.
   const newestCandidate = [...cbtcCandidates, ...cusdCandidates].reduce((m, c) => (c.blockNumber > m ? c.blockNumber : m), 0n);
-  if (capToTacCoverage(newestCandidate) < newestCandidate) return;
+  if (capToBoostCoverage(newestCandidate) < newestCandidate) return;
 
   let cbtcCount = store.countByActivity('cbtcmint');
   for (const { item, p, blockNumber, blockTime } of cbtcCandidates) {
     const depositor = (await realCbtcDepositor(item.transaction_hash, p.from)).toLowerCase();
-    const boost = tacMultiplier(depositor, blockNumber);
+    const tacB = tacMultiplier(depositor, blockNumber);
+    const zShareB = zShareMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
       txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
       depositor, amountWei: String(p.amount), priorDepositCount: cbtcCount,
-      points: pointsForCbtcEscrow(p.amount, cbtcCount) * boost, activity: 'cbtcmint', tacBoost: boost,
+      points: pointsForCbtcEscrow(p.amount, cbtcCount) * tacB * zShareB, activity: 'cbtcmint', tacBoost: tacB, zShareBoost: zShareB,
     });
     if (wrote) cbtcCount += 1;
   }
@@ -260,11 +268,12 @@ async function scanCollateralEngineCycle(store) {
     // signer, not any confidential note owner (which isn't public anyway).
     const tx = await publicClient.getTransaction({ hash: item.transaction_hash });
     const depositor = tx.from.toLowerCase();
-    const boost = tacMultiplier(depositor, blockNumber);
+    const tacB = tacMultiplier(depositor, blockNumber);
+    const zShareB = zShareMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
       txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
       depositor, amountWei: String(p.debtValue), priorDepositCount: cusdCount,
-      points: pointsForCusdMint(p.debtValue, cusdCount) * boost, activity: 'cusdmint', tacBoost: boost,
+      points: pointsForCusdMint(p.debtValue, cusdCount) * tacB * zShareB, activity: 'cusdmint', tacBoost: tacB, zShareBoost: zShareB,
     });
     if (wrote) cusdCount += 1;
   }
@@ -307,7 +316,7 @@ const WETH_DEPOSIT_EVENT = {
 async function scanZRouterCycle(store) {
   const cursorBlock = store.loadZrouterCursor();
   const latest = await publicClient.getBlockNumber();
-  const confirmedTip = capToTacCoverage(latest - BigInt(CFG.pointsConfirmations));
+  const confirmedTip = capToBoostCoverage(latest - BigInt(CFG.pointsConfirmations));
   // First-ever run: establish "now" as the starting line and stop — there is nothing before it to scan by
   // design (no backfill). Without this, a from = confirmedTip + 1 would keep being 1 block ahead of the
   // tip forever, since the cursor would never actually get saved to seed the next cycle.
@@ -364,11 +373,12 @@ async function scanZRouterCycle(store) {
 
   let priorCount = store.countByActivity('zswapeth');
   for (const [txHash, { blockNumber, blockTime, amountWei, depositor }] of candidates) {
-    const boost = tacMultiplier(depositor, blockNumber);
+    const tacB = tacMultiplier(depositor, blockNumber);
+    const zShareB = zShareMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
       txHash, blockNumber: Number(blockNumber), blockTime,
       depositor, amountWei: amountWei.toString(), priorDepositCount: priorCount,
-      points: pointsForZswapEth(amountWei, priorCount) * boost, activity: 'zswapeth', tacBoost: boost,
+      points: pointsForZswapEth(amountWei, priorCount) * tacB * zShareB, activity: 'zswapeth', tacBoost: tacB, zShareBoost: zShareB,
     });
     if (wrote) priorCount += 1;
   }
@@ -383,7 +393,7 @@ async function scanCycle(store) {
   };
 
   const latest = await publicClient.getBlockNumber();
-  const confirmedTip = capToTacCoverage(latest - BigInt(CFG.pointsConfirmations));
+  const confirmedTip = capToBoostCoverage(latest - BigInt(CFG.pointsConfirmations));
   if (confirmedTip <= cursor.lastScannedBlock) return;
 
   const chunk = BigInt(CFG.pointsScanChunk);
@@ -430,8 +440,9 @@ async function scanCycle(store) {
       const ppBoosted = store.hasEarlierPpWithdrawal(depositor, Number(evt.blockNumber));
       let points = pointsForDeposit(evt.args.amount, priorDepositCount);
       if (ppBoosted) points *= CFG.ppBoostMultiplier;
-      const boost = tacMultiplier(depositor, evt.blockNumber);
-      points *= boost;
+      const tacB = tacMultiplier(depositor, evt.blockNumber);
+      const zShareB = zShareMultiplier(depositor, evt.blockNumber);
+      points *= tacB * zShareB;
       const wrote = store.recordDeposit({
         txHash: evt.transactionHash,
         blockNumber: Number(evt.blockNumber),
@@ -444,7 +455,8 @@ async function scanCycle(store) {
         priorDepositCount,
         points,
         ppBoosted: ppBoosted ? 1 : 0,
-        tacBoost: boost,
+        tacBoost: tacB,
+        zShareBoost: zShareB,
         ...tipByTx.get(evt.transactionHash),
       });
       if (wrote) cursor.ethDepositCount += 1;
@@ -606,6 +618,8 @@ function startHttp(store) {
           zrouterLastScannedBlock: zrouterCursor != null ? zrouterCursor.toString() : null,
           // TAC transfer replay behind the holder boost; every other scan waits for it. null when the boost is off.
           tacBoostLastScannedBlock: tacBoost ? String(tacBoost.coveredThrough()) : null,
+          // Same, for the Z-share holder boost.
+          zShareBoostLastScannedBlock: zShareBoost ? String(zShareBoost.coveredThrough()) : null,
         }));
         return;
       }
@@ -714,15 +728,32 @@ async function main() {
       fromBlock: CFG.tacTokenDeployBlock,
     });
   }
+  if (CFG.zShareBoostTiers) {
+    if (!CFG.zShareBoostStartBlock) throw new Error('ZSHARE_BOOST_TIERS needs ZSHARE_BOOST_START_BLOCK');
+    zShareBoost = openTacBoost(new Database(CFG.pointsDbPath), {
+      tiers: parseBoostTiers(CFG.zShareBoostTiers),
+      windowBlocks: CFG.zShareBoostWindowBlocks,
+      startBlock: CFG.zShareBoostStartBlock,
+      fromBlock: CFG.zShareTokenDeployBlock,
+      namespace: 'zshare',
+    });
+  }
   startHttp(store);
 
   for (;;) {
-    // First, so every scan below can score up to the block it reached.
+    // First, so every scan below can score up to the block each replay reached.
     if (tacBoost) {
       try {
         await scanTacTransfers(tacBoost, publicClient, { token: ADDR.tacToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
       } catch (err) {
         log('TAC transfer scan cycle failed:', err?.message || err);
+      }
+    }
+    if (zShareBoost) {
+      try {
+        await scanTacTransfers(zShareBoost, publicClient, { token: ADDR.zShareToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
+      } catch (err) {
+        log('Z-share transfer scan cycle failed:', err?.message || err);
       }
     }
     // Runs before scanCycle so any Privacy Pools withdrawal that landed this cycle is already cached by the

@@ -72,11 +72,16 @@ export function minBalanceOver(rows, address, fromBlock, throughBlock) {
 
 // `db` is a better-sqlite3 handle (the points store's file is fine; the tables are separate).
 // fromBlock: the token's deploy block, where the replay starts. startBlock: activities before it get no boost,
-// so days scored before the boost existed are unchanged.
-export function openTacBoost(db, { tiers, windowBlocks, startBlock, fromBlock }) {
+// so days scored before the boost existed are unchanged. `namespace` picks the table pair (default 'tac', the
+// original TAC boost's tables) so a second token (e.g. a partner's own share token) can hold its own instance
+// side by side without its transfer history colliding with TAC's.
+export function openTacBoost(db, { tiers, windowBlocks, startBlock, fromBlock, namespace = 'tac' }) {
   if (!(windowBlocks > 0)) throw new Error('tac boost: windowBlocks must be > 0');
+  if (!/^[a-z][a-z0-9_]*$/.test(namespace)) throw new Error(`tac boost: invalid namespace "${namespace}"`);
+  const transfersTable = `${namespace}_transfers`;
+  const cursorTable = `${namespace}_boost_cursor`;
   db.exec(`
-    CREATE TABLE IF NOT EXISTS tac_transfers (
+    CREATE TABLE IF NOT EXISTS ${transfersTable} (
       tx_hash      TEXT NOT NULL,
       log_index    INTEGER NOT NULL,
       block_number INTEGER NOT NULL,
@@ -85,23 +90,23 @@ export function openTacBoost(db, { tiers, windowBlocks, startBlock, fromBlock })
       value_wei    TEXT NOT NULL,
       PRIMARY KEY (tx_hash, log_index)
     );
-    CREATE INDEX IF NOT EXISTS idx_tac_transfers_from ON tac_transfers(from_addr, block_number);
-    CREATE INDEX IF NOT EXISTS idx_tac_transfers_to ON tac_transfers(to_addr, block_number);
-    CREATE TABLE IF NOT EXISTS tac_boost_cursor (
+    CREATE INDEX IF NOT EXISTS idx_${transfersTable}_from ON ${transfersTable}(from_addr, block_number);
+    CREATE INDEX IF NOT EXISTS idx_${transfersTable}_to ON ${transfersTable}(to_addr, block_number);
+    CREATE TABLE IF NOT EXISTS ${cursorTable} (
       id                 INTEGER PRIMARY KEY CHECK (id = 1),
       last_scanned_block INTEGER NOT NULL
     );
   `);
 
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO tac_transfers (tx_hash, log_index, block_number, from_addr, to_addr, value_wei)
+    INSERT OR IGNORE INTO ${transfersTable} (tx_hash, log_index, block_number, from_addr, to_addr, value_wei)
     VALUES (@txHash, @logIndex, @blockNumber, @from, @to, @valueWei)`);
   const saveCursor = db.prepare(`
-    INSERT INTO tac_boost_cursor (id, last_scanned_block) VALUES (1, ?)
+    INSERT INTO ${cursorTable} (id, last_scanned_block) VALUES (1, ?)
     ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block`);
-  const loadCursor = db.prepare('SELECT last_scanned_block FROM tac_boost_cursor WHERE id = 1');
+  const loadCursor = db.prepare(`SELECT last_scanned_block FROM ${cursorTable} WHERE id = 1`);
   const rowsFor = db.prepare(`
-    SELECT block_number, log_index, from_addr, to_addr, value_wei FROM tac_transfers
+    SELECT block_number, log_index, from_addr, to_addr, value_wei FROM ${transfersTable}
     WHERE (from_addr = @a OR to_addr = @a) AND block_number <= @through
     ORDER BY block_number, log_index`);
 

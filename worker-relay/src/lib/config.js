@@ -61,6 +61,8 @@ export const ADDR = {
   // Public TAC ERC20 (contracts/deployments/1.json's tacToken) — read-only here, just to check the points
   // distributor's funded balance before attempting updateRoot.
   tacToken: opt('TAC_TOKEN_ADDR', '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279'),
+  // zfi's own Z Shares ERC20 — read-only here, for the Z-share holder boost (src/lib/tac-holder-boost.js).
+  zShareToken: opt('ZSHARE_TOKEN_ADDR', '0x00a6bA94BBb5474725515De88fE04F854f2dCb12'),
   // PointsDistributor (contracts/src/PointsDistributor.sol) — empty until deployed, in which case
   // points-indexer.js's settleCycle logs and skips publishing rather than failing.
   pointsDistributor: opt('POINTS_DISTRIBUTOR_ADDR', ''),
@@ -438,6 +440,14 @@ export const CFG = {
   tacBoostWindowBlocks: num('TAC_BOOST_WINDOW_BLOCKS', 7200),
   tacBoostStartBlock: num('TAC_BOOST_START_BLOCK', 0),
   tacTokenDeployBlock: num('TAC_TOKEN_DEPLOY_BLOCK', 25998751),
+
+  // ── Z-share holder boost (src/lib/tac-holder-boost.js, opened a second time under the 'zshare' namespace) ──
+  // Same mechanic as the TAC-holder boost above, applied to zfi's own Z Shares token instead — the two stack
+  // multiplicatively. Empty tiers switch it off.
+  zShareBoostTiers: opt('ZSHARE_BOOST_TIERS', ''),
+  zShareBoostWindowBlocks: num('ZSHARE_BOOST_WINDOW_BLOCKS', 7200),
+  zShareBoostStartBlock: num('ZSHARE_BOOST_START_BLOCK', 0),
+  zShareTokenDeployBlock: num('ZSHARE_TOKEN_DEPLOY_BLOCK', 23827015),
 
   // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
   // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC
