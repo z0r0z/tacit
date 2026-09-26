@@ -140,13 +140,25 @@ export function openTacBoost(db, { tiers, windowBlocks, startBlock, fromBlock, n
 // Replays the token's Transfer logs forward from the cursor to `confirmations` behind head, chunked like
 // scanCycle. Each chunk commits its rows and the cursor together, so a crash mid-scan never leaves the cursor
 // ahead of the rows it claims to cover.
+//
+// Some RPCs cap eth_getLogs by response size, not a fixed block count — a busy token's Transfer volume can
+// fail a range a quieter contract handles fine at the same `chunk`. On such an error this shrinks just that
+// range and retries, then grows back toward `chunk` once ranges start succeeding again, rather than adopting
+// a permanently tiny chunk (which would turn a large backfill into tens of thousands of round trips).
 export async function scanTacTransfers(boost, client, { token, confirmations, chunk }) {
   const latest = await client.getBlockNumber();
   const confirmedTip = Number(latest) - confirmations;
   let from = boost.coveredThrough() + 1;
+  let size = chunk;
   while (from <= confirmedTip) {
-    const to = Math.min(from + chunk - 1, confirmedTip);
-    const logs = await client.getLogs({ address: token, event: TRANSFER_EVENT, fromBlock: BigInt(from), toBlock: BigInt(to) });
+    const to = Math.min(from + size - 1, confirmedTip);
+    let logs;
+    try {
+      logs = await client.getLogs({ address: token, event: TRANSFER_EVENT, fromBlock: BigInt(from), toBlock: BigInt(to) });
+    } catch (err) {
+      if (size > 1) { size = Math.max(1, Math.floor(size / 4)); continue; }
+      throw err;
+    }
     boost.recordTransfers(logs.map((l) => ({
       txHash: l.transactionHash,
       logIndex: Number(l.logIndex),
@@ -156,6 +168,7 @@ export async function scanTacTransfers(boost, client, { token, confirmations, ch
       valueWei: l.args.amount.toString(),
     })), to);
     from = to + 1;
+    size = Math.min(chunk, size * 4);
   }
   return boost.coveredThrough();
 }
