@@ -180,8 +180,8 @@ async function renderDetail(body) {
       <span>${p.tally?.private_voters || 0} private 🔒</span>
       <span>${p.tally?.public_voters || 0} public</span>
       ${p.snapshot_height ? `<span>snapshot: Bitcoin block ${esc(p.snapshot_height)}${p.eth_snapshot_block ? ` · Ethereum block ${esc(p.eth_snapshot_block)}` : ''}</span>` : ''}
-      ${p.cid ? `<a href="https://ipfs.io/ipfs/${esc(p.cid)}" target="_blank" rel="noopener" class="gov-link">proposal on IPFS ↗</a>` : ''}
-      ${p.result_cid ? `<a href="https://ipfs.io/ipfs/${esc(p.result_cid)}" target="_blank" rel="noopener" class="gov-link">result snapshot ↗</a>` : ''}
+      ${p.cid ? `<a href="https://ipfs.filebase.io/ipfs/${esc(p.cid)}" target="_blank" rel="noopener" class="gov-link">proposal on IPFS ↗</a>` : ''}
+      ${p.result_cid ? `<a href="https://ipfs.filebase.io/ipfs/${esc(p.result_cid)}" target="_blank" rel="noopener" class="gov-link">result snapshot ↗</a>` : ''}
     </div>
 
     <div id="gov-vote-zone"></div>`;

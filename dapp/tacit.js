@@ -57179,6 +57179,8 @@ function _consumeTabUrlHash() {
     } else if (parsed.tab === 'mixer') {
       if (typeof renderMixer === 'function') { try { renderMixer(); } catch {} }
       if (typeof startMixerAutoRefresh === 'function') { try { startMixerAutoRefresh(); } catch {} }
+    } else if (parsed.tab === 'govern') {
+      try { renderGovernTab(wallet, governanceApi()); } catch (e) { console.error('govern tab', e); }
     } else if (parsed.aid && parsed.tab === 'discover') {
       // Already on Discover but aid changed — re-resolve focus against the
       // already-mounted lists so a hash-only change scrolls/highlights too.
@@ -92076,6 +92078,11 @@ async function init() {
   // consumers so those get first crack at their hashes (both self-clear
   // when they match, leaving the URL clean for a tab-deeplink to follow).
   _consumeTabUrlHash();
+  // The early consume above can land before the tab's click wiring exists, which leaves a cold #tab=govern
+  // showing an empty panel (the late consume is then deduped). Render it now that init is done.
+  if (/^#tab=govern\b/.test(location.hash || '')) {
+    try { renderGovernTab(wallet, governanceApi()); } catch (e) { console.error('govern tab', e); }
+  }
   // Auto-fulfil bootstrap. If the user enabled the daemon in a prior
   // session, restart it now that the wallet is initialized. The daemon
   // itself handles the locked-wallet case (skips quietly until unlock);
