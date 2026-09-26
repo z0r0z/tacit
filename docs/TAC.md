@@ -20,6 +20,8 @@ authority, and it is bridged to Ethereum as an ERC-20 minted only against a prov
 
 - **Relay fees paid in TAC are never sold.** The relay moves any TAC it collects to the protocol reserve,
   the ops multisig, once it reaches 100 TAC.
+- **A quarter of the relay's ETH surplus goes to buybacks.** Relay fees first pay for gas and proving. A
+  quarter of any ETH left over is sent to TacBuyback.
 - **Buybacks.** [TacBuyback](https://etherscan.io/address/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250) holds
   ETH sent to it and buys TAC on the public TAC/ETH market, on the Tacit pool or the TAC/ETH Precision pool,
   whichever quotes better. The TAC goes straight to the reserve; the contract never holds it.
