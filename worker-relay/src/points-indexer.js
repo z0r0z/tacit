@@ -37,6 +37,43 @@ function capToBoostCoverage(tip) {
   return capped;
 }
 
+// One-time fast catch-up for a freshly (re-)enabled boost, run once at startup before scanTacTransfers's
+// eth_getLogs-based incremental scan takes over. That scan chunks by block range, and this RPC caps
+// eth_getLogs ranges hard regardless of how few events are actually in them (the same limit
+// scanPrivacyPoolCycle above works around) — backfilling a token's whole history that way is thousands of
+// tiny range calls and would hold every points activity frozen for hours. Blockscout's transfers endpoint
+// pages by item count instead, so it costs a handful of calls for these low-volume boost tokens. Walks
+// backward (newest first) until a page is entirely at or before what's already covered, then hands the
+// collected rows to `boost` directly — scanTacTransfers's own small incremental ranges near head are cheap
+// enough on this RPC and don't need this.
+async function blockscoutBackfillBoost(boost, token, confirmedTip) {
+  const already = boost.coveredThrough();
+  if (already >= confirmedTip) return;
+  const collected = [];
+  let params = '';
+  for (;;) {
+    const res = await fetch(`${PP_BLOCKSCOUT_BASE}/tokens/${token}/transfers${params}`);
+    if (!res.ok) throw new Error(`blockscout token-transfers ${res.status}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) break;
+    let reachedCoverage = false;
+    for (const item of items) {
+      if (item.block_number <= already) { reachedCoverage = true; break; }
+      if (item.block_number > confirmedTip) continue; // not yet confirmed, scanTacTransfers will pick it up
+      collected.push({
+        txHash: item.transaction_hash, logIndex: Number(item.log_index), blockNumber: item.block_number,
+        from: item.from.hash, to: item.to.hash, valueWei: item.total.value,
+      });
+    }
+    if (reachedCoverage || !data.next_page_params) break;
+    params = '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(data.next_page_params).map(([k, v]) => [k, String(v)])),
+    ).toString();
+  }
+  boost.recordTransfers(collected, confirmedTip);
+}
+
 const DISTRIBUTOR_ABI = [
   { type: 'function', name: 'updateRoot', stateMutability: 'nonpayable', inputs: [{ name: 'newRoot', type: 'bytes32' }, { name: 'newTotalAllocated', type: 'uint256' }], outputs: [] },
   { type: 'function', name: 'totalClaimed', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
@@ -737,6 +774,17 @@ async function main() {
       fromBlock: CFG.zShareTokenDeployBlock,
       namespace: 'zshare',
     });
+  }
+  if (tacBoost || zShareBoost) {
+    const confirmedTip = Number(await publicClient.getBlockNumber()) - CFG.pointsConfirmations;
+    if (tacBoost) {
+      try { await blockscoutBackfillBoost(tacBoost, ADDR.tacToken, confirmedTip); }
+      catch (err) { log('TAC boost Blockscout backfill failed, falling back to the incremental scan:', err?.message || err); }
+    }
+    if (zShareBoost) {
+      try { await blockscoutBackfillBoost(zShareBoost, ADDR.zShareToken, confirmedTip); }
+      catch (err) { log('Z-share boost Blockscout backfill failed, falling back to the incremental scan:', err?.message || err); }
+    }
   }
   startHttp(store);
 
