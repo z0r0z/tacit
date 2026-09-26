@@ -438,6 +438,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       byAsset[id].value += BigInt(n.value);
       byAsset[id].notes.push(n);
     }
+    // A full scan is the whole wallet, so it sets the holder tier; a windowed one only sees part of it.
+    const ctac = assetByTicker.cTAC;
+    if (ctac && ctac.assetId && o.fromBlock == null && o.toBlock == null) {
+      const held = byAsset[String(ctac.assetId).toLowerCase()];
+      _privateTacWei = held ? held.value * BigInt(ctac.unitScale || '1') : 0n;
+    }
     // `diag` travels with the result. _scanNotes swallows a failure in any one channel so a single dead
     // endpoint cannot blank the whole wallet — but a caller that sees only `notes` cannot tell a genuinely
     // empty channel from one that errored, and for cBTC and bridge-mint notes that distinction is the
@@ -2759,6 +2765,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // and broadcast settle themselves). The guest's OP_UNWRAP splits value → withdrawal(value−fee) +
   // fee, both public legs summing to the proven value (no separate fee proof).
   const RELAY_FEE_BPS = 30n;                                 // 0.30% of the exit
+  // TAC holders exit at a lower rate. Tiers are whole TAC held, private cTAC notes (seen by balance()) plus any
+  // public TAC the caller reports through setPublicTacHeld. The gas-aware floor still applies, so a discounted
+  // fee never drops below what the relay needs to settle.
+  const HOLDER_FEE_TIERS = [[10000n, 15n], [1000n, 20n], [100n, 25n]]; // [whole TAC, bps], highest first
+  let _privateTacWei = 0n;
+  let _publicTacWei = 0n;
+  function setPublicTacHeld(wei) { _publicTacWei = BigInt(wei || 0); }
+  function holderFeeBps() {
+    const whole = (_privateTacWei + _publicTacWei) / 10n ** 18n;
+    for (const [min, bps] of HOLDER_FEE_TIERS) if (whole >= min) return bps;
+    return RELAY_FEE_BPS;
+  }
   // Per-ticker settle-gas floor expressed in the UNDERLYING (wei) unit, so it is scale-independent. The
   // in-system floor = wei ÷ unitScale (e.g. cETH 1e14 wei = 0.0001 ETH → 1e4 in-system at scale 1e10, or
   // 1e14 at scale 1). Expressing it in wei is what keeps the floor correct across the cETH scale boundary.
@@ -2907,7 +2925,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Quote the relay fee for exiting a note of `value` (in-system units). { fee, net, value }.
-  function quoteUnwrapFee(value, ticker = 'cETH', { feeBps = RELAY_FEE_BPS, minFee } = {}) {
+  function quoteUnwrapFee(value, ticker = 'cETH', { feeBps = holderFeeBps(), minFee } = {}) {
     const v = BigInt(value);
     const floor = minFee != null ? BigInt(minFee) : relayMinFee(ticker);
     const pct = (v * BigInt(feeBps) + 9999n) / 10000n; // ceil
@@ -3287,7 +3305,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   });
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf,
-    deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
+    deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, buildAttestMeta, chainBindingHex,
     erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolCurrentRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle,
     cbtcLockState, syncCbtcLockReservations,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

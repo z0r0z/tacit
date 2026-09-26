@@ -1028,3 +1028,26 @@ test('submitSettle: a founding LP add goes through createPairAndSettle, an ordin
   assert.ok(found.signedRaw.includes(sel('createPairAndSettle(bytes32,bytes32,uint32,bytes,bytes,bytes[])')), 'founding add uses createPairAndSettle');
   assert.ok(found.signedRaw.includes('01'.repeat(32) + '02'.repeat(32) + '0'.repeat(62) + '1e'), 'assetA, assetB and feeBps=30 ride the head words');
 });
+
+test('quoteUnwrapFee: TAC holders exit at a lower rate, never below the floor', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const TAC = 10n ** 18n;
+  const v = inSys(10n ** 18n) * 10n; // 10 ETH exit: well above the floor, so the rate decides the fee
+  const feeAt = (bps) => ux.quoteUnwrapFee(v, 'cETH', { feeBps: bps }).fee;
+  assert.equal(ux.holderFeeBps(), 30n);
+  assert.equal(ux.quoteUnwrapFee(v, 'cETH').fee, feeAt(30n));
+  for (const [held, bps] of [[99n, 30n], [100n, 25n], [999n, 25n], [1000n, 20n], [10000n, 15n], [10n ** 9n, 15n]]) {
+    ux.setPublicTacHeld(held * TAC);
+    assert.equal(ux.holderFeeBps(), bps, `${held} TAC`);
+    assert.equal(ux.quoteUnwrapFee(v, 'cETH').fee, feeAt(bps), `${held} TAC fee`);
+  }
+  assert.ok(feeAt(15n) < feeAt(30n));
+  // A small exit is floor-bound either way: the discount never takes it under the relay's floor.
+  const small = CETH_FLOOR * 2n;
+  assert.equal(ux.quoteUnwrapFee(small, 'cETH').fee, CETH_FLOOR);
+  assert.equal(ux.quoteUnwrapFee(small, 'cETH', { minFee: CETH_FLOOR * 3n }).fee, small, 'gas-aware minFee still wins');
+  // An explicit rate from the caller is honoured as before.
+  assert.equal(ux.quoteUnwrapFee(v, 'cETH', { feeBps: 30n }).fee, feeAt(30n));
+  ux.setPublicTacHeld(0);
+  assert.equal(ux.holderFeeBps(), 30n);
+});
