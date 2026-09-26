@@ -52,7 +52,7 @@ test('serves the oversight view on mainnet only, and ignores other routes', asyn
   assert.equal((await o.handle(req, {}, url('/governance/oversight'), 'signet', {})).status, 404);
   const r = await o.handle(req, {}, url('/governance/oversight'), 'mainnet', {});
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.sections.map((s) => s.id), ['treasury', 'engine', 'farms', 'airdrop', 'lineage']);
+  assert.deepEqual(r.body.sections.map((s) => s.id), ['flows', 'treasury', 'engine', 'farms', 'airdrop', 'lineage']);
 });
 
 test('values are formatted, and every role reports whether the ops multisig holds it', async () => {
@@ -85,4 +85,34 @@ test('responses are cached for a minute', async () => {
   const after = calls.eth;
   await o.handle(req, {}, url('/governance/oversight'), 'mainnet', {});
   assert.equal(calls.eth, after);
+});
+
+test('flows: buybacks and relay TAC to the reserve, all time and the last 7 days', async () => {
+  const RELAY = '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7';
+  const recent = new Date(Date.now() - 86400e3).toISOString(), old = new Date(Date.now() - 30 * 86400e3).toISOString();
+  const TAC = (n) => (BigInt(n) * 10n ** 18n).toString();
+  const byUrl = (url) => {
+    if (url.includes('/addresses/0x6919cbEf0e70AFFA02Ae02c86c532A137154f250/logs')) return { items: [
+      { block_timestamp: recent, decoded: { method_call: 'Bought(uint8 indexed venue, uint256 ethIn, uint256 tacOut)', parameters: [{ name: 'tacOut', value: TAC(40) }] } },
+      { block_timestamp: old, decoded: { method_call: 'Bought(uint8 indexed venue, uint256 ethIn, uint256 tacOut)', parameters: [{ name: 'tacOut', value: TAC(60) }] } },
+    ] };
+    if (url.includes('/token-transfers')) return { items: [
+      { from: { hash: RELAY }, to: { hash: OPS }, total: { value: TAC(527) }, timestamp: recent },
+      { from: { hash: RELAY }, to: { hash: OTHER }, total: { value: TAC(999) }, timestamp: recent }, // not to the reserve
+      { from: { hash: OTHER }, to: { hash: RELAY }, total: { value: TAC(5) }, timestamp: recent },   // incoming fee
+    ] };
+    return { items: [] };
+  };
+  const o = buildOversight({
+    ethCall: async () => '0x' + '0'.repeat(64), ethGetBalance: async () => 0n, keccak256: keccak_256,
+    jsonResponse: (body, status = 200) => ({ body, status }),
+    fetchImpl: async (url) => ({ ok: true, json: async () => byUrl(url) }),
+  });
+  const { body } = await o.handle(req, {}, url('/governance/oversight'), 'mainnet', {});
+  const flows = body.sections.find((x) => x.id === 'flows');
+  const v = (label) => flows.items.find((i) => i.label === label).value;
+  assert.equal(v('Bought back, all time'), '100 TAC (2 buys)');
+  assert.equal(v('Relay fees paid in TAC, to the reserve'), '527 TAC');
+  assert.equal(v('Back to the reserve, last 7 days'), '567 TAC');
+  assert.equal(flows.informational, true);
 });

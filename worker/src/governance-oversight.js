@@ -15,6 +15,10 @@ const MAINNET = {
   tac: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279',
   buyback: '0x6919cbEf0e70AFFA02Ae02c86c532A137154f250',
   pointsDistributor: '0x000000C918e44A3a443937fA7594eA4f7C95D6b9',
+  relay: '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7',
+  // The points program: 100,000 TAC over 90 days (README "Points and farms").
+  pointsTacPerDay: 100_000 / 90,
+  pointsEndsAt: Date.UTC(2026, 11, 22) / 1000,
 };
 const BLOCKSCOUT = 'https://eth.blockscout.com/api/v2';
 const CACHE_MS = 60_000;
@@ -72,6 +76,49 @@ export function buildOversight({ ethCall, ethGetBalance, keccak256, jsonResponse
     } catch { return null; }
   }
 
+  // Every page of a Blockscout listing, bounded. Null when the listing cannot be read at all.
+  async function pages(url, max = 10) {
+    const out = [];
+    let q = '';
+    for (let i = 0; i < max; i++) {
+      const res = await fetchImpl(url + q, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return i === 0 ? null : out;
+      const j = await res.json();
+      out.push(...(j.items || []));
+      if (!j.next_page_params) break;
+      q = (url.includes('?') ? '&' : '?') + new URLSearchParams(Object.entries(j.next_page_params).map(([k, v]) => [k, String(v)])).toString();
+    }
+    return out;
+  }
+
+  // TAC coming back to the reserve: TacBuyback purchases (its Bought events) and relay fees paid in TAC (TAC
+  // transfers from the relay wallet to the reserve). All time and the last 7 days.
+  async function tacFlows(c) {
+    try {
+      const weekAgo = Date.now() / 1000 - 7 * 86400;
+      const [logs, transfers] = await Promise.all([
+        pages(`${BLOCKSCOUT}/addresses/${c.buyback}/logs`),
+        pages(`${BLOCKSCOUT}/addresses/${c.relay}/token-transfers?type=ERC-20&token=${c.tac}`),
+      ]);
+      if (logs === null || transfers === null) return null;
+      const f = { bought: 0n, bought7: 0n, buys: 0, swept: 0n, swept7: 0n };
+      for (const it of logs) {
+        if (!it.decoded || !String(it.decoded.method_call).startsWith('Bought(')) continue;
+        const p = Object.fromEntries(it.decoded.parameters.map((x) => [x.name, x.value]));
+        const v = BigInt(p.tacOut || 0);
+        f.bought += v; f.buys += 1;
+        if (Date.parse(it.block_timestamp) / 1000 >= weekAgo) f.bought7 += v;
+      }
+      for (const t of transfers) {
+        if (!eq(t.from?.hash, c.relay) || !eq(t.to?.hash, c.ops)) continue;
+        const v = BigInt(t.total?.value || 0);
+        f.swept += v;
+        if (Date.parse(t.timestamp) / 1000 >= weekAgo) f.swept7 += v;
+      }
+      return f;
+    } catch { return null; }
+  }
+
   async function snapshot(network) {
     const c = MAINNET;
     const [
@@ -98,10 +145,29 @@ export function buildOversight({ ethCall, ethGetBalance, keccak256, jsonResponse
       uint(network, c.buyback, 'lastBuyAt()'), uint(network, c.tac, 'balanceOf(address)', c.pointsDistributor),
       farmQueue(network, c),
     ]);
+    const flows = await tacFlows(c);
     const zero = '0x' + '0'.repeat(40);
     const farmTacPerDay = farmRate !== null && farmUnitScale !== null ? units(farmRate * farmUnitScale * 86400n, 18, 0) : null;
 
+    const nowS = Date.now() / 1000;
+    const pointsLive = nowS < c.pointsEndsAt;
+    const farmPerDay = farmRate !== null && farmUnitScale !== null && farmFinish !== null && Number(farmFinish) > nowS
+      ? Number(farmRate * farmUnitScale * 86400n / 10n ** 18n) : 0;
+    const emitted7 = Math.round((farmPerDay + (pointsLive ? c.pointsTacPerDay : 0)) * 7);
+    const tac0 = (v) => (v === null ? null : `${units(v, 18, 0)} TAC`);
     const sections = [
+      {
+        id: 'flows', title: 'TAC flows', category: 'treasury', target: c.buyback, informational: true,
+        summary: 'TAC paid out as rewards, against TAC coming back to the reserve through buybacks and relay fees paid in TAC.',
+        items: [
+          { label: 'Farm rewards', value: farmPerDay ? `${Math.round(farmPerDay).toLocaleString('en-US')} TAC a day` : 'none running' },
+          { label: 'Points rewards', value: pointsLive ? `${Math.round(c.pointsTacPerDay).toLocaleString('en-US')} TAC a day until ${date(BigInt(c.pointsEndsAt))}` : 'program ended' },
+          { label: 'Bought back, all time', value: flows ? `${tac0(flows.bought)} (${flows.buys} buy${flows.buys === 1 ? '' : 's'})` : null, address: c.buyback },
+          { label: 'Relay fees paid in TAC, to the reserve', value: flows ? tac0(flows.swept) : null },
+          { label: 'Rewards at current rates', value: `≈ ${emitted7.toLocaleString('en-US')} TAC a week` },
+          { label: 'Back to the reserve, last 7 days', value: flows ? tac0(flows.bought7 + flows.swept7) : null },
+        ],
+      },
       {
         id: 'treasury', title: 'Treasury and reserve', category: 'treasury', target: c.ops,
         controller: c.ops, controllerIsOps: true,

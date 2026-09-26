@@ -380,8 +380,8 @@ async function renderProtocol(body) {
       <div class="gov-card-top">
         ${catBadge(sec.category)}
         <span style="flex:1;"></span>
-        <span style="font-size:11px;color:${sec.controllerIsOps ? 'var(--ink-mid)' : 'var(--red-warn)'};">
-          ${sec.controllerIsOps ? 'held by the ops multisig' : `held by ${isAddr(sec.controller) ? esc(shortAddr(sec.controller)) : 'unknown'}`}</span>
+        ${sec.informational ? '' : `<span style="font-size:11px;color:${sec.controllerIsOps ? 'var(--ink-mid)' : 'var(--red-warn)'};">
+          ${sec.controllerIsOps ? 'held by the ops multisig' : `held by ${isAddr(sec.controller) ? esc(shortAddr(sec.controller)) : 'unknown'}`}</span>`}
       </div>
       <div class="gov-ctitle">${esc(sec.title)} ${isAddr(sec.target) ? addrLink(sec.target) : ''}</div>
       <div style="font-size:12px;line-height:1.55;color:var(--ink-mid);margin-bottom:8px;">${esc(sec.summary)}</div>
