@@ -425,6 +425,16 @@ export const CFG = {
   // (kept as its own knob so it can be tuned independently later) and the same early-adopter decay curve.
   pointsBasePerZswapEth: num('POINTS_BASE_PER_ZSWAP_ETH', 1000),
 
+  // ── TAC-holder boost (src/lib/tac-holder-boost.js) ──
+  // Every activity's points are multiplied by the depositor's TAC tier: "whole TAC:multiplier" pairs, judged
+  // on the lowest public TAC balance held over the trailing tacBoostWindowBlocks (7200 ≈ 24h). Empty tiers
+  // switch the boost off. tacBoostStartBlock is required with tiers: activities before it are never boosted,
+  // so scoring already done stays exactly as it was if the ledger is ever rebuilt.
+  tacBoostTiers: opt('TAC_BOOST_TIERS', ''),
+  tacBoostWindowBlocks: num('TAC_BOOST_WINDOW_BLOCKS', 7200),
+  tacBoostStartBlock: num('TAC_BOOST_START_BLOCK', 0),
+  tacTokenDeployBlock: num('TAC_TOKEN_DEPLOY_BLOCK', 25998751),
+
   // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
   // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC
   // budget, once per UTC day-epoch, and publishes the result as a new cumulative merkle root. Empty

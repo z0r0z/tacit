@@ -125,14 +125,16 @@ export function openStore(dbPath) {
     // toward a cBTC mint), 'cusdmint' (a cUSD CDP loan opened). amount_wei's UNITS depend on this: ETH wei
     // for 'wrap'/'cbtcmint' (wstETH, 18 decimals), tacitDecimals=8-scaled dollars for 'cusdmint'.
     "activity TEXT NOT NULL DEFAULT 'wrap'",
+    // The TAC-holder multiplier already folded into `points` (1 when the depositor held no tier).
+    'tac_boost REAL NOT NULL DEFAULT 1',
   ]) {
     try { db.exec(`ALTER TABLE deposits ADD COLUMN ${col}`); } catch {}
   }
 
   const insertDeposit = db.prepare(`
     INSERT OR IGNORE INTO deposits
-      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity)
-    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted, @activity)
+      (tx_hash, block_number, block_time, depositor, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost)
+    VALUES (@txHash, @blockNumber, @blockTime, @depositor, @amountWei, @priorDepositCount, @points, @tipWei, @tipRecipient, @ppBoosted, @activity, @tacBoost)
   `);
   const bumpTotals = db.prepare(`
     INSERT INTO totals (address, points, deposit_count, amount_wei)
@@ -156,7 +158,7 @@ export function openStore(dbPath) {
   const totalForStmt = db.prepare(`SELECT address, points, deposit_count, amount_wei FROM totals WHERE address = ?`);
   const countByActivityStmt = db.prepare(`SELECT COUNT(*) AS n FROM deposits WHERE activity = ?`);
   const depositsForStmt = db.prepare(`
-    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity
+    SELECT tx_hash, block_number, block_time, amount_wei, prior_deposit_count, points, tip_wei, tip_recipient, pp_boosted, activity, tac_boost
     FROM deposits WHERE depositor = ? ORDER BY block_number DESC LIMIT ?
   `);
   const dayPointsStmt = db.prepare(`
@@ -221,7 +223,7 @@ export function openStore(dbPath) {
   // way `depositor` (tx.from, the transaction's own signer) is what earns points — a forwarder tip never
   // changes who that is.
   const recordDeposit = db.transaction((dep) => {
-    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, activity: 'wrap', ...dep });
+    const wrote = insertDeposit.run({ tipWei: null, tipRecipient: null, ppBoosted: 0, activity: 'wrap', tacBoost: 1, ...dep });
     if (wrote.changes === 0) return false; // already recorded (safe to re-scan a chunk after a crash)
     bumpTotals.run({ address: dep.depositor, points: dep.points, amountWei: dep.amountWei });
     return true;
