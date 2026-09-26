@@ -451,6 +451,11 @@ export const CFG = {
   // Market creation itself is free (no bet required), so this is a flat reward rather than volume-based —
   // otherwise creating markets would be a zero-cost way to mint points before any real activity exists.
   pointsPerPmCreate: num('POINTS_PER_PM_CREATE', 50),
+  // The creator reward triggers on the market's first bet from a non-creator address (see scanPmCycle) — but
+  // a dust bet from the creator's own second wallet would satisfy that at near-zero cost. Requiring a real
+  // minimum stake raises farming back to two wallets' gas PLUS this much genuinely-at-risk ETH, rather than
+  // two wallets' gas alone.
+  pmMinQualifyingBetWei: BigInt(opt('PM_MIN_QUALIFYING_BET_WEI', '1000000000000000')), // 0.001 ETH
   pmDeployBlock: num('PM_DEPLOY_BLOCK', 26033835),
 
   // ── TAC-holder boost (src/lib/tac-holder-boost.js) ──

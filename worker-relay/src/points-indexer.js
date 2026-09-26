@@ -372,8 +372,10 @@ function pointsForPmCreate(priorCount) {
 // The creator reward is a DIFFERENT hole, not the same tradeoff: creating a market costs nothing at all (no
 // collateral, no bet, any resolver including yourself), so a flat reward at Created alone is free-to-farm at
 // gas cost only — one script could mint unlimited creator points (a second zfi finding). This one IS closed:
-// the reward is deferred until the market's first Bet from an address other than the creator, gated by
-// pm_markets.creator_awarded so it only ever fires once per market regardless of how many further bets follow.
+// the reward is deferred until the market's first Bet from an address other than the creator (of at least
+// pmMinQualifyingBetWei — otherwise the creator's own second wallet placing a dust bet would satisfy this at
+// near-zero extra cost, a residual the same zfi peer flagged), gated by pm_markets.creator_awarded so it only
+// ever fires once per market regardless of how many further bets follow.
 async function scanPmCycle(store) {
   const priorCursor = store.loadPmCursor();
   const deployBlock = BigInt(CFG.pmDeployBlock);
@@ -463,7 +465,7 @@ async function scanPmCycle(store) {
     });
     if (wrote) betCount += 1;
 
-    if (bettor !== creator && !creatorAlreadyAwarded && !creatorAwardedThisCycle.has(marketId)) {
+    if (bettor !== creator && BigInt(amountWei) >= CFG.pmMinQualifyingBetWei && !creatorAlreadyAwarded && !creatorAwardedThisCycle.has(marketId)) {
       const creatorTacB = tacMultiplier(creator, blockNumber);
       const creatorZShareB = zShareMultiplier(creator, blockNumber);
       // Keyed on the market's own Created tx hash — real, unique per market, and never the triggering bet's
