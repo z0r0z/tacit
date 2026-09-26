@@ -10,10 +10,25 @@ import { createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './lib/config.js';
 import { publicClient } from './lib/chain.js';
+import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
+import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
 
 const log = (...a) => console.log(`[points ${new Date().toISOString()}]`, ...a);
+
+// TAC-holder boost (lib/tac-holder-boost.js). Null when TAC_BOOST_TIERS is empty: every multiplier is then 1
+// and no scan is held back.
+let tacBoost = null;
+function tacMultiplier(address, blockNumber) {
+  return tacBoost ? tacBoost.boostFor(address, Number(blockNumber)).multiplier : 1;
+}
+// An activity can only be scored once the TAC transfer replay covers its block, so each scan stops there.
+function capToTacCoverage(tip) {
+  if (!tacBoost) return tip;
+  const covered = BigInt(tacBoost.coveredThrough());
+  return covered < tip ? covered : tip;
+}
 
 const DISTRIBUTOR_ABI = [
   { type: 'function', name: 'updateRoot', stateMutability: 'nonpayable', inputs: [{ name: 'newRoot', type: 'bytes32' }, { name: 'newTotalAllocated', type: 'uint256' }], outputs: [] },
@@ -222,13 +237,19 @@ async function scanCollateralEngineCycle(store) {
   cbtcCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
   cusdCandidates.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
 
+  // Blockscout serves blocks the TAC replay hasn't reached yet. Score nothing and keep the cursor, so the
+  // whole page is retried next cycle rather than recording those activities unboosted.
+  const newestCandidate = [...cbtcCandidates, ...cusdCandidates].reduce((m, c) => (c.blockNumber > m ? c.blockNumber : m), 0n);
+  if (capToTacCoverage(newestCandidate) < newestCandidate) return;
+
   let cbtcCount = store.countByActivity('cbtcmint');
   for (const { item, p, blockNumber, blockTime } of cbtcCandidates) {
     const depositor = (await realCbtcDepositor(item.transaction_hash, p.from)).toLowerCase();
+    const boost = tacMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
       txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
       depositor, amountWei: String(p.amount), priorDepositCount: cbtcCount,
-      points: pointsForCbtcEscrow(p.amount, cbtcCount), activity: 'cbtcmint',
+      points: pointsForCbtcEscrow(p.amount, cbtcCount) * boost, activity: 'cbtcmint', tacBoost: boost,
     });
     if (wrote) cbtcCount += 1;
   }
@@ -238,10 +259,12 @@ async function scanCollateralEngineCycle(store) {
     // No borrower address on CdpMinted — same convention as the wrap scanner: the transaction's own
     // signer, not any confidential note owner (which isn't public anyway).
     const tx = await publicClient.getTransaction({ hash: item.transaction_hash });
+    const depositor = tx.from.toLowerCase();
+    const boost = tacMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
       txHash: item.transaction_hash, blockNumber: Number(blockNumber), blockTime,
-      depositor: tx.from.toLowerCase(), amountWei: String(p.debtValue), priorDepositCount: cusdCount,
-      points: pointsForCusdMint(p.debtValue, cusdCount), activity: 'cusdmint',
+      depositor, amountWei: String(p.debtValue), priorDepositCount: cusdCount,
+      points: pointsForCusdMint(p.debtValue, cusdCount) * boost, activity: 'cusdmint', tacBoost: boost,
     });
     if (wrote) cusdCount += 1;
   }
@@ -263,24 +286,28 @@ const WETH_DEPOSIT_EVENT = {
   ],
 };
 
-// A fourth way to earn points: swapping ETH through zSwap/zRouter. Deliberately forward-only (no
-// backfill) — the cursor starts at whatever block this service first sees live, not any deploy block.
+// A fourth way to earn points: swapping ETH through zSwap/zRouter — treated as "ETH reaching zRouter" as a
+// deliberate proxy for a swap, not an exhaustive decode of every route zRouter can take (z's call: AMM-style
+// swaps only, order-board fills excluded, and this proxy is "good enough" rather than chasing every pool's
+// own Swap event). Deliberately forward-only (no backfill) — the cursor starts at whatever block this
+// service first sees live, not any deploy block.
 //
-// NOT "top-level tx sends ETH to zRouter": that misses a batched wallet call (EIP-5792/7702), where the
-// top-level tx goes to the user's own account and the call to zRouter is internal — a real gap a zfi peer
-// caught. zRouter's own event log carries nothing but OwnershipTransferred (the pools it routes through
-// emit their own Swap events, not zRouter), so there's no zRouter-level event to key on either. Instead
-// this watches canonical WETH's own `Deposit(dst, wad)` — confirmed against a real zRouter swap that it
-// wraps incoming ETH to WETH before routing it, naming zRouter as `dst` — which fires regardless of call
-// depth, since an event is part of the transaction's logs whether the emitting contract was called at the
-// top level or from inside a batch. `tx.from` on the resulting transaction is still the real signer either
-// way: for an EOA or an EIP-7702-delegated EOA it's the user themselves; the harder case (a true ERC-4337
-// smart-account transaction submitted by a separate bundler) would show the bundler instead, and closing
-// that needs bundler-specific handling this doesn't attempt yet.
+// Two signals, merged and deduped by tx hash:
+//   1. A top-level transaction sending value directly to zRouter — catches a DIRECT call on any route,
+//      wrap-based or native-ETH (V4/zAMM/Lido/Curve), since this only looks at the top-level value, never
+//      which pool type ends up trading it.
+//   2. Canonical WETH's own `Deposit(dst, wad)` naming zRouter — catches a BATCHED wallet call (EIP-5792/
+//      7702, where the top-level tx goes to the user's own account and the call into zRouter is internal)
+//      on zRouter's WRAP-based routes specifically, since an event is part of the transaction's logs
+//      regardless of call depth, unlike a plain value transfer.
+// The one gap left standing: a BATCHED call on a NATIVE-ETH route (no WETH involved at all) is invisible to
+// both — that needs transaction tracing or the destination pool's own Swap event, neither of which this
+// attempts. `tx.from` is the real signer either way for an EOA or an EIP-7702-delegated EOA; a true
+// ERC-4337 smart-account transaction submitted by a separate bundler would show the bundler instead.
 async function scanZRouterCycle(store) {
   const cursorBlock = store.loadZrouterCursor();
   const latest = await publicClient.getBlockNumber();
-  const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
+  const confirmedTip = capToTacCoverage(latest - BigInt(CFG.pointsConfirmations));
   // First-ever run: establish "now" as the starting line and stop — there is nothing before it to scan by
   // design (no backfill). Without this, a from = confirmedTip + 1 would keep being 1 block ahead of the
   // tip forever, since the cursor would never actually get saved to seed the next cycle.
@@ -291,33 +318,57 @@ async function scanZRouterCycle(store) {
   const from = cursorBlock + 1n;
   if (confirmedTip < from) return;
 
+  const blockCache = new Map();
+  const getBlock = async (blockNumber) => {
+    let block = blockCache.get(blockNumber);
+    if (!block) {
+      block = await publicClient.getBlock({ blockNumber });
+      blockCache.set(blockNumber, block);
+    }
+    return block;
+  };
+
+  // Signal 1: direct top-level calls. Block-by-block, not eth_getLogs — a plain ETH transfer emits no
+  // event, so there is nothing to filter logs on for this signal.
+  const byTxHash = new Map(); // tx hash -> { blockNumber, blockTime, amountWei, depositor }
+  for (let b = from; b <= confirmedTip; b++) {
+    const block = await getBlock(b);
+    for (const tx of block.transactions) {
+      if (tx.to && tx.to.toLowerCase() === ADDR.zRouter.toLowerCase() && tx.value > 0n) {
+        byTxHash.set(tx.hash, {
+          blockNumber: tx.blockNumber, blockTime: Number(block.timestamp),
+          amountWei: tx.value, depositor: tx.from.toLowerCase(),
+        });
+      }
+    }
+  }
+
+  // Signal 2: WETH's own Deposit event, for batched wrap-based calls signal 1 can't see (its top-level
+  // tx.value is 0 or unrelated — the value moved on an INNER call). `.set` here never overwrites an
+  // already-found signal-1 entry for the same tx, so a direct wrap-based swap (caught by both signals)
+  // keeps its signal-1 entry rather than being re-fetched.
   const logs = await publicClient.getLogs({
-    address: WETH_ADDR,
-    event: WETH_DEPOSIT_EVENT,
-    args: { dst: ADDR.zRouter },
-    fromBlock: from,
-    toBlock: confirmedTip,
+    address: WETH_ADDR, event: WETH_DEPOSIT_EVENT, args: { dst: ADDR.zRouter }, fromBlock: from, toBlock: confirmedTip,
   });
+  for (const evt of logs) {
+    if (byTxHash.has(evt.transactionHash)) continue;
+    const block = await getBlock(evt.blockNumber);
+    const tx = await publicClient.getTransaction({ hash: evt.transactionHash });
+    byTxHash.set(evt.transactionHash, {
+      blockNumber: evt.blockNumber, blockTime: Number(block.timestamp),
+      amountWei: evt.args.wad, depositor: tx.from.toLowerCase(),
+    });
+  }
+
+  const candidates = [...byTxHash.entries()].sort((a, b) => (a[1].blockNumber < b[1].blockNumber ? -1 : a[1].blockNumber > b[1].blockNumber ? 1 : 0));
 
   let priorCount = store.countByActivity('zswapeth');
-  const blockCache = new Map();
-  const txCache = new Map();
-  for (const evt of logs) {
-    let block = blockCache.get(evt.blockNumber);
-    if (!block) {
-      block = await publicClient.getBlock({ blockNumber: evt.blockNumber });
-      blockCache.set(evt.blockNumber, block);
-    }
-    let tx = txCache.get(evt.transactionHash);
-    if (!tx) {
-      tx = await publicClient.getTransaction({ hash: evt.transactionHash });
-      txCache.set(evt.transactionHash, tx);
-    }
-    const depositor = tx.from.toLowerCase();
+  for (const [txHash, { blockNumber, blockTime, amountWei, depositor }] of candidates) {
+    const boost = tacMultiplier(depositor, blockNumber);
     const wrote = store.recordDeposit({
-      txHash: evt.transactionHash, blockNumber: Number(evt.blockNumber), blockTime: Number(block.timestamp),
-      depositor, amountWei: evt.args.wad.toString(), priorDepositCount: priorCount,
-      points: pointsForZswapEth(evt.args.wad, priorCount), activity: 'zswapeth',
+      txHash, blockNumber: Number(blockNumber), blockTime,
+      depositor, amountWei: amountWei.toString(), priorDepositCount: priorCount,
+      points: pointsForZswapEth(amountWei, priorCount) * boost, activity: 'zswapeth', tacBoost: boost,
     });
     if (wrote) priorCount += 1;
   }
@@ -332,7 +383,7 @@ async function scanCycle(store) {
   };
 
   const latest = await publicClient.getBlockNumber();
-  const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
+  const confirmedTip = capToTacCoverage(latest - BigInt(CFG.pointsConfirmations));
   if (confirmedTip <= cursor.lastScannedBlock) return;
 
   const chunk = BigInt(CFG.pointsScanChunk);
@@ -379,6 +430,8 @@ async function scanCycle(store) {
       const ppBoosted = store.hasEarlierPpWithdrawal(depositor, Number(evt.blockNumber));
       let points = pointsForDeposit(evt.args.amount, priorDepositCount);
       if (ppBoosted) points *= CFG.ppBoostMultiplier;
+      const boost = tacMultiplier(depositor, evt.blockNumber);
+      points *= boost;
       const wrote = store.recordDeposit({
         txHash: evt.transactionHash,
         blockNumber: Number(evt.blockNumber),
@@ -391,6 +444,7 @@ async function scanCycle(store) {
         priorDepositCount,
         points,
         ppBoosted: ppBoosted ? 1 : 0,
+        tacBoost: boost,
         ...tipByTx.get(evt.transactionHash),
       });
       if (wrote) cursor.ethDepositCount += 1;
@@ -550,6 +604,8 @@ function startHttp(store) {
           ceLastScannedBlock: ceCursor != null ? ceCursor.toString() : null,
           // zRouter ETH-swap scan (see scanZRouterCycle) — forward-only, null until its first cycle runs.
           zrouterLastScannedBlock: zrouterCursor != null ? zrouterCursor.toString() : null,
+          // TAC transfer replay behind the holder boost; every other scan waits for it. null when the boost is off.
+          tacBoostLastScannedBlock: tacBoost ? String(tacBoost.coveredThrough()) : null,
         }));
         return;
       }
@@ -649,9 +705,26 @@ function startHttp(store) {
 async function main() {
   if (!CFG.pointsStartBlock) throw new Error('missing required env POINTS_START_BLOCK');
   const store = openStore(CFG.pointsDbPath);
+  if (CFG.tacBoostTiers) {
+    if (!CFG.tacBoostStartBlock) throw new Error('TAC_BOOST_TIERS needs TAC_BOOST_START_BLOCK');
+    tacBoost = openTacBoost(new Database(CFG.pointsDbPath), {
+      tiers: parseBoostTiers(CFG.tacBoostTiers),
+      windowBlocks: CFG.tacBoostWindowBlocks,
+      startBlock: CFG.tacBoostStartBlock,
+      fromBlock: CFG.tacTokenDeployBlock,
+    });
+  }
   startHttp(store);
 
   for (;;) {
+    // First, so every scan below can score up to the block it reached.
+    if (tacBoost) {
+      try {
+        await scanTacTransfers(tacBoost, publicClient, { token: ADDR.tacToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
+      } catch (err) {
+        log('TAC transfer scan cycle failed:', err?.message || err);
+      }
+    }
     // Runs before scanCycle so any Privacy Pools withdrawal that landed this cycle is already cached by the
     // time a same-cycle wrap is scored against it.
     try {
