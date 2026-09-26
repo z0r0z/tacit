@@ -249,6 +249,48 @@ async function scanCollateralEngineCycle(store) {
   if (newestSeen != null && (priorCursor == null || newestSeen > priorCursor)) store.saveCeCursor(newestSeen);
 }
 
+function pointsForZswapEth(valueWei, priorCount) {
+  return (Number(valueWei) / 1e18) * CFG.pointsBasePerZswapEth * earlyAdopterBonus(priorCount);
+}
+
+// A fourth way to earn points: swapping ETH through zSwap/zRouter. Deliberately forward-only (no
+// backfill) — the cursor starts at whatever block this service first sees live, not any deploy block.
+// zRouter's own event log carries nothing but OwnershipTransferred (the pools it routes through emit their
+// own Swap events, not zRouter), so this detects a swap by the plain on-chain fact of it instead: a
+// top-level transaction sending ETH directly to zRouter. `tx.from` on a top-level transaction already IS
+// the originating EOA — there's no separate tx.origin to fetch; that distinction only exists inside a
+// contract's own internal call chain, which a plain transaction object can't show.
+async function scanZRouterCycle(store) {
+  const cursorBlock = store.loadZrouterCursor();
+  const latest = await publicClient.getBlockNumber();
+  const confirmedTip = latest - BigInt(CFG.pointsConfirmations);
+  const from = cursorBlock != null ? cursorBlock + 1n : confirmedTip + 1n;
+  if (confirmedTip < from) return;
+
+  const candidates = [];
+  for (let b = from; b <= confirmedTip; b++) {
+    const block = await publicClient.getBlock({ blockNumber: b, includeTransactions: true });
+    for (const tx of block.transactions) {
+      if (tx.to && tx.to.toLowerCase() === ADDR.zRouter.toLowerCase() && tx.value > 0n) {
+        candidates.push({ tx, blockTime: Number(block.timestamp) });
+      }
+    }
+  }
+
+  let priorCount = store.countByActivity('zswapeth');
+  for (const { tx, blockTime } of candidates) {
+    const depositor = tx.from.toLowerCase();
+    const wrote = store.recordDeposit({
+      txHash: tx.hash, blockNumber: Number(tx.blockNumber), blockTime,
+      depositor, amountWei: tx.value.toString(), priorDepositCount: priorCount,
+      points: pointsForZswapEth(tx.value, priorCount), activity: 'zswapeth',
+    });
+    if (wrote) priorCount += 1;
+  }
+
+  store.saveZrouterCursor(confirmedTip);
+}
+
 async function scanCycle(store) {
   const cursor = store.loadCursor() ?? {
     lastScannedBlock: BigInt(CFG.pointsStartBlock) - 1n,
@@ -584,6 +626,11 @@ async function main() {
       await scanCollateralEngineCycle(store);
     } catch (err) {
       log('collateral engine scan cycle failed:', err?.message || err);
+    }
+    try {
+      await scanZRouterCycle(store);
+    } catch (err) {
+      log('zRouter scan cycle failed:', err?.message || err);
     }
     try {
       await scanCycle(store);

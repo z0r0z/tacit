@@ -106,6 +106,13 @@ export function openStore(dbPath) {
       id                 INTEGER PRIMARY KEY CHECK (id = 1),
       last_scanned_block INTEGER NOT NULL
     );
+
+    -- zRouter ETH-swap scan cursor (see scanZRouterCycle). Forward-only — no deploy-block floor, since this
+    -- activity deliberately starts counting from whenever the service first ran it, not from history.
+    CREATE TABLE IF NOT EXISTS zrouter_cursor (
+      id                 INTEGER PRIMARY KEY CHECK (id = 1),
+      last_scanned_block INTEGER NOT NULL
+    );
   `);
 
   // Migration for a store created before tip tracking / the Privacy Pools boost / cBTC+cUSD mint activity
@@ -196,6 +203,11 @@ export function openStore(dbPath) {
   const loadCeCursorStmt = db.prepare(`SELECT last_scanned_block FROM ce_cursor WHERE id = 1`);
   const saveCeCursorStmt = db.prepare(`
     INSERT INTO ce_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
+    ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
+  `);
+  const loadZrouterCursorStmt = db.prepare(`SELECT last_scanned_block FROM zrouter_cursor WHERE id = 1`);
+  const saveZrouterCursorStmt = db.prepare(`
+    INSERT INTO zrouter_cursor (id, last_scanned_block) VALUES (1, @lastScannedBlock)
     ON CONFLICT(id) DO UPDATE SET last_scanned_block = excluded.last_scanned_block
   `);
 
@@ -338,11 +350,20 @@ export function openStore(dbPath) {
     saveCeCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
   }
 
+  function loadZrouterCursor() {
+    const row = loadZrouterCursorStmt.get();
+    return row ? BigInt(row.last_scanned_block) : null;
+  }
+
+  function saveZrouterCursor(lastScannedBlock) {
+    saveZrouterCursorStmt.run({ lastScannedBlock: lastScannedBlock.toString() });
+  }
+
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
     dayPointsByAddress, applyDayRewards, allRewards, rewardFor,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
-    loadCeCursor, saveCeCursor,
+    loadCeCursor, saveCeCursor, loadZrouterCursor, saveZrouterCursor,
   };
 }

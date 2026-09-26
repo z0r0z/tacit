@@ -419,6 +419,12 @@ export const CFG = {
   cusdMintBonusMultiplier: num('CUSD_MINT_BONUS_MULTIPLIER', 2),
   collateralEngineDeployBlock: num('COLLATERAL_ENGINE_DEPLOY_BLOCK', 25998747),
 
+  // ── zRouter ETH-swap activity (src/points-indexer.js's scanZRouterCycle) ──
+  // A fourth way to earn points: swapping ETH through zSwap/zRouter. Forward-only by design — no backfill,
+  // starts counting from whichever block this service first sees it live. Same base rate as an ETH wrap
+  // (kept as its own knob so it can be tuned independently later) and the same early-adopter decay curve.
+  pointsBasePerZswapEth: num('POINTS_BASE_PER_ZSWAP_ETH', 1000),
+
   // ── Points reward settlement (src/points-indexer.js's settleCycle -> PointsDistributor) ──
   // Separate from the points/bonus knobs above: this converts POINTS into a pro-rata slice of a fixed TAC
   // budget, once per UTC day-epoch, and publishes the result as a new cumulative merkle root. Empty
