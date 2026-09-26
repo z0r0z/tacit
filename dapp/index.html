@@ -104,7 +104,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=18a77a95">
+<link rel="modulepreload" href="./tacit.js?cb=3aa7b938">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -8615,7 +8615,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
      CSP is `script-src 'self' 'wasm-unsafe-eval'` — no 'unsafe-inline',
      so an inline <script> would be CSP-blocked. Same-origin .js file
      satisfies 'self'. See preboot.js for the activation logic. -->
-<script src="./preboot.js?cb=90a3db3d"></script>
+<script src="./preboot.js?cb=5e9058ba"></script>
 </head>
 <body>
 
@@ -8777,6 +8777,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   <button class="tab" data-tab="market" data-group="trade" title="Trade on the Bitcoin order book — instant and atomic-intent listings settle non-custodially in one Bitcoin tx; some OTC listings require counterparty trust instead">Trade<span id="nav-open-orders-badge" style="display:none;margin-left:6px;font-size:9px;font-weight:600;padding:1px 6px;background:var(--ink,#0a0a0a);color:var(--bg,#f4efe6);border-radius:9px;letter-spacing:0.04em;vertical-align:middle;" title="You have open orders. Click to see them."></span></button>
   <button class="tab" data-tab="discover" data-group="discover" title="Browse Bitcoin-native assets and public mints">Discover</button>
   <button class="tab" data-tab="etch" data-group="create" title="Create Bitcoin-native confidential assets and drops">Create</button>
+  <button class="tab" data-tab="govern" data-group="govern" title="TAC governance: proposals, votes, and everything the ops multisig controls">Govern</button>
   <button class="tab" data-tab="about" data-group="advanced" title="Protocol docs, security notes, and advanced references">Docs</button>
 </div>
 
@@ -10357,7 +10358,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
 <!-- GOVERN — off-chain TAC governance (Snapshot-style). Rendered by renderGovernTab() on show. -->
 <div class="tab-panel" id="tab-govern">
   <div class="section" style="max-width:840px;margin:0 auto;">
-    <div class="section-header">Govern <span class="muted" style="font-size:11px;font-weight:400;">TAC proposals · private &amp; public voting</span></div>
+    <div class="section-header">Govern <span class="muted" style="font-size:11px;font-weight:400;">TAC proposals · private tier voting</span></div>
     <div class="section-body" style="font-size:13px;" id="govern-body">
       <div class="muted">Loading governance…</div>
     </div>
@@ -11298,7 +11299,7 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=18a77a95"></script>
+<script type="module" src="./tacit.js?cb=3aa7b938"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

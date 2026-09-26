@@ -45333,7 +45333,7 @@ function _tabLiveOnNet(name) {
     case 'claim':
       return false;                                      // airdrop recipient portal parked for now
     case 'govern':
-      return false;                                      // governance UI parked until proposals are live
+      return currentNetworkName() === 'mainnet';         // proposals, votes and the oversight view are mainnet
     case 'csend':
       return !!(d.pool && d.router);                    // cETH note send uses ConfidentialRouter
     case 'otc': case 'earn':
