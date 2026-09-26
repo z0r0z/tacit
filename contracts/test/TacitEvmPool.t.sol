@@ -124,8 +124,8 @@ contract TacitEvmPoolRealProofTest is Test {
         assertEq(token.balanceOf(w.recipient), 690);
         assertEq(token.balanceOf(w.relayer), 15);
         assertEq(token.balanceOf(address(pool)), 295);
-        assertEq(pool.root(), bytes32(w.pub[2]));
-        assertEq(pool.nextIndex(), 6);
+        assertEq(pool.root(), bytes32(w.pub[1]), "a withdrawal without change inserts nothing");
+        assertEq(pool.nextIndex(), 4);
     }
 
     function test_replay_is_stale() public {
@@ -240,6 +240,7 @@ contract TacitEvmPoolRulesTest is Test {
         int256 ext;
         uint256 fee;
         uint256 value;
+        bool noInsert;
     }
 
     function _call(Call memory c) internal {
@@ -257,6 +258,7 @@ contract TacitEvmPoolRulesTest is Test {
         pub[6] = _assetField(c.pool, c.asset);
         pub[7] = c.nf0;
         pub[8] = c.nf1;
+        pub[9] = c.noInsert ? 0 : 1;
         uint256[2] memory z2;
         uint256[2][2] memory z22;
         if (err != bytes4(0)) vm.expectRevert(err);
@@ -349,6 +351,7 @@ contract TacitEvmPoolRulesTest is Test {
         pub[1] = uint256(ethPool.root());
         pub[3] = 2;
         pub[6] = _assetField(ethPool, address(0));
+        pub[9] = 1;
         uint256[2] memory z2;
         uint256[2][2] memory z22;
         vm.expectRevert(TacitEvmPool.WrongInsertionIndex.selector);
@@ -372,6 +375,45 @@ contract TacitEvmPoolRulesTest is Test {
         uint256[2][2] memory z22;
         vm.expectRevert(TacitEvmPool.BadProof.selector);
         ethPool.transact{value: 1 ether}(z2, z22, z2, pub, RECIPIENT, 1 ether, RELAYER, 0, "", "");
+    }
+
+    function test_call_without_outputs_inserts_nothing_and_never_goes_stale() public {
+        _call(_onEth(_eth(111, 0, 0, 1 ether, 0, 1 ether)));
+        Call memory c = _onEth(_eth(999, 5, 0, -0.5 ether, 0, 0));
+        c.noInsert = true;
+        uint256[11] memory pub;
+        pub[0] = uint256(ethPool.root());
+        pub[1] = 12345; // not the head: irrelevant when nothing is inserted
+        pub[2] = 12345;
+        pub[3] = 77;
+        pub[4] = _pa(c.ext, 0);
+        pub[5] = uint256(keccak256(abi.encode(block.chainid, address(ethPool), RECIPIENT, c.ext, RELAYER, uint256(0), keccak256(""), keccak256("")))) % P;
+        pub[6] = _assetField(ethPool, address(0));
+        pub[7] = 5;
+        bytes32 rootBefore = ethPool.root();
+        uint256[2] memory z2;
+        uint256[2][2] memory z22;
+        ethPool.transact(z2, z22, z2, pub, RECIPIENT, c.ext, RELAYER, 0, "", "");
+        assertEq(ethPool.root(), rootBefore);
+        assertEq(ethPool.nextIndex(), 2);
+        assertEq(RECIPIENT.balance, 0.5 ether);
+        assertTrue(ethPool.nullified(bytes32(uint256(5))));
+    }
+
+    function test_fee_needs_a_relayer_and_a_withdrawal_needs_a_recipient() public {
+        _call(_onEth(_eth(111, 0, 0, 1 ether, 0, 1 ether)));
+        uint256[11] memory pub;
+        pub[0] = uint256(ethPool.root());
+        pub[1] = uint256(ethPool.root());
+        pub[3] = ethPool.nextIndex();
+        pub[6] = _assetField(ethPool, address(0));
+        pub[9] = 1;
+        uint256[2] memory z2;
+        uint256[2][2] memory z22;
+        vm.expectRevert(TacitEvmPool.ZeroAddress.selector);
+        ethPool.transact(z2, z22, z2, pub, RECIPIENT, 0, address(0), 1, "", "");
+        vm.expectRevert(TacitEvmPool.ZeroAddress.selector);
+        ethPool.transact(z2, z22, z2, pub, address(0), -1, RELAYER, 0, "", "");
     }
 
     function test_fee_on_transfer_token_rejected() public {

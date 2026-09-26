@@ -298,14 +298,14 @@ contract TacitEvmPoolRouterTest is TxBuilder {
         vm.prank(user);
         usdc.transfer(box, 1234);
         vm.expectRevert(TacitEvmPoolRouter.NotExpired.selector);
-        router.reclaimDeposit(i);
+        router.reclaimDeposit(i, address(usdc));
         vm.warp(i.deadline + 1);
         vm.prank(keeper);
-        router.reclaimDeposit(i);
+        router.reclaimDeposit(i, address(usdc));
         assertEq(usdc.balanceOf(refund), 1234);
         assertEq(usdc.balanceOf(box), 0);
         vm.expectRevert(TacitEvmPoolRouter.NothingToReclaim.selector);
-        router.reclaimDeposit(i);
+        router.reclaimDeposit(i, address(usdc));
     }
 
     function test_surplus_left_after_completion_is_reclaimable() public {
@@ -315,7 +315,7 @@ contract TacitEvmPoolRouterTest is TxBuilder {
         usdc.transfer(box, 1100);
         router.completeDeposit(i, _tx(pool, 11, 0, _leaves(21, 22), address(0), 1000, keeper, 0, hex"aa", ""));
         vm.warp(i.deadline + 1);
-        router.reclaimDeposit(i);
+        router.reclaimDeposit(i, address(usdc));
         assertEq(usdc.balanceOf(refund), 100);
     }
 
@@ -355,6 +355,18 @@ contract TacitEvmPoolRouterTest is TxBuilder {
         assertEq(usdc.balanceOf(box), 0);
     }
 
+    function test_wrap_tip_bound_to_tipTo() public {
+        TacitEvmPoolRouter.WrapIntent memory w = _wrapIntent(usdcId, 5000, 50);
+        w.tipTo = keeper;
+        address box = router.wrapBoxOf(w);
+        vm.prank(user);
+        usdc.transfer(box, 5050);
+        vm.prank(address(0xC0B1E5));
+        router.completeWrap(w);
+        assertEq(usdc.balanceOf(keeper), 50, "tip goes to tipTo, not the caller");
+        assertEq(usdc.balanceOf(address(0xC0B1E5)), 0);
+    }
+
     function test_eth_wrap_box_into_v1() public {
         TacitEvmPoolRouter.WrapIntent memory w = _wrapIntent(TETH_LINK, 1 ether, 0);
         address box = router.wrapBoxOf(w);
@@ -370,15 +382,31 @@ contract TacitEvmPoolRouterTest is TxBuilder {
         router.completeWrap(w);
     }
 
+    function test_reclaim_recovers_a_token_the_box_was_not_meant_for() public {
+        TacitEvmPoolRouter.DepositIntent memory i = _depositIntent(1000, _leaves(21, 22), hex"aa");
+        address box = router.depositBoxOf(i);
+        vm.prank(user);
+        SafeTransferLib.safeTransferETH(box, 0.5 ether);
+        TacitEvmPoolRouter.WrapIntent memory w = _wrapIntent(bytes32(uint256(0xdead)), 1, 0);
+        address wbox = router.wrapBoxOf(w);
+        vm.prank(user);
+        usdc.transfer(wbox, 77);
+        vm.warp(i.deadline + 1);
+        router.reclaimDeposit(i, address(0));
+        router.reclaimWrap(w, address(usdc));
+        assertEq(refund.balance, 0.5 ether, "ETH sent to a token-pool box");
+        assertEq(usdc.balanceOf(refund), 77, "funds at a box for an unregistered V1 asset");
+    }
+
     function test_wrap_box_reclaim() public {
         TacitEvmPoolRouter.WrapIntent memory w = _wrapIntent(usdcId, 5000, 0);
         address box_ = router.wrapBoxOf(w);
         vm.prank(user);
         usdc.transfer(box_, 5000);
         vm.expectRevert(TacitEvmPoolRouter.NotExpired.selector);
-        router.reclaimWrap(w);
+        router.reclaimWrap(w, address(usdc));
         vm.warp(w.deadline + 1);
-        router.reclaimWrap(w);
+        router.reclaimWrap(w, address(usdc));
         assertEq(usdc.balanceOf(refund), 5000);
     }
 

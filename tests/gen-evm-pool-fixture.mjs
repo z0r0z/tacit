@@ -55,7 +55,7 @@ async function step(name, { inputs, outputs, recipient, extAmount, relayer, fee,
   const { input, outLeaf } = zk.buildWitness({ asset, leaves, inputs, outputs, extAmount, fee, extDataHash: eh });
   const { proof, publicSignals } = await proveTransact(input, { wasm, zkey, snarkjs });
   const cd = JSON.parse(`[${await snarkjs.groth16.exportSolidityCallData(proof, publicSignals)}]`);
-  leaves = [...leaves, ...outLeaf];
+  if (outLeaf[0] !== 0n || outLeaf[1] !== 0n) leaves = [...leaves, ...outLeaf];
   steps.push({
     name, pA: cd[0], pB: cd[1], pC: cd[2], publicInputs: cd[3],
     recipient, extAmount: extAmount.toString(), relayer, fee: fee.toString(), memo0, memo1,

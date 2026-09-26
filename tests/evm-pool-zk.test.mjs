@@ -93,7 +93,7 @@ async function run(name, c) {
   assert.ok(await verifyTransact(vk, pub, wire, { snarkjs }));
   assert.deepStrictEqual(decodeProof(encodeProof(proof)).pi_a.slice(0, 2), proof.pi_a.slice(0, 2));
   proofs[name] = { proof, pub, wire, input };
-  leaves = [...leaves, ...outLeaf];
+  if (outLeaf[0] !== 0n || outLeaf[1] !== 0n) leaves = [...leaves, ...outLeaf];
   pool = zk.tree(leaves);
   assert.strictEqual(pool.root, newRoot);
   ok(`${name}: proves and verifies (${(dt / 1000).toFixed(2)} s fullProve), pool grows to ${leaves.length} leaves`);
@@ -184,5 +184,19 @@ const neg = async (label, input) => { assert.strictEqual(await satisfies(input),
   assert.throws(() => zk.buildWitness({ asset, leaves: [], inputs: [{ ...alice0, index: 1 }, null], outputs: [outTo(alice, 1000n, 0), null], extAmount: 0n, fee: 0n, extDataHash: 0n }));
   ok('buildWitness refuses an input whose claimed leaf is not at its index');
 }
+{
+  const w = proofs['withdraw-with-relayer-fee'].input;
+  assert.strictEqual(w.newRoot, w.oldRoot);
+  const x = clone(w); x.newRoot = S(BigInt(x.newRoot) + 1n);
+  await neg('no outputs: the root cannot move', x);
+}
+{
+  const a1 = zk.buildWitness({ asset, leaves, inputs: [{ dummy: true }, null], outputs: [outTo(alice, 0n, 9), null], extAmount: 0n, fee: 0n, extDataHash: 0n });
+  const a2 = zk.buildWitness({ asset, leaves, inputs: [{ dummy: true }, null], outputs: [outTo(alice, 0n, 9), null], extAmount: 0n, fee: 0n, extDataHash: 0n });
+  assert.notStrictEqual(a1.nf[0], a2.nf[0]);
+  assert.ok(await satisfies(a1.input));
+  ok('dummy inputs get fresh keys: distinct nullifiers, and the witness satisfies the circuit');
+}
 
 console.log(`${n} checks passed`);
+process.exit(0);

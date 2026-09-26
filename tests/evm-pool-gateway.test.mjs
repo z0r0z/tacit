@@ -33,6 +33,10 @@ console.log('deposit intents');
 {
   assert.throws(() => depositIntent(zk, { asset, amount: 10n, outputs: [out(11n, 0)], refund: REFUND, deadline: 1n }));
   ok('outputs above the deposit are refused');
+  assert.throws(() => depositIntent(zk, { asset, amount: 10n, outputs: [out(1n, 0)], refund: '0x' + '0'.repeat(40), deadline: 1n }), /refund/);
+  assert.throws(() => depositIntent(zk, { asset, amount: 1n << 120n, outputs: [], refund: REFUND, deadline: 1n }), /2\^120/);
+  assert.throws(() => depositIntent(zk, { asset, amount: 10n, outputs: [out(1n, 0), out(1n, 1), out(1n, 2)], refund: REFUND, deadline: 1n }), /two outputs/);
+  ok('zero refund, amount ≥ 2^120 and three outputs are refused');
 }
 const { intent, hint } = depositIntent(zk, { asset, amount: 1000n, outputs: [out(990n, 0)], memo0: '0xa11ce0', refund: REFUND, deadline: 2_000_000_000n, nonce: 1n });
 assert.strictEqual(hint.fee, 10n);

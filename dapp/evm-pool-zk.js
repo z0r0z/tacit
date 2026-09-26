@@ -1,5 +1,5 @@
 // EVM shielded pool: witness and public signals for dapp/circuits/evm-pool/transact.circom, and the values the
-// pool contract (contracts/src/TacitShieldedPool.sol) derives on-chain. Keys, notes, nullifiers and EdDSA are
+// pool contract (contracts/src/TacitEvmPool.sol) derives on-chain. Keys, notes, nullifiers and EdDSA are
 // the Bitcoin pool's (./btc-pool-zk.js); only values widen to 120 bits and the asset is the pool's own field.
 //
 //   asset        = keccak256(abi.encode(chainId, pool, token)) mod p
@@ -30,6 +30,7 @@ const addr = (a) => {
   if (b.length !== 20) throw new Error('evm-pool-zk: address must be 20 bytes');
   return word(bytesToBig(b));
 };
+const randomBig = (n) => bytesToBig(crypto.getRandomValues(new Uint8Array(n)));
 const keccakField = (...words) => bytesToBig(keccak_256(concatBytes(...words))) % P_FR;
 const memoHash = (m) => keccak_256(typeof m === 'string' ? hexToBytes(m) : m);
 
@@ -104,24 +105,25 @@ export function makeEvmPoolZk({ poseidon }) {
   const message = ({ asset, nf, outLeaf, publicAmount: pa, extDataHash: eh }) =>
     H([asset, ...nf, ...outLeaf, pa, eh]);
 
-  // leaves: the pool's leaves in order (the tree the proof inserts into). inputs[i]: { v, rho, nk, sk, index }
-  // for an owned note, { dummy: true } for a zero-value filler, or null for an empty slot. outputs[k]:
-  // { v, npk, rho } or null. root: membership root (defaults to the current root).
-  function buildWitness({ asset, leaves, inputs, outputs, extAmount, fee, extDataHash: eh, root = null }) {
+  // leaves: the pool's inserted leaves in order; membership is proven against their root. inputs[i]:
+  // { v, rho, nk, sk, index } for an owned note, { dummy: true } for a zero-value filler with fresh random keys
+  // (so its nullifier is unique and unlinkable), or null for an empty slot. outputs[k]: { v, npk, rho } or null.
+  // With both outputs null the proof inserts nothing.
+  function buildWitness({ asset, leaves, inputs, outputs, extAmount, fee, extDataHash: eh }) {
     if (inputs.length !== EVM_N_IN || outputs.length !== EVM_N_OUT) throw new Error('evm-pool-zk: arity');
     const t = tree(leaves);
     if (t.size % 2) throw new Error('evm-pool-zk: pool size must be even');
     const pa = publicAmount(extAmount, fee);
-    const mRoot = root ?? t.root;
 
     const ins = inputs.map((x) => {
       if (!x) return { empty: true, v: 0n, rho: 0n, nk: 1n, sk: 1n, index: 0n, path: Array(EVM_TREE_DEPTH).fill(0n), nf: 0n };
       if (x.dummy) {
-        const sk = x.sk ?? (1n + (BigInt(x.seed ?? 1) % (L_BJJ - 1n)));
-        const nk = x.nk ?? sk;
-        const NK = mulB8(nk);
-        const leaf = leafOf(asset, 0n, npkOf(mulB8(sk), NK), x.rho ?? 0n);
-        return { v: 0n, rho: x.rho ?? 0n, nk, sk, index: 0n, path: Array(EVM_TREE_DEPTH).fill(0n), leaf, nf: nullifier(nk, leaf, 0n) };
+        const sk = 1n + (randomBig(64) % (L_BJJ - 1n));
+        const nk = 1n + (randomBig(64) % (L_BJJ - 1n));
+        const rho = randomBig(64) % P_FR;
+        const index = randomBig(4);
+        const leaf = leafOf(asset, 0n, npkOf(mulB8(sk), mulB8(nk)), rho);
+        return { v: 0n, rho, nk, sk, index, path: Array(EVM_TREE_DEPTH).fill(0n), leaf, nf: nullifier(nk, leaf, index) };
       }
       const NK = mulB8(x.nk);
       const leaf = leafOf(asset, x.v, npkOf(mulB8(x.sk), NK), x.rho);
@@ -147,7 +149,7 @@ export function makeEvmPoolZk({ poseidon }) {
     const newRoot = insert(outLeaf, start, insPath);
 
     const input = {
-      root: mRoot, oldRoot: t.root, newRoot, startIndex: start, publicAmount: pa, extDataHash: eh, asset,
+      root: t.root, oldRoot: t.root, newRoot, startIndex: start, publicAmount: pa, extDataHash: eh, asset,
       nf, outLeaf,
       inV: ins.map((x) => x.v), inRho: ins.map((x) => BigInt(x.rho)), inNk: ins.map((x) => BigInt(x.nk)),
       inAk: ins.map((x) => mulB8(x.sk)), inIndex: ins.map((x) => BigInt(x.index)), inPath: ins.map((x) => x.path),

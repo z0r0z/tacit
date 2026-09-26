@@ -45,7 +45,8 @@ interface IConfidentialPoolWrap {
 ///      and both memos, so the completer can only deliver exactly the notes the owner chose. The completer is
 ///      paid the pool's relayer fee, which the leaves fix at amount − Σ output values.
 ///   4. WRAP BOXES (wrapBoxOf / completeWrap / reclaimWrap) — the same for a V1 note: any source pays the box,
-///      anyone completes `wrap(assetId, amount, commit)` into the confidential pool and is paid `tip`.
+///      anyone completes `wrap(assetId, amount, commit)` into the confidential pool, and `tip` goes to the intent's
+///      `tipTo` (or to the completer when it is zero).
 ///   5. POOL → V1 (withdrawToV1) — withdraw from this pool straight into a wrap box and complete it, one tx.
 ///
 /// Leaving this pool for anything else needs nothing here: a withdrawal whose recipient is a ConfidentialRouter
@@ -54,7 +55,7 @@ interface IConfidentialPoolWrap {
 /// Trust model, as ConfidentialRouter: tokens pass through only within a call and each named leg is swept
 /// back to the caller; any stray balance is swept by the next caller, so never leave value resting here. The
 /// pool, zRouter, Permit2 and V1 pool are immutable. A box holds only the funds paid to it and releases them
-/// only to its intent's destination (the pool deposit / V1 wrap) or, after its deadline, to its `refund`. A
+/// only to its intent's destination (the pool deposit / V1 wrap) or, after its deadline, any token to its `refund`. A
 /// tampered intent maps to a different, empty box. nonReentrant on every entrypoint.
 contract TacitEvmPoolRouter is ReentrancyGuardTransient {
     ITacitEvmPool public immutable POOL;
@@ -94,11 +95,13 @@ contract TacitEvmPoolRouter is ReentrancyGuardTransient {
         uint256 nonce;
     }
 
-    /// A V1 wrap a box completes: `wrap(assetId, amount, commit)` on V1, `tip` of the same token to the completer.
+    /// A V1 wrap a box completes: `wrap(assetId, amount, commit)` on V1, `tip` of the same token to `tipTo`, or to
+    /// the completer when `tipTo` is zero (an open tip can be taken by whoever lands the completion first).
     struct WrapIntent {
         bytes32 assetId;
         uint256 amount;
         uint256 tip;
+        address tipTo;
         bytes32 commit;
         address refund;
         uint64 deadline;
@@ -206,9 +209,10 @@ contract TacitEvmPoolRouter is ReentrancyGuardTransient {
         emit DepositBoxCompleted(box, msg.sender);
     }
 
-    /// Permissionless, after the deadline: the box's whole balance of the pool asset goes to `intent.refund`.
-    function reclaimDeposit(DepositIntent calldata intent) external nonReentrant {
-        _reclaim(_depositSalt(intent), ASSET, intent.refund, intent.deadline);
+    /// Permissionless, after the deadline: the box's whole balance of `token` (address(0) = ETH) goes to
+    /// `intent.refund`. Any token can be recovered, not only the pool asset.
+    function reclaimDeposit(DepositIntent calldata intent, address token) external nonReentrant {
+        _reclaim(_depositSalt(intent), token, intent.refund, intent.deadline);
     }
 
     // ──────────────────── 4. Wrap boxes (into a V1 note) ────────────────────
@@ -217,21 +221,19 @@ contract TacitEvmPoolRouter is ReentrancyGuardTransient {
         return LibClone.predictDeterministicAddress_PUSH0(boxImpl, _wrapSalt(intent), address(this));
     }
 
-    /// Permissionless: wraps `intent.amount` to `intent.commit` on V1 and pays `intent.tip` to the caller.
+    /// Permissionless: wraps `intent.amount` to `intent.commit` on V1 and pays `intent.tip`.
     function completeWrap(WrapIntent calldata intent) external nonReentrant {
         _completeWrap(intent);
     }
 
-    function reclaimWrap(WrapIntent calldata intent) external nonReentrant {
-        (address token,) = _wrapToken(intent.assetId);
+    function reclaimWrap(WrapIntent calldata intent, address token) external nonReentrant {
         _reclaim(_wrapSalt(intent), token, intent.refund, intent.deadline);
     }
 
     // ──────────────────── 5. Pool → V1 in one transaction ────────────────────
 
     /// Withdraw from the pool into `intent`'s wrap box (the proof binds the box as recipient, so the
-    /// destination cannot be changed) and complete the wrap. The pool's relayer fee goes to `t.relayer`; the
-    /// wrap tip goes to the caller.
+    /// destination cannot be changed) and complete the wrap. The pool's relayer fee goes to `t.relayer`.
     function withdrawToV1(Tx calldata t, WrapIntent calldata intent) external nonReentrant {
         if (t.extAmount >= 0 || t.recipient != wrapBoxOf(intent)) revert BadIntent();
         POOL.transact(t.pA, t.pB, t.pC, t.publicInputs, t.recipient, t.extAmount, t.relayer, t.fee, t.memo0, t.memo1);
@@ -267,7 +269,7 @@ contract TacitEvmPoolRouter is ReentrancyGuardTransient {
             if (!poolMinted) _lazyApprove(token, address(V1), intent.amount);
             V1.wrap(intent.assetId, intent.amount, intent.commit);
         }
-        _deliver(token, msg.sender, intent.tip);
+        _deliver(token, intent.tipTo == address(0) ? msg.sender : intent.tipTo, intent.tip);
         emit WrapBoxCompleted(box, msg.sender);
     }
 

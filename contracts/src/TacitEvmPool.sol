@@ -21,11 +21,12 @@ interface ITransactVerifier {
 /// Immutable, matching V1 (SPEC §8): no owner, no pause, no admin function. If the relation or verifier
 /// ever needs to change, a successor pool is deployed at a new address; this contract never rotates.
 ///
-/// Notes live in an append-only Poseidon(2) tree of depth 32; each transact() call inserts exactly one
-/// pair of leaves (an empty output slot is still a leaf, value 0) at the pool's current size, proven
-/// in-circuit against `oldRoot`/`newRoot` — the contract never hashes. `root` is the pool's current head;
-/// `everKnownRoot` retains every root the pool has ever held, so a prover can build a membership proof
-/// against a root that is no longer current without racing the next writer.
+/// Notes live in an append-only Poseidon(2) tree of depth 32. A transact() call with at least one output
+/// inserts one pair of leaves (an empty output slot is still a leaf, value 0) at the pool's current size,
+/// proven in-circuit against `oldRoot`/`newRoot`, so the contract never hashes; it must build on the current
+/// head, so submit through private order flow. A call whose outputs are both empty inserts nothing, leaves
+/// the tree untouched and cannot go stale. `everKnownRoot` retains every root the pool has held, so
+/// membership can be proven against a root that is no longer current.
 contract TacitEvmPool {
     ITransactVerifier public immutable VERIFIER;
     address public immutable ASSET; // address(0) = native ETH
@@ -45,7 +46,7 @@ contract TacitEvmPool {
         bytes32 indexed nf1,
         bytes32 outLeaf0,
         bytes32 outLeaf1,
-        uint256 firstIndex,
+        uint256 firstIndex, // meaningful only when an outLeaf is non-zero; indexers skip an all-zero pair
         bytes32 newRoot,
         address recipient,
         int256 extAmount,
@@ -101,12 +102,17 @@ contract TacitEvmPool {
         bytes calldata memo1
     ) external payable {
         if (publicInputs[6] != ASSET_FIELD) revert WrongAsset();
-        if (bytes32(publicInputs[1]) != root) revert StaleRoot();
+        bool inserts = publicInputs[9] != 0 || publicInputs[10] != 0;
+        if (inserts) {
+            if (bytes32(publicInputs[1]) != root) revert StaleRoot();
+            if (publicInputs[3] != nextIndex) revert WrongInsertionIndex();
+            if (nextIndex + 2 > (1 << 32)) revert PoolFull();
+        }
         if (!everKnownRoot[bytes32(publicInputs[0])]) revert UnknownMembershipRoot();
-        if (publicInputs[3] != nextIndex) revert WrongInsertionIndex();
-        if (nextIndex + 2 > (1 << 32)) revert PoolFull();
         if (extAmount <= -int256(VALUE_MAX) || extAmount >= int256(VALUE_MAX)) revert ValueOutOfRange();
         if (fee >= VALUE_MAX) revert ValueOutOfRange();
+        if (fee != 0 && relayer == address(0)) revert ZeroAddress();
+        if (extAmount < 0 && recipient == address(0)) revert ZeroAddress();
 
         bytes32 nf0 = bytes32(publicInputs[7]);
         bytes32 nf1 = bytes32(publicInputs[8]);
@@ -124,11 +130,14 @@ contract TacitEvmPool {
 
         if (nf0 != bytes32(0)) nullified[nf0] = true;
         if (nf1 != bytes32(0)) nullified[nf1] = true;
-        bytes32 newRoot = bytes32(publicInputs[2]);
-        root = newRoot;
-        everKnownRoot[newRoot] = true;
         uint256 firstIndex = nextIndex;
-        nextIndex = firstIndex + 2;
+        bytes32 newRoot = root;
+        if (inserts) {
+            newRoot = bytes32(publicInputs[2]);
+            root = newRoot;
+            everKnownRoot[newRoot] = true;
+            nextIndex = firstIndex + 2;
+        }
 
         _settle(recipient, extAmount, relayer, fee);
 

@@ -3,11 +3,14 @@
 // contracts' own views (depositBoxOf / wrapBoxOf / escrowAddressFor), never computed here.
 //
 // A deposit intent fixes the amount, both output leaves and both memo hashes. Its hint (each output's v, npk,
-// rho) is what a keeper needs to prove the deposit; it reveals nothing the leaf does not already commit to, and
-// spending still needs the owner's keys. The keeper's fee is amount − Σ v.
+// rho) is what a keeper needs to prove the deposit. It tells the keeper how the deposit splits across the two
+// outputs, which the leaves hide; it cannot link later spends, which need the owner's nk. The keeper's fee is
+// amount − Σ v.
 
 import { keccak_256 } from './vendor/tacit-deps.min.js';
-import { extDataHash, EVM_N_OUT } from './evm-pool-zk.js';
+import { extDataHash, EVM_N_OUT, EVM_VALUE_BITS } from './evm-pool-zk.js';
+
+const VALUE_MAX = 1n << EVM_VALUE_BITS;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 const toBytes = (m) => {
@@ -20,10 +23,12 @@ const hex32 = (b) => '0x' + Array.from(b, (x) => x.toString(16).padStart(2, '0')
 
 // outputs: up to two { v, npk, rho } (null for an empty slot). Returns the on-chain intent and the keeper hint.
 export function depositIntent(zk, { asset, amount, outputs, memo0 = new Uint8Array(), memo1 = new Uint8Array(), refund, deadline, nonce = 0n }) {
+  if (outputs.length > EVM_N_OUT) throw new Error('evm-pool-gateway: at most two outputs');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(String(refund)) || BigInt(refund) === 0n) throw new Error('evm-pool-gateway: a non-zero refund address is required to recover an unfinished box');
+  if (BigInt(amount) <= 0n || BigInt(amount) >= VALUE_MAX) throw new Error('evm-pool-gateway: amount must be in (0, 2^120)');
   const outs = [...outputs, ...Array(EVM_N_OUT - outputs.length).fill(null)];
-  if (outs.length !== EVM_N_OUT) throw new Error('evm-pool-gateway: at most two outputs');
   const total = outs.reduce((s, o) => s + (o ? BigInt(o.v) : 0n), 0n);
-  if (BigInt(amount) <= 0n || total > BigInt(amount)) throw new Error('evm-pool-gateway: outputs exceed the deposit');
+  if (total > BigInt(amount)) throw new Error('evm-pool-gateway: outputs exceed the deposit');
   const leaves = outs.map((o) => (o ? zk.leafOf(asset, o.v, o.npk, o.rho) : 0n));
   const m0 = toBytes(memo0);
   const m1 = toBytes(memo1);
@@ -49,6 +54,8 @@ export function completionWitness(zk, { intent, hint, asset, leaves, chainId, po
 // A withdrawal of `amount` to `recipient` (a wrap box for withdrawToV1, an exit-recipe escrow, or any address),
 // paying `fee` to `relayer`. inputs / change follow evm-pool-zk.js buildWitness; change is an optional output.
 export function withdrawalWitness(zk, { asset, leaves, inputs, change = null, amount, recipient, relayer = ZERO, fee = 0n, memo0 = new Uint8Array(), memo1 = new Uint8Array(), chainId, pool }) {
+  if (BigInt(fee) > 0n && BigInt(relayer) === 0n) throw new Error('evm-pool-gateway: a fee needs a relayer address');
+  if (BigInt(recipient) === 0n) throw new Error('evm-pool-gateway: a withdrawal needs a recipient');
   const extAmount = -BigInt(amount);
   const m0 = toBytes(memo0);
   const m1 = toBytes(memo1);

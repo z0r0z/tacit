@@ -18,8 +18,9 @@ pragma circom 2.1.6;
 // slots; the contract rejects equal non-zero nullifiers.
 //
 // Insertion is proven here, so the contract never hashes: the two output leaves fill leaves startIndex and
-// startIndex + 1 (startIndex even) of the tree whose root is oldRoot, giving newRoot. Membership of inputs is
-// proven against root, any root the pool has held.
+// startIndex + 1 (startIndex even) of the tree whose root is oldRoot, giving newRoot. A transaction whose outputs
+// are both empty inserts nothing and requires newRoot = oldRoot. Membership of inputs is proven against root,
+// any root the pool has held.
 //
 // Spend authority: EdDSA-Poseidon under Ak over M = Poseidon(asset, nf, outLeaf, publicAmount, extDataHash).
 // M leaves out the tree position, so a proof that loses the race for oldRoot is re-proven without a new
@@ -172,8 +173,13 @@ template EvmPoolTransact(depth, nIn, nOut, valueBits) {
         before.path[j] <== insPath[j];
         after.path[j] <== insPath[j];
     }
-    before.root === oldRoot;
-    after.root === newRoot;
+    // A transaction with both outputs empty inserts nothing: the roots are unconstrained by the paths and
+    // must be equal, and the contract leaves the tree and its size untouched.
+    signal ins;
+    ins <== 1 - outEmpty[0].out * outEmpty[1].out;
+    (before.root - oldRoot) * ins === 0;
+    (after.root - newRoot) * ins === 0;
+    (newRoot - oldRoot) * (1 - ins) === 0;
 
     signal extDataHashSq;
     extDataHashSq <== extDataHash * extDataHash;
