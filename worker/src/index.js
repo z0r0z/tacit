@@ -104,6 +104,7 @@ import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-sc
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
 import { bpRangeVerify, bpClassicProofLen } from '../../dapp/bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint } from '../../dapp/bulletproofs-plus.js';
+import { makeStatsReader, mergeReadings, toJson as statsJson } from '../../dapp/weld/stats/read.js';
 
 // Node (Render) egress: several Bitcoin explorers publish AAAA records that this host can't route, so
 // fetch() picks IPv6 and ETIMEDOUTs at connect (AggregateError in internalConnectMultiple) — which broke
@@ -621,7 +622,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/crossout/minted', '/farm/program', '/farm/health']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/confidential/submit', '/confidential/status', '/confidential/quote', '/confidential/index', '/reflection/dump', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/crossout/minted', '/farm/program', '/farm/health']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1489,13 +1490,19 @@ async function handleReflectionStatus(req, env, url, cors) {
   }
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
-  const headers = { ...cors, 'Cache-Control': 'public, max-age=10' };
+  const r = await reflectionStatusBody(env, network);
+  if (r.error) return jsonResponse({ error: r.error }, r.status, r.status === 404 ? { ...cors, 'Cache-Control': 'no-store' } : cors);
+  return jsonResponse(r.body, 200, { ...cors, 'Cache-Control': 'public, max-age=10' });
+}
+// The reflection's status from its persisted record (cached for REFLECTION_STATUS_TTL_MS), for /reflection/status and
+// for the stats reading this API keeps: { body } or { error, status }.
+async function reflectionStatusBody(env, network) {
   const hit = _reflectionStatusCache.get(network);
-  if (hit && Date.now() - hit.at < REFLECTION_STATUS_TTL_MS) return jsonResponse(hit.body, 200, headers);
+  if (hit && Date.now() - hit.at < REFLECTION_STATUS_TTL_MS) return { body: hit.body };
   const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
-  if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  if (!raw) return { error: 'no persisted state', status: 404 };
   let s;
-  try { s = JSON.parse(raw); } catch { return jsonResponse({ error: 'corrupt state' }, 500, cors); }
+  try { s = JSON.parse(raw); } catch { return { error: 'corrupt state', status: 500 }; }
   const snap = s.snapshot && typeof s.snapshot === 'object' ? s.snapshot : s;
   const attested = s.attestedHeight ?? null, tip = s.tipHeight ?? null;
   const body = {
@@ -1511,7 +1518,49 @@ async function handleReflectionStatus(req, env, url, cors) {
     updatedAt: new Date().toISOString(),
   };
   _reflectionStatusCache.set(network, { at: Date.now(), body });
-  return jsonResponse(body, 200, headers);
+  return { body };
+}
+
+// ── /stats: the weld stats page's reading, taken here and shared by every visitor ──
+// One reading at a time, at most every quarter hour and only when asked for; a visitor meanwhile gets the last one at
+// once. Each reading starts from what the last one kept, so it asks the chains and explorers only for what is new, and a
+// part it can't read keeps its last value (the reading says which, and from when).
+const STATS_TTL_MS = 15 * 60 * 1000;
+const _stats = { body: null, at: 0, reading: null, keep: {}, inflight: null };
+function refreshStats(env) {
+  if (_stats.inflight) return _stats.inflight;
+  const getApi = async (path) => {
+    const u = new URL(path, 'http://local');
+    if (u.pathname === '/leaderboard') {
+      const r = await fetch(`${POINTS_API_BASE}/leaderboard${u.search}`, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`points ${r.status}`);
+      return r.json();
+    }
+    if (u.pathname === '/reflection/status' && env.REGISTRY_KV) {
+      const r = await reflectionStatusBody(env, 'mainnet');
+      if (r.error) throw new Error(r.error);
+      return r.body;
+    }
+    throw new Error(`no ${u.pathname}`);
+  };
+  _stats.inflight = makeStatsReader({ getApi }).read(_stats.keep)
+    .then(({ reading, keep }) => {
+      _stats.keep = keep;
+      _stats.reading = mergeReadings(_stats.reading, reading);
+      _stats.body = statsJson(_stats.reading);
+      _stats.at = Date.now();
+    })
+    .catch((e) => { console.warn(`[stats] reading failed: ${(e && e.message) || e}`); })
+    .finally(() => { _stats.inflight = null; });
+  return _stats.inflight;
+}
+async function handleStats(env, cors) {
+  if (!_stats.body || Date.now() - _stats.at > STATS_TTL_MS) {
+    const p = refreshStats(env);
+    if (!_stats.body) await p;
+  }
+  if (!_stats.body) return jsonResponse({ error: 'not read yet' }, 503, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '30' });
+  return new Response(_stats.body, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' } });
 }
 
 // Export the persisted reflection record verbatim (the counterpart to /reflection/seed). The
@@ -25570,6 +25619,8 @@ async function _routeFetch(req, env, ctx) {
       || url.pathname === '/leaderboard' || url.pathname.startsWith('/points/') || url.pathname.startsWith('/claim/');
     const cors = corsHeaders(env, req.headers.get('Origin') || '', openOrigin);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+
+    if (url.pathname === '/stats' && req.method === 'GET') return handleStats(env, cors);
 
     if (url.pathname === '/health' && req.method === 'GET') {
       return new Response(JSON.stringify({ ok: true, ts: Date.now() }), {
