@@ -366,12 +366,12 @@ test('a gate that cannot read gas or ETH price fails OPEN, not closed', async ()
 
 // ── prove-mode: a bounded subsidy, and a budget that junk cannot drain ─────────
 const submitSrc = worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob'));
-function loadSubmit({ cap = '3', freeCap = '3', submitJob, kvStore = new Map(), feeOf = () => 0n }) {
+function loadSubmit({ cap = '3', freeCap = '3', submitJob, kvStore = new Map(), feeOf = () => 0n, tipPaid = async () => false }) {
   const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
-  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx', 'withKvKeyLock',
+  const mk = new Function('confSettler', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx', 'withKvKeyLock', 'wrapTipPaid',
     submitSrc + '; return handleConfidentialSubmit;');
   const handler = mk(() => ({ submitJob }), async () => ({ ok: true }), (body, status) => ({ body, status }), () => false, (type, op) => feeOf(type, op), {},
-    (_key, fn) => fn());
+    (_key, fn) => fn(), tipPaid);
   const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap, FREE_RELAY_DAILY_CAP: freeCap }, {});
   return { call, kvStore };
 }
@@ -430,6 +430,53 @@ test('junk and dedupe hits cannot drain the free budget', async () => {
   const dup = loadSubmit({ freeCap: '3', feeOf: () => 0n, submitJob: async () => ({ jobId: 'j', status: 'pending', deduped: true }) });
   for (let i = 0; i < 10; i++) ok((await dup.call({ type: 'cbtcmint', op: {}, mode: 'settle' })).status === 200, 'a dedupe hit must always pass');
   ok(dup.kvStore.size === 0, 'a dedupe hit spent the free budget');
+});
+
+test('a wrap whose deposit paid its tip stays off the free budget; one that did not still spends it', async () => {
+  let n = 0;
+  const tipPaid = async (_env, body) => body.type === 'wrap' && !!body.depositTx;
+  const { call, kvStore } = loadSubmit({ freeCap: '1', feeOf: () => 0n, tipPaid, submitJob: async () => ({ jobId: 'j' + ++n, status: 'pending' }) });
+  for (let i = 0; i < 5; i++) ok((await call({ type: 'wrap', op: {}, mode: 'settle', depositTx: '0x' + 'ab'.repeat(32) })).status === 200, `paid wrap ${i + 1} must be accepted past the free cap`);
+  ok(kvStore.size === 0, 'a paid wrap spent the free budget');
+  ok((await call({ type: 'wrap', op: {}, mode: 'settle' })).status === 200, 'an unpaid wrap within the cap is accepted');
+  const over = await call({ type: 'wrap', op: {}, mode: 'settle' });
+  ok(over.status === 429 && over.body.code === 'free_budget', `an unpaid wrap over the free cap is refused, got ${over.status}`);
+});
+
+// wrapTipPaid reads the deposit's receipt: a WrappedWithTip from a known forwarder, for this op's own deposit, tipping
+// our recipient at least half of what settling costs now.
+const tipSrc = worker.slice(worker.indexOf('async function wrapSettleCost'), worker.indexOf('// A GLOBAL daily ceiling on prove-mode jobs'));
+async function loadTipPaid({ receipt, gasHex = '0x3b9aca00', ethUsd = 2500, proveUsd = 0.2 }) {
+  const { keccak_256 } = await import(join(ROOT, 'node_modules/@noble/hashes/sha3.js'));
+  const u = await import(join(ROOT, 'node_modules/@noble/hashes/utils.js'));
+  const DEP = { mainnet: { assets: [{ ticker: 'cETH', assetId: '0x' + '3c'.repeat(32), unitScale: '10000000000', native: true }, { ticker: 'cUSD', assetId: '0x' + '8f'.repeat(32), unitScale: '10000000000' }] } };
+  const f = new Function('keccak_256', 'bytesToHex', 'hexToBytes', '_CONFIDENTIAL_DEPLOYMENTS', '_ethRpc', '_ethGasPrice', '_ethUsdPrice', '_provePriceUsd',
+    tipSrc + '; return { wrapTipPaid, wrapSettleCost };')(keccak_256, u.bytesToHex, u.hexToBytes, DEP, async (_n, m) => (m === 'eth_getTransactionReceipt' ? receipt : null),
+    async () => gasHex, async () => ethUsd, async () => proveUsd);
+  return { ...f, keccak_256, u };
+}
+test('a wrap counts as paid only for its own deposit, through our forwarder, to our recipient, at a real tip', async () => {
+  const W = (b) => '0x' + b.repeat(32), op = { asset: W('3c'), value: '1000000', cx: W('01'), cy: W('02'), owner: W('03') };
+  const { wrapTipPaid, wrapSettleCost, keccak_256, u } = await loadTipPaid({ receipt: null });
+  const commit = '0x' + u.bytesToHex(keccak_256(u.hexToBytes('01'.repeat(32) + '02'.repeat(32) + '03'.repeat(32))));
+  const sig = '0x' + u.bytesToHex(keccak_256(new TextEncoder().encode('WrappedWithTip(bytes32,uint256,uint256,address)')));
+  const FWD = '0x000000D218B03db5837943b0b05DeA2965AE956e', TO = '0x' + '006cd14f36f65ecbb29b2519ccbe63a0dc8549f2'.padStart(64, '0');
+  const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const cost = (await wrapSettleCost({}, '0x3b9aca00', 2500)).tipWei;
+  const rcpt = ({ address = FWD, topics = [sig, commit, TO], amount = 10n ** 16n, tip = cost, status = '0x1' } = {}) => ({ status, logs: [{ address, topics, data: '0x' + word(amount) + word(tip) }] });
+  const paid = async (receipt, body = { type: 'wrap', op, depositTx: W('aa') }) => (await loadTipPaid({ receipt })).wrapTipPaid({}, body);
+  ok(await paid(rcpt()) === true, 'a full tip for this deposit counts as paid');
+  ok(await paid(rcpt({ tip: (cost + 1n) / 2n })) === true, 'half the cost still counts (gas moves between the quote and the settle)');
+  ok(await paid(rcpt({ tip: cost / 3n })) === false, 'a tip under half the cost is still free work');
+  ok(await paid(rcpt({ topics: [sig, W('99'), TO] })) === false, "another deposit's tip does not pay for this one");
+  ok(await paid(rcpt({ topics: [sig, commit, '0x' + '11'.repeat(32)] })) === false, 'a tip to someone else does not pay us');
+  ok(await paid(rcpt({ address: '0x' + '22'.repeat(20) })) === false, 'the same event from any other contract is ignored');
+  ok(await paid(rcpt({ amount: 10n ** 15n })) === false, 'a tip on a different amount is a different deposit');
+  ok(await paid(rcpt({ status: '0x0' })) === false, 'a reverted deposit paid nothing');
+  ok(await paid(rcpt(), { type: 'wrap', op }) === false, 'without depositTx a wrap is free work, as before');
+  ok(await paid(rcpt(), { type: 'transfer', op, depositTx: W('aa') }) === false, 'only a wrap can be paid this way');
+  ok(await paid(rcpt(), { type: 'wrap', op: { ...op, asset: W('8f') }, depositTx: W('aa') }) === false, 'the ETH forwarder pays only for the native asset');
+  ok(await paid(null) === false, 'no receipt, no exemption');
 });
 
 test('prove-mode is not counted against the free-relay budget', async () => {

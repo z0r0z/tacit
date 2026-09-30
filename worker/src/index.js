@@ -2079,15 +2079,8 @@ function handleConfidentialQuote(req, env, url, cors) {
       // capping the ETH tip against it would need a price this endpoint may not have for every asset.
       if (gasPriceHex) {
         try {
-          const wrapSettleGas = BigInt(env.WRAP_SETTLE_GAS || '593000');
-          const gasCostWei = wrapSettleGas * BigInt(gasPriceHex);
-          const opProve = Number(env.OP_PROVE || '0.39');
-          const provePriceUsd = await _provePriceUsd('mainnet').catch(() => null);
-          let proveCostWei = 0n;
-          if (provePriceUsd && ethUsd) proveCostWei = BigInt(Math.ceil((opProve * provePriceUsd / ethUsd) * 1e18));
-          const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000');
-          const base = gasCostWei + proveCostWei;
-          let tipWei = base + (base * marginBps) / 10000n;
+          const cost = await wrapSettleCost(env, gasPriceHex, ethUsd);
+          let tipWei = cost.tipWei;
           if (ticker === 'cETH') {
             const amountParam = url.searchParams.get('amountWei') || '';
             if (/^\d+$/.test(amountParam)) {
@@ -2101,7 +2094,7 @@ function handleConfidentialQuote(req, env, url, cors) {
           // broadcasting their own settle transaction and paying its gas directly, so the wrap figure's
           // gas component would bill them again for gas they never cost the relay. This is the prove
           // leg alone (+ the same margin) — the only cost self-settle actually adds to the relay's bill.
-          out.recommendedProveTipWei = (proveCostWei + (proveCostWei * marginBps) / 10000n).toString();
+          out.recommendedProveTipWei = cost.proveTipWei.toString();
         } catch { /* leave recommendedWrapTipWei/recommendedProveTipWei unset — callers should treat a missing field as "ask again" */ }
       }
       return jsonResponse(out, 200, { ...cors, 'Cache-Control': 'public, max-age=15' });
@@ -2203,6 +2196,52 @@ async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST,
     return { ok: true };
   });
 }
+// What settling one wrap costs this relay now, with its margin, in wei: settle gas at `gasPriceHex` plus the SP1
+// network prove (nothing for the prove when PROVE or ETH has no price). The quote recommends it as a wrap tip, and a
+// wrap whose deposit paid at least half of it is paid work (wrapTipPaid).
+async function wrapSettleCost(env, gasPriceHex, ethUsd) {
+  const gasCostWei = BigInt(env.WRAP_SETTLE_GAS || '593000') * BigInt(gasPriceHex);
+  const provePriceUsd = await _provePriceUsd('mainnet').catch(() => null);
+  const proveCostWei = provePriceUsd && ethUsd ? BigInt(Math.ceil((Number(env.OP_PROVE || '0.39') * provePriceUsd / ethUsd) * 1e18)) : 0n;
+  const marginBps = BigInt(env.RELAY_FEE_MARGIN_BPS || '1000'), withMargin = (x) => x + (x * marginBps) / 10000n;
+  return { tipWei: withMargin(gasCostWei + proveCostWei), proveTipWei: withMargin(proveCostWei) };
+}
+// A wrap's op carries no fee (its tip rides on the deposit, paid on chain before anything is proved), so by its op
+// alone a wrap is free work. `depositTx` names the deposit's transaction: when its receipt holds a WrappedWithTip
+// from one of our tip forwarders for this op's own deposit (commitment, asset and amount) paying our tip recipient at
+// least half of what settling costs now, the wrap is paid work and stays off the free budget. Anything unreadable
+// leaves it free work, as before.
+const WRAPPED_WITH_TIP = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('WrappedWithTip(bytes32,uint256,uint256,address)')));
+const WRAPPED_TOKEN_WITH_TIP = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('WrappedWithTip(bytes32,bytes32,uint256,uint256,address)')));
+async function wrapTipPaid(env, body) {
+  const op = body?.op, tx = String(body?.depositTx || '');
+  if (body?.type !== 'wrap' || !op || typeof op !== 'object' || !/^0x[0-9a-fA-F]{64}$/.test(tx)) return false;
+  const word = (x) => (/^0x[0-9a-fA-F]{64}$/.test(String(x || '')) ? String(x).slice(2).toLowerCase() : null);
+  const [cx, cy, owner, asset] = [op.cx, op.cy, op.owner, op.asset].map(word);
+  if (!cx || !cy || !owner || !asset || !/^\d+$/.test(String(op.value ?? ''))) return false;
+  const row = (_CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || []).find((a) => String(a.assetId || '').toLowerCase() === '0x' + asset);
+  if (!row) return false;
+  const commit = '0x' + bytesToHex(keccak_256(hexToBytes(cx + cy + owner))), amount = BigInt(op.value) * BigInt(row.unitScale || '1');
+  const forwarders = [env.WRAP_TIP_FORWARDER_ADDR || '0x000000D218B03db5837943b0b05DeA2965AE956e', env.WRAP_TOKEN_TIP_FORWARDER_ADDR]
+    .filter(Boolean).map((a) => String(a).toLowerCase());
+  const to = '0x' + String(env.RELAY_TIP_RECIPIENT_ADDR || '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2').slice(2).toLowerCase().padStart(64, '0');
+  const r = await _ethRpc('mainnet', 'eth_getTransactionReceipt', [tx]).catch(() => null);
+  if (!r || r.status !== '0x1') return false;
+  let tip = null;
+  for (const l of r.logs || []) {
+    const t = (l.topics || []).map((x) => String(x).toLowerCase()), data = String(l.data || '').slice(2);
+    if (!forwarders.includes(String(l.address).toLowerCase()) || data.length < 128) continue;
+    // The ETH forwarder wraps only the pool's native asset; the token one names the asset it wrapped.
+    const mine = (t[0] === WRAPPED_WITH_TIP && t[1] === commit && t[2] === to && row.native === true)
+      || (t[0] === WRAPPED_TOKEN_WITH_TIP && t[1] === '0x' + asset && t[2] === commit && t[3] === to);
+    if (mine && BigInt('0x' + data.slice(0, 64)) === amount) { tip = BigInt('0x' + data.slice(64, 128)); break; }
+  }
+  if (tip == null || tip === 0n) return false;
+  const [gas, ethUsd] = await Promise.all([_ethGasPrice('mainnet').catch(() => null), _ethUsdPrice().catch(() => null)]);
+  if (!gas) return false;
+  const { tipWei } = await wrapSettleCost(env, gas, ethUsd);
+  return tip * 2n >= tipWei;
+}
 // A GLOBAL daily ceiling on prove-mode jobs, on top of the per-IP bucket.
 //
 // Prove-mode proves on OUR network PROVE and, unlike a relayed settle, can never carry a collectable fee: the
@@ -2262,7 +2301,7 @@ async function handleConfidentialSubmit(req, env, cors) {
       : await proveRateLimit(env, ip);
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many submit requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': String(rl.retryAfter) });
   }
-  const feeless = submitMode === 'settle' && isFeeless(body.type, body.op);
+  const feeless = submitMode === 'settle' && isFeeless(body.type, body.op) && !(await wrapTipPaid(env, body));
   if (feeless) {
     const b = await freeRelayBudget(env);
     if (!b.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${b.used}/${b.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget' }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
