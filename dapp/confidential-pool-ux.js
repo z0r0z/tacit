@@ -3036,9 +3036,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   // Build + relay-settle a confidential route (a 1-hop path is a plain swap). `inNote` is a recovered note.
-  // PARTIAL ROUTES: `amountIn` may be LESS than the note's value — the remainder returns as a change
-  // note in the same settle, in the ROUTE START asset. Passing the note's full value emits no change leaf.
-  async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, waitOpts } = {}) {
+  // `amountIn` is the note's full value: buildRoute does not build change yet, so a smaller amount is refused
+  // (split the note with a transfer first). `selfSettle` hands the proven op to the caller to settle.
+  async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, selfRelay = false, selfSettle = null, waitOpts } = {}) {
     const q = await quoteRoute({ asset0: inNote.asset, amountIn, path, fee });
     if (!q) throw new Error('route: a hop pool is not initialized');
     const id = identity(walletPriv);
@@ -3079,7 +3079,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
-    return _dispatch({ type: 'route', spec: { op, leaves, outputs, ephRand }, sealedMemos, selfRelay, walletPriv, waitOpts });
+    return _dispatch({ type: 'route', spec: { op, leaves, outputs, ephRand }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
   }
 
   // Self-settle a box-proven op (ConfidentialPool.settle) from the caller's own EVM account. Used by the CDP

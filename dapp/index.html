@@ -408,6 +408,7 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .step h3 { font: 400 21px/1.2 var(--serif); margin: 2px 0 2px; color: var(--mute); }
 .step .d { font-size: 12.5px; color: var(--mute); }
 .step .act { margin-top: 10px; }
+.step .act .link { display: block; margin-top: 10px; }
 .step.done .n { background: var(--ink); border-color: var(--ink); color: var(--card); }
 .step.done h3 { color: var(--ink); }
 .step.now .n { border: 2px solid var(--orange); color: var(--ink); }
@@ -2627,7 +2628,7 @@ const linkName = (sheet) => Object.keys(ALIAS).find((k) => ALIAS[k][0] === sheet
 // #lock opens Borrow on Bitcoin at its first step, the BTC to lock for cBTC; #leaderboard opens Points at the leaderboard.
 // A view a sheet opens on by default adds nothing (#private, #farm), and the older single names (#eth, #pts) still work.
 const VIEW = {
-  v1: { wrap: '', send: 'send', out: 'withdraw', btc: 'bitcoin' },
+  v1: { wrap: '', send: 'send', swap: 'swap', out: 'withdraw', btc: 'bitcoin' },
   dev: { deposit: '', send: 'send', out: 'withdraw', receive: 'receive' },
   btc: { send: '', receive: 'receive' },
   pts: { all: '', day: 'today' },
@@ -3017,7 +3018,7 @@ function renderV1(el) {
     ${depositCallout('eth', 'v1-finish')}
     ${LK.pub === S.key.pubHex && lockList('claim').length ? html`<div class="callout"><span>${lockList('claim').length === 1 ? 'A private payment was' : `${lockList('claim').length} private payments were`} sent to you.</span><button class="btn ghost" type="button" id="v1-claim">Claim</button></div>` : ''}
     ${LK.pub === S.key.pubHex && lockList('refund').length ? html`<div class="callout"><span>${lockList('refund').length === 1 ? 'A private send was' : `${lockList('refund').length} private sends were`} never claimed. ${lockList('refund').length === 1 ? 'It' : 'They'} can come back to you.</span><button class="btn ghost" type="button" id="v1-back">Take back</button></div>` : ''}
-    ${segSub('v1', V1.mode, [['wrap', 'Make private'], ['send', 'Send'], ['out', 'Withdraw'], ...(xoShown(S.key.pubHex) ? [['btc', 'To Bitcoin']] : [])])}
+    ${segSub('v1', V1.mode, [['wrap', 'Make private'], ['send', 'Send'], ['swap', 'Swap'], ['out', 'Withdraw'], ...(xoShown(S.key.pubHex) ? [['btc', 'To Bitcoin']] : [])])}
     <div id="v1-form"></div>
     <div class="status" role="status" id="v1-status"></div>`);
   wireSub(el, 'v1', (m) => { V1.mode = m; keep($('#sheet-eth'), render.eth); });
@@ -3030,7 +3031,7 @@ function renderV1(el) {
   if (!s && !P.scanning && !P.err) scanPrivate().then(() => rerender('eth')).catch((e) => { sayErr($('#v1-status'), e); rerender('eth'); });
   // A scan that failed is tried again a minute later, not on every redraw of the sheet.
   if (LK.pub !== S.key.pubHex && !LK.scanning && !(LK.failed?.pub === S.key.pubHex && Date.now() - LK.failed.at < 60e3)) loadLocks().then(() => rerender('eth')).catch(() => {});
-  ({ wrap: v1Wrap, send: v1Send, out: v1Out, btc: v1Btc })[V1.mode]($('#v1-form'), $('#v1-status'));
+  ({ wrap: v1Wrap, send: v1Send, swap: v1Swap, out: v1Out, btc: v1Btc })[V1.mode]($('#v1-form'), $('#v1-status'));
 }
 
 // ── what a deposit joins and earns ────────────────────────────────────────────────────────────────────────
@@ -3339,6 +3340,120 @@ function v1Send(el, status) {
       rerender('eth');
       // The relay published a different note than was built: the recipient may not find it. This browser keeps its refund record.
       if (r?.memoCheck?.ok === false) run.warn($('#v1-status'), 'Sent, but the relay published a different note than was built, so the recipient may not find it. If it goes unclaimed, take it back in the classic app after the deadline; its refund record is saved in this browser.');
+    } catch (e) { run.fail(status, e); }
+  });
+}
+
+// Swap: private tETH, TAC, cUSD and cBTC for one another against the farms' pools. Every one of those pools pairs tETH, so a
+// swap between two of the others goes through it, two pools in one settle. A route spends one whole note (it has no change
+// yet), so an amount no note matches is cut first, as a send's is. The swap shows on chain as a move in the pool's balances.
+const SWAP_ASSETS = [['eth', 'tETH', 'teth', 6], ['tac', 'TAC', 'tac', 2], ['cusd', 'cUSD', 'cusd', 2], ['cbtc', 'cBTC', 'cbtc', 6]];   // key, name, icon, decimals shown
+const SW = { from: 'eth', to: 'tac' };
+const swapAsset = (k) => SWAP_ASSETS.find((a) => a[0] === k);
+const swapStops = (from, to) => (from === 'eth' || to === 'eth' ? [to] : ['eth', to]);
+// A relay fee has at most two significant digits, rounded up: the proof refuses any other.
+const twoDigits = (v) => { if (v <= 0n) return 0n; const d = BigInt(String(v).length); if (d <= 2n) return v; const m = 10n ** (d - 2n); return ((v + m - 1n) / m) * m; };
+// The relay's fee for the swap, in the asset paid: a second pool costs it more gas.
+async function swapFee(t, from, to) {
+  const f = BigInt(await t.quoteOpFee(POOL_TK[from], 'route'));
+  return swapStops(from, to).length > 1 ? twoDigits((f * 14n) / 10n) : f;
+}
+// The best pool at each step (the fee tier that pays most), what the route returns, and how far the trade moves the price.
+async function swapPlan(t, from, to, units, fee) {
+  const id = (k) => P.scan[k].id;
+  let cur = id(from), amt = units - fee, mid = Number(amt);
+  const path = [];
+  for (const k of swapStops(from, to)) {
+    const next = id(k);
+    const tiers = await Promise.all([30, 5, 100, 1].map((feeBps) => t.quoteRoute({ asset0: cur, amountIn: amt, path: [{ assetNext: next, feeBps }] }).then((r) => r && r.amountOut > 0n ? { feeBps, out: r.amountOut, hop: r.hops[0] } : null, () => null)));
+    const best = tiers.filter(Boolean).sort((x, y) => (x.out < y.out ? 1 : x.out > y.out ? -1 : 0))[0];
+    if (!best) return null;
+    const lo = BigInt(cur) <= BigInt(next);
+    mid = (mid * Number(lo ? best.hop.reserveBPre : best.hop.reserveAPre)) / Number(lo ? best.hop.reserveAPre : best.hop.reserveBPre) * (1 - best.feeBps / 1e4);
+    path.push({ assetNext: next, feeBps: best.feeBps });
+    cur = next; amt = best.out;
+  }
+  return { path, amountOut: amt, impact: mid > 0 ? Math.max(0, (1 - Number(amt) / mid) * 100) : 0 };
+}
+function v1Swap(el, status) {
+  if (SW.to === SW.from) SW.to = SW.from === 'eth' ? 'tac' : 'eth';
+  const from = SW.from, to = SW.to, [, unit, icon, dp] = swapAsset(from), [, unitTo, , dpTo] = swapAsset(to), held = spendable(from);
+  const again = () => keep($('#sheet-eth'), render.eth);
+  mount(el, html`
+    <div class="lbl"><span>Swap</span><button type="button" id="sw-max">${heldLabel(from, 8, dp, unit)}</button></div>
+    ${segSub('swf', from, SWAP_ASSETS.map(([k, u]) => [k, u]))}
+    <div class="amt"><input id="sw-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit} to swap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${icon}"/></svg>${unit}</span></div>
+    <div class="lbl"><span>For</span></div>
+    ${segSub('swt', to, SWAP_ASSETS.filter(([k]) => k !== from).map(([k, u]) => [k, u]))}
+    <div class="rcpt" id="sw-rcpt" hidden></div>
+    <div id="sw-ack"></div>
+    <button class="btn" type="button" id="sw-go" disabled>Swap privately</button>
+    <p class="note">What you hold stays private. The swap itself is public: it moves the pool's balances by its size, though nothing says whose it is.</p>`);
+  const amt = $('#sw-amt'), go = $('#sw-go'), rc = $('#sw-rcpt'), ackBox = $('#sw-ack');
+  wireSub(el, 'swf', (k) => { SW.from = k; clearField(amt); again(); });
+  wireSub(el, 'swt', (k) => { SW.to = k; again(); });
+  let q = null, seq = 0;
+  const show = (v, d = dp, u = unit) => `${fmt(v, 8, d)} ${u}`;
+  const gateOk = () => { go.disabled = !q || !lossOk(ackBox, q.impact); };
+  $('#sw-max').onclick = () => { amt.value = held ? plain(held, 8) : ''; amt.dispatchEvent(new Event('input')); };
+  const check = async (e) => {
+    const my = ++seq;
+    const units = parseUnits(amt.value, 8);
+    q = null; go.disabled = true; if (e?.isTrusted) say(status, ''); mount(ackBox, html``);
+    if (tooFine(rc, amt.value, units, 8)) return;
+    if (!units) { rc.hidden = true; return; }
+    if (!P.scan) { quoteErr(rc, new Error(overBalance())); return; }
+    try {
+      const t = await getUx();
+      const exact = freeNotes(P.scan[from].notes).some((n) => BigInt(n.value) === units);
+      const [fee, split] = await Promise.all([swapFee(t, from, to), exact ? 0n : t.quoteOpFee(POOL_TK[from], 'transfer').then(BigInt)]);
+      if (my !== seq || !amt.isConnected) return;
+      mount(rc, html``);
+      if (units + split > held) { warn(rc, feeRoom(units, split, held, P.scan[from].notes, (v) => show(v)) || overBalance()); return; }
+      if (units <= fee * 2n) { warn(rc, `Swap more than ${show(fee * 2n)}: the relay fee is ${show(fee, 8)} for this swap.`); return; }
+      const plan = await swapPlan(t, from, to, units, fee);
+      if (my !== seq || !amt.isConnected) return;
+      if (!plan) throw new Error('There is no pool to swap these in yet.');
+      const minOut = (plan.amountOut * 99n) / 100n;
+      q = { from, to, units, fee, split, ...plan, minOut, at: Date.now() };
+      mount(rc, html`
+        <div class="kv"><span>You get about</span><b>${show(plan.amountOut, dpTo, unitTo)}</b></div>
+        ${lossLine(plan.impact)}
+        <div class="kv"><span>At least</span><b>${show(minOut, dpTo, unitTo)}</b></div>
+        <div class="kv"><span>Relay fee</span><b>${show(fee, 8)}</b></div>
+        ${split ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan[from].notes).some((n) => BigInt(n.value) >= units + split) ? 'split a note' : 'combine notes'}</span><b>${show(split, 8)}</b></div>` : ''}
+        ${swapStops(from, to).length > 1 ? html`<div class="kv"><span>Through</span><b>tETH, two pools in one settle</b></div>` : ''}`);
+      rc.hidden = false;
+      mount(ackBox, lossGate('sw-ackv', plan.impact, 'swap'));
+      wireAck(ackBox, 'sw-ackv', plan.impact, gateOk);
+      if (fee * 20n >= units) warn(rc, `The relay fee is ${pctFmt(Number((fee * 1000n) / units) / 10)} of this swap: a larger swap spreads it.`);
+      else if (plan.impact >= 5) warn(rc, 'This pool is thin: smaller amounts move the price less.');
+      gateOk();
+    } catch (x) { if (my === seq) quoteErr(rc, x); }
+  };
+  onEdit([amt], go, check);
+  go.onclick = () => busy(go, async (run) => {
+    const x = q;
+    if (!x || !lossOk(ackBox, x.impact)) return;
+    if (Date.now() - x.at > 60e3) { say(status, 'The price had gone stale. It is being read again; check it and press once more.'); check({}); return; }
+    const label = `Swap ${show(x.units)} for ${unitTo}`;
+    run.go({ label, status: () => $('#v1-status'), clear: () => clearField(amt) });
+    try {
+      const t = await getUx(), priv = walletPriv();
+      const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) === x.units, status, x.from);          // a route spends a whole note
+      // The note may have taken minutes to cut: the price is read again, and a swap that would return less than the least shown is not made.
+      const now = await swapPlan(t, x.from, x.to, x.units, x.fee);
+      if (!now || now.amountOut < x.minOut) throw new Error('The price moved while your note was made. Your note is ready: check the new price and press again.');
+      run.say(status, 'The relay is proving your swap…');
+      const args = { inNote: note, amountIn: x.units, path: now.path, minOut: x.minOut };
+      try { await t.route({ walletPriv: priv, ...args, fee: x.fee, waitOpts: run.wait(null, 15 * 60e3) }); }
+      catch (e) {
+        if (!relayRefused(e) || run.away) throw e;
+        offerSelf({ go: (y) => y.t.route({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }), label, sheet: 'eth', status: () => $('#v1-status') }, e);
+        return;
+      }
+      await scanPrivate(true).catch(() => {});
+      rerender('eth');
     } catch (e) { run.fail(status, e); }
   });
 }
@@ -6373,15 +6488,17 @@ function farmJoin(el, p, status, has) {
     // Both sides are needed, as private notes, added together at the pool's ratio: the steps say which one is missing and
     // take you to where it is made. The farm sheet remembers where you came from, so the way back is one tap.
     const getB = { tac: ['tac', 'Shield TAC', 'TAC made private, so what you hold stays hidden.'], cusd: ['borrow', 'Borrow cUSD', 'Borrow dollars against your bitcoin.'], cbtc: ['borrow', 'Mint cBTC', 'Lock bitcoin to mint cBTC one for one.'] }[kB] || ['tac', `Get private ${other}`, `Get ${other} as a private balance.`];
-    const step = (n, state, title, detail, go) => html`<li class="step ${state}"><span class="n">${state === 'done' ? '✓' : n}</span><div><h3>${title}</h3><div class="d">${detail}</div>${go ? html`<div class="act"><button class="btn ghost" type="button" data-join-get="${go[0]}">${go[1]}</button></div>` : ''}</div></li>`;
+    const step = (n, state, title, detail, go, swap = false) => html`<li class="step ${state}"><span class="n">${state === 'done' ? '✓' : n}</span><div><h3>${title}</h3><div class="d">${detail}</div>${go ? html`<div class="act"><button class="btn ghost" type="button" data-join-get="${go[0]}">${go[1]}</button>${swap ? html`<button class="link" type="button" data-join-swap>Or swap some of your private tETH for ${other}</button>` : ''}</div>` : ''}</div></li>`;
     mount(el, html`
       <div class="lbl"><span>${has ? 'Add more' : 'Add and farm'}</span></div>
       <ol class="steps">
         ${step(1, bA ? 'done' : 'now', 'Private tETH', bA ? `You have ${fmt(bA, 8, 6)} tETH ready.` : 'ETH made private, so what you hold stays hidden.', bA ? null : ['private', 'Make ETH private'])}
-        ${step(2, bB ? 'done' : bA ? 'now' : '', `Private ${other}`, bB ? `You have ${fmt(bB, 8, dpB)} ${other} ready.` : getB[2], bB ? null : [getB[0], getB[1]])}
+        ${step(2, bB ? 'done' : bA ? 'now' : '', `Private ${other}`, bB ? `You have ${fmt(bB, 8, dpB)} ${other} ready.` : getB[2], bB ? null : [getB[0], getB[1]], !!bA)}
         ${step(3, '', has ? 'Add to the farm' : 'Add and farm', 'Both go in together at the pool’s ratio and start earning TAC. It opens here once both are ready.', null)}
       </ol>`);
     $$('[data-join-get]', el).forEach((b) => b.onclick = () => { FARM.back = { pid, label: pairName(p.pair), at: Date.now() }; $('#sheet-farm').close(); openSheet(b.dataset.joinGet); });
+    // With private tETH in hand, the other side is one private swap away.
+    $$('[data-join-swap]', el).forEach((b) => b.onclick = () => { FARM.back = { pid, label: pairName(p.pair), at: Date.now() }; SW.from = 'eth'; SW.to = kB; $('#sheet-farm').close(); openLink('private/swap'); });
     return;
   }
   mount(el, html`

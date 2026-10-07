@@ -15,6 +15,8 @@
 //   farmexit Exit on a private position is one press: harvest what is worth harvesting, unbond giving up what accrued since (a plain
 //            unbond refuses it), take the liquidity out, each step named as it runs
 //   farmclaim Claim rewards harvests the positions with a real reward and none holding dust, then unwraps the wTAC
+//   swap     the Swap tab of the Tacit pool: its link, a swap of a note that is exactly the amount, an amount no note matches (cut
+//            first), a swap between two assets that are not tETH (through tETH), and a refusing relay (offered from the account)
 //   pair     with no TAC held, Max fills the ETH side and says TAC is missing; then ETH + TAC staked in one transaction
 //            with an EIP-2612 permit
 //   farm     a one-sided ETH zap waits for its typed loss acceptance (its preview's APR never above the farm's APR now),
@@ -102,7 +104,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -2985,13 +2987,36 @@ const chainStub = () => `
       add.splice(add.findIndex((x) => x.cx === n.cx), 1);
       return { unwrap: {}, next: [] };
     };`;
-const stubFarmUx = (page, { notes = [], positions = null, chain = false }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+// A swap's route and the split before it, recorded in window.__swapCalls and applied to the notes. The real pools are read for the
+// quote. window.__swapRefuse makes the relay refuse a relayed route, as it does when its free settles are used up.
+const swapStub = () => `
+    window.__swapCalls = [];
+    const wait = () => new Promise((r) => setTimeout(r, 400));
+    ux.route = async (a) => {
+      const q = await ux.quoteRoute({ asset0: a.inNote.asset, amountIn: a.amountIn, path: a.path, fee: a.fee });
+      window.__swapCalls.push({ amountIn: String(a.amountIn), noteValue: String(a.inNote.value), fee: String(a.fee), minOut: String(a.minOut), out: String(q.amountOut), path: a.path.map((h) => h.feeBps + ':' + h.assetNext), self: !!a.selfSettle });
+      if (window.__swapRefuse && !a.selfSettle) throw new Error('fee below the current floor');
+      await wait();
+      add.splice(add.findIndex((n) => n.cx === a.inNote.cx), 1);
+      add.push(note(q.assetFinal, q.amountOut));
+      return { txHash: '0x' + 'ab'.repeat(32) };
+    };
+    ux.transfer = async ({ notes, amount }) => {
+      window.__swapCalls.push({ split: String(amount) });
+      await wait();
+      for (const n of notes) add.splice(add.findIndex((x) => x.cx === n.cx), 1);
+      const total = notes.reduce((t, n) => t + BigInt(n.value), 0n);
+      add.push(note(notes[0].asset, amount));
+      if (total > amount) add.push(note(notes[0].asset, total - amount));
+      return {};
+    };`;
+const stubFarmUx = (page, { notes = [], positions = null, chain = false, swap = false }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
   import * as real from '/confidential-pool-ux.js?stub=real';
   export * from '/confidential-pool-ux.js?stub=real';
   export function makeConfidentialPoolUx(o) {
     const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
     let seq = 0;
-    const note = (asset, value) => { seq++; return { asset, value: String(value), leafIndex: 910000 + seq, cx: '0x' + seq.toString(16).padStart(64, 'a'), cy: '0x01', owner: '0x02', root: '0x03', path: [] }; };
+    const note = (asset, value) => { seq++; return { asset: asset[0] === '@' ? String(ux.assetByTicker[asset.slice(1)].assetId).toLowerCase() : asset, value: String(value), leafIndex: 910000 + seq, cx: '0x' + seq.toString(16).padStart(64, 'a'), cy: '0x01', owner: '0x02', root: '0x03', path: [] }; };
     const add = ${JSON.stringify(notes.map(([a, v]) => [a, String(v)]))}.map(([a, v]) => note(a, BigInt(v)));      // the chain adds and removes notes here
     window.__farmCalls = [];
     ux.balance = async (priv) => {
@@ -3001,6 +3026,7 @@ const stubFarmUx = (page, { notes = [], positions = null, chain = false }) => pa
       ${positions ? 'b.farmPositions = positions.map((p) => ({ ...p }));' : ''}       // the page takes positions from the scan when it carries them
       return b;
     };
+    ${swap ? swapStub() : ''}
     ${positions ? `const positions = ${JSON.stringify(positions)}; ux.farmPositions = async () => positions.map((p) => ({ ...p }));
     ${chain ? chainStub() : `ux.farmHarvest = async ({ position }) => { window.__farmCalls.push('harvest:' + position.receiptLeaf); return {}; };
     ux.farmUnbond = async ({ position }) => { window.__farmCalls.push('unbond:' + position.receiptLeaf); return {}; };`}` : ''}
@@ -3072,6 +3098,12 @@ await step('farmsteps', async () => {
     await p.waitForSelector('#sheet-farm[open] .farm.open[data-farm="pid0"]', { timeout: 60000 });
     await p.waitForTimeout(500);
     ok(!(await p.$('.farm-back')), 'farmsteps: back at the same farm, and the way back is gone');
+    // With private tETH in hand, the missing side is one private swap away: opened on tETH for TAC, with the way back to the farm.
+    ok(/Or swap some of your private tETH for TAC/.test(await text(p, '#farm-pid0 [data-join-swap]')), 'farmsteps: the missing TAC step also offers a private swap of the tETH held');
+    await p.click('#farm-pid0 [data-join-swap]');
+    await p.waitForSelector('#sheet-eth[open] #sw-amt', { timeout: 120000 });
+    ok(!(await p.$('#sheet-farm[open]')) && await p.$eval('#sheet-eth [data-swf="eth"]', (b) => b.getAttribute('aria-selected') === 'true') && await p.$eval('#sheet-eth [data-swt="tac"]', (b) => b.getAttribute('aria-selected') === 'true')
+      && (await p.getAttribute('#sheet-eth .farm-back a', 'href')) === '#farm/private-0' && await p.evaluate(() => location.hash) === '#private/swap', 'farmsteps: the swap opens as tETH for TAC, at the farm\'s own way back');
     if (r.errors.length) { fails++; console.log('FAIL farmsteps page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -3114,6 +3146,82 @@ await step('farmclaim', async () => {
     const calls = await p.evaluate(() => window.__farmCalls);
     ok(JSON.stringify(calls) === JSON.stringify([`harvest:0x${'7'.repeat(64)}`, 'redeem:1234560000']), `farmclaim: the position with a real reward is harvested, the one with dust is not, then the wTAC is unwrapped (${calls.join(', ')})`);
     if (r.errors.length) { fails++; console.log('FAIL farmclaim page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// The Swap tab of the Tacit pool: its link, a swap of a note that is exactly the amount (one route over the whole note, the least
+// it returns 1% under the quote, a relay fee), an amount no note matches (cut first), a swap between two assets that are not tETH
+// (through tETH, two pools in one route), and a relay that refuses (the swap offered from the paying account, no relay fee).
+await step('swap', async () => {
+  const r = await openFarmKey('5a9b'.padEnd(64, '6'), { notes: [[FARM_CETH, 5000000n], [FARM_CETH, 5000000n], [FARM_CTAC, 50000000000n], ['@cUSD', 10000000000n]], swap: true });
+  const p = r.page, calls = () => p.evaluate(() => window.__swapCalls);
+  const typed = async (v) => { await p.fill('#sw-amt', v); await until(p, () => !document.querySelector('#sw-go').disabled || /Swap more|More than|relay fee is|no pool/i.test(document.querySelector('#sw-rcpt')?.textContent || ''), null, 600000);
+    console.log(`     quote for ${v}: ${(await text(p, '#sw-rcpt')).replace(/\s+/g, ' ').slice(0, 220)}${(await text(p, '#sw-ack')).trim() ? ' | gate: ' + (await text(p, '#sw-ack')).trim().slice(0, 90) : ''}`);
+    // A loss gate (15% and over) waits for the tick, or the typed figure from 30%, as a person gives it.
+    if (await p.$('#sw-ack input[type="checkbox"]')) await p.check('#sw-ack input[type="checkbox"]');
+    else if (await p.$('#sw-ack input')) await p.fill('#sw-ack input', (await text(p, '#sw-ack b')).trim());
+    await until(p, () => !document.querySelector('#sw-go').disabled, null, 60000);
+  };
+  // The press hands the swap to the relay and the form frees up once the scan after it has drawn the new balances (a slow fork takes minutes).
+  const settled = (re) => until(p, (x) => new RegExp(x).test(document.querySelector('#sw-max')?.textContent || ''), re.source, 900000);
+  const choose = async (attr, k) => { try { await until(p, () => !document.querySelector('#sheet-eth [aria-busy="true"]'), null, 400000).catch(async (e) => { console.log('     still busy:', JSON.stringify(await p.evaluate(() => ({ busy: [...document.querySelectorAll('[aria-busy="true"]')].map((b) => b.id || b.textContent.slice(0, 30)), status: document.querySelector('#v1-status')?.textContent.slice(0, 200), calls: window.__swapCalls.length, act: document.querySelector('#act-body')?.textContent.replace(/\s+/g, ' ').slice(0, 300) }))), '\n'); throw e; }); await p.click(`#sheet-eth [data-${attr}="${k}"]`, { timeout: 60000 }); await p.waitForSelector('#sw-amt', { timeout: 30000 }); } catch (e) { throw new Error(`choosing ${attr}=${k}: ${e.message.split('\n').slice(0, 8).join(' | ')}`); } };
+  try {
+    await p.evaluate(() => { location.hash = '#private/swap'; });
+    await p.waitForSelector('#sw-amt', { timeout: 300000 });
+    ok(await p.$eval('#sheet-eth [data-v1="swap"]', (b) => b.getAttribute('aria-selected') === 'true') && await p.evaluate(() => location.hash) === '#private/swap', 'swap: #private/swap opens the Swap tab, and it keeps its link');
+    await until(p, () => /Private 0\.1 tETH/.test(document.querySelector('#sw-max')?.textContent || ''), null, 120000);
+    ok(true, `swap: the balance of what is paid reads on the tab (${(await text(p, '#sw-max')).trim()})`);
+
+    // A note that is exactly the amount: one route over the whole note.
+    await typed('0.05');
+    const quote = (await text(p, '#sw-rcpt')).replace(/\s+/g, ' ');
+    ok(/You get about\s*[\d,.]+ TAC/.test(quote) && /At least\s*[\d,.]+ TAC/.test(quote) && /Relay fee\s*[\d.]+ tETH/.test(quote) && !/split a note|Through tETH/.test(quote), `swap: tETH for TAC states what it returns, the least, and the relay fee (${quote.slice(0, 150)})`);
+    await shot(p, 'swap-quote');
+    await p.click('#sw-go');
+    await until(p, () => window.__swapCalls.length >= 1, null, 300000);
+    let c = (await calls())[0];
+    ok(c.amountIn === '5000000' && c.noteValue === '5000000' && c.path.length === 1 && c.path[0].endsWith(FARM_CTAC) && BigInt(c.fee) > 0n && BigInt(c.minOut) === BigInt(c.out) * 99n / 100n,
+      `swap: one route over the whole note into TAC, the least 1% under the quote, a relay fee (${JSON.stringify(c)})`);
+    await settled(/Private 0\.05 tETH/);
+    await choose('swf', 'tac');
+    await settled(/Private [\d,.]+ TAC/);
+    const held = parseFloat((await text(p, '#sw-max')).replace(/[^\d.]/g, '') || '0');
+    ok(held > 500, `swap: the TAC arrives as a private balance (${(await text(p, '#sw-max')).trim()})`);
+    ok(!(await p.$('#sheet-eth [data-swt="tac"]')), 'swap: what is paid is not offered as what is bought');
+
+    // No note of that size: it is cut first.
+    await choose('swt', 'eth');
+    await typed('100');
+    ok(/Relay fee to (split a note|combine notes)/.test(await text(p, '#sw-rcpt')), 'swap: an amount no note matches shows the relay fee to cut one');
+    await p.click('#sw-go');
+    await until(p, () => window.__swapCalls.length >= 3, null, 900000);
+    const cut = await calls();
+    ok(cut[1].split === '10000000000' && cut[2].amountIn === '10000000000' && cut[2].noteValue === '10000000000' && cut[2].path[0].endsWith(FARM_CETH), `swap: the note is cut to the amount, then that note is swapped (${JSON.stringify(cut.slice(1))})`);
+
+    // Between two assets that are not tETH: through tETH.
+    await choose('swf', 'cusd');
+    await choose('swt', 'tac');
+    await settled(/Private 100 cUSD/);
+    await typed('100');
+    ok(/Through\s*tETH, two pools in one settle/.test((await text(p, '#sw-rcpt')).replace(/\s+/g, ' ')) && /You get about/.test(await text(p, '#sw-rcpt')), 'swap: cUSD for TAC says it goes through tETH');
+    await p.click('#sw-go');
+    await until(p, () => window.__swapCalls.length >= 4, null, 300000);
+    c = (await calls())[3];
+    ok(c.path.length === 2 && c.path[0].endsWith(FARM_CETH) && c.path[1].endsWith(FARM_CTAC) && c.amountIn === '10000000000', `swap: two pools in one route, tETH between (${JSON.stringify(c.path.map((x) => x.slice(0, 6) + '…' + x.slice(-4)))})`);
+
+    // A relay that refuses: the swap is offered from the paying account, with no relay fee.
+    await p.evaluate(() => { window.__swapRefuse = true; });
+    await choose('swf', 'eth');
+    await choose('swt', 'tac');
+    await typed('0.05');
+    await p.click('#sw-go');
+    await p.waitForSelector('#sheet-eth [data-selfdo]', { timeout: 300000 });
+    ok(/Send it from .* instead/.test(await text(p, '#v1-status')), 'swap: a refusing relay leaves the swap offered from the paying account');
+    await p.click('#sheet-eth [data-selfdo]');
+    await until(p, () => window.__swapCalls.some((x) => x.self), null, 300000);
+    c = (await calls()).find((x) => x.self);
+    ok(c.fee === '0' && c.amountIn === '5000000', `swap: sent from the paying account the route has no relay fee (${JSON.stringify(c)})`);
+    if (r.errors.length) { fails++; console.log('FAIL swap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
