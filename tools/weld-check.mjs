@@ -3155,7 +3155,7 @@ await step('farmclaim', async () => {
 await step('swap', async () => {
   const r = await openFarmKey('5a9b'.padEnd(64, '6'), { notes: [[FARM_CETH, 5000000n], [FARM_CETH, 5000000n], [FARM_CTAC, 50000000000n], ['@cUSD', 10000000000n]], swap: true });
   const p = r.page, calls = () => p.evaluate(() => window.__swapCalls);
-  const typed = async (v) => { await p.fill('#sw-amt', v); await until(p, () => !document.querySelector('#sw-go').disabled || /Swap more|More than|relay fee is|no pool/i.test(document.querySelector('#sw-rcpt')?.textContent || ''), null, 600000);
+  const typed = async (v) => { await p.fill('#sw-amt', v); await until(p, () => !document.querySelector('#sw-go').disabled || /Swap more|More than|relay fee is|no pool/i.test(document.querySelector('#sw-rcpt')?.textContent || ''), null, 600000).catch(async (e) => { console.log(`     no quote for ${v}: rcpt=${JSON.stringify((await text(p, '#sw-rcpt')).slice(0, 200))} status=${JSON.stringify((await text(p, '#v1-status')).slice(0, 160))} go.disabled=${await p.$eval('#sw-go', (b) => b.disabled).catch(() => '?')} max=${(await text(p, '#sw-max')).trim()}`); throw e; });
     console.log(`     quote for ${v}: ${(await text(p, '#sw-rcpt')).replace(/\s+/g, ' ').slice(0, 220)}${(await text(p, '#sw-ack')).trim() ? ' | gate: ' + (await text(p, '#sw-ack')).trim().slice(0, 90) : ''}`);
     // A loss gate (15% and over) waits for the tick, or the typed figure from 30%, as a person gives it.
     if (await p.$('#sw-ack input[type="checkbox"]')) await p.check('#sw-ack input[type="checkbox"]');
