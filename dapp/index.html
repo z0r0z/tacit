@@ -5838,13 +5838,91 @@ function farmTotals(wtacNotes) {
   const harvested = wtacNotes.reduce((a, x) => a + BigInt(x.value), 0n) * E10 + wtacHere();
   return { n, worth, perDay, pending, harvested };
 }
+// ── the private farms' steps ───────────────────────────────────────────────────────────────────────────────────────────
+// Harvest, unbond, turn into TAC and take out are each one relay-proved settle, a few minutes apiece. A button runs one;
+// Claim rewards and Exit run several in a row and say which they are on. Every step finds its input again from the key and
+// the chain (a harvest's reward note and an unbond's liquidity note both re-derive from the key), so a chain that stops,
+// for any reason, carries on from where it got to when its button is pressed again.
+const refreshFarm = () => Promise.allSettled([scanPrivate(true), loadPositions()]);
+const samePos = (pos) => (FARM.positions || []).find((x) => x.receiptLeaf === pos.receiptLeaf) || pos;      // the same position, as last read
+const stepOf = (tell, k, n) => (n > 1 ? (m) => tell(`Step ${k} of ${n} · ${m}`) : tell);
+const isLp = (p) => (n) => String(n.asset).toLowerCase() === String(p.lpAsset).toLowerCase();
+async function stepHarvest(run, pos, tell) {
+  tell('The relay is proving your harvest…');
+  await (await getUx()).farmHarvest({ walletPriv: walletPriv(), position: pos, waitOpts: run.wait('Harvest farm rewards', 15 * 60e3) });
+  await refreshFarm();
+}
+// `forfeit`: end the position though some reward is unharvested (what a position earns after its harvest settles, which is
+// more than the dust a plain unbond allows within seconds, since a farm streams every second).
+async function stepUnbond(run, pos, tell, forfeit = false) {
+  tell('The relay is proving your unbond…');
+  await (await getUx()).farmUnbond({ walletPriv: walletPriv(), position: pos, forfeitPending: forfeit, waitOpts: run.wait('Unbond from a farm', 15 * 60e3) });
+  await refreshFarm();
+}
+// The wTAC this key holds as notes (and in the paying account) becomes TAC in the paying account.
+async function stepRedeem(run, tell) {
+  const t = await getUx(), priv = walletPriv(), to = await payingAccount();
+  const rid = String(FARM.program?.rewardAsset || '').toLowerCase();
+  const mine = freeNotes(P.scan?.notes).filter((n) => rid && String(n.asset).toLowerCase() === rid);
+  if (!mine.length && !(wtacHere() > 0n)) throw new Error('These rewards are already on their way to TAC. Follow them in Activity.');
+  run.take(...mine.map(kNote));
+  for (const [i, n] of mine.entries()) {
+    tell(`The relay is unwrapping your rewards${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
+    await t.farmRedeem({ walletPriv: priv, note: n, to, wait: true, waitOpts: run.wait(`Unwrap ${fmt(BigInt(n.value), 8, 2)} wTAC of farm rewards`, 15 * 60e3) });
+  }
+  // WrappedTac turns the wTAC ERC20 in the paying account into TAC, one for one: what is there now, whatever its source.
+  const wtacNow = async () => wordAt(await ethCall(WTAC, SEL.balanceOf + addrWord(to)), 0);
+  let bal = await wtacNow();
+  for (let i = 0; !bal && mine.length && i < 10; i++) { await sleep(3000); bal = await wtacNow(); }   // a read behind the chain
+  if (!bal && mine.length) throw new Error('The unwrap landed, but the wTAC is not visible yet. Press the button again in a minute; it picks up from here.');
+  if (bal > 0n) { const h = await sendTx({ to: WTAC, data: SEL.wtacWithdraw + word(bal) + addrWord(to), label: `Turn ${fmt(bal, 18, 2)} wTAC into TAC` }); tell(html`Turning wTAC into TAC… ${txLink(h)}`); await waitTx(h); }
+}
+// Liquidity that is no longer bonded, taken out as the pool's two assets. False when the relay refused and the paying account
+// was offered the send instead (that offer is now on screen).
+async function stepTakeOut(run, p, notes, tell, status) {
+  const t = await getUx(), priv = walletPriv(), r = p.reserves || {}, mine = freeNotes(notes);
+  if (!mine.length) throw new Error('This liquidity is already being taken out. Follow it in Activity.');
+  run.take(...mine.map(kNote));
+  for (const [i, n] of mine.entries()) {
+    tell(`The relay is taking your liquidity out${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
+    const args = { assetA: r.assetA, assetB: r.assetB, feeBps: Number(p.feeBps ?? 30), shareNote: n };
+    try { await t.lpRemove({ walletPriv: priv, ...args, waitOpts: run.wait(`Take out ${pairName(p.pair)} liquidity`, 15 * 60e3) }); }
+    catch (e1) {
+      if (!relayRefused(e1) || run.away) throw e1;
+      offerSelf({ label: `Take out ${pairName(p.pair)} liquidity`, sheet: 'farm', after: loadFarms, status: () => status,
+        go: (y) => y.t.lpRemove({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }) }, e1);
+      return false;
+    }
+  }
+  return true;
+}
+// Claim rewards: harvest every position with a real reward, then turn what is harvested into TAC.
+async function claimRewards(run, tell) {
+  const owed = (FARM.positions || []).filter(unharvested), n = owed.length + 1;
+  for (const [i, pos] of owed.entries()) await stepHarvest(run, samePos(pos), stepOf(tell, i + 1, n));
+  await stepRedeem(run, stepOf(tell, n, n));
+}
+// Exit: harvest what is worth harvesting, end the position, take its liquidity out. 'out' when both assets are private notes
+// again, 'unseen' when the unbond landed but its note is not in the scan yet, 'offered' when the paying account was offered the
+// last send. A reward under the harvest threshold, and what the position earns while these steps run, is given up.
+const HARVEST_WORTH = 1000000n;                                                    // 0.01 TAC in reward units
+async function exitPosition(run, p, pos, tell, status) {
+  const harvest = (big(pos.pendingUnits) || 0n) > HARVEST_WORTH, steps = harvest ? 3 : 2;
+  let k = 0;
+  if (harvest) await stepHarvest(run, samePos(pos), stepOf(tell, ++k, steps));
+  const had = new Set(freeNotes(P.scan?.notes).filter(isLp(p)).map(kNote));
+  await stepUnbond(run, samePos(pos), stepOf(tell, ++k, steps), true);
+  const fresh = freeNotes(P.scan?.notes).filter(isLp(p)).filter((x) => !had.has(kNote(x)));
+  if (!fresh.length) return 'unseen';
+  return (await stepTakeOut(run, p, fresh, stepOf(tell, ++k, steps), status)) ? 'out' : 'offered';
+}
 function renderFarmNotes(el) {
   const prog = FARM.program, notes = S.key ? freeNotes(P.scan?.notes) : null;
   const rid = String(prog?.rewardAsset || '').toLowerCase();
   const wtac = (notes || []).filter((n) => rid && String(n.asset).toLowerCase() === rid);
   const lps = (prog?.pools || []).map((p) => ({ p, notes: (notes || []).filter((n) => String(n.asset).toLowerCase() === String(p.lpAsset).toLowerCase()) })).filter((x) => x.notes.length);
   const inNotes = wtac.reduce((a, n) => a + BigInt(n.value), 0n), inAccount = wtacHere();
-  const tot = farmTotals(wtac), waiting = tot.pending + tot.harvested;
+  const tot = farmTotals(wtac), waiting = tot.pending + tot.harvested, owed = (FARM.positions || []).some(unharvested);
   if (!tot.n && !inNotes && !inAccount && !lps.length) { mount(el, html``); return; }
   const day = (v) => (v >= 10 ? Math.round(v).toLocaleString('en-US') : v.toFixed(2));
   mount(el, html`
@@ -5855,7 +5933,8 @@ function renderFarmNotes(el) {
       ${waiting > 0n ? html`<div class="kv"><span>Rewards</span><b>${fmt(waiting, 18, 2)} TAC${tot.harvested > 0n && tot.pending > 0n ? ` · ${fmt(tot.harvested, 18, 2)} harvested` : ''}</b></div>` : ''}
       ${inNotes ? html`<div class="kv"><span>Harvested rewards</span><b>${fmt(inNotes, 8, 2)} wTAC</b></div>` : ''}
       ${inAccount ? html`<div class="kv"><span>wTAC in ${your()}</span><b>${fmt(inAccount, 18, 2)}</b></div>` : ''}
-      ${inNotes || inAccount ? html`<button class="btn ghost" type="button" id="fn-redeem">Turn into TAC</button>` : ''}
+      ${inNotes || inAccount || owed ? html`<button class="btn ghost" type="button" id="fn-redeem">${owed ? 'Claim rewards' : 'Turn into TAC'}</button>
+        ${owed ? html`<p class="note">Claim rewards harvests every position that has earned, then turns all of it into TAC in ${your()}. Each step takes a few minutes; if you close the page, press it again to carry on.</p>` : ''}` : ''}
       ${lps.map(({ p, notes: ns }) => { const n = ns.reduce((a, x) => a + BigInt(x.value), 0n); return html`<div class="kv"><span>${pairName(p.pair)} liquidity, not bonded</span><b>${lpWorth(p, n) || `${n.toLocaleString('en-US')} shares`}</b></div>
         <button class="btn ghost" type="button" data-lprm="${p.pid}">Take it out as ${pairName(p.pair)}</button>`; })}
       ${inNotes || inAccount || lps.length ? html`<p class="note">wTAC is the farms' reward token, one for one with TAC: it becomes TAC in ${your()}. Liquidity that is not bonded earns nothing; taking it out returns both assets as private notes.</p>` : ''}
@@ -5865,19 +5944,8 @@ function renderFarmNotes(el) {
   const rd = $('#fn-redeem', el);
   if (rd) rd.onclick = () => busy(rd, async (run) => {
     try {
-      const t = await getUx(), priv = walletPriv(), to = await payingAccount(), mine = freeNotes(wtac);
-      if (!mine.length && !(wtacHere() > 0n)) throw new Error('These rewards are already on their way to TAC. Follow them in Activity.');
-      run.take(...mine.map(kNote));
-      for (const [i, n] of mine.entries()) {
-        say(status, `The relay is unwrapping your rewards${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
-        await t.farmRedeem({ walletPriv: priv, note: n, to, wait: true, waitOpts: run.wait(`Unwrap ${fmt(BigInt(n.value), 8, 2)} wTAC of farm rewards`, 15 * 60e3) });
-      }
-      // WrappedTac turns the wTAC ERC20 in the paying account into TAC, one for one: what is there now, whatever its source.
-      const wtacNow = async () => wordAt(await ethCall(WTAC, SEL.balanceOf + addrWord(to)), 0);
-      let bal = await wtacNow();
-      for (let i = 0; !bal && mine.length && i < 10; i++) { await sleep(3000); bal = await wtacNow(); }   // a read behind the chain
-      if (!bal && mine.length) throw new Error('The unwrap landed, but the wTAC is not visible yet. Press Turn into TAC again in a minute; it picks up from here.');
-      if (bal > 0n) { const h = await sendTx({ to: WTAC, data: SEL.wtacWithdraw + word(bal) + addrWord(to), label: `Turn ${fmt(bal, 18, 2)} wTAC into TAC` }); say(status, html`Turning wTAC into TAC… ${txLink(h)}`); await waitTx(h); }
+      say(status, 'Starting…'); status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      await claimRewards(run, (m) => say(status, m));
       toast('Rewards turned into TAC');
       await done(`Your rewards are TAC in ${your()}.`);
     } catch (e) {
@@ -5887,22 +5955,9 @@ function renderFarmNotes(el) {
     }
   });
   $$('[data-lprm]', el).forEach((b) => b.onclick = () => busy(b, async (run) => {
-    const x = lps.find((l) => String(l.p.pid) === b.dataset.lprm), r = x.p.reserves || {};
+    const x = lps.find((l) => String(l.p.pid) === b.dataset.lprm);
     try {
-      const t = await getUx(), priv = walletPriv(), mine = freeNotes(x.notes);
-      if (!mine.length) throw new Error('This liquidity is already being taken out. Follow it in Activity.');
-      run.take(...mine.map(kNote));
-      for (const [i, n] of mine.entries()) {
-        say(status, `The relay is taking your liquidity out${mine.length > 1 ? ` (${i + 1} of ${mine.length})` : ''}…`);
-        const args = { assetA: r.assetA, assetB: r.assetB, feeBps: Number(x.p.feeBps ?? 30), shareNote: n };
-        try { await t.lpRemove({ walletPriv: priv, ...args, waitOpts: run.wait(`Take out ${pairName(x.p.pair)} liquidity`, 15 * 60e3) }); }
-        catch (e1) {
-          if (!relayRefused(e1) || run.away) throw e1;
-          offerSelf({ label: `Take out ${pairName(x.p.pair)} liquidity`, sheet: 'farm', after: loadFarms, status: () => status,
-            go: (y) => y.t.lpRemove({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }) }, e1);
-          return;
-        }
-      }
+      if (!(await stepTakeOut(run, x.p, x.notes, (m) => say(status, m), status))) return;
       toast('Liquidity taken out');
       await done('Taken out: both assets are private notes again.');
     } catch (e) {
@@ -6254,20 +6309,38 @@ function renderShielded(el, p) {
       ${sharesEth(p, pos.shares) != null ? html`<div class="kv"><span>Worth</span><b>${aboutEth(sharesEth(p, pos.shares))}${Number(p.totalShares) ? ` · ${sharePct(Number(pos.shares) / Number(p.totalShares))} of the farm` : ''}</b></div>` : ''}
       <div class="kv"><span>Earned</span><b>${pos.pendingTac} TAC${pendingEth(pos) > 0n ? ` (${aboutEth(pendingEth(pos))})` : ''}</b></div>
       ${day ? html`<div class="kv"><span>Earning</span><b>about ${day >= 10 ? Math.round(day).toLocaleString('en-US') : day.toFixed(2)} TAC a day</b></div>` : ''}
-      <div class="row2"><button class="btn ghost" type="button" data-harvest="${i}" ${BigInt(pos.pendingUnits || 0) > 0n ? '' : 'disabled'}>Harvest</button><button class="btn ghost" type="button" data-unbond="${i}" ${locked || unharvested(pos) ? 'disabled' : ''}>${locked ? `Unbond from ${dayFmt(Number(pos.unlockAt))}` : 'Unbond'}</button></div>
-      ${unharvested(pos) && !locked ? html`<p class="note">Harvest first: unbonding now would give up the ${pos.pendingTac} TAC this position has earned.</p>` : ''}`; })}
-    ${mine.length ? html`<p class="note">Harvest pays what is earned as a wTAC note, which turns into TAC one for one. Unbond ends the position and returns the liquidity as a private note.</p>
+      <div class="row2"><button class="btn ghost" type="button" data-harvest="${i}" ${BigInt(pos.pendingUnits || 0) > 0n ? '' : 'disabled'}>Harvest</button><button class="btn" type="button" data-exit="${i}" ${locked ? 'disabled' : ''}>${locked ? `Exit from ${dayFmt(Number(pos.unlockAt))}` : 'Exit'}</button></div>
+      <p class="note">Exit takes everything out: it harvests what you have earned, ends the position and returns the liquidity as private notes. What the position earns while those steps run${day ? ` (about ${day >= 1440 ? Math.round(day / 1440).toLocaleString('en-US') : (day / 1440).toFixed(3)} TAC a minute)` : ''} is given up.</p>
+      <details class="lockmore"><summary>One step at a time</summary>
+        <div class="row2"><button class="btn ghost" type="button" data-unbond="${i}" ${locked || unharvested(pos) ? 'disabled' : ''}>${locked ? `Unbond from ${dayFmt(Number(pos.unlockAt))}` : 'Unbond'}</button></div>
+        ${unharvested(pos) && !locked ? html`<p class="note">Harvest first: unbonding now would give up the ${pos.pendingTac} TAC this position has earned. A farm pays out every second, so a position soon holds a little more after a harvest; Exit gives that up knowingly.</p>` : ''}
+      </details>`; })}
+    ${mine.length ? html`<p class="note">Harvest pays what is earned as a wTAC note, which turns into TAC one for one.</p>
       <div class="status" role="status" id="sf-act-${p.pid}"></div>` : ''}
     <div id="sj-${p.pid}"></div>`);
   farmJoin($(`#sj-${p.pid}`, box), p, status, mine.length > 0);
   const act = $(`#sf-act-${p.pid}`, box);                          // harvest and unbond report here, under the positions
   $$('[data-harvest]', box).forEach((b) => b.onclick = () => busy(b, async (run) => {
-    try { say(act, 'The relay is proving your harvest…'); await (await getUx()).farmHarvest({ walletPriv: walletPriv(), position: mine[Number(b.dataset.harvest)], waitOpts: run.wait('Harvest farm rewards', 15 * 60e3) }); say(act, html`<span class="ok">Harvested to a wTAC note,</span> the farm’s reward token, one for one with TAC. <button class="link" type="button" data-fn-go="redeem">Turn it into TAC</button>`); toast('Harvested'); await Promise.allSettled([scanPrivate(true), loadPositions()]); rerender('farm'); }
+    try { await stepHarvest(run, mine[Number(b.dataset.harvest)], (m) => say(act, m)); say(act, html`<span class="ok">Harvested to a wTAC note,</span> the farm’s reward token, one for one with TAC. <button class="link" type="button" data-fn-go="redeem">Turn it into TAC</button>`); toast('Harvested'); rerender('farm'); }
     catch (e) { sayErr(act, e); }
   }));
   $$('[data-unbond]', box).forEach((b) => b.onclick = () => busy(b, async (run) => {
-    try { say(act, 'The relay is proving your unbond…'); await (await getUx()).farmUnbond({ walletPriv: walletPriv(), position: mine[Number(b.dataset.unbond)], waitOpts: run.wait('Unbond from a farm', 15 * 60e3) }); say(act, html`<span class="ok">Unbonded. Your liquidity is a private note again.</span> <button class="link" type="button" data-fn-go="lp${p.pid}">Take it out as ${pairName(p.pair)}</button>`); toast('Unbonded'); await Promise.allSettled([scanPrivate(true), loadPositions()]); rerender('farm'); }
+    try { await stepUnbond(run, mine[Number(b.dataset.unbond)], (m) => say(act, m)); say(act, html`<span class="ok">Unbonded. Your liquidity is a private note again.</span> <button class="link" type="button" data-fn-go="lp${p.pid}">Take it out as ${pairName(p.pair)}</button>`); toast('Unbonded'); rerender('farm'); }
     catch (e) { sayErr(act, /forfeit/i.test(e?.message || '') ? new Error('Harvest first; unbonding now would forfeit the TAC it has earned.') : /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.') : e); }
+  }));
+  $$('[data-exit]', box).forEach((b) => b.onclick = () => busy(b, async (run) => {
+    const pos = mine[Number(b.dataset.exit)];
+    try {
+      say(act, 'Starting…'); act.scrollIntoView({ block: 'nearest', behavior: 'smooth' });    // a chain runs for minutes: keep its progress in view
+      const out = await exitPosition(run, p, pos, (m) => say(act, m), act);
+      if (out === 'out') { toast('Out of the farm'); say(act, html`<span class="ok">Out. Your liquidity is back as private ${pairName(p.pair)} notes, and the rewards are in your wTAC notes.</span>`); }
+      else if (out === 'unseen') say(act, html`<span class="ok">Unbonded.</span> The liquidity note has not shown up yet. <button class="link" type="button" data-fn-go="lp${p.pid}">Take it out</button> once it does.`);
+      await refreshFarm(); rerender('farm');
+    } catch (e) {
+      sayErr(act, /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.') : e);
+      // A step may have landed before the failure; read again, and press Exit again to carry on from where it stopped.
+      await refreshFarm(); rerender('farm');
+    }
   }));
 }
 

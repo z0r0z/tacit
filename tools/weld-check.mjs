@@ -12,6 +12,9 @@
 //            unharvested, harvested rewards and unbonded liquidity above the farms, a harvest pointing at its next step
 //   farmsteps joining a private farm with tETH but no TAC is a checklist (tETH done, TAC next and where to get it, the add last),
 //            and the sheet it sends you to carries a way back to the same farm
+//   farmexit Exit on a private position is one press: harvest what is worth harvesting, unbond giving up what accrued since (a plain
+//            unbond refuses it), take the liquidity out, each step named as it runs
+//   farmclaim Claim rewards harvests the positions with a real reward and none holding dust, then unwraps the wTAC
 //   pair     with no TAC held, Max fills the ETH side and says TAC is missing; then ETH + TAC staked in one transaction
 //            with an EIP-2612 permit
 //   farm     a one-sided ETH zap waits for its typed loss acceptance (its preview's APR never above the farm's APR now),
@@ -99,7 +102,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -2944,14 +2947,52 @@ await step('tacdeposit', async () => {
 // private farm's card shows once a key has something in it. Harvest and unbond are recorded, not proved.
 const FARM_CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', FARM_CTAC = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const FARM_WTAC_ASSET = '0x1097c9e552ae4fce2a8c416b93403953fa445a5f2cdae8ced36d9a78cfe40832', FARM_LP0 = '0x17c56713a7e4a5d679a71def3ff9fa186f1556ef757b0ee6b7a3ed8c9249ef99';
-const stubFarmUx = (page, { notes = [], positions = null }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+// With `chain`, the farm steps keep state, as the chain does: a harvest turns the reward into a wTAC note, and the position goes on
+// earning (more than the dust a plain unbond allows, as a farm that streams every second does by the time a harvest settles);
+// an unbond refuses over that dust unless told to give it up, then turns the position into a liquidity note; taking that
+// out gives both assets; redeeming spends a wTAC note. Each call is recorded in window.__farmCalls.
+const chainStub = () => `
+    const DUST = 100000n, REWARD = ${JSON.stringify(FARM_WTAC_ASSET)}, CETH = ${JSON.stringify(FARM_CETH)}, CTAC = ${JSON.stringify(FARM_CTAC)};
+    const find = (leaf) => positions.find((x) => x.receiptLeaf === leaf), slow = () => new Promise((r) => setTimeout(r, 700));
+    ux.farmHarvest = async ({ position }) => {
+      await slow();
+      const p = find(position.receiptLeaf), units = BigInt(p.pendingUnits);
+      window.__farmCalls.push('harvest:' + position.receiptLeaf);
+      if (units <= 0n) throw new Error('farm-harvest: nothing to claim beyond the relay fee yet');
+      add.push(note(REWARD, units));
+      p.pendingUnits = String(DUST * 20n); p.pendingTac = '0.02';
+      return {};
+    };
+    ux.farmUnbond = async ({ position, forfeitPending }) => {
+      await slow();
+      const p = find(position.receiptLeaf);
+      window.__farmCalls.push('unbond:' + position.receiptLeaf + ':' + (forfeitPending ? 'forfeit' : 'keep'));
+      if (!forfeitPending && BigInt(p.pendingUnits) > DUST) throw new Error('farm-unbond: ' + p.pendingUnits + ' reward units are still pending and would be forfeited; harvest first, or pass forfeitPending: true');
+      positions.splice(positions.indexOf(p), 1);
+      add.push(note(p.lpAsset, BigInt(p.shares)));
+      return {};
+    };
+    ux.lpRemove = async ({ shareNote }) => {
+      await slow();
+      window.__farmCalls.push('remove:' + shareNote.value);
+      add.splice(add.findIndex((n) => n.cx === shareNote.cx), 1);
+      add.push(note(CETH, BigInt(shareNote.value) / 10n), note(CTAC, BigInt(shareNote.value) * 3n));
+      return {};
+    };
+    ux.farmRedeem = async ({ note: n }) => {
+      await slow();
+      window.__farmCalls.push('redeem:' + n.value);
+      add.splice(add.findIndex((x) => x.cx === n.cx), 1);
+      return { unwrap: {}, next: [] };
+    };`;
+const stubFarmUx = (page, { notes = [], positions = null, chain = false }) => page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
   import * as real from '/confidential-pool-ux.js?stub=real';
   export * from '/confidential-pool-ux.js?stub=real';
   export function makeConfidentialPoolUx(o) {
     const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
     let seq = 0;
     const note = (asset, value) => { seq++; return { asset, value: String(value), leafIndex: 910000 + seq, cx: '0x' + seq.toString(16).padStart(64, 'a'), cy: '0x01', owner: '0x02', root: '0x03', path: [] }; };
-    const add = ${JSON.stringify(notes.map(([a, v]) => [a, String(v)]))}.map(([a, v]) => note(a, BigInt(v)));
+    const add = ${JSON.stringify(notes.map(([a, v]) => [a, String(v)]))}.map(([a, v]) => note(a, BigInt(v)));      // the chain adds and removes notes here
     window.__farmCalls = [];
     ux.balance = async (priv) => {
       const b = await balance(priv);
@@ -2961,8 +3002,8 @@ const stubFarmUx = (page, { notes = [], positions = null }) => page.route(/\/con
       return b;
     };
     ${positions ? `const positions = ${JSON.stringify(positions)}; ux.farmPositions = async () => positions.map((p) => ({ ...p }));
-    ux.farmHarvest = async ({ position }) => { window.__farmCalls.push('harvest:' + position.receiptLeaf); return {}; };
-    ux.farmUnbond = async ({ position }) => { window.__farmCalls.push('unbond:' + position.receiptLeaf); return {}; };` : ''}
+    ${chain ? chainStub() : `ux.farmHarvest = async ({ position }) => { window.__farmCalls.push('harvest:' + position.receiptLeaf); return {}; };
+    ux.farmUnbond = async ({ position }) => { window.__farmCalls.push('unbond:' + position.receiptLeaf); return {}; };`}` : ''}
     return ux;
   }` }));
 const farmPos = (n, shares, units, tac) => ({ pid: 0, pair: 'TAC/cETH', lpAsset: FARM_LP0, shares: String(shares), receiptLeaf: '0x' + String(n).repeat(64), receiptIndex: n, unlockAt: 0, pendingUnits: String(units), pendingTac: tac });
@@ -2986,7 +3027,7 @@ await step('farmpos', async () => {
   const p = r.page;
   try {
     await go(p, '#farm');
-    await p.waitForSelector('.farm.open[data-farm="pid0"] [data-unbond]', { timeout: 240000 });
+    await p.waitForSelector('.farm.open[data-farm="pid0"] [data-unbond]', { state: 'attached', timeout: 240000 });
     const card = (await text(p, '#farm-pid0')).replace(/\s+/g, ' ');
     ok(/Position 1/.test(card) && /Position 2/.test(card), 'farmpos: with two positions in one pool, each is named');
     ok(card.indexOf('Your position') < card.indexOf('In the pool') && /The farm/.test(card), 'farmpos: the positions lead the card and the farm\'s facts close it');
@@ -3032,6 +3073,47 @@ await step('farmsteps', async () => {
     await p.waitForTimeout(500);
     ok(!(await p.$('.farm-back')), 'farmsteps: back at the same farm, and the way back is gone');
     if (r.errors.length) { fails++; console.log('FAIL farmsteps page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// Exit is one press: harvest what is worth harvesting, unbond (giving up what the position earned while the harvest settled,
+// which a plain unbond refuses), take the liquidity out. The steps are named as they run, and what is left is a position gone,
+// both assets as private notes, and the rewards as wTAC.
+await step('farmexit', async () => {
+  const r = await openFarmKey('e817'.padEnd(64, '6'), { notes: [], positions: [farmPos(7, 150000000, 1234560000, '12.3456')], chain: true });
+  const p = r.page, leaf = '0x' + '7'.repeat(64);
+  try {
+    await go(p, '#farm');
+    await p.waitForSelector('.farm.open[data-farm="pid0"] [data-exit]', { timeout: 300000 });
+    const card = (await text(p, '#farm-pid0')).replace(/\s+/g, ' ');
+    ok(/Exit takes everything out/.test(card) && /earns while those steps run \(about [\d.,]+ TAC a minute\) is given up/.test(card), 'farmexit: Exit says what it does and what it gives up');
+    await shot(p, 'farmexit-before');
+    await p.evaluate(() => { window.__seen = new Set(); setInterval(() => window.__seen.add((document.querySelector('#sf-act-0')?.textContent || '').trim()), 80); });
+    await p.click('[data-exit="0"]');
+    await until(p, () => /^Out\./.test(document.querySelector('#sf-act-0')?.textContent.trim() || '') || !!document.querySelector('#sf-act-0 .err'), null, 120000);
+    const calls = await p.evaluate(() => window.__farmCalls), seen = await p.evaluate(() => [...window.__seen].filter(Boolean));
+    ok(JSON.stringify(calls) === JSON.stringify([`harvest:${leaf}`, `unbond:${leaf}:forfeit`, 'remove:150000000']), `farmexit: harvest, then unbond giving up the little accrued since, then take the liquidity out (${calls.join(', ')})`);
+    ok(seen.some((t) => /^Step 1 of 3 · .*harvest/.test(t)) && seen.some((t) => /^Step 2 of 3 · .*unbond/.test(t)) && seen.some((t) => /^Step 3 of 3 · .*liquidity out/.test(t)), `farmexit: each step names itself as it runs (${seen.map((t) => t.slice(0, 28)).join(' | ')})`);
+    await shot(p, 'farmexit-after');
+    await until(p, () => !document.querySelector('[data-exit]') && /Harvested rewards\s*12\.35 wTAC/.test(document.querySelector('#farm-notes')?.textContent || ''), null, 120000);
+    ok(true, 'farmexit: the position is gone, and the rewards wait as wTAC notes');
+    if (r.errors.length) { fails++; console.log('FAIL farmexit page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// Claim rewards is one press too: every position with a real reward is harvested (not one holding dust), then what is harvested
+// is turned into TAC. On the fork the paying account has no wTAC to withdraw, so the chain ends where it says the wTAC is not visible.
+await step('farmclaim', async () => {
+  const r = await openFarmKey('c1a1'.padEnd(64, '6'), { notes: [], positions: [farmPos(7, 150000000, 1234560000, '12.3456'), farmPos(8, 20000000, 50000, '0.0005')], chain: true });
+  const p = r.page;
+  try {
+    await go(p, '#farm');
+    await p.waitForSelector('#fn-redeem', { timeout: 300000 });
+    ok(/Claim rewards/.test(await text(p, '#fn-redeem')) && /harvests every position that has earned, then turns all of it into TAC/.test(await text(p, '#farm-notes')), 'farmclaim: with rewards unharvested the button says Claim rewards, and what it does');
+    await p.click('#fn-redeem');
+    await until(p, () => /wTAC is not visible yet|Your rewards are TAC/.test(document.querySelector('#fn-status')?.textContent || ''), null, 180000);
+    const calls = await p.evaluate(() => window.__farmCalls);
+    ok(JSON.stringify(calls) === JSON.stringify([`harvest:0x${'7'.repeat(64)}`, 'redeem:1234560000']), `farmclaim: the position with a real reward is harvested, the one with dust is not, then the wTAC is unwrapped (${calls.join(', ')})`);
+    if (r.errors.length) { fails++; console.log('FAIL farmclaim page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
