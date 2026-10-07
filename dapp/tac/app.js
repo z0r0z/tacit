@@ -9,7 +9,7 @@
 // their own carrier, by design, so those need a little BTC in the wallet.
 
 const SATS_URL = '/tac/sats.js?cb=6655b51b';     // tokens rewritten by build/build.mjs (TAC_CB_FILES)
-const MARKET_URL = '/tac/market.js?cb=300eec2a';
+const MARKET_URL = '/tac/market.js?cb=8508c2d7';
 const CLAIM_URL = '/tac/claim.js?cb=25c5f1f4';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=49410363';

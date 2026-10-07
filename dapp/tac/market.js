@@ -136,7 +136,8 @@ function askDepth(sales, decimals = 8, mark = null, onBuy = null) {
 
   const list = el('div', { class: 'depth' });
   for (const r of shown.slice(0, 8)) {
-    const buy = onBuy && r.sale?.sale_id ? el('button', { class: 'buy', type: 'button' }, 'Buy') : null;
+    // An ask far over the market is shown, not offered: one press from paying many times what TAC trades at.
+    const buy = onBuy && r.sale?.sale_id && r.unit <= band ? el('button', { class: 'buy', type: 'button' }, 'Buy') : null;
     if (buy) buy.onclick = () => onBuy(r, buy, list);
     list.append(el('div', { class: `dep${buy ? ' buyable' : ''}` },
       el('span', { class: 'bar', style: `width:${Math.max(4, (r.units / max) * 100)}%` }),
@@ -159,20 +160,31 @@ function askDepth(sales, decimals = 8, mark = null, onBuy = null) {
 // the TAC over. tacit.js takes it as the classic order book does: it checks the seller's listing on chain before any sats
 // move, and records the commit before sending it, so sats it locks can be recovered should another buyer get there first.
 const STAGE = { 'fetch-start': 'Checking the listing on chain…', 'commit-start': 'Sending the commit…', 'wait-visible': 'Waiting for the commit to show…', 'broadcast-start': 'Sending the reveal that hands the TAC over…' };
-// Sats at this key's Bitcoin address that carry no asset: what a purchase can spend.
+// Sats at this key's Bitcoin address a purchase can spend: the take's own picker, which leaves out outputs that carry an
+// asset or a cBTC lock, and refuses to guess when it cannot tell them apart.
 async function freeSats(T) {
   const addr = T.wallet.address();
-  const [utxos, h] = await Promise.all([T.getUtxos(addr), T.scanHoldings().catch(() => null)]);
-  const held = new Set();
-  if (h instanceof Map) for (const e of h.values()) for (const u of e?.utxos || []) held.add(`${u.txid}:${u.vout}`);
-  return { addr, sats: (utxos || []).filter((u) => !held.has(`${u.txid}:${u.vout}`)).reduce((t, u) => t + Number(u.value || 0), 0) };
+  const safe = await T.pickSafeCommitSats(await T.getUtxos(addr));
+  return { addr, sats: safe.reduce((t, u) => t + Number(u.value || 0), 0) };
 }
-function buyer(host, ctx) {
+// What the buyer was last told, kept across a re-read of the book so the result of a purchase is not wiped with it.
+let notice = null;
+// How a failed purchase reads, from the message tacit.js's takePreauthSale throws. Sats a commit locked come first: they
+// are the one case where something was sent, and the same message can also say "insufficient sats" (for the reveal).
+export function buyFailure(message) {
+  const said = String(message || '');
+  if (/locked at|recovery record/i.test(said)) return 'locked';
+  if (/insufficient sats for commit/i.test(said)) return 'short';
+  return 'other';
+}
+function buyer(host, ctx, mark) {
   if (!ctx.ensureKey || !ctx.turn) return null;
   const st = 'st-market', fund = el('div', { class: 'fund' });
-  let pending = null, rate = null;
+  let pending = null, rate = null, shown = null, seq = 0;
   const paintFund = async () => {
+    const mine = ++seq;                                          // a read for an earlier wallet state never paints over a later one
     if (!ctx.unlocked?.()) {
+      shown = null;
       const open = el('button', { class: 'link', type: 'button' }, 'Open your wallet');
       open.onclick = () => ctx.busy(open, st, async () => { await ctx.ensureKey(); await paintFund(); });
       fund.replaceChildren(el('p', { class: 'note' }, 'Buying takes sats from your Tacit wallet’s Bitcoin address. ', open, ' to buy.'));
@@ -181,39 +193,52 @@ function buyer(host, ctx) {
     fund.replaceChildren(el('p', { class: 'note' }, 'Reading your Bitcoin address…'));
     try {
       const T = ctx.T, f = await freeSats(T);
+      if (mine !== seq) return;
+      shown = f.addr;
       const copy = el('button', { class: 'link', type: 'button' }, 'copy');
       copy.onclick = () => navigator.clipboard?.writeText(f.addr).then(() => { copy.textContent = 'copied'; }).catch(() => {});
       fund.replaceChildren(
         el('div', { class: 'kv' }, el('span', {}, 'Pay from'), el('b', { class: 'num' }, `${f.addr.slice(0, 10)}…${f.addr.slice(-6)} `, copy)),
         el('div', { class: 'kv' }, el('span', {}, 'Sats there'), el('b', { class: 'num' }, `${num(f.sats, 0)} sats`)),
         f.sats ? null : el('p', { class: 'note' }, 'Send sats to that address from any Bitcoin wallet, then buy.'));
-    } catch (e) { fund.replaceChildren(el('p', { class: 'note err' }, `Could not read your Bitcoin address: ${e?.message || e}`)); }
+    } catch (e) { if (mine === seq) { shown = null; fund.replaceChildren(el('p', { class: 'note err' }, `Could not read your Bitcoin address: ${e?.message || e}`)); } }
   };
   // The first press says what it costs; a second press on the same ask pays.
-  const ask = (r) => ctx.say(st, `Buy ${num(r.units, 2)} TAC for ${num(r.sats, 0)} sats, plus the fees for two Bitcoin transactions${rate ? `, at about ${rate} sat/vB` : ''}. Press Confirm to pay.`);
+  const ask = (r) => {
+    const vs = mark ? ` (${num(Math.abs((r.unit / mark - 1) * 100), 0)}% ${r.unit >= mark ? 'above' : 'below'} the recent trade price of ${num(mark, 0)})` : '';
+    ctx.say(st, `Buy ${num(r.units, 2)} TAC for ${num(r.sats, 0)} sats, ${num(r.unit, 1)} sats per TAC${vs}, plus the fees for two Bitcoin transactions${rate ? `, at about ${rate} sat/vB` : ''}. Press Confirm to pay.`);
+  };
   const onBuy = (r, btn, list) => {
+    notice = null;
     if (pending !== r) {
       pending = r;
       for (const b of list.querySelectorAll('.buy')) b.textContent = 'Buy';
       btn.textContent = 'Confirm';
       ask(r);
-      if (rate == null) ctx.T?.getFeeRate?.().then((x) => { if (Number.isFinite(Number(x))) { rate = Math.ceil(Number(x)); if (pending === r) ask(r); } }).catch(() => {});
+      ctx.T?.getFeeRate?.().then((x) => { if (Number.isFinite(Number(x))) { rate = Math.ceil(Number(x)); if (pending === r) ask(r); } }).catch(() => {});
       return;
     }
     pending = null;
     btn.textContent = 'Buy';
     return ctx.busy(btn, st, async () => {
       await ctx.ensureKey();
+      // What was shown must be what pays: if the open key is not the address above, say so and show the new one.
+      if (!shown || ctx.T.wallet.address() !== shown) { await paintFund(); throw new Error('The wallet changed since the address above was read. Check it, then press Buy again.'); }
       try {
         const res = await ctx.turn(() => ctx.T.takePreauthSale({ assetIdHex: ASSET, saleIdHex: r.sale.sale_id, sale: r.sale, onProgress: (s) => ctx.say(st, STAGE[s] || 'Working…') }));
-        ctx.say(st, el('span', { class: 'ok' }, `Bought ${num(r.units, 2)} TAC.`), ' ', ctx.txLink(res.reveal_txid));
+        notice = () => [el('span', { class: 'ok' }, `Bought ${num(r.units, 2)} TAC.`), ' ', ctx.txLink(res.reveal_txid)];
+        ctx.say(st, ...notice());
         ctx.refresh?.();
-        setTimeout(() => mount(host, ctx), 2000);                  // that ask has left the book
+        setTimeout(() => mount(host, ctx), 2000);                  // that ask has left the book; the result stays
       } catch (e) {
-        if (/insufficient sats/i.test(String(e?.message || ''))) throw new Error(`Your Bitcoin address has too few sats for this ask: it costs ${num(r.sats, 0)} sats, plus the fees for two transactions. Nothing was sent.`);
-        if (!/recover/i.test(String(e?.message || ''))) throw e;
-        ctx.errSay(st, e);
-        document.getElementById(st)?.append(' ', el('a', { href: '/classic.html#tab=holdings' }, 'Recover the locked sats in the classic app →'));
+        const kind = buyFailure(e?.message);
+        if (kind === 'locked') {
+          ctx.errSay(st, e);
+          document.getElementById(st)?.append(' ', el('a', { href: '/classic.html#tab=holdings' }, 'Recover the locked sats in the classic app →'));
+          return;
+        }
+        if (kind === 'short') throw new Error(`Your Bitcoin address has too few sats for this ask: it costs ${num(r.sats, 0)} sats, plus the fees for two transactions. Nothing was sent.`);
+        throw e;
       }
     });
   };
@@ -221,7 +246,7 @@ function buyer(host, ctx) {
   if (host.__fund) window.removeEventListener('tac:wallet', host.__fund);      // a re-read of the book replaces the last listener
   host.__fund = paintFund;
   window.addEventListener('tac:wallet', paintFund);
-  return { fund, onBuy, status: el('div', { class: 'status', id: st, role: 'status' }) };
+  return { fund, onBuy, status: el('div', { class: 'status', id: st, role: 'status' }, ...(notice ? notice() : [])) };
 }
 
 export async function mount(host, ctx = {}) {
@@ -234,7 +259,7 @@ export async function mount(host, ctx = {}) {
 
   const mark = Number(row?.mark_price?.unit) || null;
   const chg = Number(row.price_24h_change_pct);
-  const buy = buyer(host, ctx);
+  const buy = buyer(host, ctx, mark);
   wrap.append(
     el('p', { class: 'eyebrow' }, 'TAC on the Bitcoin orderbook'),
     el('div', { class: 'bal' },

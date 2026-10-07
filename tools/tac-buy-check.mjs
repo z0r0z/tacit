@@ -7,6 +7,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
 import { extname, join, normalize } from 'node:path';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
@@ -50,7 +51,8 @@ try {
   ok(/Open your wallet/.test(await text('#market-body .fund')), 'locked: the page asks for the wallet before buying');
 
   await page.click('#wallet-chip');
-  await page.fill('#import-key', '9'.repeat(63) + '1');
+  // A key made for this run, so no one can have funded its address: pressing Confirm below can never send anything.
+  await page.fill('#import-key', randomBytes(32).toString('hex'));
   await page.click('#btn-import');
   await page.waitForSelector('#pass-input-1', { state: 'visible', timeout: 30000 }).catch(() => {});
   if (await page.$('#pass-input-1:visible')) {
@@ -58,13 +60,22 @@ try {
   }
   await page.waitForFunction(() => /Sats there/.test(document.querySelector('#market-body .fund')?.textContent || ''), null, { timeout: 90000 });
   ok(/Pay from\s*bc1q.*Sats there\s*0 sats/.test(await text('#market-body .fund')), `opened: the key's Bitcoin address and its sats (${(await text('#market-body .fund')).slice(0, 70)})`);
+  if (!/Sats there\s*0 sats/.test(await text('#market-body .fund'))) throw new Error('this key\'s address holds sats: not pressing Confirm');
 
   await page.click('#market-body .dep .buy');
-  ok(/^Buy [\d,.]+ TAC for [\d,]+ sats, plus the fees for two Bitcoin transactions.*Press Confirm to pay\.$/.test(await text('#st-market')) && (await text('#market-body .dep .buy')) === 'Confirm',
+  ok(/^Buy [\d,.]+ TAC for [\d,]+ sats, [\d,.]+ sats per TAC.*plus the fees for two Bitcoin transactions.*Press Confirm to pay\.$/.test(await text('#st-market')) && (await text('#market-body .dep .buy')) === 'Confirm',
     `a first press states the cost and asks for a second (${(await text('#st-market')).slice(0, 80)})`);
   await page.click('#market-body .dep .buy');
   await page.waitForFunction(() => /err|Bought/.test(document.querySelector('#st-market')?.innerHTML || ''), null, { timeout: 300000 });   // the listing checks read public Bitcoin APIs, slow at times
   ok(/too few sats for this ask.*Nothing was sent\./.test(await text('#st-market')) && !sent.length, `confirm with no sats stops before any transaction (${(await text('#st-market')).slice(0, 80)})`);
+  // An ask priced far over the market is listed, but not offered: one press from paying many times the going price.
+  const far = await ctx.newPage();
+  await far.route(/\/preauth-sales/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+    body: JSON.stringify({ sales: [{ sale_id: 'ff'.repeat(32), expiry: Math.floor(Date.now() / 1000) + 3600, min_price_sats: 100000000, asset_opening: { amount: '100000000' }, decimals: 8 }] }) }));
+  await far.goto(URL_, { waitUntil: 'domcontentloaded' });
+  await far.click('#tab-market');
+  await far.waitForSelector('#market-body .dep', { timeout: 60000 });
+  ok((await far.$$eval('#market-body .dep .buy', (b) => b.length)) === 0 && (await far.$$eval('#market-body .dep', (d) => d.length)) === 1, 'an ask far over the market is listed but has no Buy button');
   ok(!errors.length, `no page errors ${errors.join(' | ')}`);
 } catch (e) { fails++; console.log('FAIL', e.message.split('\n')[0]); }
 await browser.close();
