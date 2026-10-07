@@ -439,6 +439,8 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .warn { color: var(--warn); }
 .amt.act { margin-top: 12px; }
 .steps .btn { margin-top: 12px; }
+.farm-back { margin: -6px 0 14px; font-size: 12.5px; }
+.farm-back a { color: var(--ink); }
 .steps .kv { padding: 3px 0; }
 .opts { display: grid; gap: 8px; margin-top: 4px; }
 .opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
@@ -2688,14 +2690,29 @@ document.addEventListener('click', (e) => {
   if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
   e.preventDefault(); openLink(a.dataset.link);
 });
+// Sent from a farm's checklist to another sheet to make an asset private: that sheet carries a link back to the farm for half an
+// hour, and the farm sheet clears it once it is open again.
+function paintBack(sheet) {
+  for (const o of $$('.farm-back')) o.remove();
+  const b = FARM.back;
+  if (!b || sheet === 'farm' || Date.now() - b.at > 30 * 60e3 || !['eth', 'tac', 'borrow'].includes(sheet)) return;
+  const head = $(`#sheet-${sheet} .sheet-head`);
+  if (!head) return;
+  const line = document.createElement('p');
+  line.className = 'farm-back';
+  line.innerHTML = html`<a href="#farm/private-${Number(b.pid)}">← Back to the ${b.label} farm</a>`.s;
+  head.after(line);
+}
 function openSheet(name) {
   const [sheet, tab] = Object.hasOwn(ALIAS, name) ? ALIAS[name] : [name];
   const d = $(`#sheet-${sheet}`);
   if (!d) return;
+  if (sheet === 'farm') FARM.back = null;
   for (const o of $$('dialog.sheet[open]:not(.layer)')) if (o !== d) o.close();
   if (tab) selectTab(sheet, tab);
   if (render[sheet]) { if (running(sheet)) deferred.add(sheet); else keep(d, render[sheet]); }   // reopened mid-action: as it was left
   if (!d.open) d.showModal();
+  paintBack(sheet);
   syncLink();
   load[sheet]?.().then(() => rerender(sheet)).catch(() => {});
 }
@@ -5732,7 +5749,8 @@ load.farm = () => loadFarms();
 
 const LOGO = { TAC: 'tk-tac', cETH: 'tk-teth', cUSD: 'tk-cusd', cBTC: 'tk-cbtc', ETH: 'tk-eth' };
 const logoPair = (a, b, cls = 'md') => html`<span class="pair"><svg class="tk ${cls}" aria-hidden="true"><use href="#${LOGO[a]}"/></svg><svg class="tk ${cls}" aria-hidden="true"><use href="#${LOGO[b]}"/></svg></span>`;
-const pairName = (pair) => pair.replace('cETH', 'tETH').replace('/', ' / ');
+// A pool's name with tETH first, as the classic app reads it: the private pools all pair it, so TAC/cETH is "tETH / TAC".
+const pairName = (pair) => { const k = String(pair).split('/').map((x) => (x === 'cETH' ? 'tETH' : x)); if (k[1] === 'tETH') k.reverse(); return k.join(' / '); };
 // A farm's APR now: a year of its TAC at the Precision mid price, over the ETH value staked in it. It moves with every
 // deposit, withdrawal and trade. The private pools all pair tETH, so each is worth twice its tETH side.
 const CETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
@@ -5743,13 +5761,18 @@ const shieldedApr = (p) => {
   if (String(r.assetA).toLowerCase() !== CETH_ID || !Number(r.lpTotalShares)) return null;
   return aprOf(Number(p.tacPerDayForPool), 2 * Number(r.reserveA) / 1e8 * Number(p.totalShares) / Number(r.lpTotalShares));
 };
+// How much a private pool holds, in ETH wei: its two sides are equal in value, so twice its tETH side. Null while it is not read.
+const poolDepthEth = (p) => { const r = p?.reserves || {}; return String(r.assetA).toLowerCase() === CETH_ID && big(r.reserveA) ? 2n * big(r.reserveA) * E10 : null; };
+const depthText = (wei) => (wei == null ? '' : ` · ${wei < 10n ** 16n ? 'under 0.01' : fmt(wei, 18, 2)} ETH deep`);
+// What shares of a private pool are worth in ETH wei, the same way.
+const sharesEth = (p, shares) => { const r = p?.reserves || {}, total = big(r.lpTotalShares), n = big(shares); return total && n != null && String(r.assetA).toLowerCase() === CETH_ID ? 2n * n * big(r.reserveA) / total * E10 : null; };
 // Shares of a private pool as the two assets they are worth now. Pool notes all carry 8 decimals, and every farmed pool pairs tETH.
 const lpWorth = (p, shares) => {
   const r = p?.reserves || {}, total = big(r.lpTotalShares), n = big(shares), other = String(p?.pair || '').split('/').find((k) => k !== 'cETH') || '';
   if (!total || n == null || String(r.assetA).toLowerCase() !== CETH_ID) return null;
   return `${fmt(n * BigInt(r.reserveA) / total, 8, 5)} tETH + ${fmt(n * BigInt(r.reserveB) / total, 8, /BTC/.test(other) ? 6 : 2)} ${shownAs(other)}`;
 };
-const aprShort = (a) => (a == null ? '' : a >= 1000 ? '1,000%+ APR' : `${Math.round(a)}% APR`);
+const aprShort = (a) => (a == null ? '' : a >= 10000 ? '10,000%+ APR' : `${Math.round(a).toLocaleString('en-US')}% APR`);
 const aprLong = (a) => (a >= 100000 ? 'over 100,000%' : `about ${Math.round(a).toLocaleString('en-US')}%`);
 const aprRow = (a) => (a == null ? '' : html`<div class="kv"><span>APR now</span><b>${aprLong(a)}</b></div>
   <p class="note">At today’s TAC price and stake. It falls as more liquidity joins, so the earliest deposits earn the most.</p>`);
@@ -5762,7 +5785,7 @@ render.farm = () => {
     <li class="farm${FARM.open === 'precision' ? ' open' : ''}" data-farm="precision">
       <button type="button" aria-controls="farm-precision" aria-expanded="${FARM.open === 'precision'}">
         ${logoPair('TAC', 'ETH')}
-        <span><span class="name">TAC / ETH</span><span class="kind">Public pool${x?.staked > 0n ? html`<span class="tag">yours</span>` : ''}</span></span>
+        <span><span class="name">TAC / ETH</span><span class="kind">Public pool${x?.value > 0 ? depthText(BigInt(Math.round(x.value))) : ''}${x?.staked > 0n ? html`<span class="tag">yours</span>` : ''}</span></span>
         <span class="rate">${x ? html`<b>${fmt(x.perDay, 18, 0)} TAC</b><span>a day${x.live && precisionApr(x) != null ? ` · ${aprShort(precisionApr(x))}` : ''}</span>` : FARM.errs?.precision ? html`<b>—</b>` : html`<b><span class="sk" style="--w:7ch"></span></b><span class="sk" style="--w:11ch"></span>`}</span>
       </button>
       <div class="body" id="farm-precision"></div>
@@ -5775,7 +5798,7 @@ render.farm = () => {
       <li class="farm${FARM.open === 'pid' + p.pid ? ' open' : ''}" data-farm="pid${p.pid}">
         <button type="button" aria-controls="farm-pid${p.pid}" aria-expanded="${FARM.open === 'pid' + p.pid}">
           ${logoPair(a === 'cETH' ? b : a, 'cETH')}
-          <span><span class="name">${pairName(p.pair)}</span><span class="kind">Private pool${mine(p.pid).length ? html`<span class="tag">yours</span>` : ''}</span></span>
+          <span><span class="name">${pairName(p.pair)}</span><span class="kind">Private pool${depthText(poolDepthEth(p))}${mine(p.pid).length ? html`<span class="tag">yours</span>` : ''}</span></span>
           <span class="rate"><b>${live ? Math.round(Number(p.tacPerDayForPool)).toLocaleString('en-US') : 0} TAC</b><span>a day${live && shieldedApr(p) != null ? ` · ${aprShort(shieldedApr(p))}` : ''}</span></span>
         </button>
         <div class="body" id="farm-pid${p.pid}"></div>
@@ -5799,22 +5822,43 @@ render.farm = () => {
 // TAC, or into the pool's two assets as private notes.
 // wTAC in the paying account, as read for that account: nothing while another account's read is all there is.
 const wtacHere = () => (FARM.wtac && S.address && FARM.wtac.who.toLowerCase() === S.address.toLowerCase() ? FARM.wtac.v : 0n);
+// What this key has in the private farms, summed: its positions worth in ETH, what they earn a day, and the rewards waiting
+// (not yet harvested, harvested as wTAC notes, and wTAC already in the paying account), all in TAC wei.
+function farmTotals(wtacNotes) {
+  const prog = FARM.program, live = !!prog?.epoch?.active, scale = big(prog?.unitScale) || E10;
+  let n = 0, worth = 0n, perDay = 0, pending = 0n;
+  for (const pos of FARM.positions || []) {
+    const p = (prog?.pools || []).find((q) => Number(q.pid) === Number(pos.pid));
+    if (!p) continue;
+    n++;
+    worth += sharesEth(p, pos.shares) || 0n;
+    if (live && Number(p.totalShares)) perDay += Number(p.tacPerDayForPool) * Number(pos.shares) / Number(p.totalShares);
+    pending += (big(pos.pendingUnits) || 0n) * scale;
+  }
+  const harvested = wtacNotes.reduce((a, x) => a + BigInt(x.value), 0n) * E10 + wtacHere();
+  return { n, worth, perDay, pending, harvested };
+}
 function renderFarmNotes(el) {
   const prog = FARM.program, notes = S.key ? freeNotes(P.scan?.notes) : null;
   const rid = String(prog?.rewardAsset || '').toLowerCase();
   const wtac = (notes || []).filter((n) => rid && String(n.asset).toLowerCase() === rid);
   const lps = (prog?.pools || []).map((p) => ({ p, notes: (notes || []).filter((n) => String(n.asset).toLowerCase() === String(p.lpAsset).toLowerCase()) })).filter((x) => x.notes.length);
   const inNotes = wtac.reduce((a, n) => a + BigInt(n.value), 0n), inAccount = wtacHere();
-  if (!inNotes && !inAccount && !lps.length) { mount(el, html``); return; }
+  const tot = farmTotals(wtac), waiting = tot.pending + tot.harvested;
+  if (!tot.n && !inNotes && !inAccount && !lps.length) { mount(el, html``); return; }
+  const day = (v) => (v >= 10 ? Math.round(v).toLocaleString('en-US') : v.toFixed(2));
   mount(el, html`
     <div class="blk">
-      <div class="lbl"><span>From the private farms</span></div>
+      <div class="lbl"><span>Your private farming</span></div>
+      ${tot.n ? html`<div class="kv"><span>In the farms</span><b>${tot.worth > 0n ? `${aboutEth(tot.worth)} · ` : ''}${tot.n} position${tot.n === 1 ? '' : 's'}</b></div>` : ''}
+      ${tot.perDay ? html`<div class="kv"><span>Earning</span><b>about ${day(tot.perDay)} TAC a day</b></div>` : ''}
+      ${waiting > 0n ? html`<div class="kv"><span>Rewards</span><b>${fmt(waiting, 18, 2)} TAC${tot.harvested > 0n && tot.pending > 0n ? ` · ${fmt(tot.harvested, 18, 2)} harvested` : ''}</b></div>` : ''}
       ${inNotes ? html`<div class="kv"><span>Harvested rewards</span><b>${fmt(inNotes, 8, 2)} wTAC</b></div>` : ''}
       ${inAccount ? html`<div class="kv"><span>wTAC in ${your()}</span><b>${fmt(inAccount, 18, 2)}</b></div>` : ''}
       ${inNotes || inAccount ? html`<button class="btn ghost" type="button" id="fn-redeem">Turn into TAC</button>` : ''}
       ${lps.map(({ p, notes: ns }) => { const n = ns.reduce((a, x) => a + BigInt(x.value), 0n); return html`<div class="kv"><span>${pairName(p.pair)} liquidity, not bonded</span><b>${lpWorth(p, n) || `${n.toLocaleString('en-US')} shares`}</b></div>
         <button class="btn ghost" type="button" data-lprm="${p.pid}">Take it out as ${pairName(p.pair)}</button>`; })}
-      <p class="note">wTAC is the farms' reward token, one for one with TAC: it becomes TAC in ${your()}. Liquidity that is not bonded earns nothing; taking it out returns both assets as private notes.</p>
+      ${inNotes || inAccount || lps.length ? html`<p class="note">wTAC is the farms' reward token, one for one with TAC: it becomes TAC in ${your()}. Liquidity that is not bonded earns nothing; taking it out returns both assets as private notes.</p>` : ''}
       <div class="status" role="status" id="fn-status"></div>
     </div>`);
   const status = $('#fn-status', el), done = async (msg) => { say(status, html`<span class="ok">${msg}</span>`); await Promise.allSettled([scanPrivate(true), loadFarms(true)]); rerender('farm'); };
@@ -6207,6 +6251,7 @@ function renderShielded(el, p) {
     ${mine.map((pos, i) => { const locked = Number(pos.unlockAt || 0) > chainNow(), day = FARM.program.epoch?.active && Number(p.totalShares) ? Number(p.tacPerDayForPool) * Number(pos.shares) / Number(p.totalShares) : 0; return html`
       ${mine.length > 1 ? html`<div class="lbl"><span>Position ${i + 1}</span></div>` : ''}
       <div class="kv"><span>Your position</span><b>${lpWorth(p, pos.shares) || `${Number(pos.shares).toLocaleString('en-US')} shares`}</b></div>
+      ${sharesEth(p, pos.shares) != null ? html`<div class="kv"><span>Worth</span><b>${aboutEth(sharesEth(p, pos.shares))}${Number(p.totalShares) ? ` · ${sharePct(Number(pos.shares) / Number(p.totalShares))} of the farm` : ''}</b></div>` : ''}
       <div class="kv"><span>Earned</span><b>${pos.pendingTac} TAC${pendingEth(pos) > 0n ? ` (${aboutEth(pendingEth(pos))})` : ''}</b></div>
       ${day ? html`<div class="kv"><span>Earning</span><b>about ${day >= 10 ? Math.round(day).toLocaleString('en-US') : day.toFixed(2)} TAC a day</b></div>` : ''}
       <div class="row2"><button class="btn ghost" type="button" data-harvest="${i}" ${BigInt(pos.pendingUnits || 0) > 0n ? '' : 'disabled'}>Harvest</button><button class="btn ghost" type="button" data-unbond="${i}" ${locked || unharvested(pos) ? 'disabled' : ''}>${locked ? `Unbond from ${dayFmt(Number(pos.unlockAt))}` : 'Unbond'}</button></div>
@@ -6252,9 +6297,18 @@ function farmJoin(el, p, status, has) {
   if (!kA || !kB) { mount(el, html``); return; }
   const bA = spendable(kA), bB = spendable(kB);
   if (!bA || !bB) {
-    const get = { tac: html`<button class="link" type="button" data-join-get="tac">shield TAC</button>`, cusd: html`<button class="link" type="button" data-join-get="borrow">borrow cUSD</button>`, cbtc: html`<button class="link" type="button" data-join-get="borrow">mint cBTC</button>` }[kB];
-    mount(el, html`<p class="note">${has ? 'To add more, you' : 'To farm here, you'} need private tETH and private ${other}, added together at the pool’s ratio. ${bA ? '' : html`<button class="link" type="button" data-join-get="private">Wrap ETH</button>${bB ? '' : ' and '}`}${bB ? '' : get}${bA && bB ? '' : '.'}</p>`);
-    $$('[data-join-get]', el).forEach((b) => b.onclick = () => { $('#sheet-farm').close(); openSheet(b.dataset.joinGet); });
+    // Both sides are needed, as private notes, added together at the pool's ratio: the steps say which one is missing and
+    // take you to where it is made. The farm sheet remembers where you came from, so the way back is one tap.
+    const getB = { tac: ['tac', 'Shield TAC', 'TAC made private, so what you hold stays hidden.'], cusd: ['borrow', 'Borrow cUSD', 'Borrow dollars against your bitcoin.'], cbtc: ['borrow', 'Mint cBTC', 'Lock bitcoin to mint cBTC one for one.'] }[kB] || ['tac', `Get private ${other}`, `Get ${other} as a private balance.`];
+    const step = (n, state, title, detail, go) => html`<li class="step ${state}"><span class="n">${state === 'done' ? '✓' : n}</span><div><h3>${title}</h3><div class="d">${detail}</div>${go ? html`<div class="act"><button class="btn ghost" type="button" data-join-get="${go[0]}">${go[1]}</button></div>` : ''}</div></li>`;
+    mount(el, html`
+      <div class="lbl"><span>${has ? 'Add more' : 'Add and farm'}</span></div>
+      <ol class="steps">
+        ${step(1, bA ? 'done' : 'now', 'Private tETH', bA ? `You have ${fmt(bA, 8, 6)} tETH ready.` : 'ETH made private, so what you hold stays hidden.', bA ? null : ['private', 'Make ETH private'])}
+        ${step(2, bB ? 'done' : bA ? 'now' : '', `Private ${other}`, bB ? `You have ${fmt(bB, 8, dpB)} ${other} ready.` : getB[2], bB ? null : [getB[0], getB[1]])}
+        ${step(3, '', has ? 'Add to the farm' : 'Add and farm', 'Both go in together at the pool’s ratio and start earning TAC. It opens here once both are ready.', null)}
+      </ol>`);
+    $$('[data-join-get]', el).forEach((b) => b.onclick = () => { FARM.back = { pid, label: pairName(p.pair), at: Date.now() }; $('#sheet-farm').close(); openSheet(b.dataset.joinGet); });
     return;
   }
   mount(el, html`

@@ -10,6 +10,8 @@
 //   farmgate nobody connected: the public farm offers a browser wallet or, in place, the ways into a Tacit wallet, and back
 //   farmpos  a private farm's card with positions: each named and leading the card, unbond held back while a real reward is
 //            unharvested, harvested rewards and unbonded liquidity above the farms, a harvest pointing at its next step
+//   farmsteps joining a private farm with tETH but no TAC is a checklist (tETH done, TAC next and where to get it, the add last),
+//            and the sheet it sends you to carries a way back to the same farm
 //   pair     with no TAC held, Max fills the ETH side and says TAC is missing; then ETH + TAC staked in one transaction
 //            with an EIP-2612 permit
 //   farm     a one-sided ETH zap waits for its typed loss acceptance (its preview's APR never above the farm's APR now),
@@ -97,7 +99,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -367,7 +369,7 @@ await step('apr', async () => {
   ok(rows.length >= 2 && rows.every((r) => /APR/.test(r)) && /APR now\s*(about [\d,]+%|over 100,000%)/.test(card), 'apr: every farm shows its APR now, the public card in full');
   await until(page, () => /APR on TAC\/ETH/.test(document.querySelector('[data-foot="farm"]')?.textContent || ''), null, 60000).catch(() => {});
   const foot = (await text(page, '[data-foot="farm"]')).trim();
-  ok(/^(\d[\d,]*%|1,000%\+) APR on TAC\/ETH · [\d,]+ TAC a day/.test(foot), `apr: the Farm tile leads with the public farm's APR (${foot})`);
+  ok(/^(\d[\d,]*%|10,000%\+) APR on TAC\/ETH$/.test(foot), `apr: the Farm tile leads with the public farm's APR (${foot})`);
 });
 
 await step('farmgate', async () => {
@@ -2996,6 +2998,11 @@ await step('farmpos', async () => {
     ok(await p.evaluate(() => { const n = document.querySelector('#farm-notes'), l = document.querySelector('#farm-list'); return !!(n.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING) && /Harvested rewards/.test(n.textContent) && /not bonded/.test(n.textContent); }),
       'farmpos: harvested rewards and unbonded liquidity wait above the farms');
     ok(/Private pool/.test(await text(p, '[data-farm="pid0"] > button')) && !/Tacit pool/.test(await text(p, '#farm-list')), 'farmpos: the rows say Private pool');
+    const rows = (await text(p, '#farm-list')).replace(/\s+/g, ' ');
+    ok(/tETH \/ TAC/.test(rows) && !/TAC \/ tETH/.test(rows) && (rows.match(/Private pool · [\d.,]+ ETH deep|Private pool · under 0\.01 ETH deep/g) || []).length >= 3, 'farmpos: pools read tETH first, and each says how deep it is');
+    ok(/In the farms\s*≈ [\d.]+ ETH · 2 positions/.test(await text(p, '#farm-notes')) && /Earning\s*about [\d.,]+ TAC a day/.test(await text(p, '#farm-notes')) && /Rewards\s*24\.69 TAC · 12\.35 harvested/.test((await text(p, '#farm-notes')).replace(/\s+/g, ' ')),
+      'farmpos: a summary leads the sheet: what is in the farms, what it earns a day, and the rewards waiting in all');
+    ok(/Worth\s*≈ [\d.]+ ETH · [\d.<>a-z% ]+ of the farm/.test(card), 'farmpos: each position says what it is worth and its share of the farm');
     await p.click('[data-harvest="0"]');
     await p.waitForSelector('#sf-act-0 [data-fn-go="redeem"]', { timeout: 60000 });
     ok(await p.evaluate(() => { const a = document.querySelector('#sf-act-0'), u = document.querySelector('[data-unbond="1"]'); return !!(u.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'farmpos: a harvest reports under the positions, not below the join form');
@@ -3005,6 +3012,29 @@ await step('farmpos', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
+// A private farm with a key that holds tETH but no TAC: joining is a checklist (tETH done, TAC next and where to get it, the add
+// last), going there leaves a way back to this farm, and taking it returns to the same card.
+await step('farmsteps', async () => {
+  const r = await openFarmKey('57e9'.padEnd(64, '6'), { notes: [[FARM_CETH, 2000000n]], positions: [] });
+  const p = r.page;
+  try {
+    await go(p, '#farm');
+    await p.waitForSelector('[data-farm="pid0"] > button', { timeout: 120000 });
+    if (!(await p.$('.farm.open[data-farm="pid0"]'))) await p.click('[data-farm="pid0"] > button');
+    await p.waitForSelector('#farm-pid0 .steps', { timeout: 300000 });
+    const steps = await p.$$eval('#farm-pid0 .step', (l) => l.map((x) => [x.className.replace('step', '').trim(), x.querySelector('h3').textContent, x.querySelector('button')?.textContent || '']));
+    ok(steps.length === 3 && steps[0][0] === 'done' && steps[1][0] === 'now' && steps[2][0] === '' && steps[1][2] === 'Shield TAC', `farmsteps: tETH is done, TAC is next and says where to get it, the add waits (${JSON.stringify(steps)})`);
+    await p.click('#farm-pid0 [data-join-get="tac"]');
+    await p.waitForSelector('#sheet-tac[open] .farm-back a', { timeout: 30000 });
+    ok(!(await p.$('#sheet-farm[open]')) && (await p.getAttribute('.farm-back a', 'href')) === '#farm/private-0' && /tETH \/ TAC/.test(await text(p, '.farm-back')), 'farmsteps: it opens the TAC sheet with a way back to this farm');
+    await p.click('.farm-back a');
+    await p.waitForSelector('#sheet-farm[open] .farm.open[data-farm="pid0"]', { timeout: 60000 });
+    await p.waitForTimeout(500);
+    ok(!(await p.$('.farm-back')), 'farmsteps: back at the same farm, and the way back is gone');
+    if (r.errors.length) { fails++; console.log('FAIL farmsteps page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
 
 // The farm sheet in each state a visitor can reach, for design review: nobody connected, a wallet with and without TAC, a
 // stake with something earned and a withdrawal previewed, then the private farms with nothing to add, with notes to add, and
