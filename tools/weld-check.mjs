@@ -348,9 +348,10 @@ await step('ux', async () => {
   ok(await page.$eval('#sheet-tac', (d) => d.open), 'ux: a drag that starts in the sheet and ends on the backdrop leaves it open');
   await page.fill('#sl-amt', '1,500');
   await page.locator('#sl-amt').blur();                                       // 1,500 is flagged on leaving the field, not while it may still be typed
-  ok(/Write 1500/.test(await text(page, '[data-amt-hint]')), 'ux: an ambiguous 1,500 says how to write it');
+  const hintSays = (re) => until(page, (r) => new RegExp(r).test(document.querySelector('[data-amt-hint]')?.textContent || ''), re.source, 5000).then(() => true, () => false);
+  ok(await hintSays(/Write 1500/), 'ux: an ambiguous 1,500 says how to write it');
   await page.fill('#sl-amt', '1.2.3');
-  ok(/cannot be read/.test(await text(page, '[data-amt-hint]')), 'ux: an unreadable amount says so');
+  ok(await hintSays(/cannot be read/), 'ux: an unreadable amount says so');
   await page.fill('#sl-amt', '1');
   ok(!(await page.$('[data-amt-hint]')), 'ux: a readable amount shows no hint');
   await page.evaluate(() => { location.hash = '#farm'; });
@@ -2546,7 +2547,7 @@ await step('receipts', async () => {
     await r.page.fill('#s-amt', '0.1');
     await until(r.page, () => /They get about/.test(document.querySelector('#s-rcpt')?.textContent || '') && !document.querySelector('#s-go').disabled, null, 60000);
     await r.page.click('#s-go');
-    await until(r.page, () => /with the relay/.test(document.querySelector('#v1-status')?.textContent || ''), null, 60000)
+    await until(r.page, () => /Sent to the relay/.test(document.querySelector('#v1-status')?.textContent || ''), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(r.page, '#v1-status')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
     const a0 = await rx();
     ok(a0.calls.length === 1 && a0.calls[0].type === 'transfer' && a0.calls[0].spend[0] === a0.notes[1][0], `receipts: the send splits the 0.2 note first (${JSON.stringify(a0.calls)})`);
