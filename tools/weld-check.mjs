@@ -69,6 +69,10 @@
 //            way (seeded in tacit.js's journal) show their steps and actions, a burn not yet seen to land is cancelled only after
 //            Ethereum is looked at, starting one sends a bridge-burn job and leaves a record behind when the settle is not seen, and a
 //            send the relay refuses at submit offers the paying account and leaves no record
+//   xbring   the To Bitcoin tab's tETH on Bitcoin: a key's Taproot output holds tETH notes that two real signed cross-out mint reveals
+//            made (one recorded by Bitcoin's proof, one it has not reached), listed on request with the amount the journal knows; the
+//            recorded one is sent back by a burn that is signed and broadcast through ordinary relay, burns the note under its own
+//            ν for tETH with this key as its owner, and shows under Coming back; the TAC Bridge tab does not list it
 //   activity relayed jobs (dispatched as tacit:job, as the relay client does) move Queued → Proving → Done or Failed, with
 //            toasts and Etherscan links; a transaction the page sends is followed to its receipt; after a reload the list
 //            is still there, a job left proving is followed to its settle, a failure from the last six hours is asked
@@ -104,7 +108,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,xbring,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -2111,6 +2115,117 @@ await step('xobridge', async () => {
   ok(fees.length === (retried ? 2 : 1) && fees.every(ladder) && (!retried || (fees[1] > fees[0] && fees[1] >= fee1 * 2n)), `xobridge: a fee the relay turns down is asked again once at a doubled fee on the ladder (${retried ? 'doubling fits' : 'doubling would not fit the note'}; fees ${fees.join(' → ')})`);
   statusError = 'stubbed in the fork check';
   if (r.errors.length) { fails++; console.log('FAIL xobridge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  await r.browser.close();
+});
+
+// The To Bitcoin tab's tETH on Bitcoin (see the header). The key's Taproot output holds two notes made by real, signed cross-out mint
+// reveals (built in the page with its own modules); the explorers, Bitcoin's proof and the worker answer from canned responses.
+await step('xbring', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'c7e7'.padEnd(64, '6'), privB = Buffer.from(hex, 'hex'), pubB = secp.getPublicKey(privB, true), pub = Buffer.from(pubB).toString('hex'), XONLY = '0x' + pub.slice(2);
+  const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
+  const { makeConfidentialPool } = await import(new URL('../dapp/confidential-pool.js', import.meta.url));
+  const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+  const rev = (h) => h.match(/../g).reverse().join('');
+  const api = (re, fn) => r.page.route(re, (route) => fn(route, new URL(route.request().url())));
+  await r.page.goto(r.url + '#wallet');
+  // Two notes: A (0.004 tETH, in Bitcoin's proof), B (0.003 tETH, made in a block the proof has not reached).
+  // A cross-out's destination blinding is HMAC(key, 'tacit-crossout-blinding-v1' || nullifier) mod n, as crossOut() derives it.
+  const derive = (nullifier) => { const m = Buffer.concat([Buffer.from('tacit-crossout-blinding-v1'), Buffer.from(nullifier.slice(2), 'hex')]); let b = 0n; for (const x of hmac(sha256, privB, m)) b = (b << 8n) | BigInt(x); b %= secp.CURVE.n; return b === 0n ? 1n : b; };
+  const mk = (amount, claim, nullifier) => { const nu = '0x' + nullifier.repeat(32), blinding = derive(nu), { cx, cy } = pool.commitXY(amount, blinding); return { amount, blinding, cx, cy, claimId: '0x' + claim.repeat(32), nullifier: nu }; };
+  const NA = mk(400000n, 'c1', 'a1'), NB = mk(300000n, 'c2', 'a2');
+  await r.page.evaluate(async () => {
+    globalThis.__TACIT_NO_INIT__ = true; localStorage.setItem('tacit-network-v1', 'mainnet');
+    const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
+    T._testSetScanHoldingsOverride(() => new Map());
+  });
+  const built = await r.page.evaluate(async ([hexKey, xonly, asset, notes]) => {
+    const { makeBtcWallet } = await import('/bitcoin-taproot-wallet.js');
+    const { makeCrossoutMintReveal } = await import('/crossout-mint-reveal.js');
+    const { secp } = await import('/vendor/tacit-deps.min.js');
+    const priv = Uint8Array.from(hexKey.match(/../g).map((b) => parseInt(b, 16)));
+    const w = makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 3 });
+    const mr = makeCrossoutMintReveal({ secp });
+    return notes.map((n, i) => { const b = mr.buildCrossoutMintTxs({ prims: w.prims, assetId: asset, claimId: n.claimId, cx: n.cx, cy: n.cy, destXonly: xonly, fundingUtxo: { txid: String(i + 1).repeat(64), vout: 0, value: 50000 }, feeRate: 3 }); return { revealHex: b.revealHex, revealTxid: b.revealTxid }; });
+  }, [hex, XONLY, CETH, [NA, NB].map((n) => ({ claimId: n.claimId, cx: n.cx, cy: n.cy }))]);
+  NA.revealHex = built[0].revealHex; NA.txid = built[0].revealTxid; NB.revealHex = built[1].revealHex; NB.txid = built[1].revealTxid;
+  const leafOf = (n) => pool.btcNoteLeaf(CETH, n.cx, n.cy, XONLY);
+  const addrP2tr = await r.page.evaluate(async (x) => (await import('/crossout-notes.js')).p2trAddress(x.slice(2), 'bc'), XONLY);
+  const posts = [];
+  const explorer = (route, u) => {
+    const p = u.pathname.replace(/^\/api/, '').replace(/^\/chain/, '');
+    if (route.request().method() === 'POST' && p === '/tx') { posts.push(route.request().postData()); return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: 'ab'.repeat(32) }); }
+    if (p === `/address/${addrP2tr}/utxo`) return json(route, [NA, NB].map((n) => ({ txid: n.txid, vout: 0, value: 330, status: { confirmed: true, block_height: n === NA ? 970000 : 970200 } })));
+    if (/^\/address\/bc1q[0-9a-z]+\/utxo$/.test(p)) return json(route, [{ txid: 'f1'.repeat(32), vout: 0, value: 20000, status: { confirmed: true, block_height: 960000 } }]);
+    for (const n of [NA, NB]) {
+      if (p === `/tx/${n.txid}/hex`) return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: n.revealHex });
+      if (p === `/tx/${n.txid}`) return json(route, { txid: n.txid, status: { confirmed: true, block_height: n === NA ? 970000 : 970200 }, vout: [{ scriptpubkey: '5120' + XONLY.slice(2), value: 330 }] });
+    }
+    if (/\/fees\/recommended$/.test(p)) return json(route, { fastestFee: 3, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 });
+    if (/\/fee-estimates$/.test(p)) return json(route, { 1: 3, 6: 2, 144: 1 });
+    return route.fallback();
+  };
+  await api(/^https:\/\/(mempool\.space|blockstream\.info)\/api\//, explorer);
+  await api(/^https:\/\/api\.tacit\.finance\/chain\//, explorer);
+  await api(/^https:\/\/api\.tacit\.finance\/reflection\/dump/, (route) => json(route, { attestedHeight: 970100, snapshot: { height: 970100,
+    liveTriples: [[pool.outpointKey('0x' + rev(NA.txid), 0), pool.commitmentHash(NA.cx, NA.cy), CETH, XONLY, 0]], noteLeaves: [leafOf(NA)], spentLinks: [],
+    burnNodes: [['0x' + '00'.repeat(32), '0x' + '00'.repeat(32), '0x' + '00'.repeat(32), true]], pendingDepositRecords: [] } }));
+  await api(/^https:\/\/api\.tacit\.finance\/crossout\/minted/, (route) => json(route, { decided: false, minted: false }));
+  await api(/^https:\/\/api\.tacit\.finance\/reflection\/(status|eth-state)/, (route) => json(route, { network: 'mainnet', attestedHeight: 970100, tipHeight: 970100, lagBlocks: 0 }));
+
+  // The journal remembers both settles (a minted cross-out each), which spares the Ethereum lookup and the search.
+  const big = (v) => ({ __big: String(v) });
+  const jr = (n) => ({ id: n.nullifier, network: 'mainnet', walletPub: pub, stage: 'minted', createdAt: Date.now() - 36e5, destXonly: XONLY.slice(2),
+    source: { nullifier: n.nullifier, value: big(n.amount), amount: big(n.amount), fee: big(0), assetId: CETH, ticker: 'tETH' }, settle: { txHash: 'e1'.repeat(32), claimId: n.claimId, cx: n.cx, cy: n.cy, ethBlock: 26000000, claimIdVerified: true } });
+  await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-crossout-bridge-v1:mainnet:${pub}`, JSON.stringify([jr(NA), jr(NB)])]);
+  await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'true'));
+  await r.page.click('#wallet-body [data-in="paste"]');
+  await r.page.fill('#ws-hex', hex);
+  await r.page.click('#wallet-body [data-in="key"]');
+  await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+  await go(r.page, '#private/bitcoin');
+  await r.page.waitForSelector('#xb-look', { timeout: 120000 });
+  ok(/Look for it/.test(await text(r.page, '#eth-v1')), 'xbring: tETH on Bitcoin is listed on request, so a key that has bridged nothing loads nothing');
+  await r.page.click('#xb-look');
+  await until(r.page, () => document.querySelectorAll('#eth-v1 input[name="xb-note"]').length === 2, null, 240000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | section: ${(await text(r.page, '#eth-v1')).replace(/\s+/g, ' ').slice(-400)} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
+  const items = await r.page.$$eval('#eth-v1 label.brn', (xs) => xs.map((x) => ({ text: x.textContent.replace(/\s+/g, ' ').trim(), off: x.classList.contains('off') })));
+  ok(items.length === 2 && items.some((x) => /0\.004 tETH/.test(x.text) && !x.off) && items.some((x) => /0\.003 tETH/.test(x.text) && x.off && /Waiting for Bitcoin’s proof on Ethereum to reach its block/.test(x.text)),
+    `xbring: both notes are found with their amounts; the one the proof has recorded can be chosen, the other says why not (${items.map((x) => x.text).join(' | ')})`);
+  await until(r.page, () => /You get[^]*0\.004 private tETH on Ethereum/.test(document.querySelector('#xb-rcpt')?.textContent || ''), null, 120000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rcpt: ${(await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ')}`); });
+  const rc = (await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ');
+  ok(/Relay feeNone/.test(rc) && /Bitcoin feeabout [\d,]+ sats/.test(rc) && !(await r.page.isVisible('#xb-ackrow')) === false, `xbring: the one ready note is chosen for the holder and its receipt names what arrives and the Bitcoin fee (${rc.slice(0, 200)})`);
+  ok(await r.page.isDisabled('#xb-go'), 'xbring: the button waits for the box to be ticked');
+  await r.page.check('#xb-ack');
+  ok(!(await r.page.isDisabled('#xb-go')), 'xbring: ticked, it can start');
+  const before = posts.length;
+  await r.page.click('#xb-go');
+  await until(r.page, () => document.querySelectorAll('#eth-v1 .brr').length === 1, null, 240000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(r.page, '#v1-status')} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
+  const sent = [...new Set(posts.slice(before))];             // an explorer a transaction is offered to more than once sees it once
+  ok(sent.length === 2, `xbring: the burn is signed and its commit and reveal go out through ordinary relay (${sent.length} transactions)`);
+  const decs = await r.page.evaluate(async (txs) => { const { classifyConfidentialTx } = await import('/burn-deposit-bitcoin.js'); return txs.map((h) => { const d = classifyConfidentialTx('0x' + h); return d ? { type: d.type, nullifier: d.nullifier, assetId: d.assetId, target: d.target } : null; }); }, sent);
+  const dec = decs.find((d) => d && d.type === 'burn') || null;
+  const nu = pool.nullifier(pool.btcNoteLeaf(CETH, NA.cx, NA.cy, XONLY));
+  ok(dec && dec.type === 'burn' && dec.nullifier === nu && String(dec.assetId).toLowerCase() === CETH, `xbring: the reveal burns the note under its own ν, for tETH, with this key as its owner (${JSON.stringify(dec).slice(0, 160)})`);
+  const row = (await text(r.page, '#eth-v1 .brr')).replace(/\s+/g, ' ');
+  ok(/0\.004 tETH/.test(row) && /Burn sent|Confirmed/.test(row) && !!(await r.page.$('#eth-v1 .brr .stp li.now')), `xbring: it shows under Coming back with its steps (${row.slice(0, 160)})`);
+  const rec = await r.page.evaluate((k) => JSON.parse(localStorage.getItem(k) || '[]')[0], `tacit-burndep-bridge-v1:mainnet:${pub}`);
+  ok(rec && rec.source.ticker === 'tETH' && rec.source.p2tr === true && rec.path === 'reflected', 'xbring: the bridge journal holds it as a tETH, Taproot-owned, reflected burn');
+  // The tab and the row stay for a return in flight even with the setting off and no cross-out left to follow.
+  await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'false'));
+  await r.page.evaluate(([k]) => localStorage.removeItem(k), [`tacit-crossout-bridge-v1:mainnet:${pub}`]);
+  await go(r.page, '#private');
+  await until(r.page, () => !!document.querySelector('#eth-v1 [data-v1="btc"]'), null, 60000);
+  await go(r.page, '#private/bitcoin');
+  await until(r.page, () => document.querySelectorAll('#eth-v1 .brr').length === 1, null, 60000);
+  ok(true, 'xbring: with the setting off and no cross-out under way, a return in flight keeps the tab and its Coming back row');
+  await go(r.page, '#bridge');
+  await until(r.page, () => !document.querySelector('#bridge-body')?.hidden, null, 60000);
+  await sleep(1500);
+  ok((await r.page.$$('#bridge-body .brr')).length === 0, 'xbring: the TAC Bridge tab does not list the tETH bridge');
+  if (r.errors.length) { fails++; console.log('FAIL xbring page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
 });
 const WNS = '0x0000000000696760E15f265e828DB644A0c242EB';

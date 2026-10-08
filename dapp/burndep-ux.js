@@ -98,10 +98,18 @@ export function makeBurnDepositUx(deps) {
     // the transaction that made it (dapp/note-opening.js). nullifierSpent(ν) → boolean: whether the pool has spent ν.
     // Together they let a one-step bridge be rebuilt from its burn transaction and the key alone.
     openNote = null, nullifierSpent = null,
+    // Optional. openHeldNote(txid, vout, walletPriv) → { assetId, amount, blinding, owner } | null: the opening of a note a cross-out
+    // made at this key's own Taproot output (dapp/crossout-notes.js), so a bridge of such a note is rebuilt from its burn too.
+    openHeldNote = null,
+    // Optional. The assets a tracked note can be sent back to Ethereum as ([{ assetId, ticker, capRaw }]); left out, TAC alone
+    // under BURNDEP_BETA_CAP_RAW. The burn-deposit path below is TAC's own and does not read this.
+    assets: assetsIn = null,
   } = deps || {};
   for (const [k, v] of Object.entries({ workerBase, secp, sha256, keccak256, hmac, pool, bridgeMint, chainBindingHex, tacAssetId, chain })) {
     if (v == null) throw new Error(`burndep-ux: deps.${k} required`);
   }
+  const ASSETS = (assetsIn || [{ assetId: tacAssetId, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW }]).map((a) => ({ ...a, assetId: withHex(a.assetId), capRaw: BigInt(a.capRaw) }));
+  const assetOf = (id) => ASSETS.find((a) => lc(stripHex(a.assetId)) === lc(stripHex(id || ''))) || null;
   const storage = storageIn || defaultStorage();
   const cryptoDeps = { secp, keccak256, sha256 };
   const kit = makeBurnDepositKit(cryptoDeps);
@@ -343,6 +351,51 @@ export function makeBurnDepositUx(deps) {
     return out;
   }
 
+  // ---- preflightHeld: a note this key holds at its own Taproot output, which a cross-out made ----
+  // The same checks as the reflected branch of preflight, for a note whose output is P2TR(this key) and whose auth key is that
+  // key: it must be confirmed, tracked by the reflection, and in the note tree under the leaf the burn names it by.
+  async function preflightHeld({ note, walletPub }) {
+    const out = { steps: [], ok: false };
+    const step = (name, ok, detail) => { out.steps.push({ name, ok, detail }); return ok; };
+    const a = assetOf(note.assetId || tacAssetId);
+    if (!step('asset', !!a, a ? a.ticker : 'an asset this cannot send back')) return out;
+    if (!step('cap', BigInt(note.amount) <= a.capRaw, `${note.amount} raw units`)) return out;
+    let srcTx;
+    try { srcTx = await fetchChainJson(`/tx/${stripHex(note.txid)}`); }
+    catch (e) { step('source-lookup', false, String(e.message || e)); return out; }
+    const vout = srcTx && srcTx.vout && srcTx.vout[note.vout];
+    if (!step('source-confirmed', !!(srcTx && srcTx.status && srcTx.status.confirmed), 'the note\'s output is confirmed on Bitcoin')) return out;
+    const owner = '0x' + bytesToHexLocal(typeof walletPub === 'string' ? hexToBytesLocal(stripHex(walletPub)).slice(1) : walletPub.slice(1));
+    if (!step('source-ownership', !!vout && lc(vout.scriptpubkey) === '5120' + stripHex(owner), 'the note\'s output is this key\'s own Taproot output')) return out;
+    let live;
+    try { live = await isLive(note.txid, note.vout, { fresh: true }); }
+    catch (e) { step('reflection', false, String(e.message || e)); return out; }
+    if (live === null) { step('not-tracked', false, 'the reflection has not reached the block this note was made in yet; try again in a little while'); return out; }
+    if (!step('reflected', live === true, 'tracked by the reflection: bridges in one Bitcoin transaction')) return out;
+    const refl = await reflected();
+    if (refl.leaves) {
+      const { cx, cy } = pool.commitXY(BigInt(note.amount), BigInt(note.blinding));
+      const bound = refl.liveBound.get(outpointOf(note.txid, note.vout));
+      const leaf = bridgeMint.sourceLeaf({ sourceClass: bound ? 2 : 1, asset: a.assetId, cx, cy, owner, chainBinding: withHex(chainBindingHex()) });
+      if (!step('old-leaf', refl.leaves.has(lc(leaf)), 'this note is not in the reflected note tree in the form the burn names it by')) return out;
+    }
+    out.path = 'reflected';
+    try { out.burnFeeRate = await chain.getFeeRate('priority'); step('fee-estimate', true, `${out.burnFeeRate} sat/vB`); }
+    catch (e) { step('fee-estimate', false, String(e.message || e)); return out; }
+    out.ok = out.steps.every((x) => x.ok);
+    return out;
+  }
+
+  // A reflected burn marked not recorded is looked at again: its transaction is read afresh (a reorg can move it to a later block, and
+  // the attested state is judged against the block it is in now) and it goes back to waiting to be recorded.
+  async function recheckBurn(walletPub, id) {
+    const rec = getRecord(walletPub, id);
+    if (!rec || rec.path !== 'reflected' || rec.stage !== 'not-recorded') throw new Error('burndep-ux: only a reflected burn marked not recorded can be checked again');
+    const t = await fetchChainJson(`/tx/${stripHex(rec.burn.txid)}`);
+    if (!t || !t.status || !t.status.confirmed) throw new Error('burndep-ux: that burn is not confirmed on Bitcoin just now; try again once it is');
+    return putRecord({ ...rec, stage: 'rburn-mined', burnHeight: Number(t.status.block_height), lastError: null, errorCount: 0 });
+  }
+
   async function traceNote({ txid, vout, assetId }) {
     // maxDepth is the walk's own budget, shared by both callers of traceNote (the source note in preflight,
     // the burn-home after migrate) — set to the larger of the two limits so neither trace is cut short before
@@ -417,8 +470,13 @@ export function makeBurnDepositUx(deps) {
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     if (isReserved(note.txid, note.vout)) throw new Error('burndep-ux: this note is already reserved by another bridge in progress');
-    if (BigInt(note.amount) > BURNDEP_BETA_CAP_RAW) throw new Error('burndep-ux: over the beta cap');
+    // `note.assetId` names the asset (TAC when left out); `note.p2tr` says the note sits at this key's own Taproot output (a
+    // cross-out made it) rather than its P2WPKH output, so the key is its auth key and it is spent by key path.
+    const asset = assetOf(note.assetId || tacAssetId);
+    if (!asset) throw new Error('burndep-ux: this asset cannot be sent back to Ethereum here');
+    if (BigInt(note.amount) > asset.capRaw) throw new Error('burndep-ux: over the beta cap');
     if (note.stealthTweakedSk) throw new Error(`burndep-ux: ${PRIVATE_NOTE}`);
+    const p2tr = !!note.p2tr;
     const d = await callWorker('GET', '/reflection/dump');
     const s = d && d.snapshot;
     if (!s || !Array.isArray(s.noteLeaves) || !Array.isArray(s.liveTriples)) throw new Error('burndep-ux: could not read the reflection state; try again in a moment');
@@ -427,16 +485,16 @@ export function makeBurnDepositUx(deps) {
     const safe = await chain.pickSafeCommitSats(await chain.getUtxos(P.wallet.address()));
     const built = await burner().buildBridgeBurnTxs({
       prims: P, snapshot, feeRate, fundingUtxos: Array.isArray(safe) ? safe : [safe].filter(Boolean),
-      note: { txid: stripHex(note.txid), vout: Number(note.vout), sats: Number(note.sats), asset: withHex(tacAssetId), value: BigInt(note.amount), blinding: BigInt(note.blinding), script: bytesToHexLocal(p2wpkhScriptOf(walletPub)) },
+      note: { txid: stripHex(note.txid), vout: Number(note.vout), sats: Number(note.sats), asset: asset.assetId, value: BigInt(note.amount), blinding: BigInt(note.blinding), script: p2tr ? '5120' + bytesToHexLocal(walletPub.slice(1)) : bytesToHexLocal(p2wpkhScriptOf(walletPub)) },
       notePriv: walletPriv, chainBinding: withHex(chainBindingHex()), sourceClass: 1, fee: 0n,
-      dest: { owner: pickDestOwner(walletPriv).owner },
+      dest: { owner: pickDestOwner(walletPriv, asset.assetId).owner },
       deriveDestBlinding: (nu) => mintRecovery.deriveBridgeMintBlinding({ privkey: walletPriv, nullifier: nu }),
     });
     const p = built.plan;
     const funding = built.commitTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout }));
     return putRecord({
       id, network, walletPub: bytesToHexLocal(walletPub), path: 'reflected', stage: 'rburn-signed', createdAt: now(),
-      source: { txid: stripHex(note.txid).toLowerCase(), vout: Number(note.vout), sats: Number(note.sats), assetId: tacAssetId, amount: BigInt(note.amount), blinding: BigInt(note.blinding) },
+      source: { txid: stripHex(note.txid).toLowerCase(), vout: Number(note.vout), sats: Number(note.sats), assetId: asset.assetId, ticker: asset.ticker, ...(p2tr ? { p2tr: true } : {}), amount: BigInt(note.amount), blinding: BigInt(note.blinding) },
       burn: { txid: built.revealTxid, hex: built.revealHex, commitTxid: built.commitTxid, commitHex: built.commitHex, fee: built.commitFee + built.revealFee, feeRate: built.feeRate, fundingUtxo: funding[0], fundingUtxos: funding },
       envelope: { destLeaf: p.destLeaf, nullifier: p.nullifier, burnId: p.burnId },
       mint: {
@@ -614,11 +672,11 @@ export function makeBurnDepositUx(deps) {
       try {
         minted = await bridgeMint.bridgeMint({
         network, sourceClass: m.sourceClass, spentTxid: m.spentTxid, spentVout: m.spentVout,
-        asset: withHex(tacAssetId), chainBinding: m.chainBinding,
+        asset: withHex((rec.source && rec.source.assetId) || tacAssetId), chainBinding: m.chainBinding,
         burned: { value: BigInt(m.burned.value), blinding: BigInt(m.burned.blinding), owner: m.burned.owner },
         dest: { value: BigInt(m.dest.value), blinding: BigInt(m.dest.blinding), owner: m.dest.owner },
         // The destination blinding is derived from the wallet key and ν, which the recovery scan re-derives.
-        recovery: recoveryFor(walletPriv, m.dest.value),
+        recovery: recoveryFor(walletPriv, m.dest.value, (rec.source && rec.source.assetId) || tacAssetId),
         selfSettle,
         waitOpts: { timeoutMs: MINT_WAIT_MS, onJob: (jobId) => say('submitted', { jobId }), onUpdate: (st) => say('status', { status: st.status }) },
         });
@@ -698,8 +756,8 @@ export function makeBurnDepositUx(deps) {
   // A stable, always-available choice: this beta ships one bridge per note, so index 0 never collides with
   // itself, and recovery (confidential-recovery.js's walkBridgeMints) tries indexes 0..7 regardless of which
   // one was actually used, so nothing is lost if a future version needs to rotate this.
-  function pickDestOwner(walletPriv) {
-    const dn = pool.deriveNote(walletPriv, withHex(tacAssetId), 0);
+  function pickDestOwner(walletPriv, assetId = tacAssetId) {
+    const dn = pool.deriveNote(walletPriv, withHex(assetId), 0);
     return { destIndex: 0, owner: pool.nkToOwner(dn.secret), secret: dn.secret };
   }
 
@@ -708,9 +766,11 @@ export function makeBurnDepositUx(deps) {
   // browser's journal remembers. A round amount keeps the derived blinding as before; any other amount also seals a memo to the
   // key, which any device reads back from the chain.
   const scanRound = (v) => { let x = BigInt(v); if (x <= 0n) return false; while (x % 10n === 0n) x /= 10n; return x < 100n; };
-  function recoveryFor(walletPriv, value) {
-    if (scanRound(value)) return { seedDerived: true };
-    return { ownerPub: '0x' + bytesToHexLocal(secp.getPublicKey(walletPriv, true)), secret: pickDestOwner(walletPriv).secret };
+  // A balance read searches the derived blinding for TAC alone (a deep recovery covers the other assets), so a note of any other
+  // asset is always sealed to the key, whatever its amount.
+  function recoveryFor(walletPriv, value, assetId = tacAssetId) {
+    if (lc(stripHex(assetId)) === lc(stripHex(tacAssetId)) && scanRound(value)) return { seedDerived: true };
+    return { ownerPub: '0x' + bytesToHexLocal(secp.getPublicKey(walletPriv, true)), secret: pickDestOwner(walletPriv, assetId).secret };
   }
 
   // The mint-time destination note: fully re-derivable from the wallet key plus the burn-home's own commitment
@@ -791,30 +851,37 @@ export function makeBurnDepositUx(deps) {
   // transaction that made it, and the burn must name this key's own destination. Returns the rebuilt record, or null when
   // the burn is not of that kind (a burn-deposit, which recoverFromTxid rebuilds from its amount instead).
   async function recoverReflectedBurn(burnTxidDisplay, walletPriv) {
-    if (!openNote) return null;
+    if (!openNote && !openHeldNote) return null;
     const id = stripHex(burnTxidDisplay).toLowerCase();
     const burnTx = await fetchChainJson(`/tx/${id}`);
     if (!burnTx || !burnTx.vin || burnTx.vin.length < 2) return null;
     const env = classifyConfidentialTx('0x' + await fetchChainText(`/tx/${id}/hex`));
-    if (!env || env.type !== 'burn' || lc(stripHex(env.assetId)) !== lc(stripHex(tacAssetId))) return null;
+    const asset = env && env.type === 'burn' ? assetOf(env.assetId) : null;
+    if (!asset) return null;
     const prev = classifyConfidentialTx('0x' + await fetchChainText(`/tx/${stripHex(burnTx.vin[0].txid)}/hex`));
     if (prev && prev.type === 'cxfer') return null;                         // vin[0] is a burn-home: a burn-deposit
     if (!burnTx.status || !burnTx.status.confirmed) throw new Error('burndep-ux: that burn has not confirmed yet; try again once it has');
 
     const note = burnTx.vin[1];                                             // [envelope commit, the burned note]
-    const opened = await openNote(note.txid, note.vout);
+    // A note at this wallet's P2WPKH output is opened from the transaction that made it (TAC); one a cross-out made at this key's
+    // Taproot output is opened from the key and the chain, and that key is its owner.
+    const ZERO = '0x' + '00'.repeat(32);
+    let opened = lc(stripHex(asset.assetId)) === lc(stripHex(tacAssetId)) && openNote ? await openNote(note.txid, note.vout) : null, burnedOwner = ZERO;
+    if (!opened && openHeldNote) {
+      const held = await openHeldNote(note.txid, note.vout, walletPriv);
+      if (held && lc(stripHex(held.assetId)) === lc(stripHex(asset.assetId))) { opened = held; burnedOwner = held.owner; }
+    }
     if (!opened) throw new Error('burndep-ux: this key did not receive that burned note, so it is not this wallet’s bridge');
     const walletPub = secp.getPublicKey(walletPriv, true);
-    const asset = withHex(tacAssetId), ZERO = '0x' + '00'.repeat(32);
     const { cx, cy } = pool.commitXY(BigInt(opened.amount), BigInt(opened.blinding));
-    const srcLeaf = pool.btcNoteLeaf(asset, cx, cy, ZERO);
+    const srcLeaf = pool.btcNoteLeaf(asset.assetId, cx, cy, burnedOwner);
     const nu = pool.nullifier(srcLeaf);
     if (lc(env.nullifier) !== lc(nu)) throw new Error('burndep-ux: the burn does not match that note’s opening (a note not held at this wallet’s own address cannot be rebuilt this way)');
     // The destination is this key's own: only its owner derives the blinding, and the burn pins the leaf that commits to it.
-    const owner = pickDestOwner(walletPriv).owner;
+    const owner = pickDestOwner(walletPriv, asset.assetId).owner;
     const destBlinding = mintRecovery.deriveBridgeMintBlinding({ privkey: walletPriv, nullifier: env.nullifier });
     const { cx: dx, cy: dy } = pool.commitXY(BigInt(opened.amount), destBlinding);
-    if (lc(pool.leaf(asset, dx, dy, owner)) !== lc(env.dest)) throw new Error('burndep-ux: that burn names a destination that is not this wallet’s, so it is not this wallet’s bridge');
+    if (lc(pool.leaf(asset.assetId, dx, dy, owner)) !== lc(env.dest)) throw new Error('burndep-ux: that burn names a destination that is not this wallet’s, so it is not this wallet’s bridge');
 
     const rid = recordId(note.txid, note.vout);
     const existing = getRecord(walletPub, rid);
@@ -825,13 +892,13 @@ export function makeBurnDepositUx(deps) {
     const spentTxid = withHex(revHex(note.txid));                           // internal byte order, as the mint names it
     const rec = {
       id: rid, network, walletPub: bytesToHexLocal(walletPub), path: 'reflected', stage: 'rburn-mined', createdAt: now(), recoveredAt: now(),
-      source: { txid: stripHex(note.txid).toLowerCase(), vout: Number(note.vout), sats: note.prevout ? note.prevout.value : null, assetId: tacAssetId, amount: BigInt(opened.amount), blinding: BigInt(opened.blinding) },
+      source: { txid: stripHex(note.txid).toLowerCase(), vout: Number(note.vout), sats: note.prevout ? note.prevout.value : null, assetId: asset.assetId, ticker: asset.ticker, ...(burnedOwner !== ZERO ? { p2tr: true } : {}), amount: BigInt(opened.amount), blinding: BigInt(opened.blinding) },
       burn: { txid: id, hex: null },
       burnHeight: Number(burnTx.status.block_height),
       envelope: { destLeaf: env.dest, nullifier: env.nullifier, burnId: pool.bridgeBurnId(1, spentTxid, Number(note.vout), srcLeaf, env.target) },
       mint: {
         sourceClass: 1, spentTxid, spentVout: Number(note.vout), chainBinding: env.target,
-        burned: { value: BigInt(opened.amount), blinding: BigInt(opened.blinding), owner: ZERO },
+        burned: { value: BigInt(opened.amount), blinding: BigInt(opened.blinding), owner: burnedOwner },
         dest: { value: BigInt(opened.amount), blinding: destBlinding, owner },
       },
     };
@@ -987,7 +1054,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   return {
-    BURNDEP_BETA_CAP_RAW, eligibleNotes, isReserved, pickFunding, preflight, start, startReflected, advance, resumeAll, recoverFromTxid, list, abandon,
+    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, preflight, preflightHeld, recheckBurn, start, startReflected, advance, resumeAll, recoverFromTxid, list, abandon,
     cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded,
     slipstreamStatus: broadcaster.slipstreamStatus,
     checkTxidStatus,

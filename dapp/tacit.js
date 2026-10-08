@@ -74,8 +74,9 @@ import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAv
 import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';
 import { makeConfidentialPoolUx, setExternalTacHolders } from './confidential-pool-ux.js';
-import { makeBurnDepositUx } from './burndep-ux.js';
+import { makeBurnDepositUx, BURNDEP_BETA_CAP_RAW as BURNDEP_BETA_CAP_RAW_TAC } from './burndep-ux.js';
 import { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW as CROSSOUT_TAC_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW } from './crossout-ux.js';
+import { makeCrossoutNotes } from './crossout-notes.js';
 import { renderConfidentialPoolTab } from './confidential-pool-tab.js';
 import { renderLanePanel } from './cross-chain-lane.js';
 import { renderCdpTab, announceCbtcBonds } from './confidential-defi-tab.js';
@@ -19915,10 +19916,15 @@ function _burndepUxSingleton() {
   const poolUx = _poolUxSingleton();
   _burndepUxNet = net;
   const guard = makeCrossLaneGuard({ keccak256: keccak_256 });
+  // What a tracked note can be sent back to Ethereum as: TAC, and tETH where the pool's note asset is the Bitcoin-lane tETH asset.
+  const cEthRow = poolUx.assetByTicker && poolUx.assetByTicker.cETH;
+  const tethAsset = cEthRow && cEthRow.assetId && cEthRow.bitcoinLink && String(cEthRow.assetId).toLowerCase() === String(cEthRow.bitcoinLink).toLowerCase() ? cEthRow.assetId : null;
   return (_burndepUx = makeBurnDepositUx({
     network: net, hrp: NET.hrp, workerBase: WORKER_BASE, secp, sha256, keccak256: keccak_256, hmac,
     pool: poolUx.pool, bridgeMint: poolUx.bridgeMint, chainBindingHex: poolUx.chainBindingHex,
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
+    assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW_TAC },
+      ...(tethAsset ? [{ assetId: tethAsset, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW }] : [])],
     chain: { getUtxos, pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     encodeCXferBppPayload, computeKernelMsg, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount, signSchnorr, modN,
     // A bridge rebuilt from its burn alone: the burned note's opening comes from the transaction that made it and the key,
@@ -19929,6 +19935,8 @@ function _burndepUxSingleton() {
       return r ? { amount: r.amount, blinding: r.blinding } : null;
     },
     nullifierSpent: (nu) => guard.evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
+    // A bridge of a note a cross-out made at this key's own Taproot output is rebuilt from its burn through that note's opening.
+    openHeldNote: (txid, vout, walletPriv) => _crossoutNotesSingleton().openOutpoint({ walletPriv, txid, vout }),
   }));
 }
 // Every outpoint any bridge record (any wallet, this browser) has reserved as its source note or its Bitcoin
@@ -19964,6 +19972,21 @@ function _crossoutUxSingleton() {
 // _filterRecent hook, same fail-open rationale.
 function _crossoutReserved(txid, vout) {
   try { return _crossoutUxSingleton().isFundingReserved(txid, vout); } catch { return false; }
+}
+// The notes this key holds at its own Taproot output because a cross-out minted them, found from the key and public data
+// (dapp/crossout-notes.js). The holdings scan lists only the key's P2WPKH address, so these are read here instead.
+let _crossoutNotes = null, _crossoutNotesNet = null;
+function _crossoutNotesSingleton() {
+  const net = NET.name;
+  if (_crossoutNotes && _crossoutNotesNet === net) return _crossoutNotes;
+  const poolUx = _poolUxSingleton();
+  _crossoutNotesNet = net;
+  const workerJson = async (path) => { const r = await fetch(`${WORKER_BASE}${path}${path.includes('?') ? '&' : '?'}network=${net}`); if (!r.ok) throw new Error(`worker ${r.status}`); return r.json(); };
+  return (_crossoutNotes = makeCrossoutNotes({
+    secp, hmac, sha256, pool: poolUx.pool, evmLog: poolUx.evmLog, rpc: poolUx.rpc,
+    poolAddress: poolUx.cfg && poolUx.cfg.pool, deployBlock: Number((poolUx.cfg && poolUx.cfg.deployBlock) || 0),
+    chainJson: (path) => apiJson(path), chainHex: (path) => apiText(path), workerJson, hrp: NET.hrp,
+  }));
 }
 // A connected Ethereum wallet's public TAC counts toward the holder exit rate in every pool tab.
 setExternalTacHolders(() => (ethWallet?.state?.address ? ['0x' + String(ethWallet.state.address).replace(/^0x/, '')] : []));
@@ -78601,7 +78624,7 @@ export {
   scanHoldings, invalidateHoldingsCache,
   // The TAC bridge to Ethereum, for pages that load this file as a library: the same instance, journal and coin
   // reservations the Holdings tab uses, so a bridge started on one page is followed on the other.
-  _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, pickSafeCommitSats,
+  _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, _crossoutNotesSingleton as crossoutNotes, pickSafeCommitSats,
   discoverStealthFromTxid, scanAssetForStealthReceipts,
   recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,
   markStealthTxidSeen, isStealthTxidSeen,

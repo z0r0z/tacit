@@ -205,10 +205,9 @@ function makeWorld() {
     setRegisterConflict: (v) => { registerConflict = v; },
     setLive: (txid, vout) => liveKeys.add(String(pool.outpointKey(withHex(stripHex(txid).match(/../g).reverse().join('')), vout)).toLowerCase()),
     setRecordBurns: (v) => { recordBurns = v; },
-    setReflectedNote: ({ txid, vout, value, blinding }) => {
+    setReflectedNote: ({ txid, vout, value, blinding, asset = ASSET, authKey = '0x' + '00'.repeat(32) }) => {
       const { cx, cy } = pool.commitXY(value, blinding);
-      const zero = '0x' + '00'.repeat(32);
-      reflectedNote = { leaf: pool.btcNoteLeaf(ASSET, cx, cy, zero), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), ASSET, zero, 0] };
+      reflectedNote = { leaf: pool.btcNoteLeaf(asset, cx, cy, authKey), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), asset, authKey, 0] };
     },
     // The attested state records a reflected burn: its destination, read from the reveal the way the reflection reads it.
     foldReflected: (revealHex) => { const d = classifyConfidentialTx(withHex(revealHex)); if (d && d.dest) reflectedDests.push(String(d.dest).toLowerCase()); },
@@ -1125,6 +1124,151 @@ function storageContainsPrivkey(storage, priv) {
   const hex = Buffer.from(priv).toString('hex');
   for (const [, v] of storage._raw) if (String(v).toLowerCase().includes(hex)) return true;
   return false;
+}
+
+// ==== a tETH note at this key's own Taproot output (a cross-out made it): sent back by key path, auth key = the key ====
+{
+  const TETH = withHex('3c'.repeat(32)), XONLY = bytesToHex(WALLET_PUB.slice(1));
+  const CAP = 500_000n, AMT = 400_000n, SATS = 330;
+  const assets = [{ assetId: ASSET, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW }, { assetId: TETH, ticker: 'tETH', capRaw: CAP }];
+  const held = { txid: NOTE_TXID, vout: NOTE_VOUT, sats: SATS, amount: AMT, blinding: NOTE_BLINDING, assetId: TETH, p2tr: true };
+  const setup = () => {
+    const world = makeWorld();
+    world.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2));
+    world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: TETH, authKey: XONLY });
+    return { world, ux: makeUx(world, makeMemStorage(), { assets }) };
+  };
+  {
+    const { world, ux } = setup();
+    const pf = await ux.preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(pf.ok === true && pf.path === 'reflected' && pf.burnFeeRate === BASE_RATE && world.broadcasts.length === 0, 'preflightHeld passes for a tracked tETH note at the key\'s own Taproot output, and sends nothing');
+    const bad = (note, why) => ux.preflightHeld({ note, walletPub: WALLET_PUB }).then((x) => !x.ok && x.steps.some((y) => !y.ok && y.name === why));
+    ok(await bad({ ...held, assetId: withHex('ff'.repeat(32)) }, 'asset'), 'an asset it cannot send back is refused by name');
+    ok(await bad({ ...held, amount: CAP + 1n }, 'cap'), 'over the cap is refused by name');
+    const { ux: other } = setup();
+    const oPub = secp.getPublicKey(new Uint8Array(32).fill(0x44), true);
+    ok(!(await other.preflightHeld({ note: held, walletPub: oPub })).ok, 'a note at some other key\'s Taproot output is not this key\'s to send back');
+    const w2 = makeWorld(); w2.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2)); w2.setLive(NOTE_TXID, NOTE_VOUT);
+    const u2 = makeUx(w2, makeMemStorage(), { assets });
+    const pf2 = await u2.preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(!pf2.ok && pf2.steps.some((y) => y.name === 'old-leaf' && !y.ok), 'a live note whose leaf is not in the tree in the burn\'s form is refused before anything is signed');
+    const w3 = makeWorld(); w3.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2));
+    const pf3 = await makeUx(w3, makeMemStorage(), { assets }).preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(!pf3.ok && pf3.steps.some((y) => y.name === 'reflected' && !y.ok), 'a note the reflection does not track yet is not offered');
+  }
+  {
+    const { world, ux } = setup();
+    let r = await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    ok(r.stage === 'rburn-signed' && r.source.assetId === TETH && r.source.ticker === 'tETH' && r.source.p2tr === true && world.broadcasts.length === 0, 'the burn is signed and journalled as a tETH, Taproot-owned note, with nothing sent');
+    const { cx, cy } = pool.commitXY(AMT, NOTE_BLINDING);
+    const nu = pool.nullifier(pool.btcNoteLeaf(TETH, cx, cy, XONLY));
+    const dec = classifyConfidentialTx(withHex(r.burn.hex));
+    ok(dec && dec.type === 'burn' && dec.nullifier === nu && dec.assetId === TETH && dec.target === withHex('7c'.repeat(32)), 'the reveal burns the note under its own ν (auth key = this key) for tETH, toward this pool');
+    ok(r.mint.sourceClass === 1 && r.mint.burned.owner === XONLY && BigInt(r.mint.dest.value) === AMT, 'the mint is planned as class 1 with this key as the burned note\'s owner, the full amount');
+    const dn = pool.deriveNote(WALLET_PRIV, TETH, 0);
+    ok(r.mint.dest.owner === pool.nkToOwner(dn.secret) && r.mint.dest.owner !== pool.nkToOwner(pool.deriveNote(WALLET_PRIV, ASSET, 0).secret), 'the Ethereum note is owned by the key\'s tETH note owner, not TAC\'s');
+    const mr = makeBridgeMintRecovery({ hmac: hmacFn, sha256, curveOrder: secp.CURVE.n });
+    ok(BigInt(r.mint.dest.blinding) === BigInt(mr.deriveBridgeMintBlinding({ privkey: WALLET_PRIV, nullifier: nu })), 'its blinding comes from the key and ν, so the minted note is found again from the key');
+    let threw = false; try { await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE }); } catch { threw = true; }
+    ok(threw, 'the same note cannot be sent twice');
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'rburn-sent' && world.broadcasts.length === 2 && world.broadcasts.every((b) => b.chain), 'commit and reveal go out through ordinary relay');
+    world.setChainTx(r.burn.txid, { confirmed: true });
+    r = await ux.advance(r.walletPub, r.id);
+    world.setNoteHeight(1001); world.setChainTx(r.burn.txid, { confirmed: true }); world.foldReflected(r.burn.hex);
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'rfolded', 'recorded by the attested state, it is ready to mint');
+    r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+    const call = world.bridgeMintCalls[0];
+    ok(r.stage === 'minted' && call.asset === TETH && call.sourceClass === 1 && call.burned.owner === XONLY && call.spentTxid === withHex(revHex(NOTE_TXID)),
+      'the mint is for tETH and names the Taproot-owned note as class 1');
+    ok(call.recovery.seedDerived !== true && call.recovery.ownerPub === '0x' + Buffer.from(WALLET_PUB).toString('hex') && pool.nkToOwner(call.recovery.secret) === call.dest.owner,
+      'a round tETH amount is still sealed to the key, since a balance read searches the derived blinding for TAC alone');
+  }
+  {
+    // The note's auth key is the key's x-only form, so a key whose public point has an odd y is spent as well as an even one
+    // (the builder checks the key-path signature against the output key before it returns).
+    for (const fill of [0x22, 0x23, 0x24, 0x25, 0x26, 0x27]) {
+      const priv = new Uint8Array(32).fill(fill), pub = secp.getPublicKey(priv, true), xo = bytesToHex(pub.slice(1));
+      const world = makeWorld();
+      world.setBurnHomeOnChain(NOTE_TXID, '5120' + xo.slice(2));
+      world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: TETH, authKey: xo });
+      const u = makeUx(world, makeMemStorage(), { assets });
+      const r = await u.startReflected({ note: held, walletPriv: priv, feeRate: BASE_RATE });
+      ok(r.stage === 'rburn-signed' && r.mint.burned.owner === xo, `the burn is signed for a key with ${pub[0] === 2 ? 'even' : 'odd'} y (0x${fill.toString(16)}…)`);
+    }
+  }
+  {
+    // An amount the scan cannot guess is sealed to the key under the tETH note owner.
+    const odd = 123_457n;
+    const world = makeWorld();
+    world.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2));
+    world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: odd, blinding: NOTE_BLINDING, asset: TETH, authKey: XONLY });
+    const ux = makeUx(world, makeMemStorage(), { assets });
+    let r = await ux.startReflected({ note: { ...held, amount: odd }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    r = await ux.advance(r.walletPub, r.id); world.setChainTx(r.burn.txid, { confirmed: true }); r = await ux.advance(r.walletPub, r.id);
+    world.setNoteHeight(1001); world.setChainTx(r.burn.txid, { confirmed: true }); world.foldReflected(r.burn.hex); r = await ux.advance(r.walletPub, r.id);
+    await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+    const c = world.bridgeMintCalls[0];
+    ok(c.recovery.seedDerived !== true && pool.nkToOwner(c.recovery.secret) === c.dest.owner && c.dest.owner === pool.nkToOwner(pool.deriveNote(WALLET_PRIV, TETH, 0).secret), 'a non-round tETH amount is sealed to the key under the tETH note owner');
+  }
+  {
+    // A tETH return burn is rebuilt from its transaction id and the key alone, the note opened by what the cross-out made.
+    const { world, ux } = setup();
+    let orig = await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    world.setChainTx(orig.burn.txid, { confirmed: true, vin: [{ txid: orig.burn.commitTxid, vout: 0 }, { txid: NOTE_TXID, vout: NOTE_VOUT, prevout: { value: SATS } }] });
+    world.setChainHex(orig.burn.txid, orig.burn.hex);
+    world.setChainHex(orig.burn.commitTxid, orig.burn.commitHex);
+    const opener = async (txid, vout, priv) => (stripHex(txid) === NOTE_TXID && vout === NOTE_VOUT && Buffer.from(priv).equals(Buffer.from(WALLET_PRIV))
+      ? { assetId: TETH, amount: AMT, blinding: NOTE_BLINDING, owner: XONLY } : null);
+    const fresh = makeUx(world, makeMemStorage(), { assets, openHeldNote: opener, nullifierSpent: async () => false });
+    const rebuilt = await fresh.recoverFromTxid(orig.burn.txid, WALLET_PRIV);
+    const ser = (x) => JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    ok(rebuilt.stage === 'rburn-mined' && rebuilt.path === 'reflected' && rebuilt.source.assetId === TETH && rebuilt.source.ticker === 'tETH' && rebuilt.source.p2tr === true, 'a tETH return burn is rebuilt from its txid alone, as a tETH, Taproot-owned bridge');
+    ok(ser(rebuilt.mint) === ser(orig.mint) && rebuilt.envelope.destLeaf === orig.envelope.destLeaf && rebuilt.envelope.burnId === orig.envelope.burnId, 'with exactly the mint the original browser planned');
+    world.setNoteHeight(1001); world.foldReflected(orig.burn.hex);
+    let r = await fresh.advance(rebuilt.walletPub, rebuilt.id);
+    r = await fresh.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+    const mc = world.bridgeMintCalls[world.bridgeMintCalls.length - 1];
+    ok(r.stage === 'minted' && mc.asset === TETH && mc.burned.owner === XONLY, 'and mints it as tETH with this key as the burned note\'s owner');
+    const thief = makeUx(world, makeMemStorage(), { assets, openHeldNote: opener });
+    const otherKey = new Uint8Array(32).fill(0x23);
+    let msg = null; try { await thief.recoverFromTxid(orig.burn.txid, otherKey); } catch (e) { msg = e.message; }
+    ok(/did not receive that burned note/.test(msg || ''), 'a key whose cross-out did not make the note cannot rebuild the bridge');
+    const none = makeUx(world, makeMemStorage(), { assets });
+    msg = null; try { await none.recoverFromTxid(orig.burn.txid, WALLET_PRIV); } catch (e) { msg = e.message; }
+    ok(msg !== null && none.list(Buffer.from(WALLET_PUB).toString('hex')).length === 0, 'without an opener for such notes it is not rebuilt, and nothing is journalled');
+    const done = makeUx(world, makeMemStorage(), { assets, openHeldNote: opener, nullifierSpent: async () => true });
+    ok((await done.recoverFromTxid(orig.burn.txid, WALLET_PRIV)).stage === 'minted', 'one the pool has already minted is found complete');
+  }
+  {
+    // A burn marked not recorded can be looked at again; it returns to waiting, and is recorded if the state now holds it.
+    const { world, ux } = setup();
+    let r = await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    world.setRecordReflected(false);
+    r = await ux.advance(r.walletPub, r.id); world.setChainTx(r.burn.txid, { confirmed: true }); r = await ux.advance(r.walletPub, r.id);
+    world.setNoteHeight(1001); world.setChainTx(r.burn.txid, { confirmed: true }); world.foldReflected(r.burn.hex);
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'not-recorded', 'sanity: a burn the state passed without recording is marked not recorded');
+    let msg = null; try { await ux.recheckBurn(r.walletPub, 'nope'); } catch (e) { msg = e.message; }
+    ok(/only a reflected burn marked not recorded/.test(msg || ''), 'checking something that is not such a burn is refused');
+    world.setChainTx(r.burn.txid, { confirmed: false });
+    msg = null; try { await ux.recheckBurn(r.walletPub, r.id); } catch (e) { msg = e.message; }
+    ok(/not confirmed on Bitcoin just now/.test(msg || '') && ux.list(r.walletPub)[0].stage === 'not-recorded', 'a burn Bitcoin does not show confirmed is not put back to waiting');
+    world.setChainTx(r.burn.txid, { confirmed: true }); world.setRecordReflected(true);
+    r = await ux.recheckBurn(r.walletPub, r.id);
+    ok(r.stage === 'rburn-mined' && r.burnHeight === 1001 && r.lastError === null, 'a confirmed one goes back to waiting to be recorded, at the block it is in now');
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'rfolded', 'and is recorded and ready to mint once the state holds its burn');
+  }
+  {
+    // TAC alone stays what it was: no assets configured, a tETH note is refused.
+    const world = makeWorld(); world.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2));
+    world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: TETH, authKey: XONLY });
+    const ux = makeUx(world, makeMemStorage());
+    let threw = null; try { await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE }); } catch (e) { threw = e; }
+    ok(threw && /cannot be sent back/.test(threw.message) && world.broadcasts.length === 0, 'without tETH configured, a tETH note is refused before anything is signed');
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURES (${n} passed)` : `\nall ${n} burndep-ux checks passed`);
