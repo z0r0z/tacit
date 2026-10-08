@@ -67,9 +67,9 @@ function ensureSatsConnect() {
 // Poseidon over BN254 — leaf commitment (poseidon3), nullifier hash
 // (poseidon1), and per-pool merkle node hash (poseidon2). Must match the
 // circuit's parameters in dapp/circuits/withdraw.circom (rate=2, capacity=1,
-// Grassi 2020 round counts). poseidon-lite is a slim pure-JS implementation
-// that ships ~30 KB of round constants per arity.
-import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-deps.min.js';
+// Grassi 2020 round counts). poseidon-lite is a slim pure-JS implementation;
+// its round constants live in their own bundle.
+import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-poseidon.min.js';
 import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore, prfBytesToScalar as toValidScalar } from './prf-wallet.js';
 import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';

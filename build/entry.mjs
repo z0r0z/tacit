@@ -17,11 +17,4 @@ export { bech32, base58, base32 } from '@scure/base';
 // connect an external BTC wallet, so it doesn't belong on the eager
 // critical path.
 
-// Poseidon hash over BN254 — used by mixer-pool leaf commitments (poseidon3),
-// nullifier hash (poseidon1), and merkle-tree node hash (poseidon2). MUST
-// match the parameters embedded in dapp/circuits/withdraw.circom (rate=2,
-// capacity=1, the Grassi 2020 round counts). poseidon-lite is a slim pure-JS
-// implementation that ships ~30 KB minified — much smaller than full
-// circomlibjs (which carries a WASM BN254 field implementation we don't
-// need at runtime).
-export { poseidon1, poseidon2, poseidon3 } from 'poseidon-lite';
+// Poseidon lives in ./entry-poseidon.mjs: its round constants would be ~95% of this bundle.
