@@ -2036,6 +2036,11 @@ await step('xobridge', async () => {
   ok(/Cancelled: no burn for it was found on Ethereum/.test(await text(r.page, '#xo-rstatus')) && !JSON.parse(await r.page.evaluate((k) => localStorage.getItem(k), `tacit-crossout-bridge-v1:mainnet:${pub}`)).some((x) => x.stage === 'settling'),
     'xobridge: cancelling it drops the row and the record once Ethereum shows no burn for it');
 
+  // Without the setting the tab only follows the bridges under way; with it, a new one can be started.
+  ok(!(await r.page.$('#xo-amt')), 'xobridge: without the setting, bridges under way are followed and no new one is offered');
+  await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'true'));
+  await go(r.page, '#private');
+  await go(r.page, '#private/bitcoin');
   // The form. A tETH balance of five notes (0.004, 0.002, 0.012, 0.005, 0.005) is read; the key's Bitcoin address has nothing yet.
   await r.page.waitForSelector('#xo-amt');
   await r.page.fill('#xo-amt', '0.004');
