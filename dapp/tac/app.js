@@ -11,8 +11,8 @@
 const TACIT_URL = '/tacit.js?cb=fc4f11ee';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
 const SECRET_URL = '/sats/secret.js?cb=bebc4d31';
 const SATS_URL = '/tac/sats.js?cb=19b44eda';
-const MARKET_URL = '/tac/market.js?cb=3fa22400';
-const CLAIM_URL = '/tac/claim.js?cb=5bb5c719';
+const MARKET_URL = '/tac/market.js?cb=b6459103';
+const CLAIM_URL = '/tac/claim.js?cb=0cbb63e1';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=49410363';
 const WORKER = 'https://api.tacit.finance';

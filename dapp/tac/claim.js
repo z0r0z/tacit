@@ -49,20 +49,22 @@ export function encodeClaim({ secret32, txid, network, pinned = false }) {
 export const claimUrl = (origin, payload) => `${String(origin).replace(/\/+$/, '')}/tac/#${FRAGMENT}=${payload}`;
 
 export function decodeClaim(input) {
-  if (!input || typeof input !== 'string') throw new Error('empty claim link');
+  if (!input || typeof input !== 'string') throw new Error('That claim link is empty.');
   let p = input.trim();
   const at = p.lastIndexOf(`${FRAGMENT}=`);
   if (at !== -1) p = p.slice(at + FRAGMENT.length + 1);
   p = p.split(/[&#\s]/)[0];
   const parts = p.split('.');
-  if (parts.length !== 5) throw new Error('that does not look like a claim link');
+  if (parts.length !== 5) throw new Error('That does not look like a claim link.');
   const [v, network, secretB64, txid, pinFlag] = parts;
-  if (v !== LINK_VERSION) throw new Error(`unsupported claim link version ${v}`);
-  if (!NETS.has(network)) throw new Error(`unsupported network ${network}`);
-  if (!TXID_RE.test(txid)) throw new Error('claim link carries a malformed txid');
+  if (v !== LINK_VERSION) throw new Error('This claim link is in a format this page does not read.');
+  if (!NETS.has(network)) throw new Error('That link is for another network.');
+  // A link cut short or changed on the way: its transaction id or its secret does not read.
+  const partial = 'Part of this claim link is missing or changed. Copy the whole link again.';
+  if (!TXID_RE.test(txid)) throw new Error(partial);
   let secret32;
-  try { secret32 = unb64url(secretB64); } catch { throw new Error('claim link secret is not valid base64url'); }
-  if (secret32.length !== 32) throw new Error('claim link secret is the wrong length');
+  try { secret32 = unb64url(secretB64); } catch { throw new Error(partial); }
+  if (secret32.length !== 32) throw new Error(partial);
   return { secret32, txid, network, pinned: pinFlag === '1' };
 }
 
@@ -89,13 +91,13 @@ export async function readClaim(S, pool, { secret32, pin = '', network = 'mainne
   return { wallet: w, notes: live, total: live.reduce((t, n) => t + BigInt(n.value), 0n), seen: notes.length };
 }
 
-// Recipient: move it into a wallet of their own. Relayed when a relayer quotes, so somebody who has never
+// Recipient: move it into a wallet of their own. Relayed when the relay quotes, so somebody who has never
 // held bitcoin can take delivery — the carrier is paid for out of the note itself, in TAC.
 export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, fmt = String, say = () => {} }) {
   const from = claimPoolWallet(pool, secret32, { pin, network });
   const { total } = await readClaim(S, pool, { secret32, pin, network, asset });
-  if (total <= 0n) throw new Error('there is nothing left under this link — it may already have been claimed.');
-  // The relayer's fee comes out of the same notes, so sweep the balance minus whatever it quotes.
+  if (total <= 0n) throw new Error(`Nothing is under this link now: it has been claimed already${pin ? ', or that PIN is not the one it was made with' : ''}.`);
+  // The relay's fee comes out of the same notes, so sweep the balance minus whatever it quotes.
   let fee = 0n;
   try {
     const info = await S.poolClientFor(network).relayInfo();

@@ -177,6 +177,8 @@ export function buyFailure(message) {
   if (/insufficient sats for commit/i.test(said)) return 'short';
   return 'other';
 }
+// An error in words: the page's own reading of it when it is mounted with one.
+const words = (ctx, e) => (ctx.errText ? ctx.errText(e) : String(e?.message || e));
 function buyer(host, ctx, mark) {
   if (!ctx.ensureKey || !ctx.turn) return null;
   const st = 'st-market', fund = el('div', { class: 'fund' });
@@ -201,12 +203,12 @@ function buyer(host, ctx, mark) {
         el('div', { class: 'kv' }, el('span', {}, 'Pay from'), el('b', { class: 'num' }, `${f.addr.slice(0, 10)}…${f.addr.slice(-6)} `, copy)),
         el('div', { class: 'kv' }, el('span', {}, 'Sats there'), el('b', { class: 'num' }, `${num(f.sats, 0)} sats`)),
         f.sats ? null : el('p', { class: 'note' }, 'Send sats to that address from any Bitcoin wallet, then buy.'));
-    } catch (e) { if (mine === seq) { shown = null; fund.replaceChildren(el('p', { class: 'note err' }, `Could not read your Bitcoin address: ${e?.message || e}`)); } }
+    } catch (e) { if (mine === seq) { shown = null; fund.replaceChildren(el('p', { class: 'note err' }, `Could not read your Bitcoin address: ${words(ctx, e)}`)); } }
   };
   // The first press says what it costs; a second press on the same ask pays.
   const ask = (r) => {
     const vs = mark ? ` (${num(Math.abs((r.unit / mark - 1) * 100), 0)}% ${r.unit >= mark ? 'above' : 'below'} the recent trade price of ${num(mark, 0)})` : '';
-    ctx.say(st, `Buy ${num(r.units, 2)} TAC for ${num(r.sats, 0)} sats, ${num(r.unit, 1)} sats per TAC${vs}, plus the fees for two Bitcoin transactions${rate ? `, at about ${rate} sat/vB` : ''}. Press Confirm to pay.`);
+    ctx.say(st, `Buy ${num(r.units, 2)} TAC for ${num(r.sats, 0)} sats, ${num(r.unit, 1)} sats per TAC${vs}, plus the fees for two Bitcoin transactions${rate ? `, at ≈ ${rate} sat/vB` : ''}. Press Confirm to pay.`);
   };
   const onBuy = (r, btn, list) => {
     notice = null;
@@ -233,7 +235,10 @@ function buyer(host, ctx, mark) {
       } catch (e) {
         const kind = buyFailure(e?.message);
         if (kind === 'locked') {
-          ctx.errSay(st, e);
+          // The commit's sats are held until they are recovered; the record that recovers them is in this browser.
+          const held = /(\d+) sats locked at ([0-9a-f]{64}):0/i.exec(String(e?.message || ''));
+          const msg = `The purchase stopped after its commit went out${held ? `, which holds ${num(held[1], 0)} sats at ${held[2].slice(0, 10)}…:0` : ''}. This browser kept the record that recovers them.`;
+          ctx.errSay(st, ctx.said ? ctx.said(msg) : new Error(msg));
           document.getElementById(st)?.append(' ', el('a', { href: '/classic.html#tab=holdings' }, 'Recover the locked sats in the classic app →'));
           return;
         }
@@ -255,7 +260,7 @@ export async function mount(host, ctx = {}) {
 
   let row, sales;
   try { [row, sales] = await Promise.all([loadBitcoinMarket(), loadAsks()]); }
-  catch (e) { host.replaceChildren(el('p', { class: 'note err' }, `Could not load the market: ${e?.message || e}`)); return; }
+  catch (e) { host.replaceChildren(el('p', { class: 'note err' }, `Could not load the market: ${words(ctx, e)}`)); return; }
 
   const mark = Number(row?.mark_price?.unit) || null;
   const chg = Number(row.price_24h_change_pct);
@@ -307,6 +312,6 @@ export async function mount(host, ctx = {}) {
       el('p', { class: 'note' }, 'A one-sided deposit into a pool this thin moves the price against itself. Add both sides when you hold both.'),
     );
   } catch (e) {
-    document.getElementById('prec-body').replaceChildren(el('p', { class: 'note err' }, `Could not read the pool: ${e?.message || e}`));
+    document.getElementById('prec-body').replaceChildren(el('p', { class: 'note err' }, `Could not read the pool: ${words(ctx, e)}`));
   }
 }
