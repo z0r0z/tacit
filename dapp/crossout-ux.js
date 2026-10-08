@@ -347,19 +347,24 @@ export function makeCrossoutUx(deps) {
   // sats free for its fees, or the proof's state unreadable, so the gate that protects the mint could not be asked
   // either); `warnings` are slower-than-usual conditions to show beside the receipt. A fee rate that rises in the hours
   // before the mint is signed is covered by asking for room for twice today's.
-  async function preflight({ walletPriv, feeRate = null } = {}) {
+  // Each bridge of this key that has yet to sign its mint takes a coin of its own when it does (the top free one then), so
+  // this one is checked against the coin after theirs: `pending` counts them, less the notes named in `exclude` (a bridge
+  // being sent again). A signed mint's coin is already reserved and out of the list.
+  async function preflight({ walletPriv, feeRate = null, exclude = [] } = {}) {
     const P = freshPrims(walletPriv), problems = [], warnings = [];
     const rate = Number(feeRate) || Number(await chain.getFeeRate('priority')) || 3;
     const needSats = mintReveal.estimateSats({ feeRate: Math.ceil(rate * 2), dust: P.DUST }), estSats = mintReveal.estimateSats({ feeRate: rate, dust: P.DUST });
     const address = P.wallet.address();
+    const skip = new Set(exclude.map((x) => lc(x)));
+    const pending = loadAll(secp.getPublicKey(walletPriv, true)).filter((r) => ['settling', 'settled', 'covered'].includes(r.stage) && !skip.has(lc(r.id))).length;
     let haveSats = 0, confirmed = false;
     try {
       const safe = await chain.pickSafeCommitSats(await chain.getUtxos(address));
-      const top = Array.isArray(safe) ? safe[0] : safe;
-      if (top) { haveSats = Number(top.value) || 0; confirmed = !top.status || top.status.confirmed !== false; }
+      const coin = (Array.isArray(safe) ? safe : safe ? [safe] : [])[pending];
+      if (coin) { haveSats = Number(coin.value) || 0; confirmed = !coin.status || coin.status.confirmed !== false; }
     } catch (e) { problems.push({ name: 'funding-unreadable', detail: String((e && e.message) || e) }); }
     if (!problems.length) {
-      if (haveSats < needSats) problems.push({ name: 'funding', detail: haveSats ? `${haveSats} sats in the largest free coin` : 'no free coin' });
+      if (haveSats < needSats) problems.push({ name: 'funding', detail: haveSats ? `${haveSats} sats in the ${pending ? 'next' : 'largest'} free coin` : 'no free coin' });
       else if (!confirmed) problems.push({ name: 'funding-unconfirmed', detail: `${haveSats} sats, not yet confirmed` });
     }
     let reflection = null, coverage = null;
@@ -375,7 +380,7 @@ export function makeCrossoutUx(deps) {
       if (reflection.lagBlocks > 144) warnings.push({ name: 'reflection-behind', detail: `${reflection.lagBlocks} Bitcoin blocks` });
       if (coverage.behindBlocks == null || coverage.behindBlocks > 1800) warnings.push({ name: 'coverage-behind', detail: coverage.behindBlocks == null ? 'no view yet' : `${coverage.behindBlocks} Ethereum blocks` });
     } catch (e) { problems.push({ name: 'proof-unreadable', detail: String((e && e.message) || e) }); }
-    return { ok: problems.length === 0, problems, warnings, feeRate: rate, needSats, estSats, haveSats, address, reflection, coverage };
+    return { ok: problems.length === 0, problems, warnings, feeRate: rate, needSats, estSats, haveSats, pending, address, reflection, coverage };
   }
 
   const STAGE_ADVANCE = {

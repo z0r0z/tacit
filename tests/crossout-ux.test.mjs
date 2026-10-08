@@ -456,6 +456,21 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 400_000n, blinding: 
   ok(noView.ok && noView.warnings.some((w) => w.name === 'coverage-behind' && /no view/.test(w.detail)), 'no Ethereum view yet is a warning');
 }
 
+// ---- preflight counts the bridges that have yet to take a coin of their own ----
+{
+  const world = makeWorld();
+  const ux = makeUx(world, MULTI);
+  await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  const one = await ux.preflight({ walletPriv: WALLET_PRIV });
+  ok(!one.ok && one.pending === 1 && one.problems[0].name === 'funding' && /no free coin/.test(one.problems[0].detail), 'a second bridge is not passed on the coin the first one signs its mint from');
+  world.setUtxos([{ txid: FUND_TXID, vout: 0, value: 50_000 }, { txid: FUND_TXID, vout: 1, value: 40_000 }]);
+  const two = await ux.preflight({ walletPriv: WALLET_PRIV });
+  ok(two.ok && two.pending === 1 && two.haveSats === 40_000, 'with a second coin it passes, checked against that coin');
+  world.setUtxos([{ txid: FUND_TXID, vout: 0, value: 50_000 }]);
+  const again = await ux.preflight({ walletPriv: WALLET_PRIV, exclude: [TNOTE.nullifier] });
+  ok(again.ok && again.pending === 0 && again.haveSats === 50_000, 'a bridge being sent again is not counted against itself');
+}
+
 // ---- the unattended mint waits out a fee spike, and a signed mint Bitcoin never took can be signed again ----
 {
   const world = makeWorld();
