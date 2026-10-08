@@ -305,4 +305,19 @@ await check('the quote can be priced for a spend that burns more gas, and toV1 h
   assert.ok(urls.includes('/quote?gas=700000'), 'toV1 asked for the quote priced for its own gas');
 });
 
+await check('toV1 counts its hour-long deadline from the chain time it is given', async () => {
+  const POOLA = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', RELAYER = '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0';
+  const calls = [];
+  const rpc = async (m, p) => { if (m === 'eth_call') calls.push(p[0].data); return m === 'eth_blockNumber' ? '0x64' : m === 'eth_getLogs' ? [] : '0x0'; };
+  const w = makeEvmPoolWallet({
+    zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(5)), prove: null, store: null, keeper: 'https://k.test',
+    fetchImpl: async () => ({ ok: true, status: 200, headers: new Map(), json: async () => ({ chainId: 1, pool: POOLA, relayer: RELAYER, fee: '5000000000000' }) }),
+    chain: { chainId: 1, pool: POOLA, router: '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', rpc, deployBlock: 0, confirmations: 0, relayer: RELAYER },
+  });
+  const now = 1_900_000_000;
+  await assert.rejects(() => w.toV1({ amount: 10n ** 12n, commit: '0x' + '11'.repeat(32), via: 'relay', now }), /not enough in the pool/);
+  const box = calls.find((d) => d && d.length === 10 + 64 * 8);                   // wrapBoxOf(the wrap intent, eight words)
+  assert.equal(BigInt('0x' + box.slice(10 + 64 * 6, 10 + 64 * 7)), BigInt(now + 3600), 'the intent\'s deadline is that time plus an hour');
+});
+
 console.log(`\n${n} checks passed`);

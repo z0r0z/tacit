@@ -938,8 +938,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // Robinhood Chain) in one relayed withdraw-and-call through the L2's canonical bridge; that chain's keeper then
     // sweeps it into a note there (watchReceive on the L2 wallet). Arrives in minutes. The amount and the address
     // are public on Ethereum; which note paid is not. l2Rpc (a jsonRpc on the L2) is needed for Robinhood Chain,
-    // whose retryable is priced from the L2. → tx hash.
-    async bridgeOut({ toChainId, amount, l2Rpc = null, maxFee = null, onStep = () => {} }) {
+    // whose retryable is priced from the L2. `now`: the chain's time in unix seconds, which its hour-long deadline
+    // counts from (this device's clock by default). → tx hash.
+    async bridgeOut({ toChainId, amount, l2Rpc = null, maxFee = null, now = null, onStep = () => {} }) {
       if (Number(chain.chainId) !== 1) throw new Error('bridging out starts from the Ethereum pool');
       const b = L2_BRIDGES[Number(toChainId)];
       if (!b) throw new Error(`no bridge to chain ${toChainId}`);
@@ -967,7 +968,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const { call: c, value } = bridgeEthCall(args);
       const refund = await api.refundBox();
       const nonce = BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16))));
-      const intent = callIntent({ calls: [c], refund, deadline: BigInt(Math.floor(Date.now() / 1000) + 3600), nonce });
+      const intent = callIntent({ calls: [c], refund, deadline: BigInt((now ?? Math.floor(Date.now() / 1000)) + 3600), nonce });
       // The OP portal burns L1 gas to buy the deposit's L2 gas (~620k in all); a retryable costs ~100k.
       return api.withdrawAndCall({ intent, amount: value, gas: b.kind === 'op' ? 1_300_000 : 700_000, maxFee, onStep });
     },
@@ -975,8 +976,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // Moves `amount` wei (a multiple of 1e10) from this Ethereum pool into a V1 tETH note with commitment `commit`,
     // in one transaction (router.withdrawToV1): relayed by default, or from the signer with via: 'self'. `commit` is
     // V1's wrap commitment for the wallet's own next V1 note (confidential-pool-ux buildWrap(...).commit); the V1
-    // wallet finds the deposit from its key and makes it a note with its usual wrap settle. → tx hash.
-    async toV1({ amount, commit, via = null, maxFee = null, onStep = () => {} }) {
+    // wallet finds the deposit from its key and makes it a note with its usual wrap settle. `now` as for bridgeOut. → tx hash.
+    async toV1({ amount, commit, via = null, maxFee = null, now = null, onStep = () => {} }) {
       if (Number(chain.chainId) !== 1) throw new Error('V1 is on Ethereum; move to V1 from the Ethereum pool');
       const a = BigInt(amount);
       if (a <= 0n || a % V1_UNIT !== 0n) throw new Error('the amount must be a positive multiple of 1e10 wei');
@@ -988,7 +989,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         assetId: V1_TETH_ASSET_ID, amount: a, tip: 0n, tipTo: ZERO, commit,
         // Only a box funded and never completed is reclaimable; withdrawToV1 funds and completes in one call.
         refund: await api.refundBox(),
-        deadline: BigInt(Math.floor(Date.now() / 1000) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
+        deadline: BigInt((now ?? Math.floor(Date.now() / 1000)) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
       };
       const box = '0x' + String(await chain.rpc('eth_call', [{ to: chain.router, data: calldata(`wrapBoxOf(${WRAP_SIG})`, [{ tuple: WRAP_TYPES }], [wrapValues(intent)]) }, 'latest'])).slice(-40);
       const ins = await prepare(a + fee, q, onStep);
