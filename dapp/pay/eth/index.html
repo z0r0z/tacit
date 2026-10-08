@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hoafFaUkdWWMbzOYm1bmNlaTHKVRM+CVqj6Lz2C1M8g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xqnBzu7gP1fcF10iOwEQYeu/kkMXxlUyau5rk+GUlt0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
@@ -1888,6 +1888,8 @@ async function act(btn, fn) {
     clearInterval(timer);
     btn.removeAttribute('aria-busy');
     S.busy--; S.busyChain = null;
+    // A spend the relay may still have sent is not filled in again: a second press would pay it twice.
+    if (/may still have sent/i.test(err?.message || '')) for (const id of ['f-amt', 'f-wamt', 'f-gamt', 'f-damt']) delete DRAFT[id];
     const keepStatus = status.innerHTML;
     renderApp();
     if (err?.feeMoved != null) reMax();
@@ -2370,11 +2372,14 @@ const addDue = (d) => writeJson(dueKey(), [...dues(), { id: Date.now().toString(
 const dropDue = (id) => writeJson(dueKey(), dues().filter((d) => d.id !== id));
 // A held payment that may have gone out is never offered again: it is marked before the send, unmarked only when the
 // send surely did not happen, and dropped once the history shows the withdrawal.
-const markDue = (id, sent) => writeJson(dueKey(), dues().map((d) => (d.id === id ? { ...d, sent: sent ? Date.now() : undefined } : d)));
-const dueLanded = (d, c) => (CH[c.chainId].hist?.rows || []).some((r) => r.kind === 'out' && lc(r.to) === lc(d.to) && r.v === BigInt(d.amount) && (r.time ?? r.near ?? Infinity) * 1000 >= d.sent - 600e3);
+const markDue = (id, sent, h) => writeJson(dueKey(), dues().map((d) => (d.id === id ? { ...d, sent: sent ? d.sent || Date.now() : undefined, h: sent ? h || d.h : undefined } : d)));
+// The withdrawal that paid it: its own transaction once that is known, else one of its amount to its address made after
+// it was sent, each row standing for one held payment only.
+const dueRow = (d, c, used) => (CH[c.chainId].hist?.rows || []).find((r) => r.kind === 'out' && !used.has(r) && (d.h ? lc(r.tx || '') === lc(d.h)
+  : lc(r.to) === lc(d.to) && r.v === BigInt(d.amount) && (r.time ?? r.near ?? Infinity) * 1000 >= d.sent - 600e3));
 window.addEventListener('storage', (e) => { if (S.key && (e.key === null || e.key === dueKey())) paintDue(); });
 function paintDue() {
-  if (S.key) for (const d of dues()) if (d.sent && chainOf(d.chain) && dueLanded(d, chainOf(d.chain))) dropDue(d.id);
+  if (S.key) { const used = new Set(); for (const d of dues()) { const c = d.sent && chainOf(d.chain), r = c && dueRow(d, c, used); if (r) { used.add(r); dropDue(d.id); } } }
   const el = $('#due'), list = S.key ? dues().filter((d) => chainOf(d.chain)) : [];
   el.hidden = !list.length;
   if (!list.length || el.querySelector('[aria-busy="true"]')) return;
@@ -2423,7 +2428,7 @@ function payDue(id) {
     try { h = await W.withdraw({ to: d.to, amount: a, via, maxFee, onStep: step }); }
     catch (e) { if (!e?.said) markDue(id, false); throw e; }
     // One not in a block yet stays listed as sent, until the history shows it.
-    if (await finish(c, h, via, `Paid ${nameFor(d.to) || short(d.to)} ${exact(a)} ETH.`)) dropDue(id);
+    if (await finish(c, h, via, `Paid ${nameFor(d.to) || short(d.to)} ${exact(a)} ETH.`)) dropDue(id); else markDue(id, true, h);
   });
 }
 

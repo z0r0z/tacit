@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-urTsZFMJgp6l6lb/49o+stCtyH/s3pV8xfsgVbI/hm0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-t37qOCrE9eyiAa15WbsYo1VdnUD9uJr41dSY9Bcs/8I=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base and Robinhood Chain. One key and one tacit1 address, every payment made on your device, recovered from the key alone.">
@@ -1156,6 +1156,7 @@ function btcReceive(f) {
       let hintsDown = false;
       const n = await pollHints().catch(() => { hintsDown = true; return 0; });     // the hints service being down must not stop the Bitcoin read
       await loadBtc(true);
+      if (BTC.err) throw BTC.err;                                     // a read that failed has not shown there is nothing new
       say(status, n ? html`<span class="ok">Found ${n} new payment${n === 1 ? '' : 's'} to you.</span>`
         : hintsDown ? html`<span class="err">Couldn’t read the notices of payments from Tacit apps just now.</span> <button class="link" type="button" id="f-scan-re">Try again</button>`
         : 'Nothing new. Payments from Tacit apps show here on their own; from another wallet, open the link its sender shares or paste its transaction id under “Other ways to receive BTC”.');
@@ -1177,6 +1178,7 @@ function btcReceive(f) {
         }
         return T.extWallet.sendSats(b.addr, Number(v));
       });
+      const fa = $('#f-famt'); if (fa) fa.value = '';               // done: a redraw does not offer it again
       say(status, html`<span class="ok">Added ${fmt(v, 8, 8)} BTC. It counts once it confirms.</span> ${btcTx(txid)}`);
       loadBtc(true);
     } catch (e) { sayErr(status, e); }
@@ -1227,20 +1229,25 @@ setInterval(() => { if (!document.hidden && S.key && !BTC.loading) pollHints().c
 async function hintsForMe(t, pub) {
   const H = await getHints(), k = HINT_AT + pub, st = readJson(k) || {};
   const privs = t.SP_KEY_VERSIONS.map((v) => t.deriveWalletSilentPaymentKeys(hexToBytes(S.key.priv), v).scanPriv);
-  const todo = new Map((st.retry || []).map((x) => (typeof x === 'string' ? [x, Date.now()] : [x.tx, x.at || Date.now()])));     // txid → when it was first opened
+  const todo = new Map((st.retry || []).map((x) => (typeof x === 'string' ? { tx: x, at: Date.now() } : x)).map((x) => [x.tx, x]));
   let n = 0;
   const after = await H.readHints(SP_HINTS, st.after || 0, async (id, e, c) => {
     const tx = H.openHint(privs, e, c);
-    if (tx && !todo.has(tx)) todo.set(tx, Date.now());
+    if (tx && !todo.has(tx)) todo.set(tx, { tx, at: Date.now() });
     if (++n % 20 === 0) await new Promise((r) => setTimeout(r, 0));
   });
-  // A hinted transaction is looked for again on every read until it is found, for a week: an explorer that has not seen
-  // it yet, or could not be asked, says nothing about whether it exists.
-  const now = Date.now(), retry = [];
-  for (const [tx, at] of todo) {
-    try { await t.discoverSilentPaymentFromTxid(tx); } catch { if (now - at < 7 * 86400e3) retry.push({ tx, at }); }
+  // A hinted transaction is looked for until it is found, for a week, less often each time: an explorer that has not seen
+  // it yet, or could not be asked, says nothing about whether it exists. Anyone can post a hint to a published address, so
+  // the list is bounded and each read looks up only a few, newest first; one that exists but pays this key nothing is done.
+  const now = Date.now(), keep = [...todo.values()].filter((x) => now - x.at < 7 * 86400e3).sort((a, b) => b.at - a.at).slice(0, 200);
+  let looked = 0;
+  for (const x of keep) {
+    if ((x.next || 0) > now || looked >= 12) continue;
+    looked++;
+    try { await t.discoverSilentPaymentFromTxid(x.tx); x.done = true; }
+    catch { x.tries = (x.tries || 0) + 1; x.next = now + Math.min(6 * 3600e3, 60e3 * 2 ** x.tries); }
   }
-  if (S.key?.pubHex === pub) writeJson(k, { after, retry });
+  if (S.key?.pubHex === pub) writeJson(k, { after, retry: keep.filter((x) => !x.done) });
 }
 const getSecret = lazy(() => import('/sats/secret.js?cb=bebc4d31'));
 function loadTac(force = false) {
@@ -1500,6 +1507,7 @@ function tacMove(f) {
       sayTurn(status, 'Getting ready…');
       const r = await withKey((t) => X.exitToWallet(t, { poolWallet: pw, amount: v, asset: X.TAC_ASSET_MAINNET, anchor, say: (m) => say(status, html`<span class="spin" aria-hidden="true"></span>${m}`) }), pub);
       if (r.wait) return waitView(r, 'f-exit');
+      const xa = $('#f-xamt'); if (xa) xa.value = '';               // taken out: a redraw does not offer it again
       await withKey(async (t) => { try { t.invalidateHoldingsCache?.(); } catch {} });
       await loadTac(true).catch(() => {});
       say($('#status'), html`<span class="ok">Took out ${fmt(v, 8, 8)} TAC to your Bitcoin address.</span> It shows there once the pool counts it, after three confirmations. ${btcTx(r.revealTxid)}`);
