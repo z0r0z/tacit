@@ -151,7 +151,7 @@ export async function mount(root, ctx) {
 
   function soon() {
     body.replaceChildren(
-      el('p', { class: 'note' }, 'Private ETH with the same address as your sats. Hold, send and withdraw ETH on Ethereum, Base and Robinhood Chain, with every transaction proved here, on this device, and sent by a relayer so you need no gas.'),
+      el('p', { class: 'note' }, 'Private ETH with the same address as your sats. Hold, send and withdraw ETH on Ethereum, Base and Robinhood Chain, with every transaction proved here, on this device, and sent by a relay so you need no gas.'),
       el('p', { class: 'note' }, 'It opens when the trusted setup for its circuit closes. Anyone can add randomness to it in a few minutes.'),
       el('div', { class: 'row' },
         el('a', { class: 'btn', href: '/?evmpool=ceremony' }, 'Help with the setup'),
@@ -230,14 +230,14 @@ export async function mount(root, ctx) {
     const stuck = held > 0n && min && held < min;
     p.textContent = '';
     if (held > 0n) p.textContent = stuck
-      ? `${fmtEth(held)} is at your private ETH address. The relayer collects it once it reaches ${fmtEth(min)} at today's gas price.`
+      ? `${fmtEth(held)} is at your private ETH address. The relay collects it once it reaches ${fmtEth(min)} at today's gas price.`
       : `${fmtEth(held)} is at your private ETH address, on its way into your private balance.`;
     else if (min) p.textContent = `At today's gas price, send at least ${fmtEth(min)} at a time.`;
     p.hidden = !p.textContent;
     const collect = root.querySelector('#eth-collect');
     if (collect) collect.hidden = !(held > 0n && (stuck || !chain.keeper) && globalThis.ethereum?.request);
     const fee = root.querySelector('#eth-fee');
-    if (fee) { fee.textContent = q?.fee ? `The relayer's fee is ${fmtEth(BigInt(q.fee))} now, taken from your private balance.` : ''; fee.hidden = !fee.textContent; }
+    if (fee) { fee.textContent = q?.fee ? `The relay's fee is ${fmtEth(BigInt(q.fee))} now, taken from your private balance.` : ''; fee.hidden = !fee.textContent; }
   }
 
   function main() {
@@ -250,14 +250,14 @@ export async function mount(root, ctx) {
     const step = (m) => say(m[0].toUpperCase() + m.slice(1) + '…');
 
     body.replaceChildren(...[
-      el('p', { class: 'note' }, `Private ETH on ${chain.name}: proved on this device, sent by a relayer, so you need no gas.`),
+      el('p', { class: 'note' }, `Private ETH on ${chain.name}: proved on this device, sent by a relay, so you need no gas.`),
       el('div', { class: 'kv' }, el('span', {}, 'private balance'), el('b', { id: 'eth-bal' }, '…')),
       ...copyRow('private ETH address', w.receiveBox, `Send ETH here from any wallet or exchange on ${chain.name}. It moves into your private balance within minutes, less at most 0.25%.`),
       el('p', { class: 'note small', id: 'eth-wait', hidden: true }),
       el('div', { class: 'row' }, el('button', { class: 'btn quiet sm', type: 'button', id: 'eth-collect', hidden: true }, 'Collect it now from my wallet')),
       ...copyRow('private address', w.address, 'For private payments from other Tacit users, in sats or ETH. Nothing on chain links a payment to it.'),
       el('div', { class: 'row' }, checkBtn),
-      relayer ? null : el('p', { class: 'note' }, `Sending and withdrawing open on ${chain.name} when its relayer is announced.`),
+      relayer ? null : el('p', { class: 'note' }, `Sending and withdrawing open on ${chain.name} when its relay is announced.`),
       el('p', { class: 'note small', id: 'eth-fee', hidden: true }),
       el('h3', {}, 'Send privately'),
       field('eth-to', 'To: a Tacit address (tacit1…) or Secret Sats address (bp1…)', 'tacit1… or bp1…'),
@@ -284,7 +284,7 @@ export async function mount(root, ctx) {
       status.replaceChildren('Collected in ', explorer(h), '.');
       refresh();
     });
-    checkBtn.onclick = () => action(checkBtn, async () => { await w.watchReceive(); say('Asked the relayer to check your private ETH address.'); await refresh(); });
+    checkBtn.onclick = () => action(checkBtn, async () => { await w.watchReceive(); say('Asked the relay to check your private ETH address.'); await refresh(); });
     sendBtn.onclick = () => action(sendBtn, async () => {
       const h = await w.send({ to: poolRecipient(root.querySelector('#eth-to').value, 'mainnet'), amount: parseEth(root.querySelector('#eth-amt').value), onStep: step });
       status.replaceChildren('Sent privately in ', explorer(h), '.');
