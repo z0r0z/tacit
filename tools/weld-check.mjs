@@ -349,7 +349,7 @@ await step('ux', async () => {
   await page.fill('#sl-amt', '1,500');
   await page.locator('#sl-amt').blur();                                       // 1,500 is flagged on leaving the field, not while it may still be typed
   const hintSays = (re) => until(page, (r) => new RegExp(r).test(document.querySelector('[data-amt-hint]')?.textContent || ''), re.source, 5000).then(() => true, () => false);
-  ok(await hintSays(/Write 1500/), 'ux: an ambiguous 1,500 says how to write it');
+  ok(await hintSays(/Write 1500 for fifteen hundred, or 1,5 for a decimal comma/), 'ux: an ambiguous 1,500 says how to write it');
   await page.fill('#sl-amt', '1.2.3');
   ok(await hintSays(/cannot be read/), 'ux: an unreadable amount says so');
   await page.fill('#sl-amt', '1');

@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-EabdfBOpYyWzVRvtLlCK7GdYtYl2ssCsPFn9GVNIdmQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Ma35qMLT016v+29m0/eZHdtOcm4hq2dkA6elJ1hfdPU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
-<script src="/front-route.js?cb=0885ec9a"></script>
+<script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
 <meta name="description" content="Private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin. The Tacit essentials on one page.">
 <meta property="og:type" content="website">
@@ -48,15 +48,16 @@
   --card: #F2EBD4;
   --field: #FAF6EA;
   --ink: #1A1A1A;
-  --mute: #645E50;
+  --mute: #625C4F;
   --hair: rgba(26,26,26,.12);
   --hair-2: rgba(26,26,26,.28);
   --orange: #f7931a;
   --ok: #0a7234;
-  --warn: #9a4f00;
+  --warn: #9a4a00;
   --err: #b8341d;
   --scrim: rgba(26,26,26,.36);
   --lift: 0 22px 44px -28px rgba(26,26,26,.45);
+  --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
   --skel: rgba(26,26,26,.08);
   --skel-hi: rgba(26,26,26,.02);
   --bar: #8F8979;
@@ -125,6 +126,8 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .chip { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 0 14px; background: var(--card);
   border: 1px solid var(--hair-2); cursor: pointer; white-space: nowrap; }
 .chip #wallet-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip .narrow { display: none; }
+@media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
 .brand { flex: none; }
 @media (hover: hover) { .chip:hover { border-color: var(--ink); } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
@@ -313,13 +316,13 @@ a.di { color: inherit; text-decoration: none; }
 
 footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 44px; padding-top: 18px;
   border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
-footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
-footer a { color: var(--mute); }
+footer nav { display: flex; flex-wrap: wrap; gap: 0 18px; }
+footer a { display: inline-block; padding: 12px 0; color: var(--mute); }
 @media (hover: hover) { footer a:hover { color: var(--ink); } }
 
 /* ── sheets ── */
 dialog.sheet { width: min(560px, calc(100vw - 32px)); max-height: min(90vh, 900px); max-height: min(90dvh, 900px); padding: 0; overflow: auto; overscroll-behavior: contain;
-  color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: 0 40px 90px -40px rgba(0,0,0,.6); }
+  color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
 dialog.sheet[open] { animation: rise .22s cubic-bezier(.2,.8,.2,1); }
 dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
@@ -356,6 +359,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .amt input { flex: 1; min-width: 0; font: 500 24px/1.2 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 12px 14px; outline: none; }
 .amt .u { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 4px; color: var(--mute); white-space: nowrap; }
 .amt.text input { font: 400 14px/1.4 var(--mono); padding: 14px; }
+.amt .link { flex: none; padding: 0 14px; }
 @media (pointer: coarse) { .amt.text input { font-size: 16px; } }
 input::placeholder { color: var(--mute); opacity: .7; }
 
@@ -595,6 +599,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <symbol id="i-pts" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M16 8.5L18 14L23.5 16L18 18L16 23.5L14 18L8.5 16L14 14Z" fill="#f7931a"/></symbol>
     <symbol id="i-key" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="12" cy="16" r="4.3" fill="none" stroke="#f4efe6" stroke-width="2.3"/><path d="M16.3 16H25.5M22.4 16v3.4M25.5 16v2.6" fill="none" stroke="#f7931a" stroke-width="2.3" stroke-linecap="round"/></symbol>
     <symbol id="tk-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></symbol>
+    <symbol id="tk-peth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5" stroke-dasharray="2.4 1.4"/><g fill="#8ea2f0"><path fill-opacity=".7" d="M16.3 7v6.6l5.6 2.5z"/><path d="M16.3 7L10.7 16.1l5.6-2.5z"/><path fill-opacity=".7" d="M16.3 20.4v4.5l5.6-7.8z"/><path d="M16.3 24.9v-4.5l-5.6-3.3z"/><path fill-opacity=".35" d="M16.3 19.4l5.6-3.3-5.6-2.5z"/><path fill-opacity=".7" d="M10.7 16.1l5.6 3.3v-5.8z"/></g></symbol>
   </defs>
 </svg>
 
@@ -709,15 +714,17 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   </main>
 
   <footer>
-    <span>tacit weld · mainnet</span>
+    <span>tacit.finance · mainnet</span>
     <nav aria-label="More">
-      <a href="/classic.html">Classic app</a>
-      <a href="/weld/stats/">Stats</a>
-      <a href="/weld/keeper/">Community ops</a>
       <a href="/pay/">Pay privately</a>
+      <a href="/pay/eth/">Private ETH</a>
+      <a href="/tac/">TAC on Bitcoin</a>
+      <a href="/weld/stats/">Stats</a>
+      <a href="/classic.html">Classic app</a>
+      <a href="/weld/keeper/">Community ops</a>
       <a href="/tacit-v1.pdf">Whitepaper</a>
-      <a href="https://github.com/src-company/tacit/blob/main/docs/BUILD-A-TACIT-DAPP.md" rel="noopener">Build on Tacit</a>
       <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" rel="noopener">Security</a>
+      <a href="https://github.com/src-company/tacit/blob/main/docs/BUILD-A-TACIT-DAPP.md" rel="noopener">Build on Tacit</a>
       <a href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" rel="noopener">Pool contract</a>
     </nav>
   </footer>
@@ -951,6 +958,10 @@ class Raw { constructor(s) { this.s = s; } }
 const part = (v) => v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => escMap[c]);
 const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
 const mount = (el, view) => { el.innerHTML = view?.s ?? ''; };
+// A Tacit address, short. Every one starts with the same 10 characters (the prefix and its format), so it keeps six of
+// its own after them; the wallet chip on a narrow screen shows the prefix and those six.
+const tacitShort = (a) => `${a.slice(0, 16)}…${a.slice(-6)}`;
+const chipView = (a) => (/^tacit1/.test(a || '') && a.length > 30 ? html`<span class="wide">${tacitShort(a)}</span><span class="narrow">tacit1…${a.slice(10, 16)}</span>` : html`${short(a, 6)}`);
 
 // Decimal formatting of a base-unit bigint: `dec` decimals, at most `max` shown, thousands grouped.
 function fmt(v, dec = 18, max = 4) {
@@ -1058,10 +1069,13 @@ function revertText(e) {
 const errText = (e) => {
   if (e?.said) return e.message;                                   // already in words (keptDeposit)
   const m = String(e?.shortMessage || e?.message || e || 'Something went wrong');
-  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction/i.test(m)) return 'Cancelled in your wallet.';
+  if (e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction|no wallet selected/i.test(m)) return 'Cancelled in your wallet.';
+  if (/no ethereum wallet detected/i.test(m)) return `No Ethereum wallet found in this browser. Open this page in your wallet's own browser, or install MetaMask, Rabby or Rainbow.${isPasskeyAvailable() ? ' Or use a passkey.' : ''}`;
   const r = revertText(e);
   if (r) return r;
   if (/insufficient funds/i.test(m)) return 'Not enough ETH for this and its gas.';
+  if (/not enough in the pool/i.test(m)) return 'Your private balance does not cover this amount and its fee.';
+  if (/does not match the ceremony|verification key does not match/i.test(m)) return 'The proving key did not match its published hash, so it was not used. Reload and try again.';
   // The relay's fee check at submit (pool-ux already asked again at twice the floor once): gas moved, or the fee is
   // genuinely short. Nothing was proved or spent; asking again works the fee out afresh.
   if (/fee below the current floor/i.test(m)) return 'The network fee rose while this was being sent. Nothing was spent. Try again in a minute; the fee is worked out again each time.';
@@ -1077,6 +1091,7 @@ const errText = (e) => {
   // The relay's daily allowance of settles that carry no fee in the op (a wrap's tip rides on its deposit, so a wrap
   // counts): it opens again at midnight UTC, not in a moment.
   if (/free relayed settles for today are used up/i.test(m)) return 'The relay’s free settles for today are used up. They open again at midnight UTC.';
+  if (/\bHTTP 5\d\d\b/.test(m)) return 'The service is busy right now. Try again in a moment.';
   if (/failed to fetch|networkerror|load failed|all rpcs failed/i.test(m)) return 'Could not reach the network. Check your connection and try again.';
   if (/rate.?limit|too many requests|\b429\b|exceeded.*(?:request|quota)|upgrade.*(?:plan|tier)/i.test(m)) return 'That network is busy right now. Try again in a moment.';
   if (/timed? ?out|timeout/i.test(m)) return 'The network took too long to answer. Try again.';
@@ -1225,7 +1240,7 @@ for (const ev of ['input', 'change']) document.addEventListener(ev, ({ target: i
   const t = i.value.trim(), open = ev === 'input' && (t === '.' || /^[1-9]\d{0,2}(?:,\d{3})*,\d{0,3}$/.test(t));
   const bad = !!t && !open && parseUnits(t, 64) == null;
   if (bad) i.setAttribute('aria-invalid', 'true'); else i.removeAttribute('aria-invalid');
-  amountHint(i, bad ? (/^[1-9]\d{0,2},\d{3}$/.test(t) ? 'Write 1500 for fifteen hundred, or 1.500 for one and a half.' : 'That amount cannot be read. Use a plain number such as 0.25.') : '');
+  amountHint(i, bad ? (/^[1-9]\d{0,2},\d{3}$/.test(t) ? 'Write 1500 for fifteen hundred, or 1,5 for a decimal comma.' : 'That amount cannot be read. Use a plain number such as 0.25.') : '');
 }, true);
 function amountHint(i, text) {
   const box = i.closest('.amt');
@@ -2125,7 +2140,7 @@ function tacitAddress(privHex) {
 
 // The wallet a returning visitor already has (tacit-wallet-known.js, shared by weld, /pay and /pay/eth): the one
 // tacit.finance is logged in with first, then a different key one of these pages opened before, offered second.
-const KNOWN_IDS = [LITE_ID, 'tacit-pay-hub-id-v1', 'tacit-pay-id-v1'];
+const KNOWN_IDS = [LITE_ID, 'tacit-pay-hub-id-v1', 'tacit-pay-id-v1', 'tacit-tac-id-v1'];
 function knownWallet() { return knownWallets(KNOWN_IDS).primary; }
 function otherWallet() { return knownWallets(KNOWN_IDS).other; }
 // How a key was opened, for the wallet sheet; an address never breaks across lines.
@@ -2488,7 +2503,7 @@ function btcSend(to, sats) {
 function paintWallet() {
   $('#start').hidden = !!(S.key || S.address || knownWallet());           // shown only to someone who has never opened a wallet here
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.address ? ' live' : '');
-  $('#wallet-label').textContent = S.key ? (S.key.tacit ? short(S.key.tacit, 6) : 'Opening…') : S.address ? short(S.address) : knownWallet() ? 'Open wallet' : 'Sign in';
+  mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${S.address ? short(S.address) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
 }
 $('#wallet').onclick = () => openSheet('wallet');
 $('#start-go').onclick = () => openSheet('wallet');
@@ -2510,7 +2525,7 @@ render.wallet = () => {
       ${S.wallet && !S.provider?.isWalletConnect ? html`<div class="kv"><span>Ethereum</span><b>${S.wallet}</b></div>` : wcLine()}`);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
-  const k = S.key, a = S.acct, pays = payer(), btcAddr = T?.extWallet?.state?.address || (k.mode === 'btc' || k.mode === 'ext' ? k.address : null);
+  const k = S.key, kept = k.mode === 'ext' || k.mode === 'local', a = S.acct, pays = payer(), btcAddr = T?.extWallet?.state?.address || (k.mode === 'btc' || k.mode === 'ext' ? k.address : null);
   const eth = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`;
   mount(el, html`
     <div class="who"><div class="addr num">${k.tacit ? short(k.tacit, 12) : '…'}</div><div class="u">Your Tacit address · opened with ${viaText(k)}</div>
@@ -2527,8 +2542,10 @@ render.wallet = () => {
     <div class="status" role="status" id="ac-status"></div>
     <div class="kv sep"><span>Bitcoin</span>${btcAddr ? html`<b>${short(btcAddr, 8)}</b>` : html`<span class="mute">connects when you lock BTC to borrow</span>`}</div>
     ${wcLine()}
-    <p class="note">The key stays in this tab, and whoever holds it holds the Tacit account too. Private payments to your Tacit address reach you here and in the classic app.</p>`);
+    ${kept ? html`<p class="note"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
+    <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab, and whoever holds it holds the Tacit account too. Private payments to your Tacit address reach you here and in the classic app.</p>`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
+  $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   $('#w-lock').onclick = () => { if (midAction()) return; evm.deselectProvider(); S.key = null; syncAccount(); resetPrivate(); paintWallet(); refreshAll(); rerender('wallet'); };
   const bal = (id, who) => who && rpc('eth_getBalance', [who, 'latest']).then((b) => { const e = $('#' + id); if (e) e.textContent = `${fmt(BigInt(b), 18, 4)} ETH`; }, () => { const e = $('#' + id); if (e) e.textContent = '—'; });
   bal('ac-abal', a.address); bal('ac-wbal', S.wallet);
@@ -3835,7 +3852,7 @@ function v1Btc(el, status) {
         <div class="kv"><span>You get</span><b>${units > fee ? fmt(units - fee, 8, 8) : '0'} tETH on your Bitcoin address</b></div>
         <div class="kv"><span>Relay fee</span><b>${fmt(fee, 8, 8)} tETH</b></div>
         ${size && units + size <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.eth.notes).some((n) => BigInt(n.value) >= units + size) ? 'split a note' : 'combine notes'}</span><b>${fmt(size, 8, 8)} tETH</b></div>` : ''}
-        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>about ${pf.estSats.toLocaleString('en-US')} sats from ${short(pf.address, 6)}</b></div>
+        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>≈ ${pf.estSats.toLocaleString('en-US')} sats from ${short(pf.address, 6)}</b></div>
         <div class="kv"><span>Arrives</span><b>usually a few hours, sometimes up to a day</b></div>`);
       const problem = pf.problems[0];
       let ok = true;
@@ -4094,7 +4111,7 @@ function renderDevice(el) {
   mount(el, html`
     ${segSub('chain', String(c.chainId), DEVICE_CHAINS.map((x) => [String(x.chainId), x.name]))}
     <div class="bal">
-      <svg class="tk md" aria-hidden="true"><use href="#tk-eth"/></svg>
+      <span class="pair"><svg class="tk md" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk md" aria-hidden="true"><use href="#tk-peth"/></svg></span>
       <div><div class="v num">${DEV.bal != null ? fmt(DEV.bal, 18, 6) : DEV.err ? html`<span class="err">—</span>` : last != null ? html`<span class="stale">${fmt(last, 18, 6)}</span>` : html`<span class="sk" style="--w:8ch"></span>`}</div><div class="u">ETH, private on ${c.name}</div></div>
       <div class="side">${DEV.err ? html`<button class="link" type="button" id="d-rescan">retry</button>` : DEV.bal != null ? html`<button class="link" type="button" id="d-rescan">refresh</button>` : 'updating…'}</div>
     </div>
@@ -4140,6 +4157,8 @@ function renderDevice(el) {
   // The most a relayed spend may cost: a quarter more than the fee its preview showed. The wallet refuses a dearer quote,
   // which replaces the one shown, and the form is drawn again with it.
   const capOf = (fee) => (fee ? (fee * 5n) / 4n : null);
+  // A fee row shows that cap, rounded up to 6 decimals, so "at most" holds.
+  const upEth = (v) => fmt(((v + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n, 18, 6);
   const feeMoved = async (e) => {
     const g = destGas(), q = (await DEV.W?.quote(g || undefined).catch(() => null)) || { ...quoteNow(), fee: String(e.feeMoved) };
     if (g) DEV.gq[g] = q; else DEV.quote = q;
@@ -4165,7 +4184,7 @@ function renderDevice(el) {
   // too (its own mergePlan): → how many merges it makes, or null when no run of them covers it.
   if (W && !DEV.plan && DEV.mode === 'out') getDeviceMods().then((m) => { DEV.plan = m.mergePlan; rerender('eth'); }).catch(() => {});
   const merges = (amount, fee) => (W && DEV.plan ? DEV.plan(W.notes().map((n) => n.v), amount + fee, fee) : DEV.bal != null && amount + fee <= DEV.bal ? 0 : null);
-  const combineRow = (m, fee) => (m && fee ? html`<div class="kv"><span>Relay fee to combine notes${m > 1 ? ` (×${m})` : ''}</span><b>${fmt(fee * BigInt(m), 18, 6)} ETH</b></div>` : '');
+  const combineRow = (m, fee) => (m && fee ? html`<div class="kv"><span>Relay fee to combine notes${m > 1 ? ` (×${m})` : ''}</span><b>at most ${upEth(capOf(fee) * BigInt(m))} ETH</b></div>` : '');
   const overText = (amount, fee) => (DEV.bal == null || amount + fee > DEV.bal ? (fee ? 'More than your private balance, once the relay fee is counted.' : 'More than your private balance.')
     : fee ? 'More than your private balance, once the relay fees to combine its notes are counted.' : 'More than one withdrawal can take: your private balance is spread over too many notes.');
   // Everything a send or withdrawal can take: the most that its merges and its relay fee leave.
@@ -4272,7 +4291,7 @@ function renderDevice(el) {
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
         const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>`);
+        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>`);
         const over = m == null;
         go.disabled = !raw || !!bad || over;
         if (!raw) {}
@@ -4283,7 +4302,7 @@ function renderDevice(el) {
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
         const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>`);
+        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>`);
         const over = m == null, coarse = dest === 'v1' && amount % E10 !== 0n;
         go.disabled = over || coarse;
         if (over) warn(rc, overText(amount, relayFee));
@@ -4324,7 +4343,12 @@ function renderDevice(el) {
     });
   } else {
     const min = DEV.quote?.receiveMin ? BigInt(DEV.quote.receiveMin) : null;
+    // The unified address carries this key's pool keys, so a payment to it in any pool lands in that pool's private balance.
+    const uni = UNI && S.key.tacit;
     mount(f, W ? html`
+      ${uni ? html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${tacitShort(S.key.tacit)}</b><button class="link" type="button" data-copy="${S.key.tacit}">copy</button></div>
+        ${idRow(S.key.tacit)}
+        <p class="note">Paid at your tacit1 address, it lands in your private balance on any chain. Anyone using Tacit can pay you privately with it, in any pool, and it never appears on chain.</p></div>` : ''}
       <div class="blk"><div class="kv"><span>Pool address</span><b class="mono">${short(W.address, 10)}</b><button class="link" type="button" data-copy="${W.address}">copy</button></div>
         ${idRow(W.address)}
         <p class="note">For private sends within this pool, from another Tacit user’s device. Nothing on chain links a payment to it.</p></div>
@@ -4915,7 +4939,7 @@ function renderBridge(el) {
       review = { key: rvKey, note: n, pf, short: have != null && have < BigInt(sats) };
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(BigInt(n.amount), 8, 4)} private TAC on Ethereum</b></div>
-        <div class="kv"><span>Bitcoin fee</span><b>about ${sats.toLocaleString('en-US')} sats${one ? '' : ', and the burn’s own fee later'}</b></div>
+        <div class="kv"><span>Bitcoin fee</span><b>≈ ${sats.toLocaleString('en-US')} sats${one ? '' : ', and the burn’s own fee later'}</b></div>
         <div class="kv"><span>Relay fee</span><b>None</b></div>
         <div class="kv"><span>How</span><b>${one ? 'One Bitcoin transaction' : 'A move, then a burn through a miner'}</b></div>`);
       if (review.short) warn(rc, BTC.pending > 0n ? html`This key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, with ${fmt(BTC.pending, 8, 8)} still arriving. Once that confirms it covers the fee.`

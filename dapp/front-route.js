@@ -33,6 +33,8 @@
     }
     var params = new URLSearchParams(q);
     if (CLASSIC_HASH.test(h) || CLASSIC_QUERY.some(function (k) { return params.has(k); })) return away(CLASSIC + q + h);
+    // Payment, gift and proof links belong to tacit pay: #btc&pay= and #tac&pay= to its hub, the rest to its ETH page.
+    if (/(^#|&)(gift|proof|pay)=/.test(h)) return away((/^#(btc|tac)&/i.test(h) ? '/pay/' : '/pay/eth/') + h);
     var parts = path.toLowerCase().replace(/^\/+|\/+$/g, '').split('/');
     var view = VIEWS.indexOf(parts[0]) !== -1 && parts.every(function (x) { return /^[a-z0-9-]+$/.test(x); });
     if (path !== '/') window.history.replaceState(null, '', '/' + q + (view && !h ? '#' + parts.join('/') : h));
