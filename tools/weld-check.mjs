@@ -1861,6 +1861,8 @@ await step('bridge', async () => {
   let dumps = 0;
   await api(/^https:\/\/api\.tacit\.finance\/reflection\/dump/, (route) => { dumps++; return json(route, { attestedHeight: 970000,
     snapshot: { height: 970000, liveTriples: [[pool.outpointKey('0x' + rev(N1), 0), '0x00', '0x00', '0x00', 0], [pool.outpointKey('0x' + rev(N3), 0), '0x00', '0x00', '0x00', 0], [pool.outpointKey('0x' + rev(N4), 0), '0x00', '0x00', '0x00', 0]], burnNodes: [], noteLeaves: [leafOf(25000000000n)], pendingDepositRecords: [] } }); });
+  // Any other transaction Bitcoin has never seen (the stuck bridge's two): registered first, so the fixtures below win.
+  await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/[0-9a-f]{64}/, (route) => route.fulfill({ status: 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not-found"}' }));
   await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/(c1|c2|c3|c4){32}/, (route, u) => json(route, { txid: u.pathname.split('/').pop(),
     status: { confirmed: true, block_height: 960000 }, vout: [{ scriptpubkey: u.pathname.includes('c3c3') ? spk3 : spk, value: 546 }] }));
   await api(/^https:\/\/api\.tacit\.finance\/bridge\/recover/, (route) => {
@@ -1922,8 +1924,10 @@ await step('bridge', async () => {
   ok(/didn’t complete/.test(rows[2] || '') && /Recover/.test(rows[2] || ''), 'bridge: one that did not complete offers Recover');
   ok(/Cancel this bridge/.test(rows[3] || '') && /has not taken this transaction/.test(rows[3] || ''), 'bridge: a signed transaction Bitcoin keeps rejecting offers to be cancelled');
   await r.page.click('#bridge-body [data-bract="cancel"]');
+  await until(r.page, () => /Yes, cancel it/.test(document.querySelector('#bridge-body [data-bract="cancel"]')?.textContent || ''), null, 30000);
+  await r.page.click('#bridge-body [data-bract="cancel"]');
   await until(r.page, () => document.querySelectorAll('#bridge-body .brr').length === 3, null, 60000);
-  ok(true, 'bridge: cancelling it drops the row');
+  ok(true, 'bridge: cancelling it asks once more, checks Bitcoin has neither transaction, then drops the row');
   await r.page.click('#bridge-body [data-bract="recover"]');
   await until(r.page, () => /Recovering/.test(document.querySelector('#br-rstatus')?.textContent || '') || /err/.test(document.querySelector('#br-rstatus')?.innerHTML || ''), null, 60000);
   ok(claims.length === 1 && claims[0].burnTxid?.replace(/^0x/, '') === 'bb' + 'd3'.repeat(31) && /on its way back/.test(await text(r.page, '#bridge-body')),
@@ -2039,9 +2043,10 @@ await step('xobridge', async () => {
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | receipt: ${(await text(r.page, '#xo-rcpt')).replace(/\s+/g, ' ')} | status: ${await text(r.page, '#v1-status')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
   const rc0 = (await text(r.page, '#xo-rcpt')).replace(/\s+/g, ' ');
   ok(/You get0\.00\d+ tETH on your Bitcoin address/.test(rc0) && /Relay fee0\.00\d+ tETH/.test(rc0) && /Arrivesusually a few hours, sometimes up to a day/.test(rc0), `xobridge: the receipt names what arrives, the relay fee and the time (${rc0.slice(0, 220)})`);
-  ok(/short of the \d[\d,]* sats/.test(rc0) && await r.page.isDisabled('#xo-go') && await r.page.isHidden('#xo-ackrow'), 'xobridge: with no sats on the key’s Bitcoin address it cannot start, and says how many it needs');
-  // Funded: the box appears, and ticking it enables the button.
-  utxos = [{ txid: 'f1'.repeat(32), vout: 0, value: 20000, status: { confirmed: true, block_height: 970000 } }];
+  ok(/needs a coin of \d[\d,]* sats|needs one coin of \d[\d,]* sats/.test(rc0) && await r.page.isDisabled('#xo-go') && await r.page.isHidden('#xo-ackrow'), 'xobridge: with no sats on the key’s Bitcoin address it cannot start, and says how many it needs');
+  // Funded: the box appears, and ticking it enables the button. Each bridge still to sign its mint takes a coin of its own,
+  // so there is one coin for each of those and one for this.
+  utxos = Array.from({ length: 8 }, (_, i) => ({ txid: (i + 10).toString(16).padStart(2, '0').repeat(32), vout: 0, value: 20000, status: { confirmed: true, block_height: 970000 } }));
   await r.page.click('#xo-recheck');
   await until(r.page, () => !document.querySelector('#xo-ackrow')?.hidden, null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | receipt: ${(await text(r.page, '#xo-rcpt')).replace(/\s+/g, ' ')}`); });
   ok(await r.page.isDisabled('#xo-go'), 'xobridge: with sats free, the button still waits for the box to be ticked');
