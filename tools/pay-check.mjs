@@ -646,7 +646,7 @@ try {
       .catch(async (e) => { console.log('    ' + (await p.textContent('#recover-body')).replace(/\s+/g, ' ')); throw e; });
     const rows = await p.$$eval('.rows li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
     console.log('    ' + rows.join('\n    '));
-    ok(rows.some((r) => /^Shielded in ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3333…3333 ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
+    ok(rows.some((r) => /^Deposited ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3333…3333 ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
     // The balance is read again beside the history; the two agree once both are in.
     await p.waitForFunction((n) => /matches/.test(document.querySelector(`.chainsum li:nth-child(${n})`)?.textContent || ''), F.row, { timeout: 180e3 }).catch(() => {});
     ok(/matches/.test(await p.$eval(`.chainsum li:nth-child(${F.row})`, (e) => e.textContent)), 'rebuilt balance matches');
@@ -702,7 +702,7 @@ try {
     const got = await p.$$eval('.rows li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
     console.log('    ' + got.join('\n    '));
     ok(got.some((r) => /^Came in through a payment link ?\+0\.003 ETH/.test(r)), 'the payee’s key finds the wallet payment');
-    ok(got.some((r) => /^Shielded in ?\+0\.001 ETH/.test(r)) && got.some((r) => /^Shielded in ?\+0\.0015 ETH/.test(r)), 'the payee’s key finds both deposits made straight to them');
+    ok(got.some((r) => /^Deposited ?\+0\.001 ETH/.test(r)) && got.some((r) => /^Deposited ?\+0\.0015 ETH/.test(r)), 'the payee’s key finds both deposits made straight to them');
     // The next link names a fresh one-time address.
     const next = await getPaidLink(p, '', '');
     ok(new URL(next).hash.match(/n=([0-9a-f]+)/)[1] !== new URL(link).hash.match(/n=([0-9a-f]+)/)[1], 'after a link is paid, the next link uses a new address');
