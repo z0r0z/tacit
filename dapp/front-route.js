@@ -8,7 +8,7 @@
   var TABS = ['wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim',
     'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'airdrop', 'points', 'govern'];
   // Pages in their own directories, asked for without the trailing slash.
-  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'pay'];
+  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth'];
   // The fragments and queries the classic app reads; this page's own are bare names (#eth, #farm) and #sp=/#st=.
   var CLASSIC_HASH = /^#(?:(?:tab|recv|claim|dclaim|gate|tacit-invoice|amm)=|amm-?ceremony$)/;
   var CLASSIC_QUERY = ['ceremony', 'coordinator', 'amm', 'ammceremony'];
@@ -19,7 +19,7 @@
   var away = function (to) { window.__tacitAway = true; window.location.replace(to); };
   try {
     var loc = window.location, path = loc.pathname, q = loc.search, h = loc.hash;
-    var seg = ((path.match(/^\/([a-z0-9-]+)\/?$/i) || [])[1] || '').toLowerCase();
+    var seg = ((path.match(/^\/([a-z0-9-]+(?:\/[a-z0-9-]+)?)\/?$/i) || [])[1] || '').toLowerCase();
     if (PAGES.indexOf(seg) !== -1 && !/\/$/.test(path)) return away('/' + seg + '/' + q + h);
     if (seg === 'classic') return away(CLASSIC + q + h);
     if (TABS.indexOf(seg) !== -1) {

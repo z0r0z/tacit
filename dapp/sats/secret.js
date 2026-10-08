@@ -351,7 +351,7 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   // With no limit given, a quarter above the fee the relayer advertises is the limit: its fee rate moving between the two
   // reads is taken, a quote far above what was shown is never signed unseen.
   const cap = maxFee ?? (fee != null ? (BigInt(fee) * 5n) / 4n : null);
-  if (q && cap != null && BigInt(q.fee) > BigInt(cap)) throw Object.assign(new Error('the relayer’s fee changed'), { feeMoved: BigInt(q.fee) });
+  if (q && cap != null && BigInt(q.fee) > BigInt(cap)) throw Object.assign(new Error('The relay’s fee changed.'), { feeMoved: BigInt(q.fee) });
   say('finding your notes…');
   const a = await prepare(poolWallet, asset, amount + (q ? BigInt(q.fee) : 0n), anchor, inputs);
   if (a.wait) return { wait: a.wait, tip: a.tip };
@@ -360,7 +360,7 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   const built = pool.buildSpendBody({ asset: '0x' + String(asset).replace(/^0x/, ''), hAnchor: a.hAnchor, root: a.root, inputs: a.notes, outputs, wallet: poolWallet, bind: q ? q.bind : null });
   const { payload, payloadHex } = await proveHere(built, say);
   if (q) {
-    say('handing it to the relayer…');
+    say('Handing it to the relay…');
     // A relayer can quote and still fail to post — it needs its own confirmed coins to fund the carrier,
     // and it reserves one of them as this batch's bind. When that happens the payment must not be stuck:
     // the body is bound to the relayer's outpoint so this wallet cannot post THIS one, but it can build
@@ -374,13 +374,13 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
         const stt = await client.relayStatus(sub.id).catch(() => null);
         if (stt?.carrier) { pendingMark(a.notes, stt.carrier, a.total - amount - BigInt(q.fee), asset, 0n, ownerTag(poolWallet)); return { revealTxid: stt.carrier, relayed: true, anchor: a.hAnchor }; }
         if (stt && (['dropped', 'rejected'].includes(stt.state) || spentElsewhere(stt.state))) { reason = stt.reason || stt.state; break; }
-        say('waiting for the relayer’s batch…');
+        say('Waiting for the relay’s batch…');
         await new Promise((r) => setTimeout(r, 5000));
       }
       reason = reason || 'it did not post in time';
     } catch (e) { reason = e?.message || String(e); }
     if (spentElsewhere(reason)) throw new Error('Those notes are already being spent by another payment. Wait for it to settle, then try again.');
-    say(`the relayer could not post it (${reason}) — sending it from this wallet instead…`);
+    say('The relay could not post it in time, so this wallet is posting it from its Bitcoin address…');
     return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes });
   }
   say('sending…');
