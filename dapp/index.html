@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-I6Gu/NrdX9akYetVJ8nvutk2nu+8IJC+e2mdLl2Gb5A=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-HFCqdziTj0y4lhlAdrnMqW9Z8JT1Gxx6UiR9ScsT1L0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=0885ec9a"></script>
 <title>tacit</title>
@@ -33,7 +33,7 @@
 <link rel="modulepreload" href="/evm-account.js">
 <link rel="modulepreload" href="/evm-tx.js">
 <link rel="modulepreload" href="/tac-airdrop.js?cb=02ef61b4">
-<link rel="modulepreload" href="/evm-trade-venues.js?cb=38171d17">
+<link rel="modulepreload" href="/evm-trade-venues.js?cb=3f6e79ea">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
 <!-- preload:end -->
@@ -880,7 +880,7 @@ import { announceWalletConnect } from '/walletconnect.js?cb=31f53606';
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js?cb=02ef61b4';
-import { makeEvmTradeVenues, encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM } from '/evm-trade-venues.js?cb=38171d17';
+import { makeEvmTradeVenues, encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM } from '/evm-trade-venues.js?cb=3f6e79ea';
 import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
 // front-route.js is sending this visit to another page: nothing here starts while the browser moves on.

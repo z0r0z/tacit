@@ -1509,7 +1509,7 @@ function createMarket(host, ctx) {
   }
 
   // Set the ticket from outside (book rows, Holdings "sell", the post-buy "bid the rest").
-  function prime({ side, type, spendSats, receiveBase, sellBase, totalSats, unit } = {}) {
+  function prime({ side, type, spendSats, receiveBase, sellBase, amountBase, totalSats, unit } = {}) {
     if (side) S.side = side;
     if (type) S.type = type;
     if (S.lane !== 'btc') setLane('btc');
@@ -1527,7 +1527,7 @@ function createMarket(host, ctx) {
         : (ba || bb || ctx.asset().markUnit));
       if (u) el.price2.value = plainUnit(u);
       if (totalSats != null && u) el.amount.value = fmtAmount(amountForSats(totalSats, u, dec), dec).replace(/,/g, '');
-      else if (sellBase != null) el.amount.value = fmtAmount(sellBase, dec).replace(/,/g, '');
+      else if ((amountBase ?? sellBase) != null) el.amount.value = fmtAmount(amountBase ?? sellBase, dec).replace(/,/g, '');
       S.anchorTotal = false;
       S.syncTotal?.();
     }
@@ -1567,8 +1567,22 @@ function createMarket(host, ctx) {
     if (act === 'refresh') { refresh({ force: true }); return; }
     if (act === 'lane') { setLane(t.dataset.v); return; }
     if (act === 'side') { if (S.side !== t.dataset.v) { S.side = t.dataset.v; S.limitAt = null; el.amount.value = ''; el.total.value = ''; savePref(); paintTicketFrame(); paintAll(); } return; }
-    if (act === 'type') { S.type = t.dataset.v; savePref(); if (S.type === 'limit' && !el.price2.value) prime({ type: 'limit' }); paintTicketFrame(); paintAll(); return; }
-    if (act === 'to-limit') { S.type = 'limit'; prime({ type: 'limit' }); return; }
+    if (act === 'type') {
+      // The amount box counts sats for a market buy entered in sats and tokens everywhere
+      // else, so crossing between the two carries the value over in the other unit.
+      const from = readOrder(), to = t.dataset.v;
+      const carried = S.side === 'buy' && S.buyIn === 'sats' && S.type !== to;
+      S.type = to; savePref();
+      if (carried) el.amount.value = to === 'market' && from?.totalSats ? String(from.totalSats) : '';
+      if (to === 'limit' && (carried || !el.price2.value)) prime({ type: 'limit', totalSats: carried ? from?.spendSats : undefined });
+      paintTicketFrame(); paintAll(); return;
+    }
+    if (act === 'to-limit') {
+      const o = readOrder();
+      S.type = 'limit';
+      prime({ type: 'limit', totalSats: o?.spendSats, amountBase: o?.receiveBase ?? o?.sellBase });
+      return;
+    }
     if (act === 'allow-price') { S.limitAt = { side: S.side, unit: Number(t.dataset.v) }; paintOpts(); paintQuote(); return; }
     if (act === 'inc-manual-now') { S.includeManual = true; savePref(); paintOpts(); paintQuote(); return; }
     if (act === 'to-market') { S.type = 'market'; prime({ type: 'market', sellBase: parseAmount(el.amount.value, dec) || undefined }); return; }

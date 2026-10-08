@@ -70,9 +70,11 @@ const SETUP = () => {
     return { venue, amountIn, amountOut: out, feeBps: venue === 'precision' ? haircut * 100n : haircut, tokenIn: '0x0', tokenOut: '0x1' };
   };
   const quoteAll = async ({ dir, amountIn, account }) => {
+    if (W.quoteDelay) await new Promise((r) => setTimeout(r, W.quoteDelay));
     rec('quoteAll', { dir, amountIn, account, fresh: W.calls.some((c) => c.name === 'build') });
     const drift = W.calls.some((c) => c.name === 'build') ? W.freshDrift : 0n;
-    const ranked = ['precision', 'tacit-amm'].map((v) => outFor(v, dir, amountIn, drift)).filter(Boolean).sort((a, b) => (a.amountOut > b.amountOut ? -1 : 1));
+    const flipped = W.flipVenueAfterBuild && W.calls.some((c) => c.name === 'build');
+    const ranked = ['precision', 'tacit-amm'].map((v) => outFor(v, dir, amountIn, drift)).filter(Boolean).sort((a, b) => (flipped ? (a.venue === 'tacit-amm' ? -1 : 1) : (a.amountOut > b.amountOut ? -1 : 1)));
     return { dir, amountIn, ranked, best: ranked[0] || null, precision: ranked.find((r) => r.venue === 'precision') || null, tacitAmm: ranked.find((r) => r.venue === 'tacit-amm') || null, boards: { restingOrders: W.restingOrders }, zquoter: null };
   };
   W.venues = {
@@ -83,7 +85,7 @@ const SETUP = () => {
     build: ({ quote, dir, account, slippageBps, minOut }) => {
       rec('build', { venue: quote.venue, dir, account, slippageBps, minOut, amountOut: quote.amountOut });
       const ethIn = dir === 'ETH_TO_TAC';
-      return { to: '0x' + 'ab'.repeat(20), data: '0x' + (ethIn ? '01' : '02') + quote.amountOut.toString(16).padStart(64, '0'), value: ethIn ? quote.amountIn : 0n, approval: ethIn ? null : { token: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', spender: '0x' + 'cd'.repeat(20), amount: quote.amountIn } };
+      return { to: '0x' + 'ab'.repeat(20), data: '0x' + (ethIn ? '01' : '02') + quote.amountOut.toString(16).padStart(64, '0'), value: ethIn ? quote.amountIn : 0n, approval: ethIn ? null : { token: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', spender: '0x' + (quote.venue === 'tacit-amm' ? 'ef' : 'cd').repeat(20), amount: quote.amountIn } };
     },
   };
   W.rpc = {
@@ -96,7 +98,7 @@ const SETUP = () => {
     },
     getBalance: async () => W.ethBal,
     gasPrice: async () => W.gasPrice,
-    receipt: async (hash) => W.receipts[hash] || { status: W.receiptStatus, logs: W.logs || [] },
+    receipt: async (hash) => (W.pending ? null : (W.receipts[hash] || { status: W.receiptStatus, logs: W.logs || [] })),
   };
   W.wallet = {
     address: () => W.addr,
@@ -288,6 +290,83 @@ await test('a re-quote that falls below the reviewed floor asks first; stopping 
   const last = builds[builds.length - 1].args;
   assert.equal(fmt(BigInt(last.minOut)), shownNew[2].replace(/,/g, ''), 'the accepted floor is what was built');
   assert.equal((await calls(page, 'sendTx')).length, 1);
+});
+
+await test('a changed amount or side cannot be reviewed until its own quote lands', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await typeAmount(page, '0.5');
+  assert.equal(await page.textContent('[data-k=ego]'), 'Review buy');
+  await page.fill('[data-k=eamount]', '1.5');
+  assert.equal(await page.textContent('[data-k=ego]'), 'Finding the best price…', 'the 0.5 quote does not answer for 1.5');
+  assert.equal(await page.isDisabled('[data-k=ego]'), true);
+  assert.match(await page.textContent('[data-k=equote]'), /Finding the best price/, 'no figures for another amount are shown');
+  await settle(page, 700);
+  assert.equal(await page.textContent('[data-k=ego]'), 'Review buy');
+  await page.click('[data-k=ego]');
+  const m = await waitModal(page, /Buy 2\d,\d{3} TAC/);
+  assert.match(m, /You pay1\.5 ETH/);
+  await page.keyboard.press('Escape');
+  // a quote still in flight when the side flips does not answer for the other side
+  await page.evaluate(() => { window.__w.quoteDelay = 900; });
+  await typeAmount(page, '1');
+  await page.click('[data-act=eside][data-v=sell]');
+  await page.fill('[data-k=eamount]', '5000');
+  await settle(page, 1200);
+  await page.evaluate(() => { window.__w.quoteDelay = 0; });
+  await page.fill('[data-k=eamount]', '5001');
+  assert.equal(await page.textContent('[data-k=ego]'), 'Finding the best price…');
+});
+
+await test('a finished or failed swap dialog closes with Escape', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await typeAmount(page, '0.2');
+  await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Bought/);
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal(await page.$('.bm-modal'), null, 'Escape closes the result');
+  await page.evaluate(() => { window.__w.sendFails = Object.assign(new Error('denied'), { code: 4001 }); });
+  await typeAmount(page, '0.2');
+  await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Nothing sent/);
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal(await page.$('.bm-modal'), null, 'Escape closes the failure too');
+  // while the swap is running, Escape does nothing
+  await page.evaluate(() => { window.__w.sendFails = null; window.__w.pending = true; });
+  await typeAmount(page, '0.2');
+  await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Confirming on Ethereum/); await settle(page, 200);
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.ok(await page.$('.bm-modal'), 'a swap in flight keeps its dialog');
+});
+
+await test('sell: if the winning venue changes after the allowance, the new venue is allowed too', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await page.click('[data-act=eside][data-v=sell]'); await settle(page);
+  await page.evaluate(() => { window.__w.flipVenueAfterBuild = true; });
+  await typeAmount(page, '1000');
+  await page.click('[data-k=ego]'); await waitModal(page, /Sell 1,000 TAC/);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Sold 1,000 TAC|Nothing sent|Swap failed/);
+  const sends = await calls(page, 'sendTx');
+  const spenders = sends.filter((c) => /^0x095ea7b3/.test(c.args.data)).map((c) => '0x' + c.args.data.slice(10 + 24, 10 + 64));
+  assert.deepEqual(spenders, ['0x' + 'cd'.repeat(20), '0x' + 'ef'.repeat(20)], 'each venue the swap went to was allowed before it ran');
+  assert.equal(sends.length, 3);
+});
+
+await test('selling TAC with no ETH for the network fee cannot be reviewed', async (page) => {
+  await page.evaluate(() => { window.__w.ethBal = 0n; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await page.click('[data-act=eside][data-v=sell]'); await settle(page);
+  await typeAmount(page, '100');
+  assert.equal(await page.textContent('[data-k=ego]'), 'Not enough ETH for the network fee');
+  assert.equal(await page.isDisabled('[data-k=ego]'), true);
 });
 
 await test('a wallet rejection sends nothing and says so plainly; a failing simulation never reaches the wallet', async (page) => {

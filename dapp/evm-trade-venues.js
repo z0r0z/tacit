@@ -388,10 +388,12 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
 
   // `permit` ({ value, deadline, v, r, s }, an EIP-2612 permit over TAC to zRouter) is used by the TAC-in Precision
   // route in place of an approval; the other routes return `approval` whatever is passed.
-  function build({ quote, dir, account, slippageBps = 50, deadline, permit }) {
+  // `minOut` is the floor a caller has already shown the user; without one it is the quote less `slippageBps`.
+  function build({ quote, dir, account, slippageBps = 50, minOut: reviewedMinOut = null, deadline, permit }) {
     if (!quote || !quote.venue) throw new Error('build: a ranked quote is required');
     const dl = deadline ?? BigInt(Math.floor(Date.now() / 1000) + 1800);
-    const minOut = (quote.amountOut * BigInt(10000 - slippageBps)) / 10000n;
+    const minOut = reviewedMinOut != null ? BigInt(reviewedMinOut) : (quote.amountOut * BigInt(10000 - slippageBps)) / 10000n;
+    if (minOut > quote.amountOut) throw new Error('build: minOut is above what the quote pays');
     if (quote.venue === VENUES.PRECISION) {
       if (typeof keccak256 !== 'function' && quote.tokenIn !== ZERO_ADDR) throw new Error('build: keccak256 required for a TAC-in Precision route');
       return buildPrecisionSwap({ quote, account, minOut, deadline: dl, keccak256, permit: quote.tokenIn === ZERO_ADDR ? null : permit });

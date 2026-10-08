@@ -321,6 +321,23 @@ const B32 = '0x' + 'ab'.repeat(32);
   assert.equal(tacitBuilt.approval, null);
   ok('build() routes an ETH-in Tacit AMM leg through zRouter.snwap rather than calling the AMM directly');
 
+  // A floor the caller already showed the user rides into the calldata as given; without one it is
+  // derived from the quote and the slippage.
+  {
+    const word64 = (v) => v.toString(16).padStart(64, '0');
+    const derived = (result.best.amountOut * 9950n) / 10000n;
+    const reviewed = (result.best.amountOut * 9000n) / 10000n;
+    const plain = venues.build({ quote: result.best, dir: 'ETH_TO_TAC', account: A1, slippageBps: 50 });
+    const pinned = venues.build({ quote: result.best, dir: 'ETH_TO_TAC', account: A1, slippageBps: 50, minOut: reviewed });
+    assert.ok(plain.data.includes(word64(derived)) && !plain.data.includes(word64(reviewed)), 'no floor given: derived from the quote');
+    assert.ok(pinned.data.includes(word64(reviewed)) && !pinned.data.includes(word64(derived)), 'the reviewed floor is the one sent');
+    const tacitFloor = (result.tacitAmm.amountOut * 9000n) / 10000n;
+    const tacitPinned = venues.build({ quote: result.tacitAmm, dir: 'ETH_TO_TAC', account: A1, slippageBps: 50, minOut: tacitFloor });
+    assert.ok(tacitPinned.data.includes(word64(tacitFloor)), 'the Tacit AMM leg takes it too');
+    assert.throws(() => venues.build({ quote: result.best, dir: 'ETH_TO_TAC', account: A1, slippageBps: 50, minOut: result.best.amountOut + 1n }), /minOut/, 'a floor above the quote could only revert');
+  }
+  ok('build() sends the floor it is given, and refuses one above the quote');
+
   // TAC-in Precision: needs the checkpoint leg (binds the pulled funds to this exact route) and an
   // approval on zRouter, never on PRECISION_ROUTE directly (snwap is what pulls the funds).
   const keccak256 = (bytes) => hexToBytesFromCastKeccak(bytes);

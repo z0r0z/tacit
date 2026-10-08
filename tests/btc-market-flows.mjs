@@ -313,6 +313,41 @@ await test('a failed cancel names the cancel, not a trade', async (page) => {
   assert.ok(await page.$('.bm-orow [data-act=cancel]'), 'the Cancel button is back to retry');
 });
 
+await test('a buy that finds no match becomes a bid worth the sats typed, not that many tokens', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '5000'); await settle(page);
+  assert.match(await page.textContent('[data-k=quote]'), /more than you entered/);
+  await page.click('[data-act=to-limit]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=total]', (n) => n.value), '5000');
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '25');
+});
+
+await test('switching between Now and At my price carries the amount over in the other unit', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '5000'); await settle(page);
+  await page.click('[data-act=type][data-v=limit]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '25', '5,000 sats at 200 sats/TAC are 25 TAC, not 5,000 TAC');
+  assert.equal(await page.$eval('[data-k=total]', (n) => n.value), '5000');
+  await page.fill('[data-k=amount]', '30'); await settle(page);
+  await page.click('[data-act=type][data-v=market]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '6000', '30 TAC at 200 are 6,000 sats, not 30 sats');
+  await page.click('[data-act=type][data-v=limit]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '30');
+});
+
+await test('selling keeps its token amount when moving to At my price and back', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.bids = [W.bid('b1', 100, 15000)]; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=side][data-v=sell]'); await settle(page);
+  await page.fill('[data-k=amount]', '40'); await settle(page);
+  await page.click('[data-act=type][data-v=limit]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '40');
+  await page.click('[data-act=type][data-v=market]'); await settle(page);
+  assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '40');
+});
+
 await test('typing and focus survive live refreshes; a row click primes the ticket', async (page) => {
   await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; W.bids = [W.bid('b1', 10, 1800, { watchtower: true })]; });
   await mount(page); await settle(page, 300);

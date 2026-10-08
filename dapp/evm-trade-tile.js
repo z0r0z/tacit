@@ -350,6 +350,12 @@ function createLane(host, opts0) {
     return Number(((S.spot.rate - rate) * 10000n) / S.spot.rate);
   }
   const minOutOf = (amountOut, bps) => (amountOut * BigInt(10000 - bps)) / 10000n;
+  // A quote answers one direction and one amount; anything typed or flipped since asks a new question.
+  const quoteIsCurrent = () => {
+    const q = S.quote, a = parseUnitsStr(S.amountStr);
+    return !!q && !!a && q.dir === dir() && q.amountIn === a;
+  };
+  const quotePending = () => S.quoting || S.debTimer != null;
 
   // The pools answer in a second or two; the aggregator probe can take several and usually has
   // no route, so it joins the quote when it answers instead of holding the whole quote back.
@@ -385,7 +391,7 @@ function createLane(host, opts0) {
     const amt = parseUnitsStr(S.amountStr);
     if (!amt || amt <= 0n) { S.quote = null; S.quoting = false; S.quoteSeq++; paintQuote(); paintVenues(); paintGo(); return; }
     const d = dir();
-    const run = () => doQuote(amt, d);
+    const run = () => { S.debTimer = null; doQuote(amt, d); };
     if (immediate) run(); else S.debTimer = setTimeout(run, DEBOUNCE_MS);
   }
 
@@ -454,7 +460,7 @@ function createLane(host, opts0) {
   }
   function quoteView() {
     const q = S.quote;
-    if (!q || !q.best) return null;
+    if (!q || !q.best || !quoteIsCurrent()) return null;
     const bps = impactBps(q);
     const minOut = minOutOf(q.best.amountOut, S.slippageBps);
     const rateOut = toNum(q.best.amountOut) / toNum(q.amountIn); // out per in
@@ -471,8 +477,8 @@ function createLane(host, opts0) {
     if (!amt || amt <= 0n) { el.quote.innerHTML = ''; return; }
     const v = quoteView();
     if (!v) {
-      if (S.quoting && !S.quote) html = `<div class="bm-q bm-muted">Finding the best price…</div>`;
-      else if (S.quote && !S.quote.best) html = `<div class="bm-q bm-warn">No venue can fill this amount right now.</div>${S.quote.boards?.restingOrders > 0 ? `<div class="bm-q bm-muted">${S.quote.boards.restingOrders} resting order${S.quote.boards.restingOrders === 1 ? '' : 's'} on zSwap's boards may — <a href="${esc(zswapDeepLink({ host: ZSWAP_HOST, dir: dir(), amount: S.amountStr }) || ZSWAP_HOST)}" target="_blank" rel="noopener noreferrer">fill there ↗</a>.</div>` : ''}`;
+      if (quotePending() && !quoteIsCurrent()) html = `<div class="bm-q bm-muted">Finding the best price…</div>`;
+      else if (S.quote && quoteIsCurrent() && !S.quote.best) html = `<div class="bm-q bm-warn">No venue can fill this amount right now.</div>${S.quote.boards?.restingOrders > 0 ? `<div class="bm-q bm-muted">${S.quote.boards.restingOrders} resting order${S.quote.boards.restingOrders === 1 ? '' : 's'} on zSwap's boards may — <a href="${esc(zswapDeepLink({ host: ZSWAP_HOST, dir: dir(), amount: S.amountStr }) || ZSWAP_HOST)}" target="_blank" rel="noopener noreferrer">fill there ↗</a>.</div>` : ''}`;
       else html = `<div class="bm-q bm-warn">Couldn't reach Ethereum to price this — <button type="button" class="bm-link" data-act="erequote">try again</button>.</div>`;
       el.quote.innerHTML = html; return;
     }
@@ -541,9 +547,10 @@ function createLane(host, opts0) {
     if (!address()) return set('Connect wallet', true, 'connect');
     const b = balIn();
     if (b != null && amt > b) return set(`Not enough ${inTicker()}`, false);
-    if (S.quoting && !S.quote?.best) return set('Finding the best price…', false);
-    if (!S.quote || !S.quote.best) return set('No price right now', false);
+    if (!quoteIsCurrent()) return set(quotePending() ? 'Finding the best price…' : 'No price right now', false);
+    if (!S.quote.best) return set('No price right now', false);
     if (S.side === 'buy' && S.ethBal != null && S.gasPrice && amt + feeEstWei(GAS_GUESS.ETH_TO_TAC) > S.ethBal) return set('Not enough ETH for the network fee', false);
+    if (S.side === 'sell' && S.ethBal != null && S.gasPrice && S.ethBal < feeEstWei(GAS_GUESS.TAC_TO_ETH)) return set('Not enough ETH for the network fee', false);
     const bps = impactBps(S.quote);
     if (bps != null && bps >= IMPACT_BLOCK_BPS && !S.ackImpact) return set('Confirm the price impact above', false);
     return set(S.side === 'buy' ? 'Review buy' : 'Review sell', true, 'review');
@@ -578,6 +585,7 @@ function createLane(host, opts0) {
       close() { if (onKey) document.removeEventListener('keydown', onKey); wrap.remove(); },
       onEscape(fn) { onKey = (e) => { if (e.key === 'Escape' && !escLocked) fn(); }; document.addEventListener('keydown', onKey); },
       lockEscape() { escLocked = true; },
+      unlockEscape() { escLocked = false; },
     };
   }
   const stepsHtml = (steps) => `<ol class="bm-steps">${steps.map((s) => `<li class="${s.status}"><span class="st">${{ queued: '○', working: '◐', waiting: '◔', done: '✓', failed: '✕', skipped: '–' }[s.status] || '○'}</span><span class="lb">${s.label}${s.note ? `<em>${esc(s.note)}</em>` : ''}${s.hash ? ` <a href="${esc(txUrl(s.hash))}" target="_blank" rel="noopener">tx</a>` : ''}</span></li>`).join('')}</ol>`;
@@ -645,7 +653,8 @@ function createLane(host, opts0) {
   }
   async function ensureAllowance(built, addr, step, paint) {
     if (!built.approval) { if (step && step.status === 'queued') { step.status = 'skipped'; step.note = 'not needed for this route'; paint(); } return; }
-    if (step.status === 'done') return;
+    if (step.status === 'done' && step.spender === built.approval.spender) return;
+    step.spender = built.approval.spender;
     step.status = 'working'; step.note = 'checking what\'s already allowed'; paint();
     const allowance = decUint256(await rpc().call(built.approval.token, encErc20Allowance(addr, built.approval.spender)));
     if (allowance >= built.approval.amount) { step.status = 'skipped'; step.note = 'already allowed'; paint(); return; }
@@ -693,6 +702,7 @@ function createLane(host, opts0) {
         });
         if (!accepted) {
           S.quote = fresh; S.busy = false; paintAll();
+          md.unlockEscape();
           md.set('<h2>Nothing sent</h2><p class="bm-q">The quote on the page has been refreshed.</p>');
           md.buttons([{ label: 'Done', primary: true, onClick: () => md.close() }]);
           return;
@@ -728,6 +738,7 @@ function createLane(host, opts0) {
       for (const x of steps) if (x.status === 'queued') x.status = 'skipped';
     }
     S.busy = false;
+    md.unlockEscape();
     if (err) {
       md.set(`<h2>${hash ? 'Swap failed' : 'Nothing sent'}</h2><p class="bm-q">${esc(friendlyEthError(err))}</p>${stepsHtml(steps)}`);
       md.buttons([{ label: 'Done', primary: true, onClick: () => md.close() }]);
@@ -760,12 +771,12 @@ function createLane(host, opts0) {
     const act = t.dataset.act;
     if (act === 'eside') {
       if (S.side !== t.dataset.v) {
-        S.side = t.dataset.v; S.amountStr = ''; el.amount.value = ''; S.quote = null; S.ackImpact = false; savePref();
+        S.side = t.dataset.v; S.amountStr = ''; el.amount.value = ''; S.quote = null; S.quoting = false; S.quoteSeq++; clearTimeout(S.debTimer); S.debTimer = null; S.ackImpact = false; savePref();
         paintAll(); refreshSpot(true); el.amount.focus({ preventScroll: true });
       }
       return;
     }
-    if (act === 'echip') { S.amountStr = t.dataset.v; el.amount.value = t.dataset.v; S.ackImpact = false; paintGo(); scheduleQuote(true); return; }
+    if (act === 'echip') { S.amountStr = t.dataset.v; el.amount.value = t.dataset.v; S.ackImpact = false; scheduleQuote(true); paintGo(); return; }
     if (act === 'econnect') { connect(); return; }
     if (act === 'erequote') { scheduleQuote(true); return; }
     if (act === 'ego') { review(); return; }
@@ -776,7 +787,7 @@ function createLane(host, opts0) {
     if (t.dataset.act === 'eslip') { S.slippageBps = Number(t.value) || DEFAULT_SLIPPAGE_BPS; savePref(); paintOpts(); paintQuote(); }
     if (t.dataset.act === 'eack') { S.ackImpact = t.checked; paintGo(); }
   }, sig);
-  el.amount.addEventListener('input', () => { S.amountStr = el.amount.value; S.ackImpact = false; paintGo(); scheduleQuote(false); }, sig);
+  el.amount.addEventListener('input', () => { S.amountStr = el.amount.value; S.ackImpact = false; scheduleQuote(false); paintQuote(); paintGo(); }, sig);
   el.amount.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !el.go.disabled) review(); }, sig);
 
   // ── background ────────────────────────────────────────────────────────────
