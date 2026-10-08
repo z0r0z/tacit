@@ -640,6 +640,8 @@ export const CFG = {
   holdingVkeyFile: opt('HOLDING_VKEY_FILE', ''),
   holdingVkeySha256: opt('HOLDING_VKEY_SHA256', ''),
   holdingChains: opt('HOLDING_CHAINS', '1,8453,4663').split(',').map((s) => Number(s.trim())).filter(Boolean),
+  // Optional reading node per chain (HOLDING_RPC_1, HOLDING_RPC_8453, HOLDING_RPC_4663), for the first read of a pool's history.
+  holdingRpcUrls: Object.fromEntries([1, 8453, 4663].map((id) => [id, opt(`HOLDING_RPC_${id}`, '')]).filter(([, u]) => u)),
   // A UTC day settles once, so it waits until it is over, this margin has passed and every scanner has read past
   // its end (lib/points-settle-gate.js). A scanner that stays behind no longer holds rewards back after the
   // maximum wait.

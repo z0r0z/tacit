@@ -6,7 +6,13 @@ import { parseAbiItem } from 'viem';
 const TRANSACT = parseAbiItem('event Transact(bytes32 indexed nf0, bytes32 indexed nf1, bytes32 outLeaf0, bytes32 outLeaf1, uint256 firstIndex, bytes32 newRoot, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export const rateLimited = (err) => /rate|limit|429|-32016|-32005|-32011|too many|capacity/i.test(`${err?.shortMessage || ''} ${err?.message || ''} ${err?.details || ''} ${err?.code ?? ''}`);
+// A node's refusal of a range ("block range", "more than 10000 results", "response size") is answered by asking for less; only a
+// refusal of the caller ends the stretch.
+const RANGE = /block range|range (?:is )?too|too large|too wide|more than [\d,]+ (?:results|logs)|response size|query returned|exceed\w* .*(?:range|results|size)/i;
+export const rateLimited = (err) => {
+  const text = `${err?.shortMessage || ''} ${err?.message || ''} ${err?.details || ''} ${err?.code ?? ''}`;
+  return !RANGE.test(text) && /\brate\b|\b429\b|-32016|-32005|-32011|too many requests|capacity|request limit|limit reached|exceeded.*(?:quota|limit)/i.test(text);
+};
 
 export async function scanHoldingChain({ store, client, chainId, pool, deployBlock, confirmations = 12, span = 2000, maxSpan = 2000, budgetMs = 40000, pauseMs = 120, log = () => {}, now = () => Date.now() }) {
   const started = now();

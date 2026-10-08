@@ -33,6 +33,10 @@ try {
 
   assert.equal(rateLimited(new Error('request limit reached')), true);
   assert.equal(rateLimited(new Error('range too large')), false);
+  for (const m of ['block range limit exceeded', 'query returned more than 10000 results', 'Log response size exceeded', 'eth_getLogs is limited to a 5000 block range']) assert.equal(rateLimited(new Error(m)), false, `a refused range is not a rate limit: ${m}`);
+  for (const m of ['Too Many Requests', 'over rate limit', 'HTTP 429', 'exceeded your daily quota', 'request limit reached']) assert.equal(rateLimited(new Error(m)), true, m);
+  assert.equal(rateLimited(Object.assign(new Error('x'), { code: -32005, details: 'daily request count exceeded, request rate limited' })), true);
+  assert.equal(rateLimited(new Error('could not generate the accurate separate answer')), false, 'words that merely contain "rate" are not one');
 
   // A node that takes only 100 blocks at a time: the span is halved until it works, then kept.
   const c1 = chainWith(events, { maxRange: 100 });

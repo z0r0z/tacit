@@ -11,7 +11,7 @@ export const CHAINS = {
   4663: { name: 'Robinhood Chain', rpc: 'https://rpc.mainnet.chain.robinhood.com', deployBlock: 73991661, span: 20000, maxSpan: 400000 },
 };
 const TRANSACT = parseAbiItem('event Transact(bytes32 indexed nf0, bytes32 indexed nf1, bytes32 outLeaf0, bytes32 outLeaf1, uint256 firstIndex, bytes32 newRoot, address recipient, int256 extAmount, address relayer, uint256 fee, bytes memo0, bytes memo1)');
-const POOL_ABI = parseAbi(['function root() view returns (bytes32)', 'function nextIndex() view returns (uint256)', 'function everKnownRoot(bytes32) view returns (bool)', 'function rootSize(bytes32) view returns (uint256)']);
+const POOL_ABI = parseAbi(['function ASSET_FIELD() view returns (uint256)', 'function root() view returns (bytes32)', 'function nextIndex() view returns (uint256)', 'function everKnownRoot(bytes32) view returns (bool)', 'function rootSize(bytes32) view returns (uint256)']);
 // Block explorers (Blockscout) that list a contract's logs by page, so history needs no archive node.
 export const EXPLORERS = {
   1: { api: 'https://eth.blockscout.com/api/v2' },
@@ -52,13 +52,18 @@ export async function readTransactLogs(client, { from, head, span, maxSpan = spa
 }
 
 // The pool's own answer at `block`: its root and how many leaves it has inserted.
-export async function poolState(client, block) {
+export async function poolState(client, block, pool = POOL) {
   const blockNumber = BigInt(block);
   const [root, nextIndex] = await Promise.all([
-    client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'root', blockNumber }),
-    client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'nextIndex', blockNumber }),
+    client.readContract({ address: pool, abi: POOL_ABI, functionName: 'root', blockNumber }),
+    client.readContract({ address: pool, abi: POOL_ABI, functionName: 'nextIndex', blockNumber }),
   ]);
   return { root: BigInt(root), nextIndex: Number(nextIndex) };
+}
+
+// The asset field element the pool commits notes under; it differs from chain to chain.
+export async function poolAssetOf(client, pool = POOL) {
+  return BigInt(await client.readContract({ address: pool, abi: POOL_ABI, functionName: 'ASSET_FIELD' }));
 }
 
 // How many leaves the pool had when `root` was its head, read from the pool's root history (a read of the latest state, so no

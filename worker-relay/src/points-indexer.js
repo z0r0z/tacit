@@ -24,6 +24,8 @@ import { createHolding } from './lib/holding-service.js';
 import { parseBuckets } from './lib/holding-epoch.js';
 import { loadHash } from './lib/poseidon-hash.js';
 import { readJson } from './lib/http-json.js';
+import { clientKey } from './lib/token-bucket.js';
+import { makeClient as holdingClient } from './lib/evm-pool-snapshot-chain.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
 import { parseCategoryWeights, parseEngagementSchedule } from './lib/points-engagement.js';
 import { dayPot, dayBoard, dayHistory, splitDayBudget } from './lib/points-day-board.js';
@@ -1564,7 +1566,7 @@ let holding = null;
 const HOLDING_CHAINS = {
   1: { deployBlock: 26069245, confirmations: 12, span: 2000, maxSpan: 2000 },
   8453: { deployBlock: 51864014, confirmations: 20, span: 500, maxSpan: 500 },
-  4663: { deployBlock: 73991661, confirmations: 20, span: 20000, maxSpan: 400000 },
+  4663: { deployBlock: 73991661, confirmations: 600, span: 20000, maxSpan: 400000 },
 };
 async function setupHolding(store) {
   if (!CFG.holdingEnabled) return null;
@@ -1573,12 +1575,13 @@ async function setupHolding(store) {
   const raw = readFileSync(CFG.holdingVkeyFile);
   const pin = CFG.holdingVkeySha256.toLowerCase().replace(/^0x/, '');
   if (!pin || createHash('sha256').update(raw).digest('hex') !== pin) throw new Error('HOLDING_VKEY_FILE does not match HOLDING_VKEY_SHA256');
-  const clients = Object.fromEntries(ZROUTER_CHAINS.map(({ chainId, client }) => [chainId, client]));
-  const poolAsset = await publicClient.readContract({ address: CFG.evmPoolAddr, abi: [{ type: 'function', name: 'ASSET_FIELD', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }], functionName: 'ASSET_FIELD' });
+  // A chain's reading client is the points service's own for it unless HOLDING_RPC_<chain> names another (a node that serves the
+  // pool's whole history, for the first read).
+  const clients = Object.fromEntries(ZROUTER_CHAINS.map(({ chainId, client }) => [chainId, CFG.holdingRpcUrls[chainId] ? holdingClient(CFG.holdingRpcUrls[chainId]) : client]));
   const h = createHolding({
     store, hash: await loadHash(), groth16: (await import('snarkjs')).groth16, log, clients,
     cfg: {
-      enabled: true, rate: CFG.holdingRate, buckets: parseBuckets(CFG.holdingBucketsEth), pool: CFG.evmPoolAddr, poolAsset, vkey: JSON.parse(raw.toString('utf8')),
+      enabled: true, rate: CFG.holdingRate, buckets: parseBuckets(CFG.holdingBucketsEth), pool: CFG.evmPoolAddr, vkey: JSON.parse(raw.toString('utf8')),
       chains: CFG.holdingChains.filter((id) => HOLDING_CHAINS[id] && clients[id]).map((chainId) => ({ chainId, ...HOLDING_CHAINS[chainId] })), budgetMs: 15000,
     },
   });
@@ -1617,7 +1620,7 @@ function startHttp(store, evmState) {
       if (url.pathname === '/holding/claim') {
         if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST a claim' })); return; }
         if (!holding) { res.statusCode = 404; res.end(JSON.stringify({ error: 'not enabled' })); return; }
-        const r = await holding.claim(await readJson(req));
+        const r = await holding.claim(await readJson(req), { client: clientKey(req) });
         res.statusCode = r.status; res.end(JSON.stringify(r.body));
         return;
       }

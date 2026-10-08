@@ -1,8 +1,10 @@
 // The fixed rules of a holding reward, shared by whoever proves and whoever verifies: which sizes of note can be claimed, how
 // the day's snapshot moment is drawn, and what a claim is bound to. Pure.
 //
-// A day's snapshot is drawn after the day has ended, from the hash of an Ethereum block that did not exist until then, so nobody
-// can time a deposit to it; each chain's snapshot is the last block at or before that moment of the same day.
+// A day's snapshot is drawn after the day has ended, from the beacon randomness (prevRandao) of the Ethereum blocks around a
+// moment that had not come when the day ended, so nobody can time a deposit to it; each chain's snapshot is the last block at or
+// before that moment of the same day. Many blocks' randomness are combined because one proposer decides whether to propose its
+// own block, and so can pick between two values of it; to pick the draw it would have to hold every one of them.
 import { encodeAbiParameters, encodePacked, keccak256, getAddress } from 'viem';
 
 export const FIELD_P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -28,6 +30,12 @@ export function bucketFor(valueWei, buckets) {
   let best = null;
   for (const b of buckets) if (BigInt(valueWei) >= b) best = b;
   return best;
+}
+
+// One 32-byte value from the randomness of the blocks (their prevRandao values, in block order).
+export function randomnessOf(mixHashes) {
+  if (!Array.isArray(mixHashes) || !mixHashes.length) throw new Error('no randomness to draw from');
+  return keccak256(encodePacked(['string', 'bytes32[]'], ['tacit-holding-randomness', mixHashes]));
 }
 
 // The moment, in seconds, of `epoch`'s snapshot: a draw within the day from the randomness block's hash.

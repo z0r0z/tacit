@@ -8,8 +8,9 @@ export class HoldingStateError extends Error {}
 const EMPTY = 0n;
 
 // events: [{ block, logIndex, firstIndex, outLeaf0, outLeaf1, nf0, nf1, newRoot }] (hex or bigint), every event of the pool up to
-// at least `block`. emptyRoot: the root of an empty tree.
-export function poolStateAt({ events, block, hash, emptyRoot }) {
+// at least `block`. emptyRoot: the root of an empty tree. The spent-set root is the costly part and is left null (nfRoot: false) for
+// a caller that has more to check first.
+export function poolStateAt({ events, block, hash, emptyRoot, nfRoot = true }) {
   const sorted = [...events].map((e) => ({
     block: Number(e.block), logIndex: Number(e.logIndex), firstIndex: BigInt(e.firstIndex), leaves: [BigInt(e.outLeaf0), BigInt(e.outLeaf1)],
     nfs: [BigInt(e.nf0), BigInt(e.nf1)], newRoot: BigInt(e.newRoot),
@@ -26,7 +27,7 @@ export function poolStateAt({ events, block, hash, emptyRoot }) {
     for (const nf of e.nfs) if (nf !== EMPTY) nullifiers.push(nf);
   }
   if (new Set(nullifiers).size !== nullifiers.length) throw new HoldingStateError('a nullifier appears twice');
-  return { block, root, size: Number(size), nullifiers, nfRoot: smtRoot(nullifiers, hash) };
+  return { block, root, size: Number(size), nullifiers, nfRoot: nfRoot ? smtRoot(nullifiers, hash) : null };
 }
 
 // The root of an empty note tree of `depth` levels, empty leaf 0.

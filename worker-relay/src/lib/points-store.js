@@ -559,6 +559,19 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   const saveHoldingSnapshot = (s) => saveHoldingSnapshotStmt.run({ ...s, root: String(s.root), nfRoot: String(s.nfRoot) }).changes > 0;
   const holdingSnapshots = (epoch) => holdingSnapshotsStmt.all(epoch);
   const recordHoldingClaim = (c) => recordHoldingClaimStmt.run({ ...c, retNf: String(c.retNf) }).changes > 0;
+  const holdingClaimStmt = db.prepare(`SELECT claim_address AS claimAddress, bucket_wei AS bucketWei, points FROM holding_claims WHERE epoch = ? AND ret_nf = ?`);
+  const holdingClaimFor = (epoch, retNf) => holdingClaimStmt.get(epoch, String(retNf)) ?? null;
+  // The block through which a chain's stored events have been checked whole against the pool's own root and leaf count.
+  const loadHoldingVerified = (chainId) => { const v = getMeta(`holding_verified_${chainId}`); return v === null ? null : Number(v); };
+  const saveHoldingVerified = (chainId, block) => { setMeta(`holding_verified_${chainId}`, Number(block)); };
+  // Forgets the events after `block` and reads on from there: what a check that found a hole or a reorg falls back to.
+  const rewindHoldingStmt = db.prepare(`DELETE FROM holding_events WHERE chain_id = ? AND block > ?`);
+  const rewindHolding = db.transaction((chainId, block) => {
+    rewindHoldingStmt.run(chainId, Number(block));
+    saveHoldingCursorStmt.run(chainId, Number(block));
+    const v = loadHoldingVerified(chainId);
+    if (v !== null && v > Number(block)) saveHoldingVerified(chainId, block);
+  });
   function dayActivityPoints(dayStartSec, dayEndSec, { onTime = false } = {}) {
     return (onTime ? onTimeDayActivityStmt : dayActivityStmt).all(dayStartSec, dayEndSec);
   }
@@ -752,7 +765,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
 
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
-    dayPointsByAddress, dayActivityPoints, weekActivityPoints, lateDays, creditedWithPrefix, commitDay, saveHoldingEvents, holdingEvents, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
+    dayPointsByAddress, dayActivityPoints, weekActivityPoints, lateDays, creditedWithPrefix, commitDay, saveHoldingEvents, holdingEvents, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
