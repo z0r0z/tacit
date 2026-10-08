@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Hp2AxSVcxk1lGAGYCddiwWKdbr+3eOyGoMnawhTMLPc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KVAxAftvh/vzksi0nufJ6xxzexoZdEUR2xOItGSG8B8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
@@ -925,10 +925,11 @@ async function setKey(k) {
   toast(`Opened ${short(UNIFIED_LIVE ? unifiedAddress() : keys.address, 8)}`);
   syncAll(true);
   historyAll();
+  for (const c of CHAINS) boxScan(c);
 }
 function forget() {
   // The receive boxes' and links' keys derive from this key, so they go with it.
-  S.key = null; S.keys = null; Object.assign(BOXQ, { for: null, map: null, at: [] }); Object.assign(GIFTQ, { for: null, by: {} }); LINKSHOW.v = null; PLANS.clear();
+  S.key = null; S.keys = null; Object.assign(BOXQ, { for: null, map: null, at: [] }); BOXST.for = null; Object.assign(SHOWN, { pub: null, k: null, seen: null, told: null }); Object.assign(GIFTQ, { for: null, by: {} }); LINKSHOW.v = null; PLANS.clear();
   for (const c of CHAINS) JUST[c.chainId].length = 0;
   for (const k of Object.keys(DRAFT)) delete DRAFT[k];
   if (REQ.v && !REQ.v.paid) { DRAFT['f-to'] = REQ.v.bp; if (REQ.v.amount) DRAFT['f-amt'] = plain(REQ.v.amount); }
@@ -1163,7 +1164,10 @@ function syncChain(c, fresh = false) {
       Promise.all(boxes.map((i) => W.waiting(i).then((v) => [i, v], () => [i, null])))]);
     const s = await W.sync();
     if (st.W !== W || S.key?.pubHex !== pub) return;
-    if (st.bal != null && st.bal !== s.balance) historyOf(c, true);             // something arrived or left: read it into the history
+    if (st.bal != null && st.bal !== s.balance) {                             // something arrived or left: read it into the history
+      historyOf(c, true);
+      boxScan(c, linkIndex() ?? (boxTop(c) ?? 0) + 1, 1);                      // and whether it was the link's address
+    }
     const mine = st.fill = {};
     Object.assign(st, { bal: s.balance, leaves: s.leaves, notes: W.notes().map((n) => BigInt(n.v)), err: null, at: Date.now(), fails: 0 });
     const seen = readJson(BAL_SEEN) || {};
@@ -1173,7 +1177,13 @@ function syncChain(c, fresh = false) {
       if (st.fill !== mine || st.W !== W || S.key?.pubHex !== pub) return;
       const waitBoxes = waits.filter(([, v]) => v != null && v > 0n);
       Object.assign(st, { quote: q, quoteErr, waiting: waitBoxes.reduce((a, [, v]) => a + v, 0n), waitBoxes });
+      // An address seen paid stays counted as paid once its ETH has been moved in.
+      for (const [i] of waitBoxes) if (i > 0 && BOXST.for === pub && BOXST.top[c.chainId] != null && i > BOXST.top[c.chainId]) BOXST.top[c.chainId] = i;
+      const wk = SHOWN.k != null && waits.find(([i]) => i === SHOWN.k);
+      if (wk?.[1] > 0n) SHOWN.seen = { k: SHOWN.k, c, v: wk[1], state: 'moving' };
+      else if (wk?.[1] === 0n && SHOWN.seen?.k === SHOWN.k && SHOWN.seen.c === c) SHOWN.seen.state = 'in';
       paintSynced(c);
+      announceLink();
     });
   }).catch((e) => { if (S.key?.pubHex === pub) Object.assign(st, { err: e, at: Date.now(), fails: st.fails + 1 }); }).finally(() => { if (st.syncing === p) st.syncing = null; paintSynced(c); });
   return p;
@@ -1258,18 +1268,71 @@ async function boxMap(count = BOXES) {
   return map;
 }
 // The one-time deposit address the next payment link uses: one past the highest one that has taken a payment on any
-// chain (an address is the same on all three), counting ETH still waiting at one. A link gets a fresh address once
-// the last has been paid, so paid links are not linked to each other on chain, and no run of unused addresses opens
-// up: rebuilt from the key, every one lies within the wallet's lookahead of the one before. null until every chain's
-// history is read, and while any chain's last read failed: an address paid there would not show.
+// chain (an address is the same on all three), counting ETH still waiting at one, and past every refund address a
+// withdrawal named. A link gets a fresh address once the last has been paid, so paid links are not linked to each other
+// on chain, and no run of unused addresses opens up: rebuilt from the key, every one lies within the wallet's lookahead
+// of the one before. A chain counts once its addresses have been read (BOXST), or else its history; refund addresses
+// are named only in withdrawals on Ethereum (a move to an L2 or into the classic app), so Ethereum's history counts
+// always. null until then, and while a read that counts failed: an address paid there would not show.
 function linkIndex() {
-  if (!S.key || !CHAINS.every((c) => CH[c.chainId].hist && !CH[c.chainId].histErr)) return null;
+  const e1 = CH[CHAINS[0].chainId];
+  if (!S.key || !e1.hist || e1.histErr) return null;
   let top = 0;
   for (const c of CHAINS) {
-    for (const r of CH[c.chainId].hist?.rows || []) { if (r.box > top) top = r.box; if (r.refund > top) top = r.refund; }
-    for (const [i, v] of CH[c.chainId].waitBoxes || []) if (i > top && v > 0n) top = i;
+    const st = CH[c.chainId], b = boxTop(c);
+    if (b == null && (!st.hist || st.histErr)) return null;
+    if (b > top) top = b;
+    for (const r of st.hist?.rows || []) { if (r.box > top) top = r.box; if (r.refund > top) top = r.refund; }
+    for (const [i, v] of st.waitBoxes || []) if (i > top && v > 0n) top = i;
   }
   return top + 1;
+}
+// Each chain's one-time addresses, read from the chain itself: the highest one ever paid there (the router counted a
+// sweep of it, or ETH waits at it). They are handed out in order, so they are read upward until BOX_GAP in a row past
+// the highest found were never paid. A read that fails is tried again by itself, 15 s later and then twice as long each
+// time; meanwhile that chain's history stands in.
+const BOX_GAP = 20;
+const BOXST = { for: null, top: {}, hit: {}, p: {}, err: {}, fails: {}, read: {} };
+const boxTop = (c) => (S.key && BOXST.for === S.key.pubHex ? BOXST.top[c.chainId] ?? null : null);
+function boxScan(c, from = 1, gap = BOX_GAP) {
+  const id = c.chainId, pub = S.key?.pubHex;
+  if (!pub) return Promise.resolve();
+  if (BOXST.for !== pub) Object.assign(BOXST, { for: pub, top: {}, hit: {}, p: {}, err: {}, fails: {}, read: {} });
+  if (BOXST.p[id]) return BOXST.p[id];
+  if (BOXST.top[id] == null) { from = 1; gap = BOX_GAP; }                    // a chain is read whole before a short look counts
+  const p = BOXST.p[id] = (async () => {
+    const rpc = await rpcOn(c), hit = BOXST.hit[id] ||= {};
+    let found = BOXST.top[id] ?? 0, base = Math.max(from - 1, found), next = from;
+    BOXST.read[id] = 0;
+    while (next <= base + gap) {
+      const end = base + gap;
+      await boxMap(end + 1);
+      if (BOXST.for !== pub) return;
+      await eachLimit(Array.from({ length: end - next + 1 }, (_, j) => next + j), 4, async (i) => {
+        const a = BOXQ.at[i].address, [n, v] = await Promise.all([receiveCount(c, a), rpc('eth_getBalance', [a, 'latest']).then(BigInt)]);
+        if (n > 0n || v > 0n) { hit[i] = v > 0n ? 'moving' : 'in'; if (i > found) found = i; if (i > base) base = i; }
+        BOXST.read[id]++; paintLinkWait();
+      });
+      next = end + 1;
+    }
+    if (BOXST.for === pub) Object.assign(BOXST, { top: { ...BOXST.top, [id]: Math.max(BOXST.top[id] ?? 0, found) }, err: { ...BOXST.err, [id]: null }, fails: { ...BOXST.fails, [id]: 0 } });
+  })().catch((e) => {
+    if (BOXST.for !== pub) return;
+    BOXST.err[id] = e;
+    const n = BOXST.fails[id] = (BOXST.fails[id] || 0) + 1;
+    setTimeout(() => { if (S.key?.pubHex === pub && boxTop(c) == null) boxScan(c); }, Math.min(15e3 * 2 ** (n - 1), 300e3));
+  }).finally(() => { if (BOXST.p[id] === p) BOXST.p[id] = null; if (S.key?.pubHex === pub) linkMoved(); });
+  return p;
+}
+// Once the next link's address is known or moves, the addresses worth watching are watched, and a form that waited for
+// it, or shows another, is drawn again.
+function linkMoved(c = null) {
+  const k = linkIndex();
+  if (k != null) { watchLinks(); watchLinkBoxes(); }
+  paintLinkWait();
+  if (S.busy) return;
+  if (FORM.needsLink || (k != null && FORM.linkK != null && FORM.linkK !== k) || (FORM.paidShown !== undefined && FORM.paidShown !== paidSig())) renderForm();
+  else if (c === S.chain && S.tab === 'send' && S.sendMode === 'link') { if (FORM.needsGift) renderForm(); else refreshLinks(); }
 }
 // The one-time addresses worth watching: the current link's and up to nineteen before it.
 const linkRange = () => { const k = linkIndex(); return k == null ? [] : Array.from({ length: Math.min(20, k) }, (_, j) => k - j); };
@@ -1621,9 +1684,15 @@ function historyOf(c, fresh = false, since = Date.now()) {
   const p = st.histing = scanHistory(c, (f, work) => {
     st.histProg = f; st.histWork = work || null;
     if (work && work.read < work.of && performance.now() - lastPaint < 400) return;       // repainted at most every 400 ms
-    lastPaint = performance.now(); paintRecover();
+    lastPaint = performance.now(); paintRecover(); paintLinkWait();
   })
-    .then((h) => { if (S.key?.pubHex === pub) { st.hist = h; st.histErr = null; st.histFails = 0; } })
+    .then((h) => {
+      if (S.key?.pubHex !== pub) return;
+      const was = st.hist;
+      st.hist = h; st.histErr = null; st.histFails = 0;
+      // A private payment this read found that the last one had not: said once, here.
+      if (was) for (const r of h.rows.filter((x) => x.kind === 'in' && !was.rows.some((y) => lc(y.tx) === lc(x.tx))).slice(0, 3)) toast(`Received ${eth(r.v)} ETH privately on ${c.full}.`);
+    })
     .catch((e) => {
       if (S.key?.pubHex !== pub) return;
       st.histErr = e;
@@ -1634,11 +1703,8 @@ function historyOf(c, fresh = false, since = Date.now()) {
       paintRecover(); paintDue();
       if (!S.busy && c === S.chain) FORM.check?.();
       if (S.key?.pubHex !== pub) return;
-      const k = linkIndex();
-      if (k != null) { watchLinks(); watchLinkBoxes(); }
-      if (S.busy) return;
-      if (FORM.needsLink || (k != null && FORM.linkK != null && FORM.linkK !== k)) renderForm();
-      else if (c === S.chain && S.tab === 'send' && S.sendMode === 'link') { if (FORM.needsGift) renderForm(); else refreshLinks(); }
+      announceLink(); offerProof();
+      linkMoved(c);
     });
   paintRecover();
   return p;
@@ -1648,6 +1714,8 @@ async function rebuild(btn) {
   if (S.busy) return toast('Finish the payment in progress first.', true);          // a rebuild now would drop the wallet that payment is using
   await busyBtn(btn, async () => {
     for (const c of CHAINS) { try { localStorage.removeItem(stateKey(c)); } catch {} Object.assign(CH[c.chainId], { W: null, for: null, bal: null, hist: null, histErr: null, err: null, at: 0, fails: 0 }); }
+    BOXST.for = null;
+    for (const c of CHAINS) boxScan(c);
     paintChains(); paintBal(); paintRecover();
     await Promise.all(CHAINS.map((c) => Promise.all([syncChain(c, true), historyOf(c, true)])));
     const failed = CHAINS.filter((c) => CH[c.chainId].err || CH[c.chainId].histErr);
@@ -1762,7 +1830,7 @@ function renderForm() {
   if (S.busy) return;
   const f = $('#form');
   keepFocus(f, () => {
-    FORM.check = null; FORM.needsW = false; FORM.waitShown = undefined; FORM.needsLink = false; FORM.needsGift = false; FORM.relayShown = undefined; FORM.linkK = undefined;
+    FORM.check = null; FORM.needsW = false; FORM.waitShown = undefined; FORM.needsLink = false; FORM.needsGift = false; FORM.relayShown = undefined; FORM.linkK = undefined; FORM.paidShown = undefined;
     if (!S.key) {
       mount(f, html`<p class="gate-p">Open your Tacit wallet. One key holds your private ETH on all three chains, and nothing else needs backing up.</p>${signIn('g')}`);
       return wireSignIn(f, 'g');
@@ -1778,9 +1846,10 @@ function renderForm() {
   });
 }
 // A drawn form whose picture of this chain is out of date: its wallet has arrived, what waits at the deposit
-// addresses changed, the relay came or went, or the link it shows was paid.
+// addresses changed, the relay came or went, or the link it shows was paid or moved in.
 const formStale = (c) => c === S.chain && ((FORM.needsW && CH[c.chainId].W) || (FORM.waitShown !== undefined && CH[c.chainId].waiting !== FORM.waitShown)
-  || (FORM.relayShown !== undefined && FORM.relayShown !== relayUp()) || (FORM.linkK !== undefined && FORM.linkK !== linkIndex()));
+  || (FORM.relayShown !== undefined && FORM.relayShown !== relayUp()) || (FORM.linkK !== undefined && FORM.linkK !== linkIndex())
+  || (FORM.paidShown !== undefined && FORM.paidShown !== paidSig()));
 const privacyView = (c, amount, to, via) => {
   const p = privacyCheck(c, amount, to, via);
   if (!p) return html`<div class="pv"><p class="note">Checking how well this blends in…</p></div>`;
@@ -1984,6 +2053,17 @@ const done = (c, h, text) => { say($('#status'), html`<span class="ok">${text}</
 // → whether it is in a block now, read from the node the wallet read it from.
 const mined = (c, h, via) => (via === 'self' ? rpcApart(c) : rpcOn(c)).then((rpc) => rpc('eth_getTransactionReceipt', [h])).then((r) => !!r && (r.status === '0x1' || r.status === 1), () => false);
 const UNMINED = 'Sent; not in a block yet. Check Activity before sending again.';
+// A private payment's success line offers its proof once the history has read the payment.
+const SENT = { v: null };
+function offerProof() {
+  const s = SENT.v, el = $('#status');
+  if (!s || !el.querySelector(`a[href$="${s.h}"]`) || el.querySelector('[data-sproof]')) return;
+  const r = (CH[s.c.chainId].hist?.rows || []).find((x) => lc(x.tx) === lc(s.h) && x.kind === 'sent' && x.proof);
+  if (!r) return;
+  SENT.v = null;
+  el.insertAdjacentHTML('beforeend', html` <button class="link" type="button" data-sproof="${s.c.key}:${r.tx}:${r.proof.k}:${r.proof.e.toString(16).padStart(64, '0')}">Copy proof of payment</button> <span class="mute">Anyone with their address can check it was paid. It shows nothing else.</span>`.s);
+}
+document.addEventListener('click', (e) => { const b = e.target.closest?.('[data-sproof]'); if (b) copy(`${location.origin}/pay/eth/#proof=${b.dataset.sproof}`, 'Proof link copied.'); });
 // Its success line once the transaction is in a block; until then, that it was sent and is not in one yet. → mined
 async function finish(c, h, via, text) {
   if (await mined(c, h, via)) { done(c, h, text); return true; }
@@ -2300,6 +2380,7 @@ function formSend(f) {
       if (ofReq && REQ.v === req && (!req.amount || a === req.amount)) Object.assign(req, { paid: { h, c, a }, state: 'in', err: null });
       clearDraft('f-amt', 'f-to');
       const ok = await finish(c, h, via, `Sent ${exact(a)} ETH privately.`);
+      SENT.v = { c, h };
       if (ofReq && REQ.v === req && req.paid?.h === h) Object.assign(req, { state: ok ? 'in' : 'pending' });
     });
   };
@@ -2564,13 +2645,14 @@ function formWithdraw(f) {
     if (!a) throw new Error('Enter an amount.');
     const W = await walletOn(c);
     if (l2) {
-      // The move names a refund address of this key; it must come after the newest payment link's, read from history.
+      // The move names a refund address of this key; it must come after the newest payment link's.
+      const ok = (x) => !!CH[x.chainId].hist && !CH[x.chainId].histErr, missing = () => CHAINS.filter((x) => !ok(x) && (x === CHAINS[0] || boxTop(x) == null));
       let k = linkIndex();
-      if (k == null) {                                              // a chain's history unread or failed: read it again first
-        await Promise.all(CHAINS.map((x) => (CH[x.chainId].hist && !CH[x.chainId].histErr ? null : historyOf(x, true).catch(() => {}))));
+      if (k == null) {                                              // not read yet, or a read failed: read it again first
+        await Promise.all(missing().map((x) => (x === CHAINS[0] ? historyOf(x, true).catch(() => {}) : boxScan(x))));
         k = linkIndex();
       }
-      if (k == null) throw new Error(`Your history on ${CHAINS.filter((x) => !CH[x.chainId].hist || CH[x.chainId].histErr).map((x) => x.name).join(' and ')} could not be read, and this move needs it to pick an address no payment link uses. Try again in a minute.`);
+      if (k == null) throw new Error(`Your addresses on ${new Intl.ListFormat('en').format(missing().map((x) => x.name))} could not be read, and this move needs them to pick an address no payment link uses. Try again in a minute.`);
       W.watchThrough(k);
       const h = await W.bridgeOut({ toChainId: l2.chainId, amount: a, l2Rpc: await rpcOn(l2), maxFee, onStep: step });
       walletOn(l2).then((w) => w.watchReceive()).catch(() => {});
@@ -2640,18 +2722,58 @@ async function ownName(n) {
   if (lc(d.bp) !== lc(S.key.bp)) throw new Error(`${d.label || n} points to a different Tacit address.`);
   return d;
 }
+// The link Receive shows stays on screen once drawn: when its address is paid, it says so there, until "New link".
+const SHOWN = { pub: null, k: null, seen: null, told: null };
+// What became of link k's address: paid and being moved in, or moved into the private balance. → { c, v, state } or null
+function linkPaid(k) {
+  if (k == null || !S.key) return null;
+  for (const c of CHAINS) {
+    const r = (CH[c.chainId].hist?.rows || []).find((x) => x.kind === 'link' && x.box === k);
+    if (r) return { c, v: r.v + (r.fee || 0n), state: 'in' };
+  }
+  if (SHOWN.seen?.k === k) return SHOWN.seen;
+  for (const c of CHAINS) { const h = BOXST.for === S.key.pubHex && BOXST.hit[c.chainId]?.[k]; if (h) return { c, v: null, state: h }; }
+  return null;
+}
+const paidSig = () => { const p = linkPaid(SHOWN.k); return p ? `${p.state}:${p.v}` : ''; };
+// A payment to the shown link is said once, wherever the page is, and Receive shows it whichever chain it came on.
+function announceLink() {
+  const p = linkPaid(SHOWN.k);
+  if (!S.busy && S.tab === 'receive' && FORM.paidShown !== undefined && FORM.paidShown !== paidSig()) renderForm();
+  if (!p || SHOWN.told === SHOWN.k) return;
+  SHOWN.told = SHOWN.k;
+  toast(`Your payment link was paid${p.v != null ? `: ${eth(p.v)} ETH` : ''} on ${p.c.full}.`);
+}
+// What the link's one-time address still waits for, as it is read.
+function linkWaitView() {
+  const busy = [], failed = [];
+  for (const c of CHAINS) {
+    const st = CH[c.chainId], histOk = !!st.hist && !st.histErr, boxDown = !!BOXST.err[c.chainId] && !BOXST.p[c.chainId];
+    const needHist = (c === CHAINS[0] && !histOk) || (boxDown && !histOk), needBoxes = boxTop(c) == null && !histOk;
+    if (!needHist && !needBoxes) continue;
+    if (needHist && st.histErr && !st.histing) { failed.push(c); continue; }
+    busy.push(needHist ? `your ${c.name} history${st.histWork?.of ? ` (${st.histWork.read} of ${st.histWork.of})` : st.histProg != null ? ` (${Math.floor(st.histProg * 100)}%)` : ''}`
+      : `your addresses on ${c.name}${BOXST.read[c.chainId] ? ` (${BOXST.read[c.chainId]} read)` : ''}`);
+  }
+  const list = (xs) => new Intl.ListFormat('en').format(xs);
+  return html`Adding a one-time deposit address, so any wallet can pay with no download.${busy.length ? ` Reading ${list(busy)}…` : !failed.length ? ' Almost ready…' : ''}${failed.length
+    ? html` <span class="err">Couldn’t read ${list(failed.map((x) => x.name))} yet; trying again shortly.</span> <button class="link" type="button" id="f-hre">Try now</button>` : ''}`;
+}
+const paintLinkWait = () => { const el = $('#f-wait'); if (el) mountOnce(el, linkWaitView()); };
 function formReceive(f) {
-  const c = S.chain, W = cur().W, k = linkIndex(), box = k != null ? BOXQ.at[k] : null;
+  const c = S.chain, W = cur().W, live = linkIndex();
+  if (SHOWN.pub !== S.key.pubHex) Object.assign(SHOWN, { pub: S.key.pubHex, k: null, seen: null, told: null });
+  // A link that was paid stays until "New link"; one that turned out not to be the next (an address found in use) gives way.
+  if (SHOWN.k != null && live != null && live > SHOWN.k && !linkPaid(SHOWN.k)) SHOWN.k = null;
+  const k = SHOWN.k ?? live, box = k != null ? BOXQ.at[k] : null, paid = linkPaid(k);
+  if (box) SHOWN.k = k;
   FORM.needsW = !W;
   FORM.needsLink = !box;
-  FORM.linkK = k ?? undefined;
+  FORM.linkK = live ?? undefined;
+  FORM.paidShown = paidSig();
   if (k != null && !box) boxMap(k + 1).then(() => { if (FORM.needsLink && !S.busy && S.tab === 'receive') renderForm(); });
-  const failed = CHAINS.filter((x) => CH[x.chainId].histErr);
-  // The link waits for every chain's history, as the same address serves every chain and is never handed out twice.
-  const stuck = failed.filter((x) => CH[x.chainId].histFails >= 3), names = (xs) => new Intl.ListFormat('en').format(xs.map((x) => x.name));
-  const wait = k != null ? html`<p class="note">Preparing your link…</p>`
-    : !failed.length ? html`<p class="note">Reading your history… A link waits for every chain, so it never repeats an address.</p>`
-    : html`<p class="note ${stuck.length ? 'err' : ''}">${stuck.length ? html`Couldn’t read your history on ${names(stuck)} after several tries.` : html`Reading your history on ${names(failed)} again in a moment…`} A link waits for every chain, so it never repeats an address. <button class="link" type="button" id="f-hre">Try now</button></p>`;
+  const min = paid && CH[paid.c.chainId].quote?.receiveMin ? BigInt(CH[paid.c.chainId].quote.receiveMin) : null;
+  const waits = paid?.state === 'moving' && ((min && paid.v != null && paid.v < min) || !chainKeeper(paid.c) || CH[paid.c.chainId].quoteErr);
   mount(f, html`
     <div class="blk"><div class="lbl"><span>Get paid</span><span>anyone can pay, from any wallet</span></div>
       ${amountField('f-ramt', 'Amount (optional)')}
@@ -2661,13 +2783,16 @@ function formReceive(f) {
       <div class="lbl"><span>Your name in the link (optional)</span><span>keeps it short</span></div>
       <div class="amt text"><input id="f-rname" placeholder="you.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name in the link"></div>
       <p class="note" id="f-rnote" role="status" hidden></p>
-      <div class="qrbox" id="f-qr">${box ? '' : wait}</div>
-      <div class="row2"><button class="btn" type="button" id="f-link" ${box ? '' : 'disabled'}>Copy payment link</button><button class="btn ghost" type="button" id="f-share" ${box ? '' : 'disabled'}>Share</button></div>
+      <div class="qrbox" id="f-qr"${paid ? html` style="opacity:.35"` : ''}></div>
+      ${paid ? html`<p class="note ${paid.state === 'in' ? 'ok' : ''}" role="status">${paid.state === 'in' ? '' : html`<span class="spin" aria-hidden="true"></span>`}Paid${paid.v != null ? ` · ${eth(paid.v)} ETH` : ''} on ${paid.c.full} · ${paid.state === 'in' ? 'in your private balance' : waits ? 'waiting at its address: take it in under Deposit, From an exchange' : 'moving into your private balance'}</p>
+      <div class="row2"><button class="btn" type="button" id="f-new" style="grid-column:1 / -1">New link</button></div>`
+    : html`${box ? '' : html`<p class="note" id="f-wait">${k != null ? 'Preparing your link…' : linkWaitView()}</p>`}
+      <div class="row2"><button class="btn" type="button" id="f-link" ${box ? html`data-box="${k}"` : ''}>Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>`}
       <p class="note">Paid from a Tacit wallet, it is private end to end. Paid from any other wallet, it reaches your private balance on ${c.full}, usually within minutes, for at most 0.25%. Each paid link gets a fresh address, so your payments aren’t linked to each other.</p></div>
     ${UNIFIED_LIVE ? html`<div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
       <div class="addr"><code>${unifiedAddress()}</code><button class="link" type="button" data-copy="${unifiedAddress()}">copy</button></div>
       <p class="note">ID <b class="num nw">${addressId(unifiedAddress())}</b>. Whoever pays you sees the same ID, so you can check it matches.</p>
-      <p class="note">Anyone using Tacit can pay you privately with it, in any pool and on any chain. It never appears on chain. Your pool-only address (ID <span class="num nw">${addressId(S.key.bp)}</span>) still works too: <button class="link" type="button" data-copy="${S.key.bp}">copy bp1…</button></p></div>
+      <p class="note">Anyone using Tacit can pay you privately with it, on Bitcoin, Ethereum, Base and Robinhood Chain. It never appears on chain. Your pool-only address (ID <span class="num nw">${addressId(S.key.bp)}</span>) still works too: <button class="link" type="button" data-copy="${S.key.bp}">copy bp1…</button></p></div>
       <div id="f-up"></div>`
     : html`<div class="blk"><div class="lbl"><span>Your pool address</span><span>same on every chain</span></div>
       <div class="addr"><code>${S.key.bp}</code><button class="link" type="button" data-copy="${S.key.bp}">copy</button></div>
@@ -2675,15 +2800,20 @@ function formReceive(f) {
       <p class="note">For private payments from other Tacit users. It never appears on chain, and it receives in the Bitcoin pool too. From an exchange, use Deposit.</p></div>`}`);
   if (UNIFIED_LIVE) nameUpgrade().then((plan) => { const el = $('#f-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });
   $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
-  $('#f-hre')?.addEventListener('click', () => CHAINS.forEach((x) => { if (!CH[x.chainId].hist || CH[x.chainId].histErr) historyOf(x, true); }));
-  if (!box) return;
-  const ns = signBox(S.keys.v, box.npk), amtEl = $('#f-ramt'), forEl = $('#f-rfor'), copyB = $('#f-link'), shareB = $('#f-share'), qr = $('#f-qr');
+  f.querySelector('.blk').addEventListener('click', (e) => {
+    if (!e.target.closest('#f-hre')) return;
+    for (const x of CHAINS) { if (BOXST.err[x.chainId]) boxScan(x); if (!CH[x.chainId].hist || CH[x.chainId].histErr) historyOf(x, true); }
+  });
+  $('#f-new')?.addEventListener('click', () => { Object.assign(SHOWN, { k: null, seen: null }); clearDraft('f-ramt', 'f-rfor'); renderForm(); $('#f-ramt')?.focus(); });
+  // Until the one-time address is in, the link pays the Tacit address: private from a Tacit wallet, and from any other
+  // wallet the payer proves the deposit on their device first.
+  const ns = box ? signBox(S.keys.v, box.npk) : null, amtEl = $('#f-ramt'), forEl = $('#f-rfor'), copyB = $('#f-link'), shareB = $('#f-share'), qr = $('#f-qr');
   // A typed amount that is not a number is not left out of the link: the link, the QR code and the buttons wait for a valid one.
   const amount = () => { const t = amtEl.value.trim(), a = t ? parseUnits(t) : null; return { bad: !!t && a == null, a }; };
   // A name in the link, once it is checked to point at this key, stands for the address: a shorter link and QR code.
   let named = null, nseq = 0, ntimer = 0;
   const nameEl = $('#f-rname'), nameNote = $('#f-rnote'), pub = S.key.pubHex;
-  const link = (a) => payLink({ bp: named || (UNIFIED_LIVE ? unifiedAddress() : S.key.bp), n: box.npk, ns, amount: a, chain: c, note: forEl.value.trim() });
+  const link = (a) => payLink({ bp: named || (UNIFIED_LIVE ? unifiedAddress() : S.key.bp), n: box?.npk, ns, amount: a, chain: c, note: forEl.value.trim() });
   const checkName = async () => {
     const v = lc(nameEl.value.trim()), my = ++nseq;
     named = null;
@@ -2716,16 +2846,17 @@ function formReceive(f) {
   FORM.check = () => {
     const { bad } = amount();
     $('#f-rerr').hidden = !bad;
-    copyB.disabled = shareB.disabled = bad;
+    if (copyB) copyB.disabled = shareB.disabled = bad;
     clearTimeout(timer);
     if (bad) { drawn = null; mount(qr, html``); } else if (!drawn) draw(); else timer = setTimeout(draw, 150);
   };
-  copyB.onclick = () => { const { bad, a } = amount(); if (!bad) copy(link(a), 'Payment link copied'); };
+  if (copyB) copyB.onclick = () => { const { bad, a } = amount(); if (!bad) copy(link(a), 'Payment link copied'); };
   // The name kept from before, else the connected wallet's primary name when its record is this key.
   nameEl.value = nameEl.value || readJson(NAME_PREF + pub) || '';
   if (nameEl.value) checkName();
   else if (S.wallet) getNames().then((n) => n.findPrimary(S.wallet)).then(({ primary }) => primary && ownName(primary.name))
     .then((d) => { if (d && nameEl.isConnected && !nameEl.value) { nameEl.value = d.label; checkName(); } }).catch(() => {});
+  if (!shareB) return;
   if (!navigator.share) { shareB.hidden = true; copyB.style.gridColumn = '1 / -1'; }
   shareB.onclick = () => { const { bad, a } = amount(); if (!bad) navigator.share({ title: 'Pay me', text: `Pay me${a ? ` ${fmt(a, 18, 6)} ETH` : ''} on ${c.full}. Private if you use Tacit.`, url: link(a) }).catch(() => {}); };
 }

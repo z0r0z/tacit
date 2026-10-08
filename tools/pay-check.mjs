@@ -105,7 +105,7 @@ async function readQr(p) {
 }
 const getPaidLink = async (p, amount, note) => {
   await p.click('#tabs [data-tab="receive"]');
-  await p.waitForSelector('#f-link:not([disabled])', { timeout: 900e3 });
+  await p.waitForSelector('#f-link[data-box]:not([disabled])', { timeout: 900e3 });     // the link with its one-time deposit address
   await p.fill('#f-ramt', amount); await p.fill('#f-rfor', note); await sleep(300);
   await p.click('#f-link');
   return p.evaluate(() => navigator.clipboard.readText());
