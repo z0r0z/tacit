@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-HzEx61Dm6k10ydC96wC5l7XUa+i3Sy+qL7vPv1pWwZE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-I6Gu/NrdX9akYetVJ8nvutk2nu+8IJC+e2mdLl2Gb5A=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=0885ec9a"></script>
 <title>tacit</title>
@@ -286,6 +286,7 @@ a.di { color: inherit; text-decoration: none; }
 .tpx td { text-align: right; white-space: nowrap; }
 .tpx small { display: block; margin-top: 1px; font-size: 11px; color: var(--mute); }
 .tpx .note { margin: 0; padding: 8px 12px 10px; border-top: 1px solid var(--hair); }
+.tpx thead th { padding: 0; border: 0; }
 
 /* ── first visit ── */
 .start { margin: -14px 0 30px; padding: 22px 24px; background: var(--card); border: 1px solid var(--hair); }
@@ -3165,7 +3166,7 @@ function holderTier(addr) {
 }
 // `kind`: 'v1' (a wrap into the Tacit pool) or 'dev' (a deposit into the ETH pool on any chain).
 let PTSINFO = false;
-const ptsWhy = () => `Points share each day’s pot of up to ${potTac()} TAC. You earn ${rateStr(ethBase())} per ETH, times an early bonus that shrinks as deposits add up, times more for holding TAC for a day (and ${PGM.wrapBoost} for a wrap into the Tacit pool).${weekMax() ? ` The day’s points are then multiplied by up to ${weekMax().max} for activity across kinds and days in the week${weekMax().from ? `, from ${dayShort(weekMax().from)}` : ''}.` : ''} This is an estimate: the program counts deposits from its own records.`;
+const ptsWhy = () => `Points share each day’s pot of up to ${potTac()} TAC. You earn ${rateStr(ethBase())} per ETH, times an early bonus that shrinks as deposits add up, times more for holding TAC for a day (and ×${PGM.wrapBoost} for a wrap into the Tacit pool).${weekMax() ? ` The day’s points are then multiplied by up to ${weekMax().max} for activity across kinds and days in the week${weekMax().from ? `, from ${dayShort(weekMax().from)}` : ''}.` : ''} This is an estimate: the program counts deposits from its own records.`;
 document.addEventListener('click', (e) => {
   if (!e.target.closest?.('[data-ptsinfo]')) return;
   PTSINFO = !PTSINFO;
@@ -3354,7 +3355,7 @@ function v1Send(el, status) {
   mount(el, html`
     <div class="lbl"><span>To</span></div>
     <div class="amt text"><input id="s-to" placeholder="tacit1… or name.wei" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
-    <div class="lbl"><span>Amount</span><button type="button" id="s-max">${heldLabel('eth', 8, 6, 'tETH')}</button></div>
+    <div class="lbl"><span>Amount</span><button type="button" id="s-max"${maxAria(`Use all: ${fmt(spendable('eth'), 8, 6)} tETH`)}>${heldLabel('eth', 8, 6, 'tETH')}</button></div>
     <div class="amt"><input id="s-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to send"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
     <div class="rcpt" id="s-rcpt" hidden></div>
     <button class="btn" type="button" id="s-go" disabled>Send privately</button>
@@ -3545,7 +3546,7 @@ function v1Out(el, status) {
   mount(el, html`
     <div class="lbl"><span>To</span><span><button type="button" id="o-dev">On this device</button> · <button type="button" id="o-me">${mine()}</button></span></div>
     <div class="amt text"><input id="o-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
-    <div class="lbl"><span>Amount</span><button type="button" id="o-max">${heldLabel('eth', 8, 6, 'tETH')}</button></div>
+    <div class="lbl"><span>Amount</span><button type="button" id="o-max"${maxAria(`Use all: ${fmt(spendable('eth'), 8, 6)} tETH`)}>${heldLabel('eth', 8, 6, 'tETH')}</button></div>
     <div class="amt"><input id="o-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
     <div class="rcpt" id="o-rcpt" hidden></div>
     <button class="btn" type="button" id="o-go" disabled>Withdraw ETH</button>`);
@@ -3923,12 +3924,22 @@ async function artifact(name, sha, onProgress) {
   let bytes;
   if (hit) bytes = new Uint8Array(await hit.arrayBuffer());
   else {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
-    const total = Number(r.headers.get('content-length')) || 0, reader = r.body.getReader(), parts = [];
-    let got = 0;
-    for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; onProgress?.(name, got, total); }
-    bytes = new Uint8Array(got); let o = 0; for (const c of parts) { bytes.set(c, o); o += c.length; }
+    // A download that sends nothing for a minute is given up, so a stalled connection says so instead of waiting on it.
+    const ac = typeof AbortController === 'function' ? new AbortController() : null;
+    let stall = null;
+    const arm = () => { if (!ac) return; clearTimeout(stall); stall = setTimeout(() => ac.abort(), 60e3); };
+    try {
+      arm();
+      const r = await fetch(url, ac ? { signal: ac.signal } : undefined);
+      if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+      const total = Number(r.headers.get('content-length')) || 0, reader = r.body.getReader(), parts = [];
+      let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; arm(); parts.push(value); got += value.length; onProgress?.(name, got, total); }
+      bytes = new Uint8Array(got); let o = 0; for (const c of parts) { bytes.set(c, o); o += c.length; }
+    } catch (e) {
+      if (ac?.signal.aborted) throw new Error('The proving files stopped downloading. Check your connection and try again.');
+      throw e;
+    } finally { clearTimeout(stall); }
   }
   if (hexOf(await crypto.subtle.digest('SHA-256', bytes)) !== strip(sha).toLowerCase()) {
     if (hit) await cache.delete(key).catch(() => {});
@@ -4008,7 +4019,7 @@ async function moveToV1(run, W, amount, step, via = null, maxFee = null) {
   run.check();
   const label = `Move ${fmt(amount, 18, 6)} ETH into the Tacit pool`;
   if (via) { await payingAccount(); W.connect(payFrom(1, label)); }
-  const sent = await W.toV1({ amount, commit: '0x' + strip(w.commit), via, maxFee, onStep: step }), h = via ? sent : keeperTx(sent, 1, label);
+  const sent = await W.toV1({ amount, commit: '0x' + strip(w.commit), via, maxFee, now: chainNow(), onStep: step }), h = via ? sent : keeperTx(sent, 1, label);
   if (P.scan) P.scan.at = 0;                                     // the Tacit pool balance is read again on its next view
   step('the Tacit pool relay is proving your note');
   // toV1 returns once the move is mined, so from here the deposit waits in the Tacit pool for its Finish.
@@ -4150,9 +4161,17 @@ function renderDevice(el) {
     if (canSelf) RETRY['d-self'] = () => { DEV.self = true; rerender('eth'); };
     return html`<p class="note err">The relay’s fee could not be read; trying again.${canSelf ? html` <button class="link" type="button" data-retry="d-self">Send it from ${your()} instead</button>` : ''}</p>`;
   };
-  // Everything a send or withdrawal can take: the private balance less the relay fee.
-  const maxPriv = DEV.bal != null ? html`<button type="button" id="d-maxp">Private ${fmt(DEV.bal, 18, 4)} ETH</button>` : '';
-  const wireMax = () => { wireRoute(); $('#d-maxp')?.addEventListener('click', () => { const fe = relayFeeNow(), left = DEV.bal > fe ? DEV.bal - fe : 0n, v = DEV.mode === 'out' && c.chainId === 1 && DEV.dest === 'v1' ? left - left % E10 : left, amt = $('#d-amt'); amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); }); };
+  // A spend is paid from two notes. When no two cover it, the wallet first merges notes, each merge paying the relay fee
+  // too (its own mergePlan): → how many merges it makes, or null when no run of them covers it.
+  if (W && !DEV.plan && DEV.mode === 'out') getDeviceMods().then((m) => { DEV.plan = m.mergePlan; rerender('eth'); }).catch(() => {});
+  const merges = (amount, fee) => (W && DEV.plan ? DEV.plan(W.notes().map((n) => n.v), amount + fee, fee) : DEV.bal != null && amount + fee <= DEV.bal ? 0 : null);
+  const combineRow = (m, fee) => (m && fee ? html`<div class="kv"><span>Relay fee to combine notes${m > 1 ? ` (×${m})` : ''}</span><b>${fmt(fee * BigInt(m), 18, 6)} ETH</b></div>` : '');
+  const overText = (amount, fee) => (DEV.bal == null || amount + fee > DEV.bal ? (fee ? 'More than your private balance, once the relay fee is counted.' : 'More than your private balance.')
+    : fee ? 'More than your private balance, once the relay fees to combine its notes are counted.' : 'More than one withdrawal can take: your private balance is spread over too many notes.');
+  // Everything a send or withdrawal can take: the most that its merges and its relay fee leave.
+  const maxOut = (fee) => { let lo = 0n, hi = DEV.bal ?? 0n; while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (merges(mid, fee) != null) lo = mid; else hi = mid - 1n; } return lo; };
+  const maxPriv = DEV.bal != null ? html`<button type="button" id="d-maxp" aria-label="Use all: ${fmt(DEV.bal, 18, 4)} ETH private">Private ${fmt(DEV.bal, 18, 4)} ETH</button>` : '';
+  const wireMax = () => { wireRoute(); $('#d-maxp')?.addEventListener('click', () => { const left = maxOut(relayFeeNow()), v = DEV.mode === 'out' && c.chainId === 1 && DEV.dest === 'v1' ? left - left % E10 : left, amt = $('#d-amt'); amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); }); };
   if (DEV.mode === 'deposit') {
     mount(f, html`${amountField('d-amt', 'Amount', html`<button type="button" id="d-max">${payName()} <span id="d-wb"><span class="sk" style="--w:5ch"></span></span> ETH</button>`)}
       <div class="lbl"><span>To</span><span>yourself, unless you name someone</span></div>
@@ -4165,12 +4184,18 @@ function renderDevice(el) {
     const amt = $('#d-amt'), go = $('#d-go'), rc = $('#d-rcpt'), toEl = $('#d-dto'), dsv = { raw: '', r: null };
     const rpcOf = async () => (await getDeviceMods()).jsonRpc(c.rpc);
     const wbEl = $('#d-wb');
-    rpc('eth_getBalance', [S.address, 'latest'], c.rpc).then((b) => { if (!wbEl.isConnected) return; wb = BigInt(b); wbEl.textContent = fmt(wb, 18, 4); check(); }).catch(() => { if (wbEl.isConnected) wbEl.textContent = '—'; });
+    rpc('eth_getBalance', [S.address, 'latest'], c.rpc).then((b) => { if (!wbEl.isConnected) return; wb = BigInt(b); wbEl.textContent = fmt(wb, 18, 4); $('#d-max')?.setAttribute('aria-label', `Use all but gas: ${fmt(wb, 18, 4)} ETH in ${payName()}`); check(); }).catch(() => { if (wbEl.isConnected) wbEl.textContent = '—'; });
+    // A pool address is read with the decoder the deposit itself uses, so a typo shows here and not at the press.
+    let bpKeys = null;
+    const bpCheck = (raw) => getDeviceMods().then((m) => {
+      try { m.recipientOf(bpKeys ||= m.evmPoolKeys(m.zk, walletPriv()), raw); return { bp: raw }; }
+      catch { return { error: 'That is not a valid pool address (bp1…). Check it for a typo.' }; }
+    }, (e) => ({ error: errText(e) }));
     const check = () => {
       const amount = parseUnits(amt.value), raw = toEl.value.trim();
       if (raw && dsv.raw !== raw) {
         dsv.raw = raw; dsv.r = null;
-        (/^bp1/i.test(raw) ? Promise.resolve({ bp: raw }) : /^tacit1/i.test(raw) || /\.(g?wei|eth)$/i.test(raw) ? devResolve(raw) : Promise.resolve({ error: 'Enter a pool address (bp1…), a Tacit address or a name, or leave it empty for yourself.' }))
+        (/^bp1/i.test(raw) ? bpCheck(raw) : /^tacit1/i.test(raw) || /\.(g?wei|eth)$/i.test(raw) ? devResolve(raw) : Promise.resolve({ error: 'Enter a pool address (bp1…), a Tacit address or a name, or leave it empty for yourself.' }))
           .then((r) => { if (dsv.raw === raw) { dsv.r = r; check(); } });
       }
       go.disabled = true; rc.hidden = true; mount(rc, html``);
@@ -4245,23 +4270,23 @@ function renderDevice(el) {
         let bad = null;
         if (raw) { try { recipientOf(raw); } catch (x) { bad = x; } }
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
-        const relayFee = relayFeeNow();
+        const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div><div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>`);
-        const over = DEV.bal != null && amount + relayFee > DEV.bal;
+        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>`);
+        const over = m == null;
         go.disabled = !raw || !!bad || over;
         if (!raw) {}
         else if (bad && !/^0(x[0-9a-fA-F]{0,39})?$/i.test(raw)) warn(rc, bad.message);            // not while an address is still being typed
-        else if (over) warn(rc, 'More than your private balance.');
+        else if (over) warn(rc, overText(amount, relayFee));
         else rc.hidden = !relayFee;
       } else {
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
-        const relayFee = relayFeeNow();
+        const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div><div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>`);
-        const over = DEV.bal != null && amount + relayFee > DEV.bal, coarse = dest === 'v1' && amount % E10 !== 0n;
+        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>${fmt(relayFee, 18, 6)} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>`);
+        const over = m == null, coarse = dest === 'v1' && amount % E10 !== 0n;
         go.disabled = over || coarse;
-        if (over) warn(rc, 'More than your private balance, once the relay fee is counted.');
+        if (over) warn(rc, overText(amount, relayFee));
         else if (coarse) warn(rc, 'The Tacit pool takes up to 8 decimals.');
         else rc.hidden = !relayFee;
       }
@@ -4282,7 +4307,7 @@ function renderDevice(el) {
         }
         else if (dest === 'v1') { h = await moveToV1(run, W2, amount, step, via, maxFee); done = 'Moved into the Tacit pool as tETH.'; }
         else {
-          h = keeperTx(await W2.bridgeOut({ toChainId: l2.chainId, amount, maxFee, l2Rpc: (await getDeviceMods()).jsonRpc(l2.rpc), onStep: step }), 1, `Move ${fmt(amount, 18, 6)} ETH to ${l2.name}`);
+          h = keeperTx(await W2.bridgeOut({ toChainId: l2.chainId, amount, maxFee, now: chainNow(), l2Rpc: (await getDeviceMods()).jsonRpc(l2.rpc), onStep: step }), 1, `Move ${fmt(amount, 18, 6)} ETH to ${l2.name}`);
           devWalletOn(l2.chainId).then((w) => w.watchReceive()).catch(() => {});   // that chain's keeper sweeps the arrival in
           done = `On its way to ${l2.name}.`;
         }
@@ -4293,6 +4318,7 @@ function renderDevice(el) {
         if (e?.said || waitRanOut(e)) { clearField(amt); rc.hidden = true; afterAction(html`<span class="err">${errText(e)}</span>`); }
         else if (e?.feeMoved != null) await feeMoved(e);
         else if (dest === 'addr' || dest === 'v1') failed(e);
+        else if (l2 && l2.chainId !== 8453 && /^not enough in the pool/.test(e?.message || '')) sayErr(status, new Error(`More than your private balance, once ${l2.name}’s bridge fee is counted as well: its ticket is priced as the move is sent. Try a little less.`));
         else sayErr(status, e);
       }
     });
@@ -4685,18 +4711,25 @@ function paintTacPrice() {
   const sats = (eth) => (v.ethBtc ? (eth / v.ethBtc) * 1e8 : null), ethOfSats = (n) => (v.ethBtc ? (n / 1e8) * v.ethBtc : null);
   const usd = v.ethBtc && v.usdBtc ? (v.mid / v.ethBtc) * v.usdBtc : null;
   const gap = (eth) => (eth == null ? '' : `${eth >= v.mid ? '+' : '−'}${Math.abs((eth / v.mid - 1) * 100).toFixed(1)}%`);
-  const row = (name, what, eth, satsV, cmp = gap(eth)) => html`<tr><th>${name}<small>${what}</small></th>
+  const row = (name, what, eth, satsV, cmp = gap(eth)) => html`<tr><th scope="row">${name}<small>${what}</small></th>
     <td>${eth == null ? '—' : `${sig(eth)} ETH`}<small>${satsV == null ? '' : `${satsFmt(satsV)} sats`}</small></td><td>${cmp}<small>&nbsp;</small></td></tr>`;
   const open = box.open;
-  mount(box, html`<summary><span>TAC</span><b class="num">${sig(v.mid)} ETH</b><span class="mute num">${sats(v.mid) != null ? `${satsFmt(sats(v.mid))} sats` : ''}${usd != null ? ` · $${usd.toFixed(usd < 1 ? 3 : 2)}` : ''}</span><span class="more">Where it trades</span></summary>
-    <table class="num"><tbody>
+  const head = html`<span>TAC</span><b class="num">${sig(v.mid)} ETH</b><span class="mute num">${sats(v.mid) != null ? `${satsFmt(sats(v.mid))} sats` : ''}${usd != null ? ` · $${usd.toFixed(usd < 1 ? 3 : 2)}` : ''}</span><span class="more">Where it trades</span>`;
+  const body = html`<table class="num"><thead><tr><th scope="col"><span class="sr">Where</span></th><th scope="col"><span class="sr">Mid price</span></th><th scope="col"><span class="sr">Against the Precision pool</span></th></tr></thead><tbody>
       ${row('Precision pool', 'Ethereum, the deepest', v.mid, sats(v.mid), 'reference')}
       ${row('Tacit AMM', 'Ethereum, public', v.amm, v.amm == null ? null : sats(v.amm))}
       ${row('Private AMM', 'in the Tacit pool', TPX.amm ?? null, TPX.amm ? sats(TPX.amm) : null, TPX.amm === undefined ? (TPX.ammErr ? '—' : '…') : gap(TPX.amm ?? null))}
       ${v.mark ? row('Bitcoin order book', 'recent trades', ethOfSats(v.mark), v.mark) : ''}
-      ${v.ask ? row('', 'cheapest ask now', ethOfSats(v.ask), v.ask) : ''}
+      ${v.ask ? row(html`<span class="sr">Bitcoin order book</span>`, 'cheapest ask now', ethOfSats(v.ask), v.ask) : ''}
     </tbody></table>
-    <p class="note">Mid prices, against the Precision pool's. Sats and ETH meet at the collateral engine's BTC price. <a href="${TAC_BOOK}">The Bitcoin order book →</a></p>`);
+    <p class="note">Mid prices, against the Precision pool's. Sats and ETH meet at the collateral engine's BTC price. <a href="${TAC_BOOK}">The Bitcoin order book →</a></p>`;
+  // A summary already drawn keeps its element, so keyboard focus on it survives a repaint; only what it says is replaced.
+  const sum = box.querySelector(':scope > summary');
+  if (sum) {
+    if (sum.innerHTML !== head.s) mount(sum, head);
+    while (sum.nextSibling) sum.nextSibling.remove();
+    sum.insertAdjacentHTML('afterend', body.s);
+  } else mount(box, html`<summary>${head}</summary>${body}`);
   box.open = open;
   box.hidden = false;
   box.ontoggle = () => { if (box.open && TPX.amm === undefined) loadPrivateAmm().then(paintTacPrice); };
@@ -5282,7 +5315,7 @@ function renderAirdrop(el) {
   const finish = async (r, who, run) => {
     say(status, html`Claiming… ${txLink(r.txHash)}`);
     const w = await air.waitClaimed(who);
-    if (w.claimed) { await loadAirdrop(true); rerender('tac'); toast('TAC claimed'); }
+    if (w.claimed) { say(status, html`<span class="ok">Claimed.</span> ${txLink(r.txHash)}`); await loadAirdrop(true); rerender('tac'); toast('TAC claimed'); }
     else { say(status, html`<span class="err">Sent, not confirmed yet.</span> ${txLink(r.txHash)} Check it there before claiming again.`); run.release(true); }
   };
   const c = $('#air-claim');
