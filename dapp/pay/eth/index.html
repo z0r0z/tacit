@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rd0Txs1Lz3DuM8/0xfMzA9fVNMA7hdpL9KeQ2AXAiMw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fo3dIWb13vbQCuV75d4BNZ2XADNrVpMefPflTham3EQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
@@ -311,7 +311,8 @@ input::placeholder { color: var(--mute); opacity: 1; }
 .perks b { font-weight: 500; }
 .earn { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 4px; }
 .earn div { padding: 10px 12px; background: var(--field); border: 1px solid var(--hair); }
-.earn b { display: block; font: 500 18px/1.2 var(--mono); letter-spacing: -.02em; }
+.earn b { display: block; font: 500 18px/1.2 var(--mono); letter-spacing: -.02em; overflow-wrap: anywhere; }
+@media (max-width: 400px) { .earn b { font-size: 14px; } }
 .earn span { font-size: 11.5px; color: var(--mute); }
 .pts-line { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .note .link, .callout .link, .status .link { padding: 6px 2px; margin: -6px -2px; }
@@ -870,7 +871,7 @@ function forget() {
   S.key = null; S.keys = null; Object.assign(BOXQ, { for: null, map: null, at: [] }); Object.assign(GIFTQ, { for: null, by: {} }); LINKSHOW.v = null; PLANS.clear();
   for (const c of CHAINS) JUST[c.chainId].length = 0;
   for (const k of Object.keys(DRAFT)) delete DRAFT[k];
-  if (REQ.v) { DRAFT['f-to'] = REQ.v.bp; if (REQ.v.amount) DRAFT['f-amt'] = plain(REQ.v.amount); }
+  if (REQ.v && !REQ.v.paid) { DRAFT['f-to'] = REQ.v.bp; if (REQ.v.amount) DRAFT['f-amt'] = plain(REQ.v.amount); }
   GIFTSEEN.clear();
   for (const st of Object.values(CH)) { clearTimeout(st.histTimer); Object.assign(st, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null, waitBoxes: [], quoteErr: null, deferred: false }); }
 }
@@ -2105,7 +2106,7 @@ function formSend(f) {
   $$('[data-unperson]', f).forEach((b) => b.onclick = () => { dropPerson(b.dataset.unperson); renderForm(); });
   const doSave = () => { const n = pname.value.trim(); if (!n) return pname.focus(); savePerson(n, to.value.trim()); delete DRAFT['f-pname']; renderForm(); toast(`Saved as ${n}`); };
   $('#f-psave').onclick = doSave;
-  pname.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
+  pname.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSave(); } });
   $('#f-paste').onclick = async () => { try { to.value = (await navigator.clipboard.readText()).trim(); to.dispatchEvent(new Event('input')); } catch { to.focus(); } };
   $('#f-max').onclick = () => { const fee = relayFee(tab); if (fee == null) return; const v = maxSpend(fee); amt.value = v ? plain(v) : ''; markMax(amt); amt.dispatchEvent(new Event('input')); };
   FORM.check = () => {
@@ -2190,9 +2191,10 @@ function formSend(f) {
       if (r.error) throw new Error(r.error);
       if (r.bp !== shown) throw new Error('Where that address or name points changed. Check it and send again.');
       const req = REQ.v, ofReq = !!req && await reqIs(req, r.bp);
+      if (ofReq && req.paid) throw new Error('This request is already paid.');
       if (via) await signerFor(c).ready();
       const h = await W.send({ to: r.bp, amount: a, via, maxFee, onStep: step });
-      if (ofReq && REQ.v === req) Object.assign(req, { paid: { h, c, a }, state: 'in', err: null });
+      if (ofReq && REQ.v === req && (!req.amount || a === req.amount)) Object.assign(req, { paid: { h, c, a }, state: 'in', err: null });
       clearDraft('f-amt', 'f-to');
       done(c, h, `Sent ${fmt(a, 18, 6)} ETH privately.`);
     });
@@ -2343,7 +2345,12 @@ const dueKey = () => `tacit-pay-due-v1:${S.key.pubHex}`;
 const dues = () => (S.key && readJson(dueKey())) || [];
 const addDue = (d) => writeJson(dueKey(), [...dues(), { id: Date.now().toString(36), to: d.to, amount: d.amount.toString(), chain: d.chain }]);
 const dropDue = (id) => writeJson(dueKey(), dues().filter((d) => d.id !== id));
+// A held payment that may have gone out is never offered again: it is marked before the send, unmarked only when the
+// send surely did not happen, and dropped once the history shows the withdrawal.
+const markDue = (id, sent) => writeJson(dueKey(), dues().map((d) => (d.id === id ? { ...d, sent: sent ? Date.now() : undefined } : d)));
+const dueLanded = (d, c) => (CH[c.chainId].hist?.rows || []).some((r) => r.kind === 'out' && lc(r.to) === lc(d.to) && r.v === BigInt(d.amount) && (r.time ?? r.near ?? Infinity) * 1000 >= d.sent - 600e3);
 function paintDue() {
+  if (S.key) for (const d of dues()) if (d.sent && chainOf(d.chain) && dueLanded(d, chainOf(d.chain))) dropDue(d.id);
   const el = $('#due'), list = S.key ? dues().filter((d) => chainOf(d.chain)) : [];
   el.hidden = !list.length;
   if (!list.length || el.querySelector('[aria-busy="true"]')) return;
@@ -2352,6 +2359,10 @@ function paintDue() {
       const c = chainOf(d.chain), a = BigInt(d.amount), st = CH[c.chainId], who = nameFor(d.to) || short(d.to);
       const fee = relayFee('send', c), covers = st.bal != null && fee != null && !!spendPlan(a, fee, st), bad = badSum(d.to);
       const p = privacyCheck(c, a, d.to, null), ready = covers && p && !p.wait && !bad;
+      if (d.sent) return html`<div class="due-i"><div class="h"><b>Pay ${who}</b><span class="num">${fmt(a, 18, 6)} ETH</span></div>
+        <div class="req-m">on ${c.full} · to <span class="nw">${short(d.to)}</span></div>
+        <p class="note">Sent. It leaves this list once Activity shows it; if it never does, dismiss it and pay again from Send.</p>
+        <div class="foot-a"><span></span><button class="link" type="button" data-undue="${d.id}">dismiss</button></div></div>`;
       const line = bad ? SUM_MSG
         : st.bal == null || !p ? 'Checking…'
         : fee == null ? (st.quoteErr ? 'The relay is unavailable right now. Try again shortly, or choose your wallet under Send.' : 'Checking…')
@@ -2375,8 +2386,12 @@ function payDue(id) {
   if (btn) act(btn, async (step) => {
     const a = BigInt(d.amount), W = await walletOn(c), via = viaFor('send');
     if (badSum(d.to)) throw new Error(SUM_MSG);
+    if (!via && maxFee == null) throw new Error("Reading the relay's fee. Try again in a moment.");     // never a spend with no cap on what the relay takes
     if (via) await signerFor(c).ready();
-    const h = await W.withdraw({ to: d.to, amount: a, via, maxFee, onStep: step });
+    markDue(id, true);
+    let h;
+    try { h = await W.withdraw({ to: d.to, amount: a, via, maxFee, onStep: step }); }
+    catch (e) { if (!e?.said) markDue(id, false); throw e; }
     dropDue(id);
     done(c, h, `Paid ${nameFor(d.to) || short(d.to)} ${fmt(a, 18, 6)} ETH.`);
   });
@@ -2692,7 +2707,7 @@ async function shieldTo(r, a, c) {
   const W = S.key ? await walletOn(c) : await payerWallet(c);
   const h = await W.depositTo({ to: res.bp, amount: a, onStep: (m) => { r.step = stepWords(m); paintReq(); } });
   ptsExpect(c, a);
-  Object.assign(r, { paid: { h, c, a }, state: 'in' }); paintReq();
+  Object.assign(r, { paid: { h, c, a }, state: 'in' }); paintReq(); clearDraft('f-amt', 'f-to');
   toast(`Paid ${fmt(a, 18, 6)} ETH.`);
   if (S.key) syncChain(c, true);
 }
@@ -2718,7 +2733,7 @@ async function payFromWallet(btn) {
       fetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: npk.toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
       r.err = null; r.state = 'confirm'; paintReq();
       const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) }] });
-      Object.assign(r, { paid: { h, c, a }, state: 'mining' }); paintReq();
+      Object.assign(r, { paid: { h, c, a }, state: 'mining' }); paintReq(); clearDraft('f-amt', 'f-to');
       ptsExpect(c, a);
       toast(`Paid ${fmt(a, 18, 6)} ETH.`);
       let rc = null;

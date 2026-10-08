@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-lHYDZIfGPF0iKspIuImCEjCUmKh10Gt8VhcHF0DOzew=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-BOhKMZu4xyjj0ZgCOFbfUx+qNC2Iqmd9ufAFw8OUGAo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base and Robinhood Chain. One key and one tacit1 address, every payment made on your device, recovered from the key alone.">
@@ -1031,7 +1031,7 @@ function btcSend(f) {
       mount(rc, html`<div class="kv"><span>${r.name || 'To'}</span><b>${r.shown}</b></div>${idRow(r)}<div class="kv"><span>How</span><b>${how}</b></div>
         ${avail != null && v > avail ? html`<p class="note err">More than you hold.</p>` : v && v <= SATS_DUST ? html`<p class="note err">Send more than 546 sats.</p>` : ''}`);
       rc.hidden = false;
-      go.disabled = !v || (avail != null && v > avail) || v <= SATS_DUST;
+      go.disabled = S.sending > 0 || !v || (avail != null && v > avail) || v <= SATS_DUST;
     } catch (e) { if (my === seq) { mount(rc, html`<p class="note err">${errText(e)}</p>`); rc.hidden = false; } }
   };
   // An address is checked as it is typed; a name waits for a pause, as each check of one is three lookups.
@@ -1290,7 +1290,7 @@ function tacSend(f) {
     ${none ? toReceive('No shielded TAC yet. Receive some at your address to send it.') : ''}
     <div class="lbl"><span>To</span><span>Tacit or pool address, or a name</span></div>
     <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
-    <div class="lbl"><span>Amount</span>${ok ? html`<button type="button" id="f-max">${fmt(most, 8, 4)} TAC</button>` : ''}</div>
+    <div class="lbl"><span>Amount</span>${ok ? html`<button type="button" id="f-max" aria-label="Send the most: ${fmt(most, 8, 4)} TAC">${fmt(most, 8, 4)} TAC</button>` : ''}</div>
     <div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="rcpt" id="f-rcpt" hidden></div>
     <button class="btn" type="button" id="f-go" disabled>Send TAC privately</button>
@@ -1331,7 +1331,7 @@ function tacSend(f) {
         ${stop ? html`<p class="note err">${stop}</p>` : avail != null && v > avail ? html`<p class="note err">More than you hold.</p>` : ''}`);
       wireRoute(rc);
       rc.hidden = false;
-      go.disabled = !v || !!stop || (avail != null && v > avail);
+      go.disabled = S.sending > 0 || !v || !!stop || (avail != null && v > avail);
     } catch (e) { if (my === seq) { mount(rc, html`<p class="note err">${errText(e)}</p>`); rc.hidden = false; } }
   };
   to.addEventListener('input', () => {
@@ -1342,6 +1342,7 @@ function tacSend(f) {
   amt.addEventListener('input', check);
   const send = async (anchor = null) => {
     const r = route, v = parseUnits(amt.value, 8), status = $('#status'), pub = S.key.pubHex, pw = TAC.pw;
+    if (!go.isConnected) return say(status, 'The form was redrawn. Check it and press Send again.');
     if (!r || !v) return;
     try {
       await pinned(r, to.value, tacRoute, check);
@@ -1459,6 +1460,7 @@ async function checkFound() {
   const f = FOUND.v;
   if (!f || !S.key || FOUND.busy) return paintFound();
   Object.assign(FOUND, { busy: true, res: null }); paintFound();
+  const pub = S.key.pubHex;
   try {
     const { sats, tokens } = await withKey(async (t) => {
       let sats = 0n, tokens = [];
@@ -1482,7 +1484,7 @@ async function checkFound() {
     loadMode(true);
   } catch (e) { FOUND.res = html`<span class="err">${errText(e)}</span>`; }
   FOUND.busy = false;
-  if (FOUND.v !== f) { FOUND.res = null; return checkFound(); }          // another link was opened meanwhile: this verdict is not its
+  if (FOUND.v !== f || S.key?.pubHex !== pub) { FOUND.res = null; return checkFound(); }   // another link, or another key, opened meanwhile          // another link was opened meanwhile: this verdict is not its
   paintFound();
 }
 // Shielded TAC transfers land at one-time outputs; the asset's transfer index finds the ones for this key.
@@ -1523,7 +1525,7 @@ function paintReq() {
   el.hidden = !r;
   if (!r) return;
   const unit = r.mode === 'tac' ? 'TAC' : 'BTC';
-  const to = r.route ? html`<b class="nw">${r.route.name ? `${r.route.name} → ` : ''}${r.route.shown}</b>` : r.err ? html`<span class="err">${r.err}</span>` : html`<b class="nw">${short(r.to, 10)}</b> · looking it up…`;
+  const to = r.route ? html`<b>${r.route.name ? `${r.route.name} → ` : ''}${r.route.shown}</b>` : r.err ? html`<span class="err">${r.err}</span>` : html`<b class="nw">${short(r.to, 10)}</b> · looking it up…`;
   mount(el, html`<div class="lbl"><span>Payment request</span><button class="link" type="button" id="rq-x">dismiss</button></div>
     <div class="req-a num">${r.amount ? `${fmt(r.amount, 8, r.mode === 'tac' ? 4 : 8)} ${unit}` : html`<small>Any amount of ${unit}</small>`}</div>
     <div class="req-m">to ${to}${r.note ? html` · “${r.note}”` : ''}</div>
@@ -1621,7 +1623,7 @@ function render() {
       <div><div class="v t">${S.mode === 'tac' ? 'Shielded TAC' : 'Silent BTC'}</div><div class="u">yours shows once a wallet is open</div></div>`);
     tabs.hidden = true; S.drawn = S.reads = S.tabs = null;
     f.removeAttribute('role'); f.removeAttribute('aria-labelledby');
-    if (S.gate && $('#g-err', f)) return;                 // the gate is drawn: a way in that failed has just said why, and a redraw would erase it
+    if (S.gate && $('#g-err', f) && (signing || !$('#g-err', f).hidden)) return;   // a way in is running, or has just said why it failed                 // the gate is drawn: a way in that failed has just said why, and a redraw would erase it
     S.gate = true;
     mount(f, html`<p class="gate-p">Open your Tacit wallet. One key holds your BTC, TAC and ETH, and nothing else needs backing up.</p>${signIn('g')}`);
     return wireSignIn(f, 'g');
