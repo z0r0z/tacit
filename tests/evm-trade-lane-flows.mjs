@@ -161,11 +161,17 @@ await test('spot price and venues show before any amount; a quote names what you
   assert.match(q, /On Bitcoin the last trade was 250 sats per TAC \(\$0\.25\)/);
   const v = await page.textContent('[data-k=evenues]');
   assert.match(v, /bestPrecision17,5\d\d0\.30%Tacit AMM17,5\d\d0\.60%zQuoterno routeOrder boardsno resting orders/s);
-  // an aggregator route that pays more takes over when it answers
+  // an aggregator quote that pays more is shown as a comparison with a link to fill it on
+  // zSwap — this page cannot send through it, so it is never the route
   await page.evaluate(() => { window.__w.zq = { venue: 'zquoter', status: 'ok', amountIn: 10n ** 18n, amountOut: 18_000n * 10n ** 18n, feeBps: 5n }; });
   await typeAmount(page, '1.0');
-  assert.match(await page.textContent('[data-k=equote]'), /You get18,000 TAC.*RoutezQuoter 0\.05% fee/s);
-  assert.match(await page.textContent('[data-k=evenues]'), /bestzQuoter18,0000\.05%Precision/s);
+  const withZ = await page.textContent('[data-k=equote]');
+  assert.match(withZ, /You get17,5\d\d TAC.*RoutePrecision 0\.30% fee/s);
+  assert.match(withZ, /zQuoter quotes 18,000 TAC for this — more than the routes this page sends through\. Fill it on zSwap/);
+  assert.equal(await page.getAttribute('[data-k=equote] a', 'href'), 'https://zswap.wei.limo/#token=ETH&out=0xA1313eb9f3A445606D9583bcAc3ebeB56a858279&amount=1.0');
+  const venuesZ = await page.textContent('[data-k=evenues]');
+  assert.match(venuesZ, /bestPrecision17,5\d\d0\.30%Tacit AMM17,5\d\d0\.60%zQuoter18,000 fill on zSwap ↗0\.05%/);
+  assert.doesNotMatch(venuesZ, /bestzQuoter/);
   // not connected: the quote shows, the button offers to connect
   assert.equal(await page.textContent('[data-k=ego]'), 'Connect wallet');
   assert.equal(await page.isDisabled('[data-k=ego]'), false);
@@ -367,6 +373,22 @@ await test('selling TAC with no ETH for the network fee cannot be reviewed', asy
   await typeAmount(page, '100');
   assert.equal(await page.textContent('[data-k=ego]'), 'Not enough ETH for the network fee');
   assert.equal(await page.isDisabled('[data-k=ego]'), true);
+});
+
+await test('a zQuoter quote above the pools does not change the route: the review names the pool and the swap runs on it', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await page.evaluate(() => { window.__w.zq = { venue: 'zquoter', status: 'ok', amountIn: 5n * 10n ** 17n, amountOut: 9_000n * 10n ** 18n, feeBps: 5n }; });
+  await typeAmount(page, '0.5');
+  await page.click('[data-k=ego]');
+  const m = await waitModal(page, /Buy 8,\d{3} TAC/);
+  assert.match(m, /RoutePrecision on Ethereum/);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Bought/);
+  assert.doesNotMatch(await page.textContent('.bm-modal'), /The price moved/);
+  const builds = await calls(page, 'build');
+  assert.ok(builds.every((c) => c.args.venue === 'precision'), 'every build is for the venue the review named');
+  assert.equal((await calls(page, 'sendTx')).length, 1);
 });
 
 await test('a wallet rejection sends nothing and says so plainly; a failing simulation never reaches the wallet', async (page) => {

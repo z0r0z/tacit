@@ -103,6 +103,7 @@ const SETUP = () => {
       listForSale: async (o) => { rec('listForSale', { amountBase: String(o.amountBase), k: o.shape.k, perLotSats: o.shape.perLotSats, unit: o.unit, expirySec: o.expirySec }); return { txid: 'f1'.repeat(32) }; },
       cancelListing: async (raw) => { rec('cancelListing', raw.sale_id); await maybeFail('cancelListing', raw.sale_id); if (W.hold) await W.hold; },
       cancelOffer: async (raw) => rec('cancelOffer', raw.intent_id),
+      offerNeedsSpend: async (raw) => { rec('offerNeedsSpend', raw.intent_id); return !!W.needsSpend; },
       cancelBid: async (raw) => rec('cancelBid', raw.bid_id),
       ensureAutoConfirm: () => rec('ensureAutoConfirm', {}),
       offerStatus: async ({ intentId }) => W.statuses[intentId] || 'posted',
@@ -112,7 +113,7 @@ const SETUP = () => {
       sold: async (o) => rec('sold', { amount: String(o.amount), ids: o.ids }),
       listed: async () => rec('listed', {}),
     },
-    confirm: async (o) => { rec('confirm', { title: o.title }); return W.confirmAnswer; },
+    confirm: async (o) => { rec('confirm', { title: o.title, body: o.body }); return W.confirmAnswer; },
     toast: (m, k) => rec('toast', { m, k }),
     // Mirrors the real formatter: a verb names the operation, so a failed cancel is never "Trade failed".
     friendlyError: (e, o) => `${o?.verb || 'Trade'} failed: ${e?.message || String(e)}`,
@@ -346,6 +347,40 @@ await test('selling keeps its token amount when moving to At my price and back',
   assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '40');
   await page.click('[data-act=type][data-v=market]'); await settle(page);
   assert.equal(await page.$eval('[data-k=amount]', (n) => n.value), '40');
+});
+
+await test('cancelling an offer a buyer already holds a signed settlement for says it spends the coins, once', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.intent('mi', 10, 3100, { maker_pubkey: W.me.pubHex })]; W.needsSpend = true; });
+  await mount(page); await settle(page, 300);
+  await page.click('.bm-orow [data-act=cancel]'); await settle(page, 300);
+  const confirms = await calls(page, 'confirm');
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0].args.body, /signed settlement/);
+  assert.match(confirms[0].args.body, /spends the listed coins back to your own wallet/);
+  assert.match(confirms[0].args.body, /about 800 sats/);
+  assert.deepEqual((await calls(page, 'cancelOffer')).map((c) => c.args), ['mi']);
+  // an offer nobody holds a settlement for is just removed, with no fee mentioned
+  await page.evaluate(() => { const W = window.__w; W.needsSpend = false; W.calls = []; });
+  await page.click('.bm-orow [data-act=cancel]'); await settle(page, 300);
+  const plain = (await calls(page, 'confirm'))[0].args.body;
+  assert.doesNotMatch(plain, /network fee|settlement/);
+});
+
+await test('selling counts only tokens not already in your open listings and offers', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('mp', 400, 90000, { seller_pubkey: W.me.pubHex }), W.intent('mi', 100, 22000, { maker_pubkey: W.me.pubHex })]; W.bids = [W.bid('b1', 500, 75000, { watchtower: true })]; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=side][data-v=sell]'); await settle(page);
+  assert.match(await page.textContent('[data-k=bal]'), /Balance: 500 TAC · 500 TAC in your open orders/);
+  const chips = await page.$$eval('[data-k=chips] button', (bs) => bs.map((x) => [x.textContent, x.dataset.v]));
+  assert.deepEqual(chips.map((c) => c[1]), ['125', '250', '500'], 'chips are shares of what is free');
+  await page.fill('[data-k=amount]', '700'); await settle(page);
+  assert.equal(await page.textContent('[data-k=go]'), 'Not enough TAC');
+  assert.match(await page.textContent('[data-k=quote]'), /You have 500 TAC available.*in your open orders/);
+  await page.fill('[data-k=amount]', '500'); await settle(page);
+  assert.equal(await page.textContent('[data-k=go]'), 'Review sell');
+  await page.click('[data-act=type][data-v=limit]'); await settle(page);
+  await page.fill('[data-k=limit-price]', '300'); await page.fill('[data-k=amount]', '600'); await settle(page);
+  assert.equal(await page.textContent('[data-k=go]'), 'Not enough TAC');
 });
 
 await test('typing and focus survive live refreshes; a row click primes the ticket', async (page) => {

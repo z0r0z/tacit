@@ -379,11 +379,9 @@ function createLane(host, opts0) {
     refreshGas().then(() => { if (!S.destroyed && seq === S.quoteSeq) { paintQuote(); paintGo(); } });
     const z = await zq;
     if (S.destroyed || seq !== S.quoteSeq || !S.quote || !z) return;
+    // Kept for comparison only: the swap is sent through the venues quoteAll ranks, which the
+    // aggregator's route is not one of, so it must not become the route the review names.
     S.quote.zquoter = z;
-    if (z.status === 'ok' && z.amountOut > 0n) {
-      S.quote.ranked = [...S.quote.ranked.filter((r) => r.venue !== VENUES.ZQUOTER), z].sort((a, b) => (a.amountOut === b.amountOut ? 0 : a.amountOut > b.amountOut ? -1 : 1));
-      S.quote.best = S.quote.ranked[0];
-    }
     paintQuote(); paintVenues(); paintGo();
   }
   function scheduleQuote(immediate) {
@@ -501,6 +499,11 @@ function createLane(host, opts0) {
     } else if (bps != null && bps >= IMPACT_WARN_BPS) {
       html += `<div class="bm-q bm-note">A large trade for this pool — splitting it would get a better average price.</div>`;
     }
+    const z = q.zquoter;
+    if (z && z.status === 'ok' && z.amountOut > q.best.amountOut) {
+      const zl = zswapDeepLink({ host: ZSWAP_HOST, dir: dir(), amount: S.amountStr || undefined }) || ZSWAP_HOST;
+      html += `<div class="bm-q bm-note">zQuoter quotes ${fmtTok(z.amountOut, outT)} ${outT} for this — more than the routes this page sends through. <a href="${esc(zl)}" target="_blank" rel="noopener noreferrer">Fill it on zSwap ↗</a></div>`;
+    }
     html += bitcoinCompare(usdPerTac);
     el.quote.innerHTML = html;
   }
@@ -523,6 +526,11 @@ function createLane(host, opts0) {
       for (const v of [VENUES.PRECISION, VENUES.TACIT_AMM, VENUES.ZQUOTER]) {
         if (seen.has(v)) continue;
         const st = v === VENUES.ZQUOTER ? q.zquoter?.status : null;
+        if (st === 'ok' && q.zquoter.amountOut > 0n) {
+          const zl = zswapDeepLink({ host: ZSWAP_HOST, dir: q.dir, amount: S.amountStr || undefined }) || ZSWAP_HOST;
+          rows += rowOf(venueLabel(v), `${fmtTok(q.zquoter.amountOut, T)} <a href="${esc(zl)}" target="_blank" rel="noopener noreferrer">fill on zSwap ↗</a>`, feePct(q.zquoter) != null ? `${feePct(q.zquoter).toFixed(2)}%` : '—', false, `${venueWhy(v)} This page can't send through it; zSwap can.`);
+          continue;
+        }
         const note = st === 'pending' ? 'checking…' : st === 'timeout' ? 'slow to answer' : 'no route';
         rows += rowOf(venueLabel(v), `<em>${note}</em>`, '', false, venueWhy(v));
       }
@@ -535,7 +543,7 @@ function createLane(host, opts0) {
     } else {
       rows += `<div class="bm-empty">${S.spotAt === 0 ? 'Reading Ethereum venues…' : 'No venue is quoting right now.'}</div>`;
     }
-    const note = `<div class="bm-book-note"><span>One venue fills the whole trade — the one paying most.</span><span>Prices move block to block; the review re-checks them.</span></div>`;
+    const note = `<div class="bm-book-note"><span>One venue fills the whole trade — the best of those this page sends through.</span><span>Prices move block to block; the review re-checks them.</span></div>`;
     const html = head + rows + note;
     if (el.venues.__html !== html) { el.venues.innerHTML = html; el.venues.__html = html; }
   }

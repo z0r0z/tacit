@@ -32571,6 +32571,38 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   return j;
 }
 
+// Cancelling an atomic offer whose claim has been fulfilled: the buyer already holds the
+// seller's signed partial reveal, valid for 24 hours, and taking the offer off the board does
+// not void it. Spending the listed coin back to ourselves does, because the reveal then
+// references an outpoint that is gone. The worker record is removed afterwards, best effort.
+// `utxo` is the offer's { txid, vout } as the worker lists it. Throws the unlock-cancelled
+// error when the user declines the backup or funding prompts, with nothing broadcast.
+async function selfSpendFulfilledOffer({ assetIdHex, intentIdHex, utxo, onStage = null }) {
+  if (!utxo?.txid) throw new Error('this offer has no listed coin on record — refresh and try again');
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  // The local opening (amount + blinding) buildAndBroadcastCXfer needs comes from our holdings.
+  const u = h?.utxos.find(x => x.utxo.txid === utxo.txid && x.utxo.vout === utxo.vout);
+  if (!u) throw new Error('asset UTXO is not in holdings - the taker may have already broadcast.');
+  if (!await ensureBurnerBackedUp('Cancel fulfilled atomic intent (spends the listed asset UTXO via self-send)')) throw _newUnlockCancelledError();
+  const need = await estimateSatsForOp('cxfer');
+  if (!(await ensureSatsFunded(need, 'Cancelling intent'))) throw _newUnlockCancelledError();
+  try { onStage?.('broadcasting...'); } catch {}
+  const r = await buildAndBroadcastCXfer({
+    assetIdHex,
+    recipientPubHex: bytesToHex(wallet.pub),
+    amount: u.amount,
+    forceUtxos: [u],
+  });
+  // The on-chain self-CXFER is what actually invalidated the partial reveal.
+  // Worker DELETE is now best-effort cleanup so the entry stops appearing.
+  _markLocalListingCancel(`intent:${intentIdHex}`);
+  await cancelAxferIntent({ assetIdHex, intentIdHex }).catch(() => {});
+  invalidateMarketCache();
+  invalidateHoldingsCache();
+  return r;
+}
+
 // ============== PREAUTH SALES (buyer-completable T_AXFER) ==============
 // Three exported flows: publishPreauthSale (seller), cancelPreauthSale
 // (seller), takePreauthSale (buyer). No claim/fulfil step — the seller's
@@ -70541,6 +70573,23 @@ async function _btcMarketListForSale(aid, { amountBase, shape, expirySec, onStag
   return { txid: null, via: 'single', sale_id: r?.sale_id };
 }
 
+// What cancelling one of our offers has to do. Until a claim is fulfilled, removing the offer
+// from the board is enough. After that the buyer holds a signed settlement, and only spending
+// the listed coin voids it; `spend` is true while that coin is still unspent. The worker's
+// single-offer read is the fresh view, the board row the fallback.
+async function _btcMarketOfferLock(aid, raw) {
+  let it = null;
+  try {
+    const resp = await fetch(withNet(ATOMIC_INTENT_GET_URL(aid, raw.intent_id)));
+    if (resp.ok) it = (await resp.json().catch(() => null))?.intent || null;
+  } catch {}
+  const fulfilled = !!((it || raw)?.fulfilment_pending || it?.fulfilment);
+  const utxo = it?.asset_utxo || raw?.asset_utxo || null;
+  if (!fulfilled || !utxo?.txid) return { fulfilled, spend: false, utxo };
+  const sp = await getOutspend(utxo.txid, utxo.vout).catch(() => null);
+  return { fulfilled, spend: sp?.spent !== true, utxo };
+}
+
 // Where a sell offer stands: 'posted' → 'claimed' (buyer reserved it) → 'confirmed'
 // (our wallet answered) → 'settled' once the listed coins are spent on chain; 'closed'
 // when the offer is gone and the coins never moved (cancelled or expired).
@@ -70684,7 +70733,12 @@ function _btcMarketCtx(aid) {
         if (!sale) throw new Error('listing not found — it may have just sold');
         return hardCancelPreauthSale({ assetIdHex: aid, sale });
       },
-      cancelOffer: (raw) => cancelAxferIntent({ assetIdHex: aid, intentIdHex: raw.intent_id }),
+      offerNeedsSpend: async (raw) => (await _btcMarketOfferLock(aid, raw)).spend,
+      cancelOffer: async (raw) => {
+        const lock = await _btcMarketOfferLock(aid, raw);
+        if (lock.spend) return selfSpendFulfilledOffer({ assetIdHex: aid, intentIdHex: raw.intent_id, utxo: lock.utxo });
+        return cancelAxferIntent({ assetIdHex: aid, intentIdHex: raw.intent_id });
+      },
       cancelBid: async (raw) => {
         // The registration names the bid wallet's key and cancelling deletes it, so read it first.
         let wtPub = '';
@@ -75265,34 +75319,7 @@ async function marketCancelIntentHandler(btn) {
     )) return;
     btn.disabled = true; btn.textContent = 'self-spending...';
     try {
-      // Locate the asset UTXO in our holdings to source the local opening that
-      // buildAndBroadcastCXfer needs (amount + blinding).
-      const holdings = await scanHoldings();
-      const h = holdings.get(aid);
-      const u = h?.utxos.find(x =>
-        x.utxo.txid === intent.asset_utxo.txid && x.utxo.vout === intent.asset_utxo.vout,
-      );
-      if (!u) throw new Error('asset UTXO is not in holdings - the taker may have already broadcast.');
-      if (!await ensureBurnerBackedUp('Cancel fulfilled atomic intent (spends the listed asset UTXO via self-send)')) {
-        btn.disabled = false; btn.textContent = 'Cancel';
-        return;
-      }
-      const need = await estimateSatsForOp('cxfer');
-      if (!(await ensureSatsFunded(need, 'Cancelling intent'))) {
-        btn.disabled = false; btn.textContent = 'Cancel';
-        return;
-      }
-      btn.textContent = 'broadcasting...';
-      await buildAndBroadcastCXfer({
-        assetIdHex: aid,
-        recipientPubHex: bytesToHex(wallet.pub),
-        amount: u.amount,
-        forceUtxos: [u],
-      });
-      // The on-chain self-CXFER is what actually invalidated the partial reveal.
-      // Worker DELETE is now best-effort cleanup so the entry stops appearing.
-      _markLocalListingCancel(`intent:${iid}`);
-      await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid }).catch(() => {});
+      await selfSpendFulfilledOffer({ assetIdHex: aid, intentIdHex: iid, utxo: intent.asset_utxo, onStage: (t) => { btn.textContent = t; } });
       toast('Intent cancelled - asset UTXO spent - taker can no longer broadcast OK', 'success', 6000);
       setTimeout(() => { renderMarket(); renderHoldings(); renderActivity(); }, 500);
     } catch (e) {

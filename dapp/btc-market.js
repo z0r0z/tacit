@@ -468,10 +468,12 @@ function createMarket(host, ctx) {
         }
       }
     } else {
-      bal = m.assetBase == null ? `Balance: checking…` : `Balance: <b>${fmtAmount(m.assetBase, dec)}</b> ${T}`;
-      if (m.assetBase > 0n) {
+      const free = freeBase(m);
+      const locked = free == null ? 0n : m.assetBase - free;
+      bal = free == null ? `Balance: checking…` : `Balance: <b>${fmtAmount(free, dec)}</b> ${T}${locked > 0n ? ` <em>· ${fmtAmount(locked, dec)} ${T} in your open orders</em>` : ''}`;
+      if (free > 0n) {
         for (const p of [25, 50, 100]) {
-          const v = (m.assetBase * BigInt(p)) / 100n;
+          const v = (free * BigInt(p)) / 100n;
           if (v > 0n) chips.push(`<button type="button" data-act="chip" data-v="${fmtAmount(v, dec).replace(/,/g, '')}">${p === 100 ? 'Max' : p + '%'}</button>`);
         }
       }
@@ -635,8 +637,10 @@ function createMarket(host, ctx) {
     }
     if (o.type === 'market' && o.side === 'sell') {
       const p = q.plan;
-      if (m && m.unlocked && m.assetBase != null && o.sellBase > m.assetBase) {
-        el.quote.innerHTML = `<div class="bm-q bm-warn">You have ${fmtAmount(m.assetBase, dec)} ${T}.</div>`;
+      const free = m?.unlocked ? freeBase(m) : null;
+      if (free != null && o.sellBase > free) {
+        const locked = m.assetBase - free;
+        el.quote.innerHTML = `<div class="bm-q bm-warn">You have ${fmtAmount(free, dec)} ${T} available${locked > 0n ? ` — ${fmtAmount(locked, dec)} ${T} is in your open orders` : ''}.</div>`;
         setGo(`Not enough ${asset0.ticker}`, false);
         return;
       }
@@ -702,7 +706,8 @@ function createMarket(host, ctx) {
     if (q.crosses) html += `<div class="bm-q bm-note">Bids already pay ${fmtUnit(q.bestSellable)} or more — a <button type="button" class="bm-link" data-act="to-market">market sell</button> gets you that now.</div>`;
     html += `<div class="bm-q bm-muted">Buyers take it without you online. Cancel any time (one network fee).</div>`;
     el.quote.innerHTML = html;
-    if (m && m.unlocked && m.assetBase != null && o.base > m.assetBase) { setGo(`Not enough ${asset0.ticker}`, false); return; }
+    const freeList = m?.unlocked ? freeBase(m) : null;
+    if (freeList != null && o.base > freeList) { setGo(`Not enough ${asset0.ticker}`, false); return; }
     setGo('Review listing', true, 'review');
   }
 
@@ -745,29 +750,47 @@ function createMarket(host, ctx) {
   }
 
   // ── your orders ───────────────────────────────────────────────────────────
-  function paintOrders() {
-    if (!S.book) return;
-    const m = me();
+  // Everything of yours that is open here: listings and offers (each holds a coin until it
+  // sells or is cancelled), bids, and sells still being followed. `lock` is the tokens a row
+  // keeps out of what you can sell.
+  function myOrderRows() {
     const mine = [];
+    if (!S.book) return mine;
     for (const a of S.book.asks.filter((x) => x.mine)) {
       const sale = S.sells.get(a.raw.intent_id || '');
       mine.push({
-        id: a.id, side: 'sell', amount: a.amount, unit: a.unit, sats: a.sats,
+        id: a.id, side: 'sell', amount: a.amount, unit: a.unit, sats: a.sats, lock: a.fullAmount,
         status: sale ? sellStatusText(sale) : a.kind === 'preauth' ? 'listed' : 'listed · you confirm claims',
         action: !sale || sale.state === 'posted' ? 'cancel' : null, kind: sale ? 'sale' : a.kind, raw: a.raw,
       });
     }
     for (const b of S.book.bids.filter((x) => x.mine)) {
       mine.push({
-        id: b.id, side: 'buy', amount: b.amount, unit: b.unit, sats: b.sats,
+        id: b.id, side: 'buy', amount: b.amount, unit: b.unit, sats: b.sats, lock: 0n,
         status: b.auto ? 'bid · auto-settles' : 'bid · fills while you\'re online', action: 'cancel', kind: b.kind, raw: b.raw,
       });
     }
     for (const [iid, sale] of S.sells) {
       if (mine.some((r) => r.raw?.intent_id === iid)) continue;
       if (sale.state === 'settled' || sale.state === 'closed' || sale.state === 'gone') continue;
-      mine.push({ id: 'sell:' + iid, side: 'sell', amount: BigInt(sale.amount), unit: sale.unit, sats: sale.sats, status: sellStatusText(sale), action: sale.state === 'posted' ? 'cancel' : null, kind: 'sale', raw: { intent_id: iid } });
+      mine.push({ id: 'sell:' + iid, side: 'sell', amount: BigInt(sale.amount), unit: sale.unit, sats: sale.sats, lock: BigInt(sale.amount), status: sellStatusText(sale), action: sale.state === 'posted' ? 'cancel' : null, kind: 'sale', raw: { intent_id: iid } });
     }
+    return mine;
+  }
+
+  // What you can still sell: the wallet balance less the coins already committed to your own
+  // open listings and offers (the executor sells only from free coins).
+  function lockedBase() { return myOrderRows().reduce((t, r) => t + r.lock, 0n); }
+  function freeBase(m) {
+    if (m?.assetBase == null) return null;
+    const l = lockedBase();
+    return m.assetBase > l ? m.assetBase - l : 0n;
+  }
+
+  function paintOrders() {
+    if (!S.book) return;
+    const m = me();
+    const mine = myOrderRows();
     if (!mine.length || !m) { el.orders.hidden = true; el.orders.innerHTML = ''; return; }
     el.orders.hidden = false;
     const html = `<h3>Your orders <em>${mine.length}</em></h3><div class="bm-otable">${mine.map((r) => `
@@ -1457,11 +1480,19 @@ function createMarket(host, ctx) {
     if (!r || S.cancelling.has(id)) return;
     const what = `${r.side === 'buy' ? 'bid for' : r.kind === 'sale' ? 'offer of' : 'listing of'} ${fmtAmount(r.amount, dec, 4)} ${asset0.ticker} at ${fmtUnit(r.unit)}`;
     const onchain = r.kind === 'preauth';
+    // An offer whose claim has been fulfilled is already in the buyer's hands, signed. Taking
+    // it off the board does not void that; only spending its coin back to you does.
+    let signed = false;
+    if (r.kind === 'intent' || r.kind === 'intent-var' || r.kind === 'sale') {
+      try { signed = !!(await ctx.exec.offerNeedsSpend?.(r.raw)); } catch { signed = false; }
+    }
     const ok = await ctx.confirm({
       title: `Cancel ${r.side === 'buy' ? 'bid' : 'listing'}?`,
       body: onchain
         ? `Cancels your ${what}. This spends the listed coins back to your own wallet so the listing can never be filled — one network fee (about 800 sats).`
-        : `Cancels your ${what}.${r.raw?.watchtower ? ' The watchtower stops too, and whatever is left in the bid wallet comes back to you.' : ''}`,
+        : signed
+          ? `Cancels your ${what}. A buyer already holds the signed settlement for it, which stays valid for 24 hours, so this spends the listed coins back to your own wallet to void it — one network fee (about 800 sats).`
+          : `Cancels your ${what}.${r.raw?.watchtower ? ' The watchtower stops too, and whatever is left in the bid wallet comes back to you.' : ''}`,
       confirmLabel: 'Cancel order', cancelLabel: 'Keep it',
     });
     if (!ok || S.cancelling.has(id)) return;
@@ -1501,7 +1532,8 @@ function createMarket(host, ctx) {
       const upTo = S.book.bids.filter((b) => !b.mine && b.unit >= lv.unit * (1 - 1e-9) && (S.includeManual || b.auto));
       const need = upTo.reduce((t, b) => t + b.amount, 0n);
       const m = me();
-      const give = m?.assetBase != null && m.assetBase > 0n && m.assetBase < need ? m.assetBase : need;
+      const free = freeBase(m);
+      const give = free != null && free > 0n && free < need ? free : need;
       const best = eligibleBids()[0]?.unit || lv.unit;
       S.slip = SLIPPAGE_CHOICES.find((p) => best * (1 - p / 100) <= lv.unit) ?? SLIPPAGE_CHOICES[SLIPPAGE_CHOICES.length - 1];
       prime({ side: 'sell', type: 'market', sellBase: give });
