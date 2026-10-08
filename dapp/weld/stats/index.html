@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module (its sha256 pinned in script-src by build/build.mjs) and the reading it imports. It reads
      public data only: no wallet, no key; it keeps the last reading, and the chain data behind it, to read on from. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mCPG3w+4bEw/DakOksXfoldjfCfp9B/ERzpGX1GAJVs='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://cloudflare-eth.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SJwC0rprlLX9X8XoVlogjZxZf2JunhEt4QYSmoGUZ4I='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://cloudflare-eth.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>Tacit v1 stats</title>
 <meta name="description" content="Tacit v1 stats, live from Ethereum and Bitcoin: private ETH, cBTC and cUSD, TAC, and Bitcoin's state on Ethereum.">
@@ -132,8 +132,9 @@ footer a:hover { color: var(--ink); }
   details.how dl { grid-template-columns: 1fr; gap: 2px 0; }
   details.how dd { margin-bottom: 8px; }
 }
+table.chains .n { color: var(--mute); }
 @media (max-width: 520px) {
-  table.chains .moves { display: none; }
+  table.chains .moves, table.chains .n, table.chains .wide { display: none; }
   table.chains { font-size: 12px; }
 }
 @media (max-width: 380px) {
@@ -362,9 +363,10 @@ function showPrivate() {
 
 // Each pool's own figures, the V1 pool first (once it is read) and the device pools after, and their total.
 function showPools(t, withTotal) {
-  const cell = (v, n) => (v == null ? '—' : `${fmt(v, 18, 4)}${n != null ? ` <span style="color:var(--mute)">(${int(n)})</span>` : ''}`);
+  const cell = (v, n) => (v == null ? '—' : `${fmt(v, 18, 4)}${n != null ? `<span class="n"> (${int(n)})</span>` : ''}`);
+  const pool = (p) => `<a href="${EXPLORER[p.id]}/address/${esc(A.evmPool)}" target="_blank" rel="noopener">${esc(NAME[p.id])}<span class="wide"> device pool</span> ↗</a>`;
   $('#c-dev').innerHTML = `<div class="tscroll"><table class="chains num"><thead><tr><th>Pool</th><th>Held</th><th>In</th><th>Out</th><th class="moves">Moves</th></tr></thead><tbody>
-    ${t.pools.map((p) => `<tr><td>${p.id === 'v1' ? addr(A.pool, 1, 'V1 pool') : addr(A.evmPool, p.id, `${NAME[p.id]} device pool`)}</td><td>${p.held == null ? '—' : fmt(p.held, 18, 4)}</td><td>${cell(p.inWei, p.deposits)}</td><td>${cell(p.outWei, p.withdrawals)}</td><td class="moves">${p.moves == null ? '—' : int(p.moves)}</td></tr>`).join('')}
+    ${t.pools.map((p) => `<tr><td>${p.id === 'v1' ? addr(A.pool, 1, 'V1 pool') : pool(p)}</td><td>${p.held == null ? '—' : fmt(p.held, 18, 4)}</td><td>${cell(p.inWei, p.deposits)}</td><td>${cell(p.outWei, p.withdrawals)}</td><td class="moves">${p.moves == null ? '—' : int(p.moves)}</td></tr>`).join('')}
     ${withTotal ? `<tr><td>Total</td><td>${fmt(t.held, 18, 4)} ETH</td><td>${fmt(t.inWei, 18, 4)}</td><td>${fmt(t.outWei, 18, 4)}</td><td class="moves"></td></tr>` : ''}</tbody></table></div>`;
   $('#f-dev').hidden = false;
 }

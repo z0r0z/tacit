@@ -109,7 +109,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .panel + .panel { margin-top: 14px; }
 
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); border: 1px solid var(--hair-2); margin: 0 0 18px; }
-@media (max-width: 420px) { #tabs button { padding: 8px 2px; font-size: 12.5px; } }   /* five tabs share a phone's width */
+@media (max-width: 420px) { .panel { padding: 20px 14px; } #tabs button { padding: 8px 2px; font-size: 12.5px; } }   /* five tabs share a phone's width */
 .seg button { min-height: var(--tap); padding: 8px 10px; background: none; border: 0; cursor: pointer; color: var(--mute); line-height: 1.25; }
 .seg button + button { border-left: 1px solid var(--hair-2); }
 .seg button[aria-selected="true"] { background: var(--ink); color: var(--card); }

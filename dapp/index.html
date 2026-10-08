@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-D9qqClwn9CpfYo0KXkFVWGGUm27dt3tnRhzPT1Qotrw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ZiSER2NWIwyqdkH11dpOY50t6VlJUOF/U1E4w6JxMb4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=c240ced2"></script>
 <title>tacit</title>
@@ -470,6 +470,8 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .opt-m { font-size: 12px; color: var(--mute); padding-left: 32px; }
 .opt-t .w-bal { margin-left: auto; font-weight: 400; font-size: 12.5px; color: var(--mute); }
 .opts + .seg { margin-top: 14px; }
+#tac-bal > .opts { margin: 0 0 16px; }
+.note.tb-ask { margin: 0 0 14px; }
 .parts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: -8px 0 16px; font-size: 12px; color: var(--mute); }
 .parts b { font-weight: 400; color: var(--ink); }
 .links { list-style: none; margin: 16px 0 0; padding: 12px 0 0; border-top: 1px solid var(--hair); display: grid; gap: 8px; font-size: 13px; }
@@ -4943,7 +4945,7 @@ async function brTick(first = false) {
 // found), the public ERC20 on Ethereum (the connected wallet and the Tacit account) and private TAC notes in the Tacit pool.
 // `acct` is kept apart from the combined total: Shield draws only on the Tacit account's own TAC (routerWrap signs from
 // the key, not a connected wallet), so it needs that figure on its own, not the two homes added together.
-const TACB = { who: null, erc: null, acct: null, err: null, fee: undefined };
+const TACB = { who: null, erc: null, acct: null, err: null, fee: undefined, signIn: false };
 // What moving the private TAC out costs: the relay's fee on each note worth moving, read once the notes are known.
 async function loadTacFee() {
   const notes = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse();
@@ -4978,8 +4980,14 @@ async function loadTacHoldings(force = false) {
 function renderTacBal(el) {
   const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
   // No key open in this tab (a link straight to #tac skips the wallet sheet): private TAC, send and make-public all need
-  // the key, so offer the same sign-in, with the wallet tacit.finance already has first. The airdrop below is separate.
+  // the key, so offer the same sign-in, with the wallet tacit.finance already has first. The airdrop below is separate, so
+  // without a wallet known here the offer is one line and the tabs lead.
   if (!S.key) {
+    if (!TACB.signIn && !knownWallet()) {
+      mount(el, html`<p class="note tb-ask">Holding private TAC? <button class="link" type="button" id="tb-open">Open your Tacit wallet</button> to see it, send it or make it public.</p>`);
+      $('#tb-open').onclick = () => { TACB.signIn = true; renderTacBal(el); el.querySelector('.opt')?.focus(); };
+      return;
+    }
     mount(el, html`<p class="lede-s">Open your Tacit wallet to see your private TAC, send it, or make it public. It is the same wallet as in the classic app.</p>${signIn('tb')}`);
     wireSignIn(el, 'tb');
     return;
@@ -5185,7 +5193,7 @@ function renderAirdrop(el) {
 const venues = makeEvmTradeVenues({ ethCall: (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.gas ? { gas: o.gas } : {}) }, block]), keccak256: keccak_256 });
 // TAC also trades for sats on the Bitcoin order book: /tac buys from its asks, and the classic app lists TAC held on Bitcoin.
 const TAC_BOOK = `/classic.html#tab=market&aid=${TAC_BTC_ID}`;
-const bookLine = (sell) => html`<p class="note">${sell ? 'Want sats instead?' : 'Paying in sats?'} <a href="${sell ? TAC_BOOK : '/tac/#buy'}">${sell ? 'Sell TAC held on Bitcoin' : 'Buy TAC'} on the Bitcoin order book →</a></p>`;
+const bookLine = (sell) => html`<p class="note">${sell ? 'Want sats instead?' : 'Paying in sats?'} <a href="${sell ? TAC_BOOK : '/tac/#buy'}">${sell ? 'Sell TAC held on Bitcoin in its order book' : 'Buy TAC on the Bitcoin order book'} →</a></p>`;
 function renderBuy(el) {
   if (!S.address) { mount(el, html`${gate('Buy TAC with ETH at the best price across pools. Buying through the Precision pool earns points.', 'Connect wallet', 'buy-connect')}${bookLine(false)}`); return wireConnect('buy-connect', () => rerender('tac')); }
   mount(el, html`
