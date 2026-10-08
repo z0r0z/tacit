@@ -3,23 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Its one inline script is pinned by sha256 in script-src by build/build.mjs. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-s70IFNd0xp4Moa/JQnlRIR52+kO/q6ma+l+CAM04fJM='; connect-src https://api.tacit.finance; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Trusted setup: Secret Sats EVM pool</title>
-<meta name="description" content="Help secure the Secret Sats EVM pool, private ETH and EVM assets proved on your own device: mix your randomness into its proving key. A few minutes in your browser, no wallet needed, and you can contribute more than once.">
+<meta name="description" content="The trusted setup behind the Secret Sats EVM pool, private ETH and EVM assets proved on your own device. Its proving key was made in a public ceremony, each contribution mixing in fresh randomness from a browser, and sealed by Bitcoin block 968,840.">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
-<link rel="canonical" href="https://tacit.finance/ceremony">
+<link rel="canonical" href="https://tacit.finance/ceremony/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
-<meta property="og:url" content="https://tacit.finance/ceremony">
+<meta property="og:url" content="https://tacit.finance/ceremony/">
 <meta property="og:title" content="Trusted setup: Secret Sats EVM pool">
-<meta property="og:description" content="Help secure the Secret Sats EVM pool. A few minutes in your browser, no wallet needed.">
+<meta property="og:description" content="The Secret Sats EVM pool's proving key was made in a public ceremony in the browser and sealed by Bitcoin block 968,840.">
 <meta property="og:image" content="https://tacit.finance/ceremony-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Trusted setup. Help secure the Secret Sats EVM pool. A few minutes in your browser. No wallet needed.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Trusted setup: Secret Sats EVM pool">
-<meta name="twitter:description" content="Help secure the Secret Sats EVM pool. A few minutes in your browser, no wallet needed.">
+<meta name="twitter:description" content="The Secret Sats EVM pool's proving key was made in a public ceremony in the browser and sealed by Bitcoin block 968,840.">
 <meta name="twitter:image" content="https://tacit.finance/ceremony-card.png">
 <meta name="twitter:image:alt" content="Trusted setup. Help secure the Secret Sats EVM pool. A few minutes in your browser. No wallet needed.">
 <meta name="theme-color" content="#0b0c0e">
@@ -63,8 +65,6 @@ h1 span { color: var(--orange); }
 .track .lbl.first { transform: none; }
 .track .lbl.last { transform: translateX(-100%); }
 .track .head { position: absolute; top: 7px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--orange); transition: left 1.2s cubic-bezier(.2,.8,.2,1); animation: pulse 2s infinite; }
-.cta { display: inline-block; white-space: nowrap; background: var(--orange); color: #0b0c0e; text-decoration: none; font: 15px var(--mono); letter-spacing: .04em; padding: 13px 22px; transition: background .2s; }
-.cta:hover { background: var(--ink); }
 .note { font: 12.5px var(--mono); color: var(--mid); margin: 12px 0 0; }
 .recent { margin: 24px 0 0; padding: 0; list-style: none; font: 12.5px var(--mono); color: var(--mid); }
 .recent li { display: grid; grid-template-columns: 3em minmax(0, 1fr) 6.5em; gap: 12px; padding: 7px 0; border-top: 1px solid var(--faint); align-items: baseline; }
@@ -85,7 +85,6 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
   body { font-size: 18px; } main { padding-top: 32px; } .lead { font-size: 20px; } h1 { margin-top: 40px; }
   .big .n { font-size: 54px; } .card { padding: 20px 18px; }
   .recent li { grid-template-columns: 2.6em minmax(0, 1fr) 6.5em; }
-  .cta { padding: 13px 16px; font-size: 14px; letter-spacing: .02em; }
 }
 @media (prefers-reduced-motion: reduce) { .dot, .track .head { animation: none; } .track .fill, .track .head { transition: none; } .recent li.new { animation: none; } }
 </style>
@@ -94,18 +93,17 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
 <main>
   <div class="top">
     <a href="/"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#f4efe6"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round"/></svg>tacit</a>
-    <span class="live"><span class="dot" id="dot"></span><span id="livelabel">open ceremony</span></span>
+    <span class="live"><span class="dot idle" id="dot"></span><span id="livelabel">ceremony closed</span></span>
   </div>
 
   <h1>Trusted setup<span>.</span></h1>
   <p class="lead">The EVM side of Secret Sats: the same private notes and the same address, for ETH and other EVM assets on Ethereum, Base and Robinhood Chain, with every transaction proved on your own device. Its proving key comes from one public ceremony: each contribution mixes in fresh randomness, and the key is sound as long as a single contributor kept theirs secret.</p>
 
-  <div class="card" aria-live="polite">
+  <div class="card">
     <div class="big"><span class="n" id="n">·</span><span class="l" id="nlabel">contributions</span></div>
-    <p class="now" id="now">&nbsp;</p>
+    <p class="now" id="now" aria-live="polite">&nbsp;</p>
     <div class="track" id="track" aria-hidden="true"><div class="rail"></div><div class="fill" id="fill"></div></div>
-    <a class="cta" href="/?evmpool=ceremony">Contribute in your browser →</a>
-    <p class="note">A few minutes. No wallet needed. Contribute as often as you like.</p>
+    <p class="note">Contributions are closed. The hash of Bitcoin block 968,840, unknown until it was mined, was mixed in as the final beacon.</p>
     <ul class="recent" id="recent"></ul>
   </div>
 
@@ -131,7 +129,6 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
   </section>
 
   <nav class="links">
-    <a href="/?evmpool=ceremony">Contribute</a>
     <a href="/sats/">Secret Sats</a>
     <a href="/secret-sats/">Lite paper</a>
     <a href="/tacit-v1.pdf">Tacit V1</a>
@@ -162,7 +159,9 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
   };
   const dur = (sec) => { const d = Math.max(0, Math.floor(Date.now() / 1000 - sec)); return d < 60 ? d + 's' : Math.floor(d / 60) + 'm ' + String(d % 60).padStart(2, '0') + 's'; };
 
-  let shown = null, state = null, live = null, rows = [], known = new Set(), firstLoad = true;
+  let shown = null, state = null, live = null, rows = [], known = new Set(), firstLoad = true, lastLine = null;
+  // The clock ticks every second; only text that changed is written, so the live line speaks only when it says something new.
+  const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 
   // Track: a rail toward the last milestone, a tick per milestone, and a head at the current count.
   const track = $('track');
@@ -185,7 +184,6 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
     if (!state) return;
     const n = Number(state.contribution_count) || 0;
     countTo(n);
-    $('nlabel').textContent = n === 1 ? 'contribution' : 'contributions';
     const pct = pos(n);
     $('fill').style.width = pct + '%';
     head.style.left = pct + '%';
@@ -200,14 +198,11 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
     else if (closing) line = `Contributions closed · sealing with <a href="https://mempool.space/block/${BEACON}">Bitcoin block ${BEACON}</a>`;
     else if (busy) line = `<span class="hot">Contributing now</span> · ${dur(live.reservation.head_started_at || live.reservation.started_at)}` + (waiting ? ` · ${waiting} waiting` : '');
     else line = (lastAt ? `Last contribution <b>${ago(lastAt)}</b>` : 'Be the first to contribute') + (next ? ` · ${next[0] - n} more to reach ${next[1]}` : ' · every milestone reached');
-    $('now').innerHTML = line;
+    if (line !== lastLine) { $('now').innerHTML = line; lastLine = line; }
     $('dot').classList.toggle('idle', !busy && !state.finalized && !(lastAt && Date.now() / 1000 - lastAt < 900));
-    $('livelabel').textContent = state.finalized ? 'ceremony closed' : closing ? 'closing · sealing' : (busy ? 'live · contributing now' : 'open ceremony');
-    document.querySelector('.cta').style.display = state.finalized || closing ? 'none' : '';
-    document.querySelector('.card .note').textContent = state.finalized || closing
-      ? 'Contributions are closed. Its hash, unknown until the block is mined, is mixed in as the final beacon.'
-      : 'A few minutes. No wallet needed. Contribute as often as you like.';
-    for (const li of $('recent').querySelectorAll('li')) { const a = li.querySelector('.ago'); if (a) a.textContent = ago(Number(li.dataset.t)); }
+    setText($('nlabel'), n === 1 ? 'contribution' : 'contributions');
+    setText($('livelabel'), state.finalized ? 'ceremony closed' : closing ? 'closing · sealing' : (busy ? 'live · contributing now' : 'open ceremony'));
+    for (const li of $('recent').querySelectorAll('li')) { const a = li.querySelector('.ago'); if (a) setText(a, ago(Number(li.dataset.t))); }
   }
 
   function paintRecent() {
@@ -244,7 +239,7 @@ footer { font: 12px var(--mono); color: var(--dim); margin-top: 28px; }
     if (full || n !== lastCount) { await refreshRecent(); lastCount = n; }
     paint();
   }
-  tick(true).catch(() => { $('now').textContent = 'The ceremony is open.'; });
+  tick(true).catch(() => { $('now').textContent = 'Contributions are closed.'; });
   setInterval(() => { if (!document.hidden) tick(false); }, 12000);
   setInterval(() => { if (!document.hidden) paint(); }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(false); });

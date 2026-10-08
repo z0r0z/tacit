@@ -40,6 +40,9 @@ const WELD_STATS_HTML = join(DAPP_DIR, 'weld', 'stats', 'index.html');   // weld
 const WELD_KEEPER_HTML = join(DAPP_DIR, 'weld', 'keeper', 'index.html'); // community ops: permissionless keeper actions (advanceTip etc.), its inline module CSP-hash-pinned
 const PAY_HTML = join(DAPP_DIR, 'pay', 'index.html');         // tacit pay: BTC and TAC payments, one file, its inline module CSP-hash-pinned
 const PAY_ETH_HTML = join(DAPP_DIR, 'pay', 'eth', 'index.html');   // tacit pay's private ETH, likewise (served at /pay/eth/ and /pay/wei/)
+const CEREMONY_HTML = join(DAPP_DIR, 'ceremony', 'index.html');     // the EVM pool's trusted-setup page: one classic inline script, CSP-hash-pinned
+const SECRET_SATS_HTML = join(DAPP_DIR, 'secret-sats', 'index.html'); // the lite paper's viewer, likewise
+const TACIT_V1_HTML = join(DAPP_DIR, 'tacit-v1', 'index.html');     // the whitepaper's viewer, likewise
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -217,7 +220,7 @@ function preloadBlocks(page) {
       if (!existsSync(file)) throw new Error(`preload: ${url} is not in dapp/`);
       seen.add(url);
       for (const m of readFileSync(file, 'utf8').matchAll(STATIC_IMPORT)) {
-        if (/^[./]/.test(m[2])) walk(new URL(m[2], `https://x${path}`).pathname);
+        if (/^[./]/.test(m[2])) { const u = new URL(m[2], `https://x${path}`); walk(u.pathname + u.search); }
       }
     };
     for (const r of list.trim().split(/\s+/).filter(Boolean)) walk(urlOf(r));
@@ -276,14 +279,19 @@ function updateCacheVersion(swBytes, vendorBundle, prfWalletBytes) {
 // defence is that no inline script runs there, and CSP is per-response — one page opting out is enough.
 // Pinning the exact sha256 of its own inline module keeps both properties. Recomputed on every build so an
 // edit to that script can never leave a stale pin (which would simply stop the page working, loudly).
-// Returns { changed, digest } or null when the page has no inline module.
-function verifyCspDigest(htmlText) {
-  const m = /<script type="module">([\s\S]*?)<\/script>/.exec(htmlText);
+// Returns { changed, digest } or null when the page has no inline module. `script` picks the inline script a page pins
+// when it is not a module.
+const INLINE_MODULE = /<script type="module">([\s\S]*?)<\/script>/;
+function verifyCspDigest(htmlText, script = INLINE_MODULE) {
+  const m = script.exec(htmlText);
   if (!m) return null;
   return 'sha256-' + createHash('sha256').update(m[1], 'utf8').digest('base64');
 }
 // The pinned pages and where each keeps its hash: verify.html's script-src is the hash alone, weld's is 'self' plus
-// the hash (it also imports same-origin modules).
+// the hash (it also imports same-origin modules). The ceremony and paper pages run one classic inline script and load no
+// other, so theirs is the hash alone.
+const INLINE_CLASSIC = /<script>([\s\S]*?)<\/script>/;
+const HASH_ONLY = { re: /script-src '(unsafe-inline|sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src '${d}'` };
 const PINNED_PAGES = [
   { name: 'verify.html', file: VERIFY_HTML, re: /script-src '(unsafe-inline|sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src '${d}'` },
   { name: 'index.html', file: WELD_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
@@ -291,10 +299,13 @@ const PINNED_PAGES = [
   { name: 'weld/keeper/index.html', file: WELD_KEEPER_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
   { name: 'pay/index.html', file: PAY_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
   { name: 'pay/eth/index.html', file: PAY_ETH_HTML, re: /script-src 'self' '(sha256-[A-Za-z0-9+/=]+)'/, put: (d) => `script-src 'self' '${d}'` },
+  { name: 'ceremony/index.html', file: CEREMONY_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
+  { name: 'secret-sats/index.html', file: SECRET_SATS_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
+  { name: 'tacit-v1/index.html', file: TACIT_V1_HTML, script: INLINE_CLASSIC, ...HASH_ONLY },
 ];
 function updatePinnedCsp(page) {
   const htmlText = readFileSync(page.file).toString('utf8');
-  const digest = verifyCspDigest(htmlText);
+  const digest = verifyCspDigest(htmlText, page.script);
   if (!digest) return { changed: false, digest: null };
   const after = htmlText.replace(page.re, page.put(digest));
   if (after === htmlText) return { changed: false, digest };
@@ -368,7 +379,7 @@ async function main() {
     for (const page of PINNED_PAGES) {
       if (!existsSync(page.file)) continue;
       const vText = readFileSync(page.file).toString('utf8');
-      const want = verifyCspDigest(vText);
+      const want = verifyCspDigest(vText, page.script);
       const got = (page.re.exec(vText) || [])[1] || null;
       if (want && got !== want) {
         console.error(`✗ ${page.name} CSP script hash is stale — run \`npm run build\` and commit the result:`);

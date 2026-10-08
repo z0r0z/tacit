@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Its one inline script is pinned by sha256 in script-src by build/build.mjs. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-sWg3vWsBiyb5RT8mtY5km6UatXRZcjf9Va9h63alBok='; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Secret Sats: Private Payments on Bitcoin</title>
 <meta name="description" content="Send bitcoin-backed cBTC with the amount hidden, and through a shielded pool with sender and receiver unlinked. The Secret Sats lite paper.">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="alternate icon" href="/favicon.ico">
-<link rel="canonical" href="https://tacit.finance/secret-sats">
+<link rel="canonical" href="https://tacit.finance/secret-sats/">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="tacit">
-<meta property="og:url" content="https://tacit.finance/secret-sats">
+<meta property="og:url" content="https://tacit.finance/secret-sats/">
 <meta property="og:title" content="Secret Sats: Private Payments on Bitcoin">
 <meta property="og:description" content="Send bitcoin-backed cBTC with the amount hidden, and through a shielded pool with sender and receiver unlinked. The Secret Sats lite paper.">
 <meta property="og:image" content="https://tacit.finance/secret-sats-card.png">
