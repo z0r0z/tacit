@@ -3217,7 +3217,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   // Measured settle gas per relayed op (+ headroom): whole-note unwrap ~361k, send-and-unwrap ~590k (change
   // leaf), shielded transfer ~600k (membership + 2 output leaves).
-  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n, route: 600000n, swap: 600000n };
+  const SETTLE_GAS = { unwrap: 450000n, sendunwrap: 680000n, transfer: 620000n, lp: 780000n, lpremove: 720000n, route: 600000n, swap: 600000n, bridgeburn: 600000n };
   // Succinct network prove fee per op, as wei. Measured from a live fulfillment for a shielded transfer:
   // 0.3892 PROVE x ~$0.19 = ~$0.074, ~0.00004 ETH at ~$1900/ETH — and ETH has moved well above that since,
   // so this now overstates the cost in ETH and the fee over-recovers by a few percent. Re-derive it from a

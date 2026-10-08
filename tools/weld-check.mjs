@@ -130,6 +130,8 @@ const submits = [], refused = [], relays = [], walletTxs = [];
 let gatewayOnce = false;                                          // the next relay meets a gateway timeout (devmove)
 // Submits the relay refuses before taking them, as it does once the day's free settles are used up.
 let refuseSubmits = 0;
+// What a relayed job reports when it fails (the default stands for a settle the page could not see through).
+let statusError = 'stubbed in the fork check';
 // With `proveStub`, a job asked for as a proof only reads proven (a stand-in proof, with the memos it was sent with),
 // for a page that sends the settle itself.
 let proveStub = false;
@@ -182,7 +184,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     if (u.pathname === '/confidential/status') {
       const id = u.searchParams.get('id'), pj = provenJobs[id];
       if (pj) return json(route, { jobId: id, mode: 'prove', status: 'proven', publicValues: '0x' + '01'.repeat(32), proof: '0x' + '02'.repeat(32), memos: pj.memos });
-      return json(route, { status: 'failed', error: 'stubbed in the fork check' });
+      return json(route, { status: 'failed', error: statusError });
     }
     // A live API that does not answer is the page's to report, as it would be for a user; the run goes on.
     try {
@@ -1949,7 +1951,7 @@ await step('xobridge', async () => {
       const ux = real.makeConfidentialPoolUx(o), balance = ux.balance;
       const note = (value, i) => ({ asset: '${CETH}', value: BigInt(value), blinding: BigInt(1000 + i), leafIndex: 900000 + i, leaf: '0x' + String(i).repeat(64).slice(0, 64), nullifier: '0x' + String(i + 1).repeat(64).slice(0, 64),
         cx: '0x' + String(i).repeat(64).slice(0, 64), cy: '0x01', owner: '0x' + '02'.repeat(32), secret: '0x' + '03'.repeat(32), root: '0x' + '04'.repeat(32), path: Array.from({ length: 32 }, () => '0x' + '00'.repeat(32)) });
-      const add = [note(400000, 1), note(200000, 2), note(1200000, 3), note(500000, 4)];
+      const add = [note(400000, 1), note(200000, 2), note(1200000, 3), note(500000, 4), note(500000, 5)];
       ux.balance = async (priv) => {
         const b = await balance(priv);
         b.notes = [...b.notes, ...add];
@@ -2020,7 +2022,7 @@ await step('xobridge', async () => {
   ok(/Cancelled: no burn for it was found on Ethereum/.test(await text(r.page, '#xo-rstatus')) && !JSON.parse(await r.page.evaluate((k) => localStorage.getItem(k), `tacit-crossout-bridge-v1:mainnet:${pub}`)).some((x) => x.stage === 'settling'),
     'xobridge: cancelling it drops the row and the record once Ethereum shows no burn for it');
 
-  // The form. A tETH balance of four notes (0.004, 0.002, 0.012, 0.005) is read; the key's Bitcoin address has nothing yet.
+  // The form. A tETH balance of five notes (0.004, 0.002, 0.012, 0.005, 0.005) is read; the key's Bitcoin address has nothing yet.
   await r.page.waitForSelector('#xo-amt');
   await r.page.fill('#xo-amt', '0.004');
   await until(r.page, () => /Bitcoin fee, when it is sent/.test(document.querySelector('#xo-rcpt')?.textContent || ''), null, 240000)
@@ -2070,6 +2072,24 @@ await step('xobridge', async () => {
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | status: ${await text(r.page, '#v1-status')} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
   const left = JSON.parse(await r.page.evaluate((k) => localStorage.getItem(k), `tacit-crossout-bridge-v1:mainnet:${pub}`));
   ok(!left.some((x) => x.id === '0x' + '5'.repeat(64)) && left.some((x) => x.id === '0x' + '2'.repeat(64)) && refused.length > 0, 'xobridge: a send the relay refuses at submit offers the paying account and leaves no record of that note behind (the first note’s intent stays)');
+  // A relay that turns the fee down when it picks the job up: the page asks once more at a doubled fee brought back onto the
+  // two-digit ladder, and when that is turned down too (or doubling would eat the note) offers the paying account.
+  await r.page.fill('#xo-amt', '');
+  await until(r.page, () => document.querySelector('#xo-rcpt')?.hidden, null, 30000);          // the last receipt is gone before the next is waited for
+  await r.page.fill('#xo-amt', '0.005');
+  await until(r.page, () => /Relay fee0\.\d+ tETH/.test(document.querySelector('#xo-rcpt')?.textContent || '') && !document.querySelector('#xo-ackrow')?.hidden, null, 240000);
+  const fee1 = BigInt(Math.round(Number((await text(r.page, '#xo-rcpt')).match(/Relay fee(0\.\d+) tETH/)[1]) * 1e8));
+  statusError = 'feeGate: bound fee is below the marginal cost at this gas';
+  const b2 = submits.length;
+  await r.page.check('#xo-ack');
+  await r.page.click('#xo-go');
+  await until(r.page, () => !!document.querySelector('#v1-status [data-selfdo]') || /feeGate|marginal cost|Sent to the relay/.test(document.querySelector('#v1-status')?.textContent || ''), null, 240000);
+  await sleep(1500);
+  const fees = submits.slice(b2).map((b) => BigInt(b.op?.fee ?? b.fee ?? -1));
+  const ladder = (v) => v.toString().replace(/0+$/, '').length <= 2;
+  const retried = fee1 * 4n < 500000n;
+  ok(fees.length === (retried ? 2 : 1) && fees.every(ladder) && (!retried || (fees[1] > fees[0] && fees[1] >= fee1 * 2n)), `xobridge: a fee the relay turns down is asked again once at a doubled fee on the ladder (${retried ? 'doubling fits' : 'doubling would not fit the note'}; fees ${fees.join(' → ')})`);
+  statusError = 'stubbed in the fork check';
   if (r.errors.length) { fails++; console.log('FAIL xobridge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
 });

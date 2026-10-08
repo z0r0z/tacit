@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xcYjVRqiUThl8m3hvHwoyqSznrGm6WSGy/8I53LSJRM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-x0eDqn9xKjNSv3hTph+H5buJ93H3dLp9Dl8smvGAVuc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=c240ced2"></script>
 <title>tacit</title>
@@ -2770,7 +2770,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 
 // ── Tacit V1 pool: shared module, loaded on first use ────────────────────────────────────────────────────
 const getUx = lazy(async () => {
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=c6f52584'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=296931a3'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));      // public TAC in the connected wallet counts toward the exit-fee tier, as on tacit.finance
   return makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -3432,6 +3432,10 @@ const xoProblemText = (p, pf) => p.name === 'funding' ? html`This key’s Bitcoi
 // The sats check reads this key's holdings in tacit.js, so it runs in a turn that holds the key like every other use of it.
 const xoPreflight = (ux, pub) => withKey(() => ux.preflight({ walletPriv: walletPriv() }), pub);
 const xoShown = (pub) => xoOn() || xoJournaled(pub);
+// A relay fee is two significant digits at most, rounded up, so a doubled fee is brought back onto that ladder.
+const xoLadder = (v) => { const x = BigInt(v), d = x.toString().length; if (d <= 2) return x; const s = 10n ** BigInt(d - 2); return ((x + s - 1n) / s) * s; };
+// The relay turned the fee down, at submit (its floor moved) or when it picked the job up (below its cost at that gas).
+const xoFeeShort = (e) => /fee below the current floor|feeGate|below the marginal cost/i.test(String(e?.message || e || ''));
 function xoErr(e) {
   const m = String(e?.message || e || '').replace(/^crossout-ux:\s*/, '');
   if (/another tab/i.test(m)) return 'This bridge is being moved on in another tab. Wait for it there, or close that tab and try again.';
@@ -3570,6 +3574,7 @@ function v1Btc(el, status) {
     if (e?.isTrusted) say(status, '');
     if (tooFine(rc, amt.value, units, 8)) return;
     if (!units) { rc.hidden = true; return; }
+    if (P.scan && units > spendable('eth')) { mount(rc, html``); warn(rc, overBalance()); return; }
     mount(rc, html`<p class="note">Checking the fees and the proof…</p>`); rc.hidden = false;
     try {
       const [t, ux] = await Promise.all([getUx(), xoUx()]);
@@ -3628,10 +3633,10 @@ function v1Btc(el, status) {
       try {
         try { rec = await startWith({ fee: x.fee, waitOpts: run.wait(null, 15 * 60e3) }); }
         // The relay's floor moved between the quote and the submit: nothing was proved, so ask once more at twice the fee.
-        catch (e0) { if (/fee below the current floor/i.test(e0?.message || '') && x.fee * 2n * 2n < x.units) rec = await startWith({ fee: x.fee * 2n, waitOpts: run.wait(null, 15 * 60e3) }); else throw e0; }
+        catch (e0) { const up = xoLadder(x.fee * 2n); if (xoFeeShort(e0) && !waitRanOut(e0) && up * 2n < x.units) rec = await startWith({ fee: up, waitOpts: run.wait(null, 15 * 60e3) }); else throw e0; }
       } catch (e) {
         // A wait that ran out is not a refusal: the job may still be proving, so its intent stays and is looked for on Ethereum.
-        if (!relayRefused(e) || waitRanOut(e) || run.away) throw e;
+        if (!(relayRefused(e) || xoFeeShort(e)) || waitRanOut(e) || run.away) throw e;
         // Refused at submit: nothing was queued, so the intent is let go and the same burn goes out from the paying account.
         await ux.cancelIntent(pub, note.nullifier).catch(() => {});
         offerSelf({ label: `Bridge ${amtText} to Bitcoin`, sheet: 'eth', status: () => $('#v1-status'), then: 'Burned. The Bitcoin step goes on by itself from here.', after: () => xoTick(true),
