@@ -19,6 +19,7 @@
 /tac      /tac/      301
 /pay      /pay/      301
 /pay/eth  /pay/eth/  301
+/weld/keeper  /weld/keeper/  301
 /pay/wei  /pay/eth/index.html  200
 /pay/wei/*  /pay/eth/index.html  200
 
