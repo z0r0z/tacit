@@ -5,10 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module (its sha256 pinned in script-src by build/build.mjs) and the reading it imports. It reads
      public data only: no wallet, no key; it keeps the last reading, and the chain data behind it, to read on from. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SJwC0rprlLX9X8XoVlogjZxZf2JunhEt4QYSmoGUZ4I='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://cloudflare-eth.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DRTtrOg3MJDjvLcvfKZJ8v/JpbHGdnzR/gtltoPMpWs='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://cloudflare-eth.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>Tacit v1 stats</title>
 <meta name="description" content="Tacit v1 stats, live from Ethereum and Bitcoin: private ETH, cBTC and cUSD, TAC, and Bitcoin's state on Ethereum.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tacit">
+<meta property="og:url" content="https://tacit.finance/weld/stats/">
+<meta property="og:title" content="Tacit v1 stats">
+<meta property="og:description" content="Live from Ethereum and Bitcoin: private ETH, cBTC and cUSD, TAC, and Bitcoin's state on Ethereum.">
+<meta property="og:image" content="https://tacit.finance/tacit-card.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -394,7 +401,7 @@ function showTac(r) {
 function showPoints(r) {
   paint('pts', [
     { k: 'Participants', v: `${int(r.participants)}${r.full ? '+' : ''}`, m: 'accounts earning points' },
-    { k: 'Points', v: int(Math.round(r.points)), m: `${r.full ? `across the top ${int(BOARD_MAX)} · ` : ''}<a href="/#leaderboard">leaderboard ↗</a>` },
+    { k: 'Points', v: int(Math.round(r.points)), m: `${r.full ? `across the top ${int(r.participants)} · ` : ''}<a href="/#leaderboard">leaderboard ↗</a>` },
     { k: 'TAC allocated', v: fmt(r.allocated, 18, 0), u: 'TAC', m: `to points holders · ${addr(A.points, 1, 'distributor')}` },
     { k: 'TAC claimed', v: fmt(r.claimed, 18, 2), u: 'TAC', m: 'from points so far' },
   ]);
