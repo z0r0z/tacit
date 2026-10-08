@@ -56,7 +56,7 @@
 //   bridge   the TAC sheet's Bridge: stubbed TAC notes on Bitcoin listed (one over the limit refused), a tracked note checks out
 //            as one Bitcoin transaction but waits for sats for its fee, bridges under way show their steps and actions, and
 //            Recover files its claim
-//   xobridge the tETH sheet's To Bitcoin tab: shown by default, hidden by a local setting (a deep link to it then falls back) unless a bridge is under way;
+//   xobridge the tETH sheet's To Bitcoin tab: hidden until enabled by a local setting (a deep link to it then falls back) unless a bridge is under way;
 //            a tETH balance (stubbed notes) is quoted the relay fee, the Bitcoin fee and the time, refused over the limit and under the
 //            minimum, and held back until the key's Bitcoin address has sats for the Bitcoin step and the box is ticked; bridges under
 //            way (seeded in tacit.js's journal) show their steps and actions, a burn not yet seen to land is cancelled only after
@@ -1976,15 +1976,15 @@ await step('xobridge', async () => {
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
 
-  // Shown by default; switched off locally with no bridge under way, there is no tab, and a link to it opens the sheet as it is.
-  await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'false'));
+  // Hidden until enabled: with nothing set and no bridge under way there is no tab, and a link to it opens the sheet as it is.
   await go(r.page, '#private/bitcoin');
   await until(r.page, () => !!document.querySelector('#eth-v1 [data-v1="wrap"][aria-selected="true"]'), null, 120000);
-  ok(!(await r.page.$('#eth-v1 [data-v1="btc"]')), 'xobridge: switched off locally, with no bridge under way, the sheet has no To Bitcoin tab, and a link to it opens Make private');
-  await r.page.evaluate(() => localStorage.removeItem('tacit-teth-btc'));
+  ok(!(await r.page.$('#eth-v1 [data-v1="btc"]')), 'xobridge: with nothing set and no bridge under way the sheet has no To Bitcoin tab, and a link to it opens Make private');
+  await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'true'));
   await go(r.page, '#private');
   await until(r.page, () => !!document.querySelector('#eth-v1 [data-v1="btc"]'), null, 120000);
-  ok(true, 'xobridge: with nothing set, the tab is there');
+  ok(true, 'xobridge: enabled, the tab is there');
+  await r.page.evaluate(() => localStorage.removeItem('tacit-teth-btc'));
 
   // A bridge already under way shows the tab even when it is switched off, however the bridge got there.
   await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'false'));
