@@ -43,6 +43,8 @@ const MAX_HOPS_BURN_HOME = 64;
 const JOURNAL_PREFIX = 'tacit-burndep-bridge-v1';
 const LEASE_TTL_MS = 30_000;
 const DEST_INDEXES = 8; // matches confidential-recovery.js's walkBridgeMints default
+// How long a mint waits on the relay's queue before the call returns; the job goes on there either way.
+const MINT_WAIT_MS = 15 * 60 * 1000;
 
 const stripHex = (h) => String(h).replace(/^0x/, '');
 const withHex = (h) => (String(h).startsWith('0x') ? String(h) : '0x' + String(h));
@@ -605,13 +607,7 @@ export function makeBurnDepositUx(deps) {
       if (!walletPriv) throw new Error('burndep-ux: this stage needs the wallet key');
       const say = (phase, extra) => { try { onProgress && onProgress({ phase, ...extra }); } catch { /* best-effort */ } };
       const m = rec.mint;
-      // A mint that landed without this page hearing of it (a lost answer, a wait that ran out, a settle sent by someone else)
-      // shows as the burned note's nullifier spent in the pool: the record is complete, and nothing is built or sent again.
-      const landed = async () => {
-        if (!nullifierSpent || !rec.envelope || !rec.envelope.nullifier) return null;
-        try { return (await nullifierSpent(rec.envelope.nullifier)) ? putRecord({ ...rec, stage: 'minted', mintedAt: now(), lastError: null, errorCount: 0 }) : null; } catch { return null; }
-      };
-      const already = await landed();
+      const already = await mintLanded(rec);
       if (already) return already;
       say('fetching-snapshot');
       let minted;
@@ -624,10 +620,10 @@ export function makeBurnDepositUx(deps) {
         // The destination blinding is derived from the wallet key and ν, which the recovery scan re-derives.
         recovery: recoveryFor(walletPriv, m.dest.value),
         selfSettle,
-        waitOpts: { onJob: (jobId) => say('submitted', { jobId }), onUpdate: (st) => say('status', { status: st.status }) },
+        waitOpts: { timeoutMs: MINT_WAIT_MS, onJob: (jobId) => say('submitted', { jobId }), onUpdate: (st) => say('status', { status: st.status }) },
         });
       } catch (e) {
-        const done = await landed();
+        const done = await mintLanded(rec);
         if (done) return done;
         throw e;
       }
@@ -650,6 +646,8 @@ export function makeBurnDepositUx(deps) {
       return putRecord({ ...rec, stage: 'folded', foldedAt: now() });
     },
     folded: async (rec, { walletPriv, onProgress, selfSettle }) => {
+      const already = await mintLanded(rec);
+      if (already) return already;
       const recorded = await burnRecorded(rec);
       if (recorded === false) return putRecord({ ...rec, stage: 'not-recorded', notRecordedAt: now() });
       if (!walletPriv) throw new Error('burndep-ux: this stage needs the wallet key');
@@ -660,7 +658,9 @@ export function makeBurnDepositUx(deps) {
       const dest = rec.dest || deriveDest(walletPriv, rec.burnHome, rec.burnHome.txid, rec.source.amount);
       say('fetching-snapshot'); // bridgeMint's own fetchReflectionSnapshot() is the multi-MB reflection dump — no
       // hook inside that call itself, so this fires for the whole build+submit span up to the relay's own onJob.
-      const minted = await bridgeMint.bridgeMint({
+      let minted;
+      try {
+        minted = await bridgeMint.bridgeMint({
         network, sourceClass: 0,
         spentTxid: withHex(revHex(rec.burnHome.txid)), spentVout: 0,
         asset: withHex(tacAssetId), chainBinding: withHex(chainBindingHex()),
@@ -672,13 +672,28 @@ export function makeBurnDepositUx(deps) {
         recovery: recoveryFor(walletPriv, dest.value),
         selfSettle,
         waitOpts: {
+          timeoutMs: MINT_WAIT_MS,
           onJob: (jobId) => say('submitted', { jobId }),
           onUpdate: (st) => say('status', { status: st.status }),
         },
-      });
+        });
+      } catch (e) {
+        const done = await mintLanded({ ...rec, dest });
+        if (done) return done;
+        throw e;
+      }
       return putRecord({ ...rec, dest, stage: 'minted', mintedAt: now(), mintedJobId: minted.jobId || null, mintedTxHash: minted.txHash || null });
     },
   };
+
+  // A mint that landed without this page hearing of it (a lost answer, a wait that ran out, a settle sent by someone else)
+  // shows as the burned note's nullifier spent in the pool: the record is complete, and nothing is built or sent again.
+  // The pool takes each nullifier once, so a second mint of one burn could only fail; this keeps it from being sent.
+  async function mintLanded(rec) {
+    const nu = (rec.envelope && rec.envelope.nullifier) || (rec.dest && rec.dest.nullifier);
+    if (!nullifierSpent || !nu) return null;
+    try { return (await nullifierSpent(nu)) ? putRecord({ ...rec, stage: 'minted', mintedAt: now(), lastError: null, errorCount: 0 }) : null; } catch { return null; }
+  }
 
   // A stable, always-available choice: this beta ships one bridge per note, so index 0 never collides with
   // itself, and recovery (confidential-recovery.js's walkBridgeMints) tries indexes 0..7 regardless of which
@@ -730,6 +745,41 @@ export function makeBurnDepositUx(deps) {
 
   function list(walletPub) { return loadAll(walletPub); }
   function abandon(walletPub, id) { saveAll(walletPub, loadAll(walletPub).filter((r) => r.id !== id)); }
+
+  // Whether a transaction is on Bitcoin (mined or in a mempool): 'present', 'absent' only on an explicit not-found, and
+  // 'unknown' for anything else, a rate limit or an outage included -- a transport failure is never read as absence.
+  async function chainTxState(txid) {
+    const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+    if (!f || !txid) return 'unknown';
+    try {
+      const res = await f(`${workerBase}/chain/tx/${stripHex(txid)}?network=${network}`);
+      if (res.status === 404) return 'absent';
+      if (!res.ok) return 'unknown';
+      const j = await res.json().catch(() => null);
+      if (j && j.status) return 'present';
+      return j && j.error === 'not-found' ? 'absent' : 'unknown';
+    } catch { return 'unknown'; }
+  }
+
+  // Gives up a bridge whose signed burn or move Bitcoin never took, once the chain is asked again and has neither of its
+  // two transactions: its TAC was never spent. One whose reveal Bitcoin has is not given up but goes on as sent, and one
+  // whose commit alone is there, or that could not be checked, is kept. → the record that goes on, or null once dropped.
+  async function cancelSigned(walletPub, id) {
+    if (!getRecord(walletPub, id)) return null;
+    if (!tryAcquireLease(id)) throw new Error('burndep-ux: this bridge is being advanced in another tab right now');
+    try {
+      const rec = getRecord(walletPub, id);
+      if (!rec) return null;
+      const signed = rec.stage === 'rburn-signed' ? rec.burn : rec.stage === 'migrate-signed' ? rec.migrate : null;
+      if (!signed) throw new Error('burndep-ux: only a bridge whose signed transaction Bitcoin never took can be cancelled');
+      const [commit, reveal] = await Promise.all([chainTxState(signed.commitTxid), chainTxState(signed.txid || signed.revealTxid)]);
+      if (reveal === 'present') return putRecord({ ...rec, stage: rec.stage === 'rburn-signed' ? 'rburn-sent' : 'migrate-sent', sentAt: now(), lastError: null, errorCount: 0 });
+      if (commit === 'present') throw new Error('burndep-ux: the first of its two transactions is on Bitcoin, so it was not cancelled');
+      if (commit !== 'absent' || reveal !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about its transactions just now, so it was not cancelled; try again in a minute');
+      abandon(walletPub, id);
+      return null;
+    } finally { releaseLease(id); }
+  }
 
   // Recovers a bridge from just its burn txid and the wallet key — the case where the journal itself is
   // gone (a different browser/device, or cleared storage) but the migrate has already confirmed, so
@@ -912,14 +962,15 @@ export function makeBurnDepositUx(deps) {
     return putRecord({ ...rec, stage: r.status === 'sent' ? 'recovered' : 'recovering', recover: { status: r.status, txid: r.txid || null, at: now() } });
   }
 
-  // The key-free part of a stage the holder drives: a bridge whose burn-home is live stops, and an unrecorded burn says
-  // so, without waiting for a click. Used by a page's background refresh.
+  // The key-free part of a stage the holder drives: a bridge whose burn-home is live stops, an unrecorded burn says
+  // so, and a mint that landed is complete, without waiting for a click. Used by a page's background refresh.
   async function verify(walletPub, id) {
     const rec = getRecord(walletPub, id);
     if (!rec) return null;
     if ((rec.stage === 'traced' || rec.stage === 'migrate-confirmed') && (await isLive(rec.burnHome.txid, 0, { fresh: true })) === true) {
       return putRecord({ ...rec, stage: 'stopped', stoppedAt: now(), stoppedWhy: 'tracked' });
     }
+    if (rec.stage === 'folded' || rec.stage === 'rfolded') { const done = await mintLanded(rec); if (done) return done; }
     if (rec.stage === 'folded' && (await burnRecorded(rec)) === false) return putRecord({ ...rec, stage: 'not-recorded', notRecordedAt: now() });
     if (rec.stage === 'recovering') return STAGE_ADVANCE.recovering(rec);
     return rec;
@@ -937,7 +988,7 @@ export function makeBurnDepositUx(deps) {
 
   return {
     BURNDEP_BETA_CAP_RAW, eligibleNotes, isReserved, pickFunding, preflight, start, startReflected, advance, resumeAll, recoverFromTxid, list, abandon,
-    buildCancel, reclaim, recover, verify, isLive, burnRecorded,
+    cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded,
     slipstreamStatus: broadcaster.slipstreamStatus,
     checkTxidStatus,
   };

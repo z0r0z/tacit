@@ -1014,6 +1014,89 @@ async function atRfolded(storage, extra = {}, amount = NOTE_AMOUNT) {
   const done = await first;
   ok(!!refused && /another tab/.test(refused.message) && done.stage === 'minted', 'while one page is mid-mint, another is told it is being advanced elsewhere');
 }
+{
+  const { world, ux, r } = await atRfolded(makeMemStorage(), { nullifierSpent: async () => false });
+  await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(world.bridgeMintCalls[0].waitOpts.timeoutMs === 15 * 60 * 1000, 'a mint waits up to 15 minutes on the relay’s queue');
+}
+
+// The deposit path's mint is looked for in the pool the same way before anything is sent, and the background check
+// records a mint that landed without a click.
+async function atFolded(extra = {}) {
+  const world = makeWorld();
+  const ux = makeUx(world, makeMemStorage(), extra);
+  let r = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id); world.setMigrateConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id); r = await ux.advance(r.walletPub, r.id);
+  world.setBurnHomeOnChain(r.burnHome.txid, r.burnHome.spk);
+  r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  world.setBurnSubmitted(r.burn.txid);
+  r = await ux.advance(r.walletPub, r.id); world.setBurnConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id); r = await ux.advance(r.walletPub, r.id);
+  world.setBurnFolded(true);
+  r = await ux.advance(r.walletPub, r.id);
+  return { world, ux, r };
+}
+{
+  const asked = [];
+  const { world, ux, r } = await atFolded({ nullifierSpent: async (nu) => { asked.push(nu); return true; } });
+  ok(r.stage === 'folded', 'sanity: the deposit-path bridge is ready to mint');
+  const after = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(after.stage === 'minted' && world.bridgeMintCalls.length === 0 && asked.includes(r.envelope.nullifier), 'a deposit-path mint already in the pool is recorded as minted, asked by the burn’s own nullifier, with nothing sent');
+}
+{
+  let spent = false;
+  const { world, ux, r } = await atFolded({ nullifierSpent: async () => spent });
+  const before = await ux.verify(r.walletPub, r.id);
+  spent = true;
+  const after = await ux.verify(r.walletPub, r.id);
+  ok(before.stage === 'folded' && after.stage === 'minted' && world.bridgeMintCalls.length === 0, 'the background check leaves an unlanded mint ready, and records a landed one as minted without sending anything');
+}
+{
+  let spent = false;
+  const { world, ux, r } = await atFolded({ nullifierSpent: async () => spent });
+  world.bridgeMint.bridgeMint = async (args) => { world.bridgeMintCalls.push(args); spent = true; throw new Error('settle timed out (box offline or backlogged)'); };
+  const after = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(after.stage === 'minted', 'a deposit-path mint whose wait ran out after it landed is recorded as minted');
+}
+
+// A signed burn Bitcoin never took is given up only once the chain has neither of its transactions.
+async function atRburnSigned() {
+  const world = makeWorld();
+  world.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+  world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+  const seen = new Map();                                     // txid → 'present' | 'absent' | 'down'
+  const fetchImpl = async (url, opts) => {
+    const m = new URL(url).pathname.match(/^\/chain\/tx\/([0-9a-f]{64})$/);
+    const s = m && seen.get(m[1]);
+    if (s === 'down') return { ok: false, status: 503, json: async () => ({ error: 'upstream unavailable' }) };
+    if (s === 'absent') return { ok: true, status: 200, json: async () => ({ error: 'not-found' }) };
+    if (s === 'present') return { ok: true, status: 200, json: async () => ({ txid: m[1], status: { confirmed: false } }) };
+    return world.fetchImpl(url, opts);
+  };
+  const ux = makeUx({ ...world, fetchImpl }, makeMemStorage());
+  const r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+  return { ux, r, seen, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
+}
+{
+  const { ux, r, seen, commit, reveal } = await atRburnSigned();
+  ok(r.stage === 'rburn-signed' && commit && reveal, 'sanity: a signed one-step burn with its two transaction ids');
+  const refusal = async () => { try { await ux.cancelSigned(r.walletPub, r.id); return null; } catch (e) { return e.message; } };
+  seen.set(commit, 'down'); seen.set(reveal, 'absent');
+  ok(/could not be asked/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a chain that cannot be read keeps the bridge as it is');
+  seen.set(commit, 'present');
+  ok(/first of its two/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a commit Bitcoin has keeps the bridge');
+  seen.set(reveal, 'present');
+  const on = await ux.cancelSigned(r.walletPub, r.id);
+  ok(on?.stage === 'rburn-sent' && ux.list(r.walletPub)[0].stage === 'rburn-sent', 'a burn Bitcoin has is not given up: it goes on as sent');
+  ok(/only a bridge whose signed transaction/.test(await refusal() || ''), 'and once it is sent it cannot be cancelled this way');
+}
+{
+  const { ux, r, seen, commit, reveal } = await atRburnSigned();
+  seen.set(commit, 'absent'); seen.set(reveal, 'absent');
+  const gone = await ux.cancelSigned(r.walletPub, r.id);
+  ok(gone === null && ux.list(r.walletPub).length === 0, 'with neither transaction on Bitcoin the bridge is dropped');
+}
 
 // A note newer than the attested state is not judged yet: preflight asks to wait, and a bridge holds before its burn.
 {
