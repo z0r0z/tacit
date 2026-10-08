@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-btc-pool.onrender.com https://tacit-btc-pool-relay.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://eth.llamarpc.com https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-btc-pool.onrender.com https://tacit-btc-pool-relay.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://eth.llamarpc.com https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>Secret TAC</title>
 <meta name="description" content="Shield TAC in a Bitcoin-native pool. Hidden amounts, unlinkable payments, withdraw anywhere.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
-<meta property="og:url" content="https://tacit.finance/tac">
+<link rel="canonical" href="https://tacit.finance/tac/">
+<meta property="og:url" content="https://tacit.finance/tac/">
 <meta property="og:title" content="Secret TAC">
 <meta property="og:description" content="Shield TAC in a Bitcoin-native pool. Hidden amounts, unlinkable payments, withdraw anywhere.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
@@ -244,10 +245,10 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </section>
 
   <div class="strip" id="strip">
-    <div><span class="v num" id="s-set">—</span><span class="k">Anonymity set</span></div>
-    <div><span class="v num" id="s-spends">—</span><span class="k">Private transfers</span></div>
-    <div><span class="v num" id="s-height">—</span><span class="k">Indexed block</span></div>
-    <div><span class="v" id="s-proof">—</span><span class="k">Proof system</span></div>
+    <div><span class="v num" id="s-set">…</span><span class="k">Anonymity set</span></div>
+    <div><span class="v num" id="s-txs">…</span><span class="k">Pool transactions</span></div>
+    <div><span class="v num" id="s-height">…</span><span class="k">Indexed block</span></div>
+    <div><span class="v" id="s-proof">…</span><span class="k">Proof system</span></div>
   </div>
 
   <section class="panel" id="claim-panel" hidden>
@@ -256,12 +257,12 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </section>
 
   <section class="panel" id="main">
-    <div class="seg" role="tablist" id="tabs">
-      <button role="tab" id="tab-shield" aria-selected="true">Shield</button>
-      <button role="tab" id="tab-send">Send</button>
-      <button role="tab" id="tab-withdraw">Withdraw</button>
-      <button role="tab" id="tab-receive">Receive</button>
-      <button role="tab" id="tab-market">Market</button>
+    <div class="seg" role="tablist" id="tabs" aria-label="Shielded TAC">
+      <button role="tab" id="tab-shield" aria-controls="pane-shield" aria-selected="true" tabindex="0">Shield</button>
+      <button role="tab" id="tab-send" aria-controls="pane-send" aria-selected="false" tabindex="-1">Send</button>
+      <button role="tab" id="tab-withdraw" aria-controls="pane-withdraw" aria-selected="false" tabindex="-1">Withdraw</button>
+      <button role="tab" id="tab-receive" aria-controls="pane-receive" aria-selected="false" tabindex="-1">Receive</button>
+      <button role="tab" id="tab-market" aria-controls="pane-market" aria-selected="false" tabindex="-1">Market</button>
     </div>
 
     <div class="bal">
@@ -273,7 +274,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
     </div>
     <div class="kv"><span id="bal-note">Connect a wallet to see your balances.</span><button class="link" id="btn-refresh" hidden>refresh</button></div>
 
-    <div id="pane-shield">
+    <div id="pane-shield" role="tabpanel" aria-labelledby="tab-shield" tabindex="0">
       <div class="lbl"><label for="shield-pick">TAC to move into the pool</label></div>
       <div class="amt text"><select id="shield-pick" style="flex:1;min-width:0;font:400 14px/1.4 var(--mono);color:var(--ink);background:none;border:0;padding:14px;outline:none"><option>Connect a wallet</option></select></div>
       <p class="note">A whole note goes in at once — splitting it first would publish the split. Once it is in the pool you can send or take out any amount you like. This step pays its own Bitcoin fee, so the wallet needs a little BTC.</p>
@@ -282,7 +283,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="status" id="st-shield"></div>
     </div>
 
-    <div id="pane-send" hidden>
+    <div id="pane-send" role="tabpanel" aria-labelledby="tab-send" tabindex="0" hidden>
       <div class="lbl"><label for="send-to">To a Tacit or pool address</label></div>
       <div class="amt text"><input id="send-to" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="tacit1… or bp1…"></div>
       <div class="lbl"><label for="send-amt">Amount</label><button class="link" id="send-max" type="button">max</button></div>
@@ -293,7 +294,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="status" id="st-send"></div>
 
       <div class="lbl sep"><span>Or send to someone with no wallet</span></div>
-      <p class="note" style="margin-top:0">Creates a link that holds the TAC. Whoever opens it can take it into a wallet of their own — they need no wallet now and no bitcoin ever, because the relayer takes its fee from the TAC itself. Anyone holding the link can spend it, so send it the way you would send cash, and add a PIN if the channel is not private.</p>
+      <p class="note" style="margin-top:0">Creates a link that holds the TAC. Whoever opens it can take it into a wallet of their own — they need no wallet now and no bitcoin ever, because the relay takes its fee from the TAC itself. Anyone holding the link can spend it, so send it the way you would send cash, and add a PIN if the channel is not private.</p>
       <div class="lbl"><label for="claim-amt">Amount</label></div>
       <div class="amt"><input id="claim-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><img class="tk sm" src="/tac-logo.png" alt="">TAC</span></div>
       <div class="fiat" id="claim-sats"></div>
@@ -301,15 +302,20 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="amt text"><input id="claim-pin" autocomplete="off" inputmode="numeric" placeholder="leave blank for none"></div>
       <button class="btn ghost" id="btn-claim-make">Create a claim link</button>
       <div class="status" id="st-claim-make"></div>
+      <div id="claim-links" hidden>
+        <div class="lbl sep"><span>Links made on this device</span></div>
+        <div id="claim-links-list"></div>
+        <div class="status" id="st-claim-links" role="status"></div>
+      </div>
     </div>
 
-    <div id="pane-withdraw" hidden>
-      <div class="seg sub" role="tablist" id="wtabs">
-        <button role="tab" id="wtab-self" aria-selected="true">To my wallet</button>
-        <button role="tab" id="wtab-sats">To sats</button>
+    <div id="pane-withdraw" role="tabpanel" aria-labelledby="tab-withdraw" tabindex="0" hidden>
+      <div class="seg sub" role="tablist" id="wtabs" aria-label="Withdraw">
+        <button role="tab" id="wtab-self" aria-controls="wpane-self" aria-selected="true" tabindex="0">To my wallet</button>
+        <button role="tab" id="wtab-sats" aria-controls="wpane-sats" aria-selected="false" tabindex="-1">To sats</button>
       </div>
 
-      <div id="wpane-self">
+      <div id="wpane-self" role="tabpanel" aria-labelledby="wtab-self">
         <div class="lbl"><label for="exit-amt">Amount to withdraw</label><button class="link" id="exit-max" type="button">max</button></div>
         <div class="amt"><input id="exit-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><img class="tk sm" src="/tac-logo.png" alt="">TAC</span></div>
       <div class="fiat" id="exit-sats"></div>
@@ -318,14 +324,14 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
         <div class="status" id="st-exit"></div>
       </div>
 
-      <div id="wpane-sats" hidden>
+      <div id="wpane-sats" role="tabpanel" aria-labelledby="wtab-sats" hidden>
         <div id="sats-body"></div>
       </div>
     </div>
 
-    <div id="pane-market" hidden><div id="market-body"></div></div>
+    <div id="pane-market" role="tabpanel" aria-labelledby="tab-market" tabindex="0" hidden><div id="market-body"></div></div>
 
-    <div id="pane-receive" hidden>
+    <div id="pane-receive" role="tabpanel" aria-labelledby="tab-receive" tabindex="0" hidden>
       <p class="eyebrow">Your Tacit address</p>
       <div class="amt text"><input id="recv-tacit" readonly value="Connect a wallet"></div>
       <p class="note">The one to share. Tacit apps pay it inside the shielded pool, and the same address takes BTC and ETH. It says nothing about what you hold, and each payment to it arrives at a different one-time key that only your wallet can find.</p>
@@ -375,7 +381,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
     <button class="btn ghost" id="btn-create">Create a new wallet here</button>
     <button class="btn ghost" id="btn-lock" hidden>Lock</button>
     <div class="lbl" style="margin-top:22px"><label for="import-key">Or restore from a key</label></div>
-    <div class="amt text"><input id="import-key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 hex characters"></div>
+    <div class="amt text"><input type="password" id="import-key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 hex characters"></div>
     <button class="btn ghost" id="btn-import">Restore</button>
     <div class="status" id="st-connect"></div>
   </div>
@@ -402,6 +408,6 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </form>
 </div>
 <div id="toast-container" aria-live="polite"></div>
-<script type="module" src="/tac/app.js?cb=f5ea8164"></script>
+<script type="module" src="/tac/app.js?cb=fea9d648"></script>
 </body>
 </html>

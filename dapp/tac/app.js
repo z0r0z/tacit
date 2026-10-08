@@ -8,9 +8,11 @@
 // then the sender needs no BTC at all and pays the relayer inside the pool. Shields and exits always fund
 // their own carrier, by design, so those need a little BTC in the wallet.
 
-const SATS_URL = '/tac/sats.js?cb=6655b51b';     // tokens rewritten by build/build.mjs (TAC_CB_FILES)
-const MARKET_URL = '/tac/market.js?cb=8508c2d7';
-const CLAIM_URL = '/tac/claim.js?cb=25c5f1f4';
+const TACIT_URL = '/tacit.js?cb=7b6896c4';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
+const SECRET_URL = '/sats/secret.js?cb=eeabb728';
+const SATS_URL = '/tac/sats.js?cb=19b44eda';
+const MARKET_URL = '/tac/market.js?cb=3fa22400';
+const CLAIM_URL = '/tac/claim.js?cb=5bb5c719';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=49410363';
 const WORKER = 'https://api.tacit.finance';
@@ -106,7 +108,9 @@ async function loadPrice() {
     const u = Number(j?.mark_price?.unit);
     if (Number.isFinite(u) && u > 0) markSats = u;
   } catch { /* the page works priceless */ }
-  try { btcUsd = await T.getBtcUsdPrice(); } catch { btcUsd = null; }
+  renderHeaderPrice();
+  renderBalances(); renderAmountHints();
+  try { btcUsd = await (await loadTacit()).getBtcUsdPrice(); } catch { btcUsd = null; }
   renderHeaderPrice();
   renderBalances(); renderAmountHints();
 }
@@ -129,15 +133,37 @@ function renderHeaderPrice() {
 }
 
 // ── modules ──
-async function loadTacit() {
-  if (T) return T;
-  globalThis.__TACIT_NO_INIT__ = true;
-  try { localStorage.setItem('tacit-network-v1', 'mainnet'); } catch {}
-  T = await import('/tacit.js');
-  S = await import('/sats/secret.js');
-  try { prf = await import('/prf-wallet.js'); } catch { prf = null; }
-  try { K = await import(KNOWN_URL); } catch { K = null; }
-  return T;
+// tacit.js reads the shared network once, at import. This page pins mainnet for its visit and puts the previous
+// value back when it goes away, so the main app keeps the network its user chose.
+const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-tac-prev-net-v1';
+function pinNetwork() {
+  // Another tab of these pages may have pinned it already: its own value is then not this tab's to restore later.
+  try {
+    const cur = localStorage.getItem(SHARED_NET);
+    if (sessionStorage.getItem(PREV_NET) === null && cur !== 'mainnet') sessionStorage.setItem(PREV_NET, cur ?? '');
+    localStorage.setItem(SHARED_NET, 'mainnet');
+  } catch {}
+}
+window.addEventListener('pagehide', () => {
+  try {
+    const p = sessionStorage.getItem(PREV_NET);
+    if (p !== null) { p === '' ? localStorage.removeItem(SHARED_NET) : localStorage.setItem(SHARED_NET, p); sessionStorage.removeItem(PREV_NET); }
+  } catch {}
+});
+
+let secretP = null, tacitP = null;
+// secret.js alone serves the pool reads (the strip, the relay's fee), so those need not wait for tacit.js.
+const loadSecret = () => (secretP ||= import(SECRET_URL).then((m) => (S = m), (e) => { secretP = null; throw e; }));
+function loadTacit() {
+  return (tacitP ||= (async () => {
+    pinNetwork();
+    globalThis.__TACIT_NO_INIT__ = true;
+    const [t] = await Promise.all([import(TACIT_URL), loadSecret()]);
+    T = t;
+    try { prf = await import('/prf-wallet.js'); } catch { prf = null; }
+    try { K = await import(KNOWN_URL); } catch { K = null; }
+    return T;
+  })().catch((e) => { tacitP = null; throw e; }));
 }
 
 // ── wallet ──
@@ -316,9 +342,27 @@ async function unlockKnown() {
   await refreshAll();
 }
 
+// The public key of the wallet saved in this browser under the slot setPriv writes, or null.
+function savedLocalPub() {
+  try {
+    const b = JSON.parse(localStorage.getItem(`tacit-wallet-v1:${T.NET.name}`) || 'null');
+    return b && isPub(b.pub) ? T.hexToBytes(b.pub) : null;
+  } catch { return null; }
+}
+
 async function importKey() {
   const hex = $('import-key').value.trim().toLowerCase().replace(/^0x/, '');
   if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('A Tacit key is 64 hex characters.');
+  await loadTacit();
+  const saved = savedLocalPub();
+  if (saved) {
+    // wallet.address() reads only `this.pub`, so it names the saved wallet without opening it.
+    const addr = T.wallet.address.call({ pub: saved });
+    if (!confirm(`This replaces the wallet saved in this browser (${short(addr, 10, 6)}). Only that wallet's own key backup brings it back. Continue?`)) {
+      say('st-connect', 'Nothing was changed.');
+      return;
+    }
+  }
   await turn(async () => {
     T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null; T.extWallet.state = null;
     await T.wallet.setPriv(hex);
@@ -367,10 +411,11 @@ const shieldedTotal = () => (shielded.notes || []).filter((n) => !n.spent).reduc
 
 function renderBalances() {
   const sT = shieldedTotal(), pT = publicTotal();
-  $('bal-shielded').textContent = !haveWallet() ? '—' : shielded.loading ? '…' : fmt(sT);
-  $('bal-public').textContent = !haveWallet() ? '—' : pub.loading ? '…' : fmt(pT);
-  $('bal-shielded-sats').textContent = haveWallet() && !shielded.loading && sT > 0n ? satsText(sT) : '';
-  $('bal-public-sats').textContent = haveWallet() && !pub.loading && pT > 0n ? satsText(pT) : '';
+  // Both balances are read only with the key open; a locked wallet has no figure to show yet.
+  $('bal-shielded').textContent = !unlocked() ? '—' : shielded.loading ? '…' : fmt(sT);
+  $('bal-public').textContent = !unlocked() ? '—' : pub.loading ? '…' : fmt(pT);
+  $('bal-shielded-sats').textContent = unlocked() && !shielded.loading && sT > 0n ? satsText(sT) : '';
+  $('bal-public-sats').textContent = unlocked() && !pub.loading && pT > 0n ? satsText(pT) : '';
   // Spends pad to three outputs with zero-value notes so the real count stays hidden on chain. They are
   // padding, not holdings — counting them would tell the wallet's owner they have notes they don't.
   const n = (shielded.notes || []).filter((x) => !x.spent && BigInt(x.value) > 0n).length;
@@ -428,14 +473,18 @@ function renderShieldPicker() {
 // ── pool stats ──
 async function loadStats() {
   try {
+    await loadSecret();
     const st = await S.poolClientFor('mainnet').status();
     $('s-set').textContent = Number(st.leafCount || 0).toLocaleString('en-US');
     $('s-height').textContent = Number(st.height || 0).toLocaleString('en-US');
     $('s-proof').textContent = st.proofSystem === 'halo2-kzg-bn254' ? 'Halo2·KZG' : (st.proofSystem || '—');
+    // Every Bitcoin transaction that added notes to the pool: shields, spends and a relay's batched carriers alike.
     const feed = await S.poolClientFor('mainnet').allNotes().catch(() => null);
-    const spends = feed ? new Set(feed.filter((n) => n.txid).map((n) => n.txid)).size : null;
-    $('s-spends').textContent = spends == null ? '—' : spends.toLocaleString('en-US');
-  } catch { /* the strip stays dashed; the page still works */ }
+    const txs = feed ? new Set(feed.filter((n) => n.txid).map((n) => n.txid)).size : null;
+    $('s-txs').textContent = txs == null ? '—' : txs.toLocaleString('en-US');
+  } catch {
+    for (const id of ['s-set', 's-txs', 's-height', 's-proof']) if ($(id).textContent === '…') $(id).textContent = '—';
+  }
   try {
     const info = await S.poolClientFor('mainnet').relayInfo();
     relayLive = !!info;
@@ -475,7 +524,7 @@ async function doSend(anchor = null) {
   // A relayed payment spends the fee out of the same notes, so it has to fit alongside the amount.
   if (amount + relayFeeUnits() > shieldedTotal()) {
     throw new Error(relayFeeUnits() > 0n
-      ? `More than your shielded balance once the relayer's ${fmt(relayFeeUnits())} TAC fee is included.`
+      ? `More than your shielded balance once the relay's ${fmt(relayFeeUnits())} TAC fee is included.`
       : 'More than your shielded balance.');
   }
   const r = await S.payPrivately(T, { poolWallet, to, amount, asset: S.TAC_ASSET_MAINNET, anchor, say: (m) => say('st-send', m) });
@@ -522,11 +571,25 @@ function waitBox(statusId, w, retry) {
 }
 
 // ── tabs ──
+// One tab in the tab order at a time; the arrow keys, Home and End move between them.
 function tabs(ids, panes, onPick) {
+  const pick = (i, focus = false) => {
+    ids.forEach((x, j) => {
+      const t = $(x);
+      t.setAttribute('aria-selected', String(i === j));
+      t.tabIndex = i === j ? 0 : -1;
+      $(panes[j]).hidden = i !== j;
+    });
+    if (focus) $(ids[i]).focus();
+    onPick?.(i);
+  };
   ids.forEach((id, i) => {
-    $(id).addEventListener('click', () => {
-      ids.forEach((x, j) => { $(x).setAttribute('aria-selected', String(i === j)); $(panes[j]).hidden = i !== j; });
-      onPick?.(i);
+    $(id).addEventListener('click', () => pick(i));
+    $(id).addEventListener('keydown', (e) => {
+      const j = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: ids.length - 1 }[e.key];
+      if (j === undefined) return;
+      e.preventDefault();
+      pick((j + ids.length) % ids.length, true);
     });
   });
 }
@@ -592,6 +655,7 @@ async function scanEverything(statusId = 'st-recv') {
   tabs(['tab-shield', 'tab-send', 'tab-withdraw', 'tab-receive', 'tab-market'],
     ['pane-shield', 'pane-send', 'pane-withdraw', 'pane-receive', 'pane-market'],
     (i) => {
+      if (i === 1) renderClaimLinks();
       if (i === 3) paintReceive();
       if (i === 4) renderMarket();
     });
@@ -651,7 +715,10 @@ async function scanEverything(statusId = 'st-recv') {
   });
   $('btn-scan').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
 
+  // The strip and the mark price load alongside tacit.js; neither needs it.
+  const early = Promise.all([loadStats(), loadPrice()]);
   await loadTacit();
+  renderClaimLinks();
   // Show whichever identity this browser already has as connected-but-locked. Reading its pubkey needs no
   // passphrase and no passkey prompt; opening it is always a deliberate click.
   known = knownWallet();
@@ -666,7 +733,7 @@ async function scanEverything(statusId = 'st-recv') {
   };
   window.addEventListener('hashchange', openFrag);
   openFrag();
-  await Promise.all([loadStats(), loadPrice()]);
+  await early;
   if (unlocked()) await refreshAll();
 })();
 
@@ -676,6 +743,85 @@ async function scanEverything(statusId = 'st-recv') {
 let claimMod = null;
 const loadClaim = async () => (claimMod ||= await import(CLAIM_URL));
 
+// Every link this device makes, written before its payment goes out and given its link once the payment lands, so a
+// tab closed mid-payment does not take the only copy of the secret with it. The PIN is never stored.
+const CLAIM_LINKS = 'tacit-tac-claim-links-v1';
+const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const fromHex = (h) => Uint8Array.from(String(h).match(/../g) || [], (x) => parseInt(x, 16));
+function claimLinks() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CLAIM_LINKS) || '[]');
+    return Array.isArray(v) ? v.filter((x) => x && /^[0-9a-f]{64}$/.test(x.secret)) : [];
+  } catch { return []; }
+}
+function writeClaimLinks(list) {
+  try { localStorage.setItem(CLAIM_LINKS, JSON.stringify(list)); } catch {}
+  renderClaimLinks();
+}
+const putClaimLink = (rec) => writeClaimLinks([...claimLinks().filter((x) => x.secret !== rec.secret), rec]);
+const patchClaimLink = (secret, patch) => writeClaimLinks(claimLinks().map((x) => (x.secret === secret ? { ...x, ...patch } : x)));
+const dropClaimLink = (secret) => writeClaimLinks(claimLinks().filter((x) => x.secret !== secret));
+
+function renderClaimLinks() {
+  const host = $('claim-links'), list = claimLinks().sort((a, b) => b.at - a.at);
+  if (!host) return;
+  host.hidden = !list.length;
+  $('claim-links-list').replaceChildren(...list.map((rec) => {
+    const row = document.createElement('div');
+    row.className = 'kv';
+    const what = document.createElement('span');
+    let amount = '';
+    try { amount = `${fmt(rec.amount)} TAC · `; } catch {}
+    what.textContent = `${amount}${new Date(rec.at).toLocaleString()}${rec.pinned ? ' · with a PIN' : ''}`;
+    const acts = document.createElement('b');
+    const act = (label, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'link'; b.textContent = label; b.style.marginLeft = '12px';
+      b.onclick = () => fn(b);
+      acts.append(b);
+      return b;
+    };
+    if (rec.link) {
+      act('copy link', (b) => { navigator.clipboard?.writeText(rec.link); b.textContent = 'copied'; });
+    } else {
+      let pinField = null;
+      if (rec.pinned) {
+        pinField = document.createElement('input');
+        pinField.autocomplete = 'off'; pinField.inputMode = 'numeric'; pinField.placeholder = 'its PIN';
+        pinField.setAttribute('aria-label', 'The PIN you set for this link');
+        pinField.style.cssText = 'width:7em;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--hair);padding:2px 6px';
+        acts.append(pinField);
+      }
+      act('find the link', (b) => busy(b, 'st-claim-links', () => findClaimLink(rec, pinField ? pinField.value.trim() : '')));
+    }
+    act('forget', () => {
+      if (!confirm(rec.link ? 'Forget this link on this device? Anyone who already has it can still claim it.' : 'Forget this link? This device keeps the only copy of its secret.')) return;
+      dropClaimLink(rec.secret);
+    });
+    row.append(what, acts);
+    return row;
+  }));
+}
+
+// A link whose payment was cut short: its note is found under the link's own pool wallet, and the note's
+// transaction completes the link.
+async function findClaimLink(rec, pin) {
+  await loadTacit();
+  const C = await loadClaim();
+  if (rec.pinned && !pin) throw new Error('Enter the PIN you set for this link.');
+  const secret32 = fromHex(rec.secret);
+  say('st-claim-links', 'Looking for its payment…');
+  const notes = await S.poolNotes(C.claimPoolWallet(S.pool, secret32, { pin, network: rec.network }), S.TAC_ASSET_MAINNET);
+  const n = notes.find((x) => x.txid && BigInt(x.value) > 0n);
+  if (!n) {
+    return say('st-claim-links', rec.pinned
+      ? 'Nothing under this link yet. Check the PIN, or try again in a few blocks.'
+      : 'Nothing under this link yet. Try again in a few blocks. A payment that never went out left the TAC in your shielded balance.');
+  }
+  patchClaimLink(rec.secret, { txid: n.txid, link: C.claimUrl(location.origin, C.encodeClaim({ secret32, txid: n.txid, network: rec.network, pinned: rec.pinned })) });
+  say('st-claim-links', 'Found. Copy the link above.');
+}
+
 async function makeClaimLink() {
   await ensureKey();
   const C = await loadClaim();
@@ -684,15 +830,24 @@ async function makeClaimLink() {
   if (!shielded.notes.length) await loadShielded();
   if (amount + relayFeeUnits() > shieldedTotal()) throw new Error('More than your shielded balance.');
   const pin = $('claim-pin').value.trim();
+  let secret = null;
   const r = await C.createClaim(T, {
     S, pool: S.pool, poolWallet, amount, asset: S.TAC_ASSET_MAINNET, pin, network: 'mainnet',
     say: (m) => say('st-claim-make', m),
+    keep: ({ secret32, pinned, network }) => {
+      secret = toHex(secret32);
+      putClaimLink({ secret, pinned, network, amount: amount.toString(), at: Date.now() });
+    },
   });
-  if (r.wait) return say('st-claim-make', `Your newest note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} first.`);
+  if (r.wait) {
+    if (secret) dropClaimLink(secret);
+    return say('st-claim-make', `Your newest note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} first.`);
+  }
+  if (secret) patchClaimLink(secret, { txid: r.revealTxid, link: r.link });
   $('claim-amt').value = ''; $('claim-pin').value = '';
   const box = document.createElement('div');
   const field = document.createElement('input');
-  field.readOnly = true; field.value = r.link;
+  field.readOnly = true; field.value = r.link; field.setAttribute('aria-label', 'Claim link');
   field.style.cssText = 'width:100%;font:400 12px/1.4 var(--mono);color:var(--ink);background:var(--field);border:1px solid var(--hair);padding:10px;margin-top:8px';
   const copy = document.createElement('button');
   copy.className = 'btn ghost'; copy.textContent = 'Copy the link';
@@ -714,10 +869,11 @@ async function showClaim(payload) {
 
   const pinField = document.createElement('input');
   pinField.placeholder = 'PIN'; pinField.autocomplete = 'off'; pinField.inputMode = 'numeric';
+  pinField.setAttribute('aria-label', 'PIN');
   pinField.style.cssText = 'width:100%;font:400 14px/1.4 var(--mono);color:var(--ink);background:var(--field);border:1px solid var(--hair);padding:12px';
   const line = document.createElement('div'); line.className = 'kv';
   const btn = document.createElement('button'); btn.className = 'btn'; btn.textContent = 'Claim into my wallet';
-  const st = document.createElement('div'); st.className = 'status';
+  const st = document.createElement('div'); st.className = 'status'; st.id = 'st-claim'; st.setAttribute('role', 'status');
 
   async function refresh() {
     line.replaceChildren(document.createTextNode('Checking…'));
@@ -731,10 +887,21 @@ async function showClaim(payload) {
   }
 
   btn.onclick = () => busy(btn, 'st-claim', async () => {
-    await ensureKey();   // creates or unlocks a wallet, so a first-time recipient lands somewhere real
+    await loadTacit();
+    if (!known && !haveWallet()) {
+      const create = document.createElement('button');
+      create.className = 'btn ghost'; create.textContent = 'Create a wallet here';
+      create.onclick = () => busy(create, 'st-claim', async () => {
+        await createWallet();
+        say('st-claim', 'Wallet created. Back up its key, then claim the TAC into it.');
+      });
+      say('st-claim', 'Create a wallet first: the TAC moves into it.', create);
+      return;
+    }
+    await ensureKey();
     const r = await C.sweepClaim(T, {
       S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet',
-      asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, say: (m) => { st.textContent = m; },
+      asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; },
     });
     if (r.wait) { st.textContent = `The note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} before it can move.`; return; }
     st.replaceChildren(document.createTextNode('Claimed into your wallet in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? ' — the fee came out of the TAC, so this cost you no bitcoin.' : '.'));

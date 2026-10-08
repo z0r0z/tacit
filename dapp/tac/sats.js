@@ -1,8 +1,7 @@
-// "Withdraw to sats" — the two hops that turn shielded TAC into real bitcoin, neither of which asks the
-// seller for a single sat up front.
+// "Withdraw to sats" — the two hops that turn shielded TAC into real bitcoin.
 //
-//   1. Withdraw. The TAC leaves the pool as an ordinary note in this wallet. (This hop funds its own
-//      Bitcoin fee today; see the relayer note in the UI.)
+//   1. Withdraw. The TAC leaves the pool as an ordinary note in this wallet. This hop funds its own
+//      Bitcoin fee.
 //   2. List. publishPreauthSale signs an authorization and POSTs it — no transaction, no fee. A buyer
 //      settles it alone and pays sats straight to a payout address you name, which can be a wallet that
 //      has never held anything and never touches this page's key.
@@ -183,7 +182,7 @@ export function mount(host, ctx) {
     const depth = book?.count ?? null;
     host.replaceChildren(
       el('p', { class: 'note', style: 'margin-top:0' },
-        'Shielded TAC out, real bitcoin in — without holding any bitcoin to start. You withdraw, then list at the market price; the buyer settles and pays sats straight to an address you name. That address can be a brand-new wallet, so the sats arrive somewhere with no history at all.'),
+        'Shielded TAC out, real bitcoin in. You withdraw, which pays its own small Bitcoin fee, then list at the market price; the buyer settles and pays sats straight to an address you name. That address can be a brand-new wallet, so the sats arrive somewhere with no history at all.'),
 
       el('div', { class: 'lbl' }, el('label', { for: 'sats-amt' }, 'Amount to sell'),
         el('button', { class: 'link', type: 'button', onclick: () => { amt.value = plain(shieldedTotal()); recompute(); } }, 'max')),
@@ -208,7 +207,7 @@ export function mount(host, ctx) {
       el('p', { class: 'eyebrow', style: 'margin-top:18px' }, 'Step 2 — list for sats'),
       btnList,
       statusStep2,
-      el('p', { class: 'note' }, 'Listing is a signature, not a transaction: it costs nothing and needs no bitcoin. Cancel any time before a buyer takes it.'),
+      el('p', { class: 'note' }, 'Listing is a signature, not a transaction: it costs nothing and needs no bitcoin. The listing stays on the book for seven days. Shielding the TAC back into the pool before a buyer takes it spends the note, which ends the listing at once.'),
     );
     btnList.disabled = !exited;
   }

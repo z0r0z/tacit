@@ -67,9 +67,11 @@ export function decodeClaim(input) {
 }
 
 // Sender: pay a fresh throwaway pool wallet, and hand back the link that opens it.
-export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', say = () => {} }) {
+// `keep` is handed the secret before anything is paid, so the caller can store it first.
+export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', say = () => {}, keep = () => {} }) {
   const secret32 = genClaimSecret();
   const to = claimPoolWallet(pool, secret32, { pin, network });
+  keep({ secret32, pinned: !!pin, network });
   const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, say });
   if (r.wait) return { wait: r.wait, tip: r.tip };
   return {
@@ -89,7 +91,7 @@ export async function readClaim(S, pool, { secret32, pin = '', network = 'mainne
 
 // Recipient: move it into a wallet of their own. Relayed when a relayer quotes, so somebody who has never
 // held bitcoin can take delivery — the carrier is paid for out of the note itself, in TAC.
-export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, say = () => {} }) {
+export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, fmt = String, say = () => {} }) {
   const from = claimPoolWallet(pool, secret32, { pin, network });
   const { total } = await readClaim(S, pool, { secret32, pin, network, asset });
   if (total <= 0n) throw new Error('there is nothing left under this link — it may already have been claimed.');
@@ -101,6 +103,6 @@ export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network =
     if (f != null) fee = BigInt(f);
   } catch { fee = 0n; }
   const amount = total - fee;
-  if (amount <= 0n) throw new Error(`the relayer's fee (${fee}) is more than this link holds (${total}).`);
+  if (amount <= 0n) throw new Error(`The relay's fee (${fmt(fee)} TAC) is more than this link holds (${fmt(total)} TAC).`);
   return S.payPrivately(tacit, { poolWallet: from, to: toAddress, amount, asset, say });
 }

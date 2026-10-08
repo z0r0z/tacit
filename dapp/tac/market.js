@@ -302,7 +302,7 @@ export async function mount(host, ctx = {}) {
       el('div', { class: 'kv' }, el('span', {}, ended ? 'Ended' : 'Runs for'), el('b', { class: 'num' }, ended ? new Date(p.finish * 1000).toISOString().slice(0, 10) : `${days} more days`)),
       apr != null && !ended ? el('div', { class: 'kv' }, el('span', {}, 'Rewards vs staked value'), el('b', { class: 'num' }, `≈ ${num(apr, 0)}% a year`)) : null,
       el('p', { class: 'note' }, ended
-        ? 'The stream has ended: withdrawing and claiming still work, but a new stake earns nothing until it is refunded.'
+        ? 'The stream has ended: withdrawing and claiming still work, but a new stake earns nothing until the farm is funded again.'
         : 'That rate moves sharply as stake joins or leaves — it is a snapshot, not a promise. Nothing indexes this pool over time, so there is no line to draw here yet.'),
       el('p', { class: 'note' }, 'A one-sided deposit into a pool this thin moves the price against itself. Add both sides when you hold both.'),
     );
