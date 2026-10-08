@@ -197,7 +197,7 @@ function pageCacheBust(files, write) {
 // from the first bytes of the HTML. The group after the bar is what the page needs right after it starts, not before:
 // the module's first lines preload it, once what the page waits on has arrived, so the two do not share bandwidth.
 // Generated here so it cannot go stale; --verify-only reports a block that no longer matches.
-const PRELOAD_PAGES = ['pay/index.html', 'pay/eth/index.html'];
+const PRELOAD_PAGES = ['index.html', 'pay/index.html', 'pay/eth/index.html'];
 const STATIC_IMPORT = /(?:^|[\n;}])\s*(?:import|export)\s*(?:[^'"();]*?\sfrom\s*)?(['"])([^'"]+)\1/g;
 const HEAD_BLOCK = /<!-- preload:begin -->[\s\S]*?<!-- preload:end -->/, LATER_BLOCK = /\/\/ preload-later:begin\n[\s\S]*?\/\/ preload-later:end/;
 function preloadBlocks(page) {

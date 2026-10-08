@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gEE55fxNr6kNfIiiIM47msQ/htI9odJW9wTY2bCEps8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-D9qqClwn9CpfYo0KXkFVWGGUm27dt3tnRhzPT1Qotrw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://tacit-pin.rosscampbell9.workers.dev; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=c240ced2"></script>
 <title>tacit</title>
@@ -20,6 +20,23 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js -->
+<!-- preload:begin -->
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prf-wallet.js">
+<link rel="modulepreload" href="/tacit-wallet-known.js?cb=49410363">
+<link rel="modulepreload" href="/tacit-address.js">
+<link rel="modulepreload" href="/bip352.js">
+<link rel="modulepreload" href="/evm-wallet.js?cb=16740dae">
+<link rel="modulepreload" href="/identity-message.js">
+<link rel="modulepreload" href="/walletconnect.js?cb=31f53606">
+<link rel="modulepreload" href="/evm-account.js">
+<link rel="modulepreload" href="/evm-tx.js">
+<link rel="modulepreload" href="/tac-airdrop.js?cb=02ef61b4">
+<link rel="modulepreload" href="/evm-trade-venues.js?cb=38171d17">
+<link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
+<link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
+<!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
@@ -841,6 +858,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 <div class="toasts" id="toast-container" popover="manual" role="status" aria-live="polite"></div>
 
 <script type="module">
+// preload-later:begin
+// preload-later:end
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=49410363';
