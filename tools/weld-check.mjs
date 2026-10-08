@@ -2800,8 +2800,8 @@ await step('stats', async () => {
     await until(r.page, () => /^As of /.test(document.querySelector('#asof')?.textContent || '') && !/updating/.test(document.querySelector('#asof')?.textContent || ''), null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | asof: ${await text(r.page, '#asof')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
     ok(!/some figures/.test(await text(r.page, '#asof')), `stats: every part read (${await text(r.page, '#asof')})`);
-    const s = await card('Shielded');
-    ok(/^Shielded \| 1\.5ETH \| 2 deposits/.test(s), `stats: ETH shielded in is the sum of the pool's ETH wraps (${s})`);
+    const s = await card('Made private');
+    ok(/^Made private \| 1\.5ETH \| 2 deposits/.test(s), `stats: ETH made private is the sum of the pool's ETH wraps (${s})`);
     ok(/^Wallets \| 2 \|/.test(await card('Wallets')), `stats: wallets are the senders of those wraps, however they reached the pool (${await card('Wallets')})`);
     ok(/^Withdrawn \| 0\.2ETH/.test(await card('Withdrawn')), `stats: withdrawn is what the pool paid out, whatever else came in (${await card('Withdrawn')})`);
     ok(await r.page.$eval('#f-eth', (f) => !f.hidden), 'stats: the ETH-over-time chart is drawn');
@@ -2812,8 +2812,8 @@ await step('stats', async () => {
     ok(/^cUSD borrowed \| 3\.5cUSD \| 2\.5 open on 1 loan · 1 repaid/.test(cu), `stats: cUSD borrowed, repaid and still out (${cu})`);
     const ad = await card('Airdrop claimed');
     ok(/^Airdrop claimed \| 60TAC \| 2 wallets/.test(ad), `stats: airdrop claims summed, claimers counted once (${ad})`);
-    ok(/^TAC shielded \| 100TAC \| 1 deposit/.test(await card('TAC shielded')), `stats: TAC shielded (${await card('TAC shielded')})`);
-    ok(/USDC 2\.5/.test(await card('Other shielded')) && /USDT 4\.63/.test(await card('Other shielded')), `stats: other assets are named from the pool's registry, or their token (${await card('Other shielded')})`);
+    ok(/^TAC made private \| 100TAC \| 1 deposit/.test(await card('TAC made private')), `stats: TAC made private (${await card('TAC made private')})`);
+    ok(/USDC 2\.5/.test(await card('Others made private')) && /USDT 4\.63/.test(await card('Others made private')), `stats: other assets are named from the pool's registry, or their token (${await card('Others made private')})`);
     ok(await r.page.evaluate(() => [...document.querySelectorAll('.card .m a')].some((a) => /etherscan\.io\/token\/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279#balances$/.test(a.href))), 'stats: TAC links to its ERC-20 holders on Etherscan');
     const pa = await card('Participants'), pp = await card('Points'), ta = await card('TAC allocated');
     ok(/^Participants \| 2 \|/.test(pa) && /^Points \| 30 \|/.test(pp) && /^TAC allocated \| [\d,]+TAC/.test(ta), `stats: points participants and totals from the leaderboard, TAC allocated from the distributor (${pa} | ${pp} | ${ta})`);
@@ -2844,11 +2844,11 @@ await step('stats', async () => {
     const settled = () => until(r.page, () => /^As of /.test(document.querySelector('#asof')?.textContent || '') && !/updating/.test(document.querySelector('#asof')?.textContent || ''), null, 60000).catch(() => {});
     await r.page.reload();
     await settled();
-    ok(hits.length === n && logReads.length === nLogs && /^Shielded \| 1\.5ETH/.test(await card('Shielded')), `stats: a second visit within the quarter hour shows the last reading and reads nothing (${hits.length - n} explorer, ${logReads.length - nLogs} log reads)`);
+    ok(hits.length === n && logReads.length === nLogs && /^Made private \| 1\.5ETH/.test(await card('Made private')), `stats: a second visit within the quarter hour shows the last reading and reads nothing (${hits.length - n} explorer, ${logReads.length - nLogs} log reads)`);
     await r.page.goto(r.url + 'stats/?fresh');
     await settled();
     const fresh = hits.slice(n);
-    ok(fresh.length === 2 && fresh.every((q) => Number(new URLSearchParams(q.split('?')[1]).get('startblock')) > 0) && /^Shielded \| 1\.5ETH \| 2 deposits/.test(await card('Shielded')),
+    ok(fresh.length === 2 && fresh.every((q) => Number(new URLSearchParams(q.split('?')[1]).get('startblock')) > 0) && /^Made private \| 1\.5ETH \| 2 deposits/.test(await card('Made private')),
       `stats: a fresh reading reads on from what the last one kept, asking the explorers only for what is new (${fresh.join(' | ')})`);
     // The API's shared reading, when there is one, is all a visit needs.
     const kept = fromJsonText(await r.page.evaluate(() => localStorage.getItem('tacit-weld-stats-v3')));
@@ -2858,8 +2858,8 @@ await step('stats', async () => {
     const before = [hits.length, logReads.length];
     await r.page.goto(r.url + 'stats/');
     await settled();
-    ok(/^Shielded \| 9ETH/.test(await card('Shielded')) && hits.length === before[0] && logReads.length === before[1],
-      `stats: with the API's shared reading the page shows it and reads nothing itself (${await card('Shielded')} · ${hits.length - before[0]} explorer, ${logReads.length - before[1]} log reads)`);
+    ok(/^Made private \| 9ETH/.test(await card('Made private')) && hits.length === before[0] && logReads.length === before[1],
+      `stats: with the API's shared reading the page shows it and reads nothing itself (${await card('Made private')} · ${hits.length - before[0]} explorer, ${logReads.length - before[1]} log reads)`);
     if (r.errors.length) { fails++; console.log('FAIL stats page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); await rpc('anvil_setStorageAt', [ENGINE, CUSD_SLOT, '0x' + word(cusdWas)]); }
 });
