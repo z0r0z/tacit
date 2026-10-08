@@ -101,7 +101,7 @@ const SETUP = () => {
       placeBid: async (o) => { rec('placeBid', o); return { bid_id: 'nb'.padEnd(32, '0'), expiry: now + o.expirySec }; },
       registerWatchtower: async (o) => { rec('registerWatchtower', o); },
       listForSale: async (o) => { rec('listForSale', { amountBase: String(o.amountBase), k: o.shape.k, perLotSats: o.shape.perLotSats, unit: o.unit, expirySec: o.expirySec }); return { txid: 'f1'.repeat(32) }; },
-      cancelListing: async (raw) => rec('cancelListing', raw.sale_id),
+      cancelListing: async (raw) => { rec('cancelListing', raw.sale_id); await maybeFail('cancelListing', raw.sale_id); if (W.hold) await W.hold; },
       cancelOffer: async (raw) => rec('cancelOffer', raw.intent_id),
       cancelBid: async (raw) => rec('cancelBid', raw.bid_id),
       ensureAutoConfirm: () => rec('ensureAutoConfirm', {}),
@@ -114,7 +114,8 @@ const SETUP = () => {
     },
     confirm: async (o) => { rec('confirm', { title: o.title }); return W.confirmAnswer; },
     toast: (m, k) => rec('toast', { m, k }),
-    friendlyError: (e) => e?.message || String(e),
+    // Mirrors the real formatter: a verb names the operation, so a failed cancel is never "Trade failed".
+    friendlyError: (e, o) => `${o?.verb || 'Trade'} failed: ${e?.message || String(e)}`,
     onError: (e) => rec('onError', { m: e?.message }),
     goBack: () => rec('goBack', {}),
   });
@@ -286,6 +287,30 @@ await test('cancel your own orders, each with its own executor', async (page) =>
   assert.deepEqual((await calls(page, 'cancelListing')).map((c) => c.args), ['mp']);
   assert.deepEqual((await calls(page, 'cancelOffer')).map((c) => c.args), ['mi']);
   assert.deepEqual((await calls(page, 'cancelBid')).map((c) => c.args), ['mb']);
+});
+
+await test('a cancel runs once however often it is clicked, and says so while it runs', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('mp', 10, 3000, { seller_pubkey: W.me.pubHex })]; W.hold = new Promise((r) => { W.release = r; }); });
+  await mount(page); await settle(page, 300);
+  await page.click('.bm-orow [data-act=cancel]'); await settle(page, 150);
+  assert.equal(await page.$('.bm-orow [data-act=cancel]'), null, 'no second Cancel while one runs');
+  assert.match(await page.$eval('.bm-orow', (n) => n.textContent), /cancelling/);
+  await page.evaluate(() => window.__ctl.refresh({ force: true })); await settle(page, 150);
+  assert.match(await page.$eval('.bm-orow', (n) => n.textContent), /cancelling/, 'a live refresh keeps it');
+  await page.evaluate(() => window.__w.release()); await settle(page, 300);
+  assert.equal((await calls(page, 'cancelListing')).length, 1);
+  assert.equal((await calls(page, 'confirm')).length, 1);
+  assert.equal((await calls(page, 'toast')).filter((c) => /Order cancelled/.test(c.args.m)).length, 1);
+});
+
+await test('a failed cancel names the cancel, not a trade', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('mp', 10, 3000, { seller_pubkey: W.me.pubHex })]; W.fail.cancelListing = 'listed UTXO no longer in your wallet'; });
+  await mount(page); await settle(page, 300);
+  await page.click('.bm-orow [data-act=cancel]'); await settle(page, 200);
+  const toasts = (await calls(page, 'toast')).map((c) => c.args);
+  assert.deepEqual(toasts.map((t) => t.m), ['Cancel failed: listed UTXO no longer in your wallet']);
+  assert.equal(toasts[0].k, 'error');
+  assert.ok(await page.$('.bm-orow [data-act=cancel]'), 'the Cancel button is back to retry');
 });
 
 await test('typing and focus survive live refreshes; a row click primes the ticket', async (page) => {

@@ -113,7 +113,7 @@ function createMarket(host, ctx) {
     expirySec: EXPIRY_CHOICES.some(([s]) => s === pref.expirySec) ? pref.expirySec : 86400,
     watchtower: pref.watchtower !== false,
     showAllAsks: false, showAllBids: false,
-    busy: false, destroyed: false,
+    busy: false, destroyed: false, cancelling: new Set(),
     lastOk: 0, lastErr: null, timer: null, statsAt: 0,
     lane: ctx.initialLane === 'eth' && ctx.mountEth ? 'eth' : 'btc',
     quote: null,
@@ -772,8 +772,8 @@ function createMarket(host, ctx) {
     el.orders.hidden = false;
     const html = `<h3>Your orders <em>${mine.length}</em></h3><div class="bm-otable">${mine.map((r) => `
       <div class="bm-orow ${r.side}"><span class="s">${r.side === 'buy' ? 'Buy' : 'Sell'}</span>
-      <span>${fmtAmount(r.amount, dec, 4)} ${T}</span><span>@ ${fmtUnit(r.unit)}</span><span class="muted">${esc(r.status)}</span>
-      <span>${r.action === 'cancel' ? `<button type="button" data-act="cancel" data-id="${esc(r.id)}">Cancel</button>` : ''}</span></div>`).join('')}</div>`;
+      <span>${fmtAmount(r.amount, dec, 4)} ${T}</span><span>@ ${fmtUnit(r.unit)}</span><span class="muted">${esc(S.cancelling.has(r.id) ? 'cancelling…' : r.status)}</span>
+      <span>${r.action === 'cancel' && !S.cancelling.has(r.id) ? `<button type="button" data-act="cancel" data-id="${esc(r.id)}">Cancel</button>` : ''}</span></div>`).join('')}</div>`;
     if (el.orders.__html !== html) { el.orders.innerHTML = html; el.orders.__html = html; }
     S.myRows = new Map(mine.map((r) => [r.id, r]));
   }
@@ -1420,9 +1420,9 @@ function createMarket(host, ctx) {
             try {
               await ctx.exec.registerWatchtower({ bidId, amountBase: base, priceSats: sats, expirySec: S.expirySec, expiry: r.expiry });
               wtStep.status = 'done';
-            } catch (e) { wtStep.status = 'failed'; wtStep.note = `${ctx.friendlyError(e)} — your bid is live; fills complete while this page is open`; }
+            } catch (e) { wtStep.status = 'failed'; wtStep.note = `${ctx.friendlyError(e, { verb: 'Watchtower' })} — your bid is live; fills complete while this page is open`; }
           }
-        } catch (e) { bidStep.status = 'failed'; bidStep.note = ctx.friendlyError(e); err = e; if (wtStep) wtStep.status = 'skipped'; }
+        } catch (e) { bidStep.status = 'failed'; bidStep.note = ctx.friendlyError(e, { verb: 'Bid' }); err = e; if (wtStep) wtStep.status = 'skipped'; }
       } else { bidStep.status = 'skipped'; bidStep.note = 'everything filled'; if (wtStep) wtStep.status = 'skipped'; }
     }
     paint(err ? 'Order not completed' : bidId ? 'Your bid is live' : 'Done');
@@ -1444,7 +1444,7 @@ function createMarket(host, ctx) {
       const r = await ctx.exec.listForSale({ amountBase: shape.listedBase, shape, unit: order.unit, expirySec: S.expirySec, onStage: (t) => { step.note = t; md.set(`<h2>Listing…</h2>${stepsHtml([step])}`); } });
       step.status = 'done'; step.note = ''; step.txid = r?.txid || null;
       await ctx.after.listed?.({ amount: shape.listedBase, result: r });
-    } catch (e) { step.status = 'failed'; step.note = ctx.friendlyError(e); err = e; }
+    } catch (e) { step.status = 'failed'; step.note = ctx.friendlyError(e, { verb: 'Listing' }); err = e; }
     md.set(`<h2>${err ? 'Listing not completed' : 'Listed'}</h2>${stepsHtml([step])}${err ? '' : '<p class="bm-q bm-muted">It shows in the book within a few seconds. Cancel from Your orders.</p>'}`);
     md.unlockEscape();
     md.buttons([{ label: 'Done', primary: true, onClick: () => md.close() }]);
@@ -1454,7 +1454,7 @@ function createMarket(host, ctx) {
 
   async function cancelOrder(id) {
     const r = S.myRows?.get(id);
-    if (!r) return;
+    if (!r || S.cancelling.has(id)) return;
     const what = `${r.side === 'buy' ? 'bid for' : r.kind === 'sale' ? 'offer of' : 'listing of'} ${fmtAmount(r.amount, dec, 4)} ${asset0.ticker} at ${fmtUnit(r.unit)}`;
     const onchain = r.kind === 'preauth';
     const ok = await ctx.confirm({
@@ -1464,7 +1464,8 @@ function createMarket(host, ctx) {
         : `Cancels your ${what}.${r.raw?.watchtower ? ' The watchtower stops too, and whatever is left in the bid wallet comes back to you.' : ''}`,
       confirmLabel: 'Cancel order', cancelLabel: 'Keep it',
     });
-    if (!ok) return;
+    if (!ok || S.cancelling.has(id)) return;
+    S.cancelling.add(id); paintOrders();
     try {
       await ctx.unlock();
       if (r.kind === 'preauth') await ctx.exec.cancelListing(r.raw);
@@ -1475,7 +1476,8 @@ function createMarket(host, ctx) {
         if (sale) { sale.state = 'closed'; sale.doneAt = nowSec(); saveSells(); }
       } else await ctx.exec.cancelBid(r.raw);
       ctx.toast?.('Order cancelled', 'success');
-    } catch (e) { ctx.toast?.(`Cancel failed: ${ctx.friendlyError(e)}`, 'error', 9000); ctx.onError?.(e); }
+    } catch (e) { ctx.toast?.(ctx.friendlyError(e, { verb: 'Cancel' }), 'error', 9000); ctx.onError?.(e); }
+    S.cancelling.delete(id);
     refresh({ force: true });
   }
 

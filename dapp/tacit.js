@@ -16509,9 +16509,9 @@ function savePreauthTakePendingSeen(set) {
 // matches the recovery-side notification's tone. Preserves the
 // "Commit tx broadcast — N sats locked at …" tail when present so
 // the post-commit recovery path still has the data it needs to fire.
-function friendlyTradeErrorMsg(rawMsg, { postCommit = false } = {}) {
+function friendlyTradeErrorMsg(rawMsg, { postCommit = false, verb = 'Trade' } = {}) {
   const s = String(rawMsg || '').trim();
-  if (!s) return 'Trade failed (no error detail returned).';
+  if (!s) return `${verb} failed (no error detail returned).`;
   // Extract the post-commit decoration tail BEFORE we rewrite, so we
   // can re-append a tightened version after the rewrite. The
   // recovery-record file pointer (tacit-preauth-take-pending-v1:…)
@@ -16565,7 +16565,7 @@ function friendlyTradeErrorMsg(rawMsg, { postCommit = false } = {}) {
     return `Bitcoin policy limit hit — tx too large or chain too deep${tail}. Retry once your other unconfirmed txs settle.`;
   }
   if (/insufficient sats|insufficient funds/i.test(core)) {
-    return `Insufficient sats in the wallet to fund this trade${tail}. Top up and retry.`;
+    return `Insufficient sats in the wallet to fund this ${verb.toLowerCase()}${tail}. Top up and retry.`;
   }
   if (/aborted — listing liveness/i.test(core)) {
     return `Aborted — couldn't verify the listing was still live. No sats spent.`;
@@ -16580,7 +16580,7 @@ function friendlyTradeErrorMsg(rawMsg, { postCommit = false } = {}) {
   }
   // Generic API/HTTP errors with the raw message stripped of envelope noise.
   if (core.length > 220) core = core.slice(0, 220) + '…';
-  return `Trade failed: ${core}${tail}.`;
+  return `${verb} failed: ${core}${tail}.`;
 }
 
 // Parse a takePreauthSale[Batch] post-commit error tail and fire the
@@ -70723,7 +70723,7 @@ function _btcMarketCtx(aid) {
     },
     confirm: (o) => tacitConfirm(o),
     toast: (m, k, ms) => toast(m, k, ms),
-    friendlyError: (e) => (isUnlockCancelled(e) ? 'Unlock cancelled — nothing was sent.' : friendlyTradeErrorMsg(e?.message || String(e))),
+    friendlyError: (e, o) => (isUnlockCancelled(e) ? 'Unlock cancelled — nothing was sent.' : friendlyTradeErrorMsg(e?.message || String(e), o)),
     onError: (e) => { if (!isUnlockCancelled(e)) { try { maybePromptRecoveryFromError(e, { source: 'take' }); } catch {} } },
     txUrl: (txid) => `https://mempool.space/${NET.name === 'signet' ? 'signet/' : ''}tx/${txid}`,
     goBack: () => goToMarketBrowse(),
@@ -75370,7 +75370,7 @@ async function hardCancelPreauthSale({ assetIdHex, sale }) {
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ pubHex: myPubHex, amount: listed.amount }],
-    forceUtxos: [{ txid: aoTxid, vout: aoVout, amount: listed.amount, blinding: listed.blinding }],
+    forceUtxos: [listed],
   });
   // Mark the listing as a local cancel so the auto-refresh vanish-detector
   // doesn't fire a false "your listing sold" toast: the listed UTXO has
