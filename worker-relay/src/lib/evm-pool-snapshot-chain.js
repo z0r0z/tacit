@@ -63,10 +63,10 @@ export async function poolState(client, block) {
 
 // How many leaves the pool had when `root` was its head, read from the pool's root history (a read of the latest state, so no
 // archive node is needed); null for a root the pool never held.
-export async function rootSizeOf(client, root) {
-  const known = await client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'everKnownRoot', args: ['0x' + BigInt(root).toString(16).padStart(64, '0')] });
+export async function rootSizeOf(client, root, pool = POOL) {
+  const known = await client.readContract({ address: pool, abi: POOL_ABI, functionName: 'everKnownRoot', args: ['0x' + BigInt(root).toString(16).padStart(64, '0')] });
   if (!known) return null;
-  return Number(await client.readContract({ address: POOL, abi: POOL_ABI, functionName: 'rootSize', args: ['0x' + BigInt(root).toString(16).padStart(64, '0')] }));
+  return Number(await client.readContract({ address: pool, abi: POOL_ABI, functionName: 'rootSize', args: ['0x' + BigInt(root).toString(16).padStart(64, '0')] }));
 }
 
 // The pool's Transact events from a Blockscout API, newest page first, down to `from`. An event the explorer returns undecoded

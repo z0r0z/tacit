@@ -12,7 +12,7 @@
 
 // The kinds of activity: where the program is used, not which contract. An activity that is not listed is its own kind.
 export const KIND_OF = {
-  wrap: 'private', evmpooldeposit: 'private', btcpool: 'private',
+  wrap: 'private', evmpooldeposit: 'private', btcpool: 'private', holding: 'private',
   zswapeth: 'swap',
   cbtcmint: 'borrow', cbtchold: 'borrow', cusdmint: 'borrow',
   weiname: 'names',

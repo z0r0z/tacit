@@ -20,6 +20,10 @@ import { fundingStatus, fundingVerdict } from './lib/points-funding.js';
 import { tvlSeries } from './lib/points-tvl.js';
 import { programTerms } from './lib/points-program.js';
 import { makeCounted } from './lib/points-counted.js';
+import { createHolding } from './lib/holding-service.js';
+import { parseBuckets } from './lib/holding-epoch.js';
+import { loadHash } from './lib/poseidon-hash.js';
+import { readJson } from './lib/http-json.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
 import { parseCategoryWeights, parseEngagementSchedule } from './lib/points-engagement.js';
 import { dayPot, dayBoard, dayHistory, splitDayBudget } from './lib/points-day-board.js';
@@ -1554,6 +1558,33 @@ export async function settleCycle(store, coverage = null) {
   log(`published points root ${tree.root} (${formatTac(totalWei)} TAC across ${tree.count} addresses), tx ${hash}`);
 }
 
+// The holding reward (lib/holding-service.js), built at start when HOLDING_ENABLED=1 and null otherwise, in which case its routes
+// answer that it is off. Its verification key must match the pinned hash or the service does not start it.
+let holding = null;
+const HOLDING_CHAINS = {
+  1: { deployBlock: 26069245, confirmations: 12, span: 2000, maxSpan: 2000 },
+  8453: { deployBlock: 51864014, confirmations: 20, span: 500, maxSpan: 500 },
+  4663: { deployBlock: 73991661, confirmations: 20, span: 20000, maxSpan: 400000 },
+};
+async function setupHolding(store) {
+  if (!CFG.holdingEnabled) return null;
+  const { readFileSync } = await import('node:fs');
+  const { createHash } = await import('node:crypto');
+  const raw = readFileSync(CFG.holdingVkeyFile);
+  const pin = CFG.holdingVkeySha256.toLowerCase().replace(/^0x/, '');
+  if (!pin || createHash('sha256').update(raw).digest('hex') !== pin) throw new Error('HOLDING_VKEY_FILE does not match HOLDING_VKEY_SHA256');
+  const clients = Object.fromEntries(ZROUTER_CHAINS.map(({ chainId, client }) => [chainId, client]));
+  const poolAsset = await publicClient.readContract({ address: CFG.evmPoolAddr, abi: [{ type: 'function', name: 'ASSET_FIELD', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }], functionName: 'ASSET_FIELD' });
+  const h = createHolding({
+    store, hash: await loadHash(), groth16: (await import('snarkjs')).groth16, log, clients,
+    cfg: {
+      enabled: true, rate: CFG.holdingRate, buckets: parseBuckets(CFG.holdingBucketsEth), pool: CFG.evmPoolAddr, poolAsset, vkey: JSON.parse(raw.toString('utf8')),
+      chains: CFG.holdingChains.filter((id) => HOLDING_CHAINS[id] && clients[id]).map((chainId) => ({ chainId, ...HOLDING_CHAINS[chainId] })), budgetMs: 15000,
+    },
+  });
+  log(`holding reward on: ${CFG.holdingChains.join(', ')}, ${CFG.holdingRate} points per ETH-day`);
+  return h;
+}
 function startHttp(store, evmState) {
   const counted = countedFor(store);
   const history = dayHistory({
@@ -1567,7 +1598,29 @@ function startHttp(store, evmState) {
     res.setHeader('Content-Type', 'application/json');
 
     const url = new URL(req.url, 'http://localhost');
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'content-type');
+      res.statusCode = 204; res.end(); return;
+    }
     try {
+      if (url.pathname === '/holding') {
+        res.end(JSON.stringify(holding ? holding.status() : { enabled: false }));
+        return;
+      }
+      const nfPath = url.pathname.match(/^\/holding\/nullifiers\/(\d+)\/(\d+)$/);
+      if (nfPath) {
+        const r = holding ? holding.nullifiers(Number(nfPath[1]), Number(nfPath[2])) : { status: 404, body: { error: 'not enabled' } };
+        res.statusCode = r.status; res.end(JSON.stringify(r.body));
+        return;
+      }
+      if (url.pathname === '/holding/claim') {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST a claim' })); return; }
+        if (!holding) { res.statusCode = 404; res.end(JSON.stringify({ error: 'not enabled' })); return; }
+        const r = await holding.claim(await readJson(req));
+        res.statusCode = r.status; res.end(JSON.stringify(r.body));
+        return;
+      }
       if (url.pathname === '/health') {
         const cursor = store.loadCursor();
         const ppCursor = store.loadPpCursor();
@@ -1735,7 +1788,8 @@ function startHttp(store, evmState) {
       res.statusCode = 404;
       res.end(JSON.stringify({ error: 'not found' }));
     } catch (err) {
-      res.statusCode = 500;
+      res.statusCode = err?.status === 400 || err?.status === 413 ? err.status : 500;      // a request body that is too large or not JSON
+      if (res.statusCode === 413) res.setHeader('Connection', 'close');
       res.end(JSON.stringify({ error: String(err?.message || err) }));
     }
   });
@@ -1776,6 +1830,7 @@ async function main() {
     }
   }
   const evmState = openEvmPoolPointsState(store.db);
+  try { holding = await setupHolding(store); } catch (err) { log('holding reward not started:', err?.message || err); holding = null; }
   startHttp(store, evmState);
 
   for (;;) {
@@ -1853,6 +1908,7 @@ async function main() {
     } catch (err) {
       log('settle cycle failed:', err?.message || err);
     }
+    if (holding) { try { await holding.cycle(); } catch (err) { log('holding cycle failed:', err?.message || err); } }
     await new Promise((r) => setTimeout(r, CFG.pointsPollSecs * 1000));
   }
 }

@@ -631,6 +631,15 @@ export const CFG = {
   // from the given day. 0 means none.
   pointsCbtcHoldRate: num('POINTS_CBTC_HOLD_RATE', 0),
   pointsCbtcHoldFromDay: num('POINTS_CBTC_HOLD_FROM_DAY', 0),
+  // A reward for ETH that stays in the EVM pools (lib/holding-service.js): each ended day a snapshot is drawn on each chain, and a
+  // zero-knowledge proof that a note of a given size is held in it earns points to the address the claim names. Off unless
+  // HOLDING_ENABLED=1; a rate of 0 pays nothing. The key is the circuit's verification key (a file), pinned by its SHA-256.
+  holdingEnabled: opt('HOLDING_ENABLED', '0') === '1',
+  holdingRate: num('POINTS_HOLDING_RATE', 0),               // points per ETH of the claimed size, for each day held
+  holdingBucketsEth: opt('HOLDING_BUCKETS_ETH', ''),        // e.g. "0.01,0.03,0.1,0.3,1,3"; empty means those
+  holdingVkeyFile: opt('HOLDING_VKEY_FILE', ''),
+  holdingVkeySha256: opt('HOLDING_VKEY_SHA256', ''),
+  holdingChains: opt('HOLDING_CHAINS', '1,8453,4663').split(',').map((s) => Number(s.trim())).filter(Boolean),
   // A UTC day settles once, so it waits until it is over, this margin has passed and every scanner has read past
   // its end (lib/points-settle-gate.js). A scanner that stays behind no longer holds rewards back after the
   // maximum wait.

@@ -120,6 +120,44 @@ export function openStore(dbPath, { excluded = [] } = {}) {
       checked_at INTEGER NOT NULL
     );
 
+    -- A holding reward (lib/holding-*.js): each EVM pool's Transact events as read from its chain, the snapshot drawn for each
+    -- day on each chain (the first one drawn stands), and the claims credited (one per tag per day).
+    CREATE TABLE IF NOT EXISTS holding_events (
+      chain_id    INTEGER NOT NULL,
+      block       INTEGER NOT NULL,
+      log_index   INTEGER NOT NULL,
+      first_index TEXT NOT NULL,
+      out_leaf0   TEXT NOT NULL,
+      out_leaf1   TEXT NOT NULL,
+      nf0         TEXT NOT NULL,
+      nf1         TEXT NOT NULL,
+      new_root    TEXT NOT NULL,
+      PRIMARY KEY (chain_id, block, log_index)
+    );
+    CREATE TABLE IF NOT EXISTS holding_cursor (chain_id INTEGER PRIMARY KEY, block INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS holding_snapshots (
+      epoch      INTEGER NOT NULL,
+      chain_id   INTEGER NOT NULL,
+      block      INTEGER NOT NULL,
+      moment     INTEGER NOT NULL,
+      root       TEXT NOT NULL,
+      nf_root    TEXT NOT NULL,
+      size       INTEGER NOT NULL,
+      nullifiers INTEGER NOT NULL,
+      taken_at   INTEGER NOT NULL,
+      PRIMARY KEY (epoch, chain_id)
+    );
+    CREATE TABLE IF NOT EXISTS holding_claims (
+      epoch         INTEGER NOT NULL,
+      chain_id      INTEGER NOT NULL,
+      ret_nf        TEXT NOT NULL,
+      claim_address TEXT NOT NULL,
+      bucket_wei    TEXT NOT NULL,
+      points        REAL NOT NULL,
+      claimed_at    INTEGER NOT NULL,
+      PRIMARY KEY (epoch, ret_nf)
+    );
+
     -- One-off markers (a backfill that has been done), by name.
     CREATE TABLE IF NOT EXISTS meta (
       k TEXT PRIMARY KEY,
@@ -498,10 +536,29 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   });
   const depositorOfStmt = db.prepare(`SELECT depositor FROM deposits WHERE tx_hash = ?`);
   const depositorOfTx = (txHash) => depositorOfStmt.get(txHash)?.depositor ?? null;
+  const insertHoldingEventStmt = db.prepare(`INSERT OR IGNORE INTO holding_events (chain_id, block, log_index, first_index, out_leaf0, out_leaf1, nf0, nf1, new_root) VALUES (@chainId, @block, @logIndex, @firstIndex, @outLeaf0, @outLeaf1, @nf0, @nf1, @newRoot)`);
+  const saveHoldingEvents = db.transaction((chainId, events) => {
+    let n = 0;
+    for (const e of events) n += insertHoldingEventStmt.run({ chainId, block: Number(e.block), logIndex: Number(e.logIndex), firstIndex: String(e.firstIndex), outLeaf0: String(e.outLeaf0), outLeaf1: String(e.outLeaf1), nf0: String(e.nf0), nf1: String(e.nf1), newRoot: String(e.newRoot) }).changes;
+    return n;
+  });
+  const holdingEventsStmt = db.prepare(`SELECT block, log_index AS logIndex, first_index AS firstIndex, out_leaf0 AS outLeaf0, out_leaf1 AS outLeaf1, nf0, nf1, new_root AS newRoot FROM holding_events WHERE chain_id = ? AND block <= ? ORDER BY block, log_index`);
+  const holdingCursorStmt = db.prepare(`SELECT block FROM holding_cursor WHERE chain_id = ?`);
+  const saveHoldingCursorStmt = db.prepare(`INSERT INTO holding_cursor (chain_id, block) VALUES (?, ?) ON CONFLICT(chain_id) DO UPDATE SET block = excluded.block`);
+  const saveHoldingSnapshotStmt = db.prepare(`INSERT OR IGNORE INTO holding_snapshots (epoch, chain_id, block, moment, root, nf_root, size, nullifiers, taken_at) VALUES (@epoch, @chainId, @block, @moment, @root, @nfRoot, @size, @nullifiers, @takenAt)`);
+  const holdingSnapshotsStmt = db.prepare(`SELECT epoch, chain_id AS chainId, block, moment, root, nf_root AS nfRoot, size, nullifiers, taken_at AS takenAt FROM holding_snapshots WHERE epoch = ? ORDER BY chain_id`);
+  const recordHoldingClaimStmt = db.prepare(`INSERT OR IGNORE INTO holding_claims (epoch, chain_id, ret_nf, claim_address, bucket_wei, points, claimed_at) VALUES (@epoch, @chainId, @retNf, @claimAddress, @bucketWei, @points, @claimedAt)`);
   const getMetaStmt = db.prepare(`SELECT v FROM meta WHERE k = ?`);
   const setMetaStmt = db.prepare(`INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`);
   const getMeta = (k) => getMetaStmt.get(k)?.v ?? null;
   const setMeta = (k, v) => { setMetaStmt.run(k, String(v)); };
+  const holdingEvents = (chainId, throughBlock = Number.MAX_SAFE_INTEGER) => holdingEventsStmt.all(chainId, throughBlock);
+  const loadHoldingCursor = (chainId) => holdingCursorStmt.get(chainId)?.block ?? null;
+  const saveHoldingCursor = (chainId, block) => { saveHoldingCursorStmt.run(chainId, Number(block)); };
+  // The first snapshot drawn for a day on a chain stands.
+  const saveHoldingSnapshot = (s) => saveHoldingSnapshotStmt.run({ ...s, root: String(s.root), nfRoot: String(s.nfRoot) }).changes > 0;
+  const holdingSnapshots = (epoch) => holdingSnapshotsStmt.all(epoch);
+  const recordHoldingClaim = (c) => recordHoldingClaimStmt.run({ ...c, retNf: String(c.retNf) }).changes > 0;
   function dayActivityPoints(dayStartSec, dayEndSec, { onTime = false } = {}) {
     return (onTime ? onTimeDayActivityStmt : dayActivityStmt).all(dayStartSec, dayEndSec);
   }
@@ -695,7 +752,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
 
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
-    dayPointsByAddress, dayActivityPoints, weekActivityPoints, lateDays, creditedWithPrefix, commitDay, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
+    dayPointsByAddress, dayActivityPoints, weekActivityPoints, lateDays, creditedWithPrefix, commitDay, saveHoldingEvents, holdingEvents, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
