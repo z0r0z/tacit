@@ -216,9 +216,25 @@ async function _cacheFirst(req, cacheName) {
   }
   if (resp && resp.ok) {
     // Clone before storing because Response bodies are single-use.
-    try { cache.put(req, resp.clone()); } catch { /* quota / opaque — fine */ }
+    try { _putReplacingBuilds(cache, req, resp.clone()).catch(() => {}); } catch { /* quota / opaque — fine */ }
   }
   return resp;
+}
+
+// The static cache is keyed by full URL, and each deploy gives a bundle a new ?cb= token, so storing a build also
+// drops the copies cached under that path's earlier tokens. Entries without a token are left alone: one page can load
+// a file both ways (amm-farm-ui.js imports './tacit.js' bare beside the page's ?cb= copy).
+async function _putReplacingBuilds(cache, req, resp) {
+  await cache.put(req, resp);
+  const url = new URL(req.url);
+  const cb = url.searchParams.get('cb');
+  if (cb) {
+    for (const key of await cache.keys()) {
+      const k = new URL(key.url);
+      const kcb = k.searchParams.get('cb');
+      if (k.pathname === url.pathname && kcb && kcb !== cb) await cache.delete(key);
+    }
+  }
 }
 
 async function _revalidate(req, cache) {
