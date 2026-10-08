@@ -65,7 +65,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     if (!provider) {
       if (providers.length >= 2 && typeof pick === 'function') {
         const uuid = await pick(listProviders());
-        if (!uuid) throw new Error('no wallet selected');
+        if (!uuid) throw Object.assign(new Error('Wallet choice cancelled'), { code: 4001 });
         if (!selectProvider(uuid)) throw new Error('selected wallet vanished — reload the page and reconnect');
         provider = selected;
       }
@@ -83,7 +83,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
       provider.__tacitAcctWired = true;
       try {
         provider.on?.('accountsChanged', (accs) => {
-          try { window.dispatchEvent(new CustomEvent('tacit:evm-accounts', { detail: { accounts: accs || [] } })); } catch { /* ignore */ }
+          try { window.dispatchEvent(new CustomEvent('tacit:evm-accounts', { detail: { accounts: accs || [], provider } })); } catch { /* ignore */ }
         });
       } catch { /* provider without event support */ }
     }

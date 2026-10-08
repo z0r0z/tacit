@@ -7,7 +7,7 @@
      data stats does, plus an injected wallet to sign advanceTip(bytes) — permissionless on chain
      (contracts/src/lib/BitcoinLightRelay.sol:253) — so anyone can push the header relay forward and pay their
      own gas, instead of waiting on Tacit's own cron. No Tacit key touches this page. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-lg0+r0+Nxy8Xz6kbRhpmeuN5z72MBYKXz93wHnfFKvw=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AabTo+6wdoNTJZF2Hoz6eeG6qQCj+wtpW28zEbYBNeI=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>Tacit community ops</title>
 <meta name="description" content="Advance Tacit's Bitcoin header relay yourself, from your own wallet: a permissionless, on-chain function anyone can call, so a stuck bridge or reflection never has to wait on Tacit's own operators.">
@@ -224,7 +224,7 @@ footer a:hover { color: var(--ink); }
 
 <script type="module">
 import { secp, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeEvmWallet } from '/evm-wallet.js?cb=16740dae';
+import { makeEvmWallet } from '/evm-wallet.js?cb=1e6da73a';
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=69a4a651';
 
 const $ = (s, el = document) => el.querySelector(s);

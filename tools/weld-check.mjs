@@ -224,11 +224,13 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
     return json(route, { ok: true });
   });
+  let walletChain = '0x1';                                   // what the wallet says it is on; every chain is this one fork
   await ctx.exposeFunction('__wallet', async (method, params = []) => {
-    if (method === 'eth_sendTransaction') walletTxs.push(params[0]);
+    if (method === 'eth_sendTransaction') { walletTxs.push(params[0]); const { chainId, ...tx } = params[0]; return rpc(method, [tx]); }
     if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [account];
-    if (method === 'eth_chainId') return '0x1';
-    if (method === 'wallet_switchEthereumChain' || method === 'wallet_watchAsset') return null;
+    if (method === 'eth_chainId') return walletChain;
+    if (method === 'wallet_switchEthereumChain') { walletChain = params[0]?.chainId || walletChain; return null; }
+    if (method === 'wallet_watchAsset') return null;
     if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
       if (!key) throw Object.assign(new Error('this account cannot sign'), { code: 4001 });
       let digest;
@@ -2346,7 +2348,7 @@ await step('activity', async () => {
     ok(await r.page.$eval('#act', (b) => b.hidden), 'activity: no Activity button before anything has happened');
     await fire({ jobId: 'j-wrap', type: 'wrap', status: 'pending' });
     await until(r.page, () => !document.querySelector('#act').hidden && document.querySelector('#act-n').textContent === '1', null, 15000);
-    ok(await toastHas(/Wrap: queued for the relay/), 'activity: a queued job shows in the header with a count, and is toasted');
+    ok(await toastHas(/Make private: queued for the relay/), 'activity: a queued job shows in the header with a count, and is toasted');
     await openActivity(r.page);
     ok((await row('job:j-wrap')).now === 'Queued', `activity: its row is at Queued (${(await row('job:j-wrap')).text.slice(0, 50)})`);
     await fire({ jobId: 'j-wrap', type: 'wrap', status: 'proving' });
@@ -2356,7 +2358,7 @@ await step('activity', async () => {
     await until(r.page, () => /Done in/.test(document.querySelector('[data-act="job:j-wrap"]')?.textContent || ''), null, 15000);
     const done = await row('job:j-wrap');
     ok(done.links.includes(`https://etherscan.io/tx/${H('a1')}`) && await r.page.$eval('#act-n', (n) => n.hidden), `activity: done, linked to its transaction, nothing left in flight (${done.text.slice(0, 60)})`);
-    ok(await toastHas(/Wrap: done\./), 'activity: done is toasted');
+    ok(await toastHas(/Make private: done\./), 'activity: done is toasted');
     // A failure reads as the relay wrote it, with the transaction it names linked.
     await fire({ jobId: 'j-send', type: 'stealthlock', status: 'pending' });
     await fire({ jobId: 'j-send', type: 'stealthlock', status: 'failed', error: `this note was already spent in ${H('b2')}; if that was this same request, it went through` });
@@ -3074,7 +3076,7 @@ await step('farmpos', async () => {
     await p.waitForSelector('#sf-act-0 [data-fn-go="redeem"]', { timeout: 60000 });
     ok(await p.evaluate(() => { const a = document.querySelector('#sf-act-0'), u = document.querySelector('[data-unbond="1"]'); return !!(u.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'farmpos: a harvest reports under the positions, not below the join form');
     await p.click('#sf-act-0 [data-fn-go="redeem"]');
-    await until(p, () => document.activeElement?.id === 'fn-redeem', null, 10000);
+    await until(p, () => ['fn-turn', 'fn-redeem'].includes(document.activeElement?.id), null, 10000);
     ok((await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('harvest:')), 'farmpos: a harvest says where to turn it into TAC, and the link takes you to that button');
     if (r.errors.length) { fails++; console.log('FAIL farmpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
@@ -3090,7 +3092,7 @@ await step('farmsteps', async () => {
     if (!(await p.$('.farm.open[data-farm="pid0"]'))) await p.click('[data-farm="pid0"] > button');
     await p.waitForSelector('#farm-pid0 .steps', { timeout: 300000 });
     const steps = await p.$$eval('#farm-pid0 .step', (l) => l.map((x) => [x.className.replace('step', '').trim(), x.querySelector('h3').textContent, x.querySelector('button')?.textContent || '']));
-    ok(steps.length === 3 && steps[0][0] === 'done' && steps[1][0] === 'now' && steps[2][0] === '' && steps[1][2] === 'Shield TAC', `farmsteps: tETH is done, TAC is next and says where to get it, the add waits (${JSON.stringify(steps)})`);
+    ok(steps.length === 3 && steps[0][0] === 'done' && steps[1][0] === 'now' && steps[2][0] === '' && steps[1][2] === 'Make TAC private', `farmsteps: tETH is done, TAC is next and says where to get it, the add waits (${JSON.stringify(steps)})`);
     await p.click('#farm-pid0 [data-join-get="tac"]');
     await p.waitForSelector('#sheet-tac[open] .farm-back a', { timeout: 30000 });
     ok(!(await p.$('#sheet-farm[open]')) && (await p.getAttribute('.farm-back a', 'href')) === '#farm/private-0' && /tETH \/ TAC/.test(await text(p, '.farm-back')), 'farmsteps: it opens the TAC sheet with a way back to this farm');
