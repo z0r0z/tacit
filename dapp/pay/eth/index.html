@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-m8MEIPIY82C6ptmAYokpnF/ExZbY+8lH30n3MMmw2NU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hoafFaUkdWWMbzOYm1bmNlaTHKVRM+CVqj6Lz2C1M8g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
@@ -2410,7 +2410,7 @@ function payDue(id) {
   if (c !== S.chain) switchChain(c);
   const btn = $(`[data-due="${id}"]`), maxFee = capOf(relayFee('send', c));
   if (btn) act(btn, async (step) => {
-    const a = BigInt(d.amount), via = viaFor('send');
+    const a = BigInt(d.amount), W = await walletOn(c), via = viaFor('send');
     if (badSum(d.to)) throw new Error(SUM_MSG);
     if (!via && maxFee == null) throw new Error("Reading the relay's fee. Try again in a moment.");     // never a spend with no cap on what the relay takes
     if (via) await signerFor(c).ready();
@@ -2422,8 +2422,8 @@ function payDue(id) {
     let h;
     try { h = await W.withdraw({ to: d.to, amount: a, via, maxFee, onStep: step }); }
     catch (e) { if (!e?.said) markDue(id, false); throw e; }
-    dropDue(id);
-    await finish(c, h, via, `Paid ${nameFor(d.to) || short(d.to)} ${exact(a)} ETH.`);
+    // One not in a block yet stays listed as sent, until the history shows it.
+    if (await finish(c, h, via, `Paid ${nameFor(d.to) || short(d.to)} ${exact(a)} ETH.`)) dropDue(id);
   });
 }
 
