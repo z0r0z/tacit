@@ -1,5 +1,5 @@
-// The amount parsers of /pay and /pay/eth read a decimal comma as a decimal point, a thousands comma as nothing, and refuse
-// a lone comma before three digits (1,500) rather than guess. Both pages must agree.
+// The amount parsers of /pay, /pay/eth and /tac read a decimal comma as a decimal point, a thousands comma as nothing, and
+// refuse a lone comma before three digits (1,500) rather than guess. The pages must agree.
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -12,6 +12,7 @@ const pull = (page, name) => {
 };
 const hub = eval(`(${pull('pay/index.html', 'parseAmount')})`);
 const eth = eval(`(${pull('pay/eth/index.html', 'parseUnits')})`);
+const tac = eval(`(${pull('tac/app.js', 'parseAmount')})`);
 
 // [text, decimals, wanted (null: not an amount)]
 const CASES = [
@@ -24,8 +25,9 @@ const CASES = [
 for (const [text, dec, want] of CASES) {
   assert.equal(hub(text, dec), want, `hub ${JSON.stringify(text)}`);
   assert.equal(eth(text, dec), want, `eth ${JSON.stringify(text)}`);
+  assert.equal(tac(text, dec), want, `tac ${JSON.stringify(text)}`);
 }
 // Eighteen decimals, as the ETH page uses them.
 assert.equal(hub('0,001', 18), 10n ** 15n);
 assert.equal(eth('0,001', 18), 10n ** 15n);
-console.log(`ok: ${CASES.length + 2} amounts parse the same on /pay and /pay/eth`);
+console.log(`ok: ${CASES.length + 2} amounts parse the same on /pay, /pay/eth and /tac`);

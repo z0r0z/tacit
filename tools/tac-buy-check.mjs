@@ -51,13 +51,11 @@ try {
   ok(/Open your wallet/.test(await text('#market-body .fund')), 'locked: the page asks for the wallet before buying');
 
   await page.click('#wallet-chip');
-  // A key made for this run, so no one can have funded its address: pressing Confirm below can never send anything.
-  await page.fill('#import-key', randomBytes(32).toString('hex'));
-  await page.click('#btn-import');
-  await page.waitForSelector('#pass-input-1', { state: 'visible', timeout: 30000 }).catch(() => {});
-  if (await page.$('#pass-input-1:visible')) {
-    await page.fill('#pass-input-1', 'correct horse battery staple'); await page.fill('#pass-input-2', 'correct horse battery staple'); await page.click('#pass-submit');
-  }
+  // A key made for this run, pasted, so no one can have funded its address: pressing Confirm below can never send
+  // anything. A pasted key is held for the tab only.
+  await page.click('#ws-in [data-in="paste"]');
+  await page.fill('#ws-hex', randomBytes(32).toString('hex'));
+  await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => /Sats there/.test(document.querySelector('#market-body .fund')?.textContent || ''), null, { timeout: 90000 });
   ok(/Pay from\s*bc1q.*Sats there\s*0 sats/.test(await text('#market-body .fund')), `opened: the key's Bitcoin address and its sats (${(await text('#market-body .fund')).slice(0, 70)})`);
   if (!/Sats there\s*0 sats/.test(await text('#market-body .fund'))) throw new Error('this key\'s address holds sats: not pressing Confirm');

@@ -96,6 +96,8 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
   border: 1px solid var(--hair-2); cursor: pointer; white-space: nowrap; }
 @media (hover: hover) { .chip:hover { border-color: var(--ink); } }
 .chip #wallet-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip .narrow { display: none; }
+@media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
 .dot.on { background: var(--ok); }
 .dot.live { background: var(--orange); }
@@ -139,6 +141,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .amt:focus-within { border-color: var(--ink); }
 .amt input { flex: 1; min-width: 0; font: 500 24px/1.2 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 12px 14px; outline: none; }
 .amt .u { display: inline-flex; align-items: center; gap: 8px; padding: 0 14px 0 4px; color: var(--mute); white-space: nowrap; }
+.amt:has(input[aria-invalid="true"]) { border-color: var(--err); }
 .amt.text input, .amt.text select { font: 400 14px/1.4 var(--mono); padding: 14px; }
 .amt.text select { flex: 1; min-width: 0; color: var(--ink); background: none; border: 0; outline: none; }
 .field-in { width: 100%; font: 400 14px/1.4 var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); padding: 12px; }
@@ -225,8 +228,11 @@ footer a { display: inline-block; padding: 12px 0; color: var(--mute); }
 .pass-hint { font-size: 12px; color: var(--mute); min-height: 1.65em; }
 .pass-hint.error { color: var(--err); }
 .pass-hint.ok { color: var(--ok); }
-#toast-container { position: fixed; bottom: 16px; left: 16px; right: 16px; display: grid; gap: 6px; justify-items: center; z-index: 1100; pointer-events: none; }
-.toast { background: var(--ink); color: var(--card); padding: 8px 14px; max-width: 520px; font-size: 12px; pointer-events: auto; }
+.toasts { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; width: auto; height: auto; margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+.toasts:not(:popover-open) { display: none; }
+.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
+.toast.bad, .toast.error { background: var(--err); color: var(--card); }
+.toast a, .toast .link { color: inherit; font-size: inherit; margin-left: 4px; }
 
 dialog.sheet { width: min(520px, calc(100vw - 32px)); max-height: min(90vh, 900px); max-height: min(90dvh, 900px); padding: 0; overflow: auto; overscroll-behavior: contain;
   color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
@@ -242,6 +248,28 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 .sheet-head h2:focus { outline: none; }
 .lede-s { color: var(--mute); font-size: 13px; margin: 0 0 14px; }
 
+/* the ways in, and the open wallet */
+.opts { display: grid; gap: 8px; margin-top: 4px; }
+.opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
+@media (hover: hover) { .opt:hover:not(:disabled) { border-color: var(--ink); } }
+.opt:disabled { opacity: .5; cursor: progress; }
+.opt.main { border-color: var(--ink); background: var(--card); }
+.opt-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+.opt-t b { font-weight: 500; }
+.opt-m { font-size: 12px; color: var(--mute); padding-left: 28px; }
+.opt[aria-busy="true"] .opt-t::after { content: ''; width: 11px; height: 11px; margin-left: auto; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 8px 0 0; }
+.opts-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
+.amt .link { flex: none; padding: 0 14px; }
+.who { text-align: center; padding: 4px 0 16px; margin-bottom: 6px; border-bottom: 1px solid var(--hair); }
+.who .a { font: 500 16px/1.4 var(--mono); overflow-wrap: anywhere; }
+.who .u { font-size: 12px; color: var(--mute); margin-top: 4px; }
+.who .u b { font-weight: 500; color: var(--ink); }
+.picker { display: grid; gap: 8px; }
+.picker button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 14px; background: var(--field); border: 1px solid var(--hair-2); cursor: pointer; text-align: left; }
+@media (hover: hover) { .picker button:hover { border-color: var(--ink); } }
+.picker img { width: 28px; height: 28px; }
+
 @media (max-width: 640px) {
   .top { gap: 12px; }
   .brand { gap: 8px; }
@@ -253,6 +281,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   .brand .tk { width: 26px; height: 26px; }
   .brand b { font-size: 26px; }
 }
+@media (max-width: 430px) { .top:has(#wallet-dot.on) .brand i { display: none; } }   /* an open wallet's address needs the room */
 @media (max-width: 340px) { .brand i { display: none; } }
 /* A finger needs the full tap size; a mouse keeps the tighter controls. */
 @media (pointer: coarse) {
@@ -268,15 +297,23 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-btc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#f7931a"/><path fill="#fff" d="M22.5 14.1c.3-2-1.2-3.1-3.3-3.8l.7-2.7-1.7-.4-.7 2.6-1.3-.3.7-2.6-1.6-.4-.7 2.7-1.1-.3-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8 1l-.8 3.1h.2l-.2.1-1.1 4.4c-.1.2-.3.5-.8.4 0 0-1.2-.3-1.2-.3l-.8 1.9 2.2.5 1.2.3-.7 2.7 1.6.4.7-2.7 1.3.3-.7 2.7 1.7.4.7-2.7c2.8.5 4.9.3 5.8-2.2.7-2-.04-3.2-1.5-4 1.1-.2 1.9-.9 2.1-2.4zm-3.7 5.3c-.5 2-3.9.9-5 .6l.9-3.6c1.1.3 4.6.8 4.1 3zm.5-5.4c-.5 1.8-3.3.9-4.2.7l.8-3.3c.9.2 3.9.6 3.4 2.6z"/></symbol></svg>
+<div class="sr" id="live" role="status" aria-live="polite"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="tk-btc" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#F7931A"/><path fill="#FFF" d="M23.189 14.02c.314-2.096-1.283-3.223-3.465-3.975l.708-2.84-1.728-.43-.69 2.765c-.454-.114-.92-.22-1.385-.326l.695-2.783L15.596 6l-.708 2.839c-.376-.086-.746-.17-1.104-.26l.002-.009-2.384-.595-.46 1.846s1.283.294 1.256.312c.7.175.826.638.805 1.006l-.806 3.235c.048.012.11.03.18.057l-.183-.045-1.13 4.532c-.086.212-.303.531-.793.41.018.025-1.256-.313-1.256-.313l-.858 1.978 2.25.561c.418.105.828.215 1.231.318l-.715 2.872 1.727.43.708-2.84c.472.127.93.245 1.378.357l-.706 2.828 1.728.43.715-2.866c2.948.558 5.164.333 6.097-2.333.752-2.146-.037-3.385-1.588-4.192 1.13-.26 1.98-1.003 2.207-2.538zm-3.95 5.538c-.533 2.147-4.148.986-5.32.695l.95-3.805c1.172.293 4.929.872 4.37 3.11zm.535-5.569c-.487 1.953-3.495.96-4.47.717l.86-3.45c.975.243 4.118.696 3.61 2.733z"/></symbol>
+    <symbol id="tk-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></symbol>
+    <symbol id="i-key" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="12" cy="16" r="4.3" fill="none" stroke="#f4efe6" stroke-width="2.3"/><path d="M16.3 16H25.5M22.4 16v3.4M25.5 16v2.6" fill="none" stroke="#f7931a" stroke-width="2.3" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
 <div class="shell">
 
   <header class="top">
-    <a class="brand" href="/tac/" aria-label="tacit tac"><img class="tk" src="/tac-logo.png" alt=""><b>tacit</b><i>tac</i></a>
+    <a class="brand" href="/tac/" aria-label="tacit tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>tac</i></a>
     <div class="top-r">
       <span class="px" id="hdr-price" title="TAC mark price, from real trades"></span>
       <a class="classic" href="/">All of Tacit</a>
-      <button class="chip" id="wallet-chip" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Connect</span></button>
+      <button class="chip" id="wallet-chip" type="button" aria-haspopup="dialog"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
     </div>
   </header>
 
@@ -308,16 +345,16 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 
     <div class="bal">
       <div>
-        <div class="uu"><img class="tk sm dash" src="/tac-logo.png" alt=""><span class="v num" id="bal-shielded">—</span> <span class="u">TAC shielded</span></div>
+        <div class="uu"><svg class="tk sm dash" aria-hidden="true"><use href="#tk-tac"/></svg><span class="v num" id="bal-shielded">—</span> <span class="u">TAC shielded</span></div>
         <div class="fiat" id="bal-shielded-sats"></div>
       </div>
       <div class="side">in your wallet<b class="num" id="bal-public">—</b><span class="fiat" id="bal-public-sats"></span></div>
     </div>
-    <div class="kv"><span id="bal-note">Connect a wallet to see your balances.</span><button class="link" id="btn-refresh" hidden>refresh</button></div>
+    <div class="kv"><span id="bal-note">Open your wallet to see your balances.</span><button class="link" id="btn-refresh" hidden>refresh</button></div>
 
     <div id="pane-shield" role="tabpanel" aria-labelledby="tab-shield" tabindex="0">
       <div class="lbl"><label for="shield-pick">TAC to move into the pool</label></div>
-      <div class="amt text"><select id="shield-pick"><option>Connect a wallet</option></select></div>
+      <div class="amt text"><select id="shield-pick"><option>Open your wallet first</option></select></div>
       <p class="note">A whole note goes in at once — splitting it first would publish the split. Once it is in the pool you can send or withdraw any amount you like. This step pays its own Bitcoin fee, so the wallet needs a little BTC.</p>
       <p class="note" id="shield-stealth-note"></p>
       <button class="btn" id="btn-shield">Shield TAC</button>
@@ -328,7 +365,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="lbl"><label for="send-to">To a Tacit or pool address</label></div>
       <div class="amt text"><input id="send-to" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="tacit1… or bp1…"></div>
       <div class="lbl"><label for="send-amt">Amount</label><button class="link" id="send-max" type="button">max</button></div>
-      <div class="amt"><input id="send-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><img class="tk sm" src="/tac-logo.png" alt="">TAC</span></div>
+      <div class="amt"><input id="send-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="fiat" id="send-sats"></div>
       <p class="note">The amount and the recipient stay hidden. Send any part of your balance; the remainder stays in the pool as change.</p>
       <button class="btn" id="btn-send">Send privately</button>
@@ -337,7 +374,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="lbl sep"><span>Or send to someone with no wallet</span></div>
       <p class="note" style="margin-top:0">Creates a link that holds the TAC. Whoever opens it can take it into a wallet of their own — they need no wallet now and no bitcoin ever, because the relay takes its fee from the TAC itself. Anyone holding the link can spend it, so send it the way you would send cash, and add a PIN if the channel is not private.</p>
       <div class="lbl"><label for="claim-amt">Amount</label></div>
-      <div class="amt"><input id="claim-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><img class="tk sm" src="/tac-logo.png" alt="">TAC</span></div>
+      <div class="amt"><input id="claim-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="fiat" id="claim-sats"></div>
       <div class="lbl"><label for="claim-pin">PIN (optional, shared separately)</label></div>
       <div class="amt text"><input id="claim-pin" autocomplete="off" inputmode="numeric" placeholder="leave blank for none"></div>
@@ -358,7 +395,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 
       <div id="wpane-self" role="tabpanel" aria-labelledby="wtab-self">
         <div class="lbl"><label for="exit-amt">Amount to withdraw</label><button class="link" id="exit-max" type="button">max</button></div>
-        <div class="amt"><input id="exit-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><img class="tk sm" src="/tac-logo.png" alt="">TAC</span></div>
+        <div class="amt"><input id="exit-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="fiat" id="exit-sats"></div>
         <p class="note">Comes back as ordinary TAC in this wallet, public again from that point on. Withdraw part and the rest stays shielded. This step pays its own Bitcoin fee.</p>
         <button class="btn" id="btn-exit">Withdraw TAC</button>
@@ -374,13 +411,13 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 
     <div id="pane-receive" role="tabpanel" aria-labelledby="tab-receive" tabindex="0" hidden>
       <p class="eyebrow">Your Tacit address</p>
-      <div class="amt text"><input id="recv-tacit" readonly value="Connect a wallet"></div>
+      <div class="amt text"><input id="recv-tacit" readonly value="Open your wallet to see it"></div>
       <p class="note">The one to share. Tacit apps pay it inside the shielded pool, and the same address takes BTC and ETH. It says nothing about what you hold, and each payment to it arrives at a different one-time key that only your wallet can find.</p>
       <div class="row2">
         <button class="btn ghost" id="btn-copy-tacit">Copy Tacit address</button>
       </div>
       <p class="eyebrow">Your pool address</p>
-      <div class="amt text"><input id="recv-addr" readonly value="Connect a wallet"></div>
+      <div class="amt text"><input id="recv-addr" readonly value="Open your wallet to see it"></div>
       <p class="note">The pool part alone, for an app that asks for a bp1… address. What it receives lands in the same shielded balance.</p>
       <div class="row2">
         <button class="btn ghost" id="btn-copy">Copy pool address</button>
@@ -417,28 +454,16 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </footer>
 </div>
 
-<dialog class="sheet" id="connect-sheet">
+<dialog class="sheet" id="connect-sheet" aria-labelledby="wallet-h">
   <div class="sheet-in">
-    <div class="sheet-head"><h2>Wallet</h2><button class="x" id="connect-x" aria-label="Close">×</button></div>
-    <p class="note" style="margin-top:0">This page keeps a Tacit key in your browser. The same key derives your pool address, so your shielded balance is recoverable from it anywhere.</p>
-    <p class="note" id="known-line" hidden style="margin-top:0"></p>
-    <button class="btn" id="btn-open">Unlock</button>
-    <button class="btn ghost" id="btn-create">Create a new wallet here</button>
-    <button class="btn ghost" id="btn-lock" hidden>Lock</button>
-    <div class="lbl" style="margin-top:22px"><label for="import-key">Or restore from a key</label></div>
-    <div class="amt text"><input type="password" id="import-key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 hex characters"></div>
-    <button class="btn ghost" id="btn-import">Restore</button>
-    <div class="status" id="st-connect"></div>
+    <div class="sheet-head"><h2 id="wallet-h" tabindex="-1" autofocus>Wallet</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="wallet-body"></div>
   </div>
 </dialog>
-
-<dialog class="sheet" id="key-sheet">
+<dialog class="sheet" id="sheet-pick" aria-label="Choose a wallet">
   <div class="sheet-in">
-    <div class="sheet-head"><h2>Back up</h2><button class="x" id="key-x" aria-label="Close">×</button></div>
-    <p class="note" style="margin-top:0">This key is the only way back to your shielded TAC. Nobody can restore it for you.</p>
-    <div class="amt text"><input id="key-out" readonly></div>
-    <button class="btn" id="btn-key-copy">Copy key</button>
-    <button class="btn ghost" id="btn-key-lock">Lock</button>
+    <div class="sheet-head"><h2 tabindex="-1" autofocus>Choose a wallet</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
+    <div id="pick-body"></div>
   </div>
 </dialog>
 
@@ -452,7 +477,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
     <div class="row"><button class="btn ghost" id="pass-cancel" type="button">Cancel</button><button class="btn" id="pass-submit" type="submit">Continue</button></div>
   </form>
 </div>
-<div id="toast-container" aria-live="polite"></div>
-<script type="module" src="/tac/app.js?cb=6aeb4e65"></script>
+<div class="toasts" id="toast-container" popover="manual"></div>
+<script type="module" src="/tac/app.js?cb=8e8bb856"></script>
 </body>
 </html>
