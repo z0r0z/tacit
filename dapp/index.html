@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-qPhygkNblKj9319LS+3K85Wy9RK4kLJ43j+WKPCCluY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xkYt3CtVrXeXgdWyuJ1MbGXThdJtRVYQDNcH/Q/ERb4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
@@ -454,6 +454,15 @@ a.btn { text-decoration: none; white-space: nowrap; }
 .hl li + li { margin-top: 3px; }
 .hl a:not(.btn) { color: var(--ink); }
 .hl .note { margin-top: 8px; }
+.pv { margin-top: 12px; padding: 10px 12px; background: var(--field); border-left: 2px solid var(--bar); }
+.pv.pv-fair { border-left-color: var(--orange); }
+.pv.pv-weak { border-left-color: var(--err); }
+.pv-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: var(--ink); }
+.pv-h i { width: 7px; height: 7px; border-radius: 50%; background: var(--bar); }
+.pv-fair .pv-h i { background: var(--orange); }
+.pv-weak .pv-h i { background: var(--err); }
+.rcpt .pv .note { margin-top: 4px; }
+.pv a { color: var(--ink); }
 .callout.bad { border-left-color: var(--err); }
 .ack { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 12.5px; color: var(--err); cursor: pointer; }
 .ack input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--err); flex: none; }
@@ -4298,6 +4307,104 @@ async function devResolve(raw) {
   return r.pool ? { bp: r.pool, label: r.name, id: r.address } : { error: `${r.name} points to a Tacit address from before pool payments, so it can’t receive in this pool yet. Pay it from the Tacit pool tab instead.` };
 }
 
+// ── how well a withdrawal blends in, from what anyone can see on chain ──
+// Every deposit and withdrawal of the pool on a chain, by block and amount: the crowd a withdrawal blends into. Public
+// data, kept under the name tacit pay keeps it by, so a read on either page serves both; a read a node's limits cut short
+// keeps what it got, and the next one carries on from there. The logs come from the nodes that serve the pool's whole span.
+const T_TRANSACT = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)')));
+const LOG_RPC = { 1: ['https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'], 8453: ['https://base.gateway.tenderly.co', 'https://mainnet.base.org'] };
+const POOLQ = {};
+function poolStats(c) {
+  const key = `tacit-pay-pool-v1:${c.chainId}:${EVM_POOL.toLowerCase()}`, part = `${key}:part`, q = POOLQ[c.chainId] ||= { v: store.get(key), p: null, at: 0, failAt: 0 };
+  if (q.p) return q.p;
+  if (q.v && Date.now() - q.at < 60e3) return Promise.resolve(q.v);
+  q.p = (async () => {
+    const m = await getDeviceMods(), rpc = m.jsonRpc(LOG_RPC[c.chainId] || c.rpc), tip = Number(BigInt(await rpc('eth_blockNumber')));
+    const from = [q.v, store.get(part)].filter((x) => x?.through >= c.deployBlock - 1).sort((a, b) => b.through - a.through)[0];
+    const v = from ? { through: from.through, ins: from.ins.slice(), outs: from.outs.slice() } : { through: c.deployBlock - 1, ins: [], outs: [] };
+    let step = 2_000_000, busyTries = 0;
+    for (let a = v.through + 1; a <= tip;) {
+      const b = Math.min(tip, a + step - 1);
+      try {
+        for (const l of await rpc('eth_getLogs', [{ address: EVM_POOL, topics: [T_TRANSACT], fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }])) {
+          const ext = BigInt.asIntN(256, wordAt(l.data, 5)), at = Number(BigInt(l.blockNumber));
+          if (ext > 0n) v.ins.push([at, ext.toString()]); else if (ext < 0n) v.outs.push([at, (-ext).toString()]);
+        }
+        v.through = b; a = b + 1; busyTries = 0;
+        store.set(part, v);
+      } catch (e) {
+        const f = m.logFailure(e, step);
+        if (f?.step) { step = f.step; continue; }
+        if (f?.busy && ++busyTries <= 6) { await sleep(1500 * busyTries); continue; }
+        throw e;
+      }
+    }
+    store.set(key, v); store.set(part, null);
+    q.v = v; q.at = Date.now();
+    return v;
+  })().catch((e) => { q.failAt = Date.now(); throw e; }).finally(() => { q.p = null; });
+  return q.p;
+}
+// While a form checks against them, the pool's deposits are read again after a minute, and the form checks again when they
+// are in. A failed read is tried again after half a minute.
+function poolWait(c) {
+  const q = POOLQ[c.chainId];
+  if (q?.p || Date.now() - (q?.failAt || 0) < 30e3) return;
+  poolStats(c).catch(() => {}).finally(() => { const i = $('#d-amt'); if (i?.value && DEV.chain === c && !running('eth')) i.dispatchEvent(new Event('input')); });
+}
+const ROUND = [1n, 25n, 5n].flatMap((m) => Array.from({ length: 22 }, (_, k) => m * 10n ** BigInt(k))).sort((a, b) => (a < b ? -1 : 1));
+// How well a withdrawal (or a move) of `amount` to `to` blends in, rated as tacit pay rates it, on what this page holds:
+// the address, the amount against the pool's deposits, and this key's deposits it still holds as notes here (a note made
+// in the block of a deposit of its amount, or swept in at a deposit address). tacit pay also reads every deposit the key
+// ever made and when, so the best this check says is 'part': these parts hold. → { level: 'part' | 'fair' | 'weak',
+// notes, crowd, round } or null while the pool or the balance is being read.
+function privacyCheck(c, amount, to, self) {
+  const v = POOLQ[c.chainId]?.v, W = DEV.W && DEV.key === S.key.pubHex + c.chainId && DEV.bal != null ? DEV.W : null;
+  if (Date.now() - (POOLQ[c.chainId]?.at || 0) > 60e3) poolWait(c);
+  if (!v || !W) return null;
+  const notes = [];
+  let level = 'part';
+  const fair = (t) => { notes.push(t); if (level === 'part') level = 'fair'; };
+  const is = (a) => !!to && !!a && to.toLowerCase() === a.toLowerCase();
+  if (is(S.wallet) || is(S.acct?.address)) { level = 'weak'; notes.push(`This is your ${is(S.wallet) ? 'connected wallet' : 'Tacit account'}: withdrawing to it links it to the pool. A fresh address keeps them apart.`); }
+  const mine = [];
+  for (const n of W.notes()) {
+    const nv = BigInt(n.v), xs = v.ins.filter(([b, x]) => b === n.block && (BigInt(x) === nv || (n.kind === 'receive' && BigInt(x) > nv && (BigInt(x) - nv) * 400n <= BigInt(x)))).map(([, x]) => BigInt(x));
+    if (xs.length || n.kind === 'receive') mine.push({ vs: [nv, ...xs], block: n.block });
+  }
+  const near = (x) => x === amount || (x > amount ? x - amount : amount - x) * 1000n <= amount;
+  const same = mine.find((r) => r.vs.some(near));
+  if (same) fair('Close to the amount that came in earlier, so the two can be paired. A different amount, or withdrawing it in parts, blends in better.');
+  // More than two significant digits reads like a fingerprint; a round amount blends in with everyone else's.
+  const odd = amount.toString().replace(/0+$/, '').length > 2, round = ROUND.filter((r) => r <= amount).pop();
+  if (!same && odd && round) notes.push('Round amounts blend in with more withdrawals.');
+  const last = mine.reduce((a, r) => (r.block > (a?.block ?? -1) ? r : a), null);
+  if (last) {
+    const since = v.ins.filter(([b]) => b > last.block).length;
+    if (since < 5) fair(`${since ? `Only ${since} deposit${since === 1 ? '' : 's'} by others since yours` : 'No one else has deposited since yours'}. Waiting a day, and for a few more, makes this much harder to link.`);
+  }
+  // A withdrawal blends in only with deposits at least as large: few of them single it out.
+  const large = v.ins.filter(([, x]) => BigInt(x) >= amount).length;
+  if (large < 5) {
+    notes.push(`${large ? `Only ${large} deposit${large === 1 ? '' : 's'}` : 'No deposit'} on ${c.name} ${large === 1 || !large ? 'was' : 'were'} this large. Smaller parts blend in better.`);
+    if (large < 2) level = 'weak'; else if (level === 'part') level = 'fair';
+  }
+  if (self) fair('Your wallet shows as the one sending it.');
+  if (v.ins.length < 25) fair(`The pool on ${c.name} is still young: ${v.ins.length} deposit${v.ins.length === 1 ? '' : 's'} so far. Every new deposit makes yours harder to single out.`);
+  const crowd = `Your ETH hides among ${W.summary().leaves} notes from ${v.ins.length} deposits in the pool on ${c.name}.`;
+  return { level, notes, crowd, round: (same || odd) && round && round !== amount ? round : null };
+}
+function privacyView(c, amount, to, self) {
+  const p = privacyCheck(c, amount, to, self);
+  const full = html`<p class="note"><a href="/pay/eth/#withdraw&chain=${c.chainId}">Check how private this withdrawal is in tacit pay ↗</a> It weighs every deposit you made, and when.</p>`;
+  if (!p) return html`<div class="pv"><p class="note">${POOLQ[c.chainId]?.p || !POOLQ[c.chainId]?.failAt ? 'Checking how well this blends in…' : 'The pool’s deposits could not be read just now.'}</p>${full}</div>`;
+  const label = { part: 'Blends in by address and size', fair: 'Could blend in better', weak: 'Easy to link to you' }[p.level];
+  return html`<div class="pv pv-${p.level}"><div class="pv-h"><i></i>${label}</div>
+    ${p.notes.map((t) => html`<p class="note">${t}</p>`)}
+    ${p.round ? html`<p class="note"><button class="link" type="button" id="pv-round" data-v="${p.round}">Withdraw ${fmt(p.round, 18, 6)} ETH instead</button></p>` : ''}
+    <p class="note">${p.crowd}</p>${full}</div>`;
+}
+
 function renderDevice(el) {
   if (!needKey(el, 'Keep ETH private on Ethereum, Base or Robinhood Chain, with the privacy work done here in your browser. Open your Tacit wallet to start.')) return;
   const c = DEV.chain, W = DEV.W && DEV.key === S.key.pubHex + c.chainId ? DEV.W : null;
@@ -4472,6 +4579,7 @@ function renderDevice(el) {
     wireSub(f, 'dest', (d) => { DEV.dest = d; keep($('#sheet-eth'), render.eth); });
     const toEl = $('#d-to'), amt = $('#d-amt'), go = $('#d-go'), rc = $('#d-rcpt');
     let shown = 0n;
+    rc.addEventListener('click', (e) => { const b = e.target.closest('#pv-round'); if (b) { amt.value = plain(BigInt(b.dataset.v), 18); amt.dispatchEvent(new Event('input')); } });
     $('#d-me')?.addEventListener('click', () => busy($('#d-me'), async () => { try { toEl.value = await payingAccount(); toEl.dispatchEvent(new Event('input')); } catch (e) { sayErr(status, e); } }));
     for (const id of ['d-to', 'd-amt']) $('#' + id)?.addEventListener('focus', warm, { once: true });
     const check = () => {
@@ -4485,23 +4593,23 @@ function renderDevice(el) {
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
         const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>`);
-        const over = m == null;
+        const over = m == null, pv = raw && !bad && !over ? privacyView(c, amount, raw, walletRoute()) : '';
+        mount(rc, html`${relayFee ? html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ETH</b></div>` : ''}${pv}`);
         go.disabled = !raw || !!bad || over;
         if (!raw) {}
         else if (bad && !/^0(x[0-9a-fA-F]{0,39})?$/i.test(raw)) warn(rc, bad.message);            // not while an address is still being typed
         else if (over) warn(rc, overText(amount, relayFee));
-        else rc.hidden = !relayFee;
+        else rc.hidden = !relayFee && !pv;
       } else {
         if (feeUnread()) { mount(rc, feeNote()); rc.hidden = false; return; }
         const relayFee = relayFeeNow(), m = DEV.bal == null ? 0 : merges(amount, relayFee);
         shown = relayFee;
-        if (relayFee) mount(rc, html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>`);
-        const over = m == null, coarse = dest === 'v1' && amount % E10 !== 0n;
+        const over = m == null, coarse = dest === 'v1' && amount % E10 !== 0n, pv = !over && !coarse ? privacyView(c, amount, null, walletRoute()) : '';
+        mount(rc, html`${relayFee ? html`<div class="kv"><span>Relay fee, from your private balance</span><b>at most ${upEth(capOf(relayFee))} ETH</b></div>${combineRow(m, relayFee)}<div class="kv"><span>Arrives</span><b>${fmt(amount, 18, 6)} ${dest === 'v1' ? 'tETH' : `ETH${l2 ? ', less at most 0.25%' : ''}`}</b></div>` : ''}${pv}`);
         go.disabled = over || coarse;
         if (over) warn(rc, overText(amount, relayFee));
         else if (coarse) warn(rc, 'The Tacit pool takes up to 8 decimals.');
-        else rc.hidden = !relayFee;
+        else rc.hidden = !relayFee && !pv;
       }
     };
     for (const el of dest === 'addr' ? [toEl, amt] : [amt]) el.addEventListener('input', check);   // synchronous: no network in this check
