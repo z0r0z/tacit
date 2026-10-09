@@ -119,6 +119,15 @@ localStorage.setItem('tacit-wallet-v1:mainnet:by:bc1qextaddr', blob(PUB_A));
   ok('btc with no verified key here: the network opens the key saved for the extension address', T.getActiveWalletMode() === 'ext');
   ok('btc kept on the network with nothing saved', localStorage.getItem('tacit-active-mode-v1:signet') === 'btc');
 }
+fresh();
+localStorage.setItem('tacit-active-mode-v1', 'local');
+localStorage.setItem('tacit-ext-state-v1', JSON.stringify({ provider: 'unisat', address: 'bc1qextaddr', pubkey: '02' + '11'.repeat(32) }));
+localStorage.setItem('tacit-wallet-v1:mainnet:by:bc1qextaddr', blob(PUB_B));
+localStorage.setItem('tacit-wallet-v1:mainnet', blob(PUB_A));
+{
+  const T = await load('mainnet');
+  ok('local with an extension wallet also saved: the local wallet still opens', T.getActiveWalletMode() === 'local');
+}
 
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

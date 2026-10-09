@@ -2145,18 +2145,22 @@ function _readActiveMode(net) {
   try { return localStorage.getItem(_activeModeKey(net)); } catch { return null; }
 }
 // 'ext' or 'local' when `net` has a wallet saved in this browser: a key bound
-// to an extension address (the cached one first), or the local key.
-function _savedWalletModeOn(net) {
+// to an extension address (the cached one first), or the local key. With
+// `prefer`, that mode when its wallet is saved there.
+function _savedWalletModeOn(net, prefer = null) {
   try {
     const has = (k) => !!(localStorage.getItem(k) || '').trim();
     const ext = JSON.parse(localStorage.getItem(EXT_STATE_KEY) || 'null');
-    if (ext?.address && has(`${WALLET_KEY_BASE}:${net}:by:${String(ext.address).toLowerCase()}`)) return 'ext';
-    if (has(`${WALLET_KEY_BASE}:${net}`)) return 'local';
     const prefix = `${WALLET_KEY_BASE}:${net}:by:`;
-    for (let i = 0; i < localStorage.length; i++) {
+    let extSaved = !!(ext?.address && has(`${prefix}${String(ext.address).toLowerCase()}`));
+    for (let i = 0; !extSaved && i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(prefix) && has(k)) return 'ext';
+      if (k && k.startsWith(prefix) && has(k)) extSaved = true;
     }
+    const localSaved = has(`${WALLET_KEY_BASE}:${net}`);
+    if (prefer === 'local' && localSaved) return 'local';
+    if (extSaved) return 'ext';
+    if (localSaved) return 'local';
   } catch {}
   return null;
 }
@@ -2181,15 +2185,16 @@ function clearActiveWalletMode() {
 // network keeps the recorded mode where it hides nothing: an Ethereum or
 // Bitcoin link stays on a network with no saved wallet, or where that link
 // already holds a verified key; a passkey stays everywhere (a passkey restores
-// ahead of a saved key with no mode anyway). Otherwise the network opens the
-// wallet saved for it, if any. The old record is then removed.
+// ahead of a saved key with no mode anyway); a local or extension wallet stays
+// where that wallet is saved. Otherwise the network opens the wallet saved for
+// it, if any. The old record is then removed.
 function _migrateActiveMode() {
   try {
     const legacy = localStorage.getItem(ACTIVE_MODE_KEY);
     if (legacy === null) return;
     for (const net of IDENTITY_NETS) {
       if (_readActiveMode(net) !== null) continue;
-      const saved = _savedWalletModeOn(net);
+      const saved = _savedWalletModeOn(net, legacy);
       let v = saved;
       if (legacy === 'passkey') v = 'passkey';
       else if (legacy === 'eth' || legacy === 'btc') {
