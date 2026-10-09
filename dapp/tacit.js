@@ -66116,24 +66116,51 @@ async function enrichDiscoverMints(a, verify) {
   }
 }
 
-// Stage 4 — per-burn validation. Mutates `verify.verifiedBurns` (BigInt) and
-// pushes to `verify.mismatches` if a worker-claimed burn amount disagrees
-// with the on-chain T_BURN envelope. Persistent cache of burned amounts as
-// decimal strings (BigInt isn't JSON-serializable).
+// A burn validates as the validator checks one: with change, its vout 0 validates like any held note; a full burn
+// has no output, so its inputs must validate and its kernel signature verify against burned·H − Σ C_in.
+async function _discoverBurnValid(btxid, btx, bd, fetchTx) {
+  if (bd.outputs.length > 0) return validateOutpoint(btxid, 0, new Map(), fetchTx);
+  if (!Array.isArray(btx.vin) || btx.vin.length < 2 || btx.vin.length - 1 > 255) return false;
+  const validatedSet = new Map();
+  let EPrime = safeMult(H, bd.burnedAmount);
+  for (let i = 1; i < btx.vin.length; i++) {
+    const inp = btx.vin[i];
+    if (!(await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx))) return false;
+    const parent = await fetchTx(inp.txid);
+    const parentEnv = parent ? _txOutputEnvelope(parent) : null;
+    const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid) : null;
+    if (!pd || pd.assetIdHex !== bytesToHex(bd.assetId)) return false;
+    EPrime = EPrime.add(bytesToPoint(pd.commitment).negate());
+  }
+  if (EPrime.equals(secp.ProjectivePoint.ZERO)) return false;
+  const msg = computeKernelMsg(bd.assetId, btx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout })), [], bd.burnedAmount);
+  return verifySchnorr(bd.kernelSig, msg, EPrime.toRawBytes(true).slice(1));
+}
+
+// Stage 4 — per-burn validation. Mutates `verify.verifiedBurns` (BigInt) for
+// burns that validate, `verify.reportedBurns` for decodable T_BURN envelopes
+// that do not (yet), and pushes to `verify.mismatches` if a worker-claimed burn
+// amount disagrees with the on-chain T_BURN envelope. Persistent cache of
+// burned amounts as decimal strings (BigInt isn't JSON-serializable); a burn
+// that did not validate is checked again after DISCOVER_NEG_TTL_MS.
 async function enrichDiscoverBurns(a, verify) {
   if (!verify.ok) return;
   const claimedBurns = Array.isArray(a.burns) ? a.burns : [];
   if (claimedBurns.length === 0) return;
+  verify.reportedBurns = verify.reportedBurns || {};
   for (const b of claimedBurns) {
     const btxid = b && b.tx;
     if (!/^[0-9a-f]{64}$/.test(String(btxid || ''))) continue;
-    if (verify.verifiedBurns[btxid] !== undefined) continue;
+    if (verify.verifiedBurns[btxid] !== undefined || verify.reportedBurns[btxid] !== undefined) continue;
     const cached = getCachedDiscoverBurn(btxid);
-    if (cached) {
+    const recheck = cached && cached.ok && cached.valid !== true
+      && (cached.valid !== false || Date.now() - (cached.ts || 0) > DISCOVER_NEG_TTL_MS);
+    if (cached && !recheck) {
       if (cached.ok && cached.asset_id === a.asset_id && typeof cached.burnedAmount === 'string') {
         try {
           const onChainBurn = BigInt(cached.burnedAmount);
-          verify.verifiedBurns[btxid] = onChainBurn;
+          if (cached.valid === true) verify.verifiedBurns[btxid] = onChainBurn;
+          else verify.reportedBurns[btxid] = onChainBurn;
           // Re-check mismatch against the *current* worker claim (cached chain
           // truth is immutable; worker entries can change session to session).
           const workerBurn = (() => { try { return BigInt(b.burned_amount); } catch { return null; } })();
@@ -66154,8 +66181,10 @@ async function enrichDiscoverBurns(a, verify) {
       if (!bd) { setCachedDiscoverBurn(btxid, { ok: false }); continue; }
       if (bytesToHex(bd.assetId) !== a.asset_id) { setCachedDiscoverBurn(btxid, { ok: false }); continue; }
       const onChainBurn = bd.burnedAmount;
-      setCachedDiscoverBurn(btxid, { ok: true, asset_id: a.asset_id, burnedAmount: onChainBurn.toString() });
-      verify.verifiedBurns[btxid] = onChainBurn;
+      const valid = await _discoverBurnValid(btxid, btx, bd, _sharedFetchTx).catch(() => false);
+      setCachedDiscoverBurn(btxid, { ok: true, asset_id: a.asset_id, burnedAmount: onChainBurn.toString(), valid });
+      if (valid) verify.verifiedBurns[btxid] = onChainBurn;
+      else verify.reportedBurns[btxid] = onChainBurn;
       const workerBurn = (() => { try { return BigInt(b.burned_amount); } catch { return null; } })();
       if (workerBurn !== null && workerBurn !== onChainBurn) {
         if (!verify.mismatches.includes(`burn ${shorten(btxid, 6)} amount`)) {
@@ -66460,7 +66489,8 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // verifiedMints yet, so showing "0 chain-verified · N worker-only (rejected)"
   // would be misleading. The badge appears once enrichDiscoverMints completes.
   const verifiedMintTxids = (verified && verify.verifiedMints) ? verify.verifiedMints : {};
-  const claimedMints = Array.isArray(a.mints) ? a.mints : [];
+  // One entry per transaction, however often the worker lists it.
+  const claimedMints = [...new Map((Array.isArray(a.mints) ? a.mints : []).map(m => [m && m.mint_txid, m])).values()];
   let mintBadge = '';
   let mintAttestedCount = 0, mintAttestedSum = 0n, mintAllAttested = true;
   let chainMintCount = 0;
@@ -66500,25 +66530,30 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     // the asset has zero mint history just because we haven't validated yet.
     mintBadge = `<div style="margin-top:6px;font-size:11px;color:var(--ink-mid);">${claimedMints.length} mint${claimedMints.length === 1 ? '' : 's'} reported · validating…</div>`;
   }
-  // Burns: trust only on-chain T_BURN envelopes for this asset_id. The on-chain
-  // burned_amount is the authority; worker-claimed entries with no chain
-  // backing are surfaced as phantom so the user sees the discrepancy. Same
-  // _burnsEnriched gating as mints.
+  // Burns: trust only on-chain T_BURN envelopes for this asset_id that
+  // validate (inputs and kernel). The on-chain burned_amount is the
+  // authority; a decodable envelope that does not validate is "reported",
+  // named but not counted as destroyed; worker-claimed entries with no chain
+  // backing are surfaced as phantom so the user sees the discrepancy. One
+  // entry per transaction. Same _burnsEnriched gating as mints.
   const verifiedBurnMap = (verified && verify.verifiedBurns) ? verify.verifiedBurns : {};
-  const claimedBurns = Array.isArray(a.burns) ? a.burns : [];
+  const reportedBurnMap = (verified && verify.reportedBurns) ? verify.reportedBurns : {};
+  const claimedBurns = [...new Map((Array.isArray(a.burns) ? a.burns : []).map(b => [b && b.tx, b])).values()];
   let burnedSum = 0n;
-  let chainBurnCount = 0;
+  let chainBurnCount = 0, reportedBurnCount = 0;
   for (const b of claimedBurns) {
     const x = verifiedBurnMap[b && b.tx];
-    if (typeof x !== 'bigint') continue;
-    if (x < 0n || x >= (1n << BigInt(N_BITS))) continue;
+    if (typeof x !== 'bigint' || x < 0n || x >= (1n << BigInt(N_BITS))) {
+      if (typeof reportedBurnMap[b && b.tx] === 'bigint') reportedBurnCount++;
+      continue;
+    }
     burnedSum += x;
     chainBurnCount++;
   }
-  const phantomBurns = claimedBurns.length - chainBurnCount;
+  const phantomBurns = claimedBurns.length - chainBurnCount - reportedBurnCount;
   let burnBadge = '';
-  if (verified && verify._burnsEnriched && (chainBurnCount > 0 || phantomBurns > 0)) {
-    burnBadge = `<div style="margin-top:6px;font-size:11px;color:var(--red-warn);">${chainBurnCount} chain-verified burn${chainBurnCount === 1 ? '' : 's'} · ${escapeHtml(fmtAssetAmount(burnedSum, decimals))} destroyed${phantomBurns > 0 ? ` · <span style="color:var(--red);">${phantomBurns} worker-only (rejected)</span>` : ''}</div>`;
+  if (verified && verify._burnsEnriched && (chainBurnCount > 0 || reportedBurnCount > 0 || phantomBurns > 0)) {
+    burnBadge = `<div style="margin-top:6px;font-size:11px;color:var(--red-warn);">${chainBurnCount} chain-verified burn${chainBurnCount === 1 ? '' : 's'} · ${escapeHtml(fmtAssetAmount(burnedSum, decimals))} destroyed${reportedBurnCount > 0 ? ` · <span style="color:var(--ink-mid);">${reportedBurnCount} reported, not verified</span>` : ''}${phantomBurns > 0 ? ` · <span style="color:var(--red);">${phantomBurns} worker-only (rejected)</span>` : ''}</div>`;
   } else if (verified && !verify._burnsEnriched && claimedBurns.length > 0) {
     burnBadge = `<div style="margin-top:6px;font-size:11px;color:var(--ink-mid);">${claimedBurns.length} burn${claimedBurns.length === 1 ? '' : 's'} reported · validating…</div>`;
   }
@@ -66536,14 +66571,17 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       && mintAttestedCount === chainMintCount) {
     const totalIssued = etchSupply + mintAttestedSum;
     const circulating = totalIssued - burnedSum;
-    if (chainMintCount === 0 && chainBurnCount === 0) {
+    // Burns that exceed what was issued give no supply figure.
+    if (circulating < 0n) {
+      totalSupplyBadge = '';
+    } else if (chainMintCount === 0 && chainBurnCount === 0 && reportedBurnCount === 0) {
       // Collapsed: rewrite supplyBadge from "Etch supply: X · ✓ verified
       // supply" to "Supply: X · ✓ verified supply · fixed (no mints, no burns)".
       // Skip the totalSupplyBadge to avoid duplicating the same number.
       const tag = supplyAttestBadge(attestSource, verify.imageUri || a.image_uri);
       supplyBadge = `<div style="margin-top:6px;font-size:12px;color:var(--green-positive);"><strong>Supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag} · fixed (no mints, no burns)</div>`;
     } else {
-      totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:var(--green-positive);"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}</div>`;
+      totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:var(--green-positive);"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}${reportedBurnCount > 0 ? ` · ${reportedBurnCount} reported burn${reportedBurnCount === 1 ? '' : 's'} not subtracted` : ''}</div>`;
     }
   }
 
