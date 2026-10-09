@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RdNwOoFMDw8yxH5Oi9Gvjq6ecQvG6/7CSwj6i0Fvvaw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+0/J4yS4BRduePhFAxnbXlW5EuW4L1k+N4YkISrpJKo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
-<script src="/front-route.js?cb=6706fb66"></script>
+<script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
 <meta name="description" content="Private DeFi on Bitcoin and Ethereum. Assets issued on Bitcoin with hidden amounts, a zero-knowledge bridge to a confidential pool on Ethereum, private ETH, TAC, points, farms and dollars borrowed against Bitcoin.">
 <meta property="og:type" content="website">
@@ -213,6 +213,14 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── hero ── */
 .hero { padding: 64px 0 40px; }
+/* The airdrop, while it is open: one line above the headline that opens the claim. */
+.news { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; margin: 0 0 18px; font-size: 12px; color: var(--mute);
+  text-decoration: none; }
+.news b { font-weight: 500; color: var(--ink); }
+.news .dot { width: 6px; height: 6px; }
+.news .dot:not(.on) { background: var(--orange); }
+.news .go { transition: transform .18s; }
+@media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(3px); } }
 .hero h1 { font: 400 clamp(42px, 8vw, 72px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 22px; }
 .hero h1 em { font-style: italic; }
 .hero p { color: var(--mute); margin: 0; max-width: 54ch; }
@@ -603,6 +611,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .chip { padding: 0 10px; }
   .chip.act { width: 38px; }
   .hero { padding: 40px 0 28px; }
+  .news .w { display: none; }
   .start .btn { flex: 1 1 100%; }
   .start .cta a { order: 2; }
   .proof .more { margin-left: 0; }
@@ -686,6 +695,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   </header>
 
   <section class="hero" aria-labelledby="hero-h">
+    <a class="news" id="air-news" href="#airdrop" data-link="airdrop"><span class="dot" data-dot="tac"></span><b>TAC airdrop</b><span data-foot="tac">Is your wallet in it?</span><span class="go"><span class="w">Check yours </span>→</span></a>
     <h1 id="hero-h">Private DeFi on<br><em>Bitcoin</em> and Ethereum.</h1>
     <p>Tacit issues assets on Bitcoin and carries them into a confidential pool on Ethereum by zero-knowledge proof, and back. Amounts and owners stay hidden. Every balance recovers from one key.</p>
     <div class="start" id="start" hidden>
@@ -745,9 +755,9 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
         <span class="fig"><b class="num" id="ern-farm-v"><span class="sk" style="--w:4ch"></span></b><span id="ern-farm">TAC/ETH farm</span></span>
       </span>
       <span class="rows">
+        <a class="row" href="#airdrop" data-link="airdrop"><span class="dot" data-dot="tac"></span><b>Airdrop</b><span data-foot="tac">Claim your share</span><span class="go" aria-hidden="true">→</span></a>
         <a class="row" href="#points" data-link="points"><span class="dot" data-dot="pts"></span><b>Points</b><span data-foot="pts">100,000 TAC over 90 days</span><span class="go" aria-hidden="true">→</span></a>
         <a class="row" href="#farm" data-link="farm"><span class="dot live" data-dot="farm"></span><b>Farm</b><span data-foot="farm">Reading farms…</span><span class="go" aria-hidden="true">→</span></a>
-        <a class="row" href="#airdrop" data-link="airdrop"><span class="dot" data-dot="tac"></span><b>Airdrop</b><span data-foot="tac">Claim your share</span><span class="go" aria-hidden="true">→</span></a>
       </span>
     </article>
     </div>
@@ -2976,7 +2986,11 @@ for (const d of $$('dialog.sheet:not(.layer), #asset-card')) {
   b.onclick = () => copy(`${location.origin}${location.pathname}${linkNow()}`, 'Link copied');
   x.before(b);
 }
-const setFoot = (name, text, dot = '') => { $(`[data-foot="${name}"]`).textContent = text; $(`[data-dot="${name}"]`).className = 'dot' + (dot ? ' ' + dot : ''); dashSoon(); };
+const setFoot = (name, text, dot = '') => {
+  for (const e of $$(`[data-foot="${name}"]`)) e.textContent = text;
+  for (const e of $$(`[data-dot="${name}"]`)) e.className = 'dot' + (dot ? ' ' + dot : '');
+  dashSoon();
+};
 const gate = (text, label, id, alt = '') => html`<div class="gate"><p>${text}</p><button class="btn" type="button" id="${id}">${label}</button>${alt ? html`<p class="alt">${alt}</p>` : ''}</div>`;
 function wireConnect(id, after) {
   const b = document.getElementById(id);
@@ -5051,6 +5065,7 @@ async function checkBtcPayment(raw, status) {
 const air = makeTacAirdrop({ call: makeRpcCall({ rpcs: RPCS }), keccak256: keccak_256 });
 let AIR = null;
 const AIR_CLOSE = `Claims close ${dayFmt(air.config.deadline)}`;
+if (Number(air.config.deadline) * 1000 < Date.now()) $('#air-news').hidden = true;             // the line above the headline goes once claims close
 const AIRL = {};
 function loadAirdrop(force = false) {
   if (!S.wallet) { AIR = null; setFoot('tac', AIR_CLOSE); return Promise.resolve(); }

@@ -6,15 +6,16 @@
   var CLASSIC = '/classic.html';
   // The classic app's tabs, which it writes into the address bar as clean paths (/market?aid=…). Mirrors preboot.js.
   var TABS = ['wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim',
-    'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'airdrop', 'points', 'govern'];
+    'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'points', 'govern'];
   // Pages in their own directories, asked for without the trailing slash.
   var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth'];
   // The fragments and queries the classic app reads; this page's own are bare names (#eth, #farm) and #sp=/#st=.
   var CLASSIC_HASH = /^#(?:(?:tab|recv|claim|dclaim|gate|tacit-invoice|amm)=|amm-?ceremony$)/;
   var CLASSIC_QUERY = ['ceremony', 'coordinator', 'amm', 'ammceremony'];
   // Readable paths for this page's own views (/lock, /farm, /device/base/withdraw): each becomes its link, the part after
-  // the #, on this same page, with no reload. Names the classic app used for its tabs (/points, /airdrop) stay its own.
-  var VIEWS = ['lock', 'borrow', 'farm', 'leaderboard', 'bitcoin', 'private', 'device', 'buy', 'sell', 'swap', 'activity', 'asset'];
+  // the #, on this same page, with no reload. Names the classic app used for its tabs (/points) stay its own, except /airdrop,
+  // which opens this page's claim.
+  var VIEWS = ['lock', 'borrow', 'farm', 'leaderboard', 'bitcoin', 'private', 'device', 'buy', 'sell', 'swap', 'activity', 'asset', 'airdrop'];
   // Leaving for another page: the front page's own module sees the flag and stays idle until the browser moves on.
   var away = function (to) { window.__tacitAway = true; window.location.replace(to); };
   try {
