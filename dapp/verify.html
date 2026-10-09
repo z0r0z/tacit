@@ -13,7 +13,7 @@
      leave a stale pin behind. Fonts are same-origin static files, not a third-party
      CDN. connect-src is limited to public Bitcoin explorers + IPFS gateways.
      No third-party script, no analytics. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-NbpB6/aFRqnWoj+f3NCKcTrVo7uCjn7Gma50Y02hpzA='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-rCdQoXUlzHG4nu9veo2ftqB61dMCwz25s1+jJw6frDA='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link https://gateway.pinata.cloud https://trustless-gateway.link https://*.ipfs.inbrowser.link; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -370,10 +370,11 @@ async function run() {
     settle(r, !!etch);
     if (!etch) throw new Error('no CETCH envelope in tx witness');
 
-    r = row(`ticker is TAC, decimals = ${etch.decimals}`);
-    settle(r, etch.ticker === 'TAC');
+    // Another asset is checked on its own terms: its ticker and supply are reported, not held to TAC's.
+    r = row(IS_CANONICAL ? `ticker is TAC, decimals = ${etch.decimals}` : `ticker ${etch.ticker}, decimals = ${etch.decimals}`);
+    settle(r, !IS_CANONICAL || etch.ticker === 'TAC');
 
-    r = row('mint authority is zero — non-mintable, no new TAC can ever be valid');
+    r = row(IS_CANONICAL ? 'mint authority is zero — non-mintable, no new TAC can ever be valid' : 'mint authority is zero — non-mintable, no more can ever be valid');
     settle(r, etch.mintAuthority.every(b => b === 0), toHex(etch.mintAuthority));
 
     const cid = (etch.imageUri || '').replace(/^ipfs:\/\//, '');
@@ -386,14 +387,15 @@ async function run() {
     const supply = BigInt(att.supply), blinding = BigInt('0x' + att.blinding);
     settle(r, compress(pedersenCommit(H, supply, blinding)) === toHex(etch.commitment));
 
-    r = row('supply opens to exactly 21,000,000 TAC');
-    settle(r, supply === 2100000000000000n, `${(supply / (10n ** BigInt(etch.decimals))).toLocaleString('en-US')} at ${etch.decimals} decimals`);
+    const shown = `${(supply / (10n ** BigInt(etch.decimals))).toLocaleString('en-US')} at ${etch.decimals} decimals`;
+    r = row(IS_CANONICAL ? 'supply opens to exactly 21,000,000 TAC' : 'the supply the commitment opens to');
+    settle(r, !IS_CANONICAL || supply === 2100000000000000n, shown);
 
     if (anyFail) { verdictEl.className = 'verdict bad'; verdictEl.textContent = '✗ verification FAILED'; }
     else if (IS_CANONICAL) { verdictEl.className = 'verdict ok'; verdictEl.textContent = '✓ TAC supply is provably fixed at 21,000,000 — non-mintable, opening verified from Bitcoin + IPFS'; }
     // Name the asset in the verdict itself, not only in the banner: the verdict line is the part that gets
     // screenshotted and quoted.
-    else { verdictEl.className = 'verdict ok'; verdictEl.textContent = `✓ checks passed for CUSTOM asset ${TAC_ASSET_ID} — this is NOT TAC`; }
+    else { verdictEl.className = 'verdict ok'; verdictEl.textContent = `✓ ${etch.ticker} supply is fixed at ${shown}, non-mintable: CUSTOM asset ${TAC_ASSET_ID} — this is NOT TAC`; }
   } catch (e) {
     verdictEl.className = 'verdict bad'; verdictEl.textContent = '✗ could not complete: ' + e.message;
   }
