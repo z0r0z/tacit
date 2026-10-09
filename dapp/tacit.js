@@ -18871,11 +18871,12 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       changePoint = isSentinel ? null : bytesToPoint(dec.cChangeOrSentinel);
       bytesToPoint(dec.cReceiptSecp);
     } catch { validatedSet.set(key, false); return false; }
-    // Mirror the guest (fold_swap_var): the range proof is an m=1 BP+ over the change alone, and a whole-input
-    // swap (sentinel change) carries no range check. BP+ proofs never enter the standard-BP rpBatch.
+    // Mirror the guest (fold_swap_var): the range proof is an m=1 proof over the change alone, BP+ (as this app
+    // builds it) or the classic form the guest also takes, and a whole-input swap (sentinel change) carries no range
+    // check. These proofs never enter the standard-BP rpBatch.
     if (changePoint) {
-      let rangeOk = false;
-      try { rangeOk = bppRangeVerify([changePoint], dec.rangeProof); } catch { rangeOk = false; }
+      const verifies = (f) => { try { return f([changePoint], dec.rangeProof) === true; } catch { return false; } };
+      const rangeOk = verifies(bppRangeVerify) || verifies(bpRangeAggVerify);
       if (!rangeOk) { validatedSet.set(key, false); return false; }
     }
     let poolEntry = _scanPoolEntryByPoolId(bytesToHex(dec.poolId));
@@ -22575,10 +22576,10 @@ function _savePendingWithdraw(rec) {
 }
 // Signed reveals saved before their commit went out: one record per commit under PENDING_REVEAL_PREFIX (see
 // broadcastCommitReveal), plus the single 'tacit-pending-reveal:<net>' slot the mixer withdraw writes. A record is
-// re-sent while its commit output is unspent and kept through network errors. It is dropped once the commit
-// output is spent in a confirmed tx, when the commit has not appeared after 14 days, or after 30 days.
+// re-sent while its commit output is unspent and kept through network errors: while the commit is on chain the
+// record is the one way to its sats. It is dropped once the commit output is spent in a confirmed tx, or when the
+// commit has not appeared after 14 days.
 const PENDING_REVEAL_UNSEEN_MS = 14 * 24 * 3600_000;
-const PENDING_REVEAL_MAX_AGE_MS = 30 * 24 * 3600_000;
 async function _settlePendingReveal(key) {
   const drop = (why) => { try { localStorage.removeItem(key); } catch {} return why; };
   let rec = null;
@@ -22586,7 +22587,6 @@ async function _settlePendingReveal(key) {
   if (!rec) return 'none';
   if (typeof rec.revealHex !== 'string' || !rec.revealHex || !/^[0-9a-f]{64}$/i.test(String(rec.commitTxid || ''))) return drop('malformed');
   const age = Date.now() - (Number(rec.savedAt) || 0);
-  if (age > PENDING_REVEAL_MAX_AGE_MS) return drop('expired');
   try { await apiJson(`/tx/${rec.commitTxid}/status`, { cache: 'no-store' }); }
   catch (e) {
     if (/API 404/.test(String(e?.message || e)) && age > PENDING_REVEAL_UNSEEN_MS) return drop('commit-unseen');

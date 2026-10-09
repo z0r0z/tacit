@@ -132,6 +132,16 @@ console.log('\nSaved reveals:');
   ok('an unspent commit output re-sends the reveal', posted >= 1, `posted ${posted}`);
   ok('and keeps the record until the spend confirms', localStorage.getItem(key) !== null);
 
+  localStorage.setItem(key, JSON.stringify({ ...rec, savedAt: Date.now() - 60 * 24 * 3600_000 }));
+  await run(async (url, opts) => {
+    if (String(opts.method || 'GET').toUpperCase() === 'POST') return new Response('ab'.repeat(32), { status: 200 });
+    if (url.includes(`/tx/${COMMIT}/outspend/0`)) return json({ spent: false });
+    if (url.includes(`/tx/${COMMIT}/status`)) return json({ confirmed: true, block_height: 100 });
+    return new Response('not found', { status: 404 });
+  });
+  ok('a record of any age is kept while its commit is on chain and unspent', localStorage.getItem(key) !== null);
+  localStorage.setItem(key, JSON.stringify(rec));
+
   await run(async (url) => {
     if (url.includes(`/tx/${COMMIT}/outspend/0`)) return json({ spent: true, txid: rec.revealTxid, vin: 0, status: { confirmed: false } });
     if (url.includes(`/tx/${COMMIT}/status`)) return json({ confirmed: true, block_height: 100 });
