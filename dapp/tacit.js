@@ -1223,6 +1223,7 @@ const wallet = {
   set ext(v) { extWallet.state = v; },
 
   async load(boundExtAddr = null) {
+    const prevPub = _openPubHex();
     const key = walletStorageKey(boundExtAddr);
     const raw = localStorage.getItem(key);
     const shape = _storageShape(raw);
@@ -1288,6 +1289,7 @@ const wallet = {
       throw new Error(`unknown wallet storage format at ${key}`);
     }
     this.pub = secp.getPublicKey(this.priv, true);
+    _onIdentityChanged(prevPub);
   },
 
   async setPriv(hex, boundExtAddr = null) {
@@ -1313,9 +1315,11 @@ const wallet = {
     const blob = await encryptPrivkey(priv, passphrase);
     if (_slotHoldsOtherWallet(key)) throw new Error(_otherWalletInSlotMsg(key));
     localStorage.setItem(key, blob);
+    const prevPub = _openPubHex();
     _leaveDerivedWalletMode();
     this.priv = priv;
     this.pub = secp.getPublicKey(priv, true);
+    _onIdentityChanged(prevPub);
     setActiveWalletMode(boundExtAddr ? 'ext' : 'local');
   },
   address() { return p2wpkhAddress(this.pub); },
@@ -1469,9 +1473,11 @@ const prfWallet = {
     if (wallet.ext) extWallet.disconnect();
     if (wallet.mode === 'eth') ethWallet.disconnect();
     if (wallet.mode === 'btc') btcWallet.disconnect();
+    const prevPub = _openPubHex();
     wallet.priv = new Uint8Array(priv); // copy: caller zeroes `priv` below
     wallet.pub = pub;
     wallet.mode = 'passkey';
+    _onIdentityChanged(prevPub);
     const map = loadPrfMap();
     const entryLabel = label || `passkey-${pubHex.slice(0, 6)}`;
     // Don't store address — same passkey produces the same priv on every
@@ -1495,10 +1501,12 @@ const prfWallet = {
   // Lock: clear in-memory wallet state. The PRF map persists so next reload
   // auto-logs in via tryRestore — the passkey itself is the source of truth.
   lock() {
+    const prevPub = _openPubHex();
     this.state = null;
     wallet.mode = null;
     wallet.pub = null;
     wallet.priv = null;
+    _onIdentityChanged(prevPub);
   },
 
   tryRestore() {
@@ -1711,16 +1719,20 @@ const ethWallet = {
     const priorPub = this.state?.pubkey;
     if (priorPub && priorPub !== pubHex) {
       if (!this.state.netUnverified) {
+        const prevPub = _openPubHex();
         wallet.priv = null; wallet.pub = null; wallet.mode = null;
+        _onIdentityChanged(prevPub);
         throw new Error(
           'ETH signature changed — refusing to derive a different identity. ' +
           'Reconnect the original wallet/account to recover.');
       }
       _parkUnverifiedIdentity(ETH_WALLET_KEY, this.state);
     }
+    const prevPub = _openPubHex();
     wallet.priv = priv;
     wallet.pub = pub;
     wallet.mode = 'eth';
+    _onIdentityChanged(prevPub);
     this.state = { address: addr, pubkey: pubHex };
     this._cache(this.state);
     setActiveWalletMode('eth');
@@ -1774,9 +1786,11 @@ const ethWallet = {
   },
 
   lock() {
+    const prevPub = _openPubHex();
     wallet.priv = null;
     wallet.mode = null;
     wallet.pub = null;
+    _onIdentityChanged(prevPub);
   },
 };
 
@@ -1874,9 +1888,11 @@ const btcWallet = {
     const pub = secp.getPublicKey(priv, true);
     sigA.fill(0); sigB.fill(0);
 
+    const prevPub = _openPubHex();
     wallet.priv = priv;
     wallet.pub = pub;
     wallet.mode = 'btc';
+    _onIdentityChanged(prevPub);
     this.state = {
       address: ext.address,
       provider: ext.provider,
@@ -1927,16 +1943,20 @@ const btcWallet = {
     const pubHex = bytesToHex(pub);
     if (!carried && pubHex !== cached.tacitPubkey) {
       if (!cached.netUnverified) {
+        const prevPub = _openPubHex();
         wallet.priv = null; wallet.pub = null; wallet.mode = null;
+        _onIdentityChanged(prevPub);
         throw new Error(
           'BTC signature changed — refusing to derive a different identity. Your ' +
           'assets are safe on-chain; reconnect the original wallet/version to recover.');
       }
       _parkUnverifiedIdentity(BTC_WALLET_KEY, cached);
     }
+    const prevPub = _openPubHex();
     wallet.priv = priv;
     wallet.pub = pub;
     wallet.mode = 'btc';
+    _onIdentityChanged(prevPub);
     if (carried || cached.netUnverified) {
       this.state = { address: ext.address, provider: ext.provider, btcPubkey: ext.pubkey, tacitPubkey: pubHex, kind };
       this._cache(this.state);
@@ -1970,7 +1990,11 @@ const btcWallet = {
     this.state = null;
     try { localStorage.removeItem(_identityKey(BTC_WALLET_KEY)); } catch {}
   },
-  lock() { wallet.priv = null; wallet.pub = null; wallet.mode = null; },
+  lock() {
+    const prevPub = _openPubHex();
+    wallet.priv = null; wallet.pub = null; wallet.mode = null;
+    _onIdentityChanged(prevPub);
+  },
 };
 
 // One-time move of the unscoped linked-wallet records to the network each was
@@ -19502,8 +19526,17 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // re-renders, and other balance peeks within the window don't re-pay it.
 // Broadcast handlers explicitly invalidate so the next scan picks up the
 // new state immediately. force=true bypasses the cache (Refresh button).
+// The cache (and _lastFullScan) carry the pubkey and network they were read
+// for, and are served only while both still match the open wallet.
 let _holdingsCache = null;
 let _holdingsTruncatedScan = false;
+function _openPubHex() {
+  try { return wallet.pub ? bytesToHex(wallet.pub) : null; } catch { return null; }
+}
+function _holdingsOwner() { return { pubHex: _openPubHex(), net: NET.name }; }
+function _holdingsOwnedNow(c) {
+  return !!c && c.pubHex === _openPubHex() && c.net === NET.name;
+}
 // Sticky "this wallet has ever had assets" flag — persisted to localStorage
 // keyed by (network, owner_pubkey) so it survives page reload. Without
 // persistence, a heavy treasury wallet on first page load (whose first scan
@@ -19858,10 +19891,16 @@ const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
 // or the main per-UTXO loop. Heavy wallets save the ~1-2s per-UTXO work on
 // every Refresh that wouldn't have produced a different answer. Cleared by
 // invalidateHoldingsCache (broadcast handlers, network switch, etc.).
-let _lastFullScan = null; // { utxoSig, hasUnresolved, holdings }
+let _lastFullScan = null; // { pubHex, net, utxoSig, hasUnresolved, holdings }
 function invalidateHoldingsCache(opts) {
   _holdingsCache = null;
   _lastFullScan = null;
+  // A scan already running is not handed to the next caller, and its result is
+  // not cached. The routine 30s poll keeps sharing it, so scans don't stack.
+  if (!opts || !opts.fromPoll) {
+    _holdingsLatestGen++;
+    _holdingsInFlight = null;
+  }
   invalidateUtxoCache();
   // Only nudge the claim poller back to fast cadence on *mutation*-driven
   // invalidations (publish/cancel/take). Routine refresh ticks pass
@@ -19870,6 +19909,18 @@ function invalidateHoldingsCache(opts) {
   if (!opts || !opts.fromPoll) {
     try { _kickClaimPollerFast(); } catch {}
   }
+}
+
+// Every path that opens a different key, or leaves one, calls this so nothing
+// read for one key is shown, cached or spent as another's. With
+// `prevPubHex`, it acts only when the open pubkey differs from it.
+function _onIdentityChanged(prevPubHex) {
+  if (prevPubHex !== undefined && prevPubHex === _openPubHex()) return;
+  try { invalidateHoldingsCache(); } catch {}
+  try { _satsSendCache = null; } catch {}
+  try { _holdingsEverSeenAssets = false; } catch {}
+  try { _holdingsLastRenderOk = false; } catch {}
+  try { _cancelHoldingsRetry(); } catch {}
 }
 
 // Test-only seam: short-circuit scanHoldings by writing a synthetic
@@ -19883,7 +19934,7 @@ function invalidateHoldingsCache(opts) {
 // scanHoldings emits: { fetchedAt, holdings: Map<aid, {decimals,
 // ticker, balance: BigInt, utxos: [{utxo:{txid,vout,value}, amount:
 // BigInt, blinding: BigInt-or-hex}]}> }.
-function _testInjectHoldingsCache(c) { _holdingsCache = c; }
+function _testInjectHoldingsCache(c) { _holdingsCache = c && c.pubHex === undefined ? { ..._holdingsOwner(), ...c } : c; }
 
 // Test-only seam: replace scanHoldings's body with a caller-provided
 // function. Unlike _testInjectHoldingsCache (which writes a static
@@ -20348,7 +20399,7 @@ async function scanHoldings(force = false) {
     const r = _scanHoldingsOverride();
     return r instanceof Promise ? await r : r;
   }
-  if (!force && _holdingsCache && (Date.now() - _holdingsCache.fetchedAt) < HOLDINGS_CACHE_TTL_MS) {
+  if (!force && _holdingsOwnedNow(_holdingsCache) && (Date.now() - _holdingsCache.fetchedAt) < HOLDINGS_CACHE_TTL_MS) {
     return _holdingsCache.holdings;
   }
   if (_holdingsInFlight) return _holdingsInFlight;
@@ -20361,9 +20412,13 @@ async function scanHoldings(force = false) {
   // click, Transfer preview, Drops, and every other balance-aware path
   // routes through here, so one gate covers them all.
   const myGen = ++_holdingsLatestGen;
-  _holdingsInFlight = (async () => {
+  let myScan = null;
+  myScan = _holdingsInFlight = (async () => {
     try {
       await ensurePrivkey();
+      // The key this scan reads for. A result read while another key was
+      // opened is neither cached nor returned.
+      const owner = _holdingsOwner();
       // Wallclock budget. Without this, a slow / flaky mempool.space leaves
       // the Holdings tab spinning indefinitely with no feedback; the user
       // can't tell "scan in progress" from "scan dead." 90s is generous
@@ -20387,13 +20442,16 @@ async function scanHoldings(force = false) {
       const implP = (async () => {
         try {
           const h = await _scanHoldingsImpl();
+          if (!_holdingsOwnedNow(owner)) {
+            throw new Error('The open wallet changed while its holdings were being read. Nothing was sent; try again.');
+          }
           // Stale-write guard: only commit to the cache if this is still the
           // newest scan. After a user-triggered retry (invalidateHoldingsCache
           // + new scanHoldings call), _holdingsLatestGen has incremented and
           // this orphan run's myGen no longer matches — drop the result so
           // the retry's value is what the user sees.
           if (myGen === _holdingsLatestGen) {
-            _holdingsCache = { fetchedAt: Date.now(), holdings: h };
+            _holdingsCache = { ...owner, fetchedAt: Date.now(), holdings: h };
             // Holdings cache just warmed — kick a market re-render so the
             // swap-tile cold-load placeholder (see applyMarketFilters'
             // _holdingsKnown branch) swaps to the real tile in sell mode
@@ -20416,10 +20474,10 @@ async function scanHoldings(force = false) {
       })();
       return await Promise.race([implP, timeoutP]);
     } finally {
-      _holdingsInFlight = null;
+      if (_holdingsInFlight === myScan) _holdingsInFlight = null;
     }
   })();
-  return _holdingsInFlight;
+  return myScan;
 }
 
 // scanHoldings wrapper with a rate-limit-ONLY stale-cache fallback. Used by
@@ -20449,7 +20507,7 @@ async function scanHoldingsOrStale(maxAgeMs = Infinity) {
     const msg = String(e && e.message || '');
     const isRateLimited = /rate limited|429/i.test(msg);
     if (!isRateLimited) throw e;
-    if (!_holdingsCache || !(_holdingsCache.holdings instanceof Map)) throw e;
+    if (!_holdingsOwnedNow(_holdingsCache) || !(_holdingsCache.holdings instanceof Map)) throw e;
     const ageMs = Date.now() - (_holdingsCache.fetchedAt || 0);
     if (ageMs > maxAgeMs) throw e;
     const ageSec = Math.max(0, Math.floor(ageMs / 1000));
@@ -20459,6 +20517,7 @@ async function scanHoldingsOrStale(maxAgeMs = Infinity) {
 }
 
 async function _scanHoldingsImpl() {
+  const owner = _holdingsOwner(), gen0 = _holdingsLatestGen;
   // Refresh the pool registry before walking UTXOs. Without this, a user who
   // receives a pay-to-other T_WITHDRAW and hasn't visited the Mixer tab sees
   // the validator's mixerIsPoolRegistered check fail (poolRegistry is empty)
@@ -20486,7 +20545,7 @@ async function _scanHoldingsImpl() {
   // Stable ghosts are fine to keep cached — they only transition via an
   // explicit Import share-link, which clears the cache via invalidate.
   const utxoSig = utxos.map(u => `${u.txid}:${u.vout}`).sort().join(',');
-  if (_lastFullScan && _lastFullScan.utxoSig === utxoSig && !_lastFullScan.hasUnresolved) {
+  if (_holdingsOwnedNow(_lastFullScan) && _lastFullScan.utxoSig === utxoSig && !_lastFullScan.hasUnresolved) {
     return _lastFullScan.holdings;
   }
   const holdings = new Map();
@@ -21894,7 +21953,11 @@ async function _scanHoldingsImpl() {
     // the next signature check rather than serving the cache.
     (h.unverified && h.unverified.length > 0)
   );
-  _lastFullScan = { utxoSig, hasUnresolved, holdings };
+  // Kept only when no other key was opened (and no newer scan started) while
+  // this one ran.
+  if (gen0 === _holdingsLatestGen && _holdingsOwnedNow(owner)) {
+    _lastFullScan = { ...owner, utxoSig, hasUnresolved, holdings };
+  }
   // OTC settlement reconciler. Walks open `otc-reserved` activity entries
   // and marks any whose expected delivery has arrived. Match heuristic:
   // same asset_id + amount ≥ reserved + sender_pubkey == maker_pubkey from
@@ -29539,6 +29602,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 
 async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   await ensurePrivkey();
+  const owner = _holdingsOwner();
   const tx = await getTx(txidHex);
   if (!tx || !tx.vin || tx.vin.length < 2) throw new Error(`tx ${txidHex.slice(0,16)}… missing or malformed`);
   const wit0 = tx.vin[0]?.witness;
@@ -29701,8 +29765,8 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   }
   // Merge into the live cache if present. scanHoldings rebuilds via
   // _holdingsCache = { fetchedAt, holdings: Map }, so we patch holdings
-  // directly.
-  if (_holdingsCache?.holdings instanceof Map) {
+  // directly — only while the cache and this discovery are for the open key.
+  if (_holdingsOwnedNow(owner) && _holdingsOwnedNow(_holdingsCache) && _holdingsCache.holdings instanceof Map) {
     for (const d of counted) {
       const meta = getAssetMeta(d.assetIdHex);
       const h = _holdingsCache.holdings.get(d.assetIdHex) || {
@@ -53327,7 +53391,10 @@ async function refreshSatsSendBalance() {
   // need no asset classifier. The actual Confirm-and-send re-runs
   // scanHoldingsOrStale strictly and refuses if it can't classify, so a
   // cached/partial DISPLAY can never spend (and burn) a 546-sat asset UTXO.
+  // A readout read for one key is never painted or kept once another is open.
+  const owner = _holdingsOwner();
   const _paint = (holdings, allUtxos, spUtxos, note) => {
+    if (!_holdingsOwnedNow(owner)) return;
     const classified = !!(allUtxos && holdings instanceof Map);
     const sats = (classified ? selectSatsUtxosSafe(allUtxos, holdings) : []).concat(spUtxos || []);
     const total = sats.reduce((acc, u) => acc + (u.value || 0), 0);
@@ -53358,7 +53425,7 @@ async function refreshSatsSendBalance() {
   // page) is already cached — paint instantly, then refresh in the background
   // if it's past its TTL. No blocking on a fresh scan when we already have a
   // safe answer to show.
-  const cached = (_holdingsCache && _holdingsCache.holdings instanceof Map) ? _holdingsCache : null;
+  const cached = (_holdingsOwnedNow(_holdingsCache) && _holdingsCache.holdings instanceof Map) ? _holdingsCache : null;
   if (cached) {
     const ageMs = Date.now() - (cached.fetchedAt || 0);
     const stale = ageMs >= HOLDINGS_CACHE_TTL_MS;
@@ -61260,10 +61327,17 @@ async function renderHoldings() {
     // can render with depth info on the first paint, without doubling the
     // latency budget. Failure tolerated — banner falls back to depth-less
     // copy when tip is null.
+    const renderOwner = _holdingsOwner();
     const [holdings, tipHeight] = await Promise.all([
       scanHoldings(),
       getTip().catch(() => null),
     ]);
+    // Another key was opened while this read: these holdings are not shown or
+    // saved as its snapshot; the list is read again for the key open now.
+    if (renderOwner.pubHex !== null && !_holdingsOwnedNow(renderOwner)) {
+      renderHoldings().catch(() => {});
+      return;
+    }
     const arr = [...holdings.values()].sort((a, b) => a.balance < b.balance ? 1 : a.balance > b.balance ? -1 : 0);
     if (!arr.length) {
       // Distinguish "wallet is actually empty" from "previous scan had
@@ -78153,8 +78227,10 @@ async function _importCrossNetworkWallet({ otherNet, raw }) {
   // (one passphrase to remember, one to type per session). User can
   // re-encrypt later from the Wallet tab if they want different passphrases
   // per network. Same priv stored under the new network's key.
+  const prevPub = _openPubHex();
   wallet.priv = priv;
   wallet.pub = secp.getPublicKey(priv, true);
+  _onIdentityChanged(prevPub);
   const newKey = walletStorageKey();
   localStorage.setItem(newKey, await encryptPrivkey(priv, srcPassphrase));
   setActiveWalletMode('local');
