@@ -3387,7 +3387,7 @@ await step('swap', async () => {
     // A note that is exactly the amount: one route over the whole note.
     await typed('0.05');
     const quote = (await text(p, '#sw-rcpt')).replace(/\s+/g, ' ');
-    ok(/You get about\s*[\d,.]+ TAC/.test(quote) && /At least\s*[\d,.]+ TAC/.test(quote) && /Relay fee\s*[\d.]+ tETH/.test(quote) && !/split a note|Through tETH/.test(quote), `swap: tETH for TAC states what it returns, the least, and the relay fee (${quote.slice(0, 150)})`);
+    ok(/[1-9]/.test(await text(p, '#sw-outv')) && /TAC/.test(await text(p, '#sw-out')) && /Price\s*1 tETH ≈ [\d,.]+ TAC/.test(quote) && /At least\s*[\d,.]+ TAC/.test(quote) && /Relay fee\s*[\d.]+ tETH/.test(quote) && !/split a note|Through tETH/.test(quote), `swap: tETH for TAC states what it returns, the least, and the relay fee (${quote.slice(0, 150)})`);
     await shot(p, 'swap-quote');
     await p.click('#sw-go');
     await until(p, () => window.__swapCalls.length >= 1, null, 300000);
@@ -3415,7 +3415,7 @@ await step('swap', async () => {
     await choose('swt', 'tac');
     await settled(/Private 100 cUSD/);
     await typed('100');
-    ok(/Through\s*tETH, two pools in one settle/.test((await text(p, '#sw-rcpt')).replace(/\s+/g, ' ')) && /You get about/.test(await text(p, '#sw-rcpt')), 'swap: cUSD for TAC says it goes through tETH');
+    ok(/Through\s*tETH, two pools in one settle/.test((await text(p, '#sw-rcpt')).replace(/\s+/g, ' ')) && /[1-9]/.test(await text(p, '#sw-outv')), 'swap: cUSD for TAC says it goes through tETH');
     await p.click('#sw-go');
     await until(p, () => window.__swapCalls.length >= 4, null, 300000);
     c = (await calls())[3];
