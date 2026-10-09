@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AlOdYvbGZ15VywZWFq7vrYNz2nZKEYqKtOQ0G+RNvhM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cqF0MaV1NwQg1CehLCTyY24t+51VXd1FCNR/nt4AHCc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://tacit-pin.rosscampbell9.workers.dev; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base and Robinhood Chain. One key and one tacit1 address, every payment made on your device, and your balances rebuild from that key.">
@@ -243,6 +243,8 @@ details.fold > summary small { margin-left: auto; font-size: 12px; color: var(--
   font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
 .callout > span { min-width: 0; overflow-wrap: anywhere; }
 .callout b { font-weight: 500; }
+.callout.ask { flex-direction: column; align-items: stretch; }
+.callout.ask .acts { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .opts { display: grid; gap: 8px; margin-top: 4px; }
 .opt { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
@@ -453,7 +455,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <section class="card" id="how" aria-labelledby="how-h">
       <div class="card-h"><h2 id="how-h">How each one stays private</h2></div>
       <div class="how">
-        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</b><p>Sent as a silent payment (BIP‑352): each payment lands at a fresh address that only the recipient’s key can find, so nothing on chain ties it to their published address. The amount and your own Bitcoin address show.</p></div>
+        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</b><p>Sent as a silent payment (BIP‑352): each payment lands at a fresh address only the recipient’s key can find, and nothing on chain ties it to their published address. The amount and your own Bitcoin address show. Spending it from here combines it with your Bitcoin address’s coins.</p></div>
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</b><p>Paid inside the shielded pool on Bitcoin, with a zero-knowledge proof made on this device. Posted by the relay for a fee in TAC, it hides who paid, who was paid and how much; posted from your own Bitcoin address, that address shows as the sender.</p></div>
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</b><p>Paid inside the private pool on Ethereum, Base or Robinhood Chain, proved on this device and sent by a relay: no gas, and nothing on chain links payer and payee. Deposits and withdrawals show.</p></div>
       </div>
@@ -1228,7 +1230,7 @@ const shareView = (s) => html`<div class="callout"><span>${s.what}</span><button
 const wireShare = (f) => $$('[data-copy]', f).forEach((x) => x.onclick = () => copy(x.dataset.copy, x.dataset.done || 'Copied'));
 const paidView = (list) => (list.length ? html`<div class="blk"><div class="lbl"><span>Paid to you by silent payment</span><span>${list.length} unspent</span></div>
     ${list.slice(0, 8).map((x) => html`<div class="kv"><span>${x.at ? ago(x.at) : 'waiting for a block'}${ANN.fresh.has(x.k) ? html` · <b class="ok">new</b>` : ''}</span><b class="num">${fmt(x.sats, 8, 8)} BTC · ${btcTx(x.txid)}</b></div>`)}
-    <p class="note">Each landed at a fresh address only your key can find. They count in your balance and pay for your sends.</p></div>` : '');
+    <p class="note">Each landed at a fresh address only your key can find. They count in your balance and pay for your sends. Spending them from here combines them with your Bitcoin address’s coins.</p></div>` : '');
 // The address to share: three lines of it, a button to copy all of it, and the rest one press away.
 const ADDR = { open: false };
 const mainAddr = (label, sub, v, note) => html`<div class="blk"><div class="lbl"><span>${label}</span><span>${sub}</span></div>
@@ -1252,7 +1254,7 @@ function btcReceive(f) {
     <p class="note">On a new device, silent payments from Tacit apps in the last 45 days show on their own. For older ones, open their payment link.</p>
     ${fold('d-ask', 'Ask for an amount', 'a link to share', askView('btc'))}
     ${fold('d-more', 'Other ways to receive BTC', 'silent payment, Bitcoin address', html`
-      ${row('Silent payments', 'BIP‑352', BTC.sp, 'From any wallet that sends silent payments. Payments from Tacit apps show here on their own; from another wallet, open the link its sender shares or paste its transaction id below.')}
+      ${row('Silent payments', 'BIP‑352', BTC.sp, 'From any wallet that sends silent payments. Payments from Tacit apps show here on their own; from another wallet, open the link its sender shares or paste its transaction id below. Spending them from here combines them with your Bitcoin address’s coins.')}
       ${row('Bitcoin address', 'public', b?.addr, 'From an exchange or any wallet. What arrives here is public; it funds your sends.')}
       <div class="blk"><div class="lbl"><span>Add BTC from your Bitcoin wallet</span><span>Xverse, Leather or UniSat</span></div>
         <div class="amt"><input id="f-famt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
@@ -1490,6 +1492,35 @@ function waitView(w, id, X) {
     ANCHOR.tip = w.tip; b.click(); ANCHOR.tip = null;
   };
 }
+// A carrier posted from the Bitcoin address: two transactions, about the size of the relay's own carrier, at the fee rate
+// tacit.js pays for them. → sats, or null while that size is not known.
+async function carrierSats() {
+  const vb = TAC.carrierVb;
+  if (!vb) return null;
+  const t = await loadTacit(), rate = (await t.getFeeRate()) * 1.2, commit = t.estCommitVb(1);
+  return vb > commit ? t.feeFor(commit, rate) + t.feeFor(vb - commit, rate) : null;
+}
+// Asks on the status line before a payment the relay did not take is posted from this key's Bitcoin address. It stays
+// there until answered, whatever else writes to that line. "Not now", another key opened, or ten minutes with no answer
+// is a no; the relay posting the payment meanwhile ends the question.
+const askSelfPost = (pub) => async (why, { timedOut = false, signal } = {}) => {
+  const sats = await Promise.race([carrierSats().catch(() => null), new Promise((r) => setTimeout(() => r(null), 4e3))]);
+  const lead = why === 'relay-slow' ? (timedOut ? 'The relay hasn’t posted it in five minutes.' : 'The relay hasn’t posted it.') : 'The relay didn’t take this payment.';
+  const status = $('#status'), box = document.createElement('div');
+  box.className = 'callout ask';
+  mount(box, html`<span>${lead} Post it from your Bitcoin address instead? Your Bitcoin address shows as the sender${sats ? ` and pays ≈ ${sats.toLocaleString('en-US')} sats` : ''}.</span>
+    <span class="acts"><button class="btn sm" type="button" data-ask="yes">Post it from my Bitcoin address</button><button class="btn ghost sm" type="button" data-ask="no">Not now</button></span>`);
+  return new Promise((resolve) => {
+    const keep = new MutationObserver(() => { if (!box.isConnected) status.append(box); });
+    const end = (yes) => { clearTimeout(timer); keep.disconnect(); signal?.removeEventListener('abort', no); box.remove(); resolve(yes && S.key?.pubHex === pub); };
+    const no = () => end(false), timer = setTimeout(no, 10 * 60e3);
+    if (signal?.aborted) return no();
+    signal?.addEventListener('abort', no);
+    box.querySelectorAll('[data-ask]').forEach((b) => { b.onclick = () => end(b.dataset.ask === 'yes'); });
+    status.replaceChildren(box);
+    keep.observe(status, { childList: true });
+  });
+};
 function tacSend(f) {
   const ok = TAC.pub === S.key.pubHex, relayOk = TAC.relay && TAC.fee != null, viaRelay = relayOk && TAC.route !== 'self', fee = viaRelay ? TAC.fee : null;
   const most = TAC.top2 > (fee || 0n) ? TAC.top2 - (fee || 0n) : 0n;
@@ -1504,7 +1535,7 @@ function tacSend(f) {
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>Send TAC privately</button>
     ${TAC.share ? shareView(TAC.share) : ''}
     <p class="note">${viaRelay
-      ? html`Proved on this device, then posted by the relay for at most ${fmt(fee, 8, 8)} TAC, so you need no BTC for it. Who paid, who was paid and how much stay hidden. If the relay can’t post it, your Bitcoin address does, and shows as the sender. <button class="link" type="button" data-troute="self">Post it from my Bitcoin address</button>`
+      ? html`Proved on this device, then posted by the relay for at most ${fmt(fee, 8, 8)} TAC, so you need no BTC for it. Who paid, who was paid and how much stay hidden. <button class="link" type="button" data-troute="self">Post it from my Bitcoin address</button>`
       : html`Proved on this device, then posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender. Who was paid and how much stay hidden.${relayOk ? html` <button class="link" type="button" data-troute="relay">Use the relay</button>` : ''}`}</p>`);
   const wireRoute = (el) => $$('[data-troute]', el).forEach((b) => b.onclick = () => { TAC.route = b.dataset.troute; writeJson(TAC_ROUTE, TAC.route); render(); });
   wireRoute(f);
@@ -1562,7 +1593,7 @@ function tacSend(f) {
       if (r.kind === 'pool') {
         const X = await getSecret();
         sayTurn(status, 'Getting ready…');
-        const res = await withKey((t) => { going(status, 'Getting ready…'); return X.payPrivately(t, { poolWallet: pw, to: r.to, amount: v, asset: X.TAC_ASSET_MAINNET, anchor, noRelay: !viaRelay, maxFee: viaRelay ? fee : null, say: (m) => going(status, m) }); }, pub);
+        const res = await withKey((t) => { going(status, 'Getting ready…'); return X.payPrivately(t, { poolWallet: pw, to: r.to, amount: v, asset: X.TAC_ASSET_MAINNET, anchor, noRelay: !viaRelay, maxFee: viaRelay ? fee : null, say: (m) => going(status, m), askSelf: askSelfPost(pub) }); }, pub);
         if (res.wait) return waitView(res, 'f-go', X);
         markPaid('tac', raw, v, res.revealTxid);
         TAC.share = null;
@@ -1589,6 +1620,7 @@ function tacSend(f) {
       await loadTac(true).catch(() => {});
       say($('#status'), html`<span class="ok">Sent ${fmt(v, 8, 8)} TAC, shielded.</span> ${btcTx(id)}`);
     } catch (e) {
+      if (e?.relayDeclined) return say(status, e.message);
       if (e?.feeMoved == null) return sayErr(status, e);
       TAC.fee = e.feeMoved; render();
       say($('#status'), html`<span class="err">The relay’s fee changed to ${fmt(e.feeMoved, 8, 8)} TAC. Check it and press again.</span>`);
@@ -1628,16 +1660,14 @@ function tacMove(f) {
       <div class="amt"><input id="f-xamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="kv" id="f-xfee" hidden><span>Bitcoin fee</span><b class="num"></b></div>
       <button class="btn ghost" type="button" id="f-exit" ${ok && TAC.pw && TAC.pool > 0n ? '' : 'disabled'}>Withdraw</button>
-      <p class="note">The amount shows on chain as it leaves the pool; which notes paid it doesn’t. The rest stays shielded.</p></div>`);
+      <p class="note">Your Bitcoin address shows as where it goes; the amount and which notes paid it don’t. The rest stays shielded.</p></div>`);
   // The most one withdrawal can take is its two largest notes.
   $('#f-xmax')?.addEventListener('click', () => { const x = $('#f-xamt', f); if (x) { x.value = plain(TAC.top2); x.dispatchEvent(new Event('input')); } });
-  // A withdrawal is posted from the Bitcoin address in two transactions, about the size of the relay's own carrier, at the
-  // fee rate tacit.js pays for them.
-  if (TAC.carrierVb) loadTacit().then(async (t) => {
-    const rate = (await t.getFeeRate()) * 1.2, vb = TAC.carrierVb, commit = t.estCommitVb(1);
+  // A withdrawal is posted from the Bitcoin address.
+  carrierSats().then((n) => {
     const el = $('#f-xfee', f);
-    if (!el || vb <= commit) return;
-    $('b', el).textContent = `≈ ${(t.feeFor(commit, rate) + t.feeFor(vb - commit, rate)).toLocaleString('en-US')} sats, paid from your Bitcoin address`;
+    if (!el || n == null) return;
+    $('b', el).textContent = `≈ ${n.toLocaleString('en-US')} sats, paid from your Bitcoin address`;
     el.hidden = false;
   }).catch(() => {});
   $('#f-shield')?.addEventListener('click', (e) => busyBtn(e.currentTarget, async () => {
