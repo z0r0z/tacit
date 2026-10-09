@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-7IMjkIenUMz0Nzm63ZMlOHs6QqtrsYchUTMW7R9z/Xw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AGuV6MTkScnuRbokZk+58e4EzV9eZ5tdhKm3pNHNZB8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base, Robinhood Chain and MegaETH. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
@@ -522,7 +522,7 @@ import { qrSvg as qrMarkup } from '/qr.js?cb=926d16be';
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // The rest of the page's modules, asked for now that the ones it waited on are here.
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=e689bce4","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=e245ecff","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 // ── config ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -761,7 +761,7 @@ function sayLive(el, view) {
 // ── pool modules, loaded once, right after the page ──────────────────────────────────────────────────────
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=e689bce4'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=e245ecff'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -944,8 +944,9 @@ function forget() {
   // The receive boxes' and links' keys derive from this key, so they go with it.
   S.key = null; S.keys = null; Object.assign(BOXQ, { for: null, map: null, at: [] }); BOXST.for = null; Object.assign(SHOWN, { pub: null, k: null, seen: null, told: null }); Object.assign(GIFTQ, { for: null, by: {} }); LINKSHOW.v = null; PLANS.clear();
   for (const c of CHAINS) JUST[c.chainId].length = 0;
+  const typed = DRAFT['f-amt'];
   for (const k of Object.keys(DRAFT)) delete DRAFT[k];
-  if (REQ.v && !REQ.v.paid) { DRAFT['f-to'] = REQ.v.bp; if (REQ.v.amount) DRAFT['f-amt'] = plain(REQ.v.amount); }
+  if (REQ.v && !REQ.v.paid) { DRAFT['f-to'] = REQ.v.bp; if (REQ.v.amount) DRAFT['f-amt'] = plain(REQ.v.amount); else if (typed) DRAFT['f-amt'] = typed; }
   GIFTSEEN.clear();
   for (const st of Object.values(CH)) { clearTimeout(st.histTimer); Object.assign(st, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null, waitBoxes: [], quoteErr: null, deferred: false }); }
 }
@@ -1145,6 +1146,8 @@ async function watchLinkBoxes() {
   for (const c of CHAINS) {
     const st = CH[c.chainId];
     if (!st.W || S.busyChain === c.chainId || !st.W.watchThrough(k)) continue;
+    await (st.syncing || Promise.resolve()).catch(() => {});               // a read on the old wallet writes its state last
+    if (S.busyChain === c.chainId || !S.key) continue;
     try { localStorage.removeItem(stateKey(c)); } catch {}
     Object.assign(st, { W: null, for: null });
     await walletOn(c);
@@ -2009,9 +2012,9 @@ let MAXED = null;
 const markMax = (amt) => { MAXED = { id: amt.id, v: amt.value }; };
 const reMax = () => { const i = MAXED && $('#' + MAXED.id); if (i?.value && i.value === MAXED.v) $('#f-max')?.click(); };
 // The relay's fee moved past the preview's: its fresh quote replaces the one the preview used, and the form is redrawn with it.
-async function feeChanged(c, fee) {
+async function feeChanged(c, fee, bridge = null) {
   const st = CH[c.chainId];
-  if (S.tab === 'withdraw' && S.dest !== 'addr') BRIDGE_Q.fee[S.dest] = fee;
+  if (bridge) BRIDGE_Q.fee[bridge] = fee;
   else st.quote = (await st.W?.quote().catch(() => null)) || (st.quote && { ...st.quote, fee: fee.toString() });
 }
 
@@ -2025,7 +2028,8 @@ const stepWords = (m) => STEP_WORDS[m] || m[0].toUpperCase() + m.slice(1);
 const KEEP_OPEN = 'Keep this page open until it finishes.';
 window.addEventListener('beforeunload', (e) => { if (S.busy > 0 || GIFT.busy || REQ.v?.paying) { e.preventDefault(); e.returnValue = ''; } });
 // Runs an action with the app card held: chain, tab and route stay put, and the poll leaves this chain alone.
-async function act(btn, fn) {
+// `bridge`: the L2 a move's quote was for, so a moved fee lands on that quote.
+async function act(btn, fn, { bridge = null } = {}) {
   if (S.busy) return;
   const status = $('#status'), c = S.chain;
   S.busy++; S.busyChain = c.chainId; paintChains(); renderTabs(); paintBal(); paintReq();
@@ -2048,7 +2052,7 @@ async function act(btn, fn) {
   try { await CH[c.chainId].syncing?.catch(() => {}); await fn(step, c); ok = true; tDone = Date.now(); }
   catch (e) {
     err = e; tDone = Date.now();
-    if (e?.feeMoved != null) await feeChanged(c, e.feeMoved);
+    if (e?.feeMoved != null) await feeChanged(c, e.feeMoved, bridge);
     say(status, html`<span class="err">${e?.feeMoved != null ? `The relay fee changed to ${fmt(e.feeMoved, 18, 6)} ETH. Check it and press again.` : errText(e)}</span>${relayTrouble(e) && routeOf(S.tab) === 'relay' && (S.tab === 'send' || (S.tab === 'withdraw' && S.dest === 'addr'))
       ? html` <button class="link" type="button" id="use-wallet">Send it from your wallet instead</button>` : ''}`);
   } finally {
@@ -2061,6 +2065,8 @@ async function act(btn, fn) {
     renderApp();
     if (err?.feeMoved != null) reMax();
     status.innerHTML = keepStatus;
+    // The button pressed takes the focus back, so a keyboard is not sent to the top of the page.
+    if (btn.id && (!document.activeElement || document.activeElement === document.body)) document.getElementById(btn.id)?.focus({ preventScroll: true });
     $('#use-wallet')?.addEventListener('click', () => { ROUTES[S.tab] = 'wallet'; writeJson(ROUTE_PREF, ROUTES); renderForm(); reMax(); say(status, html`<span class="mute">Your wallet will send it. Press the button again.</span>`); });
   }
   const st = CH[c.chainId], again = st.deferred;
@@ -2428,7 +2434,7 @@ function formLink(f) {
     ${routeSeg(tab, cur().quote?.fee ? BigInt(cur().quote.fee) : null)}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>Create payment link</button>
-    ${shown ? html`<div class="blk glink"><div class="lbl"><span>Your link · ${exact(shown.a)} ETH on ${shown.c.full}</span><button type="button" id="gl-x">done</button></div>
+    ${shown ? html`<div class="blk glink"><div class="lbl"><span>Your link · they get ${exact(shown.a)} ETH on ${shown.c.full}</span><button type="button" id="gl-x">done</button></div>
       <div class="addr"><code>${shown.url}</code></div>
       <div class="row2"><button class="btn" type="button" id="gl-copy">Copy link</button><button class="btn ghost" type="button" id="gl-share">Share</button></div>
       <p class="note">Anyone with this link can take the ETH, so send it only to them, in a private message. Until it’s taken you can take it back below; your key finds it again on any device.</p></div>` : ''}
@@ -2525,7 +2531,7 @@ function linksList() {
   const all = [...made, ...found].sort((a, b) => b.row?.block - a.row?.block || b.i - a.i);
   if (!all.length) return '';
   return html`<div class="lbl"><span>Your links</span><span>found again from your key</span></div>
-    <ul class="gl">${all.filter((g, n) => !g.taken || n < 12).map((g) => html`<li><span><b class="num">${fmt(g.v, 18, 6)} ETH</b> · ${g.c.name}${gl.notes[`${g.c.chainId}:${g.i}`] ? ` · “${gl.notes[`${g.c.chainId}:${g.i}`]}”` : ''} · ${g.taken === 'taken' ? 'taken' : g.taken === 'back' ? 'taken back' : 'not taken yet'}</span>
+    <ul class="gl">${all.filter((g, n) => !g.taken || n < 12).map((g) => html`<li><span><b class="num">${fmt(g.v, 18, 6)} ETH</b> in the link, their fee included · ${g.c.name}${gl.notes[`${g.c.chainId}:${g.i}`] ? ` · “${gl.notes[`${g.c.chainId}:${g.i}`]}”` : ''} · ${g.taken === 'taken' ? 'taken' : g.taken === 'back' ? 'taken back' : 'not taken yet'}</span>
       ${g.taken ? '' : html`<span class="acts"><button class="link" type="button" data-gcopy="${g.i}:${g.c.chainId}">copy link</button><button class="link" type="button" data-gback="${g.i}:${g.c.chainId}">take back</button></span>`}</li>`)}</ul>`;
 }
 function wireLinks(root) {
@@ -2555,7 +2561,10 @@ function takeBack(i, c) {
 // private balance meanwhile, and only this reminder is kept, in this browser.
 const dueKey = () => `tacit-pay-due-v1:${S.key.pubHex}`;
 const dues = () => (S.key && readJson(dueKey())) || [];
-const addDue = (d) => writeJson(dueKey(), [...dues(), { id: Date.now().toString(36), to: d.to, amount: d.amount.toString(), chain: d.chain }]);
+const addDue = (d) => {
+  if (dues().some((x) => !x.sent && lc(x.to) === lc(d.to) && x.amount === d.amount.toString() && x.chain === d.chain)) return;   // held once
+  writeJson(dueKey(), [...dues(), { id: Date.now().toString(36), to: d.to, amount: d.amount.toString(), chain: d.chain }]);
+};
 const dropDue = (id) => writeJson(dueKey(), dues().filter((d) => d.id !== id));
 // A held payment that may have gone out is never offered again: it is marked before the send, unmarked only when the
 // send surely did not happen, and dropped once the history shows the withdrawal.
@@ -2601,6 +2610,7 @@ function payDue(id) {
   if (d.sent) { paintDue(); return toast(PAYING_AWAY, true); }
   if (c !== S.chain) switchChain(c);
   const btn = $(`[data-due="${id}"]`), maxFee = capOf(relayFee('send', c));
+  $$('#due [data-undue]').forEach((b) => { b.disabled = true; });        // the card being paid stays until the payment ends
   if (btn) act(btn, async (step) => {
     const a = BigInt(d.amount), W = await walletOn(c), via = viaFor('send');
     if (badSum(d.to)) throw new Error(SUM_MSG);
@@ -2693,7 +2703,7 @@ function formWithdraw(f) {
     const h = await W.withdraw({ to: raw, amount: a, via, maxFee, onStep: step });
     clearDraft('f-wamt');
     await finish(c, h, via, `Withdrew ${exact(a)} ETH.`);
-  }); };
+  }, { bridge: l2 ? S.dest : null }); };
   if (l2 && BRIDGE_Q.fee?.[S.dest] == null) bridgeQuote(S.dest);
 }
 const BRIDGE_Q = { fee: {}, prepay: {}, busy: {}, failed: {} };
@@ -2810,7 +2820,7 @@ function formReceive(f) {
       <div class="amt text"><input id="f-rname" placeholder="you.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name in the link"></div>
       <p class="note" id="f-rnote" role="status" hidden></p>
       <div class="qrbox" id="f-qr"${paid ? html` style="opacity:.35"` : ''}></div>
-      ${paid ? html`<p class="note ${paid.state === 'in' ? 'ok' : ''}" role="status">${paid.state === 'in' ? '' : html`<span class="spin" aria-hidden="true"></span>`}Paid${paid.v != null ? ` · ${eth(paid.v)} ETH` : ''} on ${paid.c.full} · ${paid.state === 'in' ? 'in your private balance' : waits ? 'waiting at its address: take it in under Deposit, From an exchange' : 'moving into your private balance'}</p>
+      ${paid ? html`<p class="note ${paid.state === 'in' ? 'ok' : ''}" role="status">${paid.state === 'in' ? '' : html`<span class="spin" aria-hidden="true"></span>`}Paid${paid.v != null ? ` · ${eth(paid.v)} ETH` : ''} on ${paid.c.full} · ${paid.state === 'in' ? 'in your private balance' : waits ? `waiting at its address: on ${paid.c.full}, take it in under Deposit, From an exchange` : 'moving into your private balance'}</p>
       <div class="row2"><button class="btn" type="button" id="f-new" style="grid-column:1 / -1">New link</button></div>`
     : html`${box ? '' : html`<p class="note" id="f-wait">${k != null ? 'Preparing your link…' : linkWaitView()}</p>`}
       <div class="row2"><button class="btn" type="button" id="f-link" ${box ? html`data-box="${k}"` : ''}>Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>`}
@@ -2843,7 +2853,7 @@ function formReceive(f) {
   const checkName = async () => {
     const v = lc(nameEl.value.trim()), my = ++nseq;
     named = null;
-    if (!v) { nameNote.hidden = true; writeJson(NAME_PREF + pub, null); FORM.check(); return; }
+    if (!v) { nameNote.hidden = true; writeJson(NAME_PREF + pub, null); FORM.check?.(); return; }
     nameNote.hidden = false; nameNote.className = 'note'; nameNote.textContent = 'Checking the name…';
     try {
       const d = await ownName(v);
@@ -2855,7 +2865,7 @@ function formReceive(f) {
       if (my !== nseq || !nameEl.isConnected) return;
       nameNote.className = 'note err'; nameNote.textContent = errText(e);
     }
-    FORM.check();
+    FORM.check?.();
   };
   nameEl.addEventListener('input', () => { clearTimeout(ntimer); ntimer = setTimeout(checkName, 350); });
   let drawn = null, timer = null;
@@ -2878,7 +2888,7 @@ function formReceive(f) {
   };
   if (copyB) copyB.onclick = () => { const { bad, a } = amount(); if (!bad) copy(link(a), 'Payment link copied'); };
   // The name kept from before, else the connected wallet's primary name when its record is this key.
-  nameEl.value = nameEl.value || readJson(NAME_PREF + pub) || '';
+  nameEl.value = DRAFT['f-rname'] ?? (readJson(NAME_PREF + pub) || '');                   // what is being typed outlives a redraw
   if (nameEl.value) checkName();
   else if (S.wallet) getNames().then((n) => n.findPrimary(S.wallet)).then(({ primary }) => primary && ownName(primary.name))
     .then((d) => { if (d && nameEl.isConnected && !nameEl.value) { nameEl.value = d.label; checkName(); } }).catch(() => {});
@@ -3275,7 +3285,7 @@ function renderWalletSheet() {
   $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? unifiedAddress() : k.bp, 'Address copied');
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   nameUpgrade().then((plan) => { const el = $('#w-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });
-  $('#w-lock').onclick = () => { if (S.busy) return toast('Finish the payment in progress first.', true); lock(); renderWalletSheet(); };
+  $('#w-lock').onclick = () => { if (S.busy || GIFT.busy || REQ.v?.paying) return toast('Finish the payment in progress first.', true); lock(); renderWalletSheet(); };
   $('#w-conn')?.addEventListener('click', () => connectWallet().then(renderWalletSheet).catch((e) => toast(errText(e), true)));
 }
 function openWalletSheet() { renderWalletSheet(); if (!$('#sheet-wallet').open) $('#sheet-wallet').showModal(); }
@@ -3316,8 +3326,10 @@ function drawGift() {
   if (!g) return;
   if (!g.chain) {
     mount($('#gift-body'), html`<div class="lbl"><span>Sent to you by link</span><button class="link" type="button" id="gift-x">dismiss</button></div>
-      <p class="note err">This link is incomplete: it does not say which chain it is for.</p>`);
-    $('#gift-x').onclick = () => { GIFT.v = null; renderApp(); };
+      <p class="note err">This link is incomplete: it does not say which chain it is for. Ask the sender, or look on each:</p>
+      <div class="row2">${CHAINS.map((c) => html`<button class="btn ghost sm" type="button" data-gchain="${c.chainId}">${c.name}</button>`)}</div>`);
+    $('#gift-x').onclick = () => { GIFT.v = null; leaveBar(g.src); renderApp(); };
+    $$('[data-gchain]', el).forEach((b) => b.onclick = () => { g.chain = chainOf(b.dataset.gchain); leaveBar(g.src); paintGift(); loadGift(); });
     return;
   }
   const c = g.chain, b = GIFT.bal, fee = GIFT.fee, d = GIFT.done, left = b != null && fee != null && b > fee ? b - fee : null;
@@ -3355,7 +3367,8 @@ async function claimGift(to) {
   const g = GIFT.v;
   if (!g || GIFT.busy) return;
   if (badSum(to)) { GIFT.err = new Error(SUM_MSG); return paintGift(); }
-  const maxFee = capOf(GIFT.fee);
+  const maxFee = capOf(GIFT.fee), bp = S.key?.bp;                                      // the key it goes to, fixed as the press is made
+  if (!to && !bp) return;
   Object.assign(GIFT, { busy: true, err: null, step: 'Getting ready' });
   paintGift();
   const tick = setInterval(() => { const e = $('#gift-status'); if (e) sayLive(e, giftStatus()); }, 250);
@@ -3366,7 +3379,7 @@ async function claimGift(to) {
     if (!st.balance) throw new Error('This link has already been taken.');
     // The spend takes all of it less the relay's fee as quoted for that spend; this quote only names the amount shown.
     const amount = st.balance - BigInt(q.fee), onStep = (m) => { GIFT.step = stepWords(m); };
-    const h = to ? await W.withdraw({ to, amount: 'max', maxFee, onStep }) : await W.send({ to: S.key.bp, amount: 'max', maxFee, onStep });
+    const h = to ? await W.withdraw({ to, amount: 'max', maxFee, onStep }) : await W.send({ to: bp, amount: 'max', maxFee, onStep });
     const inBlock = await mined(g.chain, h, null);
     if (GIFT.v === g) Object.assign(GIFT, { done: { h, a: amount, to, inBlock }, bal: 0n });
     toast(!inBlock ? UNMINED : to ? `Sent ${exact(amount)} ETH to ${short(to)}.` : `${exact(amount)} ETH is in your private balance.`);
@@ -3453,7 +3466,7 @@ function applyHash() {
   const giftLater = /^[0-9a-f]{64}$/.test(gs) && GIFT.busy;
   if (giftLater) toast('Finishing the link already open; the new one opens after it.');
   if (/^[0-9a-f]{64}$/.test(gs) && !GIFT.busy) {
-    Object.assign(GIFT, { v: { seed: hexToBytes(gs), chain: c || null, note: noteOf(q.get('for')) }, W: null, bal: null, fee: null, err: null, done: null, to: '' });
+    Object.assign(GIFT, { v: { seed: hexToBytes(gs), chain: c || null, note: noteOf(q.get('for')), src: h }, W: null, bal: null, fee: null, err: null, done: null, to: '' });
     if (c) loadGift();
   }
   const tab = TABS.find(([k]) => words.includes(k))?.[0] || q.get('tab') || (words.includes('link') ? 'send' : null);
@@ -3469,7 +3482,7 @@ function applyHash() {
     }
     if (!S.busy) S.tab = 'send';
   } else if (tab && !S.busy && TABS.some(([k]) => k === tab)) S.tab = tab;
-  if (/(^|&)gift=/.test(h) && !giftLater) try { history.replaceState(null, '', location.pathname); } catch {}
+  if (/(^|&)gift=/.test(h) && !giftLater && c) try { history.replaceState(null, '', location.pathname); } catch {}   // one with no chain stays until a chain is picked
 }
 // Arrow keys, Home and End move between the tabs of a tab list, as screen-reader and keyboard users expect.
 // Enter in a form's field presses that form's action, when it is enabled; the button's own handler still checks everything.

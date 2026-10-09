@@ -305,7 +305,7 @@ const ownerTag = (poolWallet) => (poolWallet?.addressString ? String(poolWallet.
 function pendingMark(notes, txid, change, asset, out = 0n, owner = null) {
   const p = pendingRead(), at = Date.now();
   for (const n of notes) if (n.nf) p.spent[nfKey(n.nf)] = { at, txid };
-  if (change > 0n || out > 0n) p.change[txid] = { at, v: change.toString(), ...(out > 0n ? { out: out.toString() } : {}), asset: String(asset).replace(/^0x/, '').toLowerCase(), ...(owner ? { owner } : {}) };
+  if (txid && (change > 0n || out > 0n)) p.change[txid] = { at, v: change.toString(), ...(out > 0n ? { out: out.toString() } : {}), asset: String(asset).replace(/^0x/, '').toLowerCase(), ...(owner ? { owner } : {}) };
   try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
 }
 // The notes of `notes` this browser has not spent, how much of `asset` is settling as change not yet read back, and how
@@ -346,7 +346,8 @@ async function prepare(poolWallet, asset, need, anchor, fixed = null) {
 // open). A false answer posts nothing and throws with `relayDeclined`. Without `askSelf` both fallbacks post unasked.
 // `deductFee` makes `amount` the total these notes give up: a relayer's quoted fee comes out of the recipient's output,
 // a self-funded post delivers all of it, and nothing comes back as change. The result's `amount` is what the recipient got.
-export async function payPrivately(tacit, { poolWallet, to, amount, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, inputs = null, askSelf = null, deductFee = false }) {
+// A quote that ran out while the proof was made (a first proof fetches the prover) is asked for once more, with the same notes.
+export async function payPrivately(tacit, { poolWallet, to, amount, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, inputs = null, askSelf = null, deductFee = false, requoted = false }) {
   to = poolRecipient(to, poolWallet.network);
   pool.decodeAddress(to, poolWallet.network);
   const client = poolClientFor(poolWallet.network);
@@ -354,8 +355,10 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   const fee = info?.fees?.['0x' + String(asset).replace(/^0x/, '').toLowerCase()];
   // A relayer that cannot quote must not end the payment. Nothing has been proved yet and the self-funded
   // path below needs no relayer, so every refusal it can give here — no free coin to bind, quote table full,
-  // rate limited — means "not now", not "impossible". relayInfo() is already caught for the same reason.
-  const q = fee != null ? await client.quote({ asset: '0x' + String(asset).replace(/^0x/, '') }).catch(() => null) : null;
+  // rate limited — means "not now", not "impossible"; one that fails is asked once more after a moment, as a passing
+  // refusal must not send the payment from the wallet's own address. relayInfo() is already caught for the same reason.
+  const askQuote = () => client.quote({ asset: '0x' + String(asset).replace(/^0x/, '') });
+  const q = fee != null ? await askQuote().catch(() => new Promise((r) => setTimeout(r, 1500)).then(askQuote).catch(() => null)) : null;
   // With no limit given, a quarter above the fee the relayer advertises is the limit: its fee rate moving between the two
   // reads is taken, a quote far above what was shown is never signed unseen.
   const cap = maxFee ?? (fee != null ? (BigInt(fee) * 5n) / 4n : null);
@@ -379,12 +382,19 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
     // notes (selecting again for the smaller need could pick others), so it publishes the same nullifiers — if the relayer does eventually post its copy, only
     // whichever lands first is accepted and the other is rejected by the pool. The money cannot go twice.
     const relayed = (carrier) => { pendingMark(a.notes, carrier, a.total - pay - BigInt(q.fee), asset, 0n, ownerTag(poolWallet)); return { revealTxid: carrier, relayed: true, anchor: a.hAnchor, amount: pay }; };
+    // The relay counts a payment confirmed once the pool holds its spend, whichever carrier took it there.
+    const landed = (stt) => stt?.carrier || (stt?.state === 'confirmed' ? stt.carrier || null : undefined);
     let reason = null, sub = null, timedOut = false;
     try {
-      sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId });
+      try { sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId }); }
+      catch (e) {
+        if (requoted || !/quote expired/i.test(e?.message || '')) throw e;
+        say('The relay’s quote ran out while the proof was made; asking for a new one…');
+        return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay, maxFee, say, inputs: a.notes, askSelf, deductFee, requoted: true });
+      }
       for (let i = 0; i < 60 && !reason; i++) {
         const stt = await client.relayStatus(sub.id).catch(() => null);
-        if (stt?.carrier) return relayed(stt.carrier);
+        if (landed(stt) !== undefined) return relayed(landed(stt));
         if (stt && (['dropped', 'rejected'].includes(stt.state) || spentElsewhere(stt.state))) { reason = stt.reason || stt.state; break; }
         say('Waiting for the relay’s batch…');
         await new Promise((r) => setTimeout(r, 5000));
@@ -402,13 +412,13 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
       while (!ctl.signal.aborted) {
         await new Promise((r) => setTimeout(r, 5000));
         const stt = ctl.signal.aborted ? null : await client.relayStatus(sub.id).catch(() => null);
-        if (stt?.carrier) return { carrier: stt.carrier };
+        if (landed(stt) !== undefined) return { carrier: landed(stt), landed: true };
       }
       return {};
     })() : null;
     const asked = (async () => ({ ok: !!(await askSelf('relay-slow', { timedOut, signal: ctl.signal })) }))();
     const got = await (watch ? Promise.race([asked, watch]) : asked).finally(() => ctl.abort());
-    if (got.carrier) return relayed(got.carrier);
+    if (got.landed) return relayed(got.carrier);
     if (!got.ok) throw relayDeclined('The relay hasn’t posted it yet and may still. Nothing else was sent; check your balance before paying again.');
     say('Posting it from your Bitcoin address…');
     return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes, deductFee });

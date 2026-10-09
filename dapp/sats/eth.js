@@ -6,7 +6,7 @@
 // Link: /sats#eth=<chain id>[&do=send|withdraw] opens this panel on that chain, at that form.
 
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=e689bce4';
+import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '/evm-pool-wallet.js?cb=e245ecff';
 import { vkHash } from '/evm-pool-zk-prover.js?cb=00ff69c2';
 import { poolRecipient } from '/pool-recipient.js?cb=a9311fc4';
 import { L2_BRIDGES } from '/evm-pool-gateway.js';

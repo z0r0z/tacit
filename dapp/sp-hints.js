@@ -41,10 +41,11 @@ export async function postHint(base, scanPub, txidHex, fetchImpl = fetch) {
   return (await r.json()).id;
 }
 
-// Every hint after `after`, in order, through onHint(id, e, c); returns the last id read.
-export async function readHints(base, after, onHint, fetchImpl = fetch) {
+// Every hint after `after`, in order, through onHint(id, e, c); returns the last id read. At most `maxPages` pages of
+// 2,000 a call: anyone may post hints, so one read is bounded and the next carries on from the id this one returns.
+export async function readHints(base, after, onHint, fetchImpl = fetch, { maxPages = 1000 } = {}) {
   let at = after;
-  for (let guard = 0; guard < 1000; guard++) {
+  for (let guard = 0; guard < maxPages; guard++) {
     const r = await fetchImpl(`${base}/sp/hints?after=${at}&limit=2000`, { cache: 'no-store', signal: AbortSignal.timeout?.(20_000) });
     if (!r.ok) throw new Error(`hints: HTTP ${r.status}`);
     const j = await r.json();

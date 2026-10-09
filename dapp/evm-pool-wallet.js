@@ -490,7 +490,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // start, at most once in ten minutes.
   async function readHealed() {
     try { return await readNew(); } catch (e) {
-      if (!/ out of order /.test(e?.message || '') || Date.now() - healedAt < 600_000) throw e;
+      // A gap in the unconfirmed tail alone is a node a block behind, not a tree missing leaves: the next read sees it whole.
+      if (e?.tail || !/ out of order /.test(e?.message || '') || Date.now() - healedAt < 600_000) throw e;
       healedAt = Date.now();
       const keep = { attempts: saved.attempts, nextRefund: saved.nextRefund };
       saved = { ...blank(), ...keep }; view = null; persist();
@@ -522,7 +523,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       saved = next;
       persist();
     }
-    view = absorb(saved, ts.filter((t) => t.block > safe), rs.filter((r) => r.block > safe));
+    try { view = absorb(saved, ts.filter((t) => t.block > safe), rs.filter((r) => r.block > safe)); }
+    catch (e) { if (e instanceof Error) e.tail = true; throw e; }
     return summary();
   }
 

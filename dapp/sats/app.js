@@ -2,9 +2,9 @@
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
 const TACIT_URL = '/tacit.js?cb=22713f3a';
-const SECRET_URL = '/sats/secret.js?cb=6e4d17a4';
+const SECRET_URL = '/sats/secret.js?cb=11026f23';
 const MIX_URL = '/sats/mix.js?cb=18747071';
-const ETH_URL = '/sats/eth.js?cb=8f726558';
+const ETH_URL = '/sats/eth.js?cb=a9d94c54';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
 
 // tacit.js reads its network from this shared key once, at import. This page
