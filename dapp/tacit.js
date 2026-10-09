@@ -47512,6 +47512,7 @@ function _ammCrystallizedShares(pool) {
 // Returns `null` if no path exists. Returns `{ hops, deltaOutLast }`
 // for the best-scoring path (tie-break: shortest hop count).
 const SWAP_ROUTE_HOPS_MAX = 4;
+const SWAP_ROUTE_MAX_EXPANSIONS = 2000;   // curve evaluations per search
 
 function _ammCurveDeltaOutLocal(direction, R_A_pre, R_B_pre, delta_in, fee_bps) {
   const ra = BigInt(R_A_pre), rb = BigInt(R_B_pre), din = BigInt(delta_in);
@@ -47574,16 +47575,21 @@ export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) 
   const adj = _ammPoolAdjacency(pools);
   if (!adj.has(a_in)) return null;
 
-  // DFS that materializes every reachable path up to depth 4 from a_in
-  // to a_out, applying the CFMM curve at each step against a snapshot
-  // of pool reserves (clones each step so re-visiting the same pool
-  // composes correctly).
+  // DFS over paths up to depth 4 from a_in to a_out, applying the CFMM
+  // curve at each step; a pool appears at most once per path.
   let best = null;
+  let expansions = 0;
   function _key(p, dir) { return `${p.pool_id}:${dir}`; }
-  function _dfs(asset, amountAtAsset, hops, snapshots, depth) {
+  function _dfs(asset, amountAtAsset, hops, snapshots, depth, prevAsset = null) {
     if (depth > SWAP_ROUTE_HOPS_MAX) return;
     const edges = adj.get(asset) || [];
+    // Keep the best edge to each neighbouring asset. A pool already on the path (the guest rejects a repeated
+    // pool) and a hop straight back to the asset just left are skipped.
+    const bestEdge = new Map();
     for (const { pool, direction, otherAsset } of edges) {
+      if (otherAsset === prevAsset) continue;
+      if (hops.some(h => h.poolId === pool.pool_id)) continue;
+      if (++expansions > SWAP_ROUTE_MAX_EXPANSIONS) break;
       const snapKey = pool.pool_id;
       let R_A, R_B;
       if (snapshots.has(snapKey)) {
@@ -47602,7 +47608,10 @@ export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) 
         dOut = curve.deltaOut;
       } catch { continue; }
       if (dOut <= 0n) continue;
-
+      const cur = bestEdge.get(otherAsset);
+      if (!cur || dOut > cur.dOut) bestEdge.set(otherAsset, { pool, direction, otherAsset, snapKey, R_A, R_B, dOut });
+    }
+    for (const { pool, direction, otherAsset, snapKey, R_A, R_B, dOut } of bestEdge.values()) {
       const newHop = {
         poolId: pool.pool_id,
         direction,
@@ -47630,7 +47639,7 @@ export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) 
         }
       }
       if (newHops.length < SWAP_ROUTE_HOPS_MAX && otherAsset !== a_out) {
-        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1);
+        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1, asset);
       }
       // ALSO recurse when otherAsset == a_out and depth < max — a longer
       // path might still yield a better dOut if subsequent hops have
@@ -47638,7 +47647,7 @@ export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) 
       // small (≤ 4 deep, ≤ ~20 edges per pool — single-digit
       // milliseconds in practice).
       if (newHops.length < SWAP_ROUTE_HOPS_MAX && otherAsset === a_out) {
-        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1);
+        _dfs(otherAsset, dOut, newHops, advancedSnapshot, depth + 1, asset);
       }
     }
   }
@@ -48237,12 +48246,14 @@ export function previewSwapRoute({ fromAid, toAid, amountIn, pools }) {
     const pa = String(p.asset_a).toLowerCase();
     const pb = String(p.asset_b).toLowerCase();
     if ((pa === a_in && pb === a_out) || (pa === a_out && pb === a_in)) {
+      // Every pool for the pair is quoted (fee tiers differ); the largest output wins.
       const direction = (pa === a_in) ? 0 : 1;
       try {
         const c = swapVarCurveDeltaOut(direction, p.reserve_a, p.reserve_b, din, p.fee_bps);
-        direct = { kind: 'direct', pool: p, direction, deltaOut: c.deltaOut, raPost: c.raPost, rbPost: c.rbPost };
+        if (!direct || c.deltaOut > direct.deltaOut) {
+          direct = { kind: 'direct', pool: p, direction, deltaOut: c.deltaOut, raPost: c.raPost, rbPost: c.rbPost };
+        }
       } catch { /* unusable direct pool — fall through to multi-hop */ }
-      break;
     }
   }
 
@@ -48422,10 +48433,13 @@ function _wirePoolSwapForm() {
         `Tx:     one Bitcoin commit + reveal pair — atomic across all ${r.hops.length} pools`);
     }
   };
+  // Typed amounts quote once input pauses for 300 ms.
+  let _previewTimer = null;
+  const _renderPreviewSoon = () => { clearTimeout(_previewTimer); _previewTimer = setTimeout(_renderPreview, 300); };
   fromSel.onchange = _renderPreview;
   toSel.onchange   = _renderPreview;
-  amtIn.oninput    = _renderPreview;
-  if (slipIn) slipIn.oninput = _renderPreview;
+  amtIn.oninput    = _renderPreviewSoon;
+  if (slipIn) slipIn.oninput = _renderPreviewSoon;
   broadcastBtn.onclick = async () => {
     if (broadcastBtn.disabled) return;
     const fromAid = fromSel.value, toAid = toSel.value;
