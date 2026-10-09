@@ -31,12 +31,13 @@
   --bg: #E8E0CC;
   --card: #F2EBD4;
   --ink: #1A1A1A;
-  --mute: #625D50;
+  --mute: #625C4F;
   --hair: rgba(10,10,10,.12);
   --hair-strong: rgba(10,10,10,.28);
   --orange: #f7931a;
   --err: #a52f1a;
-  --ok: #2f6b3a;
+  --ok: #0a7234;
+  --warn: #9a4a00;
   --scrim: rgba(26,26,26,.4);
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
   --serif: 'Instrument Serif', Georgia, serif;
@@ -52,11 +53,12 @@
     --bg: #17150F;
     --card: #221F17;
     --ink: #EDE5CF;
-    --mute: #A8A08A;
+    --mute: #A39B85;
     --hair: rgba(237,229,207,.13);
     --hair-strong: rgba(237,229,207,.3);
     --err: #f08a6c;
-    --ok: #93c48a;
+    --ok: #8fcf9a;
+    --warn: #f7931a;
     --scrim: rgba(0,0,0,.6);
     color-scheme: dark;
   }
@@ -65,17 +67,35 @@
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
-body { font: var(--t-md)/1.65 var(--mono); padding: 0 var(--s4); overflow-wrap: break-word; }
-main { max-width: 600px; margin: 0 auto; padding: var(--s8) 0 var(--s7); }
+body { font: var(--t-md)/1.65 var(--mono); padding: 0 max(var(--s4), env(safe-area-inset-right)) env(safe-area-inset-bottom) max(var(--s4), env(safe-area-inset-left)); overflow-wrap: break-word; }
+.shell { max-width: 600px; margin: 0 auto; padding-bottom: var(--s7); }
+main { padding: var(--s6) 0 0; }
 p { margin: 0 0 var(--s3); }
 a { color: var(--ink); text-underline-offset: 3px; text-decoration-thickness: 1px; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-.hidden { display: none !important; }
+.hidden, [hidden] { display: none !important; }
 .muted { color: var(--mute); }
 .err { color: var(--err); }
 .ok { color: var(--ok); }
+.warn { color: var(--warn); }
 .small { font-size: var(--t-xs); }
+
+/* ── header: the front page's wordmark, a link to all of Tacit and the wallet chip ── */
+.top { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding: 22px 0; }
+.brand { display: inline-flex; flex: none; align-items: center; gap: 10px; text-decoration: none; }
+.brand .tk { width: 30px; height: 30px; display: block; flex: none; border-radius: 50%; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
+.top-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.top-r .home { flex: none; display: inline-flex; align-items: center; min-height: 40px; padding: 0 8px; color: var(--mute); font-size: 12px; text-decoration: none; }
+@media (hover: hover) { .top-r .home:hover { color: var(--ink); text-decoration: underline; } }
+.chip { font: inherit; color: var(--ink); display: inline-flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 0 14px; background: var(--card);
+  border: 1px solid var(--hair-strong); cursor: pointer; white-space: nowrap; }
+@media (hover: hover) { .chip:hover { border-color: var(--ink); } }
+.chip span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip .dot { width: 7px; height: 7px; margin: 0; vertical-align: 0; flex: none; background: var(--hair-strong); }
+.chip .dot.on { background: var(--ok); }
 
 /* ── headings ── */
 h1 { font: 400 var(--t-h1)/.95 var(--serif); margin: var(--s4) 0 var(--s2); letter-spacing: -.01em; }
@@ -166,7 +186,7 @@ input:focus-visible, select:focus-visible { outline: 2px solid var(--ink); outli
 .kv > span:first-child { color: var(--mute); font-size: var(--t-xs); }
 .kv b { font-weight: 400; overflow-wrap: anywhere; min-width: 0; }
 .kv .acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 0 var(--s3); margin-top: -2px; }
-.kv .acts a { font-size: var(--t-xs); color: var(--mute); display: inline-flex; align-items: center; min-height: 28px; }
+.kv .acts a, .kv .acts .link-btn { font-size: var(--t-xs); color: var(--mute); display: inline-flex; align-items: center; min-height: 28px; padding: 0; }
 .addrs { margin: 0 0 var(--s4); }
 .sub-h { margin: var(--s4) 0 var(--s1); }
 .callout { border-left: 2px solid var(--orange); padding: var(--s1) 0 var(--s1) var(--s4); margin: 0 0 var(--s4); font-size: var(--t-sm); }
@@ -237,9 +257,12 @@ summary::after { content: '+'; color: var(--mute); font-size: 18px; line-height:
 details[open] summary::after { content: '−'; }
 details p { margin: 0 0 var(--s4); color: var(--mute); font-size: var(--t-sm); max-width: 60ch; }
 
-footer { color: var(--mute); font-size: var(--t-xs); border-top: 1px solid var(--hair); padding-top: var(--s5); line-height: 2.2; }
-footer a { color: var(--mute); }
-footer a:hover { color: var(--ink); }
+footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 36px; padding-top: 18px;
+  border-top: 1px solid var(--hair-strong); color: var(--mute); font-size: 12px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 0 18px; }
+footer nav span { display: inline-block; padding: 12px 0; }
+footer a { display: inline-block; padding: 12px 0; color: var(--mute); }
+@media (hover: hover) { footer a:hover { color: var(--ink); } }
 
 /* ── passphrase modal and toasts (driven by tacit.js) ── */
 .modal { position: fixed; inset: 0; background: var(--scrim); display: none; place-items: center; padding: var(--s4); z-index: 1000; }
@@ -249,13 +272,15 @@ footer a:hover { color: var(--ink); }
 .pass-hint { font-size: var(--t-xs); color: var(--mute); min-height: 1.65em; }
 .pass-hint.error { color: var(--err); }
 .pass-hint.ok { color: var(--ok); }
-#toast-container { position: fixed; bottom: var(--s4); left: var(--s4); right: var(--s4); display: grid; gap: 6px; justify-items: center; z-index: 1100; pointer-events: none; }
-.toast { background: var(--ink); color: var(--bg); padding: 8px 14px; max-width: 520px; font-size: var(--t-xs); pointer-events: auto; }
-.toast.error { background: var(--err); color: #fff; }
+#toast-container { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; display: grid; gap: 8px; justify-items: center; z-index: 1100; pointer-events: none; }
+.toast { max-width: min(520px, 100%); overflow-wrap: anywhere; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto;
+  box-shadow: 0 22px 44px -28px rgba(26,26,26,.45); animation: rise .2s ease-out; }
+.toast.error { background: var(--err); color: var(--card); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 
 @media (max-width: 640px) {
   :root { --t-h1: 52px; --t-h2: 26px; --s8: 56px; }
-  main { padding-top: var(--s7); }
+  main { padding-top: var(--s4); }
   .hush { font-size: 84px; }
   .tag { font-size: 22px; }
   .panel { padding: var(--s4); margin-left: calc(-1 * var(--s2)); margin-right: calc(-1 * var(--s2)); }
@@ -265,6 +290,18 @@ footer a:hover { color: var(--ink); }
   .btn.sm, .seg button { min-height: var(--tap); }
   .link-btn, .kv .acts a { min-height: var(--tap); }
   .tabs { gap: var(--s4); }
+  .top { gap: var(--s3); }
+  .chip { padding: 0 10px; }
+}
+@media (max-width: 400px) {
+  .brand .tk { width: 26px; height: 26px; }
+  .brand b { font-size: 26px; }
+}
+@media (max-width: 340px) { .brand i { display: none; } }
+/* A finger needs the full tap size; a mouse keeps the tighter controls. 16px fields keep a phone from zooming in. */
+@media (pointer: coarse) {
+  .chip, .top-r .home, .btn.sm, .seg button, .link-btn, .kv .acts a, .kv .acts .link-btn { min-height: var(--tap); }
+  input[type=text], input[type=number], input[type=password], select { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -273,12 +310,25 @@ footer a:hover { color: var(--ink); }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+<div class="shell">
+  <header class="top">
+    <a class="brand" href="/sats/" aria-label="tacit sats"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>sats</i></a>
+    <div class="top-r">
+      <a class="home" href="/">All of Tacit</a>
+      <button class="chip" id="chip" type="button" aria-controls="wallet"><span class="dot" id="chip-dot"></span><span id="chip-label">Sign in</span></button>
+    </div>
+  </header>
 <main>
   <header class="hero">
     <span class="hush" role="img" aria-label="Shushing face">🤫</span>
     <h1>Secret Sats</h1>
     <p class="tag">Pay in bitcoin. Tell no one.</p>
-    <p class="lede">Private payments in ordinary Bitcoin transactions. The amount, the sender and where the coins came from stay hidden, and every payment carries a proof any node can check.</p>
+    <p class="lede">Private payments in ordinary Bitcoin transactions. Inside the pool, the amount, the sender and where the coins came from stay hidden, and every payment carries a proof any node can check.</p>
     <div class="hero-links"><a href="#try">Try it ↓</a><a href="#how">How it works ↓</a><a href="/secret-sats">Read the paper →</a></div>
   </header>
 
@@ -293,11 +343,16 @@ footer a:hover { color: var(--ink); }
             <button type="button" class="mainnet" data-net="mainnet" aria-pressed="false">mainnet</button>
           </div>
         </div>
-        <p class="note hidden" id="mainnet-note">Mainnet moves real bitcoin. Send, silent payments and the shielded pool — TAC only, experimental — all work here.</p>
+        <p class="note hidden" id="mainnet-note">Mainnet moves real bitcoin. Sends, silent payments and the shielded pool for TAC and cBTC all work here.</p>
 
         <div id="connect">
           <p class="note">The same wallet as on tacit.finance: a passkey or linked wallet opens it on both.</p>
           <div class="opts">
+            <button type="button" class="opt primary hidden" id="btn-known">
+              <span class="opt-t" id="known-t">Continue with your Tacit wallet</span>
+              <span class="opt-m" id="known-m"></span>
+            </button>
+            <p class="divider hidden" id="known-or">or open another</p>
             <button type="button" class="opt primary" id="btn-passkey">
               <span class="opt-t">Use a passkey <em class="rec" id="passkey-rec">recommended</em></span>
               <span class="opt-m">Touch ID, Windows Hello or a security key. The passkey is your backup; no passphrase.</span>
@@ -336,7 +391,7 @@ footer a:hover { color: var(--ink); }
             <div class="kv"><span>sats</span><b id="w-bal">—</b></div>
             <div class="kv hidden" id="w-assets-row"><span>tokens</span><b id="w-assets">—</b></div>
             <div class="kv"><span>address</span><b id="w-addr">—</b>
-              <span class="acts"><a href="#" id="copy-addr" role="button">copy</a><a id="view-addr" target="_blank" rel="noopener noreferrer">explorer ↗</a></span></div>
+              <span class="acts"><button type="button" class="link-btn" id="copy-addr">copy</button><a id="view-addr" target="_blank" rel="noopener noreferrer">explorer ↗</a></span></div>
           </div>
           <div class="callout hidden" id="faucet-hint">
             <p>Empty wallet. Get 5,000 test sats; the balance updates on its own.</p>
@@ -350,16 +405,16 @@ footer a:hover { color: var(--ink); }
           <p class="eyebrow sub-h">Your private addresses</p>
           <div class="addrs">
             <div class="kv"><span>silent · sats</span><b id="w-sp">—</b>
-              <span class="acts" id="copy-sp-wrap"><a href="#" id="copy-sp" role="button">copy</a></span></div>
+              <span class="acts" id="copy-sp-wrap"><button type="button" class="link-btn" id="copy-sp">copy</button></span></div>
             <div class="kv"><span>shielded · tokens</span><b id="w-st">—</b>
-              <span class="acts hidden" id="copy-st-wrap"><a href="#" id="copy-st" role="button">copy</a></span></div>
+              <span class="acts hidden" id="copy-st-wrap"><button type="button" class="link-btn" id="copy-st">copy</button></span></div>
           </div>
           <div class="row">
             <button class="btn sm hidden" id="btn-unlock">Unlock</button>
             <button class="btn quiet sm hidden" id="btn-fund">Fund from linked wallet</button>
             <button class="btn quiet sm" id="btn-refresh">Refresh</button>
             <button class="btn quiet sm hidden" id="btn-backup">Back up key</button>
-            <button class="btn quiet sm" id="btn-disconnect">Disconnect</button>
+            <button class="btn quiet sm" id="btn-disconnect">Sign out</button>
           </div>
           <div class="row hidden" id="fund-row"><input type="number" id="fund-amt" min="546" step="1" inputmode="numeric" placeholder="sats" aria-label="Sats to move from your linked wallet"><button class="btn sm" id="btn-fund-go">Move to Tacit</button></div>
           <ol class="lines compact activity hidden" id="activity" aria-label="Recent activity"></ol>
@@ -383,6 +438,7 @@ footer a:hover { color: var(--ink); }
             <div class="row"><button class="btn" id="btn-sweep">Move to your wallet</button></div>
             <div class="status" id="sweep-out" aria-live="polite"></div>
           </div>
+          <p class="note" id="send-note"></p>
           <div class="field"><label for="send-asset">Send</label><select id="send-asset"><option value="sats">sats</option></select></div>
           <div class="field"><label for="to" id="to-label">To: a tb1q… address or a silent address (tsp1…)</label><input type="text" id="to" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
           <div class="field"><label for="amt" id="amt-label">Amount (sats)</label><input type="text" id="amt" inputmode="decimal" autocomplete="off" placeholder="546 or more"></div>
@@ -444,7 +500,7 @@ footer a:hover { color: var(--ink); }
 
       <section role="tabpanel" id="panel-eth" aria-labelledby="tab-eth" tabindex="0" hidden>
         <div id="eth">
-          <p class="note" id="eth-placeholder">Connect a wallet above to use private ETH: the same address as your sats, on Ethereum, Base and Robinhood Chain.</p>
+          <p class="note" id="eth-placeholder">Connect a wallet above to use private ETH on Ethereum, Base and Robinhood Chain, with the same key as your sats.</p>
           <div id="eth-root"></div>
         </div>
       </section>
@@ -453,13 +509,13 @@ footer a:hover { color: var(--ink); }
 
   <section class="block" id="how" aria-labelledby="how-h">
     <h2 id="how-h">How it works</h2>
-    <p>The pool holds cBTC, a bitcoin-backed token. Sats can mix first, with no coordinator, then swap into cBTC. cBTC is shielded into the pool, paid privately inside it, and leaves the same way.</p>
+    <p>The pool holds Tacit tokens: test cBTC, a bitcoin-backed token, on signet; TAC and cBTC on mainnet. Sats can mix first, with no coordinator, then swap into cBTC. cBTC is shielded into the pool, paid privately inside it, and withdrawn the same way.</p>
     <figure class="diagram">
       <svg viewBox="0 0 340 178" role="img" aria-labelledby="diagram-t" fill="none" stroke="currentColor" stroke-width="1">
-        <title id="diagram-t">sats swap to cBTC; cBTC is shielded into the pool and paid privately; it exits as cBTC and swaps back to sats</title>
+        <title id="diagram-t">sats swap to cBTC; cBTC is shielded into the pool and paid privately; it is withdrawn as cBTC and swaps back to sats</title>
         <g font-family="IBM Plex Mono, monospace" font-size="13" text-anchor="middle" fill="currentColor" stroke="none">
           <text x="50" y="30">sats</text><text x="110" y="30">⇄</text><text x="170" y="30">swap</text><text x="230" y="30">⇄</text><text x="290" y="30">cBTC</text>
-          <text x="50" y="95">shield</text><text x="110" y="95">→</text><text x="170" y="95">pay</text><text x="230" y="95">→</text><text x="290" y="95">exit</text>
+          <text x="50" y="95">shield</text><text x="110" y="95">→</text><text x="170" y="95">pay</text><text x="230" y="95">→</text><text x="290" y="95">withdraw</text>
           <text x="50" y="160">cBTC</text><text x="110" y="160">⇄</text><text x="170" y="160">swap</text><text x="230" y="160">⇄</text><text x="290" y="160">sats</text>
         </g>
         <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" stroke="none" opacity=".6"><text x="334" y="122" text-anchor="end">pool</text></g>
@@ -507,7 +563,7 @@ footer a:hover { color: var(--ink); }
         <p class="eyebrow">Visible</p>
         <ul>
           <li>That a pool transaction happened, and when</li>
-          <li>What entered and what exited</li>
+          <li>What went in and what was withdrawn</li>
           <li>Amounts, when already public (a bought lot)</li>
         </ul>
       </div>
@@ -525,7 +581,7 @@ footer a:hover { color: var(--ink); }
     <ul class="lines compact">
       <li><span>buy and shield</span><span>997 vB</span></li>
       <li><span>private payment</span><span>806 vB</span></li>
-      <li><span>exit to sats</span><span>1,077 vB</span></li>
+      <li><span>back to sats</span><span>1,077 vB</span></li>
       <li><span>+ commit, when self-posted (relays batch it)</span><span>153 vB</span></li>
     </ul>
   </section>
@@ -534,24 +590,39 @@ footer a:hover { color: var(--ink); }
     <h2 id="faq-h">Questions</h2>
     <details><summary>What is this?</summary><p>A working demo of private payments on Bitcoin. Send sats, pay a silent address, mix sats with other wallets into equal coins with no history, or move cBTC through a shielded pool that hides amounts and owners.</p></details>
     <details><summary>Is it a sidechain?</summary><p>No. Every step is an ordinary Bitcoin transaction. Indexers replay Bitcoin and check each proof; there is no other chain, federation or operator.</p></details>
-    <details><summary>Where are my sats? What is cBTC?</summary><p>Sats and silent payments stay sats in your wallet. On signet, the pool holds cBTC, a Tacit token backed by locked BTC and a slashable escrow; sats turn into cBTC and back to sats by atomic swap, no custodian either way. On mainnet the pool carries TAC.</p></details>
+    <details><summary>Where are my sats? What is cBTC?</summary><p>Sats and silent payments stay sats in your wallet. On signet, the pool holds cBTC, a Tacit token backed by locked BTC and a slashable escrow; sats turn into cBTC and back to sats by atomic swap, no custodian either way. On mainnet the pool carries TAC and cBTC.</p></details>
     <details><summary>Who can see what?</summary><p>Anyone sees that a pool transaction happened. Only payer and payee know the amount and who paid whom. Silent and shielded addresses give each payment a fresh output only the recipient can find.</p></details>
     <details><summary>Do I need to trust anyone?</summary><p>Bitcoin, the proof system, and the indexer you use — run your own and it is just Bitcoin and the proofs. No one holds the pool: a note moves only with its owner’s proof.</p></details>
-    <details><summary>Does proving cost anything?</summary><p>No. Your device proves each shield, payment and exit in seconds, after a one-time download of the prover. You pay only the Bitcoin fee.</p></details>
-    <details><summary>Mainnet or signet?</summary><p>Both. Sends, silent payments and the shielded pool all run on mainnet, where the pool is flagged experimental and carries TAC only. Shielding, paying privately and exiting all work today, each paying its own Bitcoin fee; gasless relaying for payments and exits is rolling out next. Signet keeps the full demo — a test cBTC the faucet hands out for signet sats — for trying every step before you move real TAC.</p></details>
+    <details><summary>Does proving cost anything?</summary><p>No. Your device proves each shield, payment and withdrawal in seconds, after a one-time download of the prover. You pay the Bitcoin fee, or, on mainnet, the relay’s fee when it posts a payment for you.</p></details>
+    <details><summary>Mainnet or signet?</summary><p>Both. Sends, silent payments and the shielded pool all run on mainnet, where the pool carries TAC and cBTC. A relay posts private payments for a fee in the token paid, so your Bitcoin address does not show as the sender; shielding and withdrawing are posted from your own Bitcoin address and pay its Bitcoin fee. Signet keeps the full demo, with a test cBTC the faucet hands out for signet sats, for trying every step before you move real TAC.</p></details>
   </section>
 
-  <footer>
-    <a href="/secret-sats.pdf">Paper</a> ·
-    <a href="https://github.com/src-company/tacit">GitHub</a> ·
-    <a href="https://github.com/src-company/tacit/blob/main/SPEC.md#310-bitcoin-native-shielded-pool-live-on-mainnet-experimental">SPEC §3.10</a> ·
-    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool.md">Design</a> ·
-    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md">Security</a> ·
-    <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-pool-native-peg.md">Native peg</a> ·
-    <a href="/weld/keeper/">Community ops</a> ·
-    <a href="/">tacit.finance</a>
-  </footer>
 </main>
+
+  <footer>
+    <span id="foot-net">tacit sats · signet</span>
+    <nav aria-label="More">
+      <a href="/">All of Tacit</a>
+      <a href="/pay/">Pay privately</a>
+      <a href="/pay/eth/">Private ETH</a>
+      <a href="/tac/">TAC on Bitcoin</a>
+      <a href="/weld/stats/">Stats</a>
+      <a href="/classic.html">Classic app</a>
+      <a href="/weld/keeper/">Community ops</a>
+      <a href="/tacit-v1.pdf">Whitepaper</a>
+      <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" rel="noopener">Security</a>
+      <a href="https://github.com/src-company/tacit" rel="noopener">Source</a>
+    </nav>
+    <nav aria-label="Secret Sats papers">
+      <span>Secret Sats</span>
+      <a href="/secret-sats.pdf">Paper</a>
+      <a href="https://github.com/src-company/tacit/blob/main/SPEC.md#310-bitcoin-native-shielded-pool-live-on-mainnet-experimental" rel="noopener">SPEC §3.10</a>
+      <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool.md" rel="noopener">Design</a>
+      <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-shielded-pool-security.md" rel="noopener">Pool security</a>
+      <a href="https://github.com/src-company/tacit/blob/main/contracts/sp1/confidential/DESIGN-btc-pool-native-peg.md" rel="noopener">Native peg</a>
+    </nav>
+  </footer>
+</div>
 
 <div class="modal" id="pass-modal">
   <form id="pass-form" role="dialog" aria-modal="true" aria-labelledby="pass-title">
@@ -564,6 +635,6 @@ footer a:hover { color: var(--ink); }
   </form>
 </div>
 <div id="toast-container" aria-live="polite"></div>
-<script type="module" src="/sats/app.js?cb=e61e0f30"></script>
+<script type="module" src="/sats/app.js?cb=b0e7b8b0"></script>
 </body>
 </html>
