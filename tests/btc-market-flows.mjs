@@ -139,7 +139,9 @@ const shot = async (page, n) => { if (process.env.SHOTS) await page.screenshot({
 const calls = (page, name) => page.evaluate((n) => window.__w.calls.filter((c) => !n || c.name === n), name);
 const settle = (page, ms = 150) => page.waitForTimeout(ms);
 async function clickGo(page) { await page.click('[data-k=go]'); await settle(page); }
-async function modalPrimary(page) { await page.click('.bm-modal .bm-mfoot .bm-go'); }
+// The dialog's confirm button ignores clicks for its first 600 ms (a second Enter or tap right
+// after it opens must not confirm); a person reading the review takes longer than that.
+async function modalPrimary(page) { await page.waitForTimeout(650); await page.click('.bm-modal .bm-mfoot .bm-go'); }
 async function waitModal(page, re, timeout = 8000) {
   await page.waitForFunction((src) => new RegExp(src).test(document.querySelector('.bm-modal h2')?.textContent || ''), re.source, { timeout });
   return page.textContent('.bm-modal');
@@ -381,6 +383,51 @@ await test('selling counts only tokens not already in your open listings and off
   await page.click('[data-act=type][data-v=limit]'); await settle(page);
   await page.fill('[data-k=limit-price]', '300'); await page.fill('[data-k=amount]', '600'); await settle(page);
   assert.equal(await page.textContent('[data-k=go]'), 'Not enough TAC');
+});
+
+await test('a second Enter right after the review opens does not confirm the order', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '20000'); await settle(page);
+  await page.focus('[data-k=amount]');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'one review dialog');
+  assert.match(await page.textContent('.bm-modal'), /Buy 100 TAC/, 'still on the review');
+  assert.equal((await calls(page, 'takeAsk')).length + (await calls(page, 'takePreauthBatch')).length, 0, 'nothing was bought');
+  // a deliberate click once the dialog has been up is honored
+  await settle(page, 500);
+  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await waitModal(page, /Bought/);
+  assert.equal((await calls(page, 'takeAsk')).length, 1);
+});
+
+await test('only one review dialog is open at a time, even from the keyboard behind it', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '20000'); await settle(page);
+  await page.focus('[data-k=amount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1);
+  await page.focus('[data-k=amount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'a second Enter behind the dialog opens nothing');
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal((await page.$$('.bm-modal')).length, 0);
+  await page.focus('[data-k=amount]'); await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'closing it frees the ticket again');
+});
+
+await test('closing the review dialog returns the keyboard to where it was', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '20000'); await settle(page);
+  await page.focus('[data-k=amount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal(await page.evaluate(() => document.activeElement?.closest('.bm-modal') ? 'dialog' : 'page'), 'dialog');
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.k), 'amount', 'focus is back in the amount box');
 });
 
 await test('typing and focus survive live refreshes; a row click primes the ticket', async (page) => {

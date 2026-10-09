@@ -130,6 +130,9 @@ async function waitModal(page, re, timeout = 8000) {
   await page.waitForFunction((src) => new RegExp(src).test(document.querySelector('.bm-modal')?.textContent || ''), re.source, { timeout });
   return page.textContent('.bm-modal');
 }
+// The dialog's confirm button ignores clicks for its first 600 ms (a second Enter or tap right
+// after it opens must not confirm); a person reading the review takes longer than that.
+async function clickPrimary(page) { await page.waitForTimeout(650); await page.click('.bm-modal .bm-mfoot .bm-go'); }
 async function typeAmount(page, v) { await page.fill('[data-k=eamount]', v); await page.waitForTimeout(450); }
 
 async function test(name, fn) {
@@ -222,7 +225,7 @@ await test('buy: the review is what is sent — ETH as value, no approval, the r
   assert.match(m, /Confirm in your wallet.*Confirming on Ethereum/s);
   const floor = (await page.textContent('.bm-modal')).match(/At least([\d,]+) TAC/)[1];
   await page.evaluate(() => { const W = window.__w; W.logs = [{ address: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(64), '0x' + '11'.repeat(20).padStart(64, '0')], data: '0x' + (8765n * 10n ** 18n).toString(16).padStart(64, '0') }]; });
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Bought 8,765 TAC/);
   const sends = await calls(page, 'sendTx');
   assert.equal(sends.length, 1, 'one transaction, no approval for ETH in');
@@ -249,7 +252,7 @@ await test('sell: an allowance is granted first when short, then the swap; both 
   const m = await waitModal(page, /Sell 1,000 TAC/);
   assert.match(m, /Allow the venue to take your TACskipped if already allowed/);
   assert.match(m, /two transactions the first time/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Sold 1,000 TAC/);
   const sends = await calls(page, 'sendTx');
   assert.equal(sends.length, 2);
@@ -259,10 +262,10 @@ await test('sell: an allowance is granted first when short, then the swap; both 
   assert.match(await page.textContent('.bm-modal'), /Allow the venue to take your TAC.*Confirm in your wallet.*Confirming on Ethereum/s);
   // enough allowance already: one transaction
   await page.evaluate(() => { window.__w.allowance = 10n ** 30n; window.__w.calls = []; });
-  await page.click('.bm-modal .bm-mfoot .bm-go'); await settle(page);
+  await clickPrimary(page); await settle(page);
   await typeAmount(page, '10');
   await page.click('[data-k=ego]'); await waitModal(page, /Sell 10 TAC/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Sold 10 TAC/);
   assert.equal((await calls(page, 'sendTx')).length, 1);
   assert.match(await page.textContent('.bm-modal'), /already allowed/);
@@ -274,23 +277,23 @@ await test('a re-quote that falls below the reviewed floor asks first; stopping 
   await page.evaluate(() => { window.__w.freshDrift = 200n; });
   await typeAmount(page, '0.1');
   await page.click('[data-k=ego]'); await waitModal(page, /Buy 1,7\d\d TAC/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   const m = await waitModal(page, /The price moved/);
   assert.match(m, /You were shown≈ 1,7\d\d TAC.*It is now≈ 1,7\d\d TAC/s);
   assert.match(m, /Nothing has been sent/);
   await page.click('.bm-modal .bm-mfoot button:not(.bm-go)');
   await waitModal(page, /Nothing sent/);
   assert.equal((await calls(page, 'sendTx')).length, 0);
-  await page.click('.bm-modal .bm-mfoot .bm-go'); await settle(page);
+  await clickPrimary(page); await settle(page);
   // the page's quote was refreshed to the lower price
   assert.match(await page.textContent('[data-k=equote]'), /You get1,7\d\d TAC/);
   // continue path
   await page.click('[data-k=ego]'); await waitModal(page, /Buy 1,7\d\d TAC/);
   await page.evaluate(() => { window.__w.freshDrift = 400n; });
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /The price moved/);
   const shownNew = (await page.textContent('.bm-modal')).match(/It is now≈ ([\d,]+) TAC at least ([\d,]+)/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Bought/);
   const builds = await calls(page, 'build');
   const last = builds[builds.length - 1].args;
@@ -329,14 +332,14 @@ await test('a finished or failed swap dialog closes with Escape', async (page) =
   await page.click('[data-act=econnect]'); await settle(page, 300);
   await typeAmount(page, '0.2');
   await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Bought/);
   await page.keyboard.press('Escape'); await settle(page, 100);
   assert.equal(await page.$('.bm-modal'), null, 'Escape closes the result');
   await page.evaluate(() => { window.__w.sendFails = Object.assign(new Error('denied'), { code: 4001 }); });
   await typeAmount(page, '0.2');
   await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Nothing sent/);
   await page.keyboard.press('Escape'); await settle(page, 100);
   assert.equal(await page.$('.bm-modal'), null, 'Escape closes the failure too');
@@ -344,7 +347,7 @@ await test('a finished or failed swap dialog closes with Escape', async (page) =
   await page.evaluate(() => { window.__w.sendFails = null; window.__w.pending = true; });
   await typeAmount(page, '0.2');
   await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Confirming on Ethereum/); await settle(page, 200);
   await page.keyboard.press('Escape'); await settle(page, 100);
   assert.ok(await page.$('.bm-modal'), 'a swap in flight keeps its dialog');
@@ -357,7 +360,7 @@ await test('sell: if the winning venue changes after the allowance, the new venu
   await page.evaluate(() => { window.__w.flipVenueAfterBuild = true; });
   await typeAmount(page, '1000');
   await page.click('[data-k=ego]'); await waitModal(page, /Sell 1,000 TAC/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Sold 1,000 TAC|Nothing sent|Swap failed/);
   const sends = await calls(page, 'sendTx');
   const spenders = sends.filter((c) => /^0x095ea7b3/.test(c.args.data)).map((c) => '0x' + c.args.data.slice(10 + 24, 10 + 64));
@@ -383,12 +386,56 @@ await test('a zQuoter quote above the pools does not change the route: the revie
   await page.click('[data-k=ego]');
   const m = await waitModal(page, /Buy 8,\d{3} TAC/);
   assert.match(m, /RoutePrecision on Ethereum/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   await waitModal(page, /Bought/);
   assert.doesNotMatch(await page.textContent('.bm-modal'), /The price moved/);
   const builds = await calls(page, 'build');
   assert.ok(builds.every((c) => c.args.venue === 'precision'), 'every build is for the venue the review named');
   assert.equal((await calls(page, 'sendTx')).length, 1);
+});
+
+await test('a second Enter right after the review opens does not send the swap', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await typeAmount(page, '0.2');
+  await page.focus('[data-k=eamount]');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await settle(page, 400);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'one review dialog');
+  assert.match(await page.textContent('.bm-modal'), /Buy .* TAC/);
+  assert.equal((await calls(page, 'sendTx')).length, 0, 'nothing was sent');
+  await settle(page, 500);
+  await clickPrimary(page);
+  await waitModal(page, /Bought/);
+  assert.equal((await calls(page, 'sendTx')).length, 1);
+});
+
+await test('only one swap review is open at a time, even from the keyboard behind it', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await typeAmount(page, '0.2');
+  await page.focus('[data-k=eamount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1);
+  await page.focus('[data-k=eamount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'a second Enter behind the dialog opens nothing');
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal((await page.$$('.bm-modal')).length, 0);
+  await page.focus('[data-k=eamount]'); await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal((await page.$$('.bm-modal')).length, 1, 'closing it frees the ticket again');
+});
+
+await test('closing the swap review returns the keyboard to where it was', async (page) => {
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=econnect]'); await settle(page, 300);
+  await typeAmount(page, '0.2');
+  await page.focus('[data-k=eamount]');
+  await page.keyboard.press('Enter'); await settle(page, 300);
+  assert.equal(await page.evaluate(() => document.activeElement?.closest('.bm-modal') ? 'dialog' : 'page'), 'dialog');
+  await page.keyboard.press('Escape'); await settle(page, 100);
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.k), 'eamount', 'focus is back in the amount box');
 });
 
 await test('a wallet rejection sends nothing and says so plainly; a failing simulation never reaches the wallet', async (page) => {
@@ -397,15 +444,15 @@ await test('a wallet rejection sends nothing and says so plainly; a failing simu
   await typeAmount(page, '0.2');
   await page.evaluate(() => { window.__w.sendFails = Object.assign(new Error('MetaMask Tx Signature: User denied transaction signature.'), { code: 4001 }); });
   await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   const m = await waitModal(page, /Nothing sent/);
   assert.match(m, /Cancelled in your wallet — nothing was sent/);
   assert.doesNotMatch(m, /MetaMask/);
-  await page.click('.bm-modal .bm-mfoot .bm-go'); await settle(page);
+  await clickPrimary(page); await settle(page);
   assert.equal(await page.inputValue('[data-k=eamount]'), '0.2', 'the amount stays for a retry');
   await page.evaluate(() => { window.__w.sendFails = null; window.__w.simFails = 'execution reverted'; window.__w.simData = '0x08c379a0' + '20'.padStart(64, '0') + '0e'.padStart(64, '0') + '546f6f206c6974746c65206f7574'.padEnd(64, '0'); window.__w.calls = []; });
   await page.click('[data-k=ego]'); await waitModal(page, /Buy/);
-  await page.click('.bm-modal .bm-mfoot .bm-go');
+  await clickPrimary(page);
   const m2 = await waitModal(page, /Nothing sent/);
   assert.match(m2, /It would fail: Too little out/);
   assert.equal((await calls(page, 'sendTx')).length, 0);

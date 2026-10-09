@@ -21,6 +21,10 @@ import {
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 
 const DEBOUNCE_MS = 300;
+// The review's confirm button takes focus when the dialog opens, and Enter in the amount box
+// is what opens it, so a second Enter (a double tap, or key repeat) would land on it unread.
+// The button ignores activation for this long after the dialog appears, and ignores held keys.
+const CONFIRM_GRACE_MS = 600;
 const BG_REQUOTE_MS = 20_000;
 const SPOT_REFRESH_MS = 30_000;
 const ZQUOTER_WAIT_MS = 4000;
@@ -574,13 +578,17 @@ function createLane(host, opts0) {
     document.body.appendChild(wrap);
     const body = wrap.querySelector('.bm-mbody'), foot = wrap.querySelector('.bm-mfoot');
     let onKey = null, escLocked = false;
+    const openedAt = Date.now();
+    const prevFocus = document.activeElement;
     return {
       body, foot,
       set(html) { body.innerHTML = html; },
       buttons(btns) {
         foot.innerHTML = btns.map((b, i) => `<button type="button" data-i="${i}" class="${b.primary ? 'bm-go' : ''}"${b.disabled ? ' disabled' : ''}>${esc(b.label)}</button>`).join('');
         foot.querySelectorAll('button').forEach((n) => {
+          n.onkeydown = (e) => { if (e.repeat) e.preventDefault(); };
           n.onclick = () => {
+            if (n.classList.contains('bm-go') && Date.now() - openedAt < CONFIRM_GRACE_MS) return;
             if (btns[+n.dataset.i].once !== false) {
               foot.querySelectorAll('button').forEach((x) => { x.disabled = true; });
               if (n.classList.contains('bm-go')) n.textContent = 'Working…';
@@ -590,7 +598,12 @@ function createLane(host, opts0) {
         });
         foot.querySelector('.bm-go')?.focus();
       },
-      close() { if (onKey) document.removeEventListener('keydown', onKey); wrap.remove(); },
+      close() {
+        if (onKey) document.removeEventListener('keydown', onKey);
+        wrap.remove();
+        // Hand the keyboard back to what had it (the amount box), not to the page body.
+        try { if (prevFocus && prevFocus.isConnected) prevFocus.focus({ preventScroll: true }); } catch {}
+      },
       onEscape(fn) { onKey = (e) => { if (e.key === 'Escape' && !escLocked) fn(); }; document.addEventListener('keydown', onKey); },
       lockEscape() { escLocked = true; },
       unlockEscape() { escLocked = false; },
@@ -612,7 +625,8 @@ function createLane(host, opts0) {
   }
 
   async function review() {
-    if (S.busy || S.destroyed) return;
+    // The page behind a dialog is still reachable by keyboard; one review at a time.
+    if (S.busy || S.destroyed || document.querySelector('.bm-modal')) return;
     if (el.go.dataset.kind === 'connect') return connect();
     const v = quoteView();
     const amt = parseUnitsStr(S.amountStr);

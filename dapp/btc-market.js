@@ -25,6 +25,10 @@ const REFRESH_TIMEOUT_MS = 15_000;
 const STATS_REFRESH_MS = 60_000;
 const SELL_TRACK_MS = 8_000;
 const MAX_REROUTES = 3;
+// A dialog's confirm button takes focus when it opens, and Enter in the amount box is what
+// opens it, so a second Enter (a double tap, or key repeat) would land on it unread. The
+// button ignores activation for this long after the dialog appears, and ignores held keys.
+const CONFIRM_GRACE_MS = 600;
 const LADDER_ROWS = 8;
 // Orders this far from the last trade are folded away until "show all" (fat-finger
 // bids at a fraction of a sat, asks at many times the price).
@@ -1083,6 +1087,8 @@ function createMarket(host, ctx) {
     const foot = wrap.querySelector('.bm-mfoot');
     let onKey = null;
     let escLocked = false;
+    const openedAt = Date.now();
+    const prevFocus = document.activeElement;
     const api = {
       body, foot,
       set(html) {
@@ -1093,7 +1099,9 @@ function createMarket(host, ctx) {
       buttons(btns) {
         foot.innerHTML = btns.map((b, i) => `<button type="button" data-i="${i}" class="${b.primary ? 'bm-go' : ''}"${b.disabled ? ' disabled' : ''}>${esc(b.label)}</button>`).join('');
         foot.querySelectorAll('button').forEach((n) => {
+          n.onkeydown = (e) => { if (e.repeat) e.preventDefault(); };
           n.onclick = () => {
+            if (n.classList.contains('bm-go') && Date.now() - openedAt < CONFIRM_GRACE_MS) return;
             if (btns[+n.dataset.i].once !== false) {
               foot.querySelectorAll('button').forEach((x) => { x.disabled = true; });
               // A slow unlock prompt or network round-trip can leave the button sitting
@@ -1106,7 +1114,12 @@ function createMarket(host, ctx) {
         const primary = foot.querySelector('.bm-go');
         if (primary) primary.focus();
       },
-      close() { if (onKey) document.removeEventListener('keydown', onKey); wrap.remove(); },
+      close() {
+        if (onKey) document.removeEventListener('keydown', onKey);
+        wrap.remove();
+        // Hand the keyboard back to what had it (the amount box), not to the page body.
+        try { if (prevFocus && prevFocus.isConnected) prevFocus.focus({ preventScroll: true }); } catch {}
+      },
       onEscape(fn) { onKey = (e) => { if (e.key === 'Escape' && !escLocked) fn(); }; document.addEventListener('keydown', onKey); },
       lockEscape() { escLocked = true; },
       unlockEscape() { escLocked = false; },
@@ -1123,7 +1136,8 @@ function createMarket(host, ctx) {
   const planSig = (q) => (q?.plan ? q.plan.fills.map((f) => (f.ask || f.bid).id + ':' + f.amount + ':' + f.sats).join(',') : String(q?.shape?.totalSats ?? ''));
   let reviewing = false;
   async function review() {
-    if (S.busy || S.destroyed || reviewing) return;
+    // The page behind a dialog is still reachable by keyboard; one review at a time.
+    if (S.busy || S.destroyed || reviewing || document.querySelector('.bm-modal')) return;
     const m = me();
     if (!m) { await ctx.unlock(); refresh({ soft: true }); return; }
     let q = computeQuote();
