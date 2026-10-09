@@ -9,12 +9,12 @@
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
-<meta name="description" content="Private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin. The Tacit essentials on one page.">
+<meta name="description" content="Private DeFi on Bitcoin and Ethereum. Assets issued on Bitcoin with hidden amounts, a zero-knowledge bridge to a confidential pool on Ethereum, private ETH, TAC, points, farms and dollars borrowed against Bitcoin.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/">
 <meta property="og:title" content="tacit">
-<meta property="og:description" content="Private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin.">
+<meta property="og:description" content="Private DeFi on Bitcoin and Ethereum: private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
@@ -212,8 +212,10 @@ a.di { color: inherit; text-decoration: none; }
 .hero { padding: 64px 0 44px; }
 .hero h1 { font: 400 clamp(42px, 8vw, 72px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 22px; }
 .hero h1 em { font-style: italic; }
-.hero p { color: var(--mute); margin: 0; max-width: 44ch; }
-.shelf { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 30px; }
+.hero p { color: var(--mute); margin: 0; max-width: 54ch; }
+.shelf { display: flex; flex-wrap: wrap; gap: 10px 32px; margin-top: 30px; }
+.shelf-g { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.shelf-g small { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--mute); }
 .shelf button { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mute); background: none; border: 0; padding: 4px 0; cursor: pointer; }
 @media (hover: hover) { .shelf button:hover { color: var(--ink); } }
 .shelf .tk { width: 24px; height: 24px; }
@@ -294,6 +296,22 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── first steps: a first visit, then an open key until it holds anything private ── */
 .start { margin: -14px 0 30px; padding: 22px 24px; background: var(--card); border: 1px solid var(--hair); }
+
+/* ── how it fits together: Bitcoin, the bridge, Ethereum ── */
+.map { margin: -10px 0 30px; padding-top: 22px; border-top: 1px solid var(--hair); }
+.map h2 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); margin: 0 0 18px; }
+.map ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px 28px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.map li { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-content: start; gap: 5px 12px; font-size: 13px; }
+.map li > .tk, .map li > .pair { grid-row: span 3; width: 28px; height: 28px; }
+.map li .pair { position: relative; margin: 0; }
+.map li .pair .tk { position: absolute; top: 0; left: 0; width: 19px; height: 19px; }
+.map li .pair .tk + .tk { top: auto; left: auto; right: 0; bottom: 0; box-shadow: 0 0 0 2px var(--paper); }
+.map li b { font-weight: 500; }
+.map li p { margin: 0; color: var(--mute); line-height: 1.5; }
+.map li a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
+@media (hover: hover) { .map li a:hover { text-decoration: underline; } }
+/* Someone who already holds something here has a dashboard instead. */
+.shell:has(#dash:not([hidden])) .map { display: none; }
 .start-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
 .start h2 { font: 400 26px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .start-h .link { flex: none; padding: 8px 0; margin: -8px 0; }
@@ -309,15 +327,19 @@ a.di { color: inherit; text-decoration: none; }
 .start .btn { width: auto; min-width: 180px; display: inline-flex; }
 
 /* ── tiles ── */
-.tiles { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.tile { display: flex; flex-direction: column; gap: 8px; min-height: 250px; padding: 24px; color: inherit; text-decoration: none;
+.group + .group { margin-top: 36px; }
+.group-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0 0 12px; }
+.group-h h2 { font: 400 26px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.group-h p { margin: 0; font-size: 12.5px; color: var(--mute); }
+.tiles { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.tile { display: flex; flex-direction: column; gap: 8px; min-height: 250px; padding: 22px 20px; color: inherit; text-decoration: none;
   background: var(--card); border: 1px solid var(--hair); transition: border-color .18s, transform .18s, box-shadow .18s; }
 @media (hover: hover) { .tile:hover { border-color: var(--ink); transform: translateY(-2px); box-shadow: var(--lift); } }
 .tile .pair { margin-bottom: 18px; }
-.tile h2 { font: 400 32px/1.02 var(--serif); letter-spacing: -.01em; margin: 0; }
+.tile h3 { font: 400 28px/1.02 var(--serif); letter-spacing: -.01em; margin: 0; }
 .tile p { color: var(--mute); font-size: 13px; line-height: 1.55; margin: 0; }
 .tile-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--hair); font-size: 12.5px; min-width: 0; }
-.tile-foot span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-foot span:nth-child(2) { min-width: 0; line-height: 1.35; }
 .tile-foot .go { margin-left: auto; transition: transform .18s; }
 @media (hover: hover) { .tile:hover .go { transform: translateX(3px); } }
 
@@ -562,16 +584,10 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .hero { padding: 40px 0 32px; }
   .strip .fig > .tk { width: 26px; height: 26px; }
   .strip + .hero { padding-top: 32px; }
-  .tiles { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .paycard { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 10px; padding: 18px; }
   .paycard h2 { font-size: 26px; }
-  .tile { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "logo title" "logo text" "foot foot"; gap: 4px 16px; min-height: 0; padding: 18px; }
-  .tile .pair { grid-area: logo; margin: 2px 0 0; align-self: start; }
-  .tile .tk { width: 44px; height: 44px; }
-  .tile .pair .tk + .tk { margin-left: -12px; box-shadow: 0 0 0 2px var(--card); }
-  .tile h2 { grid-area: title; font-size: 26px; }
-  .tile p { grid-area: text; }
-  .tile-foot { grid-area: foot; margin-top: 10px; padding-top: 12px; }
+  .map ol { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .map { margin-top: -4px; }
   dialog.sheet { width: 100vw; max-width: 100vw; margin: auto 0 0; max-height: 92vh; max-height: 92dvh; border-width: 1px 0 0; }
   .sheet-in { padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
   .big { font-size: 46px; }
@@ -581,6 +597,17 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .start .btn { width: 100%; }
   .dash-g { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .di-v { font-size: 17px; white-space: normal; overflow-wrap: anywhere; }
+}
+@media (max-width: 800px) {
+  .tiles { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .tile { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "logo title" "logo text" "foot foot"; gap: 4px 16px; min-height: 0; padding: 18px; }
+  .tile .pair { grid-area: logo; margin: 2px 0 0; align-self: start; }
+  .tile .tk { width: 44px; height: 44px; }
+  .tile .pair .tk + .tk { margin-left: -12px; box-shadow: 0 0 0 2px var(--card); }
+  .tile h3 { grid-area: title; font-size: 26px; }
+  .tile p { grid-area: text; }
+  .tile-foot { grid-area: foot; margin-top: 10px; padding-top: 12px; }
+  .group + .group { margin-top: 28px; }
 }
 @media (max-width: 400px) {
   .brand .tk { width: 26px; height: 26px; }
@@ -650,22 +677,41 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 
   <section class="hero" aria-labelledby="hero-h">
     <h1 id="hero-h">Private DeFi on<br><em>Bitcoin</em> and Ethereum.</h1>
-    <p>Amounts and owners stay hidden. Every balance recovers from one key.</p>
+    <p>Tacit issues assets on Bitcoin and carries them into a confidential pool on Ethereum by zero-knowledge proof, and back. Amounts and owners stay hidden. Every balance recovers from one key.</p>
     <div class="shelf" aria-label="Assets">
-      <button type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
-      <button type="button" data-asset="tac" aria-haspopup="dialog" title="What TAC is"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
-      <button type="button" data-asset="cbtc" aria-haspopup="dialog" title="What cBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
-      <button type="button" data-asset="cusd" aria-haspopup="dialog" title="What cUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
-      <button type="button" data-asset="tacbtc" aria-haspopup="dialog" title="What tacBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</button>
-      <button type="button" data-asset="tacusd" aria-haspopup="dialog" title="What tacUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</button>
+      <span class="shelf-g"><small>Private notes</small>
+        <button type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
+        <button type="button" data-asset="tac" aria-haspopup="dialog" title="What TAC is"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
+        <button type="button" data-asset="cbtc" aria-haspopup="dialog" title="What cBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
+        <button type="button" data-asset="cusd" aria-haspopup="dialog" title="What cUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
+      </span>
+      <span class="shelf-g"><small>Public ERC-20s</small>
+        <button type="button" data-asset="tacbtc" aria-haspopup="dialog" title="What tacBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</button>
+        <button type="button" data-asset="tacusd" aria-haspopup="dialog" title="What tacUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</button>
+      </span>
     </div>
+  </section>
+
+  <section class="map" aria-labelledby="map-h">
+    <h2 id="map-h">How it fits together</h2>
+    <ol>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><b>On Bitcoin</b>
+        <p>Tacit issues assets like TAC in Bitcoin transactions, with their amounts hidden. Anyone can rebuild the same state from the chain alone.</p>
+        <a href="/tac/">TAC on Bitcoin →</a></li>
+      <li><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span><b>Between the chains</b>
+        <p>A zero-knowledge proof of Bitcoin’s own blocks carries a note into the pool on Ethereum, and the pool’s state back. No federation or multisig signs anything.</p>
+        <a href="#bridge" data-link="bridge">Bridge TAC →</a></li>
+      <li><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><b>On Ethereum</b>
+        <p>One immutable pool holds tETH, TAC, cBTC and cUSD as private notes: pay, swap, farm and borrow with nobody seeing how much or to whom. ETH-only pools on Ethereum, Base and Robinhood Chain take private payments too.</p>
+        <a href="#private" data-link="private">Open the pool →</a></li>
+    </ol>
   </section>
 
   <section class="start" id="start" aria-labelledby="start-h" hidden>
     <div class="start-h"><h2 id="start-h">New here? Three steps.</h2><button class="link" type="button" id="start-x" hidden>Hide</button></div>
     <ol>
       <li data-step="1"><b>Open a wallet</b><span>Sign in with MetaMask or a Bitcoin wallet, or create one with Face ID or Touch ID.</span></li>
-      <li data-step="2"><b>Make ETH private</b><span>One transaction moves it in. From then on, amounts and recipients stay hidden.</span></li>
+      <li data-step="2"><b>Make ETH private</b><span>One transaction moves it into the Tacit pool as tETH. From then on, amounts and recipients stay hidden.</span></li>
       <li data-step="3"><b>Use it</b><span><a href="/pay/">Pay anyone privately</a>, <a href="#points" data-link="points">earn TAC</a>, or <a href="#borrow" data-link="borrow">borrow against bitcoin</a>. One key restores it all.</span></li>
     </ol>
     <button class="btn" type="button" id="start-go">Get started</button>
@@ -690,43 +736,53 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     </ul>
   </section>
 
-  <main class="tiles">
+  <main>
+  <section class="group" aria-labelledby="g-use">
+    <div class="group-h"><h2 id="g-use">Use it</h2><p>Private balances on Bitcoin and Ethereum, all from one key.</p></div>
+    <div class="tiles">
     <a class="tile" href="#eth" data-open="eth" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span>
-      <h2>Private ETH</h2>
-      <p>Make your ETH private, then send it to anyone without the world seeing how much or to whom. Swap, farm and borrow with it too.</p>
+      <h3>Private ETH</h3>
+      <p>Make your ETH private. In the Tacit pool it is tETH: send, swap, farm and borrow with it, and nobody sees how much or to whom. For payments alone there are also ETH pools on Ethereum, Base and Robinhood Chain.</p>
       <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">Ethereum, Base and Robinhood Chain</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#bitcoin" data-open="btc" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
-      <h2>Bitcoin</h2>
+      <h3>Bitcoin</h3>
       <p>Your key’s own Bitcoin wallet. Hold BTC and TAC on Bitcoin, send them to anyone, and get paid privately at your tacit1 address.</p>
       <span class="tile-foot"><span class="dot" data-dot="btc"></span><span data-foot="btc">Private payments on Bitcoin</span><span class="go" aria-hidden="true">→</span></span>
     </a>
+    <a class="tile" href="#borrow" data-open="borrow" aria-haspopup="dialog">
+      <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span>
+      <h3>Borrow on Bitcoin</h3>
+      <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend, backed by an ETH bond.</p>
+      <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow">No one else ever holds your BTC</span><span class="go" aria-hidden="true">→</span></span>
+    </a>
+    </div>
+  </section>
+  <section class="group" aria-labelledby="g-earn">
+    <div class="group-h"><h2 id="g-earn">Earn TAC</h2><p>Three ways to get Tacit’s asset on Ethereum: the airdrop, points every day, and farming.</p></div>
+    <div class="tiles">
     <a class="tile" href="#tac" data-open="tac" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
-      <h2>TAC</h2>
-      <p>Claim your share of the one-million-TAC airdrop, or buy TAC with ETH.</p>
+      <h3>TAC</h3>
+      <p>Tacit’s own asset, issued once on Bitcoin with a fixed supply. Claim your share of the one-million-TAC airdrop, buy TAC with ETH, or bridge TAC you hold on Bitcoin.</p>
       <span class="tile-foot"><span class="dot" data-dot="tac"></span><span data-foot="tac">Claim or buy</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#points" data-open="pts" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg></span>
-      <h2>Points</h2>
+      <h3>Points</h3>
       <p>Earn TAC just for using Tacit: making ETH private, swapping, borrowing and more. Up to <span data-pgm="pot">1,111</span> TAC is shared out every day.</p>
       <span class="tile-foot"><span class="dot" data-dot="pts"></span><span data-foot="pts">100,000 TAC over 90 days</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#farm" data-open="farm" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
-      <h2>Farm TAC</h2>
+      <h3>Farm TAC</h3>
       <p>Put ETH and TAC in a pool, public or private, and earn TAC every second. While the pools are small, early deposits earn the most.</p>
       <span class="tile-foot"><span class="dot live" data-dot="farm"></span><span data-foot="farm">Reading farms…</span><span class="go" aria-hidden="true">→</span></span>
     </a>
-    <a class="tile" href="#borrow" data-open="borrow" aria-haspopup="dialog">
-      <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span>
-      <h2>Borrow on Bitcoin</h2>
-      <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend, backed by an ETH bond.</p>
-      <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow">No one else ever holds your BTC</span><span class="go" aria-hidden="true">→</span></span>
-    </a>
+    </div>
+  </section>
   </main>
 
   <footer>
