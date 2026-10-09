@@ -170,6 +170,11 @@ globalThis.fetch = async (url, opts = {}) => {
   if (method === 'GET' && /\/tx\/[0-9a-f]{64}$/.test(u)) {
     const wanted = u.match(/\/tx\/([0-9a-f]{64})$/)[1];
     if (parentTxByTxid.has(wanted)) return json(parentTxByTxid.get(wanted));
+    // The buyer's funding UTXOs come from plain P2WPKH spends, which the holdings scan reads as plain sats
+    // (a UTXO it cannot read is held back from funding).
+    if (buyerUtxos.some(b => b.txid === wanted)) {
+      return json({ txid: wanted, vin: [{ txid: '00'.repeat(32), vout: 0, witness: ['30'.repeat(71), bytesToHex(BUYER_PUB)], prevout: { scriptpubkey_type: 'v0_p2wpkh' } }], vout: [], status: { confirmed: false } });
+    }
     if (broadcasts.length > 0) return json({ txid: wanted, status: { confirmed: false } });
     return json({ error: 'Not found' }, 404);
   }

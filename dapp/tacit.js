@@ -17142,6 +17142,11 @@ async function _fetchSwapAccepted(txidHex) {
       return fb;
     }
     const j = await r.json();
+    // A receipt or change record is used only with a 32-byte asset id and a compressed-point commitment.
+    const note = (x) => {
+      const aid = String(x?.asset_id || '').toLowerCase(), c = String(x?.commitment || '').toLowerCase();
+      return /^[0-9a-f]{64}$/.test(aid) && /^0[23][0-9a-f]{64}$/.test(c) ? { ...x, asset_id: aid, commitment: c } : null;
+    };
     // Outcome fields: 'execute' | 'passthrough'.
     // Legacy strict-algorithm accepts report 'execute' with no
     // delta_out_actual (they executed exactly at their declared values).
@@ -17154,8 +17159,8 @@ async function _fetchSwapAccepted(txidHex) {
       passReason: j.pass_reason || null,
       deltaOutActual: j.delta_out_actual != null ? BigInt(j.delta_out_actual) : null,
       refundAmount: j.refund_amount != null ? BigInt(j.refund_amount) : null,
-      receipt: j.receipt || null,
-      change: j.change || null,
+      receipt: note(j.receipt),
+      change: note(j.change),
       scannedHeight: Number.isInteger(j.scanned_height) ? j.scanned_height : null,
     };
     _ammSwapAcceptedCache.set(txidHex, entry);
@@ -20369,9 +20374,11 @@ async function _scanHoldingsImpl() {
     }
   }
 
+  // Wallet UTXOs this scan could not read or classify; the plain-sats pickers hold them back.
+  holdings.unclassified = new Set();
   for (const u of utxos) {
     const tx = await fetchTx(u.txid);
-    if (!tx || !tx.vin || !tx.vin[0]) continue;
+    if (!tx || !tx.vin || !tx.vin[0]) { holdings.unclassified.add(`${u.txid}:${u.vout}`); continue; }
     // vin[0]'s envelope, or a pool spend on a later input, as validateOutpoint reads the tx.
     const env = _txOutputEnvelope(tx);
     if (!env) continue;
@@ -20627,6 +20634,7 @@ async function _scanHoldingsImpl() {
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = hexToBytes(x.commitmentHex);
     } else continue;
+    if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) { holdings.unclassified.add(`${u.txid}:${u.vout}`); continue; }
 
     if (!holdings.has(assetIdHex)) {
       holdings.set(assetIdHex, {
@@ -21511,21 +21519,24 @@ async function _scanHoldingsImpl() {
         // still-unconfirmed scan hit, and even once confirmed this stays cheap: getTx
         // caches confirmed txs (mem + IDB) forever, so a repeat rehydration costs no
         // extra network round-trip beyond the outspend check already made here.
-        let txStatus = null;
-        try { const t = await getTx(txid); txStatus = t?.status || null; } catch {}
-        try {
-          const os = await getOutspend(txid, vout);
-          return { k, alive: !(os && os.spent === true), txStatus };
-        } catch { return { k, alive: true, txStatus }; }  // fail-open on transient errors; classifier will re-check next scan
+        let txStatus = null, tx = null;
+        try { tx = await fetchTx(txid); txStatus = tx?.status || null; } catch {}
+        let alive = true;  // fail-open on transient errors; classifier will re-check next scan
+        try { const os = await getOutspend(txid, vout); alive = !(os && os.spent === true); } catch {}
+        // A credit counts only once its output validates like any other UTXO.
+        const valid = alive && await validateOutpoint(txid, vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut, validatedReasons)
+          .catch(() => { validatedReasons.set(`${txid}:${vout}`, _REASON_FETCH_FAILED); return false; });
+        return { k, alive, txStatus, tx, valid };
       });
       const results = await Promise.all(liveChecks);
-      for (const { k, alive, txStatus } of results) {
+      for (const { k, alive, txStatus, tx, valid } of results) {
         const e = credits[k];
         if (!e) continue;
         const [txid, voutStr] = k.split(':');
         const vout = parseInt(voutStr, 10);
         if (!alive) { removeStealthCredit(txid, vout); continue; }
         const aid = e.assetIdHex;
+        if (!/^[0-9a-f]{64}$/.test(String(aid || ''))) continue;
         const meta = getAssetMeta(aid);
         let h = holdings.get(aid);
         if (!h) {
@@ -21540,30 +21551,53 @@ async function _scanHoldingsImpl() {
         // De-dupe: if the classical loop already added this UTXO (e.g. a
         // self-stealth-to-self that came back to wallet.pub), skip.
         if (h.utxos.some(x => x.utxo.txid === txid && x.utxo.vout === vout)) continue;
-        const amount = BigInt(e.amount);
-        if (!e.amountBlinding) continue;
-        const blinding = BigInt('0x' + e.amountBlinding);
-        const commitment = e.commitmentHex
-          ? hexToBytes(e.commitmentHex)
-          : null;
-        // derive tweaked_sk on the fly from (wallet.priv, b). Stored
-        // `stealthBlindingHex` is `b`; tweaked_sk itself never hits disk.
-        let stealthTweakedSk = null;
-        if (e.stealthBlindingHex) {
+        try {
+          const amount = BigInt(e.amount);
+          if (!e.amountBlinding) continue;
+          const blinding = BigInt('0x' + e.amountBlinding);
+          // derive tweaked_sk on the fly from (wallet.priv, b). Stored
+          // `stealthBlindingHex` is `b`; tweaked_sk itself never hits disk.
+          let stealthTweakedSk = null;
+          if (e.stealthBlindingHex) {
+            try {
+              const b = BigInt('0x' + e.stealthBlindingHex);
+              stealthTweakedSk = bytesToHex(computeStealthTweakedSk({ underlyingPriv: wallet.priv, blinding: b }));
+            } catch { stealthTweakedSk = null; }
+          }
+          // The commitment, value and script are the transaction's own: the stored credit counts only when it
+          // opens that commitment at an output paying the key it re-derives. One that could not be checked waits in
+          // `unverified` and is checked again next scan, as the loop above treats an unverifiable UTXO.
+          const out = tx?.vout?.[vout];
+          const env = tx ? _txOutputEnvelope(tx) : null;
+          const dec = env?.opcode === T_CXFER ? decodeCXferPayload(env.payload)
+                    : env?.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload) : null;
+          const commitment = dec && vout < dec.outputs.length ? dec.outputs[vout].commitment
+                           : (/^0[23][0-9a-f]{64}$/.test(String(e.commitmentHex || '')) ? hexToBytes(e.commitmentHex) : null);
+          const utxo = { txid, vout, value: Number.isInteger(out?.value) ? out.value : DUST, status: txStatus || {} };
+          if (!valid) {
+            const blockTime = Number(txStatus?.block_time || 0);
+            const fresh = !txStatus?.confirmed || (blockTime > 0 && Math.floor(Date.now() / 1000) - blockTime < 30 * 60);
+            if (!tx || validatedReasons.get(`${txid}:${vout}`) === _REASON_FETCH_FAILED || fresh) h.unverified.push({ utxo, commitment });
+            else h.inflated.push({ utxo, commitment });
+            continue;
+          }
+          let opens = false;
           try {
-            const b = BigInt('0x' + e.stealthBlindingHex);
-            stealthTweakedSk = bytesToHex(computeStealthTweakedSk({ underlyingPriv: wallet.priv, blinding: b }));
-          } catch { stealthTweakedSk = null; }
-        }
-        h.balance += amount;
-        h.utxos.push({
-          utxo: { txid, vout, value: DUST, status: txStatus || {} },
-          amount, blinding,
-          commitment,
-          senderPubHex: e.senderPubHex || null,
-          stealthTweakedSk,
-          blockTime: txStatus?.block_time || e.blockTime || null,
-        });
+            opens = !!dec && bytesToHex(dec.assetId) === aid && !!stealthTweakedSk
+              && String(out?.scriptpubkey || '').toLowerCase() === bytesToHex(p2wpkhScript(secp.getPublicKey(hexToBytes(stealthTweakedSk), true)))
+              && pedersenCommit(amount, blinding).equals(bytesToPoint(commitment));
+          } catch { opens = false; }
+          if (!opens) { h.ghosts.push({ utxo, commitment }); continue; }
+          h.balance += amount;
+          h.utxos.push({
+            utxo,
+            amount, blinding,
+            commitment,
+            senderPubHex: e.senderPubHex || null,
+            stealthTweakedSk,
+            blockTime: txStatus?.block_time || e.blockTime || null,
+          });
+        } catch (err) { console.warn('stealth credit', k, 'could not be read:', err); }
       }
     }
   } catch (err) { console.warn('stealth-credit rehydration failed:', err); }
@@ -21583,7 +21617,7 @@ async function _scanHoldingsImpl() {
   // transition without a UTXO edit (pmint credit at depth ≥ 3, worker-side
   // dclaim credit), so we re-scan when present. Ghosts and clean h.utxos[]
   // entries are stable and don't trigger re-scan.
-  const hasUnresolved = [...holdings.values()].some(h =>
+  const hasUnresolved = holdings.unclassified.size > 0 || [...holdings.values()].some(h =>
     (h.pending && h.pending.length > 0) ||
     (h.inflated && h.inflated.length > 0) ||
     // unverified UTXOs can transition to valid on retry (transient fetch
@@ -25614,6 +25648,8 @@ async function farmRecoverPositions({ onProgress = null } = {}) {
       try { farmRec = await farmActions.fetchFarm(bytesToHex(dec.farmId)); } catch { continue; }
       if (!farmRec || !farmRec.pool_id) continue;
       const rewardAssetIdHex = String(farmRec.reward_asset_id || '').replace(/^0x/, '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(String(farmRec.pool_id).replace(/^0x/, '').toLowerCase())) continue;
+      if (isHarvest && !/^[0-9a-f]{64}$/.test(rewardAssetIdHex)) continue;
       let openings = [];
       if (isUnbond) {
         openings = _farmRecovery.recoverUnbond(env.payload, { poolId: farmRec.pool_id });
@@ -29224,18 +29260,27 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
       senderPubHex,
     });
   }
-  if (!merge || discovered.length === 0) return discovered;
+  if (discovered.length === 0) return discovered;
 
-  // Persist the recovered opening so future scans recognize the (txid, vout).
-  // (The holdings cache itself is rebuilt from scratch on every scanHoldings;
-  // the persistent opening + the explicit stealth-utxo list survive.)
+  // A note counts only once its output validates like any other (kernel, range proof, asset ancestry). One whose
+  // check could not finish, or that is too new to judge, is kept as a stealth credit for the next holdings scan to
+  // check again, and the call asks to be retried; one that fails on a settled transfer is not counted.
+  const persistedTrue = _getPersistedValidatedTrue();
+  const validatedSet = new Map(persistedTrue);
+  const reasons = new Map();
+  const blockTime = Number(tx.status?.block_time || 0);
+  const settled = !!tx.status?.confirmed && blockTime > 0 && Math.floor(Date.now() / 1000) - blockTime >= 30 * 60;
+  const counted = [], unchecked = [];
   for (const d of discovered) {
-    // Dedupe the Activity stamp permanently, independent of the credit store: a credit is legitimately
-    // deleted the moment its UTXO is spent (removeStealthCredit, via the rehydration liveness check), but
-    // the underlying receive transaction is still a real, discoverable payment — a rescan after the note is
-    // spent would otherwise find "no live credit" and log the same receive again, repeating on every later
-    // rescan. isStealthActivityLogged never clears on spend, so this fires exactly once per (txid, vout).
-    const alreadySeen = isStealthActivityLogged(d.txid, d.vout);
+    let reason = null;
+    try {
+      if (await validateOutpoint(d.txid, d.vout, validatedSet, getTx, 0, null, null, null, reasons)) { counted.push(d); continue; }
+      reason = reasons.get(`${d.txid}:${d.vout}`) || null;
+    } catch { reason = _REASON_FETCH_FAILED; }
+    if (reason === _REASON_FETCH_FAILED || !settled) unchecked.push(d);
+  }
+  for (const [k, ok] of validatedSet) if (ok === true) persistedTrue.set(k, true);
+  const keep = (d) => {
     recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, d.blinding);
     recordStealthCredit({
       txidHex: d.txid, vout: d.vout, assetIdHex: d.assetIdHex,
@@ -29246,6 +29291,25 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
       senderPubHex: d.senderPubHex,
       blockTime: tx.status?.block_time || null,
     });
+  };
+  const notChecked = () => Object.assign(new Error('That transfer could not be checked against Bitcoin just now. Try again in a minute.'), { again: true });
+  if (merge) for (const d of unchecked) keep(d);
+  if (!merge || counted.length === 0) {
+    if (unchecked.length) throw notChecked();
+    return counted;
+  }
+
+  // Persist the recovered opening so future scans recognize the (txid, vout).
+  // (The holdings cache itself is rebuilt from scratch on every scanHoldings;
+  // the persistent opening + the explicit stealth-utxo list survive.)
+  for (const d of counted) {
+    // Dedupe the Activity stamp permanently, independent of the credit store: a credit is legitimately
+    // deleted the moment its UTXO is spent (removeStealthCredit, via the rehydration liveness check), but
+    // the underlying receive transaction is still a real, discoverable payment — a rescan after the note is
+    // spent would otherwise find "no live credit" and log the same receive again, repeating on every later
+    // rescan. isStealthActivityLogged never clears on spend, so this fires exactly once per (txid, vout).
+    const alreadySeen = isStealthActivityLogged(d.txid, d.vout);
+    keep(d);
     // Register asset metadata (ticker, decimals, image_uri, etch_txid) on
     // first sight of a never-held asset. Without this the credit lands in
     // localStorage but the Holdings card renders ticker '???' and
@@ -29299,7 +29363,7 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
   // _holdingsCache = { fetchedAt, holdings: Map }, so we patch holdings
   // directly.
   if (_holdingsCache?.holdings instanceof Map) {
-    for (const d of discovered) {
+    for (const d of counted) {
       const meta = getAssetMeta(d.assetIdHex);
       const h = _holdingsCache.holdings.get(d.assetIdHex) || {
         ticker: meta?.ticker || '???',
@@ -29310,7 +29374,7 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
       if (!exists) {
         h.balance += d.amount;
         h.utxos.push({
-          utxo: { txid: d.txid, vout: d.vout, value: DUST, status: tx.status || {} },
+          utxo: { txid: d.txid, vout: d.vout, value: tx.vout[d.vout].value, status: tx.status || {} },
           amount: d.amount, blinding: d.blinding, commitment: d.commitment,
           senderPubHex: d.senderPubHex,
           stealthTweakedSk: d.stealthTweakedSk,
@@ -29320,7 +29384,8 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
       _holdingsCache.holdings.set(d.assetIdHex, h);
     }
   }
-  return discovered;
+  if (unchecked.length) throw notChecked();
+  return counted;
 }
 
 // asset-wide recipient discovery. Walks the worker's
@@ -36583,13 +36648,20 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null })
     ],
     outputs: revealOutputs,
   };
+  // A note received at a one-time address is signed with its tweaked key, as buildAndBroadcastCXferMulti does.
+  const assetSigners = pickedAssetUtxos.map((x) => {
+    if (!x.stealthTweakedSk) return { priv: wallet.priv, pub: wallet.pub };
+    const priv = hexToBytes(x.stealthTweakedSk);
+    return { priv, pub: secp.getPublicKey(priv, true) };
+  });
   const prevouts = [
     { value: commitValue, script: p2trSpk },
-    ...pickedAssetUtxos.map(x => ({ value: x.utxo.value, script: p2wpkhScript(wallet.pub) })),
+    ...pickedAssetUtxos.map((x, i) => ({ value: x.utxo.value, script: p2wpkhScript(assetSigners[i].pub) })),
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
   for (let i = 1; i < revealTx.inputs.length; i++) {
-    revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
+    const s = assetSigners[i - 1];
+    revealTx.inputs[i].witness = signP2wpkhInputWithKey(revealTx, i, prevouts[i].value, s.priv, s.pub);
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
@@ -36728,7 +36800,9 @@ function selectSatsUtxosSafe(allUtxos, holdings) {
     for (const g of (h.ghosts || []))   exclude.add(`${g.utxo?.txid || g.txid}:${g.utxo?.vout ?? g.vout}`);
     for (const i of (h.inflated || [])) exclude.add(`${i.utxo?.txid || i.txid}:${i.utxo?.vout ?? i.vout}`);
     for (const p of (h.pending || []))  exclude.add(`${p.utxo?.txid || p.txid}:${p.utxo?.vout ?? p.vout}`);
+    for (const v of (h.unverified || [])) exclude.add(`${v.utxo?.txid || v.txid}:${v.utxo?.vout ?? v.vout}`);
   }
+  for (const k of (holdings.unclassified || [])) exclude.add(k);
   return (allUtxos || []).filter(u => {
     const key = `${u.txid}:${u.vout}`;
     if (exclude.has(key)) return false;       // gate 1
@@ -36904,8 +36978,9 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     if (ac !== bc) return bc - ac;
     return b.value - a.value;
   });
+  const heldBack = holdings.unclassified?.size ? ' Some coins could not be checked just now and are held back; refresh and try again.' : '';
   if (allSats.length === 0) {
-    throw new Error('no plain-sats UTXOs available to send. Top up first, or all your sats are bound up in asset commitments.');
+    throw new Error('no plain-sats UTXOs available to send. Top up first, or all your sats are bound up in asset commitments.' + heldBack);
   }
 
   // (5) Greedy input picking + fee estimate. Iterate growing the input set until
@@ -36936,7 +37011,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   }
   if (fee === 0) {
     const have = total;
-    throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange, recipientIsP2tr, _numP2tr()), feeRate)})`);
+    throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange, recipientIsP2tr, _numP2tr()), feeRate)}).${heldBack}`);
   }
 
   // (6) Belt-and-suspenders re-classification on the FINAL picked set. Catches
