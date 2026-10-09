@@ -67,6 +67,13 @@ function browserLogStore() {
   return { get: (k) => run('readonly', (st) => st.get(k)), put: (k, v) => run('readwrite', (st) => st.put(v, k)), del: (k) => run('readwrite', (st) => st.delete(k)) };
 }
 
+// The wallet-key copies each instance keeps in memory (the keys identity() was handed, and what was read with them),
+// so one call drops them in every instance: the app calls it on lock, forget and a key switch.
+const _keyForgetters = new Set();
+export function forgetKeys() {
+  for (const forget of _keyForgetters) { try { forget(); } catch { /* one instance failing leaves the others cleared */ } }
+}
+
 // `logStore` ({ get, put, del }, each returning a promise) replaces the browser's IndexedDB store for chain-final logs;
 // null keeps none.
 export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network, logStore } = {}) {
@@ -341,7 +348,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const _rev = (h) => (String(h).replace(/^0x/, '').match(/../g) || []).reverse().join('');
   // Bridge-mint walk memo. Recovered notes are keyed `${wallet}:${leaf}` and re-added on a rescan without searching; leaves
   // the cheap balance-read pass / the full pass searched without a match are keyed `${wallet}:${amounts}:${leaf}`, so a
-  // second wallet in the same tab, or a newly known amount, searches afresh.
+  // second wallet in the same tab, or a newly known amount, searches afresh. `wallet` is the wallet's pubkey.
   const _bridgeFound = new Map();
   const _bridgeFastTried = new Set();
   const _bridgeTried = new Set();
@@ -373,10 +380,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!list.includes(v.toString())) list.push(v.toString());
     try { localStorage.setItem(k, JSON.stringify(list.slice(-32))); return true; } catch { return false; }
   }
+  // Keyed by a hash of the wallet's pubkey, so no private key is kept as a key.
   const _btcHistoryCache = new Map();
   const BTC_HISTORY_TTL_MS = 10 * 60 * 1000;
   function _defaultBtcHistory(priv) {
-    const key = _hex(privBytes(priv));
+    const key = _hex(sha256(secp.getPublicKey(privBytes(priv), true)));
     const hit = _btcHistoryCache.get(key);
     if (hit && Date.now() - hit.at < BTC_HISTORY_TTL_MS) return hit.promise;
     const provider = makeBtcHistoryProvider({ fetchImpl: _fetch, sha256, hrp: Number(cfg.chainId) === 1 ? 'bc' : 'tb' });
@@ -386,6 +394,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     promise.catch(() => { entry.at = Date.now() - BTC_HISTORY_TTL_MS + 60000; }); // retry a failed lookup after a minute
     return promise;
   }
+  const forget = () => { _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); };
+  _keyForgetters.add(forget);
   const _lockVBtcCache = new Map();
   async function _cbtcLockVBtc(txid, vout) {
     const outpoint = pool.outpointKey('0x' + _rev(txid), vout);
@@ -637,7 +647,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     diag.bridge.amountsTried = amounts.length;
     if (bridge) {
       const todo = new Map();
-      const wk = _hex(privBytes(id.priv));
+      const wk = lc(id.pubHex);
       const triedSet = fast ? _bridgeFastTried : _bridgeTried;
       const triedKey = (lf) => `${wk}:${amounts.join(',')}:${lf}`;
       for (const l of unexplained()) {
@@ -3805,6 +3815,6 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, buildWrap, nextWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, resumeWrapAndSend, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
-    cbtcLockState, syncCbtcLockReservations, cbtcBonds,
+    cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

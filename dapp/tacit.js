@@ -73,7 +73,7 @@ import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-poseidon.min.js'
 import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore, prfBytesToScalar as toValidScalar } from './prf-wallet.js';
 import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';
-import { makeConfidentialPoolUx, setExternalTacHolders } from './confidential-pool-ux.js';
+import { makeConfidentialPoolUx, setExternalTacHolders, forgetKeys as forgetPoolKeys } from './confidential-pool-ux.js';
 import { makeBurnDepositUx, BURNDEP_BETA_CAP_RAW as BURNDEP_BETA_CAP_RAW_TAC } from './burndep-ux.js';
 import { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW as CROSSOUT_TAC_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW } from './crossout-ux.js';
 import { makeCrossoutNotes } from './crossout-notes.js';
@@ -1315,10 +1315,11 @@ const wallet = {
     const blob = await encryptPrivkey(priv, passphrase);
     if (_slotHoldsOtherWallet(key)) throw new Error(_otherWalletInSlotMsg(key));
     localStorage.setItem(key, blob);
-    const prevPub = _openPubHex();
+    const prevPub = _openPubHex(), prevPriv = this.priv;
     _leaveDerivedWalletMode();
     this.priv = priv;
     this.pub = secp.getPublicKey(priv, true);
+    if (prevPriv && prevPriv !== priv) { try { prevPriv.fill(0); } catch {} }
     _onIdentityChanged(prevPub);
     setActiveWalletMode(boundExtAddr ? 'ext' : 'local');
   },
@@ -1719,6 +1720,7 @@ const ethWallet = {
     const priorPub = this.state?.pubkey;
     if (priorPub && priorPub !== pubHex) {
       if (!this.state.netUnverified) {
+        priv.fill(0);
         const prevPub = _openPubHex();
         wallet.priv = null; wallet.pub = null; wallet.mode = null;
         _onIdentityChanged(prevPub);
@@ -1943,6 +1945,7 @@ const btcWallet = {
     const pubHex = bytesToHex(pub);
     if (!carried && pubHex !== cached.tacitPubkey) {
       if (!cached.netUnverified) {
+        priv.fill(0);
         const prevPub = _openPubHex();
         wallet.priv = null; wallet.pub = null; wallet.mode = null;
         _onIdentityChanged(prevPub);
@@ -19983,6 +19986,7 @@ function _onIdentityChanged(prevPubHex) {
   try { _holdingsEverSeenAssets = false; } catch {}
   try { _holdingsLastRenderOk = false; } catch {}
   try { _cancelHoldingsRetry(); } catch {}
+  try { forgetPoolKeys(); } catch {}
 }
 
 // Test-only seam: short-circuit scanHoldings by writing a synthetic
@@ -51093,6 +51097,8 @@ function setupWalletButtons() {
     _holdingsLastRenderOk = false;
     _cancelHoldingsRetry();
     invalidateHoldingsCache();
+    // The pool helpers' copies of the key go too, so locking forgets every one.
+    try { forgetPoolKeys(); } catch {}
     try { renderWalletCard(); } catch {}
     try { _renderWalletTacitAddress(); } catch {}
     // Re-render only the tabs that show balances; refreshAssetSelect /
@@ -51435,8 +51441,9 @@ function setupWalletButtons() {
       toast('Storage cleanup failed: ' + (e?.message || e), 'error');
       return;
     }
-    try { oldPriv?.fill(0); } catch {}
     wallet.priv = null;
+    try { oldPriv?.fill(0); } catch {}
+    try { forgetPoolKeys(); } catch {}
     wallet.pub = null;
     wallet.mode = null;
     toast('Wallet forgotten. Reloading…', 'success');
