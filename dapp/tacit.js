@@ -592,9 +592,6 @@ let IPFS_GATEWAY = _ipfsGateway();
 // the worker proxy is unreachable. Worker is the preferred primary (handles
 // the race internally + edge-caches); direct gateways stay in the list so
 // disabled-worker dapps still have a path.
-// Tacit's own IPFS node: holds the ceremony genesis files (ptau, r1cs, first zkey), which the ceremony fetch
-// tries first. Everything fetched from it is content-checked (sha256 pins, zkey chain verification).
-const TACIT_IPFS_NODE_GATEWAY = 'https://10mz1z2351rzze-8080.proxy.runpod.net/ipfs/';
 const IPFS_GATEWAYS_FALLBACK = [
   IPFS_GATEWAY,
   'https://ipfs.filebase.io/ipfs/',
@@ -43730,7 +43727,6 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
     try {
       if (gw.includes('tacit-pin')) return 'tacit cache';
       if (gw.includes('ipfs.filebase.io')) return 'filebase';
-      if (gw === TACIT_IPFS_NODE_GATEWAY) return 'tacit node';
       if (gw.includes('ipfs.orbitor.dev')) return 'orbitor';
       if (gw.includes('gateway.pinata.cloud')) return 'pinata';
       const h = new URL(gw).hostname;
@@ -43738,7 +43734,7 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
     } catch { return 'gateway'; }
   };
   // Each host once: IPFS_GATEWAY is the Filebase entry itself once the worker is known bad.
-  for (const gw of new Set([TACIT_IPFS_NODE_GATEWAY, ...IPFS_GATEWAYS_FALLBACK])) {
+  for (const gw of new Set(IPFS_GATEWAYS_FALLBACK)) {
     if (_skip && _skip.has(gw)) continue;
     const url = `${gw}${cid}`;
     const label = _gwLabel(gw);

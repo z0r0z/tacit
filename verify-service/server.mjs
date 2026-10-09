@@ -17,7 +17,7 @@ const MAX_BYTES = parseInt(process.env.MAX_BYTES || String(500 * 1024 * 1024), 1
 // indirect lookup.
 const FETCH_TIMEOUT_MS = parseInt(process.env.FETCH_TIMEOUT_MS || '180000', 10);
 
-const GATEWAYS = (process.env.IPFS_GATEWAYS || 'https://10mz1z2351rzze-8080.proxy.runpod.net/ipfs/,https://ipfs.filebase.io/ipfs/,https://ipfs.io/ipfs/,https://w3s.link/ipfs/,https://dweb.link/ipfs/')
+const GATEWAYS = (process.env.IPFS_GATEWAYS || 'https://ipfs.filebase.io/ipfs/,https://ipfs.orbitor.dev/ipfs/,https://gateway.pinata.cloud/ipfs/')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const CID_RE = /^[A-Za-z0-9]{46,80}$/;
