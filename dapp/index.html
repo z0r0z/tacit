@@ -327,6 +327,27 @@ a.di { color: inherit; text-decoration: none; }
 .map li p { margin: 0; color: var(--mute); line-height: 1.5; }
 .map li a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
 @media (hover: hover) { .map li a:hover { text-decoration: underline; } }
+/* TAC in one line, then four facts, each with where to check or act on it. */
+.tacbar { margin: 0 0 26px; padding: 20px 22px; background: var(--card); border: 1px solid var(--hair); }
+.tacbar-h { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 6px 14px; }
+.tacbar-h .tk { width: 40px; height: 40px; }
+.tacbar-h h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font: 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.tacbar-h .tag { display: inline-flex; align-items: center; gap: 6px; font: 500 10.5px var(--mono); text-transform: uppercase; letter-spacing: .1em; }
+.tacbar-h .tag::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); }
+.tacbar-h p { grid-column: 1 / -1; margin: 8px 0 0; color: var(--mute); font-size: 13px; line-height: 1.5; max-width: 72ch; }
+.tacbar-h p + p { margin-top: 4px; }
+.tacbar-row { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 22px; margin: 18px 0 0; padding: 16px 0 0;
+  border-top: 1px solid var(--hair); }
+.tacbar-row li { display: grid; align-content: start; gap: 5px; font-size: 12.5px; }
+.tacbar-row small { font: 500 10.5px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--mute); }
+.tacbar-row b { font-weight: 400; line-height: 1.45; color: var(--ink); }
+.tacbar-row span { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 2px; }
+.tacbar-row a { color: var(--ink); text-decoration: none; font-size: 12px; }
+@media (hover: hover) { .tacbar-row a:hover { text-decoration: underline; } }
+@media (max-width: 640px) {
+  .tacbar { padding: 18px 16px; }
+  .tacbar-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* Someone who already holds something here has a dashboard instead; the assets stay. */
 .shell:has(#dash:not([hidden])) .map { display: none; }
 .how .shelf { margin-top: 0; }
@@ -746,6 +767,21 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
           <p>One immutable pool holds tETH, TAC, cBTC and cUSD as private notes. ETH-only pools on Ethereum, Base, Robinhood Chain and MegaETH take private payments too.</p>
           <a href="#private" data-link="private">Open the pool →</a></li>
       </ol>
+    </div>
+    <div class="tacbar" aria-labelledby="tacbar-h">
+      <div class="tacbar-h">
+        <svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>
+        <h2 id="tacbar-h">TAC <span class="tag">Private on Bitcoin L1</span></h2>
+        <p>Tacit’s own token, private on Bitcoin itself. Every TAC transfer on Bitcoin hides its amount, and TAC’s own shielded pool there hides who received it too, with no custodian or multisig anywhere in it.</p>
+        <p>It was Tacit’s first asset, airdropped to bootstrap one private currency on Bitcoin and Ethereum: claimable on Bitcoin by the 5,599 wallets holding shares in zFi, the DeFi network Tacit is built on, and on Ethereum by 8,652 holders across the same network.</p>
+        <p>Points and farms keep spreading it to grow the anonymity set, and TAC gets every future Tacit protocol improvement first.</p>
+      </div>
+      <ul class="tacbar-row">
+        <li><small>Supply</small><b>21,000,000, issued once with no mint key</b><span><a href="/verify.html">Verify it →</a></span></li>
+        <li><small>Shielding bitcoin</small><b>Swap sats for TAC peer to peer, atomically, move it in the pool, and swap back to a fresh address</b><span><a href="/tac/">TAC, shielded →</a></span></li>
+        <li><small>Holding it</small><b>Public TAC boosts your points and lowers your exit fee; holders vote on proposals</b><span><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md#holding-tac" rel="noopener">What holding does ↗</a><a href="/classic.html#tab=govern">Proposals →</a></span></li>
+        <li><small>Getting it</small><b>The airdrop, points and farms, or buy with ETH or sats</b><span><a href="#points" data-link="points">Earn →</a><a href="#buy" data-link="buy">Buy →</a></span></li>
+      </ul>
     </div>
     <div class="shelf" aria-label="Assets">
       <span class="shelf-g"><small>Private notes</small>
