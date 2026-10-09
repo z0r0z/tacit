@@ -10,8 +10,10 @@
 //   farmgate nobody connected: the public farm offers a browser wallet or, in place, the ways into a Tacit wallet, and back
 //   farmpos  a private farm's card with positions: each named and leading the card, unbond held back while a real reward is
 //            unharvested, harvested rewards and unbonded liquidity above the farms, a harvest pointing at its next step
-//   farmsteps joining a private farm with tETH but no TAC is a checklist (tETH done, TAC next and where to get it, the add last),
-//            and the sheet it sends you to carries a way back to the same farm
+//   farmsteps joining a private farm with tETH but no TAC opens on tETH alone; both sides says where TAC is made (with a way back
+//            to the farm) or to farm with tETH alone
+//   farmzap  one side alone farms: Max takes the whole balance, the quote says what is swapped and what both sides add, and the
+//            press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both
 //   farmexit Exit on a private position is one press: harvest what is worth harvesting, unbond giving up what accrued since (a plain
 //            unbond refuses it), take the liquidity out, each step named as it runs
 //   farmclaim Claim rewards harvests the positions with a real reward and none holding dust, then unwraps the wTAC
@@ -108,7 +110,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmexit,farmclaim,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,xbring,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,devsend,device,borrow,bonds,mainbond,locks,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,farmpos,farmsteps,farmzap,farmexit,farmclaim,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,xobridge,xbring,pts,ptsview,activity,receipts,stats,dash,tacdeposit').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -1128,8 +1130,8 @@ await step('farmjoin', async () => {
     ok(j.controller.toLowerCase() === '0x000031c47cb61fab1ce2790a69625fabb71ede24' && j.selfSettle === 'function' && j.calldata === '0x' + Buffer.from(keccak_256('settle(bytes,bytes,bytes[])')).toString('hex').slice(0, 8),
       `farmjoin: the bond goes to the farm manager, settled by the paying account (${j.controller}, ${j.selfSettle}, ${j.calldata})`);
     ok(j.aAsset === CETH && j.bAsset === CTAC && b * rA >= a * rB && (b - 1n) * rA < a * rB, `farmjoin: the TAC side is the tETH side at the live ratio, rounded up (${a} : ${b}, pool ${rA} : ${rB})`);
-    ok(splits.length === 2 && splits.every((x) => BigInt(x.amount) + BigInt(x.fee) <= (x.asset === CETH ? 2000000n : 50000000000n)) && BigInt(splits[0].amount) === a && BigInt(splits[1].amount) === b,
-      `farmjoin: each note is cut to exactly its side, its fee within the balance (${JSON.stringify(splits)})`);
+    ok(a === 2000000n && splits.length === 1 && splits[0].asset === CTAC && BigInt(splits[0].amount) === b && BigInt(splits[0].amount) + BigInt(splits[0].fee) <= 50000000000n,
+      `farmjoin: Max spends the tETH note whole, so only the TAC side is cut, its fee within the balance (${JSON.stringify(splits)})`);
     await until(r.page, () => /In the farm/.test(document.querySelector('#sf-status-0')?.textContent || ''), null, 60000).catch(() => {});
     ok(/In the farm/.test(await text(r.page, '#sf-status-0')), `farmjoin: the sheet says it is in (${await text(r.page, '#sf-status-0')})`);
     if (r.errors.length) { fails++; console.log('FAIL farmjoin page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -3152,6 +3154,7 @@ const swapStub = () => `
       add.push(note(q.assetFinal, q.amountOut));
       return { txHash: '0x' + 'ab'.repeat(32) };
     };
+    ux.lpBond = async (a) => { window.__join = { controller: a.controller, a: a.aNote.value, b: a.bNote.value, aAsset: a.aNote.asset, bAsset: a.bNote.asset, feeBps: a.feeBps, selfSettle: typeof a.selfSettle }; return { txHash: null, dShares: 1n }; };
     ux.transfer = async ({ notes, amount }) => {
       window.__swapCalls.push({ split: String(amount) });
       await wait();
@@ -3230,8 +3233,8 @@ await step('farmpos', async () => {
     if (r.errors.length) { fails++; console.log('FAIL farmpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
-// A private farm with a key that holds tETH but no TAC: joining is a checklist (tETH done, TAC next and where to get it, the add
-// last), going there leaves a way back to this farm, and taking it returns to the same card.
+// A private farm with a key that holds tETH but no TAC: the form opens on tETH alone; both sides says where TAC is made (going
+// there leaves a way back to this farm, and taking it returns to the same card) or to farm with tETH alone.
 await step('farmsteps', async () => {
   const r = await openFarmKey('57e9'.padEnd(64, '6'), { notes: [[FARM_CETH, 2000000n]], positions: [] });
   const p = r.page;
@@ -3239,23 +3242,62 @@ await step('farmsteps', async () => {
     await go(p, '#farm');
     await p.waitForSelector('[data-farm="pid0"] > button', { timeout: 120000 });
     if (!(await p.$('.farm.open[data-farm="pid0"]'))) await p.click('[data-farm="pid0"] > button');
-    await p.waitForSelector('#farm-pid0 .steps', { timeout: 300000 });
-    const steps = await p.$$eval('#farm-pid0 .step', (l) => l.map((x) => [x.className.replace('step', '').trim(), x.querySelector('h3').textContent, x.querySelector('button')?.textContent || '']));
-    ok(steps.length === 3 && steps[0][0] === 'done' && steps[1][0] === 'now' && steps[2][0] === '' && steps[1][2] === 'Make TAC private', `farmsteps: tETH is done, TAC is next and says where to get it, the add waits (${JSON.stringify(steps)})`);
+    await p.waitForSelector('#farm-pid0 [data-sjm="pair"]', { timeout: 300000 });
+    const on = (m) => p.$eval(`#farm-pid0 [data-sjm="${m}"]`, (b) => b.getAttribute('aria-selected') === 'true');
+    ok(!(await p.$('#farm-pid0 .steps')) && await on('a') && (await text(p, '#sj-go-0')) === 'Farm with tETH' && /About half is swapped to TAC inside the pool/.test(await text(p, '#farm-pid0 .how')),
+      `farmsteps: with tETH and no TAC the form opens on tETH alone and says what is swapped (${(await text(p, '#farm-pid0 .how')).trim()})`);
+    await p.click('#farm-pid0 [data-sjm="pair"]');
+    await p.waitForSelector('#farm-pid0 [data-join-get="tac"]', { timeout: 30000 });
+    ok(/You hold no private TAC/.test(await text(p, '#farm-pid0 .how')) && !(await p.$('#sj-go-0')) && /farm with tETH alone/.test(await text(p, '#farm-pid0 [data-join-one="a"]')), 'farmsteps: both sides with no TAC says where to get it, or to farm with tETH alone');
     await p.click('#farm-pid0 [data-join-get="tac"]');
     await p.waitForSelector('#sheet-tac[open] .farm-back a', { timeout: 30000 });
     ok(!(await p.$('#sheet-farm[open]')) && (await p.getAttribute('.farm-back a', 'href')) === '#farm/private-0' && /tETH \/ TAC/.test(await text(p, '.farm-back')), 'farmsteps: it opens the TAC sheet with a way back to this farm');
     await p.click('.farm-back a');
-    await p.waitForSelector('#sheet-farm[open] .farm.open[data-farm="pid0"]', { timeout: 60000 });
+    await p.waitForSelector('#sheet-farm[open] .farm.open[data-farm="pid0"] [data-join-one="a"]', { timeout: 60000 });
     await p.waitForTimeout(500);
     ok(!(await p.$('.farm-back')), 'farmsteps: back at the same farm, and the way back is gone');
-    // With private tETH in hand, the missing side is one private swap away: opened on tETH for TAC, with the way back to the farm.
-    ok(/Or swap some of your private tETH for TAC/.test(await text(p, '#farm-pid0 [data-join-swap]')), 'farmsteps: the missing TAC step also offers a private swap of the tETH held');
-    await p.click('#farm-pid0 [data-join-swap]');
-    await p.waitForSelector('#sheet-eth[open] #sw-amt', { timeout: 120000 });
-    ok(!(await p.$('#sheet-farm[open]')) && await p.$eval('#sheet-eth [data-swf="eth"]', (b) => b.getAttribute('aria-selected') === 'true') && await p.$eval('#sheet-eth [data-swt="tac"]', (b) => b.getAttribute('aria-selected') === 'true')
-      && (await p.getAttribute('#sheet-eth .farm-back a', 'href')) === '#farm/private-0' && await p.evaluate(() => location.hash) === '#private/swap', 'farmsteps: the swap opens as tETH for TAC, at the farm\'s own way back');
+    await p.click('#farm-pid0 [data-join-one="a"]');
+    await p.waitForSelector('#sj-go-0', { timeout: 30000 });
+    ok(await on('a') && (await text(p, '#sj-go-0')) === 'Farm with tETH', 'farmsteps: and the link opens the form on tETH alone');
     if (r.errors.length) { fails++; console.log('FAIL farmsteps page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// One side alone farms. With tETH and no TAC, Max takes the whole balance and the quote says what is swapped and what both
+// sides then add. The press cuts a note of the swap amount, swaps it whole in the farm's pool, cuts what pairs with the
+// return at the live ratio (or spends what is left whole when that costs the pool's other LPs less than a cut), and bonds both.
+await step('farmzap', async () => {
+  const r = await openFarmKey('7a9b'.padEnd(64, '6'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true });
+  const p = r.page;
+  try {
+    await go(p, '#farm');
+    await p.waitForSelector('[data-farm="pid0"] > button', { timeout: 120000 });
+    if (!(await p.$('.farm.open[data-farm="pid0"]'))) await p.click('[data-farm="pid0"] > button');
+    await p.waitForSelector('#sj-max-0', { timeout: 300000 });
+    await p.click('#sj-max-0');
+    // Cold, the fork fetches the relay-fee quotes' DEX reads slot by slot (see csend): minutes where mainnet takes a second.
+    await until(p, () => /Swaps/.test(document.querySelector('#sj-rcpt-0')?.textContent || '') && !document.querySelector('#sj-go-0').disabled, null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ')}`); });
+    const rc = (await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ');
+    ok((await p.inputValue('#sj-a-0')) === '0.02' && /Swaps\s*0\.0\d+ tETH for about [\d.,]+ TAC/.test(rc) && /Then adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee for the swap/.test(rc) && /Relay fee to split your notes/.test(rc) && /Share of the farm/.test(rc) && /Gas, from your Tacit account/.test(rc),
+      `farmzap: Max takes the whole balance, and the quote says what is swapped, what both sides add, and the fees (${rc})`);
+    await shot(p, 'farmzap');
+    await p.click('#sj-go-0');
+    await until(p, () => !!window.__join || /err/.test(document.querySelector('#sf-status-0')?.innerHTML || ''), null, 240000);
+    const j = await p.evaluate(() => window.__join), calls = await p.evaluate(() => window.__swapCalls);
+    if (!j) throw new Error(`no bond: ${await text(p, '#sf-status-0')} ${JSON.stringify(calls)}`);
+    const sw = calls.find((c) => c.amountIn), cuts = calls.filter((c) => c.split);
+    const poolId = '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00';
+    const sel = Buffer.from(keccak_256('pools(bytes32)')).toString('hex').slice(0, 8);
+    const w = (await rpc('eth_call', [{ to: '0x000000000Ed1eabD231Be41d93b719056F7febFC', data: '0x' + sel + poolId.slice(2) }, 'latest'])).slice(2);
+    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * rA / rB;
+    ok(sw && cuts[0] && cuts[0].split === sw.amountIn && sw.noteValue === sw.amountIn && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
+      `farmzap: a note of the swap amount is cut and swapped whole in the farm's pool, at most 1% under the quote (${JSON.stringify(calls)})`);
+    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a >= need && (a - need) * 250n <= a && a + BigInt(sw.amountIn) <= 2000000n && j.selfSettle === 'function',
+      `farmzap: the bond spends the swap's return whole and pairs tETH with it at the live ratio, within what was held (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
+    await until(p, () => /In the farm/.test(document.querySelector('#sf-status-0')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/In the farm/.test(await text(p, '#sf-status-0')), `farmzap: the sheet says it is in (${await text(p, '#sf-status-0')})`);
+    if (r.errors.length) { fails++; console.log('FAIL farmzap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
