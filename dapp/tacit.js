@@ -30753,6 +30753,36 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
 //
 // Returns { recipBlinding, makerPub, anchorBytes } so the caller can record
 // the opening without re-deriving. Throws on any failure.
+// The take-offer confirm for an offer verifyAxferOffer accepted. Ticker and
+// decimals are this wallet's record of the asset's on-chain metadata, never the
+// offer's: an offer naming others is refused, and an asset with no record here
+// is shown by its id with the amount in base units. Returns { error } or
+// { text, ticker, decimals }.
+function atomicOfferReview(offer) {
+  const meta = getAssetMeta(offer.asset_id);
+  const known = !!meta?.ticker && Number.isInteger(meta.decimals);
+  if (known && ((offer.ticker != null && offer.ticker !== meta.ticker) || (offer.decimals != null && offer.decimals !== meta.decimals))) {
+    return { error: `offer rejected: it names the asset ${offer.ticker ?? '?'} with ${offer.decimals ?? '?'} decimals, but the asset's on-chain record is ${meta.ticker} with ${meta.decimals}. Nothing was sent.` };
+  }
+  const amt = BigInt(offer.amount);
+  const assetLine = known ? `${meta.ticker} (${shorten(offer.asset_id, 8)})` : `${offer.asset_id}`;
+  const amountLine = known ? `${fmtAssetAmount(amt, meta.decimals)} ${meta.ticker}` : `${amt.toString()} base units`;
+  const expIso = new Date(offer.expiry * 1000).toISOString();
+  const text =
+    `Take this atomic offer?\n\n` +
+    `Asset:    ${assetLine}\n` +
+    `Buying:   ${amountLine}\n` +
+    `Price:    ${offer.price_sats.toLocaleString()} sats\n` +
+    `Pay to:   ${offer.maker_address}\n` +
+    `Expires:  ${expIso} (as the maker states)\n\n` +
+    `Checked here: the amount opens the on-chain commitment and its range proof is valid · the maker address derives from the maker pubkey · the outputs pay you the asset and pay the maker the price` +
+    (known
+      ? ' · ticker and decimals are this wallet\'s on-chain record of the asset.\n\n'
+      : '.\nThis asset is not in this wallet\'s asset list, so it is shown by its id and the amount in base units.\n\n') +
+    `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts.`;
+  return { text, ticker: known ? meta.ticker : '', decimals: known ? meta.decimals : 0 };
+}
+
 function verifyAxferOffer(offer) {
   if (offer.version !== AXFER_OFFER_VERSION) throw new Error(`unsupported offer version: ${offer.version}`);
   if (offer.network !== NET.name) throw new Error(`offer is for ${offer.network}, current network is ${NET.name}`);
@@ -49389,6 +49419,25 @@ function setupCustomApiPanel() {
 // useful on signet too, but a user landing here on signet looking to
 // "buy BTC" probably just hasn't switched networks yet, so we keep the
 // signet copy focused on the faucet.
+//
+// A THORChain ETH→BTC quote is used only when its memo is a swap to L1 BTC
+// paying `addr` (forms `SWAP:BTC.BTC:<addr>:…`, `=:b:<addr>:…`, with an
+// optional `/<refund>` after the address) and it has not expired. Returns the
+// reason to refuse, or null.
+function thorchainQuoteProblem(q, addr, nowSec = Math.floor(Date.now() / 1000)) {
+  const f = String(q?.memo || '').split(':');
+  const fn = (f[0] || '').toLowerCase(), asset = (f[1] || '').toLowerCase();
+  const dest = (f[2] || '').split('/')[0];
+  if (!(fn === 'swap' || fn === 's' || fn === '=') || !(asset === 'btc.btc' || asset === 'b')) {
+    return 'The quote is not a swap to Bitcoin. Nothing was sent.';
+  }
+  if (!addr || dest.toLowerCase() !== String(addr).toLowerCase()) {
+    return 'The quote pays a Bitcoin address that is not this wallet\'s. Nothing was sent.';
+  }
+  const exp = Number(q?.expiry);
+  if (!Number.isFinite(exp) || exp <= nowSec) return 'The quote has expired. Get a new quote; nothing was sent.';
+  return null;
+}
 function setupTopupModal() {
   const btn = document.getElementById('btn-buy-btc');
   const modal = document.getElementById('topup-modal');
@@ -49550,7 +49599,12 @@ function setupTopupModal() {
       }
       if (q.error) throw new Error(q.error);
       if (!q.inbound_address || !q.memo) throw new Error('invalid quote response');
-      _thorQuote = { ...q, ethAmount: ethAmt, thorAmount };
+      const problem = thorchainQuoteProblem(q, addr);
+      if (problem) {
+        if (swapStatus) swapStatus.textContent = problem;
+        return;
+      }
+      _thorQuote = { ...q, ethAmount: ethAmt, thorAmount, destination: addr };
       const outBtc = _thorAmtToStr(Number(q.expected_amount_out), 8);
       const feeBtc = _thorAmtToStr(Number(q.fees?.total || 0), 8);
       const rate = (Number(q.expected_amount_out) / thorAmount).toFixed(8);
@@ -49587,6 +49641,16 @@ function setupTopupModal() {
       return;
     }
     const q = _thorQuote;
+    // Checked again at send: the quote may have expired, or another wallet
+    // been opened, since it was shown.
+    let addrNow = null; try { addrNow = wallet.address(); } catch {}
+    const problem = addrNow === q.destination ? thorchainQuoteProblem(q, addrNow) : 'The open wallet changed since this quote. Get a new quote; nothing was sent.';
+    if (problem) {
+      if (swapStatus) swapStatus.textContent = problem;
+      if (swapResult) swapResult.style.display = 'none';
+      _thorQuote = null;
+      return;
+    }
     const _ethStr = Number(q.ethAmount).toFixed(18);
     const _ethParts = _ethStr.split('.');
     const _ethWhole = BigInt(_ethParts[0]) * 10n**18n;
@@ -77375,27 +77439,15 @@ function setupHoldingsButtons() {
         let offer;
         try { offer = JSON.parse(raw); }
         catch (e2) { errEl.textContent = 'invalid JSON: ' + e2.message; return false; }
-        // Cryptographically verify the offer before showing confirm() — the
-        // dialog must reflect verified facts (commitment binding to amount,
-        // address derived from pubkey, etc.) rather than the maker's claims.
+        // Verify the offer before showing confirm(): the dialog shows what was
+        // checked rather than the maker's claims (see atomicOfferReview).
         try { verifyAxferOffer(offer); }
         catch (e2) { errEl.textContent = 'offer rejected: ' + e2.message; return false; }
-        const dec = Number.isInteger(offer.decimals) ? offer.decimals : 0;
-        const ticker = offer.ticker || '?';
-        const amt = BigInt(offer.amount);
-        const expIso = new Date(offer.expiry * 1000).toISOString();
-        if (!confirm(
-          `Take this atomic offer? (cryptographically verified)\n\n` +
-          `Asset:    ${ticker} (${shorten(offer.asset_id, 8)})\n` +
-          `Buying:   ${fmtAssetAmount(amt, dec)} ${ticker}\n` +
-          `Price:    ${offer.price_sats.toLocaleString()} sats\n` +
-          `Pay to:   ${offer.maker_address}\n` +
-          `Expires:  ${expIso}\n\n` +
-          `Verified: amount matches the on-chain commitment · maker address derives from maker pubkey · output scripts pay the right parties · range proof valid.\n\n` +
-          `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts.`,
-        )) return false;
+        const review = atomicOfferReview(offer);
+        if (review.error) { errEl.textContent = review.error; return false; }
+        if (!confirm(review.text)) return false;
         try {
-          const r = await takeAxferOffer(offer);
+          const r = await takeAxferOffer({ ...offer, ticker: review.ticker, decimals: review.decimals });
           toast(`Atomic take broadcast ✓ tx=${shorten(r.txid, 8)}`, 'success', 8000);
           renderHoldings(); renderActivity();
         } catch (e2) {
@@ -79268,6 +79320,7 @@ export {
   // identity at login) is a load-bearing recovery-safety property and gets
   // dedicated coverage in tests/btc-wallet.test.mjs.
   btcWallet, ethWallet, extWallet, prfWallet, setActiveWalletMode, getActiveWalletMode, clearActiveWalletMode,
+  atomicOfferReview, thorchainQuoteProblem,
   // Onboarding wiring entry points — exported so tests/btc-wallet-welcome.test.mjs
   // can drive the real welcome-modal choice handler and the lazy sign-time
   // unlock against a minimal DOM, without booting the full app init().
