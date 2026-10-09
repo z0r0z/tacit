@@ -819,6 +819,9 @@ async function sweep() {
 // so a send's refresh is never skipped; a read that finishes under another key is dropped.
 let assetsBusy = false, assetsAgain = false;
 let held = []; // tokens with a balance: { id, ticker, decimals, balance }
+// From the last holdings scan, txid:vout → 'counted', 'checking' (held back until it can be checked) or 'invalid'
+// (did not validate, so not counted). A found credit is listed with what the scan made of it.
+let creditState = new Map();
 async function refreshAssets() {
   const w = T?.wallet;
   if (w?.pub && !w.priv) { show('w-assets-row', true); $('w-assets').textContent = 'unlock to show'; return; }
@@ -833,6 +836,10 @@ async function refreshAssets() {
     if (gen !== keyGen) return;
     const rows = [];
     held = [];
+    const states = new Map(), mark = (list, state) => { for (const e of list || []) { const u = e?.utxo || e; if (u?.txid != null) states.set(`${u.txid}:${u.vout}`, state); } };
+    for (const x of (h instanceof Map ? h.values() : [])) { mark(x.utxos, 'counted'); mark(x.unverified, 'checking'); mark(x.inflated, 'invalid'); }
+    creditState = states;
+    renderFound();
     for (const [id, x] of (h instanceof Map ? h.entries() : [])) {
       const bal = typeof x.balance === 'bigint' ? x.balance : 0n;
       if (bal <= 0n) continue;
@@ -868,6 +875,7 @@ function signOut() {
   faucetPending = null;
   hashChecked = null;
   held = [];
+  creditState = new Map();
   exitSats = { key: null, t: 0, coins: [], feeRate: null };
   renderSweep();
   $('sweep-out').textContent = '';
@@ -1154,10 +1162,13 @@ function renderFound() {
     ol.append(li);
   };
   for (const [key, c] of credits) row(key, fmtSats(c.sats) + (c.coinClass ? ` · ${c.coinClass === 'mixed' ? 'mixed' : 'mix entry'}, kept apart` : '') + (spentChecked.get(key) ? ' · spent' : ''));
-  for (const [key, c] of tokens) row(key, tokenAmount(c.assetIdHex, c.amount));
+  const said = { checking: ' · being checked, not counted yet', invalid: ' · did not validate, not counted' };
+  for (const [key, c] of tokens) row(key, tokenAmount(c.assetIdHex, c.amount) + (said[creditState.get(key)] || ''));
   const h = document.createElement('p');
   h.className = 'muted';
-  h.textContent = 'Found for you. Send spends them like anything else you hold:';
+  h.textContent = tokens.some(([key]) => creditState.get(key) === 'checking' || creditState.get(key) === 'invalid')
+    ? 'Found for you. Send spends the ones counted like anything else you hold:'
+    : 'Found for you. Send spends them like anything else you hold:';
   box.append(h, ol);
 }
 
