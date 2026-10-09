@@ -34,6 +34,10 @@ const LADDER_ROWS = 8;
 // bids at a fraction of a sat, asks at many times the price).
 const FAR_BELOW = 0.2;
 const FAR_ABOVE = 5;
+// A market order's default price limit stays within this factor of the last trade (when there
+// is a recent one); a book priced beyond it is shown as it is and taken with one explicit tap.
+const BAND = 2;
+const BAND_FRESH_SEC = 30 * 86400;
 const CHART_TFS = [['1D', 86400, '1D'], ['1W', 7 * 86400, '1W'], ['1M', 30 * 86400, '1M'], ['ALL', Infinity, 'All']];
 const SLIPPAGE_CHOICES = [1, 2, 5, 10, 25];
 // A market order's default price cap. Thin books (most real listings here) sit in a few
@@ -254,16 +258,37 @@ function createMarket(host, ctx) {
   };
   // The price limit: a % from the best offer, unless the user picked an exact price
   // from a suggestion (S.limitAt), which lasts until they change side or pick a %.
+  // The last trade, while it is recent enough to anchor a price.
+  const lastTradeUnit = () => {
+    const a = ctx.asset();
+    return a.markUnit > 0 && a.lastTradeTs && nowSec() - a.lastTradeTs < BAND_FRESH_SEC ? a.markUnit : null;
+  };
+  const inBand = (u) => { const r = lastTradeUnit(); return !r || (u >= r / BAND && u <= r * BAND); };
   const maxBuyUnit = () => {
     if (S.limitAt?.side === 'buy') return S.limitAt.unit;
     const best = eligibleAsks()[0]?.unit;
-    return best ? best * (1 + S.slip / 100) : Infinity;
+    if (!best) return Infinity;
+    const r = lastTradeUnit();
+    const cap = best * (1 + S.slip / 100);
+    return r ? Math.min(cap, r * BAND) : cap;
   };
   const minSellUnit = () => {
     if (S.limitAt?.side === 'sell') return S.limitAt.unit;
     const best = eligibleBids()[0]?.unit;
-    return best ? best * (1 - S.slip / 100) : 0;
+    if (!best) return 0;
+    const r = lastTradeUnit();
+    const floor = best * (1 - S.slip / 100);
+    return r ? Math.max(floor, r / BAND) : floor;
   };
+  // Where a resting order starts: joining the book, unless the book is far from the last trade.
+  function restingUnit(side) {
+    const bb = S.book?.bestBid, ba = S.book?.bestAsk;
+    const join = side === 'buy' ? (bb && ba ? Math.min(bb, ba) : bb || ba) : (ba || bb);
+    const mark = ctx.asset().markUnit;
+    const u = join && inBand(join) ? join : (mark || join || null);
+    // The price the field shows, so the amount a bid is worth is the one the ticket then quotes.
+    return u ? Number(plainUnit(u)) : null;
+  }
   const usdOf = (sats) => {
     const px = ctx.btcUsd();
     return px > 0 && Number.isFinite(sats) ? (sats / 1e8) * px : null;
@@ -393,6 +418,10 @@ function createMarket(host, ctx) {
     // Each fact on its own line rather than one dense run-on sentence — a small "key"
     // for the dots and the few whole-piece/online-only asks, not a paragraph to parse.
     const legend = [];
+    if (b.overlap) {
+      const autoAbove = b.bids.some((x) => !x.mine && x.auto && x.unit > b.bestAsk);
+      legend.push(autoAbove ? 'A bid above the cheapest ask settles automatically — sell into it now.' : 'A bid above the cheapest ask settles when its bidder is online.');
+    }
     if (b.asks.some((x) => !x.mine && x.whole)) legend.push('Asks sell as whole pieces');
     if (b.asks.some((x) => !x.mine && !x.instant)) legend.push('<i class="bm-dot wait"></i> the seller confirms your claim');
     if (b.bids.some((x) => !x.mine && x.auto)) legend.push('<i class="bm-dot auto"></i> settles automatically');
@@ -549,6 +578,21 @@ function createMarket(host, ctx) {
     el.go.dataset.kind = kind;
   }
 
+  // The bid that "Bid" places for a buy that found no match: the sats typed (or the amount
+  // asked for) at the price a resting order starts from.
+  function bidOutcome(o) {
+    const unit = restingUnit('buy');
+    if (!unit) return null;
+    const base = o.spendSats != null ? amountForSats(o.spendSats, unit, dec) : o.receiveBase;
+    return base > 0n ? { base, unit } : null;
+  }
+
+  // The least it takes to buy a piece at the best price (asks sell in whole pieces).
+  function piecesFromSats(asks) {
+    const key = fmtUnit(asks[0].unit);
+    return asks.filter((a) => fmtUnit(a.unit) === key).reduce((m, a) => Math.min(m, a.sats), Infinity);
+  }
+
   function paintAvail(q) {
     let h = '';
     if (S.book && (!q || q.empty) && S.type === 'market') {
@@ -556,7 +600,10 @@ function createMarket(host, ctx) {
         const asks = eligibleAsks();
         if (asks.length) {
           const smallest = asks.reduce((m, a) => (a.sats < m.sats ? a : m), asks[0]);
-          h = `Best offer <b>${fmtUnit(asks[0].unit)}</b> sats/${T} · smallest piece ${fmtAmount(smallest.amount, dec, 4)} ${T} for ${fmtSats(smallest.sats)} sats`;
+          const fromSats = piecesFromSats(asks);
+          h = fromSats > smallest.sats
+            ? `Best price <b>${fmtUnit(asks[0].unit)}</b> sats/${T} · pieces from ${fmtSats(fromSats)} sats · smallest piece ${fmtAmount(smallest.amount, dec, 4)} ${T} for ${fmtSats(smallest.sats)} sats at ${fmtUnit(smallest.unit)}`
+            : `Best price <b>${fmtUnit(asks[0].unit)}</b> sats/${T} · smallest piece ${fmtAmount(smallest.amount, dec, 4)} ${T} for ${fmtSats(smallest.sats)} sats`;
         } else h = 'No one is selling right now.';
       } else {
         const bids = eligibleBids();
@@ -576,7 +623,7 @@ function createMarket(host, ctx) {
     if (!(mark > 0) || !p?.avgUnit) return '';
     const off = side === 'buy' ? (p.avgUnit - mark) / mark : (mark - p.avgUnit) / mark;
     if (off < 0.1) return '';
-    return `<div class="bm-q bm-warn">${side === 'buy' ? 'Pays' : 'Sells'} ${Math.round(off * 100)}% ${side === 'buy' ? 'above' : 'below'} the last trade (${fmtUnit(mark)} sats/${T}). Check the book or set a tighter price limit in Settings.</div>`;
+    return `<div class="bm-q bm-note">${side === 'buy' ? 'Pays' : 'Sells'} ${Math.min(99, Math.round(off * 100))}% ${side === 'buy' ? 'above' : 'below'} the last trade (${fmtUnit(mark)} sats/${T}).</div>`;
   }
 
   function paintQuote() {
@@ -609,16 +656,18 @@ function createMarket(host, ctx) {
         // What the same order could fill with no price limit, offered as a one-tap raise.
         const wide = S.book.asks.some((a) => !a.mine) ? planBuy(S.book, { spendSats: o.spendSats ?? null, receiveBase: o.receiveBase ?? null, maxUnit: Infinity, includeIntents: S.includeMaker }) : null;
         const best = eligibleAsks()[0]?.unit;
+        const bid = bidOutcome(o);
+        const bidLabel = bid ? `Bid ${fmtAmount(bid.base, dec, 4)} ${T} at ${fmtUnit(bid.unit)}` : 'Bid at my price';
         let offer = '';
         if (wide && wide.fills.length && best) {
-          why = `Nothing fills within your price limit of ${fmtUnit(q.maxUnit)}.`;
-          const over = ((wide.worstUnit - best) / best) * 100;
-          offer = `<div class="bm-callout"><div>Your ${o.spendSats != null ? `${fmtSats(o.spendSats)} sats` : 'order'} can buy <b>${fmtAmount(wide.amount, dec, 4)} ${T}</b> at up to <b>${fmtUnit(wide.worstUnit)}</b> — ${over.toFixed(0)}% above the best offer.</div>
-            <div class="bm-actions"><button type="button" class="bm-btn" data-act="allow-price" data-v="${wide.worstUnit}">Allow up to ${fmtUnit(wide.worstUnit)}</button><button type="button" class="bm-btn ghost" data-act="to-limit">Bid at my price</button></div></div>`;
+          const reach = o.spendSats != null ? `Your ${fmtSats(o.spendSats)} sats reach` : 'Your order reaches';
+          const pieces = wide.fills.length === 1 ? 'one piece' : `${wide.fills.length} pieces`;
+          why = `${reach} ${pieces}: ${fmtAmount(wide.amount, dec, 4)} ${T} at ${wide.fills.length === 1 ? '' : 'up to '}${fmtUnit(wide.worstUnit)} sats/${T}. Best price here is ${fmtUnit(best)} sats/${T}, in pieces from ${fmtSats(piecesFromSats(eligibleAsks()))} sats.`;
+          offer = `<div class="bm-actions"><button type="button" class="bm-btn" data-act="allow-price" data-v="${wide.worstUnit}">Buy ${fmtAmount(wide.amount, dec, 4)} ${T} at ${fmtUnit(wide.worstUnit)}</button><button type="button" class="bm-btn ghost" data-act="to-limit">${bidLabel}</button></div>`;
         } else {
-          offer = `<div class="bm-actions"><button type="button" class="bm-btn" data-act="to-limit">Place a bid at my price</button></div>`;
+          offer = `<div class="bm-actions"><button type="button" class="bm-btn" data-act="to-limit">${bid ? bidLabel : 'Place a bid at my price'}</button></div>`;
         }
-        html = `<div class="bm-q bm-warn">${why}</div>${offer}`;
+        html = `<div class="bm-q">${why}</div>${offer}`;
         el.quote.innerHTML = html;
         setGo('No match at this price', false);
         return;
@@ -655,10 +704,16 @@ function createMarket(host, ctx) {
         else if (p.skipped.some((s) => s.reason === 'too-big')) why = 'The bids here want more than you entered.';
         const acts = [];
         if (p.manualAvailable) acts.push(`<button type="button" class="bm-btn" data-act="inc-manual-now">Offer to online-only bids</button>`);
+        // The best bid you could sell into, when it sits below the price floor: stated with the
+        // last trade beside it, and taken only by choosing it.
         const wideBid = S.book.bids.find((b) => !b.mine && (S.includeManual || b.auto));
-        if (!p.manualAvailable && wideBid && wideBid.unit < minSellUnit()) acts.push(`<button type="button" class="bm-btn" data-act="allow-price" data-v="${wideBid.unit}">Allow down to ${fmtUnit(wideBid.unit)}</button>`);
+        if (wideBid && wideBid.unit < minSellUnit()) {
+          const last = lastTradeUnit();
+          why = `The best bid you can sell into is ${fmtUnit(wideBid.unit)} sats/${T}${last ? `; the last trade was ${fmtUnit(last)}` : ''}.${p.manualAvailable ? ` ${p.manualAvailable} more settle${p.manualAvailable === 1 ? 's' : ''} only while the bidder is online.` : ''}`;
+          acts.push(`<button type="button" class="bm-btn ${acts.length ? 'ghost' : ''}" data-act="allow-price" data-v="${wideBid.unit}">Sell at ${fmtUnit(wideBid.unit)} sats/${T}</button>`);
+        }
         acts.push(`<button type="button" class="bm-btn ${acts.length ? 'ghost' : ''}" data-act="to-limit">List at my price</button>`);
-        html = `<div class="bm-q bm-warn">${why}</div><div class="bm-actions">${acts.join('')}</div>`;
+        html = `<div class="bm-q">${why}</div><div class="bm-actions">${acts.join('')}</div>`;
         el.quote.innerHTML = html;
         setGo('No match at this price', false);
         return;
@@ -1567,12 +1622,14 @@ function createMarket(host, ctx) {
     } else {
       // Resting defaults: a buy joins the best bid (or the cheapest ask when bids sit above
       // it); a sell joins the cheapest ask.
-      const bb = S.book?.bestBid, ba = S.book?.bestAsk;
-      const u = unit || (S.side === 'buy'
-        ? (bb && ba ? Math.min(bb, ba) : bb || ba || ctx.asset().markUnit)
-        : (ba || bb || ctx.asset().markUnit));
+      const u = unit || restingUnit(S.side);
       if (u) el.price2.value = plainUnit(u);
-      if (totalSats != null && u) el.amount.value = fmtAmount(amountForSats(totalSats, u, dec), dec).replace(/,/g, '');
+      if (totalSats != null && u) {
+        // The amount worth exactly this total at the price (one base unit more when rounding down
+        // would leave it a sat short), so the total the ticket shows is the sats you brought.
+        const a0 = amountForSats(totalSats, u, dec);
+        el.amount.value = fmtAmount(satsForAmount(a0, u, dec) < totalSats ? a0 + 1n : a0, dec).replace(/,/g, '');
+      }
       else if ((amountBase ?? sellBase) != null) el.amount.value = fmtAmount(amountBase ?? sellBase, dec).replace(/,/g, '');
       S.anchorTotal = false;
       S.syncTotal?.();

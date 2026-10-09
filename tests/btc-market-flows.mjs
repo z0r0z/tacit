@@ -430,6 +430,84 @@ await test('closing the review dialog returns the keyboard to where it was', asy
   assert.equal(await page.evaluate(() => document.activeElement?.dataset?.k), 'amount', 'focus is back in the amount box');
 });
 
+// The live TAC book's shape: the best price comes in pieces far bigger than a small budget, and
+// the only auto-settling bid is a lone 1 sat per token.
+const THIN = `const W = window.__w;
+  W.listings = [W.preauth('big', 20000, 3540000), W.preauth('mid', 1021, 212368), W.preauth('small', 35.7142, 17857)];`;
+
+await test('a buy that no piece fits states the book plainly and offers each outcome with its size', async (page) => {
+  await page.evaluate(`(() => { ${THIN} })()`);
+  await mount(page); await settle(page, 300);
+  assert.match(await page.textContent('[data-k=avail]'), /Best price 177\.00 sats\/TAC · pieces from 3,540,000 sats · smallest piece 35\.7142 TAC for 17,857 sats at 500\.00/);
+  await page.fill('[data-k=amount]', '20000'); await settle(page);
+  const q = await page.textContent('[data-k=quote]');
+  assert.match(q, /Your 20,000 sats reach one piece: 35\.7142 TAC at 500\.00 sats\/TAC\./);
+  assert.match(q, /Best price here is 177\.00 sats\/TAC, in pieces from 3,540,000 sats\./);
+  assert.doesNotMatch(q, /\d+% above/, 'plain figures, no percentages to read into');
+  assert.equal((await page.textContent('[data-act=allow-price]')).trim(), 'Buy 35.7142 TAC at 500.00');
+  assert.equal((await page.textContent('[data-act=to-limit]')).trim(), 'Bid 112.9943 TAC at 177.00');
+  await page.click('[data-act=to-limit]'); await settle(page);
+  assert.equal(await page.inputValue('[data-k=limit-price]'), '177.00', 'the bid joins the best price');
+  assert.match(await page.inputValue('[data-k=amount]'), /^112\.994/);
+  const total = Number(await page.inputValue('[data-k=total]'));
+  assert.ok(total >= 19990 && total <= 20000, `the bid is worth the sats typed (${total})`);
+});
+
+await test('the Bid offered for a buy with no match is worth what the ticket then quotes', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('big', 228.7, 39793), W.preauth('small', 35.7142, 17857)]; });
+  await mount(page); await settle(page, 300);
+  await page.fill('[data-k=amount]', '20000'); await settle(page);
+  const label = (await page.textContent('[data-act=to-limit]')).trim();
+  const [, base] = label.match(/^Bid ([\d.,]+) TAC at/);
+  await page.click('[data-act=to-limit]'); await settle(page);
+  assert.match(await page.textContent('[data-k=quote]'), new RegExp(`Your bid${base.replace(/\./g, '\\.')} TAC at`), 'the button and the quote name the same bid');
+});
+
+await test('a market sell stays inside a band around the last trade; a lone far bid is one explicit tap', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.me.assetBase = BigInt(W.TAC(5000)); W.bids = [W.bid('lone', 12000, 12000, { watchtower: true })]; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=side][data-v=sell]'); await settle(page);
+  await page.fill('[data-k=amount]', '1500'); await settle(page);
+  assert.equal(await page.textContent('[data-k=go]'), 'No match at this price');
+  const q = await page.textContent('[data-k=quote]');
+  assert.match(q, /The best bid you can sell into is 1 sats\/TAC; the last trade was 200\.00\./);
+  assert.doesNotMatch(q, /\d+% below/);
+  assert.equal((await page.textContent('[data-act=allow-price]')).trim(), 'Sell at 1 sats/TAC');
+  assert.equal((await calls(page, 'sellToBid')).length, 0);
+  await page.click('[data-act=allow-price]'); await settle(page);
+  assert.equal(await page.textContent('[data-k=go]'), 'Review sell');
+  assert.match(await page.textContent('[data-k=quote]'), /You get1,500 sats/);
+});
+
+await test('a sell that finds only online-only bids and a far bid shows both choices', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.bids = [W.bid('lone', 12000, 12000, { watchtower: true }), W.bid('man', 150, 30000)]; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=side][data-v=sell]'); await settle(page);
+  await page.fill('[data-k=amount]', '1000'); await settle(page);
+  assert.ok(await page.$('[data-act=inc-manual-now]'), 'online-only bids can be included');
+  assert.ok(await page.$('[data-act=allow-price]'), 'the far bid can be taken explicitly');
+  assert.ok(await page.$('[data-act=to-limit]'), 'listing at a price stays on offer');
+});
+
+await test('a resting order joins the book only where the book is near the last trade', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.bids = [W.bid('lone', 12000, 12000, { watchtower: true })]; });
+  await mount(page); await settle(page, 300);
+  await page.click('[data-act=side][data-v=sell]'); await settle(page);
+  await page.click('[data-act=type][data-v=limit]'); await settle(page);
+  assert.equal(await page.inputValue('[data-k=limit-price]'), '200.00', 'with no asks the price starts at the last trade, not at a 1 sat bid');
+  await page.click('[data-act=side][data-v=buy]'); await settle(page);
+  assert.equal(await page.inputValue('[data-k=limit-price]'), '200.00');
+});
+
+await test('a bid above the cheapest ask is explained in the book notes', async (page) => {
+  await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('a', 100, 17700)]; W.bids = [W.bid('hi', 150, 31950)]; });
+  await mount(page); await settle(page, 300);
+  assert.match(await page.textContent('[data-k=book-note]'), /A bid above the cheapest ask settles when its bidder is online\./);
+  await page.evaluate(() => { const W = window.__w; W.bids = [W.bid('hi', 150, 31950, { watchtower: true })]; });
+  await page.evaluate(() => window.__ctl.refresh({ force: true })); await settle(page, 300);
+  assert.match(await page.textContent('[data-k=book-note]'), /A bid above the cheapest ask settles automatically — sell into it now\./);
+});
+
 await test('typing and focus survive live refreshes; a row click primes the ticket', async (page) => {
   await page.evaluate(() => { const W = window.__w; W.listings = [W.preauth('p1', 100, 20000)]; W.bids = [W.bid('b1', 10, 1800, { watchtower: true })]; });
   await mount(page); await settle(page, 300);
