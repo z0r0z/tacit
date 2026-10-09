@@ -37379,10 +37379,16 @@ function buildSatsSendTx({ inputs, recipientScript, recipientValue, changeScript
   };
 }
 
+// How far a sats send's fee may rise between its preview and Confirm before
+// the send stops and the preview is shown again.
+function satsSendFeeMargin(previewFee) { return Math.max(100, Math.ceil(previewFee / 10)); }
+
 // End-to-end sats-send: validate, classify, pick, build, sign, broadcast.
 // Throws on any precondition failure — caller surfaces the message in the UI.
 // Returns { txid, inputsSpent, recipientValue, changeValue, fee, feeRate }.
-async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
+// `maxFee`: the fee a preview showed. A rebuilt fee above it by more than
+// satsSendFeeMargin stops the send before signing (error.feeRose).
+async function buildAndBroadcastSatsSend({ recipientAddr, amountSats, maxFee = null }) {
   await ensurePrivkey();
   // SAFETY CONTRACT — applies to both the P2WPKH and silent-payment paths:
   //   • Sender's tacit coins: protected by selectSatsUtxosSafe (excludes
@@ -37498,7 +37504,8 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     }
     const feeNoChange = feeFor(estSatsSendVb(picked.length, false, recipientIsP2tr, nP2tr), feeRate);
     if (total >= amt + feeNoChange) {
-      fee = feeNoChange;
+      // No change output: everything above the amount goes to the fee.
+      fee = total - amt;
       change = 0;
       hasChange = false;
       break;
@@ -37507,6 +37514,11 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   if (fee === 0) {
     const have = total;
     throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange, recipientIsP2tr, _numP2tr()), feeRate)}).${heldBack}`);
+  }
+  if (Number.isFinite(maxFee) && fee > maxFee + satsSendFeeMargin(maxFee)) {
+    const e = new Error(`The network fee is now ${fee.toLocaleString('en-US')} sats, up from ${maxFee.toLocaleString('en-US')} in the preview. Nothing was sent. Check the new preview and confirm again.`);
+    e.feeRose = true;
+    throw e;
   }
 
   // (6) Belt-and-suspenders re-classification on the FINAL picked set. Catches
@@ -53796,7 +53808,8 @@ function setupSatsSendForm() {
         }
         const feeNo = feeFor(estSatsSendVb(picked.length, false, recipientIsP2tr, nP2tr), feeRate);
         if (total >= amtSats + feeNo) {
-          fee = feeNo; change = 0; hasChange = false; break;
+          // No change output: everything above the amount goes to the fee.
+          fee = total - amtSats; change = 0; hasChange = false; break;
         }
       }
       if (fee === 0) throw new Error(`insufficient sats: have ${total}, need ${amtSats} + fees (~${feeFor(estSatsSendVb(picked.length, true, recipientIsSilent, _nP2tr()), feeRate)})`);
@@ -53866,7 +53879,7 @@ function setupSatsSendForm() {
       // ship the previewed tx. The buildAndBroadcastSatsSend helper does the
       // re-classification check for us so a race between Preview and Confirm
       // can't slip an asset UTXO through.
-      const r = await buildAndBroadcastSatsSend({ recipientAddr: job.recipient, amountSats: job.amtSats });
+      const r = await buildAndBroadcastSatsSend({ recipientAddr: job.recipient, amountSats: job.amtSats, maxFee: job.fee });
       const isSilent = !!decodeSilentPaymentAddress(job.recipient);
       toast(`Sent ${r.recipientValue.toLocaleString('en-US')} sats · ${shorten(r.txid, 6)}`, 'success');
       if (pendingSatsSend === job) {
@@ -53925,6 +53938,11 @@ function setupSatsSendForm() {
     } catch (e) {
       if (isUnlockCancelled(e)) {
         $('#sats-error').textContent = 'Unlock cancelled — nothing was broadcast.';
+      } else if (e?.feeRose) {
+        // Show the new fee in a fresh preview before anything is sent.
+        try { await $('#btn-sats-preview').onclick(); } catch {}
+        const errEl = $('#sats-error');
+        errEl.textContent = e.message + (errEl.textContent ? ` ${errEl.textContent}` : '');
       } else {
         $('#sats-error').textContent = e.message;
         console.error(e);
@@ -79436,7 +79454,7 @@ export {
   // Additional builders exposed for the signet dryrun harness — same
   // jsdom-shim entry point as the daemon, exercises full flow end-to-end.
   buildAndBroadcastCXfer, buildAndBroadcastCEtch, buildAndBroadcastCMint,
-  buildAndBroadcastSatsSend,
+  buildAndBroadcastSatsSend, satsSendFeeMargin,
   // JIT funding gate — exported so the signet harness can drive the real
   // silent-payment consolidation path (the bridge fee gate) end-to-end.
   ensureSatsFunded,

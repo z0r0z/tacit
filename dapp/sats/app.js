@@ -1,7 +1,7 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=fc0675fa';
+const TACIT_URL = '/tacit.js?cb=89c4ac0a';
 const SECRET_URL = '/sats/secret.js?cb=423f48a3';
 const MIX_URL = '/sats/mix.js?cb=18747071';
 const ETH_URL = '/sats/eth.js?cb=8f726558';
