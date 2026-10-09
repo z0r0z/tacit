@@ -17200,6 +17200,7 @@ function clearValidatorCaches() {
   _dclaimCreditedCache.clear();
   _ammSwapAcceptedCache.clear();
   _ammOpAcceptedCache.clear();
+  _farmReceiptCache.clear();
   _crossoutMintedCache.clear();
   _btcPoolExitCache.clear();
   _btcPoolExitMatched.clear();
@@ -17467,6 +17468,63 @@ async function _ammOpAcceptedFailure(txidHex, tx, label) {
   if (_strictDecided(acc.scannedHeight, h)) return _REASON_INVALID;
   _strictUnavailable(`${label} ${txidHex}: acceptance not decided`);
   return _REASON_FETCH_FAILED;
+}
+
+// Farm mints (T_LP_UNBOND lp_return, T_LP_HARVEST reward, T_FARM_REFUND treasury) carry no commitment on chain:
+// the note is the one the worker decreed when it applied the op, served from its receipt at /amm/farm-receipt.
+// `endpoint: false` when the worker has no such route (an older deploy), `available: false` when it can't be read.
+const _farmReceiptCache = new Map();
+async function _fetchFarmReceipt(txidHex) {
+  const c = _farmReceiptCache.get(txidHex);
+  if (c && (c.found || (Date.now() - c.fetchedAt) < AMM_SWAP_ACCEPTED_TTL_MS)) return c;
+  const put = (e) => { const v = { ...e, fetchedAt: Date.now() }; _farmReceiptCache.set(txidHex, v); return v; };
+  if (!WORKER_BASE) return put({ available: false });
+  try {
+    const r = await fetch(`${WORKER_BASE}/amm/farm-receipt?network=${NET.name}&txid=${txidHex}`);
+    if (r.status === 404) return put({ available: true, endpoint: false });
+    if (!r.ok) return put({ available: false });
+    const j = await r.json();
+    return put({
+      available: true, endpoint: true, found: !!j.found, kind: j.kind || null, note: j.note || null,
+      scannedHeight: Number.isInteger(j.scanned_height) ? j.scanned_height : null,
+    });
+  } catch {
+    return put({ available: false });
+  }
+}
+const _FARM_KIND_BY_OPCODE = new Map([
+  [ammEnvelopeMod.OPCODE_T_LP_UNBOND, 'unbond'], [ammEnvelopeMod.OPCODE_T_LP_HARVEST, 'harvest'], [ammEnvelopeMod.OPCODE_T_FARM_REFUND, 'refund'],
+]);
+// The note an applied farm op minted at `vout`: { note: { assetIdHex, amount, blinding, commitment, vout } } when the
+// worker's receipt matches the envelope (its own amount and public blinding, opening the receipt's commitment), else
+// { reason } to mark the output with, or { reason, endpoint: false } when the worker has no receipts to answer from.
+async function _farmMintNote(env, txidHex, vout, tx) {
+  const kind = _FARM_KIND_BY_OPCODE.get(env.opcode);
+  if (!kind) return { reason: _REASON_INVALID };
+  const dec = kind === 'unbond' ? ammEnvelopeMod.decodeLpUnbond(env.payload)
+    : kind === 'harvest' ? ammEnvelopeMod.decodeLpHarvest(env.payload) : ammEnvelopeMod.decodeFarmRefund(env.payload);
+  if (!dec) return { reason: _REASON_INVALID };
+  const acc = await _fetchFarmReceipt(txidHex);
+  if (!acc.available) { _strictUnavailable(`farm mint ${txidHex}: receipt unavailable`); return { reason: _REASON_FETCH_FAILED }; }
+  if (acc.endpoint === false) { _strictUnavailable(`farm mint ${txidHex}: no receipt service`); return { reason: _REASON_INVALID, endpoint: false }; }
+  if (!acc.found) {
+    if (_strictDecided(acc.scannedHeight, _confirmedHeight(tx))) return { reason: _REASON_INVALID };
+    _strictUnavailable(`farm mint ${txidHex}: receipt not decided`);
+    return { reason: _REASON_FETCH_FAILED };
+  }
+  const n = acc.note || {};
+  const [amount, rBytes] = kind === 'unbond' ? [dec.shares, dec.lpReturnR]
+    : kind === 'harvest' ? [dec.rewardAmount, dec.rewardR] : [dec.refundAmount, dec.refundR];
+  try {
+    if (acc.kind !== kind || n.vout !== vout || n.vout !== 1) return { reason: _REASON_INVALID };
+    if (!/^[0-9a-f]{64}$/.test(String(n.asset_id)) || !/^0[23][0-9a-f]{64}$/.test(String(n.commitment))) return { reason: _REASON_INVALID };
+    if (BigInt(n.amount) !== BigInt(amount) || String(n.r).toLowerCase() !== bytesToHex(rBytes)) return { reason: _REASON_INVALID };
+    const blinding = BigInt('0x' + bytesToHex(rBytes));
+    if (blinding === 0n || blinding >= SECP_N) return { reason: _REASON_INVALID };
+    const commitment = hexToBytes(n.commitment);
+    if (!pedersenCommit(BigInt(amount), blinding).equals(bytesToPoint(commitment))) return { reason: _REASON_INVALID };
+    return { note: { assetIdHex: n.asset_id, amount: BigInt(amount), blinding, commitment, vout } };
+  } catch { return { reason: _REASON_INVALID }; }
 }
 
 // A swap spends its asset input at vin[1]: a validated note that commits to the envelope's c_in, of the asset
@@ -19294,6 +19352,14 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return true;
   }
 
+  // Farm mints: the note the worker decreed when it applied the op (its receipt), at vout 1.
+  if (_FARM_KIND_BY_OPCODE.has(env.opcode)) {
+    const { note, reason } = await _farmMintNote(env, txidHex, vout, tx);
+    if (!note) { _markInvalid(validatedSet, validatedReasons, key, reason); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -19340,6 +19406,11 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
   if (parentEnv.opcode === T_CROSSOUT_MINT) {
     if (!parentTxid) return null;
     const { note } = await _crossoutMintNote(parentEnv, parentTxid, vout);
+    return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
+  }
+  if (_FARM_KIND_BY_OPCODE.has(parentEnv.opcode)) {
+    if (!parentTxid) return null;
+    const { note } = await _farmMintNote(parentEnv, parentTxid, vout, null);
     return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
   }
   if (parentEnv.opcode === T_CETCH) {
@@ -21022,13 +21093,15 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.commitment;
-    } else if (env.opcode === ammEnvelopeMod.OPCODE_T_LP_UNBOND || env.opcode === ammEnvelopeMod.OPCODE_T_LP_HARVEST) {
-      // Farm-position notes (lp_return / reward; DUST P2WPKH at vout 1|2, like T_PREAUTH_BID). The
-      // commitment is VALIDATOR-DECREED — not in the envelope — so it's resolved by the worker
-      // pre-scan (farmRecoverPositions) into _farmOpeningCache. An un-pre-scanned farm UTXO is
-      // skipped here (no false recognition); the !valid recovery branch re-credits cached ones.
-      const fc = _farmOpeningCache.get(`${u.txid}:${u.vout}`);
+    } else if (_FARM_KIND_BY_OPCODE.has(env.opcode)) {
+      // Farm-minted notes (lp_return / reward / treasury refund; DUST P2WPKH at vout 1). The commitment is
+      // decreed by the worker when it applies the op, so it comes from the worker's receipt, which also opens it
+      // (the amount and blinding are public in the envelope). Against a worker with no receipt route it comes from
+      // the farm pre-scan (farmRecoverPositions) instead, and the !valid branch below credits it as before.
+      const fm = await _farmMintNote(env, u.txid, u.vout, tx);
+      const fc = fm.note || (fm.endpoint === false ? _farmOpeningCache.get(`${u.txid}:${u.vout}`) : null);
       if (!fc) continue;
+      if (fm.note) { try { recordOpening(u.txid, u.vout, fc.assetIdHex, fc.amount, fc.blinding); } catch {} }
       assetIdHex = fc.assetIdHex;
       const _fm = getAssetMeta(assetIdHex);
       if (_fm) { ticker = _fm.ticker; decimals = _fm.decimals; }
@@ -21124,13 +21197,12 @@ async function _scanHoldingsImpl() {
           } catch {}
         }
       }
-      // Farm-position notes (lp_return / reward): validateOutpoint doesn't model validator-decreed
-      // farm mints, so it returns false here. Re-credit from the worker pre-scan cache
-      // (farmRecoverPositions) — mirroring the pending-T_PMINT recovery above — so a wiped wallet
-      // recovers + spends them. The cached opening's (amount, blinding) reopen the cached commitment.
+      // Farm-position notes (lp_return / reward) against a worker with no receipt route: the validator has
+      // nothing to credit them from, so they are re-credited from the farm pre-scan cache (farmRecoverPositions),
+      // mirroring the pending-T_PMINT recovery above. With receipts, a farm note counts only once it validates.
       if (env.opcode === ammEnvelopeMod.OPCODE_T_LP_UNBOND || env.opcode === ammEnvelopeMod.OPCODE_T_LP_HARVEST) {
         const fc = _farmOpeningCache.get(`${u.txid}:${u.vout}`);
-        if (fc) {
+        if (fc && (await _fetchFarmReceipt(u.txid)).endpoint === false) {
           try {
             if (pedersenCommit(fc.amount, fc.blinding).equals(bytesToPoint(onChainCommitment))) {
               recordOpening(u.txid, u.vout, fc.assetIdHex, fc.amount, fc.blinding);
