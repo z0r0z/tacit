@@ -142,11 +142,14 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .facts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 22px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--mute); }
 .facts li { display: inline-flex; align-items: center; gap: 8px; }
 .facts li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--eth); }
+.hero .more { margin-top: 16px; max-width: none; font-size: 12.5px; }
+.hero .more a { color: var(--ink); text-decoration: none; }
+@media (hover: hover) { .hero .more a:hover { text-decoration: underline; } }
 /* Signed in, the page is the form: the pitch gives way to it. */
 body.in .hero { padding: 26px 0 20px; }
 body.in .hero h1 { font-size: clamp(32px, 6vw, 44px); margin: 0; }
 body.in .hero h1 br { display: none; }
-body.in .hero p, body.in .facts { display: none; }
+body.in .hero p, body.in .facts, body.in .hero .more { display: none; }
 
 /* ── cards ── */
 .card { background: var(--card); border: 1px solid var(--hair); padding: 22px; margin: 0 0 14px; }
@@ -430,6 +433,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <li>Recovered from your key</li>
       <li>No gas to send or withdraw</li>
     </ul>
+    <p class="more"><a href="/#private">For ETH that also swaps, farms and borrows, make it private as tETH in the Tacit pool →</a></p>
   </section>
 
   <main>

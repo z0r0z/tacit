@@ -107,6 +107,9 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 .hero h1 { font: 400 clamp(42px, 8vw, 72px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 22px; }
 .hero h1 em { font-style: italic; }
 .hero p { color: var(--mute); margin: 0; max-width: 46ch; }
+.hero .hero-more { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 16px; max-width: none; font-size: 12.5px; }
+.hero .hero-more a { color: var(--ink); text-decoration: none; }
+@media (hover: hover) { .hero .hero-more a:hover { text-decoration: underline; } }
 
 /* live pool strip */
 .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 1px; margin: 0 0 14px;
@@ -323,7 +326,8 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
 
   <section class="hero">
     <h1>TAC, <em>shielded</em>.</h1>
-    <p>A pool on Bitcoin itself. Move TAC in, pay anyone without revealing the amount or who received it, and withdraw it when you want. Proofs are made on your own device — there is no bridge, no custodian and no multisig anywhere in it.</p>
+    <p>A pool on Bitcoin itself. Move TAC in, pay anyone without revealing the amount or who received it, and withdraw it when you want. Proofs are made on your own device, and no custodian or multisig stands anywhere in it.</p>
+    <p class="hero-more"><a href="/#bridge">The same TAC crosses to the Tacit pool on Ethereum by proof →</a><a href="/#asset/tac">What TAC is →</a></p>
   </section>
 
   <div class="strip" id="strip">

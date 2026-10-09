@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4UuyYpp9l8bddzWtoYVYs6iuWbgGZPaZiDMi9FjSlyQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KNlDVGHT349N+S1dVArvClBiNGuHMkdbA61zflBpBPU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
@@ -743,7 +743,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <a class="tile" href="#eth" data-open="eth" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span>
       <h3>Private ETH</h3>
-      <p>Make your ETH private. In the Tacit pool it is tETH: send, swap, farm and borrow with it, and nobody sees how much or to whom. For payments alone there are also ETH pools on Ethereum, Base and Robinhood Chain.</p>
+      <p>Make your ETH private. In the Tacit pool it is tETH: send, swap, farm and borrow with it, and nobody sees how much or to whom. Or keep ETH in a pay-only pool on this device, on Ethereum, Base or Robinhood Chain.</p>
       <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">Ethereum, Base and Robinhood Chain</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#bitcoin" data-open="btc" aria-haspopup="dialog">
@@ -795,6 +795,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <a href="/classic.html">Classic app</a>
       <a href="/weld/keeper/">Community ops</a>
       <a href="/tacit-v1.pdf">Whitepaper</a>
+      <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener">Spec</a>
       <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" rel="noopener">Security</a>
       <a href="https://github.com/src-company/tacit/blob/main/docs/BUILD-A-TACIT-DAPP.md" rel="noopener">Build on Tacit</a>
       <a href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" rel="noopener">Pool contract</a>
@@ -5238,7 +5239,7 @@ const brNote = (n) => brOver(n) ? html`<div class="brn brsp"><span><b class="num
   : html`<label class="pick brn${n.eligible ? '' : ' off'}"><input type="radio" name="br-note" value="${brId(n)}" ${n.eligible ? '' : 'disabled'} ${BR.pick === brId(n) ? 'checked' : ''}>
   <span><b class="num">${fmt(BigInt(n.amount), 8, 4)} TAC</b>${n.eligible ? '' : html`<small>${brReason(n.reason)}</small>`}</span></label>`;
 function renderBridge(el) {
-  if (!needKey(el, 'Bring TAC from your Bitcoin address into your private TAC on Ethereum. Open your Tacit wallet to start.')) return;
+  if (!needKey(el, 'Bring TAC from your Bitcoin address into your private TAC on Ethereum. A burn on Bitcoin pays only BTC, and the pool mints the same TAC once Bitcoin’s proof carries it over, usually within hours. Open your Tacit wallet to start.')) return;
   const pub = S.key.pubHex, b = BR.pub === pub ? BR : null;
   if (!b?.notes && !BR.loading && !b?.err) loadBridge().then(() => rerender('tac')).catch(() => {});
   const recs = brRecords(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging'), open = notes.filter((n) => n.eligible);
