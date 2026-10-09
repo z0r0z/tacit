@@ -63,6 +63,18 @@ test('tacit.finance restore order: eth and btc when active, passkey unless ext o
   assert.equal(siteWallet().pubHex, OTHER);
 });
 
+test("tacit.finance's mainnet mode is read from its per-network record first, and a cleared one reads as none", () => {
+  reset();
+  put('tacit-prf-v1', { old: { pubkey: OTHER, lastUsed: 1 } });
+  put('tacit-wallet-v1:mainnet', { pub: SITE });
+  put('tacit-active-mode-v1', 'passkey');
+  put('tacit-active-mode-v1:mainnet', 'local');
+  put('tacit-active-mode-v1:signet', 'eth');
+  assert.equal(siteWallet().mode, 'local', 'the mainnet record wins over the old single record');
+  put('tacit-active-mode-v1:mainnet', '');
+  assert.equal(siteWallet().mode, 'passkey', 'cleared on mainnet: the restore order with no mode');
+});
+
 test('a stale or pasted record is never offered', () => {
   reset();
   put('tacit-wallet-v1:mainnet', { pub: SITE });

@@ -2083,16 +2083,77 @@ async function ensurePrivkey() {
 // instead of always running the passkey path first. Without this, a user
 // with both an external wallet AND a passkey gets a passkey OS prompt every
 // reload, and the only way back to ext-wallet flow is to cancel.
+//
+// Kept per network, under `<ACTIVE_MODE_KEY>:<net>`. A network with no choice
+// of its own uses an Ethereum or Bitcoin wallet linked on the other network
+// (its key there comes from one signature at the next unlock), unless this
+// network has a wallet saved in this browser, which then opens instead.
+// Disconnect / Forget record '' (cleared here), so a link is not carried back.
 const ACTIVE_MODE_KEY = 'tacit-active-mode-v1';
+const _WALLET_MODES = ['passkey', 'ext', 'local', 'eth', 'btc'];
+const _activeModeKey = (net = NET.name) => `${ACTIVE_MODE_KEY}:${net}`;
+function _readActiveMode(net) {
+  try { return localStorage.getItem(_activeModeKey(net)); } catch { return null; }
+}
+// 'ext' or 'local' when `net` has a wallet saved in this browser: a key bound
+// to an extension address (the cached one first), or the local key.
+function _savedWalletModeOn(net) {
+  try {
+    const has = (k) => !!(localStorage.getItem(k) || '').trim();
+    const ext = JSON.parse(localStorage.getItem(EXT_STATE_KEY) || 'null');
+    if (ext?.address && has(`${WALLET_KEY_BASE}:${net}:by:${String(ext.address).toLowerCase()}`)) return 'ext';
+    if (has(`${WALLET_KEY_BASE}:${net}`)) return 'local';
+    const prefix = `${WALLET_KEY_BASE}:${net}:by:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix) && has(k)) return 'ext';
+    }
+  } catch {}
+  return null;
+}
 function getActiveWalletMode() {
-  const v = localStorage.getItem(ACTIVE_MODE_KEY);
-  return v === 'passkey' || v === 'ext' || v === 'local' || v === 'eth' || v === 'btc' ? v : null;
+  const own = _readActiveMode(NET.name);
+  if (own !== null) return _WALLET_MODES.includes(own) ? own : null;
+  if (_savedWalletModeOn(NET.name)) return null;
+  for (const net of IDENTITY_NETS) {
+    if (net === NET.name) continue;
+    const v = _readActiveMode(net);
+    if (v === 'eth' || v === 'btc') return v;
+  }
+  return null;
 }
 function setActiveWalletMode(mode) {
-  if (mode === 'passkey' || mode === 'ext' || mode === 'local' || mode === 'eth' || mode === 'btc') {
-    localStorage.setItem(ACTIVE_MODE_KEY, mode);
-  }
+  if (_WALLET_MODES.includes(mode)) localStorage.setItem(_activeModeKey(), mode);
 }
+function clearActiveWalletMode() {
+  try { localStorage.setItem(_activeModeKey(), ''); } catch {}
+}
+// One-time move of the single record kept before modes were per network. Each
+// network keeps the recorded mode where it hides nothing: an Ethereum or
+// Bitcoin link stays on a network with no saved wallet, or where that link
+// already holds a verified key; a passkey stays everywhere (a passkey restores
+// ahead of a saved key with no mode anyway). Otherwise the network opens the
+// wallet saved for it, if any. The old record is then removed.
+function _migrateActiveMode() {
+  try {
+    const legacy = localStorage.getItem(ACTIVE_MODE_KEY);
+    if (legacy === null) return;
+    for (const net of IDENTITY_NETS) {
+      if (_readActiveMode(net) !== null) continue;
+      const saved = _savedWalletModeOn(net);
+      let v = saved;
+      if (legacy === 'passkey') v = 'passkey';
+      else if (legacy === 'eth' || legacy === 'btc') {
+        const rec = _readIdentityRecord(legacy === 'eth' ? ETH_WALLET_KEY : BTC_WALLET_KEY, net);
+        const keyHere = !!(rec && (rec.pubkey || rec.tacitPubkey) && !rec.netUnverified);
+        if (!saved || keyHere) v = legacy;
+      }
+      if (v) localStorage.setItem(_activeModeKey(net), v);
+    }
+    localStorage.removeItem(ACTIVE_MODE_KEY);
+  } catch {}
+}
+_migrateActiveMode();
 
 // Render saved passkey list in Manage Wallet drawer. Each entry is a clickable
 // row that re-authenticates with that specific credential. Active entry
@@ -51073,7 +51134,7 @@ function setupWalletButtons() {
       else clearPrfMap();
       prfWallet.lock();
       invalidateHoldingsCache();
-      localStorage.removeItem(ACTIVE_MODE_KEY);
+      clearActiveWalletMode();
       location.reload();
       return;
     }
@@ -51088,7 +51149,7 @@ function setupWalletButtons() {
       ethWallet.disconnect();
       ethWallet.lock();
       invalidateHoldingsCache();
-      localStorage.removeItem(ACTIVE_MODE_KEY);
+      clearActiveWalletMode();
       location.reload();
       return;
     }
@@ -51106,7 +51167,7 @@ function setupWalletButtons() {
       btcWallet.disconnect();
       btcWallet.lock();
       invalidateHoldingsCache();
-      localStorage.removeItem(ACTIVE_MODE_KEY);
+      clearActiveWalletMode();
       location.reload();
       return;
     }
@@ -51152,7 +51213,7 @@ function setupWalletButtons() {
     try {
       localStorage.removeItem(forgetKey);
       localStorage.removeItem(BACKUP_ACK_PREFIX + bytesToHex(oldPub));
-      localStorage.removeItem(ACTIVE_MODE_KEY);
+      clearActiveWalletMode();
     } catch (e) {
       toast('Storage cleanup failed: ' + (e?.message || e), 'error');
       return;
@@ -77054,7 +77115,7 @@ function setupBtcWalletButtons() {
     extWallet.disconnect();
     wallet.ext = null;
     invalidateHoldingsCache();
-    localStorage.removeItem(ACTIVE_MODE_KEY);
+    clearActiveWalletMode();
     location.reload();
   };
 }
@@ -77089,7 +77150,7 @@ function setupEthWalletButtons() {
     ethWallet.disconnect();
     ethWallet.lock();
     invalidateHoldingsCache();
-    localStorage.removeItem(ACTIVE_MODE_KEY);
+    clearActiveWalletMode();
     location.reload();
   };
 }
@@ -79102,7 +79163,7 @@ export {
   // BTC determinism guard (enroll signs twice, refuses to derive a drifting
   // identity at login) is a load-bearing recovery-safety property and gets
   // dedicated coverage in tests/btc-wallet.test.mjs.
-  btcWallet, ethWallet, extWallet, prfWallet, setActiveWalletMode, getActiveWalletMode,
+  btcWallet, ethWallet, extWallet, prfWallet, setActiveWalletMode, getActiveWalletMode, clearActiveWalletMode,
   // Onboarding wiring entry points — exported so tests/btc-wallet-welcome.test.mjs
   // can drive the real welcome-modal choice handler and the lazy sign-time
   // unlock against a minimal DOM, without booting the full app init().

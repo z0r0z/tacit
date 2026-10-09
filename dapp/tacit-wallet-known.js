@@ -17,7 +17,9 @@ const savedPub = (addr) => lc(readJson(addr ? `tacit-wallet-v1:mainnet:by:${lc(a
 // funds, then the key saved in this browser.
 export function siteWallet() {
   try {
-    const mode = localStorage.getItem('tacit-active-mode-v1');
+    // tacit.finance keeps its mode per network (`tacit-active-mode-v1:<net>`, '' once cleared there); the un-suffixed
+    // record is the one kept before that, read until tacit.finance has moved it.
+    const mode = localStorage.getItem('tacit-active-mode-v1:mainnet') ?? localStorage.getItem('tacit-active-mode-v1');
     // tacit.finance keeps the Ethereum wallet's address as 40 hex characters, without 0x.
     if (mode === 'eth') { const r = readJson('tacit-eth-identity:mainnet'); if (r?.address && isPub(r.pubkey)) return { mode, pubHex: lc(r.pubkey), address: '0x' + lc(r.address).replace(/^0x/, '') }; }
     if (mode === 'btc') { const r = readJson('tacit-btc-identity:mainnet'); if (r?.address && isPub(r.tacitPubkey)) return { mode, pubHex: lc(r.tacitPubkey), address: r.address, btc: r }; }

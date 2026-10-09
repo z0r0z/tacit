@@ -1,7 +1,7 @@
 // Secret Sats page. The landing copy is static; everything that touches a key
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
-const TACIT_URL = '/tacit.js?cb=b37a881c';
+const TACIT_URL = '/tacit.js?cb=0e41ba88';
 const SECRET_URL = '/sats/secret.js?cb=423f48a3';
 const MIX_URL = '/sats/mix.js?cb=18747071';
 const ETH_URL = '/sats/eth.js?cb=8f726558';
@@ -22,7 +22,7 @@ const SESSION = 'tacit-sats-session-v1';
 const IDENTITY = (net) => `tacit-sats-id-v1:${net}`;
 const SHARED_WALLET_KEYS = [
   'tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
-  ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`]),
+  ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`]),
 ];
 // Silent-payment tweak index per network. The wallet fetches public tweaks
 // and matches them locally; the index never sees a key.
@@ -37,7 +37,7 @@ const TOKEN_SEND_SATS = 3000;
 const PRF_MAP = 'tacit-prf-v1';
 // The wallet a returning visitor already has on mainnet (tacit-wallet-known.js, shared by the front page, /pay, /pay/eth
 // and /tac): the one tacit.finance has open first, then a key one of those pages opened. Public data only.
-const KNOWN_URL = '/tacit-wallet-known.js?cb=49410363';
+const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
 const KNOWN_IDS = ['tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1', 'tacit-tac-id-v1'];
 const FETCH_MS = 20_000;
 
