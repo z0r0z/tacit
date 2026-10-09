@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nyRVlDQj3v19sdBC9gHT/rYlayJlUOyqWOQwaxjM6DA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4CLLwM0sWys/E2XpTh9Am+mbkIzK/6/g18uZBbgFlq4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -307,16 +307,38 @@ a.di { color: inherit; text-decoration: none; }
 .tile .row b { font-weight: 500; }
 .tile .row span:nth-child(3) { color: var(--mute); }
 @media (hover: hover) { .tile .row:hover b { text-decoration: underline; } }
-@media (min-width: 641px) {
-  .tile.wide { grid-column: span 2; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto auto 1fr;
-    grid-template-areas: "top rows" "title rows" "text rows" "figs rows"; gap: 8px 28px; }
-  .tile.wide .tile-top { grid-area: top; }
-  .tile.wide h3 { grid-area: title; }
-  .tile.wide p { grid-area: text; }
-  .tile.wide .figs { grid-area: figs; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 3px 16px; }
-  .tile.wide .figs .fig { display: grid; }
-  .tile.wide .rows { grid-area: rows; align-self: end; }
-}
+/* Earn on private ETH: the two steps the page leads with, side by side, the second listing each private pool's rate. */
+main > section + section { margin-top: 40px; }
+.flow-b { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.flow-step .tile-top { justify-content: flex-start; gap: 12px; }
+.flow-n { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; border-radius: 50%;
+  font: 500 12px var(--mono); color: var(--card); background: var(--ink); }
+.pools { position: relative; z-index: 1; list-style: none; display: grid; margin: 4px 0 0; padding: 0; }
+.pools a { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; color: var(--ink); text-decoration: none;
+  border-top: 1px dashed var(--hair-2); }
+.pools b { font: 500 13px var(--mono); }
+@media (hover: hover) { .pools a:hover span { text-decoration: underline; } }
+.facts { position: static; }
+.facts li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; color: var(--mute); border-top: 1px dashed var(--hair-2); }
+.facts b { font-weight: 500; color: var(--ink); text-align: right; }
+/* Points: what each action earns now, the most weighted first. */
+.ways-b { padding: 18px 20px 14px; background: var(--card); border: 1px solid var(--hair); }
+.ways-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; }
+.ways-top a { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); text-decoration: none; }
+.ways-why { margin: 10px 0 4px; font-size: 12.5px; line-height: 1.5; color: var(--mute); }
+#ways { list-style: none; margin: 0; padding: 0; }
+#ways a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 14px; align-items: center; gap: 4px 12px; min-height: 44px; padding: 8px 0;
+  border-top: 1px solid var(--hair); font-size: 13px; color: inherit; text-decoration: none; }
+#ways .tk { grid-column: 1; width: 22px; height: 22px; }
+#ways .w-l { grid-column: 2; min-width: 0; }
+#ways .boost { grid-column: 3; padding: 2px 6px; font: 500 10.5px var(--mono); font-style: normal; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink); background: color-mix(in srgb, var(--orange) 26%, transparent); }
+#ways b { grid-column: 4; font: 500 14px var(--mono); white-space: nowrap; text-align: right; }
+#ways b small { font: 400 11.5px var(--mono); color: var(--mute); }
+#ways .go { grid-column: 5; transition: transform .18s; }
+@media (hover: hover) { #ways a:hover .w-l { text-decoration: underline; } #ways a:hover .go { transform: translateX(3px); } }
+.ways-note { margin: 8px 0 0; font-size: 12px; color: var(--mute); }
+.ways-note a { margin-left: 6px; color: var(--ink); text-decoration: none; }
 
 /* ── how it comes together: Bitcoin, the bridge, Ethereum, and the assets ── */
 .how { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--hair); }
@@ -609,10 +631,17 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .fig { display: grid; justify-items: end; text-align: right; font-size: 11px; line-height: 1.3; }
   .fig b { font-size: 14px; }
   .fig > span { max-width: 15ch; }
-  .tile.wide { grid-template-areas: "logo title title" "logo text text" "logo figs figs" "foot foot foot"; }
-  .tile.wide .figs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 16px; margin-top: 6px; }
-  .tile.wide .fig { justify-items: start; text-align: left; }
-  .tile.wide .fig > span { max-width: none; }
+  .flow-b { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .flow-step { grid-template-areas: "logo title figs" "logo text text" "pools pools pools" "foot foot foot"; }
+  .flow-step .pair { display: none; }
+  .pools { grid-area: pools; margin-top: 8px; }
+  #ways a { grid-template-columns: 22px minmax(0, 1fr) auto 14px; }
+  #ways .boost { grid-column: 2; grid-row: 2; justify-self: start; }
+  #ways b { grid-column: 3; grid-row: 1 / span 2; }
+  #ways .go { grid-column: 4; grid-row: 1 / span 2; }
+  .ways-b { padding: 16px 16px 12px; }
+  .ways-top .fig { display: flex; justify-items: start; text-align: left; font-size: 12px; }
+  .ways-top .fig > span { max-width: none; }
   .tile-foot, .rows { grid-area: foot; margin-top: 8px; }
   .tile-foot { padding-top: 12px; }
   .tile-foot:has(> span:nth-child(2):empty) { display: none; }
@@ -623,7 +652,6 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .dash-g { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .di-v { font-size: 17px; white-space: normal; overflow-wrap: anywhere; }
 }
-@media (max-width: 800px) and (min-width: 641px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 400px) {
   .brand .tk { width: 26px; height: 26px; }
   .brand b { font-size: 26px; }
@@ -694,50 +722,70 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <ul class="dash-g" id="dash-g"></ul>
   </section>
 
-  <main aria-labelledby="g-do">
-    <div class="group-h"><h2 id="g-do">What you can do</h2><p>All from one key, on Bitcoin and Ethereum.</p></div>
-    <div class="tiles">
-    <article class="tile">
-      <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span></span>
-      <h3><a class="tile-main" href="#private" data-link="private">Make private</a></h3>
-      <p>Move ETH into the Tacit pool as tETH. From then on, nobody sees how much or to whom.</p>
-      <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="held"><span class="sk" style="--w:4ch"></span></span><small>ETH</small></b><span>private now</span></span></span>
-      <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth"></span><span class="go" aria-hidden="true">→</span></span>
-    </article>
-    <article class="tile">
-      <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span></span>
-      <h3><a class="tile-main" href="/pay/">Pay</a></h3>
-      <p>Send BTC, TAC or ETH to anyone, and get paid in all three at one tacit1 address.</p>
-      <span class="tile-foot"><span class="dot" data-dot="btc"></span><span data-foot="btc"></span><span class="go" aria-hidden="true">→</span></span>
-    </article>
-    <article class="tile">
-      <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span></span>
-      <h3><a class="tile-main" href="#private/swap" data-link="private/swap">Swap</a></h3>
-      <p>Trade tETH, TAC, cBTC and cUSD inside the pool. Your balances stay private, and nothing says whose trade it is.</p>
-      <span class="tile-foot"><span class="dot"></span><span></span><span class="go" aria-hidden="true">→</span></span>
-    </article>
-    <article class="tile">
-      <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span></span>
-      <h3><a class="tile-main" href="#borrow" data-link="borrow">Borrow</a></h3>
-      <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend.</p>
-      <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="cusd"><span class="sk" style="--w:4ch"></span></span><small>cUSD</small></b><span>borrowed on BTC</span></span></span>
-      <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow"></span><span class="go" aria-hidden="true">→</span></span>
-    </article>
-    <article class="tile wide">
-      <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span></span>
-      <h3><a class="tile-main" href="#points" data-link="points">Earn TAC</a></h3>
-      <p>Points every day for using Tacit, TAC every second for farming, and the airdrop.</p>
-      <span class="figs">
-        <span class="fig"><b class="num" id="ern-pts-v"><span class="sk" style="--w:5ch"></span></b><span id="ern-pts">points pot today</span></span>
-        <span class="fig"><b class="num" id="ern-farm-v"><span class="sk" style="--w:4ch"></span></b><span id="ern-farm">TAC/ETH farm</span></span>
-      </span>
-      <span class="rows">
-        <a class="row" href="#airdrop" data-link="airdrop"><span class="dot" data-dot="tac"></span><b>Airdrop</b><span data-foot="tac">Claim your share</span><span class="go" aria-hidden="true">→</span></a>
-        <a class="row" href="#points" data-link="points"><span class="dot" data-dot="pts"></span><b>Points</b><span data-foot="pts">100,000 TAC over 90 days</span><span class="go" aria-hidden="true">→</span></a>
-        <a class="row" href="#farm" data-link="farm"><span class="dot live" data-dot="farm"></span><b>Farm</b><span data-foot="farm">Reading farms…</span><span class="go" aria-hidden="true">→</span></a>
-      </span>
-    </article>
-    </div>
+  <main>
+    <section class="flow" aria-labelledby="flow-h">
+      <div class="group-h"><h2 id="flow-h">Earn on private ETH</h2><p>Make it private, then farm it privately for TAC.</p></div>
+      <div class="flow-b">
+        <article class="tile flow-step">
+          <span class="tile-top"><span class="flow-n" aria-hidden="true">1</span><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span></span>
+          <h3><a class="tile-main" href="#private" data-link="private">Make ETH private</a></h3>
+          <p>One transaction moves ETH into the Tacit pool as tETH. From then on, nobody sees how much or to whom.</p>
+          <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="held"><span class="sk" style="--w:4ch"></span></span><small>ETH</small></b><span>private now</span></span></span>
+          <ul class="pools facts">
+            <li><span>Points</span><b class="num" data-way="wrap">1,250 per ETH</b></li>
+            <li><span>Back to ETH</span><b>any time, one for one</b></li>
+            <li><span>Recovery</span><b>from your key and the chain</b></li>
+          </ul>
+          <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth"></span><span class="go" aria-hidden="true">→</span></span>
+        </article>
+        <article class="tile flow-step">
+          <span class="tile-top"><span class="flow-n" aria-hidden="true">2</span><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span></span>
+          <h3><a class="tile-main" id="flow-farm" href="#farm" data-link="farm">Farm it privately</a></h3>
+          <p>Add tETH to a private pool, alone or with its pair, and earn TAC every second. What you hold stays hidden.</p>
+          <span class="figs"><span class="fig"><b class="num" id="ern-farm-v"><span class="sk" style="--w:4ch"></span></b><span id="ern-farm">best private pool</span></span></span>
+          <ul class="pools" id="flow-pools" aria-label="Private pools"></ul>
+          <span class="tile-foot"><span class="dot live" data-dot="farm"></span><span data-foot="farm">Reading farms…</span><span class="go" aria-hidden="true">→</span></span>
+        </article>
+      </div>
+    </section>
+
+    <section class="ways" aria-labelledby="ways-h">
+      <div class="group-h"><h2 id="ways-h">Points</h2><p>Up to <span data-pgm="pot">1,111</span> TAC a day, split by that day’s points.</p></div>
+      <div class="ways-b">
+        <div class="ways-top">
+          <span class="fig"><b class="num" id="ern-pts-v"><span class="sk" style="--w:5ch"></span></b><span id="ern-pts">points pot today</span></span>
+          <a href="#points" data-link="points"><span class="dot" data-dot="pts"></span><span data-foot="pts">100,000 TAC over 90 days</span><span class="go" aria-hidden="true">→</span></a>
+        </div>
+        <p class="ways-why">What each action earns now. When the protocol needs more of something, its weight goes up and it moves to the top.</p>
+        <ol id="ways" aria-label="Points per action"></ol>
+        <p class="ways-note">Early activity counts up to ×5, and holding public TAC up to ×2. <a href="#leaderboard" data-link="leaderboard">Leaderboard →</a></p>
+      </div>
+    </section>
+
+    <section aria-labelledby="g-do">
+      <div class="group-h"><h2 id="g-do">More, privately</h2><p>All from one key, on Bitcoin and Ethereum.</p></div>
+      <div class="tiles">
+      <article class="tile">
+        <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span></span>
+        <h3><a class="tile-main" href="/pay/">Pay</a></h3>
+        <p>Send BTC, TAC or ETH to anyone, and get paid in all three at one tacit1 address.</p>
+        <span class="tile-foot"><span class="dot" data-dot="btc"></span><span data-foot="btc"></span><span class="go" aria-hidden="true">→</span></span>
+      </article>
+      <article class="tile">
+        <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span></span>
+        <h3><a class="tile-main" href="#private/swap" data-link="private/swap">Swap</a></h3>
+        <p>Trade tETH, TAC, cBTC and cUSD inside the pool. Your balances stay private, and nothing says whose trade it is.</p>
+        <span class="tile-foot"><span class="dot"></span><span></span><span class="go" aria-hidden="true">→</span></span>
+      </article>
+      <article class="tile">
+        <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span></span>
+        <h3><a class="tile-main" href="#borrow" data-link="borrow">Borrow</a></h3>
+        <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend.</p>
+        <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="cusd"><span class="sk" style="--w:4ch"></span></span><small>cUSD</small></b><span>borrowed on BTC</span></span></span>
+        <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow"></span><span class="go" aria-hidden="true">→</span></span>
+      </article>
+      </div>
+    </section>
   </main>
 
   <section class="how" id="how" aria-label="How it comes together">
@@ -6054,6 +6102,7 @@ function takeProgram(p) {
   if (p.rates && typeof p.rates === 'object') next.rates = Object.fromEntries(Object.entries(p.rates).filter(([, v]) => num(v, 0, 1e9) != null && Number(v) > 0).map(([k, v]) => [k, Number(v)]));
   Object.assign(PGM, next);
   for (const e of $$('[data-pgm="pot"]')) e.textContent = potTac();
+  paintWays();
 }
 // Each kind of activity the program scores: what it was, and what its amount is counted in (none where it is not an amount).
 const PT_ACTS = { wrap: ['Wrapped ETH into the Tacit pool', 'ETH'], evmpooldeposit: ['Deposited ETH', 'ETH'], zswapeth: ['Swapped ETH', 'ETH'],
@@ -6125,11 +6174,20 @@ load.pts = () => loadPoints();
 RETRY.points = () => loadPoints(true).then(() => rerender('pts')).catch(() => {});
 // The Earn tile's figures: the day's points pot with the time left in it, and what the TAC/ETH farm pays now.
 function paintEarn() {
-  const f = FARM.top, per = (n) => n.toLocaleString('en-US');
-  if (f) {
-    mount($('#ern-farm-v'), f.apr != null ? html`${f.apr >= 1000 ? '1,000+' : per(Math.round(f.apr))}%<small>APR</small>` : f.perDay ? html`${per(f.perDay)}<small>TAC a day</small>` : '—');
-    $('#ern-farm').textContent = f.apr != null ? `TAC/ETH farm · ${per(f.pubDay)} TAC a day` : f.perDay ? `across ${f.farms} farms` : 'farms between reward periods';
-  } else if (f === null) { $('#ern-farm-v').textContent = '—'; $('#ern-farm').textContent = 'farms not read yet'; }
+  const per = (n) => n.toLocaleString('en-US'), prog = FARM.program;
+  // The private pools, the best rate first: what "Farm it privately" offers now.
+  const pools = prog?.epoch?.active && FARM.precision?.tacEth ? (prog.pools || []).map((p) => ({ p, apr: shieldedApr(p) })).filter((x) => x.apr != null).sort((a, b) => b.apr - a.apr) : [];
+  if (pools.length) {
+    mount($('#ern-farm-v'), html`${pools[0].apr >= 10000 ? '10,000+' : per(Math.round(pools[0].apr))}%<small>APR</small>`);
+    $('#ern-farm').textContent = 'best private pool';
+    const best = $('#flow-farm');                                                       // the step opens the best private pool, not the farm list's default
+    best.href = `#farm/private-${pools[0].p.pid}`; best.dataset.link = `farm/private-${pools[0].p.pid}`;
+    mount($('#flow-pools'), html`${pools.map(({ p, apr }) => html`<li><a href="#farm/private-${p.pid}" data-link="farm/private-${p.pid}"><span>${pairName(p.pair)}</span><b class="num">${aprShort(apr)}</b></a></li>`)}`);
+  } else if (FARM.top === null || (prog && !prog.epoch?.active)) {
+    $('#ern-farm-v').textContent = '—';
+    $('#ern-farm').textContent = prog && !prog.epoch?.active ? 'farms between reward periods' : 'farms not read yet';
+    mount($('#flow-pools'), html``);
+  }
   const on = now() < ptsEnd();
   mount($('#ern-pts-v'), on ? html`<span data-pgm="pot">${potTac()}</span><small>TAC</small>` : '—');
   $('#ern-pts').textContent = on ? `points pot today · ${dayLeft()} left` : `points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`;
@@ -6166,6 +6224,21 @@ const earnRows = () => {
     r.cusdmint && ['borrow', 'cusd', 'Borrow cUSD', `${n(r.cusdmint)} per dollar, when you send the loan yourself${weightNote('cusdmint', day)}`],
   ].filter(Boolean);
 };
+// The actions the points program scores on this page, in the order the protocol wants them when no weight says otherwise.
+const WAYS = [['wrap', 'Make ETH private', 'ETH', 'private', 'teth'], ['cbtcmint', 'Post a bond toward cBTC', 'wstETH', 'lock', 'cbtc'],
+  ['evmpooldeposit', 'Deposit ETH on this device', 'ETH', 'device', 'eth'], ['zswapeth', 'Buy TAC with ETH', 'ETH', 'buy', 'tac'], ['cusdmint', 'Borrow cUSD', 'dollar', 'borrow', 'cusd']];
+// What each action earns now, the most weighted first: a weight in force multiplies its rate and lifts it; one still ahead is marked with its day.
+function paintWays() {
+  const el = $('#ways');
+  if (!el) return;
+  const s = scheduled(PGM.weights, utcDay(now())), wts = s?.e.weights || {}, ahead = s?.from || null;
+  const rows = WAYS.map(([k, label, unit, go, ic], i) => ({ label, unit, go, ic, i, rate: PGM.rates[k], wt: wts[k] ?? 1 }))
+    .filter((r) => r.rate && (ahead || r.wt !== 0))
+    .sort((a, b) => (ahead ? 0 : b.wt - a.wt) || a.i - b.i);
+  const wrap = rows.find((r) => r.go === 'private');
+  for (const e of $$('[data-way="wrap"]')) e.textContent = wrap ? `${rateStr(Math.round(wrap.rate * (ahead ? 1 : wrap.wt)))} per ETH` : 'not counted';
+  mount(el, html`${rows.map((r) => html`<li><a href="#${r.go}" data-link="${r.go}"><svg class="tk sm" aria-hidden="true"><use href="#tk-${r.ic}"/></svg><span class="w-l">${r.label}</span>${r.wt !== 1 ? html`<i class="boost">${r.wt === 0 ? 'not counted' : `×${r.wt}`}${ahead ? ` from ${dayShort(ahead)}` : ''}</i>` : ''}<b class="num">${rateStr(Math.round(r.rate * (ahead ? 1 : r.wt)))}<small> per ${r.unit}</small></b><span class="go" aria-hidden="true">→</span></a></li>`)}`);
+}
 // Today's pot and how it is being split: the same for everyone, so shown before anyone connects.
 function pulse() {
   const p = PTS.pulse;
@@ -8523,6 +8596,9 @@ paintWallet();          // a returning visitor's chip says "Open wallet", not th
 const farmFoot = store.get(FARM_FOOT_KEY);
 if (typeof farmFoot === 'string' && farmFoot) setFoot('farm', farmFoot, 'live');
 paintEarn();
+paintWays();
+// The points terms in force, for the Points list before any wallet is known: the day's board carries them.
+fetch(`${API}/leaderboard?day=today&limit=1`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.program) takeProgram(d.program); }).catch(() => {});
 refreshAll();
 resumeActivity();
 let lastTick = Date.now();
