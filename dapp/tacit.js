@@ -261,11 +261,8 @@ const ONBOARDED_KEY = 'tacit-onboarded-v1';
 const WORKER_BASE = (typeof globalThis !== 'undefined' && typeof globalThis.__TACIT_WORKER_BASE__ === 'string' && globalThis.__TACIT_WORKER_BASE__)
   || (typeof process !== 'undefined' && process.env?.TACIT_WORKER_BASE)
   || 'https://api.tacit.finance';
-// Render is the primary indexer origin; the legacy Cloudflare worker stays as a
-// failover so a Render outage (or a CF rate-limit) can't lock the dapp out of
-// the indexer. Every worker call goes through api(), which tries these in order.
-const WORKER_FALLBACK = 'https://tacit-pin.rosscampbell9.workers.dev';
-const WORKER_BASES = [WORKER_BASE, WORKER_FALLBACK].filter((b, i, a) => b && a.indexOf(b) === i);
+// The indexer origin every worker call goes through (api()).
+const WORKER_BASES = [WORKER_BASE].filter(Boolean);
 
 // Read-only ETH-wrap points leaderboard (worker-relay/src/points-indexer.js). Informational only —
 // nothing here gates or unlocks anything; a fetch failure just leaves the points chip blank.
