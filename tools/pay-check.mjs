@@ -7,8 +7,10 @@
 //          sent by the wallet (no relay), then the history rebuilt from chain logs names all three
 //   hub    tacit.finance/pay read-only against mainnet with KEY: links made for the ETH page before it moved open on
 //          /pay/eth/; BTC and TAC balances read; each kind of address routes as it should, a tacit1 from before the pool
-//          lane included (a silent payment in BTC, a shielded transfer in TAC); the receive addresses and their QR codes
-//   btcsend no network: a silent payment through /pay's Send form to a tacit1 (both forms), captured, found by its recipient
+//          lane included (a silent payment in BTC, a shielded transfer in TAC); the receive addresses and their QR codes;
+//          Activity rebuilt from the key
+//   btcsend no network: a silent payment through /pay's Send form to a tacit1 (both forms), captured, shown in Activity, found
+//          by its recipient
 //   firstrun no network: a first visit with no wallet leads with a new passkey wallet, a failed way in is said beside the options, and
 //          every module a page preloads is fetched once
 //   saved  no network: the key saved in this browser, behind a passphrase, opens on /pay/ and /pay/eth/ through the passphrase
@@ -303,6 +305,12 @@ try {
     const qb = await readQr(p, '#f-aqr svg');
     ok(qb === null ? /Bitcoin address/.test(await p.getAttribute('#f-aqr svg', 'aria-label')) : qb === `bitcoin:${addrs[2]}`, `its switch shows the Bitcoin address as a bitcoin: link${qb ? `: ${qb.slice(0, 20)}…` : ''}`);
     await p.click('[data-qrv="tacit"]').catch(() => {});
+    // Activity, read from the key and the chain once its card is in view: rows, or that there are none yet.
+    await p.evaluate(() => document.querySelector('#activity').scrollIntoView());
+    await p.waitForFunction(() => document.querySelector('#act-body .rows li') || /Nothing yet|Couldn’t/.test(document.querySelector('#act-body').textContent), null, { timeout: 180e3 }).catch(() => {});
+    const rowsN = await p.$$eval('#act-body .rows li', (x) => x.length);
+    ok(rowsN > 0 || /Nothing yet\. Payments you make or receive with this key show here\./.test(await text('#act-body')), `Activity: ${rowsN ? `${rowsN} payments` : ((await text('#act-body')).match(/(Nothing yet|Couldn’t)[^.]*\./) || [''])[0]}`);
+    await p.evaluate(() => scrollTo(0, 0));
     ok(await p.evaluate(() => document.body.classList.contains('in') && getComputedStyle(document.querySelector('.hero p')).display === 'none'), 'signed in, the pitch gives way to the form');
     ok(await p.evaluate(() => {
       const tabs = [...document.querySelectorAll('#tabs [role="tab"]')], sel = tabs.filter((t) => t.getAttribute('aria-selected') === 'true'), f = document.getElementById('form');
@@ -520,6 +528,11 @@ try {
       await p.waitForFunction(() => document.querySelector('#f-go')?.getAttribute('aria-busy') !== 'true', null, { timeout: 30e3 }).catch(() => {});
       await sleep(400);
       ok((await p.inputValue('#f-amt')) === '' && await p.$eval('#f-go', (b) => b.disabled), `${form}: once sent, the amount is cleared and Send BTC waits for a new one`);
+      // The payment stays in Activity after its status line is gone, until the explorer lists it.
+      await p.evaluate(() => document.querySelector('#activity').scrollIntoView());
+      await p.waitForFunction(() => [...document.querySelectorAll('#act-body .rows li')].some((li) => /Sent/.test(li.textContent) && /0\.0005 BTC/.test(li.textContent)), null, { timeout: 60e3 }).catch(() => {});
+      const sentRow = (await p.$$eval('#act-body .rows li', (x) => x.map((li) => li.textContent.replace(/\s+/g, ' ').trim()))).find((r) => /^Sent/.test(r)) || '';
+      ok(/−0\.0005 BTC/.test(sentRow) && /waiting for a block/.test(sentRow) && sentRow.includes(tx?.txid?.slice(0, 8) || '-'), `${form}: Activity shows it at once: ${sentRow.slice(0, 90)}`);
       current = tx;
       const found = await p.evaluate(async ({ B, txid }) => {
         const t = await import('/tacit.js'), d = await import('/vendor/tacit-deps.min.js');
