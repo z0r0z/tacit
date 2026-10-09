@@ -37412,7 +37412,8 @@ async function proveRangeDisclosure({ assetIdHex, threshold, holding }) {
 
 // Consumer-side disclosure verifier.
 //   1. 0 < K < 2⁶⁴.
-//   2. For every listed UTXO: parent tx exists; vout's scriptpubkey is P2WPKH
+//   2. For every listed UTXO (each listed once, validating as a held note
+//      does, and unspent): parent tx exists; vout's scriptpubkey is P2WPKH
 //      whose 20-byte hash equals HASH160(owner_pubkey); parent's
 //      vin[0].witness[1] decodes as a tacit envelope; getParentEnvelopeData
 //      returns a commitment with the declared asset_id.
@@ -37447,13 +37448,22 @@ async function verifyDisclosure(disclosure, fetchTx) {
     const ownerPubBytes = hexToBytes(ownerPubHex);
     const expectHash160 = bytesToHex(hash160(ownerPubBytes));
     const utxos = [];
+    const seen = new Set();
+    const validatedSet = new Map(_getPersistedValidatedTrue());
     let Csum = secp.ProjectivePoint.ZERO;
     for (const u of utxosRaw) {
       const txidHex = String(u?.txid || '').toLowerCase();
       const vout    = u?.vout;
       if (!/^[0-9a-f]{64}$/.test(txidHex)) return { ok: false, reason: 'utxo.txid malformed' };
       if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return { ok: false, reason: 'utxo.vout out of range' };
+      if (seen.has(`${txidHex}:${vout}`)) return { ok: false, reason: `utxo ${txidHex}:${vout} listed twice` };
+      seen.add(`${txidHex}:${vout}`);
       utxos.push({ txid: txidHex, vout });
+
+      // Each UTXO must validate like a held note (kernel, range proof, asset ancestry) and be unspent.
+      if (!(await validateOutpoint(txidHex, vout, validatedSet, fetchTx))) return { ok: false, reason: `utxo ${txidHex}:${vout}: does not validate` };
+      const os = await getOutspend(txidHex, vout);
+      if (os?.spent === true) return { ok: false, reason: `utxo ${txidHex}:${vout}: spent` };
 
       const tx = await fetchTx(txidHex);
       if (!tx?.vout?.[vout]?.scriptpubkey) return { ok: false, reason: `utxo ${txidHex}:${vout}: scriptpubkey missing` };
@@ -72061,7 +72071,7 @@ function renderMarketBrowse(rows) {
     if (g.preauths) kindBits.push(`<span style="color:var(--green);font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${g.preauths} instant</span>`);
     if (g.intents) kindBits.push(`<span style="color:var(--purple);font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
-    if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
+    if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC; the balance proof is not verified here)">${g.ranges} range</span>`);
     // Prefer mark price for the browse tile's at-a-glance number — it's
     // the outlier-guarded "real trading band" figure, more representative
     // for cross-asset comparison than raw min-ask which can be dust.

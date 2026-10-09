@@ -16962,6 +16962,7 @@ async function handleDisclosurePost(assetIdHex, req, env, network, cors) {
     const vout = u?.vout;
     if (!/^[0-9a-f]{64}$/.test(txid))                       return jsonResponse({ error: 'utxo.txid must be 64 hex chars' }, 400, cors);
     if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return jsonResponse({ error: 'utxo.vout must be integer 0..65535' }, 400, cors);
+    if (utxos.some(x => x.txid === txid && x.vout === vout)) return jsonResponse({ error: `utxo ${txid}:${vout} is listed twice` }, 400, cors);
     utxos.push({ txid, vout });
   }
 
@@ -17621,6 +17622,7 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
     const vout = u?.vout;
     if (!/^[0-9a-f]{64}$/.test(txid))                       return jsonResponse({ error: 'utxo.txid must be 64 hex chars' }, 400, cors);
     if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return jsonResponse({ error: 'utxo.vout must be integer 0..65535' }, 400, cors);
+    if (utxos.some(x => x.txid === txid && x.vout === vout)) return jsonResponse({ error: `utxo ${txid}:${vout} is listed twice` }, 400, cors);
     utxos.push({ txid, vout });
   }
 
