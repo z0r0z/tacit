@@ -66128,23 +66128,29 @@ async function enrichDiscoverMints(a, verify) {
 
 // A burn validates as the validator checks one: with change, its vout 0 validates like any held note; a full burn
 // has no output, so its inputs must validate and its kernel signature verify against burned·H − Σ C_in.
+// Ancestry already validated this session (by a holdings scan or an earlier burn) is not walked again.
 async function _discoverBurnValid(btxid, btx, bd, fetchTx) {
-  if (bd.outputs.length > 0) return validateOutpoint(btxid, 0, new Map(), fetchTx);
-  if (!Array.isArray(btx.vin) || btx.vin.length < 2 || btx.vin.length - 1 > 255) return false;
-  const validatedSet = new Map();
-  let EPrime = safeMult(H, bd.burnedAmount);
-  for (let i = 1; i < btx.vin.length; i++) {
-    const inp = btx.vin[i];
-    if (!(await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx))) return false;
-    const parent = await fetchTx(inp.txid);
-    const parentEnv = parent ? _txOutputEnvelope(parent) : null;
-    const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid) : null;
-    if (!pd || pd.assetIdHex !== bytesToHex(bd.assetId)) return false;
-    EPrime = EPrime.add(bytesToPoint(pd.commitment).negate());
+  const persistedTrue = _getPersistedValidatedTrue();
+  const validatedSet = new Map(persistedTrue);
+  try {
+    if (bd.outputs.length > 0) return await validateOutpoint(btxid, 0, validatedSet, fetchTx);
+    if (!Array.isArray(btx.vin) || btx.vin.length < 2 || btx.vin.length - 1 > 255) return false;
+    let EPrime = safeMult(H, bd.burnedAmount);
+    for (let i = 1; i < btx.vin.length; i++) {
+      const inp = btx.vin[i];
+      if (!(await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx))) return false;
+      const parent = await fetchTx(inp.txid);
+      const parentEnv = parent ? _txOutputEnvelope(parent) : null;
+      const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid) : null;
+      if (!pd || pd.assetIdHex !== bytesToHex(bd.assetId)) return false;
+      EPrime = EPrime.add(bytesToPoint(pd.commitment).negate());
+    }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) return false;
+    const msg = computeKernelMsg(bd.assetId, btx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout })), [], bd.burnedAmount);
+    return verifySchnorr(bd.kernelSig, msg, EPrime.toRawBytes(true).slice(1));
+  } finally {
+    for (const [k, ok] of validatedSet) if (ok === true) persistedTrue.set(k, true);
   }
-  if (EPrime.equals(secp.ProjectivePoint.ZERO)) return false;
-  const msg = computeKernelMsg(bd.assetId, btx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout })), [], bd.burnedAmount);
-  return verifySchnorr(bd.kernelSig, msg, EPrime.toRawBytes(true).slice(1));
 }
 
 // Stage 4 — per-burn validation. Mutates `verify.verifiedBurns` (BigInt) for
@@ -66159,7 +66165,7 @@ async function enrichDiscoverBurns(a, verify) {
   if (claimedBurns.length === 0) return;
   verify.reportedBurns = verify.reportedBurns || {};
   for (const b of claimedBurns) {
-    const btxid = b && b.tx;
+    const btxid = b && (b.burn_txid || b.tx);
     if (!/^[0-9a-f]{64}$/.test(String(btxid || ''))) continue;
     if (verify.verifiedBurns[btxid] !== undefined || verify.reportedBurns[btxid] !== undefined) continue;
     const cached = getCachedDiscoverBurn(btxid);
@@ -66548,13 +66554,14 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // entry per transaction. Same _burnsEnriched gating as mints.
   const verifiedBurnMap = (verified && verify.verifiedBurns) ? verify.verifiedBurns : {};
   const reportedBurnMap = (verified && verify.reportedBurns) ? verify.reportedBurns : {};
-  const claimedBurns = [...new Map((Array.isArray(a.burns) ? a.burns : []).map(b => [b && b.tx, b])).values()];
+  const burnTx = (b) => b && (b.burn_txid || b.tx);
+  const claimedBurns = [...new Map((Array.isArray(a.burns) ? a.burns : []).map(b => [burnTx(b), b])).values()];
   let burnedSum = 0n;
   let chainBurnCount = 0, reportedBurnCount = 0;
   for (const b of claimedBurns) {
-    const x = verifiedBurnMap[b && b.tx];
+    const x = verifiedBurnMap[burnTx(b)];
     if (typeof x !== 'bigint' || x < 0n || x >= (1n << BigInt(N_BITS))) {
-      if (typeof reportedBurnMap[b && b.tx] === 'bigint') reportedBurnCount++;
+      if (typeof reportedBurnMap[burnTx(b)] === 'bigint') reportedBurnCount++;
       continue;
     }
     burnedSum += x;
