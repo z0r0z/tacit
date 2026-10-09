@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RNAASV3KiLX4xaIdQlYySV3/r2vdXAadgoynw3it9fY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nyRVlDQj3v19sdBC9gHT/rYlayJlUOyqWOQwaxjM6DA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -244,6 +244,8 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── TAC's price, where it trades ── */
 .tpx { margin: 0 0 14px; background: var(--field); border: 1px solid var(--hair); }
+/* Opened from an airdrop link, the Airdrop tab is the claim alone: the price and the Tacit wallet above it are for the other tabs. */
+#sheet-tac[data-claim][data-tab="air"] :is(#tac-px, #tac-bal) { display: none; }
 .tpx summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; padding: 10px 12px; cursor: pointer; list-style: none; font-size: 13px; }
 .tpx summary::-webkit-details-marker { display: none; }
 .tpx summary b { font-weight: 500; }
@@ -2865,8 +2867,11 @@ function openLink(h) {
   if (!running(sheet)) SUBLINK[sheet]?.set(tab ?? TAB[sheet], parts);
   if (head === 'lock') LOCK.focus = true;
   if (head === 'leaderboard') PTS.jump = true;
+  // An airdrop link opens the TAC sheet on the claim alone (see #sheet-tac[data-claim] in the styles), until it closes.
+  $('#sheet-tac').toggleAttribute('data-claim', head === 'airdrop');
   openSheet(head);
 }
+$('#sheet-tac').addEventListener('close', () => $('#sheet-tac').removeAttribute('data-claim'));
 // An in-page link to a view opens it as its link would; with a modifier key it opens in a new tab as usual.
 document.addEventListener('click', (e) => {
   const a = e.target.closest?.('a[data-link]');
@@ -5141,6 +5146,7 @@ render.tac = () => {
   // The Bridge tab carries a dot while a bridge of this key is under way.
   const brs = S.key ? brJournal(S.key.pubHex).filter((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered') : [];
   $('[data-tac-mode="bridge"]').innerHTML = brs.length ? html`Bridge<i class="dot live" aria-hidden="true"></i><span class="sr">, ${brs.some(brDue) ? 'waiting for you' : 'under way'}</span>`.s : 'Bridge';
+  $('#sheet-tac').dataset.tab = TAB.tac;
   renderTacBal($('#tac-bal'));
   paintTacPrice();
   for (const t of ['air', 'buy', 'sell', 'bridge']) $(`#${t}-body`).hidden = TAB.tac !== t;
