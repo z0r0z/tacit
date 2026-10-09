@@ -28,6 +28,8 @@ globalThis.fetch = async (input, init) => {
   }
   if (/\/address\/[^/]+\/utxo/.test(url)) return json(walletUtxos);
   if (/\/address\/[^/]+\/txs/.test(url)) return json([]);
+  // The wallet's Bitcoin history, read before coin selection to rebuild its cBTC lock reservations: none here.
+  if (url.includes('/scripthash/')) return json([]);
   for (const t of offline) if (url.includes(`/tx/${t}`)) throw new Error('offline: ' + url);
   for (const [k, f] of routes) if (url.includes(k)) return json(f(url));
   throw new Error('offline: ' + url);
