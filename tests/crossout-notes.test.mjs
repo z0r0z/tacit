@@ -188,5 +188,33 @@ const makeNotes = (world, extra = {}) => makeCrossoutNotes({ secp, hmac: (h, k, 
   ok(Date.now() - t0 < 2500, 'repeated searches reuse the baby-step table (three took ' + (Date.now() - t0) + ' ms)');
 }
 
+{
+  // Dust with a mint-shaped envelope can be sent to anyone's Taproot address: only a few unknown claims are looked up per call,
+  // and an answer (found or not) is kept, so a refresh does not search Ethereum again for the same claim.
+  const many = Array.from({ length: 11 }, (_, i) => makeBridge({ assetId: TETH, amount: 100_000n + BigInt(i), nullifier: withHex((0xb0 + i).toString(16).repeat(32)), seed: (0x70 + i).toString(16) }));
+  const world = makeWorld(many);
+  const notes = makeNotes(world);
+  const first = await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  const opened = first.filter((x) => x.amount != null), skipped = first.filter((x) => x.amount == null);
+  ok(first.length === 11 && opened.length === 8 && skipped.length === 3 && skipped.every((x) => /not opened/.test(x.openErr || '')), 'eight unknown claims are opened per call; the rest are listed unopened');
+  const known = Object.fromEntries(many.slice(8).map((b) => [b.claimId.toLowerCase(), { amount: b.amount, nullifier: b.nullifier }]));
+  const withKnown = await makeNotes(makeWorld(many)).discover({ walletPriv: WALLET_PRIV, assetIds: [TETH], known });
+  ok(withKnown.filter((x) => x.amount != null).length === 11, 'claims the journal already knows are opened without counting against the cap');
+  const logsAfterFirst = world.reads.logs;
+  const second = await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  ok(second.filter((x) => x.amount != null).length === 11 && world.reads.logs > logsAfterFirst, 'the next refresh reuses the eight answers and gets on to the rest');
+  const logsAfterSecond = world.reads.logs;
+  await notes.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  ok(world.reads.logs === logsAfterSecond, 'and one after that searches Ethereum for none of them again');
+  // A claim with no event is looked for once.
+  const stray = makeBridge({ assetId: TETH, amount: 333_333n, nullifier: withHex('d1'.repeat(32)), seed: '7f' });
+  const w2 = makeWorld([stray]); w2.logs.length = 0;
+  const n2 = makeNotes(w2);
+  await n2.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  const l2 = w2.reads.logs;
+  await n2.discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
+  ok(l2 > 0 && w2.reads.logs === l2, 'a claim with no event on Ethereum is searched for once, not on every refresh');
+}
+
 console.log(`\n${n} crossout-notes checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

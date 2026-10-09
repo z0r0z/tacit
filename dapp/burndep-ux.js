@@ -33,6 +33,8 @@ import { buildRecoverClaim } from './bridge-recover.js';
 import { makeBridgeBurnBroadcaster } from './bridge-burn-broadcast.js';
 
 export const BURNDEP_BETA_CAP_RAW = 100_000_000_000n; // 1,000 TAC at 8 decimals
+// A return of a note a cross-out made waits when Bitcoin's fee is above this (sat/vB), as the cross-out's own mint does.
+export const RETURN_FEE_CEILING = 100;
 // The registration door (worker/src/index.js) caps a bundle's cxfers at 64 hops. The migrate itself adds one
 // of those hops, so the SOURCE note's own pre-migrate depth is checked against 63 (preflight, before anything
 // is signed), and the BURN-HOME's post-migrate depth — source hops + 1 — is checked separately against the
@@ -376,7 +378,9 @@ export function makeBurnDepositUx(deps) {
     if (refl.leaves) {
       const { cx, cy } = pool.commitXY(BigInt(note.amount), BigInt(note.blinding));
       const bound = refl.liveBound.get(outpointOf(note.txid, note.vout));
-      const leaf = bridgeMint.sourceLeaf({ sourceClass: bound ? 2 : 1, asset: a.assetId, cx, cy, owner, chainBinding: withHex(chainBindingHex()) });
+      // A note bound to a deployment is burned as class 2; this path sends class 1 only, so such a note stops here, before anything is signed.
+      if (!step('bound', !bound, 'this note is bound to a deployment, which this path does not send back')) return out;
+      const leaf = bridgeMint.sourceLeaf({ sourceClass: 1, asset: a.assetId, cx, cy, owner, chainBinding: withHex(chainBindingHex()) });
       if (!step('old-leaf', refl.leaves.has(lc(leaf)), 'this note is not in the reflected note tree in the form the burn names it by')) return out;
     }
     out.path = 'reflected';
@@ -465,7 +469,7 @@ export function makeBurnDepositUx(deps) {
   // the way the reflection does before anything is journalled.
   let _burner = null;
   const burner = () => _burner || (_burner = makeBridgeBurnBroadcaster({ pool, bridgeMint }));
-  async function startReflected({ note, walletPriv, feeRate = null }) {
+  async function startReflected({ note, walletPriv, feeRate = null, allowHighFee = false }) {
     const walletPub = secp.getPublicKey(walletPriv, true);
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
@@ -477,6 +481,10 @@ export function makeBurnDepositUx(deps) {
     if (BigInt(note.amount) > asset.capRaw) throw new Error('burndep-ux: over the beta cap');
     if (note.stealthTweakedSk) throw new Error(`burndep-ux: ${PRIVATE_NOTE}`);
     const p2tr = !!note.p2tr;
+    if (p2tr && !allowHighFee) {
+      const rate = Number(feeRate != null ? feeRate : await chain.getFeeRate('priority'));
+      if (rate > RETURN_FEE_CEILING) throw new Error(`burndep-ux: Bitcoin fees are high right now (${Math.round(rate)} sat/vB), so this waits for them to fall under ${RETURN_FEE_CEILING}`);
+    }
     const d = await callWorker('GET', '/reflection/dump');
     const s = d && d.snapshot;
     if (!s || !Array.isArray(s.noteLeaves) || !Array.isArray(s.liveTriples)) throw new Error('burndep-ux: could not read the reflection state; try again in a moment');
@@ -517,10 +525,15 @@ export function makeBurnDepositUx(deps) {
   // else here is a broadcast or a single small request, over before a progress indicator would even paint).
   // selfSettle({ jobId, publicValues, proof, memos }) → { txHash }: at the mint, the relay proves and the caller sends the
   // settle itself and pays its gas, for a relay that will not take the mint (a fee floor, a spent free budget, load).
+  const inFlight = new Set();                                  // bridges this page is moving on now
   async function advance(walletPub, id, { walletPriv = null, onProgress = null, selfSettle = null } = {}) {
     const rec = getRecord(walletPub, id);
     if (!rec) throw new Error(`burndep-ux: no bridge record for ${id}`);
+    // A key that is not the bridge's would sign or seal its steps as another key.
+    if (walletPriv && lc(bytesToHexLocal(secp.getPublicKey(walletPriv, true))) !== lc(rec.walletPub)) throw new Error('burndep-ux: this bridge belongs to another key');
+    if (inFlight.has(id)) throw new Error('burndep-ux: this bridge is being advanced in this page right now');
     if (!tryAcquireLease(id)) throw new Error('burndep-ux: this bridge is being advanced in another tab right now');
+    inFlight.add(id);
     // A stage can outlast the lease (a mint waits on a proof), so it is kept while this call holds it: no other page starts the
     // same step meanwhile.
     const renew = setInterval(() => { try { storage.setItem(leaseKey(id), JSON.stringify({ owner: sessionId, at: now() })); } catch {} }, Math.max(1000, Math.floor(LEASE_TTL_MS / 3)));
@@ -539,7 +552,7 @@ export function makeBurnDepositUx(deps) {
       const now_ = at && getRecord(walletPub, id);
       if (now_ && now_.stage === at.stage) putRecord({ ...now_, lastError: { message: String((e && e.message) || e), at: now() }, errorCount: (now_.errorCount || 0) + 1 });
       throw e;
-    } finally { clearInterval(renew); releaseLease(id); }
+    } finally { inFlight.delete(id); clearInterval(renew); releaseLease(id); }
   }
 
   const STAGE_ADVANCE = {
@@ -1054,7 +1067,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   return {
-    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, preflight, preflightHeld, recheckBurn, start, startReflected, advance, resumeAll, recoverFromTxid, list, abandon,
+    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, list, abandon,
     cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded,
     slipstreamStatus: broadcaster.slipstreamStatus,
     checkTxidStatus,

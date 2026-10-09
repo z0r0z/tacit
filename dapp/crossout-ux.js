@@ -81,7 +81,8 @@ function deserializeRecord(text) {
 // per-bridge cap; left out, it is TAC alone under CROSSOUT_BETA_CAP_RAW. A note of any other asset is refused
 // before anything is settled, and so is a recovered settle that names one.
 // `poolAddress` (the pool whose CrossOutRecorded events settle a bridge) lets a bridge whose page closed before its
-// settle was seen find that settle again; without it such a record just waits.
+// settle was seen find that settle again; without it such a record just waits. `nullifierSpent(ν)` says whether the pool has
+// spent a note: a bridge is not cancelled while its note has been.
 // `crossOut`, `pool`, `rpc`, `evmLog` are the confidential pool ux's own (dapp/confidential-pool-ux.js) --
 // injected rather than re-instantiated here, matching how burndep-ux.js takes `bridgeMint`/`pool` from the
 // same pool ux singleton instead of building its own. `postHint` is optional (tacit.js's local fast-track
@@ -89,7 +90,7 @@ function deserializeRecord(text) {
 export function makeCrossoutUx(deps) {
   const {
     network = 'mainnet', hrp = 'bc', workerBase, fetchImpl, storage: storageIn = null,
-    secp, hmac, sha256, crossOut, pool, rpc, evmLog, tacAssetId, assets: assetsIn = null, chain, postHint = null, feeCeiling = CROSSOUT_MINT_FEE_CEILING, poolAddress = null,
+    secp, hmac, sha256, crossOut, pool, rpc, evmLog, tacAssetId, assets: assetsIn = null, chain, postHint = null, feeCeiling = CROSSOUT_MINT_FEE_CEILING, poolAddress = null, nullifierSpent = null,
   } = deps || {};
   for (const [k, v] of Object.entries({ workerBase, secp, hmac, sha256, crossOut, pool, rpc, evmLog, chain })) {
     if (v == null) throw new Error(`crossout-ux: deps.${k} required`);
@@ -314,10 +315,15 @@ export function makeCrossoutUx(deps) {
   }
 
   // ---- advance: drive a record forward one stage. walletPriv is required only at 'covered'->'mint-signed'. ----
+  const inFlight = new Set();                                  // bridges this page is moving on now: a tick and a press do not both sign
   async function advance(walletPub, id, { walletPriv = null, allowHighFee = false } = {}) {
     const rec = getRecord(walletPub, id);
     if (!rec) throw new Error(`crossout-ux: no bridge record for ${id}`);
+    // A key that is not the bridge's would sign its Bitcoin step with another key's coins.
+    if (walletPriv && lc(bytesToHexLocal(secp.getPublicKey(walletPriv, true))) !== lc(rec.walletPub)) throw new Error('crossout-ux: this bridge belongs to another key');
+    if (inFlight.has(id)) throw new Error('crossout-ux: this bridge is being advanced in this page right now');
     if (!tryAcquireLease(id)) throw new Error('crossout-ux: this bridge is being advanced in another tab right now');
+    inFlight.add(id);
     try {
       const fn = STAGE_ADVANCE[rec.stage];
       if (!fn) return rec; // terminal ('minted') or unknown -- nothing to do
@@ -329,7 +335,7 @@ export function makeCrossoutUx(deps) {
       const cur = getRecord(walletPub, id) || rec;
       putRecord({ ...cur, lastError: { message: String((e && e.message) || e), at: now() }, errorCount: (cur.errorCount || 0) + 1 });
       throw e;
-    } finally { releaseLease(id); }
+    } finally { inFlight.delete(id); releaseLease(id); }
   }
 
   // Picks one confirmed, safe-to-spend UTXO from `address` -- same pattern burndep-ux.js's pickFundingUtxo
@@ -403,7 +409,8 @@ export function makeCrossoutUx(deps) {
       const P = freshPrims(walletPriv);
       const feeRate = await chain.getFeeRate('priority');
       if (!allowHighFee && Number(feeRate) > feeCeiling) {
-        throw new Error(`crossout-ux: Bitcoin fees are high right now (${Math.round(feeRate)} sat/vB), so the Bitcoin step is waiting for them to fall under ${feeCeiling}`);
+        const cost = mintReveal.estimateSats({ feeRate: Math.ceil(Number(feeRate)), dust: P.DUST }).toLocaleString('en-US');
+        throw new Error(`crossout-ux: Bitcoin fees are high right now (${Math.round(feeRate)} sat/vB, about ${cost} sats for this step), so it is waiting for them to fall under ${feeCeiling}`);
       }
       const fundingUtxo = rec.mint && rec.mint.fundingUtxo ? rec.mint.fundingUtxo : await pickFundingUtxo(P.wallet.address());
       const built = mintReveal.buildCrossoutMintTxs({
@@ -422,25 +429,26 @@ export function makeCrossoutUx(deps) {
       return putRecord({ ...rec, stage: 'mint-submitted', submittedAt: now() });
     },
     'mint-submitted': async (rec) => {
-      let tx;
-      try { tx = await fetchChainJson(`/tx/${stripHex(rec.mint.revealTxid)}`); }
-      catch { return rec; } // not found yet -- resumable
-      if (!tx || !tx.status || !tx.status.confirmed) {
-        // A duplicate broadcast of an already-known tx is a safe, explicit no-op.
-        await chain.broadcastWithRetry(rec.mint.commitHex).catch(() => {});
-        await chain.broadcastWithRetry(rec.mint.revealHex).catch(() => {});
-        return rec;
+      const rv = await chainTx(rec.mint.revealTxid);
+      if (rv.state === 'present' && rv.confirmed) return putRecord({ ...rec, stage: 'mint-confirmed', confirmedAt: now() });
+      if (rv.state === 'unknown') return rec;                                      // not read: wait, and send nothing on a guess
+      // Not on Bitcoin, or in a mempool and not mined: the signed pair is offered again. A transaction a node knows is a safe no-op;
+      // one Bitcoin dropped is back in. The pair is never rebuilt, since a rebuilt one would conflict with it.
+      const refused = [];
+      for (const hex of [rec.mint.commitHex, rec.mint.revealHex]) {
+        try { await chain.broadcastWithRetry(hex); } catch (e) { const m = String((e && e.message) || e); if (!/already|known|in block|in mempool/i.test(m)) refused.push(m); }
       }
-      return putRecord({ ...rec, stage: 'mint-confirmed', confirmedAt: now() });
+      // Dropped and refused on being offered again (its funding coin was spent elsewhere): said on the record, where "Sign it again" is offered.
+      if (rv.state === 'absent' && refused.length) throw new Error(`crossout-ux: Bitcoin did not take the signed transactions again: ${refused[0].slice(0, 160)}`);
+      return rec;
     },
     // The reveal is on Bitcoin; the note is the bridge's only when the worker has credited it for this claim. That is
     // asked per (asset, claim, txid): `decided` once the scan is past the mint by the credit depth, `minted` only for
     // the tx recorded for the claim. Undecided or unreadable waits; decided and not minted is a refusal worth saying.
     'mint-confirmed': async (rec) => {
       // A reveal reorged out of its block is no longer confirmed: back to waiting for a confirmation (and re-sent if dropped).
-      let tx = null;
-      try { tx = await fetchChainJson(`/tx/${stripHex(rec.mint.revealTxid)}`); } catch { /* unreadable: keep waiting on the credit */ }
-      if (tx && tx.status && tx.status.confirmed === false) return putRecord({ ...rec, stage: 'mint-submitted', confirmedAt: null });
+      const rv = await chainTx(rec.mint.revealTxid);
+      if (rv.state === 'absent' || (rv.state === 'present' && rv.confirmed === false)) return putRecord({ ...rec, stage: 'mint-submitted', confirmedAt: null });
       return checkCredited(rec);
     },
     'mint-rejected': async (rec) => checkCredited(rec),
@@ -470,18 +478,19 @@ export function makeCrossoutUx(deps) {
   function fetchChainJson(path) { return callWorker('GET', `/chain${path}`); }
   // Whether a transaction is on Bitcoin (mined or in a mempool): 'present', 'absent' only on an explicit not-found, and
   // 'unknown' for anything else, a rate limit or an outage included -- a transport failure is never read as absence.
-  async function chainTxState(txid) {
+  async function chainTx(txid) {
     const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
-    if (!f) return 'unknown';
+    if (!f) return { state: 'unknown' };
     try {
       const res = await f(`${workerBase}/chain/tx/${stripHex(txid)}?network=${network}`);
-      if (res.status === 404) return 'absent';
-      if (!res.ok) return 'unknown';
+      if (res.status === 404) return { state: 'absent' };
+      if (!res.ok) return { state: 'unknown' };
       const j = await res.json().catch(() => null);
-      if (j && j.status) return 'present';
-      return j && j.error === 'not-found' ? 'absent' : 'unknown';
-    } catch { return 'unknown'; }
+      if (j && j.status) return { state: 'present', confirmed: j.status.confirmed === true };
+      return { state: j && j.error === 'not-found' ? 'absent' : 'unknown' };
+    } catch { return { state: 'unknown' }; }
   }
+  const chainTxState = async (txid) => (await chainTx(txid)).state;
 
   // Gives up a bridge that was started and never seen to settle -- after the chain has been looked at once more and shows
   // no settle for it. One that had landed is returned as the settled record it is; a burn the relay finishes after this
@@ -493,6 +502,13 @@ export function makeCrossoutUx(deps) {
     if (!poolAddress || rec.startBlock == null) throw new Error('crossout-ux: this bridge cannot be checked against Ethereum, so it was not cancelled');
     const after = await reconcile(rec);
     if (after.stage !== 'settling') return after;
+    // A note the pool has spent may have been burned by a settle the logs did not show (a node behind, a range it would not serve,
+    // a job still being proved): the record is the only way the Bitcoin step is ever sent, so it is kept.
+    if (nullifierSpent) {
+      let spent;
+      try { spent = await nullifierSpent(id); } catch { throw new Error('crossout-ux: could not check whether this note was spent, so it was not cancelled'); }
+      if (spent) throw new Error('crossout-ux: this note has been spent on Ethereum, so its burn may have landed; it was not cancelled. If you bridged it, find it with its Ethereum transaction hash');
+    }
     saveAll(walletPub, loadAll(walletPub).filter((r) => r.id !== id));
     return null;
   }
@@ -503,7 +519,7 @@ export function makeCrossoutUx(deps) {
   async function resign(walletPub, id) {
     const rec = getRecord(walletPub, id);
     if (!rec) throw new Error(`crossout-ux: no bridge record for ${id}`);
-    if (rec.stage !== 'mint-signed' || !rec.mint) throw new Error('crossout-ux: only a signed mint that has not been sent can be signed again');
+    if ((rec.stage !== 'mint-signed' && rec.stage !== 'mint-submitted') || !rec.mint) throw new Error('crossout-ux: only a signed mint that Bitcoin does not have can be signed again');
     const seen = await chainTxState(rec.mint.commitTxid);
     if (seen === 'unknown') throw new Error('crossout-ux: could not check whether its first transaction is on Bitcoin, so it was not signed again');
     if (seen === 'present') throw new Error('crossout-ux: its first transaction is already on Bitcoin, so it will go on by itself');

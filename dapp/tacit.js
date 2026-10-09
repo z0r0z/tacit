@@ -19966,6 +19966,8 @@ function _crossoutUxSingleton() {
       ...(tethId ? [{ assetId: tethId, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] : [])],
     chain: { getUtxos, pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     postHint,
+    // Cancelling a burn that never settled first asks the pool whether the note's nullifier has been spent.
+    nullifierSpent: (nu) => makeCrossLaneGuard({ keccak256: keccak_256 }).evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
   }));
 }
 // Mirrors _burndepReserved for the Bitcoin-side funding UTXO a cross-out's mint-signed stage reserves — same
@@ -23015,7 +23017,9 @@ function _burndepRelayRefused(err) {
 function _renderHoldingsBurndepBridges(listEl) {
   if (!wallet || !wallet.pub || !WORKER_BASE) return;
   let ux, records;
-  try { ux = _burndepUxSingleton(); records = ux.list(bytesToHex(wallet.pub)).filter((r) => r.stage !== 'minted' && r.stage !== 'reclaimed'); }
+  // This list is the TAC bridge's: a tETH return (kept in the same journal) is shown on the front page's To Bitcoin tab.
+  const tacHex = CANONICAL_TAC_ASSET_ID_HEX.toLowerCase();
+  try { ux = _burndepUxSingleton(); records = ux.list(bytesToHex(wallet.pub)).filter((r) => r.stage !== 'minted' && r.stage !== 'reclaimed' && (!r.source || !r.source.assetId || String(r.source.assetId).replace(/^0x/i, '').toLowerCase() === tacHex)); }
   catch { return; }
   const existing = listEl.querySelector('.burndep-bridge-holdings');
   if (existing) existing.remove();

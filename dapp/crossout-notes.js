@@ -78,6 +78,7 @@ export function solveAmount(P, bits = 26) {
 
 // deps: chainJson(path) / chainHex(path) read the Bitcoin explorer behind the worker ('/address/..', '/tx/..'); workerJson(path)
 // reads the worker itself ('/crossout/minted?..'); rpc(method, params) is the Ethereum node the pool is read through.
+const MAX_LOOKUPS = 8;
 export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolAddress, deployBlock = 0, chainJson, chainHex, workerJson, hrp = 'bc', maxAmountBits = 26 } = {}) {
   for (const [k, v] of Object.entries({ secp, hmac, sha256, pool, evmLog, rpc, chainJson, chainHex, workerJson })) if (v == null) throw new Error(`crossout-notes: deps.${k} required`);
 
@@ -93,7 +94,16 @@ export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolA
   }
 
   // The CrossOutRecorded event of a claim: its claim id is the first indexed topic. Paged so a node that caps a log range still answers.
+  // An answer is kept for a few minutes (a claim with no event is looked for once, not on every refresh), found or not.
+  const eventMemo = new Map();
   async function eventOf(claimId) {
+    const k = lc(claimId), hit = eventMemo.get(k);
+    if (hit && Date.now() - hit.at < 5 * 60e3) return hit.ev;
+    const ev = await eventOfUncached(claimId);
+    eventMemo.set(k, { at: Date.now(), ev });
+    return ev;
+  }
+  async function eventOfUncached(claimId) {
     if (!poolAddress) return null;
     const head = Number(BigInt(await rpc('eth_blockNumber', [])));
     for (let to = head; to >= deployBlock; to -= 50000) {
@@ -137,6 +147,7 @@ export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolA
     const utxos = await chainJson(`/address/${addr}/utxo`);
     const out = [];
     out.unread = 0;                                                                  // outputs that could not be read: the list is not complete
+    let lookups = 0;                                                                 // notes needing the Ethereum lookup and the search: capped per call
     for (const u of Array.isArray(utxos) ? utxos : []) {
       if (Number(u.vout) !== 0 || Number(u.value) > 2000) continue;                  // a cross-out mint's note is vout 0, at dust
       let hex, tx;
@@ -147,7 +158,11 @@ export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolA
       if (!tx || !tx.vout || !tx.vout[0] || lc(tx.vout[0].scriptpubkey) !== spk) continue;
       const k = known[lc(cm.claimId)] || null;
       let opening = null, openErr = null;
-      try { opening = await openMint({ walletPriv, asset: cm.assetId, claimId: cm.claimId, cx: cm.cx, cy: cm.cy, ownerXonly: xonly, known: k }); }
+      // Anyone can send dust with a mint-shaped envelope to this address: past a few unknown claims per call the rest are listed
+      // without being opened; the answers already found are kept, so each later call gets further down the list.
+      const fresh = !k && !eventMemo.has(lc(cm.claimId));
+      if (fresh && lookups >= MAX_LOOKUPS) openErr = 'not opened: many outputs to look up';
+      else try { if (fresh) lookups++; opening = await openMint({ walletPriv, asset: cm.assetId, claimId: cm.claimId, cx: cm.cx, cy: cm.cy, ownerXonly: xonly, known: k }); }
       catch (e) { openErr = String((e && e.message) || e); }
       let credited = null;
       try {

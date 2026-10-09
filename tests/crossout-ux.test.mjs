@@ -91,6 +91,8 @@ function makeWorld() {
   let statusDown = false, utxos = [{ txid: FUND_TXID, vout: 0, value: 50_000 }], unconfirmed = false;
   const crossOutCalls = [];
   let chainLogs = [], crossOutError = null, creditDown = false, credit = { decided: true, minted: true };
+  const droppedTxs = new Set();
+  let broadcastError = null;
   let lastCreditQuery = null;
   let claimIdVerified = true;
   let claimIdNote = 'corroborated against CrossOutRecorded';
@@ -121,6 +123,8 @@ function makeWorld() {
       lastCreditQuery = Object.fromEntries(u.searchParams);
       return { ok: true, json: async () => ({ network: 'mainnet', decided: credit.decided, minted: credit.minted, status: credit.status || null, mintedTxid: credit.mintedTxid || null }) };
     }
+    const dropped = p.match(/\/chain\/tx\/([0-9a-f]+)$/) && droppedTxs.has(p.match(/\/chain\/tx\/([0-9a-f]+)$/)[1]);
+    if (dropped) return { ok: false, status: 404, json: async () => { throw new Error('Unexpected token T in JSON'); } };           // an explorer's plain-text "Transaction not found"
     const chainMatch = p.match(/\/chain\/tx\/([0-9a-f]+)$/);
     if (chainMatch) {
       const tx = chainTxs.get(chainMatch[1]);
@@ -133,7 +137,7 @@ function makeWorld() {
   const chain = {
     getUtxos: async () => utxos.map((x) => ({ ...x, status: { confirmed: !unconfirmed } })),
     pickSafeCommitSats: async (us) => us,
-    broadcastWithRetry: async (hex) => { broadcasts.push(hex); return { txid: 'stub' }; },
+    broadcastWithRetry: async (hex) => { if (broadcastError) throw broadcastError; broadcasts.push(hex); return { txid: 'stub' }; },
     getFeeRate: async () => 3,
   };
 
@@ -155,6 +159,7 @@ function makeWorld() {
     fetchImpl, chain, crossOut, rpc,
     setEthCovered: (v) => { ethCovered = v; },
     setCredit: (v) => { credit = v; }, setCreditDown: (v) => { creditDown = v; }, creditQuery: () => lastCreditQuery,
+    dropTx: (txid) => droppedTxs.add(stripHex(txid)), restoreTx: (txid) => droppedTxs.delete(stripHex(txid)), setBroadcastError: (e) => { broadcastError = e; },
     crossOutCalls, setLogs: (v) => { chainLogs = v; }, setCrossOutError: (e) => { crossOutError = e; },
     setStatus: (v) => { status = v; }, setStatusDown: (v) => { statusDown = v; }, setUtxos: (v) => { utxos = v; }, setUnconfirmed: (v) => { unconfirmed = v; },
     setCoverage: (o) => { if (o.ethHead != null) ethHead = o.ethHead; if (o.bestBlock !== undefined) bestBlock = o.bestBlock; if (o.confirmedBlock !== undefined) confirmedBlock = o.confirmedBlock; },
@@ -426,7 +431,7 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 400_000n, blinding: 
   const pf = await ux.preflight({ walletPriv: WALLET_PRIV });
   ok(pf.ok && pf.problems.length === 0 && pf.warnings.length === 0, 'with sats free and the proof keeping up, preflight is clean');
   ok(pf.haveSats === 50_000 && pf.needSats > 0 && pf.needSats < 50_000 && pf.feeRate === 3, 'it reports the sats on hand against what one mint needs');
-  { const fees = 180 * 6 + 110 * 6, dust = pf.needSats - fees; ok(dust >= 294 && dust <= 546, 'what it asks for is both fees at twice today\'s rate (3 sat/vB) plus the output\'s dust'); }
+  { const fees = 180 * 6 + 154 * 6, dust = pf.needSats - fees; ok(dust >= 294 && dust <= 546, 'what it asks for is both fees at twice today\'s rate (3 sat/vB) plus the output\'s dust'); }
   ok(pf.reflection.lagBlocks === 0 && pf.coverage.behindBlocks === 26_147_613 - 26_147_224, 'it reads how far the proof and the Ethereum view are behind');
   ok(/^bc1q/.test(pf.address), 'and names the address that pays');
 
@@ -482,7 +487,7 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 400_000n, blinding: 
   world.setEthCovered(true);
   await ux.advance(WALLET_PUB, TNOTE.nullifier);
   let m = null; try { await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV }); } catch (e) { m = e.message; }
-  ok(/fees are high right now \(400 sat\/vB\)/.test(m || '') && ux.list(WALLET_PUB)[0].stage === 'covered' && world.broadcasts.length === 0, 'above the fee ceiling the Bitcoin step waits: nothing is signed or sent, and the record says why');
+  ok(/fees are high right now \(400 sat\/vB, about [\d,]+ sats for this step\)/.test(m || '') && ux.list(WALLET_PUB)[0].stage === 'covered' && world.broadcasts.length === 0, 'above the fee ceiling the Bitcoin step waits: nothing is signed or sent, and the record says why');
   const forced = await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV, allowHighFee: true });
   ok(forced.stage === 'mint-signed', 'sent anyway when the holder says so');
   rate = 20;
@@ -770,6 +775,104 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 400_000n, blinding: 
     let m = null; try { await ux2.advance(WALLET_PUB, TNOTE.nullifier); } catch (e) { m = e.message; }
     const rec = JSON.parse(store.get(key))[0];
     ok(hits === 1 && m === 'rpc down' && rec.lastError.message === 'rpc down' && rec.source.attempts.join() === '10000,0', 'the error is written onto the record as it is now, keeping what another tab added meanwhile');
+  }
+}
+
+// ---- each mint transaction pays at least the relay floor for the size it really has ----
+{
+  const { makeCrossoutMintReveal, vsizeOfHex } = await import('../dapp/crossout-mint-reveal.js');
+  const mr = makeCrossoutMintReveal({ secp });
+  const destX = destXonlyOf(WALLET_PRIV);
+  const P = makeBtcWallet({ priv: WALLET_PRIV, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 1 }).prims;
+  for (const rate of [1, 1.4, 3, 40]) {
+    const b = mr.buildCrossoutMintTxs({ prims: P, assetId: TETH, claimId: CLAIM_ID, cx: CX, cy: CY, destXonly: destX, fundingUtxo: { txid: FUND_TXID, vout: 0, value: 400_000 }, feeRate: rate });
+    const cv = vsizeOfHex(b.commitHex), rv = vsizeOfHex(b.revealHex);
+    ok(b.commitFee >= cv && b.revealFee >= rv, `at ${rate} sat/vB the commit (${cv} vB, pays ${b.commitFee}) and the reveal (${rv} vB, pays ${b.revealFee}) each pay at least 1 sat/vB`);
+  }
+  const low = mr.buildCrossoutMintTxs({ prims: P, assetId: TETH, claimId: CLAIM_ID, cx: CX, cy: CY, destXonly: destX, fundingUtxo: { txid: FUND_TXID, vout: 0, value: 50_000 }, feeRate: 0.2 });
+  ok(low.feeRate === 1 && low.commitFee >= vsizeOfHex(low.commitHex), 'a quoted rate under the relay floor is raised to it, not signed as it is');
+  ok(vsizeOfHex(low.commitHex) <= 154 && vsizeOfHex(low.revealHex) <= 180, 'and the sizes it budgets (154 and 180 vB) cover the real ones');
+}
+
+// ---- found by a second review: a dropped mint is sent again, cancel keeps a spent note's record, a key and a page guard ----
+{
+  const fresh = async (extra = {}) => {
+    const world = makeWorld(); const ux = makeUx(world, { ...MULTI, ...extra });
+    await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+    world.setEthCovered(true);
+    await ux.advance(WALLET_PUB, TNOTE.nullifier);
+    const signed = await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+    const sent = await ux.advance(WALLET_PUB, TNOTE.nullifier);
+    return { world, ux, signed, sent };
+  };
+  {
+    const { world, ux, signed, sent } = await fresh();
+    ok(sent.stage === 'mint-submitted', 'set up: sent to Bitcoin');
+    world.dropTx(signed.mint.revealTxid);                         // an explorer that has never heard of it answers 404 with plain text
+    const before = world.broadcasts.length;
+    const again = await ux.advance(WALLET_PUB, TNOTE.nullifier);
+    ok(again.stage === 'mint-submitted' && world.broadcasts.length === before + 2 && world.broadcasts.slice(-2)[0] === signed.mint.commitHex && world.broadcasts.slice(-1)[0] === signed.mint.revealHex,
+      'a mint the explorer answers 404 for is offered to Bitcoin again, the same signed pair, commit first');
+    world.setBroadcastError(new Error('bad-txns-inputs-missingorspent'));
+    let m = null; try { await ux.advance(WALLET_PUB, TNOTE.nullifier); } catch (e) { m = e.message; }
+    const row = ux.list(WALLET_PUB)[0];
+    ok(/did not take the signed transactions again: bad-txns-inputs-missingorspent/.test(m || '') && row.lastError && row.errorCount === 1, 'when Bitcoin refuses them again, the record says so');
+    world.setBroadcastError(null);
+    const re = await ux.resign(WALLET_PUB, TNOTE.nullifier);
+    ok(re.stage === 'covered' && !re.mint, 'and a signed pair Bitcoin does not have and will not take can be signed again from a free coin');
+    world.restoreTx(signed.mint.revealTxid);
+  }
+  {
+    const { world, ux, signed } = await fresh();
+    world.dropTx(signed.mint.commitTxid);
+    world.mineRevealTxid(signed.mint.revealTxid);
+    // The reveal confirmed and the commit is unknown to the explorer: resign must not run while the reveal is on Bitcoin.
+    ok((await ux.advance(WALLET_PUB, TNOTE.nullifier)).stage === 'mint-confirmed', 'a confirmed reveal moves on');
+    world.dropTx(signed.mint.revealTxid);
+    ok((await ux.advance(WALLET_PUB, TNOTE.nullifier)).stage === 'mint-submitted', 'a confirmed reveal that is then gone from Bitcoin goes back to being sent');
+  }
+  {
+    const { world, ux, signed } = await fresh();
+    world.mineRevealTxid(signed.mint.commitTxid);                 // Bitcoin has the commit
+    let m = null; try { await ux.resign(WALLET_PUB, TNOTE.nullifier); } catch (e) { m = e.message; }
+    ok(/already on Bitcoin/.test(m || '') && ux.list(WALLET_PUB)[0].stage === 'mint-submitted' && !!ux.list(WALLET_PUB)[0].mint, 'a pair Bitcoin has is not signed again');
+  }
+  {
+    // A key that is not the bridge's does not sign its Bitcoin step.
+    const world = makeWorld(); const ux = makeUx(world, MULTI);
+    await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+    world.setEthCovered(true);
+    await ux.advance(WALLET_PUB, TNOTE.nullifier);
+    const other = new Uint8Array(32).fill(0x34);
+    let m = null; try { await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: other }); } catch (e) { m = e.message; }
+    ok(/belongs to another key/.test(m || '') && ux.list(WALLET_PUB)[0].stage === 'covered' && !ux.list(WALLET_PUB)[0].lastError, 'another key is refused before anything is signed, and the bridge is left as it was');
+  }
+  {
+    // Two advances of one bridge in one page do not both sign.
+    const world = makeWorld(); const ux = makeUx(world, MULTI);
+    await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+    world.setEthCovered(true);
+    await ux.advance(WALLET_PUB, TNOTE.nullifier);
+    const a = ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+    let m = null; try { await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV }); } catch (e) { m = e.message; }
+    const first = await a;
+    ok(/being advanced in this page right now/.test(m || '') && first.stage === 'mint-signed' && ux.list(WALLET_PUB)[0].mint.revealTxid === first.mint.revealTxid, 'a second advance of the same bridge in the same page is refused while the first is signing');
+  }
+  {
+    // Cancel keeps a record whose note the pool has spent.
+    const world = makeWorld(); world.setCrossOutError(Object.assign(new Error('settle timed out'), {}));
+    let spent = false;
+    const ux = makeUx(world, { ...MULTI, poolAddress: POOL_ADDR, nullifierSpent: async () => spent });
+    try { await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 10_000n }); } catch {}
+    spent = true;
+    let m = null; try { await ux.cancelIntent(WALLET_PUB, TNOTE.nullifier); } catch (e) { m = e.message; }
+    ok(/has been spent on Ethereum/.test(m || '') && ux.list(WALLET_PUB).length === 1, 'a bridge whose note the pool has spent is not cancelled: its burn may have landed');
+    spent = false;
+    ok((await ux.cancelIntent(WALLET_PUB, TNOTE.nullifier)) === null && ux.list(WALLET_PUB).length === 0, 'and one whose note is unspent, with no settle found, is let go');
+    const bad = makeUx(world, { ...MULTI, poolAddress: POOL_ADDR, nullifierSpent: async () => { throw new Error('rpc'); } });
+    try { await bad.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 10_000n }); } catch {}
+    m = null; try { await bad.cancelIntent(WALLET_PUB, TNOTE.nullifier); } catch (e) { m = e.message; }
+    ok(/could not check whether this note was spent/.test(m || '') && bad.list(WALLET_PUB).length === 1, 'and one that cannot be checked is kept too');
   }
 }
 

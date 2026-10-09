@@ -205,9 +205,9 @@ function makeWorld() {
     setRegisterConflict: (v) => { registerConflict = v; },
     setLive: (txid, vout) => liveKeys.add(String(pool.outpointKey(withHex(stripHex(txid).match(/../g).reverse().join('')), vout)).toLowerCase()),
     setRecordBurns: (v) => { recordBurns = v; },
-    setReflectedNote: ({ txid, vout, value, blinding, asset = ASSET, authKey = '0x' + '00'.repeat(32) }) => {
+    setReflectedNote: ({ txid, vout, value, blinding, asset = ASSET, authKey = '0x' + '00'.repeat(32), bound = false }) => {
       const { cx, cy } = pool.commitXY(value, blinding);
-      reflectedNote = { leaf: pool.btcNoteLeaf(asset, cx, cy, authKey), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), asset, authKey, 0] };
+      reflectedNote = { leaf: pool.btcNoteLeaf(asset, cx, cy, authKey), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), asset, authKey, bound ? 1 : 0] };
     },
     // The attested state records a reflected burn: its destination, read from the reveal the way the reflection reads it.
     foldReflected: (revealHex) => { const d = classifyConfidentialTx(withHex(revealHex)); if (d && d.dest) reflectedDests.push(String(d.dest).toLowerCase()); },
@@ -1260,6 +1260,34 @@ function storageContainsPrivkey(storage, priv) {
     ok(r.stage === 'rburn-mined' && r.burnHeight === 1001 && r.lastError === null, 'a confirmed one goes back to waiting to be recorded, at the block it is in now');
     r = await ux.advance(r.walletPub, r.id);
     ok(r.stage === 'rfolded', 'and is recorded and ready to mint once the state holds its burn');
+  }
+  {
+    // A bound note is refused by the check, not at planning; a high fee waits; another key is refused; one page does not advance twice at once.
+    const { world, ux } = setup();
+    world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: TETH, authKey: XONLY, bound: true });
+    const pf = await ux.preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(!pf.ok && pf.steps.some((y) => y.name === 'bound' && !y.ok), 'a note bound to a deployment is refused by the check, naming the step');
+    const { world: w2, ux: u2 } = setup();
+    let msg = null; try { await u2.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: 400 }); } catch (e) { msg = e.message; }
+    ok(/fees are high right now \(400 sat\/vB\)/.test(msg || '') && w2.broadcasts.length === 0 && u2.list(Buffer.from(WALLET_PUB).toString('hex')).length === 0, 'a return waits when Bitcoin\'s fee is above the ceiling, with nothing signed or journalled');
+    w2.chain.getUtxos = async () => [{ txid: FUND_TXID_2, vout: 0, value: 300_000 }];
+    const high = await u2.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: 400, allowHighFee: true });
+    ok(high.stage === 'rburn-signed', 'and is signed when the holder says to go ahead');
+    const { world: w3, ux: u3 } = setup();
+    const r3 = await u3.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    const other = new Uint8Array(32).fill(0x24);
+    msg = null; try { await u3.advance(r3.walletPub, r3.id, { walletPriv: other }); } catch (e) { msg = e.message; }
+    ok(/belongs to another key/.test(msg || '') && u3.list(r3.walletPub)[0].stage === 'rburn-signed' && !u3.list(r3.walletPub)[0].lastError && w3.broadcasts.length === 0, 'another key is refused before anything is sent, and the bridge is left as it was');
+    const p1 = u3.advance(r3.walletPub, r3.id);
+    msg = null; try { await u3.advance(r3.walletPub, r3.id); } catch (e) { msg = e.message; }
+    await p1;
+    ok(/being advanced in this page right now/.test(msg || '') && w3.broadcasts.length === 2, 'a second advance in the same page while the first is sending is refused, so the pair goes out once');
+    // TAC keeps its own behaviour: no ceiling on a tracked TAC note.
+    const wt = makeWorld(); wt.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+    wt.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+    wt.chain.getUtxos = async () => [{ txid: FUND_TXID_2, vout: 0, value: 300_000 }];
+    const tr = await makeUx(wt, makeMemStorage()).startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: 400 });
+    ok(tr.stage === 'rburn-signed', 'the TAC bridge is unchanged: no ceiling is put on it');
   }
   {
     // TAC alone stays what it was: no assets configured, a tETH note is refused.

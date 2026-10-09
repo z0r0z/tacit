@@ -2159,6 +2159,7 @@ await step('xbring', async () => {
   const leafOf = (n) => pool.btcNoteLeaf(CETH, n.cx, n.cy, XONLY);
   const addrP2tr = await r.page.evaluate(async (x) => (await import('/crossout-notes.js')).p2trAddress(x.slice(2), 'bc'), XONLY);
   const posts = [];
+  let feeNow = 150;                                                                  // high at first: a return waits for fees to fall
   const explorer = (route, u) => {
     const p = u.pathname.replace(/^\/api/, '').replace(/^\/chain/, '');
     if (route.request().method() === 'POST' && p === '/tx') { posts.push(route.request().postData()); return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: 'ab'.repeat(32) }); }
@@ -2168,8 +2169,8 @@ await step('xbring', async () => {
       if (p === `/tx/${n.txid}/hex`) return route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: n.revealHex });
       if (p === `/tx/${n.txid}`) return json(route, { txid: n.txid, status: { confirmed: true, block_height: n === NA ? 970000 : 970200 }, vout: [{ scriptpubkey: '5120' + XONLY.slice(2), value: 330 }] });
     }
-    if (/\/fees\/recommended$/.test(p)) return json(route, { fastestFee: 3, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 });
-    if (/\/fee-estimates$/.test(p)) return json(route, { 1: 3, 6: 2, 144: 1 });
+    if (/\/fees\/recommended$/.test(p)) return json(route, { fastestFee: feeNow, halfHourFee: feeNow, hourFee: Math.min(feeNow, 2), economyFee: 1, minimumFee: 1 });
+    if (/\/fee-estimates$/.test(p)) return json(route, { 1: feeNow, 6: Math.min(feeNow, 2), 144: 1 });
     return route.fallback();
   };
   await api(/^https:\/\/(mempool\.space|blockstream\.info)\/api\//, explorer);
@@ -2199,6 +2200,13 @@ await step('xbring', async () => {
   const items = await r.page.$$eval('#eth-v1 label.brn', (xs) => xs.map((x) => ({ text: x.textContent.replace(/\s+/g, ' ').trim(), off: x.classList.contains('off') })));
   ok(items.length === 2 && items.some((x) => /0\.004 tETH/.test(x.text) && !x.off) && items.some((x) => /0\.003 tETH/.test(x.text) && x.off && /Waiting for Bitcoin’s proof on Ethereum to reach its block/.test(x.text)),
     `xbring: both notes are found with their amounts; the one the proof has recorded can be chosen, the other says why not (${items.map((x) => x.text).join(' | ')})`);
+  // Above the ceiling nothing is offered: the receipt says so, with the cost, and there is no box to tick.
+  await until(r.page, () => /fees are high right now/.test(document.querySelector('#xb-rcpt')?.textContent || ''), null, 120000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rcpt: ${(await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ')}`); });
+  ok(/16\d sat\/vB/.test(await text(r.page, '#xb-rcpt')) && !(await r.page.isVisible('#xb-ackrow')), `xbring: at 165 sat/vB (150 and the priority margin) the return is not offered, the receipt says why and what it would cost, and there is nothing to tick (${(await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ')} | ackrow visible: ${await r.page.isVisible('#xb-ackrow')})`);
+  feeNow = 3;
+  await sleep(62000);                                                                 // the page keeps a fee for a minute
+  await r.page.evaluate(() => document.querySelector('input[name="xb-note"]:checked')?.dispatchEvent(new Event('change')));
   await until(r.page, () => /You get[^]*0\.004 private tETH on Ethereum/.test(document.querySelector('#xb-rcpt')?.textContent || ''), null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | rcpt: ${(await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ')}`); });
   const rc = (await text(r.page, '#xb-rcpt')).replace(/\s+/g, ' ');

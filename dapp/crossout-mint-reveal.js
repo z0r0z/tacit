@@ -12,7 +12,23 @@
 // are self-checked below before anything is signed.
 import { encodeCrossoutMint } from './confidential-crossout-consumer.js';
 
-const REVEAL_VB = 180, COMMIT_VB = 110;
+// Measured on real signed transactions: the commit is 153 vB with a change output, the reveal 172 vB. The budgets are those, rounded up.
+const REVEAL_VB = 180, COMMIT_VB = 154;
+const MIN_RELAY_RATE = 1;                                     // sat/vB, the floor a node relays at
+
+// Virtual size of a serialized segwit transaction, read from its bytes.
+export function vsizeOfHex(hex) {
+  const b = hexBytes(hex); let p = 4;
+  const seg = b[p] === 0 && b[p + 1] === 1; if (seg) p += 2;
+  const vi = () => { const f = b[p++]; if (f < 0xfd) return f; if (f === 0xfd) { const v = b[p] | (b[p + 1] << 8); p += 2; return v; } const v = (b[p] | (b[p + 1] << 8) | (b[p + 2] << 16) | (b[p + 3] << 24)) >>> 0; p += 4; return v; };
+  const nin = vi(); for (let i = 0; i < nin; i++) { p += 36; const l = vi(); p += l + 4; }
+  const nout = vi(); for (let i = 0; i < nout; i++) { p += 8; const l = vi(); p += l; }
+  const wStart = p;
+  if (seg) for (let i = 0; i < nin; i++) { const n = vi(); for (let j = 0; j < n; j++) { const l = vi(); p += l; } }
+  const wit = seg ? (p - wStart) + 2 : 0, base = b.length - wit;
+  return Math.ceil((base * 3 + b.length) / 4);
+}
+function hexBytes(h) { const s = String(h).replace(/^0x/, ''); const a = new Uint8Array(s.length / 2); for (let i = 0; i < a.length; i++) a[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return a; }
 
 export function makeCrossoutMintReveal({ secp } = {}) {
   if (!secp) throw new Error('crossout-mint-reveal: deps.secp required');
@@ -40,7 +56,7 @@ export function makeCrossoutMintReveal({ secp } = {}) {
     const senderP2wpkh = prims.p2wpkhScript(prims.wallet.pub);
     const destSpk = prims.hexToBytes('5120' + destHex);
 
-    const rate = Number(feeRate) || 3;
+    const rate = Math.max(MIN_RELAY_RATE, Number(feeRate) || 3);
     const revealFee = Math.ceil(REVEAL_VB * rate);
     const commitValue = revealFee + prims.DUST;
     const commitFee = Math.ceil(COMMIT_VB * rate);
@@ -68,6 +84,10 @@ export function makeCrossoutMintReveal({ secp } = {}) {
     if (!revealHex.includes('225120' + destHex)) throw new Error('crossout-mint-reveal: self-check failed -- reveal vout 0 is not P2TR(destXonly)');
     if (revealTx.outputs.length !== 1) throw new Error('crossout-mint-reveal: self-check failed -- reveal must have exactly one output');
 
+    // Each transaction must pay at least the relay floor for what it measures: a node refuses one that does not, and the refusal is final.
+    const commitIn = fundingUtxo.value, commitOut = commitOutputs.reduce((n, o) => n + o.value, 0);
+    if (commitIn - commitOut < vsizeOfHex(commitHex) * MIN_RELAY_RATE) throw new Error('crossout-mint-reveal: the commit would pay under the minimum relay fee');
+    if (commitValue - prims.DUST < vsizeOfHex(revealHex) * MIN_RELAY_RATE) throw new Error('crossout-mint-reveal: the reveal would pay under the minimum relay fee');
     return { commitHex, commitTxid, revealHex, revealTxid, feeRate: rate, commitFee, revealFee, commitValue };
   }
 
