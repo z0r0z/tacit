@@ -14331,11 +14331,12 @@ function _be32ToDecimal(bytes) {
 // decimal strings (denomination). snarkjs wants ALL decimal. Normalize.
 function _publicInputsToDecimal(inputs) {
   return inputs.map(s => {
+    if (typeof s === 'bigint') return s.toString();
     if (typeof s !== 'string') s = String(s);
     if (s.startsWith('0x')) return BigInt(s).toString();
-    // hex strings without 0x prefix vs decimal: hex when even-length and
-    // contains hex chars; otherwise decimal pass-through.
-    if (/^[0-9a-fA-F]+$/.test(s) && s.length === 64) return BigInt('0x' + s).toString();
+    // Digits only is decimal; a 64-char string with a hex letter is unprefixed hex.
+    if (/^[0-9]+$/.test(s)) return s;
+    if (/^[0-9a-fA-F]{64}$/.test(s)) return BigInt('0x' + s).toString();
     return s;
   });
 }
@@ -14375,11 +14376,10 @@ async function verifyMixerProof({ vkCid, publicInputs, proof }) {
   try {
     [snarkjs, vk] = await Promise.all([_loadSnarkjs(), _fetchMixerVk(vkCid)]);
   } catch (e) {
-    // vk fetch or snarkjs load failure — return false (treat as unverified)
-    // rather than throwing into the recursive validator, which would mark
-    // the entire UTXO ancestry as invalid.
+    // vk fetch or snarkjs load failure: the proof was not checked, so throw for the caller to retry rather
+    // than answer false.
     if (typeof console !== 'undefined') console.warn('[mixer] verify load:', e.message || e);
-    return false;
+    throw new ValidationUnavailableError(`mixer proof verifier unavailable: ${e?.message || e}`);
   }
   if (!vk || !snarkjs?.groth16?.verify) return false;
 
@@ -14459,6 +14459,7 @@ function _ammBjjCoords(cBJJBytes) {
   return { u: pt[0], v: pt[1] };
 }
 
+// true / false, or null when snarkjs or the key could not be loaded (the proof was not checked; retry).
 async function verifyAmmProof({ circuitKey, vkCid, publicInputs, proof }) {
   if (!proof || proof.length !== 256) return false;
   if (!Array.isArray(publicInputs)) return false;
@@ -14469,9 +14470,12 @@ async function verifyAmmProof({ circuitKey, vkCid, publicInputs, proof }) {
     [snarkjs, wrapper] = await Promise.all([_loadSnarkjs(), _fetchAmmVkWrapper(vkCid)]);
   } catch (e) {
     if (typeof console !== 'undefined') console.warn('[amm] verify load:', e.message || e);
-    return false;
+    return null;
   }
-  if (!wrapper?.[circuitKey] || !snarkjs?.groth16?.verify) return false;
+  if (!snarkjs?.groth16?.verify) return null;
+  if (!wrapper?.[circuitKey]) return false;
+  const ic = wrapper[circuitKey].IC;
+  if (!Array.isArray(ic) || publicInputs.length !== ic.length - 1) return false;
   const proofObj = _parseGroth16Proof(proof);
   if (!proofObj) return false;
   const decInputs = _publicInputsToDecimal(publicInputs);
@@ -15395,6 +15399,24 @@ function _lpAssetIdLookupRefresh(pools) {
     });
   }
   _lpAssetIdLookup = next;
+}
+// When fetchAmmPools last loaded the complete pool list (0 = never). The validator's pool lookups load it on
+// demand through _ensureAmmPoolLookup; true when a complete list no older than maxAgeMs is loaded.
+let _lpAssetIdLookupLoadedAt = 0;
+async function _ensureAmmPoolLookup(maxAgeMs = Infinity) {
+  const fresh = () => _lpAssetIdLookupLoadedAt > 0 && Date.now() - _lpAssetIdLookupLoadedAt <= maxAgeMs;
+  if (fresh()) return true;
+  try { await fetchAmmPools(); } catch {}
+  return fresh();
+}
+// find() against the pool list, loading the list when find() comes back empty. Under strict validation a pool
+// that still does not resolve is unavailable rather than a negative.
+async function _findWithAmmPoolLookup(find, label) {
+  const empty = (v) => !v || (Array.isArray(v) && v.length === 0);
+  let v = find();
+  if (empty(v) && await _ensureAmmPoolLookup(POOL_LIST_CACHE_MS)) v = find();
+  if (empty(v)) _strictUnavailable(`${label}: pool not resolved`);
+  return v;
 }
 // Reverse lookups against _lpAssetIdLookup keyed by pool_id_hex /
 // canonical (asset_a, asset_b). Used by scanHoldings recovery for
@@ -16943,6 +16965,7 @@ function clearValidatorCaches() {
   _pmintCreditedCache.clear();
   _dclaimCreditedCache.clear();
   _ammSwapAcceptedCache.clear();
+  _ammOpAcceptedCache.clear();
   _crossoutMintedCache.clear();
   _btcPoolExitCache.clear();
   _btcPoolExitMatched.clear();
@@ -17174,6 +17197,65 @@ async function _fetchSwapAccepted(txidHex) {
   }
 }
 
+// Worker record of an applied T_LP_ADD / T_LP_REMOVE / T_PROTOCOL_FEE_CLAIM (/amm/op-accepted), read like
+// /amm/swap-accepted. The worker records ops from since_height on. With no record set to answer from (the
+// endpoint is absent, no since_height yet, or the op confirmed before it) the output is credited as it was
+// before the record existed.
+const _ammOpAcceptedCache = new Map();
+async function _fetchAmmOpAccepted(txidHex) {
+  const c = _ammOpAcceptedCache.get(txidHex);
+  if (c && (Date.now() - c.fetchedAt) < AMM_SWAP_ACCEPTED_TTL_MS) return c;
+  const put = (e) => { const v = { ...e, fetchedAt: Date.now() }; _ammOpAcceptedCache.set(txidHex, v); return v; };
+  if (!WORKER_BASE) return put({ accepted: null, workerAvailable: false });
+  try {
+    const r = await fetch(`${WORKER_BASE}/amm/op-accepted?network=${NET.name}&txid=${txidHex}`);
+    if (r.status === 404) return put({ accepted: null, workerAvailable: true, recordSet: false });
+    if (!r.ok) return put({ accepted: null, workerAvailable: false });
+    const j = await r.json();
+    return put({
+      accepted: !!j.accepted, workerAvailable: true, recordSet: true,
+      sinceHeight: Number.isInteger(j.since_height) ? j.since_height : null,
+      scannedHeight: Number.isInteger(j.scanned_height) ? j.scanned_height : null,
+    });
+  } catch {
+    return put({ accepted: null, workerAvailable: false });
+  }
+}
+// Null when the op's outputs may be credited, else the reason to mark them with. Mirrors the T_SWAP_VAR gate:
+// an unreachable worker credits outside strict validation, and a missing record is final once the worker has
+// scanned the op's block to the credit depth.
+async function _ammOpAcceptedFailure(txidHex, tx, label) {
+  const acc = await _fetchAmmOpAccepted(txidHex);
+  if (!acc.workerAvailable) { _strictUnavailable(`${label} ${txidHex}: acceptance unavailable`); return null; }
+  if (acc.accepted || !acc.recordSet || !Number.isInteger(acc.sinceHeight)) return null;
+  const h = _confirmedHeight(tx);
+  if (Number.isFinite(h) && h < acc.sinceHeight) return null;
+  if (_strictDecided(acc.scannedHeight, h)) return _REASON_INVALID;
+  _strictUnavailable(`${label} ${txidHex}: acceptance not decided`);
+  return _REASON_FETCH_FAILED;
+}
+
+// A swap spends its asset input at vin[1]: a validated note that commits to the envelope's c_in, of the asset
+// the swap sells. Null when it does, else the reason to mark the swap's outputs with. A parent that cannot be
+// fetched or resolved is transient. With no asset to compare (pool list unavailable) the asset check is skipped
+// outside strict validation, as the swap gate credits an unreachable worker.
+async function _swapInputFailure(tx, cInSecp, assetInHex, validatedSet, validatedReasons, fetchTx, label) {
+  const inp = tx.vin[1];
+  if (!inp) return _REASON_INVALID;
+  const parentKey = `${inp.txid}:${inp.vout}`;
+  if (validatedSet.get(parentKey) !== true) {
+    return validatedReasons?.get(parentKey) === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID;
+  }
+  const parent = await fetchTx(inp.txid);
+  const parentEnv = parent ? _txOutputEnvelope(parent) : null;
+  const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid) : null;
+  if (!pd) { _strictUnavailable(`${label}: input ${parentKey} not resolved`); return _REASON_FETCH_FAILED; }
+  if (!bytesEqual(pd.commitment, cInSecp)) return _REASON_INVALID;
+  if (!assetInHex) { _strictUnavailable(`${label}: input asset not resolved`); return null; }
+  if (String(pd.assetIdHex).toLowerCase() !== String(assetInHex).toLowerCase()) return _REASON_INVALID;
+  return null;
+}
+
 // Bitcoin-native shielded pool exits (T_BTC_SPEND with an exit). An exit output is a transparent note of
 // (asset, Cx, Cy) exactly when the pool's replay recorded an accepted exit at txid:exit_vout, so its validity
 // comes from the pool service's exit record. No service reachable → no record → not credited. A T_BTC_SPEND
@@ -17377,6 +17459,7 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
   // Walk the ancestry DAG breadth-first to discover every (txid, vout) that
   // will need validating. The walk descends only through:
   //   - asset-input ancestry of CXFER / BURN / AXFER (vin[1..] or vin[1..1+aic])
+  //   - the asset input of T_SWAP_VAR / T_SWAP_ROUTE (vin[1])
   //   - the CETCH ancestor of T_MINT (etchTxid, vout 0)
   // All other opcodes (CETCH, PMINT, PETCH, DEPOSIT, WITHDRAW, DROP, DCLAIM)
   // validate self-contained — their "parent" lookups (e.g. T_PETCH parent for
@@ -17475,6 +17558,10 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
             enqueue(tx.vin[i].txid, tx.vin[i].vout);
           }
         }
+      } else if (env.opcode === T_SWAP_VAR || env.opcode === T_SWAP_ROUTE) {
+        // The swap's asset input is vin[1].
+        const dec = env.opcode === T_SWAP_VAR ? decodeTSwapVarPayload(env.payload) : decodeTSwapRoutePayload(env.payload);
+        if (dec && tx.vin.length >= 2) enqueue(tx.vin[1].txid, tx.vin[1].vout);
       }
     }
   }
@@ -18312,13 +18399,19 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       bytesToHex(dec.rLeaf),
       (bytes32ToBigint(dec.bindHash) % BN254_FIELD_SIZE).toString(),
     ];
-    const proofOk = await verifyMixerProof({
-      // vkCid is stored as Uint8Array in the registry (encoded from the
-      // worker's string at scanPools time). Decode for the IPFS URL.
-      vkCid: pool ? new TextDecoder().decode(pool.vkCid) : null,
-      publicInputs,
-      proof: dec.proof,
-    });
+    let proofOk;
+    try {
+      proofOk = await verifyMixerProof({
+        // vkCid is stored as Uint8Array in the registry (encoded from the
+        // worker's string at scanPools time). Decode for the IPFS URL.
+        vkCid: pool ? new TextDecoder().decode(pool.vkCid) : null,
+        publicInputs,
+        proof: dec.proof,
+      });
+    } catch {
+      _strictUnavailable(`T_WITHDRAW ${txidHex}: proof verifier unavailable`);
+      _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false;
+    }
     if (!proofOk) { validatedSet.set(key, false); return false; }
     // Mark nullifier spent on first successful validation. NOTE: this
     // mutates global pool state inside the recursive validator, which is
@@ -18659,10 +18752,13 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // publicly by the envelope itself (amount + blinding revealed). Deep
     // soundness (claimer == pool.protocol_fee_address, accrued match) is
     // worker-enforced; the dapp's role here is to mark vout[0] as a valid
-    // tacit UTXO so ancestry walks and holdings scans surface it.
+    // tacit UTXO so ancestry walks and holdings scans surface it, once the
+    // worker records that it applied the claim.
     if (vout !== 0) { validatedSet.set(key, false); return false; }
     const dec = ammEnvelopeMod.decodeProtocolFeeClaim(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
+    const opFail = await _ammOpAcceptedFailure(txidHex, tx, 'T_PROTOCOL_FEE_CLAIM');
+    if (opFail) { _markInvalid(validatedSet, validatedReasons, key, opFail); return false; }
     validatedSet.set(key, true);
     return true;
   }
@@ -18695,6 +18791,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
         _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
       }
     }
+    // The share mint is backed only when the worker applied the add (kernels against real inputs, reserves).
+    const opFail = await _ammOpAcceptedFailure(txidHex, tx, 'T_LP_ADD');
+    if (opFail) { _markInvalid(validatedSet, validatedReasons, key, opFail); return false; }
     validatedSet.set(key, true);
     return true;
   }
@@ -18716,14 +18815,22 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       }
     }
     if (_isAmmCeremonyUnlocked()) {
-      const candidates = _scanLpRemovePoolIdCandidates(dec);
+      let candidates = _scanLpRemovePoolIdCandidates(dec);
+      if (!candidates.length) {
+        const loaded = await _ensureAmmPoolLookup(POOL_LIST_CACHE_MS);
+        candidates = _scanLpRemovePoolIdCandidates(dec);
+        if (!candidates.length && (!loaded || _strictValidation)) {
+          _strictUnavailable(`T_LP_REMOVE ${txidHex}: pool not resolved`);
+          _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false;
+        }
+      }
       if (!candidates.length || !dec.proof || !dec.recvACBJJ || !dec.recvBCBJJ) {
         _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
       }
       const coordsA = _ammBjjCoords(dec.recvACBJJ);
       const coordsB = _ammBjjCoords(dec.recvBCBJJ);
       if (!coordsA || !coordsB) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
-      let anyOk = false;
+      let anyOk = false, verifierDown = false;
       for (const poolIdBytes of candidates) {
         const ok = await verifyAmmProof({
           circuitKey: 'lp_remove', vkCid: CANONICAL_AMM_VK_CID,
@@ -18737,10 +18844,17 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
           ],
           proof: dec.proof,
         });
+        if (ok === null) verifierDown = true;
         if (ok) { anyOk = true; break; }
+      }
+      if (!anyOk && verifierDown) {
+        _strictUnavailable(`T_LP_REMOVE ${txidHex}: proof verifier unavailable`);
+        _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false;
       }
       if (!anyOk) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
     }
+    const opFail = await _ammOpAcceptedFailure(txidHex, tx, 'T_LP_REMOVE');
+    if (opFail) { _markInvalid(validatedSet, validatedReasons, key, opFail); return false; }
     validatedSet.set(key, true);
     return true;
   }
@@ -18752,16 +18866,24 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     let isSentinel = true;
     for (let i = 0; i < 33; i++) if (dec.cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
     if (vout === 2 && isSentinel) { validatedSet.set(key, false); return false; }
-    let changePoint, receiptPoint;
+    let changePoint;
     try {
-      changePoint = isSentinel ? secp.ProjectivePoint.ZERO : bytesToPoint(dec.cChangeOrSentinel);
-      receiptPoint = bytesToPoint(dec.cReceiptSecp);
+      changePoint = isSentinel ? null : bytesToPoint(dec.cChangeOrSentinel);
+      bytesToPoint(dec.cReceiptSecp);
     } catch { validatedSet.set(key, false); return false; }
-    if (rpBatch) {
-      rpBatch.push({ commitments: [changePoint, receiptPoint], proof: dec.rangeProof });
-    } else if (!bpRangeAggVerify([changePoint, receiptPoint], dec.rangeProof)) {
-      validatedSet.set(key, false); return false;
+    // Mirror the guest (fold_swap_var): the range proof is an m=1 BP+ over the change alone, and a whole-input
+    // swap (sentinel change) carries no range check. BP+ proofs never enter the standard-BP rpBatch.
+    if (changePoint) {
+      let rangeOk = false;
+      try { rangeOk = bppRangeVerify([changePoint], dec.rangeProof); } catch { rangeOk = false; }
+      if (!rangeOk) { validatedSet.set(key, false); return false; }
     }
+    let poolEntry = _scanPoolEntryByPoolId(bytesToHex(dec.poolId));
+    if (!poolEntry && await _ensureAmmPoolLookup(POOL_LIST_CACHE_MS)) poolEntry = _scanPoolEntryByPoolId(bytesToHex(dec.poolId));
+    const inFail = await _swapInputFailure(tx, dec.cInSecp,
+      poolEntry ? (dec.direction === 0 ? poolEntry.asset_a : poolEntry.asset_b) : null,
+      validatedSet, validatedReasons, fetchTx, `T_SWAP_VAR ${txidHex}`);
+    if (inFail) { _markInvalid(validatedSet, validatedReasons, key, inFail); return false; }
     // Receipt + change are virtual mints; the bulletproof only bounds their
     // range, not that delta_out follows the curve at the pool's real reserves.
     // Gate credit on the worker's accepted-swap set (offline → optimistic).
@@ -18788,6 +18910,13 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     } else if (!bpRangeAggVerify([secp.ProjectivePoint.ZERO, receiptPoint], dec.rangeProof)) {
       validatedSet.set(key, false); return false;
     }
+    const inp1 = tx.vin[1];
+    if (!inp1 || inp1.txid !== bytesToHex(reverseBytes(dec.traderInputTxidBE)) || (inp1.vout >>> 0) !== (dec.traderInputVout >>> 0)) {
+      _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
+    }
+    const inFailR = await _swapInputFailure(tx, dec.cInSecp, bytesToHex(dec.traderInputAssetId),
+      validatedSet, validatedReasons, fetchTx, `T_SWAP_ROUTE ${txidHex}`);
+    if (inFailR) { _markInvalid(validatedSet, validatedReasons, key, inFailR); return false; }
     // Virtual mint — gate credit on the worker's accepted-swap set, same as
     // T_SWAP_VAR above (offline → optimistic).
     const accSr = await _fetchSwapAccepted(txidHex);
@@ -19097,7 +19226,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
       }
       return null;
     }
-    const poolEntry = _scanPoolEntryByPoolId(bytesToHex(d.poolId));
+    const poolEntry = await _findWithAmmPoolLookup(() => _scanPoolEntryByPoolId(bytesToHex(d.poolId)), `T_SWAP_VAR ${parentTxid}`);
     if (!poolEntry) return null;
     if (vout === 1) {
       const aid = (d.direction === 0 ? poolEntry.asset_b : poolEntry.asset_a).toLowerCase();
@@ -19178,7 +19307,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     const d = ammEnvelopeMod.decodeLpAdd(parentEnv.payload);
     if (!d) return null;
     if (vout === 0) {
-      const poolIdBytes = _scanLpAddPoolId(d);
+      const poolIdBytes = await _findWithAmmPoolLookup(() => _scanLpAddPoolId(d), `T_LP_ADD ${parentTxid}`);
       if (!poolIdBytes) return null;
       const lpAid = ammAssetMod.deriveLpAssetId(poolIdBytes);
       return { assetIdHex: bytesToHex(lpAid), commitment: d.shareCSecp };
@@ -19216,7 +19345,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
       // CANONICAL-first blinding), owner-bound to the vout-2 key — FORM the identical commitment so the note
       // is spendable, exactly like the LP-add refund vouts above. r_recv_a is wire rRecvB when the pair is
       // swapped into canonical order (the guest passes the canonical-first blinding to the refund).
-      const cand = _scanLpRemovePoolIdCandidates(d);
+      const cand = await _findWithAmmPoolLookup(() => _scanLpRemovePoolIdCandidates(d), `T_LP_REMOVE ${parentTxid}`);
       if (!cand.length) return null;
       const lpAid = ammAssetMod.deriveLpAssetId(cand[0]);
       const [canonA] = ammAssetMod.canonicalAssetPair(bytesToHex(d.assetA), bytesToHex(d.assetB));
@@ -47520,22 +47649,37 @@ export function findSwapRoutePath({ assetInHex, assetOutHex, amountIn, pools }) 
 
 let _poolListCache = null;
 let _poolListCacheUntil = 0;
+let _poolListInFlight = null;
 const POOL_LIST_CACHE_MS = 25 * 1000;
+const POOL_LIST_PAGE_GUARD = 50;
 async function fetchAmmPools() {
   if (Date.now() < _poolListCacheUntil && _poolListCache) return _poolListCache;
   if (!WORKER_BASE) return [];
-  try {
-    const resp = await fetch(`${WORKER_BASE}/amm/pools?limit=200&network=${encodeURIComponent(NET.name)}`);
-    if (!resp.ok) return [];
-    const r = await resp.json();
-    if (!r || !Array.isArray(r.pools)) return [];
-    _poolListCache = r.pools;
-    _poolListCacheUntil = Date.now() + POOL_LIST_CACHE_MS;
-    // Keep the LP-asset synthetic-meta cache in sync with the worker's
-    // current pool list so Holdings can render LP shares with tickers.
-    try { _lpAssetIdLookupRefresh(r.pools); } catch {}
-    return r.pools;
-  } catch { return []; }
+  if (_poolListInFlight) return _poolListInFlight;
+  _poolListInFlight = (async () => {
+    try {
+      // Pages through the worker's cursor so every pool is listed.
+      const pools = [];
+      let cursor = null;
+      for (let page = 0; page < POOL_LIST_PAGE_GUARD; page++) {
+        const resp = await fetch(`${WORKER_BASE}/amm/pools?limit=200&network=${encodeURIComponent(NET.name)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        if (!resp.ok) return [];
+        const r = await resp.json();
+        if (!r || !Array.isArray(r.pools)) return [];
+        pools.push(...r.pools);
+        cursor = typeof r.cursor === 'string' && r.cursor ? r.cursor : null;
+        if (!cursor) break;
+      }
+      _poolListCache = pools;
+      _poolListCacheUntil = Date.now() + POOL_LIST_CACHE_MS;
+      // Keep the LP-asset synthetic-meta cache in sync with the worker's
+      // current pool list so Holdings can render LP shares with tickers.
+      try { _lpAssetIdLookupRefresh(pools); if (!cursor) _lpAssetIdLookupLoadedAt = Date.now(); } catch {}
+      return pools;
+    } catch { return []; }
+    finally { _poolListInFlight = null; }
+  })();
+  return _poolListInFlight;
 }
 
 // ============== Trustless AMM pool-state derivation (client-side replay) ==============
