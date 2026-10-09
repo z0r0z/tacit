@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ieMY1c0zKt+jA5/H7smoj9kGl8zGp9XWjFdhmQJ+Cb0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g5InCnf5DNzGHBiToxfoowlCmMSTf5/Tjlv2y60nSKs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -321,6 +321,19 @@ main > section + section { margin-top: 40px; }
 .facts { position: static; }
 .facts li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; color: var(--mute); border-top: 1px dashed var(--hair-2); }
 .facts b { font-weight: 500; color: var(--ink); text-align: right; }
+/* The public farm, for ETH straight from a wallet: one row under the private steps. */
+.pubfarm { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 14px; align-items: center; gap: 6px 16px; margin-top: 14px; padding: 14px 18px;
+  color: inherit; text-decoration: none; background: var(--card); border: 1px solid var(--hair); transition: border-color .18s; }
+.pubfarm .tk { width: 30px; height: 30px; }
+.pubfarm .pair .tk + .tk { margin-left: -10px; box-shadow: 0 0 0 2px var(--card); }
+.pf-t { display: grid; gap: 2px; min-width: 0; font-size: 12.5px; color: var(--mute); line-height: 1.45; }
+.pf-t b { font-weight: 500; color: var(--ink); font-size: 13px; }
+.pf-r { display: grid; justify-items: end; gap: 1px; }
+.pf-r b { font: 500 17px var(--mono); letter-spacing: -.02em; white-space: nowrap; }
+.pf-r b small, .pf-r > small { font-size: 11.5px; font-weight: 400; color: var(--mute); }
+.pf-r b small { margin-left: 3px; }
+.pubfarm .go { transition: transform .18s; }
+@media (hover: hover) { .pubfarm:hover { border-color: var(--ink); } .pubfarm:hover .go { transform: translateX(3px); } .pubfarm:hover .pf-t b { text-decoration: underline; } }
 /* Points, on the actions that earn them: a quiet line each, marked when the protocol weights it up (its card then leads its row). */
 .ptchip { display: flex; align-items: flex-start; gap: 7px; margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--mute); }
 .ptchip .tk { margin-top: 1px; }
@@ -638,6 +651,10 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .flow-step .pair { display: none; }
   .pools { grid-area: pools; margin-top: 8px; }
   .ptchip { grid-area: pts; }
+  .pubfarm { grid-template-columns: auto minmax(0, 1fr) 14px; padding: 14px 16px; margin-top: 10px; }
+  .pubfarm .pair { align-self: start; }
+  .pf-r { grid-column: 2; grid-row: 2; justify-items: start; }
+  .pubfarm .go { grid-column: 3; grid-row: 1 / span 2; }
   .ptsline .fig { display: inline-flex; justify-items: start; text-align: left; font-size: 12px; }
   .ptsline .fig > span { max-width: none; }
   .ptsline .you { margin-left: 0; }
@@ -746,6 +763,12 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
           <span class="tile-foot"><span class="dot live" data-dot="farm"></span><span data-foot="farm">Reading farms…</span><span class="go" aria-hidden="true">→</span></span>
         </article>
       </div>
+      <a class="pubfarm" href="#farm/public" data-link="farm/public">
+        <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span>
+        <span class="pf-t"><b>Or farm in public, in one step</b><span>One transaction from your wallet: about half your ETH is swapped to TAC inside the pool, then both earn TAC every second.</span></span>
+        <span class="pf-r"><b class="num" id="pub-apr"><span class="sk" style="--w:4ch"></span></b><small id="pub-day">TAC/ETH farm</small></span>
+        <span class="go" aria-hidden="true">→</span>
+      </a>
     </section>
 
     <section aria-labelledby="g-do">
@@ -6173,6 +6196,10 @@ function paintEarn() {
     $('#ern-farm').textContent = prog && !prog.epoch?.active ? 'farms between reward periods' : 'farms not read yet';
     mount($('#flow-pools'), html``);
   }
+  // The public TAC/ETH farm, joined with ETH alone in one transaction: its APR and what it pays a day.
+  const f = FARM.top;
+  if (f?.apr != null) { mount($('#pub-apr'), html`${f.apr >= 10000 ? '10,000+' : per(Math.round(f.apr))}%<small>APR</small>`); $('#pub-day').textContent = `TAC/ETH farm · ${per(f.pubDay)} TAC a day`; }
+  else if (f || f === null) { $('#pub-apr').textContent = '—'; $('#pub-day').textContent = f ? 'TAC/ETH farm, between reward periods' : 'TAC/ETH farm'; }
   const on = now() < ptsEnd();
   mount($('#ern-pts-v'), on ? html`<span data-pgm="pot">${potTac()}</span><small>TAC</small>` : '—');
   $('#ern-pts').textContent = on ? `points pot today · ${dayLeft()} left` : `points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`;
