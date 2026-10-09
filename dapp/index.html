@@ -2265,7 +2265,7 @@ function setKey(k) {
 // tacit.js opens the passphrase-locked and Bitcoin-signed keys exactly as tacit.finance does. It loads only for
 // those paths, as a library: it reads the shared network once at import, so this page pins mainnet for its visit,
 // and any call that rewrites the app's linked-wallet records is run with them put back afterwards.
-const TACIT_URL = '/tacit.js?cb=a1b2f368';
+const TACIT_URL = '/tacit.js?cb=294efe4a';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-lite-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -4353,7 +4353,7 @@ function loadHeld(force = false) {
     if (S.key?.pubHex === pub) { store.set(`tacit-lite-device-bal-v1:${c.chainId}:${pub}`, { v: s.balance.toString(), at: Date.now() }); dashSoon(); }
   });
   const sats = (async () => {
-    const X = await import('/sats/secret.js?cb=423f48a3');
+    const X = await import('/sats/secret.js?cb=6e4d17a4');
     const notes = (await X.poolNotes(X.poolWalletFor(priv, 'mainnet'))).filter((n) => !n.spent);
     const held = X.livePoolAssets().map((a) => ({ ...a, value: notes.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n) }));
     if (S.key?.pubHex === pub) { HELD.sats = held; HELD.satsErr = false; dashSoon(); }
@@ -4600,7 +4600,7 @@ function renderDevice(el) {
     $('#d-max').onclick = () => { if (wb != null) { const keep_ = c.chainId === 1 ? 3n * 10n ** 15n : 2n * 10n ** 14n, v = wb > keep_ ? wb - keep_ : 0n; amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); } };
     amt.addEventListener('input', check); check();                              // synchronous: no network in this check
     amt.addEventListener('focus', warm, { once: true });
-    go.onclick = () => busy(go, async () => {
+    go.onclick = () => busy(go, async (run) => {
       try {
         const amount = parseUnits(amt.value);
         if (!amount) throw new Error('Enter an amount.');
@@ -4615,9 +4615,12 @@ function renderDevice(el) {
         const W2 = await deviceWallet();
         await payingAccount(); W2.connect(payFrom(c.chainId, `Deposit ${fmt(amount, 18, 6)} ETH${to ? ' to someone else’s private balance' : ''} on this device${c.chainId === 1 ? '' : `, on ${c.name}`}`));
         const h = to ? await W2.depositTo({ to, amount, onStep: step }) : await W2.deposit({ amount, onStep: step });
+        // The library hands back the hash once mined, or after three minutes without a receipt: the receipt is read here
+        // before the deposit is said to have landed, and one still pending keeps the form spent.
+        await waitTx(h, { timeoutMs: 20e3, chainId: c.chainId });
         clearField(amt); rc.hidden = true;
         afterAction(html`<span class="ok">${to ? 'Deposited into their private balance.' : 'Deposited.'}</span> ${explorer(h)}`);
-      } catch (e) { sayErr(status, e); }
+      } catch (e) { if (e?.pending) { clearField(amt); rc.hidden = true; } txFail(run, status, e); }
     });
   } else if (DEV.mode === 'send') {
     // Paying from this balance is done in tacit pay, the one place for payments: the same key, pool and balance, with send
@@ -4700,11 +4703,14 @@ function renderDevice(el) {
           devWalletOn(l2.chainId).then((w) => w.watchReceive()).catch(() => {});   // that chain's keeper sweeps the arrival in
           done = `On its way to ${l2.name}.`;
         }
+        // The hash comes back once mined, or after three minutes without a receipt: read here before "Withdrawn.".
+        if (dest !== 'v1') await waitTx(h, { timeoutMs: 20e3, chainId: dest === 'addr' ? c.chainId : 1 });
         clearField(amt); rc.hidden = true;
         afterAction(html`<span class="ok">${done}</span> ${explorer(h)}`);
       } catch (e) {
         // A move that landed but has not settled has left this device: the field empties and the balance is read again.
-        if (e?.said || waitRanOut(e)) { clearField(amt); rc.hidden = true; afterAction(html`<span class="err">${errText(e)}</span>`); }
+        if (e?.pending) { clearField(amt); rc.hidden = true; txFail(run, status, e); }
+        else if (e?.said || waitRanOut(e)) { clearField(amt); rc.hidden = true; afterAction(html`<span class="err">${errText(e)}</span>`); }
         else if (e?.feeMoved != null) await feeMoved(e);
         else if (dest === 'addr' || dest === 'v1') failed(e);
         else if (l2 && l2.chainId !== 8453 && /^not enough in the pool/.test(e?.message || '')) sayErr(status, new Error(`More than your private balance, once ${l2.name}’s bridge fee is counted as well: its ticket is priced as the move is sent. Try a little less.`));
@@ -4734,12 +4740,13 @@ function renderDevice(el) {
       if (!w || !box?.isConnected) return;
       mount(box, html`<div class="callout"><span>${fmt(w, 18, 6)} ETH is waiting there. Sweep it in yourself: proved here, no fee.</span><button class="btn ghost" type="button" id="d-sweep">Sweep in</button></div>`);
       const b = $('#d-sweep');
-      b.onclick = () => busy(b, async () => {
+      b.onclick = () => busy(b, async (run) => {
         try {
           await payingAccount(); W.connect(payFrom(c.chainId, `Sweep ${fmt(w, 18, 6)} ETH in on this device${c.chainId === 1 ? '' : `, on ${c.name}`}`));
           const h = await W.sweep({ onStep: step });
+          await waitTx(h, { timeoutMs: 20e3, chainId: c.chainId });     // the sweep returns at send: read its receipt before "Swept in."
           afterAction(html`<span class="ok">Swept in.</span> ${explorer(h)}`);
-        } catch (e) { sayErr(status, e); }
+        } catch (e) { txFail(run, status, e); }
       });
     }).catch(() => {});
   }
@@ -6329,7 +6336,7 @@ function weiForm(f, status) {
       say(status, html`<span class="ok">${label}.wei now pays you privately.</span>`);
       WEI.label = ''; q = null; clearField(input); rc.hidden = true; run.release(true);       // the name is spent: the form must not offer it again
       loadPoints(true).then(() => rerender('pts')).catch(() => {});
-    } catch (e) { sayErr(status, e); check().catch(() => {}); }        // the name's state may have moved: the button reads it again
+    } catch (e) { txFail(run, status, e); check().catch(() => {}); }        // the name's state may have moved: the button reads it again
   });
 }
 
@@ -6779,7 +6786,7 @@ function renderPrecision(el) {
     await loadFarms(true); rerender('farm');
   };
   $$('[data-go="buy"]', el).forEach((b) => b.addEventListener('click', () => { $('#sheet-farm').close(); openSheet('buy'); }));
-  $$('[data-go="eth"]', el).forEach((b) => b.addEventListener('click', () => { FARM.mode = 'eth'; keep($('#sheet-farm'), render.farm); }));
+  $$('[data-go="eth"]', el).forEach((b) => b.addEventListener('click', () => { if (running(sheetOf(b))) return; FARM.mode = 'eth'; keep($('#sheet-farm'), render.farm); }));
   wireSub(el, 'pfm', (m) => { FARM.mode = m; keep($('#sheet-farm'), render.farm); });
   // What the stake has earned since the read, counted up each second at its share of the stream, to the stream's end.
   clearInterval(FARM.tick);
@@ -6853,8 +6860,8 @@ function renderPrecision(el) {
         warn(rc, html`The swap inside the pool costs a lot at this size. A smaller deposit costs less${other ? html`, and so does <button class="link" type="button" data-go="pair">adding ${mode === 'eth' ? 'TAC' : 'ETH'} too</button>` : ''}.`);
       }
       rc.querySelector('[data-go="buy"]')?.addEventListener('click', () => { $('#sheet-farm').close(); openSheet('buy'); });
-      rc.querySelector('[data-go="eth"]')?.addEventListener('click', () => { FARM.mode = 'eth'; keep($('#sheet-farm'), render.farm); });
-      rc.querySelector('[data-go="pair"]')?.addEventListener('click', () => { FARM.mode = 'pair'; keep($('#sheet-farm'), render.farm); });
+      rc.querySelector('[data-go="eth"]')?.addEventListener('click', (e) => { if (running(sheetOf(e.currentTarget))) return; FARM.mode = 'eth'; keep($('#sheet-farm'), render.farm); });
+      rc.querySelector('[data-go="pair"]')?.addEventListener('click', (e) => { if (running(sheetOf(e.currentTarget))) return; FARM.mode = 'pair'; keep($('#sheet-farm'), render.farm); });
       gateOk();
     } catch (e2) { if (my === seq) quoteErr(rc, e2); }
   };

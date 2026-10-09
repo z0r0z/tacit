@@ -344,7 +344,9 @@ async function prepare(poolWallet, asset, need, anchor, fixed = null) {
 // address, which then shows as the sender: `why` is 'no-relay' when the relay cannot quote, 'relay-slow' when it has
 // not posted the payment (`timedOut` after five minutes of waiting; `signal` aborts when it posts while the question is
 // open). A false answer posts nothing and throws with `relayDeclined`. Without `askSelf` both fallbacks post unasked.
-export async function payPrivately(tacit, { poolWallet, to, amount, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, inputs = null, askSelf = null }) {
+// `deductFee` makes `amount` the total these notes give up: a relayer's quoted fee comes out of the recipient's output,
+// a self-funded post delivers all of it, and nothing comes back as change. The result's `amount` is what the recipient got.
+export async function payPrivately(tacit, { poolWallet, to, amount, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, inputs = null, askSelf = null, deductFee = false }) {
   to = poolRecipient(to, poolWallet.network);
   pool.decodeAddress(to, poolWallet.network);
   const client = poolClientFor(poolWallet.network);
@@ -358,11 +360,13 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   // reads is taken, a quote far above what was shown is never signed unseen.
   const cap = maxFee ?? (fee != null ? (BigInt(fee) * 5n) / 4n : null);
   if (q && cap != null && BigInt(q.fee) > BigInt(cap)) throw Object.assign(new Error('The relay’s fee changed.'), { feeMoved: BigInt(q.fee) });
+  const pay = deductFee ? amount - (q ? BigInt(q.fee) : 0n) : amount;
+  if (pay <= 0n) throw Object.assign(new Error('The relay’s fee is more than this payment.'), { feeOver: q ? BigInt(q.fee) : 0n });
   say('finding your notes…');
-  const a = await prepare(poolWallet, asset, amount + (q ? BigInt(q.fee) : 0n), anchor, inputs);
+  const a = await prepare(poolWallet, asset, pay + (q ? BigInt(q.fee) : 0n), anchor, inputs);
   if (a.wait) return { wait: a.wait, tip: a.tip };
   if (!q && !noRelay && askSelf && !(await askSelf('no-relay'))) throw relayDeclined('The relay isn’t taking payments right now. Nothing was sent.');
-  const outputs = [{ address: to, value: amount }];
+  const outputs = [{ address: to, value: pay }];
   if (q) outputs.push({ address: q.address, value: BigInt(q.fee) });
   const built = pool.buildSpendBody({ asset: '0x' + String(asset).replace(/^0x/, ''), hAnchor: a.hAnchor, root: a.root, inputs: a.notes, outputs, wallet: poolWallet, bind: q ? q.bind : null });
   const { payload, payloadHex } = await proveHere(built, say);
@@ -374,7 +378,7 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
     // the same spend again without a bind and pay for the carrier itself. The rebuild is given the same
     // notes (selecting again for the smaller need could pick others), so it publishes the same nullifiers — if the relayer does eventually post its copy, only
     // whichever lands first is accepted and the other is rejected by the pool. The money cannot go twice.
-    const relayed = (carrier) => { pendingMark(a.notes, carrier, a.total - amount - BigInt(q.fee), asset, 0n, ownerTag(poolWallet)); return { revealTxid: carrier, relayed: true, anchor: a.hAnchor }; };
+    const relayed = (carrier) => { pendingMark(a.notes, carrier, a.total - pay - BigInt(q.fee), asset, 0n, ownerTag(poolWallet)); return { revealTxid: carrier, relayed: true, anchor: a.hAnchor, amount: pay }; };
     let reason = null, sub = null, timedOut = false;
     try {
       sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId });
@@ -390,7 +394,7 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
     if (spentElsewhere(reason)) throw new Error('Those notes are already being spent by another payment. Wait for it to settle, then try again.');
     if (!askSelf) {
       say('The relay could not post it in time, so this wallet is posting it from its Bitcoin address…');
-      return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes });
+      return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes, deductFee });
     }
     // A payment still waiting at the relay can be posted by it while the question is open: its carrier ends the question.
     const ctl = new AbortController();
@@ -407,13 +411,13 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
     if (got.carrier) return relayed(got.carrier);
     if (!got.ok) throw relayDeclined('The relay hasn’t posted it yet and may still. Nothing else was sent; check your balance before paying again.');
     say('Posting it from your Bitcoin address…');
-    return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes });
+    return payPrivately(tacit, { poolWallet, to, amount, asset, anchor: a.hAnchor, noRelay: true, say, inputs: a.notes, deductFee });
   }
   say('sending…');
   const own = tacit.p2wpkhScript(tacit.wallet.pub);
   const r = await broadcastCarrier(tacit, { payload, outputs: [{ value: tacit.DUST, script: own }] });
-  pendingMark(a.notes, r.revealTxid, a.total - amount, asset, 0n, ownerTag(poolWallet));
-  return { ...r, relayed: false, anchor: a.hAnchor };
+  pendingMark(a.notes, r.revealTxid, a.total - pay, asset, 0n, ownerTag(poolWallet));
+  return { ...r, relayed: false, anchor: a.hAnchor, amount: pay };
 }
 
 // One spend takes at most two notes. How many times the two largest of `values` must be joined into one, each join
@@ -430,21 +434,23 @@ export function combinePlan(values, need, fee = 0n) {
 }
 
 // Joins this wallet's two largest notes of `asset` into one, paid to its own pool address, for a payment two notes
-// cannot cover. Relayed, the relay's fee (at most `maxFee`, which a relayed join needs) comes out of the new note;
-// posted from the Bitcoin address, the new note holds both. Until the pool counts it, it shows as settling.
+// cannot cover. Relayed, the relay's quoted fee (at most `maxFee`, which a relayed join needs) comes out of the new note,
+// so the two notes become exactly one; posted from the Bitcoin address, the new note holds both. Until the pool counts it,
+// it shows as settling.
 // → payPrivately's result, plus `value`, the new note's value.
 export async function combineNotes(tacit, { poolWallet, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, askSelf = null }) {
   if (!noRelay && maxFee == null) throw new Error('combineNotes: a relayed join needs maxFee');
   const desc = (a, b) => (BigInt(a.value) < BigInt(b.value) ? 1 : BigInt(a.value) > BigInt(b.value) ? -1 : 0);
   const two = pendingView(await poolNotes(poolWallet, asset)).live.filter((n) => BigInt(n.value) > 0n).sort(desc).slice(0, 2);
   if (two.length < 2) throw Object.assign(new Error('Your shielded balance is one note: there is nothing to combine.'), { said: true });
-  const total = BigInt(two[0].value) + BigInt(two[1].value), fee = noRelay ? 0n : BigInt(maxFee);
-  if (total <= fee) throw Object.assign(new Error('Your two largest notes hold less than the relay’s fee.'), { said: true });
-  const value = total - fee;
-  const r = await payPrivately(tacit, { poolWallet, to: poolWallet.addressString, amount: value, asset, anchor, noRelay, maxFee, say, inputs: two, askSelf });
+  const total = BigInt(two[0].value) + BigInt(two[1].value);
+  if (!noRelay && total <= BigInt(maxFee)) throw Object.assign(new Error('Your two largest notes hold less than the relay’s fee.'), { said: true });
+  let r;
+  try { r = await payPrivately(tacit, { poolWallet, to: poolWallet.addressString, amount: total, deductFee: true, asset, anchor, noRelay, maxFee, say, inputs: two, askSelf }); }
+  catch (e) { if (e?.feeOver != null) throw Object.assign(new Error('Your two largest notes hold less than the relay’s fee.'), { said: true }); throw e; }
   if (r.wait) return r;
-  const kept = BigInt(pendingRead().change[r.revealTxid]?.v || 0);
-  pendingMark(two, r.revealTxid, kept + value, asset, 0n, ownerTag(poolWallet));
+  const value = r.amount;
+  pendingMark(two, r.revealTxid, value, asset, 0n, ownerTag(poolWallet));
   return { ...r, value };
 }
 

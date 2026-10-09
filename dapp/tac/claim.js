@@ -70,11 +70,12 @@ export function decodeClaim(input) {
 
 // Sender: pay a fresh throwaway pool wallet, and hand back the link that opens it.
 // `keep` is handed the secret before anything is paid, so the caller can store it first.
-export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', say = () => {}, keep = () => {} }) {
+// `askSelf` is payPrivately's: asked before the payment is posted from the sender's own Bitcoin address.
+export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', say = () => {}, keep = () => {}, askSelf = null }) {
   const secret32 = genClaimSecret();
   const to = claimPoolWallet(pool, secret32, { pin, network });
   keep({ secret32, pinned: !!pin, network });
-  const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, say });
+  const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, say, askSelf });
   if (r.wait) return { wait: r.wait, tip: r.tip };
   return {
     ...r,
@@ -92,19 +93,16 @@ export async function readClaim(S, pool, { secret32, pin = '', network = 'mainne
 }
 
 // Recipient: move it into a wallet of their own. Relayed when the relay quotes, so somebody who has never
-// held bitcoin can take delivery — the carrier is paid for out of the note itself, in TAC.
-export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, fmt = String, say = () => {} }) {
+// held bitcoin can take delivery — the carrier is paid for out of the note itself, in TAC. The whole link is given up
+// (`deductFee`): the relay's quoted fee comes out of it and nothing is left behind under a key two people know.
+// `askSelf` is payPrivately's: asked before the sweep is posted from the claimer's own Bitcoin address.
+export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, fmt = String, say = () => {}, askSelf = null }) {
   const from = claimPoolWallet(pool, secret32, { pin, network });
   const { total } = await readClaim(S, pool, { secret32, pin, network, asset });
   if (total <= 0n) throw new Error(`Nothing is under this link now: it has been claimed already${pin ? ', or that PIN is not the one it was made with' : ''}.`);
-  // The relay's fee comes out of the same notes, so sweep the balance minus whatever it quotes.
-  let fee = 0n;
-  try {
-    const info = await S.poolClientFor(network).relayInfo();
-    const f = info?.fees?.['0x' + String(asset).replace(/^0x/, '').toLowerCase()];
-    if (f != null) fee = BigInt(f);
-  } catch { fee = 0n; }
-  const amount = total - fee;
-  if (amount <= 0n) throw new Error(`The relay's fee (${fmt(fee)} TAC) is more than this link holds (${fmt(total)} TAC).`);
-  return S.payPrivately(tacit, { poolWallet: from, to: toAddress, amount, asset, say });
+  try { return await S.payPrivately(tacit, { poolWallet: from, to: toAddress, amount: total, deductFee: true, asset, say, askSelf }); }
+  catch (e) {
+    if (e?.feeOver != null) throw new Error(`The relay's fee (${fmt(e.feeOver)} TAC) is more than this link holds (${fmt(total)} TAC).`);
+    throw e;
+  }
 }

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-l31qo9S9vSHXkkTic0ddvPoPFccMqsMUOJ6bXhGN/tk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3x2X6EDNCweV1S6ck4RJewyRKc9JhIcv7loP9GO+Nho=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base, Robinhood Chain and MegaETH. One key and one tacit1 address, every payment made on your device, and your balances rebuild from that key.">
@@ -690,7 +690,10 @@ async function busyBtn(btn, fn) {
   if (btn.getAttribute('aria-busy') === 'true') return;
   const pays = btn.matches('#f-go, #f-shield, #f-exit, #f-fund, [data-pay]');
   btn.setAttribute('aria-busy', 'true'); btn.disabled = true; S.sending = (S.sending || 0) + 1; if (pays) S.paying = (S.paying || 0) + 1;
-  try { return await fn(); } finally { btn.removeAttribute('aria-busy'); btn.disabled = false; if (pays) S.paying--; if (!--S.sending) render(); }
+  try { return await fn(); } finally {
+    btn.removeAttribute('aria-busy'); btn.disabled = false; if (pays) S.paying--;
+    if (!--S.sending) { if (S.lockLater) { const why = S.lockLater; lock(); toast(why); } else render(); }
+  }
 }
 window.addEventListener('beforeunload', (e) => { if (S.paying > 0) { e.preventDefault(); e.returnValue = ''; } });
 const MEMPOOL = 'https://mempool.space';
@@ -738,7 +741,7 @@ const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitco
 // lock, BIP-352 silent payments, shielded asset sends. It holds one key at a time, so every use takes a turn and the
 // key changes only between turns. It reads the shared network once at import, so this page pins mainnet for its visit
 // and puts back any linked-wallet records a call rewrites.
-const TACIT_URL = '/tacit.js?cb=a1b2f368';
+const TACIT_URL = '/tacit.js?cb=294efe4a';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -965,14 +968,17 @@ function wireSignIn(root, id, after) {
   };
   box.querySelector(`#${id}-hex`)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') box.querySelector('[data-in="key"]').click(); });
 }
-function lock() { forget(); writeJson(PAY_ID, null); evm.deselectProvider(); S.provider = S.wallet = null; paintWallet(); render(); }
+function lock() { S.lockLater = null; forget(); writeJson(PAY_ID, null); evm.deselectProvider(); S.provider = S.wallet = null; paintWallet(); render(); }
 // The wallet that opened this key is the proof of it: when it moves to another account, or locks, the key is locked too.
+// An action under way finishes first (as the Lock button waits for one), so what it sends is recorded under its own key.
 window.addEventListener('tacit:evm-accounts', (e) => {
   if (S.key?.mode !== 'eth') return;
   const a = (e.detail?.accounts || [])[0];
   if (a && lc(a) === lc(S.key.address)) return;
+  const why = a ? 'Your wallet switched accounts, so the key it opened was locked.' : 'Your wallet locked, so the key it opened was locked.';
+  if (S.sending > 0) { S.lockLater = why; return; }
   lock();
-  toast(a ? 'Your wallet switched accounts, so the key it opened was locked.' : 'Your wallet locked, so the key it opened was locked.');
+  toast(why);
 });
 
 // ── BTC: silent payments from the key's own Bitcoin address ──────────────────────────────────────────────
@@ -1000,7 +1006,7 @@ async function readSilent(t, again) {
       if (o?.spent && o.status?.confirmed) { SPENT.add(k); t.removeSpCredit(txid, Number(vout)); }
     });
   }
-  const live = todo.filter(([k]) => !SPENT.has(k) && !SPENT_LAST.get(k));
+  const live = todo.filter(([k, c]) => !SPENT.has(k) && !SPENT_LAST.get(k) && !c.spendingTxid);
   await Promise.all(live.filter(([k, c]) => !c.blockTime && !TXTIME.has(k.split(':')[0])).slice(0, 12).map(async ([k]) => {
     const txid = k.split(':')[0], st = await esplora(`/tx/${txid}/status`).catch(() => null);
     if (st?.confirmed && st.block_time) TXTIME.set(txid, st.block_time);
@@ -1445,7 +1451,7 @@ async function hintsForMe(t, pub) {
   }
   if (S.key?.pubHex === pub) writeJson(k, { after, retry: keep.filter((x) => !x.done) });
 }
-const getSecret = lazy(() => import('/sats/secret.js?cb=423f48a3'));
+const getSecret = lazy(() => import('/sats/secret.js?cb=6e4d17a4'));
 function loadTac(force = false) {
   if (!S.key) return Promise.resolve();
   if (TAC.loading) return TAC.loading;

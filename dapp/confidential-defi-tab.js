@@ -830,6 +830,7 @@ export async function renderCdpTab(wallet, helpers = {}) {
     }
   } catch (e) {
     // A failed walk must not be reported as "no positions": say the list may be incomplete instead.
+    const statusEl = el('cdp-status');
     if (statusEl) statusEl.textContent = 'Showing locally-saved positions only — the chain walk failed: ' + formatErr(e);
   }
   if (posBox && positions.length) {

@@ -43737,7 +43737,8 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
       return h.replace(/^www\./, '').split('.')[0];
     } catch { return 'gateway'; }
   };
-  for (const gw of [TACIT_IPFS_NODE_GATEWAY, ...IPFS_GATEWAYS_FALLBACK]) {
+  // Each host once: IPFS_GATEWAY is the Filebase entry itself once the worker is known bad.
+  for (const gw of new Set([TACIT_IPFS_NODE_GATEWAY, ...IPFS_GATEWAYS_FALLBACK])) {
     if (_skip && _skip.has(gw)) continue;
     const url = `${gw}${cid}`;
     const label = _gwLabel(gw);
@@ -43828,7 +43829,7 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
     }
   }
   throw new Error(
-    `all ${IPFS_GATEWAYS_FALLBACK.length} IPFS gateways failed for ${cid}:\n  ` +
+    `all ${errors.length} IPFS gateways failed for ${cid}:\n  ` +
     errors.join('\n  ')
   );
 }

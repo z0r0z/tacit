@@ -258,14 +258,7 @@ await test('sha256-anchored validator: rejects substituted bytes (gateway-substi
   const substitutedBytes = new Uint8Array(8192);
   crypto.getRandomValues(substitutedBytes); // different content
   return withFetchStub(
-    [
-      () => okResponse(substitutedBytes),
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-    ],
+    [() => okResponse(substitutedBytes), ...Array.from({ length: 8 }, () => () => { throw new Error('Load failed'); })],
     async (calls) => {
       const validate = (b) => {
         const actual = bytesToHex(sha256(b));
@@ -279,31 +272,26 @@ await test('sha256-anchored validator: rejects substituted bytes (gateway-substi
       // message; subsequent gateways then fail with network errors.
       if (!/sha256\(.*\) does not match expected/.test(caught.message)) return false;
       if (!/Load failed/.test(caught.message)) return false;
-      if (calls.length !== 6) return false;
+      // One fetch per distinct gateway, and the message counts them all.
+      const n = Number(/all (\d+) IPFS gateways failed/.exec(caught.message)?.[1]);
+      if (!(n >= 2) || calls.length !== n) return false;
       return true;
     },
   );
 });
 
-await test('all 6 gateways failing throws a concatenated error', async () => {
+await test('every gateway failing throws a concatenated error', async () => {
   return withFetchStub(
-    [
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-      () => { throw new Error('Load failed'); },
-    ],
+    Array.from({ length: 8 }, () => () => { throw new Error('Load failed'); }),
     async (calls) => {
       let caught;
       try {
         await ceremonyFetchIpfsWithFailover(FAKE_CID, async () => null);
       } catch (e) { caught = e; }
       if (!caught) return false;
-      if (calls.length !== 6) return false;
-      // Sanity-check the format the dapp's UI surfaces to contributors.
-      if (!/all 5 IPFS gateways failed/.test(caught.message)) return false;
+      // Sanity-check the format the dapp's UI surfaces to contributors: one fetch per distinct gateway, all counted.
+      const n = Number(/all (\d+) IPFS gateways failed/.exec(caught.message)?.[1]);
+      if (!(n >= 2) || calls.length !== n) return false;
       if (!/Load failed/.test(caught.message)) return false;
       // Regression assertion: a Promise must never be stringified into the
       // error message. Pre-fix, this was the entire failure mode.

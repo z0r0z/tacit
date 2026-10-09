@@ -8,11 +8,11 @@
 // then the sender needs no BTC at all and pays the relay inside the pool. Shields and exits always fund
 // their own carrier, by design, so those need a little BTC in the wallet.
 
-const TACIT_URL = '/tacit.js?cb=a1b2f368';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
-const SECRET_URL = '/sats/secret.js?cb=423f48a3';
+const TACIT_URL = '/tacit.js?cb=294efe4a';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
+const SECRET_URL = '/sats/secret.js?cb=6e4d17a4';
 const SATS_URL = '/tac/sats.js?cb=19b44eda';
 const MARKET_URL = '/tac/market.js?cb=b6459103';
-const CLAIM_URL = '/tac/claim.js?cb=0cbb63e1';
+const CLAIM_URL = '/tac/claim.js?cb=0d2f2281';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
 const EVM_URL = '/evm-wallet.js?cb=1e6da73a';
@@ -685,7 +685,7 @@ function renderAmountHints() {
 }
 
 function renderShieldPicker() {
-  const sel = $('shield-pick');
+  const sel = $('shield-pick'), was = sel.value;
   sel.replaceChildren();
   if (!pub.notes.length) {
     const o = document.createElement('option');
@@ -714,9 +714,10 @@ function renderShieldPicker() {
       o.value = `${u.utxo.txid}:${u.utxo.vout}`;
       const s = satsText(noteVal(u));
       o.textContent = `${fmt(noteVal(u))} TAC${s ? `  ·  ${s}` : ''}`;
-      if (i === 0) o.selected = true;
       sel.append(o);
     });
+  // A rebuild (the stealth scan after unlock runs one) keeps the note picked, so Shield moves the one shown.
+  ([...sel.options].find((o) => o.value === was) || sel.options[0]).selected = true;
 }
 
 // ── pool stats ──
@@ -748,8 +749,9 @@ async function doShield() {
   if (!pub.notes.length) await loadPublic();
   const picked = $('shield-pick').value;
   const shieldable = pub.notes.filter((x) => !x.stealthTweakedSk);
-  const u = shieldable.find((x) => `${x.utxo.txid}:${x.utxo.vout}` === picked) || shieldable[0];
-  if (!u) throw new Error('No shieldable TAC in this wallet yet.');
+  if (!shieldable.length) throw new Error('No shieldable TAC in this wallet yet.');
+  const u = shieldable.find((x) => `${x.utxo.txid}:${x.utxo.vout}` === picked);
+  if (!u) throw new Error('Your notes changed. Pick the note to shield again.');
   if (u.stealthTweakedSk) throw new Error('That note was paid to a one-time address and needs its own key to move.');
   const blinding = (() => {
     const v = u.blinding;
@@ -950,85 +952,6 @@ function writeTab(i) {
   if (/tacclaim=/.test(location.hash)) return;
   try { history.replaceState(null, '', `#${tabHash(i)}`); } catch {}
 }
-(async function boot() {
-  let mainTab = 0;
-  const pickMain = tabs(TABS.map((t) => `tab-${t}`), TABS.map((t) => `pane-${t}`),
-    (i, user) => {
-      mainTab = i;
-      if (i === 1) renderClaimLinks();
-      if (i === 3) paintReceive();
-      if (i === 4) renderMarket();
-      if (user) writeTab(i);
-    });
-  const pickW = tabs(['wtab-self', 'wtab-sats'], ['wpane-self', 'wpane-sats'], (i, user) => {
-    wTab = i;
-    if (i === 1) renderSats();
-    if (user) writeTab(mainTab);
-  });
-
-  watchPassphrase();
-  $('wallet-chip').onclick = async () => { await loadTacit(); openWallet(); };
-  $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
-  $$('dialog.sheet').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
-  $('btn-refresh').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
-
-  $('btn-shield').onclick = (e) => busy(e.currentTarget, 'st-shield', doShield);
-  $('btn-send').onclick = (e) => busy(e.currentTarget, 'st-send', () => doSend());
-  $('btn-exit').onclick = (e) => busy(e.currentTarget, 'st-exit', () => doExit());
-  $('send-amt').addEventListener('input', () => { renderAmountHints(); renderSendComb(); });
-  $('exit-amt').addEventListener('input', renderAmountHints);
-  // "max" before the pool scan has run would otherwise quietly write 0 and look like an empty balance.
-  const maxInto = (field, statusId) => async () => {
-    await ensureKey();
-    if (!shielded.notes.length && !shielded.loading) await loadShielded();
-    const total = shieldedTotal() - (field === 'send-amt' ? relayFeeUnits() : 0n);
-    if (total <= 0n) return say(statusId, 'Nothing shielded yet — shield some TAC first.');
-    $(field).value = fmtPlain(total);
-    $(field).dispatchEvent(new Event('input', { bubbles: true }));
-    say(statusId, '');
-  };
-  $('send-max').onclick = () => maxInto('send-amt', 'st-send')().catch((e) => errSay('st-send', e));
-  $('exit-max').onclick = () => maxInto('exit-amt', 'st-exit')().catch((e) => errSay('st-exit', e));
-  $('btn-copy').onclick = () => {
-    if (!poolWallet) return say('st-recv', 'Open your wallet first: your pool address is derived from its key.');
-    navigator.clipboard?.writeText(poolWallet.addressString);
-    say('st-recv', 'Pool address copied.');
-  };
-  $('btn-copy-tacit').onclick = () => {
-    if (!poolWallet) return say('st-recv', 'Open your wallet first: your Tacit address is derived from its key.');
-    if (!tacitAddress) return say('st-recv', tacitAddress === false ? 'Your Tacit address could not be derived here. Copy the pool address instead.' : 'Still deriving your Tacit address. Try again in a moment, or copy the pool address.');
-    navigator.clipboard?.writeText(tacitAddress);
-    say('st-recv', 'Tacit address copied.');
-  };
-  $('btn-claim-make').onclick = (e) => busy(e.currentTarget, 'st-claim-make', makeClaimLink);
-  $('claim-amt').addEventListener('input', () => {
-    let u = 0n; try { u = parseUnits($('claim-amt').value); } catch {}
-    $('claim-sats').textContent = u > 0n ? satsText(u) : '';
-  });
-  $('btn-scan').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
-
-  // Also on hashchange: opening a claim link while this page is already loaded changes only the fragment,
-  // which is a same-document navigation — boot does not run again and the link would be ignored.
-  const openFrag = () => {
-    const frag = location.hash || '';
-    if (/tacclaim=/.test(frag)) { showClaim(frag).catch((e) => console.warn('[tac] claim link', e)); return; }
-    const [area, view] = lc(frag.replace(/^#/, '')).split(/[/&]/);
-    const i = TABS.indexOf(area === 'buy' ? 'market' : area);          // #buy: the market, where TAC is bought with sats
-    if (i < 0) return;
-    if (i === 2) pickW(view === 'sats' ? 1 : 0);
-    pickMain(i);
-  };
-  window.addEventListener('hashchange', openFrag);
-  openFrag();
-
-  // The strip and the mark price load alongside tacit.js; neither needs it.
-  const early = Promise.all([loadStats(), loadPrice()]);
-  await loadTacit();
-  renderClaimLinks();
-  paintWallet(); renderBalances(); renderShieldPicker();
-  await early;
-  if (unlocked()) await refreshAll();
-})();
 
 // ── claim links ──
 // Handing shielded TAC to someone with no wallet: the link carries a throwaway pool wallet, and the
@@ -1126,7 +1049,7 @@ async function makeClaimLink() {
   let secret = null;
   const r = await C.createClaim(T, {
     S, pool: S.pool, poolWallet, amount, asset: S.TAC_ASSET_MAINNET, pin, network: 'mainnet',
-    say: (m) => say('st-claim-make', m),
+    say: (m) => say('st-claim-make', m), askSelf: askSelfPost('st-claim-make'),
     keep: ({ secret32, pinned, network }) => {
       secret = toHex(secret32);
       putClaimLink({ secret, pinned, network, amount: amount.toString(), at: Date.now() });
@@ -1189,7 +1112,7 @@ async function showClaim(payload) {
     await ensureKey();
     const r = await C.sweepClaim(T, {
       S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet',
-      asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; },
+      asset: S.TAC_ASSET_MAINNET, toAddress: poolWallet.addressString, fmt, say: (m) => { st.textContent = m; }, askSelf: askSelfPost('st-claim'),
     });
     if (r.wait) { st.textContent = `The note needs ${r.wait} more Bitcoin block${r.wait === 1 ? '' : 's'} before it can move.`; return; }
     st.replaceChildren(document.createTextNode('Claimed into your wallet in '), txLink(r.revealTxid), document.createTextNode(r.relayed ? ' — the fee came out of the TAC, so this cost you no bitcoin.' : '.'));
@@ -1235,3 +1158,84 @@ function renderSats() {
     ensureKey, busy, say, errSay, fmt, parseUnits, shieldedTotal, txLink, loadShielded,
   })).catch((e) => { host.textContent = ''; errSay('st-exit', e); });
 }
+
+// Boot, last: the fragment is opened at once, and a claim link or #market reaches declarations above.
+(async function boot() {
+  let mainTab = 0;
+  const pickMain = tabs(TABS.map((t) => `tab-${t}`), TABS.map((t) => `pane-${t}`),
+    (i, user) => {
+      mainTab = i;
+      if (i === 1) renderClaimLinks();
+      if (i === 3) paintReceive();
+      if (i === 4) renderMarket();
+      if (user) writeTab(i);
+    });
+  const pickW = tabs(['wtab-self', 'wtab-sats'], ['wpane-self', 'wpane-sats'], (i, user) => {
+    wTab = i;
+    if (i === 1) renderSats();
+    if (user) writeTab(mainTab);
+  });
+
+  watchPassphrase();
+  $('wallet-chip').onclick = async () => { await loadTacit(); openWallet(); };
+  $$('[data-close]').forEach((b) => b.onclick = () => b.closest('dialog').close());
+  $$('dialog.sheet').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+  $('btn-refresh').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
+
+  $('btn-shield').onclick = (e) => busy(e.currentTarget, 'st-shield', doShield);
+  $('btn-send').onclick = (e) => busy(e.currentTarget, 'st-send', () => doSend());
+  $('btn-exit').onclick = (e) => busy(e.currentTarget, 'st-exit', () => doExit());
+  $('send-amt').addEventListener('input', () => { renderAmountHints(); renderSendComb(); });
+  $('exit-amt').addEventListener('input', renderAmountHints);
+  // "max" before the pool scan has run would otherwise quietly write 0 and look like an empty balance.
+  const maxInto = (field, statusId) => async () => {
+    await ensureKey();
+    if (!shielded.notes.length && !shielded.loading) await loadShielded();
+    const total = shieldedTotal() - (field === 'send-amt' ? relayFeeUnits() : 0n);
+    if (total <= 0n) return say(statusId, 'Nothing shielded yet — shield some TAC first.');
+    $(field).value = fmtPlain(total);
+    $(field).dispatchEvent(new Event('input', { bubbles: true }));
+    say(statusId, '');
+  };
+  $('send-max').onclick = () => maxInto('send-amt', 'st-send')().catch((e) => errSay('st-send', e));
+  $('exit-max').onclick = () => maxInto('exit-amt', 'st-exit')().catch((e) => errSay('st-exit', e));
+  $('btn-copy').onclick = () => {
+    if (!poolWallet) return say('st-recv', 'Open your wallet first: your pool address is derived from its key.');
+    navigator.clipboard?.writeText(poolWallet.addressString);
+    say('st-recv', 'Pool address copied.');
+  };
+  $('btn-copy-tacit').onclick = () => {
+    if (!poolWallet) return say('st-recv', 'Open your wallet first: your Tacit address is derived from its key.');
+    if (!tacitAddress) return say('st-recv', tacitAddress === false ? 'Your Tacit address could not be derived here. Copy the pool address instead.' : 'Still deriving your Tacit address. Try again in a moment, or copy the pool address.');
+    navigator.clipboard?.writeText(tacitAddress);
+    say('st-recv', 'Tacit address copied.');
+  };
+  $('btn-claim-make').onclick = (e) => busy(e.currentTarget, 'st-claim-make', makeClaimLink);
+  $('claim-amt').addEventListener('input', () => {
+    let u = 0n; try { u = parseUnits($('claim-amt').value); } catch {}
+    $('claim-sats').textContent = u > 0n ? satsText(u) : '';
+  });
+  $('btn-scan').onclick = (e) => busy(e.currentTarget, 'st-recv', () => scanEverything('st-recv'));
+
+  // Also on hashchange: opening a claim link while this page is already loaded changes only the fragment,
+  // which is a same-document navigation — boot does not run again and the link would be ignored.
+  const openFrag = () => {
+    const frag = location.hash || '';
+    if (/tacclaim=/.test(frag)) { showClaim(frag).catch((e) => console.warn('[tac] claim link', e)); return; }
+    const [area, view] = lc(frag.replace(/^#/, '')).split(/[/&]/);
+    const i = TABS.indexOf(area === 'buy' ? 'market' : area);          // #buy: the market, where TAC is bought with sats
+    if (i < 0) return;
+    if (i === 2) pickW(view === 'sats' ? 1 : 0);
+    pickMain(i);
+  };
+  window.addEventListener('hashchange', openFrag);
+  openFrag();
+
+  // The strip and the mark price load alongside tacit.js; neither needs it.
+  const early = Promise.all([loadStats(), loadPrice()]);
+  await loadTacit();
+  renderClaimLinks();
+  paintWallet(); renderBalances(); renderShieldPicker();
+  await early;
+  if (unlocked()) await refreshAll();
+})();

@@ -886,7 +886,7 @@ const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitco
 // those paths, as a library: it reads the shared network once at import, so this page pins mainnet for its visit, and any
 // call that rewrites the app's linked-wallet records is run with them put back afterwards, except one another tab wrote
 // meanwhile. Its passphrase prompt is the dialog from pass-dialog.js.
-const TACIT_URL = '/tacit.js?cb=a1b2f368';
+const TACIT_URL = '/tacit.js?cb=294efe4a';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -2130,7 +2130,7 @@ function formDeposit(f) {
       const i = Number(sw.dataset.sweep), v = (cur().waitBoxes || []).find(([x]) => x === i)?.[1] ?? 0n;
       const h = await W2.sweep({ index: i, onStep: step });
       justDid(c, { kind: i ? 'link' : 'box', v, tx: h });
-      done(c, h, 'Taken in.');
+      await finish(c, h, 'self', 'Taken in.');
     }));
   } else {
     mount(f, html`${seg}
@@ -2403,11 +2403,11 @@ function formSend(f) {
       if (ofReq && (req.paid || req.paying)) throw new Error(req.paid ? 'This request is already paid.' : 'This request is being paid from your wallet. Wait for that payment to finish.');
       if (via) await signerFor(c).ready();
       const h = await W.send({ to: r.bp, amount: a, via, maxFee, onStep: step });
-      if (ofReq && REQ.v === req && (!req.amount || a === req.amount)) { Object.assign(req, { paid: { h, c, a }, state: 'in', err: null }); rememberPaid(req); }
+      if (ofReq && (!req.amount || a === req.amount)) { Object.assign(req, { paid: { h, c, a }, state: 'in', err: null }); rememberPaid(req); }
       clearDraft('f-amt', 'f-to');
       const ok = await finish(c, h, via, `Sent ${exact(a)} ETH privately.`);
       SENT.v = { c, h };
-      if (ofReq && REQ.v === req && req.paid?.h === h) Object.assign(req, { state: ok ? 'in' : 'pending' });
+      if (ofReq && req.paid?.h === h) Object.assign(req, { state: ok ? 'in' : 'pending' });
     });
   };
 }
