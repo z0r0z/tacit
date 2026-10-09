@@ -3841,8 +3841,22 @@ async function _bondNews() {
     announceCbtcBonds(await ux.cbtcBonds(wallet.priv, { accounts: [ext].filter(Boolean) }), { tacit: ux.account(wallet.priv).address, ext });
   } catch { /* the Borrow tab reads them again */ }
 }
-async function getUtxos(a, onProgress) {
-  await _ownLocksReserved(a)?.catch(() => {});
+// Spend mode ({ forSpend: true }) is for coin selection: it waits for the lock
+// reservations and stops, with nothing sent, when they can't be read. A
+// balance read goes ahead without them.
+const _LOCKS_UNREAD_MSG = 'Could not read your locked coins just now, so nothing was sent. Try again in a minute.';
+async function _ownLocksReadyForSpend(a = null) {
+  let own = false;
+  try { own = !!wallet.pub && (a === null || a === wallet.address()); } catch {}
+  if (!own) return;
+  if (!wallet.priv) await ensurePrivkey();
+  const p = _ownLocksReserved(wallet.address());
+  if (!p) return;
+  try { await p; } catch { throw new Error(_LOCKS_UNREAD_MSG); }
+}
+async function getUtxos(a, onProgress, { forSpend = false } = {}) {
+  if (forSpend) await _ownLocksReadyForSpend(a);
+  else await _ownLocksReserved(a)?.catch(() => {});
   // Indexer-lag guard: filter out any UTXOs we *know* are spent in mempool
   // (recorded by _markTxInputsSpent right after each broadcast we issued)
   // but which the indexer's /utxo response may still include during the
@@ -11893,7 +11907,7 @@ async function buildAndBroadcastBridgeDeposit({ ethDepositRecord, onProgress }) 
   const revealFee = feeFor(revealVb, feeRate);
   const commitP2trValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -12561,7 +12575,7 @@ async function buildAndBroadcastBridgeBurn({ noteRecord, ethRecipient, onProgres
   const revealFee = feeFor(revealVb, feeRate);
   const commitP2trValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -12732,7 +12746,7 @@ async function buildAndBroadcastBridgeExport({ noteRecord, onProgress }) {
   const revealFee = feeFor(revealVb, feeRate);
   const commitP2trValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -12945,7 +12959,7 @@ async function buildAndBroadcastBridgeImport({ tethUtxo, onProgress }) {
   // Locate the tETH UTXO being imported. It may live at a stealth address
   // (the common case — exports/CXFER receipts land on stealth keys) that
   // needs the stealth-tweaked key to spend.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   let tethInput = allUtxos.find(u => u.txid === tethUtxo.txid && u.vout === tethUtxo.vout);
   let tethStealthKey = null;
   if (!tethInput) {
@@ -12959,7 +12973,7 @@ async function buildAndBroadcastBridgeImport({ tethUtxo, onProgress }) {
       });
       const tweakedPub = secp.getPublicKey(tweakedSk, true);
       const stealthAddr = p2wpkhAddress(tweakedPub);
-      const stealthUtxos = await getUtxos(stealthAddr);
+      const stealthUtxos = await getUtxos(stealthAddr, null, { forSpend: true });
       tethInput = stealthUtxos.find(u => u.txid === tethUtxo.txid && u.vout === tethUtxo.vout);
       if (tethInput) tethStealthKey = { priv: tweakedSk, pub: tweakedPub };
     }
@@ -13161,7 +13175,7 @@ async function buildAndBroadcastBridgeRotate({ noteRecord, newCommitmentHex, onP
   const revealFee = feeFor(revealVb, feeRate);
   const commitP2trValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -20269,7 +20283,7 @@ function _burndepUxSingleton() {
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
     assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW_TAC },
       ...(tethAsset ? [{ assetId: tethAsset, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW }] : [])],
-    chain: { getUtxos, pickSafeCommitSats, broadcastWithRetry, getFeeRate },
+    chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     encodeCXferBppPayload, computeKernelMsg, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount, signSchnorr, modN,
     // A bridge rebuilt from its burn alone: the burned note's opening comes from the transaction that made it and the key,
     // and whether it has already minted comes from the pool's own spent set.
@@ -20308,7 +20322,7 @@ function _crossoutUxSingleton() {
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
     assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: CROSSOUT_TAC_CAP_RAW },
       ...(tethId ? [{ assetId: tethId, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] : [])],
-    chain: { getUtxos, pickSafeCommitSats, broadcastWithRetry, getFeeRate },
+    chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     postHint,
     // Cancelling a burn that never settled first asks the pool whether the note's nullifier has been spent.
     nullifierSpent: (nu) => makeCrossLaneGuard({ keccak256: keccak_256 }).evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
@@ -22260,7 +22274,7 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
   const commitValue = DUST + revealFee;
 
   // Pick commit inputs first; their order determines the anchor.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -22423,7 +22437,7 @@ async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, 
   const revealFee = feeFor(revealVb, feeRate);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -22569,7 +22583,7 @@ async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremon
   const commitP2trValue   = DUST + revealFee;
   const commitP2wpkhValue = DUST;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -23855,7 +23869,7 @@ async function buildAndBroadcastSlotMint({
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to mint slot. Try again or hit ↻ Refresh first.');
   }
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -24184,7 +24198,7 @@ async function buildAndBroadcastSlotBurn({
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to burn. Try again or hit ↻ Refresh first.');
   }
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -24594,7 +24608,7 @@ async function buildAndBroadcastSlotRotate({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -24871,7 +24885,7 @@ async function buildAndBroadcastSlotSplit({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -25162,7 +25176,7 @@ async function buildAndBroadcastSlotMerge({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -26596,7 +26610,7 @@ async function buildAndBroadcastLpAddPoolInit({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -26848,7 +26862,7 @@ async function buildAndBroadcastLpAddVariant0({
   const commitValue = Math.max(DUST, DUST * 3 + revealFee - DUST * 2);
 
   const holdings = await scanHoldings();
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -27080,7 +27094,7 @@ async function buildAndBroadcastLpRemove({
   const commitValue = Math.max(DUST, outputDust + revealFee - lpInputDust);
 
   const holdings = await scanHoldings();
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -27265,7 +27279,7 @@ async function buildAndBroadcastProtocolFeeClaim({
   const commitValue = DUST + revealFee;
 
   const holdings = await scanHoldings();
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -27682,7 +27696,7 @@ async function buildAndBroadcastSwapVarSelfFulfill({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const assetKey = `${assetInputUtxo.txid}:${assetInputUtxo.vout}`;
   const sats = sortSatsForCommit(selectSatsUtxosSafe(allUtxos, holdings)
     .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST));
@@ -28007,7 +28021,7 @@ async function buildAndBroadcastSwapRoute({
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const assetKey = `${assetInputUtxo.txid}:${assetInputUtxo.vout}`;
   const sats = sortSatsForCommit(selectSatsUtxosSafe(allUtxos, holdings)
     .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST));
@@ -28180,7 +28194,7 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
   const commitP2trValue = Math.max(DUST, DUST + revealFee - assetUtxoValue);
 
   // Pick sat inputs for commit, EXCLUDING the asset UTXO.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -28738,7 +28752,7 @@ async function buildAndBroadcastWithdraw({
   const revealFee = feeFor(revealVb, feeRate);
   const commitP2trValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -28949,7 +28963,7 @@ async function buildAndBroadcastTDrop({
   }
   if (satsChange < DUST) satsChange = 0;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -29158,7 +29172,7 @@ async function buildAndBroadcastTDClaim({
   const wpkhSpk = p2wpkhScript(wallet.pub);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -29359,7 +29373,7 @@ async function buildAndBroadcastTDropReclaim({
   const wpkhSpk = p2wpkhScript(wallet.pub);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -29477,7 +29491,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   const revealFee = feeFor(revealVb, feeRate);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0;
   let commitFee = 500;
@@ -30174,7 +30188,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   }
   if (satsChange < DUST) satsChange = 0;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -30617,7 +30631,7 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
   // funds commit such that the reveal can pay 1 DUST tacit + price_sats BTC
   // payment + reveal fee, with the asset UTXO's sat value covering the rest.
   const commitValue = DUST + revealFee; // padding; taker will provide additional inputs to cover BTC payment and any deficit
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -30985,7 +30999,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   const knownInValue = offer.commit_value + offer.asset_utxo.value;
   const knownOutValue = offer.partial_reveal.outputs.reduce((s, o) => s + o.value, 0);
   _progress('sign-start');
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const usable = await pickSafeCommitSats(allUtxos);
   // The size estimate above under-counts the maker's reveal (its script-path witness carries the whole envelope), so at a
   // near-floor fee rate the finished transaction paid below the minimum relay fee and the broadcast was rejected.
@@ -31610,7 +31624,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
   const revealFee = feeFor(revealVbEst, feeRate);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -31939,8 +31953,8 @@ async function resumePendingAxintents() {
 // degrades the taker's own UX.
 async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim', preConsolidateCheck = null }) {
   let utxos;
-  try { utxos = await getUtxos(wallet.address()); }
-  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
+  try { utxos = await getUtxos(wallet.address(), null, { forSpend: true }); }
+  catch (e) { throw new Error(e?.message === _LOCKS_UNREAD_MSG ? e.message : 'could not load wallet UTXOs: ' + (e.message || e)); }
   const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
     .sort((a, b) => Number(a.value) - Number(b.value))
     .find(u => Number(u.value) >= requiredSats);
@@ -32531,7 +32545,7 @@ async function fulfilAxferVarIntent({ assetIdHex, intentIdHex, intent, claim, au
   const revealFee = feeFor(revealVbEst, feeRate);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -32839,7 +32853,7 @@ async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilmen
     throw new Error('partial reveal is over-funded by maker; refusing to take (suspicious shape)');
   }
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const usable = (allUtxos || []).filter(u => Number(u.value) > DUST).sort((a, b) => Number(b.value) - Number(a.value));
   const picked = []; let total = 0;
   for (const u of usable) {
@@ -33324,7 +33338,7 @@ async function publishPreauthBid({
   } else {
     _progress('split-start', { needed: buyerFundingValue });
     const feeRate = await getFeeRate();
-    const allUtxos = await getUtxos(wallet.address());
+    const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
     const sats = await pickSafeCommitSats(allUtxos);
     const picked = [];
     let total = 0;
@@ -33599,7 +33613,7 @@ async function publishPreauthBidVar({
   } else {
     _progress('split-start', { needed: buyerFundingValue });
     const feeRate = await getFeeRate();
-    const allUtxos = await getUtxos(wallet.address());
+    const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
     const sats = await pickSafeCommitSats(allUtxos);
     const picked = [];
     let total = 0;
@@ -34026,7 +34040,7 @@ async function takePreauthBid({ assetIdHex, bidIdHex, bid = null, onProgress = n
   const commitValue = DUST + revealFee;
 
   // Seller's commit tx (self-funded).
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   let pickedCommit = []; let totalCommit = 0; let commitFee = 500;
   for (const u of sats) {
@@ -34421,7 +34435,7 @@ async function takePreauthBidVar({ assetIdHex, bidIdHex, bid = null, fillAmount 
   const commitValue = DUST + revealFee;
 
   // Seller's commit tx (self-funded).
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   let pickedCommit = []; let totalCommit = 0; let commitFee = 500;
   for (const u of sats) {
@@ -34933,7 +34947,7 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   const commitValue = DUST + revealFee;
 
   // Commit tx: buyer-funded.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   // Reserve enough for: commit P2TR (commitValue) + commit fee + reveal fee
   // contribution (= price_sats already covered by commit, but the buyer also
@@ -35445,7 +35459,7 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   const commitValue = DUST + revealFee;
 
   // Commit tx.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   let pickedCommit = []; let totalCommit = 0; let commitFee = 500;
   for (const u of sats) {
@@ -36201,7 +36215,7 @@ async function sweepWatchtowerBidWallet(bidPriv, assetIds) {
       invalidateHoldingsCache();
     }
     // 2. Sweep the remaining sats (incl. the CXFER's change) to the main wallet.
-    const utxos = await getUtxos(bidAddr);
+    const utxos = await getUtxos(bidAddr, null, { forSpend: true });
     const inputs = (utxos || []).filter((u) => (u.value || 0) > DUST);
     if (inputs.length) {
       const totalIn = inputs.reduce((s, u) => s + u.value, 0);
@@ -36837,7 +36851,7 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount, onProgr
   const revealFee = feeFor(revealVb, feeRate);
   const commitValue = DUST + revealFee;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {
@@ -37010,7 +37024,7 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null })
   }
   if (satsChange < DUST) satsChange = 0;
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = await pickSafeCommitSats(allUtxos);
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
@@ -37221,11 +37235,14 @@ function selectSatsUtxosSafe(allUtxos, holdings) {
 // scanHoldings (fail-closed) -> selectSatsUtxosSafe -> sortSatsForCommit so the
 // asset-UTXO exclusion is ground-truth (holdings), not just the dust band.
 async function pickSafeCommitSats(allUtxos) {
+  // The list may come from a balance read: wait for the lock reservations and
+  // drop any reserved outpoint here as well.
+  await _ownLocksReadyForSpend();
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to fund this transaction (asset UTXOs could be spent as fees). Try again or hit ↻ Refresh first.');
   }
-  return sortSatsForCommit(selectSatsUtxosSafe(allUtxos, holdings));
+  return sortSatsForCommit(selectSatsUtxosSafe(allUtxos, holdings).filter((u) => !_isProtectedOutpoint(u.txid, u.vout)));
 }
 
 // Filter the recorded SP credits down to the spendable set, optionally
@@ -37341,7 +37358,7 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   // spending the confirmed pile first keeps the unconfirmed ancestor chain
   // short (Bitcoin mempool policy caps at 25 ancestors). Within each
   // confirmation tier, larger UTXOs come first to minimize the input count.
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
     const ac = a.status?.confirmed === true ? 1 : 0;
     const bc = b.status?.confirmed === true ? 1 : 0;
@@ -37584,12 +37601,12 @@ function computeSatsFragmentation(eligibleSatsUtxos) {
 // the consolidate builder. Excludes asset / ghost / pending UTXOs via
 // selectSatsUtxosSafe so we never sweep something the holdings scan
 // thinks might be a tacit asset.
-async function inspectSatsFragmentation() {
+async function inspectSatsFragmentation({ forSpend = false } = {}) {
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) {
     return { fragmented: false, dustCount: 0, dustTotal: 0, dustUtxos: [] };
   }
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend });
   const eligible = selectSatsUtxosSafe(allUtxos, holdings);
   return computeSatsFragmentation(eligible);
 }
@@ -37603,7 +37620,7 @@ async function inspectSatsFragmentation() {
 // future savings. Caller can pass `force: true` to consolidate anyway.
 async function buildAndBroadcastSatsConsolidate({ force = false } = {}) {
   await ensurePrivkey();
-  const inspection = await inspectSatsFragmentation();
+  const inspection = await inspectSatsFragmentation({ forSpend: true });
   if (!force && !inspection.fragmented) {
     throw new Error(`only ${inspection.dustCount} dust-shaped sats UTXOs (${SATS_DUST_SHAPE_THRESHOLD} sats or less); consolidation needs at least ${SATS_CONSOLIDATE_MIN_INPUTS} to be worth the fee. Pass force:true to override.`);
   }
@@ -53646,7 +53663,7 @@ function setupSatsSendForm() {
       if (!holdings || !(holdings instanceof Map)) {
         throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send');
       }
-      const allUtxos = await getUtxos(wallet.address());
+      const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
       const sats = selectSatsUtxosSafe(allUtxos, holdings).concat(spUtxos).sort((a, b) => {
         const ac = a.status?.confirmed === true ? 1 : 0;
         const bc = b.status?.confirmed === true ? 1 : 0;
@@ -62512,7 +62529,7 @@ async function renderHoldings() {
               const migrateRate = review.migrateFeeRate;
               const estSats = Math.ceil((120 + 415) * migrateRate) + 546 + 300;
               if (!(await ensureSatsFunded(estSats, 'Bridging'))) { errEl.textContent = 'Funding cancelled.'; return false; }
-              const utxos = await getUtxos(wallet.address());
+              const utxos = await getUtxos(wallet.address(), null, { forSpend: true });
               const safe = await pickSafeCommitSats(utxos);
               const fundingUtxo = ux.pickFunding(safe, Math.ceil(535 * migrateRate * 1.3) + 846);
               if (!fundingUtxo) { errEl.textContent = 'no plain sats UTXO available to fund the move'; return false; }

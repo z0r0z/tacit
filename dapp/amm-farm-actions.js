@@ -92,7 +92,7 @@ async function broadcastFarmTx({ payload, envelopeHash, vin1, extraOutputs = [] 
   const revealFee = feeFor(revealVb, feeRate);
   const commitValue = Math.max(DUST, revealFee + extraOutputs.reduce((s, o) => s + o.value, 0));
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const assetKey = vin1 ? `${vin1.txid}:${vin1.vout}` : null;
   const sats = sortSatsForCommit(allUtxos.filter(u =>
     u.value > DUST && (!assetKey || `${u.txid}:${u.vout}` !== assetKey)));

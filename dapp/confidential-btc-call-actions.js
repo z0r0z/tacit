@@ -42,7 +42,7 @@ export async function broadcastBtcCall({ chainBinding, executor, target, calldat
   const revealFee = feeFor(revealVb, feeRate);
   const commitValue = Math.max(DUST, revealFee);
 
-  const allUtxos = await getUtxos(wallet.address());
+  const allUtxos = await getUtxos(wallet.address(), null, { forSpend: true });
   const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {

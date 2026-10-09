@@ -150,6 +150,8 @@ globalThis.fetch = async (url, opts = {}) => {
   const text = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/plain' } });
   // mempool.space recommended fees
   if (u.endsWith('/v1/fees/recommended')) return json({ fastestFee: 10, halfHourFee: 5, hourFee: 2, economyFee: 1, minimumFee: 1 });
+  // The wallet's Bitcoin history, read before coin selection to rebuild its cBTC lock reservations: none here.
+  if (u.includes('/scripthash/')) return json([]);
   // address/X/utxo — buyer's address only
   if (u.includes(`/address/${BUYER_ADDR}/utxo`)) return json(buyerUtxos);
   // tx broadcast (POST /tx with body = hex). The mock doesn't recompute the
