@@ -7,10 +7,19 @@
      data stats does, plus an injected wallet to sign advanceTip(bytes) — permissionless on chain
      (contracts/src/lib/BitcoinLightRelay.sol:253) — so anyone can push the header relay forward and pay their
      own gas, instead of waiting on Tacit's own cron. No Tacit key touches this page. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AabTo+6wdoNTJZF2Hoz6eeG6qQCj+wtpW28zEbYBNeI=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ndAznCJgXY55/pMAUi6iACbY4pGE4YD55yiWM6F6+aM=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <title>Tacit community ops</title>
-<meta name="description" content="Advance Tacit's Bitcoin header relay yourself, from your own wallet: a permissionless, on-chain function anyone can call, so a stuck bridge or reflection never has to wait on Tacit's own operators.">
+<meta name="description" content="Move Bitcoin's state onto Ethereum yourself, from your own wallet: advance Tacit's Bitcoin header relay or submit a published proof. Both are permissionless on-chain calls, and you pay only the gas.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tacit">
+<meta property="og:url" content="https://tacit.finance/weld/keeper/">
+<meta property="og:title" content="Tacit community ops">
+<meta property="og:description" content="Advance Tacit's Bitcoin header relay or submit a published proof from your own wallet: permissionless on-chain calls, and you pay only the gas.">
+<meta property="og:image" content="https://tacit.finance/tacit-card.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -23,23 +32,25 @@
   --card: #F2EBD4;
   --field: #FAF6EA;
   --ink: #1A1A1A;
-  --mute: #6B6557;
+  --mute: #625C4F;
   --hair: rgba(26,26,26,.12);
   --hair-2: rgba(26,26,26,.28);
   --orange: #f7931a;
-  --ok: #0a7d3a;
+  --ok: #0a7234;
+  --warn: #9a4a00;
   --err: #b8341d;
   --lift: 0 22px 44px -28px rgba(26,26,26,.45);
   --skel: rgba(26,26,26,.08);
   --skel-hi: rgba(26,26,26,.02);
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: 'Instrument Serif', Georgia, serif;
+  --tap: 44px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #15130E; --card: #1F1C15; --field: #191711; --ink: #EDE5CF; --mute: #A39B85;
-    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28); --ok: #8fcf9a; --err: #f08a6c;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28); --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
     --lift: 0 22px 44px -28px rgba(0,0,0,.9); --skel: rgba(237,229,207,.07); --skel-hi: rgba(237,229,207,.15);
     color-scheme: dark;
   }
@@ -54,23 +65,36 @@ body {
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
-a:hover { text-decoration-thickness: 2px; }
+@media (hover: hover) { a:hover { text-decoration-thickness: 2px; } }
+button { font: inherit; color: inherit; letter-spacing: inherit; }
+code { font: inherit; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .shell { max-width: 720px; margin: 0 auto; padding-bottom: 56px; }
 
 .tk { width: 22px; height: 22px; display: block; flex: none; border-radius: 50%; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0; }
-.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand { flex: none; display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
 .brand .tk { width: 30px; height: 30px; }
 .brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
 .brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
-.top nav { display: flex; gap: 14px; font-size: 13px; color: var(--mute); }
-.top nav a:hover { color: var(--ink); }
+.top-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.top-r .home { flex: none; display: inline-flex; align-items: center; min-height: 40px; padding: 0 8px; color: var(--mute); font-size: 12px; text-decoration: none; }
+@media (hover: hover) { .top-r .home:hover { color: var(--ink); text-decoration: underline; } }
+.chip { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; min-width: 0; padding: 0 14px; background: var(--card);
+  border: 1px solid var(--hair-2); cursor: pointer; white-space: nowrap; }
+.chip #wallet-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip .narrow { display: none; }
+@media (max-width: 430px) { .chip .wide { display: none; } .chip .narrow { display: inline; } }
+@media (hover: hover) { .chip:hover { border-color: var(--ink); } }
+.chip[aria-busy="true"] { cursor: progress; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
+.dot.on { background: var(--ok); }
 
 h1 { font: italic 400 34px/1.1 var(--serif); margin: 0 0 6px; }
-.lede { color: var(--mute); font-size: 13px; max-width: 56ch; margin: 0 0 8px; }
+.lede { color: var(--mute); font-size: 13px; max-width: 60ch; margin: 0 0 8px; }
 .asof { font-size: 12px; color: var(--mute); margin: 0 0 26px; min-height: 1.6em; }
 
 section.grp { margin-top: 30px; }
@@ -79,23 +103,23 @@ h2 { font: italic 400 26px/1.1 var(--serif); margin: 0; display: flex; align-ite
 h2 .tk { width: 24px; height: 24px; }
 
 .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.card { background: var(--card); border: 1px solid var(--hair); border-radius: 14px; padding: 14px 16px 13px; min-width: 0; }
+.card { background: var(--card); border: 1px solid var(--hair); padding: 14px 16px 13px; min-width: 0; }
 .card .k { font-size: 12px; color: var(--mute); display: flex; align-items: center; gap: 7px; }
 .card .v { font: 400 26px/1.15 var(--serif); margin: 6px 0 4px; overflow-wrap: anywhere; }
 .card .v small { font: 12px var(--mono); color: var(--mute); margin-left: 4px; }
 .card .m { font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
-.card.wide { grid-column: span 2; }
-.card.attn { border-color: var(--orange); }
+.card.attn { border-color: var(--warn); }
+.card.attn .m { color: var(--warn); }
 
-.sk { display: inline-block; height: .9em; width: var(--w, 6ch); border-radius: 6px; vertical-align: -.08em;
-  background: linear-gradient(90deg, var(--skel) 0%, var(--skel-hi) 50%, var(--skel) 100%); background-size: 200% 100%; animation: sk 1.4s ease-in-out infinite; }
-@keyframes sk { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-@media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+.sk { display: inline-block; width: var(--w, 6ch); max-width: 100%; height: .9em; vertical-align: -.08em; border-radius: 2px;
+  background: linear-gradient(90deg, var(--skel) 0 35%, var(--skel-hi) 50%, var(--skel) 65%) 0 0 / 300% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
-.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 14px; padding: 16px 18px; margin-top: 12px; }
-.wchip { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--mute); }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hair-2); flex: none; }
-.dot.on { background: var(--ok); }
+.panel { background: var(--card); border: 1px solid var(--hair); padding: 16px 18px; margin-top: 12px; }
+.panel > .lede { margin: 0 0 4px; }
+.plan { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
+.plan p { margin: 0; }
+.plan p + p { margin-top: 6px; color: var(--mute); }
 
 .stp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; list-style: none; margin: 14px 0 0; padding: 0; font-size: 11.5px; color: var(--mute); }
 .stp li { display: inline-flex; align-items: center; gap: 6px; }
@@ -106,30 +130,30 @@ h2 .tk { width: 24px; height: 24px; }
 .stp .now i { background: var(--orange); border-color: var(--orange); animation: pulse 1.6s ease-in-out infinite; }
 .stp .bad { color: var(--err); }
 .stp .bad i { background: var(--err); border-color: var(--err); }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes pulse { 50% { opacity: .3; } }
 
 .btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 18px; padding: 10px 16px;
-  font: 500 14px var(--mono); color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
-.btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
+  font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
+@media (hover: hover) { .btn:hover:not(:disabled) { background: transparent; color: var(--ink); } }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); }
-.btn.ghost:hover:not(:disabled) { border-color: var(--ink); }
+@media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); } }
 .btn[aria-busy="true"] { cursor: progress; }
 .btn[aria-busy="true"]::after { content: ''; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font-size: 12.5px; }
-.link:hover { color: var(--ink); }
+.link { background: none; border: 0; padding: 6px 2px; margin: -6px -2px; cursor: pointer; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
+@media (hover: hover) { .link:hover { color: var(--ink); } }
 
 .status { font-size: 12.5px; min-height: 20px; margin-top: 12px; overflow-wrap: anywhere; }
-.status:empty { display: none; }
+.status:empty { min-height: 0; margin-top: 0; }                    /* kept in the page, so a live region is there before it speaks */
 .status a { color: var(--ink); }
-.status .err { color: var(--err); }
 
 .callout { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-top: 12px;
   font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
 .callout p { margin: 0; color: var(--mute); }
 .callout p b { color: var(--ink); font-weight: 500; }
 .callout a { color: var(--ink); }
+.callout .btn { margin-top: 8px; }
 
 .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.batches { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
@@ -138,23 +162,40 @@ table.batches th:first-child, table.batches td:first-child { text-align: left; p
 table.batches th { color: var(--mute); font-size: 11px; }
 
 footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 44px; padding-top: 18px;
-  border-top: 1px solid var(--hair); font-size: 12px; color: var(--mute); }
-footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
-footer a { color: var(--mute); }
-footer a:hover { color: var(--ink); }
+  border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 0 18px; }
+footer a { display: inline-block; padding: 12px 0; color: var(--mute); }
+@media (hover: hover) { footer a:hover { color: var(--ink); } }
 
 .toasts { position: fixed; inset: auto 16px max(16px, env(safe-area-inset-bottom)) 16px; width: auto; height: auto; margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
 .toasts:not(:popover-open) { display: none; }
-.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); }
+.toast { max-width: 520px; padding: 10px 16px; font-size: 12.5px; color: var(--card); background: var(--ink); pointer-events: auto; box-shadow: var(--lift); animation: rise .2s ease-out; }
 .toast.bad { background: var(--err); color: var(--card); }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 
 @media (max-width: 560px) {
-  .cards { grid-template-columns: 1fr; }
-  .card.wide { grid-column: span 1; }
+  .cards { grid-template-columns: minmax(0, 1fr); }
+  .top { gap: 12px; }
+  .brand { gap: 8px; }
+  .chip { padding: 0 10px; }
+}
+@media (max-width: 400px) {
+  .brand .tk { width: 26px; height: 26px; }
+  .brand b { font-size: 26px; }
+}
+@media (max-width: 340px) { .brand i { display: none; } }
+/* A finger needs the full tap size; a mouse keeps the tighter controls. */
+@media (pointer: coarse) {
+  .chip, .top-r .home { min-height: var(--tap); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .sk { background: var(--skel); }
 }
 </style>
 </head>
 <body>
+<div class="sr" id="live" role="status" aria-live="polite"></div>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
     <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
@@ -165,54 +206,65 @@ footer a:hover { color: var(--ink); }
 
 <div class="shell">
   <header class="top">
-    <a class="brand" href="/" aria-label="tacit weld"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>weld · ops</i></a>
-    <nav><a href="/weld/stats/">Stats</a><a href="/">Weld</a></nav>
+    <a class="brand" href="/" aria-label="tacit.finance"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>ops</i></a>
+    <div class="top-r">
+      <a class="home" href="/">All of Tacit</a>
+      <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label"><span class="wide">Connect wallet</span><span class="narrow">Connect</span></span></button>
+    </div>
   </header>
 
+  <main>
   <h1>Community ops</h1>
-  <p class="lede">Tacit's Bitcoin↔Ethereum bridge runs on a header relay and a reflection that anyone can push forward — both are plain on-chain functions with no special permission, the same ones Tacit's own servers call. If something looks stuck, you can pay a little gas and move it yourself, from your own wallet.</p>
+  <p class="lede">Bitcoin's state reaches Ethereum in two steps: a header relay that stores Bitcoin's block headers, and proofs that fold each batch of blocks into the pool. Both are plain on-chain calls that need no permission, the same calls Tacit's own services make. When either is behind, you can move it yourself from your own wallet and pay only the gas.</p>
   <p class="asof num" id="asof">Reading the relay…</p>
 
-  <section class="grp" id="g-wait">
-    <h2><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>What's waiting</h2>
+  <section class="grp" id="g-wait" aria-labelledby="h-wait">
+    <h2 id="h-wait"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>Where things stand</h2>
     <div class="cards" id="cards-wait"></div>
   </section>
 
-  <section class="grp" id="g-advance">
-    <h2><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Advance the header relay</h2>
+  <section class="grp" id="g-advance" aria-labelledby="h-advance">
+    <h2 id="h-advance"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Advance the header relay</h2>
     <div class="panel">
-      <p class="lede" style="margin:0 0 4px">Submits real Bitcoin block headers to <code>BitcoinLightRelay.advanceTip</code> on Ethereum. The contract checks their proof of work itself — it isn't Tacit's call to accept or refuse them.</p>
-      <div class="wchip" id="wchip"><span class="dot" id="wdot"></span><span id="wtext">No wallet connected</span></div>
-      <div id="plan-box"></div>
-      <button class="btn" id="btn-advance" type="button">Connect a wallet</button>
+      <p class="lede">Sends Bitcoin block headers, read from a public explorer, to <code>BitcoinLightRelay.advanceTip</code> on Ethereum. The contract checks each header's proof of work itself, so only real Bitcoin blocks are accepted. Each transaction carries up to 40 headers, and your wallet asks you to confirm each one.</p>
+      <div class="plan" id="plan-box"><p><span class="sk" style="--w:30ch"></span></p></div>
+      <button class="btn" id="btn-advance" type="button" disabled>Advance the relay</button>
       <ol class="stp" id="strip" hidden></ol>
-      <div class="tscroll"><table class="batches" id="batch-table" hidden><thead><tr><th>Batch</th><th>Headers</th><th>Status</th></tr></thead><tbody id="batch-rows"></tbody></table></div>
-      <p class="status" id="status"></p>
-      <p class="callout" id="ancestry-callout" hidden>
-        <span><b>The reflection is far behind the relay</b> — more than 2,016 blocks. A plain advance won't help; it needs <code>advanceReflectionAncestry()</code> instead, a separate permissionless recovery call.</span>
-        <button class="btn ghost" id="btn-ancestry" type="button" style="margin-top:8px">Call advanceReflectionAncestry()</button>
-      </p>
+      <div class="tscroll"><table class="batches num" id="batch-table" hidden><thead><tr><th>Batch</th><th>Blocks</th><th>Status</th></tr></thead><tbody id="batch-rows"></tbody></table></div>
+      <p class="status" id="status" role="status"></p>
+      <div class="callout" id="ancestry-callout" hidden>
+        <p><b>The proofs are more than 2,016 blocks behind the relay.</b> A proof can't span that gap in one batch, so the pool first needs a checkpoint closer to the proven block. <code>advanceReflectionAncestry()</code> sets it by walking the relay's chain back, up to 2,016 blocks a call; anyone can call it. <span id="anc-plan"></span></p>
+        <button class="btn ghost" id="btn-ancestry" type="button">Call advanceReflectionAncestry()</button>
+        <p class="status" id="anc-status" role="status"></p>
+      </div>
     </div>
   </section>
 
-  <section class="grp" id="g-attest">
-    <h2><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Attesting</h2>
+  <section class="grp" id="g-attest" aria-labelledby="h-attest">
+    <h2 id="h-attest"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Submit a proof</h2>
     <div class="panel">
-      <p class="lede" style="margin:0 0 4px">Tacit's prover publishes each proof here the moment it has one, before it submits it. If its own wallet can't land it, any wallet can: <code>attestBitcoinStateProven</code> takes no permission, only a valid proof over the pool's current state.</p>
-      <div id="proof-box"><p class="status">Reading the latest proof…</p></div>
+      <p class="lede">Tacit's prover publishes each proof the moment it has one, then submits it itself. A proof waiting here can be submitted by any wallet: <code>attestBitcoinStateProven</code> needs no permission, only a valid proof over the pool's current state.</p>
+      <div class="plan" id="proof-box"><p>Reading the latest proof…</p></div>
       <button class="btn" id="btn-proof" type="button" disabled>Submit the proof</button>
-      <p class="status" id="proof-status"></p>
+      <p class="status" id="proof-status" role="status"></p>
     </div>
     <div class="callout">
-      <p>Folding Bitcoin's state into the pool needs a real SP1 zero-knowledge proof over each batch, bought with <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a> credits on the Succinct network. Generating one isn't something a browser page can safely do yet: it needs a funded prover account, and there's no way today to ask for one without a signature that looks identical to draining that account.</p>
-      <p>Tacit's own <code>tacit-reflection</code> cron does this every 5 minutes when there's a new batch ready. Anyone can also run it themselves, against the same public inputs, with their own funded key: see <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
+      <p>Each proof is an SP1 zero-knowledge proof over one batch of Bitcoin blocks, paid for in <a href="https://etherscan.io/address/0x6BEF15D938d4E72056AC92Ea4bDD0D76B1C4ad29" target="_blank" rel="noopener">PROVE</a> credits on the Succinct network, so it is made on a prover with a funded Succinct account rather than in this page.</p>
+      <p>Tacit's prover looks for a new batch every 5 minutes. Anyone can run the same prover against the same public inputs with their own account: see <a href="https://github.com/src-company/tacit/blob/main/worker-relay/src/reflection-folder.js" target="_blank" rel="noopener">reflection-folder.js</a>.</p>
     </div>
   </section>
+  </main>
 
   <footer>
-    <span>tacit weld · mainnet</span>
-    <nav aria-label="Sources">
+    <span>tacit ops · mainnet</span>
+    <nav aria-label="More">
+      <a href="/">All of Tacit</a>
+      <a href="/pay/">Pay privately</a>
+      <a href="/pay/eth/">Private ETH</a>
+      <a href="/tac/">TAC on Bitcoin</a>
       <a href="/weld/stats/">Stats</a>
+      <a href="/classic.html">Classic app</a>
+      <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" rel="noopener">Security</a>
       <a href="https://etherscan.io/address/0x20A6ddc2C6E620c6248B5A34E85996516FDd19D0" rel="noopener">Bitcoin light relay</a>
       <a href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" rel="noopener">Pool contract</a>
       <a href="https://github.com/src-company/tacit/blob/main/tools/advance-header-relay.mjs" rel="noopener">Command-line version</a>
@@ -223,21 +275,31 @@ footer a:hover { color: var(--ink); }
 <div id="toast-container" class="toasts" popover="manual"></div>
 
 <script type="module">
-import { secp, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { makeEvmWallet } from '/evm-wallet.js?cb=1e6da73a';
-import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=69a4a651';
+import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=62741b39';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const int = (n) => Number(n).toLocaleString('en-US');
+const plural = (n, one, many = one + 's') => `${int(n)} ${n === 1 ? one : many}`;
 const short = (a, n = 4) => a ? `${a.slice(0, n + 2)}…${a.slice(-n)}` : '';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SK = (w) => `<span class="sk" style="--w:${w}"></span>`;
 
-// ── toasts (the same popover pattern weld uses) ─────────────────────────────────────────────────────────────
+// ── toasts: the front page's popover, each one also read out through the live region ──────────────────────────
 const toasts = $('#toast-container');
-function raiseToasts() { const on = toasts.childElementCount > 0; try { if (toasts.matches(':popover-open')) toasts.hidePopover(); if (on) toasts.showPopover(); } catch {} }
-new MutationObserver(raiseToasts).observe(toasts, { childList: true });
+const announce = (t) => { const el = $('#live'); if (el) el.textContent = t; };
+function raiseToasts() {
+  const on = toasts.childElementCount > 0;
+  try { if (toasts.matches(':popover-open')) toasts.hidePopover(); } catch {}
+  try { if (on) toasts.showPopover(); } catch {}
+}
+// A toast appears and fills in one tick, which screen readers miss, so its text goes to the live region too.
+new MutationObserver((recs) => {
+  raiseToasts();
+  const said = recs.flatMap((r) => [...r.addedNodes]).map((n) => n.textContent || '').join(' ').trim();
+  if (said) { announce(''); requestAnimationFrame(() => announce(said)); }
+}).observe(toasts, { childList: true });
 function toast(msg, bad = false, ms = bad ? 7000 : 4200) {
   const el = document.createElement('div');
   el.className = 'toast' + (bad ? ' bad' : '');
@@ -249,21 +311,27 @@ const errText = (e) => {
   const m = String(e?.message || e || 'Something went wrong');
   if (e?.code === 4001 || /user (rejected|denied)/i.test(m)) return 'Cancelled in your wallet.';
   if (/insufficient funds/i.test(m)) return 'Not enough ETH in that wallet for this and its gas.';
+  if (/no Ethereum wallet detected/i.test(m)) return 'No Ethereum wallet in this browser. Open this page in your wallet’s browser, or add a wallet extension such as MetaMask or Rabby.';
+  if (/does not match the canonical chain/i.test(m)) return 'The relay’s newest block is not the block the explorer has at that height (a reorg, or an explorer running behind). Tacit’s header relay returns it to Bitcoin’s main chain on its next run. Nothing was sent.';
+  if (/^esplora /.test(m)) return 'Could not read Bitcoin’s blocks from the explorer just now. Try again in a minute.';
   if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Could not reach the network. Check your connection and try again.';
   return m.replace(/^Error:\s*/, '').slice(0, 240);
 };
 
-// A single, minimal busy-button — no sheets or holds here, this page has exactly one action at a time.
+// A single busy-button: a second press while the first is running does nothing. The advance button is set from the
+// latest plan once its run ends (a refresh during the run leaves it alone).
+let repaintPlan = null;
 async function busy(btn, fn) {
   if (btn.getAttribute('aria-busy') === 'true') return;
   btn.setAttribute('aria-busy', 'true');
-  try { await fn(); } catch (e) { toast(errText(e), true); } finally { btn.removeAttribute('aria-busy'); }
+  try { await fn(); } catch (e) { toast(errText(e), true); } finally { btn.removeAttribute('aria-busy'); if (btn.id === 'btn-advance') repaintPlan?.(); }
 }
 
 // ── wallet: a bare injected-wallet connection, nothing Tacit-specific — anyone's wallet pays its own gas ──────
-const evm = makeEvmWallet({ secp, keccak256: keccak_256, bytesToHex, hexToBytes });
+const evm = makeEvmWallet({});
 const RPC = 'https://ethereum-rpc.publicnode.com';
 const S = { provider: null, address: null };
+const TX_HASH = /^0x[0-9a-f]{64}$/i;
 
 async function rpc(method, params) {
   const r = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }).then((r) => r.json());
@@ -271,13 +339,13 @@ async function rpc(method, params) {
   if (r.error) throw new Error(r.error.message + (typeof r.error.data === 'string' ? ` ${r.error.data}` : ''));
   return r.result;
 }
-async function ensureChain() {
-  if (parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) === 1) return;
-  try { await S.provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] }); }
-  catch (e) {
-    if (e?.code !== 4902 && !/unrecognized|not been added|unknown chain/i.test(e?.message || '')) throw e;
-    await S.provider.request({ method: 'wallet_addEthereumChain', params: [{ chainId: '0x1', chainName: 'Ethereum', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: [RPC], blockExplorerUrls: ['https://etherscan.io'] }] });
-  }
+// Every wallet knows Ethereum, so this only asks for the switch, then reads the chain back: some wallets report a
+// switch they have not made yet.
+async function ensureMainnet() {
+  const onMainnet = async () => parseInt(await S.provider.request({ method: 'eth_chainId' }), 16) === 1;
+  if (await onMainnet()) return;
+  await S.provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+  if (!(await onMainnet())) throw new Error('Switch your wallet to Ethereum, then try again.');
 }
 async function connect() {
   const { provider, address } = await evm.connect({});
@@ -285,22 +353,51 @@ async function connect() {
   paintWallet();
   return S.address;
 }
+// The wallet changed accounts (or locked): the next send goes from the account it now has.
+window.addEventListener('tacit:evm-accounts', (e) => {
+  if (!S.provider || (e.detail?.provider && e.detail.provider !== S.provider)) return;
+  const a = String((e.detail?.accounts || [])[0] || '').toLowerCase();
+  S.address = /^0x[0-9a-f]{40}$/.test(a) ? a : null;
+  paintWallet();
+});
 async function send({ to, data, gas }) {
-  if (!S.provider) await connect();
-  await ensureChain();
-  return S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16) }] });
+  if (!S.address) await connect();
+  await ensureMainnet();
+  const hash = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1' }] });
+  if (!TX_HASH.test(String(hash))) throw new Error('The wallet did not return a transaction hash.');
+  return String(hash).toLowerCase();
 }
+// A missed poll is tried again; a transaction still unconfirmed after five minutes is left to Etherscan.
 async function waitReceipt(hash) {
-  for (let i = 0; i < 60; i++) { const r = await rpc('eth_getTransactionReceipt', [hash]); if (r) return r; await sleep(3000); }
-  throw new Error('Timed out waiting for a confirmation — it may still land; check the address on Etherscan.');
+  for (let i = 0; i < 100; i++) {
+    try { const r = await rpc('eth_getTransactionReceipt', [hash]); if (r) return r; } catch {}
+    await sleep(3000);
+  }
+  throw new Error('Not confirmed after 5 minutes. It can still land: follow it on Etherscan from the link above.');
 }
+const landed = (r) => r?.status === '0x1' || r?.status === 1;
+const txLink = (hash, label) => `<a href="https://etherscan.io/tx/${esc(hash)}" target="_blank" rel="noopener">${esc(label)} ↗</a>`;
 function paintWallet() {
-  $('#wdot').classList.toggle('on', !!S.address);
-  $('#wtext').textContent = S.address ? `Connected: ${short(S.address, 6)}` : 'No wallet connected';
-  $('#btn-advance').textContent = S.address ? 'Advance the relay' : 'Connect a wallet';
+  $('#wallet-dot').classList.toggle('on', !!S.address);
+  const label = $('#wallet-label');
+  if (S.address) label.textContent = short(S.address);
+  else label.innerHTML = '<span class="wide">Connect wallet</span><span class="narrow">Connect</span>';
+  $('#wallet').title = S.address ? `Connected: ${S.address}` : 'Connect an Ethereum wallet to pay the gas';
 }
 
-// ── the module doing the actual planning/building/estimating (dapp/header-relay-advance.js) ────────────────
+// ── what a send costs: the node's gas price now, for an estimate in ETH next to each action ───────────────────
+let gasPrice = null;
+async function readGasPrice() { try { gasPrice = BigInt(await rpc('eth_gasPrice', [])); } catch {} }
+function ethFor(gas) {
+  if (gasPrice == null) return null;
+  const x = Number(BigInt(gas) * gasPrice) / 1e18;
+  return x >= 0.01 ? x.toFixed(3) : x >= 0.0001 ? x.toPrecision(2) : '<0.0001';
+}
+// Measured on the header relay's own sends: about 92,000 gas a transaction and 172,000 a header (1 header used
+// 263,969 gas, 2 used 436,448). Shown as an estimate only; each send's gas limit comes from the node.
+const advanceGas = (headers, txs) => 92_000n * BigInt(txs) + 172_000n * BigInt(headers);
+
+// ── the module doing the planning, building and estimating (dapp/header-relay-advance.js) ────────────────────
 const advance = makeHeaderRelayAdvance({});
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const SEL_ADVANCE_ANCESTRY = '0xaa9e6609'; // advanceReflectionAncestry()
@@ -309,94 +406,167 @@ const API = 'https://api.tacit.finance';
 const SEL_ATTEST = '0x0b36171c';        // attestBitcoinStateProven(bytes,bytes)
 const SEL_ATTESTED_DIGEST = '0xb909cdaf'; // attestedReflectionDigest()
 
-// #need=<height>&why=bridge|lock — a deep link from a stuck row elsewhere in the dapp, preselecting the target.
-const params = new URLSearchParams(location.hash.replace(/^#/, ''));
-const need = params.has('need') && Number.isFinite(Number(params.get('need'))) ? Number(params.get('need')) : null;
-const why = params.get('why');
-
-let lastPlan = null;
-
-function cardHtml({ k, v, m, wide, attn }) {
-  return `<div class="card${wide ? ' wide' : ''}${attn ? ' attn' : ''}"><div class="k">${esc(k)}</div><div class="v num">${v == null ? SK('7ch') : v}</div><div class="m">${m ?? (v == null ? SK('16ch') : '')}</div></div>`;
+// #need=<height>&why=lock|bridge — a link from a waiting lock or deposit elsewhere on tacit.finance: the relay height
+// it needs. Anything but a plain block height is ignored, and the page reads the link again when it changes.
+let need = null, why = null;
+function readLink() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const n = p.get('need') || '';
+  need = /^\d{1,8}$/.test(n) && Number(n) > 0 ? Number(n) : null;
+  why = need != null && /^(lock|bridge)$/.test(p.get('why') || '') ? p.get('why') : null;
 }
+readLink();
+const forWhat = () => (why === 'lock' ? 'your lock' : why === 'bridge' ? 'your bridge deposit' : 'the linked request');
 
+function cardHtml({ k, v, u, m, attn }) {
+  return `<div class="card${attn ? ' attn' : ''}"><div class="k">${esc(k)}</div><div class="v num">${v == null ? SK('7ch') : `${esc(v)}${u ? `<small>${esc(u)}</small>` : ''}`}</div><div class="m">${m == null ? SK('16ch') : esc(m)}</div></div>`;
+}
+const CARDS = ['Header relay', 'Bitcoin tip', 'Proven to', 'Bridge deposits'];
+$('#cards-wait').innerHTML = CARDS.map((k) => cardHtml({ k })).join('');
+
+let lastRead = 0;
 async function refresh() {
-  const st = await advance.status();
-  const behindTxt = st.behind <= 0 ? 'at the tip' : `${int(st.behind)} behind Bitcoin`;
+  const [st] = await Promise.all([advance.status(), readGasPrice()]);
+  lastRead = Date.now();
+  const lag = st.reflectionLag, far = lag != null && lag > REFLECTION_MAX_LAG;
   $('#cards-wait').innerHTML = [
-    cardHtml({ k: 'Header relay', v: `${int(st.relayTip)}`, m: `block · ${behindTxt}` }),
-    cardHtml({ k: 'Bitcoin tip', v: `${int(st.btcTip)}`, m: 'block, from a public explorer' }),
+    cardHtml({ k: 'Header relay', v: int(st.relayTip), u: 'block', m: st.behind <= 0 ? 'at Bitcoin’s tip' : `${plural(st.behind, 'block')} behind Bitcoin’s tip` }),
+    cardHtml({ k: 'Bitcoin tip', v: int(st.btcTip), u: 'block', m: 'from a public explorer' }),
     cardHtml({
-      k: 'Proven (reflection)', v: st.attested == null ? '—' : int(st.attested), attn: st.reflectionLag != null && st.reflectionLag > REFLECTION_MAX_LAG,
-      m: st.reflectionLag == null ? 'reflection status unavailable' : st.reflectionLag <= 0 ? 'fully caught up to the relay' : `${int(st.reflectionLag)} block${st.reflectionLag === 1 ? '' : 's'} behind the relay's own tip`,
+      k: 'Proven to', v: st.attested == null ? '—' : int(st.attested), u: st.attested == null ? '' : 'block', attn: far,
+      m: lag == null ? 'not read just now' : lag <= 0 ? 'caught up with the relay' : `${plural(lag, 'block')} the relay has confirmed, not yet proven`,
     }),
-    cardHtml({ k: 'Bridge deposits waiting', v: st.burnDeposits == null ? '—' : int(st.burnDeposits), m: 'Bitcoin→Ethereum, pending a fold' }),
+    cardHtml({ k: 'Bridge deposits', v: st.burnDeposits == null ? '—' : int(st.burnDeposits), m: 'Bitcoin→Ethereum deposits the proofs have recorded' }),
   ].join('');
-  $('#asof').textContent = `As of ${new Date().toLocaleTimeString('en-GB')} · confirmations required: ${st.confirmations}`;
-  $('#ancestry-callout').hidden = !(st.reflectionLag != null && st.reflectionLag > REFLECTION_MAX_LAG);
-
-  lastPlan = advance.plan({ ...st, need });
-  paintPlan(st, lastPlan);
+  $('#asof').textContent = `As of ${new Date().toLocaleTimeString('en-GB')} · a block can be proven once it is ${st.confirmations} deep`;
+  $('#ancestry-callout').hidden = !far;
+  if (far) paintAncestry(st);
+  paintPlan(st, advance.plan({ ...st, need }));
   return st;
+}
+function readFailed(e) {
+  $('#asof').innerHTML = 'Could not read the relay just now. <button class="link" type="button" id="retry">Read again</button>';
+  $('#retry').addEventListener('click', () => { $('#asof').textContent = 'Reading the relay…'; refresh().catch(readFailed); });
+  $('#plan-box').innerHTML = '<p>The plan appears once the relay is read.</p>';
+  if (e) toast(errText(e), true);
 }
 
 function paintPlan(st, pl) {
-  const box = $('#plan-box');
+  repaintPlan = () => paintPlan(st, pl);
+  const box = $('#plan-box'), btn = $('#btn-advance');
+  const safeTip = st.btcTip - 2, proven = st.relayTip - st.confirmations;
+  const lines = [];
+  let can = false;
   if (pl.action === 'idle') {
-    box.innerHTML = `<p class="status">${pl.useless ? (need != null ? 'Already matured under the current relay tip — nothing to advance.' : "The relay already leads what the reflection has consumed; advancing further won't speed anything up right now.") : 'The relay is already at the tip. Nothing to advance.'}</p>`;
-    $('#btn-advance').disabled = !!pl.useless || pl.pending === 0;
+    if (need != null && need <= st.relayTip) lines.push(`The relay already has block ${int(need)}, the height ${forWhat()} needs. Nothing to advance: what is left is the next proof (Submit a proof, below).`);
+    else if (need != null && need > safeTip) lines.push(`${forWhat()[0].toUpperCase() + forWhat().slice(1)} needs the relay at block ${int(need)}. The relay stays 2 blocks behind Bitcoin’s tip (${int(st.btcTip)}), so it can go there after ${plural(need - safeTip, 'more Bitcoin block')}, about ${int((need - safeTip) * 10)} minutes.`);
+    else if (st.relayTip >= safeTip) lines.push('The relay is at Bitcoin’s tip, less its 2-block margin. Nothing to advance.');
+    else lines.push(`The relay already confirms Bitcoin to block ${int(proven)}, ${plural(proven - st.attested, 'block')} past the proven block ${int(st.attested)}, so the next proofs aren’t waiting on it. Nothing to advance.`);
   } else {
-    const target = need != null ? ` to reach ${why === 'bridge' ? 'your bridge deposit’s' : why === 'lock' ? 'your lock’s' : 'the requested'} height` : '';
-    box.innerHTML = `<p class="status">${int(pl.pending)} header${pl.pending === 1 ? '' : 's'} pending${target} (${int(pl.from)}–${int(pl.to)})${pl.useless ? ' — this pass won’t speed up the current fold, but it’s still safe to send.' : ''}</p>`;
-    $('#btn-advance').disabled = false;
+    can = true;
+    const txs = Math.ceil(pl.pending / advance.MAX_BATCH);
+    let what = `${plural(pl.pending, 'header')} to send, blocks ${int(pl.from)}–${int(pl.to)}`;
+    if (need != null) what += pl.to >= need ? `, to reach block ${int(need)}, the height ${forWhat()} needs.` : `. ${forWhat()[0].toUpperCase() + forWhat().slice(1)} needs block ${int(need)}: the relay stays 2 blocks behind Bitcoin’s tip, so the rest can follow after ${plural(need - pl.to, 'more Bitcoin block')}.`;
+    else what += '.';
+    lines.push(what);
+    if (pl.useless && need == null) lines.push(`The relay already confirms Bitcoin to block ${int(proven)}, past the proven block ${int(st.attested)}, so the next proof isn’t waiting on it. Advancing now readies the ones after it.`);
+    const eth = ethFor(advanceGas(pl.pending, txs));
+    lines.push(`${plural(txs, 'transaction')}${eth ? `, about ${eth} ETH in gas at the current price` : ''}. Your wallet shows the exact fee before you confirm.`);
   }
+  box.innerHTML = lines.map((l) => `<p>${esc(l)}</p>`).join('');
+  if (btn.getAttribute('aria-busy') === 'true') return;   // a run in progress keeps its button
+  btn.disabled = !can;
+  btn.textContent = can ? 'Advance the relay' : 'Nothing to advance';
 }
 
 function stripHtml(batches) {
-  return ['Connect', ...batches.map((b, i) => `Batch ${i + 1}`), 'Done'].map((label, i) => `<li id="stp-${i}"><i></i>${esc(label)}</li>`).join('');
+  return ['Wallet', ...batches.map((b, i) => `Batch ${i + 1}`), 'Done'].map((label, i) => `<li id="stp-${i}"><i></i>${esc(label)}</li>`).join('');
 }
 function stripSet(i, cls) { const el = $(`#stp-${i}`); if (el) el.className = cls; }
 
 async function doAdvance() {
-  if (!S.address) { await connect(); }
-  const st = await advance.status();
-  await advance.checkCanonical(st);
-  const pl = advance.plan({ ...st, need });
-  if (pl.action !== 'advance') { toast('Nothing to advance right now.'); await refresh(); return; }
-  const batches = await advance.buildBatches(pl);
-
-  const strip = $('#strip'); strip.hidden = false; strip.innerHTML = stripHtml(batches);
-  stripSet(0, 'done');
-  $('#batch-table').hidden = false;
-  const rows = $('#batch-rows');
-  rows.innerHTML = batches.map((b, i) => `<tr id="brow-${i}"><td>${i + 1}</td><td>${b.count}</td><td>waiting</td></tr>`).join('');
-
-  let i = 0;
-  const result = await advance.runAdvance({
-    need, fromAddress: S.address, send, waitReceipt,
-    onProgress: (p) => {
-      const idx = batches.findIndex((b) => b.from === p.from && b.to === p.to);
-      const cell = $(`#brow-${idx} td:last-child`);
-      if (p.skipped) { cell.textContent = 'already landed'; stripSet(idx + 1, 'done'); return; }
-      if (p.sending && !p.txHash) { stripSet(idx + 1, 'now'); cell.textContent = 'sending…'; return; }
-      if (p.txHash) { cell.innerHTML = `<a href="https://etherscan.io/tx/${p.txHash}" target="_blank" rel="noopener">confirming ↗</a>`; }
-    },
-  });
-  result.sent.forEach((b) => {
-    const idx = batches.findIndex((x) => x.from === b.from && x.to === b.to);
-    stripSet(idx + 1, 'done');
-    const cell = $(`#brow-${idx} td:last-child`);
-    if (cell) cell.innerHTML = `<a href="https://etherscan.io/tx/${b.txHash}" target="_blank" rel="noopener">landed ↗</a>`;
-  });
-  stripSet(batches.length + 1, 'done');
-  $('#status').innerHTML = result.sent.length
-    ? `Advanced the relay to block ${int(result.to)}. The reflection cron checks every 5 minutes.`
-    : 'Nothing landed — see the batch rows above.';
-  toast(result.sent.length ? 'Header relay advanced' : 'Nothing to send');
-  await refresh();
+  const out = $('#status'), strip = $('#strip'), rows = $('#batch-rows');
+  out.textContent = '';
+  strip.hidden = true; $('#batch-table').hidden = true;
+  if (!S.address) await connect();
+  out.textContent = 'Checking the relay against Bitcoin…';
+  let batches = [], at = -1, done = 0;
+  const row = (i) => $(`#brow-${i} td:last-child`);
+  try {
+    const result = await advance.runAdvance({
+      need, fromAddress: S.address, send,
+      waitReceipt: async (hash) => {
+        const r = await waitReceipt(hash);
+        if (landed(r) && row(at)) { row(at).innerHTML = txLink(hash, 'landed'); stripSet(at + 1, 'done'); done++; }
+        return r;
+      },
+      onPlan: (p) => { if (p.action === 'advance') out.textContent = `Reading ${plural(p.pending, 'header')} from Bitcoin…`; },
+      onBatches: (bs) => {
+        batches = bs;
+        strip.innerHTML = stripHtml(bs); strip.hidden = false; stripSet(0, 'done');
+        rows.innerHTML = bs.map((b, i) => `<tr id="brow-${i}"><td>${i + 1}</td><td>${int(b.from)}–${int(b.to)}</td><td>waiting</td></tr>`).join('');
+        $('#batch-table').hidden = false;
+        out.textContent = bs.length > 1 ? `Your wallet asks you to confirm ${bs.length} transactions, one a batch.` : 'Confirm the transaction in your wallet.';
+      },
+      onProgress: (p) => {
+        at = batches.findIndex((b) => b.from === p.from && b.to === p.to);
+        const cell = row(at);
+        if (p.skipped) { stripSet(at + 1, 'done'); if (cell) cell.textContent = 'already on chain'; return; }
+        if (p.sending && !p.txHash) { stripSet(at + 1, 'now'); if (cell) cell.textContent = 'confirm in wallet'; return; }
+        if (p.txHash && cell) cell.innerHTML = txLink(p.txHash, 'confirming');
+      },
+    });
+    if (result.action !== 'advance') { out.textContent = 'Nothing to advance now: the relay moved since this page read it.'; toast('Nothing to advance right now.'); return; }
+    stripSet(batches.length + 1, 'done');
+    if (!result.sent.length) { out.textContent = `The relay reached block ${int(result.to)} before your batches went out, so nothing was sent.`; toast('Nothing to send'); return; }
+    out.textContent = `The relay now has block ${int(result.to)}. Tacit’s prover looks for a new batch every 5 minutes; the next proof can cover Bitcoin to block ${int(result.to - result.confirmations)}.`;
+    toast('Header relay advanced');
+  } catch (e) {
+    if (at >= 0) { stripSet(at + 1, 'bad'); const cell = row(at); if (cell && !/landed/.test(cell.textContent)) cell.textContent = 'stopped'; }
+    out.textContent = batches.length > 1 ? `Stopped at batch ${at + 1} of ${batches.length}${done ? `; ${plural(done, 'batch', 'batches')} before it landed` : ''}.` : '';
+    throw e;
+  } finally {
+    refresh().catch(() => {});
+  }
 }
 
-// ── a proof Tacit's prover has bought and published: submit it from this wallet ───────────────────────────────
+// ── the checkpoint for a lane far behind: advanceReflectionAncestry(), sized and simulated before it is sent ──
+// Each call walks at most 2,016 blocks from the relay's confirmed tip down toward 2,016 past the proven block.
+const ancestryCalls = (lag) => Math.max(1, Math.ceil((lag - REFLECTION_MAX_LAG) / REFLECTION_MAX_LAG));
+let ancestryGas = null;
+async function paintAncestry(st) {
+  const calls = ancestryCalls(st.reflectionLag);
+  const say = () => {
+    const eth = ancestryGas != null ? ethFor(ancestryGas) : null;
+    $('#anc-plan').textContent = `This gap takes ${plural(calls, 'call')}${eth ? `, about ${eth} ETH in gas each at the current price` : ''}.`;
+  };
+  say();
+  try { ancestryGas = BigInt(await rpc('eth_estimateGas', [{ to: POOL, data: SEL_ADVANCE_ANCESTRY }])); say(); } catch {}
+}
+async function doAncestry() {
+  const out = $('#anc-status');
+  out.textContent = '';
+  if (!S.address) await connect();
+  const st = await refresh();
+  if (!(st.reflectionLag > REFLECTION_MAX_LAG)) { toast('The proofs are back within 2,016 blocks of the relay. No checkpoint is needed.'); return; }
+  const calls = ancestryCalls(st.reflectionLag);
+  // Run it first: a call the pool refuses costs gas to find out, and the node tells us for free.
+  try { await rpc('eth_call', [{ from: S.address, to: POOL, data: SEL_ADVANCE_ANCESTRY }, 'latest']); }
+  catch (e) { throw new Error(`The pool would not take this call right now: ${errText(e)}`); }
+  const est = BigInt(await rpc('eth_estimateGas', [{ from: S.address, to: POOL, data: SEL_ADVANCE_ANCESTRY }]));
+  out.textContent = 'Confirm the transaction in your wallet.';
+  let txHash;
+  try { txHash = await send({ to: POOL, data: SEL_ADVANCE_ANCESTRY, gas: (est * 125n) / 100n }); }
+  catch (e) { out.textContent = ''; throw e; }
+  out.innerHTML = `Sent ${txLink(txHash, short(txHash, 8))}. Waiting for it to land…`;
+  const rcpt = await waitReceipt(txHash);
+  if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; refresh().catch(() => {}); throw new Error('The call reverted on chain; the figures above are read again.'); }
+  out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}. ${calls > 1 ? `This gap takes ${plural(calls, 'call')}: ${plural(calls - 1, 'more carries', 'more carry')} the walk to the checkpoint.` : 'The checkpoint is set, and the next proof builds on it.'}`;
+  toast('advanceReflectionAncestry() landed');
+  refresh().catch(() => {});
+}
+
+// ── a proof Tacit's prover has made and published: submit it from this wallet ────────────────────────────────
 // attestBitcoinStateProven(bytes publicValues, bytes proof): two dynamic arguments, offsets from the start of the arguments.
 function encodeAttest(publicValues, proof) {
   const pad32 = (n) => n.toString(16).padStart(64, '0');
@@ -404,9 +574,13 @@ function encodeAttest(publicValues, proof) {
   const a = body(publicValues), b = body(proof);
   return SEL_ATTEST + pad32(0x40) + pad32(0x40 + a.length / 2) + a + b;
 }
+const HEX_BYTES = /^0x(?:[0-9a-f]{2})+$/i, WORD = /^0x[0-9a-f]{64}$/i;
+const ATTEST_GAS = 550_000n;
 let readyProof = null;
+// Reads the latest published proof against the pool's digest, paints it, and returns it when it can be submitted.
 async function refreshProof() {
   const box = $('#proof-box'), btn = $('#btn-proof');
+  const none = (msg) => { box.innerHTML = `<p>${esc(msg)}</p>`; btn.disabled = true; readyProof = null; return null; };
   let rec = null, onchain = null;
   try {
     const [r, d] = await Promise.all([
@@ -414,52 +588,58 @@ async function refreshProof() {
       rpc('eth_call', [{ to: POOL, data: SEL_ATTESTED_DIGEST }, 'latest']),
     ]);
     rec = r && r.proof; onchain = String(d || '').toLowerCase();
-  } catch { box.innerHTML = '<p class="status">Could not read the latest proof right now.</p>'; btn.disabled = true; readyProof = null; return; }
-  if (!rec) { box.innerHTML = '<p class="status">No proof is waiting. Tacit’s prover submits each one itself, usually within minutes of buying it.</p>'; btn.disabled = true; readyProof = null; return; }
-  if (rec.priorDigest !== onchain) {
-    box.innerHTML = `<p class="status">The latest published proof (up to block ${int(rec.attestedTo)}) has already landed, or builds on a state the pool has moved past. Nothing to submit.</p>`;
-    btn.disabled = true; readyProof = null; return;
-  }
-  const mins = Math.max(0, Math.round((Date.now() - rec.at) / 60000));
-  box.innerHTML = `<p class="status"><b>A proof is ready</b> for the batch ending at block ${int(rec.attestedTo)}, published ${mins < 1 ? 'just now' : `${int(mins)} min ago`}. It has not landed on-chain. Submitting it costs about 0.5–0.6 million gas.</p>`;
+  } catch { return none('Could not read the latest proof just now. The page reads it again every minute.'); }
+  if (!rec) return none('No proof is waiting. Tacit’s prover submits each one itself, usually within minutes of making it.');
+  if (!WORD.test(rec.priorDigest) || !HEX_BYTES.test(rec.publicValues) || !HEX_BYTES.test(rec.proof)) return none('The published proof is not in the form the pool takes, so it is not offered.');
+  if (rec.priorDigest.toLowerCase() !== onchain) return none(`The latest published proof (Bitcoin to block ${int(rec.attestedTo)}) is already on chain, or builds on a state the pool has moved past. Nothing to submit.`);
+  const mins = Number.isFinite(rec.at) ? Math.max(0, Math.round((Date.now() - rec.at) / 60000)) : null;
+  const eth = ethFor(ATTEST_GAS);
+  box.innerHTML = `<p><b>A proof is ready</b> for Bitcoin to block ${esc(int(rec.attestedTo))}${mins == null ? '' : `, published ${mins < 1 ? 'just now' : `${esc(int(mins))} min ago`}`}, and it is not on chain yet.</p><p>Submitting it takes about 0.5–0.6 million gas${eth ? `, about ${esc(eth)} ETH at the current price` : ''}.</p>`;
   btn.disabled = false; readyProof = rec;
+  return rec;
 }
 async function doSubmitProof() {
+  const out = $('#proof-status');
+  out.textContent = '';
   if (!S.address) await connect();
-  await refreshProof();
-  if (!readyProof) { toast('That proof is no longer needed.'); return; }
-  const data = encodeAttest(readyProof.publicValues, readyProof.proof);
+  // This send keeps its own copy: the minute's refresh clears readyProof as soon as this proof lands.
+  const rec = await refreshProof();
+  if (!rec) { toast('That proof is no longer needed.'); return; }
+  const data = encodeAttest(rec.publicValues, rec.proof);
   // Run it first: a proof the pool no longer accepts costs gas to find out, and the node tells us for free.
   try { await rpc('eth_call', [{ from: S.address, to: POOL, data }, 'latest']); }
   catch (e) {
     const m = String(e?.message || e);
-    const why = /e677decb/i.test(m) ? 'the pool has already moved past this batch' : /d3897419/i.test(m) ? 'the header relay has not matured this batch yet' : errText(e);
-    throw new Error(`The pool would not accept this proof right now: ${why}.`);
+    const reason = /e677decb/i.test(m) ? 'the pool has already moved past this batch' : /d3897419/i.test(m) ? 'the header relay has not confirmed this batch yet' : errText(e);
+    throw new Error(`The pool would not accept this proof right now: ${reason}.`);
   }
   const est = BigInt(await rpc('eth_estimateGas', [{ from: S.address, to: POOL, data }]));
-  const txHash = await send({ to: POOL, data, gas: (est * 125n) / 100n });
-  $('#proof-status').innerHTML = `Sent <a href="https://etherscan.io/tx/${txHash}" target="_blank" rel="noopener">${short(txHash, 8)} ↗</a> — waiting for confirmation…`;
+  out.textContent = 'Confirm the transaction in your wallet.';
+  let txHash;
+  try { txHash = await send({ to: POOL, data, gas: (est * 125n) / 100n }); }
+  catch (e) { out.textContent = ''; throw e; }
+  out.innerHTML = `Sent ${txLink(txHash, short(txHash, 8))}. Waiting for it to land…`;
   const rcpt = await waitReceipt(txHash);
-  if (rcpt.status !== '0x1') throw new Error('The transaction reverted — the batch may have landed first. Check the pool on Etherscan.');
-  $('#proof-status').innerHTML = `Landed: <a href="https://etherscan.io/tx/${txHash}" target="_blank" rel="noopener">${short(txHash, 8)} ↗</a>. Bitcoin is attested up to block ${int(readyProof.attestedTo)}; bridge deposits up to there can now mint.`;
+  if (!landed(rcpt)) { out.innerHTML = `Reverted: ${txLink(txHash, short(txHash, 8))}.`; refreshProof().catch(() => {}); throw new Error('The transaction reverted: another wallet may have landed this proof first.'); }
+  out.innerHTML = `Landed: ${txLink(txHash, short(txHash, 8))}. Bitcoin is proven on Ethereum to block ${esc(int(rec.attestedTo))}; bridge deposits up to there can now mint.`;
   toast('Proof submitted');
-  await refresh(); await refreshProof();
+  refresh().catch(() => {}); refreshProof().catch(() => {});
 }
-$('#btn-proof').addEventListener('click', (e) => busy(e.currentTarget, doSubmitProof));
 
+$('#wallet').addEventListener('click', (e) => busy(e.currentTarget, connect));
 $('#btn-advance').addEventListener('click', (e) => busy(e.currentTarget, doAdvance));
-$('#btn-ancestry').addEventListener('click', (e) => busy(e.currentTarget, async () => {
-  const txHash = await send({ to: POOL, data: SEL_ADVANCE_ANCESTRY, gas: 300000n });
-  $('#status').innerHTML = `Sent <a href="https://etherscan.io/tx/${txHash}" target="_blank" rel="noopener">${short(txHash, 8)} ↗</a> — waiting for confirmation…`;
-  await waitReceipt(txHash);
-  toast('advanceReflectionAncestry() landed');
-  await refresh();
-}));
+$('#btn-ancestry').addEventListener('click', (e) => busy(e.currentTarget, doAncestry));
+$('#btn-proof').addEventListener('click', (e) => busy(e.currentTarget, doSubmitProof));
+window.addEventListener('hashchange', () => { readLink(); refresh().catch(() => {}); });
 
 paintWallet();
 refreshProof().catch(() => {});
-refresh().catch((e) => { $('#asof').textContent = 'Could not read the relay right now.'; toast(errText(e), true); });
-setInterval(() => { refresh().catch(() => {}); refreshProof().catch(() => {}); }, 60000);
+refresh().catch(readFailed);
+// Read again every minute while the page is in view, and at once when it comes back after longer.
+setInterval(() => { if (document.hidden) return; refresh().catch(() => {}); refreshProof().catch(() => {}); }, 60000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && Date.now() - lastRead > 60000) { refresh().catch(() => {}); refreshProof().catch(() => {}); }
+});
 </script>
 </body>
 </html>

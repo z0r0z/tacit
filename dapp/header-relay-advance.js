@@ -135,13 +135,17 @@ export function makeHeaderRelayAdvance({
 
   // High-level orchestration shared by the browser page and the CLI, so the batch/re-check/send loop is
   // written once. `send({to,data,gas})` returns a tx hash; `waitReceipt(hash)` resolves `{status}` (0x1/0x0
-  // or 1/0). `onProgress` is called once per batch attempt, before and after sending.
-  async function runAdvance({ need, fromAddress, send, waitReceipt, onProgress }) {
+  // or 1/0). `onProgress` is called once per batch attempt, before and after sending. `onPlan` hears this run's plan
+  // before its headers are read (a long backlog takes a while to fetch) and `onBatches` the batches it will send, so
+  // a caller shows the run it is actually making rather than one it planned separately.
+  async function runAdvance({ need, fromAddress, send, waitReceipt, onProgress, onPlan, onBatches }) {
     const st = await status();
     await checkCanonical(st);
     const pl = plan({ ...st, need });
+    onPlan?.({ ...st, ...pl });
     if (pl.action !== 'advance') return { ...st, ...pl, sent: [] };
     const batches = await buildBatches(pl);
+    onBatches?.(batches);
     const sent = [];
     for (const batch of batches) {
       // A duplicate header doesn't revert (advanceTip just finds a shorter or equal chain and no-ops), but

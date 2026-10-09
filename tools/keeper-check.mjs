@@ -5,6 +5,10 @@
 //   spent    a published proof whose prior the pool has moved past is not offered
 //   none     no published proof says so
 //   refused  the pool's own check rejects the proof (stale digest): nothing is sent, and the page says why in words
+//   chain    a wallet that reports a switch to Ethereum without making it: nothing is sent, and the page says to switch
+//   race     the minute's refresh runs while a submitted proof is still confirming: the proof lands as landed, not as an error
+//   ancestry a reflection more than 2,016 blocks behind: advanceReflectionAncestry() is run first, sent with the node's
+//            gas estimate, and a reverted receipt reads as reverted
 // Nothing reaches a live service.
 //   PLAYWRIGHT=<path to playwright-core> node tools/keeper-check.mjs [scenario,…]
 import { createServer } from 'node:http';
@@ -23,7 +27,7 @@ const WALLET = '0x1c0aa8ccd568d90d61659f060d1bfb1e6f855a20';
 const DIGEST = '0x' + 'aa'.repeat(32);
 const NEXT = '0x' + 'bb'.repeat(32);
 const PV = '0x' + 'ab'.repeat(1120), PROOF = '0x' + 'cd'.repeat(260);
-const want = (process.argv[2] || 'ready,spent,none,refused').split(',');
+const want = (process.argv[2] || 'ready,spent,none,refused,chain,race,ancestry').split(',');
 
 const TYPES = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.wasm': 'application/wasm' };
 const server = createServer((req, res) => {
@@ -40,30 +44,33 @@ const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${ext
 const hex = (n) => '0x' + n.toString(16);
 const word = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 
-async function run(name, { proof, simulateRevert = null }) {
+async function run(name, { proof, simulateRevert = null, chain = '0x1', attested = 970100, receipt = '0x1', slowReceipt = 0, clock = false }) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 900, height: 1000 } });
   const calls = [];
-  await ctx.addInitScript(({ WALLET }) => {
+  const st = { digest: DIGEST, polls: 0 };
+  // A sent proof moves the pool's digest on, as landing it would.
+  await ctx.exposeBinding('__sent', (_src, data) => { if (String(data).startsWith('0x0b36171c')) st.digest = NEXT; });
+  await ctx.addInitScript(({ WALLET, chain }) => {
     window.__txs = [];
     window.ethereum = {
       isMetaMask: true,
       request: async ({ method, params }) => {
         if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [WALLET];
-        if (method === 'eth_chainId') return '0x1';
-        if (method === 'wallet_switchEthereumChain') return null;
-        if (method === 'eth_sendTransaction') { window.__txs.push(params[0]); return '0x' + 'ee'.repeat(32); }
+        if (method === 'eth_chainId') return chain;
+        if (method === 'wallet_switchEthereumChain') return null;   // reports the switch; `chain` says whether it happened
+        if (method === 'eth_sendTransaction') { window.__txs.push(params[0]); await window.__sent(params[0].data); return '0x' + 'ee'.repeat(32); }
         throw new Error('unstubbed wallet method ' + method);
       },
       on() {}, removeListener() {},
     };
-  }, { WALLET });
+  }, { WALLET, chain });
   const answer = (m, params) => {
     calls.push({ m, params });
     if (m === 'eth_chainId') return '0x1';
     if (m === 'eth_call') {
       const { to, data, from } = params[0];
-      if (data === '0xb909cdaf') return DIGEST;                       // attestedReflectionDigest()
+      if (data === '0xb909cdaf') return st.digest;                    // attestedReflectionDigest()
       if (data === '0x1fd4827a') return word(970100);                 // tipHeight()
       if (data === '0x2755cd2d') return '0x' + '11'.repeat(32);       // tip()
       if (data && data.startsWith('0x0b36171c') && from) {
@@ -72,8 +79,8 @@ async function run(name, { proof, simulateRevert = null }) {
       }
       return '0x';
     }
-    if (m === 'eth_estimateGas') return hex(524288);
-    if (m === 'eth_getTransactionReceipt') return { status: '0x1', transactionHash: params[0], blockNumber: '0x1' };
+    if (m === 'eth_estimateGas') return params[0].data === '0xaa9e6609' ? hex(6400000) : hex(524288);   // advanceReflectionAncestry() walks up to 2,016 parents
+    if (m === 'eth_getTransactionReceipt') return ++st.polls <= slowReceipt ? null : { status: receipt, transactionHash: params[0], blockNumber: '0x1' };
     if (m === 'eth_blockNumber') return hex(26139000);
     if (m === 'eth_gasPrice') return hex(150000000);
     if (m === 'eth_getBalance') return hex(10n ** 18n);
@@ -90,13 +97,14 @@ async function run(name, { proof, simulateRevert = null }) {
     const u = new URL(route.request().url());
     const send = (b) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(b) });
     if (u.pathname === '/reflection/proof') return send({ ok: true, proof });
-    if (u.pathname === '/reflection/status') return send({ network: 'mainnet', attestedHeight: 970100, tipHeight: 970100, lagBlocks: 0, confirmations: 24, burnDeposits: 0 });
+    if (u.pathname === '/reflection/status') return send({ network: 'mainnet', attestedHeight: attested, tipHeight: 970100, lagBlocks: 0, confirmations: 24, burnDeposits: 0 });
     return send({});
   });
   for (const host of ['blockstream.info', 'mempool.space', 'mempool.emzy.de', 'mempool.bitaroo.net']) {
     await ctx.route(`https://${host}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: '970124' }));
   }
   const page = await ctx.newPage();
+  if (clock) await page.clock.install();
   page.on('pageerror', (e) => { console.log('     page error:', e.message); });
   await page.goto(`http://127.0.0.1:${WEB}/weld/keeper/`);
   await page.waitForFunction(() => !/Reading the latest proof/.test(document.querySelector('#proof-box')?.textContent || 'Reading'), null, { timeout: 15000 });
@@ -142,6 +150,41 @@ if (want.includes('refused')) {
   const t = await page.textContent('.toast.bad');
   ok(/already moved past this batch/.test(t), 'the pool’s stale-digest rejection reads in words', t.slice(0, 100));
   ok((await page.evaluate(() => window.__txs)).length === 0, 'and no transaction was sent');
+  await browser.close();
+}
+if (want.includes('chain')) {
+  console.log('== chain');
+  const { browser, page } = await run('chain', { proof: rec(), chain: '0x2105' });
+  await page.click('#btn-proof');
+  await page.waitForSelector('.toast.bad', { timeout: 15000 });
+  const t = await page.textContent('.toast.bad');
+  ok((await page.evaluate(() => window.__txs)).length === 0, 'a wallet still on Base after a reported switch sends nothing');
+  ok(/Switch your wallet to Ethereum/.test(t), 'and the page says to switch', t.slice(0, 100));
+  await browser.close();
+}
+if (want.includes('race')) {
+  console.log('== race');
+  const { browser, page } = await run('race', { proof: rec(), slowReceipt: 3, clock: true });
+  await page.click('#btn-proof');
+  await page.waitForFunction(() => /Sent/.test(document.querySelector('#proof-status')?.textContent || ''), null, { timeout: 15000 });
+  await page.clock.fastForward(61000);   // the minute's refresh: the pool's digest has moved, so it clears the ready proof
+  await page.waitForFunction(() => /Landed/.test(document.querySelector('#proof-status')?.textContent || '') || document.querySelector('.toast.bad'), null, { timeout: 30000 });
+  const bad = await page.$('.toast.bad');
+  ok(!bad && /970,110/.test(await page.textContent('#proof-status')), 'a proof that lands during a refresh reads as landed', bad ? await bad.textContent() : '');
+  await browser.close();
+}
+if (want.includes('ancestry')) {
+  console.log('== ancestry');
+  const { browser, page, calls } = await run('ancestry', { proof: null, attested: 960000, receipt: '0x0' });
+  await page.waitForSelector('#ancestry-callout:not([hidden])', { timeout: 15000 });
+  ok(/4 calls/.test(await page.textContent('#ancestry-callout')), 'the callout says how many calls the gap takes');
+  await page.click('#btn-ancestry');
+  await page.waitForSelector('.toast.bad', { timeout: 15000 });
+  const txs = await page.evaluate(() => window.__txs);
+  ok(txs.length === 1 && txs[0].to.toLowerCase() === POOL.toLowerCase() && txs[0].data === '0xaa9e6609' && txs[0].chainId === '0x1', 'advanceReflectionAncestry() goes to the pool on Ethereum');
+  ok(BigInt(txs[0].gas) === (6400000n * 125n) / 100n, 'with gas from the node’s estimate plus a quarter', txs[0].gas);
+  ok(calls.some((c) => c.m === 'eth_call' && c.params[0].from && c.params[0].data === '0xaa9e6609'), 'it ran the call first');
+  ok(/reverted/.test(await page.textContent('.toast.bad')) && /Reverted/.test(await page.textContent('#anc-status')), 'a reverted receipt reads as reverted');
   await browser.close();
 }
 server.close();
