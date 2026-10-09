@@ -22444,18 +22444,43 @@ function _savePendingWithdraw(rec) {
   try { localStorage.setItem(_pendingWithdrawsKey(), JSON.stringify(arr)); } catch {}
   return arr;
 }
+// Signed reveals saved before their commit went out: one record per commit under PENDING_REVEAL_PREFIX (see
+// broadcastCommitReveal), plus the single 'tacit-pending-reveal:<net>' slot the mixer withdraw writes. A record is
+// re-sent while its commit output is unspent and kept through network errors. It is dropped once the commit
+// output is spent in a confirmed tx, when the commit has not appeared after 14 days, or after 30 days.
+const PENDING_REVEAL_UNSEEN_MS = 14 * 24 * 3600_000;
+const PENDING_REVEAL_MAX_AGE_MS = 30 * 24 * 3600_000;
+async function _settlePendingReveal(key) {
+  const drop = (why) => { try { localStorage.removeItem(key); } catch {} return why; };
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem(key) || 'null'); } catch { rec = null; }
+  if (!rec) return 'none';
+  if (typeof rec.revealHex !== 'string' || !rec.revealHex || !/^[0-9a-f]{64}$/i.test(String(rec.commitTxid || ''))) return drop('malformed');
+  const age = Date.now() - (Number(rec.savedAt) || 0);
+  if (age > PENDING_REVEAL_MAX_AGE_MS) return drop('expired');
+  try { await apiJson(`/tx/${rec.commitTxid}/status`, { cache: 'no-store' }); }
+  catch (e) {
+    if (/API 404/.test(String(e?.message || e)) && age > PENDING_REVEAL_UNSEEN_MS) return drop('commit-unseen');
+    return 'retry';
+  }
+  let os;
+  try { os = await apiJson(`/tx/${rec.commitTxid}/outspend/0`, { cache: 'no-store' }); } catch { return 'retry'; }
+  if (!os || typeof os.spent !== 'boolean') return 'retry';
+  if (os.spent) return os.status?.confirmed === true ? drop('spent') : 'pending';
+  try { await broadcastWithRetry(rec.revealHex); return 'sent'; } catch { return 'retry'; }
+}
 async function _recoverPendingReveal() {
+  const keys = [];
   try {
-    const key = 'tacit-pending-reveal:' + NET.name;
-    const raw = localStorage.getItem(key);
-    if (!raw) return;
-    const { revealHex, savedAt } = JSON.parse(raw);
-    if (!revealHex) { localStorage.removeItem(key); return; }
-    if (Date.now() - savedAt > 3600_000) { localStorage.removeItem(key); return; }
-    await broadcastWithRetry(revealHex);
-    localStorage.removeItem(key);
-  } catch {
-    try { localStorage.removeItem('tacit-pending-reveal:' + NET.name); } catch {}
+    const legacy = 'tacit-pending-reveal:' + NET.name;
+    const prefix = `${PENDING_REVEAL_PREFIX}${NET.name}:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k === legacy || k.startsWith(prefix))) keys.push(k);
+    }
+  } catch { return; }
+  for (const k of keys) {
+    try { await _settlePendingReveal(k); } catch {}
   }
 }
 
@@ -26021,6 +26046,35 @@ async function unstageBond({ stagedBondId, onProgress = null }) {
   return { abortTxid: r.revealTxid, record: getStagedBondById(stagedBondId) };
 }
 
+// ============== AMM commit/reveal broadcast ==============
+// The AMM builders sign the reveal before the commit goes out. broadcastCommitReveal refuses a reveal that pays
+// less than its planned fee, then saves the signed reveal under tacit-pending-reveal-v1:<net>:<commitTxid>
+// before broadcasting the commit, so _recoverPendingReveal can re-send a reveal that never reached the network.
+const PENDING_REVEAL_PREFIX = 'tacit-pending-reveal-v1:';
+function assertRevealFunded(revealTx, revealPrevouts, plannedFee, label = 'reveal') {
+  if (!Array.isArray(revealPrevouts) || revealPrevouts.length !== revealTx.inputs.length) {
+    throw new Error(`${label}: reveal prevouts do not match its inputs; nothing was broadcast`);
+  }
+  const inSum = revealPrevouts.reduce((s, p) => s + Number(p.value), 0);
+  const outSum = revealTx.outputs.reduce((s, o) => s + Number(o.value), 0);
+  const paid = inSum - outSum;
+  if (!Number.isSafeInteger(paid) || paid < plannedFee) {
+    throw new Error(`${label}: the reveal would pay ${paid} sats in fees, below the planned ${plannedFee} sats; nothing was broadcast`);
+  }
+  return paid;
+}
+async function broadcastCommitReveal({ label, commitHex, commitTxid, revealTx, revealPrevouts, revealHex, revealTxid, revealFee, onProgress = null }) {
+  assertRevealFunded(revealTx, revealPrevouts, revealFee, label);
+  const _progress = (s) => { try { onProgress && onProgress(s); } catch {} };
+  try {
+    localStorage.setItem(`${PENDING_REVEAL_PREFIX}${NET.name}:${commitTxid}`,
+      JSON.stringify({ commitTxid, revealTxid, revealHex, label, savedAt: Date.now() }));
+  } catch {}
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+}
 
 // ============== AMM POOL_INIT builder (T_LP_ADD variant 1) ==============
 //
@@ -26076,10 +26130,10 @@ async function buildAndBroadcastLpAddPoolInit({
 
   // 2. Carve exact asset-A + asset-B input UTXOs from holdings
   _progress('carve:assetA');
-  const utxoA = await carveExactAmount({ assetIdHex: canonAHex, amount: dA });
+  const utxoA = await carveExactAmount({ assetIdHex: canonAHex, amount: dA, walletKeyOnly: true });
   if (!utxoA || !utxoA.utxo) throw new Error('failed to carve asset-A input UTXO');
   _progress('carve:assetB');
-  const utxoB = await carveExactAmount({ assetIdHex: canonBHex, amount: dB });
+  const utxoB = await carveExactAmount({ assetIdHex: canonBHex, amount: dB, walletKeyOnly: true });
   if (!utxoB || !utxoB.utxo) throw new Error('failed to carve asset-B input UTXO');
 
   // 3. Pool id + LP asset id + founder shares
@@ -26213,7 +26267,7 @@ async function buildAndBroadcastLpAddPoolInit({
   const feeRate = await getFeeRate();
   // 3 inputs + 4 outputs (share @0, min-liq @1, refund-A @2, refund-B @3); envelope dominates. Padded estimate.
   const revealVb = 11 + 41 + 41 + 41 + 31 + 31 + 43 + 43 +
-    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109 + 109) / 4);
+    Math.ceil((1 + 1 + 65 + 3 + envelopeScript.length + 34 + 109 + 109) / 4);
   const revealFee = feeFor(revealVb, feeRate);
   // Reveal math: commit P2TR + 2 × DUST(asset inputs) = 4 × DUST(outputs) + revealFee. commitValue covers the
   // output-side DUST deficit + revealFee (the two asset inputs supply 2 × DUST toward the four outputs).
@@ -26287,10 +26341,10 @@ async function buildAndBroadcastLpAddPoolInit({
   } catch {}
 
   // 13. Broadcast
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'POOL_INIT', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
 
   try {
     recordActivity({
@@ -26368,10 +26422,10 @@ async function buildAndBroadcastLpAddVariant0({
 
   // 2. Carve asset inputs
   _progress('carve:assetA');
-  const utxoA = await carveExactAmount({ assetIdHex: canonAHex, amount: dA });
+  const utxoA = await carveExactAmount({ assetIdHex: canonAHex, amount: dA, walletKeyOnly: true });
   if (!utxoA?.utxo) throw new Error('failed to carve asset-A input');
   _progress('carve:assetB');
-  const utxoB = await carveExactAmount({ assetIdHex: bytesToHex(canonB), amount: dB });
+  const utxoB = await carveExactAmount({ assetIdHex: bytesToHex(canonB), amount: dB, walletKeyOnly: true });
   if (!utxoB?.utxo) throw new Error('failed to carve asset-B input');
 
   // 3. Share blinding + commits (same anchoring as POOL_INIT)
@@ -26466,7 +26520,7 @@ async function buildAndBroadcastLpAddVariant0({
   const feeRate = await getFeeRate();
   // Three tacit outputs: share @0, refund-A @1, refund-B @2 (both P2TR, present on every add).
   const revealVb = 11 + 41 + 41 + 41 + 31 + 43 + 43 +
-    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109 + 109) / 4);
+    Math.ceil((1 + 1 + 65 + 3 + envelopeScript.length + 34 + 109 + 109) / 4);
   const revealFee = feeFor(revealVb, feeRate);
   // Reveal math: commit P2TR + 2 × DUST(asset inputs) = 3 × DUST(outputs) + revealFee. commitValue covers the
   // output-side DUST deficit + revealFee (the two asset inputs supply 2 × DUST toward the three outputs).
@@ -26535,10 +26589,10 @@ async function buildAndBroadcastLpAddVariant0({
     recordOpening(revealTxidHex, 0, bytesToHex(lpAssetIdBytes), shareAmount, rShareSecp);
   } catch {}
 
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'LP_ADD', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
   invalidateHoldingsCache();
 
   return {
@@ -26585,6 +26639,8 @@ async function buildAndBroadcastLpRemove({
     if (!u?.utxo || u.amount === undefined || u.blinding === undefined) {
       throw new Error('each lpShareUtxo must be {utxo:{txid,vout}, amount, blinding}');
     }
+    // The reveal signs every share input with the wallet key.
+    if (u.stealthTweakedSk) throw new Error('this LP position was received by stealth send; send it to your own address first, then remove liquidity');
     burnSum += BigInt(u.amount);
   }
   if (burnSum !== shareAmount) {
@@ -26691,7 +26747,7 @@ async function buildAndBroadcastLpRemove({
   const feeRate = await getFeeRate();
   // Three tacit outputs now: recvA @0, recvB @1, share-refund @2 (P2TR, present on every remove).
   const revealVb = 11 + 41 + (41 * lpShareUtxos.length) + 31 + 31 + 43 +
-    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109) / 4);
+    Math.ceil((1 + 1 + 65 + 3 + envelopeScript.length + 34 + 109 * lpShareUtxos.length) / 4);
   const revealFee = feeFor(revealVb, feeRate);
   // Reveal tx math: commit P2TR + Σ DUST(LP-share inputs) = 3 × DUST(receive +
   // refund outputs) + revealFee. So commitValue must cover the output-side DUST
@@ -26766,10 +26822,10 @@ async function buildAndBroadcastLpRemove({
     recordOpening(revealTxidHex, 1, bytesToHex(canonB), dB, blindB.r_secp);
   } catch {}
 
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'LP_REMOVE', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
   invalidateHoldingsCache();
 
   return {
@@ -26881,11 +26937,11 @@ async function buildAndBroadcastProtocolFeeClaim({
   const cb = controlBlock(TAP_NUMS, parity);
 
   const feeRate = await getFeeRate();
-  // reveal: 1 input (commit) + 1 output (claim UTXO at recipient DUST)
-  const revealVb = 11 + 41 + 31 +
-    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length) / 4);
+  // reveal: 1 input (commit) + 1 output (the P2TR claim note at DUST)
+  const revealVb = 11 + 41 + 43 +
+    Math.ceil((1 + 1 + 65 + 3 + envelopeScript.length + 34) / 4);
   const revealFee = feeFor(revealVb, feeRate);
-  const commitValue = Math.max(DUST, revealFee);
+  const commitValue = DUST + revealFee;
 
   const holdings = await scanHoldings();
   const allUtxos = await getUtxos(wallet.address());
@@ -26938,10 +26994,10 @@ async function buildAndBroadcastProtocolFeeClaim({
     recordOpening(revealTxidHex, 0, bytesToHex(lpAssetIdBytes), amt, blindingBig);
   } catch {}
 
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'PROTOCOL_FEE_CLAIM', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
   invalidateHoldingsCache();
 
   return {
@@ -27071,6 +27127,7 @@ async function buildSwapVarEnvelopeSelfFulfill({
   const minOutBig = BigInt(minOut);
   if (din <= 0n) throw new Error('deltaIn must be > 0');
   if (din < dinMin || din > dinMax) throw new Error('deltaIn outside [min, max]');
+  if (!(Number.isInteger(expiryHeight) && expiryHeight > 0)) throw new Error('expiryHeight must be a block height above 0');
 
   const inputAmount = BigInt(assetInputUtxo.amount);
   if (din > inputAmount) {
@@ -27197,6 +27254,51 @@ async function buildSwapVarEnvelopeSelfFulfill({
   };
 }
 
+// Reveal size and funding for a self-fulfilled T_SWAP_VAR. The reveal always has four outputs of 43 vB each
+// (OP_RETURN, receipt, change or the padding in its place, refund) and pays three DUST outputs, so the commit
+// covers 3 × DUST + the reveal fee less the asset input's DUST.
+function swapVarRevealPlan(envelopeScriptLen, feeRate) {
+  const revealVb = 11 + 41 + 41 + 43 * 4
+    + Math.ceil((1 + 1 + 65 + 3 + envelopeScriptLen + 34 + 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, 3 * DUST + revealFee - DUST);
+  return { revealVb, revealFee, commitValue };
+}
+
+// The signed T_SWAP_VAR reveal for a commit output of `commitValue` at `commitSpk`.
+function buildSwapVarRevealTx({ built, commitTxidHex, commitValue, commitSpk, envelopeScript, cb, recipSpk, changeSpk, assetInputUtxo }) {
+  const hasChange = !built.isWholeInput;
+  const opReturnSpk = concatBytes(new Uint8Array([0x6a, 0x20]), built.envelopeHash);
+  const revealOutputs = [
+    { value: 0, script: opReturnSpk },
+    { value: DUST, script: recipSpk },
+  ];
+  if (hasChange) revealOutputs.push({ value: DUST, script: built.changeScriptPubKey });
+  // The refund output always closes the reveal, so its vout index is 3 whether or not a change output is
+  // present... which it would NOT be for a whole-input swap, where the change is absent and the refund would
+  // land at vout 2. Pad with the change script in that case so the refund is always vout 3, matching the fixed
+  // index the guest reads: an index that moved with the swap shape would make the fold read the wrong output.
+  if (!hasChange) revealOutputs.push({ value: DUST, script: changeSpk });
+  revealOutputs.push({ value: DUST, script: built.refundScriptPubKey });
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: assetInputUtxo.txid, vout: assetInputUtxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: revealOutputs,
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  return { revealTx, revealPrevouts };
+}
+
 // Full broadcast wrapper. Bitcoin tx:
 //   commit: sats inputs → P2TR(envelope script) + sats change
 //   reveal:
@@ -27204,7 +27306,7 @@ async function buildSwapVarEnvelopeSelfFulfill({
 //     vin[1]  = trader's asset UTXO (P2WPKH under wallet.priv)
 //     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
 //     vout[1] = receipt UTXO at recipient P2TR (DUST sats)
-//     vout[2] = change UTXO at trader P2TR (DUST; iff not whole-input)
+//     vout[2] = change UTXO at trader P2TR (DUST; or the padding output at the same script on a whole-input swap)
 //     vout[3] = refund UTXO at trader P2TR (DUST; ALWAYS present)
 // All three note outputs MUST be P2TR: the reflection commits each one's x-only key as the reflected note's
 // spend authority, and a note with no auth key is unspendable. The intent binds all three scripts.
@@ -27254,14 +27356,8 @@ async function buildAndBroadcastSwapVarSelfFulfill({
     throw new Error('swap_var: builder returned no refund script');
   }
 
-  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + (hasChange ? 31 : 0) + 31 /* refund */;
-  const revealVb = 11 + 41 + 41 + vbBaseOuts
-    + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
-
   const feeRate = await getFeeRate();
-  const revealFee = feeFor(revealVb, feeRate);
-  const totalOutputDust = DUST /* receipt */ + (hasChange ? DUST : 0);
-  let commitValue = Math.max(DUST, totalOutputDust + revealFee - DUST /* asset input */);
+  const { revealFee, commitValue } = swapVarRevealPlan(envelopeScript.length, feeRate);
 
   const holdings = await scanHoldings();
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
@@ -27297,34 +27393,9 @@ async function buildAndBroadcastSwapVarSelfFulfill({
   const commitTxidHex = txid(commitTx);
 
   _progress('tx:reveal:build');
-  const opReturnSpk = concatBytes(new Uint8Array([0x6a, 0x20]), built.envelopeHash);
-  const revealOutputs = [
-    { value: 0, script: opReturnSpk },
-    { value: DUST, script: recipSpk },
-  ];
-  if (hasChange) revealOutputs.push({ value: DUST, script: changeNoteSpk });
-  // The refund output always closes the reveal, so its vout index is 3 whether or not a change output is
-  // present... which it would NOT be for a whole-input swap, where the change is absent and the refund would
-  // land at vout 2. Pad with the change script in that case so the refund is always vout 3, matching the fixed
-  // index the guest reads: an index that moved with the swap shape would make the fold read the wrong output.
-  if (!hasChange) revealOutputs.push({ value: DUST, script: changeSpk });
-  revealOutputs.push({ value: DUST, script: refundNoteSpk });
-  const revealTx = {
-    version: 2, locktime: 0,
-    inputs: [
-      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
-      { txid: assetInputUtxo.txid, vout: assetInputUtxo.vout | 0, sequence: 0xfffffffd, witness: [] },
-    ],
-    outputs: revealOutputs,
-  };
-  const revealPrevouts = [
-    { value: commitValue, script: commitSpk },
-    { value: DUST, script: p2wpkhScript(wallet.pub) },
-  ];
-  revealTx.inputs[0].witness = signTaprootScriptPathInput(
-    revealTx, revealPrevouts, envelopeScript, cb,
-  );
-  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  const { revealTx, revealPrevouts } = buildSwapVarRevealTx({
+    built, commitTxidHex, commitValue, commitSpk, envelopeScript, cb, recipSpk, changeSpk, assetInputUtxo,
+  });
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
@@ -27337,10 +27408,10 @@ async function buildAndBroadcastSwapVarSelfFulfill({
     }
   } catch {}
 
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'T_SWAP_VAR', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
 
   // Report the in-flight swap so /amm/pool/:id/head projects it for every
   // wallet before confirmation (coordination only — never validator-consulted).
@@ -27416,6 +27487,7 @@ async function buildSwapRouteEnvelopeSelfFulfill({
   if (!Array.isArray(pools)) throw new Error('pools must be an array');
   const inputAmount = BigInt(assetInputUtxo.amount);
   if (inputAmount <= 0n) throw new Error('input amount must be > 0');
+  if (!(Number.isInteger(expiryHeight) && expiryHeight > 0)) throw new Error('expiryHeight must be a block height above 0');
 
   const assetInHex = String(assetInputUtxo.asset_id_hex).toLowerCase();
   const assetOutHex = String(traderOutputAssetIdHex).toLowerCase();
@@ -27603,9 +27675,9 @@ async function buildAndBroadcastSwapRoute({
 
   // No change vout in self-fulfill (whole-input). 3 outputs: OP_RETURN + receipt + the intent-bound
   // P2TR refund at vout 2 (where the guest homes the input back if the route no longer clears).
-  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + 43 /* refund */;
+  const vbBaseOuts = 43 /* OP_RETURN */ + 43 /* receipt */ + 43 /* refund */;
   const revealVb = 11 + 41 + 41 + vbBaseOuts
-    + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
+    + Math.ceil((1 + 1 + 65 + 3 + envelopeScript.length + 34 + 109) / 4);
 
   const feeRate = await getFeeRate();
   const revealFee = feeFor(revealVb, feeRate);
@@ -27676,10 +27748,10 @@ async function buildAndBroadcastSwapRoute({
     recordOpening(revealTxidHex, 1, traderOutputAssetIdHex, built.deltaOutLast, built.rReceiptScalar);
   } catch {}
 
-  _progress('tx:commit:broadcast');
-  await broadcast(commitHex);
-  _progress('tx:reveal:broadcast');
-  await broadcastWithRetry(revealHex);
+  await broadcastCommitReveal({
+    label: 'T_SWAP_ROUTE', commitHex, commitTxid: commitTxidHex,
+    revealTx, revealPrevouts, revealHex, revealTxid: revealTxidHex, revealFee, onProgress: _progress,
+  });
 
   try {
     recordActivity({
@@ -29997,7 +30069,7 @@ async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddr
 // Used by amount-based publish flows (Instant listing by amount, etc.)
 // so the form can accept an arbitrary amount instead of forcing the
 // user to pre-pick a specific lot.
-async function carveExactAmount({ assetIdHex, amount, recipientPubHex = null }) {
+async function carveExactAmount({ assetIdHex, amount, recipientPubHex = null, walletKeyOnly = false }) {
   await ensurePrivkey();
   amount = BigInt(amount);
   if (amount <= 0n) throw new Error('amount must be > 0');
@@ -30030,7 +30102,9 @@ async function carveExactAmount({ assetIdHex, amount, recipientPubHex = null }) 
   // to the recipient's address — returning the unmoved UTXO would leave
   // funds at the wrong key.
   const exact = available.find(u => u.amount === amount);
-  if (exact && recipientPubHex == null) return { ...exact, splitTxid: null };
+  // walletKeyOnly: the caller signs the carved input with the wallet key, so a stealth-received lot is moved to
+  // the wallet key by the CXfer below rather than returned as is.
+  if (exact && recipientPubHex == null && !(walletKeyOnly && exact.stealthTweakedSk)) return { ...exact, splitTxid: null };
   const availLargest = available[0].amount;
   let coverUtxos;
   if (exact) {
@@ -47965,6 +48039,7 @@ function _wirePoolLpRemoveForm() {
           utxo: { txid: utxo.utxo.txid, vout: utxo.utxo.vout },
           amount: BigInt(utxo.amount),
           blinding: BigInt(utxo.blinding),
+          stealthTweakedSk: utxo.stealthTweakedSk || null,
         }],
         feeBps: pool.fee_bps,
         poolCapabilityFlags: Number(pool.capability_flags || 0),
@@ -48217,7 +48292,7 @@ function _wirePoolSwapForm() {
     const best = previewSwapRoute({ fromAid, toAid, amountIn: deltaIn, pools: _poolListCache || [] });
     if (!best) { _setPoolOut(out, '✗ no pool or multi-hop route for this pair', 'error'); return; }
     let carved;
-    try { carved = await carveExactAmount({ assetIdHex: fromAid, amount: deltaIn }); }
+    try { carved = await carveExactAmount({ assetIdHex: fromAid, amount: deltaIn, walletKeyOnly: true }); }
     catch (e) { _setPoolOut(out, `✗ carve failed: ${e.message}`, 'error'); return; }
     if (!carved?.utxo) { _setPoolOut(out, '✗ insufficient balance to carve input', 'error'); return; }
 
@@ -78906,6 +78981,7 @@ export {
   // acts as both trader (intent sig) and settler (kernel sig from
   // excess scalar). Single Bitcoin tx, no off-chain coordination.
   buildSwapVarEnvelopeSelfFulfill, buildAndBroadcastSwapVarSelfFulfill,
+  swapVarRevealPlan, buildSwapVarRevealTx, assertRevealFunded, broadcastCommitReveal, _recoverPendingReveal,
   // AMM multi-hop swap (T_SWAP_ROUTE 0x33) — atomic 2..4-hop route in
   // one Bitcoin tx. Reuses T_SWAP_VAR's crypto stack (Pedersen + BP+
   // m=2 + kernel sig under tacit-kernel-v1); no Groth16, no ceremony.
