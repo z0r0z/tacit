@@ -7,7 +7,7 @@
 //          sent by the wallet (no relay), then the history rebuilt from chain logs names all three
 //   hub    tacit.finance/pay read-only against mainnet with KEY: links made for the ETH page before it moved open on
 //          /pay/eth/; BTC and TAC balances read; each kind of address routes as it should, a tacit1 from before the pool
-//          lane included (a silent payment in BTC, a shielded transfer in TAC); the receive addresses
+//          lane included (a silent payment in BTC, a shielded transfer in TAC); the receive addresses and their QR codes
 //   btcsend no network: a silent payment through /pay's Send form to a tacit1 (both forms), captured, found by its recipient
 //   firstrun no network: a first visit with no wallet leads with a new passkey wallet, a failed way in is said beside the options, and
 //          every module a page preloads is fetched once
@@ -91,19 +91,20 @@ const openKey = async (p, key) => {
   await p.click(`#${id}-in [data-in="key"]`);
   await p.waitForSelector('#tabs:not([hidden])');
 };
-// The Receive tab's QR code, drawn to a canvas in the page, decoded here when jsQR is installed (JSQR=<its path>).
+// A QR code (the ETH page's Receive by default), drawn to a canvas in the page, decoded here when jsQR is installed
+// (JSQR=<its path>).
 let jsQR = null;
 try { jsQR = require(process.env.JSQR || 'jsqr'); } catch {}
-async function readQr(p) {
+async function readQr(p, sel = '#f-qr svg') {
   if (!jsQR) return null;
-  const { w, px } = await p.evaluate(async () => {
-    const svg = document.querySelector('#f-qr svg'), w = 600, img = new Image();
+  const { w, px } = await p.evaluate(async (sel) => {
+    const svg = document.querySelector(sel), w = 600, img = new Image();
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(svg));
     await img.decode();
     const c = Object.assign(document.createElement('canvas'), { width: w, height: w }), g = c.getContext('2d');
     g.imageSmoothingEnabled = false; g.drawImage(img, 0, 0, w, w);
     return { w, px: [...g.getImageData(0, 0, w, w).data] };
-  });
+  }, sel);
   return jsQR(Uint8ClampedArray.from(px), w, w)?.data ?? '';
 }
 const getPaidLink = async (p, amount, note) => {
@@ -294,6 +295,14 @@ try {
     await p.waitForFunction(() => [...document.querySelectorAll('.addr code')].every((c) => c.textContent !== '…'), null, { timeout: 120e3 }).catch(() => {});
     const addrs = await p.$$eval('.addr code', (x) => x.map((c) => c.textContent));
     ok(/^tacit1qzz/.test(addrs[0]) && addrs[0].length === 276 && /^sp1/.test(addrs[1]) && /^bc1/.test(addrs[2]), `receive shows the unified Tacit, silent-payment and Bitcoin addresses: ${addrs.map((a) => a.slice(0, 10)).join(' ')}`);
+    await p.waitForSelector('#f-aqr svg', { timeout: 30e3 }).catch(() => {});
+    const qa = await p.$('#f-aqr svg') ? await readQr(p, '#f-aqr svg') : '';
+    ok(qa === null ? !!(await p.$('#f-aqr svg')) : qa === addrs[0], qa === null ? 'Receive shows a QR code (install jsqr to decode it)' : 'Receive’s QR code is the Tacit address');
+    await p.click('[data-qrv="btc"]').catch(() => {});
+    await p.waitForFunction(() => /Bitcoin address/.test(document.querySelector('#f-aqr svg')?.getAttribute('aria-label') || ''), null, { timeout: 10e3 }).catch(() => {});
+    const qb = await readQr(p, '#f-aqr svg');
+    ok(qb === null ? /Bitcoin address/.test(await p.getAttribute('#f-aqr svg', 'aria-label')) : qb === `bitcoin:${addrs[2]}`, `its switch shows the Bitcoin address as a bitcoin: link${qb ? `: ${qb.slice(0, 20)}…` : ''}`);
+    await p.click('[data-qrv="tacit"]').catch(() => {});
     ok(await p.evaluate(() => document.body.classList.contains('in') && getComputedStyle(document.querySelector('.hero p')).display === 'none'), 'signed in, the pitch gives way to the form');
     ok(await p.evaluate(() => {
       const tabs = [...document.querySelectorAll('#tabs [role="tab"]')], sel = tabs.filter((t) => t.getAttribute('aria-selected') === 'true'), f = document.getElementById('form');
@@ -317,6 +326,9 @@ try {
     await p.fill('#f-qamt', '1.5'); await p.fill('#f-qfor', 'hub test'); await p.click('#f-qcopy');
     const ask = await p.evaluate(() => navigator.clipboard.readText());
     ok(new RegExp(`/pay/#tac&pay=${tacAddrs[0]}&amount=1\\.5&for=hub\\+test$`).test(ask), `a TAC payment link from Receive: ${ask.slice(0, 40)}…${ask.slice(-30)}`);
+    await p.waitForFunction(() => /1\.5 TAC/.test(document.querySelector('#f-qqr svg')?.getAttribute('aria-label') || ''), null, { timeout: 10e3 }).catch(() => {});
+    const qr = await readQr(p, '#f-qqr svg');
+    ok(qr === null ? !!(await p.$('#f-qqr svg')) : qr === ask, qr === null ? 'the request has a QR code (install jsqr to decode it)' : 'the request’s QR code is the link Copy made');
     await p.goto(ask.replace(/^https?:\/\/[^/]+/, origin));
     await p.waitForFunction(() => /1\.5 TAC/.test(document.querySelector('#hreq')?.textContent || '') && document.querySelector('#f-to')?.value, null, { timeout: 60e3 }).catch(() => {});
     await p.waitForFunction(() => /shielded pool|err/.test(document.querySelector('#f-rcpt')?.textContent || ''), null, { timeout: 60e3 }).catch(() => {});
