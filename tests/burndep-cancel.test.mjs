@@ -282,7 +282,7 @@ function makeWorld() {
       return json({ ok: true, hops: 1, bundle: { etch: { tx: '0x00', blockHash: 'aa'.repeat(32) }, cxfers: [{ tx: '0x00', txid: withHex('bb'.repeat(32)), inputs: [{ prevTxid: withHex(NOTE_TXID), prevVout: 0 }], outputs: [], rangeProof: '0x', kernelSig: '0x' }] } });
     }
     if (u.pathname === '/reflection/burndep/check') return json({ ok: true, admitted: true, reason: 'admitted' });
-    if (u.pathname === '/reflection/burndep/status') return json({ ok: true, status: migrateConfirmed ? 'folded' : 'unconfirmed' });
+    if (u.pathname === '/reflection/burndep/status') return json(migrateConfirmed ? { ok: true, status: 'not-a-burn-deposit', burnBlockHeight: 900 } : { ok: true, status: 'unconfirmed' });
     if (u.pathname.startsWith('/chain/tx/')) {
       const txid = u.pathname.slice('/chain/tx/'.length);
       const rec = chainTxs.get(stripHex(txid));

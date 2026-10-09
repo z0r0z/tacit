@@ -260,6 +260,15 @@ const burn = await rd.buildBurnDepositRevealTxs({ prims, burnHome: mig.burnHome,
   ok('burn reveal classifies as a burn-deposit carrying the exact assetId/nullifier/destLeaf/target');
 }
 {
+  // The fee is worked out on the transaction as sent, its change output included: the burn pays at least its rate on its own size.
+  for (const rate of [3, 10, 25]) {
+    const b = rate === 3 ? burn : await rd.buildBurnDepositRevealTxs({ prims, burnHome: mig.burnHome, envelope, fundingUtxo: { ...fundingUtxo2, value: 50_000 }, feeRate: rate });
+    assert.strictEqual(parseTx(Buffer.from(b.revealHex, 'hex')).outputs.length, 2, 'the burn returns its change');
+    assert.ok(b.fee >= Math.ceil(b.vsize * rate) && b.fee <= Math.ceil(b.vsize * rate) + 2 * rate, `the burn pays its rate on its own size (${b.fee} sats for ${b.vsize} vB at ${rate} sat/vB)`);
+  }
+  ok('the burn pays its fee rate on its size with the change output, at 3, 10 and 25 sat/vB');
+}
+{
   const ins = extractInputs(burn.revealHex);
   assert.strictEqual(ins.length, 2, 'burn reveal spends the burn-home and the funding UTXO');
   assert.strictEqual(ins[0].prevTxid.toLowerCase(), ('0x' + reverseHex(mig.burnHome.txid)).toLowerCase(), 'vin[0] is the burn-home (reflect.rs\'s "burned outpoint")');

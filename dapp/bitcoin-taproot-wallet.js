@@ -423,7 +423,7 @@ export function makeBtcWallet({ priv, hrp = 'bc', fetchUtxos, broadcastTx, fetch
       catch (e) {
         lastErr = e;
         const msg = (e && e.message) || '';
-        if (/already in block|already known/i.test(msg)) return null;
+        if (/already[- ]in[- ]block|already[- ]known|already in utxo set|already[- ]in[- ]mempool/i.test(msg)) return null;
         if (/too-long-mempool-chain/i.test(msg)) {
           throw new Error(
             'Bitcoin mempool ancestor-chain limit hit (25 unconfirmed parents). ' +

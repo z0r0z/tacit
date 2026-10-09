@@ -356,10 +356,22 @@ export function makeBurnDepositReveal({ pool, secp, prims: defaultPrims = null }
         return vsizeOf(P, burnTx).vsize;
       }
       let vb = sign();
-      const fee = P.feeFor(vb, rate);
+      let fee = P.feeFor(vb, rate);
       const change = plan.burnHome.value + fundingUtxo.value - DUST - fee;
       if (change < 0) throw new Error(`burn-deposit-reveal: insufficient funds (short by ${-change} sats)`);
-      if (change >= DUST) { burnTx.outputs.push({ value: change, script: fundingWpkhSpk }); vb = sign(); }
+      if (change >= DUST) {
+        // The change output adds to the size, so the fee is worked out again on the transaction that carries it, and the
+        // change is what is left after that fee (another pass covers a signature a byte longer).
+        burnTx.outputs.push({ value: change, script: fundingWpkhSpk });
+        for (let i = 0; i < 3; i++) {
+          vb = sign(); fee = P.feeFor(vb, rate);
+          const next = plan.burnHome.value + fundingUtxo.value - DUST - fee;
+          if (next < DUST) { burnTx.outputs.pop(); vb = sign(); break; }
+          if (burnTx.outputs[1].value === next) break;
+          burnTx.outputs[1].value = next;
+        }
+        if (burnTx.outputs[1]) vb = sign();                          // signed over the value it carries
+      }
       const revealStd = checkStandard(P, burnTx, prevouts, 'burn-deposit reveal');
 
       // Read it back exactly the way the guest reads it — classifyConfidentialTx already routes through
@@ -381,7 +393,7 @@ export function makeBurnDepositReveal({ pool, secp, prims: defaultPrims = null }
       }
 
       return {
-        burnTx, revealHex, revealTxid: P.txid(burnTx), fee, feeRate: rate, vsize: revealStd.vsize,
+        burnTx, revealHex, revealTxid: P.txid(burnTx), fee: revealStd.fee, feeRate: rate, vsize: revealStd.vsize,
         envelope: { assetId: envelope.assetId, nullifier: envelope.nullifier, destLeaf: envelope.destLeaf, target: envelope.target },
         burnedNote: { txid: plan.burnHome.txid, vout: plan.burnHome.vout, amount: plan.burnHome.amount, blinding: plan.burnHome.blinding },
       };

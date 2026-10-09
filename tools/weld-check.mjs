@@ -1867,6 +1867,8 @@ await step('bridge', async () => {
   let dumps = 0;
   await api(/^https:\/\/api\.tacit\.finance\/reflection\/dump/, (route) => { dumps++; return json(route, { attestedHeight: 970000,
     snapshot: { height: 970000, liveTriples: [[pool.outpointKey('0x' + rev(N1), 0), '0x00', '0x00', '0x00', 0], [pool.outpointKey('0x' + rev(N3), 0), '0x00', '0x00', '0x00', 0], [pool.outpointKey('0x' + rev(N4), 0), '0x00', '0x00', '0x00', 0]], burnNodes: [], noteLeaves: [leafOf(25000000000n)], pendingDepositRecords: [] } }); });
+  // Bitcoin's proof on Ethereum stands at block 970,000: the bridge waiting for it is 50 blocks short.
+  await api(/^https:\/\/api\.tacit\.finance\/reflection\/status/, (route) => json(route, { network: 'mainnet', attestedHeight: 970000, tipHeight: 970000, lagBlocks: 0 }));
   // Any other transaction Bitcoin has never seen (the stuck bridge's two): registered first, so the fixtures below win.
   await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/[0-9a-f]{64}/, (route) => route.fulfill({ status: 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not-found"}' }));
   await api(/^https:\/\/api\.tacit\.finance\/chain\/tx\/(c1|c2|c3|c4){32}/, (route, u) => json(route, { txid: u.pathname.split('/').pop(),
@@ -1893,12 +1895,17 @@ await step('bridge', async () => {
   const journal = [recOf('d1'.repeat(32), 'rburn-mined', { burnHeight: 970050, createdAt: Date.now() - 3e6 }),
     recOf('d2'.repeat(32), 'rfolded', { createdAt: Date.now() - 2e6, lastError: { message: 'free relayed settles for today are used up', at: Date.now() }, errorCount: 1 }),
     recOf('d3'.repeat(32), 'not-recorded', { createdAt: Date.now() - 1e6 }),
-    recOf('d4'.repeat(32), 'rburn-signed', { createdAt: Date.now() - 5e5, lastError: { message: 'bad-txns-inputs-missingorspent', at: Date.now() }, errorCount: 3 })];
+    recOf('d4'.repeat(32), 'rburn-signed', { createdAt: Date.now() - 5e5, lastError: { message: 'bad-txns-inputs-missingorspent', at: Date.now() }, errorCount: 3 }),
+    // One that arrived an hour ago: listed under Arrived, with its Ethereum transaction, until Done.
+    recOf('d5'.repeat(32), 'minted', { createdAt: Date.now() - 9e6, mintedAt: Date.now() - 36e5, mintedTxHash: '0x' + 'ab'.repeat(32) })];
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify(journal)]);
   await r.page.click('#wallet-body [data-in="paste"]');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+  // The dashboard names the bridges waiting for their holder, and opens the Bridge tab.
+  await until(r.page, () => /bridges of TAC to Ethereum are waiting for you/.test(document.querySelector('#dash-due')?.textContent || ''), null, 60000);
+  ok(/3 bridges of TAC to Ethereum are waiting for you/.test(await text(r.page, '#dash-due')), `bridge: the dashboard says three bridges wait for their holder (${(await text(r.page, '#dash-due')).replace(/\s+/g, ' ').slice(0, 120)})`);
   // The Bitcoin sheet's TAC line links here.
   await go(r.page, '#bitcoin');
   await until(r.page, () => !!document.querySelector('#btc-body a[data-link="bridge"]'), null, 120000);
@@ -1911,23 +1918,35 @@ await step('bridge', async () => {
     `bridge: the notes are listed, the one over 1,000 TAC with its reason and a split control, not a dead choice (${notes})`);
   await r.page.check(`#bridge-body input[value="${N1}:0"]`);
   await until(r.page, () => /One Bitcoin transaction|err/.test(document.querySelector('#br-rcpt')?.innerHTML || ''), null, 120000);
+  ok(/Bridge/.test(await text(r.page, '[data-tac-mode="bridge"]')) && !!(await r.page.$('[data-tac-mode="bridge"] .dot.live')) && /waiting for you/.test(await text(r.page, '[data-tac-mode="bridge"] .sr')),
+    'bridge: the Bridge tab carries a dot, and says to a screen reader that bridges wait for their holder');
   const rc = (await text(r.page, '#br-rcpt')).replace(/\s+/g, ' ');
   ok(/One Bitcoin transaction/.test(rc) && /250(\.0+)? private TAC on Ethereum/.test(rc) && /Relay fee\s*None/.test(rc), `bridge: a tracked note checks out as one Bitcoin transaction with no relay fee (${rc.slice(0, 160)})`);
-  await until(r.page, () => /short of the fee/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, 120000).catch(() => {});
+  await until(r.page, () => /short of the/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, 120000).catch(() => {});
   // The check reads the whole reflection state: redrawing the sheet (another tab and back) must not read it again.
   const before = dumps;
   await r.page.click('[data-tac-mode="airdrop"], [data-tac-mode="air"]'); await sleep(300); await r.page.click('[data-tac-mode="bridge"]');
-  await until(r.page, () => /short of the fee/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, 60000);
+  await until(r.page, () => /short of the/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, 60000);
   ok(dumps === before, `bridge: redrawing the sheet does not run the check, or read the reflection state, again (${before} → ${dumps})`);
   await r.page.check('#br-ack').catch(() => {});
-  ok(/short of the fee/.test(await text(r.page, '#br-rcpt')) && await r.page.isDisabled('#br-go'), 'bridge: a key with no sats for the fee cannot start it, and is told so');
+  ok(/has 0(\.0+)? BTC free for fees, short of the [\d,]+ sats this needs/.test(await text(r.page, '#br-rcpt')) && await r.page.isDisabled('#br-go'), `bridge: a key with no sats for the fee cannot start it, and is told what it needs (${(await text(r.page, '#br-rcpt')).replace(/\s+/g, ' ').slice(-140)})`);
   const rows = await r.page.$$eval('#bridge-body .brr', (xs) => xs.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
-  ok(rows.length === 4, `bridge: the four bridges under way are listed (${rows.length})`);
-  ok(/Recorded/.test(rows[0] || '') && /proof is at block/.test(rows[0] || '') && !!(await r.page.$('#bridge-body .brr:nth-child(1) .stp li.now')),
-    `bridge: one waiting for the proof shows its step and where the proof is (${(rows[0] || '').slice(0, 140)})`);
+  ok(rows.length === 5, `bridge: the four bridges under way and the one arrived are listed (${rows.length})`);
+  ok(/Recorded/.test(rows[0] || '') && /proof is at Bitcoin block 970,000; the burn is in block 970,050, 50 blocks on/.test(rows[0] || '') && /Started \d+ min ago/.test(rows[0] || '')
+    && !!(await r.page.$('#bridge-body .brr:nth-child(1) .stp li.now')) && /Check now/.test(rows[0] || '') && /Bitcoin bbd1d1/.test(rows[0] || '') && !/Your turn/.test(rows[0] || ''),
+    `bridge: one waiting for the proof shows its step, how many blocks the proof has to go, when it started, its burn and Check now (${(rows[0] || '').slice(0, 220)})`);
+  ok([1, 2, 3].every((i) => /Your turn/.test(rows[i] || '')), 'bridge: each bridge waiting for its holder says it is their turn');
+  ok(/Arrived/.test(rows[4] || '') && /Arrived 1 h ago/.test(rows[4] || '') && /Ethereum 0xabab/.test(rows[4] || '') && /Done/.test(rows[4] || '') && (await r.page.$$('#bridge-body .brr:last-child .stp li.done')).length === 4,
+    `bridge: an arrived bridge is listed with all its steps done, its Ethereum transaction and Done (${(rows[4] || '').slice(0, 200)})`);
+  await r.page.click('#bridge-body [data-bract="poll"]');
+  await until(r.page, () => /Not yet/.test(document.querySelector('#br-rstatus')?.textContent || ''), null, 60000);
+  ok(/Not yet\. .*50 blocks on/.test(await text(r.page, '#br-rstatus')), `bridge: Check now asks at once, and says the proof is not there yet (${await text(r.page, '#br-rstatus')})`);
+  await r.page.click('#bridge-body [data-bract="seen"]');
+  await until(r.page, () => document.querySelectorAll('#bridge-body .brr').length === 4, null, 30000);
+  ok(true, 'bridge: Done takes an arrived bridge off the list');
   ok(/Mint now/.test(rows[1] || '') && /Send it from/.test(rows[1] || '') && /free settles for today/.test(rows[1] || ''),
     `bridge: a mint the relay refused offers Mint now and sending it from the paying account (${(rows[1] || '').slice(0, 200)})`);
-  ok(/didn’t complete/.test(rows[2] || '') && /Recover/.test(rows[2] || ''), 'bridge: one that did not complete offers Recover');
+  ok(/didn’t complete/.test(rows[2] || '') && /Recover/.test(rows[2] || '') && /Check again/.test(rows[2] || ''), 'bridge: one that did not complete offers Recover, and to look at the burn again');
   ok(/Cancel this bridge/.test(rows[3] || '') && /has not taken this transaction/.test(rows[3] || ''), 'bridge: a signed transaction Bitcoin keeps rejecting offers to be cancelled');
   await r.page.click('#bridge-body [data-bract="cancel"]');
   await until(r.page, () => /Yes, cancel it/.test(document.querySelector('#bridge-body [data-bract="cancel"]')?.textContent || ''), null, 30000);

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tAE7A7Wguz2TvDztyTrXRDTsManwwzEas23wgXuaLp8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YKOZ8o4h6Dc2P/18cGz/7MipzioK6dQR3BjNXVKvbG8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
@@ -192,7 +192,11 @@ a.di { color: inherit; text-decoration: none; }
 .actr-f.err a { color: inherit; }
 .brs { margin: 0 0 18px; }
 .brr .actr-h a { flex: none; font-size: 12px; color: var(--mute); }
+.brr-a { display: flex; flex-wrap: wrap; gap: 8px; }
 .brr-a .btn { width: auto; min-height: 36px; margin: 0; padding: 6px 14px; }
+.brr .brdue { font-weight: 500; color: var(--warn); }
+.brl { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+.seg button .dot { display: inline-block; width: 6px; height: 6px; margin: 0 0 1px 6px; vertical-align: middle; }
 .brns { display: grid; }
 .brn { margin-top: 8px; }
 .brn > span { display: grid; gap: 2px; }
@@ -2265,7 +2269,7 @@ function setKey(k) {
 // tacit.js opens the passphrase-locked and Bitcoin-signed keys exactly as tacit.finance does. It loads only for
 // those paths, as a library: it reads the shared network once at import, so this page pins mainnet for its visit,
 // and any call that rewrites the app's linked-wallet records is run with them put back afterwards.
-const TACIT_URL = '/tacit.js?cb=22713f3a';
+const TACIT_URL = '/tacit.js?cb=f6c8ff4f';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-lite-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -4009,17 +4013,19 @@ function wireHeld(el, status) {
       if (!kept && pf.ok && !(pf.burnFeeRate > ux.RETURN_FEE_CEILING)) XB.rv = { key, at: Date.now(), pf };     // only a check that passed, at a fee that can be sent, is kept
       if (my !== seq || !rc.isConnected) return;
       if (!pf.ok) { mount(rc, html``); warn(rc, xbCheckText(pf.steps.find((x) => !x.ok) || { name: '' })); return; }
-      const sats = Math.ceil(410 * pf.burnFeeRate) + 846, have = BTC.pub === pub && BTC.got >= 1 ? BTC.sats : null;
+      // The fee as the builder works it out, against the coins it would spend (this key's plain sats; asset notes and locks left out).
+      const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+      if (my !== seq || !rc.isConnected) return;
+      const cost = ux.bridgeCost({ path: 'reflected', feeRate: pf.burnFeeRate, coins: coins || [], noteSats: n.sats, p2tr: true }), sats = cost.fee;
       // A return burn is not sent while Bitcoin's fees are above the ceiling: nothing is signed, so say so here rather than at the press.
       if (pf.burnFeeRate > ux.RETURN_FEE_CEILING) { mount(rc, html``); warn(rc, html`Bitcoin’s fees are high right now (${Math.round(pf.burnFeeRate)} sat/vB, about ${sats.toLocaleString('en-US')} sats for this). Bringing tETH back waits for them to fall under ${ux.RETURN_FEE_CEILING} sat/vB.`); return; }
-      review = { note: n, pf, short: have != null && have < BigInt(sats) };
+      review = { note: n, pf, short: !!coins && !cost.ok };
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(n.amount, 8, 6)} private tETH on Ethereum</b></div>
         <div class="kv"><span>Bitcoin fee</span><b>about ${sats.toLocaleString('en-US')} sats</b></div>
         <div class="kv"><span>Relay fee</span><b>None</b></div>
         <div class="kv"><span>Arrives</span><b>usually a few hours, sometimes up to a day</b></div>`);
-      if (review.short) warn(rc, BTC.pending > 0n ? html`This key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, with ${fmt(BTC.pending, 8, 8)} still arriving. Once that confirms it covers the fee.`
-        : html`This key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, short of the fee. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+      if (review.short) warn(rc, html`This key’s Bitcoin address has ${fmt(BigInt(cost.have || 0), 8, 8)} BTC free for fees, short of the ${cost.need.toLocaleString('en-US')} sats this needs.${BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : ''} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       ackRow.hidden = false; gateOk();
     } catch (e) { if (my === seq && rc.isConnected) quoteErr(rc, brFail(e)); }
   };
@@ -5136,6 +5142,9 @@ function paintTacPrice() {
   box.ontoggle = () => { if (box.open && TPX.amm === undefined) loadPrivateAmm().then(paintTacPrice); };
 }
 render.tac = () => {
+  // The Bridge tab carries a dot while a bridge of this key is under way.
+  const brs = S.key ? brJournal(S.key.pubHex).filter((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered') : [];
+  $('[data-tac-mode="bridge"]').innerHTML = brs.length ? html`Bridge<i class="dot live" aria-hidden="true"></i><span class="sr">, ${brs.some(brDue) ? 'waiting for you' : 'under way'}</span>`.s : 'Bridge';
   renderTacBal($('#tac-bal'));
   paintTacPrice();
   for (const t of ['air', 'buy', 'sell', 'bridge']) $(`#${t}-body`).hidden = TAB.tac !== t;
@@ -5150,22 +5159,70 @@ load.tac = () => { loadTacPrice().then(paintTacPrice).catch(() => {}); return Pr
 // tracks (what an ordinary transfer leaves) is burned in one Bitcoin transaction; TAC it has never seen first moves to a
 // burn address and is then burned through a miner, a second step its row offers when it is ready. Either way the mint
 // follows once the proof records the burn. The journal is only a cache: a bridge is rebuilt from its burn and the key.
-const BR = { pub: null, notes: null, at: 0, loading: null, err: null, pick: null, refl: null, autoAt: 0, auto: false, rv: null, acked: null, drop: null };
+const BR = { pub: null, notes: null, at: 0, loading: null, err: null, pick: null, refl: null, reflAt: 0, reflP: null, autoAt: 0, auto: false, rv: null, acked: null, drop: null };
 const BR_DONE = ['minted', 'reclaimed'], BR_HELD = ['not-recorded', 'stopped', 'recovered'];   // held: waiting for the holder
 const BR_STEPS = { reflected: ['Burn sent', 'Confirmed', 'Recorded', 'Arrived'], deposit: ['Moved', 'Burned', 'Recorded', 'Arrived'] };
 const BR_AT = { 'rburn-signed': 0, 'rburn-sent': 1, 'rburn-mined': 2, rfolded: 3,
   'migrate-signed': 0, 'migrate-sent': 0, 'migrate-confirmed': 1, traced: 1, 'burn-signed': 1, 'burn-submitted': 1, 'burn-mined': 2, registered: 2, folded: 3 };
+// Stages that wait on Bitcoin, its proof on Ethereum or a recovery, which this page checks by itself: "Check now" asks at once.
+// A signed burn or move, sent or not: one Bitcoin keeps refusing can be cancelled (cancelSigned asks Bitcoin first).
+const BR_SIGNED = ['rburn-signed', 'rburn-sent', 'migrate-signed', 'migrate-sent'];
+const BR_WAIT = ['rburn-sent', 'rburn-mined', 'migrate-sent', 'migrate-confirmed', 'burn-submitted', 'burn-mined', 'registered', 'recovering', 'reclaim-sent'];
 const brUx = async () => (await loadTacit()).bridgeUx();
 const brId = (n) => `${n.txid}:${n.vout}`;
 // The asset a bridge record carries: TAC unless it says otherwise (tETH comes back from Bitcoin through the same journal).
 const brTk = (rec) => rec?.source?.ticker || 'TAC';
-const brAmt = (rec) => `${fmt(BigInt(rec.source.amount), 8, brTk(rec) === 'TAC' ? 4 : 6)} ${brTk(rec)}`;
-const brRecords = (pub) => (T && pub ? T.bridgeUx().list(pub).filter((r) => !BR_DONE.includes(r.stage) && brTk(r) === 'TAC').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)) : []);
+// An amount as the module hands it (a bigint) or as the journal stores it ({ __big }).
+const brRaw = (v) => BigInt(v?.__big ?? v ?? 0);
+const brAmt = (rec) => `${fmt(brRaw(rec.source.amount), 8, brTk(rec) === 'TAC' ? 4 : 6)} ${brTk(rec)}`;
+// Read from the journal itself until tacit.js has loaded, so a visit shows its bridges at once (a press loads it).
+const brList = (pub) => (!pub ? [] : T ? T.bridgeUx().list(pub) : brJournal(pub));
+const brRecords = (pub) => brList(pub).filter((r) => !BR_DONE.includes(r.stage) && brTk(r) === 'TAC').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+// This key's TAC bridges as the journal holds them, read without tacit.js: the dashboard and the tab read it at every paint.
+const brJournal = (pub) => {
+  try { const l = JSON.parse(localStorage.getItem(`tacit-burndep-bridge-v1:mainnet:${pub}`) || '[]'); return Array.isArray(l) ? l.filter((r) => r?.stage && brTk(r) === 'TAC') : []; }
+  catch { return []; }
+};
 // Whether this key has a bridge under way, read from the journal itself so tacit.js loads only for a key that has one.
 const brJournaled = (pub) => { try { return /"stage":"(?!minted"|reclaimed")/.test(localStorage.getItem(`tacit-burndep-bridge-v1:mainnet:${pub}`) || ''); } catch { return false; } };
-// The relay would not take a mint (a fee floor, its load): it can be sent from the paying account instead. A mint whose
-// wait ran out is still in the relay's queue, and is not offered.
-const brRefused = (err) => { const m = String(err?.message || err || ''); return !waitRanOut({ message: m }) && /relay|free relayed|fee below|floor|capacity|memory cap|temporarily|too many|rate.?limit|\b(429|502|503)\b|settle/i.test(m); };
+// Recover returns TAC burned from this key's own address; a note a cross-out made at its Taproot output is not one it can.
+const brRecoverable = (rec) => brTk(rec) === 'TAC' && !rec.source?.p2tr;
+// A burn the miner has held this long, or one signed it would not take, can be moved back to the wallet instead.
+const BR_MINER_WAIT = 12 * 3600e3;
+const brMinerStuck = (rec) => (rec.stage === 'burn-signed' && !!rec.lastError && (rec.errorCount || 0) >= 3)
+  || (rec.stage === 'burn-submitted' && Date.now() - Number(rec.submittedAt || rec.updatedAt || Date.now()) > BR_MINER_WAIT);
+// What a bridge waits on its holder for, as the press its row offers: a burn, a mint the relay did not take, a move back, a
+// recovery, or a signed transaction Bitcoin keeps refusing. Empty while it goes on by itself.
+const brDue = (rec) => (rec.stage === 'traced' ? 'Burn it'
+  : (rec.stage === 'folded' || rec.stage === 'rfolded') && rec.lastError && !waitRanOut(rec.lastError) ? 'Mint now'
+  : rec.stage === 'stopped' || brMinerStuck(rec) ? 'Move it back' : rec.stage === 'not-recorded' && brRecoverable(rec) ? 'Recover'
+  : BR_SIGNED.includes(rec.stage) && rec.lastError && (rec.errorCount || 0) >= 3 ? 'Try again or cancel' : '');
+// Where a bridge is, in a few words (the dashboard's line).
+const brWhere = (rec) => ({
+  'rburn-signed': 'being sent to Bitcoin', 'migrate-signed': 'being sent to Bitcoin', 'rburn-sent': 'waiting for its Bitcoin confirmation',
+  'migrate-sent': 'waiting for its Bitcoin confirmation', 'migrate-confirmed': 'moved, and being checked', 'burn-signed': 'with a miner', 'burn-submitted': 'with a miner',
+  'rburn-mined': 'waiting for Bitcoin’s proof on Ethereum', 'burn-mined': 'waiting for Bitcoin’s proof on Ethereum', registered: 'waiting for Bitcoin’s proof on Ethereum',
+  rfolded: 'being minted', folded: 'being minted', recovering: 'coming back to your Bitcoin address', 'reclaim-sent': 'moving back to your Bitcoin address',
+})[rec.stage] || 'on its way';
+// Arrived bridges stay listed for three days, until their Done is pressed (kept per key in this browser).
+const BR_SEEN = 'tacit-lite-bridge-seen-v1';
+const brArrived = (pub) => {
+  const seen = new Set(store.get(BR_SEEN)?.[pub] || []);
+  return brList(pub).filter((r) => r.stage === 'minted' && brTk(r) === 'TAC' && !seen.has(r.id) && Date.now() - (r.mintedAt || 0) < 3 * 86400e3)
+    .sort((a, b) => (b.mintedAt || 0) - (a.mintedAt || 0));
+};
+function brSeen(pub, id) { const m = store.get(BR_SEEN) || {}; m[pub] = [...new Set([...(m[pub] || []), id])].slice(-50); store.set(BR_SEEN, m); }
+// How far Bitcoin's proof on Ethereum has reached (the block it attests), read at most once a minute.
+function brProof(force = false) {
+  if (!force && BR.reflAt && Date.now() - BR.reflAt < 60e3) return Promise.resolve(BR.refl);
+  return BR.reflP || (BR.reflP = fetch(`${API}/reflection/status?network=mainnet`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null))
+    .then((r) => { const h = Number(r?.attestedHeight); if (Number.isInteger(h) && h > 0) Object.assign(BR, { refl: h, reflAt: Date.now() }); return BR.refl; })
+    .catch(() => BR.refl).finally(() => { BR.reflP = null; }));
+}
+// The relay would not settle a mint for free (its daily free settles used up, a fee floor, a settle priced over what it carries):
+// sent from the paying account instead, the relay only proves it. Anything else (a busy service, a failed proof, a rate limit)
+// would fail the same way from the account, and a mint whose wait ran out is still in the relay's queue: neither is offered.
+const brRefused = (err) => { const m = String(err?.message || err || ''); return !waitRanOut({ message: m }) && /free relayed settles|fee below|below the (current )?floor|feegate|marginal cost|can.t take this one/i.test(m); };
 function brErr(e) {
   const m = String(e?.message || e || '');
   if (/another tab/i.test(m)) return 'This bridge is being moved on in another tab. Wait for it there, or close that tab and try again.';
@@ -5178,6 +5235,7 @@ function brCheckText(s) {
   if (s.name === 'not-tracked') return 'This TAC arrived recently: Bitcoin’s proof on Ethereum has not reached its block yet. Try again in a few hours.';
   if (s.name === 'reflected') return 'This TAC was received privately. One Bitcoin transaction sends it to your own address, and then it can be bridged.';
   if (s.name === 'old-leaf') return 'This TAC is held in an older note form that the bridge cannot burn directly. One Bitcoin transaction sends it to your own address in the current form, and then it can be bridged.';
+  if (s.name === 'bound') return 'This TAC is held in a note bound to another deployment, which the bridge does not burn.';
   if (s.name === 'source-ownership') return 'This TAC is not at this key’s own Bitcoin address.';
   if (s.name === 'source-confirmed') return 'This TAC is waiting for its Bitcoin confirmation.';
   if (s.name === 'trace') return `This TAC has passed through too many transfers to bridge (${s.detail}).`;
@@ -5191,7 +5249,7 @@ function loadBridge(force = false) {
   if (BR.loading) return BR.loading;
   const pub = S.key.pubHex;
   if (!force && BR.pub === pub && BR.notes && Date.now() - BR.at < 60e3) return Promise.resolve();
-  const refl = fetch(`${API}/reflection/status?network=mainnet`, { signal: within(20e3) }).then((r) => r.json()).catch(() => null);
+  const refl = brProof(force);
   return (BR.loading = withKey(async (t) => {
     const h = await t.scanHoldings(force);
     const tac = h instanceof Map ? [...h.entries()].find(([id, x]) => String(x.assetIdHex || id).toLowerCase() === TAC_BTC_ID)?.[1] : null;
@@ -5204,45 +5262,72 @@ function loadBridge(force = false) {
     // The notes that can go first, larger first.
     return t.bridgeUx().eligibleNotes(notes).sort((a, b) => (b.eligible - a.eligible) || (BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0));
   }, pub).then(async (notes) => {
-    const r = await refl;
-    if (S.key?.pubHex === pub) Object.assign(BR, { pub, notes, at: Date.now(), err: null, refl: Number(r?.attestedHeight) || BR.refl });
+    await refl;
+    if (S.key?.pubHex === pub) Object.assign(BR, { pub, notes, at: Date.now(), err: null });
   }, (e) => { if (S.key?.pubHex === pub) Object.assign(BR, { pub, notes: null, err: e }); }).finally(() => { BR.loading = null; }));
 }
+// Where the proof is against the block the burn is in: the wait a bridge has left, in blocks.
+function brProofText(rec) {
+  const h = Number(rec.burnHeight), p = Number(BR.refl), at = (n) => n.toLocaleString('en-US');
+  if (!Number.isInteger(h) || h <= 0) return '';
+  if (!Number.isInteger(p) || p <= 0) return ` The burn is in Bitcoin block ${at(h)}.`;
+  return p >= h ? ` The proof has reached the burn’s block (${at(h)}): the burn shows as recorded at the next check.`
+    : ` The proof is at Bitcoin block ${at(p)}; the burn is in block ${at(h)}, ${at(h - p)} block${h - p === 1 ? '' : 's'} on.`;
+}
+// A bridge ready to mint: what the mint is doing. One the relay has taken lands on its own, and is not sent again meanwhile.
+const brMinting = (rec) => (rec.lastError ? 'Recorded, and ready to mint.'
+  : rec.mintJob && Date.now() - Number(rec.mintJob.at || 0) < 20 * 60e3 ? `Recorded. Its mint is with the relay, which proves it and settles it on Ethereum, usually within minutes.`
+  : `Recorded. Minting your private ${brTk(rec)}: this page does it while it is open with your wallet.`);
 function brNoteText(rec) {
-  const s = rec.stage, wait = 'Waiting for Bitcoin’s proof on Ethereum to record the burn: usually within a few hours, sometimes up to a day.';
-  const where = BR.refl && rec.burnHeight ? ` The proof is at block ${BR.refl.toLocaleString('en-US')}; the burn is in block ${Number(rec.burnHeight).toLocaleString('en-US')}.` : '';
+  const s = rec.stage, wait = 'Confirmed on Bitcoin. Waiting for Bitcoin’s proof on Ethereum to record the burn: usually within a few hours, sometimes up to a day.';
   return ({
     'rburn-signed': 'Signed. Sending it to Bitcoin…', 'migrate-signed': 'Signed. Sending it to Bitcoin…',
-    'rburn-sent': 'Waiting for its Bitcoin confirmation.', 'migrate-sent': 'Waiting for the move to confirm on Bitcoin.',
-    'migrate-confirmed': 'Moved. Checking it before the burn…', traced: 'Moved, and ready for its burn.',
-    'burn-signed': 'Sending the burn to a miner…', 'burn-submitted': 'With a miner (MARA Slipstream). Explorers show it once it is mined.',
-    'rburn-mined': wait + where, 'burn-mined': wait, registered: wait,
-    rfolded: rec.lastError ? 'Recorded, and ready to mint.' : `Recorded. Minting your private ${brTk(rec)}…`, folded: rec.lastError ? 'Recorded, and ready to mint.' : `Recorded. Minting your private ${brTk(rec)}…`,
+    'rburn-sent': 'Sent. Waiting for its first Bitcoin confirmation, usually within the hour.', 'migrate-sent': 'Sent. Waiting for the move to confirm on Bitcoin, usually within the hour.',
+    'migrate-confirmed': 'Moved. Checking it before the burn…', traced: 'Moved, and ready for its burn. Burn it sends it to a miner and pays its fee in sats.',
+    'burn-signed': brMinerStuck(rec) ? 'The miner did not take this burn. Your TAC is still at its burn address: Move back returns it to your wallet.' : 'Sending the burn to a miner…',
+    'burn-submitted': brMinerStuck(rec) ? 'With a miner (MARA Slipstream) for over 12 hours and not mined yet. You can wait, or Move back returns your TAC to your wallet; if the miner mines the burn first, the bridge goes on from it.'
+      : 'With a miner (MARA Slipstream). Explorers show it once it is mined.',
+    'rburn-mined': wait + brProofText(rec), 'burn-mined': wait + brProofText(rec), registered: wait + brProofText(rec),
+    rfolded: brMinting(rec), folded: brMinting(rec),
+    minted: html`Arrived in your private ${brTk(rec)}. ${brTk(rec) === 'TAC' ? 'Make public, above, turns it into ERC20 TAC.' : ''}`,
     stopped: 'This bridge paused before its burn, and your TAC is untouched. Move it back to your wallet, then bridge it again: it goes in one step.',
     'reclaim-sent': 'Moving back to your Bitcoin address…',
-    'not-recorded': brTk(rec) === 'TAC' ? 'This bridge didn’t complete. Recover returns your TAC to your Bitcoin address so you can try again.'
+    'not-recorded': brRecoverable(rec) ? 'This bridge didn’t complete. Recover returns your TAC to your Bitcoin address so you can try again.'
       : 'Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.',
-    recovering: 'Your TAC is on its way back to your Bitcoin address, usually within the hour. Nothing else to do.',
+    recovering: rec.recover?.status === 'held' ? 'Your claim is being checked by hand before its TAC goes back to your Bitcoin address. Nothing else to do: this row follows it.'
+      : 'Your TAC is on its way back to your Bitcoin address, usually within the hour. Nothing else to do.',
     recovered: 'Your TAC is back on your Bitcoin address. You can bridge it again.',
   })[s] || '';
 }
+// The Bitcoin transaction a row points at: the return of a recovery or a move back, else the burn once Bitcoin has it, else the move.
+// A transaction only signed, or held by a miner, is not on any explorer yet, so it is not linked.
+function brBtcTx(rec) {
+  if (rec.stage === 'recovered' && rec.recover?.txid) return rec.recover.txid;
+  if (rec.stage === 'reclaim-sent' && rec.reclaim?.txid) return rec.reclaim.txid;
+  if (rec.burn?.txid && ['rburn-sent', 'rburn-mined', 'rfolded', 'burn-mined', 'registered', 'folded', 'minted', 'not-recorded', 'recovering'].includes(rec.stage)) return rec.burn.txid;
+  return rec.migrate?.revealTxid && rec.stage !== 'migrate-signed' ? rec.migrate.revealTxid : null;
+}
 function brRow(rec) {
-  const at = BR_AT[rec.stage], held = at == null, failing = !!rec.lastError && !held, steps = BR_STEPS[rec.path === 'reflected' ? 'reflected' : 'deposit'];
-  const preMined = rec.stage === 'burn-signed' || rec.stage === 'burn-submitted';   // a miner holds it: explorers have not seen it yet
-  const tx = (rec.stage === 'recovered' && rec.recover?.txid) || (!preMined && rec.burn?.txid) || rec.migrate?.revealTxid;
+  const arrived = rec.stage === 'minted', at = arrived ? 4 : BR_AT[rec.stage], held = at == null, failing = !!rec.lastError && !held && !arrived;
+  const steps = BR_STEPS[rec.path === 'reflected' ? 'reflected' : 'deposit'], due = brDue(rec);
+  const tx = brBtcTx(rec), eth = rec.mintedTxHash ? '0x' + String(rec.mintedTxHash).replace(/^0x/, '') : null;
   const btn = (kind, label, ghost = true) => html`<button class="btn${ghost ? ' ghost' : ''}" type="button" data-bract="${kind}" data-brid="${rec.id}">${label}</button>`;
   const act = rec.stage === 'traced' ? btn('burn', 'Burn it', false) : rec.stage === 'folded' || rec.stage === 'rfolded' ? btn('mint', 'Mint now', false)
-    : rec.stage === 'stopped' ? btn('reclaim', 'Move back to my wallet') : rec.stage === 'not-recorded' ? (brTk(rec) === 'TAC' ? btn('recover', 'Recover') : btn('recheck', 'Check again'))
-    : rec.stage === 'recovered' ? btn('dismiss', 'Done') : failing ? btn('poll', 'Try again') : '';
-  // A burn or move signed and never taken by Bitcoin, after repeated tries, can be dropped: its TAC was never touched.
-  const stuck = (rec.stage === 'rburn-signed' || rec.stage === 'migrate-signed') && failing && (rec.errorCount || 0) >= 3;
+    : rec.stage === 'stopped' ? btn('reclaim', 'Move back to my wallet')
+    : rec.stage === 'not-recorded' ? html`${brRecoverable(rec) ? btn('recover', 'Recover') : ''}${rec.path === 'reflected' ? btn('recheck', 'Check again') : ''}`
+    : rec.stage === 'recovered' ? btn('dismiss', 'Done') : arrived ? btn('seen', 'Done') : failing ? btn('poll', 'Try again') : BR_WAIT.includes(rec.stage) ? btn('poll', 'Check now') : '';
+  // A burn or move signed and never taken by Bitcoin (or dropped by it), after repeated tries, can be dropped: its TAC was never touched.
+  const stuck = BR_SIGNED.includes(rec.stage) && failing && (rec.errorCount || 0) >= 3;
   const self = (rec.stage === 'folded' || rec.stage === 'rfolded') && failing && brRefused(rec.lastError?.message);
+  const back = brMinerStuck(rec);
+  const when = arrived ? `Arrived ${ago(rec.mintedAt || Date.now())}` : rec.createdAt ? `Started ${ago(rec.createdAt)}` : '';
   return html`<li class="actr brr">
-    <div class="actr-h"><b class="num">${brAmt(rec)}</b>${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${short(tx, 6)} ↗</a>` : ''}</div>
+    <div class="actr-h"><b class="num">${brAmt(rec)}</b><span>${due ? html`<b class="brdue">Your turn</b> · ` : ''}${when}</span></div>
     ${held ? '' : html`<ol class="stp">${steps.map((l, i) => stepLi(l, i < at ? 'done' : i === at ? (failing ? 'bad' : 'now') : ''))}</ol>`}
     <div class="actr-f">${brNoteText(rec)}</div>
+    ${tx || eth ? html`<div class="actr-f brl">${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">Bitcoin ${short(tx, 6)} ↗</a>` : ''}${eth ? html`<a href="${SCAN}/tx/${eth}" target="_blank" rel="noopener">Ethereum ${short(eth, 6)} ↗</a>` : ''}</div>` : ''}
     ${failing ? html`<div class="actr-f err">${brErr(rec.lastError.message)}${rec.errorCount > 1 ? ` (${rec.errorCount} tries)` : ''}</div>` : ''}
-    ${act || stuck ? html`<div class="brr-a">${act}${stuck ? btn('cancel', brArmed(rec.id) ? 'Yes, cancel it' : 'Cancel this bridge') : ''}</div>` : ''}
+    ${act || stuck || back ? html`<div class="brr-a">${act}${back ? btn('reclaim', 'Move back to my wallet') : ''}${stuck ? btn('cancel', brArmed(rec.id) ? 'Yes, cancel it' : 'Cancel this bridge') : ''}</div>` : ''}
     ${stuck ? html`<div class="actr-f">Bitcoin has not taken this transaction. Cancelling asks Bitcoin once more, and frees the ${brTk(rec)} for another try when it has neither of the bridge’s transactions.</div>` : ''}
     ${self ? html`<div class="actr-f"><button class="link" type="button" data-bract="self" data-brid="${rec.id}">Send it from ${your()} instead</button>: no relay fee, and ${your()} pays the network fee.</div>` : ''}
   </li>`;
@@ -5259,12 +5344,14 @@ function renderBridge(el) {
   if (!needKey(el, 'Bring TAC from your Bitcoin address into your private TAC on Ethereum. A burn on Bitcoin pays only BTC, and the pool mints the same TAC once Bitcoin’s proof carries it over, usually within hours. Open your Tacit wallet to start.')) return;
   const pub = S.key.pubHex, b = BR.pub === pub ? BR : null;
   if (!b?.notes && !BR.loading && !b?.err) loadBridge().then(() => rerender('tac')).catch(() => {});
-  const recs = brRecords(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging'), open = notes.filter((n) => n.eligible);
+  const recs = brRecords(pub), done = brArrived(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging'), open = notes.filter((n) => n.eligible);
   if (BR.pick && !open.some((n) => brId(n) === BR.pick)) BR.pick = null;
   if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
   mount(el, html`
     <p class="lede-s">TAC on your Bitcoin address becomes private TAC on Ethereum, with no relay fee: you pay only a Bitcoin fee, in sats. It arrives once Bitcoin’s proof on Ethereum records the burn, usually within a few hours and sometimes up to a day. You can close this page meanwhile: open it again with the same wallet and it finishes. Make public then turns it into ERC20 TAC.</p>
-    ${recs.length ? html`<div class="lbl"><span>On the way</span></div><ul class="acts brs">${recs.map(brRow)}</ul><div class="status" role="status" id="br-rstatus"></div>` : ''}
+    ${recs.length ? html`<div class="lbl"><span>On the way</span></div><ul class="acts brs">${recs.map(brRow)}</ul>` : ''}
+    ${done.length ? html`<div class="lbl"><span>Arrived</span></div><ul class="acts brs">${done.map(brRow)}</ul>` : ''}
+    ${recs.length || done.length ? html`<div class="status" role="status" id="br-rstatus"></div>` : ''}
     <div class="lbl"><span>TAC on Bitcoin</span>${b?.notes ? html`<button type="button" id="br-re">refresh</button>` : ''}</div>
     ${!b?.notes ? (b?.err ? html`<p class="note err">${errText(b.err)} <button class="link" type="button" id="br-re">Try again</button></p>` : html`<p class="note">Reading your TAC on Bitcoin…</p>`)
       : !notes.length ? html`<p class="note">No TAC on this key’s Bitcoin address. <a href="#bitcoin/receive" data-link="bitcoin/receive">Receive TAC on Bitcoin</a></p>`
@@ -5314,16 +5401,25 @@ function renderBridge(el) {
         }
         return;
       }
-      const one = pf.path === 'reflected', sats = Math.ceil((one ? 410 : 535) * (one ? pf.burnFeeRate : pf.migrateFeeRate)) + 846;
-      const have = BTC.pub === pub && BTC.got >= 1 ? BTC.sats : null;
-      review = { key: rvKey, note: n, pf, short: have != null && have < BigInt(sats) };
+      const one = pf.path === 'reflected', rate = one ? pf.burnFeeRate : pf.migrateFeeRate;
+      // The fee as the builder works it out, against the coins it would spend: this key's plain sats as tacit.js's own coin
+      // choice sees them (asset notes and locks left out). A read that failed holds nothing back; signing checks again.
+      const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+      const cost = (await brUx()).bridgeCost({ path: pf.path, feeRate: rate, coins: coins || [], noteSats: n.sats });
+      if (my !== seq || !rc.isConnected) return;
+      review = { key: rvKey, note: n, pf, cost, short: !!coins && !cost.ok };
+      const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`;
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(BigInt(n.amount), 8, 4)} private TAC on Ethereum</b></div>
-        <div class="kv"><span>Bitcoin fee</span><b>≈ ${sats.toLocaleString('en-US')} sats${one ? '' : ', and the burn’s own fee later'}</b></div>
+        <div class="kv"><span>Bitcoin fee</span><b>≈ ${sats(cost.fee)}${one ? '' : `, and about ${sats(cost.later)} for the burn later`}</b></div>
         <div class="kv"><span>Relay fee</span><b>None</b></div>
-        <div class="kv"><span>How</span><b>${one ? 'One Bitcoin transaction' : 'A move, then a burn through a miner'}</b></div>`);
-      if (review.short) warn(rc, BTC.pending > 0n ? html`This key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, with ${fmt(BTC.pending, 8, 8)} still arriving. Once that confirms it covers the fee.`
-        : html`This key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, short of the fee. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+        <div class="kv"><span>How</span><b>${one ? 'One Bitcoin transaction' : 'A move, then a burn through a miner'}</b></div>
+        <div class="kv"><span>Arrives</span><b>Usually within a few hours, once Bitcoin’s proof on Ethereum records the burn</b></div>`);
+      if (review.short) {
+        const have = BigInt(cost.have || 0), arriving = BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : '';
+        warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
+          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+      }
       if (BR.acked !== rvKey) ack.checked = false;
       ackRow.hidden = false; gateOk();
     } catch (e) { if (my === seq && rc.isConnected) quoteErr(rc, brFail(e)); }
@@ -5342,14 +5438,14 @@ function renderBridge(el) {
     if (!r) return;
     const amt = `${fmt(BigInt(r.note.amount), 8, 4)} TAC`;
     try {
-      run.say(status, 'Signing the burn and sending it to Bitcoin…');
+      run.say(status, r.pf.path === 'reflected' ? 'Signing the burn and sending it to Bitcoin…' : 'Signing the move to its burn address and sending it to Bitcoin…');
       // Journalled before anything is broadcast: a send that fails here is sent again from its row.
       const rec = await withKey(async (t) => {
         const ux = t.bridgeUx(), priv = walletPriv();
         let made;
         if (r.pf.path === 'reflected') made = await ux.startReflected({ note: r.note, walletPriv: priv, feeRate: r.pf.burnFeeRate });
         else {
-          const safe = await t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), u = ux.pickFunding(safe, Math.ceil(535 * r.pf.migrateFeeRate * 1.3) + 846);
+          const safe = await t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), u = ux.pickFunding(safe, Math.ceil(r.cost.need * 1.1));
           if (!u) throw new Error('This key’s Bitcoin address has no sats free to pay the fee. Add some, then try again.');
           made = await ux.start({ note: r.note, walletPriv: priv, fundingUtxo: { txid: u.txid, vout: u.vout, value: u.value }, feeRate: r.pf.migrateFeeRate });
         }
@@ -5412,8 +5508,18 @@ async function brAct(run, kind, id) {
   const amt = brAmt(rec);
   try {
     if (kind === 'dismiss') { ux.abandon(pub, id); return; }
+    if (kind === 'seen') { brSeen(pub, id); return; }
+    // A wait checked at once: the proof's height is read afresh with it, and a bridge that turns out ready is minted now.
+    if (kind === 'poll' && BR_WAIT.includes(rec.stage) && !rec.lastError) {
+      run.say(status(), 'Checking…');
+      const [after] = await Promise.all([ux.advance(pub, id), brProof(true)]);
+      if ((after.stage === 'rfolded' || after.stage === 'folded') && !after.lastError) return await brAct(run, 'mint', id);
+      run.say(status(), after.stage === 'minted' ? html`<span class="ok">✓ ${amt} arrived in your private ${tk}.</span>`
+        : after.stage === rec.stage ? html`Not yet. ${brNoteText(after)}` : brNoteText(after));
+      return;
+    }
     if (kind === 'cancel') {
-      const txid = rec.burn?.txid || rec.migrate?.revealTxid, burn = rec.stage === 'rburn-signed';
+      const txid = rec.burn?.txid || rec.migrate?.revealTxid, burn = rec.stage === 'rburn-signed' || rec.stage === 'rburn-sent';
       if (!brArmed(id)) {
         BR.drop = { id, at: Date.now() };
         run.say(status(), `Cancelling drops this bridge from this page once Bitcoin is asked again and has neither of its transactions; your ${amt} stays where it is. Press “Yes, cancel it” to go ahead.`);
@@ -5432,13 +5538,19 @@ async function brAct(run, kind, id) {
       return;
     }
     if (kind === 'recover') {
-      const after = await ux.recover({ rec, walletPriv: walletPriv() });
+      // A burn the proof did record after all (it moved to a later block) is not recovered: it is looked at again, and minted.
+      const after = await ux.recover({ rec, walletPriv: walletPriv() }).catch(async (e) => {
+        if (rec.path !== 'reflected' || !/completed|mint it instead/i.test(String(e?.message))) throw e;
+        await ux.recheckBurn(pub, id);
+        return null;
+      });
+      if (!after) { run.say(status(), 'Bitcoin’s proof on Ethereum did record this burn: it goes on to its mint.'); return; }
       run.say(status(), html`<span class="ok">${after.stage === 'recovered' ? `✓ ${amt} is back on your Bitcoin address.` : `Recovering ${amt}: it returns to your Bitcoin address, usually within the hour.`}</span>`);
       return;
     }
     if (kind === 'reclaim') {
       await withKey(() => ux.reclaim({ rec, walletPriv: walletPriv() }), pub);
-      run.say(status(), html`<span class="ok">Moving ${amt} back to your Bitcoin address. It shows there once it confirms.</span>`);
+      run.say(status(), html`<span class="ok">Moving ${amt} back to your Bitcoin address. It shows there once it confirms.</span>${rec.stage === 'burn-submitted' ? ' Should the miner mine the burn first, the bridge goes on from it instead.' : ''}`);
       return;
     }
     if (kind === 'burn') {
@@ -5464,7 +5576,8 @@ async function brAct(run, kind, id) {
       run.say(status(), html`<span class="ok">✓ ${amt} arrived in your private ${tk}.</span> ${after.mintedTxHash ? txLink(after.mintedTxHash) : ''} ${tk === 'TAC' ? html`<span>Make public, above, turns it into ERC20 TAC.</span>` : ''}`);
       scanPrivate(true).then(() => rerender(tk === 'TAC' ? 'tac' : 'eth')).catch(() => {});
     } else if (after.stage !== rec.stage) run.say(status(), brNoteText(after));
-  } catch (e) { run.fail(status(), brFail(e)); } finally { BR.at = 0; rerender(tk === 'TAC' ? 'tac' : 'eth'); }
+    else if (after.mintJob && !after.lastError) run.say(status(), `${amt}: its mint is already with the relay, and lands on its own, usually within minutes. It is not sent twice.`);
+  } catch (e) { run.fail(status(), brFail(e)); } finally { BR.at = 0; rerender(tk === 'TAC' ? 'tac' : 'eth'); dashSoon(); }
 }
 // While this page is open with the key, bridges go on by themselves: their waits are checked, and one ready to mint is
 // minted, since its holder already confirmed it and the mint spends nothing more. A burn waits for its own press. A
@@ -5491,7 +5604,7 @@ async function brTick(first = false) {
       } catch { moved = true; }                                    // its row shows the error the record now carries
     }
   } catch {} finally { BR.auto = false; }
-  if (moved) { BR.at = 0; rerender('tac'); rerender('eth'); }
+  if (moved) { BR.at = 0; rerender('tac'); rerender('eth'); dashSoon(); }
 }
 // One TAC balance across its three homes: canonical TAC on Bitcoin (this key's own address and the shielded payments it
 // found), the public ERC20 on Ethereum (the connected wallet and the Tacit account) and private TAC notes in the Tacit pool.
@@ -8315,6 +8428,11 @@ function paintDash() {
     if (low.length) due.push([low.length === 1 ? bondText(low[0]) : `${low.length} bonds are short of what the engine asks for. Top them up, or they can go to the insurance reserve.`, 'bonds', 'Top up']);
     if (take.length) due.push([take.length === 1 ? bondText(take[0]) : `${take.length} bonds, ${fmt(take.reduce((s, n) => s + n.amt, 0n), 18, 5)} wstETH in all, can come back to you.`, 'bonds', 'Take back']);
     if (lost.length) due.push([lost.length === 1 ? bondText(lost[0]) : `${lost.length} locks were spent on Bitcoin before their cBTC was redeemed, so their bonds go to the insurance reserve.`, 'bonds', 'See']);
+    // Bridges from Bitcoin under way: one waiting for its holder names the press; otherwise where it is.
+    const brs = brJournal(k).filter((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered'), need = brs.filter(brDue);
+    if (need.length) due.push([need.length === 1 ? `Your bridge of ${brAmt(need[0])} to Ethereum is waiting for you: ${brDue(need[0])}.` : `${need.length} bridges of TAC to Ethereum are waiting for you.`, 'bridge', 'Open']);
+    else if (brs.length) due.push([brs.length === 1 ? `${brAmt(brs[0])} is on its way from Bitcoin to Ethereum, ${brWhere(brs[0])}. It finishes while this page is open with your wallet.`
+      : `${brs.length} bridges of TAC are on their way from Bitcoin to Ethereum. They finish while this page is open with your wallet.`, 'bridge', 'Follow']);
     const farmIds = new Set([FARM.program?.rewardAsset, ...(FARM.program?.pools || []).map((p) => p.lpAsset)].filter(Boolean).map((a) => String(a).toLowerCase()));
     const other = (P.scan?.others || []).filter((g) => !farmIds.has(g.id));
     if (other.length) {
@@ -8336,7 +8454,7 @@ function paintDash() {
     $$('[data-dash-open]', sec).forEach((b) => b.onclick = () => openSheet(b.dataset.dashOpen));
     // The line opens its sheet and presses that sheet's own button there, unless an action is already running in it.
     // The sheet's button is pressed once the sheet has drawn it: on a first open, after its read.
-    $$('[data-dash-do]', sec).forEach((b) => b.onclick = () => { if (b.dataset.dashDo === 'act') return openAct(); const [link, sheet, btn] = DASH_DO[b.dataset.dashDo]; const busyThere = running(sheet); openSheet(link); if (busyThere) return; if ($('#' + btn)) $('#' + btn).click(); else load[sheet]?.().then(() => { rerender(sheet); $('#' + btn)?.click(); }).catch(() => {}); });
+    $$('[data-dash-do]', sec).forEach((b) => b.onclick = () => { if (b.dataset.dashDo === 'act') return openAct(); if (b.dataset.dashDo === 'bridge') return openLink('bridge'); const [link, sheet, btn] = DASH_DO[b.dataset.dashDo]; const busyThere = running(sheet); openSheet(link); if (busyThere) return; if ($('#' + btn)) $('#' + btn).click(); else load[sheet]?.().then(() => { rerender(sheet); $('#' + btn)?.click(); }).catch(() => {}); });
     if (was) $(was, sec)?.focus();
   }
   clearTimeout(dashSaveT);

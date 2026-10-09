@@ -4390,7 +4390,8 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
       // `already known` / `already in block` mean the broadcast already
       // succeeded (mempool / mined). Treat as success — retrying just re-fails
       // the same way and surfaces a fake error to a user whose tx is fine.
-      if (/already in block|already known/i.test(msg)) return null;
+      // Newer nodes say `already in utxo set` for a mined one, and `txn-already-in-mempool` / `txn-already-known` for one they hold.
+      if (/already[- ]in[- ]block|already[- ]known|already in utxo set|already[- ]in[- ]mempool/i.test(msg)) return null;
       // `too-long-mempool-chain` means our inputs spend from an unconfirmed
       // ancestry of ≥25 txs (Bitcoin core's default mempool policy limit).
       // Retrying with the SAME inputs will fail the same way — the chain
@@ -20400,8 +20401,11 @@ let _burndepUx = null, _burndepUxNet = null;
 // The opening of a received or changed note, from the transaction that made it and this key alone (dapp/note-opening.js).
 const _noteOpener = makeNoteOpener({
   hexToBytes, concatBytes, reverseBytes, decodeEnvelopeScript,
+  // A trade's settlement (T_AXFER, T_AXFER_BPP) opens the same two ways as a transfer when its amount rides the output, as the
+  // holdings scan opens it.
   decodePayload: (opcode, payload) => (opcode === T_CXFER_BPP ? decodeCXferBppPayload(payload) : opcode === T_CXFER ? decodeCXferPayload(payload)
-    : opcode === T_CXFER_BOUND ? decodeCXferBoundPayload(payload) : null),
+    : opcode === T_CXFER_BOUND ? decodeCXferBoundPayload(payload) : opcode === T_AXFER ? decodeAxferPayload(payload)
+    : opcode === T_AXFER_BPP ? decodeAxferBppPayload(payload) : null),
   deriveAmountKeystreamECDH, deriveAmountKeystreamSelf, decryptAmount, deriveBlinding, deriveChangeBlinding, pedersenCommit, bytesToPoint,
 });
 function _burndepUxSingleton() {
@@ -20426,7 +20430,11 @@ function _burndepUxSingleton() {
     openNote: async (txid, vout) => {
       const tx = await getTx(txid);
       const r = tx ? _noteOpener({ tx, vout, walletPriv: wallet.priv }) : null;
-      return r ? { amount: r.amount, blinding: r.blinding } : null;
+      if (r) return { amount: r.amount, blinding: r.blinding };
+      // A note the holdings scan opened another way (a trade's inline or OP_RETURN opening) is read from the openings it kept
+      // in this browser. The burn's nullifier is checked against whatever opening is used, so a wrong one rebuilds nothing.
+      const kept = getOpening(String(txid).toLowerCase(), Number(vout));
+      return kept ? { amount: kept.amount, blinding: kept.blinding } : null;
     },
     nullifierSpent: (nu) => guard.evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
     // A bridge of a note a cross-out made at this key's own Taproot output is rebuilt from its burn through that note's opening.
@@ -23568,11 +23576,11 @@ function _burndepFriendlyError(e) {
   if (short) return `Your Tacit account ${short[1]} needs a little ETH for gas to finish this: send about 0.003 ETH to it, then press Finish again.`;
   return m;
 }
-// A mint the relay would not take (a fee floor, a spent free budget, load): the holder can send the settle from their own
-// Tacit account instead, paying only gas. Offered whenever the last attempt failed in a way that looks like the relay's side.
+// A mint the relay would not settle for free (a fee floor, a spent free budget, a settle priced over what it carries): the holder
+// can send the settle from their own Tacit account instead, paying only gas; the relay still proves it.
 function _burndepRelayRefused(err) {
   const m = String((err && err.message) || err || '');
-  return /relay|free relayed|fee below|floor|capacity|memory cap|temporarily|too many|rate.?limit|\b(429|502|503)\b|settle/i.test(m);
+  return /free relayed settles|fee below|below the (current )?floor|feegate|marginal cost|can.t take this one/i.test(m);
 }
 function _renderHoldingsBurndepBridges(listEl) {
   if (!wallet || !wallet.pub || !WORKER_BASE) return;

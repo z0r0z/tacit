@@ -70,7 +70,7 @@ function makeWorld() {
   // recorded (destination leaves). A burn checked through /reflection/burndep/check is recorded once folded, unless
   // recordBurns is off.
   const liveKeys = new Set(), checkedDests = [];
-  let recordBurns = true, noteHeight = 800;
+  let recordBurns = true, noteHeight = 800, attested = 1000;
   const recoverPosts = [], recoverState = new Map();
   const chainHex = new Map();
   // A note the reflection tracks for real (its leaf in the tree, its live entry with the true commitment hash and the
@@ -112,7 +112,7 @@ function makeWorld() {
       const live = [...liveKeys].map((k) => [k, '0x00', ASSET, '0x00', 0]);
       const noteLeaves = ['0x' + '01'.repeat(32)];
       if (reflectedNote) { live.push(reflectedNote.triple); noteLeaves.push(reflectedNote.leaf); }
-      return json({ attestedHeight: 1000, snapshot: { height: 1000, noteLeaves, liveTriples: live.sort((a, b) => (BigInt(a[0]) < BigInt(b[0]) ? -1 : 1)), spentLinks: [],
+      return json({ attestedHeight: attested, snapshot: { height: attested, noteLeaves, liveTriples: live.sort((a, b) => (BigInt(a[0]) < BigInt(b[0]) ? -1 : 1)), spentLinks: [],
         burnNodes: [['0x' + '00'.repeat(32), '0x' + '00'.repeat(32), '0x' + '00'.repeat(32), true], ...dests.map((d) => ['0x' + '11'.repeat(32), '0x' + '00'.repeat(32), d, true])],
         pendingDepositRecords: [] } });
     }
@@ -137,11 +137,14 @@ function makeWorld() {
       if (txid === undefined) throw new Error('world: status needs txid');
       if (stripHex(txid) === stripHex(burnSubmitted || '')) {
         if (burnFolded) return json({ ok: true, status: 'folded', burnBlockHeight: 900 });
-        if (burnConfirmed) return json({ ok: true, status: burnRegistered ? 'pending' : 'awaiting-scan', registered: burnRegistered });
+        if (burnConfirmed) return json({ ok: true, status: burnRegistered ? 'pending' : 'awaiting-scan', burnBlockHeight: 900, registered: burnRegistered });
         return json({ ok: true, status: 'unconfirmed' });
       }
-      // any other txid queried is a migrate-reveal-shaped check
-      return json({ ok: true, status: migrateConfirmed ? 'folded' : 'unconfirmed' });
+      // any other txid queried is a migrate-reveal-shaped check: confirmed, it is no burn (and, as every confirmed answer, names its block)
+      return json(migrateConfirmed ? { ok: true, status: 'not-a-burn-deposit', burnBlockHeight: noteHeight } : { ok: true, status: 'unconfirmed' });
+    }
+    if (u.pathname === '/reflection/status') {
+      return json({ network: 'mainnet', attestedHeight: attested, tipHeight: attested, lagBlocks: 0 });
     }
     if (u.pathname.startsWith('/chain/tx/') && u.pathname.endsWith('/hex')) {
       const id = stripHex(u.pathname.slice('/chain/tx/'.length, -'/hex'.length));
@@ -215,6 +218,7 @@ function makeWorld() {
     setChainTx: (txid, { confirmed = true, vout = [], vin = [] } = {}) => chainTxs.set(stripHex(txid), { confirmed, vout, vin }),
     setChainHex: (txid, hex) => chainHex.set(stripHex(txid), stripHex(hex)),
     setNoteHeight: (h) => { noteHeight = h; },
+    setAttested: (h) => { attested = h; },
   };
 }
 
@@ -902,7 +906,7 @@ let rec;
   const other = new Uint8Array(32).fill(0x23);
   const stranger = makeUx(world, makeMemStorage(), { openNote: async () => null });
   let msg = null; try { await stranger.recoverFromTxid(orig.burn.txid, other); } catch (e) { msg = e.message; }
-  ok(/did not receive that burned note/.test(msg || ''), 'a key that never received the note cannot rebuild it');
+  ok(/does not open with this key/.test(msg || ''), 'a key that never received the note cannot rebuild it');
   const thief = makeUx(world, makeMemStorage(), { openNote: ownerOpens });
   msg = null; try { await thief.recoverFromTxid(orig.burn.txid, other); } catch (e) { msg = e.message; }
   ok(/not this wallet’s/.test(msg || '') && thief.list(Buffer.from(secp.getPublicKey(other, true)).toString('hex')).length === 0, 'a key given the opening but not named by the burn is refused, and nothing is journalled');
@@ -1075,20 +1079,28 @@ async function atRburnSigned() {
   };
   const ux = makeUx({ ...world, fetchImpl }, makeMemStorage());
   const r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
-  return { ux, r, seen, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
+  return { ux, r, seen, world, commit: stripHex(r.burn.commitTxid).toLowerCase(), reveal: stripHex(r.burn.txid).toLowerCase() };
 }
 {
-  const { ux, r, seen, commit, reveal } = await atRburnSigned();
+  const { ux, r, seen, world, commit, reveal } = await atRburnSigned();
   ok(r.stage === 'rburn-signed' && commit && reveal, 'sanity: a signed one-step burn with its two transaction ids');
   const refusal = async () => { try { await ux.cancelSigned(r.walletPub, r.id); return null; } catch (e) { return e.message; } };
   seen.set(commit, 'down'); seen.set(reveal, 'absent');
   ok(/could not be asked/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a chain that cannot be read keeps the bridge as it is');
   seen.set(commit, 'present');
-  ok(/first of its two/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a commit Bitcoin has keeps the bridge');
+  const send = world.chain.broadcastWithRetry;
+  world.chain.broadcastWithRetry = async () => { throw new Error('bad-txns-inputs-missingorspent'); };
+  ok(/first of its two.*refused the second/.test(await refusal() || '') && ux.list(r.walletPub)[0]?.stage === 'rburn-signed', 'a commit Bitcoin has, with a reveal it refuses, keeps the bridge and says why');
+  world.chain.broadcastWithRetry = send;
+  const sends = world.broadcasts.length;
+  const went = await ux.cancelSigned(r.walletPub, r.id);
+  ok(went?.stage === 'rburn-sent' && world.broadcasts.length === sends + 1 && world.broadcasts.at(-1).chain === r.burn.hex, 'a commit Bitcoin has gets its reveal sent, and the bridge goes on as sent');
   seen.set(reveal, 'present');
   const on = await ux.cancelSigned(r.walletPub, r.id);
   ok(on?.stage === 'rburn-sent' && ux.list(r.walletPub)[0].stage === 'rburn-sent', 'a burn Bitcoin has is not given up: it goes on as sent');
-  ok(/only a bridge whose signed transaction/.test(await refusal() || ''), 'and once it is sent it cannot be cancelled this way');
+  ok((await ux.cancelSigned(r.walletPub, r.id))?.stage === 'rburn-sent', 'asked again once sent, it goes on while Bitcoin has the burn');
+  seen.set(commit, 'absent'); seen.set(reveal, 'absent');
+  ok((await ux.cancelSigned(r.walletPub, r.id)) === null && ux.list(r.walletPub).length === 0, 'a sent pair Bitcoin dropped, neither transaction there any more, is cancelled');
 }
 {
   const { ux, r, seen, commit, reveal } = await atRburnSigned();
@@ -1234,7 +1246,7 @@ function storageContainsPrivkey(storage, priv) {
     const thief = makeUx(world, makeMemStorage(), { assets, openHeldNote: opener });
     const otherKey = new Uint8Array(32).fill(0x23);
     let msg = null; try { await thief.recoverFromTxid(orig.burn.txid, otherKey); } catch (e) { msg = e.message; }
-    ok(/did not receive that burned note/.test(msg || ''), 'a key whose cross-out did not make the note cannot rebuild the bridge');
+    ok(/does not open with this key/.test(msg || ''), 'a key whose cross-out did not make the note cannot rebuild the bridge');
     const none = makeUx(world, makeMemStorage(), { assets });
     msg = null; try { await none.recoverFromTxid(orig.burn.txid, WALLET_PRIV); } catch (e) { msg = e.message; }
     ok(msg !== null && none.list(Buffer.from(WALLET_PUB).toString('hex')).length === 0, 'without an opener for such notes it is not rebuilt, and nothing is journalled');
@@ -1258,6 +1270,9 @@ function storageContainsPrivkey(storage, priv) {
     world.setChainTx(r.burn.txid, { confirmed: true }); world.setRecordReflected(true);
     r = await ux.recheckBurn(r.walletPub, r.id);
     ok(r.stage === 'rburn-mined' && r.burnHeight === 1001 && r.lastError === null, 'a confirmed one goes back to waiting to be recorded, at the block it is in now');
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'rburn-mined', 'it waits while the proof is short of the block the burn is in now');
+    world.setAttested(1001);
     r = await ux.advance(r.walletPub, r.id);
     ok(r.stage === 'rfolded', 'and is recorded and ready to mint once the state holds its burn');
   }
@@ -1299,5 +1314,155 @@ function storageContainsPrivkey(storage, priv) {
   }
 }
 
+// ==== answers that are not progress, coins held back, a dropped burn, a mint already queued, the fee a preview shows ====
+{
+  // An error answer from the status route (a rate limit) is never read as a confirmation, and is not kept as a failure.
+  const world = makeWorld();
+  let limited = false;
+  const fetchImpl = async (url, opts) => (limited && new URL(url).pathname === '/reflection/burndep/status'
+    ? { ok: false, status: 429, json: async () => ({ ok: false, error: 'too many status requests — retry in ~40s', retryAfter: 40 }) } : world.fetchImpl(url, opts));
+  const ux = makeUx({ ...world, fetchImpl }, makeMemStorage());
+  let r = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id);
+  world.setMigrateConfirmed(true); limited = true;
+  let msg = null; try { await ux.advance(r.walletPub, r.id); } catch (e) { msg = e.message; }
+  let cur = ux.list(r.walletPub)[0];
+  ok(/too many status requests/.test(msg || '') && cur.stage === 'migrate-sent' && !cur.lastError, 'a rate-limited status read leaves the move waiting, and is not kept on the record as a failure');
+  limited = false;
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'migrate-confirmed' && r.migrateHeight === 800, 'answered, the confirmed move goes on, with the block it is in');
+  r = await ux.advance(r.walletPub, r.id);
+  world.setBurnHomeOnChain(r.burnHome.txid, r.burnHome.spk);
+  r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  world.setBurnSubmitted(r.burn.txid);
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'burn-submitted', 'sanity: the burn is with the miner');
+  limited = true;
+  msg = null; try { await ux.advance(r.walletPub, r.id); } catch (e) { msg = e.message; }
+  cur = ux.list(r.walletPub)[0];
+  ok(msg && cur.stage === 'burn-submitted' && !cur.lastError, 'a rate-limited read never moves a burn the miner holds on to mined');
+  limited = false; world.setBurnConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'burn-mined' && r.burnHeight === 900, 'a mined burn keeps the block it is in, for the wait that follows');
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'registered', 'sanity: registered');
+}
+{
+  // The same journal, read by a page whose status route answers "not recorded": a registered burn is said not to have completed.
+  const world = makeWorld();
+  const storage = makeMemStorage();
+  let notRecorded = false;
+  const fetchImpl = async (url, opts) => (notRecorded && new URL(url).pathname === '/reflection/burndep/status'
+    ? { ok: true, status: 200, json: async () => ({ ok: true, status: 'not-recorded', burnBlockHeight: 900, registered: true }) } : world.fetchImpl(url, opts));
+  const ux = makeUx({ ...world, fetchImpl }, storage);
+  let r = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id); world.setMigrateConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id); r = await ux.advance(r.walletPub, r.id);
+  world.setBurnHomeOnChain(r.burnHome.txid, r.burnHome.spk);
+  r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  world.setBurnSubmitted(r.burn.txid);
+  r = await ux.advance(r.walletPub, r.id); world.setBurnConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id); r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'registered', 'sanity: a registered burn-deposit');
+  notRecorded = true;
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'not-recorded', 'a registered burn the reflection passed without recording is said to have not completed, not waited on forever');
+}
+{
+  // Coins a record will never spend are not held back: a burn signed and never sent, of a bridge that then stopped.
+  const world = makeWorld();
+  const ux = makeUx(world, makeMemStorage());
+  let r = await ux.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id); world.setMigrateConfirmed(true);
+  r = await ux.advance(r.walletPub, r.id); r = await ux.advance(r.walletPub, r.id);
+  world.setBurnHomeOnChain(r.burnHome.txid, r.burnHome.spk);
+  r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  const coin = r.burn.fundingUtxo;
+  ok(r.stage === 'burn-signed' && ux.isReserved(coin.txid, coin.vout), 'a signed burn holds its coin back');
+  world.setLive(r.burnHome.txid, 0);
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'stopped' && !ux.isReserved(coin.txid, coin.vout), 'once the bridge stops before sending it, the coin is free for other spends');
+}
+{
+  // A sent burn Bitcoin dropped and will not take again is said on its row; once Bitcoin has neither transaction it can be cancelled.
+  const world = makeWorld();
+  world.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+  world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+  const gone = new Set();
+  const fetchImpl = async (url, opts) => {
+    const m = new URL(url).pathname.match(/^\/chain\/tx\/([0-9a-f]{64})$/);
+    if (m && gone.has(m[1])) return { ok: false, status: 404, json: async () => { throw new SyntaxError('Unexpected token T'); } };
+    return world.fetchImpl(url, opts);
+  };
+  const ux = makeUx({ ...world, fetchImpl }, makeMemStorage());
+  let r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'rburn-sent', 'sanity: sent');
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'rburn-sent' && !r.lastError, 'a burn Bitcoin still holds waits quietly');
+  gone.add(stripHex(r.burn.txid).toLowerCase()); gone.add(stripHex(r.burn.commitTxid).toLowerCase());
+  const send = world.chain.broadcastWithRetry;
+  world.chain.broadcastWithRetry = async () => { throw new Error('mempool min fee not met'); };
+  for (let i = 0; i < 3; i++) await ux.advance(r.walletPub, r.id).catch(() => {});
+  const cur = ux.list(r.walletPub)[0];
+  ok(cur.stage === 'rburn-sent' && cur.errorCount === 3 && /min fee/.test(cur.lastError.message), 'a burn Bitcoin dropped and refuses again is said on the record, each try counted');
+  world.chain.broadcastWithRetry = send;
+  ok((await ux.cancelSigned(r.walletPub, r.id)) === null && ux.list(r.walletPub).length === 0 && !ux.isReserved(NOTE_TXID, NOTE_VOUT), 'and is cancelled once Bitcoin has neither transaction, its note free again');
+}
+{
+  // A mint the relay took is not built and sent again from a reload while it is with the relay; it is found once it lands.
+  const world = makeWorld();
+  world.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+  world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+  const storage = makeMemStorage();
+  let landed = false;
+  const ux = makeUx(world, storage, { nullifierSpent: async () => landed });
+  let r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+  r = await ux.advance(r.walletPub, r.id); world.setChainTx(r.burn.txid, { confirmed: true });
+  r = await ux.advance(r.walletPub, r.id); world.foldReflected(r.burn.hex);
+  r = await ux.advance(r.walletPub, r.id);
+  ok(r.stage === 'rfolded', 'sanity: ready to mint');
+  // The page closes while the relay proves: the record carries the job, as noted when the relay took it.
+  const raw = JSON.parse(storage.getItem(`tacit-burndep-bridge-v1:signet:${r.walletPub}`));
+  raw[0].mintJob = { id: 'job-queued', at: Date.now() };
+  storage.setItem(`tacit-burndep-bridge-v1:signet:${r.walletPub}`, JSON.stringify(raw));
+  const reloaded = makeUx(world, storage, { nullifierSpent: async () => landed });
+  const calls = world.bridgeMintCalls.length;
+  r = await reloaded.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(r.stage === 'rfolded' && world.bridgeMintCalls.length === calls, 'a reload while the mint is with the relay does not send it again');
+  landed = true;
+  r = await reloaded.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+  ok(r.stage === 'minted' && world.bridgeMintCalls.length === calls, 'once it lands it is found in the pool, complete');
+  // Without a job noted (or after a failure said since), the mint is built as before.
+  const w2 = makeWorld();
+  w2.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+  w2.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+  const u2 = makeUx(w2, makeMemStorage());
+  let q = await u2.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+  q = await u2.advance(q.walletPub, q.id); w2.setChainTx(q.burn.txid, { confirmed: true });
+  q = await u2.advance(q.walletPub, q.id); w2.foldReflected(q.burn.hex);
+  q = await u2.advance(q.walletPub, q.id);
+  q = await u2.advance(q.walletPub, q.id, { walletPriv: WALLET_PRIV });
+  ok(q.stage === 'minted' && w2.bridgeMintCalls.length === 1, 'a mint with no job noted is built and sent once');
+}
+{
+  // The fee a preview shows is the fee the builder then pays, and its gate matches what the builder can fund.
+  const world = makeWorld();
+  world.setBurnHomeOnChain(NOTE_TXID, '0014' + Buffer.from(ripemd160(nobleSha256(WALLET_PUB))).toString('hex'));
+  world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: NOTE_AMOUNT, blinding: NOTE_BLINDING });
+  const ux = makeUx(world, makeMemStorage());
+  for (const rate of [1, 5, 20]) {
+    const coins = [{ txid: FUND_TXID_2, vout: 0, value: 5_000 + rate * 1000 }];
+    world.chain.getUtxos = async () => coins;
+    const cost = ux.bridgeCost({ path: 'reflected', feeRate: rate, coins, noteSats: NOTE_SATS });
+    const r = await ux.startReflected({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, feeRate: rate });
+    ok(cost.ok && Math.abs(cost.fee - r.burn.fee) <= Math.max(2, rate * 2), `at ${rate} sat/vB the preview's fee (${cost.fee}) is the fee the burn pays (${r.burn.fee})`);
+    ux.abandon(r.walletPub, r.id);
+  }
+  const short = ux.bridgeCost({ path: 'reflected', feeRate: 20, coins: [{ value: 3_000 }, { value: 3_000 }], noteSats: NOTE_SATS });
+  ok(!short.ok && short.need > 6_000, `two small coins short of a one-step burn at 20 sat/vB are said short (${short.need} needed)`);
+  const two = ux.bridgeCost({ path: 'deposit', feeRate: 20, coins: [{ value: 9_000 }, { value: 9_000 }], noteSats: NOTE_SATS });
+  ok(!two.ok && two.have === 9_000 && two.need > 9_000, 'the move spends one coin whole, so two coins that only add up are said short');
+}
 console.log(failures ? `\n${failures} FAILURES (${n} passed)` : `\nall ${n} burndep-ux checks passed`);
 process.exit(failures ? 1 : 0);
