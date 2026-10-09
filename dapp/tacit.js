@@ -1295,25 +1295,82 @@ const wallet = {
     if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error('private key must be 64 hex chars');
     const b = hexToBytes(clean);
     secp.getPublicKey(b, true);
-    const passphrase = await _promptNewPassphrase('Set a passphrase to encrypt the imported privkey at rest.');
-    this.priv = b;
-    this.pub = secp.getPublicKey(b, true);
-    const key = walletStorageKey(boundExtAddr);
-    localStorage.setItem(key, await encryptPrivkey(b, passphrase));
+    await this._saveNewKey(b, boundExtAddr, 'Set a passphrase to encrypt the imported privkey at rest.');
   },
 
   async regenerate(boundExtAddr = null) {
-    const passphrase = await _promptNewPassphrase('Set a passphrase for the new wallet.');
-    this.priv = secp.utils.randomPrivateKey();
-    this.pub = secp.getPublicKey(this.priv, true);
+    await this._saveNewKey(secp.utils.randomPrivateKey(), boundExtAddr, 'Set a passphrase for the new wallet.');
+  },
+
+  // Encrypt `priv` into its storage slot and open it. Refuses, with nothing
+  // written, when the slot holds a wallet other than the open one. A passkey,
+  // Ethereum or Bitcoin-derived key is left first, so the new key is the open
+  // one with its own backup gate, and init() restores it on reload.
+  async _saveNewKey(priv, boundExtAddr, reason) {
     const key = walletStorageKey(boundExtAddr);
-    localStorage.setItem(key, await encryptPrivkey(this.priv, passphrase));
+    if (_slotHoldsOtherWallet(key)) throw new Error(_otherWalletInSlotMsg(key));
+    const passphrase = await _promptNewPassphrase(reason);
+    const blob = await encryptPrivkey(priv, passphrase);
+    if (_slotHoldsOtherWallet(key)) throw new Error(_otherWalletInSlotMsg(key));
+    localStorage.setItem(key, blob);
+    _leaveDerivedWalletMode();
+    this.priv = priv;
+    this.pub = secp.getPublicKey(priv, true);
+    setActiveWalletMode(boundExtAddr ? 'ext' : 'local');
   },
   address() { return p2wpkhAddress(this.pub); },
   pubHex()  { return bytesToHex(this.pub); },
   xonly()   { return this.pub.slice(1); }
 };
 wallet.mode = null; // null = password/burner · 'passkey' = passkey PRF
+
+// The compressed pubkey (hex) of the wallet saved in storage slot `key`; null
+// when the slot holds nothing a key could be read from, and 'locked' for an
+// encrypted wallet that names no pubkey (readable only by unlocking it).
+function _slotPubHex(key) {
+  let raw = null;
+  try { raw = localStorage.getItem(key); } catch {}
+  if (!raw || !raw.trim()) return null;
+  const shape = _storageShape(raw);
+  if (shape === 'plaintext') {
+    try { return bytesToHex(secp.getPublicKey(hexToBytes(raw), true)); } catch { return null; }
+  }
+  if (shape !== 'encrypted') return null;
+  try { if (!JSON.parse(raw)?.ct) return null; } catch { return null; }
+  const pub = readBlobPub(raw);
+  return pub ? bytesToHex(pub) : 'locked';
+}
+// Import key, New wallet and Forget wallet replace or delete one slot. They act
+// only on an empty slot or on the wallet that is open now, so a key that was
+// never shown here is not overwritten.
+function _slotHoldsOtherWallet(key) {
+  const slotPub = _slotPubHex(key);
+  if (slotPub === null) return false;
+  return !wallet.pub || slotPub !== bytesToHex(wallet.pub);
+}
+function _otherWalletInSlotMsg(key) {
+  const slotPub = _slotPubHex(key);
+  let who = 'Another wallet';
+  try { if (slotPub && slotPub !== 'locked') who = `Another wallet (${shorten(p2wpkhAddress(hexToBytes(slotPub)), 8)})`; } catch {}
+  const how = wallet.mode
+    ? 'Disconnect the wallet open now to return to it, unlock it and use Export key.'
+    : 'Unlock it and use Export key.';
+  return `${who} is saved in this browser. Back up its key first: ${how} Nothing was changed.`;
+}
+// Leave a passkey, Ethereum or Bitcoin-derived key so a key saved in this
+// browser can be the open one. The passkey list stays; the linked Ethereum or
+// Bitcoin wallet's record for this network is dropped (it re-derives the same
+// key when linked again).
+function _leaveDerivedWalletMode() {
+  if (wallet.mode === 'eth') ethWallet.disconnect();
+  if (wallet.mode === 'btc') btcWallet.disconnect();
+  prfWallet.state = null;
+  wallet.mode = null;
+}
+// 'passkey', 'Ethereum' or 'Bitcoin' while such a derived key is open, else null.
+function _linkedWalletLabel() {
+  return { passkey: 'passkey', eth: 'Ethereum', btc: 'Bitcoin' }[wallet.mode] || null;
+}
 
 // ============== BURNER BACKUP GATE ==============
 // The local "burner" privkey is the trust root for every tacit asset the user
@@ -48788,6 +48845,9 @@ function renderWalletCard(patch = {}) {
   } else if (wallet.mode === 'eth') {
     if (backupEl) { backupEl.textContent = '· eth wallet'; backupEl.style.color = 'var(--orange)'; }
     if (warnEl) warnEl.style.display = 'none';
+  } else if (wallet.mode === 'btc') {
+    if (backupEl) { backupEl.textContent = '· btc wallet'; backupEl.style.color = 'var(--orange)'; }
+    if (warnEl) warnEl.style.display = 'none';
   } else {
     const backedUp = isBurnerBackedUp();
     if (backupEl) {
@@ -50875,10 +50935,15 @@ function setupWalletButtons() {
     // Under lazy unlock, wallet.priv may be null even though a wallet exists;
     // gate on wallet.pub instead so the warning still fires for returning users
     // who reload and haven't signed yet this session.
+    const slotKey = walletStorageKey(wallet.ext?.address || null);
+    if (_slotHoldsOtherWallet(slotKey)) { toast(_otherWalletInSlotMsg(slotKey), 'error', 9000); return; }
     if (wallet.pub) {
+      const linked = _linkedWalletLabel();
       const proceed = await tacitConfirm({
-        title: 'Replace loaded wallet?',
-        body: 'Importing replaces the wallet currently loaded in this slot. If you haven\'t exported the existing key, the tokens it controls will become unrecoverable.',
+        title: linked ? 'Open an imported key instead?' : 'Replace loaded wallet?',
+        body: linked
+          ? `The imported key is saved in this browser and opened instead of your ${linked} wallet. That wallet is not deleted: connecting it again opens it.`
+          : 'Importing replaces the wallet currently loaded in this slot. If you haven\'t exported the existing key, the tokens it controls will become unrecoverable.',
         confirmLabel: 'Import anyway',
         kind: 'danger',
       });
@@ -50895,15 +50960,9 @@ function setupWalletButtons() {
     const _okBtn = document.getElementById('import-confirm');
     const _cancelBtn = document.getElementById('import-cancel');
     const _doImport = async (v) => {
+      // setPriv also pins the active mode, so a reload restores the imported
+      // key rather than an earlier passkey or linked wallet.
       await wallet.setPriv(v, wallet.ext?.address || null);
-      // ACTIVE_MODE_KEY pins which wallet mode init() restores on refresh.
-      // Without setting it here, a user who imports a privkey while
-      // `tacit-active-mode-v1` still says 'passkey' (from a prior session)
-      // gets their passkey wallet reloaded on the next page refresh —
-      // silently replacing the just-imported privkey identity. The
-      // welcome-modal "import" path at _runFirstLoadChoice already sets
-      // this; the Wallet-tab Import button was missing the same call.
-      setActiveWalletMode(wallet.ext?.address ? 'ext' : 'local');
       // Holdings cache is keyed by global wallet state; without explicit
       // invalidation the next 30 seconds of scanHoldings calls would return
       // the previous wallet's holdings, falsely showing tokens this key
@@ -50966,19 +51025,21 @@ function setupWalletButtons() {
     });
   };
   $('#btn-regen').onclick = async () => {
+    const slotKey = walletStorageKey(wallet.ext?.address || null);
+    if (_slotHoldsOtherWallet(slotKey)) { toast(_otherWalletInSlotMsg(slotKey), 'error', 9000); return; }
+    const linked = _linkedWalletLabel();
     const proceed = await tacitConfirm({
       title: 'Generate a new wallet?',
-      body: 'Your old key will be replaced (export it first if you want to keep it).',
+      body: linked
+        ? `A new key is saved in this browser and opened instead of your ${linked} wallet. That wallet is not deleted: connecting it again opens it.`
+        : 'Your old key will be replaced (export it first if you want to keep it).',
       confirmLabel: 'Generate',
       kind: 'danger',
     });
     if (!proceed) return;
     try {
+      // regenerate also pins the active mode, so a reload restores the new key.
       await wallet.regenerate(wallet.ext?.address || null);
-      // Pin active mode so reload restores this fresh privkey instead of
-      // silently reverting to a previously-loaded passkey wallet. Same
-      // bug shape as btn-import had — see the comment in _doImport above.
-      setActiveWalletMode(wallet.ext?.address ? 'ext' : 'local');
       invalidateHoldingsCache();   // see comment in btn-import handler
       toast('New wallet generated', 'success');
       refreshWallet();
@@ -51031,7 +51092,27 @@ function setupWalletButtons() {
       location.reload();
       return;
     }
+    // A Bitcoin-derived key has no saved key to delete: forgetting it drops
+    // this network's link record. Any key saved for the connected address
+    // stays in its slot.
+    if (wallet.mode === 'btc') {
+      const proceed = await tacitConfirm({
+        title: 'Disconnect Bitcoin wallet?',
+        body: 'Your tacit identity is re-derivable any time you reconnect the same Bitcoin wallet and sign the derivation message again.',
+        confirmLabel: 'Disconnect',
+        kind: 'danger',
+      });
+      if (!proceed) return;
+      btcWallet.disconnect();
+      btcWallet.lock();
+      invalidateHoldingsCache();
+      localStorage.removeItem(ACTIVE_MODE_KEY);
+      location.reload();
+      return;
+    }
     if (!wallet.pub) { toast('No wallet to forget.', ''); return; }
+    const forgetKey = walletStorageKey(wallet.ext?.address || null);
+    if (_slotHoldsOtherWallet(forgetKey)) { toast(_otherWalletInSlotMsg(forgetKey), 'error', 9000); return; }
     const proceedForget = await tacitConfirm({
       title: 'Forget this wallet?',
       body:
@@ -51064,8 +51145,12 @@ function setupWalletButtons() {
     // path instead of being silently bounced back to local-only mode.
     const oldPub = wallet.pub;
     const oldPriv = wallet.priv;
+    if (wallet.mode || walletStorageKey(wallet.ext?.address || null) !== forgetKey || _slotHoldsOtherWallet(forgetKey)) {
+      toast('The open wallet changed while this was shown. Nothing was deleted.', 'error');
+      return;
+    }
     try {
-      localStorage.removeItem(walletStorageKey(wallet.ext?.address || null));
+      localStorage.removeItem(forgetKey);
       localStorage.removeItem(BACKUP_ACK_PREFIX + bytesToHex(oldPub));
       localStorage.removeItem(ACTIVE_MODE_KEY);
     } catch (e) {
