@@ -931,18 +931,21 @@ function readBlobPub(blobJson) {
   } catch { return null; }
 }
 
+// The PBKDF2 iteration count a blob is decrypted with. Capped at 5M so a
+// tampered blob (malicious extension, XSS) can't DoS the unlock thread by
+// setting iter to billions. Floor at 100k for back-compat with older blobs.
+function _blobIter(blob) {
+  const PBKDF2_ITER_MAX = 5_000_000;
+  return Number.isInteger(blob?.iter) && blob.iter >= 100000
+    ? Math.min(blob.iter, PBKDF2_ITER_MAX)
+    : PBKDF2_ITER;
+}
 async function decryptPrivkey(blobJson, passphrase) {
   let blob;
   try { blob = JSON.parse(blobJson); } catch { throw new Error('storage blob is malformed JSON'); }
   if (blob.v !== STORAGE_FORMAT_VERSION) throw new Error(`unsupported wallet format v${blob.v}`);
   if (blob.kdf !== 'pbkdf2') throw new Error(`unsupported kdf: ${blob.kdf}`);
-  // Cap PBKDF2 iterations at 5M so a tampered blob (malicious extension, XSS)
-  // can't DoS the unlock thread by setting iter to billions. Floor at 100k for
-  // back-compat with older blobs.
-  const PBKDF2_ITER_MAX = 5_000_000;
-  const iter = Number.isInteger(blob.iter) && blob.iter >= 100000
-    ? Math.min(blob.iter, PBKDF2_ITER_MAX)
-    : PBKDF2_ITER;
+  const iter = _blobIter(blob);
   const salt = hexToBytes(blob.salt);
   const iv   = hexToBytes(blob.iv);
   const ct   = hexToBytes(blob.ct);
@@ -1271,18 +1274,26 @@ const wallet = {
       }
       if (!priv) throw lastErr || new Error('unlock failed');
       this.priv = priv;
-      // One-time migration to the lazy-unlock format: legacy blobs predate
-      // the `pub` field, so init() can't render the address on reload
-      // without prompting for the passphrase. Re-encrypt now (we have the
-      // passphrase from the just-successful unlock) so the next reload
-      // hydrates wallet.pub from the blob and skips the prompt. Idempotent
-      // — readBlobPub returns non-null for already-migrated blobs.
-      if (!readBlobPub(raw) && usedPassphrase) {
-        try { localStorage.setItem(key, await encryptPrivkey(priv, usedPassphrase)); }
-        catch (migrationErr) {
+      // One-time re-encryption, with the passphrase from the just-successful
+      // unlock, of a blob that predates the `pub` field (init() can't render
+      // the address on reload without it) or was encrypted below
+      // PBKDF2_ITER. Same slot, same key and pub. The new blob replaces the
+      // old one only after it decrypts back to the same key, and only while
+      // the slot still holds the blob just unlocked, so a failure leaves the
+      // old blob as it was.
+      let lowIter = false;
+      try { lowIter = _blobIter(JSON.parse(raw)) < PBKDF2_ITER; } catch {}
+      if ((!readBlobPub(raw) || lowIter) && usedPassphrase) {
+        try {
+          const next = await encryptPrivkey(priv, usedPassphrase);
+          const back = await decryptPrivkey(next, usedPassphrase);
+          const same = bytesEqual(back, priv);
+          back.fill(0);
+          if (same && localStorage.getItem(key) === raw) localStorage.setItem(key, next);
+        } catch (migrationErr) {
           // Quota / localStorage unavailable. User can still sign this session
-          // — only the next-reload smoothing is lost. Warn once.
-          console.warn('[tacit] lazy-unlock migration write failed; next reload will eager-unlock:', migrationErr?.message || migrationErr);
+          // and the old blob still unlocks; only the upgrade waits. Warn once.
+          console.warn('[tacit] wallet re-encryption failed; the saved blob is unchanged:', migrationErr?.message || migrationErr);
         }
       }
     } else {
