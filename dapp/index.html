@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4CLLwM0sWys/E2XpTh9Am+mbkIzK/6/g18uZBbgFlq4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ieMY1c0zKt+jA5/H7smoj9kGl8zGp9XWjFdhmQJ+Cb0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -321,24 +321,20 @@ main > section + section { margin-top: 40px; }
 .facts { position: static; }
 .facts li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 12.5px; color: var(--mute); border-top: 1px dashed var(--hair-2); }
 .facts b { font-weight: 500; color: var(--ink); text-align: right; }
-/* Points: what each action earns now, the most weighted first. */
-.ways-b { padding: 18px 20px 14px; background: var(--card); border: 1px solid var(--hair); }
-.ways-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; }
-.ways-top a { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); text-decoration: none; }
-.ways-why { margin: 10px 0 4px; font-size: 12.5px; line-height: 1.5; color: var(--mute); }
-#ways { list-style: none; margin: 0; padding: 0; }
-#ways a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto 14px; align-items: center; gap: 4px 12px; min-height: 44px; padding: 8px 0;
-  border-top: 1px solid var(--hair); font-size: 13px; color: inherit; text-decoration: none; }
-#ways .tk { grid-column: 1; width: 22px; height: 22px; }
-#ways .w-l { grid-column: 2; min-width: 0; }
-#ways .boost { grid-column: 3; padding: 2px 6px; font: 500 10.5px var(--mono); font-style: normal; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--ink); background: color-mix(in srgb, var(--orange) 26%, transparent); }
-#ways b { grid-column: 4; font: 500 14px var(--mono); white-space: nowrap; text-align: right; }
-#ways b small { font: 400 11.5px var(--mono); color: var(--mute); }
-#ways .go { grid-column: 5; transition: transform .18s; }
-@media (hover: hover) { #ways a:hover .w-l { text-decoration: underline; } #ways a:hover .go { transform: translateX(3px); } }
-.ways-note { margin: 8px 0 0; font-size: 12px; color: var(--mute); }
-.ways-note a { margin-left: 6px; color: var(--ink); text-decoration: none; }
+/* Points, on the actions that earn them: a quiet line each, marked when the protocol weights it up (its card then leads its row). */
+.ptchip { display: flex; align-items: flex-start; gap: 7px; margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--mute); }
+.ptchip .tk { margin-top: 1px; }
+.tile .ptchip .tk, .ptsline .tk { width: 16px; height: 16px; box-shadow: none; }
+.ptchip [data-way], .facts [data-way] { color: var(--ink); font-weight: 500; }
+.boost { padding: 1px 5px; font: 500 10.5px var(--mono); font-style: normal; letter-spacing: .04em; color: var(--ink);
+  background: color-mix(in srgb, var(--orange) 26%, transparent); }
+.ptsline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 14px; padding: 10px 0; font-size: 12px; color: var(--mute);
+  text-decoration: none; border-top: 1px solid var(--hair); }
+.ptsline .fig { display: inline-flex; align-items: baseline; gap: 6px; }
+.ptsline .fig b { font: 500 14px var(--mono); color: var(--ink); }
+.ptsline .you { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; color: var(--ink); }
+.ptsline .go { transition: transform .18s; }
+@media (hover: hover) { .ptsline:hover .go { transform: translateX(3px); } .ptsline:hover .you { text-decoration: underline; } }
 
 /* ── how it comes together: Bitcoin, the bridge, Ethereum, and the assets ── */
 .how { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--hair); }
@@ -620,7 +616,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .map ol { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   /* A tile is a row: logo, the verb with its figure, its line, then where you stand. */
   .tiles { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .tile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "logo title figs" "logo text text" "foot foot foot";
+  .tile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "logo title figs" "logo text text" "logo pts pts" "foot foot foot";
     gap: 4px 14px; padding: 16px; }
   .tile-top { grid-area: logo; margin: 2px 0 0; align-self: start; }
   .tile .tk { width: 34px; height: 34px; }
@@ -635,13 +631,10 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .flow-step { grid-template-areas: "logo title figs" "logo text text" "pools pools pools" "foot foot foot"; }
   .flow-step .pair { display: none; }
   .pools { grid-area: pools; margin-top: 8px; }
-  #ways a { grid-template-columns: 22px minmax(0, 1fr) auto 14px; }
-  #ways .boost { grid-column: 2; grid-row: 2; justify-self: start; }
-  #ways b { grid-column: 3; grid-row: 1 / span 2; }
-  #ways .go { grid-column: 4; grid-row: 1 / span 2; }
-  .ways-b { padding: 16px 16px 12px; }
-  .ways-top .fig { display: flex; justify-items: start; text-align: left; font-size: 12px; }
-  .ways-top .fig > span { max-width: none; }
+  .ptchip { grid-area: pts; }
+  .ptsline .fig { display: inline-flex; justify-items: start; text-align: left; font-size: 12px; }
+  .ptsline .fig > span { max-width: none; }
+  .ptsline .you { margin-left: 0; }
   .tile-foot, .rows { grid-area: foot; margin-top: 8px; }
   .tile-foot { padding-top: 12px; }
   .tile-foot:has(> span:nth-child(2):empty) { display: none; }
@@ -732,7 +725,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
           <p>One transaction moves ETH into the Tacit pool as tETH. From then on, nobody sees how much or to whom.</p>
           <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="held"><span class="sk" style="--w:4ch"></span></span><small>ETH</small></b><span>private now</span></span></span>
           <ul class="pools facts">
-            <li><span>Points</span><b class="num" data-way="wrap">1,250 per ETH</b></li>
+            <li><span>Points</span><b class="num"><span data-way="wrap">1,250</span> per ETH</b></li>
             <li><span>Back to ETH</span><b>any time, one for one</b></li>
             <li><span>Recovery</span><b>from your key and the chain</b></li>
           </ul>
@@ -749,19 +742,6 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       </div>
     </section>
 
-    <section class="ways" aria-labelledby="ways-h">
-      <div class="group-h"><h2 id="ways-h">Points</h2><p>Up to <span data-pgm="pot">1,111</span> TAC a day, split by that day’s points.</p></div>
-      <div class="ways-b">
-        <div class="ways-top">
-          <span class="fig"><b class="num" id="ern-pts-v"><span class="sk" style="--w:5ch"></span></b><span id="ern-pts">points pot today</span></span>
-          <a href="#points" data-link="points"><span class="dot" data-dot="pts"></span><span data-foot="pts">100,000 TAC over 90 days</span><span class="go" aria-hidden="true">→</span></a>
-        </div>
-        <p class="ways-why">What each action earns now. When the protocol needs more of something, its weight goes up and it moves to the top.</p>
-        <ol id="ways" aria-label="Points per action"></ol>
-        <p class="ways-note">Early activity counts up to ×5, and holding public TAC up to ×2. <a href="#leaderboard" data-link="leaderboard">Leaderboard →</a></p>
-      </div>
-    </section>
-
     <section aria-labelledby="g-do">
       <div class="group-h"><h2 id="g-do">More, privately</h2><p>All from one key, on Bitcoin and Ethereum.</p></div>
       <div class="tiles">
@@ -769,6 +749,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
         <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg></span></span>
         <h3><a class="tile-main" href="/pay/">Pay</a></h3>
         <p>Send BTC, TAC or ETH to anyone, and get paid in all three at one tacit1 address.</p>
+        <span class="ptchip"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><span><span data-way="evmpooldeposit">1,000</span> points per ETH deposited</span></span>
         <span class="tile-foot"><span class="dot" data-dot="btc"></span><span data-foot="btc"></span><span class="go" aria-hidden="true">→</span></span>
       </article>
       <article class="tile">
@@ -781,10 +762,12 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
         <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span></span>
         <h3><a class="tile-main" href="#borrow" data-link="borrow">Borrow</a></h3>
         <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend.</p>
+        <span class="ptchip"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><span><span data-way="cbtcmint">1,000</span> points per wstETH bonded</span></span>
         <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="cusd"><span class="sk" style="--w:4ch"></span></span><small>cUSD</small></b><span>borrowed on BTC</span></span></span>
         <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow"></span><span class="go" aria-hidden="true">→</span></span>
       </article>
       </div>
+      <a class="ptsline" href="#points" data-link="points"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><span class="fig"><b class="num" id="ern-pts-v"><span class="sk" style="--w:5ch"></span></b><span id="ern-pts">points pot today</span></span><span class="you"><span class="dot" data-dot="pts"></span><span data-foot="pts">100,000 TAC over 90 days</span></span><span class="go" aria-hidden="true">→</span></a>
     </section>
   </main>
 
@@ -6224,20 +6207,17 @@ const earnRows = () => {
     r.cusdmint && ['borrow', 'cusd', 'Borrow cUSD', `${n(r.cusdmint)} per dollar, when you send the loan yourself${weightNote('cusdmint', day)}`],
   ].filter(Boolean);
 };
-// The actions the points program scores on this page, in the order the protocol wants them when no weight says otherwise.
-const WAYS = [['wrap', 'Make ETH private', 'ETH', 'private', 'teth'], ['cbtcmint', 'Post a bond toward cBTC', 'wstETH', 'lock', 'cbtc'],
-  ['evmpooldeposit', 'Deposit ETH on this device', 'ETH', 'device', 'eth'], ['zswapeth', 'Buy TAC with ETH', 'ETH', 'buy', 'tac'], ['cusdmint', 'Borrow cUSD', 'dollar', 'borrow', 'cusd']];
-// What each action earns now, the most weighted first: a weight in force multiplies its rate and lifts it; one still ahead is marked with its day.
+// What each action earns in points now, on the action itself: the rate times the weight in force. A weighted-up action is marked
+// and its card leads its row; a weight still ahead is noted with its day; an action not counted loses its line.
 function paintWays() {
-  const el = $('#ways');
-  if (!el) return;
   const s = scheduled(PGM.weights, utcDay(now())), wts = s?.e.weights || {}, ahead = s?.from || null;
-  const rows = WAYS.map(([k, label, unit, go, ic], i) => ({ label, unit, go, ic, i, rate: PGM.rates[k], wt: wts[k] ?? 1 }))
-    .filter((r) => r.rate && (ahead || r.wt !== 0))
-    .sort((a, b) => (ahead ? 0 : b.wt - a.wt) || a.i - b.i);
-  const wrap = rows.find((r) => r.go === 'private');
-  for (const e of $$('[data-way="wrap"]')) e.textContent = wrap ? `${rateStr(Math.round(wrap.rate * (ahead ? 1 : wrap.wt)))} per ETH` : 'not counted';
-  mount(el, html`${rows.map((r) => html`<li><a href="#${r.go}" data-link="${r.go}"><svg class="tk sm" aria-hidden="true"><use href="#tk-${r.ic}"/></svg><span class="w-l">${r.label}</span>${r.wt !== 1 ? html`<i class="boost">${r.wt === 0 ? 'not counted' : `×${r.wt}`}${ahead ? ` from ${dayShort(ahead)}` : ''}</i>` : ''}<b class="num">${rateStr(Math.round(r.rate * (ahead ? 1 : r.wt)))}<small> per ${r.unit}</small></b><span class="go" aria-hidden="true">→</span></a></li>`)}`);
+  for (const e of $$('[data-way]')) {
+    const k = e.dataset.way, rate = PGM.rates[k], wt = ahead ? 1 : wts[k] ?? 1, next = ahead ? wts[k] : null, line = e.closest('.ptchip, li'), tile = e.closest('.tiles > .tile');
+    if (line) line.hidden = !rate || wt === 0;
+    if (tile) tile.style.order = wt > 1 ? String(-Math.round(wt * 100)) : '';
+    if (!rate || wt === 0) continue;
+    mount(e, html`${wt > 1 ? html`<i class="boost">×${wt}</i> ` : ''}${rateStr(Math.round(rate * wt))}${next != null && next !== 1 ? html` <i class="boost">${next === 0 ? 'not counted' : `×${next}`} from ${dayShort(ahead)}</i>` : ''}`);
+  }
 }
 // Today's pot and how it is being split: the same for everyone, so shown before anyone connects.
 function pulse() {
