@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UO6ITfyTBkut25mXTjmVK6gJpQUZ3zMsss32/dVTNpk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-op0RhOUMelkudBM1OczCbFNSJWRLMnGN0isHS9jFpFc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
@@ -151,6 +151,7 @@ button { font: inherit; color: inherit; letter-spacing: inherit; }
 
 /* ── your Tacit ── */
 .dash { margin: -14px 0 30px; }
+.start:not([hidden]) + .dash { margin-top: 0; }
 .dash-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
 .dash-h h2 { font: 400 26px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
 .dash-h span { font-size: 12px; color: var(--mute); text-align: right; }
@@ -291,14 +292,20 @@ a.di { color: inherit; text-decoration: none; }
 .tpx .note { margin: 0; padding: 8px 12px 10px; border-top: 1px solid var(--hair); }
 .tpx thead th { padding: 0; border: 0; }
 
-/* ── first visit ── */
+/* ── first steps: a first visit, then an open key until it holds anything private ── */
 .start { margin: -14px 0 30px; padding: 22px 24px; background: var(--card); border: 1px solid var(--hair); }
-.start h2 { font: 400 26px/1 var(--serif); letter-spacing: -.01em; margin: 0 0 16px; }
+.start-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
+.start h2 { font: 400 26px/1 var(--serif); letter-spacing: -.01em; margin: 0; }
+.start-h .link { flex: none; padding: 8px 0; margin: -8px 0; }
 .start ol { list-style: none; counter-reset: s; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .start li { counter-increment: s; display: grid; align-content: start; gap: 4px; font-size: 13px; }
 .start li b { font-weight: 500; }
 .start li b::before { content: counter(s) '  '; color: var(--mute); font: 500 12px var(--mono); }
+.start li.now b::before { color: var(--orange); }
+.start li.done b { color: var(--mute); }
+.start li.done b::before { content: '✓  '; color: var(--ok); }
 .start li span { color: var(--mute); line-height: 1.5; }
+.start li span a { color: var(--ink); }
 .start .btn { width: auto; min-width: 180px; display: inline-flex; }
 
 /* ── tiles ── */
@@ -636,21 +643,21 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <h1 id="hero-h">Confidential<br><em>crosschain</em> DeFi.</h1>
     <p>Amounts and owners stay hidden. Every balance recovers from one key.</p>
     <div class="shelf" aria-label="Assets">
-      <button type="button" data-asset="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
-      <button type="button" data-asset="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
-      <button type="button" data-asset="cbtc"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
-      <button type="button" data-asset="cusd"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
-      <button type="button" data-asset="tacbtc"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</button>
-      <button type="button" data-asset="tacusd"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</button>
+      <button type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
+      <button type="button" data-asset="tac" aria-haspopup="dialog" title="What TAC is"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
+      <button type="button" data-asset="cbtc" aria-haspopup="dialog" title="What cBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
+      <button type="button" data-asset="cusd" aria-haspopup="dialog" title="What cUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
+      <button type="button" data-asset="tacbtc" aria-haspopup="dialog" title="What tacBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</button>
+      <button type="button" data-asset="tacusd" aria-haspopup="dialog" title="What tacUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</button>
     </div>
   </section>
 
   <section class="start" id="start" aria-labelledby="start-h" hidden>
-    <h2 id="start-h">New here? Three steps.</h2>
+    <div class="start-h"><h2 id="start-h">New here? Three steps.</h2><button class="link" type="button" id="start-x" hidden>Hide</button></div>
     <ol>
-      <li><b>Open a wallet</b><span>Sign in with MetaMask or a Bitcoin wallet, or create one with Face ID or Touch ID.</span></li>
-      <li><b>Make ETH private</b><span>One transaction moves it in. From then on, amounts and recipients stay hidden.</span></li>
-      <li><b>Use it</b><span>Pay anyone privately, earn TAC, or borrow against bitcoin. One key restores it all.</span></li>
+      <li data-step="1"><b>Open a wallet</b><span>Sign in with MetaMask or a Bitcoin wallet, or create one with Face ID or Touch ID.</span></li>
+      <li data-step="2"><b>Make ETH private</b><span>One transaction moves it in. From then on, amounts and recipients stay hidden.</span></li>
+      <li data-step="3"><b>Use it</b><span><a href="/pay/">Pay anyone privately</a>, <a href="#points" data-link="points">earn TAC</a>, or <a href="#borrow" data-link="borrow">borrow against bitcoin</a>. One key restores it all.</span></li>
     </ol>
     <button class="btn" type="button" id="start-go">Get started</button>
   </section>
@@ -664,13 +671,13 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   <section class="paycard" aria-labelledby="paycard-h">
     <div>
       <h2 id="paycard-h">Pay privately</h2>
-      <p>Bitcoin, TAC or ETH to anyone, at one tacit1 address. Each payment is made on your device, and nobody watching the chain can tell who you paid.</p>
+      <p>Send Bitcoin, TAC or ETH to anyone, and get paid in all three at one tacit1 address. Each payment is made on your device, and nobody watching the chain can tell who you paid.</p>
       <p class="links-sm"><a href="/pay/eth/#receive">Get paid by link or QR →</a><a href="/pay/">Open tacit pay →</a></p>
     </div>
     <ul aria-label="Pay in">
       <li><a href="/pay/#btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>a silent payment</small></span><span class="go" aria-hidden="true">→</span></a></li>
       <li><a href="/pay/#tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded on Bitcoin</small></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/pay/eth/"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>on Ethereum, Base or Robinhood</small></span><span class="go" aria-hidden="true">→</span></a></li>
+      <li><a href="/pay/eth/"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>on Ethereum, Base or Robinhood Chain</small></span><span class="go" aria-hidden="true">→</span></a></li>
     </ul>
   </section>
 
@@ -679,12 +686,12 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span>
       <h2>Private ETH</h2>
       <p>Make your ETH private, then send it to anyone without the world seeing how much or to whom. Swap, farm and borrow with it too.</p>
-      <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">On Ethereum, Base and Robinhood</span><span class="go" aria-hidden="true">→</span></span>
+      <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">Ethereum, Base and Robinhood Chain</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#bitcoin" data-open="btc" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
       <h2>Bitcoin</h2>
-      <p>Pay in bitcoin or TAC so that nobody watching the chain can tell who you paid.</p>
+      <p>Your key’s own Bitcoin wallet. Hold BTC and TAC on Bitcoin, send them to anyone, and get paid privately at your tacit1 address.</p>
       <span class="tile-foot"><span class="dot" data-dot="btc"></span><span data-foot="btc">Private payments on Bitcoin</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#tac" data-open="tac" aria-haspopup="dialog">
@@ -2501,12 +2508,39 @@ function btcSend(to, sats) {
 }
 
 function paintWallet() {
-  $('#start').hidden = !!(S.key || S.address || knownWallet());           // shown only to someone who has never opened a wallet here
+  paintStart();
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.address ? ' live' : '');
   mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${S.address ? short(S.address) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
 }
+// The first steps: shown to someone who has never opened a wallet here, then, with a key open, until it holds anything
+// private (a note, a deposit on its way, ETH in an on-device pool, sats in the Bitcoin pool). Hidden once for good in this
+// browser. With a key open, the first step is done and the button opens the second. While its first read runs, a key this
+// browser has seen holding private assets keeps them hidden.
+const START_OFF = 'tacit-front-start-off-v1';
+function paintStart() {
+  const sec = $('#start'), k = S.key?.pubHex;
+  let show;
+  if (store.get(START_OFF)) show = false;
+  else if (!k) show = !(S.address || knownWallet());
+  else {
+    const s = P.scan, seen = (key) => (lastSeen(key) ?? 0n) > 0n;
+    const dev = DEVICE_CHAINS.some((c) => (big(store.get(`tacit-lite-device-bal-v1:${c.chainId}:${k}`)?.v) ?? 0n) > 0n);
+    const sats = HELD.pub === k && (HELD.sats || []).some((a) => a.value > 0n);
+    show = !dev && !sats && (s ? !s.partial && !s.notes.length && !s.pending.length : !P.err && !['teth', 'cbtc', 'cusd'].some(seen));
+  }
+  sec.hidden = !show;
+  if (!show) return;
+  for (const li of $$('[data-step]', sec)) {
+    const n = Number(li.dataset.step);
+    li.classList.toggle('done', !!k && n === 1);
+    li.classList.toggle('now', k ? n === 2 : n === 1);
+  }
+  $('#start-go').textContent = k ? 'Make ETH private' : 'Get started';
+  $('#start-x').hidden = !k;
+}
 $('#wallet').onclick = () => openSheet('wallet');
-$('#start-go').onclick = () => openSheet('wallet');
+$('#start-go').onclick = () => (S.key ? openLink('private') : openSheet('wallet'));
+$('#start-x').onclick = () => { store.set(START_OFF, true); paintStart(); };
 const WAL = { mode: 'add', asset: 'eth', chain: 1, all: false };
 // The Tacit account's ETH on Base and Robinhood Chain, read at most once a minute per account: the wallet sheet draws
 // itself again on every change inside it, and those chains' public RPCs limit how often they are asked.
@@ -2521,7 +2555,7 @@ function l2Balances(who) {
 render.wallet = () => {
   const el = $('#wallet-body');
   if (!S.key) {
-    mount(el, html`<p class="lede-s">Open your Tacit wallet. It is the same wallet, with the same balances, as in the classic app. Signing in with an Ethereum wallet sends nothing and costs no gas, and the same account always opens the same wallet.</p>${signIn('ws')}
+    mount(el, html`<p class="lede-s">Your Tacit wallet is one key for private balances on Bitcoin and Ethereum. Signing in with a wallet sends nothing and costs no gas, and the same account or passkey always opens the same Tacit wallet, here and in the classic app.</p>${signIn('ws')}
       ${S.wallet && !S.provider?.isWalletConnect ? html`<div class="kv"><span>Ethereum</span><b>${S.wallet}</b></div>` : wcLine()}`);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
@@ -2645,6 +2679,11 @@ document.addEventListener('keydown', (e) => {
 // "Add ETH" links in any sheet open the Tacit account's funding panel.
 document.addEventListener('click', (e) => { if (e.target.closest?.('[data-fund]')) { WAL.mode = 'add'; openSheet('wallet'); } });
 const lowEth = () => (payer() === 'tacit' ? html`More than your Tacit account holds. <button class="link" type="button" data-fund>Add ETH</button>` : 'More than your wallet holds.');
+// A paying Tacit account with no ETH yet says so before any amount is typed, with the way to add some.
+function noEthYet(el, wei, chain, then) {
+  if (!el?.isConnected || wei !== 0n || payer() !== 'tacit') return;
+  mount(el, html`<div class="callout"><span>Your Tacit account has no ETH${chain ? ` on ${chain}` : ''} yet. Send some to it from any wallet or exchange, then ${then} here.</span><button class="btn ghost" type="button" data-fund>Add ETH</button></div>`);
+}
 const mine = () => (payer() === 'tacit' ? 'My Tacit account' : 'My wallet');
 // Paying a private balance out to an account deposits come from ties the two together on chain; said, not refused.
 const ownAccount = (a) => !!a && [S.address, S.wallet, S.acct?.address].some((x) => x && String(x).toLowerCase() === String(a).toLowerCase());
@@ -3219,6 +3258,7 @@ function outlookPaint() {
 // Wrap: one wallet transaction pays the deposit plus a relay tip; the relay then proves and settles the note.
 function v1Wrap(el, status) {
   mount(el, html`
+    <div id="w-fund"></div>
     <div class="lbl"><span>Amount</span><button type="button" id="w-max">${payName()} <span id="w-bal"><span class="sk" style="--w:5ch"></span></span> ETH</button></div>
     <div class="amt"><input id="w-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to wrap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
     <div class="rcpt" id="w-rcpt" hidden></div>
@@ -3227,7 +3267,7 @@ function v1Wrap(el, status) {
     <p class="note mute" data-pool="v1">${poolLine('v1')}</p>`);
   const input = $('#w-amt'), go = $('#w-go'), rc = $('#w-rcpt');
   let bal = null, q = null, seq = 0;
-  ethBalance().then((b) => { bal = b; const e = $('#w-bal'); if (e) e.textContent = b == null ? '—' : fmt(b, 18, 4); });
+  ethBalance().then((b) => { bal = b; const e = $('#w-bal'); if (e) e.textContent = b == null ? '—' : fmt(b, 18, 4); noEthYet($('#w-fund'), b, '', 'make it private'); });
   $('#w-max').onclick = () => { if (bal != null) { const gas = 2n * 10n ** 15n; const v = bal > gas ? ((bal - gas) / E10) * E10 : 0n; input.value = v ? plain(v, 18) : ''; input.dispatchEvent(new Event('input')); } };
   onEdit([input], go, async (e) => {
     const my = ++seq;
@@ -4346,7 +4386,7 @@ function renderDevice(el) {
   const maxPriv = DEV.bal != null ? html`<button type="button" id="d-maxp" aria-label="Use all: ${fmt(DEV.bal, 18, 4)} ETH private">Private ${fmt(DEV.bal, 18, 4)} ETH</button>` : '';
   const wireMax = () => { wireRoute(); $('#d-maxp')?.addEventListener('click', () => { const left = maxOut(relayFeeNow()), v = DEV.mode === 'out' && c.chainId === 1 && DEV.dest === 'v1' ? left - left % E10 : left, amt = $('#d-amt'); amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); }); };
   if (DEV.mode === 'deposit') {
-    mount(f, html`${amountField('d-amt', 'Amount', html`<button type="button" id="d-max">${payName()} <span id="d-wb"><span class="sk" style="--w:5ch"></span></span> ETH</button>`)}
+    mount(f, html`<div id="d-fund"></div>${amountField('d-amt', 'Amount', html`<button type="button" id="d-max">${payName()} <span id="d-wb"><span class="sk" style="--w:5ch"></span></span> ETH</button>`)}
       <div class="lbl"><span>To</span><span>yourself, unless you name someone</span></div>
       <div class="amt text"><input id="d-dto" placeholder="Yourself · or bp1…, tacit1… or name.wei" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Deposit to"></div>
       <div class="rcpt" id="d-rcpt" hidden></div>
@@ -4357,7 +4397,7 @@ function renderDevice(el) {
     const amt = $('#d-amt'), go = $('#d-go'), rc = $('#d-rcpt'), toEl = $('#d-dto'), dsv = { raw: '', r: null };
     const rpcOf = async () => (await getDeviceMods()).jsonRpc(c.rpc);
     const wbEl = $('#d-wb');
-    rpc('eth_getBalance', [S.address, 'latest'], c.rpc).then((b) => { if (!wbEl.isConnected) return; wb = BigInt(b); wbEl.textContent = fmt(wb, 18, 4); $('#d-max')?.setAttribute('aria-label', `Use all but gas: ${fmt(wb, 18, 4)} ETH in ${payName()}`); check(); }).catch(() => { if (wbEl.isConnected) wbEl.textContent = '—'; });
+    rpc('eth_getBalance', [S.address, 'latest'], c.rpc).then((b) => { if (!wbEl.isConnected) return; wb = BigInt(b); wbEl.textContent = fmt(wb, 18, 4); $('#d-max')?.setAttribute('aria-label', `Use all but gas: ${fmt(wb, 18, 4)} ETH in ${payName()}`); noEthYet($('#d-fund'), wb, c.chainId === 1 ? '' : CHAIN_META[c.chainId]?.chainName || c.name, 'deposit it'); check(); }).catch(() => { if (wbEl.isConnected) wbEl.textContent = '—'; });
     // A pool address is read with the decoder the deposit itself uses, so a typo shows here and not at the press.
     let bpKeys = null;
     const bpCheck = (raw) => getDeviceMods().then((m) => {
@@ -4637,7 +4677,7 @@ async function scanShielded(status) {
 }
 render.btc = () => {
   const el = $('#btc-body');
-  if (!needKey(el, 'Pay in bitcoin or TAC so that nobody watching the chain can tell who you paid. Open your Tacit wallet to start.')) return;
+  if (!needKey(el, 'Your key’s own Bitcoin wallet: hold BTC and TAC on Bitcoin, send them to anyone, and get paid privately at your tacit1 address. Open your Tacit wallet to start.')) return;
   const b = BTC.pub === S.key.pubHex ? BTC : null, last = b || BTC.err ? null : lastSeen('btc');
   if (!b && !BTC.loading && !BTC.err) loadBtc().then(() => rerender('btc')).catch(() => {});
   mount(el, html`
@@ -7811,7 +7851,7 @@ async function nextKeyNonce(t, priv, controller, ps, ownerOf) {
 
 // ── tile footers for the private panes ───────────────────────────────────────────────────────────────────
 async function paintPrivateFeet() {
-  if (!S.key) { setFoot('eth', 'On Ethereum, Base and Robinhood'); setFoot('borrow', 'No one else ever holds your BTC'); return; }
+  if (!S.key) { setFoot('eth', 'Ethereum, Base and Robinhood Chain'); setFoot('borrow', 'No one else ever holds your BTC'); return; }
   const foot = (s) => {
     const bits = [];
     if (s.eth.value > 0n) bits.push(`${fmt(s.eth.value, 8, 4)} tETH private`);
@@ -7823,7 +7863,7 @@ async function paintPrivateFeet() {
       // this browser still says so, rather than showing the static default while private ETH sits there unseen.
       let dev = 0n;
       for (const c of DEVICE_CHAINS) { const cached = store.get(`tacit-lite-device-bal-v1:${c.chainId}:${S.key.pubHex}`); if (cached?.v) try { dev += BigInt(cached.v); } catch {} }
-      bits.push(dev > 0n ? 'Private ETH on this device too' : 'On Ethereum, Base and Robinhood');
+      bits.push(dev > 0n ? 'Private ETH on this device too' : 'Ethereum, Base and Robinhood Chain');
     }
     setFoot('eth', bits.join(' · '), s.eth.value > 0n || lockList('claim').length ? 'on' : '');
   };
@@ -7906,6 +7946,7 @@ function dashItems() {
 // What needs the user now, each a line with the button that does it in its sheet.
 const DASH_DO = { eth: ['private', 'eth', 'v1-finish'], tac: ['tac', 'tac', 'tac-finish'], borrow: ['borrow', 'borrow', 'bw-finish'], claim: ['private', 'eth', 'v1-claim'], back: ['private', 'eth', 'v1-back'], bonds: ['borrow', 'borrow', 'bw-see-bonds'] };
 function paintDash() {
+  paintStart();                                                   // the first steps follow the same reads
   const id = dashId(), sec = $('#dash');
   if (!id) { sec.hidden = true; DASH.id = null; DASH.view = ''; return; }
   if (DASH.id !== id) { if (!(id in DASH.bases)) DASH.bases[id] = store.get(id); Object.assign(DASH, { id, base: DASH.bases[id], cur: {} }); }
