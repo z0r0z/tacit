@@ -57,6 +57,9 @@ const rA2 = BigInt(sw.raPost), rB2 = BigInt(sw.rbPost);
 const burn = 500n;
 const { deltaA: remA, deltaB: remB } = ammLpRemoveOutputs(burn, rA2, rB2, S1);
 
+// The pool's two assets, ASSET_LO byte-wise below ASSET_HI (so LO is the pool's canonical asset A).
+const ASSET_LO = 'aa'.repeat(32), ASSET_HI = 'bb'.repeat(32);
+
 const SEQ = [
   { kind: 'pool_init', deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee },
   { kind: 'lp_add', deltaA: addA, deltaB: addB, shareAmount: addShares },
@@ -132,10 +135,10 @@ console.log('\nPhase 2 — envelope → op adapter (decoded → replay op):');
 {
   // Synthetic decoded envelopes mirroring decodeLpAdd / decodeTSwapVarPayload /
   // decodeLpRemove / decodeProtocolFeeClaim field names.
-  const initDec = { variant: 1, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee };
-  const addDec = { variant: 0, deltaA: addA, deltaB: addB, shareAmount: addShares };
+  const initDec = { variant: 1, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee };
+  const addDec = { variant: 0, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: addA, deltaB: addB, shareAmount: addShares };
   const swapDec = { direction: 0, deltaIn: swapIn, minOut: 0n, R_A_pre: 999n, deltaOut: 777n }; // advisory fields present + ignored
-  const remDec = { shareAmount: burn, deltaA: remA, deltaB: remB };
+  const remDec = { assetA: ASSET_LO, assetB: ASSET_HI, shareAmount: burn, deltaA: remA, deltaB: remB };
   const feeDec = { claimAmount: 123n };
 
   const op0 = replayOpFromDecoded(OPCODES.T_LP_ADD, initDec, OPCODES);
@@ -182,10 +185,10 @@ console.log('\nPhase 3 — deriveAmmPoolState (discover + on-chain verify + repl
   const POOL = 'aa'.repeat(32);
   // Decoded payloads (each tagged with its pool), mirroring the real decoders.
   const payloads = {
-    t0: { opcode: OPCODES.T_LP_ADD, payload: { variant: 1, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee, poolId: POOL } },
-    t1: { opcode: OPCODES.T_LP_ADD, payload: { variant: 0, deltaA: addA, deltaB: addB, shareAmount: addShares, poolId: POOL } },
+    t0: { opcode: OPCODES.T_LP_ADD, payload: { variant: 1, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee, poolId: POOL } },
+    t1: { opcode: OPCODES.T_LP_ADD, payload: { variant: 0, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: addA, deltaB: addB, shareAmount: addShares, poolId: POOL } },
     t2: { opcode: OPCODES.T_SWAP_VAR, payload: { direction: 0, deltaIn: swapIn, minOut: 0n, poolId: POOL } },
-    t3: { opcode: OPCODES.T_LP_REMOVE, payload: { shareAmount: burn, deltaA: remA, deltaB: remB, poolId: POOL } },
+    t3: { opcode: OPCODES.T_LP_REMOVE, payload: { assetA: ASSET_LO, assetB: ASSET_HI, shareAmount: burn, deltaA: remA, deltaB: remB, poolId: POOL } },
   };
   const heights = { t0: 100, t1: 101, t2: 102, t3: 103 };
   const mkTx = (txid) => ({ txid, status: { confirmed: true, block_height: heights[txid] }, vin: [{ witness: ['', txid, ''] }] });
@@ -232,6 +235,92 @@ console.log('\nPhase 3 — deriveAmmPoolState (discover + on-chain verify + repl
   await throwsAsync('forged LP_ADD share amount → reject', () =>
     deriveAmmPoolState(POOL, baseEnv({ decodeForOpcode: (_o, payload) =>
       (payload === payloads.t1.payload ? { ...payload, shareAmount: addShares + 1n } : payload) })), /share mismatch/);
+}
+
+console.log('\nCanonical asset order (non-canonical envelopes, as the worker swaps them):');
+{
+  // POOL_INIT listing the pair the other way round: wire A = HI with 5000, wire B = LO with 2000. The worker
+  // stores reserve_a (LO) = 2000, reserve_b (HI) = 5000.
+  const initNC = { variant: 1, assetA: ASSET_HI, assetB: ASSET_LO, deltaA: 5000n, deltaB: 2000n, feeBps: swapFee };
+  const op0 = replayOpFromDecoded(OPCODES.T_LP_ADD, initNC, OPCODES);
+  ok('non-canonical POOL_INIT → canonical deltas (A = LO side)', op0.kind === 'pool_init' && op0.deltaA === 2000n && op0.deltaB === 5000n);
+  const S0 = isqrtBig(2000n * 5000n);
+  // Non-canonical LP_ADD: wire A = HI 2500, wire B = LO 1000 → canonical (1000, 2500).
+  const addShares2 = BigInt(ammLpAddShares(1000n, 2500n, 2000n, 5000n, S0));
+  const addNC = { variant: 0, assetA: ASSET_HI, assetB: ASSET_LO, deltaA: 2500n, deltaB: 1000n, shareAmount: addShares2 };
+  // A swap LO → HI (direction 0 is canonical A → B).
+  const swapC = { direction: 0, deltaIn: 400n, minOut: 0n };
+  const swR = ammCurveDeltaOut(0, 3000n, 7500n, 400n, swapFee);
+  const rLo = BigInt(swR.raPost), rHi = BigInt(swR.rbPost), S1b = S0 + addShares2;
+  const burn2 = 700n;
+  const out2 = ammLpRemoveOutputs(burn2, rLo, rHi, S1b);
+  // Non-canonical LP_REMOVE: wire deltaA is the HI payout, wire deltaB the LO payout.
+  const remNC = { assetA: ASSET_HI, assetB: ASSET_LO, shareAmount: burn2, deltaA: BigInt(out2.deltaB), deltaB: BigInt(out2.deltaA) };
+  const ops = [
+    op0,
+    replayOpFromDecoded(OPCODES.T_LP_ADD, addNC, OPCODES),
+    replayOpFromDecoded(OPCODES.T_SWAP_VAR, swapC, OPCODES),
+    replayOpFromDecoded(OPCODES.T_LP_REMOVE, remNC, OPCODES),
+  ];
+  const st = replayAmmPoolState(ops, DEPS);
+  ok('replay of non-canonical LP ops matches the worker\'s canonical reserves',
+    st.reserveA === rLo - BigInt(out2.deltaA) && st.reserveB === rHi - BigInt(out2.deltaB) && st.totalShares === S1b - burn2,
+    `${st.reserveA}/${st.reserveB}/${st.totalShares}`);
+  // Read in wire order instead, the same ops do not replay (the add's declared shares or the remove's payouts
+  // fail the formula against the transposed reserves).
+  const wireOps = [
+    { kind: 'pool_init', deltaA: 5000n, deltaB: 2000n, feeBps: swapFee },
+    { kind: 'lp_add', deltaA: 2500n, deltaB: 1000n, shareAmount: addShares2 },
+    { kind: 'swap_var', direction: 0, deltaIn: 400n, minOut: 0n },
+    { kind: 'lp_remove', sharesBurned: burn2, outA: remNC.deltaA, outB: remNC.deltaB },
+  ];
+  let wireOk = false;
+  try { const w = replayAmmPoolState(wireOps, DEPS); wireOk = w.reserveA === st.reserveA && w.reserveB === st.reserveB; } catch { wireOk = false; }
+  ok('the same ops in wire order do not reach the canonical state', wireOk === false);
+  throws('LP op without its asset pair → reject', () =>
+    replayOpFromDecoded(OPCODES.T_LP_ADD, { variant: 0, deltaA: 1n, deltaB: 1n, shareAmount: 1n }, OPCODES), /asset pair/);
+  throws('LP op with identical assets → reject', () =>
+    replayOpFromDecoded(OPCODES.T_LP_REMOVE, { assetA: ASSET_LO, assetB: ASSET_LO, shareAmount: 1n, deltaA: 1n, deltaB: 1n }, OPCODES), /identical/);
+}
+
+console.log('\nOp order from chain data (deriveAmmPoolState):');
+{
+  async function throwsAsync(label, fn, match) {
+    try { await fn(); ok(label, false, 'did not throw'); }
+    catch (e) { ok(label, !match || match.test(e.message), e.message); }
+  }
+  const POOL = 'aa'.repeat(32);
+  // Block 101 holds the swap first, then the add; the add's shares are declared against the post-swap state.
+  const swR = ammCurveDeltaOut(0, initA, initB, 300n, swapFee);
+  const raS = BigInt(swR.raPost), rbS = BigInt(swR.rbPost);
+  const addAfterSwap = BigInt(ammLpAddShares(1000n, 1000n, raS, rbS, initTotal));
+  const payloads = {
+    i0: { opcode: OPCODES.T_LP_ADD, payload: { variant: 1, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: initA, deltaB: initB, shareAmount: initFounder, feeBps: swapFee, poolId: POOL } },
+    s1: { opcode: OPCODES.T_SWAP_VAR, payload: { direction: 0, deltaIn: 300n, minOut: 0n, poolId: POOL } },
+    a1: { opcode: OPCODES.T_LP_ADD, payload: { variant: 0, assetA: ASSET_LO, assetB: ASSET_HI, deltaA: 1000n, deltaB: 1000n, shareAmount: addAfterSwap, poolId: POOL } },
+  };
+  const chain = { i0: { h: 100, hash: 'h100' }, s1: { h: 101, hash: 'h101' }, a1: { h: 101, hash: 'h101' } };
+  const blocks = { h100: ['x', 'i0'], h101: ['y', 's1', 'z', 'a1'] };
+  const mkTx = (txid) => ({ txid, status: { confirmed: true, block_height: chain[txid].h, block_hash: chain[txid].hash }, vin: [{ witness: ['', txid, ''] }] });
+  const env = (over = {}) => ({
+    // The listing puts the add before the swap and lies about heights.
+    discover: async () => [{ txid: 'a1', height: 99, txIndex: 0 }, { txid: 's1', height: 101, txIndex: 5 }, { txid: 'i0', height: 100, txIndex: 0 }],
+    fetchTx: async (txid) => (payloads[txid] ? mkTx(txid) : null),
+    decodeEnvelope: (s) => payloads[s] || null,
+    decodeForOpcode: (_o, payload) => payload,
+    poolIdForOp: (_o, dec) => dec.poolId,
+    blockTxids: async (hash) => blocks[hash],
+    opcodes: OPCODES, deps: DEPS, tipHeight: 110, confirmations: 3,
+    ...over,
+  });
+  const st = await deriveAmmPoolState(POOL, env());
+  ok('same-block ops follow the block\'s own order, not the listing', st.totalShares === initTotal + addAfterSwap && st.reserveA === raS + 1000n);
+  await throwsAsync('ordered by the listing\'s tx_index instead, the add fails its share check', () =>
+    deriveAmmPoolState(POOL, env({ blockTxids: undefined })), /share mismatch/);
+  await throwsAsync('an op missing from its block → reject', () =>
+    deriveAmmPoolState(POOL, env({ blockTxids: async (hash) => (hash === 'h101' ? ['s1'] : blocks[hash]) })), /not found in block/);
+  const dup = await deriveAmmPoolState(POOL, env({ discover: async () => [{ txid: 'i0' }, { txid: 'i0' }, { txid: 's1' }, { txid: 'a1' }, { txid: 'a1' }] }));
+  ok('an op listed twice is replayed once', dup.totalShares === st.totalShares && dup.reserveA === st.reserveA);
 }
 
 console.log('\nShadow comparison (replay vs worker reserves):');

@@ -41,6 +41,15 @@ function _toHex(x) {
   return s;
 }
 
+// The worker applies an LP op in canonical asset order (the byte-wise smaller asset id is A) and swaps a
+// non-canonically listed envelope's deltas to match. True when the envelope lists its pair the other way round.
+function _pairSwapped(assetA, assetB) {
+  const a = _toHex(assetA || ''), b = _toHex(assetB || '');
+  if (!/^[0-9a-f]{64}$/.test(a) || !/^[0-9a-f]{64}$/.test(b)) throw new Error('replay: LP op without a 32-byte asset pair');
+  if (a === b) throw new Error('replay: LP op with identical assets');
+  return a > b;
+}
+
 // Protocol-fee crystallization — mirrors the worker's ammComputeProtocolShares
 // (lazy protocol-fee skim): the protocol's cut of LP-fee growth, measured
 // as the increase in sqrt(k) (k = reserveA·reserveB) since the last
@@ -267,14 +276,14 @@ export function replayOpFromDecoded(opcode, dec, opcodes, poolIdHex) {
   const { T_LP_ADD, T_SWAP_VAR, T_LP_REMOVE, T_PROTOCOL_FEE_CLAIM, T_SWAP_ROUTE } = opcodes;
 
   if (opcode === T_LP_ADD) {
-    // variant 1 = POOL_INIT (carries the pool fee tier), variant 0 = standard add.
+    // variant 1 = POOL_INIT (carries the pool fee tier), variant 0 = standard add. Deltas in canonical order.
+    if (dec.variant !== 0 && dec.variant !== 1) return null;
+    const sw = _pairSwapped(dec.assetA, dec.assetB);
+    const deltaA = sw ? dec.deltaB : dec.deltaA, deltaB = sw ? dec.deltaA : dec.deltaB;
     if (dec.variant === 1) {
-      return { kind: 'pool_init', deltaA: dec.deltaA, deltaB: dec.deltaB, shareAmount: dec.shareAmount, feeBps: dec.feeBps || 0 };
+      return { kind: 'pool_init', deltaA, deltaB, shareAmount: dec.shareAmount, feeBps: dec.feeBps || 0 };
     }
-    if (dec.variant === 0) {
-      return { kind: 'lp_add', deltaA: dec.deltaA, deltaB: dec.deltaB, shareAmount: dec.shareAmount };
-    }
-    return null;
+    return { kind: 'lp_add', deltaA, deltaB, shareAmount: dec.shareAmount };
   }
   if (opcode === T_SWAP_VAR) {
     return { kind: 'swap_var', direction: dec.direction, deltaIn: dec.deltaIn, minOut: dec.minOut };
@@ -294,8 +303,9 @@ export function replayOpFromDecoded(opcode, dec, opcodes, poolIdHex) {
     return { kind: 'swap_route', hops: mine };
   }
   if (opcode === T_LP_REMOVE) {
-    // decodeLpRemove returns shareAmount (burned) + deltaA/deltaB (the payouts).
-    return { kind: 'lp_remove', sharesBurned: dec.shareAmount, outA: dec.deltaA, outB: dec.deltaB };
+    // decodeLpRemove returns shareAmount (burned) + deltaA/deltaB (the payouts, in the envelope's pair order).
+    const sw = _pairSwapped(dec.assetA, dec.assetB);
+    return { kind: 'lp_remove', sharesBurned: dec.shareAmount, outA: sw ? dec.deltaB : dec.deltaA, outB: sw ? dec.deltaA : dec.deltaB };
   }
   if (opcode === T_PROTOCOL_FEE_CLAIM) {
     return { kind: 'fee_claim', claimAmount: dec.claimAmount };
@@ -323,11 +333,13 @@ export function replayOpFromDecoded(opcode, dec, opcodes, poolIdHex) {
 //   decodeForOpcode(opcode, payload) -> decoded fields | null
 //   poolIdForOp(opcode, decoded) -> poolIdHex | [poolIdHex,...]   (binds an op to
 //     its pool; a multi-pool op like a route returns every pool it touches)
+//   blockTxids?(blockHash) -> [txid,...] in block order   (orders ops that share a
+//     block; without it the discovery's tx_index breaks the tie)
 //   opcodes, deps (replay math), tipHeight, confirmations? = 3
 // }
 export async function deriveAmmPoolState(poolIdHex, env) {
   const {
-    discover, fetchTx, decodeEnvelope, decodeForOpcode, poolIdForOp,
+    discover, fetchTx, decodeEnvelope, decodeForOpcode, poolIdForOp, blockTxids,
     opcodes, deps, tipHeight, confirmations = 3,
   } = env || {};
   for (const [name, fn] of [['discover', discover], ['fetchTx', fetchTx], ['decodeEnvelope', decodeEnvelope], ['decodeForOpcode', decodeForOpcode], ['poolIdForOp', poolIdForOp]]) {
@@ -337,13 +349,17 @@ export async function deriveAmmPoolState(poolIdHex, env) {
 
   const list = await discover(poolIdHex);
   if (!Array.isArray(list)) throw new Error('deriveAmmPoolState: discover() did not return an array');
-  // Canonical (height, tx_index) order — never trust the discovery's ordering.
-  const sorted = [...list].sort((a, b) => (a.height - b.height) || (a.txIndex - b.txIndex));
 
-  const ops = [];
-  for (const item of sorted) {
+  // Fetch every listed op once, then order them by the fetched block height and position in the block. The
+  // discovery's own height / tx_index never set the order (its tx_index only breaks a same-block tie when no
+  // blockTxids reader is supplied).
+  const fetched = [];
+  const seen = new Set();
+  for (const item of list) {
     const txid = item && item.txid;
     if (typeof txid !== 'string') throw new Error('deriveAmmPoolState: op-list item missing txid');
+    if (seen.has(txid)) continue;
+    seen.add(txid);
     const tx = await fetchTx(txid);
     if (!tx) throw new Error(`deriveAmmPoolState: op ${txid} unfetchable (halt — set incomplete)`);
     if (!tx.status || tx.status.confirmed !== true) throw new Error(`deriveAmmPoolState: op ${txid} unconfirmed`);
@@ -353,6 +369,29 @@ export async function deriveAmmPoolState(poolIdHex, env) {
     if ((tipHeight - h + 1) < confirmations) {
       throw new Error(`deriveAmmPoolState: op ${txid} below confirmation depth ${confirmations}`);
     }
+    fetched.push({ txid, tx, h, pos: Number(item.txIndex) });
+  }
+  const perHeight = new Map();
+  for (const f of fetched) perHeight.set(f.h, (perHeight.get(f.h) || 0) + 1);
+  if (typeof blockTxids === 'function') {
+    const blockOrder = new Map();
+    for (const f of fetched) {
+      if (perHeight.get(f.h) < 2) continue;
+      const hash = f.tx.status.block_hash;
+      if (typeof hash !== 'string' || !hash) throw new Error(`deriveAmmPoolState: op ${f.txid} has no block hash`);
+      if (!blockOrder.has(hash)) blockOrder.set(hash, await blockTxids(hash));
+      const ids = blockOrder.get(hash);
+      f.pos = Array.isArray(ids) ? ids.indexOf(f.txid) : -1;
+      if (f.pos < 0) throw new Error(`deriveAmmPoolState: op ${f.txid} not found in block ${hash}`);
+    }
+  }
+  for (const f of fetched) {
+    if (perHeight.get(f.h) > 1 && !Number.isInteger(f.pos)) throw new Error(`deriveAmmPoolState: op ${f.txid} has no position in its block`);
+  }
+  fetched.sort((a, b) => (a.h - b.h) || ((a.pos || 0) - (b.pos || 0)));
+
+  const ops = [];
+  for (const { txid, tx } of fetched) {
     const wit = tx.vin && tx.vin[0] && tx.vin[0].witness;
     if (!Array.isArray(wit) || wit.length < 3) throw new Error(`deriveAmmPoolState: op ${txid} carries no envelope`);
     const decodedEnv = decodeEnvelope(wit[1]);

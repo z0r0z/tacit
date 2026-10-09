@@ -47736,10 +47736,13 @@ async function deriveAmmPoolStateLive(poolIdHex, {
       return Array.isArray(dec.hops) ? dec.hops.map(h => bytesToHex(h.poolId)) : null;
     }
     if (opcode === T_LP_ADD || opcode === T_LP_REMOVE) {
-      // No fee in these envelopes — bind to THIS pool by deriving its pool_id
-      // from the op's pair + the queried pool's fee/caps/protocol-fee config.
+      // A POOL_INIT (LP_ADD variant 1) carries its own fee/caps/protocol-fee config and binds by it. The other
+      // LP ops carry no fee — bind them to THIS pool by deriving its pool_id from the op's pair + the queried
+      // pool's config.
       try {
-        const pid = ammDerivePoolIdDapp(dec.assetA, dec.assetB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps);
+        const pid = (opcode === T_LP_ADD && dec.variant === 1)
+          ? ammDerivePoolIdDapp(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags, dec.protocolFeeAddress, dec.protocolFeeBps)
+          : ammDerivePoolIdDapp(dec.assetA, dec.assetB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps);
         return pid ? bytesToHex(pid) : null;
       } catch { return null; }
     }
@@ -47755,6 +47758,7 @@ async function deriveAmmPoolStateLive(poolIdHex, {
     fetchTx: getTx,
     decodeEnvelope: (witHex) => { try { return decodeEnvelopeScript(hexToBytes(witHex)); } catch { return null; } },
     decodeForOpcode, poolIdForOp,
+    blockTxids: async (hash) => apiJson(`/block/${hash}/txids`),
     opcodes: { T_LP_ADD, T_SWAP_VAR, T_SWAP_ROUTE, T_LP_REMOVE, T_PROTOCOL_FEE_CLAIM },
     deps: {
       curveDeltaOut: swapVarCurveDeltaOut,
