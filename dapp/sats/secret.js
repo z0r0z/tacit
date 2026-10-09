@@ -416,6 +416,38 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   return { ...r, relayed: false, anchor: a.hAnchor };
 }
 
+// One spend takes at most two notes. How many times the two largest of `values` must be joined into one, each join
+// paying `fee`, before two notes cover `need`: 0 when two already do, null when no run of joins does.
+export function combinePlan(values, need, fee = 0n) {
+  const desc = (a, b) => (a < b ? 1 : a > b ? -1 : 0), u = values.map(BigInt).filter((v) => v > 0n).sort(desc), want = BigInt(need), f = BigInt(fee);
+  for (let n = 0; n < 64; n++) {
+    if ((u[0] ?? 0n) + (u[1] ?? 0n) >= want) return n;
+    if (u.length < 2 || u[0] + u[1] <= f) return null;
+    u.splice(0, 2, u[0] + u[1] - f);
+    u.sort(desc);
+  }
+  return null;
+}
+
+// Joins this wallet's two largest notes of `asset` into one, paid to its own pool address, for a payment two notes
+// cannot cover. Relayed, the relay's fee (at most `maxFee`, which a relayed join needs) comes out of the new note;
+// posted from the Bitcoin address, the new note holds both. Until the pool counts it, it shows as settling.
+// → payPrivately's result, plus `value`, the new note's value.
+export async function combineNotes(tacit, { poolWallet, asset, anchor = null, noRelay = false, maxFee = null, say = () => {}, askSelf = null }) {
+  if (!noRelay && maxFee == null) throw new Error('combineNotes: a relayed join needs maxFee');
+  const desc = (a, b) => (BigInt(a.value) < BigInt(b.value) ? 1 : BigInt(a.value) > BigInt(b.value) ? -1 : 0);
+  const two = pendingView(await poolNotes(poolWallet, asset)).live.filter((n) => BigInt(n.value) > 0n).sort(desc).slice(0, 2);
+  if (two.length < 2) throw Object.assign(new Error('Your shielded balance is one note: there is nothing to combine.'), { said: true });
+  const total = BigInt(two[0].value) + BigInt(two[1].value), fee = noRelay ? 0n : BigInt(maxFee);
+  if (total <= fee) throw Object.assign(new Error('Your two largest notes hold less than the relay’s fee.'), { said: true });
+  const value = total - fee;
+  const r = await payPrivately(tacit, { poolWallet, to: poolWallet.addressString, amount: value, asset, anchor, noRelay, maxFee, say, inputs: two, askSelf });
+  if (r.wait) return r;
+  const kept = BigInt(pendingRead().change[r.revealTxid]?.v || 0);
+  pendingMark(two, r.revealTxid, kept + value, asset, 0n, ownerTag(poolWallet));
+  return { ...r, value };
+}
+
 // Exits `amount` of `asset` to this wallet's own address as an ordinary Tacit note (vout 0 of the carrier), the
 // rest staying shielded as internal change. Returns the new note's opening.
 export async function exitToWallet(tacit, { poolWallet, amount, asset, anchor = null, say = () => {} }) {

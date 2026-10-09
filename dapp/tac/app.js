@@ -9,7 +9,7 @@
 // their own carrier, by design, so those need a little BTC in the wallet.
 
 const TACIT_URL = '/tacit.js?cb=ff33dac8';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
-const SECRET_URL = '/sats/secret.js?cb=fc5a3015';
+const SECRET_URL = '/sats/secret.js?cb=423f48a3';
 const SATS_URL = '/tac/sats.js?cb=19b44eda';
 const MARKET_URL = '/tac/market.js?cb=b6459103';
 const CLAIM_URL = '/tac/claim.js?cb=0cbb63e1';
@@ -118,7 +118,7 @@ const errText = (e) => {
   if (e?.unlockCancelled || e?.name === 'NotAllowedError') return 'Cancelled.';         // the passphrase or passkey prompt was closed
   if (/no ethereum wallet detected/i.test(m)) return `No Ethereum wallet found in this browser. Open this page in your wallet's own browser, or install MetaMask, Rabby or Rainbow.${prf?.isPasskeyAvailable?.() ? ' Or use a passkey.' : ''}`;
   if (/insufficient sats|no plain-sats|not enough (?:signet )?sats/i.test(m)) return 'Not enough BTC at your Bitcoin address for this and its network fee.';
-  if (/two notes cannot cover/i.test(m)) return 'One payment can use two of your notes at a time. Send less, or send to your own Tacit address first to combine them.';
+  if (/two notes cannot cover/i.test(m)) return 'One payment spends two of your notes at most. Combine them first, then pay again.';
   if (/no spendable notes/i.test(m)) return 'Nothing in your shielded balance can be spent yet: a payment you just made is still settling.';
   if (/\bHTTP 5\d\d\b/.test(m)) return 'The service is busy right now. Try again in a moment.';
   if (/failed to fetch|networkerror|load failed|all rpcs failed/i.test(m)) return 'Could not reach the network. Check your connection and try again.';
@@ -638,7 +638,37 @@ function renderBalances() {
   const n = (shielded.notes || []).filter((x) => !x.spent && BigInt(x.value) > 0n).length;
   $('bal-note').textContent = !unlocked() ? 'Open your wallet to see your balances.'
     : `${n} shielded note${n === 1 ? '' : 's'} only you can see.`;
+  if (unlocked() && !shielded.loading && liveNotes().length > 4) {
+    const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Combine my notes' });
+    b.onclick = offerCombine;
+    $('bal-note').append(' ', b);
+  }
   $('btn-refresh').hidden = !unlocked();
+  renderSendComb();
+}
+
+// One payment spends two notes at most. One that two cannot cover goes after the two largest are joined into one, paid to
+// this wallet's own pool address; the relay's fee comes out of them when the relay posts it.
+const liveNotes = () => (S && poolWallet ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, poolWallet).live.filter((n) => BigInt(n.value) > 0n) : []);
+const liveValues = () => liveNotes().map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+const combineFee = () => (relayLive && relayFee != null ? relayFee : null);
+const combineBox = (id, lead, each = false) => html`<div class="callout"><span>${lead}<small>${combineFee() != null ? `Relay fee ≈ ${fmt(combineFee())} TAC${each ? ' each' : ''}` : 'Posted from your Bitcoin address, which pays its Bitcoin fee and shows as the sender'}.</small></span><button class="btn ghost" type="button" id="${id}">Combine my notes</button></div>`;
+// Under Send's amount: the offer to combine first, when two notes cannot cover the amount and its fee and a run of combines can.
+function renderSendComb() {
+  const box = $('send-comb');
+  if (!box) return;
+  let v = 0n;
+  try { v = parseUnits($('send-amt').value); } catch {}
+  const vals = liveValues(), k = v > 0n && unlocked() && S ? S.combinePlan(vals, v + relayFeeUnits(), combineFee() || 0n) : null;
+  box.hidden = !k;
+  if (!k) return box.replaceChildren();
+  mount(box, combineBox('btn-comb-send', html`Your TAC is in ${vals.length} notes; one payment spends two.${k > 1 ? ` This one takes ${k} combines, one per press.` : ''} Combine them first:`, k > 1));
+  $('btn-comb-send').onclick = (e) => busy(e.currentTarget, 'st-send', () => doCombine('st-send', 'Then pay again.'));
+}
+function offerCombine() {
+  const [a = 0n, b = 0n] = liveValues();
+  mount($('st-comb'), combineBox('btn-comb', html`Your TAC is in ${liveValues().length} notes; one payment spends two. Combining joins your two largest into one note of ${fmt(a + b - (combineFee() || 0n))} TAC.`));
+  $('btn-comb').onclick = (e) => busy(e.currentTarget, 'st-comb', () => doCombine('st-comb', ''));
 }
 
 // Live sats equivalent under each amount field, so an amount is never entered blind.
@@ -747,6 +777,23 @@ async function doSend(anchor = null) {
   if (r.wait) return waitBox('st-send', r, (tip) => doSend(tip));
   $('send-to').value = ''; $('send-amt').value = ''; renderAmountHints();
   say('st-send', `Sent ${fmt(amount)} TAC in `, txLink(r.revealTxid), r.relayed ? ' — relayed, fee paid in TAC.' : ' — self-funded.');
+  await loadShielded();
+}
+
+async function doCombine(statusId, then, anchor = null) {
+  await ensureKey();
+  if (!shielded.notes.length) await loadShielded();
+  const fee = combineFee();
+  let r;
+  try {
+    r = await S.combineNotes(T, { poolWallet, asset: S.TAC_ASSET_MAINNET, anchor, noRelay: fee == null, maxFee: fee, say: (m) => say(statusId, m), askSelf: askSelfPost(statusId) });
+  } catch (e) {
+    if (e?.feeMoved == null) throw e;
+    relayFee = e.feeMoved; renderSendComb();
+    throw said(`The relay’s fee changed to ${fmt(e.feeMoved)} TAC. Check it and press again.`);
+  }
+  if (r.wait) return waitBox(statusId, r, (tip) => doCombine(statusId, then, tip));
+  say(statusId, 'Combining: the new note counts after three Bitcoin confirmations, about 30 minutes.', then ? ` ${then} ` : ' ', txLink(r.revealTxid));
   await loadShielded();
 }
 
@@ -925,7 +972,7 @@ function writeTab(i) {
   $('btn-shield').onclick = (e) => busy(e.currentTarget, 'st-shield', doShield);
   $('btn-send').onclick = (e) => busy(e.currentTarget, 'st-send', () => doSend());
   $('btn-exit').onclick = (e) => busy(e.currentTarget, 'st-exit', () => doExit());
-  $('send-amt').addEventListener('input', renderAmountHints);
+  $('send-amt').addEventListener('input', () => { renderAmountHints(); renderSendComb(); });
   $('exit-amt').addEventListener('input', renderAmountHints);
   // "max" before the pool scan has run would otherwise quietly write 0 and look like an empty balance.
   const maxInto = (field, statusId) => async () => {

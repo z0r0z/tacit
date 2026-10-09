@@ -174,6 +174,10 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .callout { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; margin: 0 0 16px;
   font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
 .callout .btn { width: auto; min-height: 36px; margin: 0; padding: 6px 14px; }
+.callout small { display: block; margin-top: 3px; font-size: 12px; color: var(--mute); }
+.comb .callout { margin: 12px 0 0; }
+.comb .callout .btn { flex: none; white-space: nowrap; }
+@media (max-width: 480px) { .comb .callout { flex-direction: column; align-items: stretch; } }
 .pick { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; font-size: 12.5px; color: var(--mute); cursor: pointer; }
 .pick input { width: 18px; height: 18px; margin: 0; accent-color: var(--ink); flex: none; }
 .gate { text-align: center; padding: 26px 8px 8px; }
@@ -351,6 +355,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="side">in your wallet<b class="num" id="bal-public">—</b><span class="fiat" id="bal-public-sats"></span></div>
     </div>
     <div class="kv"><span id="bal-note">Open your wallet to see your balances.</span><button class="link" id="btn-refresh" hidden>refresh</button></div>
+    <div class="status comb" id="st-comb" role="status"></div>
 
     <div id="pane-shield" role="tabpanel" aria-labelledby="tab-shield" tabindex="0">
       <div class="lbl"><label for="shield-pick">TAC to move into the pool</label></div>
@@ -367,6 +372,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
       <div class="lbl"><label for="send-amt">Amount</label><button class="link" id="send-max" type="button">max</button></div>
       <div class="amt"><input id="send-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="fiat" id="send-sats"></div>
+      <div class="comb" id="send-comb" hidden></div>
       <p class="note">The amount and the recipient stay hidden. Send any part of your balance; the remainder stays in the pool as change.</p>
       <button class="btn" id="btn-send">Send privately</button>
       <div class="status" id="st-send" role="status"></div>
@@ -478,6 +484,6 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </form>
 </div>
 <div class="toasts" id="toast-container" popover="manual"></div>
-<script type="module" src="/tac/app.js?cb=a9ac1a8d"></script>
+<script type="module" src="/tac/app.js?cb=e859d7de"></script>
 </body>
 </html>
