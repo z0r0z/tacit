@@ -124,8 +124,9 @@ async function main() {
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(`${e.message} @ ${(e.stack || '').split('\n').slice(1, 3).map((s) => s.trim()).join(' < ')}`));
-  page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push('console: ' + m.text()); });
   const NOISE = /kraken\.com|coingecko\.com|cloudflare-eth\.com|sepolia|coinbase\.com/;
+  // A public RPC that refuses this local origin (CORS) says so on the console too: the same hosts are noise there.
+  page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text()) && !NOISE.test(m.text())) errors.push('console: ' + m.text()); });
   // ERR_ABORTED on a redundant fallback source (getFeeRate races mempool.space + blockstream.info, keeps
   // whichever answers first) is the browser cancelling the loser, not a real failure — the flow only cares
   // that ONE of them answers, which the assertions below already depend on succeeding.
@@ -151,12 +152,15 @@ async function main() {
   const pass = 'correct horse battery staple';
   let pubHexFromPage = null;
   for (const which of ['entry', 'bare']) {
-    const unlocking = page.evaluate(async ([h, srcExpr]) => {
+    const unlocking = page.evaluate(async ([h, pubHex, srcExpr, first]) => {
       const src = new Function('return ' + srcExpr)();
       const T = await import(src);
-      if (!T.wallet.priv) await T.wallet.setPriv(h);
+      const bytes = (x) => Uint8Array.from(x.match(/../g), (b) => parseInt(b, 16));
+      // The first copy saves the key through setPriv; the second finds it saved, and tacit.js rightly refuses to save over a
+      // wallet it has not opened, so that copy takes the same key directly.
+      if (!T.wallet.priv) { if (first) await T.wallet.setPriv(h); else { T.wallet.priv = bytes(h); T.wallet.pub = bytes(pubHex); } }
       return Array.from(T.wallet.pub, (x) => x.toString(16).padStart(2, '0')).join('');
-    }, [WALLET_PRIV, instanceSrc(which)]);
+    }, [WALLET_PRIV, hex(WALLET_PUB), instanceSrc(which), which === 'entry']);
     const modalShown = await page.waitForSelector('#pass-modal #pass-input-1', { state: 'visible', timeout: 15000 }).then(() => true, () => false);
     if (modalShown) { await page.fill('#pass-input-1', pass); await page.fill('#pass-input-2', pass); await page.click('#pass-submit'); }
     pubHexFromPage = await unlocking.catch((e) => e.message);
