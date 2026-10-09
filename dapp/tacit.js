@@ -29498,9 +29498,9 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
       // note under, so the P2TR nullifier is checked too instead of silently skipped.
       const _p2trAuthCandidates = (u) => {
         const out = [];
-        const add = (k) => { const h = k && (typeof k === 'string' ? (k.startsWith('0x') ? k : '0x' + k) : hx(k)); if (h && h.length === 66 && !out.includes(h)) out.push(h); };
+        const add = (k) => { const h = k && (typeof k === 'string' ? (k.startsWith('0x') ? k : '0x' + k) : '0x' + bytesToHex(k)); if (h && h.length === 66 && !out.includes(h)) out.push(h); };
         add(u.stealthXonly); add(u.xonly);
-        try { add(wallet.xonly || (wallet.pub && hx(wallet.pub.slice(1, 33)))); } catch { /* no wallet key shape */ }
+        try { add(wallet.xonly || (wallet.pub && wallet.pub.slice(1, 33))); } catch { /* no wallet key shape */ }
         return out;
       };
       for (const u of pickedAssetUtxos) {
@@ -33437,7 +33437,7 @@ async function takePreauthBid({ assetIdHex, bidIdHex, bid = null, onProgress = n
     if (/already spent/.test(msg)) throw e;
   }
   try {
-    const fundingTx = await fetchTx(fundingTxidHex);
+    const fundingTx = await getTx(fundingTxidHex);
     const fundOut = fundingTx?.vout?.[fundingVout];
     if (fundOut?.scriptpubkey) {
       const spk = hexToBytes(String(fundOut.scriptpubkey));
@@ -33776,7 +33776,7 @@ async function takePreauthBidVar({ assetIdHex, bidIdHex, bid = null, fillAmount 
     if (/already spent/.test(String(e?.message || ''))) throw e;
   }
   try {
-    const fundingTx = await fetchTx(fundingTxidHex);
+    const fundingTx = await getTx(fundingTxidHex);
     const fundOut = fundingTx?.vout?.[fundingVout];
     if (fundOut?.scriptpubkey) {
       const spk = hexToBytes(String(fundOut.scriptpubkey));
@@ -73049,7 +73049,7 @@ function _renderAtomicOffersTilesHtml(aid, asset, myPubHex) {
   // of one continuous ladder rather than a card and a ladder slammed
   // next to each other.
   return `<details data-atomic-offers-section class="atomic-offers-section" open>
-    <summary class="atomic-offers-header" title="Atomic intents are sell offers from makers holding ${ticker}. Claiming pays the maker's sat price and you receive ${ticker} in one atomic Bitcoin tx — no escrow, no trust, single-block settlement once the maker fulfils.">
+    <summary class="atomic-offers-header" title="Atomic intents are sell offers from makers holding ${escapeHtml(ticker)}. Claiming pays the maker's sat price and you receive ${escapeHtml(ticker)} in one atomic Bitcoin tx — no escrow, no trust, single-block settlement once the maker fulfils.">
       <span><span class="atomic-offer-bolt" aria-hidden="true">⚡</span><strong>Atomic offers — buy ${escapeHtml(ticker)} with sats</strong> <span class="muted">${offers.length} live · whole-lot · claim &amp; take</span></span>
       <span class="muted atomic-offers-chevron" aria-hidden="true">▾</span>
     </summary>
@@ -73365,7 +73365,7 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
         const _targetUnitStr = fmtUnitPriceSats(_targetUnit);
         const _newPriceSats = Math.max(DUST, Math.ceil(_targetUnit * Number(amt) / Math.pow(10, decimals)));
         const _diffSats = _newPriceSats - sats;
-        _improveBtn = `<button data-act="your-orders-improve-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-target-unit="${_targetUnit}" data-bid-amt-base="${amt.toString()}" data-current-sats="${sats}" title="One click, two sequential steps: cancel this bid, then re-post it at ${_targetUnitStr} sats/${ticker} (top bid is ${_topUnitStr}, this is +1%). New total ${_newPriceSats.toLocaleString()} sats (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current). Jumps you to #1 in the ladder. If the repost fails after the cancel lands, your sats are intact but the bid is gone." class="orders-action orders-action--improve">▲ improve</button>`;
+        _improveBtn = `<button data-act="your-orders-improve-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" data-target-unit="${_targetUnit}" data-bid-amt-base="${amt.toString()}" data-current-sats="${sats}" title="One click, two sequential steps: cancel this bid, then re-post it at ${_targetUnitStr} sats/${escapeHtml(ticker)} (top bid is ${_topUnitStr}, this is +1%). New total ${_newPriceSats.toLocaleString()} sats (${_diffSats >= 0 ? '+' : ''}${_diffSats.toLocaleString()} from current). Jumps you to #1 in the ladder. If the repost fails after the cancel lands, your sats are intact but the bid is gone." class="orders-action orders-action--improve">▲ improve</button>`;
       }
     }
     return `<tr>
