@@ -4279,6 +4279,31 @@ async function ammSwapAcceptedPut(env, network, txidHex, value) {
   await env.REGISTRY_KV.put(ammSwapAcceptedKey(network, txidHex), JSON.stringify(value));
 }
 
+// Applied-op marker for T_LP_ADD (both variants), T_LP_REMOVE and T_PROTOCOL_FEE_CLAIM, served by
+// /amm/op-accepted. The LP share / withdrawn / claimed outputs of these ops are minted by the op itself, so
+// the dapp validator credits them once this record shows the scan applied the op. Written before the op's
+// pool update so an applied op always has its record (a failed write fails the tick, which re-applies it).
+// The since key holds a height from which every block is scanned with these records; ops below it predate them.
+const AMM_OP_ACCEPTED_SINCE_MARGIN = 6;
+function ammOpAcceptedKey(network, txidHex) {
+  return network === 'signet' ? `ammopok:${txidHex}` : `ammopok:${network}:${txidHex}`;
+}
+function ammOpAcceptedSinceKey(network) {
+  return network === 'signet' ? 'meta:ammopok_since' : `meta:ammopok_since:${network}`;
+}
+async function ammOpAcceptedGet(env, network, txidHex) {
+  return env.REGISTRY_KV.get(ammOpAcceptedKey(network, txidHex), 'json');
+}
+async function ammOpAcceptedPut(env, network, txidHex, value) {
+  await env.REGISTRY_KV.put(ammOpAcceptedKey(network, txidHex), JSON.stringify(value));
+}
+async function ammOpAcceptedSince(env, network) {
+  try {
+    const n = parseInt(await env.REGISTRY_KV.get(ammOpAcceptedSinceKey(network)), 10);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch { return null; }
+}
+
 // Pending-swap line per pool — mempool-seen T_SWAP_VARs reported via
 // POST /amm/swap-hint, served back through GET /amm/pool/:id/head as a
 // projected-reserves view so wallets can quote against in-flight fills
@@ -22515,6 +22540,13 @@ async function scanForEtches(env, network) {
   const startHeight = lastScanned >= 0 ? lastScanned + 1 : Math.max(0, tip - backfillBlocks);
   const endHeight = Math.min(tip, startHeight + blocksPerTick);
   if (startHeight > tip) return { up_to_date: true, tip, network };
+  // Blocks from here on are scanned with applied-op records (ammOpAcceptedPut). The since height sits a few
+  // blocks ahead so a scan still running on the previous build during a deploy cannot land below it.
+  try {
+    if ((await env.REGISTRY_KV.get(ammOpAcceptedSinceKey(network))) === null) {
+      await env.REGISTRY_KV.put(ammOpAcceptedSinceKey(network), String(startHeight + AMM_OP_ACCEPTED_SINCE_MARGIN));
+    }
+  } catch { /* retried next tick; until set, no op is answered from the records */ }
 
   let scanned = 0, found = 0;
   let _subreqEstimate = 0;
@@ -23912,6 +23944,7 @@ async function scanForEtches(env, network) {
           const lpAssetId = bytesToHex(ammDeriveLpAssetId(poolIdBytes));
 
           await recordAmmOp(env, network, poolIdHex, h, txIndex, tx.txid);
+          await ammOpAcceptedPut(env, network, tx.txid, { h, op: 'pool_init', pool_id: poolIdHex });
           await ammPoolPut(env, network, poolIdHex, {
             pool_id: poolIdHex,
             asset_a: bytesToHex(aBytes),
@@ -24079,6 +24112,7 @@ async function scanForEtches(env, network) {
           const newReserveB = BigInt(xPool0.reserve_b) + dB0;
           if (newReserveA >= 1n << 64n || newReserveB >= 1n << 64n) continue;
           await recordAmmOp(env, network, poolIdHex0, h, txIndex, tx.txid);
+          await ammOpAcceptedPut(env, network, tx.txid, { h, op: 'lp_add', pool_id: poolIdHex0 });
           await ammPoolPut(env, network, poolIdHex0, {
             ...xPool0,
             reserve_a: newReserveA.toString(),
@@ -24185,6 +24219,7 @@ async function scanForEtches(env, network) {
         const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
         if (newReserveA <= 0n || newReserveB <= 0n) continue;  // defensive
         await recordAmmOp(env, network, poolIdHexR, h, txIndex, tx.txid);
+        await ammOpAcceptedPut(env, network, tx.txid, { h, op: 'lp_remove', pool_id: poolIdHexR });
         await ammPoolPut(env, network, poolIdHexR, {
           ...poolR,
           reserve_a: newReserveA.toString(),
@@ -24572,6 +24607,7 @@ async function scanForEtches(env, network) {
         if (!cClExpected.equals(cClActual)) continue;
         // Apply state transition: reset accrued, keep crystallized k_last.
         await recordAmmOp(env, network, cl.pool_id, h, txIndex, tx.txid);
+        await ammOpAcceptedPut(env, network, tx.txid, { h, op: 'fee_claim', pool_id: cl.pool_id });
         await ammPoolPut(env, network, cl.pool_id, {
           ...xPoolCl,
           protocol_fee_accrued: '0',
@@ -25982,6 +26018,7 @@ export {
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
   ammSwapAcceptedGet, ammSwapAcceptedPut,
+  ammOpAcceptedGet, ammOpAcceptedPut, ammOpAcceptedSince, ammOpAcceptedKey, ammOpAcceptedSinceKey,
   // T_SWAP_ROUTE (atomic multi-hop AMM routing)
   T_SWAP_ROUTE, SWAP_ROUTE_N_HOPS_MAX,
   decodeTSwapRoutePayload, ammSwapRouteEnvelopeHash,
@@ -26836,6 +26873,33 @@ async function _routeFetch(req, env, ctx) {
         }, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'amm swap-accepted lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // AMM applied-op check (see ammOpAcceptedPut) for T_LP_ADD / T_LP_REMOVE / T_PROTOCOL_FEE_CLAIM outputs.
+    // since_height is the first block scanned with these records: an op confirmed below it has no record to
+    // answer from, and a missing record for an op at or above it is final once scanned_height covers it.
+    if (url.pathname === '/amm/op-accepted' && req.method === 'GET') {
+      const txid = (url.searchParams.get('txid') || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txid)) {
+        return jsonResponse({ error: 'txid must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        // Cursor and since first: a record for any tx at or below the cursor is already written.
+        const scanned_height = await readScannedHeight(env, network);
+        const since_height = await ammOpAcceptedSince(env, network);
+        const rec = await ammOpAcceptedGet(env, network, txid);
+        return jsonResponse({
+          txid, network,
+          accepted: !!rec,
+          height: rec?.h ?? null,
+          op: rec?.op ?? null,
+          pool_id: rec?.pool_id ?? null,
+          since_height,
+          scanned_height,
+        }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'amm op-accepted lookup failed', detail: String(e?.message || e) }, 500, cors);
       }
     }
 
