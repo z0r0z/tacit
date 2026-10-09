@@ -1,7 +1,9 @@
 // Mix panel of the Secret Sats page: Secret Sats Join (contracts/sp1/confidential/DESIGN-secret-sats-join.md,
 // client ../secret-sats-join.js). mount(el, ctx) renders the steps into el; the step styles live in index.html.
 //   ctx = { tacit, wallet, network, log, refresh, ensureKey, track, errMsg, onWallet, secretModule, secretHandle,
-//           hintEl, openMix }
+//           hintEl, openMix, hold }
+//   hold() marks a step in flight on the page (the key, the network and closing the tab wait for it); it returns the
+//   release.
 //   secretModule() resolves to the page's secret.js module (faucet sale, pool, prover); secretHandle() is its
 //   mounted instance, so a pool note bought here unlocks the Secret payment steps.
 //
@@ -125,6 +127,7 @@ export function mount(root, ctx) {
   let abort = null;         // AbortController of the running round
   let chainInfo = { tip: null, entryHeight: null, roundHeight: null };
   let estimate = null;      // { frOwn, fr, value, entryFee }
+  let nextWho = null;       // a wallet change that came while a step ran, applied when it ends
   const errs = {};
   const progress = {};
 
@@ -151,9 +154,17 @@ export function mount(root, ctx) {
   const unusedMixed = () => (state.coins || []).filter((c) => !c.used);
 
   // ── steps ──
+  // A step acts on the progress saved now, not on what this tab read earlier: another tab of the same wallet may have
+  // made the entry or used the coin already, and a second entry or a second spend is refused here rather than made.
   async function run(id, fn, { needKey = true } = {}) {
     if (running) return;
+    const saved = load();
+    if (JSON.stringify(saved) !== JSON.stringify(state)) {
+      state = saved;
+      if (phases()[id] !== 'active') { render(); schedule(); return; }
+    }
     running = id; errs[id] = null; progress[id] = 'working…';
+    const release = ctx.hold?.() || (() => {});
     render();
     const say = (m) => { progress[id] = m; sections[id].status.textContent = m; };
     try {
@@ -163,7 +174,9 @@ export function mount(root, ctx) {
       errs[id] = joinError(e, ctx);
       if (!/^Cancelled/.test(errs[id])) console.warn('[sats] mix', id, e);
     } finally {
+      release();
       running = null; progress[id] = null;
+      if (nextWho) { const w = nextWho; nextWho = null; adoptWho(w); }
       render();
       schedule();
     }
@@ -528,10 +541,12 @@ export function mount(root, ctx) {
   }
 
   function renderRound(ph) {
-    const S = setPhase('round', ph, ph === 'done' ? `${state.round.n} coins` : '');
+    // A round others completed after this wallet signed is known by its transaction, not its size.
+    const n = Number.isInteger(state.round?.n) ? state.round.n : null;
+    const S = setPhase('round', ph, ph === 'done' ? (n ? `${n} coins` : 'signed') : '');
     const board = boards?.[0];
     if (ph === 'done') {
-      put(S.body, el('div', {}, `Signed with ${state.round.n - 1} others in `, txLink(state.round.txid), '.'), checklist(state.round.checks));
+      put(S.body, el('div', {}, n ? `Signed with ${n - 1} others in ` : 'Signed, and completed by the others in ', txLink(state.round.txid), '.'), checklist(state.round.checks));
       return;
     }
     if (running === 'round' && live) {
@@ -561,7 +576,7 @@ export function mount(root, ctx) {
       return;
     }
     if (ph !== 'active') { put(S.body, el('div', {}, 'After a block, your wallet finds its output with its own scan key. Nothing about it is stored anywhere else.')); return; }
-    put(S.body, progressList({ stage: 4, waitLine: `${state.round.n} joined`, shuffleLine: 'done', checks: state.round.checks, signedLine: 'broadcast', confirmLine: 'waiting for a block' }),
+    put(S.body, progressList({ stage: 4, waitLine: Number.isInteger(state.round.n) ? `${state.round.n} joined` : 'done', shuffleLine: 'done', checks: state.round.checks, signedLine: 'broadcast', confirmLine: 'waiting for a block' }),
       el('div', {}, 'Signed and broadcast in ', txLink(state.round.txid), '. This page checks for the block on its own.'), errLine('find'));
   }
 
@@ -631,13 +646,28 @@ export function mount(root, ctx) {
     if (waiting) { timer = setInterval(tick, POLL_MS); tick(); }
   }
 
-  ctx.onWallet?.((w) => {
+  // A step in flight keeps the wallet it started with: its progress is saved under that wallet, never another.
+  function adoptWho(w) {
     const changed = w.pubHex !== who?.pubHex;
     who = w;
     if (changed) { state = load(); chainInfo = { tip: null, entryHeight: null, roundHeight: null }; for (const k of Object.keys(errs)) errs[k] = null; schedule(); }
+  }
+  ctx.onWallet?.((w) => {
+    if (running) {
+      if (w.pubHex !== who?.pubHex) { nextWho = w; return; }
+      nextWho = null;
+    }
+    adoptWho(w);
     if (!running) render();
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && timer) tick(); });
+  // Another tab of this wallet saved its progress: follow it.
+  window.addEventListener('storage', (e) => {
+    if (running || !key() || e.key !== key()) return;
+    state = load();
+    for (const k of Object.keys(errs)) errs[k] = null;
+    render(); schedule();
+  });
 
   render();
   if (d) {

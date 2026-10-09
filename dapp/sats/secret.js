@@ -1141,7 +1141,7 @@ export function mount(root, ctx) {
   render();
   refreshFaucet();
   const timer = setInterval(() => { if (!document.hidden && !running) refreshFaucet(); }, 60_000);
-  return { render, get state() { return state; }, sections, stop: () => clearInterval(timer) };
+  return { render, get state() { return state; }, get running() { return !!running; }, sections, stop: () => clearInterval(timer) };
 }
 
 // ── mainnet ──
@@ -1196,14 +1196,17 @@ export function mountMainnet(root, ctx) {
   // Public balance: the same batched, cached holdings scan every other Wallet/Send/Holdings surface uses — not a
   // one-off UTXO walk. scanHoldings() also carries each UTXO's opening (txid, vout, amount, blinding), which
   // Shield needs.
+  // A read that finishes after the key changed belongs to the last key, and is dropped.
   async function loadPublic() {
     if (!ctx.wallet?.priv) return;
+    const owner = who?.pubHex;
     pub = { ...pub, loading: true }; render();
     try {
       const h = await tacit.scanHoldings();
+      if (who?.pubHex !== owner) return;
       const entry = h instanceof Map ? h.get(asset()) : null;
       pub = { loading: false, utxos: entry?.utxos || [], decimals: Number.isInteger(entry?.decimals) ? entry.decimals : sel.decimals };
-    } catch (e) { pub = { ...pub, loading: false }; errs.load = ctx.errMsg ? ctx.errMsg(e) : String(e?.message || e); }
+    } catch (e) { if (who?.pubHex !== owner) return; pub = { ...pub, loading: false }; errs.load = ctx.errMsg ? ctx.errMsg(e) : String(e?.message || e); }
     render();
   }
 
@@ -1211,9 +1214,10 @@ export function mountMainnet(root, ctx) {
   // a time), scanned locally with the viewing key — the same call the signet demo's Receive step makes.
   async function loadShielded() {
     const pw = poolWallet(); if (!pw) return;
+    const owner = who?.pubHex;
     shielded = { ...shielded, loading: true }; render();
-    try { shielded = { loading: false, notes: await poolNotes(pw, asset()) }; }
-    catch (e) { shielded = { ...shielded, loading: false }; errs.receive = ctx.errMsg ? ctx.errMsg(e) : String(e?.message || e); }
+    try { const notes = await poolNotes(pw, asset()); if (who?.pubHex !== owner) return; shielded = { loading: false, notes }; }
+    catch (e) { if (who?.pubHex !== owner) return; shielded = { ...shielded, loading: false }; errs.receive = ctx.errMsg ? ctx.errMsg(e) : String(e?.message || e); }
     render();
   }
 
@@ -1405,5 +1409,5 @@ export function mountMainnet(root, ctx) {
 
   checkRelay();
   render();
-  return { render, stop: () => {} };
+  return { render, get running() { return !!running; }, stop: () => {} };
 }
