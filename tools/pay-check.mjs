@@ -82,10 +82,13 @@ async function page(browser, { viewport = { width: 1280, height: 900 }, colorSch
   p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|favicon|blocked by CORS policy/.test(m.text())) errors.push(m.text()); });
   return { ctx, p, errors };
 }
+// Under a link's card (a request, or a payment by link) the way in is one line that opens the wallet sheet.
 const openKey = async (p, key) => {
-  await p.click('#g-in [data-in="paste"]');
-  await p.fill('#g-hex', key);
-  await p.click('#g-in [data-in="key"]');
+  const id = (await p.$('#g-open')) ? 'ws' : 'g';
+  if (id === 'ws') await p.click('#g-open');
+  await p.click(`#${id}-in [data-in="paste"]`);
+  await p.fill(`#${id}-hex`, key);
+  await p.click(`#${id}-in [data-in="key"]`);
   await p.waitForSelector('#tabs:not([hidden])');
 };
 // The Receive tab's QR code, drawn to a canvas in the page, decoded here when jsQR is installed (JSQR=<its path>).
@@ -105,7 +108,7 @@ async function readQr(p) {
 }
 const getPaidLink = async (p, amount, note) => {
   await p.click('#tabs [data-tab="receive"]');
-  await p.waitForSelector('#f-link:not([disabled])', { timeout: 900e3 });
+  await p.waitForSelector('#f-link[data-box]:not([disabled])', { timeout: 900e3 });     // the link with its one-time deposit address
   await p.fill('#f-ramt', amount); await p.fill('#f-rfor', note); await sleep(300);
   await p.click('#f-link');
   return p.evaluate(() => navigator.clipboard.readText());
@@ -128,7 +131,7 @@ try {
     }
     const { ctx, p, errors } = await page(browser);
     await p.goto(URL_ + '#pay=bp1qqqq&amount=0.01&chain=robinhood');
-    await p.waitForSelector('#g-in');
+    await p.waitForSelector('#g-open');
     ok(await p.evaluate(() => document.querySelector('#chains [aria-selected="true"]').textContent.startsWith('Robinhood')), 'payment link picks the chain');
     if (KEY) {
       await openKey(p, KEY);
@@ -196,7 +199,8 @@ try {
       const card = (await r.p.textContent('#req')).replace(/\s+/g, ' ');
       ok(/0\.01 ETH/.test(card) && /on Base/.test(card) && /coffee & cake/.test(card) && await r.p.$('#req-wallet') && await r.p.$('#req-priv'), `request card: ${card.slice(0, 120)}`);
       await r.p.click('#req-priv');
-      ok((await r.p.inputValue('#g-hex').catch(() => '')) === '' && await r.p.$('#g-in'), 'pay privately without a wallet asks to open one');
+      await r.p.waitForSelector('#sheet-wallet[open] #ws-in', { timeout: 10e3 }).catch(() => {});
+      ok(!!(await r.p.$('#sheet-wallet[open] #ws-in')) && !(await r.p.$('#form #g-in')), 'pay privately without a wallet opens the wallet sheet; under the card the way in is one line');
       await shot(r.p, 'request-phone');
       ok(!r.errors.length, `request page: no page errors ${r.errors.join(' | ')}`);
       await r.ctx.close();
@@ -646,7 +650,7 @@ try {
       .catch(async (e) => { console.log('    ' + (await p.textContent('#recover-body')).replace(/\s+/g, ' ')); throw e; });
     const rows = await p.$$eval('.rows li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
     console.log('    ' + rows.join('\n    '));
-    ok(rows.some((r) => /^Shielded in ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3333…3333 ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
+    ok(rows.some((r) => /^Deposited ?\+0\.01 ETH/.test(r)) && rows.some((r) => /^Sent privately ?−0\.004 ETH.*kept 0\.006/.test(r)) && rows.some((r) => /^Withdrew to 0x3333…3333 ?−0\.002 ETH.*kept 0\.004/.test(r)), 'rebuilt history names the deposit, the private payment and the withdrawal');
     // The balance is read again beside the history; the two agree once both are in.
     await p.waitForFunction((n) => /matches/.test(document.querySelector(`.chainsum li:nth-child(${n})`)?.textContent || ''), F.row, { timeout: 180e3 }).catch(() => {});
     ok(/matches/.test(await p.$eval(`.chainsum li:nth-child(${F.row})`, (e) => e.textContent)), 'rebuilt balance matches');
@@ -702,7 +706,7 @@ try {
     const got = await p.$$eval('.rows li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
     console.log('    ' + got.join('\n    '));
     ok(got.some((r) => /^Came in through a payment link ?\+0\.003 ETH/.test(r)), 'the payee’s key finds the wallet payment');
-    ok(got.some((r) => /^Shielded in ?\+0\.001 ETH/.test(r)) && got.some((r) => /^Shielded in ?\+0\.0015 ETH/.test(r)), 'the payee’s key finds both deposits made straight to them');
+    ok(got.some((r) => /^Deposited ?\+0\.001 ETH/.test(r)) && got.some((r) => /^Deposited ?\+0\.0015 ETH/.test(r)), 'the payee’s key finds both deposits made straight to them');
     // The next link names a fresh one-time address.
     const next = await getPaidLink(p, '', '');
     ok(new URL(next).hash.match(/n=([0-9a-f]+)/)[1] !== new URL(link).hash.match(/n=([0-9a-f]+)/)[1], 'after a link is paid, the next link uses a new address');

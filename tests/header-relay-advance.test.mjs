@@ -167,17 +167,27 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
   const sentTxs = [];
   const progress = [];
+  const heard = [];
   const result = await advance.runAdvance({
     fromAddress: '0x' + '11'.repeat(20),
     send: async (tx) => { const h = '0xtx' + sentTxs.length; sentTxs.push({ ...tx, h }); tip += 1; return h; }, // sending also advances the fixture's tip, like a real send would
     waitReceipt: async () => ({ status: '0x1' }),
     onProgress: (p) => progress.push(p),
+    onPlan: (p) => heard.push(['plan', p]),
+    onBatches: (b) => heard.push(['batches', b]),
   });
 
   assert.strictEqual(result.sent.length, 1); // btcTip-2 gives exactly one new header at the start
   assert.strictEqual(sentTxs.length, 1);
   assert.strictEqual(sentTxs[0].data.slice(0, 10), '0xb09e9e05');
   ok('runAdvance checks the canonical tip, plans, builds and sends exactly the pending headers');
+
+  assert.deepStrictEqual(heard.map(([k]) => k), ['plan', 'batches']);
+  assert.strictEqual(heard[0][1].action, 'advance');
+  assert.strictEqual(heard[0][1].pending, 1);
+  assert.strictEqual(heard[1][1].length, 1);
+  assert.strictEqual(heard[1][1][0].data, sentTxs[0].data);
+  ok('onPlan hears the plan and onBatches the exact batches this run then sends');
 
   // A second run against the now-advanced tip should find nothing left to do.
   const again = await advance.runAdvance({

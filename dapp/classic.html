@@ -59,7 +59,7 @@
   not read that file, so these headers must be mirrored into the Render
   Dashboard's static-site header config for them to actually take effect.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://10mz1z2351rzze-8080.proxy.runpod.net https://mempool.space https://*.mempool.space https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://ipfs.orbitor.dev https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co https://slipstream.mara.com; img-src 'self' data: https://ipfs.filebase.io https://api.tacit.finance https://tacit-api.onrender.com https://tacit-pin.rosscampbell9.workers.dev https://ipfs.orbitor.dev; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://10mz1z2351rzze-8080.proxy.runpod.net https://mempool.space https://*.mempool.space https://mempool.emzy.de https://mempool.bitaroo.net https://blockstream.info https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://cloudflare-eth.com https://api.tacit.finance https://tacit-api.onrender.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool.onrender.com https://www.tacitscan.io https://ipfs.orbitor.dev https://uploads.pinata.cloud https://gateway.pinata.cloud https://gateway.liquify.com https://ethereum-sepolia-rpc.publicnode.com https://ethereum-rpc.publicnode.com https://1rpc.io https://eth.llamarpc.com https://eth.drpc.org https://sepolia.drpc.org https://mainnet.gateway.tenderly.co https://sepolia.gateway.tenderly.co https://slipstream.mara.com; img-src 'self' data: https://ipfs.filebase.io https://api.tacit.finance https://tacit-api.onrender.com https://ipfs.orbitor.dev; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit classic</title>
 <meta name="description" content="Confidential money across Bitcoin and Ethereum — one shielded note you can send privately, swap, borrow against, and bridge. Mint cBTC/tacBTC from SP1-reflected Bitcoin locks and borrow cUSD against it.">
 <meta name="theme-color" content="#f7931a">
@@ -108,7 +108,7 @@
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="./prf-wallet.js">
-<link rel="modulepreload" href="./tacit.js?cb=ef6ad0de">
+<link rel="modulepreload" href="./tacit.js?cb=658ac9dc">
 <link rel="modulepreload" href="./bulletproofs-plus.js">
 <link rel="modulepreload" href="./amm-bjj.js">
 <link rel="modulepreload" href="./amm-sigma.js">
@@ -11238,7 +11238,7 @@ body[data-market-mode="asset"] .market-intro-note { display: none; }
 </div>
 
 <footer>
-  <span><a href="https://github.com/src-company/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · <a href="#tab=about" title="Protocol documentation">docs</a> · <a href="/weld/keeper/" title="Advance the Bitcoin header relay from your own wallet">community ops</a></span>
+  <span><a href="https://github.com/src-company/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · <a href="#tab=about" title="Protocol documentation">docs</a> · <a href="/weld/keeper/" title="Advance the Bitcoin header relay from your own wallet">community ops</a> · <a href="/pay/" title="BTC, TAC and ETH paid privately, at one tacit1 address">pay privately</a> · <a href="/weld/stats/" title="Live figures from Ethereum and Bitcoin">stats</a></span>
   <span>TAC · <a href="#tab=govern" title="Governance portal — proposals, voting, reserve flows">governance</a> · <a href="https://etherscan.io/token/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279" target="_blank" rel="noopener noreferrer" title="TAC on Ethereum, ERC-20">ERC-20</a></span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
@@ -11806,7 +11806,7 @@ body[data-market-mode="asset"] .market-intro-note { display: none; }
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=ef6ad0de"></script>
+<script type="module" src="./tacit.js?cb=658ac9dc"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

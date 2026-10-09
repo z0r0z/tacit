@@ -8,8 +8,8 @@
 // then the sender needs no BTC at all and pays the relay inside the pool. Shields and exits always fund
 // their own carrier, by design, so those need a little BTC in the wallet.
 
-const TACIT_URL = '/tacit.js?cb=ef6ad0de';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
-const SECRET_URL = '/sats/secret.js?cb=bebc4d31';
+const TACIT_URL = '/tacit.js?cb=658ac9dc';        // tokens rewritten by build/build.mjs (TAC_CB_FILES)
+const SECRET_URL = '/sats/secret.js?cb=2406f5ae';
 const SATS_URL = '/tac/sats.js?cb=19b44eda';
 const MARKET_URL = '/tac/market.js?cb=b6459103';
 const CLAIM_URL = '/tac/claim.js?cb=0cbb63e1';
@@ -139,7 +139,7 @@ function say(id, ...nodes) {
 }
 function errSay(id, e) {
   const msg = errText(e);
-  if (e?.quiet) return say(id, msg);
+  if (e?.quiet || e?.relayDeclined) return say(id, msg);
   const span = document.createElement('span');
   span.className = 'err'; span.setAttribute('role', 'alert'); span.textContent = msg;
   say(id, span);
@@ -743,7 +743,7 @@ async function doSend(anchor = null) {
       ? `More than your shielded balance once the relay's ${fmt(relayFeeUnits())} TAC fee is included.`
       : 'More than your shielded balance.');
   }
-  const r = await S.payPrivately(T, { poolWallet, to, amount, asset: S.TAC_ASSET_MAINNET, anchor, say: (m) => say('st-send', m) });
+  const r = await S.payPrivately(T, { poolWallet, to, amount, asset: S.TAC_ASSET_MAINNET, anchor, say: (m) => say('st-send', m), askSelf: askSelfPost('st-send') });
   if (r.wait) return waitBox('st-send', r, (tip) => doSend(tip));
   $('send-to').value = ''; $('send-amt').value = ''; renderAmountHints();
   say('st-send', `Sent ${fmt(amount)} TAC in `, txLink(r.revealTxid), r.relayed ? ' — relayed, fee paid in TAC.' : ' — self-funded.');
@@ -763,6 +763,26 @@ async function doExit(anchor = null) {
   try { T.invalidateHoldingsCache?.(); } catch {}
   await loadPublic(); await loadShielded();
 }
+
+// Asks before a payment the relay did not take is posted from this wallet's Bitcoin address. It stays on the status line
+// until answered, whatever else writes there. "Not now", or ten minutes with no answer, is a no; the relay posting the
+// payment meanwhile ends the question.
+const askSelfPost = (statusId) => (why, { timedOut = false, signal } = {}) => new Promise((resolve) => {
+  const el = $(statusId), box = document.createElement('div'), p = document.createElement('div'), row = document.createElement('div');
+  const lead = why === 'relay-slow' ? (timedOut ? 'The relay hasn’t posted it in five minutes.' : 'The relay hasn’t posted it.') : 'The relay didn’t take this payment.';
+  p.textContent = `${lead} Post it from your Bitcoin address instead? Your Bitcoin address shows as the sender.`;
+  const button = (cls, text, yes) => { const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = text; b.onclick = () => end(yes); return b; };
+  row.className = 'row2';
+  row.append(button('btn', 'Post it from my Bitcoin address', true), button('btn ghost', 'Not now', false));
+  box.append(p, row);
+  const keep = new MutationObserver(() => { if (!box.isConnected) el.append(box); });
+  const end = (yes) => { clearTimeout(timer); keep.disconnect(); signal?.removeEventListener('abort', no); box.remove(); resolve(yes); };
+  const no = () => end(false), timer = setTimeout(no, 10 * 60e3);
+  if (signal?.aborted) return no();
+  signal?.addEventListener('abort', no);
+  say(statusId, box);
+  keep.observe(el, { childList: true });
+});
 
 // A note younger than the wallet's anchor policy can still be spent — against the newest block instead of a
 // settled one — but that tells an observer the note is new. The choice is the wallet owner's, not ours.

@@ -397,7 +397,7 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
         <div class="lbl"><label for="exit-amt">Amount to withdraw</label><button class="link" id="exit-max" type="button">max</button></div>
         <div class="amt"><input id="exit-amt" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="fiat" id="exit-sats"></div>
-        <p class="note">Comes back as ordinary TAC in this wallet, public again from that point on. Withdraw part and the rest stays shielded. This step pays its own Bitcoin fee.</p>
+        <p class="note">Comes back as ordinary TAC at your Bitcoin address, which shows as where it goes; the amount does not. Withdraw part and the rest stays shielded. This step pays its own Bitcoin fee.</p>
         <button class="btn" id="btn-exit">Withdraw TAC</button>
         <div class="status" id="st-exit" role="status"></div>
       </div>
@@ -478,6 +478,6 @@ dialog.sheet::backdrop { background: var(--scrim); backdrop-filter: blur(2px); }
   </form>
 </div>
 <div class="toasts" id="toast-container" popover="manual"></div>
-<script type="module" src="/tac/app.js?cb=fa33c5e9"></script>
+<script type="module" src="/tac/app.js?cb=07f34b2c"></script>
 </body>
 </html>
