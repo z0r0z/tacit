@@ -247,10 +247,14 @@ export async function readReflectionDigest(client = publicClient, blockNumber) {
 // watch it with nothing but a public address. Replenish still needs the actual key to sign the swaps, so it
 // keeps using fundedWallets.
 // A read-only client for a chain other than the one CFG.chainId points at (points-indexer.js's multichain
-// zRouter scan — mainnet, Base, Robinhood all run the same zRouter address). No wallet, no fallback list:
-// this is a single-purpose reader, not the relay's own chain.
+// zRouter scan — mainnet, Base, Robinhood all run the same zRouter address). `rpcUrl` may name several
+// endpoints, comma-separated: they are tried in order, so one provider throttling this address (Base's public
+// node answers `request limit reached` under a long catch-up) does not stall that chain's scan.
 export function clientForChain(chainId, rpcUrl) {
-  return createPublicClient({ chain: { ...mainnet, id: chainId, name: `chain-${chainId}` }, transport: http(rpcUrl) });
+  const urls = String(rpcUrl || '').split(',').map((u) => u.trim()).filter(Boolean);
+  if (!urls.length) throw new Error(`clientForChain: no RPC URL for chain ${chainId}`);
+  const transport = urls.length === 1 ? http(urls[0]) : fallback(urls.map((u) => http(u)), { rank: false });
+  return createPublicClient({ chain: { ...mainnet, id: chainId, name: `chain-${chainId}` }, transport });
 }
 
 export const watchedWallets = (() => {

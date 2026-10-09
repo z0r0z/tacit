@@ -47,7 +47,7 @@ function world() {
     },
     getLogs: async ({ address, event, fromBlock, toBlock }) => {
       chain.calls++;
-      if (chain.maxRange && toBlock - fromBlock + 1n > chain.maxRange) throw Object.assign(new Error('RPC Request failed.'), { shortMessage: 'RPC Request failed.' });
+      if (chain.maxRange && toBlock - fromBlock + 1n > chain.maxRange) throw Object.assign(new Error('RPC Request failed.'), { shortMessage: 'RPC Request failed.', code: -32614, details: `eth_getLogs is limited to a ${chain.maxRange} range`, cause: { code: -32614, message: `eth_getLogs is limited to a ${chain.maxRange} range` } });
       return chain.logs.filter((l) => l.address === address.toLowerCase() && l.event === event.name
         && l.blockNumber >= fromBlock && l.blockNumber <= toBlock);
     },
@@ -384,3 +384,56 @@ await test('V1 Wrap sent via the EVM pool router is skipped, a normal wrap count
 });
 
 console.log(`\n${n} passed`);
+
+// Telling a throttle from a span cap: the real refusals these public nodes answer with (collected 2026-10-08/09).
+await test('a node\'s refusal is read as a throttle, a span cap, or neither', async () => {
+  const { rpcRefusal } = await import('../src/lib/evm-pool-points.js');
+  const viemish = (code, message, extra = {}) => Object.assign(new Error('RPC Request failed.'), { shortMessage: 'RPC Request failed.', code, details: message, cause: { code, message }, ...extra });
+  const cases = [
+    ['rate', viemish(-32011, 'request limit reached')],                                   // mainnet.base.org, 2026-10-09
+    ['rate', viemish(-32016, 'over rate limit')],                                         // mainnet.base.org, 2026-10-08
+    ['rate', viemish(-32029, 'Too Many Requests, Please apply an OnFinality API key')],
+    ['rate', viemish(-32005, 'rate limit exceeded')],
+    ['rate', Object.assign(new Error('HTTP 429'), { status: 429 })],
+    ['span', viemish(-32614, 'eth_getLogs is limited to a 500 range')],                   // mainnet.base.org, 2026-10-08
+    ['span', viemish(35, 'ranges over 10000 blocks are not supported on free plan')],     // base.drpc.org
+    ['span', viemish(-32600, 'You can make eth_getLogs requests with up to a 10 block range')], // blastapi
+    ['span', viemish(-32602, 'invalid params', { data: 'Block range too large for public endpoint' })], // tenderly
+    ['other', viemish(-32602, 'Archive requests require a personal token')],              // base-rpc.publicnode.com
+    ['other', viemish(-32000, 'Unauthorized: You must authenticate your request with an API key')],
+    ['other', Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } })],
+  ];
+  for (const [want, err] of cases) assert.equal(rpcRefusal(err), want, `${err.details ?? err.message} should read as ${want}`);
+});
+
+await test('a throttle keeps the span and the cursor; only a span cap narrows it, and it widens again', async () => {
+  const w = world();
+  w.chain.head = 9000n;
+  w.ctx.chunk = 2000; w.ctx.maxChunks = 60;
+  w.ctx.spans = new Map(); w.ctx.wins = new Map();
+  const real = w.ctx.client.getLogs;
+  // Throttled: the span is untouched, nothing is scanned, and the cursor stays where it was.
+  w.ctx.client.getLogs = async () => { throw Object.assign(new Error('RPC Request failed.'), { shortMessage: 'RPC Request failed.', code: -32011, details: 'request limit reached' }); };
+  const before = w.state.loadCursor(8453);
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.ctx.spans.get(8453), undefined, 'a throttle never narrows the span');
+  assert.equal(w.state.loadCursor(8453), before, 'and the cursor does not move');
+  // An archive refusal is not a span problem either.
+  w.ctx.client.getLogs = async () => { throw Object.assign(new Error('RPC Request failed.'), { shortMessage: 'RPC Request failed.', code: -32602, details: 'Archive requests require a personal token' }); };
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.ctx.spans.get(8453), undefined, 'nor does an archive refusal');
+  // A real span cap does narrow it, down to what the node answers.
+  w.chain.maxRange = 500n;
+  w.ctx.client.getLogs = real;
+  transact(w.chain, { hash: h(70), block: 4200n, extAmount: ETH });
+  w.chain.txs.set(h(70), { from: ALICE, to: POOL, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.ctx.spans.get(8453), 500);
+  assert.equal(creditedWei(w.store, ALICE), ETH);
+  // The cap lifts (another endpoint, a paid plan): after a run of answered calls the span climbs back to the configured chunk.
+  w.chain.maxRange = null;
+  w.chain.head = 200000n;
+  for (let i = 0; i < 6 && w.ctx.spans.get(8453) < 2000; i++) await scanEvmPoolChain(w.ctx);
+  assert.equal(w.ctx.spans.get(8453), 2000, 'the span is back at the configured chunk');
+  w.cleanup();
+});

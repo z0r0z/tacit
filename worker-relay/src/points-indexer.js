@@ -34,7 +34,7 @@ import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
 import {
-  openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rateLimited,
+  openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
 } from './lib/evm-pool-points.js';
 
 const log = (...a) => console.log(`[points ${new Date().toISOString()}]`, ...a);
@@ -1052,8 +1052,11 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr, signal1 = tr
     });
   } catch (err) {
     // A node that caps a query's block span answers a wider one with a bare error: halve the span (to a floor) and retry next cycle.
-    const wide = Number(confirmedTip - from + 1n);
-    if (signal1 || wide <= 50 || rateLimited(err)) throw err;
+    const wide = Number(confirmedTip - from + 1n), why = rpcRefusal(err);
+    // Same reading as the EVM pool scan: only a span cap narrows the span; a throttle keeps it and waits out the cycle.
+    if (signal1 || why === 'other') throw err;
+    if (why === 'rate') { log(`zRouter getLogs on chain ${chainId} was rate limited at block ${from}; resuming next cycle`); return; }
+    if (wide <= 50) throw err;
     ZROUTER_SPANS.set(chainId, Math.max(50, Math.floor(wide / 2)));
     log(`zRouter getLogs failed on chain ${chainId} over ${wide} blocks (${err?.shortMessage || err?.message || err}); trying ${ZROUTER_SPANS.get(chainId)} per call`);
     return;
@@ -1175,12 +1178,12 @@ function pointsForEvmPoolDeposit(amountWei, priorCount) {
 // judged at the deposit's own mainnet block, or for an L2 at the last mainnet block at or before its
 // timestamp, the same rule scanZRouterCycle uses.
 // The getLogs span each chain's scan last managed, kept across cycles (see scanEvmPoolChain).
-const EVM_POOL_SPANS = new Map();
+const EVM_POOL_SPANS = new Map(), EVM_POOL_WINS = new Map();
 function evmPoolCtx(store, evmState, { chainId, client }) {
   const evalCache = new Map();
   let mainnetTip = null;
   return {
-    store, state: evmState, chainId, client, spans: EVM_POOL_SPANS, pauseMs: chainId === 1 ? 0 : 250,
+    store, state: evmState, chainId, client, spans: EVM_POOL_SPANS, wins: EVM_POOL_WINS, pauseMs: chainId === 1 ? 0 : 250,
     apiBase: CFG.evmPoolExplorerApis[chainId],
     startBlock: CFG.evmPoolPointsStartBlocks[chainId],
     pool: CFG.evmPoolAddr, router: CFG.evmPoolRouterAddr, v1Pool: ADDR.pool, v1Router: ADDR.router,

@@ -252,11 +252,23 @@ async function credit(ctx, { key, blockNumber, blockTime, depositor, amountWei }
   });
 }
 
-// The narrowest getLogs span the scan will fall back to before it gives up on a failing call.
-const MIN_LOG_SPAN = 50n;
-// A refusal for load, not for the query: retried later at the same span.
-export const rateLimited = (err) => /rate limit|too many requests|\b429\b|-32016|exceeded.*(?:quota|limit)/i.test(
-  [err?.shortMessage, err?.message, err?.details, err?.cause?.message, err?.code, err?.cause?.code, err?.status].filter((x) => x != null).join(' '));
+// The narrowest getLogs span the scan will fall back to before it gives up on a failing call, and how many calls must
+// succeed at a reduced span before it is widened again: a cap met once must not pin a chain at the floor for ever.
+const MIN_LOG_SPAN = 50n, SPAN_REGROW_AFTER = 20;
+const textOf = (err) => [err?.shortMessage, err?.message, err?.details, err?.data, err?.cause?.message, err?.cause?.details,
+  err?.code, err?.cause?.code, err?.status].filter((x) => x != null).join(' ');
+// What a node refused for. 'span': this query covers too many blocks, so a narrower one would be answered. 'rate': this
+// caller is asking too often, and a narrower query only asks more often — the cure for the one is the poison for the other,
+// and reading a throttle as a cap is what drives a scan to the floor and keeps it there. 'other': anything else (an archive
+// depth it will not serve, a missing key, a network failure), where the span is not the problem either.
+export function rpcRefusal(err) {
+  const t = textOf(err);
+  if (/\brate.?limit|request limit|limit reached|too many requests|throttl|quota|\b429\b|-32005|-32011|-32016|-32029/i.test(t)) return 'rate';
+  if (/block range|range (?:over|of)|ranges over|limited to a? ?\d* ?(?:block )?range|up to a \d+ block|too (?:large|many blocks)|exceeds? .*blocks?|-32614/i.test(t)) return 'span';
+  return 'other';
+}
+// Kept for callers that only ask whether a refusal was a throttle.
+export const rateLimited = (err) => rpcRefusal(err) === 'rate';
 
 export async function scanEvmPoolChain(ctx) {
   const { state, chainId, client } = ctx;
@@ -289,14 +301,32 @@ export async function scanEvmPoolChain(ctx) {
         client.getLogs({ address: ctx.router, event: RECEIVED_EVENT, fromBlock: from, toBlock: to }),
       ]);
     } catch (err) {
-      // A node that is only busy keeps its span: the cursor stays where it is, and the next cycle resumes from it.
-      if (rateLimited(err)) { (ctx.log || (() => {}))(`EVM pool getLogs on chain ${chainId} was rate limited at block ${from}; resuming next cycle`); return; }
+      const why = rpcRefusal(err);
+      // Only a span cap is answered by asking for less. A throttle or anything else keeps the span and the cursor, and the
+      // next cycle resumes from here; shrinking for those would multiply the calls that are already being refused.
+      if (why !== 'span') {
+        (ctx.log || (() => {}))(`EVM pool getLogs on chain ${chainId} at block ${from}: ${why === 'rate' ? 'rate limited' : 'refused'} (${(err && (err.shortMessage || err.message)) || err}); resuming next cycle`);
+        return;
+      }
       if (to - from + 1n <= MIN_LOG_SPAN) throw err;
       span = (to - from + 1n) / 2n < MIN_LOG_SPAN ? MIN_LOG_SPAN : (to - from + 1n) / 2n;
       ctx.spans?.set(chainId, Number(span));
+      ctx.wins?.set(chainId, 0);
       (ctx.log || (() => {}))(`EVM pool getLogs failed on chain ${chainId} over ${to - from + 1n} blocks (${(err && (err.shortMessage || err.message)) || err}); trying ${span} per call`);
       chunks--;
       continue;
+    }
+    // A span narrowed for a cap that has since been lifted (or that another endpoint never had) is widened again, so one
+    // refusal does not leave a chain crawling for ever.
+    if (span < BigInt(ctx.chunk)) {
+      const wins = (ctx.wins?.get(chainId) ?? 0) + 1;
+      ctx.wins?.set(chainId, wins);
+      if (wins >= SPAN_REGROW_AFTER) {
+        span = span * 2n > BigInt(ctx.chunk) ? BigInt(ctx.chunk) : span * 2n;
+        ctx.spans?.set(chainId, Number(span));
+        ctx.wins?.set(chainId, 0);
+        (ctx.log || (() => {}))(`EVM pool getLogs on chain ${chainId} is answering again; trying ${span} per call`);
+      }
     }
     const boxLogs = [...completedLogs, ...receivedLogs];
     const deposits = txLogs
