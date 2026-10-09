@@ -1814,6 +1814,17 @@ const btcWallet = {
     const ext = extWallet.state;
     if (!ext) throw new Error('no Bitcoin wallet connected');
     if (ext.provider === 'unisat') {
+      // UniSat signs with whichever account is active in it, so the signature
+      // is asked for only while that is the connected address.
+      let active = null;
+      try { active = (await window.unisat.getAccounts())?.[0] || null; } catch {}
+      if (active !== ext.address) {
+        const e = new Error(active
+          ? `UniSat's active account is ${shorten(active, 8)}, not the connected ${shorten(ext.address, 8)}. Switch UniSat to ${shorten(ext.address, 8)} and try again. Nothing was signed.`
+          : `Could not read UniSat's active account. Unlock UniSat on ${shorten(ext.address, 8)} and try again. Nothing was signed.`);
+        e._btcAccountMismatch = true;
+        throw e;
+      }
       const b64 = await window.unisat.signMessage(msg, kind === 'ecdsa' ? 'ecdsa' : 'bip322-simple');
       if (typeof b64 !== 'string' || !b64) throw new Error('UniSat returned an empty signature');
       return base64ToBytes(b64);
@@ -1849,7 +1860,7 @@ const btcWallet = {
     try {
       sigA = await this._signOnce(msg, kind);
     } catch (e) {
-      if (e?._btcNonDeterministic) throw e;
+      if (e?._btcNonDeterministic || e?._btcAccountMismatch) throw e;
       kind = 'bip322';
       sigA = await this._signOnce(msg, kind);
     }
@@ -1906,7 +1917,7 @@ const btcWallet = {
     try {
       sig = await this._signOnce(msg, kind);
     } catch (e) {
-      if (e?._btcNonDeterministic || carried) throw e;
+      if (e?._btcNonDeterministic || e?._btcAccountMismatch || carried) throw e;
       kind = kind === 'ecdsa' ? 'bip322' : 'ecdsa';
       sig = await this._signOnce(msg, kind);
     }

@@ -64,6 +64,7 @@ let signerCalls = [];
 function installSigner() {
   signerCalls = [];
   globalThis.window.unisat = {
+    getAccounts: async () => [ENROLLED_ADDR],
     signMessage: async (msg, kind) => { signerCalls.push({ msg, kind }); return b64(SIG_A); },
   };
 }

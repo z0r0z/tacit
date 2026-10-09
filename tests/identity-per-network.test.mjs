@@ -81,6 +81,7 @@ const btcSigFor = (msg) => { const h = sha256(enc.encode('btc-signer|' + msg)); 
 const btcKeyFor = (net) => tacitPubFromSig(btcSigFor(identityMessage({ netName: net })));
 const btcSigns = [];
 window.unisat = {
+  getAccounts: async () => [BTC_ADDR],
   signMessage: async (msg, kind) => {
     btcSigns.push(netOfMsg(msg) + '/' + kind);
     return Buffer.from(btcSigFor(msg)).toString('base64');

@@ -69,9 +69,12 @@ const expectedPriv = (sig) => toValidScalar(sha256(sig));
 const expectedPubHex = (sig) => bytesToHex(secp.getPublicKey(expectedPriv(sig), true));
 
 let signerCalls = []; // [{ msg, kind }]
+let activeAccount = null;
 function installSigner(fn) {
   signerCalls = [];
   globalThis.window.unisat = {
+    // UniSat's active account: the connected one unless a test switches it.
+    getAccounts: async () => [activeAccount ?? extWallet.state?.address],
     signMessage: async (msg, kind) => {
       signerCalls.push({ msg, kind });
       return fn(msg, kind);
@@ -213,6 +216,35 @@ localStorage.setItem(BTC_WALLET_KEY, JSON.stringify(goodAnchor));
 {
   const r = btcWallet.tryRestore();
   ok('tryRestore accepts a well-formed anchor', !!r && r.tacitPubkey === goodAnchor.tacitPubkey);
+}
+
+console.log('\nbtcWallet — UniSat signs only as the connected account:');
+
+// 10. UniSat's active account differs from the connected address: nothing is signed or derived.
+reset();
+installSigner(det(SIG_A));
+activeAccount = 'tb1qsomeotheraccountxxxxxxxxxxxxxxxxxxxx';
+{
+  let err = null;
+  try { await btcWallet.enroll(); } catch (e) { err = e; }
+  ok('enroll refuses while another UniSat account is active', /active account is .* not the connected .* Nothing was signed/.test(err?.message || ''));
+  ok('no signature asked (and no bip322 retry)', signerCalls.length === 0);
+  ok('no key derived', wallet.priv === null && wallet.mode === null);
+}
+reset();
+localStorage.setItem(BTC_WALLET_KEY, JSON.stringify(goodAnchor));
+btcWallet.tryRestore();
+installSigner(det(SIG_A));
+activeAccount = 'tb1qsomeotheraccountxxxxxxxxxxxxxxxxxxxx';
+{
+  let err = null;
+  try { await btcWallet.login(); } catch (e) { err = e; }
+  ok('login refuses while another UniSat account is active', /Nothing was signed/.test(err?.message || '') && signerCalls.length === 0);
+}
+activeAccount = null;
+{
+  await btcWallet.login();
+  ok('login signs once the connected account is active again', signerCalls.length === 1 && bytesToHex(wallet.pub) === goodAnchor.tacitPubkey);
 }
 
 console.log(`\n${pass} passed, ${fail} failed.`);
