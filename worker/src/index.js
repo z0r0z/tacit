@@ -26903,6 +26903,32 @@ async function _routeFetch(req, env, ctx) {
       }
     }
 
+    // Farm-minted note of an applied T_LP_UNBOND / T_LP_HARVEST / T_FARM_REFUND (see ammFarmUnbondReceiptPut): its
+    // asset, commitment, amount, public blinding and vout. The scan writes the receipt before the op's farm update,
+    // and has since farms began, so a missing receipt for a tx at or below scanned_height means the op was not applied.
+    if (url.pathname === '/amm/farm-receipt' && req.method === 'GET') {
+      const txid = (url.searchParams.get('txid') || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txid)) {
+        return jsonResponse({ error: 'txid must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        // Cursor first: a receipt for any tx at or below the cursor is already written.
+        const scanned_height = await readScannedHeight(env, network);
+        const rec = await ammFarmUnbondReceiptGet(env, network, txid);
+        const note = rec ? (rec.lp_return || rec.reward || null) : null;
+        return jsonResponse({
+          txid, network,
+          found: !!note,
+          kind: rec?.kind ?? null,
+          farm_id: rec?.farm_id ?? null,
+          note: note ? { asset_id: note.asset_id, commitment: note.commitment, amount: String(note.amount), r: note.r, vout: note.vout } : null,
+          scanned_height,
+        }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'farm receipt lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
     // LP-bond yield farms endpoints.
     //
     // /farm/:farm_id — single-farm state with post-crystallization view.
