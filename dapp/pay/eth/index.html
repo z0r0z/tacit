@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-oHsgR/juFBDXyopb1ryKHEENOtRdsmjLEYJzbP0nsu0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Y1aWFr//ameoIRu9dIn6V5SB01mqRGJzK18MMjyesHw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
-<meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
+<meta name="description" content="Private ETH payments on Ethereum, Base, Robinhood Chain and MegaETH. Deposit, pay privately, withdraw any part. Proved on your device, recovered from your key.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/pay/eth/">
 <meta property="og:title" content="tacit pay">
-<meta property="og:description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device.">
+<meta property="og:description" content="Private ETH payments on Ethereum, Base, Robinhood Chain and MegaETH, proved on your device.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
@@ -427,7 +427,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 
   <section class="hero" aria-labelledby="hero-h">
     <h1 id="hero-h">Simple, private <br>payments in <em>ETH</em>.</h1>
-    <p>Deposit ETH on Ethereum, Base and Robinhood Chain, pay anyone privately, and withdraw any part. Who you pay and how much stay hidden; deposits and withdrawals show on chain.</p>
+    <p>Deposit ETH on Ethereum, Base, Robinhood Chain or MegaETH, pay anyone privately, and withdraw any part. Who you pay and how much stay hidden; deposits and withdrawals show on chain.</p>
     <ul class="facts">
       <li>Proved on your device</li>
       <li>Recovered from your key</li>
@@ -441,7 +441,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <nav class="modes" id="modes" aria-label="What to pay in">
         <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent payments</small></span></a>
         <a href="/pay/#tac" data-mode="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded pool</small></span></a>
-        <a href="/pay/eth/" data-mode="eth" aria-current="page"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>three chains</small></span></a>
+        <a href="/pay/eth/" data-mode="eth" aria-current="page"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>four chains</small></span></a>
       </nav>
       <div class="req" id="proof" hidden><div id="proof-body"></div><div class="status" role="status" id="pf-status"></div></div>
       <div class="req" id="gift" hidden><div id="gift-body"></div><div class="status" role="status" id="gift-status"></div></div>
@@ -535,11 +535,16 @@ const CHAINS = [
     explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keeper-base.onrender.com/evm-pool/keeper', deployBlock: 51864014, confirmations: 10, gasReserve: 10n ** 14n },
   { chainId: 4663, key: 'robinhood', name: 'Robinhood', full: 'Robinhood Chain', rpc: ['https://rpc.mainnet.chain.robinhood.com'],
     explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keeper-robinhood.onrender.com/evm-pool/keeper', deployBlock: 73991661, confirmations: 10, gasReserve: 10n ** 14n },
+  // MegaETH makes a block a second, so its logs are read 100,000 blocks at a time (its public node serves that range); it has no
+  // canonical bridge here (no move from Ethereum), and the points program does not count its deposits.
+  { chainId: 4326, key: 'megaeth', name: 'MegaETH', full: 'MegaETH', rpc: ['https://mainnet.megaeth.com/rpc', 'https://megaeth.drpc.org'],
+    explorer: 'https://mega.etherscan.io', keeper: 'https://tacit-evm-pool-keeper-megaeth.onrender.com/evm-pool/keeper', deployBlock: 28397750, confirmations: 30, gasReserve: 10n ** 14n, logChunk: 100000, points: false },
 ];
 const CHAIN_META = {
   1: { chainName: 'Ethereum', rpcUrls: ['https://ethereum-rpc.publicnode.com'], blockExplorerUrls: ['https://etherscan.io'] },
   8453: { chainName: 'Base', rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] },
   4663: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robinhoodchain.blockscout.com'] },
+  4326: { chainName: 'MegaETH', rpcUrls: ['https://mainnet.megaeth.com/rpc'], blockExplorerUrls: ['https://mega.etherscan.io'] },
 };
 // Each L2's canonical bridge on Ethereum (evm-pool-gateway L2_BRIDGES), to name a move in the history.
 const BRIDGES = { Base: '0x3154Cf16ccdb4C6d922629664174b904d80F2C35', 'Robinhood Chain': '0x1A07cc4BD17E0118BdB54D70990D2158AbAD7a2D' };
@@ -1123,7 +1128,7 @@ async function walletOn(c) {
   const m = await mods();
   st.W = m.makeEvmPoolWallet({
     zk: m.zk, keys: S.keys, keeper: chainKeeper(c), store: kv, feed: !S.chainOnly, prove, fetchImpl: timedFetch,
-    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations },
+    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
   });
   st.W.connect(signerFor(c));
   st.for = S.key.pubHex;
@@ -1276,7 +1281,7 @@ async function boxMap(count = BOXES) {
   return map;
 }
 // The one-time deposit address the next payment link uses: one past the highest one that has taken a payment on any
-// chain (an address is the same on all three), counting ETH still waiting at one, and past every refund address a
+// chain (an address is the same on all four), counting ETH still waiting at one, and past every refund address a
 // withdrawal named. A link gets a fresh address once the last has been paid, so paid links are not linked to each other
 // on chain, and no run of unused addresses opens up: rebuilt from the key, every one lies within the wallet's lookahead
 // of the one before. A chain counts once its addresses have been read (BOXST), or else its history; refund addresses
@@ -1391,7 +1396,7 @@ async function giftWallet(seed, c) {
   const m = await mods();
   return m.makeEvmPoolWallet({
     zk: m.zk, keys: m.evmPoolKeys(m.zk, seed), keeper: chainKeeper(c), store: null, prove, fetchImpl: timedFetch,
-    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations },
+    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
   });
 }
 
@@ -1806,7 +1811,7 @@ function totalLine() {
   const known = CHAINS.map((x) => CH[x.chainId].bal).filter((b) => b != null);
   const total = known.reduce((a, b) => a + b, 0n);
   if (known.length < 2 || !total || total === cur().bal) return '';   // only when it says more than this chain's own
-  return html`<div>${eth(total)} ETH private across ${known.length === CHAINS.length ? 'all three chains' : `${known.length} chains`}</div>`;
+  return html`<div>${eth(total)} ETH private across ${known.length === CHAINS.length ? 'all four chains' : `${known.length} chains`}</div>`;
 }
 function paintBal() {
   const c = S.chain, st = cur();
@@ -1844,7 +1849,7 @@ function renderForm() {
     if (!S.key) {
       // Opened from a link someone sent: the link's card leads, and the way in is one line.
       if (linkOnly()) { mount(f, html`<p class="gate-p">Have a Tacit wallet? <button class="link" type="button" id="g-open">Open it</button> to keep this private.</p>`); $('#g-open').onclick = openWalletSheet; return; }
-      mount(f, html`<p class="gate-p">Open your Tacit wallet. One key holds your private ETH on all three chains, and nothing else needs backing up.</p>${signIn('g')}`);
+      mount(f, html`<p class="gate-p">Open your Tacit wallet. One key holds your private ETH on all four chains, and nothing else needs backing up.</p>${signIn('g')}`);
       return wireSignIn(f, 'g');
     }
     ({ deposit: formDeposit, send: formSend, withdraw: formWithdraw, receive: formReceive })[S.tab](f);
@@ -1923,12 +1928,14 @@ document.addEventListener('click', (e) => {
 // What a deposit of `a` wei is likely to earn now: 1,000 points per ETH, the early bonus, the TAC holder tier held a day
 // and the Privacy Pools boost. → { pts, known (the pools' deposit counts are in), why }
 function pointsEst(a) {
-  const known = CHAINS.every((c) => TALLY[c.chainId]), n = CHAINS.reduce((s, c) => s + (TALLY[c.chainId]?.deposits || 0), 0);
+  const counted = CHAINS.filter((c) => c.points !== false);                                   // the chains the program scores
+  const known = counted.every((c) => TALLY[c.chainId]), n = counted.reduce((s, c) => s + (TALLY[c.chainId]?.deposits || 0), 0);
   const early = known ? 1 + 4 / (1 + n / 200) : 1, tier = holderBoost(), hold = tier.held, pp = PTS.v?.pp ? 1.2 : 1;
   const why = [known ? `×${early.toFixed(1)} early` : '', hold > 1 ? `×${hold} TAC holder` : '', tier.now > hold ? `×${tier.now} once your TAC is held a day` : '', pp > 1 ? '×1.2 Privacy Pools' : ''].filter(Boolean).join(' · ');
   return { pts: (Number(a) / 1e18) * 1000 * early * hold * pp, known, why };
 }
 function pointsRow(a) {
+  if (S.chain?.points === false) return html`<p class="note mute">No TAC points on ${S.chain.full}: the points program counts deposits on Ethereum, Base and Robinhood Chain.</p>`;
   const e = pointsEst(a);
   return html`<div class="kv"><span class="pts-line"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC points <button class="link" type="button" data-ptsinfo aria-expanded="${PTSINFO}">how?</button></span><b class="num">${e.known ? '≈ ' : 'at least '}${ptsFmt(e.pts)}${e.why ? html` <small class="mute">${e.why}</small>` : ''}</b></div>
     <p class="note mute" data-ptsnote ${PTSINFO ? '' : 'hidden'}>${PTS_WHY}</p>`;
@@ -2098,11 +2105,11 @@ function formDeposit(f) {
     FORM.waitShown = st.waiting;
     const min = st.quote?.receiveMin ? ((BigInt(st.quote.receiveMin) + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n : null;
     mount(f, html`${seg}
-      <div class="blk"><div class="lbl"><span>Your deposit address</span><span>ETH only · three chains</span></div>
+      <div class="blk"><div class="lbl"><span>Your deposit address</span><span>ETH only · four chains</span></div>
         <div class="addr"><code>${W?.receiveBox || '…'}</code>${W ? html`<button class="link" type="button" data-copy="${W.receiveBox}">copy</button>` : ''}</div>
         ${W ? html`<div class="qrbox" id="f-dqr"></div>` : ''}
         <p class="note">Send ETH here from an exchange or any wallet. It moves into your private balance on the chain it was sent on, usually within minutes, for at most 0.25%.</p>
-        <p class="note warn">Choose Ethereum, Base or Robinhood Chain as the network, and send only ETH. Sent on any other network, or as a token, it can’t be collected.</p>
+        <p class="note warn">Choose Ethereum, Base, Robinhood Chain or MegaETH as the network, and send only ETH. Sent on any other network, or as a token, it can’t be collected.</p>
         ${min ? html`<p class="note">On ${c.full} the relay takes it in from ${fmt(min, 18, 6)} ETH, a floor that moves with gas prices${c.chainId === 1 ? '; for less, choose Base' : ''}. Less waits here until more arrives, or you take it in yourself.</p>` : ''}
         <p class="note">Everything sent here shows as paid to this one address. To be paid by others, share a link from Receive.</p></div>
       <p class="note mute">Points go to the address that sent the ETH to this address, so ETH sent from an exchange earns none for you.</p>
@@ -2113,7 +2120,7 @@ function formDeposit(f) {
       ${(st.waitBoxes || []).some(([, v]) => (min && v < min) || !relayUp()) ? html`<p class="note">Taking it in yourself costs no fee; your wallet pays the gas, and its address shows as the one collecting it.</p>` : ''}
       <p class="more"><button class="link" type="button" id="f-check">Check for arrivals now</button></p>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy, 'Deposit address copied'));
-    // The address alone, which an exchange's or a wallet's scanner takes on any of the three chains.
+    // The address alone, which an exchange's or a wallet's scanner takes on any of the four chains.
     const dq = $('#f-dqr');
     if (dq && W) mount(dq, qrSvg(W.receiveBox, Math.min(dq.clientWidth || 220, 220), 'QR code of your deposit address'));
     $('#f-check').onclick = async () => { try { const W2 = await walletOn(c); await Promise.all([0, ...linkRange()].map((i) => W2.watchReceive(i).catch(() => {}))); await syncChain(c, true); say($('#status'), cur().waiting > 0n ? `${fmt(cur().waiting, 18, 6)} ETH is on its way in.` : 'Nothing waiting at the deposit address.'); } catch (e) { sayErr($('#status'), e); } };
@@ -2811,7 +2818,7 @@ function formReceive(f) {
     ${UNIFIED_LIVE ? html`<div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
       <div class="addr"><code>${unifiedAddress()}</code><button class="link" type="button" data-copy="${unifiedAddress()}">copy</button></div>
       <p class="note">ID <b class="num nw">${addressId(unifiedAddress())}</b>. Whoever pays you sees the same ID, so you can check it matches.</p>
-      <p class="note">Anyone using Tacit can pay you privately with it, on Bitcoin, Ethereum, Base and Robinhood Chain. It never appears on chain. Your pool-only address (ID <span class="num nw">${addressId(S.key.bp)}</span>) still works too: <button class="link" type="button" data-copy="${S.key.bp}">copy bp1…</button></p></div>
+      <p class="note">Anyone using Tacit can pay you privately with it, on Bitcoin, Ethereum, Base, Robinhood Chain and MegaETH. It never appears on chain. Your pool-only address (ID <span class="num nw">${addressId(S.key.bp)}</span>) still works too: <button class="link" type="button" data-copy="${S.key.bp}">copy bp1…</button></p></div>
       <div id="f-up"></div>`
     : html`<div class="blk"><div class="lbl"><span>Your pool address</span><span>same on every chain</span></div>
       <div class="addr"><code>${S.key.bp}</code><button class="link" type="button" data-copy="${S.key.bp}">copy</button></div>
@@ -3061,7 +3068,7 @@ const ptsAllow = (who) => { try { sessionStorage.setItem(PTS_OK, who); } catch {
 // An action of the connected wallet that earns points (a deposit, to itself or to someone, or a payment to a link):
 // shown at once with what it should earn, then with what the program credits once it counts it.
 function ptsExpect(c, a) {
-  if (!S.wallet || !a) return;
+  if (!S.wallet || !a || c.points === false) return;
   const who = lc(S.wallet);
   PTS.expect = [{ who, c, a: BigInt(a), est: pointsEst(a).pts, at: Date.now(), seen: new Set((PTS.v?.deposits || []).map((d) => d.tx_hash)), pts: null }, ...PTS.expect].slice(0, 6);
   if (ptsOk(who)) readPoints(true);

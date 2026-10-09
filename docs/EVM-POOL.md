@@ -684,8 +684,8 @@ adaptation from this guide, the live page and the check tool.
 The pool, router, verifier and PoseidonT5 are live on MegaETH (chain 4326) at the addresses above, deployed on 5 October
 2026 (pool deploy block 28,397,750; transactions in [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json)).
 The code is the same as on the other chains: the verifier and PoseidonT5 are byte-identical, and the pool and router differ
-only in their immutables. A relay runs at `https://tacit-evm-pool-keeper-megaeth.onrender.com/evm-pool/keeper`. The anon.wei
-page does not list MegaETH yet; an app of your own can use it now.
+only in their immutables. A relay runs at `https://tacit-evm-pool-keeper-megaeth.onrender.com/evm-pool/keeper`. The tacit.finance pay page
+(`/pay/eth/`) lists MegaETH; the anon.wei page does not list it yet; an app of your own can use it now.
 
 **What was tried on MegaETH, with real ETH.** On 5 October 2026: a shield from a wallet; a private send with change; a
 withdrawal to a fresh address from the recipient's own wallet; the same withdrawal through the relay (exact amount, fee
@@ -722,7 +722,7 @@ with no relay: it proves and sends everything itself.
 
 ## Questions
 
-Answers for people using the private ETH pool through anon.wei or tacit.finance, and for integrators. Chains: Ethereum (1), Base (8453), Robinhood Chain (4663) and, for the core pool, MegaETH (4326). The anon.wei page offers the first three. Items marked `[pending release]` describe the next version of the anon.wei page.
+Answers for people using the private ETH pool through anon.wei or tacit.finance, and for integrators. Chains: Ethereum (1), Base (8453), Robinhood Chain (4663) and, for the core pool, MegaETH (4326). The anon.wei page offers the first three; the tacit.finance pay page offers all four. Items marked `[pending release]` describe the next version of the anon.wei page.
 
 ### What is public and what is hidden
 

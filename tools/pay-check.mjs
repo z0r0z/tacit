@@ -1,5 +1,5 @@
 // Checks dapp/pay/index.html in a real browser.
-//   live   read-only against mainnet: the page loads under its pinned CSP, a pasted key reads all three chains, the
+//   live   read-only against mainnet: the page loads under its pinned CSP, a pasted key reads all four chains, the
 //          history rebuilt from the key alone matches each chain's balance, forms refuse what they should, a payment
 //          link fills Send, and a sample payment is proved and verified in the page's worker
 //   relay  (opt-in, spends funds) KEY pays KEY2 privately on mainnet through the relay; KEY2's key alone finds it
@@ -142,7 +142,7 @@ try {
       ok((await p.inputValue('#f-to')) === 'bp1qqqq' && (await p.inputValue('#f-amt')) === '0.01', 'payment link fills Send');
       await p.waitForFunction(() => document.querySelectorAll('#chains small .sk').length === 0, null, { timeout: 180e3 });
       const bals = await p.$$eval('#chains small', (x) => x.map((e) => e.textContent));
-      ok(bals.length === 3 && bals.every((b) => /ETH|—/.test(b)), `three chain balances read: ${bals.join(' · ')}`);
+      ok(bals.length === 4 && bals.every((b) => /ETH|—/.test(b)), `four chain balances read: ${bals.join(' · ')}`);
       await p.waitForFunction(() => !/rebuilding/.test(document.querySelector('#recover-at').textContent), null, { timeout: 300e3 });
       const sums = await p.$$eval('.chainsum li', (x) => x.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
       console.log('    ' + sums.join('\n    '));
@@ -568,6 +568,7 @@ try {
     const F = {
       ethereum: { id: 1, name: 'Ethereum', key: 'ethereum', other: 8453, row: 1, rpc: process.env.ETH_RPC || 'https://mainnet.gateway.tenderly.co', url: 'https://ethereum-rpc.publicnode.com', hosts: /ethereum-rpc\.publicnode\.com|mainnet\.gateway\.tenderly\.co|eth\.drpc\.org|rpc\.flashbots\.net|1rpc\.io/ },
       base: { id: 8453, name: 'Base', key: 'base', other: 1, row: 2, rpc: process.env.BASE_RPC || 'https://mainnet.base.org', url: 'https://mainnet.base.org', hosts: /mainnet\.base\.org|base\.drpc\.org/ },
+      megaeth: { id: 4326, name: 'MegaETH', key: 'megaeth', other: 8453, row: 4, rpc: process.env.MEGA_RPC || 'https://mainnet.megaeth.com/rpc', url: 'https://mainnet.megaeth.com/rpc', hosts: /mainnet\.megaeth\.com|megaeth\.drpc\.org/ },
       robinhood: { id: 4663, name: 'Robinhood Chain', key: 'robinhood', other: 8453, row: 3, rpc: process.env.RH_RPC || 'https://rpc.mainnet.chain.robinhood.com', url: 'https://rpc.mainnet.chain.robinhood.com', hosts: /rpc\.mainnet\.chain\.robinhood\.com|robinhood\.drpc\.org/ },
     }[process.env.CHAIN || 'base'];
     console.log(`fork (${F.name})`);

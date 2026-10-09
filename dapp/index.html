@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KNlDVGHT349N+S1dVArvClBiNGuHMkdbA61zflBpBPU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-TGVOZ3U2uGYImK9Z0Gs8Gl8N0zbCkjPeGSzGQkO+cl0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=6706fb66"></script>
 <title>tacit</title>
@@ -702,7 +702,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
         <p>A zero-knowledge proof of Bitcoin’s own blocks carries a note into the pool on Ethereum, and the pool’s state back. No federation or multisig signs anything.</p>
         <a href="#bridge" data-link="bridge">Bridge TAC →</a></li>
       <li><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><b>On Ethereum</b>
-        <p>One immutable pool holds tETH, TAC, cBTC and cUSD as private notes: pay, swap, farm and borrow with nobody seeing how much or to whom. ETH-only pools on Ethereum, Base and Robinhood Chain take private payments too.</p>
+        <p>One immutable pool holds tETH, TAC, cBTC and cUSD as private notes: pay, swap, farm and borrow with nobody seeing how much or to whom. ETH-only pools on Ethereum, Base, Robinhood Chain and MegaETH take private payments too.</p>
         <a href="#private" data-link="private">Open the pool →</a></li>
     </ol>
   </section>
@@ -732,7 +732,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <ul aria-label="Pay in">
       <li><a href="/pay/#btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>a silent payment</small></span><span class="go" aria-hidden="true">→</span></a></li>
       <li><a href="/pay/#tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded on Bitcoin</small></span><span class="go" aria-hidden="true">→</span></a></li>
-      <li><a href="/pay/eth/"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>on Ethereum, Base or Robinhood Chain</small></span><span class="go" aria-hidden="true">→</span></a></li>
+      <li><a href="/pay/eth/"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>on Ethereum, Base, Robinhood Chain or MegaETH</small></span><span class="go" aria-hidden="true">→</span></a></li>
     </ul>
   </section>
 
@@ -743,8 +743,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
     <a class="tile" href="#eth" data-open="eth" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></span>
       <h3>Private ETH</h3>
-      <p>Make your ETH private. In the Tacit pool it is tETH: send, swap, farm and borrow with it, and nobody sees how much or to whom. Or keep ETH in a pay-only pool on this device, on Ethereum, Base or Robinhood Chain.</p>
-      <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">Ethereum, Base and Robinhood Chain</span><span class="go" aria-hidden="true">→</span></span>
+      <p>Make your ETH private. In the Tacit pool it is tETH: send, swap, farm and borrow with it, and nobody sees how much or to whom. Or keep ETH in a pay-only pool on this device, on Ethereum, Base, Robinhood Chain or MegaETH.</p>
+      <span class="tile-foot"><span class="dot" data-dot="eth"></span><span data-foot="eth">Ethereum, Base, Robinhood Chain and MegaETH</span><span class="go" aria-hidden="true">→</span></span>
     </a>
     <a class="tile" href="#bitcoin" data-open="btc" aria-haspopup="dialog">
       <span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg></span>
@@ -1003,6 +1003,8 @@ const DEVICE_CHAINS = [
   { chainId: 1, name: 'Ethereum', rpc: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org'], explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keeper.onrender.com/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
   { chainId: 8453, name: 'Base', rpc: ['https://mainnet.base.org', 'https://base.drpc.org'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keeper-base.onrender.com/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
   { chainId: 4663, name: 'Robinhood', rpc: ['https://rpc.mainnet.chain.robinhood.com'], explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keeper-robinhood.onrender.com/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
+  // A block a second, so logs are read 100,000 blocks at a time; no canonical bridge from Ethereum (no move to it); its deposits earn no points.
+  { chainId: 4326, name: 'MegaETH', rpc: ['https://mainnet.megaeth.com/rpc', 'https://megaeth.drpc.org'], explorer: 'https://mega.etherscan.io', keeper: 'https://tacit-evm-pool-keeper-megaeth.onrender.com/evm-pool/keeper', deployBlock: 28397750, confirmations: 30, logChunk: 100000, bridge: false, points: false },
 ];
 const EVM_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', EVM_ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
 
@@ -2443,6 +2445,7 @@ const CHAIN_META = {
   1: { chainName: 'Ethereum', rpcUrls: ['https://ethereum-rpc.publicnode.com'], blockExplorerUrls: ['https://etherscan.io'] },
   8453: { chainName: 'Base', rpcUrls: ['https://mainnet.base.org'], blockExplorerUrls: ['https://basescan.org'] },
   4663: { chainName: 'Robinhood Chain', rpcUrls: ['https://rpc.mainnet.chain.robinhood.com'], blockExplorerUrls: ['https://robinhoodchain.blockscout.com'] },
+  4326: { chainName: 'MegaETH', rpcUrls: ['https://mainnet.megaeth.com/rpc'], blockExplorerUrls: ['https://mega.etherscan.io'] },
 };
 async function ensureChain(id) {
   const want = '0x' + id.toString(16);
@@ -2667,7 +2670,7 @@ render.wallet = () => {
   if (WAL.mode === 'add') {
     mount(f, html`
       <div class="kv"><span>Address</span><b class="mono">${short(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
-      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on Base or Robinhood Chain, for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
+      <p class="note">Send ETH to it from any wallet or exchange. On Ethereum it pays for everything here; on Base, Robinhood Chain or MegaETH, for the private pool there.${S.wallet ? ' Or add some from your wallet here; that links the two on chain.' : html` Or <button class="link" type="button" id="ac-connect">connect a wallet</button> to add from it.`}</p>
       ${S.wallet ? html`${amountField()}<button class="btn" type="button" id="ac-go">Add from wallet</button>` : ''}`);
     // Connecting only to fund it leaves the Tacit account paying.
     const cn = $('#ac-connect');
@@ -3296,10 +3299,11 @@ document.addEventListener('click', (e) => {
   for (const x of $$('[data-ptsinfo]')) x.setAttribute('aria-expanded', String(PTSINFO));
   for (const n of $$('[data-ptsnote]')) n.hidden = !PTSINFO;
 });
-function pointsRow(wei, kind) {
+function pointsRow(wei, kind, chain) {
+  if (chain?.points === false) return html`<p class="note mute">No TAC points on ${chain.name}: the points program counts deposits on Ethereum, Base and Robinhood Chain.</p>`;
   readOutlook();
   const v1 = kind === 'v1', dev = Object.values(OUT.dev);
-  const known = v1 ? !!OUT.v1 : dev.length === DEVICE_CHAINS.length, n = v1 ? OUT.v1?.deposits ?? 0 : dev.reduce((a, x) => a + x.deposits, 0);
+  const known = v1 ? !!OUT.v1 : dev.length === DEVICE_CHAINS.filter((c) => c.points !== false).length, n = v1 ? OUT.v1?.deposits ?? 0 : dev.reduce((a, x) => a + x.deposits, 0);
   const early = known ? 1 + (PGM.early.max - 1) / (1 + n / PGM.early.half) : 1, tier = holderTier(S.address), hold = tier.held;
   const why = [known ? `×${early.toFixed(1)} early` : '', v1 ? `×${PGM.wrapBoost} tETH` : '', hold > 1 ? `×${hold} TAC holder` : '', tier.now > hold ? `×${tier.now} once your TAC is held a day` : ''].filter(Boolean).join(' · ');
   const pts = Math.round((Number(wei) / 1e18) * (v1 ? PGM.rates.wrap ?? ethBase() * PGM.wrapBoost : ethBase()) * early * hold).toLocaleString('en-US');
@@ -4262,7 +4266,7 @@ async function deviceWallet() {
   const kv = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
   DEV.W = m.makeEvmPoolWallet({
     zk: m.zk, keys, keeper: c.keeper, store: kv,
-    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations },
+    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
     prove: async (input) => (await prover(provingNote))(input),
   });
   DEV.key = S.key.pubHex + c.chainId; DEV.bal = null;
@@ -4273,7 +4277,7 @@ async function deviceWallet() {
 async function devWalletOn(chainId) {
   const m = await getDeviceMods(), c = DEVICE_CHAINS.find((x) => x.chainId === chainId);
   return m.makeEvmPoolWallet({ zk: m.zk, keys: m.evmPoolKeys(m.zk, walletPriv()), keeper: c.keeper, prove: null,
-    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations } });
+    chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
 }
 // The account that pays is the one chosen when the action started: a key opened while it proves never pays for it.
 const payFrom = (chainId, label) => {
@@ -4338,7 +4342,7 @@ function loadHeld(force = false) {
     if (c.chainId === DEV.chain.chainId) return deviceSync();
     const m = await getDeviceMods();
     const W = m.makeEvmPoolWallet({ zk: m.zk, keys: m.evmPoolKeys(m.zk, priv), keeper: c.keeper, store: kv, prove: null,
-      chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations } });
+      chain: { chainId: c.chainId, pool: EVM_POOL, router: EVM_ROUTER, rpc: m.jsonRpc(c.rpc), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
     const s = await W.sync();
     if (S.key?.pubHex === pub) { store.set(`tacit-lite-device-bal-v1:${c.chainId}:${pub}`, { v: s.balance.toString(), at: Date.now() }); dashSoon(); }
   });
@@ -4464,7 +4468,7 @@ function privacyView(c, amount, to, self) {
 }
 
 function renderDevice(el) {
-  if (!needKey(el, 'Keep ETH private on Ethereum, Base or Robinhood Chain, with the privacy work done here in your browser. Open your Tacit wallet to start.')) return;
+  if (!needKey(el, 'Keep ETH private on Ethereum, Base, Robinhood Chain or MegaETH, with the privacy work done here in your browser. Open your Tacit wallet to start.')) return;
   const c = DEV.chain, W = DEV.W && DEV.key === S.key.pubHex + c.chainId ? DEV.W : null;
   const last = DEV.bal == null ? big(store.get(`tacit-lite-device-bal-v1:${c.chainId}:${S.key.pubHex}`)?.v) : null;
   mount(el, html`
@@ -4584,7 +4588,7 @@ function renderDevice(el) {
       const over = wb != null && amount > wb;
       go.disabled = over;
       if (over) warn(rc, 'More than your wallet balance.');
-      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${short(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev')}`); rc.hidden = false; }
+      else { mount(rc, html`${raw ? html`<div class="kv"><span>To</span><b>${dsv.r.label ? `${dsv.r.label} → ` : ''}${short(dsv.r.bp, 8)}</b></div>${idRow(dsv.r.id || dsv.r.bp)}` : ''}${pointsRow(amount, 'dev', c)}`); rc.hidden = false; }
     };
     toEl.addEventListener('input', check);
     $('#d-max').onclick = () => { if (wb != null) { const keep_ = c.chainId === 1 ? 3n * 10n ** 15n : 2n * 10n ** 14n, v = wb > keep_ ? wb - keep_ : 0n; amt.value = v ? plain(v, 18) : ''; amt.dispatchEvent(new Event('input')); } };
@@ -4625,7 +4629,7 @@ function renderDevice(el) {
   } else if (DEV.mode === 'out') {
     // From Ethereum, pool ETH also moves privately: into the Tacit pool as tETH, or to this key's balance on an L2.
     const dest = c.chainId === 1 ? DEV.dest : 'addr', l2 = DEVICE_CHAINS.find((x) => String(x.chainId) === dest);
-    mount(f, html`${c.chainId === 1 ? segSub('dest', dest, [['addr', 'Address'], ['v1', 'Tacit pool'], ...DEVICE_CHAINS.slice(1).map((x) => [String(x.chainId), x.name])]) : ''}
+    mount(f, html`${c.chainId === 1 ? segSub('dest', dest, [['addr', 'Address'], ['v1', 'Tacit pool'], ...DEVICE_CHAINS.filter((x) => x.chainId !== 1 && x.bridge !== false).map((x) => [String(x.chainId), x.name])]) : ''}
       ${dest === 'addr' ? html`<div class="lbl"><span>To</span><button type="button" id="d-me">${mine()}</button></div>
         <div class="amt text"><input id="d-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>` : ''}
       ${amountField('d-amt', 'Amount', maxPriv)}
@@ -4714,7 +4718,7 @@ function renderDevice(el) {
         <p class="note">For private sends within this pool, from another Tacit user’s device. Nothing on chain links a payment to it.</p></div>
       <div class="blk"><div class="kv"><span>Deposit address</span><b class="mono">${short(W.receiveBox, 8)}</b><button class="link" type="button" data-copy="${W.receiveBox}">copy</button></div>
         <p class="note">Send ETH here from any wallet or exchange, choosing ${c.name} as the network. It moves into your private balance within minutes, less at most 0.25%.${min ? html` The relay takes it in from ${fmt(min, 18, 4)} ETH, a floor that moves with gas prices${c.chainId === 1 ? '; for less, pick Base' : ''}. Less waits there for more, or you sweep it in yourself.` : ''}</p>
-        <p class="note">Send only ETH, and only on Ethereum, Base or Robinhood Chain: anything else can’t be collected.</p></div>
+        <p class="note">Send only ETH, and only on Ethereum, Base, Robinhood Chain or MegaETH: anything else can’t be collected.</p></div>
       <div id="d-wait"></div>
       <p class="note">To ask for an amount, <a href="/pay/eth/#receive&chain=${c.chainId}">get paid by link or QR</a> in tacit pay: each link has a deposit address of its own.</p>` : html`<p class="note">Reading your addresses…</p>`);
     $$('[data-copy]', f).forEach((b) => b.onclick = () => copy(b.dataset.copy));
@@ -8017,7 +8021,7 @@ async function nextKeyNonce(t, priv, controller, ps, ownerOf) {
 
 // ── tile footers for the private panes ───────────────────────────────────────────────────────────────────
 async function paintPrivateFeet() {
-  if (!S.key) { setFoot('eth', 'Ethereum, Base and Robinhood Chain'); setFoot('borrow', 'No one else ever holds your BTC'); return; }
+  if (!S.key) { setFoot('eth', 'Ethereum, Base, Robinhood Chain and MegaETH'); setFoot('borrow', 'No one else ever holds your BTC'); return; }
   const foot = (s) => {
     const bits = [];
     if (s.eth.value > 0n) bits.push(`${fmt(s.eth.value, 8, 4)} tETH private`);
@@ -8029,7 +8033,7 @@ async function paintPrivateFeet() {
       // this browser still says so, rather than showing the static default while private ETH sits there unseen.
       let dev = 0n;
       for (const c of DEVICE_CHAINS) { const cached = store.get(`tacit-lite-device-bal-v1:${c.chainId}:${S.key.pubHex}`); if (cached?.v) try { dev += BigInt(cached.v); } catch {} }
-      bits.push(dev > 0n ? 'Private ETH on this device too' : 'Ethereum, Base and Robinhood Chain');
+      bits.push(dev > 0n ? 'Private ETH on this device too' : 'Ethereum, Base, Robinhood Chain and MegaETH');
     }
     setFoot('eth', bits.join(' · '), s.eth.value > 0n || lockList('claim').length ? 'on' : '');
   };

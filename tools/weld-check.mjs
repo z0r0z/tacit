@@ -212,7 +212,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
   await ctx.route('https://tacit-evm-pool-keeper*.onrender.com/**', async (route) => {
     const p = new URL(route.request().url()).pathname;
     // A quote names its chain and pool, which the wallet checks before it signs anything (its host says which chain).
-    if (/\/quote$/.test(p)) return json(route, { chainId: /-base\./.test(route.request().url()) ? 8453 : /-robinhood\./.test(route.request().url()) ? 4663 : 1, pool: EVM_POOL,
+    if (/\/quote$/.test(p)) return json(route, { chainId: /-base\./.test(route.request().url()) ? 8453 : /-robinhood\./.test(route.request().url()) ? 4663 : /-megaeth\./.test(route.request().url()) ? 4326 : 1, pool: EVM_POOL,
       relayer: '0x0000000000000000000000000000000000000001', fee: '329000000000000', sweepFee: '439000000000000', receiveMin: '175600000000000000' });
     if (/\/(head|reserve)$/.test(p)) return route.fulfill({ status: 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{}' });
     if (/\/relay$/.test(p)) {

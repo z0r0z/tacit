@@ -8,12 +8,12 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-l31qo9S9vSHXkkTic0ddvPoPFccMqsMUOJ6bXhGN/tk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
-<meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base and Robinhood Chain. One key and one tacit1 address, every payment made on your device, and your balances rebuild from that key.">
+<meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base, Robinhood Chain and MegaETH. One key and one tacit1 address, every payment made on your device, and your balances rebuild from that key.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tacit">
 <meta property="og:url" content="https://tacit.finance/pay/">
 <meta property="og:title" content="tacit pay · simple, private payments">
-<meta property="og:description" content="Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base and Robinhood Chain. One key, one tacit1 address, every payment made on your device.">
+<meta property="og:description" content="Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base, Robinhood Chain and MegaETH. One key, one tacit1 address, every payment made on your device.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
@@ -438,7 +438,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 
   <section class="hero" aria-labelledby="hero-h">
     <h1 id="hero-h">Simple, private <br><em>payments</em>.</h1>
-    <p>Bitcoin as a silent payment, TAC shielded, and ETH privately on Ethereum, Base and Robinhood Chain. One key and one tacit1 address hold all three; every payment is made on your device, and your balances rebuild from that key.</p>
+    <p>Bitcoin as a silent payment, TAC shielded, and ETH privately on Ethereum, Base, Robinhood Chain and MegaETH. One key and one tacit1 address hold all three; every payment is made on your device, and your balances rebuild from that key.</p>
     <ul class="facts">
       <li>One key, one tacit1 address</li>
       <li>Made on your device</li>
@@ -451,7 +451,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <nav class="modes" id="modes" aria-label="What to pay in">
         <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent payments</small></span></a>
         <a href="/pay/#tac" data-mode="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded pool</small></span></a>
-        <a href="/pay/eth/" data-mode="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>three chains</small></span></a>
+        <a href="/pay/eth/" data-mode="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>four chains</small></span></a>
       </nav>
       <div class="req" id="found" hidden><div id="found-body"></div><div class="status" role="status" id="fd-status"></div></div>
       <div class="req" id="hreq" hidden><div id="hreq-body"></div><div class="status" role="status" id="hreq-status"></div></div>
@@ -471,7 +471,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <div class="how">
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</b><p>Sent as a silent payment (BIP‑352): each payment lands at a fresh address only the recipient’s key can find, and nothing on chain ties it to their published address. The amount and your own Bitcoin address show. Spending it from here combines it with your Bitcoin address’s coins.</p></div>
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</b><p>Paid inside the shielded pool on Bitcoin, with a zero-knowledge proof made on this device. Posted by the relay for a fee in TAC, it hides who paid, who was paid and how much; posted from your own Bitcoin address, that address shows as the sender.</p></div>
-        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</b><p>Paid inside the private pool on Ethereum, Base or Robinhood Chain, proved on this device and sent by a relay: no gas, and nothing on chain links payer and payee. Deposits and withdrawals show.</p></div>
+        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</b><p>Paid inside the private pool on Ethereum, Base, Robinhood Chain or MegaETH, proved on this device and sent by a relay: no gas, and nothing on chain links payer and payee. Deposits and withdrawals show.</p></div>
       </div>
     </section>
   </main>
