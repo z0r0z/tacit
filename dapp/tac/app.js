@@ -198,6 +198,9 @@ async function busy(btn, id, fn) {
   }
 }
 const whenIdle = (fn) => { if (busyId) afterBusy = fn; else fn(); };
+// Leaving while an action that sends is under way asks first; a read is left alone.
+const READS = new Set(['st-recv', 'st-claim-links']);
+window.addEventListener('beforeunload', (e) => { if (busyId && !READS.has(busyId)) { e.preventDefault(); e.returnValue = ''; } });
 
 // ── price ──
 // Sats per whole TAC, from the worker's mark price (computed from real trades, outlier-guarded). Used only
