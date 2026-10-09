@@ -2105,15 +2105,22 @@ await step('xobridge', async () => {
   const fee1 = BigInt(Math.round(Number((await text(r.page, '#xo-rcpt')).match(/Relay fee(0\.\d+) tETH/)[1]) * 1e8));
   statusError = 'feeGate: bound fee is below the marginal cost at this gas';
   const b2 = submits.length;
+  const retried = fee1 * 4n < 500000n, want = retried ? 2 : 1;
   await r.page.check('#xo-ack');
   await r.page.click('#xo-go');
-  await until(r.page, () => !!document.querySelector('#v1-status [data-selfdo]') || /feeGate|marginal cost|Sent to the relay/.test(document.querySelector('#v1-status')?.textContent || ''), null, 240000);
-  await sleep(1500);
+  // Whatever the page says along the way, the run is over when the relay has been asked as many times as it should be.
+  for (const t0 = Date.now(); submits.length - b2 < want && Date.now() - t0 < 240000;) await sleep(500);
+  await sleep(3000);
   const fees = submits.slice(b2).map((b) => BigInt(b.op?.fee ?? b.fee ?? -1));
   const ladder = (v) => v.toString().replace(/0+$/, '').length <= 2;
-  const retried = fee1 * 4n < 500000n;
-  ok(fees.length === (retried ? 2 : 1) && fees.every(ladder) && (!retried || (fees[1] > fees[0] && fees[1] >= fee1 * 2n)), `xobridge: a fee the relay turns down is asked again once at a doubled fee on the ladder (${retried ? 'doubling fits' : 'doubling would not fit the note'}; fees ${fees.join(' → ')})`);
+  ok(fees.length === (retried ? 2 : 1) && fees.every(ladder) && (!retried || (fees[1] > fees[0] && fees[1] >= fee1 * 2n)), `xobridge: a fee the relay turns down is asked again once at a doubled fee on the ladder (${retried ? 'doubling fits' : 'doubling would not fit the note'}; fees ${fees.join(' → ')}${fees.length !== (retried ? 2 : 1) ? ` | status: ${(await text(r.page, '#v1-status')).replace(/\s+/g, ' ').slice(0, 300)}` : ''})`);
   statusError = 'stubbed in the fork check';
+  // The rows, the receipt and the find box at phone width, with no sideways scroll.
+  await r.page.setViewportSize({ width: 360, height: 760 });
+  await sleep(400);
+  await r.page.evaluate(() => document.querySelector('#eth-v1 #xo-find')?.closest('details')?.setAttribute('open', ''));
+  const wideXo = await r.page.evaluate(() => { const d = document.querySelector('#sheet-eth .sheet-in'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
+  ok(wideXo[0] <= wideXo[1] + 1 && wideXo[2] <= wideXo[3] + 1, `xobridge: no sideways scroll at phone width (${wideXo})`);
   if (r.errors.length) { fails++; console.log('FAIL xobridge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
 });
@@ -2225,6 +2232,14 @@ await step('xbring', async () => {
   await until(r.page, () => !document.querySelector('#bridge-body')?.hidden, null, 60000);
   await sleep(1500);
   ok((await r.page.$$('#bridge-body .brr')).length === 0, 'xbring: the TAC Bridge tab does not list the tETH bridge');
+  // The new sections at phone width: a note with its reason, a row with its steps, the receipt, and the find box, with no sideways scroll.
+  await go(r.page, '#private/bitcoin');
+  await until(r.page, () => document.querySelectorAll('#eth-v1 .brr').length === 1 && !!document.querySelector('#eth-v1 #xb-find'), null, 60000);
+  await r.page.setViewportSize({ width: 360, height: 760 });
+  await sleep(400);
+  await r.page.evaluate(() => document.querySelector('#eth-v1 #xb-find')?.closest('details')?.setAttribute('open', ''));
+  const wide = await r.page.evaluate(() => { const d = document.querySelector('#sheet-eth .sheet-in'); return [d.scrollWidth, d.clientWidth, document.documentElement.scrollWidth, innerWidth]; });
+  ok(wide[0] <= wide[1] + 1 && wide[2] <= wide[3] + 1, `xbring: no sideways scroll at phone width (${wide})`);
   if (r.errors.length) { fails++; console.log('FAIL xbring page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   await r.browser.close();
 });
