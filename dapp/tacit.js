@@ -6857,6 +6857,8 @@ function bpRangeAggBatchVerify(items, n_bits = N_BITS) {
     } catch { return false; }
     const a_final = bytes32ToBigint(proofBytes.slice(off, off + 32)); off += 32;
     const b_final = bytes32ToBigint(proofBytes.slice(off, off + 32)); off += 32;
+    // Scalars must be canonical (< n), as dapp/bulletproofs.js and the guest require.
+    if (t_hat >= SECP_N || tau_x >= SECP_N || mu >= SECP_N || a_final >= SECP_N || b_final >= SECP_N) return false;
 
     // Replay transcript → y, z, x, w, u_k
     const transcript = bpTranscript();
@@ -18806,8 +18808,6 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (!dec) { validatedSet.set(key, false); return false; }
     const N = dec.outputs.length;
     const aic = dec.assetInputCount;
-    if (aic < 1 || aic > 255) { markAll(Math.max(N, 1), false); return false; }
-    if (tx.vin.length < 1 + aic) { markAll(Math.max(N, 1), false); return false; }
     let changeVout;
     if (isVar) {
       const hasRefund = dec.fillAmount < dec.maxFill;
@@ -18817,49 +18817,59 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     }
     const outIdx = vout === 0 ? 0 : (vout === changeVout && N === 2 ? 1 : null);
     if (outIdx === null) { validatedSet.set(key, false); return false; }
+    // The tacit outputs sit at vout 0 (output[0]) and changeVout (output[1], when N=2); the
+    // verdict is recorded under those Bitcoin vouts, as markBothTacitVouts does for T_AXFER_VAR.
+    const markTacitVouts = (ok, reason = _REASON_INVALID) => {
+      for (const j of (N === 2 ? [0, changeVout] : [0])) {
+        validatedSet.set(`${txidHex}:${j}`, ok);
+        if (!ok && validatedReasons) validatedReasons.set(`${txidHex}:${j}`, reason);
+      }
+    };
+    if (aic < 1 || aic > 255) { markTacitVouts(false); return false; }
+    if (tx.vin.length < 1 + aic) { markTacitVouts(false); return false; }
     for (let i = 1; i < 1 + aic; i++) {
       const inp = tx.vin[i];
       const parentKey = `${inp.txid}:${inp.vout}`;
       const parentValid = validatedSet.get(parentKey) === true;
       if (!parentValid) {
         const parentReason = validatedReasons?.get(parentKey);
-        markAll(Math.max(N, 1), false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+        markTacitVouts(false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
         return false;
       }
     }
     let Cpts;
     try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
-    catch { markAll(Math.max(N, 1), false); return false; }
+    catch { markTacitVouts(false); return false; }
     if (rpBatch) {
       rpBatch.push({ commitments: Cpts, proof: dec.rangeproof });
     } else if (!bpRangeAggVerify(Cpts, dec.rangeproof)) {
-      markAll(Math.max(N, 1), false); return false;
+      markTacitVouts(false); return false;
     }
     const ourAssetIdHex = bytesToHex(dec.assetId);
     const inputCommitments = [];
     for (let i = 1; i < 1 + aic; i++) {
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
-      if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
+      if (!parent) { markTacitVouts(false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
-      if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
+      if (!parentEnv) { markTacitVouts(false); return false; }
       const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-      if (!pd) { markAll(Math.max(N, 1), false); return false; }
-      if (pd.assetIdHex !== ourAssetIdHex) { markAll(Math.max(N, 1), false); return false; }
+      if (!pd) { markTacitVouts(false); return false; }
+      if (pd.assetIdHex !== ourAssetIdHex) { markTacitVouts(false); return false; }
       inputCommitments.push(pd.commitment);
     }
     let EPrime = secp.ProjectivePoint.ZERO;
     try {
       for (const o of dec.outputs) EPrime = EPrime.add(bytesToPoint(o.commitment));
       for (const c of inputCommitments) EPrime = EPrime.add(bytesToPoint(c).negate());
-    } catch { markAll(Math.max(N, 1), false); return false; }
-    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markAll(Math.max(N, 1), false); return false; }
+    } catch { markTacitVouts(false); return false; }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markTacitVouts(false); return false; }
     const ExBytes = EPrime.toRawBytes(true).slice(1);
     const inputOutpoints = tx.vin.slice(1, 1 + aic).map(v => ({ txid: v.txid, vout: v.vout }));
     const outputCommitments = dec.outputs.map(o => o.commitment);
     const msg = computeKernelMsg(dec.assetId, inputOutpoints, outputCommitments, 0n);
     const kernelOk = verifySchnorr(dec.kernelSig, msg, ExBytes);
-    markAll(Math.max(N, 1), kernelOk);
+    markTacitVouts(kernelOk);
     return kernelOk;
   }
 
