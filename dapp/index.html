@@ -348,14 +348,20 @@ main > section + section { margin-top: 40px; }
 .map li b { font-weight: 500; }
 .map li p { margin: 0; color: var(--mute); line-height: 1.5; }
 /* TAC, in the same plain style as the rows above: what it is, where it came from, and where to check or act on it. */
-.tacbar { margin: 0 0 26px; padding-top: 22px; border-top: 1px solid var(--hair); }
-.tacbar h2 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); margin: 0 0 16px; }
-.tacbar-b { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px 12px; font-size: 13px; }
-.tacbar-b .tk { grid-row: span 3; width: 28px; height: 28px; }
-.tacbar-b p { margin: 0; color: var(--mute); line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
-.tacbar-ln { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 2px !important; }
-.tacbar-ln a { color: var(--ink); text-decoration: none; font-size: 12.5px; }
-@media (hover: hover) { .tacbar-ln a:hover { text-decoration: underline; } }
+.tacbar { margin: 0 0 22px; padding-top: 14px; border-top: 1px solid var(--hair); }
+/* Closed until asked for: the label alone, which opens on the paragraph and its links. */
+.tacbar summary { display: inline-flex; align-items: center; gap: 10px; padding: 6px 0; cursor: pointer; list-style: none;
+  font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); }
+.tacbar summary::-webkit-details-marker { display: none; }
+.tacbar summary::after { content: '+'; font-size: 13px; letter-spacing: 0; }
+.tacbar[open] summary::after { content: '−'; }
+.tacbar[open] summary { margin-bottom: 8px; }
+@media (hover: hover) { .tacbar summary:hover { color: var(--ink); } }
+.tacbar p { margin: 0; font-size: 12px; line-height: 1.65; color: var(--mute); text-wrap: pretty; }
+.tacbar p a { color: inherit; }
+.tacbar-ln { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px !important; }
+.tacbar-ln a { font-size: 12px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--hair-2); }
+@media (hover: hover) { .tacbar-ln a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 /* Someone who already holds something here has a dashboard instead; the assets stay. */
 .shell:has(#dash:not([hidden])) .map { display: none; }
 .how .shelf { margin-top: 0; }
@@ -786,15 +792,11 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 </li>
       </ol>
     </div>
-    <div class="tacbar" aria-labelledby="tacbar-h">
-      <h2 id="tacbar-h">TAC · A Privacy Coin on Bitcoin L1</h2>
-      <div class="tacbar-b">
-        <svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>
-        <p>Tacit <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener">protocol</a>’s first asset: 21,000,000 issued once on Bitcoin, with no mint key. Every transfer hides its amount, and its own shielded pool hides who received it, with no custodian or multisig. Swap sats into it peer to peer and bitcoin goes private too.</p>
-        <p>Airdropped to bootstrap one private currency on both chains: claimable by 5,599 <a href="https://zswap.wei.limo" rel="noopener">zFi</a> shareholder wallets on Bitcoin and 8,652 holders across its network on Ethereum. Points and farms keep spreading it to grow the anonymity set, and it gets every new Tacit protocol improvement first.</p>
-        <p class="tacbar-ln"><a href="/verify.html">Verify supply →</a><a href="/tac/">Shielded pool →</a><a href="#bridge" data-link="bridge">Bridge →</a><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md#holding-tac" rel="noopener">Holding it ↗</a><a href="#buy" data-link="buy">Buy →</a></p>
-      </div>
-    </div>
+    <details class="tacbar">
+      <summary>TAC · A Privacy Coin on Bitcoin L1</summary>
+      <p>Tacit <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener">protocol</a>’s first asset: 21,000,000 issued once on Bitcoin, no mint key. Transfers hide their amounts, its shielded pool hides who received them, and sats swap into it peer to peer. Airdropped to bootstrap one private currency on both chains (claimable by 5,599 <a href="https://zswap.wei.limo" rel="noopener">zFi</a> shareholder wallets on Bitcoin and 8,652 holders on Ethereum), it keeps spreading through points and farms to grow the anonymity set, and gets each new Tacit protocol improvement first.</p>
+      <p class="tacbar-ln"><a href="/verify.html">Verify supply</a><a href="/tac/">Shielded pool</a><a href="#bridge" data-link="bridge">Bridge</a><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md#holding-tac" rel="noopener">Holding it</a><a href="#buy" data-link="buy">Buy</a></p>
+    </details>
     <div class="shelf" aria-label="Assets">
       <span class="shelf-g"><small>Private notes</small>
         <button type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
