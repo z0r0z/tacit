@@ -113,7 +113,10 @@ const _realNow = Date.now;
 let _clockSkewMs = 0;
 Date.now = () => _realNow() + _clockSkewMs;
 function setBuyerUtxos(utxos) { buyerUtxos.length = 0; buyerUtxos.push(...utxos); _clockSkewMs += 60_000; }
-function registerAssetParent(txid, vout, amount, blinding, assetIdHex = ASSET_ID) {
+// A fixture lot is marked as already proved unless `proved` is false: the take paths validate the lot's whole ancestry,
+// which these hand-built parents (no kernel signature, no range proof) would not pass.
+function registerAssetParent(txid, vout, amount, blinding, assetIdHex = ASSET_ID, proved = true) {
+  if (proved) dapp.rememberValidated([`${txid}:${vout}`]);
   const n = vout < 1 ? 1 : vout < 2 ? 2 : vout < 4 ? 4 : vout < 8 ? 8 : 0;
   if (!n) throw new Error(`test parent vout ${vout} exceeds CXFER fixture output width`);
   const outputs = [];
@@ -1010,6 +1013,36 @@ await test('N=8: aggregated hint carries fill_count == 8', () => {
   const h = hintPosts.find(x => x.reveal_txid === result8.reveal_txid);
   return h && h.fill_count === 8;
 });
+
+// ---- A lot whose ancestry does not validate is not bought, and nothing is broadcast ----
+console.log('\n§ Unproved lot: the take refuses before any sats move:');
+broadcasts.length = 0;
+setBuyerUtxos([{ txid: 'cc'.repeat(32), vout: 0, value: 100_000, status: { confirmed: true } }]);
+const FORGED_TXID = '7e'.repeat(32), FORGED_VOUT = 0, forgedNonce = hexToBytes('66'.repeat(16));
+registerAssetParent(FORGED_TXID, FORGED_VOUT, TOKEN_AMOUNT, TOKEN_BLINDING, ASSET_ID, false);
+const forgedSaleId = comp.preauthSaleIdHex(FORGED_TXID, FORGED_VOUT, SELLER_PUB, forgedNonce);
+const forgedSig = (() => {
+  const sighash = comp.preauthSellerSpendSighash({
+    assetOutpointTxidHex: FORGED_TXID, assetOutpointVout: FORGED_VOUT, assetUtxoValue: ASSET_VALUE,
+    sellerPubBytes: SELLER_PUB, sellerPayoutScriptBytes: SELLER_PAYOUT_SCRIPT, minPriceSats: MIN_PRICE_SATS,
+  });
+  const c = secp.sign(sighash, SELLER_SK, { lowS: true }).toCompactRawBytes();
+  const trim = (x) => { let i = 0; while (i < x.length - 1 && x[i] === 0) i++; let t = x.slice(i); if (t[0] & 0x80) t = new Uint8Array([0, ...t]); return t; };
+  const r = trim(c.slice(0, 32)), s2 = trim(c.slice(32, 64));
+  return concatBytes(new Uint8Array([0x30, 4 + r.length + s2.length, 0x02, r.length, ...r, 0x02, s2.length, ...s2]), new Uint8Array([0x83]));
+})();
+const forgedSale = {
+  asset_id: ASSET_ID, sale_id: forgedSaleId, seller_pubkey: bytesToHex(SELLER_PUB), seller_payout_script: bytesToHex(SELLER_PAYOUT_SCRIPT),
+  asset_outpoint: { txid: FORGED_TXID, vout: FORGED_VOUT, value: ASSET_VALUE },
+  asset_opening: { amount: TOKEN_AMOUNT.toString(), blinding: TOKEN_BLINDING.toString(16).padStart(64, '0') },
+  min_price_sats: MIN_PRICE_SATS, expiry: EXPIRY, seller_asset_spend_sig: bytesToHex(forgedSig),
+  nonce: bytesToHex(forgedNonce), ticker: 'TST', decimals: 0,
+};
+await test('a lot whose ancestry does not validate is refused', async () => {
+  try { await dapp.takePreauthSale({ assetIdHex: ASSET_ID, saleIdHex: forgedSaleId, sale: forgedSale }); return false; }
+  catch (e) { return /does not validate/.test(String(e?.message || '')); }
+});
+await test('and nothing was broadcast', () => broadcasts.length === 0);
 
 console.log(`\n${pass} passed, ${fail} failed.`);
 // Exit on the computed verdict rather than only on failure: imported browser modules can leave the

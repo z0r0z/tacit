@@ -16927,6 +16927,12 @@ async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500
 // sets it.
 let _strictValidation = null; // { failures: string[] } while set
 const STRICT_DECIDED_DEPTH = 3;
+// Outpoints a caller has already proved, reused by later checks this session (tools and tests that bring their own
+// validated fixtures).
+function rememberValidated(keys) {
+  const proved = _getPersistedValidatedTrue();
+  for (const k of keys) proved.set(String(k).toLowerCase(), true);
+}
 function setStrictValidation(ctx) {
   _strictValidation = ctx || null;
   if (_strictValidation) clearValidatorCaches();
@@ -18928,6 +18934,22 @@ async function definingCommitmentForOutpoint(txidHex, vout) {
   const pd = await getParentEnvelopeData(penv, vout, txidHex);
   if (!pd) throw new Error(`outpoint ${shorten(txidHex, 8)}:${vout} is not a tacit-asset output`);
   return pd; // { assetIdHex, commitment(bytes) }
+}
+
+// A counterparty's lot is paid for only once its outpoint validates the way Holdings credits a note: its whole
+// ancestry, every kernel and range proof, not just the envelope that defines it. Ancestors already proved this session
+// are reused. A walk that could not finish refuses as well; either way nothing has been sent.
+async function requireValidatedLot(txidHex, vout, label = "the seller's lot") {
+  const txid = String(txidHex).toLowerCase(), v = Number(vout), key = `${txid}:${v}`;
+  const proved = _getPersistedValidatedTrue();
+  const set = new Map(proved), reasons = new Map();
+  let ok;
+  try { ok = await validateOutpoint(txid, v, set, _sharedFetchTx, 0, null, null, null, reasons); }
+  catch (e) { throw new Error(`could not verify ${label} on Bitcoin, so nothing was sent (${e?.message || e})`); }
+  if (ok === true) { for (const [k, val] of set) if (val === true) proved.set(k, true); return; }
+  throw new Error(reasons.get(key) === _REASON_FETCH_FAILED
+    ? `could not verify ${label} on Bitcoin just now, so nothing was sent. Try again in a minute.`
+    : `${label} does not validate as this asset on Bitcoin, so it was not bought and nothing was sent`);
 }
 
 async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
@@ -30411,6 +30433,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
     const _env = decodeEnvelopeScript(hexToBytes(offer.partial_reveal.inputs[0].witness[1]));
     const _dec = _env && decodeAxferPayload(_env.payload);
     if (!_dec) throw new Error('offer envelope re-decode failed — refusing to take');
+    await requireValidatedLot(offer.asset_utxo.txid, offer.asset_utxo.vout);
     const _inDef = await definingCommitmentForOutpoint(offer.asset_utxo.txid, offer.asset_utxo.vout);
     if (_inDef.assetIdHex !== String(offer.asset_id).toLowerCase()) {
       throw new Error('seller asset input is a different asset — refusing to take (no sats spent)');
@@ -32291,6 +32314,7 @@ async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilmen
   // worker's POST-time outpoint validation. Mirrors the T_AXFER_VAR validator
   // closure (single asset input, N=2 outputs). One extra /tx fetch, before
   // any funding/signing.
+  await requireValidatedLot(intent.asset_utxo.txid, intent.asset_utxo.vout, "the maker's lot");
   const _varInDef = await definingCommitmentForOutpoint(intent.asset_utxo.txid, intent.asset_utxo.vout);
   if (_varInDef.assetIdHex !== String(assetIdHex).toLowerCase()) {
     throw new Error('maker asset input is a different asset — refusing to take (no sats spent)');
@@ -34376,6 +34400,7 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // a take never relies on the worker having run it. One extra /tx fetch, before
   // any sats move.
   {
+    await requireValidatedLot(sale.asset_outpoint.txid, sale.asset_outpoint.vout);
     let _inDef;
     try {
       _inDef = await definingCommitmentForOutpoint(sale.asset_outpoint.txid, sale.asset_outpoint.vout);
@@ -34805,6 +34830,7 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
       throw new Error(`sale ${e.saleIdHex.slice(0, 8)} seller opening does not match chain — refusing batch (no sats spent)`);
     }
   }
+  for (const e of expanded) await requireValidatedLot(e.sale.asset_outpoint.txid, e.sale.asset_outpoint.vout, `sale ${e.saleIdHex.slice(0, 8)}'s lot`);
 
   // Parallel pre-flight outspend check: if ANY seller's asset UTXO has
   // already been spent (cancelled, raced by another taker), abort BEFORE
@@ -78653,7 +78679,7 @@ export {
   validateOutpoint,
   // (asset, commitment) of a validated outpoint, and the pool-exit cache; used by the shielded-pool replay.
   getParentEnvelopeData, clearBtcPoolExitCache, _txOutputEnvelope as txOutputEnvelope,
-  setStrictValidation, clearValidatorCaches, ValidationUnavailableError,
+  setStrictValidation, clearValidatorCaches, ValidationUnavailableError, rememberValidated,
   // Tx negative-cache helpers — exported for the mixer owner-conflict test so
   // it can simulate a clean 404 (reorged-out / forged owner-txid) vs a
   // transient fetch failure, the distinction verifyWithdrawOwnerOnChain relies
