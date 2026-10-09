@@ -2,7 +2,7 @@
 // or the chain comes from ../tacit.js, imported only once the user connects.
 
 const TACIT_URL = '/tacit.js?cb=4d3f0b3b';
-const SECRET_URL = '/sats/secret.js?cb=2406f5ae';
+const SECRET_URL = '/sats/secret.js?cb=fc5a3015';
 const MIX_URL = '/sats/mix.js?cb=18747071';
 const ETH_URL = '/sats/eth.js?cb=151d7355';
 const POOL_STATUS = 'https://tacit-btc-pool.onrender.com/btc-pool/status';
@@ -149,9 +149,10 @@ function hold() {
   let on = true;
   return () => { if (on) { on = false; holds--; } };
 }
-// The Secret payment panel marks the step it runs (signet). The mainnet one disables every button while a step runs, and
-// only then: its Refresh is otherwise always live.
+// The Secret payment panel says whether a step of its is running. A panel that does not say is read from its markup: the
+// signet one marks the step it runs, and the mainnet one disables every button while a step runs, and only then.
 function secretRunning() {
+  if (typeof secretHandle?.running === 'boolean') return secretHandle.running;
   const root = $('secret-steps');
   if (!root) return false;
   if (root.querySelector('.is-running')) return true;
