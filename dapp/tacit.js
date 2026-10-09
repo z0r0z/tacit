@@ -6012,7 +6012,8 @@ function recordSpCredit({ txidHex, vout, sats, tweakHex, blockTime, keyVersion =
   const o = loadSpCredits();
   const key = `${txidHex}:${vout}`;
   const cls = coinClass || o[key]?.coinClass || null;
-  o[key] = { sats: String(sats), tweakHex, blockTime: blockTime || null, keyVersion, ...(cls ? { coinClass: cls } : {}) };
+  const spending = o[key]?.spendingTxid ? { spendingTxid: o[key].spendingTxid, spendingAt: o[key].spendingAt || 0 } : {};
+  o[key] = { sats: String(sats), tweakHex, blockTime: blockTime || null, keyVersion, ...(cls ? { coinClass: cls } : {}), ...spending };
   _spCreditsCache = o;
   _scheduleSpCreditsFlush();
 }
@@ -6044,6 +6045,53 @@ function removeSpCredit(txidHex, vout) {
   delete o[`${txidHex}:${vout}`];
   _spCreditsCache = o;
   _scheduleSpCreditsFlush();
+}
+// A credit this wallet broadcast a spend of carries `spendingTxid`: it is out
+// of selection and the balance until the chain settles it, and is pruned only
+// once a spend of it confirms (_spCreditState).
+function markSpCreditSpending(txidHex, vout, spendingTxid) {
+  const o = loadSpCredits();
+  const c = o[`${txidHex}:${vout}`];
+  if (!c) return;
+  c.spendingTxid = spendingTxid;
+  c.spendingAt = Date.now();
+  _spCreditsCache = o;
+  _scheduleSpCreditsFlush();
+}
+function _clearSpCreditSpending(txidHex, vout) {
+  const o = loadSpCredits();
+  const c = o[`${txidHex}:${vout}`];
+  if (!c) return;
+  delete c.spendingTxid;
+  delete c.spendingAt;
+  _spCreditsCache = o;
+  _scheduleSpCreditsFlush();
+}
+// How long a spend this wallet broadcast keeps its credit out of selection
+// while no index shows it, before the spend is checked for being gone.
+const SP_SPEND_SETTLE_MS = 10 * 60_000;
+// Where a recorded credit's output stands, from its outspend:
+//   'spent'   a spend is confirmed (the record is pruned here) or unconfirmed;
+//   'pending' this wallet's spend is not indexed yet, or the lookup failed;
+//   'unspent' no spend — including one this wallet broadcast that is no longer
+//             known anywhere (its mark is cleared, so the credit is spendable again);
+//   'unknown' the lookup failed and this wallet has no spend of it.
+async function _spCreditState(txidHex, vout, credit) {
+  let st;
+  try { st = await apiJson(`/tx/${txidHex}/outspend/${vout}`); }
+  catch { return credit.spendingTxid ? 'pending' : 'unknown'; }
+  if (st?.spent) {
+    if (st.status?.confirmed) removeSpCredit(txidHex, vout);
+    return 'spent';
+  }
+  if (!credit.spendingTxid) return 'unspent';
+  if (Date.now() - Number(credit.spendingAt || 0) < SP_SPEND_SETTLE_MS) return 'pending';
+  try { await apiJson(`/tx/${credit.spendingTxid}/status`); return 'pending'; }
+  catch (e) {
+    if (!/^API 404/.test(e?.message || '')) return 'pending';
+  }
+  _clearSpCreditSpending(txidHex, vout);
+  return 'unspent';
 }
 
 const _SP_IMG_ON  = 'privacy-48.png';
@@ -6092,7 +6140,7 @@ function _spRenderBalance() {
   const el = typeof $ === 'function' ? $('#w-sp-balance') : null;
   if (!el) return;
   const credits = loadSpCredits();
-  const entries = Object.values(credits);
+  const entries = Object.values(credits).filter((c) => !c.spendingTxid);
   if (entries.length === 0) { el.style.display = 'none'; return; }
   const total = entries.reduce((s, c) => s + Number(c.sats || 0), 0);
   el.textContent = `(incl. ${total.toLocaleString()} silent)`;
@@ -37276,11 +37324,13 @@ async function pickSafeCommitSats(allUtxos) {
 }
 
 // Filter the recorded SP credits down to the spendable set, optionally
-// reporting WHY entries were excluded via `diag` (counts: spent /
+// reporting WHY entries were excluded via `diag` (counts: spent / pending /
 // missingTweak / checkFailed). Exclusion rules:
 //   • outpoint verifiably spent — skipped, and pruned from storage once the
 //     spend is confirmed so the wallet-card silent counter self-heals
 //     instead of advertising sats that are gone;
+//   • a spend this wallet broadcast that no index shows yet — skipped until
+//     it is seen or is known to be gone (_spCreditState);
 //   • record predates tweakHex — unspendable without the tweak; only
 //     re-scanning the receiving tx repairs it;
 //   • outspend lookup FAILED — included optimistically. The send path
@@ -37296,14 +37346,10 @@ async function loadUnspentSpCredits(diag = null) {
     if (!txidHex || !Number.isFinite(vout) || !Number.isFinite(satsVal) || satsVal <= 0) continue;
     if (!credit.tweakHex) { if (diag) diag.missingTweak = (diag.missingTweak || 0) + 1; continue; }
     if (credit.coinClass) continue;
-    try {
-      const spendStatus = await apiJson(`/tx/${txidHex}/outspend/${vout}`);
-      if (spendStatus?.spent) {
-        if (diag) diag.spent = (diag.spent || 0) + 1;
-        if (spendStatus.status?.confirmed) removeSpCredit(txidHex, vout);
-        continue;
-      }
-    } catch { if (diag) diag.checkFailed = (diag.checkFailed || 0) + 1; }
+    const state = await _spCreditState(txidHex, vout, credit);
+    if (state === 'spent') { if (diag) diag.spent = (diag.spent || 0) + 1; continue; }
+    if (state === 'pending') { if (diag) diag.pending = (diag.pending || 0) + 1; continue; }
+    if (state === 'unknown' && diag) diag.checkFailed = (diag.checkFailed || 0) + 1;
     out.push({ txid: txidHex, vout, value: satsVal, status: { confirmed: true }, _sp: true, _tweakHex: credit.tweakHex });
   }
   return out;
@@ -37407,14 +37453,10 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     const satsVal = Number(credit.sats);
     if (!txidHex || !Number.isFinite(vout) || !Number.isFinite(satsVal) || satsVal <= 0) continue;
     if (!credit.tweakHex || credit.coinClass) continue;
-    try {
-      const spendStatus = await apiJson(`/tx/${txidHex}/outspend/${vout}`);
-      if (spendStatus?.spent) {
-        if (spendStatus.status?.confirmed) removeSpCredit(txidHex, vout);
-        continue;
-      }
-    } catch { /* lookup failed — include optimistically; a stale record is
-                 rejected at broadcast, a silent drop reads as missing sats */ }
+    // A failed lookup ('unknown') is included optimistically: a stale record
+    // is rejected at broadcast, a silent drop reads as missing sats.
+    const spState = await _spCreditState(txidHex, vout, credit);
+    if (spState === 'spent' || spState === 'pending') continue;
     const sk = spCreditSpendingKey(credit);
     const pub = secp.getPublicKey(sk, true);
     const xonly = pub.slice(1);
@@ -37562,8 +37604,13 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
     }
     throw e;
   }
+  // The inputs are spent from here on, before any index shows it: the next
+  // pick skips them, and a silent credit spent here leaves selection and the
+  // balance until its spend confirms (then it is pruned).
+  _markTxInputsSpent({ vin: picked.map((u) => ({ txid: u.txid, vout: u.vout })) });
+  invalidateUtxoCache();
   for (const u of picked) {
-    if (u._sp) removeSpCredit(u.txid, u.vout);
+    if (u._sp) markSpCreditSpending(u.txid, u.vout, sentTxid);
   }
   if (recipientIsSilent) {
     const myKeys = SP_KEY_VERSIONS.map((v) => deriveWalletSilentPaymentKeys(wallet.priv, v)).find((k) =>
@@ -37714,6 +37761,8 @@ async function buildAndBroadcastSatsConsolidate({ force = false } = {}) {
     }
     throw e;
   }
+  _markTxInputsSpent({ vin: inputs.map((u) => ({ txid: u.txid, vout: u.vout })) });
+  invalidateUtxoCache();
   return {
     txid: sentTxid,
     inputsSpent: inputs.map(u => ({ txid: u.txid, vout: u.vout, value: u.value })),
@@ -49288,7 +49337,7 @@ async function refreshWallet() {
     ]);
     let balance = utxos.reduce((a, u) => a + u.value, 0);
     const _spCreds = (typeof loadSpCredits === 'function') ? loadSpCredits() : {};
-    const _spConfirmedSats = Object.values(_spCreds).reduce((s, c) => s + (Number(c.sats) || 0), 0);
+    const _spConfirmedSats = Object.values(_spCreds).filter((c) => !c.spendingTxid).reduce((s, c) => s + (Number(c.sats) || 0), 0);
     balance += _spConfirmedSats;
     setNumberAnimated('#w-balance', balance, fmtSats, 600);
     setIfChanged('#w-height', height);
@@ -79293,7 +79342,7 @@ export {
   bip352InputPubkey, bip352ReceiverInputsFromEsploraTx, bip352LabelTweak, BIP352_K_MAX,
   senderComputeSilentPaymentOutputs, bip352SenderInputPrivs,
   discoverSilentPaymentFromTxid,
-  loadSpCredits, getSpCredit, removeSpCredit, recordSpCredit,
+  loadSpCredits, getSpCredit, removeSpCredit, recordSpCredit, markSpCreditSpending, loadUnspentSpCredits,
   SP_KEY_VERSION, SP_KEY_VERSIONS, deriveWalletSilentPaymentKeys, spCreditSpendingKey,
   receiverScanOutputsWithTweak, bip352PublicTweakPoint, bip352PublicTweakFromEsploraTx,
   SP_INDEX_URLS, scanSilentPaymentsViaIndex, spMatchIndexedTx, spIndexLastScanned,
