@@ -204,6 +204,10 @@ const ALLOWLIST = {
   T_BRIDGE_EXPORT:  'tETH bridge note export (0x63). Moves a note out of the in-browser set toward a bearer/import note; produces no address-scanned tacit UTXO. Recovery is via the bridge note scan, not scanHoldings.',
   T_BRIDGE_IMPORT:  'tETH bridge note import (0x64). Re-derives a note from priv + prev-outpoint (_deriveBridgeImportKeys — key-derived, no localStorage dependency); recovered via the bridge note scan, not scanHoldings. No tacit UTXO at wallet.address.',
   T_CROSSOUT_MINT:  'Confidential cross-out mint (0x65, dapp/confidential-crossout-consumer.js). Broadcast after an EVM CrossOutRecorded event; the reflection prover folds it to mint a confidential-pool NOTE (bearer secret) in the Bitcoin pool tree. Recovered via the confidential-pool note scan, not the scanHoldings address sweep.',
+
+  // Bitcoin-native shielded pool (SPEC §3.10). The way back out, T_BTC_SPEND (0x6D) with an exit, creates a transparent
+  // note and IS scanned (_btcPoolExitNote).
+  T_BTC_SHIELD_OP:  'Bitcoin shielded pool shield (0x6C, SPEC §3.10). Spends transparent notes of one asset into pool leaves and creates no transparent output of the asset. The pool notes are found from the key by the viewing-key scan of the pool\'s note feed (btc-pool-client walletNotes), not by scanHoldings; the exit back to a transparent note is T_BTC_SPEND, which is scanned.',
 };
 
 // ---- Tests --------------------------------------------------------------

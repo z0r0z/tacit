@@ -232,6 +232,24 @@ test('stats reading: with the explorers down, what the chains alone answer is st
   assert.equal(merged.eth.inWei, 1n);
 });
 
+test('stats reading: parts the newer reading already carries over stay marked when it is merged over a local one', () => {
+  // The API's shared reading: its own `btc` is carried over from an earlier read of its own.
+  const snap = { at: 3000, errors: {}, eth: { inWei: 5n }, btc: { out: 7n }, stale: ['btc'], staleAt: 1000 };
+  const local = { at: 2000, errors: {}, eth: { inWei: 4n }, btc: { out: 6n } };
+  const m = mergeReadings(local, snap);
+  assert.deepEqual(m.stale, ['btc'], 'the API\'s carried-over part is still named');
+  assert.equal(m.staleAt, 1000, 'and still dated');
+  assert.equal(m.btc.out, 7n);
+  // A part the snapshot lacks is carried over from the local reading too; the oldest date wins.
+  const m2 = mergeReadings({ ...local, at: 500, link: { tip: 9 } }, snap);
+  assert.deepEqual(m2.stale.sort(), ['btc', 'link']);
+  assert.equal(m2.staleAt, 500);
+  // A clean snapshot carries no marks.
+  const clean = mergeReadings(local, { at: 3000, errors: {}, eth: { inWei: 5n }, btc: { out: 7n } });
+  assert.deepEqual(clean.stale, []);
+  assert.equal(clean.staleAt, null);
+});
+
 test('stats reading: private ETH is the V1 pool and the device pools on every chain together', async () => {
   const x = world();
   populate(x, 1);
