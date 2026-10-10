@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5fgxa4u/lnVHkDfgirV28eNVy1KAlV/fHBfeaezF6j0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AOMQG2tnJFJ+chfsPouSdjC2yW5iwDRs8V9SFVfgrCw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -235,6 +235,22 @@ a.di { color: inherit; text-decoration: none; }
   border-top: 1px solid var(--hair); }
 .proof { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 26px; font-size: 12px; color: var(--mute); }
 .trust { font-size: 12px; font-weight: 500; color: var(--ink); }
+/* ── live: what happened lately, as a tape under the figures. It stops under the pointer and stands still under reduced
+   motion (the tape can then be scrolled by hand). ── */
+.tape { display: flex; align-items: center; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--hair-2); font-size: 12px; color: var(--mute); }
+.tape-l { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; }
+.tape-l .dot { animation: pulse 1.6s ease-in-out infinite; }
+.tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent); }
+.tape-run { display: flex; width: max-content; margin: 0; padding: 0; list-style: none; animation: tape var(--tape-s, 80s) linear infinite; }
+.tape-v:hover .tape-run, .tape-v:focus-within .tape-run { animation-play-state: paused; }
+.tape-run li { display: inline-flex; align-items: center; gap: 8px; padding-right: 32px; white-space: nowrap; }
+.tape-run .tk { flex: none; width: 16px; height: 16px; }
+.tape-run .pair .tk + .tk { margin-left: -6px; box-shadow: 0 0 0 1.5px var(--paper); }
+.tape-run b { font-weight: 500; color: var(--ink); }
+.tape-run time::before { content: '· '; }
+@keyframes tape { to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { .tape-v { overflow-x: auto; } }
 .proof b { font: 500 14px var(--mono); letter-spacing: -.02em; color: var(--ink); }
 .proof b small { margin: 0 4px 0 3px; font-size: 11.5px; font-weight: 400; letter-spacing: 0; color: var(--mute); }
 .proof { text-decoration: none; }
@@ -868,6 +884,10 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       </a>
       <span class="trust">No custodian or multisig</span>
     </div>
+    <div class="tape" id="tape" role="region" aria-label="Recent activity on Tacit" hidden>
+      <span class="tape-l"><span class="dot live" aria-hidden="true"></span>Live</span>
+      <div class="tape-v"><ul class="tape-run" id="tape-run"></ul></div>
+    </div>
   </section>
 
   <section class="dash" id="dash" aria-labelledby="dash-h" hidden>
@@ -1228,6 +1248,26 @@ class Raw { constructor(s) { this.s = s; } }
 const part = (v) => v instanceof Raw ? v.s : Array.isArray(v) ? v.map(part).join('') : v == null || v === false ? '' : String(v).replace(/[&<>"']/g, (c) => escMap[c]);
 const html = (strs, ...vals) => new Raw(strs.reduce((a, s, i) => a + part(vals[i - 1]) + s));
 const mount = (el, view) => { el.innerHTML = view?.s ?? ''; };
+// A figure counts up from zero the first time it comes into view, once a visit. Under reduced motion it stands as painted;
+// repainted while counting, the new figure stands. Units (<small>) and weight badges are left alone.
+const COUNTED = new WeakSet();
+const countIO = 'IntersectionObserver' in window && !matchMedia('(prefers-reduced-motion: reduce)').matches
+  ? new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { countIO.unobserve(e.target); runCount(e.target); } }, { threshold: 0.6 })
+  : null;
+function countUp(el) { if (el && countIO && !COUNTED.has(el) && /\d/.test(el.textContent)) { COUNTED.add(el); countIO.observe(el); } }
+function runCount(el) {
+  const node = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (/\d/.test(n.nodeValue) && !n.parentElement.closest('small, .boost') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) }).nextNode();
+  const m = node?.nodeValue.match(/^(\D*)(\d[\d,]*(?:\.\d+)?)([\s\S]*)$/), target = m ? Number(m[2].replace(/,/g, '')) : 0;
+  if (!(target > 0)) return;
+  const dec = (m[2].split('.')[1] || '').length, t0 = performance.now();
+  const step = (t) => {
+    if (!node.isConnected) return;
+    const k = Math.min(1, (t - t0) / 900);
+    node.nodeValue = m[1] + (target * (1 - (1 - k) ** 3)).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }) + m[3];
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
 // A Tacit address, short. Every one starts with the same 10 characters (the prefix and its format), so it keeps six of
 // its own after them; the wallet chip on a narrow screen shows the prefix and those six.
 const tacitShort = (a) => `${a.slice(0, 16)}…${a.slice(-6)}`;
@@ -6265,6 +6305,7 @@ function takeProgram(p) {
 const PT_ACTS = { wrap: ['Wrapped ETH into the Tacit pool', 'ETH'], evmpooldeposit: ['Deposited ETH', 'ETH'], zswapeth: ['Swapped ETH', 'ETH'],
   weiname: ['Registered a .wei name', 'ETH'], cbtcmint: ['Posted a bond toward cBTC', 'wstETH'], cbtchold: ['Kept a cBTC bond posted'], cusdmint: ['Borrowed cUSD'], pmbet: ['Bet with ETH', 'ETH'], pmcreate: ['Opened a market'] };
 const ptChain = (id) => (Number(id || 1) === 1 ? { name: 'Ethereum', explorer: SCAN } : DEVICE_CHAINS.find((c) => c.chainId === Number(id)) || null);
+const potLeft = () => { const s = 86400 - (now() % 86400); return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 const dayLeft = () => { const s = 86400 - (now() % 86400), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : `${Math.max(1, m)} min`; };
 const pointsWho = () => [...new Map([[S.acct?.address, 'Tacit account'], [S.wallet, 'Wallet']].filter(([a]) => a).map(([a, l]) => [a.toLowerCase(), l]))];
 const ptsFmt = (n) => Math.round(Number(n) || 0).toLocaleString('en-US');
@@ -6336,7 +6377,7 @@ function paintEarn() {
   // own row, the best first, once there is a price to rate them by.
   const day = prog?.epoch?.active ? Math.round(Number(prog.epoch.ratePerDayTac)) : 0, n = prog?.pools?.length || 0;
   if (day && n) {
-    mount($('#ern-farm-v'), html`${per(day)}<small>TAC</small>`);
+    mount($('#ern-farm-v'), html`${per(day)}<small>TAC</small>`); countUp($('#ern-farm-v'));
     $('#ern-farm').textContent = `a day across ${n} private pool${n === 1 ? '' : 's'}`;
   } else if (FARM.top === null || (prog && !prog.epoch?.active)) {
     $('#ern-farm-v').textContent = '—';
@@ -6350,11 +6391,12 @@ function paintEarn() {
   } else if (FARM.top === null || (prog && !prog.epoch?.active)) mount($('#flow-pools'), html``);
   // The public TAC/ETH farm, joined with ETH alone in one transaction: its APR and what it pays a day.
   const f = FARM.top;
-  if (f?.apr != null) { mount($('#pub-apr'), html`${f.apr >= 10000 ? '10,000+' : per(Math.round(f.apr))}%<small>APR</small>`); $('#pub-day').textContent = `TAC/ETH farm · ${per(f.pubDay)} TAC a day`; }
+  if (f?.apr != null) { mount($('#pub-apr'), html`${f.apr >= 10000 ? '10,000+' : per(Math.round(f.apr))}%<small>APR</small>`); countUp($('#pub-apr')); $('#pub-day').textContent = `TAC/ETH farm · ${per(f.pubDay)} TAC a day`; }
   else if (f || f === null) { $('#pub-apr').textContent = '—'; $('#pub-day').textContent = f ? (FARM.precision ? 'TAC/ETH farm, between reward periods' : 'TAC/ETH farm not read yet') : 'TAC/ETH farm'; }
   const on = now() < ptsEnd();
   mount($('#ern-pts-v'), on ? html`<span data-pgm="pot">${potTac()}</span><small>TAC</small>` : '—');
-  $('#ern-pts').textContent = on ? `points pot today · ${dayLeft()} left` : `points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`;
+  mount($('#ern-pts'), on ? html`points pot today · <span class="num" data-left>${potLeft()}</span> left` : html`points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`);
+  if (on) countUp($('#ern-pts-v'));
 }
 function paintPointsFoot() {
   const rows = PTS.key && PTS.key === pointsWho().map(([a]) => a).join() ? PTS.rows : null;
@@ -6398,6 +6440,7 @@ function paintWays() {
     if (tile) tile.style.order = wt > 1 ? String(-Math.round(wt * 100)) : '';
     if (!rate || wt === 0) continue;
     mount(e, html`${wt > 1 ? html`<i class="boost">×${wt}</i> ` : ''}${rateStr(Math.round(rate * wt))}${next != null && next !== 1 ? html` <i class="boost">${next === 0 ? 'not counted' : `×${next}`} from ${dayShort(ahead)}</i>` : ''}`);
+    countUp(e);
   }
   // A bond earns once cBTC is minted against it where the program says so, as the Points sheet says it.
   const day = utcDay(now());
@@ -8718,7 +8761,7 @@ function paintNums(p) {
   const els = $$('[data-nums]');
   for (const el of els) el.hidden = !p?.v;
   if (!p?.v) return;
-  for (const b of $$('[data-num]')) b.textContent = p.v[b.dataset.num] ?? '—';
+  for (const b of $$('[data-num]')) { b.textContent = p.v[b.dataset.num] ?? '—'; countUp(b); }
   const asOf = `As of ${new Date(p.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}`;
   for (const el of els) el.title = asOf;
 }
@@ -8737,6 +8780,44 @@ async function loadNums() {
 const refreshNums = () => loadNums().catch(() => { if (!store.get(NUMS_KEY)) paintNums(null); });
 if (store.get(NUMS_KEY)) paintNums(store.get(NUMS_KEY));
 refreshNums();
+
+// ── live: what happened lately ─────────────────────────────────────────────────────────────────────────────────
+// The tape under the figures, from the stats reading: ETH made private, ETH paid into the pay pools, settles in the Tacit pool,
+// and Bitcoin proven on Ethereum. It names no address or transaction and keeps two figures of an amount, and exits are left
+// out, so it never sets a deposit beside what left. The reading is the API's quarter-hourly one, so the newest line can be
+// minutes old; its times say when each happened.
+const TAPE = { key: '' };
+const twoFig = (wei) => (Number(BigInt(wei) / 10n ** 12n) / 1e6).toLocaleString('en-US', { maximumSignificantDigits: 2 });
+function tapeEvents(d) {
+  const latest = (xs, n) => xs.filter((t) => t).sort((a, b) => b - a).slice(0, n);
+  const latestIn = (xs, n) => xs.filter(([t]) => t).sort((a, b) => b[0] - a[0]).slice(0, n);
+  const ev = [];
+  for (const [t, v] of latestIn(d.eth?.series?.ins || [], 6)) ev.push({ t, icons: ['tk-teth'], what: 'ETH made private', amt: `${twoFig(v)} ETH` });
+  for (const x of d.dev || []) for (const [t, v] of latestIn(x.series?.ins || [], 4)) ev.push({ t, icons: ['tk-peth'], what: 'ETH in to pay privately', amt: `${twoFig(v)} ETH on ${CHAIN_META[x.chain]?.chainName || `chain ${x.chain}`}` });
+  for (const t of latest(d.link?.times?.settles || [], 6)) ev.push({ t, icons: ['tk-tac'], what: 'A private transaction settled' });
+  for (const t of latest(d.link?.times?.attests || [], 4)) ev.push({ t, icons: ['tk-btc', 'tk-eth'], what: 'Bitcoin proven on Ethereum' });
+  // The same line again within the hour, with no amount to tell them apart, is one line with a count.
+  const out = [];
+  for (const e of ev.sort((a, b) => b.t - a.t)) { const last = out.at(-1); if (last && !e.amt && last.what === e.what && last.t - e.t < 3600) last.n++; else out.push({ ...e, n: 1 }); }
+  return out.slice(0, 16);
+}
+function paintTape(d) {
+  const box = $('#tape'), run = $('#tape-run'), ev = tapeEvents(d);
+  if (!ev.length) { box.hidden = true; return; }
+  const key = ev.map((e) => `${e.t}${e.what}${e.n}`).join();
+  if (key === TAPE.key) { for (const el of $$('time[data-t]', run)) el.textContent = ago(Number(el.dataset.t) * 1000); return; }
+  TAPE.key = key;
+  const coin = (id) => html`<svg class="tk" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const item = (e, copy) => html`<li${copy ? html` aria-hidden="true"` : ''}>${e.icons.length > 1 ? html`<span class="pair">${e.icons.map(coin)}</span>` : coin(e.icons[0])}<b>${e.what}${e.n > 1 ? ` ×${e.n}` : ''}</b>${e.amt ? html`<span>${e.amt}</span>` : ''}<time data-t="${e.t}" datetime="${new Date(e.t * 1000).toISOString()}">${ago(e.t * 1000)}</time></li>`;
+  // Twice over, so the run loops without a seam; the second copy is for the eye alone.
+  mount(run, html`${ev.map((e) => item(e, false))}${ev.map((e) => item(e, true))}`);
+  box.hidden = false;
+  // The same pace whatever its length: about 40 px a second.
+  run.style.setProperty('--tape-s', `${Math.max(30, Math.round(run.scrollWidth / 2 / 40))}s`);
+}
+const refreshTape = () => readStats().then(paintTape).catch(() => {});
+refreshTape();
+setInterval(() => { if (!document.hidden) for (const e of $$('[data-left]')) e.textContent = potLeft(); }, 1000);
 
 function refreshAll() {
   AIR = null; FARM.positions = null;
@@ -8761,7 +8842,7 @@ fetch(`${API}/leaderboard?day=today&limit=1`, { signal: within(20e3) }).then((r)
 refreshAll();
 resumeActivity();
 let lastTick = Date.now();
-const tick = () => { lastTick = Date.now(); paintEarn(); brTick(); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
+const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); brTick(); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
