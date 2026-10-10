@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xRR2IVg2cvQA0N+Jb8SxiGy8xcygsw+MlDO4+qgySk8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Gdc0Xt2gFVh667aR2kMBHCPxh5EBgjN8NNbvdN7Q3dQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -791,7 +791,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
         <span class="tile-top"><span class="pair"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg></span></span>
         <h3><a class="tile-main" href="#borrow" data-link="borrow">Borrow</a></h3>
         <p>Borrow dollars against your bitcoin. The BTC stays at an address only your key can spend.</p>
-        <span class="ptchip"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><span><span data-way="cbtcmint">1,000</span> points per wstETH bonded</span></span>
+        <span class="ptchip"><svg class="tk" aria-hidden="true"><use href="#i-pts"/></svg><span><span data-way="cbtcmint">1,000</span> points per wstETH bonded<span data-bond-when></span></span></span>
         <span class="figs"><span class="fig" data-nums><b class="num"><span data-num="cusd"><span class="sk" style="--w:4ch"></span></span><small>cUSD</small></b><span>borrowed on BTC</span></span></span>
         <span class="tile-foot"><span class="dot" data-dot="borrow"></span><span data-foot="borrow"></span><span class="go" aria-hidden="true">→</span></span>
       </article>
@@ -2893,7 +2893,7 @@ const SUBLINK = {
   farm: {
     get: () => (FARM.open?.startsWith('pid') ? ['private-' + FARM.open.slice(3)] : []),
     set: (_, [p]) => {
-      if (p === 'public') FARM.open = 'precision';
+      if (p === 'public') { FARM.open = 'precision'; FARM.mode = 'eth'; }   // the row it comes from joins with ETH alone, whatever TAC is held
       else if (/^private-\d+$/.test(p || '')) FARM.open = 'pid' + p.slice(8);
       else return;
       FARM.touched = true;
@@ -3038,7 +3038,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 
 // ── Tacit V1 pool: shared module, loaded on first use ────────────────────────────────────────────────────
 const getUx = lazy(async () => {
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=8ca8c360'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=0978f8dc'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));      // public TAC in the connected wallet counts toward the exit-fee tier, as on tacit.finance
   return makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -5908,7 +5908,7 @@ function renderAirdrop(el) {
   if (ct) ct.onclick = () => busy(ct, async (run) => { try { const who = S.wallet; await finish(await air.claimTo(who, recipientOf($('#air-to-addr').value), { send: sendWallet(`Claim ${amount} TAC from the airdrop`) }), who, run); } catch (e) { sayErr(status, e); } });
   const wa = $('#air-watch');
   if (wa) wa.onclick = () => S.provider.request({ method: 'wallet_watchAsset', params: { type: 'ERC20', options: { address: ADDR.tac, symbol: 'TAC', decimals: 18, image: 'https://tacit.finance/tac-logo.png' } } }).catch(() => {});
-  const fm = $('#air-farm'); if (fm) fm.onclick = () => { $('#sheet-tac').close(); Object.assign(FARM, { open: 'precision', mode: 'pair', fill: 'tac' }); openSheet('farm'); };
+  const fm = $('#air-farm'); if (fm) fm.onclick = () => { $('#sheet-tac').close(); Object.assign(FARM, { open: 'precision', touched: true, mode: 'pair', fill: 'tac' }); openSheet('farm'); };
 }
 
 // Buy: the same venue search Tacit's market page runs (Precision band and Tacit's public AMM), sent through
@@ -6111,6 +6111,7 @@ function takeProgram(p) {
   Object.assign(PGM, next);
   for (const e of $$('[data-pgm="pot"]')) e.textContent = potTac();
   paintWays();
+  paintPointsFoot();                                                 // its "TAC over N days" is the program's own
 }
 // Each kind of activity the program scores: what it was, and what its amount is counted in (none where it is not an amount).
 const PT_ACTS = { wrap: ['Wrapped ETH into the Tacit pool', 'ETH'], evmpooldeposit: ['Deposited ETH', 'ETH'], zswapeth: ['Swapped ETH', 'ETH'],
@@ -6191,7 +6192,7 @@ function paintEarn() {
     const best = $('#flow-farm');                                                       // the step opens the best private pool, not the farm list's default
     best.href = `#farm/private-${pools[0].p.pid}`; best.dataset.link = `farm/private-${pools[0].p.pid}`;
     mount($('#flow-pools'), html`${pools.map(({ p, apr }) => html`<li><a href="#farm/private-${p.pid}" data-link="farm/private-${p.pid}"><span>${pairName(p.pair)}</span><b class="num">${aprShort(apr)}</b></a></li>`)}`);
-  } else if (FARM.top === null || (prog && !prog.epoch?.active)) {
+  } else if (FARM.top === null || (prog && !prog.epoch?.active) || (prog?.epoch?.active && !FARM.precision?.tacEth)) {   // an active epoch with no price to rate its pools by is not read yet
     $('#ern-farm-v').textContent = '—';
     $('#ern-farm').textContent = prog && !prog.epoch?.active ? 'farms between reward periods' : 'farms not read yet';
     mount($('#flow-pools'), html``);
@@ -6199,7 +6200,7 @@ function paintEarn() {
   // The public TAC/ETH farm, joined with ETH alone in one transaction: its APR and what it pays a day.
   const f = FARM.top;
   if (f?.apr != null) { mount($('#pub-apr'), html`${f.apr >= 10000 ? '10,000+' : per(Math.round(f.apr))}%<small>APR</small>`); $('#pub-day').textContent = `TAC/ETH farm · ${per(f.pubDay)} TAC a day`; }
-  else if (f || f === null) { $('#pub-apr').textContent = '—'; $('#pub-day').textContent = f ? 'TAC/ETH farm, between reward periods' : 'TAC/ETH farm'; }
+  else if (f || f === null) { $('#pub-apr').textContent = '—'; $('#pub-day').textContent = f ? (FARM.precision ? 'TAC/ETH farm, between reward periods' : 'TAC/ETH farm not read yet') : 'TAC/ETH farm'; }
   const on = now() < ptsEnd();
   mount($('#ern-pts-v'), on ? html`<span data-pgm="pot">${potTac()}</span><small>TAC</small>` : '—');
   $('#ern-pts').textContent = on ? `points pot today · ${dayLeft()} left` : `points ended ${dayShort(PGM.startDay + PGM.days - 1)}; claims stay open`;
@@ -6247,6 +6248,9 @@ function paintWays() {
     if (!rate || wt === 0) continue;
     mount(e, html`${wt > 1 ? html`<i class="boost">×${wt}</i> ` : ''}${rateStr(Math.round(rate * wt))}${next != null && next !== 1 ? html` <i class="boost">${next === 0 ? 'not counted' : `×${next}`} from ${dayShort(ahead)}</i>` : ''}`);
   }
+  // A bond earns once cBTC is minted against it where the program says so, as the Points sheet says it.
+  const day = utcDay(now());
+  for (const e of $$('[data-bond-when]')) e.textContent = PGM.bondHoldFromDay ? ` once cBTC is minted against it${PGM.bondHoldFromDay > day ? ` (from ${dayShort(PGM.bondHoldFromDay)})` : ''}` : '';
 }
 // Today's pot and how it is being split: the same for everyone, so shown before anyone connects.
 function pulse() {
@@ -6397,7 +6401,7 @@ render.pts = () => {
   if (PTS.jump && $('#pts-lb', el)) { PTS.jump = false; $('#pts-lb', el).scrollIntoView({ block: 'start' }); }
   wireConnect('pts-connect', () => rerender('pts'));
   wireSub(el, 'plv', (v) => { PTS.view = v; rerender('pts'); });
-  $$('[data-earn]', el).forEach((b) => b.onclick = () => openSheet(b.dataset.earn));
+  $$('[data-earn]', el).forEach((b) => b.onclick = () => openLink(b.dataset.earn));
   const q = $('#pl-q', el);
   if (q) q.oninput = () => {
     const t = q.value.trim().toLowerCase();
@@ -6623,11 +6627,11 @@ async function readFarms(current, force = false) {
   paintEarn();
   if (x && (x.staked > 0n || x.earned > 0n)) setFoot('farm', `Farming · ${fmt(x.earned, 18, 2)} TAC earned`, 'on');
   else if (mine) setFoot('farm', `${mine} private position${mine === 1 ? '' : 's'} earning`, 'on');
-  else if (total) {
+  else if (total && x) {
     // The public farm's APR is the Earn tile's own figure (paintEarn), so its farm line says what all the farms pay.
     setFoot('farm', across, 'live'); store.set(FARM_FOOT_KEY, across);
   }
-  else if (!x && !prog) setFoot('farm', 'Reading farms…');            // both reads failed; a real "between periods" claim needs at least one to answer
+  else if (!x) setFoot('farm', 'Reading farms…');                     // the public farm's read failed; the total without it would understate, and "between periods" would be a guess
   else setFoot('farm', 'Farms are between reward periods');
 }
 // A line that says what to do next points at the button that does it, wherever the sheet has put it.
@@ -7316,7 +7320,7 @@ function farmJoin(el, p, status, has) {
   const bA = spendable(kA), bB = spendable(kB);
   // Where the paired asset is made private. The farm sheet remembers where you came from, so the way back is one tap.
   const getB = { tac: ['tac', 'Make TAC private'], cusd: ['borrow', 'Borrow cUSD'], cbtc: ['borrow', 'Mint cBTC'] }[kB] || ['tac', `Get private ${other}`];
-  const goGet = (b) => { if (running('farm')) return; FARM.back = { pid, label: pairName(p.pair), at: Date.now() }; $('#sheet-farm').close(); openSheet(b.dataset.joinGet); };
+  const goGet = (b) => { if (running('farm')) return; FARM.back = { pid, label: pairName(p.pair), at: Date.now() }; $('#sheet-farm').close(); openLink(b.dataset.joinGet); };
   if (!bA && !bB) {
     // Nothing private yet: either side, once it is private, farms on its own.
     mount(el, html`
@@ -7460,7 +7464,9 @@ function farmJoin(el, p, status, has) {
       if (b > room(kB, j.feeB)) a = aFor(room(kB, j.feeB), res), b = bFor(a, res);
       const cands = [{ a, b }];
       for (const n of freeNotes(P.scan[kA].notes)) { const v = BigInt(n.value), w = bFor(v, res); if (fits(kB, w, j.feeB)) cands.push({ a: v, b: w }); }
-      for (const n of freeNotes(P.scan[kB].notes)) { const w = BigInt(n.value), v = aFor(w, res); if (fits(kA, v, j.feeA)) cands.push({ a: v, b: w }); }
+      // The form takes the A side and derives B from it, rounding up: that is the B this candidate adds, which falls short of
+      // the note unless it divides evenly, and then needs its own cut.
+      for (const n of freeNotes(P.scan[kB].notes)) { const v = aFor(BigInt(n.value), res), w = bFor(v, res); if (fits(kA, v, j.feeA) && fits(kB, w, j.feeB)) cands.push({ a: v, b: w }); }
       const net = (c) => 2n * c.a - (exact(kA, c.a) ? 0n : j.feeA) - (exact(kB, c.b) ? 0n : j.feeB) * res.reserveA / res.reserveB;   // worth after the cuts, in tETH
       const best = cands.filter((c) => c.a > 0n).sort((x, y) => (net(x) > net(y) ? -1 : net(x) < net(y) ? 1 : 0))[0];
       fill(`sj-a-${pid}`, best ? best.a : 0n);
