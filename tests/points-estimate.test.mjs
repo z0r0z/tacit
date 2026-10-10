@@ -9,6 +9,7 @@ const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
 const cfg = read('worker-relay/src/lib/config.js'), pay = read('dapp/pay/eth/index.html'), weld = read('dapp/index.html');
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };
+const weldTiers = new Function('return ' + weld.match(/tiers: (\[\[.*?\]\]),/)[1])();   // the TAC tiers the front page starts from, before the service's own
 const def = (key, env) => Number(cfg.match(new RegExp(`${key}: num\\('${env}', ([0-9.]+)\\)`))?.[1]);
 
 await test('the pages score 1,000 per ETH, the early bonus 1 + 4 / (1 + deposits / 200), x1.25 for a tETH wrap, x1.2 Privacy Pools', () => {
@@ -17,11 +18,14 @@ await test('the pages score 1,000 per ETH, the early bonus 1 + 4 / (1 + deposits
   assert.equal(def('pointsBonusHalfLife', 'POINTS_BONUS_HALF_LIFE'), 200);
   assert.equal(def('tethWrapBoostMultiplier', 'TETH_WRAP_BOOST_MULTIPLIER'), 1.25);
   assert.equal(def('ppBoostMultiplier', 'PP_BOOST_MULTIPLIER'), 1.2);
-  for (const [name, src] of [['pay', pay], ['weld', weld]]) {
-    assert.ok(src.includes('1 + 4 / (1 + n / 200)'), `${name}: the early bonus`);
-    assert.ok(/\* 1000 \*/.test(src), `${name}: 1,000 points per ETH`);
-  }
-  assert.ok(weld.includes('wrap = v1 ? 1.25 : 1'), 'weld: the tETH wrap factor');
+  assert.ok(pay.includes('1 + 4 / (1 + n / 200)'), 'pay: the early bonus');
+  assert.ok(/\* 1000 \*/.test(pay), 'pay: 1,000 points per ETH');
+  // The front page takes the program's terms from the service, and starts from these.
+  const pgm = weld.match(/const PGM = \{([\s\S]*?)\};\n/)?.[1] || '';
+  assert.ok(/early: \{ max: 5, half: 200 \}/.test(pgm), 'weld: the early bonus 1 + 4 / (1 + deposits / 200) it starts from');
+  assert.ok(weld.includes('1 + (PGM.early.max - 1) / (1 + n / PGM.early.half)'), 'weld: the early bonus formula');
+  assert.ok(/evmpooldeposit: 1000/.test(pgm), 'weld: 1,000 points per ETH');
+  assert.ok(/wrapBoost: 1\.25/.test(pgm), 'weld: the tETH wrap factor');
   assert.ok(pay.includes('pp = PTS.v?.pp ? 1.2 : 1'), 'pay: the Privacy Pools factor');
 });
 
@@ -29,7 +33,7 @@ await test('both pages map a TAC balance to the live tiers: 100, 1,000 and 10,00
   for (const [name, src] of [['pay', pay], ['weld', weld]]) {
     const m = src.match(/const tierOf = \(wei\) => \{([^}]*)\};/);
     assert.ok(m, `${name}: tierOf`);
-    const tierOf = new Function('wei', m[1]);
+    const fn = new Function('PGM', 'wei', m[1]), tierOf = (wei) => fn({ tiers: weldTiers }, wei);
     const E = 10n ** 18n;
     assert.deepEqual([99n, 100n, 999n, 1000n, 9999n, 10000n].map((t) => tierOf(t * E)), [1, 1.25, 1.25, 1.5, 1.5, 2], name);
     assert.equal(tierOf(0n), 1);
@@ -62,8 +66,8 @@ await test('weld: readTier gives the same answers', async () => {
   const a = weld.indexOf('const tierOf = (wei)'), b = weld.indexOf('function holderTier(addr)');
   for (const [name, [bal, logs, want]] of Object.entries(HISTORIES)) {
     const rpc = stub(bal, logs);
-    const readTier = new Function('ADDR', 'ethCall', 'rpc', 'addrWord', 'wordAt', weld.slice(a, b) + '; return readTier;')(
-      { tac: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279' }, async (to, data) => rpc('eth_call', [{ to, data }]), rpc, (x) => x.replace(/^0x/, '').toLowerCase().padStart(64, '0'), (h) => BigInt(h));
+    const readTier = new Function('ADDR', 'ethCall', 'rpc', 'addrWord', 'wordAt', 'PGM', weld.slice(a, b) + '; return readTier;')(
+      { tac: '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279' }, async (to, data) => rpc('eth_call', [{ to, data }]), rpc, (x) => x.replace(/^0x/, '').toLowerCase().padStart(64, '0'), (h) => BigInt(h), { tiers: weldTiers });
     assert.deepEqual(await readTier(ME), want, name);
   }
 });

@@ -97,6 +97,11 @@ const gov = buildGovernance({
     const u = utxoDB.get(`${txid}:${vout}`); if (!u) throw new Error('unknown utxo');
     return { asset_id: CANONICAL_TAC_ASSET_ID_HEX, commitment: bytesToHex(pointToBytes(pedersenCommit(u.amount, u.blinding))) };
   },
+  // The chain-of-custody walk the worker runs (tac-ancestry.js), answered from the fixture's own outputs.
+  async verifyTacAncestry(_e, txid, vout) {
+    const u = utxoDB.get(`${txid}:${vout}`); if (!u) return { ok: false, reason: 'unknown utxo' };
+    return { ok: true, assetIdHex: CANONICAL_TAC_ASSET_ID_HEX, commitment: pointToBytes(pedersenCommit(u.amount, u.blinding)) };
+  },
   async apiJson(_e, path) {
     const m = path.match(/\/tx\/([0-9a-f]{64})/); const vouts = [];
     const owner = ownerOf.get(m && m[1]) || holderPub;
