@@ -38,11 +38,13 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     // Purge old cache versions so a bumped CACHE_VERSION doesn't leave
-    // stale caches taking up quota.
+    // stale caches taking up quota. Only this worker's own caches: the pages keep
+    // their proving-key caches (tacit-*-pool-artifacts-v1) in the same origin
+    // storage, and those are large and pinned by hash, not by this version.
     const names = await caches.keys();
     await Promise.all(
       names
-        .filter(n => n.startsWith('tacit-') && !n.endsWith(CACHE_VERSION))
+        .filter(n => (n.startsWith('tacit-static-') || n.startsWith('tacit-immutable-')) && !n.endsWith(CACHE_VERSION))
         .map(n => caches.delete(n))
     );
     // Take control of any pages that were loaded before this SW activated.

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OVLf5iIVWVlNnoIbYTMPEDIrXpafpNIlfBjLuwO4trU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8pgFZAIuWYrxqpyvrNXzocIjLvh/QQ4aBv1j3prd7nU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Simple, private payments: Bitcoin by silent payment, TAC shielded, ETH on Ethereum, Base, Robinhood Chain and MegaETH. One key and one tacit1 address, every payment made on your device, and your balances rebuild from that key.">
@@ -1451,7 +1451,7 @@ async function hintsForMe(t, pub) {
   }
   if (S.key?.pubHex === pub) writeJson(k, { after, retry: keep.filter((x) => !x.done) });
 }
-const getSecret = lazy(() => import('/sats/secret.js?cb=11026f23'));
+const getSecret = lazy(() => import('/sats/secret.js?cb=df53b5a1'));
 function loadTac(force = false) {
   if (!S.key) return Promise.resolve();
   if (TAC.loading) return force ? (TAC.next ||= TAC.loading.finally(() => { TAC.next = null; }).then(() => loadTac(true))) : TAC.loading;

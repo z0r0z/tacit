@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g5InCnf5DNzGHBiToxfoowlCmMSTf5/Tjlv2y60nSKs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xRR2IVg2cvQA0N+Jb8SxiGy8xcygsw+MlDO4+qgySk8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keeper.onrender.com https://tacit-evm-pool-keeper-base.onrender.com https://tacit-evm-pool-keeper-robinhood.onrender.com https://mainnet.megaeth.com https://megaeth.drpc.org https://tacit-evm-pool-keeper-megaeth.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <script src="/front-route.js?cb=b0bddd8d"></script>
 <title>tacit</title>
@@ -3298,7 +3298,7 @@ const STATS = { p: null, at: 0 };
 function readStats() {
   if (STATS.p && Date.now() - STATS.at < 300e3) return STATS.p;
   STATS.at = Date.now();
-  return (STATS.p = Promise.all([import('/weld/stats/read.js?cb=1f5c31d9'), fetch(`${API}/stats?network=mainnet`, { signal: within(20e3) })])
+  return (STATS.p = Promise.all([import('/weld/stats/read.js?cb=35b42a83'), fetch(`${API}/stats?network=mainnet`, { signal: within(20e3) })])
     .then(([{ fromJson }, r]) => (r.ok ? r.text().then(fromJson) : Promise.reject(new Error(`stats ${r.status}`))))
     .catch((e) => { STATS.p = null; throw e; }));
 }
@@ -4415,7 +4415,7 @@ function loadHeld(force = false) {
     if (S.key?.pubHex === pub) { store.set(`tacit-lite-device-bal-v1:${c.chainId}:${pub}`, { v: s.balance.toString(), at: Date.now() }); dashSoon(); }
   });
   const sats = (async () => {
-    const X = await import('/sats/secret.js?cb=11026f23');
+    const X = await import('/sats/secret.js?cb=df53b5a1');
     const notes = (await X.poolNotes(X.poolWalletFor(priv, 'mainnet'))).filter((n) => !n.spent);
     const held = X.livePoolAssets().map((a) => ({ ...a, value: notes.filter((n) => strip(n.asset).toLowerCase() === a.id).reduce((t, n) => t + BigInt(n.value), 0n) }));
     if (S.key?.pubHex === pub) { HELD.sats = held; HELD.satsErr = false; dashSoon(); }
@@ -8571,7 +8571,7 @@ function paintNums(p) {
 }
 async function loadNums() {
   numsAt = Date.now();
-  const [{ privateEth }, r] = await Promise.all([import('/weld/stats/read.js?cb=1f5c31d9'), readStats()]);
+  const [{ privateEth }, r] = await Promise.all([import('/weld/stats/read.js?cb=35b42a83'), readStats()]);
   if (!r?.at) throw new Error('no reading');
   const v = { ...store.get(NUMS_KEY)?.v };
   if (r.eth && r.dev) { const t = privateEth(r.eth, r.dev); v.in = fmt(t.inWei, 18, 2); v.held = fmt(t.held, 18, 2); }

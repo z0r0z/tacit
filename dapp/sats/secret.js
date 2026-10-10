@@ -763,6 +763,22 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
+// The question a payment asks before it posts from the wallet's own Bitcoin address, as payPrivately's `askSelf`:
+// 'no-relay' (the relay did not take it) or 'relay-slow' (it has not posted it). Asked inside `host`; the answer is
+// false when it is declined, when `signal` aborts (the relay posted it meanwhile) and after ten minutes unanswered.
+export const askSelfIn = (host) => (why, { timedOut = false, signal } = {}) => new Promise((resolve) => {
+  const lead = why === 'relay-slow' ? (timedOut ? 'The relay hasn’t posted it in five minutes.' : 'The relay hasn’t posted it.') : 'The relay didn’t take this payment.';
+  const yes = el('button', { class: 'btn', type: 'button' }, 'Post it from my Bitcoin address');
+  const no = el('button', { class: 'btn quiet', type: 'button' }, 'Not now');
+  const box = el('span', { role: 'group' }, `${lead} Post it from your Bitcoin address instead? Your Bitcoin address shows as the sender. `, yes, no);
+  const end = (answer) => { clearTimeout(timer); signal?.removeEventListener('abort', decline); box.remove(); resolve(answer); };
+  const decline = () => end(false), timer = setTimeout(decline, 10 * 60e3);
+  yes.addEventListener('click', () => end(true)); no.addEventListener('click', decline);
+  if (signal?.aborted) return decline();
+  signal?.addEventListener('abort', decline);
+  host.replaceChildren(box);
+});
+
 // One line for the step; the take's post-commit errors carry a recovery pointer the main app acts on.
 function stepError(e, ctx) {
   const m = String(e?.message || e || '');
@@ -1238,7 +1254,9 @@ export function mountMainnet(root, ctx) {
     const s = BigInt(units).toString().padStart(d + 1, '0');
     return `${s.slice(0, -d)}.${s.slice(-d)}`.replace(/\.?0+$/, '') || '0';
   };
-  const shieldedTotal = () => (shielded.notes || []).filter((x) => !x.spent).reduce((t, x) => t + BigInt(x.value), 0n);
+  // Notes this browser has spent are left out until the replay counts the spend, as coin selection leaves them out.
+  const shieldedView = () => pendingView(shielded.notes || [], asset(), poolWallet());
+  const shieldedTotal = () => shieldedView().live.reduce((t, x) => t + BigInt(x.value), 0n);
   const publicTotal = () => pub.utxos.reduce((t, u) => t + (typeof u.amount === 'bigint' ? u.amount : BigInt(u.amount)), 0n);
 
   // Public balance: the same batched, cached holdings scan every other Wallet/Send/Holdings surface uses — not a
@@ -1335,7 +1353,7 @@ export function mountMainnet(root, ctx) {
     const value = parseTacUnits(payAmtField.value, pub.decimals);
     if (value <= 0n) throw new Error('Enter an amount above zero.');
     payStatus.textContent = '';
-    const r = await payPrivately(tacit, { poolWallet: pw, to, amount: value, asset: asset(), anchor, say: (m) => { payStatus.textContent = m; } });
+    const r = await payPrivately(tacit, { poolWallet: pw, to, amount: value, asset: asset(), anchor, say: (m) => { payStatus.textContent = m; }, askSelf: askSelfIn(payStatus) });
     if (r.wait) { pending.pay = { ...r }; return; }
     lastPay = { txid: r.revealTxid, to: to.slice(0, 16) + '…', value: value.toString(), relayed: r.relayed };
     toField.value = ''; payAmtField.value = '';
@@ -1408,7 +1426,7 @@ export function mountMainnet(root, ctx) {
 
     items.push(el('div', { class: 'addrs' },
       el('div', { class: 'kv' }, el('span', {}, tok(), ' public'), el('b', {}, pub.loading ? '…' : `${fmt(publicTotal())} ${sel.ticker}`)),
-      el('div', { class: 'kv' }, el('span', {}, tok('shielded'), ' shielded'), el('b', {}, shielded.loading ? '…' : shielded.notes ? `${fmt(shieldedTotal())} ${sel.ticker}` : '— scan below'))));
+      el('div', { class: 'kv' }, el('span', {}, tok('shielded'), ' shielded'), el('b', {}, shielded.loading ? '…' : shielded.notes ? `${fmt(shieldedTotal())} ${sel.ticker}${shieldedView().settling > 0n ? ` (+${fmt(shieldedView().settling)} settling)` : ''}` : '— scan below'))));
     items.push(el('div', { class: 'row' }, button('Refresh', () => { loadPublic(); loadShielded(); })));
     items.push(errLine('load'));
 

@@ -462,10 +462,11 @@ export function privateEth(eth, dev) {
 }
 
 // A newer reading over an older one: each part the newer one couldn't read is carried over from the older, which says
-// which parts and how old the oldest of them is.
+// which parts and how old the oldest of them is. Parts the newer reading itself carries over (the API's shared reading
+// does) stay marked, with their age.
 export function mergeReadings(older, newer) {
   if (!older) return newer;
-  const out = { ...newer, errors: { ...newer.errors }, stale: [], staleAt: null };
+  const out = { ...newer, errors: { ...newer.errors }, stale: [...(newer.stale || [])], staleAt: newer.stale?.length ? newer.staleAt ?? null : null };
   for (const name of ['eth', 'dev', 'btc', 'tac', 'pts', 'link']) {
     if (newer[name] == null && older[name] != null) {
       out[name] = older[name];

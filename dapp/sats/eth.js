@@ -68,7 +68,10 @@ async function copy(text) { try { await navigator.clipboard.writeText(text); ret
 // ── proving artifacts (pinned by /evm-pool/pin.json) and the worker ──
 
 let pinP = null;
-const pin = () => (pinP ||= fetch(ARTIFACTS + 'pin.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+// null means the key is not published (404). A read that failed is thrown and not kept, so the next call asks again.
+const pin = () => (pinP ||= fetch(ARTIFACTS + 'pin.json', { cache: 'no-store' })
+  .then((r) => { if (r.status === 404) return null; if (!r.ok) throw new Error(`pin.json: HTTP ${r.status}`); return r.json(); })
+  .catch((e) => { pinP = null; throw e; }));
 
 async function artifact(name, sha, onProgress) {
   const url = ARTIFACTS + name;
@@ -285,9 +288,10 @@ export async function mount(root, ctx) {
   // ETH at the private ETH address, the smallest amount the relay collects at today's gas price, and what a relayed
   // send or withdrawal costs now.
   async function showWaiting() {
-    const p = root.querySelector('#eth-wait');
-    if (!p || !W) return;
-    const [held, q] = await Promise.all([W.waiting(), chain.keeper ? W.quote().catch(() => null) : null]);
+    const p = root.querySelector('#eth-wait'), mine = W;
+    if (!p || !mine) return;
+    const [held, q] = await Promise.all([mine.waiting(), chain.keeper ? mine.quote().catch(() => null) : null]);
+    if (mine !== W) return;                                          // another chain's panel is on screen now
     const min = q?.receiveMin ? ((BigInt(q.receiveMin) + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n : null; // rounded up to what fmtEth shows
     const stuck = held > 0n && min && held < min;
     p.textContent = '';

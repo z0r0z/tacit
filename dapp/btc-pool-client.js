@@ -79,7 +79,9 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     return j;
   }
 
-  const pin = () => (pinP ||= readFile ? Promise.resolve(JSON.parse(new TextDecoder().decode(readFile('pin.json')))) : getJson(baseUrl + 'pin.json'));
+  // A failed read is not kept: the next call asks again, so a network blip does not end every later proof.
+  const pin = () => (pinP ||= (readFile ? Promise.resolve(JSON.parse(new TextDecoder().decode(readFile('pin.json')))) : getJson(baseUrl + 'pin.json'))
+    .catch((e) => { pinP = null; throw e; }));
 
   // Bytes of a pinned artifact, checked against its SHA-256. onProgress({ name, loaded, total, cached }).
   async function artifact(name, sha, total, onProgress) {

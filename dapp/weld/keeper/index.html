@@ -7,7 +7,7 @@
      data stats does, plus an injected wallet to sign advanceTip(bytes) — permissionless on chain
      (contracts/src/lib/BitcoinLightRelay.sol:253) — so anyone can push the header relay forward and pay their
      own gas, instead of waiting on Tacit's own cron. No Tacit key touches this page. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ndAznCJgXY55/pMAUi6iACbY4pGE4YD55yiWM6F6+aM=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5wmq8uVKBXzczNnvpf2id3NxNizgMn1BEC6lguKK+pc=' 'wasm-unsafe-eval'; connect-src https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -584,7 +584,7 @@ async function refreshProof() {
   let rec = null, onchain = null;
   try {
     const [r, d] = await Promise.all([
-      fetch(`${API}/reflection/proof?network=mainnet`).then((x) => x.json()),
+      fetch(`${API}/reflection/proof?network=mainnet`).then((x) => { if (!x.ok) throw new Error(`HTTP ${x.status}`); return x.json(); }),
       rpc('eth_call', [{ to: POOL, data: SEL_ATTESTED_DIGEST }, 'latest']),
     ]);
     rec = r && r.proof; onchain = String(d || '').toLowerCase();
