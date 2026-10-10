@@ -274,6 +274,7 @@ export async function proveHere(built, say = () => {}) {
     });
   } finally {
     if (timer) clearInterval(timer);
+    system.close?.();                                                // its worker holds the wasm and the proving key; each proof starts its own
   }
 }
 

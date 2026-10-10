@@ -449,7 +449,7 @@ export function mount(root, ctx) {
           timer = setInterval(() => say(`proving on your device… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
         },
       });
-    } finally { if (timer) clearInterval(timer); }
+    } finally { if (timer) clearInterval(timer); system.close?.(); }
     say('buying into the pool…');
     await tacit.broadcast(z.commitHex);
     await tacit.broadcastWithRetry(z.carrierHex);

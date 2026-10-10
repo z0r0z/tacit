@@ -99,6 +99,14 @@ function workerBackend(get, makeWorker) {
     digest: () => start(),
     async verify(doc) { await start(); return (await call({ op: 'verify', doc })).valid === true; },
     async prove(input) { await start(); return (await call({ op: 'prove', input })).out; },
+    // Ends the worker and what it holds; a later call starts a new one.
+    close() {
+      const err = new Error('btc-pool-halo2: closed');
+      for (const p of waiting.values()) p.reject(err);
+      waiting.clear();
+      try { w?.terminate?.(); } catch { /* already gone */ }
+      w = null; ready = null;
+    },
   };
 }
 
@@ -136,6 +144,8 @@ export function makeHalo2System({ wasm, params, vk, pinnedVkHash, worker = defau
     wireLen: HALO2_PROOF_LEN,
     vkHash: pin,
     ready: checkKey,
+    // Done with this system: its worker (the wasm and the proving key it holds) is ended. In-process systems hold no worker.
+    close() { backend.close?.(); checked = null; },
     async prove(input, { onProgress } = {}) {
       onProgress?.('loading');
       await checkKey();
