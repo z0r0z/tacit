@@ -533,7 +533,10 @@ async function renderCreate(body) {
     if (cleanChoices.length < 2) { status.textContent = 'At least 2 distinct choices.'; return; }
     if (new Set(cleanChoices).size !== cleanChoices.length) { status.textContent = 'Choices must be distinct.'; return; }
     let quorum = '0';
-    if (quorumTac && /^\d+$/.test(quorumTac)) quorum = (BigInt(quorumTac) * _gov.tacBase).toString();
+    if (quorumTac) {
+      if (!/^\d+$/.test(quorumTac)) { status.textContent = 'Quorum is a whole number of TAC.'; return; }
+      quorum = (BigInt(quorumTac) * _gov.tacBase).toString();
+    }
 
     el('gp-submit').disabled = true;
     status.textContent = 'Proving ≥100 TAC + pinning proposal to IPFS…';

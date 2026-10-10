@@ -277,7 +277,7 @@ function wireOpen(wallet, ux, notes) {
     if (statusEl) statusEl.textContent = 'Building + settling your position via the relayer…';
     try {
       // Settled from the wallet's own Ethereum account, the mint is credited to it by the points program.
-      const selfSettle = el('cdp-self-settle')?.checked ? (x) => ux.submitSettle({ settlerPriv: wallet.priv, ...x }) : null;
+      const selfSettle = el('cdp-self-settle')?.checked ? (x) => ux.settleFromAccount({ settlerPriv: wallet.priv, ...x }) : null;
       const r = await defi.openCdp({
         controller, debtValue, rateSnapshot, fee: 0n, collateral,
         spendRoot: root, debtBlinding, positionOwner, debtNk, selfSettle,

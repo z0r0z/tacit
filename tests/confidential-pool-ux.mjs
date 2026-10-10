@@ -375,13 +375,13 @@ function transferFixture(ux, walletPriv) {
 }
 
 // Routes relay submit / status / RPC through one fetch mock; records which legs fired.
-function relayRpcMock(seen, submitStatus = 'proven') {
+function relayRpcMock(seen, submitStatus = 'proven', receiptStatus = '0x1') {
   return async (url, opts) => {
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
     let obj;
     if (String(url).includes('/confidential/submit')) { seen.submitMode = body && body.mode; obj = { jobId: 'j1', status: submitStatus }; }
     else if (String(url).includes('/confidential/status')) { obj = { jobId: 'j1', status: submitStatus, publicValues: '0xaa', proof: '0xbb' }; }
-    else { const m = body && body.method; if (m === 'eth_sendRawTransaction') seen.broadcast = true; obj = { result: m === 'eth_gasPrice' ? '0x3b9aca00' : m === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : '0x0' }; }
+    else { const m = body && body.method; if (m === 'eth_sendRawTransaction') seen.broadcast = true; obj = { result: m === 'eth_gasPrice' ? '0x3b9aca00' : m === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : m === 'eth_getTransactionReceipt' ? { blockNumber: '0x1', status: receiptStatus } : '0x0' }; }
     return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
   };
 }
@@ -396,6 +396,18 @@ test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from th
   assert.equal(seen.broadcast, true, 'self-relay broadcasts settle() from the user EOA');
   assert.equal(r.from, ux.account(walletPriv).address, 'settle sent from the user EVM account');
   assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+});
+
+test('transfer selfRelay: a settle that reverts on chain is an error, not a success with a hash', async () => {
+  const seen = {};
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven', '0x0') });
+  const walletPriv = '0x' + '66'.repeat(32);
+  const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+  await assert.rejects(
+    () => ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, selfRelay: true }),
+    (e) => e.reverted === true && /reverted on chain/.test(e.message),
+  );
+  assert.equal(seen.broadcast, true, 'it was sent; the receipt said it changed nothing');
 });
 
 test('transfer self-send: every output is spendable with the nk sealed into its own memo', () => {
@@ -667,6 +679,30 @@ test('buildLpBondOp: fused add+bond witness — canonical order, derived shares,
   assert.ok(ux.pool.verifyOpeningSigma(bNote.cx, bNote.cy, 1000n, b.op.b.sigR, b.op.b.sigZ, ctx), 'B sigma opens under the bound bond context');
   // a missing controller is refused (no silent unbonded add)
   assert.throws(() => ux.buildLpBondOp({ walletPriv, aNote, bNote, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n }), /controller/);
+});
+
+test('buildLpBondOp: the pool reserves are canonical (low asset first) whichever order the notes come in', () => {
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => {} });
+  const walletPriv = '0x' + 'c3'.repeat(32);
+  const id = ux.identity(walletPriv);
+  const controller = '0x' + 'fa'.repeat(20);
+  const z = '0x' + '00'.repeat(32);
+  const assetLow = '0x0a' + 'a'.repeat(62), assetHigh = '0x' + 'b0'.repeat(32);
+  const mkNote = (asset, val, idx) => {
+    const dn = ux.pool.deriveNote(id.priv, asset, idx);
+    const blind = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+    const { cx, cy } = ux.pool.commitXY(BigInt(val), blind);
+    return { asset, value: String(val), cx, cy, owner: id.owner, blinding: blind, leafIndex: idx, path: [z], root: '0x' + '00'.repeat(31) + '01' };
+  };
+  // The low asset's reserve is 10000 and the high asset's 20000: 1000 of the low asset goes with 2000 of the high one.
+  const lowNote = mkNote(assetLow, 1000, 0), highNote = mkNote(assetHigh, 2000, 1);
+  const args = { walletPriv, controller, feeBps: 30, reserveAPre: 10000n, reserveBPre: 20000n, sharesPre: 10000n };
+  const want = ux.pool.lpAddShares(10000n, 1000n, 2000n, 10000n, 20000n);
+  const inOrder = ux.buildLpBondOp({ ...args, aNote: lowNote, bNote: highNote });
+  const reversed = ux.buildLpBondOp({ ...args, aNote: highNote, bNote: lowNote });
+  assert.equal(inOrder.dShares, want, 'notes in canonical order');
+  assert.equal(reversed.dShares, want, 'notes in reverse order: the same add against the same reserves');
+  assert.equal(reversed.assetA, assetLow);
 });
 
 // OP_LP_BOND → OP_FARM_HARVEST → OP_FARM_UNBOND at the witness level: the receipt a bond emits is owned by a real
@@ -1185,7 +1221,7 @@ test('fastlane exit: authenticated transfer witness (bound leaf, non-membership,
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
     const obj = String(url).includes('/confidential/submit') ? (submitted.push(body), { jobId: 'j', status: 'proven' })
       : String(url).includes('/confidential/status') ? { jobId: 'j', status: 'proven', publicValues: '0xaa', proof: '0xbb' }
-      : { result: body && body.method === 'eth_gasPrice' ? '0x3b9aca00' : body && body.method === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : '0x0' };
+      : { result: body && body.method === 'eth_gasPrice' ? '0x3b9aca00' : body && body.method === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : body && body.method === 'eth_getTransactionReceipt' ? { blockNumber: '0x1', status: '0x1' } : '0x0' };
     return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
   } });
   const pool = ux.pool;

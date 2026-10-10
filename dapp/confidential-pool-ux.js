@@ -603,7 +603,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // them still waiting for their settle, less the ones another op spent in their place (see _stillWaiting).
     diag.wrap = { found: 0, pending: [], unsettled: [], scanned: [], truncated: [] };
     try {
-      const w = R.walkWraps({ priv: id.priv, events, assets: _poolAssets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) });
+      // TAC and cTAC share one asset id: each id is walked once, or a deposit of it is found, and listed, twice.
+      const w = R.walkWraps({ priv: id.priv, events, assets: [...new Map(_poolAssets.map((a) => [lc(a.assetId), a])).values()], minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) });
       diag.wrap.scanned = w.scanned;
       diag.wrap.truncated = w.scanned.filter((s) => s.stoppedAtMaxIndex).map((s) => s.assetId);
       // Each deposit keeps the transaction that made it: a settle sent later names it, so the relay can read its tip.
@@ -1665,9 +1666,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!controller) throw new Error('lp-bond: farm controller address required');
     const id = identity(walletPriv);
     fee = BigInt(fee);
-    // Canonical pair order: assetA < assetB (lex over the 32-byte ids); keep each note's reserve with it.
-    let nA = aNote, nB = bNote, rA = BigInt(reserveAPre), rB = BigInt(reserveBPre);
-    if (BigInt(nA.asset) > BigInt(nB.asset)) { [nA, nB] = [nB, nA]; [rA, rB] = [rB, rA]; }
+    // Canonical pair order: assetA < assetB (lex over the 32-byte ids). The reserves are the pool's own, already in that order
+    // (poolReserves), so only the notes move.
+    let nA = aNote, nB = bNote;
+    const rA = BigInt(reserveAPre), rB = BigInt(reserveBPre);
+    if (BigInt(nA.asset) > BigInt(nB.asset)) [nA, nB] = [nB, nA];
     const assetA = nA.asset, assetB = nB.asset;
     const dA = BigInt(nA.value), dB = BigInt(nB.value);
     if (fee >= dA) throw new Error('lp-bond: fee >= A contribution');
@@ -3168,7 +3171,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     // older relay client returns none, and its proof is over these).
     const memos = proven.memos || sealedMemos;
     if (selfSettle) return { jobId: proven.jobId, ...(await selfSettle({ jobId: proven.jobId, publicValues: proven.publicValues, proof: proven.proof, memos, pair })) };
-    return submitSettle({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos, pair });
+    // Simulated before it is sent and waited for until it is mined: a settle that reverts (a swap landed while the proof was
+    // made, say) is an error here, not a success with a transaction hash.
+    return settleFromAccount({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos, pair });
   }
 
   // ── gasless exit (0xbow-style relayed unwrap) ──
