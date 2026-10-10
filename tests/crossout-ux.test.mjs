@@ -17,7 +17,7 @@ import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 // (poseidon et al.), which expects a browser-like global scope at import time -- same shim
 // burndep-ux.test.mjs uses ahead of its own tacit.js import.
 const realFetch = globalThis.fetch, realST = globalThis.setTimeout, realCT = globalThis.clearTimeout;
-await import('../scratchpad/domshim2.mjs');
+await import('./_domshim.mjs');
 globalThis.setTimeout = realST; globalThis.clearTimeout = realCT;
 
 // dapp/bitcoin-taproot-wallet.js imports secp from the vendor bundle, not node_modules directly (all

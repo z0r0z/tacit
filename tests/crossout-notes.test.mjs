@@ -15,7 +15,7 @@ import { makeConfidentialEvmLog } from '../dapp/confidential-evm-log.js';
 let n = 0, failures = 0;
 const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.error('  FAIL -', m); failures++; } };
 
-await import('../scratchpad/domshim2.mjs');
+await import('./_domshim.mjs');
 const { secp } = await import('../dapp/vendor/tacit-deps.min.js');
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(nobleSha256, k, secp.etc.concatBytes(...m));
 const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');

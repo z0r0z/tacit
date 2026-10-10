@@ -47,7 +47,7 @@ const hexToBytes = (h) => { const s = stripHex(h); const a = new Uint8Array(s.le
 // ---- load dapp/tacit.js under a DOM shim for the pure cxfer/BPP helpers only (see burn-deposit-reveal.js's
 // own header comment on why only these, never anything wallet-stateful, come from tacit.js) ----
 const realFetch = globalThis.fetch, realST = globalThis.setTimeout, realCT = globalThis.clearTimeout;
-await import('../scratchpad/domshim2.mjs');
+await import('./_domshim.mjs');
 globalThis.fetch = realFetch; globalThis.setTimeout = realST; globalThis.clearTimeout = realCT;
 const tacit = await import('../dapp/tacit.js');
 const {

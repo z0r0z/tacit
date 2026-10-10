@@ -6,7 +6,7 @@ import { makeNoteOpener } from '../dapp/note-opening.js';
 import { secp, hexToBytes, concatBytes, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 
 const realFetch = globalThis.fetch, realST = globalThis.setTimeout, realCT = globalThis.clearTimeout;
-await import('../scratchpad/domshim2.mjs');
+await import('./_domshim.mjs');
 globalThis.setTimeout = realST; globalThis.clearTimeout = realCT;
 const tacit = await import('../dapp/tacit.js');
 globalThis.fetch = realFetch;

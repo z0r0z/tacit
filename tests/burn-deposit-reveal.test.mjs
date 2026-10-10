@@ -28,7 +28,7 @@ const reverseHex = (h) => h.replace(/^0x/, '').match(/../g).reverse().join('');
 
 // ---- load dapp/tacit.js under a DOM shim (same pattern every real burn-deposit build script uses) ----
 const realFetch = globalThis.fetch, realST = globalThis.setTimeout, realCT = globalThis.clearTimeout;
-await import('../scratchpad/domshim2.mjs');
+await import('./_domshim.mjs');
 globalThis.fetch = realFetch; globalThis.setTimeout = realST; globalThis.clearTimeout = realCT;
 const tacit = await import('../dapp/tacit.js');
 // Only pure/stateless functions come from tacit.js — it has its own, separately-stateful wallet singleton that
