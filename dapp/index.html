@@ -61,6 +61,7 @@
   --skel: rgba(26,26,26,.08);
   --skel-hi: rgba(26,26,26,.02);
   --bar: #8F8979;
+  --route-o: .55;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: 'Instrument Serif', Georgia, serif;
   --tap: 44px;
@@ -83,6 +84,7 @@
     --skel: rgba(237,229,207,.07);
     --skel-hi: rgba(237,229,207,.15);
     --bar: #6F6958;
+    --route-o: .8;
     color-scheme: dark;
   }
 }
@@ -224,12 +226,6 @@ a.di { color: inherit; text-decoration: none; }
 .hero h1 { font: 400 clamp(42px, 8vw, 72px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 22px; }
 .hero h1 em { font-style: italic; }
 .hero p { color: var(--mute); margin: 0; max-width: 54ch; }
-.shelf { display: flex; flex-wrap: wrap; gap: 10px 32px; margin-top: 30px; }
-.shelf-g { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
-.shelf-g small { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--mute); }
-.shelf button { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mute); background: none; border: 0; padding: 4px 0; cursor: pointer; }
-@media (hover: hover) { .shelf button:hover { color: var(--ink); } }
-.shelf .tk { width: 24px; height: 24px; }
 
 /* ── in numbers: the pools' own figures under the headline; the rest sit in the tiles they belong to ── */
 .proof { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 26px; margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--hair);
@@ -269,6 +265,48 @@ a.di { color: inherit; text-decoration: none; }
 .start .hint { flex: 0 0 100%; max-width: none; order: 1; margin-top: -2px; font-size: 12.5px; line-height: 1.5; }
 .start [data-step]:not(.now) { display: none; }
 .start .link { padding: 8px 0; margin: -8px 0 -8px 6px; font-size: 12px; }
+
+/* ── start from what you hold: the eight assets as a route map. Each lane runs from what you hold to what it becomes in the
+   Tacit pool; the way between two stops is a link to the sheet that takes it, on a line from one asset's colour to the next. ── */
+.paths { --lg: 34px; padding: 18px 24px 4px; background: var(--card); border: 1px solid var(--hair); }
+.paths h2 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); margin: 0 0 2px; }
+.lanes { list-style: none; margin: 0; padding: 0; }
+.lane { display: grid; grid-template-columns: minmax(0, 1fr) 11rem; align-items: center; gap: 10px 28px; padding: 18px 0; }
+.lane + .lane { border-top: 1px solid var(--hair); }
+/* The last stop of every lane starts in the same column, so the private ends line up. */
+.route { display: grid; grid-template-columns: auto minmax(96px, 1fr) 6.5rem; align-items: start; row-gap: 14px; }
+.route.r3 { grid-template-columns: auto minmax(96px, 1fr) auto minmax(96px, 1fr) 6.5rem; }
+/* A stop: the asset's logo and name, and whether it is held in public or privately. */
+.stn { display: inline-flex; align-items: center; gap: 8px; justify-self: start; padding: 0; text-align: left; color: inherit; background: none; border: 0; }
+button.stn { cursor: pointer; }
+.stn .tk { width: var(--lg); height: var(--lg); }
+.nm { display: grid; line-height: 1.25; }
+.nm b { font: 500 13px var(--mono); letter-spacing: -.01em; color: var(--ink); }
+.nm small { font-size: 11px; color: var(--mute); }
+@media (hover: hover) { button.stn:hover b { text-decoration: underline; text-underline-offset: 3px; } }
+/* The way between two stops: a line from one asset's colour to the next, its verb riding on it. */
+.edge { --a: var(--hair-2); --b: var(--hair-2); position: relative; display: flex; align-items: center; justify-content: center; height: var(--lg); margin: 0 6px; }
+.edge::before { content: ''; position: absolute; left: 0; right: 5px; top: 50%; height: 2px; margin-top: -1px; border-radius: 1px;
+  background: linear-gradient(90deg, var(--a), var(--b)); opacity: var(--route-o); transition: opacity .18s; }
+.edge::after { content: ''; position: absolute; right: 0; top: 50%; margin-top: -4px; border: 4px solid transparent; border-right: 0; border-left: 6px solid var(--b); opacity: .8; }
+.e-eth { --a: #627eea; --b: #627eea; }
+.e-btc { --a: #f7931a; --b: #f7931a; }
+.e-usd { --a: #f7931a; --b: #16a34a; }
+.e-xch { --a: #f7931a; --b: #627eea; }
+.hop { position: relative; z-index: 1; display: inline-block; padding: 0 11px; font-size: 12px; line-height: 26px; white-space: nowrap;
+  color: var(--ink); text-decoration: none; background: var(--card); border: 1px solid var(--hair-2); transition: border-color .15s; }
+.hop::after { content: ''; position: absolute; inset: -8px -4px; }                  /* a finger's reach, past the chip's edge */
+@media (hover: hover) { .hop:hover { border-color: var(--ink); } .lane:has(.hop:hover) .edge::before { opacity: 1; } }
+.then { font-size: 12px; line-height: 1.55; color: var(--mute); text-wrap: pretty; }
+.then a { color: var(--ink); }
+/* cBTC and cUSD withdrawn to an address: their public ERC-20s, each hanging under the note it comes from. */
+.tw-l { grid-column: 1 / 3; grid-row: 2; justify-self: end; align-self: center; margin-right: 14px; font-size: 11px; color: var(--mute); text-align: right; }
+.tw-l .narrow { display: none; }
+.twin { --cx: calc(var(--lg) / 2); grid-row: 2; position: relative; }
+.twin.b { grid-column: 3; }
+.twin.u { grid-column: 5; }
+.twin .tk { width: 24px; height: 24px; margin-left: calc((var(--lg) - 24px) / 2); }
+.twin::before { content: ''; position: absolute; left: var(--cx); top: -14px; height: 13px; border-left: 1px dotted var(--mute); opacity: .7; }
 
 /* ── what you can do: one tile per action, each the same shape ── */
 /* A verb, one line, the figure that matters for it, then the line that says where you stand. A tile with more than one way
@@ -349,7 +387,7 @@ main > section + section { margin-top: 40px; }
 .ptsline .go { transition: transform .18s; }
 @media (hover: hover) { .ptsline:hover .go { transform: translateX(3px); } .ptsline:hover .you { text-decoration: underline; } }
 
-/* ── how it comes together: Bitcoin, the bridge, Ethereum, and the assets ── */
+/* ── how it comes together: Bitcoin, the bridge, Ethereum ── */
 .how { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--hair); }
 .map h2 { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); margin: 0 0 18px; }
 .map ol { list-style: none; margin: 0 0 26px; padding: 0; display: grid; gap: 18px 28px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -375,9 +413,8 @@ main > section + section { margin-top: 40px; }
 .tacbar-ln { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px !important; }
 .tacbar-ln a { font-size: 12px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--hair-2); }
 @media (hover: hover) { .tacbar-ln a:hover { color: var(--ink); text-decoration-color: currentColor; } }
-/* Someone who already holds something here has a dashboard instead; the assets stay. */
+/* Someone who already holds something here has a dashboard instead; the assets' lanes above stay. */
 .shell:has(#dash:not([hidden])) .map { display: none; }
-.how .shelf { margin-top: 0; }
 
 footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 44px; padding-top: 18px;
   border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
@@ -633,6 +670,25 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .news .w { display: none; }
   .start .btn { flex: 1 1 100%; }
   .map ol { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  /* A lane is its route, then its line under it; each stop stands over its name, so three stops and their ways fit a phone. */
+  .paths { --lg: 30px; padding: 14px 16px 2px; }
+  .lane { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 14px 0; }
+  .route, .route.r3 { row-gap: 10px; }
+  .route { grid-template-columns: auto minmax(80px, 1fr) auto; }
+  .route.r3 { grid-template-columns: auto minmax(80px, 1fr) auto minmax(80px, 1fr) auto; }
+  .then { font-size: 11.5px; line-height: 1.5; }
+  .stn { flex-direction: column; gap: 5px; justify-self: center; text-align: center; }
+  .nm { justify-items: center; line-height: 1.2; }
+  .nm b { font-size: 12px; }
+  .nm small { font-size: 10.5px; }
+  .edge { margin: 0 3px; }
+  .hop { padding: 0 7px; line-height: 24px; }
+  .twin { --cx: 50%; }
+  .twin::before { top: -10px; height: 9px; }
+  .twin .tk { width: 22px; height: 22px; margin-left: 0; }
+  .tw-l { margin-right: 6px; }
+  .tw-l .wide { display: none; }
+  .tw-l .narrow { display: inline; }
   /* A tile is a row: logo, the verb with its figure, its line, then where you stand. */
   .tiles { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .tile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "logo title figs" "logo text text" "logo pts pts" "foot foot foot";
@@ -668,6 +724,13 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .dash-g { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .di-v { font-size: 17px; white-space: normal; overflow-wrap: anywhere; }
 }
+/* The narrowest phones keep the BTC lane's two ways at full size: the stops drop their public/private line. */
+@media (max-width: 340px) {
+  .route.r3 { grid-template-columns: auto minmax(66px, 1fr) auto minmax(66px, 1fr) auto; }
+  .r3 .nm small { display: none; }
+  .r3 .edge { margin: 0 3px; }
+  .r3 .hop { padding: 0 6px; }
+}
 @media (max-width: 400px) {
   .brand .tk { width: 26px; height: 26px; }
   .brand b { font-size: 26px; }
@@ -679,7 +742,8 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .chip { min-height: var(--tap); }
   .chip.act { width: var(--tap); }
   .seg.sub button, .callout .btn, .hl-h .btn { min-height: var(--tap); }
-  .shelf button { padding: 10px 0; }
+  .paths button.stn { position: relative; }
+  .paths button.stn::after { content: ''; position: absolute; inset: -5px -4px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -739,6 +803,41 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   </section>
 
   <main>
+    <section class="paths" aria-labelledby="paths-h">
+      <h2 id="paths-h">Start from what you hold</h2>
+      <ol class="lanes">
+        <li class="lane">
+          <span class="route">
+            <span class="stn"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span class="nm"><b>ETH</b><span class="sr">, </span><small>public</small></span></span>
+            <span class="edge e-eth"><a class="hop" href="#private" data-link="private">Make <span class="sr">ETH </span>private</a></span>
+            <button class="stn" type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><span class="nm"><b>tETH</b><span class="sr">, </span><small>private</small></span></button>
+          </span>
+          <span class="then">Swap, farm or send it. Back to ETH any time.</span>
+        </li>
+        <li class="lane">
+          <span class="route r3">
+            <span class="stn"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span class="nm"><b>BTC</b><span class="sr">, </span><small>public</small></span></span>
+            <span class="edge e-btc"><a class="hop" href="#lock" data-link="lock">Lock<span class="sr"> BTC for cBTC</span></a></span>
+            <button class="stn" type="button" data-asset="cbtc" aria-haspopup="dialog" title="What cBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg><span class="nm"><b>cBTC</b><span class="sr">, </span><small>private</small></span></button>
+            <span class="edge e-usd"><a class="hop" href="#borrow" data-link="borrow">Borrow<span class="sr"> cUSD against cBTC</span></a></span>
+            <button class="stn" type="button" data-asset="cusd" aria-haspopup="dialog" title="What cUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg><span class="nm"><b>cUSD</b><span class="sr">, </span><small>private</small></span></button>
+            <span class="tw-l"><span class="wide">withdrawn to an address</span><span class="narrow">at an address</span></span>
+            <button class="stn twin b" type="button" data-asset="tacbtc" aria-haspopup="dialog" title="What tacBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg><span class="nm"><b>tacBTC</b><span class="sr">, </span><small>public</small></span></button>
+            <button class="stn twin u" type="button" data-asset="tacusd" aria-haspopup="dialog" title="What tacUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg><span class="nm"><b>tacUSD</b><span class="sr">, </span><small>public</small></span></button>
+          </span>
+          <span class="then">The BTC stays at an address only your key can spend.</span>
+        </li>
+        <li class="lane">
+          <span class="route">
+            <button class="stn" type="button" data-asset="tac" aria-haspopup="dialog" title="What TAC is"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="nm"><b>TAC</b><span class="sr">, </span><small>Bitcoin</small></span></button>
+            <span class="edge e-xch"><a class="hop" href="#bridge" data-link="bridge">Bridge<span class="sr"> TAC from Bitcoin to Ethereum</span></a></span>
+            <span class="stn"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="nm"><b>TAC</b><span class="sr">, </span><small>Ethereum</small></span></span>
+          </span>
+          <span class="then">Or <a href="#buy" data-link="buy">buy it</a> with ETH or sats.</span>
+        </li>
+      </ol>
+    </section>
+
     <section class="flow" aria-labelledby="flow-h">
       <div class="group-h"><h2 id="flow-h">Earn on private ETH</h2><p>Make it private, then farm it privately for TAC.</p></div>
       <div class="flow-b">
@@ -820,18 +919,6 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
       <p>Tacit <a href="https://github.com/src-company/tacit/blob/main/SPEC.md" rel="noopener">protocol</a>’s first asset: 21,000,000 issued once on Bitcoin, no mint key. Transfers hide their amounts, its shielded pool hides who received them, and sats swap into it peer to peer. Airdropped to bootstrap one private currency on both chains (claimable by 5,599 <a href="https://zswap.wei.limo" rel="noopener">zFi</a> shareholder wallets on Bitcoin and 8,652 holders on Ethereum), it keeps spreading through points and farms to grow the anonymity set, and gets each new Tacit protocol improvement first.</p>
       <p class="tacbar-ln"><a href="/verify.html">Verify supply</a><a href="/tac/">Shielded pool</a><a href="#bridge" data-link="bridge">Bridge</a><a href="https://github.com/src-company/tacit/blob/main/docs/TAC.md#holding-tac" rel="noopener">Holding it</a><a href="#buy" data-link="buy">Buy</a></p>
     </details>
-    <div class="shelf" aria-label="Assets">
-      <span class="shelf-g"><small>Private notes</small>
-        <button type="button" data-asset="teth" aria-haspopup="dialog" title="What tETH is"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</button>
-        <button type="button" data-asset="tac" aria-haspopup="dialog" title="What TAC is"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</button>
-        <button type="button" data-asset="cbtc" aria-haspopup="dialog" title="What cBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-cbtc"/></svg>cBTC</button>
-        <button type="button" data-asset="cusd" aria-haspopup="dialog" title="What cUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
-      </span>
-      <span class="shelf-g"><small>Public ERC-20s</small>
-        <button type="button" data-asset="tacbtc" aria-haspopup="dialog" title="What tacBTC is"><svg class="tk" aria-hidden="true"><use href="#tk-tacbtc"/></svg>tacBTC</button>
-        <button type="button" data-asset="tacusd" aria-haspopup="dialog" title="What tacUSD is"><svg class="tk" aria-hidden="true"><use href="#tk-tacusd"/></svg>tacUSD</button>
-      </span>
-    </div>
   </section>
 
   <footer>

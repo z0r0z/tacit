@@ -3540,7 +3540,7 @@ await step('tour', async () => {
     if (pid) { await pid.click(); await snap('farm-shielded'); }
     await go(p, '#borrow'); await shown(p, '#borrow-body .steps', 180000); await snap('borrow');
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-    for (const a of ['tac', 'cbtc']) { await p.click(`.shelf [data-asset="${a}"]`); await shown(p, '#asset-card[open] .links'); await snap(`card-${a}`); await p.keyboard.press('Escape'); }
+    for (const a of ['tac', 'cbtc']) { await p.click(`.paths [data-asset="${a}"]`); await shown(p, '#asset-card[open] .links'); await snap(`card-${a}`); await p.keyboard.press('Escape'); }
     if (r.errors.length) console.log(`   ${tag} page errors: ${r.errors.slice(0, 3).join(' | ')}`);
     await r.browser.close();
   }
