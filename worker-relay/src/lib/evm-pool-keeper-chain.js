@@ -110,6 +110,9 @@ export function frontFees({ base, prio, balance, gas }) {
 
 export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   const pub = createPublicClient({ transport: fallback(cfg.rpcUrls.map((u) => http(u))) });
+  // History facts (a transaction's sender and target, a block's time) are read from the read nodes in reverse order, so a
+  // backfill does not crowd the node that relays and proofs read first.
+  const factsPub = cfg.rpcUrls.length > 1 ? createPublicClient({ transport: fallback([...cfg.rpcUrls].reverse().map((u) => http(u))) }) : pub;
   const chainId = await pub.getChainId();
   if (cfg.chainId && chainId !== cfg.chainId) throw new Error(`RPC is on chain ${chainId}, EVM_POOL_CHAIN_ID is ${cfg.chainId}`);
   const viemChain = defineChain({ id: chainId, name: `chain-${chainId}`, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [cfg.rpcUrls[0]] } } });
@@ -168,15 +171,21 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
       return logs.map((l) => ({
         firstIndex: l.args.firstIndex, outLeaf0: BigInt(l.args.outLeaf0), outLeaf1: BigInt(l.args.outLeaf1), blockNumber: l.blockNumber,
         logIndex: l.logIndex, tx: l.transactionHash, nf0: l.args.nf0, nf1: l.args.nf1, memo0: l.args.memo0, memo1: l.args.memo1,
+        recipient: l.args.recipient, extAmount: l.args.extAmount, relayer: l.args.relayer, fee: l.args.fee, blockTimestamp: l.blockTimestamp ?? null,
       }));
     },
     async receivedLogs(fromBlock, toBlock) {
       const logs = await pub.getLogs({ address: cfg.router, event: RECEIVED_EVENT, fromBlock, toBlock, strict: true });
       return logs.map((l) => ({
         box: l.args.box, n: l.args.n, index: l.args.index, value: l.args.value, rho: l.args.rho, fee: l.args.fee,
-        blockNumber: l.blockNumber, logIndex: l.logIndex, tx: l.transactionHash,
+        blockNumber: l.blockNumber, logIndex: l.logIndex, tx: l.transactionHash, blockTimestamp: l.blockTimestamp ?? null,
       }));
     },
+    async txFacts(hash) {
+      const t = await factsPub.getTransaction({ hash });
+      return { from: t.from, to: t.to ?? null, input: t.input };
+    },
+    blockTime: async (blockNumber) => Number((await factsPub.getBlock({ blockNumber: BigInt(blockNumber) })).timestamp),
     depositBoxOf: async (intent) => getAddress(await read(cfg.router, ROUTER_ABI, 'depositBoxOf', [intent])),
     wrapBoxOf: async (intent) => getAddress(await read(cfg.router, ROUTER_ABI, 'wrapBoxOf', [intent])),
     async wrapToken(assetId) {

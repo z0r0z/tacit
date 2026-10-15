@@ -15,7 +15,7 @@ import { poolAsset } from '../../dapp/evm-pool-zk.js';
 import { loadKeeperConfig, checkKeeperSigner } from './lib/evm-pool-keeper-config.js';
 import { openKeeperStore } from './lib/evm-pool-keeper-store.js';
 import { makeKeeperChain } from './lib/evm-pool-keeper-chain.js';
-import { makeLeafSync } from './lib/evm-pool-keeper-leaves.js';
+import { makeLeafSync, makeFactsSync } from './lib/evm-pool-keeper-leaves.js';
 import { makePipeline } from './lib/evm-pool-keeper-pipeline.js';
 import { makeKeeperProver, loadZk } from './lib/evm-pool-keeper-prover.js';
 import { createIntakeHandler } from './lib/evm-pool-keeper-intake.js';
@@ -49,6 +49,18 @@ async function main() {
   let lastTickOk = true;
   const handler = createIntakeHandler({ store, chain, zk, assetField, cfg, log, leafSync, pipeline, isReady: () => lastTickOk });
   createServer(handler).listen(cfg.port, () => log(`listening on ${cfg.port}`));
+
+  // The history's public facts fill in on their own loop: a backfill or a slow node never delays a relay or a proof.
+  if (cfg.facts) {
+    const facts = makeFactsSync({ store, chain, startBlock: cfg.startBlock, logChunk: cfg.logChunk, concurrency: cfg.factsConcurrency });
+    (async () => {
+      for (;;) {
+        let more = false;
+        try { more = await facts.step(20_000); } catch (e) { log(`history facts: ${safeErr(e)}`); }
+        await sleep(more ? 1000 : cfg.historySecs * 1000);
+      }
+    })();
+  }
 
   let lastHistory = 0;
   for (;;) {
