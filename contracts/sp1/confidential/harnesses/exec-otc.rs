@@ -222,6 +222,7 @@ fn main() {
         .groth16()
         .cycle_limit(256_000_000)
         .gas_limit(1_000_000_000)
+        .private_stdin(true)
         .run()
         .expect("groth16 proof failed");
     /* client.verify dropped (hangs; prover self-verifies, forge *ProofReal is the gate) */

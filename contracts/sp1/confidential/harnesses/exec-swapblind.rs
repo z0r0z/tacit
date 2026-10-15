@@ -296,6 +296,7 @@ fn main() {
         .groth16()
         .cycle_limit(16_000_000_000)
         .gas_limit(16_000_000_000)
+        .private_stdin(true)
         .run()
         .expect("groth16 proof failed");
     println!(

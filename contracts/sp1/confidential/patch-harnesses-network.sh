@@ -36,6 +36,13 @@ s = re.sub(
     r'(\.groth16\(\)|\.compressed\(\))(\s*)\.run\(\)',
     r'\1\2.cycle_limit(256_000_000)\2.gas_limit(1_000_000_000)\2.run()',
     s)
+# 5) keep the witness private. A network request's stdin is otherwise uploaded as a public artifact that anyone can
+#    list by requester and download, and an op's stdin names the leaf it spends, its amounts and its owners.
+#    private_stdin(true) stores it where only the network's executor and the winning prover can read it.
+s = re.sub(
+    r'(\.gas_limit\([^)]*\))(\s*)\.run\(\)',
+    r'\1\2.private_stdin(true)\2.run()',
+    s)
 if s != orig:
     open(p, 'w').write(s)
     print("patched", p)

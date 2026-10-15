@@ -81,7 +81,7 @@ fn main() {
     println!("VKEY={vk}");
     assert_expected_vkey(&vk);
     println!("proving groth16 wrap_swap (network)...");
-    let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).run().expect("groth16 proof failed");
+    let proof = client.prove(&pk, stdin).groth16().cycle_limit(256_000_000).gas_limit(1_000_000_000).private_stdin(true).run().expect("groth16 proof failed");
     println!("PROVED groth16 wrap_swap pv_bytes={}", proof.public_values.as_slice().len());
     std::fs::write("public_values.hex", hex::encode(proof.public_values.as_slice())).unwrap();
     std::fs::write("proof_bytes.hex", hex::encode(proof.bytes())).unwrap();
