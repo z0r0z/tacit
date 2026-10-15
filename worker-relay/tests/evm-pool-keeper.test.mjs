@@ -12,7 +12,7 @@ import { depositIntent, receiveRho, receiveKeys, callIntent, callIntentJson, cal
 import { ROUTER_ABI, frontFees } from '../src/lib/evm-pool-keeper-chain.js';
 import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '../src/lib/evm-pool-keeper-config.js';
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
-import { makeLeafSync, LeafSyncError } from '../src/lib/evm-pool-keeper-leaves.js';
+import { makeLeafSync, makeFactsSync, LeafSyncError, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
 import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parseReceiveSubmission, parseRelaySubmission, ipKey } from '../src/lib/evm-pool-keeper-intake.js';
 import { createKeeper, coverCheck, quoteFee } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
@@ -420,6 +420,76 @@ await test('leaf sync persists confirmed leaves and events, re-reads the tail, a
   s = await sync.sync();
   assert.equal(s.tree.size, 4);
   assert.equal(s.tree.root, zk.tree(chain.leaves).root);
+});
+
+// A chain whose Transact logs carry every field: blocks 101..110, one transaction each; odd blocks' logs carry no
+// timestamp (as on a node that does not give one); every third transaction went through the router.
+function factsChain() {
+  const c = { router: ROUTER, block: 112n, leaves: [], logs: [], calls: { tx: 0, time: 0, logs: 0 }, failTxAt: null };
+  for (let b = 101n; b <= 110n; b++) {
+    const firstIndex = BigInt(c.leaves.length), leaf = b * 7919n;
+    c.leaves.push(leaf, 0n);
+    c.logs.push({ firstIndex, outLeaf0: leaf, outLeaf1: 0n, blockNumber: b, logIndex: 0, tx: '0x' + b.toString(16).padStart(64, '0'),
+      nf0: '0x' + b.toString(16).padStart(64, '0'), nf1: '0x' + '0'.repeat(64), memo0: '0x', memo1: '0x',
+      recipient: REFUND, extAmount: b % 2n ? 1000n : -500n, relayer: KEEPER, fee: 5n, blockTimestamp: b % 2n ? null : 1_700_000_000n + b });
+  }
+  c.blockNumber = async () => c.block;
+  c.poolState = async () => ({ root: zk.tree(c.leaves).root, nextIndex: BigInt(c.leaves.length) });
+  c.transactLogs = async (from, to) => { c.calls.logs++; return c.logs.filter((l) => l.blockNumber >= from && l.blockNumber <= to); };
+  c.txFacts = async (hash) => {
+    if (c.failTxAt !== null && c.calls.tx++ === c.failTxAt) throw new Error('node down');
+    if (c.failTxAt === null) c.calls.tx++;
+    const b = BigInt(hash);
+    return { from: '0x' + 'Bb'.repeat(20), to: b % 3n === 0n ? ROUTER : POOL, input: '0xc0ffee' + b.toString(16) };
+  };
+  c.blockTime = async (n) => { c.calls.time++; return 1_700_000_000 + Number(n); };
+  return c;
+}
+const oldShape = (l) => ({ kind: 'transact', block: Number(l.blockNumber), tx: l.tx, firstIndex: Number(l.firstIndex), nf0: l.nf0, nf1: l.nf1,
+  outLeaf0: l.outLeaf0.toString(), outLeaf1: l.outLeaf1.toString(), memo0: '0x', memo1: '0x' });
+
+await test('history facts: new events keep their log fields, and the feed shows them only when asked', async () => {
+  const store = openKeeperStore(':memory:'), chain = factsChain();
+  const sync = makeLeafSync({ store, chain, zk, startBlock: 101n, confirmations: 2n, logChunk: 4n });
+  await sync.sync();
+  const plain = sync.eventsFrom(0, 100), full = sync.eventsFrom(0, 100, { facts: true });
+  assert.equal(plain.events.length, 10);
+  assert.deepEqual(Object.keys(plain.events[0]).sort(), ['block', 'firstIndex', 'kind', 'memo0', 'memo1', 'nf0', 'nf1', 'outLeaf0', 'outLeaf1', 'tx'], 'the shape the feed always had');
+  assert.equal(plain.factsThrough, undefined);
+  const e = full.events[1];                                                   // block 102: an even block, a withdrawal
+  assert.deepEqual([e.recipient, e.ext, e.relayer, e.fee, e.ts], [REFUND.toLowerCase(), '-500', KEEPER.toLowerCase(), '5', 1_700_000_102]);
+  assert.equal(full.events[0].ts, undefined, 'block 101 gave no time in its log');
+  assert.equal(full.factsThrough, 100, 'no event has its sender yet');
+});
+
+await test('history facts: a store kept before facts is filled from the logs, then senders, targets and times, and resumes after a failure', async () => {
+  const store = openKeeperStore(':memory:'), chain = factsChain();
+  store.appendLeaves(chain.leaves.map((leaf, i) => ({ leaf, block: chain.logs[i >> 1].blockNumber })), 110, chain.logs.map((l) => ({ block: l.blockNumber, logIndex: 0, ev: oldShape(l) })));
+  const facts = makeFactsSync({ store, chain, startBlock: 101n, logChunk: 4n, concurrency: 2 });
+  assert.equal(await facts.step(0), true, 'no budget: nothing done, more to do');
+  chain.failTxAt = 3;
+  await assert.rejects(facts.step(60_000), /node down/);
+  const midway = store.getMeta('facts_block');
+  assert.equal(store.getMeta('facts_logs_block'), '110', 'the log fields were all filled before the failure');
+  chain.failTxAt = null; chain.calls.time = 0;
+  assert.equal(await facts.step(60_000), false, 'done');
+  assert.ok(midway === null || Number(midway) < 110, 'the failed window was not marked done');
+  const evs = store.eventsBetween(101, 110).map((r) => r.ev);
+  for (const ev of evs) {
+    const b = BigInt(ev.block);
+    assert.equal(ev.ext, (b % 2n ? 1000n : -500n).toString());
+    assert.equal(ev.from, '0x' + 'bb'.repeat(20));
+    assert.equal(ev.to, (b % 3n === 0n ? ROUTER : POOL).toLowerCase());
+    assert.equal(ev.input, b % 3n === 0n ? '0xc0ffee' + b.toString(16) : undefined, 'call data only for a router call');
+    assert.equal(ev.ts, 1_700_000_000 + Number(b), 'the log time where given, the block time otherwise');
+  }
+  assert.equal(chain.calls.time, 5, 'the pass that finished read a block time only for the five blocks whose log had none');
+  const sync = makeLeafSync({ store, chain, zk, startBlock: 101n, confirmations: 2n, logChunk: 4n });
+  const feed = sync.eventsFrom(0, 100, { facts: true });
+  assert.equal(feed.factsThrough, 110);
+  assert.ok(sync.eventsFrom(0, 100).events.every((e) => FACT_KEYS.every((k) => e[k] === undefined)), 'and still hidden unless asked');
+  store.resetLeaves();
+  assert.equal(store.getMeta('facts_block'), null, 'a reset clears the marks with the leaves');
 });
 
 // ── loop ──

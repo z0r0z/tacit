@@ -529,8 +529,11 @@ export function createIntakeHandler({
         if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
         const from = url.searchParams.get('from') ?? '0';
         if (!/^\d{1,12}$/.test(from)) throw bad('from must be a block number');
-        const { events, through } = leafSync.eventsFrom(Number(from), EVENTS_PAGE);
-        return send(200, { chainId: chain.chainId, pool: chain.pool, router: chain.router, from: Number(from), through, events });
+        // ?facts=1 adds each event's public facts (recipient, amount, fee, sender, target, block time) so far, and the block
+        // every event up to has them all (factsThrough); without it the feed keeps the shape it always had.
+        const facts = url.searchParams.get('facts') === '1';
+        const { events, through, factsThrough } = leafSync.eventsFrom(Number(from), EVENTS_PAGE, { facts });
+        return send(200, { chainId: chain.chainId, pool: chain.pool, router: chain.router, from: Number(from), through, ...(facts ? { factsThrough } : {}), events });
       }
       if (p === `${PREFIX}/head` && req.method === 'GET') {
         if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');

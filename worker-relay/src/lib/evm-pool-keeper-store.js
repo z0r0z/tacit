@@ -53,6 +53,8 @@ export function openKeeperStore(dbPath) {
     clearLeaves: db.prepare('DELETE FROM leaves'),
     insEvent: db.prepare('INSERT OR REPLACE INTO events (block, log_index, ev) VALUES (?, ?, ?)'),
     eventsFrom: db.prepare('SELECT block, ev FROM events WHERE block >= ? ORDER BY block, log_index LIMIT ?'),
+    eventsBetween: db.prepare('SELECT block, log_index, ev FROM events WHERE block >= ? AND block <= ? ORDER BY block, log_index'),
+    updEvent: db.prepare('UPDATE events SET ev = ? WHERE block = ? AND log_index = ?'),
     clearEvents: db.prepare('DELETE FROM events'),
   };
 
@@ -120,10 +122,17 @@ export function openKeeperStore(dbPath) {
     // Up to `limit` stored events from `fromBlock` on, in chain order. → [{ block, ev }]
     eventsFrom: (fromBlock, limit) => st.eventsFrom.all(Number(fromBlock), limit).map((r) => ({ block: r.block, ev: JSON.parse(r.ev) })),
     syncedBlock: () => { const v = st.getMeta.get('synced_block')?.v; return v === undefined ? null : Number(v); },
+    // Stored events in blocks a..b, in chain order. → [{ block, logIndex, ev }]
+    eventsBetween: (a, b) => st.eventsBetween.all(Number(a), Number(b)).map((r) => ({ block: r.block, logIndex: r.log_index, ev: JSON.parse(r.ev) })),
+    // Rewrites stored events in place (same block and log index) and, with a key, moves a progress mark, atomically.
+    updateEvents: db.transaction((rows, key = null, value = null) => {
+      for (const r of rows) st.updEvent.run(JSON.stringify(r.ev), Number(r.block), Number(r.logIndex));
+      if (key) st.setMeta.run(key, String(value));
+    }),
     resetLeaves: db.transaction(() => {
       st.clearLeaves.run();
       st.clearEvents.run();
-      db.prepare("DELETE FROM meta WHERE k = 'synced_block'").run();
+      db.prepare("DELETE FROM meta WHERE k IN ('synced_block', 'facts_block', 'facts_logs_block')").run();
     }),
     close: () => db.close(),
   };
