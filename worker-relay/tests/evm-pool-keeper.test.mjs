@@ -9,7 +9,7 @@ import { keccak_256 } from '../../dapp/vendor/tacit-deps.min.js';
 import { poolAsset } from '../../dapp/evm-pool-zk.js';
 import { encodeAbiParameters, keccak256 as viemKeccak, encodeFunctionData, decodeFunctionData, toHex } from 'viem';
 import { depositIntent, receiveRho, receiveKeys, callIntent, callIntentJson, callEscrowAddress, v1ZapShieldedNoteCall } from '../../dapp/evm-pool-gateway.js';
-import { ROUTER_ABI, frontFees } from '../src/lib/evm-pool-keeper-chain.js';
+import { ROUTER_ABI, frontFees, makeKeeperChain } from '../src/lib/evm-pool-keeper-chain.js';
 import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '../src/lib/evm-pool-keeper-config.js';
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
 import { makeLeafSync, makeFactsSync, LeafSyncError, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
@@ -490,6 +490,35 @@ await test('history facts: a store kept before facts is filled from the logs, th
   assert.ok(sync.eventsFrom(0, 100).events.every((e) => FACT_KEYS.every((k) => e[k] === undefined)), 'and still hidden unless asked');
   store.resetLeaves();
   assert.equal(store.getMeta('facts_block'), null, 'a reset clears the marks with the leaves');
+});
+
+await test('history facts: a node that answers an old range with nothing is passed over for one that has the logs', async () => {
+  const word = (h) => '0x' + h.replace(/^0x/, '').padStart(64, '0');
+  const logEvent = {
+    blockNumber: '0x65', blockHash: '0x' + '11'.repeat(32), transactionHash: '0x' + 'ab'.repeat(32), transactionIndex: '0x0', logIndex: '0x4b9', removed: false, address: POOL,
+    topics: ['0xdf0ed29e998ac2f2ff0f0516cb9c1b95af189e00d55af3764b95bdd2a835e53a', word('07'), word('00')],
+    data: '0x' + [1n, 0n, 6n, 9n, 0xabn, -500n, 0xcdn, 5n, 0x140n, 0x160n].map((v) => BigInt.asUintN(256, v).toString(16).padStart(64, '0')).join('') + '0'.repeat(128),
+  };
+  const serve = (logs, seen) => new Promise((res) => {
+    const srv = createServer((req, rsp) => {
+      let body = ''; req.on('data', (d) => { body += d; }); req.on('end', () => {
+        const one = (x) => ({ jsonrpc: '2.0', id: x.id, result: x.method === 'eth_chainId' ? '0x1' : x.method === 'eth_getLogs' ? (seen.push(1), logs) : x.method === 'eth_call' ? word(POOL) : '0x0' });
+        const j = JSON.parse(body); rsp.setHeader('content-type', 'application/json'); rsp.end(JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)));
+      });
+    }).listen(0, () => res({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+  });
+  const seenA = [], seenB = [], A = await serve([], seenA), B = await serve([logEvent], seenB);
+  try {
+    const chain = await makeKeeperChain({ cfg: { rpcUrls: [A.url, B.url], factsRpcUrls: [A.url, B.url], pool: POOL, router: ROUTER, chainId: 1, sendRpcUrls: [], allowPublicSend: false, minPriorityFee: 0n }, account: { address: KEEPER } });
+    const expect = [{ block: 101, logIndex: 1209 }];
+    const logs = await chain.factsLogs(100n, 110n, expect);
+    assert.equal(logs.length, 1);
+    assert.deepEqual([Number(logs[0].blockNumber), Number(logs[0].logIndex), logs[0].extAmount, logs[0].fee], [101, 1209, -500n, 5n]);
+    assert.equal(seenA.length, 1, 'the first node was asked and had nothing');
+    await assert.rejects(chain.factsLogs(100n, 110n, [{ block: 101, logIndex: 1 }]), /no Transact log at block 101 index 1/, 'a log no node has is an error, not an empty answer');
+    const plain = await chain.transactLogs(100n, 110n);
+    assert.equal(plain.length, 0, 'the relay path still reads through its fallback, as before: the first node answered, with nothing');
+  } finally { A.srv.close(); B.srv.close(); }
 });
 
 // ── loop ──

@@ -92,6 +92,8 @@ export function loadKeeperConfig(env = process.env) {
     // The public facts /events?facts=1 serves are filled in by a loop of their own; 0 turns it off.
     facts: str(env, 'EVM_POOL_KEEPER_FACTS', '1') !== '0',
     factsConcurrency: int(env, 'EVM_POOL_KEEPER_FACTS_CONCURRENCY', 4),
+    // The nodes the history facts are read from, tried one at a time for old logs (see makeKeeperChain); else the read nodes.
+    factsRpcUrls: list(str(env, 'EVM_POOL_FACTS_RPC_URLS')),
     maxBackoffSecs: int(env, 'EVM_POOL_KEEPER_MAX_BACKOFF_SECS', 900),
     maxChecksPerTick: int(env, 'EVM_POOL_KEEPER_MAX_CHECKS_PER_TICK', 200),
     minFees,

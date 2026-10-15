@@ -110,9 +110,13 @@ export function frontFees({ base, prio, balance, gas }) {
 
 export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   const pub = createPublicClient({ transport: fallback(cfg.rpcUrls.map((u) => http(u))) });
-  // History facts (a transaction's sender and target, a block's time) are read from the read nodes in reverse order, so a
-  // backfill does not crowd the node that relays and proofs read first.
-  const factsPub = cfg.rpcUrls.length > 1 ? createPublicClient({ transport: fallback([...cfg.rpcUrls].reverse().map((u) => http(u))) }) : pub;
+  // History facts (a transaction's sender and target, a block's time, an old range of logs) are read from their own list of
+  // nodes (EVM_POOL_FACTS_RPC_URLS, else the read nodes), so a backfill does not crowd the node that relays and proofs read.
+  // A node that keeps only recent history answers an old range with nothing, not an error, and a fallback stops at that
+  // answer, so a range of logs is asked of each node in turn until one returns every event the store holds for it.
+  const factsUrls = cfg.factsRpcUrls?.length ? cfg.factsRpcUrls : cfg.rpcUrls;
+  const factsPub = factsUrls.length > 1 ? createPublicClient({ transport: fallback(factsUrls.map((u) => http(u))) }) : createPublicClient({ transport: http(factsUrls[0]) });
+  const factsEach = factsUrls.map((u) => createPublicClient({ transport: http(u) }));
   const chainId = await pub.getChainId();
   if (cfg.chainId && chainId !== cfg.chainId) throw new Error(`RPC is on chain ${chainId}, EVM_POOL_CHAIN_ID is ${cfg.chainId}`);
   const viemChain = defineChain({ id: chainId, name: `chain-${chainId}`, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [cfg.rpcUrls[0]] } } });
@@ -150,6 +154,11 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
     return { maxFeePerGas: f.maxFeePerGas, maxPriorityFeePerGas: f.maxPriorityFeePerGas };
   };
   const b32 = (x) => `0x${BigInt(x).toString(16).padStart(64, '0')}`;
+  const transactOf = (logs) => logs.map((l) => ({
+    firstIndex: l.args.firstIndex, outLeaf0: BigInt(l.args.outLeaf0), outLeaf1: BigInt(l.args.outLeaf1), blockNumber: l.blockNumber,
+    logIndex: l.logIndex, tx: l.transactionHash, nf0: l.args.nf0, nf1: l.args.nf1, memo0: l.args.memo0, memo1: l.args.memo1,
+    recipient: l.args.recipient, extAmount: l.args.extAmount, relayer: l.args.relayer, fee: l.args.fee, blockTimestamp: l.blockTimestamp ?? null,
+  }));
 
   return {
     address: account.address,
@@ -166,13 +175,23 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
       const [root, nextIndex] = await Promise.all([read(cfg.pool, POOL_ABI, 'root', [], blockNumber), read(cfg.pool, POOL_ABI, 'nextIndex', [], blockNumber)]);
       return { root: BigInt(root), nextIndex };
     },
+    // The Transact logs of fromBlock..toBlock from the first facts node that returns every one of `expect` ([{ block, logIndex }]).
+    async factsLogs(fromBlock, toBlock, expect) {
+      let last = new Error('no facts node');
+      for (const c of factsEach) {
+        try {
+          const logs = transactOf(await c.getLogs({ address: cfg.pool, event: POOL_ABI.find((x) => x.type === 'event'), fromBlock, toBlock, strict: true }));
+          const have = new Set(logs.map((l) => `${Number(l.blockNumber)}:${Number(l.logIndex)}`));
+          const lacking = expect.find((x) => !have.has(`${x.block}:${x.logIndex}`));
+          if (!lacking) return logs;
+          last = new Error(`a facts node has no Transact log at block ${lacking.block} index ${lacking.logIndex}`);
+        } catch (e) { last = e; }
+      }
+      throw last;
+    },
     async transactLogs(fromBlock, toBlock) {
       const logs = await pub.getLogs({ address: cfg.pool, event: POOL_ABI.find((x) => x.type === 'event'), fromBlock, toBlock, strict: true });
-      return logs.map((l) => ({
-        firstIndex: l.args.firstIndex, outLeaf0: BigInt(l.args.outLeaf0), outLeaf1: BigInt(l.args.outLeaf1), blockNumber: l.blockNumber,
-        logIndex: l.logIndex, tx: l.transactionHash, nf0: l.args.nf0, nf1: l.args.nf1, memo0: l.args.memo0, memo1: l.args.memo1,
-        recipient: l.args.recipient, extAmount: l.args.extAmount, relayer: l.args.relayer, fee: l.args.fee, blockTimestamp: l.blockTimestamp ?? null,
-      }));
+      return transactOf(logs);
     },
     async receivedLogs(fromBlock, toBlock) {
       const logs = await pub.getLogs({ address: cfg.router, event: RECEIVED_EVENT, fromBlock, toBlock, strict: true });

@@ -148,7 +148,7 @@ export function makeFactsSync({ store, chain, startBlock = 0n, logChunk = 2000n,
       const a = p + 1, b = Math.min(top, a + Number(logChunk) - 1);
       const old = store.eventsBetween(a, b).filter((r) => r.ev.kind === 'transact' && r.ev.ext === undefined);
       if (!old.length) { store.setMeta('facts_logs_block', b); continue; }
-      const logs = await chain.transactLogs(BigInt(a), BigInt(b));
+      const logs = chain.factsLogs ? await chain.factsLogs(BigInt(a), BigInt(b), old.map((r) => ({ block: r.block, logIndex: r.logIndex }))) : await chain.transactLogs(BigInt(a), BigInt(b));
       const at = new Map(logs.map((l) => [`${Number(l.blockNumber)}:${Number(l.logIndex ?? 0)}`, l]));
       store.updateEvents(old.map((r) => {
         const l = at.get(`${r.block}:${r.logIndex}`);
