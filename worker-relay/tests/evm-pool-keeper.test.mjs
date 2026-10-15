@@ -521,6 +521,27 @@ await test('history facts: a node that answers an old range with nothing is pass
   } finally { A.srv.close(); B.srv.close(); }
 });
 
+await test('history facts: a node that gives a block time of 0 gives none, and a 0 an earlier version stored is read again from the block', async () => {
+  const chain = factsChain();
+  for (const l of chain.logs) l.blockTimestamp = 0n;                      // a node whose logs carry the field as 0 (Robinhood's)
+  // New events do not keep the 0.
+  const fresh = openKeeperStore(':memory:');
+  await makeLeafSync({ store: fresh, chain, zk, startBlock: 101n, confirmations: 2n, logChunk: 4n }).sync();
+  assert.ok(fresh.eventsBetween(101, 110).every((r) => r.ev.ts === undefined), 'no time kept for a 0');
+  // A store that kept the 0 (events with every log fact, a sender and a time of 0, and the stages marked done) is made right.
+  const old = openKeeperStore(':memory:');
+  old.appendLeaves(chain.leaves.map((leaf, i) => ({ leaf, block: chain.logs[i >> 1].blockNumber })), 110, chain.logs.map((l) => ({ block: l.blockNumber, logIndex: 0, ev: { ...oldShape(l), recipient: REFUND.toLowerCase(), ext: l.extAmount.toString(), relayer: KEEPER.toLowerCase(), fee: '5', from: '0x' + 'bb'.repeat(20), to: POOL.toLowerCase(), ts: 0 } })));
+  old.setMeta('facts_logs_block', 110); old.setMeta('facts_block', 110);
+  chain.calls.time = 0;
+  const facts = makeFactsSync({ store: old, chain, startBlock: 101n, logChunk: 4n });
+  assert.equal(await facts.step(60_000), false);
+  assert.equal(old.getMeta('facts_v'), '2');
+  for (const r of old.eventsBetween(101, 110)) assert.equal(r.ev.ts, 1_700_000_000 + r.block, `block ${r.block} has its time`);
+  assert.equal(chain.calls.time, 10, 'one block read for each block that had a 0');
+  assert.equal(await facts.step(60_000), false);
+  assert.equal(chain.calls.time, 10, 'and nothing is read again');
+});
+
 // ── loop ──
 
 await test('an unfunded box is only watched, with backoff; no proof is made', async () => {

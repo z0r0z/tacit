@@ -20,7 +20,7 @@ const lc = (a) => (a ? String(a).toLowerCase() : null);
 function logFacts(e) {
   const f = {};
   if (e.extAmount !== undefined && e.extAmount !== null) Object.assign(f, { recipient: lc(e.recipient), ext: str(e.extAmount), relayer: lc(e.relayer), fee: str(e.fee) });
-  if (e.blockTimestamp !== undefined && e.blockTimestamp !== null) f.ts = Number(e.blockTimestamp);
+  if (Number(e.blockTimestamp) > 0) f.ts = Number(e.blockTimestamp);                // a node that gives 0 gives none
   return f;
 }
 export const FACT_KEYS = ['recipient', 'ext', 'relayer', 'fee', 'from', 'to', 'input', 'ts'];
@@ -38,7 +38,7 @@ function receivedEvent(e) {
   return {
     kind: 'received', block: Number(e.blockNumber), tx: e.tx ?? null, box: String(e.box).toLowerCase(), n: str(e.n),
     index: Number(e.index), value: str(e.value), rho: str(e.rho), fee: str(e.fee),
-    ...(e.blockTimestamp !== undefined && e.blockTimestamp !== null ? { ts: Number(e.blockTimestamp) } : {}),
+    ...(Number(e.blockTimestamp) > 0 ? { ts: Number(e.blockTimestamp) } : {}),
   };
 }
 
@@ -156,13 +156,16 @@ export function makeFactsSync({ store, chain, startBlock = 0n, logChunk = 2000n,
         return { ...r, ev: { ...r.ev, ...logFacts(l) } };
       }), 'facts_logs_block', b);
     }
+    // Version 2 treats a stored time of 0 as missing (an earlier version kept what a node gave, and Robinhood's gives 0): the
+    // second stage runs once more over what was stored, which only does work for the events that still lack a time or sender.
+    if (store.getMeta('facts_v') !== '2') { store.setMeta('facts_block', Number(startBlock) - 1); store.setMeta('facts_v', '2'); }
     const ceiling = mark('facts_logs_block');
     for (let p = mark('facts_block'); p < ceiling; p = mark('facts_block')) {
       if (spent()) return true;
       const a = p + 1, b = Math.min(ceiling, a + Number(logChunk) - 1);
       const rows = store.eventsBetween(a, b);
-      const times = new Map(rows.filter((r) => r.ev.ts !== undefined).map((r) => [r.block, r.ev.ts]));
-      const untimed = [...new Set(rows.filter((r) => r.ev.ts === undefined).map((r) => r.block))].filter((n) => !times.has(n));
+      const times = new Map(rows.filter((r) => r.ev.ts > 0).map((r) => [r.block, r.ev.ts]));
+      const untimed = [...new Set(rows.filter((r) => !(r.ev.ts > 0)).map((r) => r.block))].filter((n) => !times.has(n));
       for (let i = 0; i < untimed.length; i += 50) {
         if (spent()) return true;
         await each(untimed.slice(i, i + 50), async (n) => { times.set(n, await chain.blockTime(n)); });
@@ -174,10 +177,10 @@ export function makeFactsSync({ store, chain, startBlock = 0n, logChunk = 2000n,
         await each(part, async (r) => { got.set(r.ev.tx, await chain.txFacts(r.ev.tx)); });
         store.updateEvents(part.map((r) => {
           const f = got.get(r.ev.tx), to = lc(f.to);
-          return { ...r, ev: { ...r.ev, from: lc(f.from), to, ...(to === router && f.input ? { input: f.input } : {}), ts: r.ev.ts ?? times.get(r.block) } };
+          return { ...r, ev: { ...r.ev, from: lc(f.from), to, ...(to === router && f.input ? { input: f.input } : {}), ts: r.ev.ts > 0 ? r.ev.ts : times.get(r.block) } };
         }));
       }
-      const timeOnly = rows.filter((r) => r.ev.ts === undefined && !(r.ev.kind === 'transact' && r.ev.from === undefined));
+      const timeOnly = rows.filter((r) => !(r.ev.ts > 0) && !(r.ev.kind === 'transact' && r.ev.from === undefined));
       store.updateEvents(timeOnly.map((r) => ({ ...r, ev: { ...r.ev, ts: times.get(r.block) } })), 'facts_block', b);
     }
     return mark('facts_logs_block') < (store.syncedBlock() ?? -1);
