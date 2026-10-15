@@ -32,7 +32,7 @@ jobs:
           # ensure the Cargo features are network, not native-gnark: network proving needs no local gnark, and the
           # native-gnark build fetches a Go module that GitHub no longer serves
           sed -i 's/features = \["blocking", "native-gnark"\]/features = ["blocking", "network"]/; s/, *"native-gnark"//' harnesses/Cargo.toml
-          grep -q '"network"' harnesses/Cargo.toml && ! grep -q native-gnark harnesses/Cargo.toml
+          grep -q '"network"' harnesses/Cargo.toml && ! grep -q '"native-gnark"' harnesses/Cargo.toml
       - name: Build each op
         run: |
           cd contracts/sp1/confidential
