@@ -1,10 +1,48 @@
 
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+const lc = (h) => String(h).toLowerCase();
+const sameHex = (a, b, bytes = 32) => typeof a === 'string' && typeof b === 'string'
+  && new RegExp('^0x[0-9a-fA-F]{' + bytes * 2 + '}$').test(a) && lc(a) === lc(b);
+const integer = (v) => {
+  if (!['string', 'number', 'bigint'].includes(typeof v) || (typeof v === 'number' && !Number.isSafeInteger(v))) throw new Error('invalid invoice integer');
+  return BigInt(v);
+};
+
+// Check the same public payment, pre-signed wrap witness and active deployment at every boundary that
+// accepts an invoice. A valid opening alone does not bind the underlying amount actually escrowed.
+export function verifyConfidentialInvoice(invoice, { pool, assetByTicker, chainBinding } = {}) {
+  try {
+    if (!invoice || invoice.v !== 1 || !invoice.witness || typeof invoice.ticker !== 'string'
+      || !Object.hasOwn(assetByTicker, invoice.ticker)) return false;
+    const meta = assetByTicker[invoice.ticker], w = invoice.witness;
+    if (!sameHex(invoice.assetId, meta.assetId) || !sameHex(invoice.underlying, meta.underlying, 20)
+      || !sameHex(invoice.chainBinding, chainBinding)) return false;
+    const amount = integer(invoice.amount), value = integer(invoice.value), scale = integer(meta.unitScale);
+    if (amount <= 0n || scale <= 0n || amount % scale !== 0n || value <= 0n || value > (1n << 64n) - 1n
+      || typeof w.value !== 'string' || !/^\+?\d+$/.test(w.value)
+      || amount !== value * scale || integer(w.value) !== value) return false;
+    if (!sameHex(w.chainBinding, invoice.chainBinding) || !sameHex(w.asset, invoice.assetId)
+      || !['cx', 'cy', 'owner'].every((k) => sameHex(w[k], invoice[k]))) return false;
+    // The wrap harness parses a decimal string, and the guest reads R/Z as exactly 33/32 bytes.
+    // The JS curve verifier also accepts other encodings which cannot be settled by that guest.
+    if (typeof w.sigR !== 'string' || !/^0x0[23][0-9a-fA-F]{64}$/.test(w.sigR)
+      || typeof w.sigZ !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(w.sigZ)) return false;
+    if (!sameHex(invoice.commit, pool.depositCommit(invoice.cx, invoice.cy, invoice.owner))) return false;
+    if (!sameHex(invoice.leaf, pool.leaf(invoice.assetId, invoice.cx, invoice.cy, invoice.owner))) return false;
+    if (!sameHex(invoice.depositId, pool.depositId(invoice.assetId, value, invoice.cx, invoice.cy, invoice.owner))) return false;
+    const ctx = pool.intentContext(
+      'tacit-wrap-intent-v1', invoice.chainBinding, invoice.assetId, invoice.depositId,
+      [[invoice.cx, invoice.cy, invoice.owner]], [value]
+    );
+    return pool.verifyOpeningSigma(invoice.cx, invoice.cy, value, w.sigR, w.sigZ, ctx);
+  } catch {
+    return false;
+  }
+}
 
 export function makeConfidentialInvoice({ ux }) {
   if (!ux || !ux.pool || !ux.buildWrap) throw new Error('makeConfidentialInvoice: a confidential-pool-ux instance is required');
   const pool = ux.pool;
-  const lc = (h) => String(h).toLowerCase();
 
   function createInvoice({ recipientPriv, ticker = 'cETH', amountWei, index = 0 }) {
     const meta = ux.assetByTicker[ticker];
@@ -31,20 +69,7 @@ export function makeConfidentialInvoice({ ux }) {
   }
 
   function verifyInvoice(invoice) {
-    try {
-      if (!invoice || invoice.v !== 1 || !invoice.witness) return false;
-      const value = BigInt(invoice.value);
-      if (lc(pool.depositCommit(invoice.cx, invoice.cy, invoice.owner)) !== lc(invoice.commit)) return false;
-      if (lc(pool.leaf(invoice.assetId, invoice.cx, invoice.cy, invoice.owner)) !== lc(invoice.leaf)) return false;
-      if (lc(pool.depositId(invoice.assetId, value, invoice.cx, invoice.cy, invoice.owner)) !== lc(invoice.depositId)) return false;
-      const ctx = pool.intentContext(
-        'tacit-wrap-intent-v1', invoice.chainBinding, invoice.assetId, invoice.depositId,
-        [[invoice.cx, invoice.cy, invoice.owner]], [value]
-      );
-      return pool.verifyOpeningSigma(invoice.cx, invoice.cy, value, invoice.witness.sigR, invoice.witness.sigZ, ctx);
-    } catch {
-      return false;
-    }
+    return verifyConfidentialInvoice(invoice, { pool, assetByTicker: ux.assetByTicker, chainBinding: ux.chainBindingHex() });
   }
 
   function payArgs(invoice) {

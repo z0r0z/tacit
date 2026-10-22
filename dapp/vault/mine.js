@@ -4,7 +4,7 @@
 // those lines link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=149c5b79';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=9cba98b8';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=e792b253';
 import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE } from '/cbtc/read.js?cb=c51b1e58';
 import { makeLoans, exactNotes } from '/btc-borrow.js?cb=15bd6e6d';
 import { makeRunner } from '/activity.js?cb=4824e4fc';

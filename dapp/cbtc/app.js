@@ -7,7 +7,7 @@ import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=deafdf6c';
 import { makeConnect } from '/trade/connect.js?cb=92188b57';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=149c5b79';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=9cba98b8';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=e792b253';
 import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=b2a110d0';
 import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=c51b1e58';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, pct, short, sig } from '/trade/util.js?cb=509d6618';

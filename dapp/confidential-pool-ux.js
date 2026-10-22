@@ -5,6 +5,7 @@ import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
+import { verifyConfidentialInvoice } from './confidential-invoice.js';
 import { makeEvmTx } from './evm-tx.js';
 import { makeRecoveryGuard } from './confidential-recovery-guard.js';
 import { makeConfidentialRouter } from './confidential-router.js';
@@ -2395,6 +2396,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   async function payInvoice({ payerPriv, invoice, gasLimit = 220000n, broadcast = true } = {}) {
+    if (!verifyConfidentialInvoice(invoice, { pool, assetByTicker, chainBinding: chainBindingHex() })) {
+      throw new Error('invoice failed verification (malformed / not claimable)');
+    }
     const acct = account(payerPriv);
     const amount = BigInt(invoice.amount);
     const native = String(invoice.underlying).toLowerCase() === '0x0000000000000000000000000000000000000000';
