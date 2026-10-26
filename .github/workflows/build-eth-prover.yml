@@ -27,8 +27,11 @@ on:
         description: 'Beacon API for the live comparison'
         default: 'https://ethereum-beacon-api.publicnode.com'
       execution_rpc:
-        description: 'Execution RPC for the live comparison: eth_getLogs from DEPLOY_BLOCK (publicnode refuses that far back without a token; drpc free refuses it too) and eth_getProof at the finalized block'
+        description: 'Execution RPC for the live comparison: eth_getLogs from DEPLOY_BLOCK (publicnode refuses that far back without a token; drpc free refuses it too)'
         default: 'https://rpc.mevblocker.io'
+      proof_rpc:
+        description: 'RPC for eth_getProof at the finalized block (kept off the logs RPC, which rate-limits two runs at once)'
+        default: 'https://ethereum-rpc.publicnode.com'
       scan_chunk:
         description: 'eth_getLogs window in blocks for the live comparison'
         default: '2500'
@@ -118,6 +121,7 @@ jobs:
           BASELINE: '${{ github.event.inputs.baseline }}'
           SOURCE_CONSENSUS_RPC: '${{ github.event.inputs.consensus_rpc }}'
           SOURCE_EXECUTION_RPC: '${{ github.event.inputs.execution_rpc }}'
+          SOURCE_PROOF_RPC: '${{ github.event.inputs.proof_rpc }}'
           SCAN_CHUNK: '${{ github.event.inputs.scan_chunk }}'
           SCAN_DELAY_MS: '400'
           SOURCE_CHAIN_ID: '1'
@@ -138,7 +142,10 @@ jobs:
           }
           head_of() { grep -aoE 'finalized slot [0-9]+ \(period [0-9]+\), exec_block [0-9]+' run-$1.log | head -1; }
           pair() {
+            # the second starts a little after the first, so their log scans do not hit the RPC together; both still read the same
+            # finalized head (it moves once an epoch), which is checked below
             one base "$PWD/base/eth_prove" & a=$!
+            sleep 30
             one new "$B" & b=$!
             wait $a || { tail -30 run-base.log; return 1; }
             wait $b || { tail -30 run-new.log; return 1; }
