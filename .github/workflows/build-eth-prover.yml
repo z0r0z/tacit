@@ -27,7 +27,10 @@ on:
         description: 'Beacon API for the live comparison'
         default: 'https://ethereum-beacon-api.publicnode.com'
       execution_rpc:
-        description: 'Execution RPC for the live comparison: eth_getLogs from DEPLOY_BLOCK (publicnode refuses that far back without a token; drpc free refuses it too)'
+        description: 'Execution RPC of the baseline run in the live comparison: eth_getLogs from DEPLOY_BLOCK (publicnode, drpc free, blastapi and ankr refuse that far back; flashbots answers with no logs)'
+        default: 'https://mainnet.gateway.tenderly.co'
+      execution_rpc_new:
+        description: 'Execution RPC of the new build''s run (another provider, so the two scans do not share one rate limit)'
         default: 'https://rpc.mevblocker.io'
       proof_rpc:
         description: 'RPC for eth_getProof at the finalized block, about 90 blocks back (kept off the logs RPC, which rate-limits two runs at once; publicnode, tenderly and flashbots refuse a proof that far back)'
@@ -122,6 +125,7 @@ jobs:
           SOURCE_CONSENSUS_RPC: '${{ github.event.inputs.consensus_rpc }}'
           SOURCE_EXECUTION_RPC: '${{ github.event.inputs.execution_rpc }}'
           SOURCE_PROOF_RPC: '${{ github.event.inputs.proof_rpc }}'
+          EXEC_RPC_NEW: '${{ github.event.inputs.execution_rpc_new }}'
           SCAN_CHUNK: '${{ github.event.inputs.scan_chunk }}'
           SCAN_DELAY_MS: '400'
           SOURCE_CHAIN_ID: '1'
@@ -138,15 +142,15 @@ jobs:
           (cd base && grep ' eth_prove$' ../worker-relay/prover/bin/SHA256SUMS | sha256sum -c -) && chmod +x base/eth_prove
           one() {
             rm -rf run-$1 && mkdir -p run-$1/out run-$1/dbg
-            ETH_PROVE_OUT_DIR=$PWD/run-$1/out ETH_PROVE_DEBUG_DIR=$PWD/run-$1/dbg "$2" > run-$1.log 2>&1
+            ETH_PROVE_OUT_DIR=$PWD/run-$1/out ETH_PROVE_DEBUG_DIR=$PWD/run-$1/dbg SOURCE_EXECUTION_RPC="$3" "$2" > run-$1.log 2>&1
           }
           head_of() { grep -aoE 'finalized slot [0-9]+ \(period [0-9]+\), exec_block [0-9]+' run-$1.log | head -1; }
           pair() {
             # the second starts a little after the first, so their log scans do not hit the RPC together; both still read the same
             # finalized head (it moves once an epoch), which is checked below
-            one base "$PWD/base/eth_prove" & a=$!
+            one base "$PWD/base/eth_prove" "$SOURCE_EXECUTION_RPC" & a=$!
             sleep 30
-            one new "$B" & b=$!
+            one new "$B" "$EXEC_RPC_NEW" & b=$!
             wait $a || { tail -30 run-base.log; return 1; }
             wait $b || { tail -30 run-new.log; return 1; }
             for who in base new; do echo "$who: $(head_of $who)"; grep -aE '^(EXECUTE_OK|EXPECTED_PV_MATCH)' run-$who.log || true; done
