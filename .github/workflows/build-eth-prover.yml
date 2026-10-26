@@ -30,8 +30,8 @@ on:
         description: 'Execution RPC for the live comparison: eth_getLogs from DEPLOY_BLOCK (publicnode refuses that far back without a token; drpc free refuses it too)'
         default: 'https://rpc.mevblocker.io'
       proof_rpc:
-        description: 'RPC for eth_getProof at the finalized block (kept off the logs RPC, which rate-limits two runs at once)'
-        default: 'https://ethereum-rpc.publicnode.com'
+        description: 'RPC for eth_getProof at the finalized block, about 90 blocks back (kept off the logs RPC, which rate-limits two runs at once; publicnode, tenderly and flashbots refuse a proof that far back)'
+        default: 'https://eth.drpc.org'
       scan_chunk:
         description: 'eth_getLogs window in blocks for the live comparison'
         default: '2500'
