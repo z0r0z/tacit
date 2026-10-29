@@ -1,4 +1,4 @@
-// Discord TAC gate: the signed /verify interaction hands back a link to the Discord page, a bad signature is
+// Discord TAC gate: the signed panel button hands back a private link to the Discord page, a bad signature is
 // refused, a holder's Ethereum signature earns the role if the account holds 100 TAC in the public ERC-20, and the
 // role is granted before the link is consumed. The Bitcoin ZK proof verifier is not exercised here (it needs live
 // TAC outpoints); this drives everything around it.
@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '../dapp/discord/message.js';
 import { createMemDriver } from '../server/driver-mem.mjs';
 import { createCacheStorage } from '../server/cache-mem.mjs';
+import { DISCORD_VERIFY_BUTTON_ID, verificationPanel } from '../discord/panel.js';
+import { FARM, POOL } from '../dapp/trade/farm-read.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -58,19 +60,36 @@ ok('bad signature is refused', bad.status === 401);
 const unsigned = await fetch(`${base}/discord/interaction`, { method: 'POST', body: '{"type":1}' });
 ok('unsigned request is refused', unsigned.status === 401);
 
-// /verify in a server
-const cmd = await post({ type: 2, data: { name: 'verify' }, guild_id: G, member: { user: { id: U } }, token: 't' });
+const C = '423456789012345678';
+const button = (user = U) => ({ type: 3, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: G, channel_id: C, member: { user: { id: user } }, message: { id: '523456789012345678', ...verificationPanel() } });
+// The same persistent panel, clicked by two different members.
+const cmd = await post(button());
 const cmdBody = await cmd.json();
-ok('/verify replies inline and ephemeral', cmd.status === 200 && cmdBody.type === 4 && cmdBody.data.flags === 64, cmdBody);
+ok('the panel button replies inline and ephemeral without editing the panel', cmd.status === 200 && cmdBody.type === 4 && cmdBody.data.flags === 64, cmdBody);
 const m = /https:\/\/tacit\.finance\/discord\/#gate=([0-9a-f]{32})/.exec(cmdBody.data?.content || '');
 ok('link goes to the Discord page', !!m, cmdBody.data?.content);
 const rec = m && await env.REGISTRY_KV.get(`dgate:${m[1]}`, 'json');
 ok('nonce is stored pending for that member and server',
   rec && rec.status === 'pending' && rec.discord_user_id === U && rec.guild_id === G, rec);
+const otherUser = '623456789012345678';
+const otherReply = await (await post(button(otherUser))).json();
+const otherNonce = /#gate=([0-9a-f]{32})/.exec(otherReply.data.content)[1];
+const otherRecord = await env.REGISTRY_KV.get(`dgate:${otherNonce}`, 'json');
+ok('a second member gets a separate private link bound to their own account', otherReply.data.flags === 64 && otherNonce !== m[1] && otherRecord.discord_user_id === otherUser);
+const legacy = await (await post({ type: 2, data: { name: 'verify' }, guild_id: G, channel_id: C, member: { user: { id: U } } })).json();
+ok('/verify remains available as a fallback', legacy.type === 4 && legacy.data.flags === 64 && /#gate=/.test(legacy.data.content));
+env.DISCORD_VERIFY_CHANNEL_ID = C;
+const elsewhere = await (await post({ ...button(), channel_id: '723456789012345678' })).json();
+ok('a configured verification channel is enforced privately', elsewhere.data.flags === 64 && !/#gate=/.test(elsewhere.data.content) && elsewhere.data.content.includes(C));
+delete env.DISCORD_VERIFY_CHANNEL_ID;
+const unknown = await (await post({ ...button(), data: { component_type: 2, custom_id: 'other-button' } })).json();
+ok('unrelated components do not create verification links', unknown.type === 4 && !/#gate=/.test(unknown.data.content));
 
 // /verify in a DM
 const dm = await post({ type: 2, data: { name: 'verify' }, user: { id: U }, token: 't' });
-ok('/verify outside a server says so', (await dm.json()).data?.content === 'This command only works in a server.');
+ok('/verify outside a server says so', (await dm.json()).data?.content === 'Verification only works in a server.');
+const buttonDm = await (await post({ ...button(), guild_id: undefined, member: undefined, user: { id: U } })).json();
+ok('a button outside a server is refused privately', buttonDm.data.flags === 64 && !/#gate=/.test(buttonDm.data.content));
 
 // role grant: refused until configured, and the nonce survives a refused grant
 const noCfg = await fetch(`${base}/discord/verify`, {
@@ -86,14 +105,28 @@ let call = null, reply = () => new Response(null, { status: 204 });
 // The worker reads balanceOf(address) through these nodes: each holder's TAC (18 decimals) is answered here, an unknown address holds none.
 const TAC = 10n ** 18n;
 const balances = new Map();
+const stakes = new Map();
+const farmReads = [];
+let reserveTac = 10_000n * TAC, supply = 10_000n * TAC, farmDown = false, farmMalformed = false;
 let rpcDown = false;
 globalThis.fetch = (url, init) => {
   if (String(url).startsWith('https://discord.com/')) { call = { url: String(url), init }; return Promise.resolve(reply()); }
   if (/^https:\/\/(ethereum-rpc\.publicnode\.com|rpc\.mevblocker\.io|eth\.merkle\.io)/.test(String(url))) {
     if (rpcDown) return Promise.resolve(new Response('down', { status: 503 }));
-    const { params } = JSON.parse(init.body);
+    const { method, params } = JSON.parse(init.body);
+    if (method === 'eth_blockNumber') return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x123456' })));
     const who = '0x' + params[0].data.slice(-40);
-    const result = '0x' + (balances.get(who) ?? 0n).toString(16).padStart(64, '0');
+    const to = params[0].to.toLowerCase(), data = params[0].data;
+    const isFarm = to === FARM.toLowerCase() || to === POOL.toLowerCase();
+    if (isFarm) {
+      farmReads.push({ to, data, block: params[1] });
+      if (farmDown) return Promise.resolve(new Response('down', { status: 503 }));
+    }
+    const value = to === FARM.toLowerCase() && data.startsWith('0x98807d84') ? (stakes.get(who) ?? 0n)
+      : to === POOL.toLowerCase() && data === '0x5a76f25e' ? reserveTac
+      : to === POOL.toLowerCase() && data === '0x18160ddd' ? supply
+      : balances.get(who) ?? 0n;
+    const result = isFarm && farmMalformed ? '0x' : '0x' + value.toString(16).padStart(64, '0');
     return Promise.resolve(new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { headers: { 'content-type': 'application/json' } }));
   }
   return realFetch(url, init);
@@ -131,7 +164,7 @@ async function personalSign(priv, text) {
   return '0x' + sig.toCompactHex() + (27 + sig.recovery).toString(16);
 }
 async function newNonce() {
-  const r = await post({ type: 2, data: { name: 'verify' }, guild_id: G, member: { user: { id: U } }, token: 't' });
+  const r = await post(button());
   return /#gate=([0-9a-f]{32})/.exec((await r.json()).data.content)[1];
 }
 const verify = (body) => fetch(`${base}/discord/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -158,6 +191,46 @@ ok('and no role is asked for, the link stays good', call === null && await statu
 let nx = await newNonce(); call = null;
 res = await verify({ nonce: nx, eth_sig: await personalSign(exact.priv, discordGateMessage(nx)) });
 ok('exactly 100 TAC is enough', res.status === 200 && call?.init.method === 'PUT', res.status);
+
+// Farm eligibility is additional to wallet eligibility, based on TAC backing staked LP shares.
+const farmer = holderOf('discord-farmer'), split = holderOf('discord-split-holder');
+stakes.set(farmer.addr, 250n * TAC);
+let nf = await newNonce(); call = null; farmReads.length = 0;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('a farmer with zero wallet TAC and 250 TAC backing their stake gets the role', res.status === 200 && call?.init.method === 'PUT');
+ok('farm reads all use the same explicit Ethereum block', farmReads.length === 3 && farmReads.every((r) => r.block === '0x123456'), farmReads);
+stakes.set(farmer.addr, 50n * TAC); reserveTac = 20_000n * TAC;
+nf = await newNonce();
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('exactly 100 underlying TAC qualifies even when the LP share count is only 50', res.status === 200);
+reserveTac -= 1n;
+nf = await newNonce(); call = null;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('a farm stake just below 100 TAC is refused and remains retryable', res.status === 403 && call === null && await status(nf) === 'pending');
+reserveTac = 10_000n * TAC;
+balances.set(split.addr, 50n * TAC); stakes.set(split.addr, 50n * TAC);
+nf = await newNonce(); call = null;
+res = await verify({ nonce: nf, eth_sig: await personalSign(split.priv, discordGateMessage(nf)) });
+ok('wallet and farm balances each have to meet the threshold separately', res.status === 403 && call === null);
+stakes.set(farmer.addr, 0n);
+nf = await newNonce(); call = null;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('an exited farm position no longer qualifies', res.status === 403 && call === null);
+stakes.set(farmer.addr, 250n * TAC); farmDown = true;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('a farm read failure is retryable and grants no role', res.status === 502 && call === null && await status(nf) === 'pending');
+const nw = await newNonce();
+res = await verify({ nonce: nw, eth_sig: await personalSign(rich.priv, discordGateMessage(nw)) });
+ok('a qualifying wallet still works when farm reads are unavailable', res.status === 200);
+farmDown = false; farmMalformed = true; call = null;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('malformed farm data fails closed and keeps the link usable', res.status === 502 && call === null && await status(nf) === 'pending');
+farmMalformed = false; supply = 0n;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('zero pool supply cannot qualify a stake', res.status === 502 && call === null);
+supply = 10_000n * TAC;
+res = await verify({ nonce: nf, eth_sig: await personalSign(farmer.priv, discordGateMessage(nf)) });
+ok('the same link succeeds after the farm recovers', res.status === 200);
 
 // a signature made for one link is worth nothing on another: it recovers a different account, which holds nothing
 let n3 = await newNonce(); call = null;

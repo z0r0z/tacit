@@ -185,8 +185,8 @@ const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'tra
 const VAULT_CB_FILES = ['vault/math.js', 'vault/deployments.js', 'vault/chain.js', 'vault/feed.js', 'vault/batch.js', 'vault/router.js', 'vault/engine.js', 'vault/pools.js', 'vault/quote.js', 'vault/mine.js', 'vault/app.js', 'vault/index.html'];
 // dapp/tasks/ is the page of jobs paid in TAC: the check of a job's transactions first, then app.js, then the page (open.js is the front page's line about them).
 const TASKS_CB_FILES = ['tasks/open.js', 'tasks/verify.js', 'tasks/app.js', 'tasks/index.html'];
-// dapp/discord/ is where /verify in Discord sends a holder: the message the wallet signs first (the API signs the same one), then app.js, then the page.
-const DISCORD_CB_FILES = ['discord/message.js', 'discord/app.js', 'discord/index.html'];
+// dapp/discord/ is where the verification panel sends a holder: shared message/holdings helpers, then app.js, then the page.
+const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/app.js', 'discord/index.html'];
 // dapp/build/ is the page for builders: its one script, then the page.
 const BUILD_CB_FILES = ['build/app.js', 'build/index.html'];
 // dapp/assets/ lists Tacit's own assets and the farms under them: the farms' reading first, then app.js, then the page.

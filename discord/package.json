@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "register": "node bot.js"
+    "register": "node bot.js",
+    "panel": "node bot.js panel"
   },
   "dependencies": {
     "dotenv": "^17.4.2"

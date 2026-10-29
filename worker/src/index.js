@@ -100,6 +100,7 @@ import { preauthSalesBookBody } from './book-views.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
+import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
 import { makeTacAncestry } from './tac-ancestry.js';
 import { makeTacArchive, ARCHIVE_MAX_ROOTS, ARCHIVE_MAX_IMPORT } from './tac-archive.js';
 import { traceBurnDepositProvenance, rebuiltRawTx } from './burndep-live-tracer.js';
@@ -27693,8 +27694,8 @@ async function completeDiscordGate(env, nonce, record, holder) {
   return { ok: true };
 }
 
-// Two ways to show the TAC: a signature from an Ethereum address that holds it in the public TAC ERC-20 (the same read a public governance vote
-// makes), or the private proof of TAC notes on Bitcoin. Either way the role is for the Discord account the link was made for.
+// An Ethereum signature proves ownership of wallet TAC or TAC backing staked Precision LP shares.
+// The private Bitcoin proof remains available. The role goes to the Discord account the link was made for.
 async function handleDiscordVerify(req, env, cors) {
   if (!env.DISCORD_BOT_TOKEN || !env.TAC_ROLE_ID) {
     return jsonResponse({ error: 'discord_gate: role grant not configured' }, 500, cors);
@@ -27716,7 +27717,7 @@ async function handleDiscordVerify(req, env, cors) {
 
   let holder;
   if (ethSig) {
-    const r = await _getGovernance().publicTacHolder(env, CER_ELIGIBILITY_NETWORK, discordGateMessage(nonce), ethSig, DISCORD_MIN_TAC_BASE_UNITS);
+    const r = await _getGovernance().publicTacHolder(env, CER_ELIGIBILITY_NETWORK, discordGateMessage(nonce), ethSig, DISCORD_MIN_TAC_BASE_UNITS, { includePrecisionFarm: true });
     if (!r.ok) return jsonResponse({ error: `discord_gate: ${r.reason}` }, r.status, cors);
     holder = `eth:${r.address}`;
   } else {
@@ -27765,14 +27766,19 @@ async function handleDiscordInteraction(req, env, cors) {
     return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  if (interaction.type === 2 && interaction.data?.name === 'verify') {
+  const verifyCommand = interaction.type === 2 && interaction.data?.name === 'verify';
+  const verifyButton = interaction.type === 3 && interaction.data?.component_type === 2 && interaction.data?.custom_id === DISCORD_VERIFY_BUTTON_ID;
+  if (verifyCommand || verifyButton) {
     const userId = interaction.member?.user?.id || interaction.user?.id;
     const guildId = interaction.guild_id;
     if (!userId || !guildId) {
       return new Response(JSON.stringify({
         type: 4,
-        data: { content: 'This command only works in a server.', flags: 64 },
+        data: { content: 'Verification only works in a server.', flags: 64 },
       }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (env.DISCORD_VERIFY_CHANNEL_ID && interaction.channel_id !== env.DISCORD_VERIFY_CHANNEL_ID) {
+      return jsonResponse({ type: 4, data: { content: `Please use the verification panel in <#${env.DISCORD_VERIFY_CHANNEL_ID}>.`, flags: 64 } }, 200, cors);
     }
 
     const buf = new Uint8Array(16);
@@ -27795,7 +27801,7 @@ async function handleDiscordInteraction(req, env, cors) {
     }), { headers: { 'Content-Type': 'application/json' } });
   }
 
-  return new Response(JSON.stringify({ type: 1 }), { headers: { 'Content-Type': 'application/json' } });
+  return jsonResponse({ type: 4, data: { content: 'Unknown verification action. Please use the Verify button.', flags: 64 } }, 200, cors);
 }
 
 // ============== ROUTER ==============

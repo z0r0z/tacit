@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// dapp/discord/ in a real browser, under its own CSP, against the real worker: the page where /verify in Discord sends a holder. The page and its modules
+// dapp/discord/ in a real browser, under its own CSP, against the real worker: the page the Discord verification panel sends a holder to. The page and its modules
 // are the real files, and the API behind api.tacit.finance is the real worker on the Node harness. What stands in: the Ethereum node (each account's TAC),
 // Discord's REST (the role), and the wallet, which signs for real with a key held here, so the worker recovers the same account the page showed.
 //   checks: no link; a holder gets the role (what the wallet is asked to sign, the link taken out of the address bar, the role asked for); 99.5 TAC is
@@ -18,8 +18,10 @@ import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import { createMemDriver } from '../server/driver-mem.mjs';
 import { createCacheStorage } from '../server/cache-mem.mjs';
 import { discordGateMessage } from '../dapp/discord/message.js';
+import { DISCORD_VERIFY_BUTTON_ID } from '../discord/panel.js';
+import { TAC as TAC_TOKEN, FARM, POOL } from '../dapp/trade/farm-read.js';
 
-const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const SHOTS = process.env.SHOTS || '';
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
@@ -52,6 +54,8 @@ const API = `http://127.0.0.1:${api.address().port}`;
 
 const TAC = 10n ** 18n;
 const balances = new Map();
+const stakes = new Map();
+let farmDown = false;
 const roles = [];
 let discordReply = () => new Response(null, { status: 204 });
 const realFetch = globalThis.fetch;
@@ -62,7 +66,16 @@ globalThis.fetch = (url, init) => {                    // the worker's own reads
   return realFetch(url, init);
 };
 const balanceAnswer = (body) => {
-  const one = (q) => ({ jsonrpc: '2.0', id: q.id, result: '0x' + (balances.get('0x' + q.params[0].data.slice(-40)) ?? 0n).toString(16).padStart(64, '0') });
+  const one = (q) => {
+    if (q.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: q.id, result: '0x123456' };
+    const { to, data } = q.params[0], who = '0x' + data.slice(-40);
+    const isFarm = to.toLowerCase() === FARM.toLowerCase() || to.toLowerCase() === POOL.toLowerCase();
+    if (farmDown && isFarm) return { jsonrpc: '2.0', id: q.id, error: { code: -32000, message: 'farm read unavailable' } };
+    const value = to.toLowerCase() === TAC_TOKEN.toLowerCase() ? balances.get(who) ?? 0n
+      : to.toLowerCase() === FARM.toLowerCase() && data.startsWith('0x98807d84') ? stakes.get(who) ?? 0n
+      : to.toLowerCase() === POOL.toLowerCase() && ['0x5a76f25e', '0x18160ddd'].includes(data) ? 10_000n * TAC : 0n;
+    return { jsonrpc: '2.0', id: q.id, result: '0x' + value.toString(16).padStart(64, '0') };
+  };
   return new Response(JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)), { headers: { 'content-type': 'application/json' } });
 };
 
@@ -75,9 +88,9 @@ const personalSign = async (priv, text) => {
   const sig = await secp.signAsync(keccak_256(concatBytes(new TextEncoder().encode(`\x19Ethereum Signed Message:\n${m.length}`), m)), priv);
   return '0x' + sig.toCompactHex() + (27 + sig.recovery).toString(16);
 };
-// Discord's own call, signed as Discord signs it: what /verify does in the server
+// Discord's own call, signed as Discord signs it: clicking the persistent panel
 async function discordVerify() {
-  const body = JSON.stringify({ type: 2, data: { name: 'verify' }, guild_id: '223456789012345678', member: { user: { id: '123456789012345678' } }, token: 't' });
+  const body = JSON.stringify({ type: 3, data: { component_type: 2, custom_id: DISCORD_VERIFY_BUTTON_ID }, guild_id: '223456789012345678', member: { user: { id: '123456789012345678' } } });
   const ts = String(Math.floor(Date.now() / 1000));
   const r = await realFetch(`${API}/discord/interaction`, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-signature-ed25519': sign(null, Buffer.from(ts + body), privateKey).toString('hex'), 'x-signature-timestamp': ts } });
   const link = (await r.json()).data.content;
@@ -85,13 +98,14 @@ async function discordVerify() {
 }
 const record = async (n) => env.REGISTRY_KV.get(`dgate:${n}`, 'json');
 
-const rich = holderOf('page-holder-250tac'), poor = holderOf('page-holder-99tac');
+const rich = holderOf('page-holder-250tac'), poor = holderOf('page-holder-99tac'), farmer = holderOf('page-farmer-100tac');
 balances.set(rich.addr, 250n * TAC); balances.set(poor.addr, 99n * TAC + TAC / 2n);
+stakes.set(farmer.addr, 100n * TAC);
 
 // ── the browser ──
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
-const b = await chromium.launch();
+const b = await chromium.launch({ channel: 'chromium-headless-shell' });
 async function open(holder, hash = '', { viewport = { width: 1100, height: 800 }, scheme = 'light' } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   const page = await ctx.newPage();
@@ -146,7 +160,7 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   const { page, errs, csp } = await open(rich);
   ok(await text(page, '#gate h2') === 'Start from Discord.', 'without a link it says to start from Discord');
   ok(await page.$('#go') === null, 'and offers nothing to press');
-  ok(/\/verify/.test(await text(page, '#gate') || ''), 'naming the command');
+  ok(/Verify.*panel.*#verify/.test(await text(page, '#gate') || ''), 'naming the persistent verification panel');
   ok((await page.title()) === 'tacit discord', 'the page is titled for what it is');
   ok(errs.length === 0 && csp.length === 0, `no script errors and nothing the CSP refused (${errs.concat(csp).join(' | ')})`);
   await shot(page, 'discord-nolink');
@@ -206,7 +220,7 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   await page.waitForFunction(() => document.querySelector('#go')?.textContent === 'Verify');
   await page.click('#go');
   await page.waitForFunction(() => document.querySelector('#gate h2')?.textContent === 'Start from Discord.');
-  ok(/expired/.test(await text(page, '#note') || ''), 'a link the server does not know says it has expired and to run /verify again');
+  ok(/expired.*Click Verify/.test(await text(page, '#note') || ''), 'a link the server does not know points back to the verification panel');
   ok(roles.length === 0, 'and no role is asked for');
   await page.context().close();
 }
@@ -230,7 +244,38 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: jo
   await page.context().close();
 }
 
-// 6. a phone, in both colour schemes
+// 6. A farm-only holder can verify without withdrawing their TAC.
+{
+  roles.length = 0;
+  const nonce = await discordVerify();
+  const { page, signed, errs, csp } = await open(farmer, `#gate=${nonce}`);
+  await connect(page);
+  await page.waitForFunction(() => document.querySelector('#go')?.textContent === 'Verify');
+  ok(await text(page, '.kv:nth-child(2) b') === '0 TAC', 'a farmer needs no loose wallet TAC');
+  ok(await text(page, '.kv:nth-child(4) b') === '100 TAC', 'the page shows the TAC backing the staked farm position');
+  await page.click('#go');
+  await page.waitForFunction(() => document.querySelector('#gate h2')?.textContent === 'You have the holder role.');
+  ok(signed.length === 1 && roles.length === 1 && (await record(nonce)).holder === `eth:${farmer.addr}`, 'a farm-only holder signs once and receives the role');
+  ok(errs.length === 0 && csp.length === 0, 'the farm path has no browser or CSP errors');
+  await page.context().close();
+}
+
+// 7. A failed farm read can be retried without replacing the member's link.
+{
+  roles.length = 0; farmDown = true;
+  const nonce = await discordVerify();
+  const { page } = await open(farmer, `#gate=${nonce}`);
+  await connect(page);
+  await page.waitForSelector('#retry');
+  ok(await page.isDisabled('#go'), 'a farm read failure cannot verify an unqualified wallet');
+  farmDown = false;
+  await page.click('#retry');
+  await page.waitForFunction(() => document.querySelector('#go')?.textContent === 'Verify');
+  ok(await text(page, '.kv:nth-child(4) b') === '100 TAC', 'retry restores the farm balance');
+  await page.context().close();
+}
+
+// 8. a phone, in both colour schemes
 for (const scheme of ['light', 'dark']) {
   const nonce = await discordVerify();
   const { page } = await open(rich, `#gate=${nonce}`, { viewport: { width: 375, height: 760 }, scheme });

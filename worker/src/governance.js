@@ -35,6 +35,8 @@
 
 import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
+import { TAC as PRECISION_TAC, FARM, POOL } from '../../dapp/trade/farm-read.js';
+import { readPrecisionTacStake } from '../../dapp/discord/holdings.js';
 
 const enc = (s) => new TextEncoder().encode(s);
 
@@ -408,18 +410,29 @@ export function buildGovernance(deps) {
   }
 
   // Whether the address that signed `message` (EIP-191) holds at least `minBase` TAC, in base units, in the canonical TAC ERC-20 at the latest block.
-  // A vote asks the same of a proposal's snapshot block; the Discord holder role asks it of now.
-  async function publicTacHolder(env, network, message, sigHex, minBase) {
+  // Discord can also opt in to the latest mainnet Precision farm stake; votes use separate snapshot reads.
+  async function publicTacHolder(env, network, message, sigHex, minBase, { includePrecisionFarm = false } = {}) {
     const token = govTacErc20(env, network);
     if (!token) return { ok: false, status: 501, reason: 'the TAC ERC-20 is not configured on this network' };
     let addr;
     try { addr = recoverEthAddr(message, sigHex); }
     catch (e) { return { ok: false, status: 400, reason: `eth sig recover failed: ${e.message || 'unknown'}` }; }
     const bal = await readErc20Balance(env, network, token, addr);
-    if (bal === null) return { ok: false, status: 502, reason: 'the TAC balance could not be read, try again' };
-    const weight = bal / GOV_ERC20_TO_BASE;
-    if (weight < minBase) return { ok: false, status: 403, reason: `${addr} holds less than the TAC required` };
-    return { ok: true, address: addr, weight };
+    const weight = bal === null ? null : bal / GOV_ERC20_TO_BASE;
+    if (weight !== null && weight >= minBase) return { ok: true, address: addr, weight };
+    // Discord opts in to the deployed mainnet farm. Governance remains wallet-only.
+    if (includePrecisionFarm && network === 'mainnet' && token === PRECISION_TAC.toLowerCase()) {
+      try {
+        const block = await ethBlockNumber(network);
+        if (!Number.isSafeInteger(block) || block <= 0) throw new Error('block unavailable');
+        const stake = await readPrecisionTacStake(({ to, data }) => ethCallAt(env, network, to, data, `0x${block.toString(16)}`), addr, { farm: FARM, pool: POOL });
+        if (stake / GOV_ERC20_TO_BASE >= minBase) return { ok: true, address: addr, weight: stake / GOV_ERC20_TO_BASE };
+      } catch {
+        return { ok: false, status: 502, reason: 'the Precision farm balance could not be read, try again' };
+      }
+    }
+    if (weight === null) return { ok: false, status: 502, reason: 'the TAC balance could not be read, try again' };
+    return { ok: false, status: 403, reason: `${addr} holds less than the TAC required in its wallet or eligible farm` };
   }
 
   // ---- tally / proposal lifecycle helpers -----------------------------------
