@@ -6,8 +6,8 @@ import {
 import { getConfidentialDeployment } from '/confidential-deployments.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE } from '/trade/tape.js?cb=a4aefafb';
-import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=13ad4a30';
-import { mountDepth } from '/trade/depth.js?cb=117b1cfe';
+import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
+import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
 import { takeEarly } from '/trade/rpc.js?cb=63f04503';
@@ -213,7 +213,7 @@ function renderLanes() {
   ];
   const bg = laneGap(btcUsdPerTac());
   setHtml($('#hints-sum'), base != null || btcUsdPerTac() != null
-    ? [base != null ? html`<span>${CM_ETH}Ethereum <b>${usd(base)}</b></span>` : '', btcUsdPerTac() != null ? html`<span>${base != null ? '· ' : ''}${CM_BTC}Bitcoin <b>${usd(btcUsdPerTac())}</b></span>` : '', bg != null && Math.abs(bg) >= 0.01 ? html`<span class="apart">· ${Math.round(Math.abs(bg) * 100)}% apart</span>` : ''].join('')
+    ? [base != null ? html`<span>${CM_ETH}<span class="nm">Ethereum </span><b>${usd(base)}</b></span>` : '', btcUsdPerTac() != null ? html`<span>${base != null ? '· ' : ''}${CM_BTC}<span class="nm">Bitcoin </span><b>${usd(btcUsdPerTac())}</b></span>` : '', bg != null && Math.abs(bg) >= 0.01 ? html`<span class="apart">· ${Math.round(Math.abs(bg) * 100)}% apart</span>` : ''].join('')
     : 'Prices on each chain');
   setHtml($('#lanes'), cards.map((c) => {
     const g = c.g ?? (c.gap != null ? `${pct(c.gap)} vs Precision${c.dev && Math.abs(c.gap) >= 0.01 ? ' · apart' : ''}` : c.sub || '');
@@ -502,10 +502,12 @@ function openBitcoinFor(act, q = S.quote) {
 $('#venues').addEventListener('click', (e) => { const b = e.target.closest('[data-btc-row]'); if (b && S.quote) openBitcoinFor(b.dataset.btcRow); });
 $('#btc-alt')?.addEventListener('click', (e) => { const b = e.target.closest('[data-btc-alt]'); if (b) openBitcoinFor(b.dataset.btcAlt); });
 // The ticket trades on Ethereum; the same TAC trades for sats on Bitcoin. The line under the ticket says what the order book does with this amount, and opens it there.
+// The page is sent with it drawn (the general sentence, which is what it says until the book is read), so the book arriving moves nothing: it is taken away only
+// when the book is read and empty, or cannot be read.
 function renderBtcAlt(q = S.quote) {
   const el = $('#btc-alt'), b = D.book, buy = S.side === 'buy';
   if (!el) return;
-  if (!btcOn() || !b || !(b.asks.length || b.bids.length)) { el.hidden = true; return; }
+  if (!btcOn() || (b ? !(b.asks.length || b.bids.length) : D.bookFailed)) { el.hidden = true; return; }
   const bk = q && !q.busy && !q.err ? q.book : null;
   let text, act;
   const worth = (sats) => (D.btcUsd ? ` (about ${usd(sats / 1e8 * D.btcUsd)})` : '');
@@ -569,7 +571,7 @@ function renderQuote(q) {
     name = rt.pick === 'split' ? `Split: ${splitWhat(rt.split)}` : rt.single.venue === 'precision' ? 'Precision pool' : rt.single.venue === 'tacit-amm' ? 'Tacit pool' : 'Other pool';
     const gainTxt = rt.split ? `${(rt.split.gainBps / 100).toFixed(rt.split.gainBps < 100 ? 2 : 1)}%` : '';
     if (rt.pick === 'split') note = `<p class="splitnote">Split: <b>${gainTxt}</b> ${buy ? 'more TAC' : 'more ETH'} than the better pool alone.</p>`;
-    else if (rt.split && buy && rt.split.gainBps >= 30) note = `<p class="splitnote mute">A split pays ${gainTxt} more, not enough to leave the Precision pool (it earns points).</p>`;
+    else if (rt.split && buy && rt.split.gainBps >= 30) note = `<p class="splitnote mute">A split pays ${gainTxt} more, not enough to ${rt.single.venue === 'precision' ? 'leave the Precision pool (it earns points)' : 'be worth it'}.</p>`;
     else if (rt.split) note = `<p class="splitnote mute">A split pays ${gainTxt} more, less than its extra network fee.</p>`;
   }
   outEl.textContent = fmtOut(out, buy); outEl.classList.remove('ph');
@@ -868,7 +870,7 @@ function renderBook() {
   mb.hidden = !showMine(); setHtml(mb, `Yours${orders.length ? `<i class="n">${orders.length}</i>` : ''}`);
   const tab = bookTab(), box = $('#ladders'), note = $('#depth-note');
   $('#book-seg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.book === tab)));
-  $('#depthchart').hidden = tab === 'trades' || tab === 'mine';
+  $('#depthchart').hidden = tab === 'trades' || tab === 'mine' || (tab === 'eth' && !!D.zb && !hasBoardOrders());       // an empty board says so once, under the tabs, not again in a blank chart
   setPeek(tab === 'btc' ? '' : null);
   if (tab === 'mine') { if (W.account && (D.tradesStale || ((!D.tradesAt || now() - D.tradesAt > 120) && (!D.tradesTried || now() - D.tradesTried > 60)))) ensureTrades(); setHtml(box, mineHtml(orders)); note.textContent = ''; return; }
   if (tab === 'trades') {

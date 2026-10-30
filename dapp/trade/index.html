@@ -56,7 +56,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=ef570aaf">
+<link rel="modulepreload" href="/trade/app.js?cb=388c338c">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/evm-trade-venues.js?cb=5a940508">
 <link rel="modulepreload" href="/zrouter-guard.js">
@@ -64,9 +64,9 @@
 <link rel="modulepreload" href="/confidential-deployments.generated.js">
 <link rel="modulepreload" href="/btc-book.js?cb=0a09ab9e">
 <link rel="modulepreload" href="/trade/tape.js?cb=a4aefafb">
-<link rel="modulepreload" href="/trade/chart.js?cb=13ad4a30">
+<link rel="modulepreload" href="/trade/chart.js?cb=04207026">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/trade/depth.js?cb=117b1cfe">
+<link rel="modulepreload" href="/trade/depth.js?cb=438b534c">
 <link rel="modulepreload" href="/trade/book.js?cb=577d1f94">
 <link rel="modulepreload" href="/zboards.js?cb=e8d21aec">
 <link rel="modulepreload" href="/trade/connect.js?cb=de979716">
@@ -177,6 +177,11 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .hints[open] summary::after { transform: rotate(180deg); }
 .hints summary b { color: var(--ink); font-weight: 500; }
 @media (hover: hover) { .hints summary:hover { color: var(--ink); } }
+/* The TAC page's own line: each price stays whole (a line that must break does so between them), and on a phone the logos say which chain, so the names go: it is one line
+   at every width, and what it is when the prices arrive is what it was before them, so nothing below it moves. */
+.hints summary.hs { flex-wrap: wrap; gap: 2px 6px; }
+.hints summary.hs > span { white-space: nowrap; }
+@media (max-width: 480px) { .hints summary.hs .nm { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }
 .hints-pop { position: absolute; left: 0; top: 100%; z-index: 40; width: min(640px, 100%); margin-top: -10px; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair-2); box-shadow: 0 10px 30px rgba(0, 0, 0, .12); }
 .hints-pop .gapnote { margin: 10px 0 0; }
 .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
@@ -235,7 +240,7 @@ code { font-size: 12px; overflow-wrap: anywhere; }
 .chart .line { fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
 .chart .area { fill-opacity: .08; stroke: none; pointer-events: none; } .chart .line-vol { fill: var(--ink); opacity: .1; }
 .chart .lastdot { stroke: var(--card); stroke-width: 2; }
-.chart .tagline { stroke-width: 1; stroke-dasharray: 3 3; opacity: .8; }
+.chart .tagline { stroke-width: 1; stroke-dasharray: 3 3; opacity: .8; } .chart .tagstem { fill: none; stroke-width: 1; opacity: .8; }
 .chart .tagbox { opacity: .95; } .chart .tagtext { fill: #1a1a1a; font-size: 10px; font-weight: 500; }
 .chart .cross line { stroke: var(--mute); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart-tip { position: absolute; z-index: 2; pointer-events: none; min-width: 170px; max-width: 280px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; background: var(--paper); border: 1px solid var(--hair-2); box-shadow: var(--lift); }
@@ -326,7 +331,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .cmp > summary::-webkit-details-marker { display: none; }
 .cmp > summary::before { content: '▸'; font-size: 10px; transition: transform .15s; } .cmp[open] > summary::before { transform: rotate(90deg); }
 @media (hover: hover) { .cmp > summary:hover { color: var(--ink); } }
-.cmp .table { margin-top: 6px; } .cmp .table td, .cmp .table th { padding-left: 4px; padding-right: 4px; } .cmp .table td.r { white-space: nowrap; }
+.cmp .table { margin-top: 6px; } .cmp .table td, .cmp .table th { padding-left: 4px; padding-right: 4px; } .cmp .table td.r, .cmp .table th { white-space: nowrap; }
 .cmp .table td small { display: block; }
 .picks { display: grid; gap: 8px; margin-top: 10px; } .picks .btn { margin-top: 0; }
 .status { font-size: 12.5px; min-height: 0; margin-top: 12px; overflow-wrap: anywhere; }
@@ -386,7 +391,7 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .ob-last { display: inline-flex; align-items: baseline; gap: 6px; } .ob-last b { font-size: 15px; font-weight: 500; color: var(--ink); } .ob-last em { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .ob-empty { padding: 12px; font-size: 11.5px; color: var(--mute); }
 .ob-peek { min-height: 1.7em; margin: 8px 0 0; font-size: 12px; color: var(--mute); }
-@media (max-width: 560px) { .ob-peek { min-height: 3.4em; } }
+@media (max-width: 560px) and (hover: hover) { .ob-peek { min-height: 3.4em; } }              /* the room for a pressed row's longer line is kept where a pointer can hover; a touch opens the market at once */
 .seg button i.n { font-style: normal; margin-left: 6px; opacity: .7; }
 .mine-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 0 0 12px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); }
 .mine-who { display: flex; flex-direction: column; min-width: 0; font-size: 12px; } .mine-who b { font-weight: 500; font-size: 13px; } .mine-who span { color: var(--mute); }
@@ -456,7 +461,7 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .pin { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; margin: -6px 0 6px; padding: 9px 12px; font-size: 12.5px; background: var(--field); border-left: 2px solid var(--orange); }
 
 .fm-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin: 0 0 12px; }
-.fm-stats > div { display: grid; gap: 2px; } .fm-stats .k { font-size: 11px; color: var(--mute); } .fm-stats b { font-weight: 500; font-size: 17px; } .fm-stats .s { font-size: 11.5px; color: var(--mute); }
+.fm-stats > div { display: grid; gap: 2px; align-content: start; } .fm-stats .k { font-size: 11px; color: var(--mute); } .fm-stats b { font-weight: 500; font-size: 17px; } .fm-stats .s { font-size: 11.5px; color: var(--mute); }
 .fm-prog { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--hair); } .fm-prog:empty { display: none; }
 .fm-ph { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; font-size: 12px; } .fm-ph span { color: var(--mute); font-size: 11.5px; }
 .fm-pf { display: grid; grid-template-columns: 1fr auto auto 14px; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid var(--hair); color: var(--ink); text-decoration: none; font-size: 12.5px; }
@@ -665,7 +670,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <h1 id="px-h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span class="sr">TAC price </span><span id="px-usd" class="num">TAC</span></h1>
       <div class="sub tac" id="px-sub"><span class="mute">Reading the pools…</span></div>
       <noscript><p class="note">Prices, charts and trading on this page need JavaScript.</p></noscript>
-      <details class="hints" id="hints"><summary id="hints-sum">Prices on each chain</summary>
+      <details class="hints" id="hints"><summary class="hs" id="hints-sum">Prices on each chain</summary>
         <div class="hints-pop"><div class="lanes" id="lanes" role="group" aria-label="TAC’s price in each place it trades"></div><p class="gapnote" id="gapnote"></p></div>
       </details>
     </div>
@@ -706,7 +711,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <button class="btn" id="go" type="button">Connect wallet</button>
       <div class="status" id="status" role="status"></div>
       <p class="note" id="tk-note"></p>
-      <p class="btc-alt" id="btc-alt" hidden></p>
+      <p class="btc-alt" id="btc-alt"><svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg><span>Or buy TAC for sats on the Bitcoin order book. <button type="button" class="linkbtn" data-btc-alt="buy">Buy on Bitcoin →</button></span></p>
       <div class="bw" id="bw" aria-live="polite"><p class="bw-l">Borrow TACD or TACE against TAC. No interest, one fee.</p><p class="bw-a"><a class="bw-go" href="/vault/">Borrow against TAC →</a></p></div>
       <details class="cmp" id="cmp" hidden><summary id="cmp-sum">Compare routes</summary>
         <table class="table" id="venues"><thead><tr><th>Where</th><th class="r">You get</th><th class="r opt">Vs best</th></tr></thead><tbody></tbody></table>
@@ -760,6 +765,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=ef570aaf"></script>
+<script type="module" src="/trade/app.js?cb=388c338c"></script>
 </body>
 </html>

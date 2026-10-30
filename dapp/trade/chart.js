@@ -9,6 +9,28 @@ const el = (name, attrs = {}, kids = []) => {
   return n;
 };
 
+// Where each price tag sits on the right edge. A tag is 16 high; two prices nearer than a tag and a gap would be drawn one over the other (the Tacit pool a
+// hair from the Precision pool covers the Precision price), so each run of tags that touch is spaced evenly about the middle of its prices, kept inside the
+// plot. `ys` are the prices' own heights; the result is the tags' heights, in the same order.
+export function placeTags(ys, step = 18, lo = -Infinity, hi = Infinity) {
+  const runs = ys.map((y, i) => ({ at: [i], c: y })).sort((a, b) => a.c - b.c);
+  const slot = (r, k) => (k - (r.at.length - 1) / 2) * step;
+  const centre = (r) => { const c = r.at.reduce((a, i, k) => a + ys[i] - slot(r, k), 0) / r.at.length, h = (r.at.length - 1) * step / 2; return Math.max(lo + h, Math.min(hi - h, c)); };
+  for (const r of runs) { r.at.sort((a, b) => ys[a] - ys[b]); r.c = centre(r); }
+  for (let again = true; again;) {
+    again = false;
+    for (let k = 0; k + 1 < runs.length; k++) {
+      const a = runs[k], b = runs[k + 1];
+      if (b.c - (b.at.length - 1) * step / 2 - (a.c + (a.at.length - 1) * step / 2) >= step - 1e-6) continue;
+      const m = { at: [...a.at, ...b.at] }; m.at.sort((p, q) => ys[p] - ys[q]); m.c = centre(m);
+      runs.splice(k, 2, m); again = true; break;
+    }
+  }
+  const out = new Array(ys.length);
+  for (const r of runs) r.at.forEach((i, k) => { out[i] = r.c + slot(r, k); });
+  return out;
+}
+
 export function niceTicks(lo, hi, count = 5) {
   if (!(hi > lo)) return [lo];
   const raw = (hi - lo) / count, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
@@ -77,7 +99,7 @@ export function mountChart(host, onHover = null, { onSelect = null, onView = nul
     const pw = W - m.l - m.r, ph = H - m.t - m.b, volH = ph * 0.16;
     const useLog = log && lo > 0, lg = useLog ? Math.log : (x) => x;
     const X = (t) => m.l + ((t - t0) / (t1 - t0 || 1)) * pw, Y = (v) => m.t + (1 - (lg(Math.max(v, lo * 1e-9)) - lg(lo)) / (lg(hi) - lg(lo) || 1)) * (ph - volH * 0.4);
-    const first = series[0], f = first?.fmt || String;
+    const first = series[0], f = first?.fmt || String, tagY = placeTags(tags.map((tg) => Y(tg.y)), 18, m.t + 8, H - m.b - 8);
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': `${label}${zoom ? ', zoomed in' : ''}. The arrow keys read each bar.`, class: 'chart-svg' });
     svg.append(el('defs', {}, el('clipPath', { id: 'chart-clip' }, el('rect', { x: m.l, y: m.t, width: pw, height: H - m.t }))));
     const plot = el('g', { 'clip-path': 'url(#chart-clip)' }), marks = [];
@@ -87,7 +109,7 @@ export function mountChart(host, onHover = null, { onSelect = null, onView = nul
     const pointF = (s) => (even && s.tickFmt ? s.tickFmt(pstep / 10) : s.fmt || f);
     for (const v of ticks) {
       svg.append(el('line', { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), class: 'grid' }));
-      if (!tags.some((tg) => Math.abs(Y(tg.y) - Y(v)) < 15)) svg.append(el('text', { x: W - m.r + 6, y: Y(v) + 4, class: 'axis' }, tickF(v)));
+      if (!tags.some((tg, i) => Math.abs(Y(tg.y) - Y(v)) < 15 || Math.abs(tagY[i] - Y(v)) < 15)) svg.append(el('text', { x: W - m.r + 6, y: Y(v) + 4, class: 'axis' }, tickF(v)));
     }
     const days = (t1 - t0) > 2 * 86400, step = Math.max(1, Math.ceil((t1 - t0) / (pw / 110)));
     const tick = (t, label) => svg.append(el('line', { x1: X(t), x2: X(t), y1: m.t, y2: H - m.b, class: 'grid v' }), el('text', { x: X(t), y: H - 6, class: 'axis mid' }, label));
@@ -145,12 +167,15 @@ export function mountChart(host, onHover = null, { onSelect = null, onView = nul
     }
     svg.append(plot, ...marks);
     const boxW = (text) => Math.max(m.r - 4, String(text).length * 6 + 8);
-    for (const tg of tags) {
-      const w = boxW(tg.label);
-      svg.append(el('line', { x1: m.l, x2: W - m.r, y1: Y(tg.y), y2: Y(tg.y), class: 'tagline', style: `stroke:${tg.color}` }),
-        el('rect', { x: W - w - 2, y: Y(tg.y) - 8, width: w, height: 16, class: 'tagbox', style: `fill:${tg.color}` }),
-        el('text', { x: W - w + 2, y: Y(tg.y) + 4, class: 'tagtext' }, tg.label));
-    }
+    tags.forEach((tg, i) => {
+      const y = Y(tg.y), at = tagY[i], w = boxW(tg.label);
+      svg.append(el('line', { x1: m.l, x2: W - m.r, y1: y, y2: y, class: 'tagline', style: `stroke:${tg.color}` }));
+      if (Math.abs(at - y) > 0.5) svg.append(el('path', { d: `M${W - m.r},${y} V${at} H${W - w - 2}`, class: 'tagstem', style: `stroke:${tg.color}` }));
+    });
+    tags.forEach((tg, i) => {
+      const at = tagY[i], w = boxW(tg.label);
+      svg.append(el('rect', { x: W - w - 2, y: at - 8, width: w, height: 16, class: 'tagbox', style: `fill:${tg.color}` }), el('text', { x: W - w + 2, y: at + 4, class: 'tagtext' }, tg.label));
+    });
     const half = (period / (t1 - t0 || 1)) * pw / 2;
     const Yv = (y) => { const k = 1 - (y - m.t) / (ph - volH * 0.4), L = lg(lo) + k * (lg(hi) - lg(lo)); return Math.max(0, useLog ? Math.exp(L) : L); };
     const dots = series.map(() => el('circle', { class: 'cd', r: 4.5, visibility: 'hidden' }));

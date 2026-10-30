@@ -8,7 +8,7 @@
 //   valueFmt: a total in the price's unit (what the orders up to a price come to; default priceFmt)
 //   onPick(level, side) is called with the order a click lands on.
 
-import { niceTicks } from '/trade/chart.js?cb=13ad4a30';
+import { niceTicks } from '/trade/chart.js?cb=04207026';
 import { cumulative } from '/trade/book.js?cb=577d1f94';
 
 const NS = 'http://www.w3.org/2000/svg';

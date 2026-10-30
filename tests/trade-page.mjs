@@ -201,7 +201,7 @@ try {
   ok((await p.$$eval('#chart .halo', (h) => h.length)) === 1 && (await p.$$eval('.hero h1 svg.tk', (h) => h.length)) === 1 && (await p.$eval('.hero h1 svg.tk', (e) => e.getBoundingClientRect().width)) > 30 && (await p.$$eval('main use[href="#tk-tac"]', (u) => u.length)) >= 7, 'the live price is marked, and the TAC mark sits beside the price and on the page\'s headings');
   await p.click('[data-kind="candles"]'); await until(p, () => document.querySelectorAll('#chart .body').length > 5);
   const c4 = await candles(p);
-  ok(c4 >= 30 && c4 <= 180, `the Ethereum lane draws the 4-hour tape as candles (${c4})`);
+  ok(c4 >= 30 && c4 <= 190, `the Ethereum lane draws the 4-hour tape as candles (${c4})`);          // a month of 4-hour bars is 181, and the bars at its two ends add a few
   const nowRead = (await text(p, '#ch-read .px')).trim();
   ok((await p.$$eval('#chart .tagtext', (t) => t.map((x) => x.textContent))).includes(nowRead), `with the Precision pool's price now at the edge, as the line above reads it (${nowRead})`);
   // the move over a range is the same in candles as on the line, and the past day's is the head's 24h move
@@ -243,6 +243,18 @@ try {
   await p.click('[data-lane="cmp"]'); await until(p, () => document.querySelectorAll('#chart polyline').length === 2);
   ok((await lines(p)) === 2 && !(await p.$('#chart .body')), 'Compare draws the two lanes as lines in dollars');
   ok(/Ethereum and Bitcoin in dollars, at today’s ETH and BTC prices/.test(await text(p, '#chart-note')), 'and says they are at today\'s rates');
+  // prices a hair apart (the Tacit pool beside the Precision pool) each keep a whole tag: they are spaced out, not drawn one over the other
+  const tagYs = await p.evaluate(async () => {
+    const { mountChart } = await import('/trade/chart.js');
+    const host = document.createElement('div'); host.style.cssText = 'position:absolute;left:-9999px;top:0;width:640px;height:300px'; document.body.append(host);
+    const bars = Array.from({ length: 24 }, (_, i) => ({ t: 1.75e9 + i * 3600, open: 1, high: 1, low: 1, close: 1 + i * 0.002, vol: 0 }));
+    mountChart(host).update({ series: [{ id: 'a', name: 'a', color: '#00f', kind: 'line', area: true, bars, fmt: String }], period: 3600,
+      tags: [{ y: 1.04, label: '$1.04', color: '#00f' }, { y: 1.0402, label: 'Tacit', color: '#0a0' }, { y: 1.2, label: 'far', color: '#f90' }] });
+    const ys = [...host.querySelectorAll('.tagbox')].map((b) => Number(b.getAttribute('y'))).sort((a, b) => a - b);
+    host.remove();
+    return ys;
+  });
+  ok(tagYs.length === 3 && tagYs.every((y, i) => i === 0 || y - tagYs[i - 1] >= 16), `tags on prices a hair apart do not overlap (${tagYs.map((y) => Math.round(y))})`);
   ok(/Precision pool \(Ethereum\).*Bitcoin order book.*Tacit pool/.test((await text(p, '#legend')).replace(/\s+/g, ' ')), 'the legend names the lanes and the Tacit pool\'s place against Precision');
   ok(/^[+−]\d[\d.]*% Bitcoin against Ethereum · now Ethereum \$0\.\d{4} Bitcoin \$0\.\d{4}$/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()), `above the chart, how far Bitcoin sits from Ethereum now, and both prices (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()})`);
   await p.hover('#chart svg', { position: { x: 400, y: 150 } });
@@ -746,6 +758,10 @@ try {
   ok(hd.top < 90 && Math.abs(hd.brand - hd.chip) < 30 && hd.menu > 30, `the brand, the menu and the wallet chip share one row on a phone (${JSON.stringify(hd)})`);
   const subh = await m.$eval('#px-sub', (e) => e.getBoundingClientRect().height);
   ok(subh >= parseFloat(await m.$eval('#px-sub', (e) => getComputedStyle(e).minHeight)) - 1 && (await m.$$eval('#px-sub .st', (a) => a.every((x) => x.getBoundingClientRect().height < 26))), `the headline's figures are one line each, in a block that holds its height (${subh}px)`);
+  const hs = await m.$eval('#hints-sum', (e) => ({ h: e.getBoundingClientRect().height, t: e.textContent.replace(/\s+/g, ' ').trim() }));
+  ok(hs.h < 32 && /Ethereum \$0\.\d+/.test(hs.t) && /Bitcoin \$0\.\d+/.test(hs.t), `the prices under the headline are one line on a phone, the chains' names kept for a screen reader (${Math.round(hs.h)}px: ${hs.t})`);
+  const shift = await m.evaluate(() => new Promise((done) => { let v = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) v += e.value; }).observe({ type: 'layout-shift', buffered: true }); setTimeout(() => done(v), 100); }));
+  ok(shift < 0.05, `nothing moves as the page's figures arrive (layout shift ${shift.toFixed(4)})`);
   if (SHOTS) await m.screenshot({ path: join(SHOTS, 'trade-phone.png'), fullPage: true });
   // the chart comes back as it was left: its lane, range and kind are kept in this browser
   await m.click('[data-lane="btc"]'); await m.click('[data-kind="candles"]'); await m.click('[data-range="0"]');
