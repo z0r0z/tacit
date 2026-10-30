@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3lOFDALPjCcSDvbG9yUowckrGFzy8Gw3V3HRDOYYp3s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LlUB8NwY8e6sYtwxd7IXUhO8z6ajWEsGnPMtFlosd7U=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -59,7 +59,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=db96a3a9">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=ba51e242">
+<link rel="modulepreload" href="/swap/card.js?cb=a77ed04e">
 <link rel="modulepreload" href="/trade/wallet.js?cb=6778fe25">
 <link rel="modulepreload" href="/trade/util.js?cb=dcf3a4f2">
 <link rel="modulepreload" href="/trade/rpc.js?cb=63f04503">
@@ -8725,7 +8725,7 @@ function renderTacBal(el) {
 // exactly goes out with no proving wait; the rest prove first as below. Nothing is proved on a guess while an amount is typed: a
 // proof here takes minutes and cannot be stopped, so one for an amount then changed would hold up the one wanted.
 const VOUCH = { mod: null, ahead: null, keep: 0 };
-const vouchers = async () => (VOUCH.mod ||= (await import('/wrap-vouchers.js?cb=bb53d540')).makeVouchers());
+const vouchers = async () => (VOUCH.mod ||= (await import('/wrap-vouchers.js?cb=44d0de15')).makeVouchers());
 const KEEP_PREF = 'tacit-lite-keep-ready-v1:';
 // The sizes that can be kept ready, by pool ticker. ETH's are kept for every key until its holder turns them off (an empty choice is
 // stored as such): a wrap of a common size then goes out with no proving wait, and asking for one costs nothing.
@@ -8881,11 +8881,22 @@ async function sweepSpent(pub, v) {
     try { if (wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(x.depositId).padStart(64, '0') }, 'latest']), 0) !== 0n) v.drop(pub, x.depositId); } catch { /* unread: kept */ }
   }));
 }
+// What the key could wrap now: the larger of the ETH in its paying accounts (the wallet's and the Tacit account's), read at most every half minute;
+// null while it cannot be read (the sizes are then asked for as before).
+async function wrapRoom() {
+  if (VOUCH.room && Date.now() - VOUCH.room.at < 30e3 && VOUCH.room.pub === S.key?.pubHex) return VOUCH.room.v;
+  let v = null;
+  try { v = (await Promise.all([S.address, S.acct?.address].filter(Boolean).map((a) => rpc('eth_getBalance', [a, 'latest']).then(BigInt)))).reduce((m, b) => (b > m ? b : m), 0n); } catch { v = null; }
+  VOUCH.room = { at: Date.now(), v, pub: S.key?.pubHex };
+  return v;
+}
 async function keepReadyOnce() {
   if (!S.key) return;
   await marketPickup().catch(() => {});
   const v = await vouchers(), pub = S.key.pubHex, device = devOn();
   await sweepSpent(pub, v).catch(() => {});
+  // The community pool's GPU is shared with every user's proof: a key that holds no ETH to wrap yet is asked for its starter size only (wrap-vouchers.js stockSizes).
+  const room = device ? null : await wrapRoom();
   if (device ? VOUCH.ahead : Date.now() < (VOUCH.poolCapUntil || 0)) return;
   // this computer proves one at a time while it is idle; the pool is asked for up to POOL_PER_TICK a minute
   let posts = 0;
@@ -8897,11 +8908,12 @@ async function keepReadyOnce() {
   };
   for (const tk of Object.keys(KEEP_READY)) {
     const have = v.list(pub, tk).map((x) => x.amount);
-    for (const want of keepSizes(tk).filter((w) => !have.includes(String(w)))) {
+    for (const want of (tk === 'cETH' ? v.stockSizes(keepSizes(tk), room, { starter: KEEP_FIRST[0], floor: KEEP_FIRST[0] }) : keepSizes(tk)).filter((w) => !have.includes(String(w)))) {
       if (await next(() => poolRequest(tk, want), () => proveAhead(tk, want))) return;
     }
   }
   for (const poolId of lpKept()) {
+    if (room != null && room < KEEP_FIRST[0]) continue;   // shares are paid for in ETH: none to pay with, none asked for
     const mine = v.list(pub, lpTicker(poolId)), t = await getUx(), res = await t.poolReserves(poolId).catch(() => null);
     // a kept share whose price has moved off its size is proved again at its own index (its deposit was never made)
     const stale = res && mine.find((x) => x.size && x.status === 'ready' && (() => { const c = lpCost(x, res), z = BigInt(x.size); return c == null || (c > z ? c - z : z - c) * 1000n > z * LP_DRIFT; })());
@@ -14639,7 +14651,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=ba51e242').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a77ed04e').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };

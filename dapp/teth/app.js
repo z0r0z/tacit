@@ -459,7 +459,7 @@ async function proveFirst(q, lane) {
 }
 // Wraps proved and then not sent, or kept ready from the front page's prove sheet: one store for both pages (/wrap-vouchers.js).
 let vouchP = null;
-const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=bb53d540').then((m) => m.makeVouchers(), (e) => { vouchP = null; throw e; }));
+const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=44d0de15').then((m) => m.makeVouchers(), (e) => { vouchP = null; throw e; }));
 function firstSay(lane, set, q) {
   S.pubInput = false;
   return (k, d) => {

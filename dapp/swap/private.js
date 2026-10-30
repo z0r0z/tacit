@@ -250,7 +250,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     catch (e) { if (declined(e) || !e?.ready || e.sent) throw e; return null; }
   }
   let vouchP = null;
-  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=bb53d540').then((m) => m.makeVouchers()));
+  const vouchers = () => (vouchP ||= import('/wrap-vouchers.js?cb=44d0de15').then((m) => m.makeVouchers()));
 
   // A note of exactly `units`: one held, or one cut to size by a send to itself (the smallest note that covers it and the relay's fee, else up
   // to 16 notes combined, largest first). The cut's fee comes out of the notes, so the amount swapped is the amount asked.

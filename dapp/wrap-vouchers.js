@@ -14,6 +14,17 @@
 
 const KEY = 'tacit-wrap-vouchers-v1:';
 
+// The sizes worth a prover's time now. A proof of a wrap its key cannot send is a minute of a prover for nothing, and most keys that sign in
+// hold nothing yet: on 2026-10-30 the proof pool made 315 proofs for about four real wraps, its one GPU spent 65% of its busy time on them,
+// and every board job that waited more than five seconds in a day (14 of 68, 371 s together) waited behind one. So a key whose paying
+// accounts hold less than `floor` ETH is asked for its starter size only (a first deposit soon after signing in still finds one ready), and
+// the rest are asked for within a minute of the money arriving. `room`: the most the key could pay with, null when it cannot be read (then
+// all are asked for, as before).
+export function stockSizes(sizes, room, { starter, floor }) {
+  if (room == null || BigInt(room) >= BigInt(floor)) return sizes;
+  return sizes.filter((s) => BigInt(s) === BigInt(starter));
+}
+
 export function makeVouchers({ storage = globalThis.localStorage } = {}) {
   const mem = new Map();   // pub → list, while the browser refuses to hold it
   const read = (pub) => {
@@ -68,6 +79,7 @@ export function makeVouchers({ storage = globalThis.localStorage } = {}) {
   return {
     list,
     pick,
+    stockSizes,
     put(pub, v) { write(pub, [...read(pub).filter((x) => x.depositId !== v.depositId), v]); },
     // A wrap proved and then not sent, kept as a ready voucher: { built, proven } as the pool module's proveWrap returns them.
     keep(pub, ticker, { built, proven }) {

@@ -89,3 +89,26 @@ test('unreadable stored data reads as empty and is overwritten by the next write
   s.put(A, v(1));
   assert.equal(s.list(A).length, 1);
 });
+
+import { stockSizes } from '../dapp/wrap-vouchers.js';
+const ETH = 10n ** 18n, SIZES = [ETH / 1000n, ETH / 100n, ETH / 10n, ETH], OPT = { starter: ETH / 100n, floor: ETH / 100n };
+
+test('a key with no money to wrap is asked for its starter size only; one with some, or one not yet read, for all', () => {
+  assert.deepEqual(stockSizes(SIZES, 0n, OPT), [ETH / 100n], 'nothing in the paying accounts');
+  assert.deepEqual(stockSizes(SIZES, ETH / 100n - 1n, OPT), [ETH / 100n], 'a wei under the floor');
+  assert.deepEqual(stockSizes(SIZES, ETH / 100n, OPT), SIZES, 'at the floor, all of them as before');
+  assert.deepEqual(stockSizes(SIZES, 5n * ETH, OPT), SIZES);
+  assert.deepEqual(stockSizes(SIZES, null, OPT), SIZES, 'a balance that could not be read changes nothing');
+  assert.deepEqual(stockSizes(SIZES, undefined, OPT), SIZES);
+});
+
+test('the starter is the only size left even when the key chose others, and none when it did not choose the starter', () => {
+  assert.deepEqual(stockSizes([ETH / 10n, ETH], 0n, OPT), [], 'a key that kept only the large sizes is asked for none until it has money');
+  assert.deepEqual(stockSizes([ETH / 100n], 0n, OPT), [ETH / 100n]);
+  assert.deepEqual(stockSizes([], 0n, OPT), []);
+});
+
+test('the store hands the rule to the page', () => {
+  const s = makeVouchers({ storage: fakeStorage() });
+  assert.equal(s.stockSizes, stockSizes);
+});
