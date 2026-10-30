@@ -24,7 +24,7 @@ import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, marketOrders, marketClear, marketProofPost, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
 import { makeBatchWindow } from './lib/batch-window.js';
 import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive } from './lib/prover.js';
-import { makeMarketSolver } from './lib/market-solver.js';
+import { makeMarketSolver, marketHasRoom } from './lib/market-solver.js';
 import { quoteTacForEth, deepest } from './lib/tac-quote.js';
 import { abi as MARKET_ABI, claimCall, fulfillCall } from './lib/market-calls.js';
 import { makeGasSolver } from './lib/gas-solver.js';
@@ -907,10 +907,12 @@ async function marketMinPrice() {
     tacRate = { at: Date.now(), out: q.amountOut };
   }
   const costWei = (MARKET_GAS * gasPrice * 13n) / 10n + CFG.marketProveCostWei;           // gas at the price plus 30% for the base fee moving, plus proving
-  // No order is taken (and no proof spent on one) that this wallet could not pay the gas to claim and fulfil: it would only sit.
-  const held = await publicClient.getBalance({ address: settleWallet.account.address });
-  if (held < (MARKET_GAS * gasPrice * 15n) / 10n) {
-    if (Date.now() - marketLowAt > 10 * 60_000) { marketLowAt = Date.now(); log(`market: the settle wallet holds ${(Number(held) / 1e18).toFixed(5)} ETH, too little to claim and fulfil an order at ${(Number(gasPrice) / 1e9).toFixed(2)} gwei: market orders are left until it is topped up`); }
+  // No order is taken (and no proof spent on one) unless the wallet holds what the relay's own settles need at today's gas (its floor: below it relayed jobs are held, which the
+  // market must never cause) AND the gas to claim and fulfil on top of that.
+  const [held, blk] = await Promise.all([publicClient.getBalance({ address: settleWallet.account.address }), publicClient.getBlock({ blockTag: 'latest' })]);
+  const { need } = await settleFundsNeed(publicClient, { block: blk });
+  if (!marketHasRoom({ held, need, orderGas: MARKET_GAS, gasPrice })) {
+    if (Date.now() - marketLowAt > 10 * 60_000) { marketLowAt = Date.now(); log(`market: the settle wallet holds ${(Number(held) / 1e18).toFixed(5)} ETH; the relay's own settles need ${(Number(need) / 1e18).toFixed(5)} at ${(Number(gasPrice) / 1e9).toFixed(2)} gwei and an order about ${(Number((MARKET_GAS * gasPrice * 15n) / 10n) / 1e18).toFixed(5)} more: market orders are left until it is topped up`); }
     return 2n ** 255n;
   }
   const tac = (costWei * tacRate.out) / 10n ** 16n;

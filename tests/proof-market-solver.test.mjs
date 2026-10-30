@@ -1,7 +1,7 @@
 // The settle relay's market pass (worker-relay/src/lib/market-solver.js) with the chain and the prover stubbed. Run: node --test tests/proof-market-solver.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeMarketSolver } from '../worker-relay/src/lib/market-solver.js';
+import { makeMarketSolver, marketHasRoom } from '../worker-relay/src/lib/market-solver.js';
 
 const drain = () => new Promise((r) => setImmediate(r));
 // the proof is made in the background: one pass starts it, a later one (once it is back) claims and fulfils
@@ -174,4 +174,13 @@ test('a claim send that errors but landed on chain is not called failed: the ful
   const s2 = mkS();
   assert.equal(await run(s2), true);
   assert.equal(fulfils, 0, 'a claim that is not on chain stops there');
+});
+
+test('the market spends only what the settle wallet holds above the relay\'s own floor: below it, relayed jobs come first and no order is taken', () => {
+  const gasPrice = 700_000_000n, orderGas = 828_000n, need = 900_000_000_000_000n;            // 0.7 gwei; a settle's worst case 0.0009 ETH
+  const order = (orderGas * gasPrice * 15n) / 10n;                                            // about 0.00087 ETH with the margin
+  assert.equal(marketHasRoom({ held: 640_000_000_000_000n, need, orderGas, gasPrice }), false, 'the wallet is under its own floor: the market is off');
+  assert.equal(marketHasRoom({ held: need + order - 1n, need, orderGas, gasPrice }), false, 'the floor kept and one order short: off');
+  assert.equal(marketHasRoom({ held: need + order, need, orderGas, gasPrice }), true, 'the floor kept with an order on top: on');
+  assert.equal(marketHasRoom({ held: 10n ** 18n, need, orderGas, gasPrice }), true);
 });

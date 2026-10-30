@@ -17,6 +17,10 @@ function priceAt(intent, at) {
   return floor + ((max - floor) * t) / ramp;
 }
 
+// The ETH the market may spend is what the settle wallet holds above what the relay's own settles need at today's gas (`need`, its floor): the market's claim and fulfil (with
+// half again for the base fee moving) must fit in that. Market orders pay in TAC but cost ETH, and the relay's main job, sending users' ops, comes first.
+export const marketHasRoom = ({ held, need, orderGas, gasPrice }) => BigInt(held) >= BigInt(need) + (BigInt(orderGas) * BigInt(gasPrice) * 15n) / 10n;
+
 // The deposit a wrap's public values consume (word 36 of the fixed 55-word layout, dapp/proof-market.js wrapPublicValues).
 export const depositOf = (publicValues) => '0x' + String(publicValues).replace(/^0x/, '').slice(36 * 64, 37 * 64);
 
