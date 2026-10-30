@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ltTBKsu8GCTNeGtaHhIWnbC3LuF/40LvuG956gXDgAI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Jzf7Gd0Gdgc9Kk5blsQxmc55RrXQxkip2XoKnOJyUhU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3088,6 +3088,8 @@ function spApply() {
       // at once as the key opens (a first deposit soon after signing in finds its sizes already asked for), then each minute
       const tick = () => { poolCollect().catch(() => {}).then(readyMarks); keepReady().catch(() => {}); };
       VOUCH.timer = setInterval(tick, 60e3);
+      // finished proofs are collected every few seconds while any is being made (the request is a few bytes, and nothing when none waits), so a voucher shows ready as it is
+      VOUCH.fast = setInterval(() => { if (!document.hidden) poolCollect().then((c) => { if (c) readyMarks(); }, () => {}); }, 8e3);
       setTimeout(tick, 2000);
     }
   }
@@ -8736,7 +8738,7 @@ async function resumeVouchers() {
 // costs, now, between 97% of the amount entered and that amount plus 2%.
 const POOL_PER_TICK = 6;
 const LP_KEEP_PREF = 'tacit-lite-keep-lp-v1:', LP_KEEP_ETH = [10n ** 15n, 10n ** 16n, 10n ** 17n, 10n ** 18n], LP_DRIFT = 25n;   // per thousand
-const KEEP_FIRST = [10n ** 17n, 10n ** 16n, 10n ** 18n, 10n ** 15n];        // asked in the order people press them (the cards offer 0.1, 0.01 and 1)
+const KEEP_FIRST = [10n ** 16n, 10n ** 17n, 10n ** 18n, 10n ** 15n];        // asked in the order people press them: the card opens on 0.01 (its quick sizes are 0.01, 0.1, 1), as do the farm chips and the quick starts
 const lpTicker = (poolId) => `lp:${String(poolId).toLowerCase()}`;
 // The pools a key's zaps are kept ready for follow its interest, not every login (a share proof is a minute of the prover's, and most keys
 // never farm): the pools this key opened, picked or zapped (all four sizes). A key meeting the tile's Earn tab or the farm sheet for the
@@ -8763,7 +8765,7 @@ async function lpPoolRequest(poolId, size, at = null) {
   const pub = S.key.pubHex, v = await vouchers(), t = await getUx(), priv = walletPriv(), shares = await lpSharesFor(t, poolId, size);
   if (!shares) return;
   const b = await lpBuild(t, priv, poolId, shares, at);
-  try { v.put(pub, lpRec(poolId, b, { size: String(size), by: 'pool', job: await poolPost(b) })); }
+  try { v.put(pub, lpRec(poolId, b, { size: String(size), by: 'pool', job: await poolPost(b, { urgent: BigInt(size) === KEEP_FIRST[0] }) })); }
   catch { if (at == null) t.releaseShareIndex({ walletPriv: priv, poolId, index: b.index }); }
 }
 // A share note proved on this computer (`size`, kept ready) or asked of the relay as a zap's amount settles (`shares`, `relay`).
@@ -8806,6 +8808,8 @@ async function lpReady(poolId, wei, res) {
 // tacit-prover, and Tacit's own prover when it is idle, proves them for TAC points, free to you.
 // One at a time: a size picked, the minute's tick and the key opening each ask, and two at once would each find a size missing and ask twice.
 function keepReady() { return (VOUCH.keeping ||= keepReadyOnce().finally(() => { VOUCH.keeping = null; })); }
+// A voucher spent (sent, or used in a zap) is made again in seconds, not at the next minute: the size a key presses is the size it presses again.
+const refillSoon = () => { clearTimeout(VOUCH.refill); VOUCH.refill = setTimeout(() => keepReady().catch(() => {}), 2500); };
 async function keepReadyOnce() {
   if (!S.key) return;
   await marketPickup().catch(() => {});
@@ -8849,36 +8853,38 @@ async function poolRequest(ticker, wei) {
   const index = await t.nextWrapIndex({ walletPriv: priv, ticker });
   try {
     const b = t.buildWrap({ walletPriv: priv, amountWei: wei, ticker, index });
-    const job = await poolPost(b);
+    const job = await poolPost(b, { urgent: BigInt(wei) === KEEP_FIRST[0] });   // the size a key presses first is asked as urgent: Tacit's prover takes it without waiting for the miners
     v.put(pub, { ticker, amount: String(b.amount), index, commit: b.commit, depositId: b.depositId, leaf: b.leaf, assetId: b.wrapArgs.assetId,
       memos: b.memos, at: Date.now(), status: 'proving', by: 'pool', job });
   } catch { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker, index }); } catch { } }
 }
 // A built wrap's program input posted to the proof pool → its job id. One answered with the pool's cap for the day holds further
 // requests from this page off for an hour.
-async function poolPost(b) {
+async function poolPost(b, { urgent = false } = {}) {
   if (Date.now() < (VOUCH.poolCapUntil || 0)) throw new Error('pool_cap');
   const [sp] = await sealMods();
   const memoHashes = b.memos.map((m) => '0x' + bytesToHex(keccak_256(hexToBytes(strip(m)))));
   const stdin = '0x' + bytesToHex(sp.stdinFor('wrap', { ...b.wrapOp, memoHashes }));
   const r = await fetch(`${API}/prover/pool/request`, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'wrap', stdin, expect: { depositId: b.depositId, leaf: b.leaf } }) }).then((x) => x.json());
+    body: JSON.stringify({ type: 'wrap', stdin, expect: { depositId: b.depositId, leaf: b.leaf }, ...(urgent ? { urgent: true } : {}) }) }).then((x) => x.json());
   if (r?.code === 'pool_cap' || r?.code === 'pool_full') VOUCH.poolCapUntil = Date.now() + 3600e3;
   if (!r?.ok || !r.id) throw new Error(r?.error || 'not taken');
   return r.id;
 }
 // The pool's finished proofs, collected into ready vouchers; one the pool gave up on is dropped (its size is asked again).
 async function poolCollect() {
-  if (!S.key) return;
+  if (!S.key) return false;
   const pub = S.key.pubHex, v = await vouchers(), mine = v.list(pub, null, 'proving').filter((x) => x.by === 'pool' && x.job);
-  if (!mine.length) return;
+  if (!mine.length) return false;
+  let changed = false;
   const t = await getUx();
   const r = await fetch(`${API}/prover/pool/result?ids=${mine.slice(0, 32).map((x) => x.job).join(',')}`, { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
   for (const x of mine) {
     const res = r?.results?.[x.job];
-    if (res?.status === 'done' && res.publicValues && res.proof && t.wrapProofFits(x, res)) v.put(pub, { ...x, status: 'ready', publicValues: res.publicValues, proof: res.proof });
-    else if (res?.status === 'gone' || (res?.status === 'done' && !t.wrapProofFits(x, res))) v.drop(pub, x.depositId);
+    if (res?.status === 'done' && res.publicValues && res.proof && t.wrapProofFits(x, res)) { v.put(pub, { ...x, status: 'ready', publicValues: res.publicValues, proof: res.proof }); changed = true; }
+    else if (res?.status === 'gone' || (res?.status === 'done' && !t.wrapProofFits(x, res))) { v.drop(pub, x.depositId); changed = true; }
   }
+  return changed;
 }
 // Ready vouchers sent: each deposits and settles through the router, together in one wallet confirmation where the wallet
 // batches calls. One whose deposit is in the pool already was sent elsewhere: it is dropped and nothing is sent.
@@ -8914,6 +8920,7 @@ async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip 
   pop?.();
   await waitTx(hash);
   for (const x of list) v.drop(pub, x.depositId);
+  refillSoon();
   tell(html`<span class="ok">Done.</span> ${txLink(hash)}`); toast(`${run.to.label}: done`);
   if (!token && sheet === 'eth') noteLanded(list.reduce((a, x) => a + BigInt(x.amount), 0n));
   await scanPrivate(true).catch(() => {});
@@ -10842,6 +10849,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
         const r = await zapShareFirst({ run, t, p, built: kept, index: x.index, shares, maxEth: z.wei + z.wei / 50n, tokenB, from, tell, status,
           proven: { publicValues: x.publicValues, proof: x.proof, memos: x.memos } });
         v.drop(pub, x.depositId);
+        refillSoon();
         hash = r.hash; landed = true; built = kept;
         if ((await zapFinish(run, p, r.rec, kept, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to put its share in the farm.'), { said: true });
         clear();

@@ -3747,7 +3747,7 @@ async function handleProofPool(req, env, url, cors) {
   let b;
   try { b = await req.json(); } catch { b = null; }
   if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
-  if (p === '/prover/pool/request') return send(await pool.request({ type: b.type, stdin: b.stdin, expect: b.expect, client }));
+  if (p === '/prover/pool/request') return send(await pool.request({ type: b.type, stdin: b.stdin, expect: b.expect, client, urgent: b.urgent === true }));
   if (p === '/prover/pool/lease') {
     // A board worker's token makes the lease Tacit's own (no points, only jobs that have waited: see proof-pool.js lease).
     const auth = req.headers.get('Authorization'), house = auth ? workerOf(auth, env.PROVER_WORKER_TOKENS) : null;

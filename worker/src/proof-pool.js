@@ -32,7 +32,8 @@ import { isHex } from './confidential-open.js';
 export const PROOF_POOL = Object.freeze({
   types: Object.freeze(['wrap']),
   maxStdinBytes: 64 * 1024,          // bincode SP1Stdin; a wrap's is under 1 KiB
-  reqPerClientDay: 40,               // POOL_REQ_IP_DAILY: a key keeps 16 sizes ready (four ETH wraps, four shares in each of three farms)
+  reqPerClientDay: 40,
+  urgentPerClientDay: 6,             // POOL_URGENT_IP_DAILY: of those, how many a page may mark urgent (the size it expects to press first): Tacit's own prover takes them without waiting for the miners               // POOL_REQ_IP_DAILY: a key keeps 16 sizes ready (four ETH wraps, four shares in each of three farms)
   maxPending: 2000,                  // POOL_MAX_PENDING: queued and leased together
   leaseMs: 45 * 60_000,              // POOL_LEASE_MS: a laptop proves a wrap in about 15 minutes
   keepMs: 7 * 86_400_000,            // POOL_KEEP_MS: how long a finished proof stays readable
@@ -57,6 +58,7 @@ export function proofPoolConfig(env = {}) {
   return Object.freeze({
     ...PROOF_POOL,
     reqPerClientDay: n(env.POOL_REQ_IP_DAILY, PROOF_POOL.reqPerClientDay, 0, 100_000),
+    urgentPerClientDay: n(env.POOL_URGENT_IP_DAILY, PROOF_POOL.urgentPerClientDay, 0, 1000),
     maxPending: n(env.POOL_MAX_PENDING, PROOF_POOL.maxPending, 1, 100_000),
     leaseMs: n(env.POOL_LEASE_MS, PROOF_POOL.leaseMs, 60_000, 86_400_000),
     minerIdleMs: n(env.POOL_MINER_IDLE_MS, PROOF_POOL.minerIdleMs, 0, 86_400_000),
@@ -194,7 +196,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, minerSeen: 'pp:miner-seen' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
@@ -206,7 +208,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   async function giveBack(q, id, l, tried) {
     const tries = (l.tries || 0) + (tried ? 1 : 0), skip = [...new Set([...(l.skip || []), l.client])].slice(-16);
     if (tries >= cfg.maxTries) { await kv.delete(K.job(id)); return; }
-    const e = { id, at: l.at, tries, skip };
+    const e = { id, at: l.at, tries, skip, ...(l.urgent ? { urgent: true } : {}) };
     const i = q.findIndex((x) => x.at > e.at);
     if (i < 0) q.push(e); else q.splice(i, 0, e);
   }
@@ -224,7 +226,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
 
   // A page posts a wrap to be proved. The same input posted again is the same job (its id is the first 16 bytes of the input's
   // sha256, as tacit-prover names a job), and costs nothing against the day's requests.
-  async function request({ type, stdin, expect, client = 'anon' } = {}) {
+  // `urgent`: the page expects to press this one first (its most likely size): up to `urgentPerClientDay` a day are marked so, and a house prover leases a marked job
+  // at once instead of holding back for the miners; past the cap it is asked as any other.
+  async function request({ type, stdin, expect, client = 'anon', urgent = false } = {}) {
     if (!cfg.types.includes(type)) return reply(400, { ok: false, code: 'bad_type', error: `type must be one of ${cfg.types.join(', ')}` });
     if (typeof stdin !== 'string' || !/^0x(?:[0-9a-fA-F]{2})+$/.test(stdin) || (stdin.length - 2) / 2 > cfg.maxStdinBytes) {
       return reply(400, { ok: false, code: 'bad_stdin', error: `stdin must be the 0x-hex of a bincode SP1Stdin of at most ${cfg.maxStdinBytes} bytes` });
@@ -249,6 +253,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (have && have.status === 'open') {
         // Still waiting. A record that lost its place in the queue (a write that never landed) gets it back.
         if (!L[id] && !q.some((e) => e.id === id)) { q.push({ id, at: have.postedAt, tries: 0, skip: [] }); q.sort((a, b) => a.at - b.at); changed = true; }
+        // asked again as urgent (a page that has since opened its card): the place it already has is marked
+        const waiting = q.find((e) => e.id === id);
+        if (urgent === true && waiting && !waiting.urgent) { const d = dayOf(t), u = Number(await kv.get(K.urg(d, client))) || 0; if (u < cfg.urgentPerClientDay) { waiting.urgent = true; changed = true; await kv.put(K.urg(d, client), String(u + 1), { expirationTtl: 2 * 86400 }); } }
         await save();
         return reply(200, { ok: true, id, deduped: true });
       }
@@ -256,10 +263,12 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (n >= cfg.reqPerClientDay) { await save(); return reply(429, { ok: false, code: 'pool_cap', error: `at most ${cfg.reqPerClientDay} proofs asked for from one place a day; this one can still be proved another way` }); }
       if (q.length + Object.keys(L).length >= cfg.maxPending) { await save(); return reply(429, { ok: false, code: 'pool_full', error: 'the pool is full just now; prove this one another way' }); }
       await write(K.job(id), { id, type, stdin: stdin.toLowerCase(), expect: want, status: 'open', postedAt: t });
-      q.push({ id, at: t, tries: 0, skip: [] });
+      const u = urgent === true ? Number(await kv.get(K.urg(d, client))) || 0 : 0, mark = urgent === true && u < cfg.urgentPerClientDay;
+      q.push({ id, at: t, tries: 0, skip: [], ...(mark ? { urgent: true } : {}) });
       changed = true;
       await save();
       await kv.put(K.req(d, client), String(n + 1), { expirationTtl: 2 * 86400 });
+      if (mark) await kv.put(K.urg(d, client), String(u + 1), { expirationTtl: 2 * 86400 });
       return reply(200, { ok: true, id });
     });
   }
@@ -293,13 +302,14 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (held.length >= cfg.leasesPerClient) { await save(); return reply(429, { ok: false, code: 'lease_open', error: `at most ${cfg.leasesPerClient} leases from one place at a time` }); }
       for (let i = 0; i < q.length;) {
         const e = q[i];
-        if (minAge && t - e.at < minAge) break;              // oldest first: the rest are younger still
+        // the wait for the miners holds for ordinary jobs; one marked urgent is taken at once, and the younger ones behind an unripe job are looked at too
+        if (minAge && t - e.at < minAge && !e.urgent) { i++; continue; }
         if ((e.skip || []).includes(client)) { i++; continue; }
         q.splice(i, 1);
         changed = true;
         const job = await read(K.job(e.id), null);
         if (!job || job.status !== 'open') continue;          // gone from under its place: dropped
-        const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: e.at, tries: e.tries || 0, skip: e.skip || [], ...(house ? { house: true } : {}) };
+        const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: e.at, tries: e.tries || 0, skip: e.skip || [], ...(e.urgent ? { urgent: true } : {}), ...(house ? { house: true } : {}) };
         L[e.id] = l;
         await save();
         return reply(200, { ok: true, id: e.id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: house ? 0 : earns(rec, m) });

@@ -8280,13 +8280,15 @@ await step('fastzap', async () => {
       && !(await p.$('#sheet-farm[open]')) && (await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('bond:')) && /farm/i.test(await text(p, '#hx-zs')),
       `fastzap: pressed, it goes from the card as one transaction with that share's proof, nothing asked of the relay, no sheet opened, and the share is farmed (${m1.map((x) => x.input.slice(0, 10))}; ${(await text(p, '#hx-zs')).replace(/\s+/g, ' ').slice(0, 90)})`);
     // (2) the Earn tab on LP only: the same pool and size, its share proved: one press away; it goes in as one transaction and is not bonded
+    await p.fill('#hx-amt', '');                   // the sizes show only while the amount is empty (with one typed the card shows its value instead)
     await readyOne();
     await until(p, () => document.querySelector('#hx-routes [data-hxr="0"]')?.getAttribute('aria-checked') === 'true' && !!document.querySelector('#hx-sub [data-hxq="0.01"].rd'), null, 240000).catch(() => {});   // its mark comes as the proof lands
+    const chipReady = !!(await p.$('#hx-sub [data-hxq="0.01"].rd'));          // read before the press: the sizes give way to the amount's value once one is in
     await p.click('#hx-sub [data-hxq="0.01"]');
     await p.click('.hx-mode [data-hxlp="1"]');
     await until(p, () => /made already/.test(document.querySelector('#hx-receipt')?.textContent || '') && /fee on every swap/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 240000).catch(() => {});
-    ok(/Add as private LP/.test(await text(p, '#hx-go')) && /made already: no wait/.test(await text(p, '#hx-receipt')) && !!(await p.$('#hx-sub [data-hxq="0.01"].rd')),
-      `fastzap: LP only, 0.01 ETH, its share proved: one press away (${(await text(p, '#hx-go'))}; ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')})`);
+    ok(/Add as private LP/.test(await text(p, '#hx-go')) && /made already: no wait/.test(await text(p, '#hx-receipt')) && chipReady,
+      `fastzap: LP only, 0.01 ETH, its share proved: one press away (${(await text(p, '#hx-go'))}; ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}; chips ${(await p.$$eval('#hx-sub [data-hxq]', (bs) => bs.map((b) => b.dataset.hxq + (b.classList.contains('rd') ? '*' : '')))).join(' ')}; kept ${JSON.stringify((await kept()).map((v) => [v.size, v.status, v.by]))})`);
     const used2 = (await kept()).find((v) => v.ticker === LP && v.size === SZ && v.status === 'ready');
     const b2 = BigInt(await rpc('eth_blockNumber', [])), s2 = submits.length, bonds = (await p.evaluate(() => window.__farmCalls)).filter((c) => c.startsWith('bond:')).length;
     await p.click('#hx-go');

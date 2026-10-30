@@ -306,6 +306,28 @@ test('house: with no miner asking for work lately, Tacit\'s own prover takes a p
   assert.equal((await h.pool.lease({ client: 'house:b', house: 'b', minAgeMs: 10 * 60_000 })).body.id, b.id, 'the miner gone quiet for over five minutes: the house takes it');
 });
 
+test('urgent: the size a page expects to press first is taken by Tacit\'s own prover at once, even with a miner about and older jobs waiting; past the daily cap it is asked as any other', async () => {
+  const h = harness();
+  const old = wrapJob(0), hot = wrapJob(1), more = Array.from({ length: 7 }, (_, i) => wrapJob(10 + i));
+  await h.pool.request({ type: 'wrap', stdin: old.stdin, expect: old.expect, client: 'page' });
+  assert.equal((await h.pool.lease({ client: 'm1', miner: MINER })).body.id, old.id, 'a miner is about (and takes the old job)');
+  const wait = { client: 'house:u', house: 'u', minAgeMs: 10 * 60_000 };
+  await h.pool.request({ type: 'wrap', stdin: more[0].stdin, expect: more[0].expect, client: 'other' });
+  h.t += 30_000;
+  await h.pool.request({ type: 'wrap', stdin: hot.stdin, expect: hot.expect, client: 'page', urgent: true });
+  assert.equal((await h.pool.lease(wait)).body.id, hot.id, 'the urgent job is leased at once; the ordinary one older than it still waits for the miners');
+  // the cap: six a day from one place
+  const c = harness();
+  const ids = [];
+  for (const j of more.slice(0, 7)) { await c.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: 'busy', urgent: true }); ids.push(j.id); }
+  await c.pool.lease({ client: 'm2', miner: MINER2 });                 // a miner is about
+  c.t += 60_000;
+  const got = [];
+  for (let i = 0; i < 4; i++) { const r = await c.pool.lease({ client: `house:c${i}`, house: `c${i}`, minAgeMs: 10 * 60_000 }); if (r.status === 200) got.push(r.body.id); }
+  assert.equal(got.length, 4, 'four house provers each take one of the urgent ones (the first was the miner\'s)');
+  assert.ok(!got.includes(ids[6]), 'the seventh, past the cap of six, was not urgent and waits');
+});
+
 test('routes: open to any origin; a page requests, a miner leases and submits (the verifier asked over eth_call), the page reads the proof', async () => {
   const env = { REGISTRY_KV: kv() };
   const seen = [];
