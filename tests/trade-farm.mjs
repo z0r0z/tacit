@@ -55,14 +55,18 @@ const tacBal = async (a) => BigInt(await rpcA('eth_call', [{ to: TACADDR, data: 
 const ethBal = async (a) => BigInt(await rpcA('eth_getBalance', [a, 'latest']));
 
 // A wallet in the page: window.ethereum answers as an EIP-1193 provider, signs TAC's permit with a real key and sends through the fork.
-async function stubWallet(ctx, { account, key, refuseSends = false }) {
-  const log = { sends: [], signs: 0, connects: 0 };
+async function stubWallet(ctx, { account, key, refuseSends = false, noPermit = false }) {
+  const log = { sends: [], signs: 0, signAttempts: 0, connects: 0 };
   await ctx.exposeFunction('__wallet', async (method, params) => {
     if (method === 'eth_requestAccounts') { log.connects++; return [account]; }
     if (method === 'eth_accounts') return [account];
     if (method === 'eth_chainId') { if (log.onChainId) { const f = log.onChainId; log.onChainId = null; await f(); } return '0x1'; }
     if (method === 'wallet_switchEthereumChain') return null;
-    if (method === 'eth_signTypedData_v4') { log.signs++; return cast('wallet', 'sign', '--private-key', key, '--data', params[1]); }
+    if (method === 'eth_signTypedData_v4') {
+      log.signAttempts++;
+      if (noPermit) throw Object.assign(new Error('The method eth_signTypedData_v4 is not supported by this account.'), { code: -32601 });
+      log.signs++; return cast('wallet', 'sign', '--private-key', key, '--data', params[1]);
+    }
     if (method === 'eth_sendTransaction') {
       if (refuseSends) throw Object.assign(new Error('User rejected the request.'), { code: 4001 });
       log.sends.push(params[0]);
@@ -76,7 +80,7 @@ async function stubWallet(ctx, { account, key, refuseSends = false }) {
   await ctx.addInitScript(() => { window.__h = {}; window.ethereum = { isStub: true, request: ({ method, params }) => window.__wallet(method, params), on(ev, fn) { window.__h[ev] = fn; }, removeListener() {} }; });
   return log;
 }
-async function fundedWallet(eth, tac) {
+async function fundedWallet(eth, tac, extra = {}) {
   const j = JSON.parse(cast('wallet', 'new', '--json'))[0], who = j.address;
   await rpcA('anvil_setBalance', [who, '0x' + eth.toString(16)]);
   if (tac) {
@@ -84,7 +88,7 @@ async function fundedWallet(eth, tac) {
     await rpcA('anvil_setStorageAt', [TACADDR, slot, '0x' + tac.toString(16).padStart(64, '0')]);
   }
   await rpcA('anvil_impersonateAccount', [who]);
-  return { account: who, key: j.private_key };
+  return { account: who, key: j.private_key, ...extra };
 }
 
 async function openPage(viewport, wallet = null, hash = '', path = '/trade/') {
@@ -109,7 +113,7 @@ async function openPage(viewport, wallet = null, hash = '', path = '/trade/') {
 }
 
 const program = JSON.parse(readFileSync(join(FX, 'farm-program-2026-10-14.json'), 'utf8'));
-const FARM = '0x0000003bF4BA0B21f5e0d35119b337F4d4CF82E0', E18 = 10n ** 18n;
+const FARM = '0x0000003bF4BA0B21f5e0d35119b337F4d4CF82E0', POOLADDR = '0x0155358241411dB868BA714aE7c83A27087e3D6E', E18 = 10n ** 18n;
 const staked = async (a) => BigInt(await rpcA('eth_call', [{ to: FARM, data: '0x98807d84' + a.slice(2).toLowerCase().padStart(64, '0') }, 'latest']));
 let r;
 try {
@@ -221,6 +225,85 @@ try {
   ok(true, 'and the stake leaves the panel');
   ok(r.errors.length === 0 && r.blocked.length === 0, `no page errors or blocked requests (${[...r.errors, ...r.blocked].slice(0, 3).join(' | ')})`);
   await r.browser.close();
+
+
+  // the tabs and the button: an amount stays only where it means the same, the button says why it waits, a deposit says what the network takes
+  {
+    const tw = await fundedWallet(3n * E18, 20000n * E18);
+    const t1 = await openPage({ width: 1280, height: 900 }, tw, '', '/trade/tac/'), tp = t1.page;
+    await until(tp, () => /TAC a day/.test(document.querySelector('#fm-stats')?.textContent || ''), null, 240000);
+    await tp.click('#fm-go');
+    await until(tp, () => /Balance/.test(document.querySelector('#fm-emax')?.textContent || ''), null, 120000);
+    ok(/^Enter an amount$/.test(await text(tp, '#fm-go')) && (await tp.$eval('#fm-go', (b) => b.disabled)), 'with a wallet and nothing typed the button asks for an amount');
+    await tp.fill('#fm-amt', '0.3');
+    await until(tp, () => /Network fee/.test(document.querySelector('#fm-rcpt')?.textContent || '') && !document.querySelector('#fm-go').disabled, null, 120000);
+    const fee = (await text(tp, '#fm-rcpt')).replace(/\s+/g, ' ');
+    ok(/Network fee(≈ \$\d+\.\d\d|under \$0\.01)/.test(fee) && /gas at [\d.]+ gwei/.test(await tp.$eval('#fm-rcpt .kv b[title*="gas at"]', (b) => b.title)), `a deposit says what the network takes, at the gas price now (${(fee.match(/Network fee[^%]*?\$[\d.]+|Network fee under \$0\.01/) || [''])[0]})`);
+    // ETH typed, then the TAC tab: those 0.3 ETH are not a TAC deposit, and do not come back as one under ETH + TAC
+    await tp.click('[data-fm="tac"]');
+    ok((await tp.inputValue('#fm-amt')) === '' && (await tp.inputValue('#fm-tacamt')) === '' && (await tp.$eval('#fm-rcpt', (e) => e.hidden)), 'another tab does not carry the amount typed in this one');
+    await tp.fill('#fm-tacamt', '1000');
+    await tp.click('[data-fm="pair"]');
+    await until(tp, () => Number(document.querySelector('#fm-amt').value) > 0 && /Deposit/.test(document.querySelector('#fm-rcpt')?.textContent || ''), null, 120000);
+    ok((await tp.inputValue('#fm-tacamt')) === '1000' && Number(await tp.inputValue('#fm-amt')) < 0.2, `ETH + TAC takes the TAC typed and fills the ETH to match it (${await tp.inputValue('#fm-amt')} ETH for 1000 TAC)`);
+    await tp.click('[data-fm="eth"]');
+    ok((await tp.inputValue('#fm-tacamt')) === '' && Number(await tp.inputValue('#fm-amt')) > 0, 'and back on ETH the ETH stays and the TAC does not');
+    // Enter sends what is quoted
+    await until(tp, () => /Earns about/.test(document.querySelector('#fm-rcpt')?.textContent || '') && !document.querySelector('#fm-go').disabled, null, 120000);
+    await tp.press('#fm-amt', 'Enter');
+    await until(tp, () => /Farming\./.test(document.querySelector('#fm-status')?.textContent || '') || document.querySelector('#fm-status .err'), null, 240000);
+    ok(/Farming\./.test(await text(tp, '#fm-status')) && (await staked(tw.account)) > 0n, 'Enter in the amount sends the deposit that is quoted');
+    await until(tp, () => /Your stake/.test(document.querySelector('#fm-pos')?.textContent || ''), null, 120000);
+    const pos = (await text(tp, '#fm-pos')).replace(/\s+/g, ' ');
+    ok(/Worth\s*(about \$[\d,.]+ · )?[\d.]+% of the farm/.test(pos), `the stake says what it is worth and its share of the farm (${pos.slice(0, 150)})`);
+    await tp.fill('#fm-amt', '0.1');
+    ok((await text(tp, '#fm-status')) === '', 'a new amount clears what was said of the last deposit');
+    ok(t1.errors.length === 0 && t1.blocked.length === 0, `no page errors or blocked requests there (${[...t1.errors, ...t1.blocked].slice(0, 3).join(' | ')})`);
+    await t1.browser.close();
+  }
+  // an amount that leaves no ETH for the network fee waits and says so: the wallet is not left to refuse it
+  {
+    const tiny = await fundedWallet(5n * 10n ** 16n, 0n);
+    const t2 = await openPage({ width: 1280, height: 900 }, tiny, '', '/trade/tac/'), tq = t2.page;
+    await until(tq, () => /TAC a day/.test(document.querySelector('#fm-stats')?.textContent || ''), null, 240000);
+    await tq.click('#fm-go');
+    await until(tq, () => /Balance/.test(document.querySelector('#fm-emax')?.textContent || ''), null, 120000);
+    await tq.fill('#fm-amt', '0.0499');
+    await until(tq, () => /Leave ETH for the network fee/.test(document.querySelector('#fm-go')?.textContent || ''), null, 60000);
+    ok(await tq.$eval('#fm-go', (b) => b.disabled), 'an amount that leaves no ETH for the network fee says so and cannot be sent');
+    await tq.fill('#fm-amt', '0.04');
+    await until(tq, () => /Farm with ETH/.test(document.querySelector('#fm-go')?.textContent || '') && !document.querySelector('#fm-go').disabled, null, 120000);
+    ok(true, 'and an amount that leaves enough can');
+    await t2.browser.close();
+  }
+  // LP shares held in the wallet are staked by a permit
+  {
+    const lpw = await fundedWallet(1n * E18, 0n);
+    await rpcA('anvil_setStorageAt', [POOLADDR, cast('keccak', '0x' + lpw.account.slice(2).toLowerCase() + '0000000000000000' + '87a211a2'), '0x' + (10n ** 17n).toString(16).padStart(64, '0')]);   // the pool's shares are Solady's too
+    const t3 = await openPage({ width: 1280, height: 900 }, lpw, '', '/trade/tac/'), tl = t3.page;
+    await until(tl, () => /TAC a day/.test(document.querySelector('#fm-stats')?.textContent || ''), null, 240000);
+    await tl.click('#fm-go');
+    await until(tl, () => /LP shares not staked/.test(document.querySelector('#fm-pos')?.textContent || '') && !!document.querySelector('#fm-stake'), null, 120000);
+    await tl.click('#fm-stake');
+    await until(tl, () => /Staked\./.test(document.querySelector('#fm-pos-status')?.textContent || '') || document.querySelector('#fm-pos-status .err'), null, 240000);
+    ok(/Staked\./.test(await text(tl, '#fm-pos-status')) && (await staked(lpw.account)) > 0n && t3.walletLog.signs === 1, `shares in the wallet are staked by a signed permit (${(await text(tl, '#fm-pos-status')).slice(0, 40)})`);
+    await t3.browser.close();
+  }
+  // a wallet that cannot sign a permit (a smart-contract account) approves the TAC and farms it
+  {
+    const sw = await fundedWallet(1n * E18, 5000n * E18, { noPermit: true });
+    const t4 = await openPage({ width: 1280, height: 900 }, sw, '', '/trade/tac/'), ts = t4.page;
+    await until(ts, () => /TAC a day/.test(document.querySelector('#fm-stats')?.textContent || ''), null, 240000);
+    await ts.click('#fm-go');
+    await until(ts, () => /Balance/.test(document.querySelector('#fm-tmax')?.textContent || '') || /Balance/.test(document.querySelector('#fm-emax')?.textContent || ''), null, 120000);
+    await ts.click('[data-fm="tac"]');
+    await ts.fill('#fm-tacamt', '500');
+    await until(ts, () => /Earns about/.test(document.querySelector('#fm-rcpt')?.textContent || '') && !document.querySelector('#fm-go').disabled, null, 120000);
+    await ts.click('#fm-go');
+    await until(ts, () => /Farming\./.test(document.querySelector('#fm-status')?.textContent || '') || document.querySelector('#fm-status .err'), null, 240000);
+    ok(/Farming\./.test(await text(ts, '#fm-status')) && t4.walletLog.signAttempts === 1 && t4.walletLog.signs === 0 && t4.walletLog.sends.length === 2 && (await staked(sw.account)) > 0n, `TAC goes in by an approval and a deposit when the wallet cannot sign a permit (${t4.walletLog.sends.length} sent, ${t4.walletLog.signAttempts} permit asked; ${(await text(ts, '#fm-status')).slice(0, 50)})`);
+    await t4.browser.close();
+  }
 
   // a wallet with ETH and no TAC: ETH + TAC takes both, so the form says so and offers ETH alone
   const bare = await fundedWallet(1n * E18, 0n);

@@ -57,15 +57,19 @@ const tacBal = async (a) => BigInt(await rpcA('eth_call', [{ to: TACADDR, data: 
 const ethBal = async (a) => BigInt(await rpcA('eth_getBalance', [a, 'latest']));
 
 // A wallet in the page: window.ethereum answers as an EIP-1193 provider, signs TAC's permit with a real key and sends through the fork.
-async function stubWallet(ctx, { account, key, refuseSends = false }) {
-  const log = { sends: [], signs: 0, connects: 0 };
+async function stubWallet(ctx, { account, key, refuseSends = false, noPermit = false }) {
+  const log = { sends: [], signs: 0, signAttempts: 0, connects: 0 };
   await ctx.exposeFunction('__wallet', async (method, params) => {
     if (method === 'eth_requestAccounts') { log.connects++; return [account]; }
     if (method === 'eth_accounts') return [account];
     if (method === 'eth_chainId') { if (log.onChainId) { const f = log.onChainId; log.onChainId = null; await f(); } return '0x1'; }
     if (method === 'wallet_switchEthereumChain') return null;
     if (method === 'wallet_watchAsset') { (log.watched ||= []).push(params); return true; }
-    if (method === 'eth_signTypedData_v4') { log.signs++; return cast('wallet', 'sign', '--private-key', key, '--data', params[1]); }
+    if (method === 'eth_signTypedData_v4') {
+      log.signAttempts++;
+      if (noPermit) throw Object.assign(new Error('The method eth_signTypedData_v4 is not supported by this account.'), { code: -32601 });
+      log.signs++; return cast('wallet', 'sign', '--private-key', key, '--data', params[1]);
+    }
     if (method === 'eth_sendTransaction') {
       if (refuseSends) throw Object.assign(new Error('User rejected the request.'), { code: 4001 });
       log.sends.push(params[0]);
@@ -400,6 +404,10 @@ try {
     await q.click('#go');
     await until(q, () => /Balance [\d.,]+ ETH/.test(document.querySelector('#in-bal')?.textContent || ''), null, 60000);
     ok(w.walletLog.connects === 1 && /Balance 10 ETH/.test(await text(q, '#in-bal')) && /Enter an amount/.test(await text(q, '#go')), `connecting shows the balance and asks for an amount (${await text(q, '#in-bal')})`);
+    ok((await q.$$eval('#chips button', (b) => b.map((x) => x.textContent))).join() === '25%,50%,75%', 'with a wallet that holds ETH the quick amounts are shares of it');
+    await q.click('#chips button:nth-child(2)');
+    ok((await q.inputValue('#amt')) === '5' && (await q.getAttribute('#chips button:nth-child(2)', 'aria-pressed')) === 'true', `and 50% fills half of it (${await q.inputValue('#amt')} of 10 ETH)`);
+    await q.fill('#amt', '');
     await until(q, () => !/^Borrow TACD or TACE against TAC\./.test(document.querySelector('#bw')?.textContent || ''), null, 60000).catch(() => {});
     const bw1 = await q.$eval('#bw', (e) => ({ h: e.getBoundingClientRect().height, t: e.innerText.replace(/\s+/g, ' ').trim(), go: e.querySelector('.bw-go')?.getAttribute('href'), goT: e.querySelector('.bw-go')?.textContent, alt: e.querySelector('.bw-alt')?.getAttribute('href') }));
     ok(quoteJs.length === 1 && bwReads() - bwReads0 >= 1, `a wallet holding TAC loads the quote module once and reads the vaults (${quoteJs.length} module, ${bwReads() - bwReads0} node requests: one Multicall3 read, sent to more than one node by the page's hedging)`);
@@ -493,6 +501,12 @@ try {
     ok(BigInt(await rpcA('eth_getTransactionCount', [me.account, 'latest'])) === n0 + 1n && w.walletLog.sends.length === 1 && w.walletLog.sends[0].to.toLowerCase() === ROUTER.toLowerCase(), 'in one transaction, sent to zRouter');
     ok(e0 - (await ethBal(me.account)) >= 2n * E18 && e0 - (await ethBal(me.account)) < 2n * E18 + E18 / 50n && (await tacBal(MC3)) === mc0 && (await ethBal(ROUTER)) === rt0, 'the ETH spent is the 2 ETH and its gas, and nothing is left in Multicall3 or the router');
     ok(/Balance [\d.,]+ ETH/.test(await text(q, '#in-bal')) && (await q.inputValue('#amt')) === '', 'the balance and the form are refreshed');
+    ok(!!(await q.$('#status #farm-it')), 'a purchase offers to farm it');
+    await q.click('#farm-it');
+    await until(q, () => document.querySelector('[data-fm="tac"]')?.getAttribute('aria-pressed') === 'true' && Number(document.querySelector('#fm-tacamt').value) > 0 && /Earns about/.test(document.querySelector('#fm-rcpt')?.textContent || ''), null, 120000);
+    await q.waitForTimeout(1200);
+    const fi = await q.evaluate(() => { const r = document.querySelector('#farm').getBoundingClientRect(); return { tac: Number(document.querySelector('#fm-tacamt').value), eth: document.querySelector('#fm-amt').value, inView: r.top < innerHeight && r.bottom > 0 }; });
+    ok(Math.abs(fi.tac - Number(got / 10n ** 16n) / 100) < 0.01 && fi.eth === '' && fi.inView, `Farm it opens the farm on TAC with the TAC just bought typed in and quoted (${fi.tac} of ${Number(got / 10n ** 16n) / 100} TAC)`);
     await until(q, () => !!document.querySelector('#chart path.tpt.up'), null, 30000).catch(() => {});
     ok(!!(await q.$('#chart path.tpt.up')) && /your purchases and sales/.test(await text(q, '#legend')), `the purchase is flagged on the chart at its price, and the key under it says what the flags are (${(await text(q, '#legend')).trim()})`);
 
@@ -534,6 +548,20 @@ try {
     ok(!!(await q.$('#chart path.tpt.down')), 'and the sale is flagged on the chart too');
     ok(w.errors.length === 0 && w.blocked.length === 0, `no page errors or blocked requests while trading (${[...w.errors, ...w.blocked].slice(0, 2).join(' | ')})`);
     await w.browser.close();
+
+    // a wallet that cannot sign a permit (a smart-contract account) approves the pool, and the sale goes by that approval and one transaction
+    {
+      const sc = await openPage({ width: 1280, height: 900 }, { ...(await fundedWallet(2n * E18, 6000n * E18)), noPermit: true }), sp = sc.page;
+      await until(sp, () => /^\$/.test(document.querySelector('#px-usd')?.textContent || ''), null, 240000);
+      await sp.click('#go'); await until(sp, () => /Balance/.test(document.querySelector('#in-bal')?.textContent || ''), null, 60000);
+      await sp.click('[data-side="sell"]'); await sp.fill('#amt', '5000');
+      await until(sp, () => /sell TAC/i.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('#go').disabled, null, 240000);
+      const permitRoute = /Precision pool|Split across/.test(await text(sp, '#route'));
+      await sp.click('#go');
+      await until(sp, () => /Sold\./.test(document.querySelector('#status')?.textContent || '') || document.querySelector('#status .err'), null, 300000);
+      ok(/Sold\./.test(await text(sp, '#status')) && sc.walletLog.signs === 0 && sc.walletLog.signAttempts === (permitRoute ? 1 : 0) && sc.walletLog.sends.length === 2, `a wallet that cannot sign a permit sells by an approval and a transaction (${sc.walletLog.sends.length} sent, ${sc.walletLog.signAttempts} permit asked; ${(await text(sp, '#status')).slice(0, 50)})`);
+      await sc.browser.close();
+    }
 
     // a wallet that says no
     const refuser = await fundedWallet(5n * E18, 0n), rf = await openPage({ width: 1280, height: 900 }, { ...refuser, refuseSends: true });

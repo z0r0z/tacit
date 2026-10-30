@@ -11,7 +11,7 @@ import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
 import { takeEarly } from '/trade/rpc.js?cb=63f04503';
-import { mountFarm } from '/trade/farm.js?cb=1a2388b9';
+import { mountFarm } from '/trade/farm.js?cb=e3f70b9d';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
 
@@ -527,7 +527,13 @@ function renderBtcAlt(q = S.quote) {
   el.hidden = false;
 }
 const PRESETS = { buy: [['0.05 ETH', '0.05'], ['0.25 ETH', '0.25'], ['1 ETH', '1']], sell: [['1,000 TAC', '1000'], ['5,000 TAC', '5000'], ['20,000 TAC', '20000']] };
-function renderChips() { $('#chips').innerHTML = PRESETS[S.side].map(([l, v]) => `<button type="button" data-amt="${v}" aria-pressed="${S.amt === v}"${S.busy ? ' disabled' : ''}>${l}</button>`).join(''); }
+// With a wallet that holds some of what is paid, the quick amounts are shares of it (the Max beside the balance is the rest); without one, round amounts to see the scale.
+function chipSet() {
+  const have = spendable(), dp = S.side === 'buy' ? 6 : 2, u = 10n ** BigInt(18 - dp);
+  const shares = have != null && have > 0n ? [['25%', 1n], ['50%', 2n], ['75%', 3n]].map(([l, k]) => [l, plain(have * k / 4n / u * u)]) : null;
+  return shares && shares.every(([, v]) => Number(v) > 0) ? shares : PRESETS[S.side];
+}
+function renderChips() { $('#chips').innerHTML = chipSet().map(([l, v]) => `<button type="button" data-amt="${v}" aria-pressed="${S.amt === v}"${S.busy ? ' disabled' : ''}>${l}</button>`).join(''); }
 function lockTicket() {
   const b = S.busy;
   $('#amt').disabled = b; $('#in-bal').disabled = b;
@@ -976,7 +982,7 @@ function renderBalance() {
   const b = $('#in-bal'), have = spendable();
   b.hidden = have == null;
   if (have != null) b.textContent = `Balance ${fmtUnits(have, 18, 4)} ${S.side === 'buy' ? 'ETH' : 'TAC'} · Max`;
-  renderBorrow();
+  renderChips(); renderBorrow();
 }
 const BW = { key: '', at: 0, q: null, busy: false, mod: null };
 const KIND_DP = { usd: 2, eth: 4 };
@@ -1019,7 +1025,7 @@ function renderGo() {
   if (!buy && S.bal && S.bal.eth != null && S.bal.eth < gasReserve(P, false)) { go.textContent = 'Add ETH for the network fee'; go.disabled = true; go.title = `About ${fmtUnits(gasReserve(P, false), 18, 5)} ETH is needed for the fee`; return; }
   if (buy && have != null && wei + gasReserve(P) > have) { go.textContent = 'Leave ETH for the network fee'; go.disabled = true; go.title = `About ${fmtUnits(gasReserve(P), 18, 5)} ETH stays for the fee: Max leaves it`; return; }
   go.textContent = buy ? 'Buy TAC' : 'Sell TAC';
-  if (P.impact >= 0.1 && S.ack !== ackKey(P)) { go.textContent = `Accept the loss to ${buy ? 'buy' : 'sell'} TAC`; go.disabled = true; go.title = 'Tick the box above to accept the price impact'; }
+  if (P.impact >= 0.1 && !acked(P)) { go.textContent = `Accept the loss to ${buy ? 'buy' : 'sell'} TAC`; go.disabled = true; go.title = 'Tick the box above to accept the price impact'; }
 }
 function planOf(q = S.quote) {
   const { wei, dir, buy, rt } = q;
@@ -1033,13 +1039,14 @@ function planOf(q = S.quote) {
   return { via: 'pools', wei, dir, buy, rt, out, floor: (out * BigInt(10000 - S.slip)) / 10000n, impact: expected ? Math.max(0, 1 - Number(out) / expected) : 0, split: rt.pick === 'split' };
 }
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const ackKey = (P) => `${P.dir}:${P.wei}:${Math.round(P.impact * 100)}`;
+// A loss accepted stands for the same trade while it is no larger: the minute's re-read that moves the figure a point either way does not take the tick away (a larger loss asks again).
+const ackKey = (P) => `${P.dir}:${P.wei}`, ackPct = (P) => Math.round(P.impact * 100), acked = (P) => S.ack?.key === ackKey(P) && ackPct(P) <= S.ack.pct;
 function detailsHtml(P) {
   const buy = P.buy, outU = buy ? 'TAC' : 'ETH', big = P.impact >= 0.1;
   return html`${P.impact >= 0.005 ? `<div class="kv"><span>Price impact</span><b class="${P.impact >= 0.05 ? 'err' : ''}">${(P.impact * 100).toFixed(P.impact < 0.1 ? 1 : 0)}%</b></div>` : ''}
     <div class="kv"><span>At least</span><b>${esc(fmtOut(P.floor, buy))} ${outU}</b></div>${feeHtml(P)}
     <div class="slip"><span class="mute">Slippage</span><div class="seg sm" id="slip-seg" role="group" aria-label="Slippage">${[[50, '0.5%'], [100, '1%'], [300, '3%']].map(([v, l]) => `<button type="button" data-slip="${v}" aria-pressed="${S.slip === v}">${l}</button>`).join('')}</div></div>
-    ${big ? `<label class="ack"><input type="checkbox" id="ack"${S.ack === ackKey(P) ? ' checked' : ''}><span>I accept losing about ${Math.round(P.impact * 100)}% of this ${buy ? 'purchase' : 'sale'} ${P.via === 'boards' ? 'against the Precision pool’s price' : 'to price impact. A smaller amount moves it less'}.</span></label>` : ''}`;
+    ${big ? `<label class="ack"><input type="checkbox" id="ack"${acked(P) ? ' checked' : ''}><span>I accept losing about ${Math.round(P.impact * 100)}% of this ${buy ? 'purchase' : 'sale'} ${P.via === 'boards' ? 'against the Precision pool’s price' : 'to price impact. A smaller amount moves it less'}.</span></label>` : ''}`;
 }
 const ROUTE_GAS = { precision: [152000, 175000], 'tacit-amm': [131000, 130000], split: [261000, 315000] };
 function feeHtml(P) {
@@ -1063,7 +1070,7 @@ function wireWalletSheet(root, close) {
 }
 
 const farm = mountFarm($('#farm'), {
-  ethCall, batch, rpc, api, wallet, W, connect: () => connectWallet(), fmtUnits, parseUnits, esc, usd, ethUsd: () => D.ethUsd, txLink,
+  ethCall, batch, rpc, api, wallet, W, connect: () => connectWallet(), fmtUnits, parseUnits, esc, usd, ethUsd: () => D.ethUsd, txLink, gasPrice: () => D.gasPrice,
   onDone: () => { readBalances().then(() => { renderBalance(); renderGo(); }); loadChain().then(paintAll).catch(() => {}); },
 });
 
@@ -1080,18 +1087,25 @@ async function withTacAccess({ make, buy, permit, from, dl }) {
   if (!buy && tx.approval) {
     const [allowed, nonceRaw] = await Promise.all([ethCall(TAC_ERC20, '0xdd62ed3e' + word(BigInt(from)) + word(BigInt(tx.approval.spender))), permit ? ethCall(TAC_ERC20, '0x7ecebe00' + word(BigInt(from))) : null]);
     const have = wordAt(allowed, 0);
+    const approve = async (said) => {
+      say(said);
+      const h = await wallet.sendTx({ to: TAC_ERC20, data: encErc20Approve(tx.approval.spender, tx.approval.amount), from });
+      say(`Waiting for the approval ${txLink(h)}`);
+      if ((await wallet.receipt(h)).status !== '0x1') throw new Error('The approval did not go through.');
+    };
     if (have < tx.approval.amount) {
       if (permit) {
         say('Sign the permit for your TAC in your wallet. The signature costs nothing.');
         const nonce = wordAt(nonceRaw, 0);
-        const sig = await wallet.signPermit({ token: TAC_ERC20, name: 'Tacit Token', spender: tx.approval.spender, value: tx.approval.amount, deadline: dl, nonce, owner: from });
-        tx = make({ value: tx.approval.amount, deadline: dl, ...sig });
-      } else {
-        say('Approve the TAC for this pool in your wallet.');
-        const h = await wallet.sendTx({ to: TAC_ERC20, data: encErc20Approve(tx.approval.spender, tx.approval.amount), from });
-        say(`Waiting for the approval ${txLink(h)}`);
-        if ((await wallet.receipt(h)).status !== '0x1') throw new Error('The approval did not go through.');
-      }
+        try {
+          const sig = await wallet.signPermit({ token: TAC_ERC20, name: 'Tacit Token', spender: tx.approval.spender, value: tx.approval.amount, deadline: dl, nonce, owner: from });
+          tx = make({ value: tx.approval.amount, deadline: dl, ...sig });
+        } catch (e) {
+          // A wallet that cannot sign a permit (a smart-contract account, or one without typed-data signing) approves the pool instead, and the trade goes without a signature. A "no" ends it.
+          if (e?.userStopped || e?.code === 4001 || /account changed/i.test(e?.message || '')) throw e;
+          await approve('Your wallet cannot sign a permit. Approve the TAC for this pool in your wallet.');
+        }
+      } else await approve('Approve the TAC for this pool in your wallet.');
     }
   }
   return tx;
@@ -1170,12 +1184,14 @@ async function sendAndReport(tx, { from, buy, P }) {
   loadChain().then(paintAll).catch(() => {});
   loadTapes({ coarse: false }).then(paintAll).catch(() => {});
   loadBoards().then(paintAll).catch(() => {});
-  say(`<span class="ok">${buy ? 'Bought' : 'Sold'}.</span> ${got != null ? `${buy ? 'Received' : 'Received about'} ${esc(fmtUnits(got, 18, buy ? 2 : 6))} ${buy ? 'TAC' : 'ETH'} · ` : ''}${txLink(hash)}${buy && !tacAdded() ? ' · <button class="linkbtn" type="button" id="add-tac">Add TAC to your wallet</button>' : ''}`);
+  say(`<span class="ok">${buy ? 'Bought' : 'Sold'}.</span> ${got != null ? `${buy ? 'Received' : 'Received about'} ${esc(fmtUnits(got, 18, buy ? 2 : 6))} ${buy ? 'TAC' : 'ETH'} · ` : ''}${txLink(hash)}${buy && !tacAdded() ? ' · <button class="linkbtn" type="button" id="add-tac">Add TAC to your wallet</button>' : ''}${buy && got ? ` · <button class="linkbtn" type="button" id="farm-it" data-tac="${got}">Farm it</button>` : ''}`);
 }
 
 const TAC_ADDED = 'tacit-trade-tac-added';
 const tacAdded = () => { try { return localStorage.getItem(TAC_ADDED) === '1'; } catch { return false; } };
 $('#status').addEventListener('click', async (e) => {
+  const f = e.target.closest('#farm-it');
+  if (f) { f.disabled = true; if (!(await farm.use({ tac: BigInt(f.dataset.tac) }))) { f.disabled = false; f.textContent = 'Could not open the farm'; } return; }
   const b = e.target.closest('#add-tac');
   if (!b) return;
   b.disabled = true;
@@ -1203,7 +1219,7 @@ $('#go').addEventListener('click', () => {
   if (!S.quote || S.quote.wei !== wei || S.quote.dir !== dirOf()) { clearTimeout(amtTimer); requote(); return; }
   if (!routeOf(S.quote)) return;
   const P = planOf();
-  if (P.impact >= 0.1 && S.ack !== ackKey(P)) return;
+  if (P.impact >= 0.1 && !acked(P)) return;
   say(''); execute(P);
 });
 $('#route').addEventListener('click', (e) => {
@@ -1215,7 +1231,8 @@ $('#route').addEventListener('click', (e) => {
 });
 $('#route').addEventListener('change', (e) => {
   if (e.target.id !== 'ack' || !S.quote || !routeOf(S.quote)) return;
-  S.ack = e.target.checked ? ackKey(planOf()) : null;
+  const P = planOf();
+  S.ack = e.target.checked ? { key: ackKey(P), pct: ackPct(P) } : null;
   renderGo();
 });
 $('#in-bal').addEventListener('click', () => {

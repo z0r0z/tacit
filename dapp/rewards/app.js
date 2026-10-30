@@ -439,7 +439,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=1a2388b9'), import('/trade/util.js?cb=dcf3a4f2'), import('/evm-trade-venues.js?cb=5a940508'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=e3f70b9d'), import('/trade/util.js?cb=dcf3a4f2'), import('/evm-trade-venues.js?cb=5a940508'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
