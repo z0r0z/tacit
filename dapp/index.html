@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Jzf7Gd0Gdgc9Kk5blsQxmc55RrXQxkip2XoKnOJyUhU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tfWikzXonrqF3z1xt6KuLuvou+1BvY1/8cJitUKx69s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -193,6 +193,13 @@ main:focus { outline: none; }
 @media (hover: none) { .hint { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } .hint .go { display: none; } }
 .hint:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; color: var(--ink); }
 .hint:focus-visible .go { opacity: 1; transform: none; }
+/* the proof's state: a pulse while it is being made, a dot once it is made */
+.hint .pf { display: none; width: 6px; height: 6px; margin-left: -2px; border-radius: 50%; background: var(--mute); }
+.hint[data-pf] .pf { display: inline-block; }
+.hint[data-pf="proving"] .pf { opacity: .55; animation: hint-pf 1.4s ease-in-out infinite; }
+.hint[data-pf="ready"] .pf { background: var(--ok, #3a8f5a); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok, #3a8f5a) 18%, transparent); }
+@keyframes hint-pf { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: .8; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .hint[data-pf="proving"] .pf { animation: none; } }
 .hint:active { transform: scale(.98); }
 @keyframes hint-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .hint { animation: none; transition: none; } }
@@ -9285,9 +9292,22 @@ function paintHints() {
     HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tag: `${Math.round(HINT_POOL.apr)}% APR`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
     { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
   ].filter(Boolean);
-  const view = html`${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span>${h.tag ? html`<small>${h.tag}</small>` : ''}<i class="go" aria-hidden="true">→</i></button>`)}`;
+  const view = html`${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span>${h.tag ? html`<small>${h.tag}</small>` : ''}<i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   hintsWarm();
+  hintsReady().catch(() => {});
+}
+// Whether each start's proof is being made or is made, read from the same vouchers the zap uses (a wrap of 0.01 ETH for Shield, a 0.01 share of the farm's pool for Farm): a quiet pulse while it is
+// proving, a dot once it is ready (the press then sends one transaction). The swap start has no proof of its own to make ahead, so it carries no mark.
+async function hintsReady() {
+  const el = $('#hints');
+  if (!el) return;
+  const mark = (id, st) => { const b = el.querySelector(`[data-hint="${id}"]`); if (!b) return; if (st) b.dataset.pf = st; else delete b.dataset.pf; b.setAttribute('aria-label', st === 'ready' ? `${b.textContent.trim()}. Its proof is made: one transaction.` : ''); if (!st) b.removeAttribute('aria-label'); };
+  if (!S.key) { mark('shield', ''); mark('zap', ''); return; }
+  const v = await vouchers(), pub = S.key.pubHex, size = String(KEEP_FIRST[0]);
+  const state = (list, f) => { const mine = list.filter(f); return mine.some((x) => x.status === 'ready') ? 'ready' : mine.length ? 'proving' : ''; };
+  mark('shield', state(v.list(pub, 'cETH'), (x) => x.amount === size));
+  mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
 }
 function hintGo(id) {
   // a press is a choice: a wallet connected with no Tacit key open is asked for it now (one signature), so the kept sizes start proving before the card's own button
@@ -9337,6 +9357,7 @@ function farmDay(p, eth) {
 // The ready marks on the sizes offered (the card's Earn tab, the Swap card's Private in), read again as proofs land, so a
 // size proved while it is on screen shows as ready without anything being pressed.
 function readyMarks() {
+  hintsReady().catch(() => {});
   if (HX.tab === 'earn') hxReadyRead().catch(() => {});
   if (HX.tab === 'swap') SWC.card?.refresh?.();
 }
