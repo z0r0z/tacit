@@ -3,7 +3,8 @@
 // makes slowly, goes to the upstream node at the fork's block). Checks the page loads clean; the quotes for ETH → TAC (with its routes),
 // USDC → TAC, ETH → tacUSD (a price far under the market has to be accepted first) and a private swap (priced here, made on the card
 // once the Tacit key is opened there); then, with a wallet that signs with a real key, buys TAC with ETH, buys TAC with USDC by permit, sells TAC by permit,
-// and opens the farm on what was bought. A phone and a dark screen have no sideways scroll.
+// and opens the farm on what was bought; a wallet that cannot sign typed data (a smart-contract account) approves the TAC to the pool and then sells it, and one
+// whose owner says no to the permit sells nothing. A phone and a dark screen have no sideways scroll.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/swap-page.mjs        (SHOTS=dir saves screenshots)
 import { createRequire } from 'node:module';
@@ -78,13 +79,15 @@ const TAC = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279', USDC = '0xA0b86991c621
 const DEPLOYED = (await rpcA('eth_getCode', [ammRouteAddress(), 'latest'])) !== '0x';
 const bal = async (t, a) => BigInt(await rpcA('eth_call', [{ to: t, data: '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0') }, 'latest']));
 
-async function stubWallet(ctx, { account, key, eip6963 = false }) {
-  const log = { sends: [], signs: 0 };
+async function stubWallet(ctx, { account, key, eip6963 = false, typedWay = '' }) {
+  // typedWay: 'none' for a smart-contract account with no typed-data signing, 'reject' for an owner who says no (set on the log, a test can change it)
+  const log = { sends: [], signs: 0, typedWay };
   await ctx.exposeFunction('__wallet', async (method, params) => {
     if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [account];
     if (method === 'eth_chainId') return '0x1';
     if (method === 'wallet_switchEthereumChain') return null;
     if (method === 'wallet_watchAsset') { (log.watched ||= []).push(params); return true; }
+    if (method === 'eth_signTypedData_v4' && log.typedWay) { log.typedTries = (log.typedTries || 0) + 1; throw new Error(log.typedWay === 'reject' ? 'User rejected the request.' : 'The method eth_signTypedData_v4 is not supported'); }
     if (method === 'eth_signTypedData_v4') { log.signs++; (log.typed ||= []).push(JSON.parse(params[1])); return cast('wallet', 'sign', '--private-key', key, '--data', params[1]); }
     if (method === 'personal_sign') { log.signs++; (log.personal ||= 0); log.personal++; return cast('wallet', 'sign', '--private-key', key, params[0]); }
     if (method === 'eth_sendTransaction') { log.sends.push(params[0]); return rpcA('eth_sendTransaction', [{ ...params[0], gas: '0x4c4b40' }]); }
@@ -836,6 +839,39 @@ if (!process.env.SKIP_GASRELAY) {
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   ok(!blocked.length, `nothing blocked by the CSP${blocked.length ? ': ' + blocked.slice(0, 3).join(' | ') : ''}`);
   void e0;
+  await browser.close();
+}
+
+// ── a wallet that cannot sign typed data (a smart-contract account) approves the TAC to the pool and then sells it; a "no" to the permit sells nothing ──
+{
+  const w = await fundedWallet();
+  const { browser, page, errors, blocked, walletLog } = await openPage({ width: 1280, height: 900 }, { wallet: { ...w, typedWay: 'none' } });
+  await page.click('#wallet-chip');
+  await until(page, () => /0x/.test(document.querySelector('#wallet-label').textContent));
+  await until(page, () => /Balance/.test(document.querySelector('#pay-side').textContent));
+  await typeAmt(page, '0.2'); await quoted(page);
+  await page.click('#go');
+  await until(page, () => /Done/.test(document.querySelector('#q').textContent), null, 180000);
+  ok(!walletLog.typedTries, 'buying TAC with ETH asks the wallet for no signature');
+  await pick(page, 'pay', 'TAC');
+  await typeAmt(page, '50'); await quoted(page);
+  const t0 = await bal(TAC, w.account), n0 = walletLog.sends.length;
+  // the owner says no to the permit: that is an answer, not a wallet without permits, so nothing is approved and nothing sent
+  walletLog.typedWay = 'reject';
+  await page.click('#go');
+  await until(page, () => /Cancelled in your wallet/.test(document.querySelector('#q').textContent), null, 120000);
+  ok(walletLog.typedTries === 1 && walletLog.sends.length === n0, 'a no to the permit ends the sale: no approval is asked for and nothing is sent');
+  // a wallet with no typed-data signing is another thing: the same press asks for the permit, which it cannot give, then approves the TAC to the pool and sells
+  walletLog.typedWay = 'none';
+  await quoted(page);
+  await page.click('#go');
+  await until(page, () => /Done/.test(document.querySelector('#q').textContent), null, 180000);
+  const t1 = await bal(TAC, w.account), sent = walletLog.sends.slice(n0);
+  ok(walletLog.typedTries === 2 && walletLog.signs === 0, `selling TAC asks the wallet for a permit, which it cannot give (${walletLog.typedTries} asked, ${walletLog.signs} signed)`);
+  ok(sent.length === 2 && sent[0].to.toLowerCase() === TAC.toLowerCase() && /^0x095ea7b3/.test(sent[0].data) && !/^0x095ea7b3/.test(sent[1].data), `so the TAC is approved to the pool and the sale sent after it (${sent.length} sends)`);
+  ok(t0 - t1 === 50n * 10n ** 18n, 'and the sale spent exactly 50 TAC');
+  ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
+  ok(!blocked.length, `nothing blocked by the CSP${blocked.length ? ': ' + blocked.slice(0, 3).join(' | ') : ''}`);
   await browser.close();
 }
 

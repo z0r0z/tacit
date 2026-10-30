@@ -32,7 +32,7 @@ export const batch = async (calls) => V.decAggregate3(await ethCall(MULTICALL3, 
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
 const PN = makePointsNote({ read: () => fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)) });
-const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(' · ');
+const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(/class="splitbar"/.test(x.note || '') ? '' : ' · ');
 // ── TAC points: what a route earns, said beside it and in its receipt, and popped from the button once it is sent ──
 // The program counts, each for the wallet that sent it: ETH that zRouter puts into a pool it can check (Uniswap v2, v3 and v4, Sushi, the
 // Precision pool) as a swap of ETH; a wallet's ETH deposited into the private pool as a wrap; its ETH deposited into the private ETH pool (Swap
@@ -1245,8 +1245,14 @@ async function withAccess({ tx, make, from, dl, permit }) {
   if (acc.allowed >= tx.approval.amount) return tx;
   if (permit) {
     say('Sign the permit for your TAC in your wallet. The signature costs nothing.');
-    const sig = R.splitSig(await signTyped(R.permitTyped({ token: R.TAC, name: 'Tacit Token', version: '1', owner: from, spender: tx.approval.spender, value: tx.approval.amount, nonce: acc.nonce, deadline: dl }), from));
-    return make({ value: tx.approval.amount, deadline: dl, ...sig });
+    try {
+      const sig = R.splitSig(await signTyped(R.permitTyped({ token: R.TAC, name: 'Tacit Token', version: '1', owner: from, spender: tx.approval.spender, value: tx.approval.amount, nonce: acc.nonce, deadline: dl }), from));
+      return make({ value: tx.approval.amount, deadline: dl, ...sig });
+    } catch (e) {
+      // A wallet that cannot sign a permit (a smart-contract account, or one without typed-data signing) approves the pool instead, and the swap goes without a signature. A "no" ends it.
+      if (e instanceof UserStopped || e?.userStopped || /account changed/i.test(e?.message || '')) throw e;
+      say('Your wallet cannot sign a permit. Approve the TAC for this pool in your wallet.');
+    }
   }
   await approve(R.TAC, tx.approval.spender, tx.approval.amount, from, acc.allowed);
   return tx;

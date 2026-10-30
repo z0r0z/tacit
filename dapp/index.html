@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jssptizvgmGebAqzZyVPzmrK180WDEDSdrNHuvNfUrY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3lOFDALPjCcSDvbG9yUowckrGFzy8Gw3V3HRDOYYp3s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15,7 +15,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script src="/front-route.js?cb=ed83e6cf"></script>
+<script defer src="/front-route.js?cb=ed83e6cf"></script>
 <title>tacit defi</title>
 <link rel="canonical" href="https://tacit.finance/">
 <meta name="description" content="Private DeFi on Bitcoin and Ethereum: private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin.">
@@ -29,7 +29,7 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /trade/farm-read.js | | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -48,6 +48,31 @@
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
+<link rel="modulepreload" href="/bridge-all.js?cb=4b6de3ff">
+<link rel="modulepreload" href="/lp-zap.js?cb=4823580d">
+<link rel="modulepreload" href="/farm-ops.js?cb=0933a4c8">
+<link rel="modulepreload" href="/relay-outcome.js?cb=26298b8e">
+<link rel="modulepreload" href="/btc-borrow.js?cb=13923518">
+<link rel="modulepreload" href="/bridge-out.js?cb=ecf49203">
+<link rel="modulepreload" href="/bridge/track.js?cb=b952f96e">
+<link rel="modulepreload" href="/bridge-in.js?cb=1b8357ef">
+<link rel="modulepreload" href="/bridge-tick.js?cb=db96a3a9">
+<link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
+<link rel="modulepreload" href="/activity.js?cb=5bc9627f">
+<link rel="modulepreload" href="/swap/card.js?cb=ba51e242">
+<link rel="modulepreload" href="/trade/wallet.js?cb=6778fe25">
+<link rel="modulepreload" href="/trade/util.js?cb=dcf3a4f2">
+<link rel="modulepreload" href="/trade/rpc.js?cb=63f04503">
+<link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
+<link rel="modulepreload" href="/swap/route.js?cb=ce610210">
+<link rel="modulepreload" href="/swap/aggregate.js?cb=3c73982e">
+<link rel="modulepreload" href="/zrouter-guard.js?cb=f5ae4bcd">
+<link rel="modulepreload" href="/swap/solvers.js?cb=2c70b259">
+<link rel="modulepreload" href="/gas-relay.js?cb=893b2c02">
+<link rel="modulepreload" href="/reward-pop.js?cb=1b53f6d4">
+<link rel="modulepreload" href="/points-note.js?cb=dc44d257">
+<link rel="modulepreload" href="/evm-pool-tokens.js?cb=e1ab5d24">
+<link rel="modulepreload" href="/net-pick.js?cb=8f57c360">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -357,10 +382,17 @@ a.di { color: inherit; text-decoration: none; }
 /* ── the hero's console: a card that takes a verb, an amount and a way, and hands the rest to the sheet that does it ── */
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 2.2%, var(--card)), var(--card) 140px); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height it settles at (measured at each width): what is below it does not move when it appears. */
-.hx:has(#hx-body:empty) { min-height: 448px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty) { min-height: 477px; } }
-@media (max-width: 360px) { .hx:has(#hx-body:empty) { min-height: 475px; } }
-@media (max-width: 340px) { .hx:has(#hx-body:empty) { min-height: 510px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 448px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 477px; } }
+@media (max-width: 360px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 475px; } }
+@media (max-width: 340px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 510px; } }
+/* Until the script draws it the card is the places of its tabs, its two fields and its button, in quiet blocks of its own colours (the script's first draw replaces them),
+   so the card is there from the first paint and nothing in it moves when its parts arrive. */
+.hx-sk { display: grid; gap: 10px; padding: 12px 16px 16px; }
+.hx-sk i { display: block; border-radius: 16px; background: color-mix(in srgb, var(--ink) 4.5%, transparent); }
+.hx-sk .t { height: 46px; margin: 0 -8px 6px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.hx-sk .f { height: 124px; }
+.hx-sk .g { height: 54px; margin-top: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
 .hx-h { --i: 0; --n: 5; position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); padding: 4px 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--hair) 75%, transparent); }
 .hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 16px) / var(--n) * .5);
   left: calc(8px + (100% - 16px) / var(--n) * (var(--i) + .25)); transition: left .4s var(--spring); }
@@ -1131,7 +1163,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=1fe73095">
+<link rel="stylesheet" href="/swap/card.css?cb=1fe73095" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1339,7 +1371,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <p class="sub">One <b>tacit1</b>&nbsp;ID on Bitcoin and Ethereum. Private inside the pool.</p>
     </div>
     <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card below"></div>
-    <section class="hx" id="hx" aria-label="Swap, bridge, send, earn or borrow"><div id="hx-body"></div></section>
+    <section class="hx" id="hx" aria-label="Swap, bridge, send, earn or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="g"></i></div></div></section>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
         <span data-nums><b class="num"><span data-num="in"><span class="sk" style="--w:5ch"></span></span></b>ETH transacted</span>
@@ -1788,6 +1820,9 @@ import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverE
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=5bc9627f';
 if (window.__tacitAway) await new Promise(() => {});
+// The swap card's stylesheet is linked in the head as media="print", so the first paint does not wait for it (the host sends it after the document, and nothing visible yet is drawn
+// with it): it applies from here, in its place in the cascade, before the tile is drawn.
+document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 
@@ -14604,7 +14639,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=d4b1e385').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=ba51e242').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };
