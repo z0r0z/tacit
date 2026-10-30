@@ -520,7 +520,10 @@ function renderBtcAlt(q = S.quote) {
   else if (!buy && bk) { text = 'Or list it for sats on Bitcoin.'; act = 'list'; }
   else { text = `Or ${buy ? 'buy' : 'sell'} TAC for sats on the Bitcoin order book.`; act = buy ? 'buy' : 'sell'; }
   const label = act === 'list' ? 'List on Bitcoin' : act === 'buy' ? 'Buy on Bitcoin' : 'Sell on Bitcoin';
-  setHtml(el, `<svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg><span>${text} <button type="button" class="linkbtn" data-btc-alt="${act}">${label} →</button></span>`);
+  const h = `<svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg><span>${text} <button type="button" class="linkbtn" data-btc-alt="${act}">${label} →</button></span>`;
+  // The line the page was sent with is kept while it is what this would draw: drawing it again would be a new element for the browser's first paint to count, a second later.
+  if (el.__h === undefined) { const t = document.createElement('template'); t.innerHTML = h; if (t.innerHTML === el.innerHTML) el.__h = h; }
+  setHtml(el, h);
   el.hidden = false;
 }
 const PRESETS = { buy: [['0.05 ETH', '0.05'], ['0.25 ETH', '0.25'], ['1 ETH', '1']], sell: [['1,000 TAC', '1000'], ['5,000 TAC', '5000'], ['20,000 TAC', '20000']] };
