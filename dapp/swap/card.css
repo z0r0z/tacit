@@ -206,10 +206,16 @@
 .swc .steps header small { flex: 1; min-width: 0; overflow: hidden; color: var(--mute); text-overflow: ellipsis; white-space: nowrap; }
 .swc .steps header .x { flex: none; width: 28px; height: 28px; margin: -4px -6px -4px auto; font-size: 20px; line-height: 1; color: var(--mute); background: none; border: 0; border-radius: 50%; cursor: pointer; }
 @media (hover: hover) { .swc .steps header .x:hover { color: var(--ink); background: var(--hair); } }
-.swc .steps .offer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 14px 0 0; padding: 10px 12px; border: 1px solid var(--hair); border-radius: 10px; }
+.swc .steps .offer { display: grid; gap: 10px; margin: 14px 0 0; padding: 12px; background: var(--card); border: 1px solid var(--ink); border-radius: 10px; }
 .swc .steps .offer b { display: block; font: 400 19px/1.15 var(--serif); letter-spacing: -.01em; }
 .swc .steps .offer small { color: var(--mute); }
-.swc .steps .acts { display: flex; gap: 6px; }
+.swc .steps .acts { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.swc .steps .acts .btn, .swc .steps .cta .btn { min-height: 44px; padding: 0 16px; font-size: 14px; }
+.swc .steps .cta { display: grid; gap: 8px; margin: 14px 0 0; }
+.swc .steps .cta .btn { width: 100%; }
+.swc .steps .cta small { font-size: 12px; line-height: 1.45; color: var(--mute); text-align: center; }
+.swc .steps .chip { flex: none; padding: 2px 8px; font: normal 11px var(--mono); font-style: normal; color: var(--mute); border: 1px solid var(--hair-2); border-radius: 999px; white-space: nowrap; }
+.swc .steps .chip.ok { color: var(--ink); border-color: var(--ink); } .swc .steps .chip.err { color: var(--err); border-color: var(--err); }
 .swc .steps .note { margin: 12px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); }
 .swc .steps .note.warn { color: var(--warn); } .swc .steps .note.err { color: var(--err); }
 .swc .recent { margin: 8px 2px 0; font-size: 12px; color: var(--mute); }

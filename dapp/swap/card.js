@@ -1430,9 +1430,9 @@ function paintLater(q, r, kind) {
   if (el.dataset.k !== k) {
     el.dataset.k = k;
     el.classList.toggle('on', LATER.on);
-    el.innerHTML = `<button type="button" class="tgl" id="later-on" role="switch" aria-checked="${LATER.on}" title="${esc(LATER_TIP)}"><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><span class="tg-t"><b>Swap privately</b>${LATER.on ? '' : '<small>hides where it goes</small>'}</span><span class="pill" aria-hidden="true"></span></button>`
+    el.innerHTML = `<button type="button" class="tgl" id="later-on" role="switch" aria-checked="${LATER.on}" title="${esc(LATER_TIP)}"><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><span class="tg-t"><b>Swap privately</b><small>${LATER.on ? 'your wallet and the address are not linked' : 'hides where it goes'}</small></span><span class="pill" aria-hidden="true"></span></button>`
       + (LATER.on ? (viaRow ? viaHtml(th) : '')
-        + `<div class="buf" title="Deposit more than you swap, so the deposit and the swap do not match. What is not swapped stays yours, private in the pool."><span>Hide amount<small> · extra stays yours</small></span><input type="range" id="later-x" min="5" max="100" step="5" value="${LATER.pct}" aria-label="How much more to deposit than you swap, so the two do not match; the extra stays yours, private"><b id="later-xv"></b></div>`
+        + `<div class="buf" title="Deposit more than you swap, so the deposit and the swap do not match. What is not swapped stays yours, private in the pool."><span>Blur the amount<small> · the extra stays yours</small></span><input type="range" id="later-x" min="5" max="100" step="5" value="${LATER.pct}" aria-label="How much more to deposit than you swap, so the two do not match; the extra stays yours, private"><b id="later-xv"></b></div>`
         + `<ol class="st pre" aria-label="How it goes"><li><i class="mk" aria-hidden="true">1</i><span>Deposit <b id="later-dep"></b></span></li><li><i class="mk" aria-hidden="true">2</i><span>Wait</span></li><li><i class="mk" aria-hidden="true">3</i><span>Swap</span></li>${laterPool() && laterDest().kind !== 'address' ? '<li><i class="mk" aria-hidden="true">4</i><span>Private</span></li>' : ''}</ol>` : '');
   }
   if (!LATER.on) return;
@@ -1529,19 +1529,22 @@ function paintSteps() {
     const s1 = p.held ? stepLi('done', 1, 'In the pool', `${amt} ${esc(unit)}${b ? ` · ${b.since ? `mixed with ${b.since} since your latest deposit` : 'nothing deposited since your latest yet'}${meter}` : ', yours and hidden'}`, 'held privately')
       : stopped ? stepLi('fail', 1, 'Deposit', 'did not go through') : depDoubt ? stepLi('fail', 1, 'Deposit', 'not confirmed', check)
       : deposited ? stepLi('done', 1, 'Deposit', p.pay ? `${tidy(amtFmt(BigInt(p.pay.amountWei), Number(p.pay.dec)))} ${esc(p.pay.sym)} in` : '', p.depositTx ? link(p.depositTx) : 'in the pool') : stepLi('now', 1, 'Deposit', 'sending…');
-    const s2 = p.held ? '' : !deposited ? stepLi('todo', 2, 'In the pool') : swapped || swapping || swapDoubt || (waiting && o) ? stepLi('done', 2, 'In the pool', mix) : stepLi('now', 2, 'In the pool', mix);
+    const s2 = p.held ? '' : !deposited ? stepLi('todo', 2, 'Hidden in the pool') : swapped || swapping || swapDoubt || (waiting && o) ? stepLi('done', 2, 'Hidden in the pool', mix) : stepLi('now', 2, 'Hidden in the pool', mix);
     const got = p.min ? `${tidy(amtFmt(BigInt(p.min), Number(p.dec)))} ${esc(p.sym)} or more` : '';
     const n3 = p.held ? 2 : 3, out3 = p.hop ? lc(p.token) === lc(p.hop.token) : p.token === lc(R.ZERO), tt = out3 ? 'Pay out' : 'Swap out';
     const s3 = swapped ? stepLi('done', n3, tt, got, p.swapTx ? link(p.swapTx) : 'done') : swapDoubt ? stepLi('fail', n3, tt, 'not confirmed', check)
       : swapping ? stepLi('now', n3, tt, 'sending…') : waiting && o ? stepLi('now', n3, tt, 'confirm the price')
-      : waiting ? stepLi('todo', n3, tt, '', `<button type="button" class="btn sm" data-later-go="${id}">${out3 ? 'Pay out now' : 'Swap now'}</button>`) : stepLi('todo', n3, tt);
+      : waiting ? stepLi('todo', n3, tt) : stepLi('todo', n3, tt);
     const s4 = !pool ? '' : done ? stepLi('done', 4, 'Private', p.sendTx ? `sent to ${esc(p.dest.name || 'the Tacit address')}` : '', (p.sendTx || p.shieldTx) ? link(p.sendTx || p.shieldTx) : 'done')
       : held ? stepLi('fail', 4, 'Private', p.shieldTx ? 'private; not sent on' : 'not yet', `<button type="button" class="btn sm" data-later-shield="${id}">${p.shieldTx ? 'Send it on' : 'Make private'}</button>`)
       : shielding ? stepLi(S.busy ? 'now' : 'todo', 4, 'Private', S.busy ? 'making it private…' : 'the TAC is in your Tacit account', S.busy ? '' : `<button type="button" class="btn sm" data-later-shield="${id}">Make private</button>`)
       : stepLi('todo', 4, 'Private');
     const dec = Number(p.dec), self = o?.via === 'self';
-    const offer = waiting && o ? `<div class="offer"><div><b>At least ${esc(tidy(amtFmt(o.min, dec)))} ${esc(p.sym)}</b>${o.ks ? `<small>KyberSwap ${esc(tidy(amtFmt(o.ks, dec)))}</small>` : ''}</div>`
-      + `<div class="acts"><button type="button" class="btn sm" data-later-ok="${id}" data-via="${self ? 'self' : 'relay'}">${self ? 'Confirm from this wallet' : 'Confirm'}</button><button type="button" class="btn sm ghost" data-later-no="${id}">Cancel</button></div></div>` : '';
+    const offer = waiting && o ? `<div class="offer"><div><small>You get at least</small><b>${esc(tidy(amtFmt(o.min, dec)))} ${esc(p.sym)}</b>${o.ks ? `<small>KyberSwap ${esc(tidy(amtFmt(o.ks, dec)))}</small>` : ''}</div>`
+      + `<div class="acts"><button type="button" class="btn" data-later-ok="${id}" data-via="${self ? 'self' : 'relay'}">${self ? 'Confirm from this wallet' : 'Confirm swap'}</button><button type="button" class="btn ghost" data-later-no="${id}">Not now</button></div></div>` : '';
+    // the one thing to do while it waits: swap it out now (the price is shown first, and nothing is sent until it is confirmed)
+    const cta = waiting && !o ? `<div class="cta"><button type="button" class="btn" data-later-go="${id}">${out3 ? 'Pay out now' : 'Swap now'}</button><small>${p.held ? 'You see the price and confirm it before anything is sent.' : b?.since ? `Mixed with ${b.since} other deposit${b.since > 1 ? 's' : ''} since yours. Swap now, or wait for more. You confirm the price first.` : 'The longer it waits, the more deposits mix with it. You confirm the price before anything is sent.'}</small></div>` : '';
+    const chip = stopped || depDoubt || swapDoubt ? ['Needs a look', 'err'] : done ? ['Done', 'ok'] : swapping || shielding ? ['Swapping', ''] : !deposited ? ['Depositing', ''] : waiting && o ? ['Confirm price', ''] : waiting ? ['Ready', 'ok'] : null;
     const selfOk = p.refused && waiting && W.account && lc(W.account) !== p.from;
     const note = p.err && !done ? `<p class="note ${stopped || depDoubt || swapDoubt ? 'err' : 'warn'}" role="status">${esc(p.err)}${selfOk ? ` <button type="button" class="link" data-later-self="${id}">Send it from this wallet</button>` : ''}</p>` : '';
     const x = done ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Hide">×</button>` : stopped || held ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Remove">×</button>`
@@ -1555,7 +1558,7 @@ function paintSteps() {
       : waiting ? `${tidy(amtFmt(held_, hd))} ${esc(unit)} is in ${poolName}, yours and hidden. Swap it out when you like.`
       : swapping ? 'Swapping it out of the pool.'
       : done ? `Done. The rest of the deposit stays private in the pool. <a href="${seeIt}">See it →</a>` : '';
-    return `<section class="plan" aria-label="Private swap of ${esc(amt)} ${esc(unit)} to ${esc(p.sym)}"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${esc(amt)} ${esc(unit)} → ${esc(p.sym)}</b><small>${esc(where)}</small>${x}</header>${now ? `<p class="now">${now}</p>` : ''}<ol class="st">${s1}${s2}${s3}${s4}</ol>${offer}${note}</section>`;
+    return `<section class="plan" aria-label="Private swap of ${esc(amt)} ${esc(unit)} to ${esc(p.sym)}"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${esc(amt)} ${esc(unit)} → ${esc(p.sym)}</b><small>${esc(where)}</small>${chip ? `<em class="chip ${chip[1]}">${chip[0]}</em>` : ''}${x}</header>${now ? `<p class="now">${now}</p>` : ''}<ol class="st">${s1}${s2}${s3}${s4}</ol>${offer}${cta}${note}</section>`;
   }).join('');
 }
 // Swap now: the route read now (with the stand-in) and shown with KyberSwap's figure; Confirm sends it while it pays at least that.
