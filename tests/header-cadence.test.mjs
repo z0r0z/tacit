@@ -59,7 +59,7 @@ assert.match(config, /headerMaxStaleBlocks: num\('HEADER_RELAY_MAX_STALE_BLOCKS'
 ok('both knobs default to the original behaviour');
 const feeder = readFileSync(join(ROOT, 'worker-relay/src/header-relay.js'), 'utf8');
 assert.match(feeder, /planHeaderAdvance\(\{/);
-assert.match(feeder, /submitAdvance\(plan\.from, plan\.to\)/);
+assert.match(feeder, /submitAdvance\(plan\.from, plan\.to, \{/);
 ok('the feeder submits what the plan says');
 
 console.log(`\n${n} checks passed`);

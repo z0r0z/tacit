@@ -23,6 +23,7 @@ import { baseFeeWait } from './lib/base-fee-wait.js';
 import { headerPace, headerHoldText, nextBaseFee } from './lib/gas-pace.js';
 import { makeQuietLog } from './lib/quiet-log.js';
 import { attestFundsNeed } from './lib/attest-fees.js';
+import { affordableHeaders, headerBatchNeed, exceedsAllowance } from './lib/header-fits.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 // The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
@@ -181,7 +182,11 @@ async function fundsNote(n, price) {
     return `; the relay wallet holds ${eth(have)} ETH and sending them costs about ${eth(need)} ETH${have < need ? ' (a top-up before then keeps the relay from falling further behind)' : ''}`;
   } catch { return ''; }
 }
-async function submitAdvance(from, to) {
+// The wallet cannot pay for one header after what an attest keeps back. Not a fault: the cycle says so (once in ten minutes) and waits for a top-up.
+class FundsShort extends Error { constructor(m) { super(m); this.name = 'FundsShort'; } }
+// `notes`: lines for the log that explain why this send goes (the dip gate, the bound), written only once the wallet is known to pay for it, so a
+// short wallet's attempts, three minutes apart, are not each a page of lines. `ctx`: where the relay and Bitcoin stand.
+async function submitAdvance(from, to, { notes = [], ctx = '' } = {}) {
   const [blk, feeHist, have] = await Promise.all([
     publicClient.getBlock({ blockTag: 'latest' }),
     publicClient.getFeeHistory({ blockCount: TIP_HISTORY_BLOCKS, rewardPercentiles: [PATIENT_PERCENTILE, TIP_PERCENTILE] }).catch(() => null),
@@ -201,18 +206,37 @@ async function submitAdvance(from, to) {
   const settlesHere = !CFG.settleAddress || CFG.settleAddress.toLowerCase() === relayWallet.account.address.toLowerCase();
   const reserve = (settlesHere ? SETTLE_RESERVE_GAS * (base * 3n + maxPriorityFeePerGas) : 0n) + attestFundsNeed({ gas: ATTEST_RESERVE_GAS, base, tip: maxPriorityFeePerGas });
   const budget = have > reserve ? have - reserve : 0n;
+  const kept = settlesHere ? 'settles and attests' : 'attests';
+  const short = () => new FundsShort(`relay wallet holds ${eth(have)} ETH and keeps ${eth(reserve)} for ${kept}; one header costs about ${eth(headerBatchNeed(1, maxFeePerGas))} ETH at today's gas — waiting for a top-up`);
+  // How many headers the wallet pays for is read from the model first, before any header is fetched or any gas estimated: a node will not estimate a
+  // batch the sender cannot pay for ('gas required exceeds allowance'), so cutting the batch after the estimate failed every attempt of a thin wallet,
+  // with all the batch's headers fetched first (lib/header-fits.js).
+  const fits0 = affordableHeaders({ budget, maxFeePerGas, max: to - from + 1 });
+  if (fits0 < 1) throw short();
+  if (fits0 < to - from + 1) { log(`relay wallet holds ${eth(have)} ETH (${eth(reserve)} kept for ${kept}), enough for ${fits0} of ${to - from + 1} headers at today's gas`); to = from + fits0 - 1; }
+  for (const n of notes) log(n);
+  log(`advancing relay ${from}..${to}${ctx ? ` (${ctx})` : ''}`);
   const headers = [];
   for (let h = from; h <= to; h++) headers.push(await headerHex(h));
   for (;;) {
     const advanceCall = { address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'advanceTip', args: [`0x${headers.slice(0, to - from + 1).join('')}`] };
-    const gas = ((await publicClient.estimateContractGas({ ...advanceCall, account: relayWallet.account })) * 125n) / 100n;
+    let estimate;
+    try { estimate = await publicClient.estimateContractGas({ ...advanceCall, account: relayWallet.account }); }
+    catch (e) {
+      // The model said the batch is paid for and the node disagrees (it prices the estimate on the whole balance at its own gas price): half the batch.
+      if (!exceedsAllowance(e)) throw e;
+      if (to <= from) throw short();
+      to = from + Math.max(1, Math.floor((to - from + 1) / 2)) - 1;
+      log(`the node will not estimate that batch for this wallet — trying ${to - from + 1} header${to > from ? 's' : ''}`);
+      continue;
+    }
+    const gas = (estimate * 125n) / 100n;
     const need = gas * maxFeePerGas;
     if (need > budget) {
       // Gas is close to linear in the header count; one header of margin covers the fixed part.
       const n = to - from + 1;
       const fits = Math.floor((n * Number(budget)) / Number(need)) - 1;
-      const kept = settlesHere ? 'settles and attests' : 'attests';
-      if (fits < 1) throw new Error(`relay wallet holds ${eth(have)} ETH and keeps ${eth(reserve)} for ${kept}; one header costs ${eth(need / BigInt(n))} ETH at today's gas: top it up`);
+      if (fits < 1) throw short();
       log(`relay wallet holds ${eth(have)} ETH (${eth(reserve)} kept for ${kept}), enough for ${fits} of ${n} headers at today's gas — advancing to ${from + fits - 1}`);
       to = from + fits - 1;
       continue;
@@ -319,6 +343,7 @@ async function cycle() {
   }
   // Nobody waits on this batch to the minute (a user who does is 'urgent', above), so a ready batch holds for a cheaper block,
   // for at most HEADER_BASEFEE_MAX_WAIT_MIN. Not when the relay is at its staleness bound or restoring the canonical chain.
+  const notes = [];     // why this send goes, logged by submitAdvance once the wallet is known to pay for it
   if (BASEFEE_WAIT && !plan.forced && !urgent && depth === 0 && price != null) {
     const gate = baseFeeGate({ history, price, pending });
     if (gate.wait) {
@@ -326,13 +351,18 @@ async function cycle() {
       say('basefee', `base fee ${g(gate.nextBase)} gwei is above the ${g(gate.ref)} gwei the last ${BASEFEE_BLOCKS} blocks usually paid; the batch has been ready ${Math.round(gate.readyAgeSec / 60)} min, waiting up to ${Math.round(BASEFEE_MAX_WAIT_SEC / 60)} min for a cheaper block`);
       return false;
     }
-    if (gate.ref != null) log(`base fee ${(Number(gate.nextBase) / 1e9).toFixed(3)} gwei (${gate.why}; recent norm ${(Number(gate.ref) / 1e9).toFixed(3)} gwei)`);
+    if (gate.ref != null) notes.push(`base fee ${(Number(gate.nextBase) / 1e9).toFixed(3)} gwei (${gate.why}; recent norm ${(Number(gate.ref) / 1e9).toFixed(3)} gwei)`);
+  }
+  if (plan.forced && dear) notes.push(`gas ${dear.toFixed(3)} gwei is over the ${pace.bars.ceil.toFixed(3)} gwei bar but ${pace.stale ? `the relay is at its staleness bound (${CFG.headerMaxStaleBlocks} headers)` : `the oldest header has waited its ${CFG.headerMaxWaitMin} minutes and gas is no spike (under ${pace.bars.spike.toFixed(2)} gwei)`} — advancing`);
+  let sent;
+  try { sent = await submitAdvance(plan.from, plan.to, { notes, ctx: `btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap}` }); }
+  catch (e) {
+    // a wallet that cannot pay for a header is waiting for a top-up, said once in ten minutes, not a cycle error every three
+    if (e?.name === 'FundsShort') { say('funds', `${e.message} (tip=${rtip} btc=${btip})`); return false; }
+    throw e;
   }
   say.reset();
-  if (plan.forced && dear) log(`gas ${dear.toFixed(3)} gwei is over the ${pace.bars.ceil.toFixed(3)} gwei bar but ${pace.stale ? `the relay is at its staleness bound (${CFG.headerMaxStaleBlocks} headers)` : `the oldest header has waited its ${CFG.headerMaxWaitMin} minutes and gas is no spike (under ${pace.bars.spike.toFixed(2)} gwei)`} — advancing`);
-  log(`advancing relay ${plan.from}..${plan.to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
-  const { txHash: tx, to: reached } = await submitAdvance(plan.from, plan.to);
-  log(`relay advanced to ${reached} tx=${tx}`);
+  log(`relay advanced to ${sent.to} tx=${sent.txHash}`);
   return true;
 }
 
