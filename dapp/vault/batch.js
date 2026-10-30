@@ -2,7 +2,7 @@
 // batcher such as Multicall3 (the vault would see Multicall3). A wallet that is itself a smart account (EIP-5792, `wallet_sendCalls`) sends them from the account, in one
 // transaction, so the records and the person's action land together or not at all. The page asks the wallet whether it can; a wallet that cannot, or does not say, is left
 // to the two steps the page has always had.
-import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=5a940508';
+import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 export { MULTICALL3 };
 
 const strip = (h) => String(h).replace(/^0x/, '');

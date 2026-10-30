@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LlUB8NwY8e6sYtwxd7IXUhO8z6ajWEsGnPMtFlosd7U=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-siSUvwpc9p5mqKEDOt5T6rsgVsIT7yqxQsfF9LalylE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <script type="module" src="/px-strip.js" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=1fe73095" as="style">
+<link rel="preload" href="/swap/card.css?cb=7335c31a" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -43,7 +43,7 @@
 <link rel="modulepreload" href="/evm-tx.js">
 <link rel="modulepreload" href="/tac-airdrop.js?cb=6a6bb45f">
 <link rel="modulepreload" href="/rpc-body.js">
-<link rel="modulepreload" href="/evm-trade-venues.js?cb=5a940508">
+<link rel="modulepreload" href="/evm-trade-venues.js?cb=10858cc2">
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-payout.js?cb=c27b4853">
 <link rel="modulepreload" href="/address-id.js?cb=c4fa5a58">
@@ -59,7 +59,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=db96a3a9">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=a77ed04e">
+<link rel="modulepreload" href="/swap/card.js?cb=a41b08a9">
 <link rel="modulepreload" href="/trade/wallet.js?cb=6778fe25">
 <link rel="modulepreload" href="/trade/util.js?cb=dcf3a4f2">
 <link rel="modulepreload" href="/trade/rpc.js?cb=63f04503">
@@ -381,18 +381,20 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── the hero's console: a card that takes a verb, an amount and a way, and hands the rest to the sheet that does it ── */
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 2.2%, var(--card)), var(--card) 140px); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
-/* The card is filled by script, so until it is, it holds the height it settles at (measured at each width): what is below it does not move when it appears. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 448px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 477px; } }
-@media (max-width: 360px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 475px; } }
-@media (max-width: 340px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 510px; } }
-/* Until the script draws it the card is the places of its tabs, its two fields and its button, in quiet blocks of its own colours (the script's first draw replaces them),
-   so the card is there from the first paint and nothing in it moves when its parts arrive. */
-.hx-sk { display: grid; gap: 10px; padding: 12px 16px 16px; }
+/* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
+   has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 537px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 529px; } }
+@media (max-width: 380px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 544px; } }
+@media (max-width: 330px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
+/* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
+   replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
+.hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
 .hx-sk i { display: block; border-radius: 16px; background: color-mix(in srgb, var(--ink) 4.5%, transparent); }
-.hx-sk .t { height: 46px; margin: 0 -8px 6px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 3%, transparent); }
-.hx-sk .f { height: 124px; }
-.hx-sk .g { height: 54px; margin-top: 6px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.hx-sk .t { height: 46px; margin: 0 -8px 8px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.hx-sk .f { height: 130px; }
+.hx-sk .p { height: 81px; }
+.hx-sk .g { height: 54px; margin-top: 8px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
 .hx-h { --i: 0; --n: 5; position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); padding: 4px 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--hair) 75%, transparent); }
 .hx-h::after { content: ''; position: absolute; bottom: -1px; height: 2px; border-radius: 2px; background: var(--ink); width: calc((100% - 16px) / var(--n) * .5);
   left: calc(8px + (100% - 16px) / var(--n) * (var(--i) + .25)); transition: left .4s var(--spring); }
@@ -1163,7 +1165,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=1fe73095" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=7335c31a" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1371,7 +1373,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <p class="sub">One <b>tacit1</b>&nbsp;ID on Bitcoin and Ethereum. Private inside the pool.</p>
     </div>
     <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card below"></div>
-    <section class="hx" id="hx" aria-label="Swap, bridge, send, earn or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="g"></i></div></div></section>
+    <section class="hx" id="hx" aria-label="Swap, bridge, send, earn or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
         <span data-nums><b class="num"><span data-num="in"><span class="sk" style="--w:5ch"></span></span></b>ETH transacted</span>
@@ -1799,7 +1801,7 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js?cb=6a6bb45f';
-import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=5a940508';
+import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, TACIT_AMM, makeEvmTradeVenues } from '/evm-trade-venues.js?cb=10858cc2';
 import { parseRecipient } from '/confidential-payout.js?cb=c27b4853';
 import { planMerge, planAll, countAll, opsCompared } from '/bridge-all.js?cb=4b6de3ff';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=112a01b9';
@@ -2000,7 +2002,9 @@ const big = (v) => { try { return v == null || v === '' ? null : BigInt(v); } ca
 const lsKv = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const devBal = (id, pub) => big(store.get(`tacit-lite-device-bal-v1:${id}:${pub}`)?.v);
 const devBalSet = (id, pub, v) => store.set(`tacit-lite-device-bal-v1:${id}:${pub}`, { v: v.toString(), at: Date.now() });
-const dayFmt = (sec) => new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+// A day as en-GB writes it (21 Dec 2026), without Intl: the first toLocaleDateString of a locale takes tens of milliseconds, and the airdrop's deadline is written with it before the tile is drawn.
+const DAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+const dayFmt = (sec) => { const d = new Date(sec * 1000); return Number.isNaN(d.getTime()) ? 'Invalid Date' : `${d.getDate()} ${DAY_MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
 const pctFmt = (x) => (x >= 99.5 && x < 99.95 ? `${x.toFixed(1)}%` : `${x >= 10 ? Math.round(x) : x.toFixed(1)}%`);
 
 const toasts = $('#toast-container');
@@ -13526,7 +13530,7 @@ async function hxBorrowTerms(units) {
 const VE = { p: null, E: null, M: null, VS: null, at: 0, who: null, feedAt: 0, say: '', S: { busy: false, batchOk: false, batchFor: null, routerFor: null, routerOff: false, routerSettled: false, batchBusy: false, seq: 0, chainT: 0, chainAt: 0, loaded: false, failed: false, stop: null } };
 class VaultStop extends Error {}
 const veEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => escMap[c]);
-const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=fbec4c24'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=2846737a'), import('/vault/feed.js?cb=4ca779bc'), import('/vault/math.js?cb=ac1ed53e')])
+const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=369ffbff'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=c20b4576'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
   .then(([eng, { DEPLOYMENTS }, C, Fd, M]) => {
     const A = /^0x[0-9a-fA-F]{40}$/, hint = (h) => (h && ['tac', 'synth', 'oracle', 'feed'].every((k) => A.test(h[k] || '')) ? Object.fromEntries(['tac', 'synth', 'oracle', 'feed'].map((k) => [k, h[k].toLowerCase()])) : null);
     VE.M = M;
@@ -14651,7 +14655,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a77ed04e').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a41b08a9').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };

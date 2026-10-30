@@ -183,19 +183,23 @@ function encZRouterMulticall(calls) {
   return '0x' + SEL.zMulticall + word(32) + word(n) + head + tail;
 }
 
-async function quotePrecision({ ethCall, dir, amountIn, account, block, trust = null }) {
+// The lens has named the Precision pool at every size so far, so its fee and its policy are asked in the lens's own call, for the pool a quote is expected to
+// name: a quote is one round trip when it names that pool, and two (the fee and the policy of the pool it did name, asked after) when it names another.
+async function quotePrecision({ ethCall, dir, amountIn, account, block, trust = null, hint = PRECISION_POOL }) {
   if (amountIn <= 0n) return null;
   const tokenIn = dir === 'ETH_TO_TAC' ? ZERO_ADDR : TAC_ERC20;
   const tokenOut = dir === 'ETH_TO_TAC' ? TAC_ERC20 : ZERO_ADDR;
   const [c0, c1] = ZERO_ADDR.toLowerCase() < TAC_ERC20.toLowerCase() ? [ZERO_ADDR, TAC_ERC20] : [TAC_ERC20, ZERO_ADDR];
-  const [bestRaw] = await batch(ethCall, [{ to: PRECISION_LENS, data: encQuoteBest({ c0, c1, sender: account, tokenIn, amountIn }) }], block);
+  const poolCalls = (pool) => [
+    { to: PRECISION_LENS, data: encEffFee({ pool, sender: account, tokenIn, amountIn }) },
+    { to: PRECISION_POLICY, data: encRoutable([pool]) },
+  ];
+  const guess = hint && !trust ? poolCalls(hint) : [];
+  const [bestRaw, ...early] = await batch(ethCall, [{ to: PRECISION_LENS, data: encQuoteBest({ c0, c1, sender: account, tokenIn, amountIn }) }, ...guess], block);
   const best = decQuoteBest(bestRaw);
   if (!best) return null;
   if (trust && trust.pool === best.pool) return { venue: VENUES.PRECISION, amountIn, amountOut: best.amountOut, feeBps: trust.feeBps, pool: best.pool, tokenIn, tokenOut };
-  const [feeRaw, routableRaw] = await batch(ethCall, [
-    { to: PRECISION_LENS, data: encEffFee({ pool: best.pool, sender: account, tokenIn, amountIn }) },
-    { to: PRECISION_POLICY, data: encRoutable([best.pool]) },
-  ], block);
+  const [feeRaw, routableRaw] = guess.length && String(best.pool).toLowerCase() === String(hint).toLowerCase() ? early : await batch(ethCall, poolCalls(best.pool), block);
   if (!decRoutableAll(routableRaw, 1)) return null;
   const feeBps = feeRaw ? decWord(feeRaw, 0) : 0n;
   return { venue: VENUES.PRECISION, amountIn, amountOut: best.amountOut, feeBps, pool: best.pool, tokenIn, tokenOut };
@@ -352,6 +356,7 @@ async function quoteV4Pools({ ethCall, dir, amountIn, block, pools = V4_TAC_POOL
 }
 
 const SPLIT_COARSE_BPS = 500n, SPLIT_FINE_BPS = 100n;
+export const SPLIT_REFINE_ABOVE = 2n * 10n ** 18n;
 
 async function gridOutputs({ ethCall, dir, account, shares, amountIn, feeBps, block }) {
   const tokenIn = dir === 'ETH_TO_TAC' ? ZERO_ADDR : TAC_ERC20;
@@ -377,7 +382,9 @@ async function gridOutputs({ ethCall, dir, account, shares, amountIn, feeBps, bl
   });
 }
 
-async function quoteSplit({ ethCall, dir, amountIn, account, block = 'latest', singles = null }) {
+// The search is a 5% grid and then, around its best, a 1% one. The second round trip buys about a basis point of the output at most (0 to 1.04 on the live pools, from
+// 0.05 ETH to 5 ETH, and under 0.4 below 0.5 ETH), so it is made only for an order of `refineAbove` wei of ETH (what is paid, or what a sale pays) or more.
+async function quoteSplit({ ethCall, dir, amountIn, account, block = 'latest', singles = null, refineAbove = 0n }) {
   if (amountIn <= 0n) return null;
   const coarse = [];
   for (let s = 0n; s <= 10000n; s += SPLIT_COARSE_BPS) coarse.push(s);
@@ -394,7 +401,7 @@ async function quoteSplit({ ethCall, dir, amountIn, account, block = 'latest', s
   if (!top) return null;
   const lo = top.shareBps > SPLIT_COARSE_BPS ? top.shareBps - SPLIT_COARSE_BPS : 0n, hi = top.shareBps + SPLIT_COARSE_BPS < 10000n ? top.shareBps + SPLIT_COARSE_BPS : 10000n;
   const fine = [];
-  for (let s = lo; s <= hi; s += SPLIT_FINE_BPS) if (s % SPLIT_COARSE_BPS !== 0n) fine.push(s);
+  if ((dir === 'ETH_TO_TAC' ? amountIn : top.total) >= refineAbove) for (let s = lo; s <= hi; s += SPLIT_FINE_BPS) if (s % SPLIT_COARSE_BPS !== 0n) fine.push(s);
   const [p, rows2] = await Promise.all([precision, fine.length ? gridOutputs({ ethCall, dir, account, shares: fine, amountIn, feeBps, block }) : []]);
   if (!p) return null;
   const single = p.amountOut >= t.amountOut ? p : t;
@@ -511,13 +518,16 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
     throw new Error(`build: unknown venue ${quote.venue}`);
   }
 
-  async function route({ dir, amountIn, account, gasPrice = null, block = 'latest', preferPrecision = dir === 'ETH_TO_TAC' }) {
+  // `gasPrice` is a price, or a promise of one that is waited for only once the quotes are in (it is read beside them, not before them): a price that does not
+  // come leaves the split to the margin it has to clear without one.
+  async function route({ dir, amountIn, account, gasPrice = null, block = 'latest', preferPrecision = dir === 'ETH_TO_TAC', refineAbove = SPLIT_REFINE_ABOVE }) {
     const acct = account || undefined;
     const singles = { precision: quotePrecision({ ethCall, dir, amountIn, account: acct, block }).catch(() => null), tacitAmm: quoteTacitAmm({ ethCall, dir, amountIn, block }).catch(() => null) };
     const [r, split] = await Promise.all([
       quoteAll({ dir, amountIn, account: acct, block, includeZQuoter: false, includeBoards: false, includeV4: false, quotes: singles }),
-      quoteSplit({ ethCall, dir, amountIn, account: acct, block, singles }).catch(() => null),
+      quoteSplit({ ethCall, dir, amountIn, account: acct, block, singles, refineAbove }).catch(() => null),
     ]);
+    gasPrice = await Promise.resolve(gasPrice).catch(() => null);
     if (!r.best) return { r, single: null, split: null, pick: null };
     const prec = (r.ranked || []).find((x) => x.venue === VENUES.PRECISION);
     const single = preferPrecision && prec && BigInt(prec.amountOut) * 100n >= BigInt(r.best.amountOut) * 99n ? prec : r.best;

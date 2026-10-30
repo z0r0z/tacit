@@ -323,7 +323,14 @@ if (!process.env.SKIP_GASRELAY) {
   ok(/TAC \$[\d.,]+/.test(await page.textContent('#pxs')) && /ETH \$[\d,]+/.test(await page.textContent('#pxs')), 'prices: TAC, ETH and BTC in dollars');
   ok((await page.textContent('#go')) === 'Enter an amount', 'the button asks for an amount');
   await typeAmt(page, '0.5');
+  // the first quote's rows are held as tall as the ones that replace them, and the Swap privately row is there while it is made, so nothing below moves when it lands
+  // (the button's bar is not measured: it sticks to the bottom of the screen once the quote lets it be pressed, and sits in the card's flow until then)
+  await until(page, () => document.querySelector('#rows button[disabled]') != null, null, 10000);
+  const laid = () => page.evaluate(() => { const top = (s) => { const e = document.querySelector(s); return e.hidden ? null : Math.round(e.getBoundingClientRect().top); }; return { rows: Math.round(document.querySelector('#rows').getBoundingClientRect().height), rcpt: top('#rcpt'), later: top('#later') }; });
+  const pending = await laid();
   await quoted(page);
+  const landed = await laid();
+  ok(pending.rows === landed.rows && pending.rcpt === landed.rcpt && pending.later === landed.later && pending.later != null, `nothing moves when the first quote lands (rows ${pending.rows} then ${landed.rows}, receipt ${pending.rcpt} then ${landed.rcpt}, Swap privately ${pending.later} then ${landed.later})`);
   const out = Number((await page.textContent('#out')).replace(/,/g, ''));
   ok(out > 100, `0.5 ETH quotes ${out} TAC`);
   ok(await page.isVisible('#rows') && (await page.$$('#rows [data-route]')).length >= 2, 'ETH → TAC offers its routes (Precision, Tacit, maybe both)');
@@ -343,7 +350,7 @@ if (!process.env.SKIP_GASRELAY) {
   const pr = await rowText('precision'), ta = await rowText('tacit-amm'), sp = await rowText('split');
   ok(/500\+ points/.test(pr) && !/points/.test(ta), `ETH → TAC says what the Precision pool earns (500+ for 0.5 ETH) and the Tacit pool nothing (${pr.slice(0, 70)} | ${ta.slice(0, 50)})`);
   { const rt = await page.textContent('#rows'); ok(/\d+\.\d+% less/.test(rt) && !/−\d/.test(rt), `a route that pays less says by how much, in words, against the best (${rt.replace(/\s+/g, ' ').slice(0, 110)})`); }
-  ok(!sp || (/\d+% \/ \d+% · [\d,]+\+ points/.test(sp) && Number(sp.match(/([\d,]+)\+ points/)[1].replace(/,/g, '')) < 500), `a split earns on its Precision leg only (${sp.slice(0, 80) || 'no split offered'})`);
+  ok(!sp || (/Precision \d+%\s*Tacit \d+%\s*[\d,]+\+ points/.test(sp) && Number(sp.match(/([\d,]+)\+ points/)[1].replace(/,/g, '')) < 500), `a split earns on its Precision leg only (${sp.slice(0, 80) || 'no split offered'})`);
   ok((await page.textContent('#go')) === 'Connect wallet', 'without a wallet the button connects one');
   // The route picked follows the amount: 0.5 ETH after a small amount is routed as a fresh 0.5 ETH is, and a route the visitor clicked stays.
   const picked = () => page.evaluate(() => document.querySelector('#rows [role="radio"][aria-checked="true"]')?.dataset.route || null);
@@ -855,6 +862,8 @@ if (!process.env.SKIP_GASRELAY) {
   ok(!walletLog.typedTries, 'buying TAC with ETH asks the wallet for no signature');
   await pick(page, 'pay', 'TAC');
   await typeAmt(page, '50'); await quoted(page);
+  // the Precision pool's route, whichever pool pays most after the tests before this one: a sale to the Tacit pool takes an approval and asks for no permit
+  await page.click('#rows [data-route="precision"]');
   const t0 = await bal(TAC, w.account), n0 = walletLog.sends.length;
   // the owner says no to the permit: that is an answer, not a wallet without permits, so nothing is approved and nothing sent
   walletLog.typedWay = 'reject';

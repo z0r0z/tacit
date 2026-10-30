@@ -44,7 +44,22 @@ ok(flip > 0 && flip < first, 'the script lets the card\'s stylesheet in before i
 
 // 4. the skeleton
 ok(/<div id="hx-body"><div class="hx-sk" aria-hidden="true">/.test(page), 'the tile is a skeleton from the first paint, hidden from a screen reader');
-ok(/\.hx:has\(#hx-body > \.hx-sk\) \{ min-height: 448px; \}/.test(page) && /@media \(max-width: 640px\) \{ \.hx:has\(#hx-body:empty\), \.hx:has\(#hx-body > \.hx-sk\) \{ min-height: 477px; \} \}/.test(page), 'and holds the height the card settles at, at each width');
+const held = [...page.matchAll(/(?:@media \(max-width: (\d+)px\) \{ )?\.hx:has\(#hx-body:empty\), \.hx:has\(#hx-body > \.hx-sk\) \{ min-height: (\d+)px; \}/g)].map((m) => `${m[1] || 'any'}:${m[2]}`);
+ok(held.join(' ') === 'any:537 640:529 380:544 330:560', `and holds the height the card settles at, at each width (${held.join(' ')}; tests/front-tile-height.mjs measures it in a browser)`);
+ok(/<i class="f"><\/i><i class="f"><\/i><i class="p"><\/i><i class="g"><\/i>/.test(page), 'and has a place for each block of the card: two fields, the block under them, the button');
+
+// 5. what the script does before it draws the tile leaves out what it can: the airdrop's closing day is written by hand, since the first toLocaleDateString of a locale
+//    takes tens of milliseconds there (84 on a throttled phone, the most of any one thing the script does before the tile)
+{
+  const src = /const DAY_MONTHS = \[[^\]]*\];\nconst dayFmt = [^\n]*/.exec(mod)?.[0];
+  ok(!!src && !/toLocaleDateString|Intl\./.test(src), 'the page writes a day by hand: dayFmt takes no Intl');
+  if (src && Intl.DateTimeFormat.supportedLocalesOf('en-GB').length) {
+    const dayFmt = new Function(`${src}; return dayFmt;`)();
+    let bad = 0, count = 0;
+    for (let sec = 1.5e9; sec < 2.2e9; sec += 86400 * 7 + 3600 * 5 + 17) { count++; if (dayFmt(sec) !== new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })) bad++; }
+    ok(bad === 0 && dayFmt(NaN) === 'Invalid Date', `and writes a day as en-GB does, in this zone (${count} days, ${bad} written differently)`);
+  }
+}
 
 console.log(`\n${fails ? `${fails} FAILED, ${n} ok` : `${n} front-head checks passed`}`);
 process.exit(fails ? 1 : 0);

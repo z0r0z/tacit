@@ -4,7 +4,7 @@
 // a time through Multicall3. Each record is built here from an archive node (headers re-encoded and checked against their own block hash, proofs as
 // the node gives them) and the oracle checks it all again: a wrong record reverts, and the page tests every batch with eth_call before it is sent.
 import { keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=5a940508';
+import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 export { MULTICALL3 };
 
 const strip = (h) => String(h).replace(/^0x/, '');

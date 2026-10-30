@@ -2,7 +2,7 @@
 // front page's Swap tab: `mountSwapCard(root, host)` draws it in `root`, and the page hands it its wallet (the front page also its Tacit key, its
 // pool module and its Activity journal). One card to a page: its state is this module's.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=5a940508';
+import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 import { UserStopped } from '/trade/wallet.js?cb=6778fe25';
 import { rpc, RPCS, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=dcf3a4f2';
 import * as R from '/swap/route.js?cb=ce610210';
@@ -33,6 +33,12 @@ const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
 const PN = makePointsNote({ read: () => fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)) });
 const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(/class="splitbar"/.test(x.note || '') ? '' : ' · ');
+// What a route's row will say under its name once it is quoted, held as room until then (the points line unseen, the split's bar blank), so the rows do not grow when the quote lands.
+const ghostNote = (k, buy, wei) => {
+  const pts = (w) => (buy && ptsFor('zswap', w) ? `<span style="visibility:hidden">${ptsTag({ pts: 100, floor: true })}</span>` : '');
+  const note = k === 'split' ? `<span class="splitbar ghost" aria-hidden="true"><span></span></span>${pts((wei || 0n) / 2n)}` : k === 'precision' ? pts(wei || 0n) : '';
+  return note ? `<small aria-hidden="true">${note}</small>` : '';
+};
 // ── TAC points: what a route earns, said beside it and in its receipt, and popped from the button once it is sent ──
 // The program counts, each for the wallet that sent it: ETH that zRouter puts into a pool it can check (Uniswap v2, v3 and v4, Sushi, the
 // Precision pool) as a swap of ETH; a wallet's ETH deposited into the private pool as a wrap; its ETH deposited into the private ETH pool (Swap
@@ -442,7 +448,8 @@ async function readPrices() {
   if (S.px.ethUsd) H.onPrices?.(S.px);
 }
 const chainDeadline = (s = 1200) => BigInt((S.chainT ? S.chainT + (now() - S.chainAt) : now()) + s);
-const gasPrice = (() => { let at = 0; return async () => { if (S.gasPrice != null && now() - at < 20) return S.gasPrice; try { S.gasPrice = BigInt(await rpc('eth_gasPrice', [])); at = now(); } catch { } return S.gasPrice; }; })();
+// One read at a time: an ask while one is out takes that read, and a quote hands the promise on (route() reads the quotes beside it and waits for the price after them).
+const gasPrice = (() => { let at = 0, out = null; return () => (S.gasPrice != null && now() - at < 20 ? Promise.resolve(S.gasPrice) : (out ||= (async () => { try { S.gasPrice = BigInt(await rpc('eth_gasPrice', [])); at = now(); } catch { } return S.gasPrice; })().finally(() => { out = null; }))); })();
 // The wallet's balances: of the card's own tokens, the registry's, the ones added by address and the pair chosen; a token of the Uniswap
 // list is read once it is chosen (all of them at once would be some five hundred reads a time)
 async function readBalances() {
@@ -531,7 +538,7 @@ async function quote(my, wei) {
   }
   if (kind === 'tac') {
     const dir = isEth(S.pay) ? 'ETH_TO_TAC' : 'TAC_TO_ETH';
-    const rt = await venues.route({ dir, amountIn: wei, account, gasPrice: await gasPrice() });
+    const rt = await venues.route({ dir, amountIn: wei, account, gasPrice: gasPrice() });
     if (!rt.single) return done({ rows: [], why: 'No pool can fill this right now.' });
     const rows = [];
     const ranked = rt.r.ranked || [];
@@ -675,7 +682,7 @@ const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
 const IDS = {};
 const idsOf = (t) => { for (const k of ['eth', 'tac', 'cusd']) IDS[k] = String(t.assetByTicker[POOL_TK[k]]?.assetId || '').toLowerCase(); IDS.cbtc = String(t.pool.CBTC_ZK_ASSET_ID).toLowerCase(); return IDS; };
 // What the relay asks, in ETH on top, to settle a deposit of the wallet's ETH; null when it cannot be read (the swap reads it again before sending).
-const tipFor = (units) => import('/teth/read.js?cb=f00ab10f').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
+const tipFor = (units) => import('/teth/read.js?cb=42b841c9').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
 let warmed = false;
 function warmPrivate() {
   if (warmed) return;
@@ -865,7 +872,7 @@ function paintQuote() {
   // whether routes are still being asked for, shown or not; a list that is not shown holds no rows of an older quote
   rows.toggleAttribute('data-more', q?.more > 0);
   if (rows.hidden && rows.innerHTML) rows.innerHTML = '';
-  if (first && !rows.hidden) rows.innerHTML = `<div class="rows-h"><span>Route</span><span>${esc(get.sym)} out</span></div>${list.map((x) => `<button type="button" role="radio" aria-checked="false" disabled><span class="rt"><b>${esc(x.name)}</b></span><span class="ra"><span>…</span></span><span class="rd" aria-hidden="true"></span></button>`).join('')}`;
+  if (first && !rows.hidden) rows.innerHTML = `<div class="rows-h"><span>Route</span><span>${esc(get.sym)} out</span></div>${list.map((x) => `<button type="button" role="radio" aria-checked="false" disabled><span class="rt"><b>${esc(x.name)}</b>${ghostNote(x.k, isEth(S.pay), parseUnits(S.amt, pay.dec))}</span><span class="ra"><span>…</span><small>&nbsp;</small></span><span class="rd" aria-hidden="true"></span></button>`).join('')}`;
   else if (!rows.hidden) {
     const top = list.find((x) => x.best) || list.reduce((a, b) => (b.out > a.out ? b : a));
     let shown = list;
@@ -1174,7 +1181,7 @@ async function prepare(P, from) {
   let tx;
   if (P.kind === 'tac') {
     const dir = isEth(P.pay) ? 'ETH_TO_TAC' : 'TAC_TO_ETH';
-    const rt = await venues.route({ dir, amountIn: P.wei, account: from, gasPrice: await gasPrice() });
+    const rt = await venues.route({ dir, amountIn: P.wei, account: from, gasPrice: gasPrice() });
     const pick = P.r.split ? rt.split : (rt.r.ranked || []).find((v) => v.venue === P.r.venue.venue);
     if (!pick) { say('That route is no longer offered. Nothing was sent; press again for the new quote.', '', true); S.busy = false; requote(true); return null; }
     if (BigInt(pick.amountOut) < P.floor) return moved();
@@ -1429,8 +1436,8 @@ function readFee() {
 const eth2 = (wei) => { const n = Number(wei) / 1e18; return tidy(n >= 1 ? n.toFixed(2) : n.toPrecision(2)); };
 const LATER_TIP = 'Deposit now into a private pool and swap out later, so nothing onchain links your wallet to where the tokens go.';
 function paintLater(q, r, kind) {
-  // kept while on with no route through the pool, so it can be switched off again
-  const el = $('#later'), fits = laterFits(kind) && (!!r || (LATER.on && !!q?.lt));
+  // kept while on with no route through the pool, so it can be switched off again; and kept while a first quote is being made, so the button below does not move when it lands
+  const el = $('#later'), fits = laterFits(kind) && (!!r || !!q?.busy || (LATER.on && !!q?.lt));
   el.hidden = !fits;
   if (!fits) return;
   if (LATER.on) readHop();
@@ -1810,7 +1817,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=67419129').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=f5a1f42a').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

@@ -1,7 +1,7 @@
 // What the vault page reads from and sends to the chain: a pool of Ethereum's public nodes (and, when the connected wallet has its own, that one too), the
 // calls of a vault and its two tokens as Multicall3 batches, and the calldata of what a person does there. Nothing here is kept: every figure comes from the
 // contracts, so a vault is the same from any browser.
-import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=5a940508';
+import { _internal, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 import { bodyType } from '../rpc-body.js';
 
 // The nodes the page's reads ask, in order (one that answers is kept until it fails). ARCHIVE are the ones that still hold the state of blocks hours old, which the

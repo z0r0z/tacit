@@ -4,7 +4,7 @@
 // it. When a vault cannot lend now (no recorded price, no room, an auction on the account's vault) it gives no figure, only why.
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import * as M from '/vault/math.js?cb=ac1ed53e';
-import { makeRpc, RPCS, makeReader, staticCalls, dynamicCalls, parseDynamic, wordAt } from '/vault/chain.js?cb=2846737a';
+import { makeRpc, RPCS, makeReader, staticCalls, dynamicCalls, parseDynamic, wordAt } from '/vault/chain.js?cb=c20b4576';
 
 export const KINDS = { usd: { sym: 'TACD', dp: 2 }, eth: { sym: 'TACE', dp: 4 } };
 const ZERO = '0x0000000000000000000000000000000000000000';

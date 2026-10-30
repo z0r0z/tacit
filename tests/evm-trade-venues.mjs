@@ -297,9 +297,9 @@ const B32 = '0x' + 'ab'.repeat(32);
 
   const venues = makeEvmTradeVenues({ ethCall });
   const result = await venues.quoteAll({ dir: 'ETH_TO_TAC', amountIn: 10n ** 16n, account: A1, includeZQuoter: true });
-  // quotePrecision issues two sequential batches (quoteBest, then effFee+routable), quoteTacitAmm, quoteBoards
-  // and the v4 pools one each — 5 Multicall3 round-trips total; zQuoter never goes through one.
-  assert.equal(calls.agg3, 5, 'precision (x2) + tacit-amm + boards + v4 pools batch through Multicall3; zQuoter never does');
+  // quotePrecision is one batch (quoteBest, with effFee+routable for the pool it is expected to name beside it, the pool this mock names), quoteTacitAmm,
+  // quoteBoards and the v4 pools one each — 4 Multicall3 round-trips total; zQuoter never goes through one.
+  assert.equal(calls.agg3, 4, 'precision + tacit-amm + boards + v4 pools batch through Multicall3; zQuoter never does');
   assert.ok(boardTokens.every((t) => t === WETH.slice(2).toLowerCase() || t === TAC_ERC20.slice(2).toLowerCase()), 'the boards are asked about WETH and TAC, never native ETH');
   assert.ok(boardTokens.includes(WETH.slice(2).toLowerCase()), 'WETH is one side of the board query');
   assert.equal(result.v4.length, V4_TAC_POOLS.length);

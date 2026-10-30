@@ -2,7 +2,7 @@ if (/^\/trade\/(index\.html)?$/.test(location.pathname)) history.replaceState(nu
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
-} from '/evm-trade-venues.js?cb=5a940508';
+} from '/evm-trade-venues.js?cb=10858cc2';
 import { getConfidentialDeployment } from '/confidential-deployments.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE } from '/trade/tape.js?cb=a4aefafb';
@@ -470,7 +470,7 @@ async function requote(quiet = false) {
   if (!quiet) { if (S.shown === S.side) { $('.p-ticket').classList.add('stale'); renderChips(); renderGo(); } else renderQuote({ busy: true }); }
   if (quiet) S.refreshing = true;
   try {
-    const [rt, sp, board] = await Promise.all([gasPrice().then((g) => venues.route({ dir, amountIn: wei, account: W.account || undefined, gasPrice: g })), ethCall(PRECISION_POOL, '0x2af1f249').catch(() => null), boardQuote(dir, wei).catch(() => null)]);
+    const [rt, sp, board] = await Promise.all([venues.route({ dir, amountIn: wei, account: W.account || undefined, gasPrice: gasPrice() }), ethCall(PRECISION_POOL, '0x2af1f249').catch(() => null), boardQuote(dir, wei).catch(() => null)]);
     if (my !== S.seq) return;
     if (!rt.single && !sp) throw new Error('no node answered');
     if (sp) { const root = Number(wordAt(sp, 0)) / 1e18; if (root > 0) { D.perEth = root * root; renderHead(); renderLanes(); } }
@@ -1007,7 +1007,7 @@ function renderBorrow() {
   if (BW.q && BW.key === key) setHtml(el, borrowHtml(BW.q, tac));
   if ((BW.key === key && now() - BW.at < 60) || BW.busy) return;
   BW.busy = true;
-  (BW.mod ||= import('/vault/quote.js?cb=5444fc51').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
+  (BW.mod ||= import('/vault/quote.js?cb=fb39da87').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
     .then((q) => { BW.q = q; }, (e) => { console.warn('borrow quote:', e?.message || e); BW.q = null; })
     .then(() => { BW.key = key; BW.at = now(); })
     .finally(() => { BW.busy = false; if (W.account && `${lc(W.account)}:${S.bal?.tac}` === key) setHtml(el, borrowHtml(BW.q, tac)); else renderBorrow(); });
@@ -1114,7 +1114,7 @@ async function withTacAccess({ make, buy, permit, from, dl }) {
 async function preparePools(P, from) {
   const buy = P.buy, dir = P.dir;
   say('Reading the price again…');
-  const rt = await venues.route({ dir, amountIn: P.wei, account: from, gasPrice: await gasPrice() });
+  const rt = await venues.route({ dir, amountIn: P.wei, account: from, gasPrice: gasPrice() });
   if (!rt.single) throw new Error('No pool can fill this right now.');
   const venue = P.rt.single.venue, pick = P.split ? rt.split : (rt.r.ranked || []).find((x) => x.venue === venue);
   if (!pick) { say('That route is no longer offered. Nothing was sent; press again for the new quote.'); requote(true); return null; }

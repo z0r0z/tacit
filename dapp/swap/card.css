@@ -362,6 +362,7 @@
 .swc .splitbar { display: flex; gap: 2px; height: 18px; margin-top: 3px; min-width: 150px; font: 10.5px var(--mono); letter-spacing: .02em; }
 .swc .splitbar span { display: flex; align-items: center; min-width: 0; padding: 0 6px; overflow: hidden; white-space: nowrap; color: #fff; }
 .swc .splitbar .pp { background: #4a63d6; border-radius: 3px 0 0 3px; } .swc .splitbar .tp { background: #15803d; border-radius: 0 3px 3px 0; }
+.swc .splitbar.ghost span { flex: 1; background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 3px; }
 
 /* a token row's kind: Private (dashed, like the ring on its mark), Public, Bitcoin; shown only while searching, when the switch and the headings are gone */
 .swc .pk-r b .pk-t { display: none; margin-left: 8px; padding: 0 6px; font: 500 9.5px/16px var(--mono); letter-spacing: .07em; text-transform: uppercase; border-radius: 999px; vertical-align: 2px; color: var(--mute); border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
