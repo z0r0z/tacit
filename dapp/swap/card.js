@@ -260,8 +260,12 @@ const WALLET_MARK = '<svg class="pl" viewBox="0 0 16 16" aria-hidden="true"><pat
 const MARK_USE = { pay: 'tk-peth', defi: 'tk-teth', btc: 'c-btc' };
 const placeMark = (at) => (at === 'wallet' ? WALLET_MARK : MARK_USE[at] ? `<svg class="tk xs" aria-hidden="true"><use href="#${MARK_USE[at]}"/></svg>` : '');
 // what each place is for, said once under its group in the picker: the same coin (TAC most of all) is held in several, and this is what tells them apart
-const PLACE_NOTE = { wallet: 'Public, on Ethereum. Swaps use the best public liquidity.', defi: 'Private, Bitcoin-backed. Swap, farm and borrow in Tacit’s own private AMM.',
-  pay: 'Private, held on this device. Pay anyone, or swap out through public liquidity.' };
+// The picker asks where a coin is held as three kinds, and nothing finer: the wallet's (public), private (the DeFi pool's and the Pay pool's, which a row tells apart by
+// what it is for, not by the pool's name: the tips still name them) and Bitcoin's. A row's key still names its place (@defi:, @pay:, @btc:).
+const KIND = { wallet: 'wallet', defi: 'private', pay: 'private', btc: 'bitcoin' };
+const KIND_NAME = { wallet: 'Wallet', private: 'Private', bitcoin: 'Bitcoin' };
+const KIND_NOTE = { wallet: 'Public, in your wallet. Swaps use the best public liquidity.', bitcoin: 'TAC and tETH at your Bitcoin address.' };
+const KIND_TIP = { wallet: 'Your wallet: public, on Ethereum', bitcoin: 'Bitcoin: TAC and tETH at your Bitcoin address', private: 'Private: tETH, TAC, cUSD and cBTC to swap, farm and borrow with (the DeFi pool), and ETH, USDC, USDT and TAC to pay anyone with (the Pay pool)' };
 const PLACE_TIP = { wallet: 'Your wallet: public, on Ethereum', pay: 'Pay pool: ETH, USDC, USDT and TAC held privately, proved on this device and paid out to any address',
   defi: 'DeFi pool: tETH, TAC, cUSD and cBTC held privately, to swap, farm and borrow with', btc: 'Bitcoin: TAC and tETH at your Bitcoin address' };
 const payPool = (k) => PAY_COINS.includes(k);
@@ -2040,40 +2044,56 @@ async function pinGo(r) {
 let pkClose = null, pkIO = null;
 // a picker row's key: a coin and the place it is held, but for the wallet's (a plain address)
 const ATK = /^@(pay|btc|defi|wallet):(.+)$/;
-function openPicker(side) {
+let PKKIND = null;                    // the kind the open picker is on, kept when its list is drawn again
+function openPicker(side, again = false) {
   pkClose?.({ keep: true });
+  if (!again) PKKIND = null;
   // the list arriving while the picker is open draws it again, and the focus stays where it was
   if (!TL.at) loadList().then(() => {
     if ($('#pk').hidden || $('#pk-q')?.value || !TL.rows.length) return;
     const a = document.activeElement, k = $('#pk').contains(a) ? (a.dataset?.k || (a.classList.contains('pk-x') ? 'x' : '')) : '';
-    openPicker(side);
+    openPicker(side, true);
     if (k) setTimeout(() => (k === 'x' ? $('#pk .pk-x') : $(`#pk [data-k="${k}"]`))?.focus(), 0);
   });
   const pk = $('#pk'), at = atOf(side), cur = side === 'pay' ? S.pay : S.get;
   // every coin the side can take, under where it is held: the wallet's (ETH, the tokens with private pools and what the wallet holds first), the
   // DeFi pool's, on the front page the Pay pool's and Bitcoin's, then the rest of the token list. A key names its place (@defi:, @pay:, @btc:).
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
-  const groups = [['Wallet', top, false, 'wallet'], [moving() ? 'Private · DeFi pool' : 'Private', POOL_COINS.map((k) => `@defi:${k}`), true, 'defi'],
-    ...(moving() ? [['Private · Pay pool', placeCoins(side, 'pay').map((k) => `@pay:${k}`), true, 'pay'], ['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), false, 'btc']] : []),
-    ['More tokens', rest, false, 'more']].filter(([, ks]) => ks.length);
-  // a row of anchors to the places, so the private balances are one press from the top of a long list
-  const JUMP = { wallet: 'Wallet', defi: 'DeFi pool', pay: 'Pay pool', btc: 'Bitcoin' }, jumps = groups.filter(([, , , id]) => JUMP[id]);
+  // [heading, keys, kind, id]: the wallet's coins with a pool or a balance lead, then the private ones (both pools), Bitcoin's, then the rest of the list (the wallet's too)
+  const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : [])], 'private', 'defi'],
+    ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
+    ['More tokens', rest, 'wallet', 'more']].filter(([, ks]) => ks.length);
+  const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
+  const first = KIND[PKAT || at];
+  let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
+  PKKIND = kind;
   const keys = groups.flatMap(([, ks]) => ks), cs = H.moves?.chains?.() || [], chains = cs.length;
   const SUB = { teth: 'ETH, made private', [lc(R.TAC)]: 'Tacit’s token', [lc(R.CUSD)]: 'a dollar borrowed against cBTC', [lc(R.CBTC)]: 'bitcoin, 1:1 with BTC' };
   const PLACE_TAG = { wallet: 'Public', defi: 'Private', pay: 'Private', btc: 'Bitcoin' };
   const row = (key) => {
     const m = ATK.exec(key), a = m ? m[1] : 'wallet', k = m ? m[2] : key, t = shownAt(k, a);
-    if (!t) return '';
-    // dimmed where it goes nowhere: a From coin with no To for it, a To coin the From side cannot reach (picked, the From side is mended)
+    if (!t) return null;
+    // dimmed where it goes nowhere: a From coin with no To for it, a To coin the From side cannot reach (picked, the From side is mended); those come last
     const ok = !moving() || (side === 'pay' ? goes('pay', k, a) : pairOk(S.pay, atOf('pay'), k, a));
-    // each row says where its coin is held, so two rows for one coin (a wallet's USDC, the Pay pool's USDC) read apart even with the group headings gone (while searching)
-    const sub = a === 'defi' ? `DeFi pool${SUB[k] ? ` · ${esc(SUB[k])}` : ''}` : a === 'pay' ? `Pay pool · ${isEth(k) && chains > 1 ? `pays on ${chainMarks(cs)}` : k === USDC_K || k === USDT_K ? 'a dollar, pays on Ethereum' : 'pays on Ethereum'}` : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
-    return `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}${PLACE_TAG[a] ? `<i class="pw pw-${a}">${PLACE_TAG[a]}</i>` : ''}</b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>`;
+    // a private coin says what it is for, where the same coin is held in both pools (ETH, TAC): to swap, farm and borrow with, or to pay anyone; the pools' names are in its tip
+    const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
+    const sub = a === 'defi' ? [SUB[k], twin && 'swap, farm, borrow'].filter(Boolean).map(esc).join(' · ')
+      : a === 'pay' ? `${isEth(k) ? 'held privately' : k === USDC_K || k === USDT_K ? 'a dollar' : 'Tacit’s token'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
+      : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
+    return { ok, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
   warmPrivate(); H.moves?.warm?.();
   pkSide = side;
-  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${side === 'pay' ? (moving() ? 'From' : 'Pay with') : moving() ? 'To' : 'Get'}"><div class="pk-h"><b>${side === 'pay' ? (moving() ? 'From' : 'Pay with') : moving() ? 'To' : 'Get'}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search, or paste a token address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${moving() && jumps.length > 2 ? `<div class="pk-jump" role="group" aria-label="Go to">${jumps.map(([, , , id]) => `<button type="button" data-jump="${id}" title="${esc(PLACE_TIP[id] || '')}">${placeMark(id)}${JUMP[id]}</button>`).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${groups.map(([g, ks, priv, id]) => `<p class="pk-g${priv ? ' priv' : ''}${moving() && priv ? ' pool' : ''}" data-g="${id}" title="${esc(moving() ? PLACE_TIP[id] || '' : '')}">${moving() ? placeMark(id) : ''}${esc(g)}</p>${moving() && PLACE_NOTE[id] ? `<p class="pk-d">${esc(PLACE_NOTE[id])}</p>` : ''}${ks.map(row).join('')}`).join('')}<p class="pk-n" id="pk-n"></p></div></div>`;
+  const title = side === 'pay' ? (moving() ? 'From' : 'Pay with') : moving() ? 'To' : 'Get', noted = new Set();
+  const list = groups.map(([g, ks, kd, id]) => {
+    const rs = ks.map(row).filter(Boolean), rows = [...rs.filter((r) => r.ok), ...rs.filter((r) => !r.ok)].map((r) => r.html).join('');
+    const hide = kd === kind ? '' : ' hidden', note = kd === 'private' ? (moving() ? 'Held privately. Swap, farm and borrow, or pay anyone.' : 'Held privately in Tacit’s pool, to swap, farm and borrow with.') : KIND_NOTE[kd];
+    return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
+  }).join('');
+  const kindBtn = (kd) => `<button type="button" role="radio" data-kind="${kd}" aria-checked="${kd === kind}" tabindex="${kd === kind ? 0 : -1}" title="${esc(KIND_TIP[kd])}">${kd === 'wallet' ? WALLET_MARK : kd === 'bitcoin' ? placeMark('btc') : '<span class="lock" aria-hidden="true"></span>'}${KIND_NAME[kd]}</button>`;
+  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
   pk.hidden = false;
+  if ($('#pk-kind')) arrows($('#pk-kind'), 'data-kind');
   // the logos of the rows in the list's view (and a little past it), fetched as they come into it
   pkIO?.disconnect();
   pkIO = new IntersectionObserver((es) => { for (const e of es) if (e.isIntersecting) { const i = e.target; i.src = i.dataset.src; i.removeAttribute('data-src'); pkIO.unobserve(i); } }, { root: $('#pk-l'), rootMargin: '160px 0px' });
@@ -2089,11 +2109,18 @@ function openPicker(side) {
   const close = ({ keep = false, quiet = false } = {}) => { if (!keep) { pkIO?.disconnect(); pkIO = null; PKAT = null; } document.removeEventListener('keydown', onKey, true); document.removeEventListener('pointerdown', away, true); if (pkClose === close) pkClose = null; if (keep) return; pk.hidden = true; pk.innerHTML = ''; if (!quiet) $(side === 'pay' ? '#pay-coin' : '#get-coin').focus(); };
   document.addEventListener('keydown', onKey, true); document.addEventListener('pointerdown', away, true);
   pkClose = close;
+  // a kind chosen: its rows (with the heading and note of its groups) are the list
+  const applyKind = (kd) => {
+    kind = PKKIND = kd;
+    for (const el of pk.querySelectorAll('#pk-l [data-kind]')) el.hidden = el.dataset.kind !== kd;
+    for (const b of pk.querySelectorAll('#pk-kind [data-kind]')) { const on = b.dataset.kind === kd; b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; }
+    $('#pk-l').scrollTop = 0;
+  };
   pk.querySelector('.pk-x').onclick = () => close();
   pk.onclick = (e) => {
     if (e.target === pk) return close();
-    const j = e.target.closest('[data-jump]');
-    if (j) { const l = $('#pk-l'), g = l.querySelector(`.pk-g[data-g="${j.dataset.jump}"]`); if (g) l.scrollTo({ top: g.offsetTop - l.offsetTop - 4, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); return; }
+    const kb = e.target.closest('#pk-kind [data-kind]');
+    if (kb) { applyKind(kb.dataset.kind); return; }
     const b = e.target.closest('[data-k]');
     if (!b) return;
     const k = b.dataset.k;
@@ -2103,7 +2130,7 @@ function openPicker(side) {
   };
   const qEl = $('#pk-q');
   if (qEl) {
-    qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); [...pk.querySelectorAll('.pk-r')].filter((b) => !b.hidden).sort((a, b) => (Number(a.style.order) || 0) - (Number(b.style.order) || 0))[0]?.click(); } });
+    qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); [...pk.querySelectorAll('.pk-r')].filter((b) => !b.hidden && !b.closest('[hidden]')).sort((a, b) => (Number(a.style.order) || 0) - (Number(b.style.order) || 0))[0]?.click(); } });
     let seq = 0, words = null;
     qEl.oninput = async () => {
       const v = qEl.value.trim(), my = ++seq, l = $('#pk-l');
@@ -2114,14 +2141,16 @@ function openPicker(side) {
         b.hidden = on && !rank; b.style.order = on ? rank : '';
       }
       l.querySelectorAll('.pk-g, .pk-d').forEach((g) => { g.hidden = on; });
-      l.classList.toggle('srch', on);                 // with the headings gone, every row names its place (CSS: .pw)
-      const jp = $('#pk .pk-jump'); if (jp) jp.hidden = on;
+      l.classList.toggle('srch', on);                 // with the headings gone, every row names its kind (CSS: .pk-t)
+      const kc = $('#pk-kind'); if (kc) kc.hidden = on;
+      if (!on) applyKind(kind);                       // the kind's rows again, once the search is cleared
       l.querySelector('[data-add]')?.remove();
       // a search that matches nothing says so (and what to do), and a half-pasted address says what is missing, rather than an empty or unchanged list
       $('#pk-n').textContent = on && words.every(({ b }) => b.hidden) ? `Nothing matches “${v.slice(0, 24)}”. Paste a token’s address to add it.` : /^0x/i.test(v) && !/^0x[0-9a-fA-F]{40}$/.test(v) ? 'Paste the whole address: 0x and 40 characters.' : '';
       if (!/^0x[0-9a-fA-F]{40}$/.test(v)) return;
       const k = lc(v);
       if (tokenOf(k)) { l.querySelectorAll('.pk-r').forEach((b) => { b.hidden = b.dataset.k !== k; }); return; }
+      l.querySelectorAll('.pk-r:not([data-add])').forEach((b) => { b.hidden = true; });                // a pasted address shows only the token to add
       $('#pk-n').textContent = 'Reading the token…';
       const t = await R.readToken({ ethCall, keccak256: keccak_256, address: k }).catch(() => null);
       if (my !== seq) return;
@@ -2131,8 +2160,9 @@ function openPicker(side) {
       $('#pk-n').textContent = 'Check the address: anyone can make a token with any name.';
     };
   }
-  if (PKAT) { const l = $('#pk-l'), g = l.querySelector(`.pk-g[data-g="${PKAT}"]`); if (g) l.scrollTo({ top: g.offsetTop - l.offsetTop - 4 }); }
-  setTimeout(() => (qEl || pk.querySelector('[aria-current="true"]') || pk.querySelector('.pk-r'))?.focus(), 0);
+  { const l = $('#pk-l'), c = [...pk.querySelectorAll('.pk-r[aria-current="true"]')].find((b) => !b.hidden); if (c && c.offsetTop - l.offsetTop > l.clientHeight * .6) l.scrollTop = c.offsetTop - l.offsetTop - l.clientHeight / 3; }
+  const touch = matchMedia('(pointer: coarse)').matches, seen = (sel) => [...pk.querySelectorAll(sel)].find((b) => !b.hidden);
+  setTimeout(() => ((touch ? null : qEl) || seen('.pk-r[aria-current="true"]') || seen('.pk-r'))?.focus(), 0);
 }
 // What a picker row says is held: on the front page the page's own reading of a place it moves from (the paying account's ETH and TAC among
 // them), a mark while the page is still reading it

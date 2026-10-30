@@ -177,6 +177,8 @@ const rowIn = (page, sym, place) => page.evaluate(([sym, place]) => {
   }
   return any;
 }, [sym, place]);
+// the picker opens on the kind the side is in (Wallet, Private or Bitcoin): a row of another kind is reached through its switch
+const showKind = async (page, k) => { const kind = await page.evaluate((k) => document.querySelector(`#pk .pk-r[data-k="${k}"]`)?.dataset.kind || '', k); if (kind && await page.isVisible('#pk-kind')) await page.click(`#pk-kind [data-kind="${kind}"]`); };
 const atOf = async (page, side) => (await page.textContent(`#${side}-at`)).trim();
 // A side made private or public, as its Wallet / Private switch did: the same coin in the other place (ETH and tETH, tacUSD and cUSD, tacBTC and
 // cBTC); a To token with no private place of its own goes by Swap privately's switch.
@@ -186,14 +188,17 @@ const sidePriv = async (page, side, on) => {
   // a To token with no private place of its own: public, Swap privately is off; private, the switch made it tETH
   if (side === 'get' && !POOL[sym] && !on) { if ((await page.getAttribute('#later-on', 'aria-checked')) === 'true' && await page.isVisible('#later-on')) await page.click('#later-on'); return; }
   await page.click(side === 'pay' ? '#pay-coin' : '#get-coin');
-  await page.click(`#pk .pk-r[data-k="${await rowIn(page, on ? POOL[sym] || 'tETH' : PUB[sym] || sym, on ? 'Private' : 'Wallet')}"]`);
+  const row = await rowIn(page, on ? POOL[sym] || 'tETH' : PUB[sym] || sym, on ? 'Private' : 'Wallet');
+  await showKind(page, row); await page.click(`#pk .pk-r[data-k="${row}"]`);
 };
 // a coin chosen in the picker, in the place the side is in; chosen again if the list arrived and was drawn anew under the click
 const pick = async (page, side, sym) => {
   const coin = side === 'pay' ? '#pay-coin' : '#get-coin';
   for (let i = 0; i < 3; i++) {
     const place = await atOf(page, side);
-    await page.click(coin); await page.waitForSelector('#pk .pk-r'); await page.click(`#pk .pk-r[data-k="${await rowIn(page, sym, place)}"]`);
+    await page.click(coin); await page.waitForSelector('#pk .pk-r:visible');
+    const row = await rowIn(page, sym, place);
+    await showKind(page, row); await page.click(`#pk .pk-r[data-k="${row}"]`);
     if ((await page.textContent(coin)).trim().startsWith(sym)) return;
     if (await page.isVisible('#pk .pk-x')) await page.keyboard.press('Escape');
   }
@@ -935,7 +940,10 @@ if (!process.env.SKIP_GASRELAY) {
 {
   const { browser, page, errors } = await openPage({ width: 1280, height: 900 }, { path: '/swap/?amt=0.01&private=to', hop: null });
   await page.click('#get-coin');
-  ok(await page.isVisible('#pk-q') && await page.isVisible('.pk-r:has(b:text-is("USDC"))') && await page.isVisible('.pk-r:has(b:text-is("tETH"))'), 'the list has the pool\'s coins and any token, and can be searched');
+  // a Private side opens on the private coins; the wallet's, and any token, are one press of the switch away
+  const poolCoins = await page.isVisible('.pk-r:has(b:text-is("tETH"))');
+  await page.click('#pk-kind [data-kind="wallet"]');
+  ok(await page.isVisible('#pk-q') && await page.isVisible('.pk-r:has(b:text-is("USDC"))') && poolCoins, 'the list has the pool\'s coins and any token, and can be searched');
   await page.click('.pk-r:has(b:text-is("USDC"))');
   await quoted(page);
   await until(page, () => document.querySelector('#later-on')?.getAttribute('aria-checked') === 'true', null, 30000).catch(() => {});
@@ -949,7 +957,8 @@ if (!process.env.SKIP_GASRELAY) {
   ok((await page.getAttribute('#later-on', 'aria-checked')) === 'false' && (await page.textContent('#get-coin')).includes('USDC') && (await atOf(page, 'get')) === 'Wallet', 'Swap privately switched off: the same USDC, bought in the open');
   await page.click('#later-on');
   ok((await page.getAttribute('#later-on', 'aria-checked')) === 'true' && (await page.textContent('#get-coin')).includes('USDC'), 'and on again: Swap privately, still USDC');
-  await page.click('#get-coin'); await page.waitForSelector('#pk .pk-r'); await page.click(`#pk .pk-r[data-k="${await rowIn(page, 'tETH', 'Private')}"]`);
+  await page.click('#get-coin'); await page.waitForSelector('#pk .pk-r:visible');
+  { const row = await rowIn(page, 'tETH', 'Private'); await showKind(page, row); await page.click(`#pk .pk-r[data-k="${row}"]`); }
   ok((await page.textContent('#get-coin')).includes('tETH') && (await atOf(page, 'get')) === 'Private' && await page.isHidden('#later'), 'a coin from the private place is a private swap into the balance, with no Swap privately');
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   await browser.close();

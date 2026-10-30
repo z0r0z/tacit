@@ -504,7 +504,7 @@ const bridgeTo = async (page, src, amt) => {
 // The Swap card's picker lists each place's coins: the places a side's picker offers (rows not dimmed: for To, where it can go from the From
 // side), or holds something in (rows with a balance), as wallet, private, bitcoin; and where a side's coin is held, as its field's corner says
 const placesOf = async (page, side, held = false) => {
-  await page.click(`#hx-swap #${side}-coin`); await page.waitForSelector('#pk .pk-r');
+  await page.click(`#hx-swap #${side}-coin`); await page.waitForSelector('#pk .pk-r:visible');
   const v = await page.evaluate((held) => {
     const out = new Set(); let g = '';
     for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) {
@@ -7625,13 +7625,13 @@ await step('hxexit', async () => {
     ok(/^USDC/.test(await q('#pay-coin')) && await q('#pay-at') === 'Private' && /^USDC/.test(await q('#get-coin')) && await q('#get-at') === 'Wallet', `hxexit: the link opens USDC held privately going out as USDC to the wallet (${await q('#pay-coin')} ${await q('#pay-at')} → ${await q('#get-coin')} ${await q('#get-at')})`);
     await until(p, (h) => (document.querySelector('#hx-swap #pay-side')?.textContent || '').replace(/,/g, '').startsWith(`Balance ${h} · Max`), held, 240000);
     ok(true, `hxexit: the From side reads what the pool holds, in USDC's own six decimals (${await q('#pay-side')})`);
-    // the picker: four Pay pool coins under their header, each marked, with what they hold, and the anchors
+    // the picker: four Pay pool coins among the private ones, each marked, with what they hold, and the switch between where coins are held
     await p.click('#hx-swap #pay-coin');
-    await p.waitForSelector('#hx-swap #pk .pk-r');
+    await p.waitForSelector('#hx-swap #pk .pk-r:visible');
     const heads = await p.$$eval('#hx-swap #pk .pk-g', (g) => g.map((x) => x.textContent.trim()));
-    const jumps = await p.$$eval('#hx-swap #pk .pk-jump button', (b) => b.map((x) => x.textContent.trim()));
+    const jumps = await p.$$eval('#hx-swap #pk .pk-kind button', (b) => b.map((x) => x.textContent.trim()));
     const pay = await p.$$eval('#hx-swap #pk [data-k^="@pay:"]', (b) => b.map((x) => [x.querySelector('b')?.textContent, x.querySelector('.tk')?.classList.contains('pvt') || !!x.querySelector('use[href="#tk-peth"]'), x.querySelector('em')?.textContent.trim()]));
-    ok(heads.includes('Private · Pay pool') && jumps.join() === 'Wallet,DeFi pool,Pay pool,Bitcoin', `hxexit: the picker names the Pay pool and has its anchors (${heads.join(' | ')}; ${jumps.join()})`);
+    ok(heads.includes('Private') && jumps.join() === 'Wallet,Private,Bitcoin', `hxexit: the picker asks where a coin is held, as Wallet, Private or Bitcoin (${heads.join(' | ')}; ${jumps.join()})`);
     ok(pay.map((x) => x[0]).join() === 'ETH,USDC,USDT,TAC' && pay.every((x) => x[1]), `hxexit: its coins are ETH, USDC, USDT and TAC, each with the private mark (${JSON.stringify(pay)})`);
     await until(p, (h) => [...document.querySelectorAll('#hx-swap #pk [data-k="@pay:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] em')].some((e) => e.textContent.replace(/,/g, '').trim() === h), held, 120000);
     ok(true, `hxexit: and the USDC row shows what the pool holds (${held})`);
@@ -7769,7 +7769,7 @@ await step('hxsendcheck', async () => {
     await p.waitForSelector('#hx-body .hx-h', { timeout: 120000 });
     await p.click('[data-hxm="send"]');
     const groups = await pickGroups(p, 'hx-sa');
-    ok(groups === 'Wallet|Private · DeFi pool|Private · Pay pool|Bitcoin' && await heldAt(p) === 'private', `hxsendcheck: the coins are listed by where they are held, the private ones under their pools (${groups})`);
+    ok(groups === 'Wallet|Private|Bitcoin' && await heldAt(p) === 'private', `hxsendcheck: the coins are listed by where they are held, the private ones together (${groups})`);
     await p.selectOption('#hx-sa', 'eth');
     await p.fill('#hx-amt', '0.05');
     await p.fill('#hx-rcpt', 'no-such-tacit-name-zz.wei');
@@ -7806,7 +7806,7 @@ await step('hxsendtac', async () => {
     await p.click('[data-hxm="send"]');
     await until(p, () => /^Balance 50 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000);
     ok(await p.$eval('#hx-sa', (e) => e.value) === 'tac', 'hxsendtac: a key holding private TAC and wallet TAC opens Send on the private TAC');
-    ok((await p.$$eval('#hx-sa optgroup', (g) => g.map((x) => x.label).join('|'))) === 'Wallet|Private|Bitcoin' && (await pickGroups(p, 'hx-sa')) === 'Wallet|Private · DeFi pool|Private · Pay pool|Bitcoin' && await heldAt(p) === 'private', 'hxsendtac: the asset is held in the wallet, privately or on Bitcoin, with TAC in the wallet on its own');
+    ok((await p.$$eval('#hx-sa optgroup', (g) => g.map((x) => x.label).join('|'))) === 'Wallet|Private|Bitcoin' && (await pickGroups(p, 'hx-sa')) === 'Wallet|Private|Bitcoin' && await heldAt(p) === 'private', 'hxsendtac: the asset is held in the wallet, privately or on Bitcoin, with TAC in the wallet on its own');
     await p.selectOption('#hx-sa', 'wtac');
     await until(p, (n) => new RegExp(`^Balance ${n}(\\.\\d+)? · Max`).test(document.querySelector('#hx-bal')?.textContent || ''), hadN, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | want ${hadN} | bal: ${await text(p, '#hx-bal')} | q: ${await line()}`); });
@@ -10958,7 +10958,7 @@ await step('routeahead', async () => {
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="swap"]');
     await until(p, () => /^tETH/.test((document.querySelector('#hx-swap #pay-coin')?.textContent || '').trim()) && /Balance 0\.25 · Max/.test(document.querySelector('#hx-swap #pay-side')?.textContent || ''), null, 300000);
-    await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r');
+    await p.click('#hx-swap #get-coin'); await p.waitForSelector('#pk .pk-r:visible');
     await p.evaluate(() => { let g = ''; for (const el of document.querySelectorAll('#pk .pk-g, #pk .pk-r')) { if (el.classList.contains('pk-g')) { g = el.textContent; continue; } if (/^Private/.test(g) && el.querySelector('b')?.textContent.trim() === 'TAC') { el.click(); return; } } });
     await until(p, () => /^TAC/.test((document.querySelector('#hx-swap #get-coin')?.textContent || '').trim()) && /private/i.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | get: ${await text(p, '#hx-swap #get-coin')} / ${await text(p, '#hx-swap #get-at')}`); });
