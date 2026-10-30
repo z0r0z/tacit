@@ -231,16 +231,23 @@ export function makeProverBoard({ storage, hash, now, lock } = {}) {
   async function summary() {
     const pend = await storage.getPending();
     const counts = { queued: 0, claimed: 0, proved: 0, failed: 0 };
+    const waits = [], proves = [];
     for (const jid of pend) {
       const j = await storage.getJob(jid);
       if (!j) continue;
       const live = j.status === 'claimed' && clock() > j.leaseUntil ? 'queued' : j.status;
       if (counts[live] != null) counts[live]++;
+      if (j.status === 'proved' && j.postedAt && j.claimedAt && j.endedAt) { waits.push((j.claimedAt - j.postedAt) / 1000); proves.push((j.endedAt - j.claimedAt) / 1000); }
     }
     const ws = await workers();
     const list = Object.entries(ws).map(([name, w]) => ({ name, proved: w.proved || 0, failed: w.failed || 0, bad: w.bad || 0, lastSeenSeconds: w.lastSeen ? Math.max(0, Math.floor((clock() - w.lastSeen) / 1000)) : null, pubkey: w.pubkey || null, programs: w.programs || ['confidential'] }))
       .sort((a, b) => b.proved - a.proved || a.name.localeCompare(b.name));
-    return { ...counts, workers: list, lease: PROVER_BOARD.leaseMs / 1000 };
+    // How the jobs finished in the last hour fared (a job stays readable that long), in seconds: the wait for a claim, which is a worker busy with other
+    // work (the proof pool's stock, an Ethereum-state proof), and the time to prove. On 2026-10-30 the wait was 1 s at the median and 24 s at the 90th
+    // percentile, every wait over five seconds behind work that was not a board job, so the 90th percentile is what a second worker would move.
+    const pct = (xs, p) => (xs.length ? Math.round([...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]) : null);
+    const recent = { n: waits.length, waitP50: pct(waits, 0.5), waitP90: pct(waits, 0.9), proveP50: pct(proves, 0.5), proveP90: pct(proves, 0.9) };
+    return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000 };
   }
 
   return { post, status, cancel, claim, result, summary };

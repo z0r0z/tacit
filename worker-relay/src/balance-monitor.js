@@ -628,7 +628,14 @@ async function checkProverBoard() {
   // still land, after a wait, on the prover network, but the box is not earning its keep.
   const failing = s.workers.filter((w) => Number(w.failed) >= 3 && Number(w.failed) * 2 >= Number(w.proved));
   if (failing.length) await alert('warning', `prover board: ${failing.map((w) => `${w.name} failed ${w.failed} of ${Number(w.failed) + Number(w.proved)} jobs`).join(', ')} — jobs then wait out the board before the prover network takes them; check the worker's log`, { workers: s.workers });
-  log(`prover board: ${live.map((w) => `${w.name} seen ${w.lastSeenSeconds}s ago, proved ${w.proved}`).join('; ')}; queued ${s.queued}, claimed ${s.claimed}`);
+  // What a user's proof waits for the GPU: the wait for a claim over the last hour's finished jobs. A worker busy with the proof pool's stock or an
+  // Ethereum-state proof leaves a user's job queued behind it (on 2026-10-30: 1 s at the median, 24 s at the 90th percentile, 70 jobs in 12 hours), and
+  // a second worker, or less stock, is what lowers it.
+  const r = s.recent;
+  if (r && r.n >= 10 && Number(r.waitP90) > CFG.proverBoardWaitWarnSecs) {
+    await alert('warning', `prover board: a user's proof waited ${r.waitP90} s for a free GPU at the 90th percentile (${r.waitP50} s at the median, ${r.n} jobs in the last hour, ${r.proveP50} s to prove): the worker is busy with other work; a second worker would cut the wait`, { recent: r });
+  }
+  log(`prover board: ${live.map((w) => `${w.name} seen ${w.lastSeenSeconds}s ago, proved ${w.proved}`).join('; ')}; queued ${s.queued}, claimed ${s.claimed}${r && r.n ? `; last hour: ${r.n} jobs, waited ${r.waitP50}/${r.waitP90} s (median/90th), proved in ${r.proveP50}/${r.proveP90} s` : ''}`);
 }
 
 // The GPU box's rent: RunPod stops the pod at a zero balance, and the board then goes quiet with no word. Hours left = balance over

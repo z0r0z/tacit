@@ -247,3 +247,19 @@ test('routes: an eth-state claim and its 1.7 MB answer through the API and its K
   assert.ok(PROVER_RESULT_MAX_BYTES > bigProof.length + 4096, 'room for the base64 proof and the JSON around it');
   assert.equal(maxRequestBytes({}, req('/prover/claim')), DEFAULT_MAX_ANON_REQUEST_BYTES);
 });
+
+test('the summary says how long the last hour\'s finished jobs waited for a claim and took to prove', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  assert.deepEqual((await b.summary()).recent, { n: 0, waitP50: null, waitP90: null, proveP50: null, proveP90: null }, 'an empty board has no figures');
+  const run = async (tag, waitMs, proveMs) => {
+    const { jobId } = await b.post({ class: 'public', stdin: Buffer.from(tag).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 3600 });
+    t += waitMs; await b.claim({ worker: tacit, classes: ['public'] });
+    t += proveMs; await b.result({ worker: tacit, jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) });
+  };
+  await run('a', 1000, 34000); await run('b', 2000, 36000); await run('c', 30000, 40000); await run('d', 1000, 35000);
+  const r = (await b.summary()).recent;
+  assert.deepEqual(r, { n: 4, waitP50: 2, waitP90: 30, proveP50: 36, proveP90: 40 });
+  // a job still waiting, or failed, is not in the figures
+  await b.post({ class: 'public', stdin: Buffer.from('queued').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 3600 });
+  assert.equal((await b.summary()).recent.n, 4);
+});

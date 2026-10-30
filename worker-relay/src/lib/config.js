@@ -219,6 +219,8 @@ export const CFG = {
   // The monitor warns when no board worker has polled for this long (Tacit runs one; a pod that stopped, out of credit or
   // otherwise, sends every settle proof to the prover network with a public input until it is back).
   proverBoardExpectWorkers: opt('PROVER_BOARD_EXPECT_WORKERS', '0') === '1',
+  // The monitor warns when a user's proof waits longer than this (seconds) at the 90th percentile for a free GPU on the board (needs ten jobs in the hour).
+  proverBoardWaitWarnSecs: num('PROVER_BOARD_WAIT_WARN_SECS', 60),
   // The monitor's alarm on the settle relay's own count of failed proofs in the last hour (settle-relay.js withFailures).
   proveFailuresWarn: num('PROVE_FAILURES_WARN', 2),
   // The RunPod account that rents the prover board's GPU box: with a key, the monitor reads its balance and says when the box's rent runs low.
