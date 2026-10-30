@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -11640,6 +11640,92 @@ await step('poolkeep', async () => {
       `poolkeep: a wrap of that size goes out at once from the pool's proof, nothing asked of the relay (${await text(r.page, '#v1-status')})`);
     if (r.errors.length) { fails++; console.log('FAIL poolkeep page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { poolDone = false; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
+});
+
+// An amount the community pool is still proving: nothing is asked of the relay for it too (a second proof would queue on the same prover
+// behind the pool's), the press says the proof is nearly made, and the wrap goes out from the pool's proof as it lands.
+await step('poolwait', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'b002'.padEnd(64, '6');
+  const ROUTER_ADDR = '0x000000005da3e3b73726af3c774deeb9472d4992', routerCode = await rpc('eth_getCode', [ROUTER_ADDR, 'latest']);
+  try {
+    await rpc('anvil_setCode', [ROUTER_ADDR, '0x00']);
+    poolDone = false; proveStub = true;
+    const q0 = poolReqs.length, s0 = submits.length, w0 = walletTxs.length;
+    await r.page.goto(r.url);
+    await r.page.waitForSelector('#hx-body .hx-h');
+    await pasteKey(r.page, hex);
+    await toWallet(r.page);
+    await r.page.waitForSelector('[data-pay="wallet"]');
+    await r.page.click('[data-pay="wallet"]');
+    await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    const ethReq = (b) => { const o = b && wrapOpFromStdin(b.stdin, STUB_CETH); return o && o.value === String(10n ** 16n / 10n ** 10n) ? o : null; };
+    await chainUntil(async () => poolReqs.slice(q0).some(ethReq), 150000);            // the 0.01 ETH size is with the pool, not proved yet
+    await go(r.page, '#private');
+    await r.page.waitForSelector('[data-v1="wrap"]', { timeout: 600000 });
+    await r.page.click('[data-v1="wrap"]').catch(() => {});
+    await r.page.waitForSelector('#w-amt', { timeout: 120000 });
+    await r.page.fill('#w-amt', '0.01');
+    await until(r.page, () => !document.querySelector('#w-go').disabled, null, QUOTE_WAIT);
+    await sleep(4000);                                                                 // the relay's own proof is asked for once an amount has stood 1.5 s
+    ok(!submits.slice(s0).some((x) => x.type === 'wrap'), `poolwait: the amount the pool is proving is not asked of the relay too (${submits.slice(s0).map((x) => `${x.type}/${x.mode}`)})`);
+    await r.page.click('#w-go');
+    await until(r.page, () => /nearly made/.test(document.querySelector('#v1-status')?.textContent || ''), null, 30000).catch(() => {});
+    ok(/nearly made/.test(await text(r.page, '#v1-status')), `poolwait: the press says the proof is nearly made (${await text(r.page, '#v1-status')})`);
+    poolDone = true;                                                                   // the miners finish it
+    await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 120000).catch(() => {});
+    const sent = walletTxs.slice(w0);
+    ok(/Done\./.test(await text(r.page, '#v1-status')) && sent.length === 1 && String(sent[0].to).toLowerCase() === ROUTER_ADDR && !submits.slice(s0).some((x) => x.type === 'wrap'),
+      `poolwait: the wrap goes out from the pool's proof as it lands, nothing asked of the relay (${await text(r.page, '#v1-status')}; ${sent.map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)})`);
+    if (r.errors.length) { fails++; console.log('FAIL poolwait page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { poolDone = false; proveStub = false; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
+});
+
+// A kept wrap whose deposit is in the pool already (sent from another tab, or a page closed before it forgot it): the press drops it and
+// goes on, proving afresh, in the same press, not with a message asking for a second one.
+await step('poolstale', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'b003'.padEnd(64, '7'), pub = Buffer.from(secp.getPublicKey(hex, true)).toString('hex');
+  const ROUTER_ADDR = '0x000000005da3e3b73726af3c774deeb9472d4992', routerCode = await rpc('eth_getCode', [ROUTER_ADDR, 'latest']);
+  const kept = () => r.page.evaluate((p) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + p) || '[]'), pub);
+  try {
+    await rpc('anvil_setCode', [ROUTER_ADDR, '0x00']);
+    poolDone = true; proveStub = true;
+    const q0 = poolReqs.length, w0 = walletTxs.length;
+    await r.page.goto(r.url);
+    await r.page.waitForSelector('#hx-body .hx-h');
+    await pasteKey(r.page, hex);
+    await toWallet(r.page);
+    await r.page.waitForSelector('[data-pay="wallet"]');
+    await r.page.click('[data-pay="wallet"]');
+    await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await until(r.page, (p) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + p) || '[]').some((v) => v.status === 'ready' && v.amount === '10000000000000000'), pub, 150000).catch(() => {});
+    const old = (await kept()).find((v) => v.status === 'ready' && v.amount === '10000000000000000');
+    ok(!!old, `poolstale: a 0.01 ETH wrap is kept ready (${(await kept()).map((v) => `${v.by}/${v.status}/${v.amount}`)})`);
+    // from here the pool says this deposit has been made already
+    const stale = new Set([old.depositId.toLowerCase().replace(/^0x/, '')]);
+    for (const h of RPC_HOSTS) await r.ctx.route(`https://${h}/**`, async (route) => {
+      try {
+        const b = JSON.parse(route.request().postData() || '{}'), one = Array.isArray(b) ? null : b;
+        const d = one?.method === 'eth_call' ? String(one.params?.[0]?.data || '').toLowerCase() : '';
+        if (d.startsWith('0x7da9874f') && stale.has(d.slice(10, 74))) return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ jsonrpc: '2.0', id: one.id, result: '0x' + '1'.padStart(64, '0') }) });
+      } catch { /* not one we answer */ }
+      return route.fallback();
+    });
+    await go(r.page, '#private');
+    await r.page.waitForSelector('[data-v1="wrap"]', { timeout: 600000 });
+    await r.page.click('[data-v1="wrap"]').catch(() => {});
+    await r.page.waitForSelector('#w-amt', { timeout: 120000 });
+    await r.page.fill('#w-amt', '0.01');
+    await until(r.page, () => !document.querySelector('#w-go').disabled, null, QUOTE_WAIT);
+    await r.page.click('#w-go');
+    await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 240000).catch(() => {});
+    const status = await text(r.page, '#v1-status'), sent = walletTxs.slice(w0);
+    ok(/Done\./.test(status) && !/Press again/.test(status) && sent.length === 1 && String(sent[0].to).toLowerCase() === ROUTER_ADDR,
+      `poolstale: the press goes on past the voucher that was sent already, in the same press (${status}; ${sent.map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)})`);
+    ok(!(await kept()).some((v) => v.depositId === old.depositId), `poolstale: and the one that was sent is no longer kept (${(await kept()).map((v) => v.depositId.slice(0, 10))})`);
+    if (r.errors.length) { fails++; console.log('FAIL poolstale page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { poolDone = false; proveStub = false; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });
 
 // TAC kept ready: a size picked in the prove sheet is asked of the pool as a TAC wrap, collected into a voucher once its proof

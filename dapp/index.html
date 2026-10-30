@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tfWikzXonrqF3z1xt6KuLuvou+1BvY1/8cJitUKx69s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6TnV+1usdVV0KJ3KHwlj6LfEp56dO6JejWa4k3rNeTM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3101,6 +3101,8 @@ function spApply() {
       // finished proofs are collected every few seconds while any is being made (the request is a few bytes, and nothing when none waits), so a voucher shows ready as it is
       VOUCH.fast = setInterval(() => { if (!document.hidden) poolCollect().then((c) => { if (c) readyMarks(); }, () => {}); }, 8e3);
       setTimeout(tick, 2000);
+      // a tab that was hidden has not collected anything meanwhile: on its return what finished is picked up, and what is missing asked for, at once
+      document.addEventListener('visibilitychange', () => { if (!document.hidden && S.key) tick(); });
     }
   }
   if (devOn()) {
@@ -4970,7 +4972,7 @@ function v1Wrap(el, status) {
       if (my !== seq || !input.isConnected) return;
       // the relay's sponsored proof of this amount, asked for once it has stood a moment (one at a time, a few a page)
       clearTimeout(VOUCH.typing);
-      if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (input.isConnected && parseUnits(input.value) === wei && (await relayProving())) proveAhead('cETH', wei, { relay: true }); }, 1500);
+      if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (input.isConnected && parseUnits(input.value) === wei && !(await poolMaking(S.key.pubHex, 'cETH', wei)) && (await relayProving())) proveAhead('cETH', wei, { relay: true }); }, 1500);
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(wei, 18, 8)} tETH</b></div>
         <div class="kv"><span>Relay tip</span><b>${own ? `none: ${devOn() ? 'proved on this computer' : 'you prove it with your own credit'}` : `${fmt(tip, 18, 6)} ETH`}</b></div>
@@ -5007,8 +5009,11 @@ function v1Wrap(el, status) {
         const pop = () => rewardPop(go, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
         if (devOn() && VOUCH.ahead?.ticker === 'cETH' && VOUCH.ahead.wei === String(x.wei)) { say(status, DEV_STAGE.device); await VOUCH.ahead.p; }
         const ready = (await vouchers()).pick(S.key.pubHex, 'cETH', x.wei);
-        if (ready) await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop });
-        else await proveFirstWrap({ run, t, priv, via, wei: x.wei, status, sheet: 'eth', pop });
+        if (ready) {
+          try { await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop }); return; }
+          catch (e) { if (!e?.stale) throw e; }   // one had been sent already: it is dropped, and the wrap is proved afresh below
+        }
+        await proveFirstWrap({ run, t, priv, via, wei: x.wei, status, sheet: 'eth', pop });
         return;
       }
       // The relay's sponsored proof, made before anything is deposited: one transaction then deposits and settles it, with the tip in it,
@@ -5016,16 +5021,27 @@ function v1Wrap(el, status) {
       // first, as before.
       if (S.key) {
         const pop = () => rewardPop(go, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts }), pub = S.key.pubHex;
-        let ready = (await vouchers()).pick(pub, 'cETH', x.wei);
-        if (!ready) {
-          say(status, 'Tacit’s relay is proving your wrap first, about a minute. Nothing has left your wallet yet…');
-          if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
-          await (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
-          ready = (await vouchers()).pick(pub, 'cETH', x.wei);
-        }
-        if (ready) {
-          await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop, tip: { wei: x.tip, to: x.to } });
-          return;
+        // A kept proof found already sent is dropped and the press goes round once more, proving afresh (twice at most).
+        for (let again = 0; again < 2; again++) {
+          let ready = (await vouchers()).pick(pub, 'cETH', x.wei);
+          // The pool is already proving this amount (a key just signed in, or a size just used and made again): a second proof asked of the relay
+          // would queue on the same prover behind it, so the one under way is waited for a little first.
+          if (!ready && (await poolMaking(pub, 'cETH', x.wei))) {
+            say(status, 'Your proof is nearly made. Nothing has left your wallet yet…');
+            ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3);
+          }
+          if (!ready) {
+            say(status, 'Tacit’s relay is proving your wrap first, about a minute. Nothing has left your wallet yet…');
+            if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
+            // started now; the pool's proof of the same amount is still taken if it lands first
+            const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
+            await Promise.race([made, racePoolVoucher(pub, 'cETH', x.wei, 5 * 60e3)]);
+            ready = (await vouchers()).pick(pub, 'cETH', x.wei);
+            if (!ready && (await poolMaking(pub, 'cETH', x.wei))) ready = await waitPoolVoucher(pub, 'cETH', x.wei, 60e3);
+          }
+          if (!ready) break;
+          try { await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop, tip: { wei: x.tip, to: x.to } }); return; }
+          catch (e) { if (!e?.stale) throw e; }
         }
       }
       say(status, 'Preparing your note…');
@@ -8674,7 +8690,7 @@ function renderTacBal(el) {
 // exactly goes out with no proving wait; the rest prove first as below. Nothing is proved on a guess while an amount is typed: a
 // proof here takes minutes and cannot be stopped, so one for an amount then changed would hold up the one wanted.
 const VOUCH = { mod: null, ahead: null, keep: 0 };
-const vouchers = async () => (VOUCH.mod ||= (await import('/wrap-vouchers.js?cb=1b01bab7')).makeVouchers());
+const vouchers = async () => (VOUCH.mod ||= (await import('/wrap-vouchers.js?cb=bb53d540')).makeVouchers());
 const KEEP_PREF = 'tacit-lite-keep-ready-v1:';
 // The sizes that can be kept ready, by pool ticker. ETH's are kept for every key until its holder turns them off (an empty choice is
 // stored as such): a wrap of a common size then goes out with no proving wait, and asking for one costs nothing.
@@ -8820,10 +8836,21 @@ async function lpReady(poolId, wei, res) {
 function keepReady() { return (VOUCH.keeping ||= keepReadyOnce().finally(() => { VOUCH.keeping = null; })); }
 // A voucher spent (sent, or used in a zap) is made again in seconds, not at the next minute: the size a key presses is the size it presses again.
 const refillSoon = () => { clearTimeout(VOUCH.refill); VOUCH.refill = setTimeout(() => keepReady().catch(() => {}), 2500); };
+// A ready voucher whose deposit is in the pool already was sent (a page closed after its transaction went, another tab): it is dropped, so its
+// size is made again and a press never meets it. Each is looked at once in ten minutes, a few a tick.
+async function sweepSpent(pub, v) {
+  const seen = (VOUCH.swept ||= new Map()), now = Date.now();
+  const due = v.list(pub, null, 'ready').filter((x) => now - (seen.get(x.depositId) || 0) > 10 * 60e3).slice(0, 6);
+  await Promise.all(due.map(async (x) => {
+    seen.set(x.depositId, now);
+    try { if (wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(x.depositId).padStart(64, '0') }, 'latest']), 0) !== 0n) v.drop(pub, x.depositId); } catch { /* unread: kept */ }
+  }));
+}
 async function keepReadyOnce() {
   if (!S.key) return;
   await marketPickup().catch(() => {});
   const v = await vouchers(), pub = S.key.pubHex, device = devOn();
+  await sweepSpent(pub, v).catch(() => {});
   if (device ? VOUCH.ahead : Date.now() < (VOUCH.poolCapUntil || 0)) return;
   // this computer proves one at a time while it is idle; the pool is asked for up to POOL_PER_TICK a minute
   let posts = 0;
@@ -8896,15 +8923,33 @@ async function poolCollect() {
   }
   return changed;
 }
+// Whether the community pool is still proving a wrap of exactly this amount for this key.
+const poolMaking = async (pub, ticker, wei) => (await vouchers()).list(pub, ticker, 'proving').some((x) => x.by === 'pool' && x.amount === String(wei));
+// The ready vouchers that make up `wei` once the pool's proof of it is collected (looked for every two seconds, for at most `ms`, and no
+// longer than the pool still has it in hand), or null. A second proof of the same wrap asked of the relay would queue on the same prover
+// behind the pool's, so a press waits a little for the one already under way.
+async function waitPoolVoucher(pub, ticker, wei, ms) {
+  const end = Date.now() + ms, v = await vouchers();
+  for (;;) {
+    const ready = v.pick(pub, ticker, wei);
+    if (ready) return ready;
+    if (Date.now() >= end || !(await poolMaking(pub, ticker, wei))) return null;
+    await new Promise((r) => setTimeout(r, 2e3));
+    if (await poolCollect().catch(() => false)) readyMarks();
+  }
+}
+// The same, for a race against another way of making the proof: only a success settles it.
+const racePoolVoucher = (...a) => waitPoolVoucher(...a).then((r) => r || new Promise(() => {}));
 // Ready vouchers sent: each deposits and settles through the router, together in one wallet confirmation where the wallet
 // batches calls. One whose deposit is in the pool already was sent elsewhere: it is dropped and nothing is sent.
 async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip = null, token = null }) {
   const pub = S.key.pubHex, v = await vouchers(), tell = (m) => run.say(status, m), from = via === 'tacit' ? S.acct?.address : S.wallet || S.address;
-  for (const x of list) {
-    if (wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(x.depositId).padStart(64, '0') }, 'latest']), 0) !== 0n) {
-      v.drop(pub, x.depositId);
-      throw Object.assign(new Error('A wrap kept ready here had been sent already, so nothing was sent. Press again.'), { said: true });
-    }
+  // Every kept wrap is looked up at once, not one after another. One whose deposit is in the pool was sent elsewhere (another tab, a page closed too
+  // soon to forget it): it is dropped and nothing is sent. `stale` tells the press to go on as if none were kept, proving afresh, instead of asking for a second press.
+  const used = await Promise.all(list.map(async (x) => wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(x.depositId).padStart(64, '0') }, 'latest']), 0) !== 0n));
+  if (used.some(Boolean)) {
+    for (const [i, x] of list.entries()) if (used[i]) v.drop(pub, x.depositId);
+    throw Object.assign(new Error('A wrap kept ready here had been sent already, so nothing was sent. Press again.'), { said: true, stale: true });
   }
   // The relay's quoted tip rides on the first call, paid through the router to the same splitter the deposit's tip goes to. A token's
   // wrap carries the permit for its amount, signed now.
@@ -8913,10 +8958,8 @@ async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip 
     calls.push(t.wrapSettleCall({ ...v.call(x), ...(i === 0 && tip?.wei ? { ethFeeWei: tip.wei, feeRecipient: tip.to } : {}),
       ...(token ? { permit: await wrapPermit({ t, via, token, value: BigInt(x.amount), status }) } : {}) }));
   }
-  for (const c of calls) {
-    try { await rpc('eth_call', [{ ...(from ? { from } : {}), to: c.to, data: c.data, value: '0x' + c.value.toString(16) }, 'latest']); }
-    catch (e) { throw Object.assign(new Error(`Nothing was sent: the router refuses a wrap kept ready here. ${revertText(e) || ''}`.trim()), { said: true }); }
-  }
+  await Promise.all(calls.map((c) => rpc('eth_call', [{ ...(from ? { from } : {}), to: c.to, data: c.data, value: '0x' + c.value.toString(16) }, 'latest'])
+    .catch((e) => { throw Object.assign(new Error(`Nothing was sent: the router refuses a wrap kept ready here. ${revertText(e) || ''}`.trim()), { said: true }); })));
   run.take(...list.map((x) => kDep({ depositId: x.depositId })));
   tell(`Proved already. Sending it from ${your()}…`);
   let hash = null;
@@ -14561,7 +14604,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=774f7f39').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=0e3a9fbc').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };

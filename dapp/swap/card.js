@@ -1800,7 +1800,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=3f58d088').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=5117fcf9').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

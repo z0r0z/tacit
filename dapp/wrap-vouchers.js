@@ -5,14 +5,49 @@
 // the proving time; sent by anyone, it can only fund the key's own note.
 //
 // A voucher: { ticker, amount (base units, decimal string), index, commit, depositId, leaf, assetId, at, status: 'proving' | 'ready',
-// by ('device' | 'relay'), job? (the proving job, to pick up after a reload), publicValues?, proof?, memos? }. Every proof is checked to
-// be for its own note (confidential-pool-ux.js wrapProofFits) before it is kept.
+// by ('device' | 'relay' | 'pool'), job? (the proving job, to pick up after a reload), publicValues?, proof?, memos? }. Every proof is
+// checked to be for its own note (confidential-pool-ux.js wrapProofFits) before it is kept.
+//
+// A full store must not lose a proof quietly. A write the browser refuses first makes room (the vouchers of other keys, the oldest
+// first) and tries again; if it is still refused, the list is kept in memory for as long as the page lives, so a proof that was paid
+// for is still found at the press. With no storage at all (a private window) the vouchers live in memory the same way.
 
 const KEY = 'tacit-wrap-vouchers-v1:';
 
 export function makeVouchers({ storage = globalThis.localStorage } = {}) {
-  const read = (pub) => { try { return JSON.parse(storage.getItem(KEY + pub) || '[]') || []; } catch { return []; } };
-  const write = (pub, list) => { try { storage.setItem(KEY + pub, JSON.stringify(list)); } catch { /* a convenience, not state */ } };
+  const mem = new Map();   // pub → list, while the browser refuses to hold it
+  const read = (pub) => {
+    if (mem.has(pub)) return mem.get(pub);
+    try { return JSON.parse(storage.getItem(KEY + pub) || '[]') || []; } catch { return []; }
+  };
+  // Frees the vouchers of the other key that was written to least recently. A key's own are what this page is for, so they stay.
+  // → whether anything was freed.
+  function makeRoom(pub) {
+    try {
+      const others = [];
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        if (!k || !k.startsWith(KEY) || k === KEY + pub) continue;
+        let list = [];
+        try { list = JSON.parse(storage.getItem(k) || '[]') || []; } catch { /* unreadable: it goes first */ }
+        others.push({ k, at: list.reduce((m, v) => Math.max(m, Number(v?.at) || 0), 0) });
+      }
+      if (!others.length) return false;
+      others.sort((a, b) => a.at - b.at);
+      storage.removeItem(others[0].k);
+      return true;
+    } catch { return false; }   // the storage cannot even be walked
+  }
+  function write(pub, list) {
+    const save = () => { storage.setItem(KEY + pub, JSON.stringify(list)); mem.delete(pub); };
+    try { save(); return; } catch { /* full, or refused */ }
+    for (let i = 0; i < 4 && makeRoom(pub); i++) { try { save(); return; } catch { /* more room */ } }
+    // Still refused: the page keeps the whole list, and the stored copy keeps as much of it as fits, the ones not made yet and the oldest
+    // going first (a proof that was paid for, and the newest, is the last to go).
+    const order = list.slice().sort((x, y) => (x.status === 'ready') - (y.status === 'ready') || (Number(x.at) || 0) - (Number(y.at) || 0));
+    for (let i = 1; i <= order.length; i++) { try { storage.setItem(KEY + pub, JSON.stringify(order.slice(i))); break; } catch { /* fewer */ } }
+    mem.set(pub, list);
+  }
   const list = (pub, ticker = null, status = null) => read(pub).filter((v) => (!ticker || v.ticker === ticker) && (!status || v.status === status));
 
   // The ready vouchers that add up to exactly `amount`, fewest first; null when none do. A handful at most, so it is searched whole.
