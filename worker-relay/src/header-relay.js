@@ -280,7 +280,19 @@ async function reflectionAttested() {
   } catch { return null; }
 }
 
+// A Bitcoin explorer that answers every source in turn with a rate limit (HTTP 429) is a wait, not a fault. The lane doubles a failing stage's
+// interval, up to half an hour, for a limit that is gone in a minute: on 2026-10-30 one 429 at the restart put the feeder 6 minutes out, and
+// the same limit had already let a batch through unheld before the dip gate stopped reading explorer timestamps.
+const isExplorerError = (e) => /^esplora /.test(String(e?.message || e));
 async function cycle() {
+  try { return await cycleOnce(); }
+  catch (e) {
+    if (!isExplorerError(e)) throw e;
+    say('explorer', `the Bitcoin explorers did not answer (${String(e.message).slice(0, 90)}) — trying again in a few minutes`);
+    return false;
+  }
+}
+async function cycleOnce() {
   const [rtip, btip, refl] = await Promise.all([relayTip(), btcTip(), reflectionAttested()]);
   // Pace against reflection: keep the relay within headerLead of reflection's attested height, so each attest
   // pays a short ancestor walk rather than one proportional to an unbounded lead. The pace is only a cost cap.
