@@ -34,7 +34,7 @@
 .swc .brd { display: grid; gap: 6px; margin: 10px 2px 0; font-size: 12px; line-height: 1.5; color: var(--mute); } .swc .brd em { font-style: normal; color: var(--warn); }
 .swc .brd button.link { padding: 0; font: 12px var(--mono); color: var(--ink); background: none; border: 0; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .swc .snt { display: grid; gap: 8px; margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); }
-.swc .snt > div { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 12px; border: 1px solid var(--hair); border-radius: 12px; }
+.swc .snt > div { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 14px; }
 .swc .snt b { font-weight: 500; color: var(--ink); } .swc .snt .what { grid-column: 1 / -1; color: var(--ink); } .swc .snt small { grid-column: 1 / -1; font-size: 12px; } .swc .snt a { color: var(--ink); }
 .swc .snt .dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--orange); }
 .swc .snt .ok .dot { background: var(--ok); } .swc .snt .warn .dot { background: var(--warn); }
@@ -43,7 +43,7 @@
 .swc .snt button.link { padding: 0 2px; font: 14px/1 var(--mono); color: var(--mute); background: none; border: 0; cursor: pointer; }
 @media (pointer: coarse) { .swc .mode button { min-height: 38px; } }
 .swc .f { padding: 12px 14px 10px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 4%, transparent); border-radius: 16px; transition: border-color .15s, box-shadow .15s; }
-.swc .f:focus-within { border-color: color-mix(in srgb, var(--ink) 32%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 5%, transparent); }
+.swc .f:focus-within { border-color: color-mix(in srgb, var(--ink) 26%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 5%, transparent); }
 .swc .fh, .swc .ff { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 22px; font-size: 12px; color: var(--mute); }
 .swc .ff { min-height: 28px; }                                              /* the quick amounts' row, drawn by the script */
 .swc .fh .where { display: inline-flex; align-items: center; gap: 6px; }
@@ -55,7 +55,7 @@
 .swc .to small { display: block; min-height: 0; margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--mute); overflow-wrap: anywhere; } .swc .to small:empty { display: none; } .swc .to small.err { color: var(--err); }
 .swc .sides { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .swc .sides button { display: inline-flex; align-items: center; gap: 6px; min-height: 20px; padding: 1px 10px; font: 12px var(--mono); color: var(--mute); background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
-.swc .sides button[aria-checked="true"] { background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 55%, transparent); }
+.swc .sides button[aria-checked="true"] { background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 22%, transparent); }
 .swc .sides .lock { flex: none; width: 8px; height: 9px; border: 1.5px dashed currentColor; border-radius: 2px; }
 .swc .sides button:disabled { opacity: .35; cursor: default; }
 @media (pointer: coarse) { .swc .sides button { min-height: 34px; padding: 1px 12px; } }
@@ -129,11 +129,11 @@
 /* A button that cannot be pressed yet has no reason to follow the screen: pinned, it covers the rows under it (most of them on a small phone). */
 .swc .act:has(.go:disabled) { position: static; background: none; }
 .swc .act .ack { margin: 0 2px 8px; }
-.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; transition: background .15s, color .15s, opacity .15s; text-decoration: none; }
+.swc .go { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin-top: 14px; padding: 10px 16px; font-size: 15px; font-weight: 500; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 16px; cursor: pointer; transition: background .15s, color .15s, opacity .15s; text-decoration: none; }
 .swc .go:hover:not(:disabled) { background: transparent; color: var(--ink); }
 .swc .go:disabled { cursor: not-allowed; }
 .swc .go.priv { background: transparent; color: var(--ink); }
-@media (prefers-color-scheme: dark) { .swc .go:not(.priv) { background: color-mix(in srgb, var(--ink) 86%, var(--card)); border-color: transparent; } .swc .go.priv { border-color: var(--hair-2); } }
+@media (prefers-color-scheme: dark) { .swc .go:not(.priv) { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; } .swc .go.priv { border-color: var(--hair-2); } }
 .swc .go.priv:hover:not(:disabled) { background: var(--ink); color: var(--card); border-style: solid; }
 /* what cannot be pressed yet rests as a soft block of the tile's own tone, not the button faded */
 .swc .go:disabled, .swc .go.priv:disabled { color: var(--mute); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: transparent; }
@@ -145,15 +145,15 @@
 .swc .sw-foot[hidden] { display: none; }
 .swc .sw-foot { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 2px 2px 0; padding-top: 4px; font-size: 12px; color: var(--mute); }
 /* Swap privately: one row that switches it, the buffer and the three steps it takes while it is on; and the swaps in progress, as the same steps */
-.swc .later { margin: 10px 2px 0; padding: 10px 12px; border: 1px solid var(--hair); border-radius: 12px; transition: border-color .15s; }
-.swc .later.on { border-color: var(--hair-2); }
+.swc .later { margin: 10px 2px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 16px; transition: border-color .15s; }
+.swc .later.on { border-color: color-mix(in srgb, var(--ink) 18%, transparent); }
 .swc .later .tgl { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 28px; padding: 0; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; font-size: 13.5px; }
 .swc .later .tgl b { flex: 1; font-weight: 500; }
 .swc .later .tgl .tg-t { flex: 1; display: grid; line-height: 1.25; }
 .swc .later .tgl small { font-size: 12px; color: var(--mute); }
 .swc .later .pill { position: relative; width: 34px; height: 20px; flex: none; border-radius: 999px; background: var(--hair-2); transition: background .15s; }
 .swc .later .pill::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .2s var(--spring); }
-.swc .later .tgl[aria-checked="true"] .pill { background: var(--ink); }
+.swc .later .tgl[aria-checked="true"] .pill { background: color-mix(in srgb, var(--ink) 85%, var(--card)); }
 .swc .later .tgl[aria-checked="true"] .pill::after { transform: translateX(14px); }
 .swc .later .buf { display: flex; align-items: center; gap: 12px; margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
 .swc .later .via { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 4px; margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
@@ -197,7 +197,7 @@
 .swc .st.pre li span { font-size: 12.5px; color: var(--ink); } .swc .st.pre li b { font-weight: 500; }
 .swc .st.pre .mk { flex: none; width: 18px; height: 18px; font-size: 10px; }
 .swc .steps { display: grid; gap: 10px; margin: 12px 2px 0; font-size: 12.5px; }
-.swc .steps .plan { padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
+.swc .steps .plan { padding: 12px 14px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 16px; }
 .swc .steps header { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 0 14px; }
 .swc .steps .now { margin: -8px 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
 .swc .steps .now a { color: inherit; }
@@ -233,27 +233,27 @@
 .swc .slip button[aria-pressed="true"] { color: var(--ink); background: color-mix(in srgb, var(--ink) 12%, transparent); border-color: transparent; }
 @media (pointer: coarse) { .swc .slip { min-height: 34px; } .swc .slip button { min-height: 34px; padding: 1px 12px; } }
 /* the coin picker: a sheet that rises inside the card */
-.swc .pk { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; border-radius: 17px; background: color-mix(in srgb, var(--paper) 55%, transparent); backdrop-filter: blur(1px); }
-.swc .pk-s { display: flex; flex-direction: column; max-height: 92%; background: var(--card); border-top: 1px solid var(--hair-2); border-radius: 16px 16px 0 0; box-shadow: 0 -24px 48px -32px rgba(0,0,0,.5); animation: swc-up .3s var(--ease); }
+.swc .pk { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; border-radius: 21px; background: color-mix(in srgb, var(--paper) 62%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.swc .pk-s { display: flex; flex-direction: column; max-height: 92%; background: var(--card); border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 20px 20px 0 0; box-shadow: 0 -18px 40px -28px rgba(0,0,0,.45); animation: swc-up .3s var(--ease); }
 @keyframes swc-up { from { transform: translateY(40px); opacity: 0; } }
 .swc .pk-h { display: flex; justify-content: space-between; align-items: center; padding: 12px 10px 6px 18px; }
 .swc .pk-h b { font: italic 400 24px/1 var(--serif); }
 .swc .pk-x { width: 36px; height: 36px; font-size: 22px; color: var(--mute); background: none; border: 0; border-radius: 50%; cursor: pointer; }
 @media (hover: hover) { .swc .pk-x:hover { color: var(--ink); background: var(--field); } }
-.swc .pk-q { margin: 2px 14px 6px; padding: 10px 12px; font: 13px var(--mono); background: var(--field); border: 1px solid var(--hair); border-radius: 10px; outline: none; }
-.swc .pk-q:focus { border-color: var(--ink); }
+.swc .pk-q { margin: 2px 18px 10px; padding: 11px 14px; font: 13px var(--mono); background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 14px; outline: none; transition: border-color .15s, box-shadow .15s; }
+.swc .pk-q:focus { border-color: color-mix(in srgb, var(--ink) 30%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 5%, transparent); }
 .swc .pk-l { display: flex; flex-direction: column; overflow: auto; padding: 0 10px 14px; }
 .swc .pk-l > [hidden] { display: none; }
 .swc .pk-g { margin: 10px 8px 4px; font-size: 12px; color: var(--mute); }
-.swc .pk-jump { flex: none; display: flex; gap: 6px; padding: 0 8px 6px; overflow-x: auto; scrollbar-width: none; }
-.swc .pk-jump button { flex: none; min-height: 28px; padding: 2px 11px; font: inherit; font-size: 12px; color: var(--mute); background: none; border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; transition: color .12s, border-color .12s; }
-.swc .pk-jump button:hover, .swc .pk-jump button:focus-visible { color: var(--ink); border-color: var(--ink); }
+.swc .pk-jump { flex: none; display: flex; gap: 6px; padding: 0 18px 8px; overflow-x: auto; scrollbar-width: none; }
+.swc .pk-jump button { flex: none; min-height: 28px; padding: 2px 11px; font: inherit; font-size: 12px; color: var(--mute); background: none; border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 999px; cursor: pointer; transition: color .12s, border-color .12s, background-color .12s; }
+.swc .pk-jump button:hover, .swc .pk-jump button:focus-visible { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 40%, transparent); background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .swc .pk-g.priv { display: flex; align-items: center; gap: 6px; }
 .swc .pk-g .tk { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -3px; }
 .swc .cm { display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; vertical-align: -3px; }
 .swc .cm svg.tk { width: 16px; height: 16px; }
 .swc .pk-g.priv::before { content: ''; width: 8px; height: 9px; border: 1.5px dashed currentColor; border-radius: 2px; }
-.swc .pk-r { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px; text-align: left; color: inherit; background: none; border: 0; border-radius: 12px; cursor: pointer; transition: background .12s; }
+.swc .pk-r { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px; text-align: left; color: inherit; background: none; border: 0; border-radius: 14px; cursor: pointer; transition: background .12s; }
 .swc .pk-r .tk { width: 34px; height: 34px; }
 .swc .pk-r { content-visibility: auto; contain-intrinsic-size: auto 52px; }
 .swc .pk-r > span:not(.tk) { flex: 1; display: grid; line-height: 1.3; min-width: 0; }
@@ -263,7 +263,7 @@
 .swc .pk-r .pk-rd { animation: pk-rd 1.2s ease-in-out infinite; }
 @keyframes pk-rd { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .swc .pk-r .pk-rd { animation: none; } }
-.swc .pk-r[aria-current="true"] { background: var(--field); box-shadow: inset 0 0 0 1px var(--hair-2); }
+.swc .pk-r[aria-current="true"] { background: var(--field); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent); }
 .swc .pk-r.off { opacity: .45; }
 @media (hover: hover) { .swc .pk-r:hover { background: var(--field); } }
 .swc .pk-n { margin: 6px 8px 0; font-size: 12px; color: var(--mute); }
@@ -342,9 +342,9 @@
 .swc .rows-h .chg { text-decoration: underline; text-underline-offset: 3px; }
 
 /* the TAC mark beside a points figure (a route's note, a home's cue, a receipt line) */
-.swc .pt { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.swc .pt { display: inline-flex; align-items: center; gap: 4px; margin: 0; padding: 0; border: 0; white-space: nowrap; }
 .swc .pt .tk, .swc dt .tk.xs { flex: none; }
-.swc dt .tk.xs { margin-right: 5px; vertical-align: -2px; }
+.swc dt .tk.xs { display: inline-block; margin-right: 5px; vertical-align: -2px; }
 
 /* a split across the two TAC pools, drawn as on the TAC trading page: each pool's share, named */
 .swc .splitbar { display: flex; gap: 2px; height: 18px; margin-top: 3px; min-width: 150px; font: 10.5px var(--mono); letter-spacing: .02em; }
@@ -352,7 +352,7 @@
 .swc .splitbar .pp { background: #4a63d6; border-radius: 3px 0 0 3px; } .swc .splitbar .tp { background: #15803d; border-radius: 0 3px 3px 0; }
 
 /* a token row's place: Private (dashed, like the ring on its mark) for the pools; Public for the wallet's, shown while searching when the group headings are gone */
-.swc .pk-r b .pw { display: inline-block; margin-left: 8px; padding: 1px 7px; font: 500 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; border-radius: 999px; vertical-align: 2px; color: var(--mute); border: 1px solid currentColor; }
+.swc .pk-r b .pw { display: inline-block; margin-left: 8px; padding: 0 6px; font: 500 9.5px/16px var(--mono); letter-spacing: .07em; text-transform: uppercase; border-radius: 999px; vertical-align: 2px; color: var(--mute); border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
 .swc .pk-r b .pw-defi, .swc .pk-r b .pw-pay { border-style: dashed; color: var(--ink); }
 .swc .pk-r b .pw-wallet { display: none; }
 .swc #pk-l.srch .pk-r b .pw-wallet { display: inline-block; }

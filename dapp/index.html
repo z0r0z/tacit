@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <script type="module" src="/px-strip.js" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=8f51d51f" as="style">
+<link rel="preload" href="/swap/card.css?cb=44cbbccf" as="style">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -432,12 +432,12 @@ a.di { color: inherit; text-decoration: none; }
 /* the network picker (net-pick.js): a pill with the network's logo and name over the select, which stays out of sight as what holds the value */
 .np { position: relative; display: inline-flex; }
 .np-sel { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
-.np-b { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 12px 3px 4px; font: inherit; font-size: 13px; color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: 999px; cursor: pointer; transition: border-color .15s; }
-.np-b:hover, .np-b:focus-visible, .np-b[aria-expanded="true"] { border-color: var(--ink); outline: none; }
+.np-b { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 12px 3px 4px; font: inherit; font-size: 13px; color: var(--ink); background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 999px; cursor: pointer; transition: border-color .15s; }
+.np-b:hover, .np-b:focus-visible, .np-b[aria-expanded="true"] { border-color: color-mix(in srgb, var(--ink) 45%, transparent); outline: none; }
 .np-b .tk { width: 24px; height: 24px; }
 .np-c { width: 9px; height: 6px; margin-left: 2px; opacity: .6; transition: transform .2s var(--ease); }
 .np-b[aria-expanded="true"] .np-c { transform: rotate(180deg); }
-.np-m { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 100%; width: max-content; padding: 4px; background: var(--card); border: 1px solid var(--hair-2); border-radius: 16px; box-shadow: 0 20px 44px -20px rgba(0,0,0,.6); animation: np-in .16s var(--ease); }
+.np-m { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 100%; width: max-content; padding: 4px; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 18px; box-shadow: 0 20px 44px -20px rgba(0,0,0,.6); animation: np-in .16s var(--ease); }
 .np-m[hidden] { display: none; }
 .np-m[data-up] { top: auto; bottom: calc(100% + 6px); }
 .np-o { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 14px 7px 8px; font: inherit; font-size: 13px; color: var(--ink); text-align: left; background: none; border: 0; border-radius: 12px; cursor: pointer; }
@@ -448,7 +448,7 @@ a.di { color: inherit; text-decoration: none; }
 @keyframes np-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { .np-m { animation: none; } .np-c { transition: none; } }
 @media (pointer: coarse) { .np-b { min-height: 38px; } .np-o { padding-block: 10px; } }
-.hx .btn { width: 100%; min-height: 56px; margin: 16px 0 0; border-radius: 14px; font-size: 15px; transition: transform .2s var(--spring), box-shadow .2s, background .15s, color .15s; }
+.hx .btn { width: 100%; min-height: 56px; margin: 16px 0 0; border-radius: 16px; font-size: 15px; transition: transform .2s var(--spring), box-shadow .2s, background .15s, color .15s; }
 @media (hover: hover) { .hx .btn:hover:not(:disabled) { color: var(--card); background: var(--ink); transform: translate(-2px, -2px); box-shadow: 3px 3px 0 var(--orange); } }
 .hx .btn:active:not(:disabled) { transform: none; box-shadow: none; }
 .hero .hx-q, .hx-q { min-height: 18px; max-width: none; margin: 10px 2px 0; font-size: 12px; line-height: 1.55; color: var(--mute); }
@@ -585,10 +585,10 @@ a.di { color: inherit; text-decoration: none; }
 /* the card's side links (earn points too, join with both) are secondary, so they stay quiet */
 .hx #hx-alt-go, .hx .q a[data-link="farm"] { font-size: 12px; color: var(--mute); }
 @media (hover: hover) { .hx #hx-alt-go:hover, .hx .q a[data-link="farm"]:hover { color: var(--ink); } }
-.hx-mode { display: inline-flex; margin: 8px 0 10px; border: 1px solid var(--hair); border-radius: 10px; overflow: hidden; }
-.hx-mode button { min-height: 30px; padding: 3px 12px; color: var(--mute); font: 12px var(--mono); white-space: nowrap; background: none; border: 0; cursor: pointer; }
-.hx-mode button + button { border-left: 1px solid var(--hair); }
-.hx-mode button[aria-checked="true"] { color: var(--card); background: var(--ink); }
+.hx-mode { display: inline-flex; gap: 2px; margin: 8px 0 10px; padding: 3px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.hx-mode button { min-height: 26px; padding: 2px 14px; color: var(--mute); font: 12px var(--mono); white-space: nowrap; background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s; }
+@media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
+.hx-mode button[aria-checked="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
 .ptsline { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 6px 14px; padding: 14px 4px; color: inherit; text-decoration: none; border-bottom: 1px solid var(--hair); }
 .ptsline .tk { width: 24px; height: 24px; box-shadow: none; transition: transform .4s var(--spring); }
 .ptsline .fig { display: inline-flex; align-items: baseline; gap: 2px 10px; flex: 0 1 auto; min-width: 0; color: var(--mute); }
@@ -1124,7 +1124,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=8f51d51f">
+<link rel="stylesheet" href="/swap/card.css?cb=44cbbccf">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
