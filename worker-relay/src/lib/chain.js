@@ -4,6 +4,7 @@ import { createPublicClient, createWalletClient, http, fallback, getAddress } fr
 import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { CFG, ADDR } from './config.js';
+import { makeBaseFeeHistory } from './base-fee-history.js';
 
 // Reads fall through the configured endpoints in order: a single provider going slow or rate-limiting
 // otherwise aborts the whole cycle, and for reflection that discards an already-paid proof.
@@ -20,6 +21,8 @@ const settleTransport = CFG.settleRpcUrl ? http(CFG.settleRpcUrl) : transport;
 const chain = CFG.chainId === 1 ? mainnet : { ...mainnet, id: CFG.chainId };
 
 export const publicClient = createPublicClient({ chain, transport });
+// The last day's base fees, read once and shared by the stages of one process (lib/gas-pace.js measures a price against them).
+export const baseFeeHistory = makeBaseFeeHistory(publicClient);
 
 // The live gas price in gwei when it is above MAX_GAS_GWEI, else null (also null when the guard is off or the price
 // cannot be read, so a flaky RPC never stalls a lane).

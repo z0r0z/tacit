@@ -44,6 +44,14 @@ ok('the staleness bound overrides a larger minimum batch');
 assert.strictEqual(plan({ base, to: base + 500, maxStale: 0, maxBatch: 40, gasDear: true }).action, 'wait');
 ok('a zero staleness bound is off');
 
+// ── a forced advance (the pace rule's time bound, lib/gas-pace.js) ──────────────────────────────────────────
+assert.deepStrictEqual(plan({ base, to: base + 48, minBatch: 20, maxBatch: 20, gasDear: true, force: true }), { action: 'advance', from: 1001, to: 1020, forced: true });
+ok('a forced advance goes through the gas ceiling');
+assert.deepStrictEqual(plan({ base, to: base + 5, minBatch: 20, maxBatch: 20, force: true }), { action: 'advance', from: 1001, to: 1005, forced: true });
+ok('and past a batching minimum');
+assert.deepStrictEqual(plan({ base, to: base + 48, minBatch: 20, maxBatch: 20, gasDear: true, force: false }), { action: 'wait', reason: 'gas', pending: 48 });
+ok('not forcing leaves the ceiling in charge');
+
 // ── wiring: defaults in config, and the feeder actually uses the plan ───────────────────────────────────────────
 const config = readFileSync(join(ROOT, 'worker-relay/src/lib/config.js'), 'utf8');
 assert.match(config, /headerMinBatch: num\('HEADER_RELAY_MIN_BATCH', 1\)/);

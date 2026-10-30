@@ -7,13 +7,15 @@
 //              or the batch is short; it is the bound on how far behind the relay may be left.
 //   restore    the relay is off the canonical chain: restoring it outranks the batching wait (it still honours the gas
 //              ceiling).
+//   force      the caller has decided this batch goes whatever the gas bar says (the oldest pending header has waited its bound,
+//              lib/gas-pace.js), as the staleness bound does.
 //
 // Returns { action: 'idle' } | { action: 'wait', reason: 'batching' | 'gas', pending } |
 //         { action: 'advance', from, to, forced }.
-export function planHeaderAdvance({ base, to, minBatch = 1, maxStale = 0, maxBatch, gasDear = false, restore = false }) {
+export function planHeaderAdvance({ base, to, minBatch = 1, maxStale = 0, maxBatch, gasDear = false, restore = false, force = false }) {
   const pending = to - base;
   if (!(pending > 0)) return { action: 'idle', pending: 0 };
-  const forced = maxStale > 0 && pending >= maxStale;
+  const forced = force || (maxStale > 0 && pending >= maxStale);
   if (!forced && !restore && pending < Math.max(1, minBatch)) return { action: 'wait', reason: 'batching', pending };
   if (!forced && gasDear) return { action: 'wait', reason: 'gas', pending };
   const from = base + 1;

@@ -34,6 +34,25 @@ zQuoter/zRouter, deposit PROVE to the Succinct vApp) runs inside `tacit-settle`
 Shared libraries live in `src/lib/`: `config.js` (env and addresses), `chain.js` (viem clients
 and ABIs), `prover.js` (spawns the prover binaries), `worker-client.js` (API routes).
 
+### Waiting for gas
+
+The header feeder and the attest wait for a cheaper block, and both are bounded (`src/lib/gas-pace.js`; tests `tests/gas-pace.test.mjs`).
+A header costs the same gas whenever it is sent, so waiting only helps if the price falls, and a wait that never ends is a bridge that
+never lands.
+
+| What | Rule | Knobs |
+|---|---|---|
+| Headers, the bar | Hold while the next block's base fee is over `HEADER_MAX_GAS_GWEI`, or over the last day's `HEADER_FOLLOW_PCT` (30th) percentile when that is higher, so gas that settles above the ceiling for good does not freeze the relay | `HEADER_MAX_GAS_GWEI`, `HEADER_FOLLOW_PCT` |
+| Headers, the bound | The oldest pending header goes after `HEADER_MAX_WAIT_MIN` (8 h) whatever the bar says, unless gas is a spike (over `PACE_SPIKE_GWEI` and `PACE_SPIKE_MULT` x the last day's median); `HEADER_RELAY_MAX_STALE_BLOCKS` stays the last resort at any price | `HEADER_MAX_WAIT_MIN`, `PACE_SPIKE_GWEI`, `PACE_SPIKE_MULT`, `HEADER_RELAY_MAX_STALE_BLOCKS` |
+| Headers, small batches | While gas is cheap (under `HEADER_CHEAP_GWEI`, or the last day's `HEADER_CHEAP_PCT` percentile if higher) the relay advances every `HEADER_CHEAP_MIN_BATCH` headers | `HEADER_CHEAP_GWEI`, `HEADER_CHEAP_PCT`, `HEADER_CHEAP_MIN_BATCH` |
+| Attest | While gas is dear a few matured blocks wait for company: the attest goes at `REFLECT_MIN_BLOCKS` (6) matured blocks, or `REFLECT_MAX_WAIT_MIN` (60) after the first, or at once while gas is cheap. It costs the same gas and PROVE base fee whatever its block count | `REFLECT_MIN_BLOCKS`, `REFLECT_MAX_WAIT_MIN` |
+| Funds | An attest needs 1.35x the base fee times its gas limit in the relay wallet (what the node checks), not twice the base fee; a header batch is sent with a 1.5x cap and raised to 2x if it is not taken | `HEADER_FEE_CAP_MULT` |
+
+With no history (the node will not serve it) only the fixed numbers apply. A wait is logged once and again every ten minutes while it
+stays the same, with the latest the stage will go, and the relay wallet's balance against the cost when it is the headers waiting.
+Replayed on 21 days of real base fees: the same cost and lag as the fixed ceiling in a usual market; with every price six times higher,
+about two hours behind on average instead of ten, and 20% cheaper.
+
 ### Loop shape
 
 **Reflection**: `GET /reflection/job` → compare the batch's `priorDigest` and `newDigest` with the

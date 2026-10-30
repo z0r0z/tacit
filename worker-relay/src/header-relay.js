@@ -14,14 +14,19 @@
 
 import { CFG, ADDR } from './lib/config.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
-import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, gasAboveCap } from './lib/chain.js';
+import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
 import { planHeaderAdvance } from './lib/header-plan.js';
 import { cbtcLockDemand } from './lib/reflection-demand.js';
 import { tipFor, TIP_HISTORY_BLOCKS, TIP_PERCENTILE } from './lib/gas-tip.js';
 import { tipLadder, sendPatient, raised } from './lib/patient-send.js';
-import { baseFeeWait, headerTimeSec } from './lib/base-fee-wait.js';
+import { baseFeeWait } from './lib/base-fee-wait.js';
+import { headerPace, headerHoldText, nextBaseFee } from './lib/gas-pace.js';
+import { makeQuietLog } from './lib/quiet-log.js';
+import { attestFundsNeed } from './lib/attest-fees.js';
 
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
+// The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
+const say = makeQuietLog(log);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 const ESPLORAS = CFG.btcEsplora.split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -47,16 +52,23 @@ const BASEFEE_BLOCKS = Number(process.env.HEADER_BASEFEE_BLOCKS || 1000);
 const BASEFEE_PERCENTILE = Number(process.env.HEADER_BASEFEE_PERCENTILE || 40);
 const BASEFEE_RATIO = Number(process.env.HEADER_BASEFEE_RATIO || 1);
 const BASEFEE_MAX_WAIT_SEC = Number(process.env.HEADER_BASEFEE_MAX_WAIT_MIN || 120) * 60;
-// `readyHeight`: the header whose arrival made this a full batch; its own time says how long the batch has been ready.
-async function baseFeeGate(readyHeight) {
-  const [hist, hdr] = await Promise.all([
-    publicClient.getFeeHistory({ blockCount: BASEFEE_BLOCKS, rewardPercentiles: [50] }),
-    headerHex(readyHeight),
-  ]);
-  const fees = hist.baseFeePerGas || [], nextBase = fees.length ? fees[fees.length - 1] : null, t = headerTimeSec(hdr);
-  const readyAgeSec = t == null ? NaN : Date.now() / 1000 - t;
-  return { ...baseFeeWait({ history: fees.slice(0, -1), nextBase, readyAgeSec, maxWaitSec: BASEFEE_MAX_WAIT_SEC, percentile: BASEFEE_PERCENTILE, ratio: BASEFEE_RATIO }), nextBase, readyAgeSec };
+// The norm is the shared last-day history (lib/base-fee-history.js), `price` the next block's base fee. How long the batch has been ready is
+// counted, not read: the header that completed the minimum batch arrived (pending - minimum) Bitcoin blocks ago, ten minutes each.
+// (It was read from that header's own timestamp, two explorer calls a cycle, and whenever the explorer rate-limited the batch went
+// through unheld: 'base-fee check unavailable (esplora ... 429) — not waiting'.) A batch under the minimum is the cheap-gas one and
+// is not held here.
+function baseFeeGate({ history, price, pending }) {
+  const fees = Array.isArray(history) ? history.slice(-BASEFEE_BLOCKS).map((v) => BigInt(Math.round(v * 1e9))) : [];
+  const readyAgeSec = pending >= Math.max(1, CFG.headerMinBatch) ? (pending - Math.max(1, CFG.headerMinBatch)) * 600 : NaN;
+  const nextBase = BigInt(Math.round(price * 1e9));
+  return { ...baseFeeWait({ history: fees, nextBase, readyAgeSec, maxWaitSec: BASEFEE_MAX_WAIT_SEC, percentile: BASEFEE_PERCENTILE, ratio: BASEFEE_RATIO }), nextBase, readyAgeSec };
 }
+// How patient the feeder is with gas (lib/gas-pace.js).
+const HEADER_PACE = {
+  ceilGwei: CFG.headerMaxGasGwei, followPct: CFG.headerFollowPct, cheapGwei: CFG.headerCheapGwei, cheapPct: CFG.headerCheapPct,
+  minBatch: CFG.headerMinBatch, minCheap: CFG.headerCheapMinBatch, maxWaitMin: CFG.headerMaxWaitMin, staleBlocks: CFG.headerMaxStaleBlocks,
+  spikeGwei: CFG.paceSpikeGwei, spikeMult: CFG.paceSpikeMult,
+};
 const relayTip = async () => Number(await publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }));
 const relayTipHash = async () => publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tip' });
 const relayParent = async (h) => publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'blockParent', args: [h] });
@@ -152,10 +164,23 @@ const TIP_FLOOR_RATE_WEI = BigInt(process.env.HEADER_TIP_FLOOR_WEI || '1000000')
 const TIP_WAIT_MS = Number(process.env.HEADER_TIP_WAIT_MS || 90_000);
 const GAS_PER_HEADER = 180_000n;
 const SETTLE_RESERVE_GAS = CFG.settleFundsGas;   // settle-relay's fee cap: 3x base
-const ATTEST_RESERVE_GAS = CFG.attestGasBudget;  // reflection's fee cap: 2x base
+const ATTEST_RESERVE_GAS = CFG.attestGasBudget;  // what an attest needs held (lib/attest-fees.js)
+// The fee cap of the first offer, as a multiple of the base fee: a node asks the wallet to hold gas x cap, so a lower cap lets a thin wallet
+// send a bigger batch. A base fee that rises past it before the batch is taken is met by the raise below, which refreshes the cap to twice
+// the base fee after TIP_WAIT_MS. (It was twice the base fee from the first send.)
+const FEE_CAP_PCT = BigInt(Math.round(Number(process.env.HEADER_FEE_CAP_MULT || 1.5) * 100));
 const eth = (wei) => (Number(wei) / 1e18).toFixed(4);
 // One percentile's column of an eth_feeHistory reward table (each row holds the requested percentiles, in order).
 const rewardColumn = (hist, k) => (hist && Array.isArray(hist.reward) ? hist.reward.map((r) => (Array.isArray(r) ? r[k] : null)) : null);
+// What the wallet holds against what sending `n` headers at `price` (gwei) will cost, for the line the feeder writes while it waits: a wait
+// that ends in a send the wallet cannot make is a stall, and the line is where whoever tops it up reads how much. '' when it cannot be read.
+async function fundsNote(n, price) {
+  try {
+    const have = await publicClient.getBalance({ address: relayWallet.account.address });
+    const need = BigInt(n) * GAS_PER_HEADER * BigInt(Math.round(price * 1e9));
+    return `; the relay wallet holds ${eth(have)} ETH and sending them costs about ${eth(need)} ETH${have < need ? ' (a top-up before then keeps the relay from falling further behind)' : ''}`;
+  } catch { return ''; }
+}
 async function submitAdvance(from, to) {
   const [blk, feeHist, have] = await Promise.all([
     publicClient.getBlock({ blockTag: 'latest' }),
@@ -171,10 +196,10 @@ async function submitAdvance(from, to) {
   const patient = cheap > market ? market : cheap;
   const tips = tipLadder({ patient: patient < TIP_FLOOR_RATE_WEI ? TIP_FLOOR_RATE_WEI : patient, market, capWei: TIP_CAP_WEI });
   const maxPriorityFeePerGas = tips[0];
-  const maxFeePerGas = (blk.baseFeePerGas ?? 0n) * 2n + maxPriorityFeePerGas;
+  const maxFeePerGas = ((blk.baseFeePerGas ?? 0n) * FEE_CAP_PCT) / 100n + maxPriorityFeePerGas;
   const base = blk.baseFeePerGas ?? 0n;
   const settlesHere = !CFG.settleAddress || CFG.settleAddress.toLowerCase() === relayWallet.account.address.toLowerCase();
-  const reserve = (settlesHere ? SETTLE_RESERVE_GAS * (base * 3n + maxPriorityFeePerGas) : 0n) + ATTEST_RESERVE_GAS * (base * 2n + maxPriorityFeePerGas);
+  const reserve = (settlesHere ? SETTLE_RESERVE_GAS * (base * 3n + maxPriorityFeePerGas) : 0n) + attestFundsNeed({ gas: ATTEST_RESERVE_GAS, base, tip: maxPriorityFeePerGas });
   const budget = have > reserve ? have - reserve : 0n;
   const headers = [];
   for (let h = from; h <= to; h++) headers.push(await headerHex(h));
@@ -251,7 +276,16 @@ async function cycle() {
   // advanceTip derives each header's difficulty target from its OWN branch (blockTarget[prev] +
   // epochStartTs[prev]), not a single global per-epoch value set by a separate call — so it crosses a
   // difficulty-epoch boundary transparently within one submission. No special-casing needed here.
-  const dear = await gasAboveCap(CFG.headerMaxGasGwei);
+  // What gas is and what it has been: the next block's base fee against the last day's (lib/gas-pace.js). The bar a batch waits for is
+  // HEADER_MAX_GAS_GWEI, or the last day's 30th percentile once that is higher, so gas settling above the ceiling for good does not
+  // freeze the relay until its 24-hour bound; the oldest header goes after HEADER_MAX_WAIT_MIN at any price short of a spike. A price
+  // or a history that cannot be read leaves the fixed numbers, and a price that cannot be read at all is not a reason to wait.
+  const pending = to - base;
+  const [history, blkNow] = await Promise.all([baseFeeHistory().catch(() => null), publicClient.getBlock({ blockTag: 'latest' }).catch(() => null)]);
+  const nextBase = nextBaseFee(blkNow);
+  const price = nextBase != null ? Number(nextBase) / 1e9 : await publicClient.getGasPrice().then((w) => Number(w) / 1e9).catch(() => null);
+  const pace = price == null ? null : headerPace({ price, pending, history, params: HEADER_PACE });
+  const dear = pace?.dear ? price : null;
   // A user waiting on the reflection (a bonded cBTC lock not recorded yet) outranks waiting for cheap gas, up to a
   // ceiling, once the wait is real: a lock cannot be folded before it has its confirmations (about four hours), so
   // until the oldest such bond is DEMAND_GRACE_BLOCKS old the relay keeps to cheap gas and loses nothing by it.
@@ -267,33 +301,35 @@ async function cycle() {
     log(`${demand.waiting} bonded cBTC lock(s) waiting on the reflection — ${why}`);
   }
   // A header costs about the same gas alone or in a batch (~177k each; a batch saves only the transaction's own overhead), so the
-  // batch minimum is a saving worth its delay only while gas is dear. Under HEADER_CHEAP_GWEI the relay advances every
-  // HEADER_CHEAP_MIN_BATCH headers, so the tip, and the bridge and reflection that wait on it, stay close to Bitcoin for a few
-  // cents a day more.
-  const nowGwei = await publicClient.getGasPrice().then((w) => Number(w) / 1e9).catch(() => null);
-  const cheap = nowGwei != null && nowGwei < CFG.headerCheapGwei;
-  const minBatch = urgent ? 1 : cheap ? Math.min(CFG.headerMinBatch, CFG.headerCheapMinBatch) : CFG.headerMinBatch;
+  // batch minimum is a saving worth its delay only while gas is dear. While gas is cheap (under HEADER_CHEAP_GWEI, or the last day's
+  // HEADER_CHEAP_PCT percentile when that is higher) the relay advances every HEADER_CHEAP_MIN_BATCH headers, so the tip, and the
+  // bridge and reflection that wait on it, stay close to Bitcoin for a few cents a day more.
+  const cheap = !!pace?.cheap;
+  const minBatch = urgent ? 1 : pace ? pace.minBatch : CFG.headerMinBatch;
   const plan = planHeaderAdvance({
     base, to, minBatch, maxStale: CFG.headerMaxStaleBlocks, maxBatch: CFG.headerMaxBatch,
-    gasDear: urgent ? false : !!dear, restore: depth > 0,
+    gasDear: urgent ? false : !!dear, restore: depth > 0, force: !urgent && !!pace?.force,
   });
   if (plan.action === 'wait') {
-    if (plan.reason === 'gas') log(`gas ${dear.toFixed(3)} gwei is above HEADER_MAX_GAS_GWEI=${CFG.headerMaxGasGwei} — waiting`);
-    else log(`batching: ${plan.pending} of ${minBatch} headers pending${cheap ? ` (gas ${nowGwei.toFixed(3)} gwei: the cheap-gas batch)` : ''} — waiting (tip=${rtip} btc=${btip})`);
+    if (plan.reason === 'gas') {
+      // the balance is read only when the line is due (every ten minutes), not each cycle
+      if (say.due('gas')) say('gas', `${headerHoldText({ price, pending: plan.pending, pace, params: HEADER_PACE })}${await fundsNote(Math.min(plan.pending, CFG.headerMaxBatch), price)} (tip=${rtip} btc=${btip})`);
+    } else say(`batching:${cheap}`, `batching: ${plan.pending} of ${minBatch} headers pending${cheap ? ` (gas ${price.toFixed(3)} gwei: the cheap-gas batch)` : ''} — waiting (tip=${rtip} btc=${btip})`);
     return false;
   }
   // Nobody waits on this batch to the minute (a user who does is 'urgent', above), so a ready batch holds for a cheaper block,
   // for at most HEADER_BASEFEE_MAX_WAIT_MIN. Not when the relay is at its staleness bound or restoring the canonical chain.
-  if (BASEFEE_WAIT && !plan.forced && !urgent && depth === 0) {
-    const gate = await baseFeeGate(base + Math.max(1, CFG.headerMinBatch)).catch((e) => { log(`base-fee check unavailable (${String(e.message).slice(0, 80)}) — not waiting`); return null; });
-    if (gate?.wait) {
+  if (BASEFEE_WAIT && !plan.forced && !urgent && depth === 0 && price != null) {
+    const gate = baseFeeGate({ history, price, pending });
+    if (gate.wait) {
       const g = (w) => (Number(w) / 1e9).toFixed(3);
-      log(`base fee ${g(gate.nextBase)} gwei is above the ${g(gate.ref)} gwei the last ${BASEFEE_BLOCKS} blocks usually paid; the batch has been ready ${Math.round(gate.readyAgeSec / 60)} min, waiting up to ${Math.round(BASEFEE_MAX_WAIT_SEC / 60)} min for a cheaper block`);
+      say('basefee', `base fee ${g(gate.nextBase)} gwei is above the ${g(gate.ref)} gwei the last ${BASEFEE_BLOCKS} blocks usually paid; the batch has been ready ${Math.round(gate.readyAgeSec / 60)} min, waiting up to ${Math.round(BASEFEE_MAX_WAIT_SEC / 60)} min for a cheaper block`);
       return false;
     }
-    if (gate && gate.ref != null) log(`base fee ${(Number(gate.nextBase) / 1e9).toFixed(3)} gwei (${gate.why}; recent norm ${(Number(gate.ref) / 1e9).toFixed(3)} gwei)`);
+    if (gate.ref != null) log(`base fee ${(Number(gate.nextBase) / 1e9).toFixed(3)} gwei (${gate.why}; recent norm ${(Number(gate.ref) / 1e9).toFixed(3)} gwei)`);
   }
-  if (plan.forced && dear) log(`gas ${dear.toFixed(3)} gwei is above HEADER_MAX_GAS_GWEI=${CFG.headerMaxGasGwei} but the relay is at its staleness bound — advancing`);
+  say.reset();
+  if (plan.forced && dear) log(`gas ${dear.toFixed(3)} gwei is over the ${pace.bars.ceil.toFixed(3)} gwei bar but ${pace.stale ? `the relay is at its staleness bound (${CFG.headerMaxStaleBlocks} headers)` : `the oldest header has waited its ${CFG.headerMaxWaitMin} minutes and gas is no spike (under ${pace.bars.spike.toFixed(2)} gwei)`} — advancing`);
   log(`advancing relay ${plan.from}..${plan.to} (btc=${btip} refl=${refl ?? '?'} lead-cap=${paceCap})`);
   const { txHash: tx, to: reached } = await submitAdvance(plan.from, plan.to);
   log(`relay advanced to ${reached} tx=${tx}`);

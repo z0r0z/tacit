@@ -155,6 +155,21 @@ export const CFG = {
   // The header feeder's own ceiling (headers can wait for cheap gas; an attest should not), HEADER_MAX_GAS_GWEI, else MAX_GAS_GWEI. In the
   // one-process lane (bitcoin-lane.js) the two run side by side, so each has its own.
   headerMaxGasGwei: num('HEADER_MAX_GAS_GWEI', num('MAX_GAS_GWEI', 0)),
+  // How the feeder and the attest wait for gas (lib/gas-pace.js). The ceiling above is the bar in a usual market; once the last day's
+  // HEADER_FOLLOW_PCT percentile is above it, that percentile is the bar, so gas settling higher for good does not freeze the relay
+  // until its staleness bound. Under max(HEADER_CHEAP_GWEI, the HEADER_CHEAP_PCT percentile) gas is cheap and batches are small.
+  // The oldest waiting header goes after HEADER_MAX_WAIT_MIN whatever the bar says (0 = no such bound) unless the price is a spike:
+  // over PACE_SPIKE_GWEI and PACE_SPIKE_MULT x the last day's median.
+  headerFollowPct: num('HEADER_FOLLOW_PCT', 30),
+  headerCheapPct: num('HEADER_CHEAP_PCT', 12),
+  headerMaxWaitMin: num('HEADER_MAX_WAIT_MIN', 480),
+  paceSpikeGwei: num('PACE_SPIKE_GWEI', 1),
+  paceSpikeMult: num('PACE_SPIKE_MULT', 8),
+  // While gas is dear (not under the cheap line above) a few matured blocks wait for company before an attest, at most
+  // REFLECT_MAX_WAIT_MIN from when the first matured; an attest costs the same gas and PROVE base fee whatever its block count. 0 or 1 =
+  // attest as soon as a block has matured, as before.
+  attestMinBlocks: num('REFLECT_MIN_BLOCKS', 6),
+  attestMaxWaitMin: num('REFLECT_MAX_WAIT_MIN', 60),
   // Alert depth for the header feeder's fork recovery. The feeder always walks the relay's tip back to the
   // explorer's chain and resubmits the canonical headers, at any depth; a branch deeper than this is not a
   // normal Bitcoin reorg, so it is also raised as a critical alert (log + ALERT_WEBHOOK_URL).

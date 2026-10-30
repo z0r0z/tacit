@@ -24,18 +24,23 @@
 
 import { CFG } from './lib/config.js';
 import { isMatured } from './lib/maturity.js';
-import { reflectionJob, reflectionAck, reflectionPending, reflectionAttestState, reflectionSubmitted, reflectionProofPublish, reflectionEthState, heartbeat, heartbeatIdle } from './lib/worker-client.js';
+import { reflectionJob, reflectionAck, reflectionAttestedHeight, reflectionPending, reflectionAttestState, reflectionSubmitted, reflectionProofPublish, reflectionEthState, heartbeat, heartbeatIdle } from './lib/worker-client.js';
 import { awaitAttestLanding, digestDeepEnough } from './lib/attest-wait.js';
 import { recoverLostAck } from './lib/reflection-reconcile.js';
 import { proveReflection, proverCredit } from './lib/prover.js';
 import { creditShort, creditRefusal, makeProvePause } from './lib/prove-pause.js';
 import { nextBlockCap } from './lib/block-cap.js';
 import { makeHeldProof } from './lib/held-proof.js';
-import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI } from './lib/chain.js';
+import { relayWallet, publicClient, verifyClient, readPool, readReflectionDigest, POOL, POOL_ABI, gasAboveCap, HEADER_RELAY, RELAY_ABI, baseFeeHistory } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
+import { attestGate, nextBaseFee } from './lib/gas-pace.js';
+import { makeQuietLog } from './lib/quiet-log.js';
+import { attestFundsNeed } from './lib/attest-fees.js';
 
 const log = (...a) => console.log(`[reflection ${new Date().toISOString()}]`, ...a);
+// A wait on purpose (gas, a top-up) is said once and then every ten minutes while it stays the same (lib/quiet-log.js).
+const say = makeQuietLog(log);
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
 // Confirmation depth required before the ack advances the persisted cursor. The ack is one-way — the
@@ -52,12 +57,39 @@ const heldProof = makeHeldProof();
 // (no job assembled, no input built) and goes on once it covers what a request reserves.
 let creditPause = null;
 
+// While gas is dear a few matured blocks wait for company before an attest (lib/gas-pace.js): an attest costs the same gas and PROVE
+// base fee whatever number of blocks it covers. Decided before a job is built, from two cheap reads (the relay's tip and the API's
+// cursor), which also means no job is assembled for blocks the relay has not matured: while the header feeder waits for cheap gas the
+// folder used to ask the API for one every poll, only to find them unmatured. A reading that cannot be had proceeds as before.
+const ATTEST_PACE = { minBlocks: CFG.attestMinBlocks, waitMin: CFG.attestMaxWaitMin, cheapGwei: CFG.headerCheapGwei, cheapPct: CFG.headerCheapPct, spikeGwei: CFG.paceSpikeGwei, spikeMult: CFG.paceSpikeMult };
+const PROBE_EVERY_MS = 10 * 60_000;     // with nothing matured, the job is still asked for this often: the drift and lost-ack checks live behind it
+const gateState = { since: null, probedAt: 0 };
+async function attestGateNow() {
+  try {
+    const [relayTip, attested, history, blk] = await Promise.all([
+      publicClient.readContract({ address: HEADER_RELAY, abi: RELAY_ABI, functionName: 'tipHeight' }).then(Number),
+      reflectionAttestedHeight(),
+      baseFeeHistory().catch(() => null),
+      publicClient.getBlock({ blockTag: 'latest' }),
+    ]);
+    const nb = nextBaseFee(blk);
+    const g = attestGate({ relayTip, attested, confirmations: CFG.reflectionConfirmations, price: nb == null ? NaN : Number(nb) / 1e9, history, now: Date.now(), since: gateState.since, probedAt: gateState.probedAt, probeEveryMs: PROBE_EVERY_MS, params: ATTEST_PACE });
+    if (g) { gateState.since = g.since; gateState.probedAt = g.probedAt; }
+    return g;
+  } catch (e) { log(`pace check unavailable (${String(e.message).slice(0, 80)}) — proceeding`); return null; }
+}
+// A batch is done (landed, or found landed): its proof is let go, the next batch's wait starts afresh, and a wait is said again.
+const batchDone = () => { heldProof.clear(); gateState.since = null; say.reset(); };
 async function cycle() {
   if (creditPause) {
     if (await creditPause.check()) { await heartbeat('reflection', 'paused; waiting to prove'); return false; }
     creditPause = null;
   }
-  const job = await reflectionJob({ maxBlocks: blockCap || 0 });
+  const gate = await attestGateNow();
+  if (gate && !gate.go) { say(gate.key, gate.text); await heartbeat('reflection', gate.beat); return false; }
+  // Only the blocks the relay has matured are asked for, so the batch can land the moment it is proved.
+  const ask = gate?.matured > 0 ? Math.min(blockCap || gate.matured, gate.matured) : (blockCap || 0);
+  const job = await reflectionJob({ maxBlocks: ask });
   // The API could not put a batch together (its block sources throttling, a restart): not the same as caught up, and said so.
   if (job?.unavailable) {
     log(`the API could not assemble a batch (HTTP ${job.unavailable}) — asking again next cycle`);
@@ -89,7 +121,7 @@ async function cycle() {
       await heartbeat('reflection', `re-ack refused status=${reack?.status} attestedTo=${attestedTo}`);
       return false;
     }
-    heldProof.clear();
+    batchDone();
     return true;
   }
 
@@ -114,7 +146,7 @@ async function cycle() {
       return false;
     }
     if (rec.recovered) {
-      heldProof.clear();
+      batchDone();
       log(`RECOVERED lost ack: pool digest ${onchain} was a landed batch the API still held — cursor advanced to attestedTo=${rec.attestedTo}`);
       await heartbeat('reflection', `recovered lost ack at ${rec.attestedTo}`);
       return true;
@@ -164,7 +196,7 @@ async function cycle() {
   // before any spend.
   const funds = await attestFunds();
   if (funds.short) {
-    log(`relay wallet holds ${eth(funds.have)} ETH, under the ${eth(funds.need)} ETH an attest can cost at today's gas — waiting for a top-up`);
+    say('funds', `relay wallet holds ${eth(funds.have)} ETH, under the ${eth(funds.need)} ETH an attest can cost at today's gas — waiting for a top-up`);
     await heartbeat('reflection', `relay wallet short: holds ${eth(funds.have)} ETH, an attest needs ${eth(funds.need)}`);
     return false;
   }
@@ -224,16 +256,21 @@ async function cycle() {
   // The funds check before buying was made at that moment's gas; the send needs the wallet to hold its worst-case fee at
   // this one. A wallet that is short now keeps the proof and waits for a top-up: failing the cycle instead would back the
   // lane off for longer than a top-up takes.
-  const late = await attestFunds();
-  if (late.short) {
-    log(`relay wallet holds ${eth(late.have)} ETH, under the ${eth(late.need)} ETH the attest can cost now — keeping the proof, waiting for a top-up`);
-    await heartbeat('reflection', `proof kept; relay wallet holds ${eth(late.have)} ETH, an attest needs ${eth(late.need)}`);
-    return false;
-  }
-  log('proved — submitting attestBitcoinStateProven...');
   // A bare estimate leaves no headroom if state moves between estimating and inclusion, and a revert here costs the
   // whole proof. Unused gas is refunded, so the pad only insures.
   const attestCall = { address: POOL, abi: POOL_ABI, functionName: 'attestBitcoinStateProven', args: [publicValues, proofBytes] };
+  // The node asks the wallet to hold the gas LIMIT the send carries (the padded estimate) times its fee cap, so that is what is checked, now
+  // that the proof is in hand and the estimate can be had (the check before buying could only use the budget for a large batch). An
+  // estimate that fails (the send would hit the same revert, and meets it below) falls back to the budget.
+  const sendGas = await publicClient.estimateContractGas({ ...attestCall, account: relayWallet.account }).then((g) => (g * 125n) / 100n).catch(() => null);
+  const late = await attestFunds({ gas: sendGas ?? ATTEST_GAS_BUDGET });
+  if (late.short) {
+    say('funds-late', `relay wallet holds ${eth(late.have)} ETH, under the ${eth(late.need)} ETH the attest can cost now — keeping the proof, waiting for a top-up`);
+    await heartbeat('reflection', `proof kept; relay wallet holds ${eth(late.have)} ETH, an attest needs ${eth(late.need)}`);
+    return false;
+  }
+  say.reset();
+  log('proved — submitting attestBitcoinStateProven...');
   // The proof above is already paid for and held until its batch lands. SETTLE_KEY is unset in production, so the settle
   // service, the header cron and this one all sign from RELAY_KEY — and settles go out privately, so a public RPC's
   // pending nonce does not see one in flight and a collision here is routine; retrying the submission costs a few
@@ -244,25 +281,25 @@ async function cycle() {
     const txHash = await withNonceRetry('attest', () => relayWallet.writeContract({ ...attestCall, gas: (attestGas * 125n) / 100n }), { log });
     await reflectionSubmitted({ newDigest, txHash, attestedTo });
     const outcome = await landAttest({ txHash, newDigest, attestedTo, nonce: await nonceOf(txHash) });
-    if (outcome !== 'dropped') { if (outcome === 'acked') heldProof.clear(); return outcome === 'acked'; }
+    if (outcome !== 'dropped') { if (outcome === 'acked') batchDone(); return outcome === 'acked'; }
     if (attempt >= CFG.reflectionResubmits) return false;
     log(`sending the same proof again (${attempt + 1}/${CFG.reflectionResubmits})`);
   }
 }
 
-// What an attest can cost the relay wallet right now against what it holds. The budget covers the padded
-// estimate of a large batch; the fee is the cap a send carries (twice the base fee plus the tip), which is what
-// the node checks the balance against. An unreadable chain is not a reason to stop.
+// What an attest can cost the relay wallet right now against what it holds: the gas limit it will carry (the budget for a large batch
+// before a proof is bought, the padded estimate after) at the fee cap a send carries, which is what the node checks the balance against
+// (lib/attest-fees.js). An unreadable chain is not a reason to stop.
 const ATTEST_GAS_BUDGET = CFG.attestGasBudget;
 const eth = (wei) => (Number(wei) / 1e18).toFixed(4);
-async function attestFunds() {
+async function attestFunds({ gas = ATTEST_GAS_BUDGET } = {}) {
   try {
     const [have, blk, tip] = await Promise.all([
       publicClient.getBalance({ address: relayWallet.account.address }),
       publicClient.getBlock({ blockTag: 'latest' }),
       publicClient.estimateMaxPriorityFeePerGas().catch(() => 10n ** 9n),
     ]);
-    const need = ATTEST_GAS_BUDGET * (2n * (blk.baseFeePerGas ?? 0n) + tip);
+    const need = attestFundsNeed({ gas, base: blk.baseFeePerGas ?? 0n, tip });
     return { have, need, short: have < need };
   } catch { return { short: false }; }
 }

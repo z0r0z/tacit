@@ -37,6 +37,14 @@ export async function reflectionJob({ maxBlocks = 0 } = {}) {
   const ask = maxBlocks > 0 ? `&maxBlocks=${Math.floor(maxBlocks)}` : '';
   return getJson(`/reflection/job?network=${encodeURIComponent(CFG.network)}${ask}`, { status: true });
 }
+// The height the API's attested cursor stands at (its persisted record, no assembly); null when it cannot be read, in which case a caller
+// carries on as it did before it read this.
+export async function reflectionAttestedHeight() {
+  try {
+    const h = Number((await getJson(`/reflection/state?network=${encodeURIComponent(CFG.network)}`))?.attestedHeight);
+    return Number.isFinite(h) && h > 0 ? h | 0 : null;
+  } catch { return null; }
+}
 export async function reflectionAck({ attestedTo, txHash, jobId }) {
   try {
     const res = await postJson('/reflection/ack', { network: CFG.network, attestedTo, txHash: txHash || '', jobId: jobId || '' });
