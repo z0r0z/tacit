@@ -25,7 +25,9 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 
 const ASSET_A = '0x' + 'aa'.repeat(32);
 const ASSET_B = '0x' + 'bb'.repeat(32);
-const OWNER = '0x' + '00'.repeat(31) + '01';
+// EVM notes are bearer: the input's spend owner is H(nk) and the nullifier binds the secret nk.
+const IN_NK = '0x' + 'c1'.repeat(32);
+const OWNER = pool.nkToOwner(IN_NK);
 const OWNER_OUT = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const FEE_BPS = 30; // 0.3% fee tier (one pool per (canonical pair, fee))
@@ -42,7 +44,7 @@ function assemble({ reserveAPre, reserveBPre, specs, priceFeeBps }) {
   const intents = specs.map((s) => swap.buildIntent({
     direction: s.direction, amountIn: s.amountIn, priceNum, priceDen, minOut: s.minOut ?? 0,
     rInSecp: s.rInSecp, rOutSecp: randomScalar(), nonceIn: randomScalar(), nonceOut: randomScalar(),
-    inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, outOwner: OWNER_OUT,
+    inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: ZEROS }, outOwner: OWNER_OUT,
   }));
   // one pool tree holds every input note; patch each intent's (leafIndex, path)
   const tree = new pool.Tree();

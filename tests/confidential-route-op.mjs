@@ -27,7 +27,9 @@ let n = 0; const ok = (s) => { console.log('  ok -', s); n++; };
 const A = '0x' + 'aa'.repeat(32);
 const B = '0x' + 'bb'.repeat(32);
 const C = '0x' + 'cc'.repeat(32); // A < B < C
-const OWNER = '0x' + '00'.repeat(31) + '01';
+// EVM notes are bearer: the input's spend owner is H(nk) and the nullifier binds the secret nk.
+const IN_NK = '0x' + 'c1'.repeat(32);
+const OWNER = pool.nkToOwner(IN_NK);
 const OUT_OWNER = '0x' + '00'.repeat(31) + '02';
 const CHAIN_BINDING = '0x' + '11'.repeat(32);
 const ZEROS = pool.zeros;
@@ -49,7 +51,7 @@ const FEE = 30; // 0.3%
     { assetNext: C, feeBps: FEE, reserveAPre: 1_000_000, reserveBPre: 1_000_000 },
   ];
   const rIn = randomScalar(), rOut = randomScalar();
-  const op = route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, amountIn, rIn, hops, minOut: 9000, outOwner: OUT_OWNER, rOut });
+  const op = route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: ZEROS }, amountIn, rIn, hops, minOut: 9000, outOwner: OUT_OWNER, rOut });
 
   // independent expectation: chain getAmountOut by hand
   const h1 = route.getAmountOut(amountIn, 1_000_000, 1_000_000, FEE);
@@ -81,7 +83,7 @@ const FEE = 30; // 0.3%
   // route B→A through pool (A,B): cur=B is the HIGH asset, so input is reserveB, output reserveA.
   const amountIn = 10_000;
   const op = route.buildRoute({
-    asset0: B, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, amountIn, rIn: randomScalar(),
+    asset0: B, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: ZEROS }, amountIn, rIn: randomScalar(),
     hops: [{ assetNext: A, feeBps: FEE, reserveAPre: 1_000_000, reserveBPre: 1_000_000 }], minOut: 9000, outOwner: OUT_OWNER, rOut: randomScalar(),
   });
   const tree = new pool.Tree();
@@ -105,7 +107,7 @@ const FEE = 30; // 0.3%
     { assetNext: C, feeBps: FEE, reserveAPre: 1_000_000, reserveBPre: 1_000_000 },
   ];
   // honest amountOut ≈ 9745; demand 9800 → must fail
-  const op = route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, amountIn, rIn: randomScalar(), hops, minOut: 9800, outOwner: OUT_OWNER, rOut: randomScalar() });
+  const op = route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: ZEROS }, amountIn, rIn: randomScalar(), hops, minOut: 9800, outOwner: OUT_OWNER, rOut: randomScalar() });
   const tree = new pool.Tree();
   const ii = tree.insert(pool.leaf(A, op.in.cx, op.in.cy, op.in.owner));
   op.in.leafIndex = ii; op.in.path = tree.rootAndPath(ii).path;
@@ -118,7 +120,7 @@ const FEE = 30; // 0.3%
 // ───────────────── 5. too many hops is rejected ─────────────────
 {
   const hops = Array.from({ length: route.MAX_ROUTE_HOPS + 1 }, () => ({ assetNext: B, feeBps: FEE, reserveAPre: 1_000_000, reserveBPre: 1_000_000 }));
-  assert.throws(() => route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, leafIndex: 0, path: ZEROS }, amountIn: 1000, rIn: randomScalar(), hops, minOut: 0, outOwner: OUT_OWNER, rOut: randomScalar() }), /hop count out of range/, 'over-long route rejected');
+  assert.throws(() => route.buildRoute({ asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: ZEROS }, amountIn: 1000, rIn: randomScalar(), hops, minOut: 0, outOwner: OUT_OWNER, rOut: randomScalar() }), /hop count out of range/, 'over-long route rejected');
   ok(`a route longer than MAX_ROUTE_HOPS (${route.MAX_ROUTE_HOPS}) is rejected`);
 }
 

@@ -237,13 +237,15 @@ function mockFetch(q) {
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
   const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
-  const owner = '0x' + '00'.repeat(31) + '01';
+  // EVM notes are bearer: the input's spend owner is H(nk) and the nullifier binds the secret nk.
+  const inNk = '0x' + 'c1'.repeat(32);
+  const owner = pool.nkToOwner(inNk);
   const outOwner = '0x' + '00'.repeat(31) + '02';
   const built = buildConfidentialAmmRouteOp({
     job,
     routeBuilder: route,
     chainBinding: CB,
-    inNote: { owner, leafIndex: 0, path: pool.zeros },
+    inNote: { owner, secret: inNk, leafIndex: 0, path: pool.zeros },
     rIn: randomScalar(),
     outOwner,
     rOut: randomScalar(),
@@ -334,13 +336,14 @@ const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   const _ct = makeConfidentialTransfer({ keccak256: keccak_256 });
   const route = makeConfidentialRoute({ keccak256: keccak_256, pool , kernelSign: _ct.kernelSign, rangeProve: _ct.rangeProve });
-  const owner = '0x' + '00'.repeat(31) + '03';
+  const inNk = '0x' + 'c3'.repeat(32);
+  const owner = pool.nkToOwner(inNk);
   const outOwner = '0x' + '00'.repeat(31) + '04';
   const built = buildConfidentialAmmRouteOp({
     job,
     routeBuilder: route,
     chainBinding: CB,
-    inNote: { owner, leafIndex: 0, path: pool.zeros },
+    inNote: { owner, secret: inNk, leafIndex: 0, path: pool.zeros },
     rIn: randomScalar(),
     outOwner,
     rOut: randomScalar(),

@@ -37,7 +37,7 @@ const hops = [
 ];
 const rIn = randomScalar(), rOut = randomScalar();
 const op = route.buildRoute({
-  asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, leafIndex: 0, path: pool.zeros },
+  asset0: A, chainBinding: CHAIN_BINDING, inNote: { owner: OWNER, secret: IN_NK, leafIndex: 0, path: pool.zeros },
   amountIn, rIn, hops, minOut: 9000, outOwner: OUT_OWNER, rOut, deadline: 0,
 });
 
