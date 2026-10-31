@@ -113,6 +113,14 @@ try {
     await page.fill('#hx-amt', '0.2');
     await page.click('#hx-go');
     ok(await page.evaluate(() => document.activeElement?.id) === 'hx-rcpt' && !(await page.$('dialog[open]')), `${tag}: so does private tETH`);
+    // Send and Request are one switch; a wallet coin is only sent
+    await page.selectOption('#hx-sa', 'usdc');
+    ok(await page.$$eval('#hx-panel .hx-sr [role="radio"]', (b) => b.map((x) => x.textContent + (x.getAttribute('aria-checked') === 'true' ? '*' : '')).join()) === 'Send*,Request', `${tag}: Send and Request are a switch, on Send`);
+    await page.click('#hx-ask');
+    ok(/You ask for/.test(await page.$eval('#hx-panel', (e) => e.textContent)) && await page.$eval('#hx-ask', (b) => b.getAttribute('aria-checked')) === 'true', `${tag}: Request opens the request`);
+    await page.click('#hx-pay');
+    await page.selectOption('#hx-sa', 'wusdc');
+    ok(!(await page.$('#hx-ask')), `${tag}: a wallet coin has no Request`);
     ok(!errors.length, `${tag}: no page errors${errors.length ? ': ' + errors.slice(0, 2).join(' | ') : ''}`);
     await ctx.close();
   }

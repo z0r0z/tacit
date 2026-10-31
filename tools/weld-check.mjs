@@ -719,6 +719,10 @@ await step('hints', async () => {
     const names = await p.$$eval('#hints .hint', (bs) => bs.map((b) => b.dataset.hint));
     ok(names.includes('pswap') && names.includes('shield'), `hints: quick starts show above the card (${names.join(' ')})`);
     ok(await p.$$eval('#hints .hint', (bs) => bs.every((b) => b.querySelectorAll('svg.tk').length >= 2 && b.textContent.trim().length > 10)), 'hints: each carries its token marks and says what it does');
+    ok(names.includes('send'), 'hints: a Send start is among them');
+    await p.click('#hints [data-hint="send"]');
+    ok(await p.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'wusdc' && document.querySelector('#hx-amt')?.value === '25' && document.activeElement?.id === 'hx-rcpt', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the Send start opens Send on the wallet\'s USDC with 25 in and the recipient asked for');
+    await p.click('[data-hxm="swap"]');
     await p.click('#hints [data-hint="pswap"]');
     ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the private swap start puts 0.01 in the card');
     ok(await cardIs(p, 'ETH>USDC'), 'hints: on ETH for USDC');
@@ -7430,6 +7434,7 @@ await step('hxsend', async () => {
     await q.click('#hx-ask');
     await q.fill('#hx-amt', '5');
     ok(/Copy payment link/.test(await text(q, '#hx-go')) && !(await q.$('#hx-rcpt')) && /You ask for/.test(await text(q, '#hx-panel')) && /^The link: opens this payment, filled in$/.test(await q.evaluate(() => window.__said())), 'hxsend: Request a payment asks for an asset and an amount and offers the link, its receipt saying what the link opens');
+    ok(await q.waitForSelector('#hx-qr svg', { timeout: 30000 }).then(() => true, () => false), 'hxsend: the request shows its link as a QR code');
     await q.click('#hx-go');
     const link = await q.evaluate(() => window.__clip[0] || '');
     ok(link === `${new URL(q.url()).origin}/#card=send:cusd&to=${encodeURIComponent(long)}&amt=5`, `hxsend: the link is this key's tacit1 address with cUSD and 5 (${link.slice(0, 60)}…)`);

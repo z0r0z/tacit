@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-uhj5nMix5ZApRtb/zGxzypZ0U1KkgRp+KXuqwBqJekM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RG6Nt3PysF3K6P3peiwvMl7iom2LEs1en3iJK7GS+a0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -535,8 +535,6 @@ a.di { color: inherit; text-decoration: none; }
 .hx-recent .quick button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hx-b .hx-recent .link { position: relative; padding: 0; font-size: 12px; }
 .hx-recent .link::after { content: ''; position: absolute; inset: -8px -6px; }
-#hx-ask, #hx-pay { position: relative; padding: 0; font-size: 12px; }
-#hx-ask::after, #hx-pay::after { content: ''; position: absolute; inset: -8px -6px; }
 .hero .hx-q.warn, .hx-q.warn { color: var(--warn); }
 .hx-gauge { margin: 14px 2px 2px; }
 .hx-gauge-b { position: relative; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--err) 0 13%, var(--orange) 13% 25%, var(--ok) 25%); opacity: .85; }
@@ -629,6 +627,8 @@ a.di { color: inherit; text-decoration: none; }
 .hx-mode { display: inline-flex; gap: 2px; margin: 8px 0 10px; padding: 3px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .hx-mode button { min-height: 26px; padding: 2px 14px; color: var(--mute); font: 12px var(--mono); white-space: nowrap; background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s; }
 @media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
+.hx-sr { display: flex; margin: 0 0 12px; } .hx-sr button { flex: 1; }
+.hx-qr { display: flex; justify-content: center; margin: 12px 0 0; } .hx-qr[hidden] { display: none; } .hx-qr svg { width: 168px; height: 168px; border-radius: 12px; }
 .hx-mode button[aria-checked="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
 .ptsline { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 6px 14px; padding: 14px 4px; color: inherit; text-decoration: none; border-bottom: 1px solid var(--hair); }
 .ptsline .tk { width: 24px; height: 24px; box-shadow: none; transition: transform .4s var(--spring); }
@@ -9382,6 +9382,7 @@ function paintHints() {
   if (!el) return;
   const pair = (ic) => html`<span class="pair">${ic.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>`;
   const hs = [
+    { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
     { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
     HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tag: `${Math.round(HINT_POOL.apr)}% APR`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
     { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
@@ -9409,6 +9410,7 @@ function hintGo(id) {
   if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
   if (id === 'zap' && HINT_POOL) return hxPreset(`earn:ether:${HINT_POOL.spec}`, HINT_ETH);        // the farm zap: the APR the chip shows is this farm's, rewards included
   if (id === 'shield') return hxPreset('shield:ether:defi', HINT_ETH);
+  if (id === 'send') { hxPreset('send:wusdc', '25'); $('#hx-rcpt')?.focus({ preventScroll: true }); return $('#hx').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' }); }
   if (id !== 'pswap') return;
   // ETH to USDC with the private way on: the Swap card's own link grammar (the card turns it into a deposit, a buffer and the relay's exit)
   for (const o of $$('dialog.sheet[open]')) o.close();
@@ -13304,12 +13306,26 @@ function hxSendSees(k = HX.send) {
 }
 const hxAskSays = () => [['The link', 'opens this payment, filled in']];
 const hxCanShare = () => typeof navigator.share === 'function' && matchMedia('(pointer: coarse)').matches;
+// a payments pool's request is a tacit pay link (it also takes a payment from a plain wallet); the others open this tile on the asset
+function hxAskLink() {
+  const a = S.key?.tacit, u = hxUnits(), dp = hxPayP();
+  if (!a) return '';
+  return dp ? `${location.origin}/pay/eth/#pay=${encodeURIComponent(a)}${dp.chain ? `&chain=${dp.chain.chainId}` : `&asset=${dp.sym.toLowerCase()}`}${u ? `&amount=${plain(u, dp.dec)}` : ''}` : `${location.origin}/#card=send:${HX.send}&to=${encodeURIComponent(a)}${u ? `&amt=${plain(u, hxDec())}` : ''}`;
+}
+// The request's link as a QR code under the receipt, for a payer in front of you: drawn once a link exists, again when it changes
+let hxQrMod = null;
+function hxAskQr() {
+  const el = $('#hx-qr');
+  if (!el) return;
+  const url = HX.tab === 'send' && HX.ask ? hxAskLink() : '';
+  el.hidden = !url;
+  if (!url || el.__u === url) return;
+  el.__u = url;
+  (hxQrMod ||= import('/qr.js?cb=926d16be')).then((m) => { if (el.__u === url) el.innerHTML = m.qrSvg(url, 168, 'QR code of the payment link'); }, () => { el.hidden = true; });
+}
 async function hxAskGo() {
-  const a = S.key?.tacit, u = hxUnits();
-  if (!a) return openSheet('wallet');
-  // a payments pool's request is a tacit pay link (it also takes a payment from a plain wallet); the others open this tile on the asset
-  const dp = hxPayP();
-  const url = dp ? `${location.origin}/pay/eth/#pay=${encodeURIComponent(a)}${dp.chain ? `&chain=${dp.chain.chainId}` : `&asset=${dp.sym.toLowerCase()}`}${u ? `&amount=${plain(u, dp.dec)}` : ''}` : `${location.origin}/#card=send:${HX.send}&to=${encodeURIComponent(a)}${u ? `&amt=${plain(u, hxDec())}` : ''}`;
+  if (!S.key?.tacit) return openSheet('wallet');
+  const url = hxAskLink();
   if (hxCanShare()) { try { await navigator.share({ url, title: 'Payment request' }); return; } catch (e) { if (e?.name === 'AbortError') return; } }
   copy(url, 'Payment link copied');
 }
@@ -14422,6 +14438,7 @@ function paintHxQ() {
   if (!$('#hx-panel')) return;
   hxShareSync();
   hxNorm();
+  hxAskQr();
   if (out) {
     if (!q.busy) out.textContent = HX.tab === 'bridge' && hxMoveFixed() ? '—' : q.out ?? '0';
     out.classList.toggle('busy', !!q.busy);
@@ -14835,21 +14852,23 @@ function paintHx() {
     const [, unit] = hxSendOf(), btcPay = HX.send === 'btc', groups = hxGroups('send'), place = hxPlaceOf('send', HX.send);
     const what = (lbl, label) => field(lbl, heldAt(place), hxIsLp() && lbl === 'You send' ? html`<span class="say">a quarter, half or all of it, picked next</span>` : amt(`${unit} ${lbl === 'You ask for' ? 'to ask for' : 'to send'}`), coin('hx-sa', label, groups, HX.send), true, place === 'private');
     HX.askFor = S.key?.tacit || '';
-    body = HX.ask ? html`${what('You ask for', 'Asset to ask for')}
+    // Send or Request: the two sides of paying, one switch (a wallet coin is only sent)
+    const sw = hxSendWallet() && !HX.ask ? '' : html`<div class="hx-mode hx-sr" role="radiogroup" aria-label="Send or request">${[['hx-pay', 'Send', !HX.ask], ['hx-ask', 'Request', !!HX.ask]].map(([i, t, on]) => html`<button type="button" role="radio" id="${i}" aria-checked="${String(on)}">${t}</button>`)}</div>`;
+    body = HX.ask ? html`${sw}${what('You ask for', 'Asset to ask for')}
       ${mid()}
       ${field('Paid to', html`<span class="where">your tacit1 address</span>`, html`<span class="say">${HX.askFor ? short(HX.askFor, 12) : 'tacit1…'}</span>`, '', false)}
       ${chainRow}<dl class="rcpt" id="hx-receipt">${hxAskSays().map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>
+      <div class="hx-qr" id="hx-qr" hidden></div>
       <div class="hx-have" id="hx-have" hidden></div>
-      ${button(HX.askFor ? (hxCanShare() ? 'Share payment link' : 'Copy payment link') : 'Open your wallet')}
-      <p class="q"><button class="link" type="button" id="hx-pay">Send instead</button></p>`
-    : html`${what('You send', 'Asset to send')}
+      ${button(HX.askFor ? (hxCanShare() ? 'Share payment link' : 'Copy payment link') : 'Open your wallet')}`
+    : html`${sw}${what('You send', 'Asset to send')}
       ${mid()}
       ${field('To', html`<span class="where">${btcPay ? 'anyone with a Bitcoin address' : 'anyone, on either chain'}</span>`, html`<input class="addr" id="hx-rcpt" placeholder="${btcPay ? 'tacit1…, sp1… or bc1…' : HX.send === 'tacb' ? 'tacit1… or name.wei' : hxSendWallet() ? '0x…, tacit1… or a name' : 'tacit1…, name.wei or 0x…'}" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient" value="${HX.rcpt}">`, '', false, false, html`<div class="hx-rc" id="hx-rc" aria-live="polite" hidden></div><div class="hx-recent" id="hx-recent" hidden></div><p class="hx-way" id="hx-way" hidden></p>`)}
       ${chainRow}<dl class="rcpt" id="hx-receipt" hidden></dl>
       <div class="hx-have" id="hx-have" hidden></div>
       ${button(hxSendLabel())}
       <p class="q" id="hx-ss" aria-live="polite"></p>
-      ${hxSendWallet() ? '' : html`<p class="q"><button class="link" type="button" id="hx-ask">Request a payment</button></p>`}`;
+      `;
   }
   mount(el, html`${head}<div class="hx-b swc" id="hx-panel" role="tabpanel" aria-labelledby="hx-tab-${m}">${body}</div>`);
   if (m === 'borrow' && HX.bsrc === 'btc') hxBwHold();
@@ -14902,7 +14921,7 @@ function paintHx() {
     $('#hx-pay')?.addEventListener('click', () => { HX.ask = false; paintHx(); $('#hx-amt')?.focus(); });
     $('#hx-chain-sel')?.addEventListener('change', (e) => { HX.chain = Number(e.target.value); HX.q = null; paintHx(); });
     netPicker($('#hx-chain-sel'));
-    paintHxQ(); hxQuote(); hxSendRead(); hxRcptCheck(); hxRecentPaint();
+    paintHxQ(); hxQuote(); hxSendRead(); hxRcptCheck(); hxRecentPaint(); hxAskQr();
     return;
   }
   const dest = $('#hx-dest', el);
