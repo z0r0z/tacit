@@ -27685,12 +27685,37 @@ async function completeDiscordGate(env, nonce, record, holder) {
     try { detail = (await res.json())?.message || ''; } catch {}
     return { ok: false, status: 502, reason: `discord_gate: Discord refused the role (${res.status}${detail ? `: ${detail}` : ''})` };
   }
+  // Keep the short-lived reply credential only while verification is pending.
+  const { interaction_reply: interactionReply, ...verifiedRecord } = record;
   await env.REGISTRY_KV.put(`dgate:${nonce}`, JSON.stringify({
-    ...record,
+    ...verifiedRecord,
     status: 'verified',
     holder,
     verified_at: Date.now(),
   }), { expirationTtl: 3600 });
+  if (interactionReply) {
+    // @original is this member's ephemeral link reply, not the shared panel.
+    // A notification failure must not undo a successful role grant.
+    try {
+      const updated = await fetch(
+        `https://discord.com/api/v10/webhooks/${interactionReply.application_id}/${encodeURIComponent(interactionReply.token)}/messages/@original`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: `**Verification succeeded!**\n\nYou now have the <@&${env.TAC_ROLE_ID}> role. You're all set.`,
+            components: [],
+            allowed_mentions: { parse: [] },
+          }),
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      if (!updated.ok) console.warn(`[discord_gate] Private success reply refused (${updated.status})`);
+    } catch {
+      // Do not log the exception: it can contain the webhook URL and token.
+      console.warn('[discord_gate] Could not update the private success reply');
+    }
+  }
   return { ok: true };
 }
 
@@ -27789,6 +27814,11 @@ async function handleDiscordInteraction(req, env, cors) {
       guild_id: guildId,
       status: 'pending',
       ts: Date.now(),
+      // Discord's interaction credential can edit the private reply for 15 minutes;
+      // our pending nonce expires after 10. Older/programmatic nonces omit it.
+      ...(/^\d{17,20}$/.test(interaction.application_id || '') && typeof interaction.token === 'string' && interaction.token ? {
+        interaction_reply: { application_id: interaction.application_id, token: interaction.token },
+      } : {}),
     }), { expirationTtl: DISCORD_GATE_NONCE_TTL });
 
     const link = `${env.DAPP_URL || 'https://tacit.finance'}/discord/#gate=${nonce}`;
