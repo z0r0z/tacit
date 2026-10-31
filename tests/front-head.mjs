@@ -9,7 +9,7 @@
 //   4. the tile is a quiet skeleton from the first paint, in the height the card settles at, which the script's first draw replaces.
 //
 //   node tests/front-head.mjs
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DAPP = join(new URL('../', import.meta.url).pathname, 'dapp');
@@ -59,6 +59,21 @@ ok(/<i class="f"><\/i><i class="f"><\/i><i class="p"><\/i><i class="g"><\/i>/.te
     for (let sec = 1.5e9; sec < 2.2e9; sec += 86400 * 7 + 3600 * 5 + 17) { count++; if (dayFmt(sec) !== new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })) bad++; }
     ok(bad === 0 && dayFmt(NaN) === 'Invalid Date', `and writes a day as en-GB does, in this zone (${count} days, ${bad} written differently)`);
   }
+}
+
+// 6. the skeleton does not stay for good: a guard watches from the head (it must run before the document is read to its end, so async and first), the page's script imports the
+//    stand-in for refused storage before anything else that reads storage, and the line the guard writes has its place in the card's styles (tests/front-boot.mjs loads the page
+//    with storage refused, a file dropped and a file that never answers)
+{
+  const guardSrc = existsSync(join(DAPP, 'front-guard.js')) ? readFileSync(join(DAPP, 'front-guard.js'), 'utf8') : '';
+  const guards = [...head.matchAll(/<script\b[^>]*\bsrc="\/front-guard\.js[^"]*"[^>]*>/g)].map((m) => m[0]);
+  ok(guards.length === 1 && /\basync\b/.test(guards[0]) && !/type="module"/.test(guards[0]), 'the head loads the guard as a classic async script');
+  const firstScript = /<script\b[^>]*\bsrc="([^"]+)"/.exec(head)?.[1] || '';
+  ok(firstScript.startsWith('/front-guard.js'), `and it is the first script the head names, so it is watching before the rest (the first is ${firstScript.split('?')[0]})`);
+  const imports = [...mod.matchAll(/^import\b[^\n]*$/gm)].map((m) => m[0]);
+  ok(imports[0] === "import '/storage-fallback.js';", `the page's script imports the stand-in for refused storage first (the first import is ${imports[0]})`);
+  ok(/\.hx-say \{/.test(page) && /\.hx-say button \{/.test(page), 'and the guard\'s line and its button are styled with the card');
+  ok(guardSrc.includes("'#hx-body > .hx-sk'"), 'and the guard looks for the skeleton this page draws');
 }
 
 console.log(`\n${fails ? `${fails} FAILED, ${n} ok` : `${n} front-head checks passed`}`);
