@@ -2091,7 +2091,7 @@ function openPicker(side, again = false) {
     // a private coin says what it is for, where the same coin is held in both pools (ETH, TAC): to swap, farm and borrow with, or to pay anyone; the pools' names are in its tip
     const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
     const sub = a === 'defi' ? [SUB[k], twin && 'swap, farm, borrow'].filter(Boolean).map(esc).join(' · ')
-      : a === 'pay' ? `${isEth(k) ? 'held privately' : k === USDC_K || k === USDT_K ? 'a dollar' : 'Tacit’s token'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
+      : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
       : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
     return { ok, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
