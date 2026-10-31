@@ -9,6 +9,7 @@ import * as R from '/swap/route.js?cb=ce610210';
 import * as A from '/swap/aggregate.js?cb=3c73982e';
 import * as SV from '/swap/solvers.js?cb=2c70b259';
 import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
+import { routeLine } from '/swap/route-name.js?cb=1bc2443b';
 import * as GR from '/gas-relay.js?cb=893b2c02';
 import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js?cb=f5ae4bcd';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
@@ -668,7 +669,8 @@ async function quoteOut(units, pay, get) {
   if (eth) return { ...base, rows: [{ k: 'pout', name: `${via}out of the pool`, out: wei, min: wei, wei, best: true, priv: true, pout: true }] };
   const sale = await within(R.quoteEthToToken({ ethCall, to: S.to || '0x0000000000000000000000000000000000000001', tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1800) }), 20e3, 'zQuoter did not answer in time. Try again.');
   if (!sale) return { rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough.` };
-  return { ...base, rows: [{ k: 'pout', name: `${via}${sale.name}${sale.feeBps ? ` ${Number(sale.feeBps) / 100}%` : ''}`, out: sale.amountOut, min: sale.amountLimit, wei, best: true, priv: true, pout: true }] };
+  const venue = `${sale.name}${sale.feeBps ? ` ${Number(sale.feeBps) / 100}%` : ''}`;
+  return { ...base, rows: [{ k: 'pout', name: `${via}${venue}`, sale: venue, out: sale.amountOut, min: sale.amountLimit, wei, best: true, priv: true, pout: true }] };
 }
 const PK = { teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [lc(R.CBTC)]: 'cbtc' };
 const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
@@ -892,7 +894,12 @@ function paintQuote() {
     else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / E10) * E10, get.dec))} ${get.sym}`]);
     if (r.sell?.rest > 0n) lines.push(['Plus', `about ${tidy(amtFmt(r.sell.rest, 18))} WETH`]);
     const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.via || r.hop;
-    if (routed) lines.push(['Route', r.name, '', r.agg?.quotes?.length ? `Compared with ${r.agg.quotes.length} pool${r.agg.quotes.length > 1 ? 's' : ''}` : r.sv ? 'An outside solver, settled through zRouter: it pays at least the least shown, or nothing is swapped' : '']);
+    // ETH through the Pay pool, a swap inside the Tacit pool and the way out of it say their route too (swap/route-name.js); a public swap's row is its own name
+    const hopEth = laterOn(kind) && isEth(S.pay) && !r.hop && !r.via && rows.hidden;
+    const named = hopEth || !routed ? routeLine({ r, pools: q.pools, hop: hopEth }, (k) => PSYM[k]) : null;
+    const compared = r.agg?.quotes?.length ? `Compared with ${r.agg.quotes.length} pool${r.agg.quotes.length > 1 ? 's' : ''}` : r.sv ? 'An outside solver, settled through zRouter: it pays at least the least shown, or nothing is swapped' : '';
+    if (named) lines.push(['Route', named.text, '', [named.tip, compared].filter(Boolean).join(' ')]);
+    else if (routed) lines.push(['Route', r.name, '', compared]);
     // what zQuoter's route adds over the best single pool, shown only when it is 0.1% or more
     if (r.agg?.quotes?.length) {
       const gain = Number(r.out - r.agg.quotes[0].out) / Number(r.agg.quotes[0].out);
@@ -2091,17 +2098,21 @@ function openPicker(side, again = false) {
     const ok = !moving() || (side === 'pay' ? goes('pay', k, a) : pairOk(S.pay, atOf('pay'), k, a));
     // a private coin says what it is for, where the same coin is held in both pools (ETH, TAC): to swap, farm and borrow with, or to pay anyone; the pools' names are in its tip
     const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
-    const sub = a === 'defi' ? [SUB[k], twin && 'swap, farm, borrow'].filter(Boolean).map(esc).join(' · ')
+    // (under its own line in the Private list the coin need not say so again: the suffix is what tells the two TACs apart once a search has taken the lines away)
+    const sub = a === 'defi' ? `${esc(SUB[k] || '')}${twin ? `<span class="pk-tw">${SUB[k] ? ' · ' : ''}swap, farm, borrow</span>` : ''}`
       : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
       : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
-    return { ok, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
+    return { ok, at: a, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
   warmPrivate(); H.moves?.warm?.();
   pkSide = side;
   const title = side === 'pay' ? (moving() ? 'From' : 'Pay with') : moving() ? 'To' : 'Get', noted = new Set();
   const list = groups.map(([g, ks, kd, id]) => {
-    const rs = ks.map(row).filter(Boolean), rows = [...rs.filter((r) => r.ok), ...rs.filter((r) => !r.ok)].map((r) => r.html).join('');
-    const hide = kd === kind ? '' : ' hidden', note = kd === 'private' ? (moving() ? 'Held privately. Swap, farm and borrow, or pay anyone.' : 'Held privately in Tacit’s pool, to swap, farm and borrow with.') : KIND_NOTE[kd];
+    const rs = ks.map(row).filter(Boolean), hide = kd === kind ? '' : ' hidden', ordered = (xs) => [...xs.filter((r) => r.ok), ...xs.filter((r) => !r.ok)].map((r) => r.html).join('');
+    // the Private list holds both pools' coins on the front page: each pool's under a line of its own that says what they are for, so a coin held in both (ETH, TAC) is not read as one
+    const homes = kd === 'private' && moving() ? [['defi', 'Swap, farm, borrow'], ['pay', 'Pay anyone']].filter(([h]) => rs.some((r) => r.at === h)) : [], split = homes.length > 1;
+    const rows = split ? homes.map(([h, label]) => `<p class="pk-sub" data-kind="${kd}"${hide}>${label}</p>${ordered(rs.filter((r) => r.at === h))}`).join('') : ordered(rs);
+    const note = kd === 'private' ? (moving() ? (split ? 'Held privately.' : 'Held privately. Swap, farm and borrow, or pay anyone.') : 'Held privately in Tacit’s pool, to swap, farm and borrow with.') : KIND_NOTE[kd];
     return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
   }).join('');
   const kindBtn = (kd) => `<button type="button" role="radio" data-kind="${kd}" aria-checked="${kd === kind}" tabindex="${kd === kind ? 0 : -1}" title="${esc(KIND_TIP[kd])}">${kd === 'wallet' ? WALLET_MARK : kd === 'bitcoin' ? placeMark('btc') : '<span class="lock" aria-hidden="true"></span>'}${KIND_NAME[kd]}</button>`;
@@ -2154,7 +2165,7 @@ function openPicker(side, again = false) {
         const rank = !sy ? 0 : sy.includes(x) ? 1 : sy.some((y) => y && y.startsWith(x)) ? 2 : nm.startsWith(x) ? 3 : `${sy.join(' ')} ${nm}`.includes(x) ? 4 : 0;
         b.hidden = on && !rank; b.style.order = on ? rank : '';
       }
-      l.querySelectorAll('.pk-g, .pk-d').forEach((g) => { g.hidden = on; });
+      l.querySelectorAll('.pk-g, .pk-d, .pk-sub').forEach((g) => { g.hidden = on; });
       l.classList.toggle('srch', on);                 // with the headings gone, every row names its kind (CSS: .pk-t)
       const kc = $('#pk-kind'); if (kc) kc.hidden = on;
       if (!on) applyKind(kind);                       // the kind's rows again, once the search is cleared

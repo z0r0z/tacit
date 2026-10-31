@@ -432,7 +432,8 @@ if (!process.env.SKIP_GASRELAY) {
   { const rc = (await page.textContent('#rcpt')).replace(/\s+/g, ' ');
     ok(/Chain seesyour 0\.25 ETH deposited/.test(rc), `private from the wallet: the receipt says what the chain sees (${rc})`);
     ok((await rowTips(page)).some((t) => /Pool depth: [\d.,]+ tETH · [\d.,]+ TAC/.test(t)), 'private: the price row keeps how deep the pool is');
-    ok(!/Pool/.test(rc) && (await page.$$('#rcpt div')).length <= 6, `private: the receipt stays short (${(await page.$$('#rcpt div')).length} rows)`); }
+    // price, least, route (the pool it crosses), impact, fees, earn, what the chain sees
+    ok(!/Pool/.test(rc) && (await page.$$('#rcpt div')).length <= 7, `private: the receipt stays short (${(await page.$$('#rcpt div')).length} rows)`); }
   await shot(page, 'desktop-private');
   // to another Tacit address: the get side's link opens a field for one, and the button waits for it to be one
   ok(/to your private balance/.test(await page.textContent('#get-where')), 'private get: it says the swap lands in your private balance');
