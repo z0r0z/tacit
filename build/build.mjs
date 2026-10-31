@@ -199,7 +199,7 @@ const REWARDS_CB_FILES = ['rewards/farms.js', 'rewards/app.js', 'rewards/index.h
 const BRIDGE_CB_FILES = ['bridge/track.js', 'bridge/mover.js', 'bridge/app.js', 'bridge/index.html'];
 // dapp/swap/ is the swap card the front page's Swap tab draws (its own address only forwards there): its routes first (and the aggregated route
 // over them), the private swaps (later.js reads the aggregated route), then the card.
-const SWAP_CB_FILES = ['gas-relay.js', 'swap/route.js', 'swap/aggregate.js', 'swap/solvers.js', 'swap/bitcoin.js', 'swap/private.js', 'swap/later.js', 'swap/card.js'];
+const SWAP_CB_FILES = ['gas-relay.js', 'swap/route.js', 'swap/aggregate.js', 'swap/solvers.js', 'swap/bitcoin.js', 'swap/private.js', 'swap/later.js', 'swap/link.js', 'swap/card.js'];
 // dapp/splitter/ is the tip splitter page: its encodings and the contract's creation code first, then app.js, then the page.
 const SPLITTER_CB_FILES = ['splitter/abi.js', 'splitter/bytecode.js', 'splitter/app.js', 'splitter/index.html'];
 // dapp/relay/ is the public page on what the relay earns and spends and what the buyback has bought, the settles it holds for any sender, and

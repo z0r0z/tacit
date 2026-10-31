@@ -8,6 +8,7 @@ import { rpc, RPCS, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E
 import * as R from '/swap/route.js?cb=ce610210';
 import * as A from '/swap/aggregate.js?cb=3c73982e';
 import * as SV from '/swap/solvers.js?cb=2c70b259';
+import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
 import * as GR from '/gas-relay.js?cb=893b2c02';
 import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js?cb=f5ae4bcd';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
@@ -2240,7 +2241,7 @@ function params() {
   return p;
 }
 function applyParams(p) {
-  const find = (v) => { if (!v) return null; const x = lc(v); return x === 'teth' ? 'teth' : (listed().find((t) => nameIs(t, x) || t.addr === x)?.addr) || null; };
+  const find = (v) => { if (!v) return null; const x = linkName(v); return x === 'teth' ? 'teth' : (listed().find((t) => nameIs(t, x) || t.addr === x)?.addr) || null; };
   const pv = p.get('private'), f = find(p.get('from')), t = find(p.get('to'));
   const fa = p.get('from-at'), ta = p.get('to-at');
   if (moving() && (['pay', 'btc'].includes(fa) || ['pay', 'btc'].includes(ta))) {
@@ -2252,10 +2253,10 @@ function applyParams(p) {
     if (a && parseUnits(a, tokenOf(S.pay)?.dec ?? 18)) S.amt = fitAmt(a);
     return;
   }
-  if (pv != null) {
-    S.outP = pv !== 'from';
-    S.inP = pv === 'from' || pv === 'both' || (pv === '' && !!f && !isEth(f));
-  }
+  // the sides the link makes private: its private= flag, and a coin it names by its private name (tETH, cTAC; cBTC or cUSD beside one)
+  const sides = linkSides({ pv, fromName: p.get('from'), toName: p.get('to'), fromKey: f }, { notes: new Set(listed().filter((x) => x.psym).map((x) => lc(x.psym))), isEth });
+  if (sides?.inP !== undefined) S.inP = sides.inP;
+  if (sides?.outP !== undefined) S.outP = sides.outP;
   const side = (k, priv) => (priv ? (isEth(k) ? 'teth' : k) : k === 'teth' ? lc(R.ZERO) : k);
   if (f) S.pay = side(f, S.inP); else if (S.inP) S.pay = 'teth';
   if (t) S.get = side(t, S.outP); else if (S.outP) S.get = S.pay === 'teth' ? lc(R.TAC) : 'teth';
@@ -2276,7 +2277,7 @@ function load(p, { fresh = true } = {}) {
   ASKED = { p, pair: `${S.pay}>${S.get}` };
   S.q = null; S.pick = null; S.hold = false; S.ack = false; S.note = '';
   const named = [p.get('from'), p.get('to')].filter((v) => v && !/^0x/i.test(v));
-  if (named.some((v) => !listed().some((t) => nameIs(t, lc(v))) && lc(v) !== 'teth')) loadList().then(() => { if (ASKED?.p !== p) return; const was = `${S.pay}>${S.get}:${S.inP}${S.outP}`; applyParams(p); if (`${S.pay}>${S.get}:${S.inP}${S.outP}` !== was) { S.q = null; paint(); readBalances().then(paintSides); if (S.amt || moveOf()) requote(true); else syncMove(); } });
+  if (named.some((v) => !listed().some((t) => nameIs(t, linkName(v))) && linkName(v) !== 'teth')) loadList().then(() => { if (ASKED?.p !== p) return; const was = `${S.pay}>${S.get}:${S.inP}${S.outP}`; applyParams(p); if (`${S.pay}>${S.get}:${S.inP}${S.outP}` !== was) { S.q = null; paint(); readBalances().then(paintSides); if (S.amt || moveOf()) requote(true); else syncMove(); } });
   const f = p.get('from');
   if (/^0x[0-9a-fA-F]{40}$/.test(f || '') && !tokenOf(lc(f))) R.readToken({ ethCall, keccak256: keccak_256, address: lc(f) }).then((t) => {
     if (!t || ASKED?.p !== p) return;

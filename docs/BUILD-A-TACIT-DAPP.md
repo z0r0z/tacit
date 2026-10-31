@@ -655,6 +655,26 @@ The AMM is [SPEC §5.5](../SPEC.md#55-amm); the op table (`OP_SWAP`, `OP_LP_ADD`
 by `(assetA, assetB, feeBps)` with `assetA < assetB` as a `BigInt` comparison — every function below
 canonicalizes the order itself, so pass either side first.
 
+**Link to a swap.** The front page's Swap card opens on a swap named in its address, and the card's copy button
+gives the same kind of link:
+
+```
+https://tacit.finance/?from=tETH&to=cBTC&amt=0.01             0.01 tETH → cBTC, both held privately: the tETH/cBTC pool
+https://tacit.finance/?from=ETH&to=cBTC&amt=0.01&private      0.01 ETH from the wallet → private cBTC
+https://tacit.finance/?from=tETH&to=USDC&amt=0.01             0.01 tETH out of the pool → USDC in the wallet
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `from`, `to` | A coin by symbol (`ETH`, `TAC`, `USDC`), by contract address, or by its private name (`tETH`, `cBTC`, `cUSD`, `cTAC`). Without them the card pays ETH for TAC. |
+| `amt` | The amount to pay, in the From coin's units. It fills the card. A private swap's address bar does not keep it; the copy link does. |
+| `private` | `to`, `from` or `both` makes those sides private. A bare `private` makes the Get side private, and the Pay side too unless it is ETH, which is made private on the way in. |
+
+A coin named by a private name needs no `private`: `tETH`, `cETH` and `cTAC` are private on their own, and `cBTC` or
+`cUSD` beside one of them is the pool's note. `cBTC` or `cUSD` alone, with no `private`, is the public tacBTC or tacUSD
+token, because those were the tokens' names before and old links keep working. A link only fills the form; nothing is
+sent until the visitor presses the button.
+
 **Read reserves and quote before you build anything:**
 
 ```js
