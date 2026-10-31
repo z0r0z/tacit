@@ -116,6 +116,16 @@ try {
     ok(again && s.navs === 3, 'the reload the person presses is a reload (and is not turned into another by the page)');
     await s.ctx.close();
   }
+  {
+    // a browser that does not say how a page was loaded (Safari before 15 has no navigation entry): the page cannot tell it has already reloaded, so it never reloads by itself
+    const s = await open({ drop: BOOT_FILE });
+    await s.ctx.addInitScript(() => { const entries = performance.getEntriesByType.bind(performance); performance.getEntriesByType = (t) => (t === 'navigation' ? [] : entries(t)); });
+    await go(s);
+    const said = await s.page.waitForSelector(LINE, { timeout: 30000 }).then(() => true, () => false);
+    await sleep(2500);
+    ok(said && s.navs === 1, `a browser that does not report its navigation type is told, and is not reloaded in circles (${s.navs} load${s.navs === 1 ? '' : 's'})`);
+    await s.ctx.close();
+  }
 
   // 4. a file never answers: said after the limit, and gone when the tile is drawn
   {

@@ -20,8 +20,9 @@
   }
   function failed() {
     if (!skeleton()) return;
-    var nav = performance.getEntriesByType('navigation')[0];
-    if (!reloaded && !(nav && nav.type === 'reload')) { reloaded = true; return window.location.reload(); }
+    // A reload only on a load that is known not to be one already: a browser that does not say how the page was loaded (Safari before 15) is told, not sent round in circles.
+    var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+    if (!reloaded && nav && nav.type !== 'reload') { reloaded = true; return window.location.reload(); }
     dead = true;
     say('Could not load the page.');
   }
