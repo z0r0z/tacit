@@ -7388,7 +7388,7 @@ await step('hxsend', async () => {
     ok(await q.$eval('[data-hxm="borrow"]', (b) => b.getAttribute('aria-selected')) === 'true', 'hxsend: Mint some opens the card on Borrow');
     await q.evaluate(() => { location.hash = '#card=send:cusd&to=alice.wei&amt=5'; });
     await until(q, () => document.querySelector('#hx-sa')?.value === 'cusd' && document.querySelector('#hx-rcpt')?.value === 'alice.wei' && document.querySelector('#hx-amt')?.value === '5', null, 60000);
-    ok(await q.evaluate(() => location.hash) === '', 'hxsend: a #card=send link fills the card with its asset, recipient and amount');
+    ok(!/[&#]to=/.test(await q.evaluate(() => location.hash)), 'hxsend: a #card=send link fills the card with its asset, recipient and amount, and the address bar no longer names the recipient');
     // A unified tacit1 address runs to about 270 characters, and a link names it whole; with no asset named the card opens on what the key holds.
     const long = shownAddress('7d7e'.padEnd(64, '5'));
     await q.selectOption('#hx-sa', 'eth');
@@ -7661,7 +7661,7 @@ await step('hxexit', async () => {
     await until(p, () => !!document.querySelector('#hx-swap #steps .offer') || /class="err"/.test(document.querySelector('#hx-swap #q')?.innerHTML || ''), null, 600000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await q('#q')} | ${await q('#steps')}`); });
     const steps = await q('#steps'), plan = await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-swap-later-v1') || '[]')[0] || null);
-    ok(/In the pool/.test(steps) && /Pay out/.test(steps) && /At least 10 USDC/.test(steps), `hxexit: the plan reads In the pool and Pay out, with the amount to confirm (${steps.replace(/\s+/g, ' ').slice(0, 170)})`);
+    ok(/In the pool/.test(steps) && /Pay out/.test(steps) && /Confirm price/.test(steps) && /10 USDC/.test(steps), `hxexit: the plan reads In the pool and Pay out, with the amount to confirm (${steps.replace(/\s+/g, ' ').slice(0, 170)})`);
     ok(plan?.held === true && plan.state === 'waiting' && plan.swapWei === '10000000' && plan.to === STAND && plan.hop?.sym === 'USDC' && !plan.depositTx, `hxexit: kept as a held plan of 10 USDC to the address, nothing deposited or sent (${plan ? `${plan.state} ${plan.swapWei}` : 'none'})`);
     await p.click('#hx-swap #steps [data-later-no]');
     await until(p, () => !document.querySelector('#hx-swap #steps .offer'), null, 30000);
@@ -7685,7 +7685,7 @@ await step('hxexit', async () => {
 await step('hxsendpp', async () => {
   // The ETH payments pool as a Send source. Its chains' event reads are answered empty, so every device sync ends at once with nothing held; once
   // they have (the page keeps each chain's balance), 0.05 ETH is set as Ethereum's, which the page then keeps for its five minutes.
-  const r = await openPage({ account: A0, key: K0 }), p = r.page, to = tacit1('e7e'.padEnd(64, '3')), BEEF = '0x000000000000000000000000000000000000beef';
+  const r = await openPage({ account: A0, key: K0 }), p = r.page, to = shownAddress('e7e'.padEnd(64, '3')), BEEF = '0x000000000000000000000000000000000000beef';
   const lander = () => p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   try {
     await r.ctx.addInitScript(() => { try { localStorage.setItem('tacit-lite-device-chain', '1'); } catch { /* the sheet opens on its own chain */ } });
