@@ -12,7 +12,7 @@
 //        chains: [{ chainId, deployBlock, confirmations?, span?, maxSpan? }] }
 // clients: { [chainId]: viem public client }. hash: Poseidon. groth16: { verify }.
 import { makeBlockAtOrBefore } from './block-at-time.js';
-import { poolStateAt, emptyRootOf, HoldingStateError } from './holding-state.js';
+import { poolStateAt, emptyRootOf, isZero, HoldingStateError } from './holding-state.js';
 import { scanHoldingChain } from './holding-scan.js';
 import { rootSizeOf, poolState, poolAssetOf } from './evm-pool-snapshot-chain.js';
 import { smtRootAsync } from './evm-pool-snapshot.js';
@@ -60,7 +60,7 @@ export function createHolding({ store, cfg, clients, hash, groth16, nowSec = () 
     if (Number(await client.getBlockNumber()) - cursor > confirmationsOf(chain) + TAIL_SLACK) return;       // still catching up: a node keeps recent state only
     let mismatch = null;
     try {
-      const state = poolStateAt({ events: store.holdingEvents(chainId, cursor), block: cursor, hash, emptyRoot, nfRoot: false });
+      const state = poolStateAt({ events: store.holdingEventsIter(chainId, cursor), ordered: true, block: cursor, hash, emptyRoot, nfRoot: false });
       const at = await poolState(client, cursor, cfg.pool);
       if (at.root !== state.root || at.nextIndex !== state.size) mismatch = `the pool reports root ${at.root.toString(16)} with ${at.nextIndex} leaves, the events give ${state.root.toString(16)} with ${state.size}`;
     } catch (err) {
@@ -111,7 +111,7 @@ export function createHolding({ store, cfg, clients, hash, groth16, nowSec = () 
     if (block === tip && Number((await client.getBlock({ blockNumber: BigInt(tip) })).timestamp) < Number(moment)) return null;     // the chain has not reached the moment
     const verified = store.loadHoldingVerified(chain.chainId);
     if (verified === null || verified < block) return null;                                       // the events are not all read and checked yet
-    const state = poolStateAt({ events: store.holdingEvents(chain.chainId, block), block, hash, emptyRoot, nfRoot: false });
+    const state = poolStateAt({ events: store.holdingEventsIter(chain.chainId, block), ordered: true, block, hash, emptyRoot, nfRoot: false });
     if (state.size > 0) {
       const known = await rootSizeOf(client, state.root, cfg.pool);
       if (known !== state.size) throw new Error(`chain ${chain.chainId}: the rebuilt root at block ${block} is not one the pool held with ${state.size} leaves (${known})`);
@@ -162,9 +162,46 @@ export function createHolding({ store, cfg, clients, hash, groth16, nowSec = () 
 
   // What a client proves against: the note tree's leaves and the spent set as of the snapshot, both public and the same for
   // everyone, so asking for them says nothing about which note is the asker's. A snapshot never changes, so the answer is
-  // built once.
+  // built once, and kept as the bytes that are sent. The object they are made from (a string for each leaf and each spent note) was kept beside the text,
+  // up to sixteen of them: with the text that was 70 MB for each snapshot of Base's (28 MB of text on 2026-10-31, and 1.3 MB more each day), on top of the
+  // 75 MB of rows one read was built from, and that is how a heap of 256 MB and the service with it were used up. The bytes are kept outside the heap, to
+  // cfg.bodyCacheBytes in all, the one read longest ago going first; `text` and `body`, for a caller that asks for the string or the object, are made then, once.
   const nullifierBodies = new Map();
-  // A snapshot is up to a few megabytes and the same for everyone, so a caller is held to a handful of reads and all callers to a rate.
+  let keptBytes = 0;
+  const bodyCacheBytes = cfg.bodyCacheBytes ?? 96_000_000;
+  const remember = (key, bytes) => {
+    for (const [old, v] of nullifierBodies) {
+      if (keptBytes + bytes.length <= bodyCacheBytes) break;
+      nullifierBodies.delete(old);
+      keptBytes -= v.bytes.length;
+    }
+    nullifierBodies.set(key, { bytes, text: null, body: null });
+    keptBytes += bytes.length;
+  };
+  // The bytes of { epoch, chainId, block, root, nfRoot, size, leaves, nullifiers } exactly as JSON.stringify writes it, made event by event from the stored
+  // rows: each run of events is written into a buffer of its own as it fills, so the heap holds no more than a run's strings (and no row), and the answer is
+  // never a string of tens of megabytes. null when the events do not give the snapshot's leaf count.
+  const RUN = 2000, HEX = /^0x[0-9a-fA-F]*$/, COMMA = Buffer.from(',');
+  const inner = (s) => (HEX.test(s) ? s : JSON.stringify(s).slice(1, -1));
+  const sealed = (run) => Buffer.from(`"${run.join('","')}"`);
+  const joined = (runs) => runs.flatMap((r, i) => (i ? [COMMA, r] : [r]));
+  function snapshotBytes(chainId, epoch, snap) {
+    const leafRuns = [], nfRuns = [];
+    let leafRun = [], nfRun = [], count = 0;
+    for (const e of store.holdingEventsIter(chainId, snap.block)) {
+      if (!isZero(e.nf0)) nfRun.push(inner(e.nf0));
+      if (!isZero(e.nf1)) nfRun.push(inner(e.nf1));
+      if (!isZero(e.outLeaf0) || !isZero(e.outLeaf1)) { leafRun.push(inner(e.outLeaf0), inner(e.outLeaf1)); count += 2; }
+      if (leafRun.length >= RUN) { leafRuns.push(sealed(leafRun)); leafRun = []; }
+      if (nfRun.length >= RUN) { nfRuns.push(sealed(nfRun)); nfRun = []; }
+    }
+    if (count !== snap.size) return null;
+    if (leafRun.length) leafRuns.push(sealed(leafRun));
+    if (nfRun.length) nfRuns.push(sealed(nfRun));
+    const head = JSON.stringify({ epoch, chainId, block: snap.block, root: snap.root, nfRoot: snap.nfRoot, size: snap.size }).slice(0, -1);
+    return Buffer.concat([Buffer.from(`${head},"leaves":[`), ...joined(leafRuns), Buffer.from('],"nullifiers":['), ...joined(nfRuns), Buffer.from(']}')]);
+  }
+  // A snapshot is tens of megabytes (Base's, 28) and the same for everyone, so a caller is held to a handful of reads and all callers to a rate.
   const readerOk = makeTokenBucket({ perMin: cfg.readsPerMin ?? 20, burst: cfg.readBurst ?? 8, now: () => nowSec() * 1000 });
   const readersOk = makeTokenBucket({ perMin: cfg.allReadsPerMin ?? 240, burst: cfg.allReadsPerMin ?? 240, maxKeys: 1, now: () => nowSec() * 1000 });
   function nullifiers(chainId, epoch, { client = 'unknown' } = {}) {
@@ -173,19 +210,21 @@ export function createHolding({ store, cfg, clients, hash, groth16, nowSec = () 
     const snap = store.holdingSnapshots(epoch).find((s) => s.chainId === chainId);
     if (!snap) return reply(404, { error: 'no snapshot for that day and chain' });
     const key = `${chainId}:${epoch}`;
-    if (!nullifierBodies.has(key)) {
-      const nfs = [], leaves = [];
-      for (const e of store.holdingEvents(chainId, snap.block)) {
-        for (const nf of [e.nf0, e.nf1]) if (BigInt(nf) !== 0n) nfs.push(nf);
-        if (BigInt(e.outLeaf0) !== 0n || BigInt(e.outLeaf1) !== 0n) leaves.push(e.outLeaf0, e.outLeaf1);
-      }
-      if (leaves.length !== snap.size) return reply(500, { error: 'the stored events do not give the snapshot' });
-      if (nullifierBodies.size > 16) nullifierBodies.clear();
-      const body = { epoch, chainId, block: snap.block, root: snap.root, nfRoot: snap.nfRoot, size: snap.size, leaves, nullifiers: nfs };
-      nullifierBodies.set(key, { body, text: JSON.stringify(body) });                    // serialized once: a snapshot never changes
+    let kept = nullifierBodies.get(key);
+    if (kept) { nullifierBodies.delete(key); nullifierBodies.set(key, kept); }          // read now: the last to go
+    else {
+      const bytes = snapshotBytes(chainId, epoch, snap);
+      if (bytes === null) return reply(500, { error: 'the stored events do not give the snapshot' });
+      remember(key, bytes);                                                               // serialized once: a snapshot never changes
+      kept = nullifierBodies.get(key);
     }
-    const kept = nullifierBodies.get(key);
-    return { ...reply(200, kept.body), text: kept.text };
+    // `bytes` is what is sent. `text` and `body` are not enumerable, so nothing that only copies a reply makes a string or an object of tens of megabytes.
+    const out = { status: 200, bytes: kept.bytes };
+    Object.defineProperties(out, {
+      text: { get: () => (kept.text ??= kept.bytes.toString()) },
+      body: { get: () => (kept.body ??= JSON.parse(kept.bytes.toString())) },
+    });
+    return out;
   }
 
   // opts.client: whoever is asking, as the caller's rate is counted.

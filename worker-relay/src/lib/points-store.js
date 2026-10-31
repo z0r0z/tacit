@@ -608,6 +608,11 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   const getMeta = (k) => getMetaStmt.get(k)?.v ?? null;
   const setMeta = (k, v) => { setMetaStmt.run(k, String(v)); };
   const holdingEvents = (chainId, throughBlock = Number.MAX_SAFE_INTEGER) => holdingEventsStmt.all(chainId, throughBlock);
+  // The same rows in the same order, one at a time. A big pool's events are a hundred thousand and more (Base's 135,000, on 2026-10-31, are 75 MB as rows,
+  // and the state built from them took 175 MB), and the process has a heap of about 256 MB: reading them with holdingEvents holds every row at once, and
+  // the state, the snapshot and a client's read of it each did that on top of what the others held. Read it through in one go, and await nothing in the
+  // loop: the statement is busy until the iterator is finished or let go (a loop that ends or throws lets it go).
+  const holdingEventsIter = (chainId, throughBlock = Number.MAX_SAFE_INTEGER) => holdingEventsStmt.iterate(chainId, throughBlock);
   const loadHoldingCursor = (chainId) => holdingCursorStmt.get(chainId)?.block ?? null;
   const saveHoldingCursor = (chainId, block) => { saveHoldingCursorStmt.run(chainId, Number(block)); };
   // The first snapshot drawn for a day on a chain stands.
@@ -835,7 +840,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
 
   return {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
-    dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
+    dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, holdingEventsIter, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay, recent,
     loadSettleState, saveSettleState, savePublishedClaims, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
