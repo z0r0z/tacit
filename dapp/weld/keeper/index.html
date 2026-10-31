@@ -7,7 +7,7 @@
      data stats does, plus an injected wallet to sign advanceTip(bytes) — permissionless on chain
      (contracts/src/lib/BitcoinLightRelay.sol:253) — so anyone can push the header relay forward and pay their
      own gas, instead of waiting on Tacit's own cron. No Tacit key touches this page. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-vJ5S48L2L35IGCWnN58I/0Rlc1gNLbVeHe+8peKAGk4=' 'wasm-unsafe-eval'; connect-src wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/hwLOSFLqB2lcXSATxUHmi7zw+L7X9pFf05QblZ3ukE=' 'wasm-unsafe-eval'; connect-src wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-points.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -175,6 +175,16 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.45); backdrop-filter: blur(2px)
 .callout .btn { margin-top: 8px; }
 
 pre.cmd { margin: 12px 0 0; padding: 12px 14px; font: 12px/1.7 var(--mono); background: var(--field); border: 1px solid var(--hair); overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: pre; }
+/* the commands to paste are shown whole (a wrapped line copies as one) */
+#g-mine pre.cmd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fld { display: block; margin-top: 14px; }
+.fld > span { display: block; margin-bottom: 6px; font-size: 12px; color: var(--mute); }
+.fld input { width: 100%; min-height: 44px; padding: 10px 12px; font: 13px var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair); border-radius: 0; }
+.fld input:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; border-color: var(--ink); }
+.fld input[aria-invalid="true"] { border-color: var(--err); }
+details.more { margin-top: 12px; font-size: 12.5px; }
+details.more summary { cursor: pointer; color: var(--mute); }
+@media (hover: hover) { details.more summary:hover { color: var(--ink); } }
 
 .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.batches { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
@@ -432,14 +442,20 @@ RUNNER_KEY=0x… node tools/community-runner.mjs</code></pre>
     </div>
   </section>
 
-  <section class="grp" id="g-mine" aria-labelledby="h-mine" hidden>
+  <section class="grp" id="g-mine" aria-labelledby="h-mine">
     <h2 id="h-mine"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>Prove wraps for points</h2>
     <div class="panel">
       <p class="lede">Your computer proves wraps people keep ready. Each proof the pool accepts earns TAC points to your address.</p>
       <div class="plan num" id="mine-box"><p><span class="sk" style="--w:22ch"></span></p></div>
-      <pre class="cmd"><code>tacit-prover mine 0xYourAddress
-TACIT_MINE=0xYourAddress tacit-prover install   # or: mine whenever it is idle, from login</code></pre>
-      <p class="plan"><a href="https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover" target="_blank" rel="noopener noreferrer">Get tacit-prover</a></p>
+      <label class="fld" for="mine-addr"><span>Your address</span><input id="mine-addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x…" maxlength="64" aria-describedby="mine-help"></label>
+      <pre class="cmd"><code id="mine-cmd">curl -fsSL https://tacit.finance/prove.sh | sh -s -- 0xYourAddress</code></pre>
+      <button class="btn" id="mine-copy" type="button">Copy the command</button>
+      <p class="plan" id="mine-help">Paste it in Terminal. It needs an Apple-silicon Mac or x86-64 Linux; the first proof downloads 6.2 GB and each takes about 5 to 10 minutes.</p>
+      <details class="more"><summary>Check on it or stop it</summary>
+        <pre class="cmd"><code id="mine-more">curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall</code></pre>
+      </details>
+      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md#prove-for-the-wrap-pool" target="_blank" rel="noopener noreferrer">How it works and what it pays</a> · <a href="https://github.com/src-company/tacit/tree/main/contracts/sp1/confidential/device-prover" target="_blank" rel="noopener noreferrer">Other ways to run it</a></p>
     </div>
   </section>
   <section class="grp" id="g-prove" aria-labelledby="h-prove">
@@ -447,7 +463,7 @@ TACIT_MINE=0xYourAddress tacit-prover install   # or: mine whenever it is idle, 
     <div class="panel">
       <p class="lede">Holders who want a proof fast sign a fee in TAC. Your computer claims the order, proves it, and is paid from their permit the moment the pool accepts it.</p>
       <div class="plan num" id="prove-box"><p><span class="sk" style="--w:22ch"></span></p></div>
-      <pre class="cmd"><code>tacit-prover                                   # proves on this computer (127.0.0.1)
+      <pre class="cmd"><code>curl -fsSL https://tacit.finance/prove.sh | sh   # installs tacit-prover and keeps it running (127.0.0.1)
 git clone https://github.com/src-company/tacit
 cd tacit &amp;&amp; npm ci --omit=dev
 RUNNER_KEY=0x… node tools/community-runner.mjs prove</code></pre>
@@ -492,6 +508,7 @@ import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/wal
 import { makeHeaderRelayAdvance } from '/header-relay-advance.js?cb=1c3a7226';
 import { POOL, SEL_ANCESTRY, ATTEST_GAS, SETTLE_GAS, readProof, attestRefusal, encodeAttest, needsAncestry, ancestryCalls, ethText, ethFeeWei, boardSummary, pickSettle, readBoard, reportLanded, settleCalldata } from '/community-ops.js?cb=89708515';
 import { bodyType } from '/rpc-body.js';
+import { cleanAddress, proveCommand, utcDay, mineLines } from '/community-prove.js?cb=9c90fa04';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -615,6 +632,7 @@ function paintWallet() {
   if (S.address) label.textContent = short(S.address);
   else label.innerHTML = '<span class="wide">Connect wallet</span><span class="narrow">Connect</span>';
   $('#wallet').title = S.address ? `Connected: ${S.address}` : 'Connect an Ethereum wallet to pay the network fee';
+  mineFromWallet();
 }
 
 // ── what a send costs: the node's gas price now, for an estimate in ETH next to each action ───────────────────
@@ -887,17 +905,69 @@ async function doSendOne() {
   refreshBoard().catch(() => {});
 }
 
-// The proof pool's day (GET /prover/pool): what waits, what was proved today and by how many provers, and who proved the most.
-// An API without the pool yet (404) leaves the section out.
-async function refreshPool() {
+// The proof pool's day (GET /prover/pool): what waits, what was proved today and by how many provers, and who proved the most; the address in the
+// field's proofs today (the pool's tally of the day, GET /prover/pool/credits, so a first proof shows at once); and, from the points service
+// (GET /mine), what a proof pays now and what the address has been credited for finished days. An API without the pool yet (404) leaves the
+// section out. The address is the field's, kept in this browser, or else the connected wallet's.
+const POINTS = 'https://tacit-points.onrender.com';
+const SAVED_ADDR = 'tacit-prove-address';
+let pool = null, mining = null, tally = null, typedAddr = false;
+const mineAddr = () => cleanAddress($('#mine-addr').value);
+function paintMine() {
   const box = $('#mine-box');
+  if (!pool) { box.innerHTML = '<p>Could not read the proof pool. The page tries again every minute.</p>'; return; }
+  const top = (pool.top || []).slice(0, 5).map((t) => `${esc(short(t.miner))} ${esc(int(t.proofs))}`).join(' · ');
+  const { pays, today, credited } = mineLines(pool, mining, { tally, address: mineAddr() });
+  const yours = [today, credited].filter(Boolean).join(' · ');
+  box.innerHTML = `<p>${esc(plural(pool.queued || 0, 'wrap'))} waiting · ${esc(int(pool.doneToday || 0))} proved today by ${esc(plural(pool.minersToday || 0, 'prover'))}</p>`
+    + (pays ? `<p>${esc(pays)}</p>` : '') + (yours ? `<p>${esc(yours)}</p>` : '') + (top ? `<p>Most today: ${top}</p>` : '');
+}
+function paintCommand() {
+  const field = $('#mine-addr'), a = mineAddr();
+  $('#mine-cmd').textContent = proveCommand(a);
+  field.setAttribute('aria-invalid', field.value.trim() && !a ? 'true' : 'false');
+}
+async function readMine() {
+  const a = mineAddr();
+  const get = (url) => fetch(url, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [m, t] = await Promise.all([get(`${POINTS}/mine${a ? `?address=${a.toLowerCase()}` : ''}`), a ? get(`${API}/prover/pool/credits?day=${utcDay()}`) : null]);
+  if (a !== mineAddr()) return;                                    // the field changed while it was read: that answer is for another address
+  mining = m; tally = t;
+}
+async function refreshPool() {
   let p = null;
   try { const r = await fetch(`${API}/prover/pool`, { cache: 'no-store' }); if (r.ok) p = await r.json(); else if (r.status === 404) { $('#g-mine').hidden = true; return; } } catch {}
-  $('#g-mine').hidden = false;
-  if (!p) { box.innerHTML = '<p>Could not read the proof pool. The page tries again every minute.</p>'; return; }
-  const top = (p.top || []).slice(0, 5).map((t) => `${esc(short(t.miner))} ${esc(int(t.proofs))}`).join(' · ');
-  box.innerHTML = `<p>${esc(plural(p.queued || 0, 'wrap'))} waiting · ${esc(int(p.doneToday || 0))} proved today by ${esc(plural(p.minersToday || 0, 'prover'))}</p>${top ? `<p>Most today: ${top}</p>` : ''}`;
+  pool = p;
+  paintMine();                                                     // the pool's figures do not wait for the points service
+  await readMine();
+  paintMine();
 }
+function addressChanged() {
+  paintCommand();
+  const a = mineAddr();
+  if (a) { try { localStorage.setItem(SAVED_ADDR, a); } catch {} }
+  readMine().then(paintMine);
+}
+$('#mine-addr').addEventListener('input', () => { typedAddr = true; addressChanged(); });
+// A connected wallet's account fills the field when nothing else has: the address the points go to is usually the one the person already uses.
+function mineFromWallet() {
+  const field = $('#mine-addr');
+  if (!S.address || typedAddr || field.value) return;
+  field.value = S.address;
+  addressChanged();
+}
+$('#mine-copy').addEventListener('click', async () => {
+  const a = mineAddr();
+  if (!a) { $('#mine-addr').focus(); toast('Enter the address the points should go to.', true); return; }
+  try { await navigator.clipboard.writeText(proveCommand(a)); toast('Copied. Paste it in Terminal.'); }
+  catch {
+    const sel = getSelection(), range = document.createRange();
+    range.selectNodeContents($('#mine-cmd')); sel.removeAllRanges(); sel.addRange(range);
+    toast('Press Ctrl+C or Cmd+C to copy it.');
+  }
+});
+try { const saved = localStorage.getItem(SAVED_ADDR); if (cleanAddress(saved)) $('#mine-addr').value = saved; } catch {}
+paintCommand();
 
 // The proof market's board (GET /market/orders): the orders waiting for a prover, each a holder's wrap and the TAC it pays at most.
 async function refreshMarket() {

@@ -112,6 +112,32 @@ order, but an attest publishes only each chunk's running-keccak root. The items 
 guest's run over that batch's Bitcoin blocks, which neither the chain nor the API publishes, so a runner cannot
 build the call from public data. `pendingOverflowChunks()` on the pool reads 0 today.
 
+## Prove for the wrap pool
+
+A page with a Tacit account open asks the proof pool to keep wraps of a few sizes proved ahead, so the deposit that follows needs no wait for a proof. Any
+computer can make those proofs. `tacit-prover` leases one wrap at a time from the pool (`GET /prover/pool`), proves it and sends the proof back; the API
+keeps it only if its public values are the wrap's and the live SP1 verifier takes it, and credits the address you named with points. Tacit's own GPU
+prover leaves a wrap to community provers first (up to ten minutes by default, and only while one has asked in the last five), so a computer that asks gets first pick.
+
+```sh
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- 0xYourAddress    # install it and start it at login
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status         # running? what waits in the pool? what has the address earned?
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall      # stop it and remove it
+```
+
+The [keeper page](https://tacit.finance/weld/keeper/) has the same command with your address filled in. [`dapp/prove.sh`](../dapp/prove.sh) picks the build
+for the machine (an Apple-silicon Mac or x86-64 Linux; on Windows, run it inside WSL), downloads the release it pins and runs nothing from it unless the
+archive's sha256 is the pinned one, puts the program in `~/.tacit-prover/bin`, and sets it to start at login (a launchd agent, or a systemd user unit). Run
+again, it updates the program and keeps the address. Cutting a new release means `node tools/prove-pins.mjs tacit-prover-vX.Y.Z`, which writes its sums into the script.
+
+- **Needs:** about 8 GB of memory. The first proof downloads SP1's Groth16 circuit once, 6.2 GB (8.4 GB unpacked). A proof takes about 5 to 10 minutes on a Mac
+  with 16 GB or more (13 minutes measured on an 8 GB MacBook Air) and uses the processor while it runs, so a laptop does best plugged in. The program asks the pool
+  once a minute and makes one proof at a time.
+- **Costs:** nothing else. No key and no ETH are involved and nothing is signed; the address only receives points. A proof it cannot make is handed back, unpaid.
+- **Earns:** 20 points a proof, the first 30 of a day. Once the day is over, the points service shares that day's TAC between the provers by points, no point
+  paid more than a cap, so a proof pays up to 20 times the cap. [`GET https://tacit-points.onrender.com/mine`](https://tacit-points.onrender.com/mine) gives the
+  terms, when they end and what is left in the pocket; add `?address=0x…` for what an address has been credited. The keeper page and `--status` read it.
+
 ## On your device
 
 The runner makes no proofs; it lands proofs others publish. Proving an op with your own hardware is

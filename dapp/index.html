@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RG6Nt3PysF3K6P3peiwvMl7iom2LEs1en3iJK7GS+a0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jzY2KFUtjpV1KCzwAHASAJHJ7AxnGP2HFaU08QNsE98=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -4085,11 +4085,8 @@ function devNote() {
   const now = at ? ` Proving now: step ${at.step} of 4, ${etaWords(at.left)}.` : LOCAL.found.busy ? ' Proving now.' : '';
   return html`On: ${LOCAL.found.gpu ? `this computer (${LOCAL.found.gpu})` : 'this computer'} proves your sends, wraps, claims and farm joins, sent from ${your()}.${now}${q ? ` ${q} more waiting.` : ''}`;
 }
-// tacit-prover's builds: one command fetches and unpacks it (curl, so no download warning) and starts it at login.
-const PROVER_REL = 'https://github.com/src-company/tacit/releases/download/tacit-prover-v0.2.0/';
-const PROVER_GETS = [['macOS, Apple silicon', 'tacit-prover-macos-arm64.tar.gz'], ['Linux, x86-64', 'tacit-prover-linux-x86_64.tar.gz']];
-const proverCmd = (f) => `curl -fsSL ${PROVER_REL}${f} | tar xz -C ~ && ~/tacit-prover install`;
-const onLinux = () => /linux/i.test(navigator.userAgentData?.platform || navigator.platform || '') && !/android/i.test(navigator.userAgent);
+// tacit-prover for this machine: one command (dapp/prove.sh: the release it pins, checked, then started at login). curl, so no download warning.
+const PROVER_CMD = 'curl -fsSL https://tacit.finance/prove.sh | sh';
 const SIZES = [1, 5, 20];
 const sizesNow = () => SIZES.filter((n) => proveFor(n) > (SP.credit ?? 0n));
 function sizeRow() {
@@ -4110,8 +4107,8 @@ function renderProve() {
   const wayOpt = (k, id, title, sub) => html`<label class="spw-o"><input type="radio" name="spw" id="${id}" ${way === k ? 'checked' : ''}><span><b>${title}</b><small>${sub}</small></span></label>`;
   const panel = way === 'device' ? html`<div class="spw-p">
       <p class="note sp-live" id="sp-dev-note" aria-live="polite">${devNote()}</p>
-      ${LOCAL.found ? '' : html`<div class="sp-get">${(onLinux() ? [...PROVER_GETS].reverse() : PROVER_GETS).map(([name, f]) => html`<div class="sp-cmd"><span>${name}</span><code>${proverCmd(f)}</code><button class="link" type="button" data-copy="${proverCmd(f)}">copy</button></div>`)}
-        <p class="note">Paste it in a terminal: it starts with your computer and idles at no CPU. The first proof also downloads SP1’s 6.2 GB circuit, once. Windows and Intel Macs: <a href="${DEVICE_GET}" target="_blank" rel="noopener">build it from source</a>.</p></div>`}
+      ${LOCAL.found ? '' : html`<div class="sp-get"><div class="sp-cmd"><span>macOS (Apple silicon) or Linux (x86-64)</span><code>${PROVER_CMD}</code><button class="link" type="button" data-copy="${PROVER_CMD}">copy</button></div>
+        <p class="note">Paste it in a terminal: it checks the download, starts with your computer, and idles at no CPU. The first proof also downloads SP1’s 6.2 GB circuit, once. Windows and Intel Macs: <a href="${DEVICE_GET}" target="_blank" rel="noopener">build it from source</a>.</p></div>`}
     </div>`
     : way === 'credit' ? html`<ol class="steps">
       <li class="step done"><span class="n">1</span><div><h3>Your prover account</h3>

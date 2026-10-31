@@ -11,7 +11,17 @@ pool's price, so the page leaves those to Tacit's relay. The list is `DEVICE_TYP
 
 ## Get it
 
-Download `tacit-prover-macos-arm64.tar.gz` or `tacit-prover-linux-x86_64.tar.gz` from the repository's tacit-prover releases and
+One command picks the build for this machine, checks it against the sha256 pinned in the script, and starts it at login (`dapp/prove.sh`, served at
+tacit.finance/prove.sh); with an address it mines the proof pool for TAC points to it (see [Mining the proof pool](#mining-the-proof-pool)):
+
+```sh
+curl -fsSL https://tacit.finance/prove.sh | sh                        # proves for this computer's pages
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- 0xYourAddress    # and mines the proof pool for that address
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- --status         # running? what waits in the pool? what was credited?
+curl -fsSL https://tacit.finance/prove.sh | sh -s -- --uninstall
+```
+
+Or download `tacit-prover-macos-arm64.tar.gz` or `tacit-prover-linux-x86_64.tar.gz` from the repository's tacit-prover releases and
 check it against the `.sha256` beside it (`shasum -a 256 -c`). The workflow that makes them is
 `.github/workflows/tacit-prover-release.yml`. Or build it:
 
