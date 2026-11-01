@@ -638,6 +638,45 @@ A `409` with `stale: true` means another transaction landed first: rebuild again
 (the owner's signature does not change). A `400` carrying `needFee` means gas moved; re-quote. Deposits are not
 relayed, since a deposit is paid by whoever sends it.
 
+### Private route
+
+A keeper sees the address each request comes from. The private route takes that away. A wallet seals every request to the keeper's
+gateway key and sends it through a forwarder, which hands it to the keeper's `POST /evm-pool/keeper/sealed`. The keeper opens it, runs
+it through the handler a direct request reaches, and seals the answer to the request's one-time key.
+
+| | sees |
+|---|---|
+| the forwarder | the caller's address, when an envelope came and how large it is (4, 8, 16, 32 or 64 KiB; answers in steps from 1 KiB), never what is in it |
+| the keeper | the forwarder's address, and the request |
+| whatever hosts the keeper | the forwarder's address and a sealed envelope |
+
+It hides a caller from the keeper only while the forwarder and the keeper are not one party: a forwarder run by the keeper's operator, or
+one that shares its log with it, hides nothing. Chain reads (`rpc`) are unchanged and go where the wallet sends them.
+
+**What it carries.** `info`, `head`, `quote`, `events`, `point`, `totals`, `status/<box>`, `relay`, `receive`, `deposit` and `wrap`; anything
+else is refused inside the envelope. It does not carry `reserve` or `cancel`: a caller has no address of its own to hold a slot under, so a
+wallet on this route proves against the queue's tail and sends without a reservation (`reserveSlot` in `dapp/evm-pool-wallet.js`), as a
+wallet whose reservations are paused does. Limits apply to the address an envelope came from, so every caller behind one forwarder shares its
+allowance. A forwarder named in `EVM_POOL_KEEPER_FORWARDERS` may send ten times as much, and the forwarder limits each caller by its own
+address.
+
+**The envelope** (`dapp/sealed-request.js`). The caller makes a one-time secp256k1 key, takes the shared secret with the gateway key, and
+derives a keccak stream and tag for the request and, from a reply nonce, another pair for the answer, the construction the wallet's memos and
+saved state use. Only the gateway key opens a request or makes an answer that passes its tag, so a forwarder can drop or delay one but
+cannot read, change or answer it. A request is single use and must be within five minutes of the keeper's clock. The gateway key is long-lived,
+so whoever gets it can read the envelopes they recorded: keep it to the keeper's environment, and if it may have been seen, make a new one
+(a new key id) and update the pages. A wallet that cannot reach any forwarder fails; it never falls back to a direct request, which would
+show its address.
+
+**Turning it on.**
+1. `node worker-relay/src/sealed-keygen.js` makes a key. The secret goes in the keeper's `EVM_POOL_KEEPER_GATEWAY_KEY` (`…_<chainId>` for one
+   chain) and nowhere else; the public key is what a page pins. `GET /evm-pool/keeper/info` shows it as `sealed` once the route is on, so
+   what a page pins can be checked against what the keeper holds.
+2. Run a forwarder: `FORWARDER_GATEWAYS='{"1":"https://…/1/evm-pool/keeper/sealed"}' node worker-relay/src/evm-pool-forwarder.js`. It holds
+   no key, forwards no header of the caller's and keeps nothing.
+3. In a page, `makeSealedFetch({ keeper, chainId, gateway, forwarders })` is the wallet's `fetchImpl`, and the page's `connect-src` names each
+   forwarder.
+
 ## Keys and recovery
 
 The Tacit identity key is a hash of an Ethereum wallet's signature over one fixed message (`dapp/identity-message.js`),

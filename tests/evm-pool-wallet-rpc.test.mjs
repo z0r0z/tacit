@@ -704,7 +704,7 @@ async function quickly(fn) {
 // the k-th read of the chain's tip from now. s.ready() is the wallet's first sync; s.rescans counts the reads from the
 // deploy block after it.
 const RELAYER = '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec';
-function spender(seed) {
+function spender(seed, { sealed = false } = {}) {
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(seed)), self = { V: keys.V, A: keys.A, N: keys.N };
   const pool = fakePool();
   const o = sealNote(zk, { to: self, value: 10n ** 16n, asset: ASSETF });
@@ -734,6 +734,7 @@ function spender(seed) {
         : path === '/events' && s.feed ? [200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }];
     return { ok: status === 200, status, headers: { get: (h) => s.keeperHeaders(h) }, json: async () => body };
   };
+  fetchImpl.sealed = sealed;
   s.make = () => (s.w = makeEvmPoolWallet({
     zk, keys, keeper: 'https://k.test', fetchImpl, feed: !!s.feed, store: null,
     prove: async () => { proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
@@ -936,6 +937,20 @@ await check('a wallet ahead of the keeper\'s history asks once from its cell and
   assert.equal(s.balance, 110n);
   assert.equal(s.notes, 2);
   assert.equal(s.leaves, pool.size, 'every leaf');
+});
+
+await check('on the private route a spend is sent without a reservation, and the same spend on a direct route asks for one', async () => {
+  for (const [route, sealed] of [['direct', false], ['private', true]]) {
+    const s = spender(sealed ? 23 : 24, { sealed });
+    s.relay = (_, body) => { s.relayed = body; return [200, { txHash: s.spend().tx }]; };
+    s.make();
+    await s.ready();
+    await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' });
+    assert.equal(s.count('/reserve'), sealed ? 0 : 1, `${route}: reservations asked`);
+    assert.equal(s.count('/relay'), 1, `${route}: relayed once`);
+    assert.ok(!('reservation' in s.relayed), `${route}: no slot named in the relay`);
+    assert.equal(s.proofs, 1, `${route}: proved once`);
+  }
 });
 
 console.log(`\n${n} checks passed`);

@@ -29,6 +29,7 @@ import { PipelineError } from './evm-pool-keeper-pipeline.js';
 import { revertName as defaultRevertName } from './evm-pool-keeper-chain.js';
 import { safeErr } from './safe-err.js';
 import { ipKey, clientKey } from './token-bucket.js';
+import { makeSealedGateway } from './evm-pool-keeper-sealed.js';
 
 const POST_ABI = parseAbi(['function post(uint256 size, uint256 blockNumber, bytes32[32] filled)']);
 const VMAX = 1n << 120n;
@@ -291,9 +292,17 @@ export function createIntakeHandler({
   revertName = defaultRevertName, leafSync = null, pipeline = null,
   onDue = () => {},   // called when a box is registered or asked about again: the keeper's loop looks at once instead of at its next poll
 }) {
-  const limited = makeRateLimiter({ perMin: cfg.ratePerMin, burst: Math.max(1, Math.min(10, cfg.ratePerMin)) });
+  // A forwarder (an address in cfg.forwarders) carries many callers, so it may send ten times as much as one.
+  const v4 = (k) => String(k).replace(/^::ffff:/, '');
+  const forwarders = new Set((cfg.forwarders || []).map((a) => v4(ipKey(a))));
+  const allowance = (perMin, burst) => {
+    const one = makeRateLimiter({ perMin, burst }), many = makeRateLimiter({ perMin: perMin * 10, burst: burst * 10 });
+    return (key) => (forwarders.has(v4(key)) ? many(key) : one(key));
+  };
+  const limited = allowance(cfg.ratePerMin, Math.max(1, Math.min(10, cfg.ratePerMin)));
   // Reads a wallet makes around every spend (head, quote, events) have their own, larger allowance.
-  const readLimited = makeRateLimiter({ perMin: cfg.ratePerMin * 6, burst: Math.max(1, Math.min(30, cfg.ratePerMin * 3)) });
+  const readLimited = allowance(cfg.ratePerMin * 6, Math.max(1, Math.min(30, cfg.ratePerMin * 3)));
+  let gateway = null;   // the private route's, made on first use
   // /head is cached for a second, and until the queue changes, so many wallets polling it cost a few reads.
   let headCache = null;
   async function headNow() {
@@ -542,6 +551,7 @@ export function createIntakeHandler({
   return async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname.replace(/\/$/, '');
+    const sealed = () => (gateway ||= makeSealedGateway({ secret: cfg.gatewayKey, handle, prefix: PREFIX, now }));
     const send = (code, body) => {
       const text = JSON.stringify(body);
       const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': '10' } : {}) };
@@ -567,7 +577,13 @@ export function createIntakeHandler({
         return send(200, {
           chainId: chain.chainId, pool: chain.pool, router: chain.router, asset: chain.asset, keeper: chain.address,
           wraps: !!chain.v1 && chain.v1.toLowerCase() !== ETH, relay: cfg.relay, minReceiveFeeBps: cfg.minReceiveFeeBps,
+          ...(cfg.gatewayKey ? { sealed: sealed().key } : {}),
         });
+      }
+      if (p === `${PREFIX}/sealed` && req.method === 'POST') {
+        if (!cfg.gatewayKey) return send(404, { error: 'no private route' });
+        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        return sealed().handle(req, res, send);
       }
       if (p === `${PREFIX}/events` && req.method === 'GET') {
         if (!leafSync) return send(404, { error: 'no event feed' });

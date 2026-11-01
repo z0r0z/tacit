@@ -13,7 +13,9 @@
     "points": "node src/points-indexer.js",
     "btc-pool": "node src/btc-pool-indexer.js",
     "pool-maker": "node src/pool-maker.js",
-    "evm-pool-keeper": "node src/evm-pool-keeper.js"
+    "evm-pool-keeper": "node src/evm-pool-keeper.js",
+    "evm-pool-forwarder": "node src/evm-pool-forwarder.js",
+    "sealed-keygen": "node src/sealed-keygen.js"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",

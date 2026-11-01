@@ -818,8 +818,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // prove it against: this wallet's, plus the leaves queued ahead of the slot. Many wallets prove at once, each in
   // its own slot. → { id, tree }, 'queued' (a spend of these notes is in the queue already), 'spent' (the pool has
   // them spent), 'stale' (refused for the queue's state: try again), 'tail' (the keeper has paused this connection's
-  // reservations: prove against the queue's tail and send without one), or null (prove without a slot).
+  // reservations: prove against the queue's tail and send without one), or null (prove without a slot). On the private route
+  // (dapp/sealed-request.js) a caller has no address of its own to hold a slot under, so it sends without one, as a paused one does.
   async function reserveSlot(sealed, ins) {
+    if (fetchImpl?.sealed) return 'tail';
     const leaf = (k) => String(sealed[k] ? sealed[k].leaf : 0n);
     let r;
     try {

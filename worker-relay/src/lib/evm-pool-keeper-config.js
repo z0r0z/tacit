@@ -7,6 +7,7 @@
 import { getAddress, isAddress } from 'viem';
 import { privateSettleUrl } from './private-settle-url.js';
 import { RECEIVE_FEE_BPS } from '../../../dapp/evm-pool-gateway.js';
+import { gatewayKeys } from '../../../dapp/sealed-request.js';
 import { parseRateFeed } from './evm-pool-keeper-rates.js';
 
 const ETH = '0x0000000000000000000000000000000000000000';
@@ -36,6 +37,13 @@ const big = (env, k, d) => {
   return BigInt(v);
 };
 const list = (v) => v.split(',').map((s) => s.trim()).filter(Boolean);
+// The private route's gateway key as 64 hex characters, or '' for off. A key that is not one stops the keeper at start, without
+// saying what it was.
+const gatewayKeyOf = (v) => {
+  if (!v) return '';
+  try { gatewayKeys(v); } catch (e) { throw new Error(`EVM_POOL_KEEPER_GATEWAY_KEY: ${e.message}`); }
+  return v.replace(/^0x/, '').toLowerCase();
+};
 
 // "token:amount,..." with token an address or "eth". Keys are lowercase addresses.
 export function parseTokenMap(v, name) {
@@ -207,6 +215,10 @@ export function loadKeeperConfig(env = process.env) {
     minDeadlineSecs: int(env, 'EVM_POOL_KEEPER_MIN_DEADLINE_SECS', 600),
     maxDeadlineSecs: int(env, 'EVM_POOL_KEEPER_MAX_DEADLINE_SECS', 30 * 86400),
     ratePerMin: int(env, 'EVM_POOL_KEEPER_RATE_PER_MIN', 20),
+    // The private route (docs/EVM-POOL.md): a gateway key turns on POST /sealed. The addresses listed as forwarders carry many callers
+    // and may send ten times the rate.
+    gatewayKey: gatewayKeyOf(str(env, 'EVM_POOL_KEEPER_GATEWAY_KEY')),
+    forwarders: list(str(env, 'EVM_POOL_KEEPER_FORWARDERS')),
 
     wasm: str(env, 'EVM_POOL_WASM', BUILD + 'transact_js/transact.wasm'),
     zkey: str(env, 'EVM_POOL_ZKEY', BUILD + 'transact_dev_final.zkey'),

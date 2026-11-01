@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +18,8 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
 import { proveTransact } from '../../dapp/evm-pool-zk-prover.js';
 import { evmPoolKeys, makeEvmPoolWallet, jsonRpc } from '../../dapp/evm-pool-wallet.js';
+import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
+import { gatewayKeys, makeSealedFetch } from '../../dapp/sealed-request.js';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 const OUT = join(ROOT, 'contracts/out');
@@ -77,6 +80,7 @@ const r = artifact('TacitEvmPoolRouter.sol', 'TacitEvmPoolRouter');
 const ZERO = '0x0000000000000000000000000000000000000000';
 const router = await deploy(r.abi, r.bytecode.object, [pool, ZERO, ZERO, ZERO, poseidonT5.address]);
 
+const GATEWAY_SECRET = '5a'.repeat(32);   // the keeper's private route (dapp/sealed-request.js) is on for the whole run
 const keeperLog = [];
 const keeper = spawn('node', ['src/evm-pool-keeper.js'], {
   cwd: join(ROOT, 'worker-relay'),
@@ -84,6 +88,7 @@ const keeper = spawn('node', ['src/evm-pool-keeper.js'], {
     ...process.env, EVM_POOL_ADDR: pool, EVM_POOL_ROUTER_ADDR: router, EVM_POOL_RPC_URL: RPC, EVM_POOL_CHAIN_ID: '31337',
     EVM_POOL_KEEPER_PRIV: KEYS[1], EVM_POOL_KEEPER_DB: join(tmp, 'keeper.db'), PORT: String(KPORT),
     EVM_POOL_KEEPER_POLL_SECS: '1', EVM_POOL_KEEPER_MIN_FEES: 'eth:1000', EVM_POOL_CONFIRMATIONS: '0',
+    EVM_POOL_KEEPER_GATEWAY_KEY: GATEWAY_SECRET,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -143,6 +148,34 @@ try {
     assert.equal(await pub.getBalance({ address: fresh }), parseEther('0.1'));
     const b = await bob.sync();
     assert.ok(b.balance < parseEther('0.2') && b.balance > parseEther('0.19'));
+  });
+
+  await test('a relayed withdrawal through the private route and a forwarder pays exactly, with no reservation, and the forwarder reads nothing', async () => {
+    const forwarded = [], paths = [];
+    const fwd = createServer(makeForwarder({ gateways: { 31337: `${KEEPER}/sealed` }, fetchImpl: async (url, init) => { forwarded.push({ headers: init.headers, body: init.body }); return fetch(url, init); } }));
+    await new Promise((res) => fwd.listen(0, res));
+    try {
+      const gateway = Buffer.from(gatewayKeys(GATEWAY_SECRET).pub).toString('hex');
+      assert.equal((await (await fetch(`${KEEPER}/info`)).json()).sealed.key, gateway, 'the keeper names the key it was given');
+      const sealedFetch = makeSealedFetch({ keeper: KEEPER, chainId: 31337, gateway, forwarders: [`http://127.0.0.1:${fwd.address().port}`] });
+      const viaRoute = Object.assign((u, init) => { paths.push(new URL(u).pathname.slice('/evm-pool/keeper'.length)); return sealedFetch(u, init); }, { sealed: true });
+      const private_ = makeEvmPoolWallet({ zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(0x22)), chain: chainCfg, keeper: KEEPER, prove, fetchImpl: viaRoute });
+      const before = (await private_.sync()).balance;
+      assert.equal(before, (await bob.sync()).balance, 'the same notes');
+      const fresh = privateKeyToAccount('0x' + '46'.repeat(32)).address;
+      const hash = await private_.withdraw({ to: fresh, amount: parseEther('0.05') });
+      assert.equal((await pub.waitForTransactionReceipt({ hash })).status, 'success');
+      assert.equal(await pub.getBalance({ address: fresh }), parseEther('0.05'));
+      assert.equal((await pub.getTransaction({ hash })).from.toLowerCase(), privateKeyToAccount(KEYS[1]).address.toLowerCase(), 'sent by the keeper');
+      assert.ok(paths.includes('/quote') && paths.includes('/relay'), paths.join(' '));
+      assert.ok(!paths.includes('/reserve'), 'no reservation asked for');
+      assert.ok(forwarded.length >= paths.length, 'every request went through the forwarder');
+      for (const f of forwarded) {
+        assert.deepEqual(Object.keys(f.headers), ['content-type']);
+        for (const text of [fresh.slice(2).toLowerCase(), 'relay', 'withdraw', 'quote']) assert.ok(!Buffer.from(f.body).includes(Buffer.from(text)), text);
+      }
+      assert.ok(!keeperLog.join('').toLowerCase().includes(fresh.slice(2).toLowerCase()), 'the keeper\'s log does not name the recipient');
+    } finally { fwd.close(); }
   });
 
   await test('withdraw and call: one relayed transaction pays a bridge; the unspent rest returns to alice as a note', async () => {

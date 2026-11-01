@@ -17,6 +17,9 @@ import { makeLeafSync, makeFactsSync, LeafSyncError, ChunkNotKept, FACT_KEYS } f
 import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parseReceiveSubmission, parseRelaySubmission, ipKey } from '../src/lib/evm-pool-keeper-intake.js';
 import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
+import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
+import { makeSealedGateway } from '../src/lib/evm-pool-keeper-sealed.js';
+import { gatewayKeys, sealRequest, makeSealedFetch } from '../../dapp/sealed-request.js';
 
 const zk = await loadZk();
 let n = 0;
@@ -1528,6 +1531,211 @@ await test('a token pool with no price for its token and no fixed minimum quotes
     cfg.rates.set(TOKEN.toLowerCase(), 5n * 10n ** 14n);
     const q = await (await fetch(`${base}/quote`)).json();
     assert.ok(BigInt(q.fee) > 0n, `a fee once priced (${q.fee})`);
+  } finally { server.close(); }
+});
+
+// ── the private route (dapp/sealed-request.js): sealed requests, a forwarder in front of the keeper ──
+
+const GATEWAY_SECRET = 'a1'.repeat(32);
+const GATEWAY_PUB = Buffer.from(gatewayKeys(GATEWAY_SECRET).pub).toString('hex');
+const listen = (server) => new Promise((r) => server.listen(0, r));
+
+// A keeper's handler behind a real server, and a forwarder in front of it behind another; `sf` is a wallet's sealed fetch through it.
+async function privateRoute({ cfg = {}, fetchImpl } = {}) {
+  const store = openKeeperStore(':memory:');
+  const logs = [];
+  const handler = createIntakeHandler({ store, chain: mockChain(), zk, assetField, cfg: mkCfg({ gatewayKey: GATEWAY_SECRET, ...cfg }), now: () => T0, log: (m) => logs.push(m) });
+  const keeper = createServer(handler);
+  await listen(keeper);
+  const base = `http://127.0.0.1:${keeper.address().port}/evm-pool/keeper`;
+  const forwarded = [];
+  const fwd = createServer(makeForwarder({ gateways: { 1: `${base}/sealed` }, fetchImpl: async (url, init) => { forwarded.push({ headers: init.headers, body: init.body }); return fetch(url, init); } }));
+  await listen(fwd);
+  const fwdUrl = `http://127.0.0.1:${fwd.address().port}`;
+  const sf = makeSealedFetch({ keeper: base, chainId: 1, gateway: GATEWAY_PUB, forwarders: [fwdUrl], fetchImpl, now: () => T0 });
+  return { store, logs, base, fwdUrl, forwarded, sf, close: () => { keeper.close(); fwd.close(); } };
+}
+const jsonInit = (method, body) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+await test('the private route is off without a gateway key, a bad key stops the keeper without saying what it was, and /info names the key when on', async () => {
+  assert.equal(loadKeeperConfig(baseEnv).gatewayKey, '');
+  assert.equal(loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_GATEWAY_KEY: '0x' + GATEWAY_SECRET.toUpperCase() }).gatewayKey, GATEWAY_SECRET);
+  for (const bad of ['nope', 'zz'.repeat(32), '00'.repeat(32)]) {
+    assert.throws(() => loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_GATEWAY_KEY: bad }), (e) => /EVM_POOL_KEEPER_GATEWAY_KEY/.test(e.message) && !e.message.includes(bad), bad);
+  }
+  assert.deepEqual(loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_FORWARDERS: '1.1.1.1, 2.2.2.2' }).forwarders, ['1.1.1.1', '2.2.2.2']);
+  assert.deepEqual(loadKeeperConfig(baseEnv).forwarders, []);
+  const off = await privateRoute({ cfg: { gatewayKey: '' } });
+  try {
+    assert.equal((await fetch(`${off.base}/sealed`, { method: 'POST', body: new Uint8Array(4200) })).status, 404);
+    assert.ok(!('sealed' in (await (await fetch(`${off.base}/info`)).json())));
+  } finally { off.close(); }
+  const on = await privateRoute();
+  try {
+    const info = await (await fetch(`${on.base}/info`)).json();
+    assert.equal(info.sealed.key, GATEWAY_PUB);
+    assert.match(info.sealed.kid, /^[0-9a-f]{8}$/);
+    assert.ok(!JSON.stringify(info).includes(GATEWAY_SECRET));
+  } finally { on.close(); }
+});
+
+await test('a sealed request reaches the same handler and gets the answer a direct one would', async () => {
+  const r = await privateRoute();
+  try {
+    assert.deepEqual(await (await r.sf(`${r.base}/info`)).json(), await (await fetch(`${r.base}/info`)).json());
+    const d = makeDeposit();
+    const w = await r.sf(`${r.base}/deposit`, jsonInit('POST', d.body));
+    assert.equal(w.status, 200);
+    const j = await w.json();
+    assert.equal(j.status, 'pending');
+    assert.equal(r.store.pendingCount(), 1);
+    const again = await (await fetch(`${r.base}/deposit`, jsonInit('POST', d.body))).json();
+    assert.equal(again.box, j.box, 'the same box, whichever way it came');
+    assert.equal(r.store.pendingCount(), 1);
+    assert.deepEqual(Object.keys(await (await r.sf(`${r.base}/status/${j.box}`)).json()).sort(), ['box', 'kind', 'reward', 'status']);
+    const junk = await r.sf(`${r.base}/deposit`, { method: 'POST', body: '{"intent":{}}' });
+    assert.equal(junk.status, 400, 'the handler\'s own refusals come back as they are');
+    assert.equal((await r.sf(`${r.base}/events?from=1`)).status, 404, 'a keeper with no feed says so the same way');
+    assert.ok(r.logs.every((m) => !m.includes(d.body.hint.outputs[0].npk)));
+  } finally { r.close(); }
+});
+
+await test('the forwarder is handed nothing readable and passes on nothing of the caller\'s, and a large answer comes back whole', async () => {
+  const viaProxy = (u, init) => fetch(u, { ...init, headers: { ...init.headers, 'x-forwarded-for': '9.9.9.9', 'cf-connecting-ip': '9.9.9.9' } });
+  const r = await privateRoute({ fetchImpl: viaProxy });
+  try {
+    const d = makeDeposit();
+    assert.equal((await r.sf(`${r.base}/deposit`, jsonInit('POST', d.body))).status, 200);
+    const sent = r.forwarded.at(-1);
+    assert.deepEqual(Object.keys(sent.headers), ['content-type'], 'a content type and nothing else is sent on');
+    assert.equal(sent.body.length, 4096 + 70);
+    for (const text of ['deposit', 'outputs', 'intent', d.body.hint.outputs[0].npk.slice(0, 12)]) assert.ok(!Buffer.from(sent.body).includes(Buffer.from(text)), text);
+    // a stored history long enough to be compressed and padded
+    const store = openKeeperStore(':memory:');
+    const chain = mockChain();
+    for (let i = 0; i < 300; i++) chain.foreignTx();
+    const sync = makeLeafSync({ store, chain, zk, startBlock: 0n, confirmations: 0n, logChunk: 50n });
+    await sync.sync();
+    const handler = createIntakeHandler({ store, chain, zk, leafSync: sync, assetField, cfg: mkCfg({ gatewayKey: GATEWAY_SECRET }), now: () => T0 });
+    const keeper = createServer(handler);
+    await listen(keeper);
+    const base = `http://127.0.0.1:${keeper.address().port}/evm-pool/keeper`;
+    try {
+      const sf = makeSealedFetch({ keeper: base, chainId: 1, gateway: GATEWAY_PUB, forwarders: ['http://f.test'], now: () => T0,
+        fetchImpl: (u, init) => fetch(`${base}/sealed`, init) });
+      const direct = await (await fetch(`${base}/events?from=0`)).json();
+      const sealed = await (await sf(`${base}/events?from=0`)).json();
+      assert.ok(direct.events.length >= 300, `${direct.events.length} events`);
+      assert.deepEqual(sealed, direct);
+    } finally { keeper.close(); }
+  } finally { r.close(); }
+});
+
+await test('sealed requests are limited as the sender of the envelope is, and a listed forwarder may send ten times as much', async () => {
+  const codes = async (r, count) => {
+    const out = [];
+    for (let i = 0; i < count; i++) out.push((await r.sf(`${r.base}/wrap`, jsonInit('POST', makeWrap({ nonce: BigInt(i + 100) })))).status);
+    return out;
+  };
+  const plain = await privateRoute({ cfg: { ratePerMin: 4 } });
+  try { assert.ok((await codes(plain, 8)).includes(429), 'every caller behind one forwarder shares its allowance'); } finally { plain.close(); }
+  const listed = await privateRoute({ cfg: { ratePerMin: 4, forwarders: ['127.0.0.1'] } });
+  try { assert.deepEqual(await codes(listed, 8), Array(8).fill(200), 'a forwarder named to the keeper'); } finally { listed.close(); }
+  const direct = await privateRoute({ cfg: { ratePerMin: 4 } });
+  try {
+    let nonce = 900n;
+    const ask = (ip) => fetch(`${direct.base}/wrap`, { ...jsonInit('POST', makeWrap({ nonce: nonce++ })), headers: { 'content-type': 'application/json', 'x-forwarded-for': ip } });
+    const first = []; for (let i = 0; i < 8; i++) first.push((await ask('7.7.7.7')).status);
+    assert.ok(first.includes(429));
+    assert.equal((await ask('8.8.8.8')).status, 200, 'the limit that holds a direct caller is unchanged, and per caller');
+    // an envelope sent from a given address is limited under that address, so one sender cannot spend another's allowance
+    const from = (ip) => makeSealedFetch({ keeper: direct.base, chainId: 1, gateway: GATEWAY_PUB, forwarders: ['http://f.test'], now: () => T0,
+      fetchImpl: (u, init) => fetch(`${direct.base}/sealed`, { ...init, headers: { ...init.headers, 'x-forwarded-for': ip } }) });
+    const sealedCodes = []; for (let i = 0; i < 8; i++) sealedCodes.push((await from('6.6.6.6')(`${direct.base}/wrap`, jsonInit('POST', makeWrap({ nonce: nonce++ })))).status);
+    assert.ok(sealedCodes.includes(429), `${sealedCodes}`);
+    assert.equal((await from('5.5.5.5')(`${direct.base}/wrap`, jsonInit('POST', makeWrap({ nonce: nonce++ })))).status, 200, 'another sender is not held by it');
+  } finally { direct.close(); }
+});
+
+await test('the private route does not carry a reservation or anything a wallet does not use, and says so inside the envelope', async () => {
+  const r = await privateRoute();
+  try {
+    for (const [method, path, body] of [['POST', '/reserve', { outLeaf0: '1', outLeaf1: '2', nfs: [] }], ['POST', '/cancel', { reservation: 'a'.repeat(24) }], ['GET', '/nope', null], ['GET', '/status/zz', null], ['POST', '/info', {}], ['GET', '/sealed', null]]) {
+      const res = await r.sf(`${r.base}${path}`, { method, body: body ? JSON.stringify(body) : undefined });
+      assert.equal(res.status, 403, `${method} ${path}`);
+      assert.match((await res.json()).error, /not carried/);
+    }
+    assert.equal((await r.sf(`${r.base}/${'x'.repeat(600)}`)).status, 403);
+  } finally { r.close(); }
+});
+
+await test('a bad envelope is refused the same way whatever is wrong with it, one seen before is refused, and a large one is turned away', async () => {
+  const r = await privateRoute();
+  try {
+    const post = (bytes) => fetch(`${r.base}/sealed`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes });
+    const get = (opts = {}) => sealRequest(opts.pub || GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => opts.at ?? T0 }).bytes;
+    const good = get();
+    const flipped = Uint8Array.from(good); flipped[1000] ^= 1;
+    const answers = [];
+    for (const bytes of [flipped, get({ pub: Buffer.from(gatewayKeys('b2'.repeat(32)).pub).toString('hex') }), get({ at: T0 - 1000 }), new Uint8Array(100), new Uint8Array(0)]) {
+      const res = await post(bytes);
+      const j = await res.json();
+      answers.push([res.status, j.error]);
+      assert.equal(j.t, T0, 'it says what time it has, so a caller whose clock is off can tell');
+    }
+    assert.deepEqual(answers, Array(5).fill([400, 'bad request']));
+    assert.equal((await post(good)).status, 200);
+    assert.equal((await post(good)).status, 400, 'the same envelope twice');
+    assert.equal((await post(new Uint8Array(70000))).status, 413);
+    assert.equal((await fetch(`${r.base}/sealed`)).status, 404, 'only POST');
+  } finally { r.close(); }
+});
+
+await test('the forwarder serves only its chains, limits each caller, and says plainly when the keeper does not answer', async () => {
+  let up = { status: 200, body: new Uint8Array([1, 2, 3]) };
+  const fwd = createServer(makeForwarder({ gateways: { 1: 'http://keeper.test/sealed' }, ratePerMin: 2,
+    fetchImpl: async () => { if (up === null) throw new Error('down'); return new Response(up.body, { status: up.status }); } }));
+  await listen(fwd);
+  const base = `http://127.0.0.1:${fwd.address().port}`;
+  const post = (path, body = new Uint8Array(10), ip = '4.4.4.4') => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-forwarded-for': ip }, body });
+  try {
+    const pre = await fetch(`${base}/f/1`, { method: 'OPTIONS' });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get('access-control-allow-origin'), '*');
+    assert.equal((await fetch(`${base}/health`)).status, 200);
+    assert.equal((await post('/f/2')).status, 404, 'a chain it does not forward');
+    assert.equal((await fetch(`${base}/f/1`)).status, 404, 'POST only');
+    const ok = await post('/f/1', undefined, '5.5.5.5');
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get('content-type'), 'application/octet-stream');
+    assert.deepEqual([...new Uint8Array(await ok.arrayBuffer())], [1, 2, 3]);
+    assert.equal((await post('/f/1', new Uint8Array(70000), '6.6.6.6')).status, 413);
+    up = { status: 400, body: new Uint8Array(1) };
+    assert.equal((await post('/f/1', undefined, '7.7.7.7')).status, 400);
+    up = { status: 503, body: new Uint8Array(1) };
+    assert.equal((await post('/f/1', undefined, '8.8.8.8')).status, 503);
+    up = null;
+    assert.equal((await post('/f/1', undefined, '9.9.9.9')).status, 502);
+    const limited = [];
+    for (let i = 0; i < 4; i++) limited.push((await post('/f/1', undefined, '3.3.3.3')).status);
+    assert.ok(limited.includes(429), `${limited}`);
+    assert.equal((await post('/f/1', undefined, '2.2.2.2')).status, 502, 'another caller is not held by it');
+  } finally { fwd.close(); }
+});
+
+await test('the gateway\'s memory of envelopes is bounded, and when full it sheds its oldest rather than turn new ones away', async () => {
+  const gateway = makeSealedGateway({ secret: GATEWAY_SECRET, prefix: '/evm-pool/keeper', now: () => T0, maxSeen: 10,
+    handle: async (req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); } });
+  const server = createServer((req, res) => gateway.handle(req, res, (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); }));
+  await listen(server);
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  const post = (bytes) => fetch(url, { method: 'POST', body: bytes }).then((r) => r.status);
+  try {
+    const envelopes = Array.from({ length: 25 }, () => sealRequest(GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => T0 }).bytes);
+    const codes = []; for (const e of envelopes) codes.push(await post(e));
+    assert.deepEqual(codes, Array(25).fill(200), 'a full memory never turns a new envelope away');
+    assert.equal(await post(envelopes[24]), 400, 'a recent one is still remembered');
+    assert.equal(await post(envelopes[0]), 200, 'an old one was shed, and a replay of it is answered afresh');
   } finally { server.close(); }
 });
 
