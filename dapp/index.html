@@ -205,7 +205,7 @@ main:focus { outline: none; }
 @media (hover: hover) { .pxs a.px:hover b { color: var(--ink); } .pxs a.px:hover .num { text-decoration: underline; text-underline-offset: 3px; } }
 /* The farms under the prices: a pair and its APR a chip, best first, each opening the tile's Earn tab on that pool's ETH zap. One line that
    scrolls sideways on a phone, and its height is kept while empty, so nothing moves when the farms are read. */
-.fms { display: flex; gap: 6px; height: 26px; margin: 0 0 8px; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
+.fms { display: flex; gap: 16px; height: 26px; margin: 0 0 8px; padding: 1px 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity .35s; }
 .fms::-webkit-scrollbar { display: none; }
 /* Quick starts above the card: quiet until looked at. Each is a pair of marks and a sentence with its amount in the ink; no outline until hover or focus (touch has no hover, so it keeps a faint one),
    the APR a small tag, an arrow that arrives on hover. Pressing one fills the card at 0.01 ETH, a size kept proved ahead. One line that scrolls sideways on a phone, fading at the edge it runs off. */
@@ -234,12 +234,12 @@ main:focus { outline: none; }
 @media (prefers-reduced-motion: reduce) { .hint { animation: none; transition: none; } }
 @media (max-width: 640px) { .hints { justify-content: flex-start; margin: 0 -16px 14px; padding: 1px 16px; scroll-padding: 0 16px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
 .fms.on { opacity: 1; }
-.fms a { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px 0 3px; color: var(--mute); text-decoration: none; white-space: nowrap; font-size: 12px; line-height: 22px; border: 1px solid color-mix(in srgb, var(--hair) 70%, transparent); border-radius: 12px; transition: border-color .15s; }
+.fms a { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0; color: var(--mute); text-decoration: none; white-space: nowrap; font-size: 12px; line-height: 22px; transition: color .15s; }
 .fms .pair .tk { width: 16px; height: 16px; }
 .fms .pair .tk + .tk { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--paper); }
 .fms b { font-weight: 400; color: var(--ink); }
 .fms small { font: 500 10px var(--mono); letter-spacing: .08em; }
-@media (hover: hover) { .fms a:hover { border-color: var(--hair-2); } .fms a:hover small { color: var(--ink); } }
+@media (hover: hover) { .fms a:hover small { color: var(--ink); } }
 .fms a:active { transform: scale(.98); }
 @media (max-width: 640px) { .fms { margin: 0 -16px 8px; padding: 1px 16px; scroll-padding: 0 16px; } }          /* runs to the screen's edge, so a chip cut off there reads as more to scroll to */
 /* Where both fit on one line, the prices sit left and the farms right, under the brand and the menu they line up with. Narrower, they stack. */
@@ -635,10 +635,10 @@ a.di { color: inherit; text-decoration: none; }
 .hx-sr { display: flex; margin: 0 0 12px; } .hx-sr button { flex: 1; }
 .hx-qr { display: flex; justify-content: center; margin: 12px 0 0; } .hx-qr[hidden] { display: none; } .hx-qr svg { width: 168px; height: 168px; border-radius: 12px; }
 .hx-mode button[aria-checked="true"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
-.ptsline { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 6px 14px; padding: 14px 4px; color: inherit; text-decoration: none; border-bottom: 1px solid var(--hair); }
+.ptsline { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 6px 14px; padding: 14px 4px; color: inherit; text-decoration: none; }
 .ptsline .tk { width: 24px; height: 24px; box-shadow: none; transition: transform .4s var(--spring); }
 .ptsline .fig { display: inline-flex; align-items: baseline; gap: 2px 10px; flex: 0 1 auto; min-width: 0; color: var(--mute); }
-.ptsline .fig b { font: 400 28px/1 var(--serif); color: var(--ink); }
+.ptsline .fig b { font: 400 34px/1 var(--serif); color: var(--ink); }
 .ptsline .fig { flex-wrap: wrap; justify-content: center; }
 .ptsline #ern-pts { text-wrap: balance; }
 .ptsline .you { display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex-basis: 100%; color: var(--mute); }
@@ -681,16 +681,16 @@ a.di { color: inherit; text-decoration: none; }
   0%, 14%, 25%, 39%, 50%, 64%, 75%, 89%, 100% { transform: scaleX(1); opacity: 1; }
   19.5%, 44.5%, 69.5%, 94.5% { transform: scaleX(.42); opacity: .65; }
 }
-.tc-facts { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 64px; margin: 0; padding: 0; }
+.tc-facts { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px 72px; margin: 0; padding: 0; }
 .tc-facts div { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 4px; }
 .tc-facts dt { font-size: 12px; color: var(--mute); }
-.tc-facts dd { margin: 0; font: 400 30px/1.1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
+.tc-facts dd { margin: 0; font: 400 40px/1.1 var(--serif); letter-spacing: -.01em; white-space: nowrap; }
 .tc-facts dd small { margin-right: 6px; font: 400 12px var(--mono); letter-spacing: 0; color: var(--mute); }
 /* Private bitcoin payments: three steps on one line, each a way in. */
-.tc-pay { width: 100%; max-width: 720px; margin: 44px 0 0; }
+.tc-pay { width: 100%; max-width: 720px; margin: 88px 0 0; }
 .tp-note { margin: 18px 0 0; text-align: center; font-size: 12px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
-.tc-pay h3 { margin: 0; font: 400 26px/1.2 var(--serif); letter-spacing: -.01em; }
-.tp-flow { position: relative; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 10px 0 0; padding: 0; }
+.tc-pay h3 { margin: 0; font: 400 34px/1.15 var(--serif); letter-spacing: -.01em; }
+.tp-flow { position: relative; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 18px 0 0; padding: 0; }
 .tp-flow::before { content: ''; position: absolute; top: 34px; left: calc(100% / 6); right: calc(100% / 6); border-top: 1px solid var(--hair-2); }
 .tp-flow li + li::before { content: '→'; position: absolute; z-index: 1; left: 0; top: 34px; transform: translate(-50%, -50%); padding: 0 6px; font-size: 13px; line-height: 1; color: var(--mute); background: var(--paper); }
 .tp-flow li { position: relative; }
@@ -702,16 +702,16 @@ a.di { color: inherit; text-decoration: none; }
 .tp-flow b { font: 400 19px/1.1 var(--serif); }
 .tp-flow small { font-size: 12px; line-height: 1.35; color: var(--mute); }
 /* What holding it does: four short lines under a rule. */
-.tc-do { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px 36px; width: 100%; max-width: 880px; margin: 40px 0 0; padding: 0; }
+.tc-do { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 32px 40px; width: 100%; max-width: 880px; margin: 72px 0 0; padding: 0; }
 .tc-do.six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .tc-idea { margin: 0 0 18px; max-width: 52ch; text-align: center; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 .tc-do li { display: grid; align-content: start; gap: 4px; }
-.tc-do b { font: 400 18px/1.15 var(--serif); }
+.tc-do b { font: 400 21px/1.15 var(--serif); }
 .tc-do span { font-size: 12px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
-.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 32px; }
+.tc-links { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px 26px; margin-top: 56px; }
 .tc-links .tl { font-size: 14px; }
-.tc-links .btn { width: auto; min-height: 48px; margin: 0; padding: 0 24px; color: var(--ink); background: transparent; border-color: var(--ink); border-radius: 999px; }
-@media (hover: hover) { .tc-links .btn:hover:not(:disabled) { color: var(--paper); background: var(--ink); } }
+.tc-links .btn { width: auto; min-height: 48px; margin: 0; padding: 0 24px; color: var(--card); background: var(--ink); border-color: var(--ink); border-radius: 16px; }
+@media (hover: hover) { .tc-links .btn:hover:not(:disabled) { color: var(--ink); background: transparent; } }
 .tc-links button.tl { padding: 0; background: none; border: 0; font-size: 14px; cursor: pointer; }
 .tc-links a.btn { text-decoration: none; }
 /* The other assets: a switch under the coin. The coin turns to the one picked, leans toward a pointer and turns over when pressed;
@@ -1117,6 +1117,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-do, .tc-do.six { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 560px; }
 }
 @media (max-width: 640px) {
+  .fms { padding-right: 24px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
   .proof-f .tl { display: none; }
   .news .w { display: none; }
   .newsl { margin-bottom: 14px; }
@@ -1151,14 +1152,14 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .tc-tilt { scale: .54; }
   .tc-shadow { width: 112px; bottom: 12px; }
   .tc-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; width: 100%; }
-  .tc-facts dd { font-size: 22px; }
+  .tc-facts dd { font-size: 24px; }
   .tc-facts dt { font-size: 11px; text-wrap: balance; }
   .tc-as { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; width: 100%; max-width: 440px; margin-bottom: 26px; }
   .tc-as button { flex-direction: column; gap: 5px; padding: 4px 0 5px; font-size: clamp(14px, 4.4vw, 16px); }
   .tc-as .tk { width: 24px; height: 24px; }
-  .tc-pay { margin-top: 36px; }
+  .tc-pay { margin-top: 56px; }
   .tp-flow small { font-size: 11px; }
-  .tc-do { gap: 16px 20px; margin-top: 32px; }
+  .tc-do { gap: 24px 20px; margin-top: 48px; }
 }
 /* A finger needs the full tap size; a mouse keeps the tighter controls. */
 @media (pointer: coarse) {
