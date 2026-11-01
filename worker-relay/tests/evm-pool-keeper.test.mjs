@@ -1673,11 +1673,11 @@ await test('a bad envelope is refused the same way whatever is wrong with it, on
   const r = await privateRoute();
   try {
     const post = (bytes) => fetch(`${r.base}/sealed`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes });
-    const get = (opts = {}) => sealRequest(opts.pub || GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => opts.at ?? T0 }).bytes;
-    const good = get();
+    const get = async (opts = {}) => (await sealRequest(opts.pub || GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => opts.at ?? T0 })).bytes;
+    const good = await get();
     const flipped = Uint8Array.from(good); flipped[1000] ^= 1;
     const answers = [];
-    for (const bytes of [flipped, get({ pub: Buffer.from(gatewayKeys('b2'.repeat(32)).pub).toString('hex') }), get({ at: T0 - 1000 }), new Uint8Array(100), new Uint8Array(0)]) {
+    for (const bytes of [flipped, await get({ pub: Buffer.from(gatewayKeys('b2'.repeat(32)).pub).toString('hex') }), await get({ at: T0 - 1000 }), new Uint8Array(100), new Uint8Array(0)]) {
       const res = await post(bytes);
       const j = await res.json();
       answers.push([res.status, j.error]);
@@ -1731,7 +1731,7 @@ await test('the gateway\'s memory of envelopes is bounded, and when full it shed
   const url = `http://127.0.0.1:${server.address().port}/`;
   const post = (bytes) => fetch(url, { method: 'POST', body: bytes }).then((r) => r.status);
   try {
-    const envelopes = Array.from({ length: 25 }, () => sealRequest(GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => T0 }).bytes);
+    const envelopes = await Promise.all(Array.from({ length: 25 }, async () => (await sealRequest(GATEWAY_PUB, { method: 'GET', path: '/info' }, { now: () => T0 })).bytes));
     const codes = []; for (const e of envelopes) codes.push(await post(e));
     assert.deepEqual(codes, Array(25).fill(200), 'a full memory never turns a new envelope away');
     assert.equal(await post(envelopes[24]), 400, 'a recent one is still remembered');

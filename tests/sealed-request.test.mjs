@@ -29,31 +29,32 @@ await check('a gateway key gives a fixed public key and key id, and only a 32-by
 });
 
 await check('a request opens at the gateway as it was sealed, and the reply opens at the caller', async () => {
-  const sealed = sealRequest(PUB, relay, { now: () => T });
-  const opened = openRequest(keys, sealed.bytes, { now: () => T });
+  const sealed = await sealRequest(PUB, relay, { now: () => T });
+  assert.equal(sealed.bytes[0], 2, 'version 2: AES-256-GCM');
+  const opened = await openRequest(keys, sealed.bytes, { now: () => T });
   assert.deepEqual([opened.method, opened.path, opened.body], ['POST', '/relay', relay.body]);
-  const reply = opened.reply(200, { 'content-type': 'application/json', 'retry-after': '10' }, te.encode('{"txHash":"0x1"}'));
+  const reply = await opened.reply(200, { 'content-type': 'application/json', 'retry-after': '10' }, te.encode('{"txHash":"0x1"}'));
   const got = await sealed.open(reply);
   assert.equal(got.status, 200);
   assert.deepEqual(got.headers, { 'content-type': 'application/json', 'retry-after': '10' });
   assert.equal(Buffer.from(got.body).toString(), '{"txHash":"0x1"}');
-  const bare = openRequest(keys, sealRequest(PUB, { method: 'GET', path: '/quote?gas=700000' }, { now: () => T }).bytes, { now: () => T });
+  const bare = await openRequest(keys, (await sealRequest(PUB, { method: 'GET', path: '/quote?gas=700000' }, { now: () => T })).bytes, { now: () => T });
   assert.deepEqual([bare.method, bare.path, bare.body], ['GET', '/quote?gas=700000', null]);
 });
 
-await check('requests are padded to a few sizes, so an envelope does not say which request it holds', () => {
-  const size = (r) => sealRequest(PUB, r, { now: () => T }).bytes.length;
-  const small = size({ method: 'GET', path: '/head' });
+await check('requests are padded to a few sizes, so an envelope does not say which request it holds', async () => {
+  const size = async (r) => (await sealRequest(PUB, r, { now: () => T })).bytes.length;
+  const small = await size({ method: 'GET', path: '/head' });
   assert.equal(small, 4096 + REQUEST_OVERHEAD);
-  assert.equal(size({ method: 'GET', path: '/quote?gas=700000' }), small);
-  assert.equal(size(relay), small);
-  assert.equal(size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(5000) } }), 8192 + REQUEST_OVERHEAD);
-  assert.equal(size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(60000) } }), 65536 + REQUEST_OVERHEAD);
-  assert.throws(() => size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(70000) } }), /too large/);
+  assert.equal(await size({ method: 'GET', path: '/quote?gas=700000' }), small);
+  assert.equal(await size(relay), small);
+  assert.equal(await size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(5000) } }), 8192 + REQUEST_OVERHEAD);
+  assert.equal(await size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(60000) } }), 65536 + REQUEST_OVERHEAD);
+  await assert.rejects(size({ method: 'POST', path: '/relay', body: { pad: 'x'.repeat(70000) } }), /too large/);
 });
 
-await check('the envelope shows nothing of the request, and two seals of one request differ throughout', () => {
-  const a = sealRequest(PUB, relay, { now: () => T }).bytes, b = sealRequest(PUB, relay, { now: () => T }).bytes;
+await check('the envelope shows nothing of the request, and two seals of one request differ throughout', async () => {
+  const a = (await sealRequest(PUB, relay, { now: () => T })).bytes, b = (await sealRequest(PUB, relay, { now: () => T })).bytes;
   for (const text of ['/relay', 'POST', 'recipient', 'distinctive-marker-12345', '0xabc', '"tx"']) assert.ok(!has(a, text), text);
   assert.notDeepEqual(a.subarray(5, 38), b.subarray(5, 38), 'a new one-time key each time');
   let same = 0;
@@ -61,78 +62,99 @@ await check('the envelope shows nothing of the request, and two seals of one req
   assert.ok(same < (a.length - 70) * 0.02, `${same} of ${a.length - 70} bytes equal`);
 });
 
-await check('a changed byte anywhere in a request is refused, and a refusal says no more than that', () => {
-  const sealed = sealRequest(PUB, relay, { now: () => T }).bytes;
+await check('a changed byte anywhere in a request is refused, and a refusal says no more than that', async () => {
+  const sealed = (await sealRequest(PUB, relay, { now: () => T })).bytes;
   const at = [0, 1, 4, 5, 20, 37, 38, 53, 54, 55, 1000, 2000, sealed.length - 17, sealed.length - 16, sealed.length - 1];
   for (const i of at) {
     const bad = Uint8Array.from(sealed);
     bad[i] ^= 1;
-    assert.throws(() => openRequest(keys, bad, { now: () => T }), (e) => e instanceof SealedError, `byte ${i}`);
+    await assert.rejects(openRequest(keys, bad, { now: () => T }), (e) => e instanceof SealedError && e.message === 'not a request', `byte ${i}`);
   }
-  assert.throws(() => openRequest(keys, sealed.subarray(0, sealed.length - 1), { now: () => T }), SealedError);
-  assert.throws(() => openRequest(keys, new Uint8Array(10), { now: () => T }), SealedError);
-  assert.throws(() => openRequest(keys, concat(sealed, new Uint8Array(70000)), { now: () => T }), SealedError);
-  for (const i of [0, 1, 20, 1000]) {
-    const bad = Uint8Array.from(sealed);
-    bad[i] ^= 1;
-    try { openRequest(keys, bad, { now: () => T }); } catch (e) { assert.equal(e.message, 'not a request', `byte ${i}`); }
-  }
-});
-await check('a request is opened only by the gateway it was sealed to', () => {
-  const sealed = sealRequest(PUB, relay, { now: () => T }).bytes;
-  assert.throws(() => openRequest(gatewayKeys('b2'.repeat(32)), sealed, { now: () => T }), SealedError);
-  const other = gatewayKeys('c3'.repeat(32));
-  const forOther = sealRequest(hex(other.pub), relay, { now: () => T }).bytes;
-  assert.throws(() => openRequest(keys, forOther, { now: () => T }), SealedError);
-  assert.doesNotThrow(() => openRequest(other, forOther, { now: () => T }));
-  assert.throws(() => sealRequest('02' + '00'.repeat(32), relay), SealedError);
+  await assert.rejects(openRequest(keys, sealed.subarray(0, sealed.length - 1), { now: () => T }), SealedError);
+  await assert.rejects(openRequest(keys, new Uint8Array(10), { now: () => T }), SealedError);
+  await assert.rejects(openRequest(keys, concat(sealed, new Uint8Array(70000)), { now: () => T }), SealedError);
+  const v1 = Uint8Array.from(sealed);
+  v1[0] = 1;
+  await assert.rejects(openRequest(keys, v1, { now: () => T }), /not a request/, 'the earlier cipher\'s version is refused');
 });
 
-await check('a request is single use and must be within a few minutes of the gateway\'s clock', () => {
+await check('a request is opened only by the gateway it was sealed to', async () => {
+  const sealed = (await sealRequest(PUB, relay, { now: () => T })).bytes;
+  await assert.rejects(openRequest(gatewayKeys('b2'.repeat(32)), sealed, { now: () => T }), SealedError);
+  const other = gatewayKeys('c3'.repeat(32));
+  const forOther = (await sealRequest(hex(other.pub), relay, { now: () => T })).bytes;
+  await assert.rejects(openRequest(keys, forOther, { now: () => T }), SealedError);
+  await openRequest(other, forOther, { now: () => T });
+  await assert.rejects(sealRequest('02' + '00'.repeat(32), relay), SealedError);
+});
+
+await check('a request is single use and must be within a few minutes of the gateway\'s clock', async () => {
   const seen = new Set();
   const once = (id) => (seen.has(id) ? false : (seen.add(id), true));
-  const sealed = sealRequest(PUB, relay, { now: () => T }).bytes;
-  assert.doesNotThrow(() => openRequest(keys, sealed, { now: () => T, seen: once }));
-  assert.throws(() => openRequest(keys, sealed, { now: () => T, seen: once }), /seen/);
-  const old = sealRequest(PUB, relay, { now: () => T - CLOCK_WINDOW - 1 }).bytes;
-  assert.throws(() => openRequest(keys, old, { now: () => T }), /clock/);
-  const future = sealRequest(PUB, relay, { now: () => T + CLOCK_WINDOW + 1 }).bytes;
-  assert.throws(() => openRequest(keys, future, { now: () => T }), /clock/);
-  const edge = sealRequest(PUB, relay, { now: () => T - CLOCK_WINDOW }).bytes;
-  assert.doesNotThrow(() => openRequest(keys, edge, { now: () => T }));
+  const sealed = (await sealRequest(PUB, relay, { now: () => T })).bytes;
+  await openRequest(keys, sealed, { now: () => T, seen: once });
+  await assert.rejects(openRequest(keys, sealed, { now: () => T, seen: once }), /seen/);
+  const old = (await sealRequest(PUB, relay, { now: () => T - CLOCK_WINDOW - 1 })).bytes;
+  await assert.rejects(openRequest(keys, old, { now: () => T }), /clock/);
+  const future = (await sealRequest(PUB, relay, { now: () => T + CLOCK_WINDOW + 1 })).bytes;
+  await assert.rejects(openRequest(keys, future, { now: () => T }), /clock/);
+  const edge = (await sealRequest(PUB, relay, { now: () => T - CLOCK_WINDOW })).bytes;
+  await openRequest(keys, edge, { now: () => T });
   const tamperedOld = Uint8Array.from(old);
   tamperedOld[100] ^= 1;
   const probe = new Set();
-  assert.throws(() => openRequest(keys, tamperedOld, { now: () => T, seen: (id) => { probe.add(id); return true; } }), SealedError);
+  await assert.rejects(openRequest(keys, tamperedOld, { now: () => T, seen: (id) => { probe.add(id); return true; } }), SealedError);
   assert.equal(probe.size, 0, 'a request that fails its tag is not remembered');
+  // The same envelope handed to the gateway twice at once is opened once.
+  const twice = (await sealRequest(PUB, relay, { now: () => T })).bytes, once2 = new Set();
+  const results = await Promise.allSettled([1, 2].map(() => openRequest(keys, twice, { now: () => T, seen: (id) => (once2.has(id) ? false : (once2.add(id), true)) })));
+  assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
 });
 
 await check('a reply is padded, opens only for its own request, and is new each time it is made', async () => {
-  const a = sealRequest(PUB, relay, { now: () => T }), b = sealRequest(PUB, relay, { now: () => T });
-  const opened = openRequest(keys, a.bytes, { now: () => T });
-  const r1 = opened.reply(200, {}, te.encode('{}')), r2 = opened.reply(200, {}, te.encode('{}'));
+  const a = await sealRequest(PUB, relay, { now: () => T }), b = await sealRequest(PUB, relay, { now: () => T });
+  const opened = await openRequest(keys, a.bytes, { now: () => T });
+  const r1 = await opened.reply(200, {}, te.encode('{}')), r2 = await opened.reply(200, {}, te.encode('{}'));
   assert.equal(r1.length, 1 + 16 + 1024 + 16);
   assert.notDeepEqual(r1, r2, 'a fresh nonce per reply');
   assert.equal(Buffer.from((await a.open(r1)).body).toString(), '{}');
   assert.equal(Buffer.from((await a.open(r2)).body).toString(), '{}');
   await assert.rejects(b.open(r1), SealedError);
   for (const i of [0, 1, 17, 500, r1.length - 1]) { const x = Uint8Array.from(r1); x[i] ^= 1; await assert.rejects(a.open(x), SealedError, `byte ${i}`); }
-  assert.equal(opened.reply(200, {}, new Uint8Array(3000)).length, 1 + 16 + 4096 + 16);
-  assert.equal(opened.reply(200, {}, new Uint8Array(30000)).length, 1 + 16 + 65536 + 16);
-  assert.equal(opened.reply(200, {}, new Uint8Array(70000)).length, 1 + 16 + 131072 + 16);
-  assert.throws(() => opened.reply(200, {}, new Uint8Array(9 << 20)), /too large/);
+  assert.equal((await opened.reply(200, {}, new Uint8Array(3000))).length, 1 + 16 + 4096 + 16);
+  assert.equal((await opened.reply(200, {}, new Uint8Array(30000))).length, 1 + 16 + 65536 + 16);
+  assert.equal((await opened.reply(200, {}, new Uint8Array(70000))).length, 1 + 16 + 131072 + 16);
+  await assert.rejects(opened.reply(200, {}, new Uint8Array(9 << 20)), /too large/);
 });
 
 await check('a compressed reply is expanded at the caller, and its length is hidden the same way', async () => {
   const text = JSON.stringify({ events: Array.from({ length: 400 }, (_, i) => ({ block: i, memo: 'ab'.repeat(65) })) });
-  const sealed = sealRequest(PUB, { method: 'GET', path: '/events?from=1' }, { now: () => T });
-  const opened = openRequest(keys, sealed.bytes, { now: () => T });
+  const sealed = await sealRequest(PUB, { method: 'GET', path: '/events?from=1' }, { now: () => T });
+  const opened = await openRequest(keys, sealed.bytes, { now: () => T });
   const z = gzipSync(text);
   assert.ok(z.length < text.length / 4);
-  const reply = opened.reply(200, { 'content-type': 'application/json' }, z, { gzip: true });
+  const reply = await opened.reply(200, { 'content-type': 'application/json' }, z, { gzip: true });
   assert.equal((reply.length - 33) % 1024, 0);
   const got = await sealed.open(reply);
   assert.equal(Buffer.from(got.body).toString(), text);
+});
+
+await check('a page of a million bytes is sealed and opened whole, and sealing it does not hold up the event loop', async () => {
+  const body = Buffer.alloc(1_000_000);
+  for (let i = 0; i < body.length; i += 65536) globalThis.crypto.getRandomValues(body.subarray(i, Math.min(body.length, i + 65536)));
+  const sealed = await sealRequest(PUB, { method: 'GET', path: '/events?from=1' }, { now: () => T });
+  const opened = await openRequest(keys, sealed.bytes, { now: () => T });
+  let last = performance.now(), worst = 0;
+  const tick = setInterval(() => { const t = performance.now(); worst = Math.max(worst, t - last); last = t; }, 2);
+  let reply;
+  for (let i = 0; i < 6; i++) reply = await opened.reply(200, {}, body);
+  worst = Math.max(worst, performance.now() - last);   // a loop that never ran the timer shows up in this last gap
+  clearInterval(tick);
+  assert.ok(worst < 150, `the loop was held ${worst.toFixed(0)} ms`);
+  assert.equal(reply.length, 1 + 16 + Math.ceil((4 + 32 + body.length) / 65536) * 65536 + 16);
+  const got = await sealed.open(reply);
+  assert.equal(got.status, 200);
+  assert.ok(Buffer.from(got.body).equals(body), 'every byte');
 });
 
 // A forwarder that hands the bytes it is given to a gateway in this process.
@@ -140,8 +162,8 @@ function gateway({ seen = new Set(), status = 200, headers = {}, answer = (req) 
   const log = [];
   const f = async (url, init) => {
     log.push({ url, init, bytes: init.body });
-    const opened = openRequest(keys, init.body, { now: () => T, seen: (id) => (seen.has(id) ? false : (seen.add(id), true)) });
-    return new Response(opened.reply(status, { 'content-type': 'application/json', ...headers }, answer(opened)), { status: 200 });
+    const opened = await openRequest(keys, init.body, { now: () => T, seen: (id) => (seen.has(id) ? false : (seen.add(id), true)) });
+    return new Response(await opened.reply(status, { 'content-type': 'application/json', ...headers }, answer(opened)), { status: 200 });
   };
   return { f, log };
 }

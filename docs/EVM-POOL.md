@@ -664,9 +664,9 @@ allowance. A forwarder named in `EVM_POOL_KEEPER_FORWARDERS` may send ten times 
 address.
 
 **The envelope** (`dapp/sealed-request.js`). The caller makes a one-time secp256k1 key, takes the shared secret with the gateway key, and
-derives a keccak stream and tag for the request and, from a reply nonce, another pair for the answer, the construction the wallet's memos and
-saved state use. Only the gateway key opens a request or makes an answer that passes its tag, so a forwarder can drop or delay one but
-cannot read, change or answer it. A request is single use and must be within five minutes of the keeper's clock. The gateway key is long-lived,
+derives an AES-256-GCM key and iv for the request and, from a reply nonce, another pair for the answer (the platform's WebCrypto, which runs
+off the event loop: a page of a million bytes seals in under a millisecond, so the history feed is carried like the rest). Only the gateway
+key opens a request or makes an answer that passes its tag, so a forwarder can drop or delay one but cannot read, change or answer it. A request is single use and must be within five minutes of the keeper's clock. The gateway key is long-lived,
 so whoever gets it can read the envelopes they recorded: keep it to the keeper's environment, and if it may have been seen, make a new one
 (a new key id) and update the pages. A wallet that cannot reach any forwarder fails; it never falls back to a direct request, which would
 show its address.

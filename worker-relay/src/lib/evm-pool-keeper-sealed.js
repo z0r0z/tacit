@@ -81,16 +81,16 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
       let bytes;
       try { bytes = await readBytes(req, MAX_REQUEST); } catch { return send(413, { error: 'body too large' }); }
       let opened;
-      try { opened = openRequest(keys, bytes, { now, seen: fresh }); } catch (e) {
+      try { opened = await openRequest(keys, bytes, { now, seen: fresh }); } catch (e) {
         if (!(e instanceof SealedError)) throw e;
         return send(400, { error: 'bad request', t: now() });
       }
       const answer = async (out) => {
         const zip = out.body.length > 1024;
         let sealed;
-        try { sealed = opened.reply(out.status, out.headers, zip ? await gzipped(out.body) : out.body, { gzip: zip }); } catch (e) {
+        try { sealed = await opened.reply(out.status, out.headers, zip ? await gzipped(out.body) : out.body, { gzip: zip }); } catch (e) {
           if (!(e instanceof SealedError)) throw e;
-          sealed = opened.reply(502, JSON_TYPE, Buffer.from('{"error":"the answer is too large for the private route"}'));
+          sealed = await opened.reply(502, JSON_TYPE, Buffer.from('{"error":"the answer is too large for the private route"}'));
         }
         res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
         res.end(Buffer.from(sealed));
