@@ -144,7 +144,7 @@ html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
   font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
-  background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%), radial-gradient(color-mix(in srgb, var(--hair) 55%, transparent) 1px, transparent 1px); background-size: auto, 24px 24px; background-repeat: no-repeat, repeat;
+  background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
@@ -209,7 +209,7 @@ main:focus { outline: none; }
 .fms::-webkit-scrollbar { display: none; }
 /* Quick starts above the card: quiet until looked at. Each is a pair of marks and a sentence with its amount in the ink; no outline until hover or focus (touch has no hover, so it keeps a faint one),
    the APR a small tag, an arrow that arrives on hover. Pressing one fills the card at 0.01 ETH, a size kept proved ahead. One line that scrolls sideways on a phone, fading at the edge it runs off. */
-.hints { display: flex; align-items: center; gap: 4px; justify-content: center; margin: 0 0 16px; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; opacity: .74; transition: opacity .3s; }
+.hints { display: flex; align-items: center; gap: 4px; justify-content: center; margin: 20px 0 0; padding: 1px 0; overflow-x: auto; scrollbar-width: none; min-height: 30px; opacity: .74; transition: opacity .3s; }
 .hints:focus-within { opacity: 1; }
 @media (hover: hover) { .hints:hover { opacity: 1; } }
 .hints::-webkit-scrollbar { display: none; }
@@ -353,8 +353,8 @@ a.di { color: inherit; text-decoration: none; }
 .act-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 16px; margin-top: 12px; font-size: 12px; color: var(--mute); }
 
 /* ── hero ── */
-.hero { padding: 28px 0 28px; }
-.hero-t { margin: 0 auto 28px; text-align: center; }
+.hero { padding: 48px 0 28px; }
+.hero-t { margin: 0 auto 40px; text-align: center; }
 /* The airdrop, while it is open: one line above the headline that opens the claim. */
 .news { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 10px; margin: 0 0 20px; font-size: 13px; color: var(--mute); text-decoration: none; }
 .newsl { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 18px; margin: 0 0 20px; }
@@ -364,19 +364,19 @@ a.di { color: inherit; text-decoration: none; }
 .news .dot:not(.on) { background: var(--orange); }
 .news .go { font-weight: 500; color: var(--ink); transition: transform .3s var(--spring); }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
-.hero h1 { font: 400 clamp(30px, 4vw, 46px)/1.08 var(--serif); letter-spacing: -.02em; margin: 0 auto 14px; text-wrap: balance; }
+.hero h1 { font: 400 clamp(40px, 6.2vw, 76px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
 .hero h1 em { font-style: italic; }
-.hero .sub { font-size: 13.5px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
+.hero .sub { font-size: 14px; line-height: 1.55; max-width: 64ch; margin: 0 auto; color: var(--mute); text-wrap: balance; }
 .hero .sub b { font-weight: 500; color: var(--ink); }
 /* A plain text link, as the quiet kind of call to action. */
 .tl { font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 
 /* ── in numbers: the pools' own figures, and beside them what no one holds for you ── */
-.proof-row { display: grid; justify-items: center; gap: 14px; margin: 32px auto 0; text-align: center; }
-.proof { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 12px 40px; color: var(--mute); text-decoration: none; }
+.proof-row { display: grid; justify-items: center; gap: 18px; margin: 56px auto 0; text-align: center; }
+.proof { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-end; gap: 12px 64px; color: var(--mute); text-decoration: none; }
 .proof [data-nums] { display: grid; gap: 6px; font-size: 12px; }
 .proof [data-nums][hidden] { display: none; }
-.proof b { font: 400 30px/1 var(--serif); letter-spacing: -.01em; color: var(--ink); }
+.proof b { font: 400 44px/1 var(--serif); letter-spacing: -.01em; color: var(--ink); }
 .proof b small { margin-left: 6px; font: 12px var(--mono); letter-spacing: 0; color: var(--mute); }
 @media (hover: hover) { .proof:hover [data-nums] { color: var(--ink); } }
 .proof-f { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 22px; }
@@ -549,7 +549,7 @@ a.di { color: inherit; text-decoration: none; }
 
 /* ── live: what happened lately, as a tape under the hero. It stops under the pointer and stands still under reduced motion
    (the tape can then be scrolled by hand). ── */
-.tape { display: flex; align-items: center; gap: 14px; margin-top: 30px; padding: 8px 0; border-top: 1px solid var(--hair-2); border-bottom: 1px solid var(--hair-2); font-size: 12px; color: var(--mute); }
+.tape { display: flex; align-items: center; gap: 14px; margin-top: 44px; padding: 8px 0; font-size: 12px; color: var(--mute); }
 .tape-l { flex: none; display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--ink); }
 .tape-l .dot { animation: pulse 1.6s ease-in-out infinite; }
 .tape-v { flex: 1; min-width: 0; overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 48px), transparent);
@@ -567,11 +567,11 @@ a.di { color: inherit; text-decoration: none; }
 #pts-lb { scroll-margin-top: 18px; }
 
 /* ── the sections under the hero: one idea each, a centred title, then its picture ── */
-.sx { padding: 64px 0 0; }
+.sx { padding: 128px 0 0; }
 .sx.fm { padding-top: 36px; }                                      /* the points strip belongs with the tape above it */
-@media (max-width: 720px) { .sx { padding-top: 52px; } .sx.fm { padding-top: 28px; } }
-.sx-h { display: grid; justify-items: center; gap: 10px; margin: 0 0 32px; text-align: center; }
-.sx-h h2 { font: 400 clamp(28px, 3.2vw, 34px)/1.1 var(--serif); letter-spacing: -.02em; margin: 0; text-wrap: balance; }
+@media (max-width: 720px) { .sx { padding-top: 88px; } .sx.fm { padding-top: 28px; } }
+.sx-h { display: grid; justify-items: center; gap: 12px; margin: 0 0 48px; text-align: center; }
+.sx-h h2 { font: 400 clamp(32px, 4.4vw, 50px)/1.06 var(--serif); letter-spacing: -.025em; margin: 0; text-wrap: balance; }
 .sx-h h2 em { font-style: italic; }
 .sx-h p { margin: 0; max-width: 52ch; font-size: 14px; line-height: 1.5; color: var(--mute); text-wrap: balance; }
 
@@ -734,7 +734,7 @@ a.di { color: inherit; text-decoration: none; }
 
 /* Integrations: other apps that read the same names and keys, as two quiet rows under a rule. */
 /* features: four quiet lines under the hero; the press card sits above the integrations */
-.pw { padding-top: 72px; }
+.pw { padding-top: 128px; }
 .pw-a { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); align-items: center; gap: 0 36px; padding: 20px 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); color: inherit; text-decoration: none; }
 .pw-i { display: block; width: 100%; height: auto; aspect-ratio: 2 / 1; object-fit: cover; border-radius: 11px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent); transition: transform .3s var(--spring); }
 .pw-t { display: grid; gap: 8px; min-width: 0; justify-items: start; }
@@ -745,11 +745,11 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .pw-a:hover .pw-go i { transform: translate(2px, -2px); color: var(--ink); } .pw-a:hover .pw-i { transform: translateY(-2px); } }
 .pw-a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 @media (max-width: 640px) {
-  .pw { padding-top: 56px; }
+  .pw { padding-top: 88px; }
   .pw-a { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px 0; }
   .pw-n { font-size: 24px; }
 }
-.ig { padding-top: 72px; }
+.ig { padding-top: 128px; }
 .pi { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: 0 56px; align-items: start; }
 .pi .pw, .pi .ig { padding-top: 0; }
 .pi .pw-a { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 0 24px; }
@@ -781,7 +781,7 @@ a.di { color: inherit; text-decoration: none; }
 @media (hover: hover) { .ig-l a:hover .ig-go { transform: translate(2px, -2px); color: var(--ink); } .ig-l a:hover .ig-n small { color: var(--ink); } .ig-l a:hover .ig-lg { transform: translateY(-2px); } }
 .ig-l a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 @media (max-width: 640px) {
-  .ig { padding-top: 56px; }
+  .ig { padding-top: 88px; }
   .ig-l { grid-template-columns: minmax(0, 1fr); }
   .ig-l a { gap: 14px; padding: 18px 0; }
   .ig-n b { font-size: 24px; }
@@ -1112,7 +1112,7 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
 @media (max-width: 340px) { .brand i { display: none; } }
 /* ── the front page on narrower screens ── */
 @media (max-width: 980px) {
-  .hero { padding-top: 18px; }
+  .hero { padding-top: 28px; }
   .wd-top, .wd-lane { grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1fr); }
   .wd-top { padding: 20px 16px 18px; }
   .wd-end { padding: 16px; }
@@ -1124,14 +1124,14 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   .newsl { margin-bottom: 14px; }
   .hero-t { margin-bottom: 20px; }
   .proof { gap: 12px 26px; }
-  .proof b { font-size: 26px; }
+  .proof b { font-size: 34px; }
   .hx-h { padding: 2px 2px 0; }
   .hx-h button { font-size: 17px; }
   .hx-b { padding: 12px; }
   .hx-b.swc .act, .hx-b .swc .act { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
   .hx-amt { font-size: 38px; }
   .tape { margin-top: 22px; }
-  .sx { padding-top: 56px; }
+  .sx { padding-top: 88px; }
   .wd { --end: 1fr; }
   .wd-top, .wd-lane { grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr); }
   .wd-top { padding: 16px 12px 14px; }
@@ -1379,8 +1379,8 @@ footer.sf svg.fill { width: 16px; height: 16px; }
       <h1 id="hero-h">Swap, send and earn <em>privately</em>.</h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID on Bitcoin and Ethereum. Private inside the pool.</p>
     </div>
-    <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card below"></div>
     <section class="hx" id="hx" aria-label="Swap, bridge, send, earn or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
+    <div class="hints" id="hints" role="group" aria-label="Quick starts: each fills the card above"></div>
     <div class="proof-row">
       <a class="proof" href="/weld/stats/" title="All stats">
         <span data-nums><b class="num"><span data-num="in"><span class="sk" style="--w:5ch"></span></span></b>ETH transacted</span>
