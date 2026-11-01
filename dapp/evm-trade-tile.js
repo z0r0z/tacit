@@ -66,7 +66,8 @@ async function rpcCall(method, params, { retryPasses = 2 } = {}) {
         if (!r.ok) { lastErr = new Error(`rpc ${r.status}`); continue; }
         const j = await r.json();
         if (j && j.error) { lastErr = Object.assign(new Error(j.error.message || 'rpc error'), { data: j.error.data, code: j.error.code }); continue; }
-        return j ? j.result : undefined;
+        if (!j || !('result' in j)) { lastErr = new Error('rpc: no result'); continue; }
+        return j.result;
       } catch (e) { lastErr = e; }
     }
   }
@@ -95,7 +96,14 @@ const short = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '');
 
 // Amount strings round-trip through BigInt, never Number, so nothing above 2^53 loses precision.
 export function parseUnitsStr(str, decimals = 18) {
-  const s = String(str == null ? '' : str).trim().replace(/[,_\s]/g, '');
+  let s = String(str == null ? '' : str).trim().replace(/[_\s]/g, '');
+  // a comma between digits is a thousands separator only where it plainly is one (1,500.25 or 1,000,000), a lone comma is a decimal point (0,05),
+  // and an ambiguous 1,500 is left unread rather than guessed (as trade/util.js reads it)
+  if (s.includes(',')) {
+    if (/^[1-9]\d{0,2}(?:,\d{3})+(?:\.\d*)?$/.test(s) && (s.includes('.') || s.indexOf(',') !== s.lastIndexOf(','))) s = s.replace(/,/g, '');
+    else if (/^\d*,\d*$/.test(s) && !/^[1-9]\d{0,2},\d{3}$/.test(s)) s = s.replace(',', '.');
+    else return null;
+  }
   if (s === '' || s === '.' || !/^[0-9]*\.?[0-9]*$/.test(s)) return null;
   const [whole, frac = ''] = s.split('.');
   if (!whole && !frac) return null;
@@ -305,7 +313,7 @@ function createLane(host, opts0) {
     if (!addr) { S.ethBal = null; S.tacBal = null; S.balAddr = null; paintBalance(); paintGo(); return; }
     try {
       const [eth, tacRaw] = await Promise.all([rpc().getBalance(addr), rpc().call(TAC_ERC20, encErc20BalanceOf(addr))]);
-      if (S.destroyed) return;
+      if (S.destroyed || address() !== addr) return;                       // the account changed while this was read: its figures are not the new one's
       S.ethBal = eth; S.tacBal = decUint256(tacRaw); S.balAddr = addr;
     } catch { /* keep the last known figures on a transient miss */ }
     paintBalance(); paintQuote(); paintGo();
@@ -657,7 +665,7 @@ function createLane(host, opts0) {
       let r = null;
       try { r = await rpc().receipt(hash); } catch {}
       if (r) return r;
-      if (Date.now() - start > RECEIPT_TIMEOUT_MS) throw new Error('Timed out waiting for confirmation — check the transaction on Etherscan.');
+      if (Date.now() - start > RECEIPT_TIMEOUT_MS) throw Object.assign(new Error('Still waiting for confirmation. The swap may yet go through, so check the transaction on Etherscan before trying again.'), { pending: true });
       await sleep(RECEIPT_POLL_MS);
     }
   }
@@ -719,13 +727,13 @@ function createLane(host, opts0) {
           md.set(`<h2>The price moved</h2>
             ${row('You were shown', `≈ ${fmtTok(reviewed.amountOut, outT)} ${outT} <em>at least ${fmtTok(minOut, outT)}</em>`)}
             ${row('It is now', `<b>≈ ${fmtTok(fresh.best.amountOut, outT)} ${outT}</b> <em>at least ${fmtTok(newMin, outT)}</em>`)}
-            <p class="bm-q bm-muted">Nothing has been sent. Continue at the new price, or stop here.</p>`);
+            <p class="bm-q bm-muted">${approveStep?.hash ? 'Your allowance went through; the swap itself has not been sent.' : 'Nothing has been sent.'} Continue at the new price, or stop here.</p>`);
           md.buttons([{ label: 'Stop — send nothing', onClick: () => resolve(false) }, { label: 'Continue at the new price', primary: true, onClick: () => resolve(true) }]);
         });
         if (!accepted) {
           S.quote = fresh; S.busy = false; paintAll();
           md.unlockEscape();
-          md.set('<h2>Nothing sent</h2><p class="bm-q">The quote on the page has been refreshed.</p>');
+          md.set(`<h2>${approveStep?.hash ? 'Swap not sent' : 'Nothing sent'}</h2><p class="bm-q">The quote on the page has been refreshed.</p>`);
           md.buttons([{ label: 'Done', primary: true, onClick: () => md.close() }]);
           return;
         }
@@ -756,13 +764,13 @@ function createLane(host, opts0) {
     } catch (e) {
       err = e;
       const s = steps.find((x) => x.status === 'working' || x.status === 'waiting') || signStep;
-      s.status = 'failed'; s.note = friendlyEthError(e);
+      s.status = e?.pending ? 'waiting' : 'failed'; s.note = friendlyEthError(e);
       for (const x of steps) if (x.status === 'queued') x.status = 'skipped';
     }
     S.busy = false;
     md.unlockEscape();
     if (err) {
-      md.set(`<h2>${hash ? 'Swap failed' : 'Nothing sent'}</h2><p class="bm-q">${esc(friendlyEthError(err))}</p>${stepsHtml(steps)}`);
+      md.set(`<h2>${err?.pending ? 'Still confirming' : hash ? 'Swap failed' : approveStep?.hash ? 'Swap not sent' : 'Nothing sent'}</h2><p class="bm-q">${esc(friendlyEthError(err))}${err?.pending && hash ? ` <a href="${esc(txUrl(hash))}" target="_blank" rel="noopener noreferrer">View on Etherscan ↗</a>` : ''}</p>${stepsHtml(steps)}`);
       md.buttons([{ label: 'Done', primary: true, onClick: () => md.close() }]);
       if (!isUserRejection(err)) notify(friendlyEthError(err), 'error');
       refreshBalances(); scheduleQuote(true); paintGo();
@@ -817,7 +825,7 @@ function createLane(host, opts0) {
     if (S.destroyed || S.busy) return;
     if (typeof document !== 'undefined' && document.visibilityState && document.visibilityState !== 'visible') return;
     if (!host.isConnected) { destroy(); return; }
-    if (address() !== S.balAddr) refreshBalances();
+    refreshBalances();                                                      // TAC or ETH that arrives while the page is open is seen without a reload
     refreshSpot();
     const amt = parseUnitsStr(S.amountStr);
     if (amt && amt > 0n) scheduleQuote(true);

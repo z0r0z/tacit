@@ -8,7 +8,7 @@
   var TABS = ['wallet', 'holdings', 'transfer', 'discover', 'market', 'pool', 'farms', 'etch', 'factory', 'drops', 'claim',
     'about', 'mixer', 'confidential-pool', 'otc', 'cdp', 'csend', 'cswap', 'earn', 'points', 'govern'];
   // Pages in their own directories, asked for without the trailing slash.
-  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'trade', 'trade/tac', 'teth', 'cbtc', 'vault', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth', 'swap', 'assets', 'rewards', 'bridge'];
+  var PAGES = ['sats', 'secret-sats', 'ceremony', 'tacit-v1', 'tac', 'trade', 'trade/tac', 'teth', 'cbtc', 'vault', 'pay', 'weld/stats', 'weld/keeper', 'pay/eth', 'swap', 'assets', 'rewards', 'bridge', 'discord'];
   // The fragments and queries the classic app reads; this page's own are bare names (#eth, #farm) and #sp=/#st=.
   var CLASSIC_HASH = /^#(?:(?:tab|recv|claim|dclaim|gate|tacit-invoice|amm)=|amm-?ceremony$)/;
   var CLASSIC_QUERY = ['ceremony', 'coordinator', 'amm', 'ammceremony'];

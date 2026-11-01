@@ -17,7 +17,7 @@ function nodes(plan) {
     if (init.signal.aborted) return abort();
     init.signal.addEventListener('abort', abort);
     if (p.hang) return;
-    setTimeout(() => (p.throws ? reject(new Error(p.throws)) : resolve({ json: async () => (p.error ? { jsonrpc: '2.0', id: 1, error: p.error } : { jsonrpc: '2.0', id: 1, result: p.result ?? url }) })), p.wait ?? 0);
+    setTimeout(() => (p.throws ? reject(new Error(p.throws)) : resolve({ json: async () => (p.bare ? p.bare : p.error ? { jsonrpc: '2.0', id: 1, error: p.error } : { jsonrpc: '2.0', id: 1, result: p.result ?? url }) })), p.wait ?? 0);
   });
   return { log, fetchImpl };
 }
@@ -27,6 +27,11 @@ const rpc = (plan, o = {}) => { const x = nodes(plan); return hedgedRpc(HOSTS, '
   const { v, log } = await rpc({});
   assert.equal(v, 'https://a'); assert.deepEqual(log.asked, ['https://a']);
   ok('a node that answers in time is the only one asked');
+}
+{
+  const { v, log } = await rpc({ 'https://a': { bare: { code: 429, message: 'rate limited' } } });
+  assert.equal(v, 'https://b'); assert.deepEqual(log.asked, ['https://a', 'https://b']);
+  ok('a reply with neither a result nor an error is a node that failed, not an answer: the next node is asked');
 }
 {
   const { v, log } = await rpc({ 'https://a': { wait: 15 } });

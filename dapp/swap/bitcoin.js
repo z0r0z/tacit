@@ -1,9 +1,9 @@
 // The swap page's Bitcoin lane: tETH and TAC swapped in the Bitcoin pool, signed by a Tacit key. The page loads this when the lane is first opened. tacit.js
 // comes with it through the trade page's Bitcoin module, which also holds the key's sign-in. Nothing here builds or signs a transaction: tacit.js does.
-import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=dcf3a4f2';
+import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=aa7aaa7f';
 import { moveSatsNeeded, MOVE_SATS_FLAT } from '/btc-book.js?cb=0a09ab9e';
 
-const BTC_MODULE = '/trade/btc.js?cb=09215711';
+const BTC_MODULE = '/trade/btc.js?cb=44c2a4f9';
 const TETH = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const TOKENS = { [TETH]: { sym: 'tETH', icon: 'teth', dec: 8 }, [TAC]: { sym: 'TAC', icon: 'tac', dec: 8 } };
 const SLIPS = [50, 100, 300];
@@ -145,6 +145,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   const amountBase = () => { const v = parseUnits(L.amt, TOKENS[L.pay].dec); return v && v > 0n ? v : null; };
   function requote(now = false) {
     clearTimeout(qTimer);
+    seq++;                                                                       // a quote still on its way is for the amount before this one
     L.q = null;
     const din = amountBase();
     if (!din || !T || L.noPool) { paint(); return; }
@@ -185,7 +186,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
     if (!L.amt) return { label: 'Enter an amount', off: true };
     if (!din) return { label: 'Enter a valid amount', off: true };
     if (bal != null && din > bal) return { label: `Not enough ${TOKENS[L.pay].sym} on Bitcoin`, off: true };
-    if (!q) return { label: 'Getting a quote…', off: true };
+    if (!q || q.din !== din) return { label: 'Getting a quote…', off: true };
     if (q.kind !== 'direct') return { label: q.kind === 'multihop' ? 'Not offered here' : 'No route', off: true };
     if (q.minOut < 1n) return { label: 'Too small', off: true };
     if (L.sats != null && L.need != null && L.sats < L.need) return { label: 'Add sats for the Bitcoin fees', act: 'fund' };
@@ -314,7 +315,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   host.addEventListener('change', (e) => { if (e.target.id === 'b-ackbox') { L.ack = e.target.checked; L.ackFor = L.ack && L.q ? { key: `${L.pay}>${L.get}:${L.q.din}:${slip}`, minOut: L.q.minOut, impact: impact(L.q) } : null; paint(); } });
   host.addEventListener('click', (e) => {
     const t = e.target;
-    if (t.closest('#b-flip')) { [L.pay, L.get] = [L.get, L.pay]; L.amt = ''; $('b-amt').value = ''; L.q = null; L.ack = false; if (L.cls === 'err' && !L.busy) say(''); paint(); return; }
+    if (t.closest('#b-flip')) { [L.pay, L.get] = [L.get, L.pay]; L.amt = ''; $('b-amt').value = ''; L.q = null; seq++; L.ack = false; if (L.cls === 'err' && !L.busy) say(''); paint(); return; }
     const dm = t.closest('[data-dismiss]'); if (dm) { L.sent.splice(Number(dm.dataset.dismiss), 1); saveSent(); paintSent(); return; }
     const sl = t.closest('[data-slip]'); if (sl) { slip = Number(sl.dataset.slip); try { localStorage.setItem(SLIP_KEY, String(slip)); } catch { /* storage is a convenience */ } requote(true); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('b-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
@@ -340,7 +341,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
     pair(f) {
       const pay = f === 'tac' ? TAC : TETH;
       if (L.pay === pay || L.busy) return;
-      [L.pay, L.get] = [L.get, L.pay]; L.amt = ''; $('b-amt').value = ''; L.q = null; L.ack = false;
+      [L.pay, L.get] = [L.get, L.pay]; L.amt = ''; $('b-amt').value = ''; L.q = null; seq++; L.ack = false;
       if (L.open) { paint(); requote(true); }
     },
     get unlocked() { return unlocked(); },

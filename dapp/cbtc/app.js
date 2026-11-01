@@ -5,12 +5,12 @@
 // transactions, and it is done on tacit.finance's Borrow sheet, which each button here opens; this page sizes the bond for an amount before it does.
 import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect } from '/trade/connect.js?cb=de979716';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=9ee104a3';
+import { makeConnect } from '/trade/connect.js?cb=27b74cab';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=ef6b24d1';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=42b841c9';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=f2671893';
-import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=dcf3a4f2';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=c30286cc';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=8c2c7c4d';
+import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=aa7aaa7f';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
 const PRESETS = [['0.001 BTC', '0.001'], ['0.01 BTC', '0.01'], ['0.1 BTC', '0.1']];
@@ -158,7 +158,7 @@ const { wallet, W } = connect;
 function pickProvider(list) { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; }
 const signIn = () => signInSheet(key, { pick: pickProvider, why: 'Sign in to see your locks, cBTC and loans. Nothing is stored or sent.' });
 let mineSeq = 0, histP = null, mineP = null, mineFor = null;
-const history = () => (histP ||= import('/confidential-recovery-btc.js').then(({ makeBtcHistoryProvider }) => makeBtcHistoryProvider({ sha256, hrp: 'bc', fetchImpl: (u, o) => fetch(u, o) })));
+const btcHistory = () => (histP ||= import('/confidential-recovery-btc.js').then(({ makeBtcHistoryProvider }) => makeBtcHistoryProvider({ sha256, hrp: 'bc', fetchImpl: (u, o) => fetch(u, o) })).catch((e) => { histP = null; throw e; }));
 function loadMine(force = false) {
   if (!key.unlocked) return Promise.resolve();
   if (!force && mineP && mineFor === key.key.pubHex) return mineP;                                   // a read for this key is under way: ask once, not twice
@@ -169,7 +169,7 @@ async function readMine() {
   const pub = key.key.pubHex, my = ++mineSeq, priv = () => key.priv();
   D.mine = { pub, loading: true }; renderMine();
   try {
-    const ux = await getUx(), hist = await history();
+    const ux = await getUx(), hist = await btcHistory();
     // Each read stands on its own: a failed one is said, the others still show.
     const [held, locks, loans] = await Promise.allSettled([readHeld({ ux, priv: priv() }), readLocks({ ux, priv: priv(), hist }), readLoans({ ux, priv: priv() })]);
     if (my !== mineSeq || key.key?.pubHex !== pub) return;

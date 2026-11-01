@@ -7,6 +7,7 @@ const get = (url) => fetch(url, { signal: AbortSignal.timeout(8e3) }).then((r) =
 
 export function liveJobs(jobs, api, now = Date.now() / 1000, deployed = new Set()) {
   if (!api?.enabled || !Array.isArray(api.jobs) || !Array.isArray(jobs)) return [];
+  if (api.endSec && now >= api.endSec) return [];
   let room = null;
   try { if (api.budget?.remainingWei != null) room = BigInt(api.budget.remainingWei); } catch { return []; }
   if (room !== null && room <= 0n) return [];
@@ -34,7 +35,7 @@ async function deployedSteps(jobs, api, live) {
     }
   }
   if (!asks.length) return new Set();
-  const { rpc } = await import('/trade/util.js?cb=dcf3a4f2');
+  const { rpc } = await import('/trade/util.js?cb=aa7aaa7f');
   const code = await Promise.all(asks.map(([, to]) => rpc('eth_getCode', [to, 'latest']).catch(() => '0x')));
   return new Set(asks.filter((_, i) => code[i] !== '0x').map(([key]) => key));
 }

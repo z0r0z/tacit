@@ -9,6 +9,8 @@
 // or low: it is a chart, not an oracle.
 
 export const TAPE_FINE = 300, TAPE_COARSE = 14400;
+// How many buckets the page asks of each tape (the newest the one in progress): the 5-minute tape reaches back this many bars, whether or not they traded.
+export const TAPE_WORDS = 256;
 const E18 = 1e18;
 
 // The 4-byte float back to an integer: mantissa << exponent.
@@ -74,9 +76,10 @@ export function continuous(bars) {
 
 // ETH traded from `from` to `to` (unix seconds): the 5-minute bars where the tape holds them (they reach back about a day), and the
 // 4-hour bars before them, a bucket that only partly falls in the window counted for its share of the time. A bucket that began
-// before the window is therefore not dropped whole, and the stretch the 5-minute bars cover is never counted twice.
-export function volumeSince({ fine = [], coarse = [] }, from, to) {
-  const f0 = fine.length ? fine[0].t : to;
+// before the window is therefore not dropped whole, and the stretch the 5-minute bars cover is never counted twice. An empty 5-minute bucket is not
+// in the tape, so where the bars start is told by `fineFrom` (the page knows how far back it asked); without it, the first bar read stands for it.
+export function volumeSince({ fine = [], coarse = [] }, from, to, fineFrom = fine.length ? fine[0].t : to) {
+  const f0 = fineFrom;
   let v = 0;
   for (const b of fine) if (b.t >= from && b.t < to) v += b.vol;
   for (const b of coarse) { const a = Math.max(b.t, from), z = Math.min(b.t + TAPE_COARSE, f0, to); if (z > a) v += (b.vol * (z - a)) / TAPE_COARSE; }

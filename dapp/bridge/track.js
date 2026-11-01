@@ -147,7 +147,7 @@ export function inRow(r, now = Date.now(), plan = null) {
     id: String(r.id || ''), dir: 'in', asset: key, amount: big(r.source?.amount), stage: r.stage,
     // a bridge that paid someone else ends in a payment to them, not a private note for the key
     at: done ? 4 : (IN_AT[r.stage] ?? 0), steps: r.stealth ? [...route.steps.slice(0, 3), 'Paid privately'] : route.steps, href: route.href, paid: !!r.stealth,
-    done, back: IN_BACK.includes(r.stage), held: ['not-recorded', 'stopped'].includes(r.stage),
+    done, back: IN_BACK.includes(r.stage), moving: ['reclaim-sent', 'recovering'].includes(r.stage), held: ['not-recorded', 'stopped'].includes(r.stage),
     due: done ? '' : inDue(r, now, plan), acts: done || IN_BACK.includes(r.stage) ? [] : inActs(r, inDue(r, now, plan), now), armed: !!(r.arm && r.arm.ok), checking: r.stage === 'traced' && !!r.checkWait && !r.lastError,
     checkNote: r.stage === 'traced' && !r.lastError ? checkNote(r.checkWait, now) : '',
     btcTx: burnTxid, btcHeight: num(r.burnHeight), ethTx: minted ? '0x' + minted : null,
@@ -165,6 +165,7 @@ export function rowNote(row) {
   if (row.dir === 'in' && row.feeWait) parts.push(`Moved. The miner’s rate is ${row.feeWait.rate.toFixed(1)} sat/vB, over the ${row.feeWait.max} sat/vB allowed (twice the rate quoted), so its burn waits for the rate to fall. Burn it sends it now at today’s rate.`);
   else if (row.err) parts.push(`${String(row.err).replace(/^(crossout-ux|burndep-ux):\s*/, '')}${row.tries > 1 ? ` (${row.tries} tries)` : ''}`);
   const acts = (row.acts || []).map((a) => a.kind);
+  if (row.dir === 'in' && row.stage === 'not-recorded' && !acts.includes('recover')) parts.push('Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.');
   if (row.dir === 'out' && acts.includes('resign')) parts.push('Bitcoin has not taken the signed transaction. Signing again uses a coin that is free now; it is only offered while the first one is not on Bitcoin.');
   if (row.dir === 'out' && acts.includes('retry')) parts.push('Confirmed on Bitcoin, but it was not credited. It can be sent again; that costs another Bitcoin fee.');
   if (row.dir === 'out' && acts.includes('cancel')) parts.push('Cancelling looks for the burn on Ethereum once more first. If it shows up later, “Can’t see a bridge?” finds it from its transaction.');
@@ -336,6 +337,7 @@ export function nextOf(row, live = null, auto = false) {
   if (row.dir === 'in') {
     // the burn and its record happen on the chains; the mint needs the page unless the relay holds it (armed)
     if (row.at >= 3) return { due: '', self: row.armed };
+    if (row.held) return { due: '', self: false };                                           // not recorded (and not one that can be recovered): nothing moves it on
     return { due: '', self: !['rburn-signed', 'migrate-signed', 'migrate-confirmed', 'traced'].includes(row.stage) };
   }
   // out: the Ethereum burn and its proof go on by themselves; the Bitcoin step is the holder's (covered → due above)

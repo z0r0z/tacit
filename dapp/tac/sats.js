@@ -57,7 +57,7 @@ export function mount(host, ctx) {
   let mark = null;          // sats per whole TAC
   let book = null;          // open sales on the mainnet book
   let sale = null;          // S.saleKeys: { keys: the sale keys used, each with the TAC still at it, free: the next key }
-  let looking = null;       // that read, while it runs
+  let looking = null, lookingFor = null;       // that read, while it runs, and the wallet it is for
   const ready = new Set();  // outpoints the pool's replay has recorded: until then a buyer's wallet does not credit them
   let pick = null;          // outpoint chosen to list
   let readErr = false;       // the last read of the sale keys failed
@@ -112,10 +112,11 @@ export function mount(host, ctx) {
 
   // The TAC already taken out to sale keys, read from the chain and opened from the pool seed, so it shows on any device.
   function look() {
-    if (looking) return looking;
     const pw = ctx.poolWallet, S = ctx.S, T = ctx.T;
+    if (looking && lookingFor === pw) return looking;                        // a read made for another wallet does not stand in for this one's
     if (!pw || !S || !T) return Promise.resolve();
-    looking = (async () => {
+    lookingFor = pw;
+    const me = looking = (async () => {
       try {
         if (!ctx.notes?.length) await loadShielded();
         const client = S.poolClientFor('mainnet');
@@ -135,8 +136,8 @@ export function mount(host, ctx) {
         if (ctx.poolWallet === pw) { readErr = true; render(); }
         throw e;
       }
-    })().finally(() => { looking = null; });
-    return looking;
+    })().finally(() => { if (looking === me) looking = null; });
+    return me;
   }
 
   // The pool counts a take-out three confirmations after its carrier, about half an hour on, and a tab left open through

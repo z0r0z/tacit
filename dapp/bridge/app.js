@@ -1,7 +1,7 @@
 // The bridge page: one tile to pick an asset and a way, the bridges this browser has under way, and the two proofs they wait on.
 // Below it, the walk-through of how each way is proven. A bridge is started on the front page (its sheets are linked); this page
 // reads the journals (track.js) and the chains, and moves a bridge on only once the holder opens the key here (mover.js).
-import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=b952f96e';
+import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=c1359914';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }   // the FAQ's limits, from the table the page enforces
 
@@ -230,7 +230,7 @@ function rowHtml(r) {
   const to = `<span class="cc" role="img" aria-label="to ${CHAIN[ends(r.dir)[1]][1]}"><span aria-hidden="true">→</span>${mk(ends(r.dir)[1])}</span>`;
   const ticks = r.steps.map((s, i) => `<i class="${i < r.at ? 'y' : i === r.at && !r.done ? 'now' : ''}" title="${esc(s)}"></i>`).join('');
   // the last step it has done (the bar shows the one it is on)
-  const where = r.done ? (r.paid ? 'Sent' : 'Arrived') : r.back ? 'Moved back to your Bitcoin address' : r.held ? 'Waiting for you' : r.at > 0 ? r.steps[r.at - 1] : 'Started';
+  const where = r.done ? (r.paid ? 'Sent' : 'Arrived') : r.back ? 'Moved back to your Bitcoin address' : r.moving ? 'Moving back to your Bitcoin address' : r.held ? 'Waiting for you' : r.at > 0 ? r.steps[r.at - 1] : 'Started';
   // with the key open here, a bridge of that key offers its presses (track.js `acts`) as buttons; one that goes on by itself says so
   const mine = MV?.open && r.pub === MV.pub && !r.done && !r.back;
   const btn = (x) => `<button type="button" class="${x.main ? 'mb-due' : 'mb-alt'}" data-mv-act="${x.kind}" data-id="${esc(r.id)}">${esc(MV.armed(r.id) && x.kind === 'cancel' ? 'Yes, cancel it' : MV.armed(r.id) && x.kind === 'force' ? 'Yes, send it now' : x.label)}</button>`;
@@ -332,7 +332,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ' <a href="/#bridge">Do it on the front page →</a>' : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=7d49ace7').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=904d5656').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

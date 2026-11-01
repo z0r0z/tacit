@@ -7,7 +7,7 @@ import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
   encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=c20b4576';
 import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=5f8dd137';
-import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=7f44b203';
+import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=51bced2e';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
 
 export const KIND = { usd: { name: 'TAC Dollar', sym: 'TACD', dp: 2, price: (t) => `$${t}` }, eth: { name: 'TAC Ether', sym: 'TACE', dp: 4, price: (t) => `${t} ETH` } };

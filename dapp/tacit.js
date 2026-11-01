@@ -3805,6 +3805,7 @@ const evmTradeLaneWallet = {
     if (String(await provider.request({ method: 'eth_chainId' })).toLowerCase() !== '0x1') {
       try { await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] }); }
       catch { throw new Error('Switch your wallet to Ethereum mainnet to trade TAC.'); }
+      if (String(await provider.request({ method: 'eth_chainId' })).toLowerCase() !== '0x1') throw new Error('Switch your wallet to Ethereum mainnet to trade TAC.');
     }
     const params = { from, to, data };
     if (value) params.value = value;

@@ -1,14 +1,14 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=9ee104a3';
-import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=42b841c9';
-import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=7fc9e504';
-import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=ea8c8b39';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=ef6b24d1';
+import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=c30286cc';
+import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=e1008e9c';
+import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=f684c501';
 import { overlay } from '/trade/sheet.js?cb=84cda8f2';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
-import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=a4aefafb';
-import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=1abc4559';
-import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=dcf3a4f2';
+import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=714b0344';
+import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=81a4248d';
+import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=aa7aaa7f';
 
 const ETHBLUE = '#627eea', ORANGE = '#f7931a';
 const SCAN = 'https://etherscan.io/';
@@ -181,7 +181,7 @@ function notify(msg, kind = '', ms = 5000) {
 }
 async function openBitcoin(prime = null) {
   try {
-    bitcoin ||= (await import('/trade/btc.js?cb=09215711')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
+    bitcoin ||= (await import('/trade/btc.js?cb=44c2a4f9')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
       asset: { id: BTC_ID, title: 'tETH on Bitcoin', after: 'tETH reaches Bitcoin through the bridge: <a href="/#private/bitcoin/out">Bridge →</a>' } });
     await bitcoin.open(prime);
   } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }

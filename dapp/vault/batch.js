@@ -64,8 +64,11 @@ export async function sendBundle(prov, from, calls, { every = 2000, timeoutMs = 
   const r = await prov.request({ method: 'wallet_sendCalls', params: [{ version: '2.0.0', from, chainId: '0x1', atomicRequired: true, calls: calls.map((c) => ({ to: c.to, data: c.data, value: '0x0' })) }] });
   const id = typeof r === 'string' ? r : r?.id;
   if (!id) throw new Error('The wallet did not take the batch. Nothing was sent.');
+  let quiet = 0;                                                       // a status read that fails is not a batch that did not go: the wallet has it
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(every)) {
-    const s = await prov.request({ method: 'wallet_getCallsStatus', params: [id] });
+    let s;
+    try { s = await prov.request({ method: 'wallet_getCallsStatus', params: [id] }); quiet = 0; }
+    catch { if (++quiet > 9) throw new Error('Your wallet sent the batch but cannot say how it went. Check its activity before trying again.'); continue; }
     const st = typeof s?.status === 'string' ? s.status.toUpperCase() : s?.status;
     if (st === 200 || st === 'CONFIRMED') {
       const rc = (s.receipts || []).at(-1);

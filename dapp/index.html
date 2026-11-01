@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-1Rl8b4ZvldomlTZ39AQIsBlMD1pynqZYl+9eXXISav8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eyNJhK2C6GWMbaz5WceKeIukFHc8DCgpbgrHvPsHenI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -16,7 +16,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=ed83e6cf"></script>
+<script defer src="/front-route.js?cb=f65d6db3"></script>
 <title>tacit defi</title>
 <link rel="canonical" href="https://tacit.finance/">
 <meta name="description" content="Private DeFi on Bitcoin and Ethereum: private ETH, Bitcoin payments, TAC, points, farms and dollars borrowed against Bitcoin.">
@@ -56,15 +56,15 @@
 <link rel="modulepreload" href="/relay-outcome.js?cb=26298b8e">
 <link rel="modulepreload" href="/btc-borrow.js?cb=13923518">
 <link rel="modulepreload" href="/bridge-out.js?cb=ecf49203">
-<link rel="modulepreload" href="/bridge/track.js?cb=b952f96e">
+<link rel="modulepreload" href="/bridge/track.js?cb=c1359914">
 <link rel="modulepreload" href="/bridge-in.js?cb=1b8357ef">
 <link rel="modulepreload" href="/bridge-tick.js?cb=db96a3a9">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=d3cb3b1e">
+<link rel="modulepreload" href="/swap/card.js?cb=4258ca9f">
 <link rel="modulepreload" href="/trade/wallet.js?cb=6778fe25">
-<link rel="modulepreload" href="/trade/util.js?cb=dcf3a4f2">
-<link rel="modulepreload" href="/trade/rpc.js?cb=63f04503">
+<link rel="modulepreload" href="/trade/util.js?cb=aa7aaa7f">
+<link rel="modulepreload" href="/trade/rpc.js?cb=bf34356a">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/swap/route.js?cb=ce610210">
 <link rel="modulepreload" href="/swap/aggregate.js?cb=3c73982e">
@@ -1647,7 +1647,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/tasks/open.js?cb=a2591741"></script>
+<script type="module" src="/tasks/open.js?cb=47d2442a"></script>
 
 <!-- ── wallet ── -->
 <dialog class="sheet" id="sheet-wallet" aria-labelledby="wallet-h">
@@ -1823,7 +1823,7 @@ import { UNBOND_DUST, HARVEST_WORTH, unharvested, bFor, aFor, farmManager, ladde
 import { relayCode, proveCapped, proved, relayRefused, jobSaid } from '/relay-outcome.js?cb=26298b8e';
 import { makeLoans, bondGap, lockPad as lockPadOf } from '/btc-borrow.js?cb=13923518';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=ecf49203';
-import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=b952f96e';
+import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=c1359914';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=e1ab5d24';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=1b8357ef';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=db96a3a9';
@@ -3581,7 +3581,7 @@ function setKey(k) {
   });
 }
 
-const TACIT_URL = '/tacit.js?cb=0bd37721';
+const TACIT_URL = '/tacit.js?cb=262f9a47';
 let T = null;
 // tacit.js under this page's key, one call at a time (/tacit-session.js)
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; } });
@@ -13555,7 +13555,7 @@ async function hxBorrowTerms(units) {
 const VE = { p: null, E: null, M: null, VS: null, at: 0, who: null, feedAt: 0, say: '', S: { busy: false, batchOk: false, batchFor: null, routerFor: null, routerOff: false, routerSettled: false, batchBusy: false, seq: 0, chainT: 0, chainAt: 0, loaded: false, failed: false, stop: null } };
 class VaultStop extends Error {}
 const veEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => escMap[c]);
-const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=369ffbff'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=c20b4576'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
+const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=697d8316'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=c20b4576'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
   .then(([eng, { DEPLOYMENTS }, C, Fd, M]) => {
     const A = /^0x[0-9a-fA-F]{40}$/, hint = (h) => (h && ['tac', 'synth', 'oracle', 'feed'].every((k) => A.test(h[k] || '')) ? Object.fromEntries(['tac', 'synth', 'oracle', 'feed'].map((k) => [k, h[k].toLowerCase()])) : null);
     VE.M = M;
@@ -14735,7 +14735,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=d3cb3b1e').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4258ca9f').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };

@@ -21,6 +21,7 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
       (async () => {
         const j = await (await fetchImpl(hosts[n], { method: 'POST', headers: { 'content-type': bodyType(hosts[n]) }, body, signal: ctrl.signal })).json();
         if (j.error) throw Object.assign(new Error(j.error.message), { revert: j.error.code === 3 || /revert/i.test(j.error.message || '') });
+        if (!('result' in j)) throw new Error('rpc: no result');
         return j.result;
       })().then(
         (v) => { clearTimeout(timer); ctrls.delete(ctrl); finish(resolve, v); },

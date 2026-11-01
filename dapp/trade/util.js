@@ -1,6 +1,6 @@
 // Small helpers the tETH page's modules share: markup, numbers, and the page's reads of the chain and the API.
 
-import { hedgedRpc } from '/trade/rpc.js?cb=63f04503';
+import { hedgedRpc } from '/trade/rpc.js?cb=bf34356a';
 import { grp, sig, group } from '/trade/fmt.js?cb=32b1744b';
 
 export const API = 'https://api.tacit.finance';

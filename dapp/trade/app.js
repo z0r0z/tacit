@@ -5,12 +5,12 @@ import {
 } from '/evm-trade-venues.js?cb=10858cc2';
 import { getConfidentialDeployment } from '/confidential-deployments.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js?cb=0a09ab9e';
-import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE } from '/trade/tape.js?cb=a4aefafb';
+import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=714b0344';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
-import { takeEarly } from '/trade/rpc.js?cb=63f04503';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
+import { takeEarly } from '/trade/rpc.js?cb=bf34356a';
 import { mountFarm } from '/trade/farm.js?cb=e3f70b9d';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
@@ -98,10 +98,12 @@ function keepTape(coarse) { const sig = `${coarse.length}:${coarse.at(-1)?.t}:${
 async function loadTapes(o = {}) {
   try { await readTapes(o); D.tapeFailed = false; } catch (e) { D.tapeFailed = true; throw e; }
 }
+// where the 5-minute tape starts: the bars it was asked for end now (an empty one is not in it)
+const fineStart = () => now() - TAPE_WORDS * TAPE_FINE;
 async function readTapes({ coarse: wantCoarse = true } = {}) {
   const sel = '0x29a65241';
   const words = (r) => { const h = strip(r), n = Number(wordAt(h, 1)); return Array.from({ length: n }, (_, i) => '0x' + h.slice(128 + i * 64, 192 + i * 64)); };
-  const [c, f] = await Promise.all([wantCoarse || !D.tape.coarse.length ? ethCall(PRECISION_POOL, sel + word(TAPE_COARSE) + word(256)) : null, ethCall(PRECISION_POOL, sel + word(TAPE_FINE) + word(256))]);
+  const [c, f] = await Promise.all([wantCoarse || !D.tape.coarse.length ? ethCall(PRECISION_POOL, sel + word(TAPE_COARSE) + word(TAPE_WORDS)) : null, ethCall(PRECISION_POOL, sel + word(TAPE_FINE) + word(TAPE_WORDS))]);
   const fine = decodeTape(words(f), TAPE_FINE);
   if (c) {
     const merged = new Map(keptTape().map((b) => [b.t, b]));
@@ -187,7 +189,7 @@ function renderHead() {
   $('#px-usd').textContent = px != null ? usd(px) : eth != null ? `${sig(eth)} ETH` : 'TAC';
   if (px != null) { $('#px-usd').classList.remove('stale'); keepPx(usd(px)); }
   document.title = px != null ? `TAC ${usd(px)} · tacit trade` : 'tacit trade · TAC';
-  const vol = volumeSince(D.tape, now() - 86400, now());
+  const vol = volumeSince(D.tape, now() - 86400, now(), fineStart());
   const bits = [], stats = [], st = (k, v, title = '') => stats.push(html`<span class="st"${title ? ` title="${esc(title)}"` : ''}><i>${k}</i> <b class="num">${v}</b></span>`);
   const changes = [['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]].map(([l, s]) => { const then = priceAgo(s); return then && D.perEth ? [l, then / D.perEth - 1] : null; }).filter(Boolean);
   if (changes.length) bits.push(`<span class="chgs">${changes.map(([l, c]) => `<span class="chg ${c >= 0.0005 ? 'up' : c <= -0.0005 ? 'down' : 'mute'}"><i>${l}</i> ${esc(pct(c))}</span>`).join(' ')}</span>`);
@@ -386,7 +388,7 @@ function renderChart() {
   const base = since ? (lane === 'btc' ? closeAt(trades, since) : ethAt(since)) : null;
   S.view = cmp ? { lane, ethNow: ethSpot, btcNow: btcSpot }
     : { lane, unit, range, line, tf, points, bars: series[0].bars, base: base ? inUnit(lane, unit)(base) : null, now: lane === 'btc' ? btcSpot : ethSpot,
-      vol: lane === 'btc' ? trades.filter((x) => x.t >= since).reduce((a, x) => a + x.vol, 0) : volumeSince(D.tape, since || (D.tape.coarse[0]?.t ?? 0), now()) };
+      vol: lane === 'btc' ? trades.filter((x) => x.t >= since).reduce((a, x) => a + x.vol, 0) : volumeSince(D.tape, since || (D.tape.coarse[0]?.t ?? 0), now(), fineStart()) };
   paintRead();
   const sw = (c) => `<i class="sw" style="background:${c}"></i>`;
   if (lane !== 'btc') legend.push(`<span>${sw(ETHBLUE)}Precision pool (Ethereum)${ethSpot != null ? ` · ${priceFmt(unit, 'eth')(ethSpot)}` : ''}</span>`);
@@ -658,7 +660,7 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=09215711').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=44c2a4f9').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));

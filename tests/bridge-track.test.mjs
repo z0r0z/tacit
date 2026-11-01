@@ -377,3 +377,15 @@ test('rows: the note, the ids, Recover and a stalled move', () => {
   const stall = inRow({ id: 's:0', stage: 'traced', path: 'deposit', source: { amount: big(1) }, errorCount: 3, lastError: { message: 'x' } }, T0);
   assert.deepEqual(stall.acts.map((a) => a.kind), ['burn', 'reclaim']); assert.equal(inRow({ id: 's:1', stage: 'traced', path: 'deposit', source: { amount: big(1) }, errorCount: 2, lastError: { message: 'x' } }, T0).acts.some((a) => a.kind === 'reclaim'), false);
 });
+
+test('a burn the proof passed without recording goes nowhere by itself, and says so; one moving back is not "Started"', () => {
+  const stuck = inRow(inRec({ stage: 'not-recorded', source: { p2tr: true } }), NOW);
+  assert.deepEqual(nextOf(stuck), { due: '', self: false });
+  assert.match(stuck.note, /cannot be minted/);
+  const recoverable = inRow(inRec({ stage: 'not-recorded' }), NOW);
+  assert.equal(nextOf(recoverable).due, 'Recover');
+  assert.doesNotMatch(recoverable.note, /cannot be minted/);
+  assert.equal(inRow(inRec({ stage: 'recovering' }), NOW).moving, true);
+  assert.equal(inRow(inRec({ stage: 'reclaim-sent' }), NOW).moving, true);
+  assert.equal(inRow(inRec({ stage: 'burn-mined' }), NOW).moving, false);
+});

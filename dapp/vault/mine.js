@@ -3,13 +3,13 @@
 // a whole cBTC note and its repayment, the mint and the loans relayed. Paying the deposit address from a wallet in the browser, a note cut to
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=9ee104a3';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=ef6b24d1';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
-import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=f2671893';
+import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=8c2c7c4d';
 import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=13923518';
 import { makeRunner } from '/activity.js?cb=5bc9627f';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=26298b8e';
-import { esc, short, grp, parseUnits, word, wordAt } from '/trade/util.js?cb=dcf3a4f2';
+import { esc, short, grp, parseUnits, word, wordAt } from '/trade/util.js?cb=aa7aaa7f';
 
 const API = 'https://api.tacit.finance';
 // Bitcoin's explorers, in order: a read that fails at one is asked of the next
@@ -17,14 +17,14 @@ const ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api'];
 async function esplora(path, as = 'json') {
   let last;
   for (const b of ESPLORA) {
-    try { const r = await fetch(b + path, { cache: 'no-store' }); if (r.ok) return as === 'json' ? r.json() : r.text(); last = new Error(`${b.split('/')[2]} ${r.status}`); }
+    try { const r = await fetch(b + path, { cache: 'no-store' }); if (r.ok) return await (as === 'json' ? r.json() : r.text()); last = new Error(`${b.split('/')[2]} ${r.status}`); }
     catch (e) { last = e; }
   }
   throw last;
 }
 const SEL = { btcToUsd: 'd5901347', rate: '2c4e722e', requiredEscrow: '034448ed', escrowTotal: 'e06e89c9', stEthPerWst: 'bb2952fc' };
 const ethTxt = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumFractionDigits: 5 });
-const btcTxt = (sats) => { const x = Number(sats) / 1e8; return x === 0 ? '0' : x >= 1 ? grp(x, 4) : x >= 0.001 ? x.toFixed(6).replace(/0+$/, '') : x.toFixed(8).replace(/0+$/, ''); };
+const btcTxt = (sats) => { const x = Number(sats) / 1e8; return x === 0 ? '0' : x >= 1 ? grp(x, 4) : x >= 0.001 ? x.toFixed(6).replace(/\.?0+$/, '') : x.toFixed(8).replace(/0+$/, ''); };
 const cusdTxt = (v) => grp(Number(v) / 1e8, Number(v) / 1e8 >= 100 ? 0 : 2);
 const big = (v) => BigInt(v);
 // what a lock's next step is, done from here

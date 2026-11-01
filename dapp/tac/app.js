@@ -1,7 +1,7 @@
 
-const TACIT_URL = '/tacit.js?cb=0bd37721';
+const TACIT_URL = '/tacit.js?cb=262f9a47';
 const SECRET_URL = '/sats/secret.js?cb=a8c52b0f';
-const SATS_URL = '/tac/sats.js?cb=cbc4ba41';
+const SATS_URL = '/tac/sats.js?cb=3708074c';
 const CLAIM_URL = '/tac/claim.js?cb=1523631a';
 const UNIFIED_URL = '/tacit-unified.js?cb=a5b3a042';
 const KNOWN_URL = '/tacit-wallet-known.js?cb=ed4c75b7';
@@ -576,7 +576,7 @@ async function loadShielded() {
 const relayFeeUnits = () => (relayLive && relayFee != null ? relayFee : 0n);
 const noteVal = (u) => (typeof u.amount === 'bigint' ? u.amount : BigInt(u.amount));
 const publicTotal = () => pub.notes.reduce((t, u) => t + noteVal(u), 0n);
-const shieldedTotal = () => (shielded.notes || []).filter((n) => !n.spent).reduce((t, n) => t + BigInt(n.value), 0n);
+const shieldedTotal = () => (S && poolWallet ? S.pendingView(shielded.notes || [], S.TAC_ASSET_MAINNET, poolWallet).live : (shielded.notes || []).filter((n) => !n.spent)).reduce((t, n) => t + BigInt(n.value), 0n);
 
 function renderBalances() {
   const sT = shieldedTotal(), pT = publicTotal();
@@ -873,6 +873,7 @@ let claimMod = null;
 const loadClaim = async () => (claimMod ||= await import(CLAIM_URL));
 
 const CLAIM_LINKS = 'tacit-tac-claim-links-v1';
+const copyText = (t) => (navigator.clipboard?.writeText ? navigator.clipboard.writeText(t).then(() => true, () => false) : Promise.resolve(false));
 const toHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const fromHex = (h) => Uint8Array.from(String(h).match(/../g) || [], (x) => parseInt(x, 16));
 function claimLinks() {
@@ -909,7 +910,7 @@ function renderClaimLinks() {
       return b;
     };
     if (rec.link) {
-      act('Copy link', (b) => { navigator.clipboard?.writeText(rec.link); b.textContent = 'Copied'; });
+      act('Copy link', (b) => { copyText(rec.link).then((ok) => { b.textContent = ok ? 'Copied' : 'Could not copy'; }); });
     } else {
       let pinField = null;
       if (rec.pinned) {
@@ -962,6 +963,8 @@ async function makeClaimLink() {
     keep: ({ secret32, pinned, network }) => {
       secret = toHex(secret32);
       putClaimLink({ secret, pinned, network, amount: amount.toString(), at: Date.now() });
+      // storage that is full or blocked keeps nothing: the payment is not made to a key only this tab knows
+      if (!claimLinks().some((x) => x.secret === secret)) throw new Error('This browser could not save the link’s key, so nothing was sent. Free some space or allow this site’s data, then try again.');
     },
   });
   if (r.wait) {
@@ -976,7 +979,7 @@ async function makeClaimLink() {
   field.className = 'field-in out';
   const copy = document.createElement('button');
   copy.className = 'btn ghost'; copy.textContent = 'Copy link';
-  copy.onclick = () => { navigator.clipboard?.writeText(r.link); copy.textContent = 'Copied'; };
+  copy.onclick = () => { copyText(r.link).then((ok) => { copy.textContent = ok ? 'Copied' : 'Select the link above to copy it'; }); };
   box.append(document.createTextNode(`${fmt(amount)} TAC is under this link. Anyone who has the link${pin ? ' and the PIN' : ''} can take it.`), field, copy);
   say('st-claim-make', box);
   await loadShielded();
@@ -999,15 +1002,18 @@ async function showClaim(payload) {
   const btn = document.createElement('button'); btn.className = 'btn'; btn.textContent = 'Claim to your wallet';
   const st = document.createElement('div'); st.className = 'status'; st.id = 'st-claim'; st.setAttribute('role', 'status');
 
+  let looked = 0;
   async function refresh() {
+    const mine = ++looked;
     line.replaceChildren(document.createTextNode('Checking…'));
     try {
       const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET });
+      if (mine !== looked) return;
       line.replaceChildren(
         Object.assign(document.createElement('span'), { textContent: r.total > 0n ? 'Waiting for you' : 'Nothing under this link' }),
         Object.assign(document.createElement('b'), { className: 'num', textContent: r.total > 0n ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : parsed.pinned ? 'Check the PIN' : 'Already claimed' }));
       btn.disabled = r.total <= 0n;
-    } catch (e) { line.replaceChildren(); errSayInto(line, e); }
+    } catch (e) { if (mine === looked) { line.replaceChildren(); errSayInto(line, e); } }
   }
 
   btn.onclick = () => busy(btn, 'st-claim', async () => {
@@ -1050,7 +1056,7 @@ function renderSats() {
     get T() { return T; }, get S() { return S; }, get poolWallet() { return poolWallet; },
     get markSats() { return markSats; }, get notes() { return shielded.notes; },
     ensureKey, busy, say, errSay, fmt, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, turn,
-  })).catch((e) => { host.textContent = ''; errSay('st-exit', e); });
+  })).catch((e) => { host.textContent = ''; delete host.dataset.ready; errSay('st-exit', e); });
 }
 
 (async function boot() {
@@ -1092,14 +1098,12 @@ function renderSats() {
   $('exit-max').onclick = () => maxInto('exit-amt', 'st-exit')().catch((e) => errSay('st-exit', e));
   $('btn-copy').onclick = () => {
     if (!poolWallet) return say('st-recv', 'Open your Tacit wallet first: your pool address is derived from its key.');
-    navigator.clipboard?.writeText(poolWallet.addressString);
-    say('st-recv', 'Pool address copied.');
+    copyText(poolWallet.addressString).then((ok) => say('st-recv', ok ? 'Pool address copied.' : 'Could not copy: the browser refused clipboard access.'));
   };
   $('btn-copy-tacit').onclick = () => {
     if (!poolWallet) return say('st-recv', 'Open your Tacit wallet first: your Tacit address is derived from its key.');
     if (!tacitAddress) return say('st-recv', tacitAddress === false ? 'Your Tacit address could not be derived here. Copy the pool address instead.' : 'Still deriving your Tacit address. Try again in a moment, or copy the pool address.');
-    navigator.clipboard?.writeText(tacitAddress);
-    say('st-recv', 'Tacit address copied.');
+    copyText(tacitAddress).then((ok) => say('st-recv', ok ? 'Tacit address copied.' : 'Could not copy: the browser refused clipboard access.'));
   };
   $('btn-claim-make').onclick = (e) => busy(e.currentTarget, 'st-claim-make', makeClaimLink);
   $('claim-amt').addEventListener('input', () => {

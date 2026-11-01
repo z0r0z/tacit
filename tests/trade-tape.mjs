@@ -138,6 +138,9 @@ const coarse = decodeTape(fx.coarse, TAPE_COARSE), fine = decodeTape(fx.fine, TA
   assert.ok(Math.abs(volumeSince({ coarse, fine }, 10000, 30000) - want) < 1e-9, 'a bucket that began before the window counts for its share, and nothing is counted twice');
   assert.equal(volumeSince({ coarse, fine: [] }, 0, 28800), 12, 'with no 5-minute bars the whole 4-hour buckets in the window are added');
   assert.equal(volumeSince({ coarse: [], fine: [] }, 0, 100), 0);
+  // an empty 5-minute bucket is not in the tape: one trade late in a 4-hour bucket is counted once, not again by the share of the bucket before it
+  assert.equal(volumeSince({ coarse: [bar(0, 1)], fine: [bar(10800, 1)] }, 0, 11400, 0), 1, 'the 5-minute tape is told where it starts');
+  assert.equal(volumeSince({ coarse: [bar(0, 1)], fine: [bar(10800, 1)] }, 0, 11400), 1.75, 'without it, the first bar read stands for the start (as before)');
   ok('volume over a window: the 5-minute bars, then the 4-hour ones by their share, with no bar counted twice');
 }
 

@@ -6,10 +6,10 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=dcf3a4f2';
-import { bodyType } from '/trade/rpc.js?cb=63f04503';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=aa7aaa7f';
+import { bodyType } from '/trade/rpc.js?cb=bf34356a';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
 
 const POINTS = 'https://tacit-points.onrender.com';
@@ -141,12 +141,19 @@ async function refresh() {
 }
 
 const apiJob = (job) => (S.api?.enabled ? S.api.jobs?.find((j) => j.id === job.id) : null);
-const isOpen = (job) => !!(S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt);
+// Over: the day it was open until has passed, or its budget is spent (the service refuses a claim then, and parks one over the budget for good).
+const programEnded = () => {
+  const a = S.api;
+  if (!a?.enabled) return false;
+  if (a.endSec && Date.now() / 1000 >= a.endSec) return true;
+  try { return a.budget?.remainingWei != null && BigInt(a.budget.remainingWei) <= 0n; } catch { return false; }
+};
+const isOpen = (job) => !!(S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt && !programEnded());
 const onChain = (job, s) => S.done[job.id]?.[s.id];
 const doneCount = (job) => job.steps.filter((s) => onChain(job, s)).length;
 const isDone = (job) => doneCount(job) === job.steps.length;
-const stateOf = (job) => (isDone(job) ? 'done' : !S.api ? 'offline' : !isOpen(job) ? 'soon' : 'open');
-const PILL = { done: ['Done', 'ok'], open: ['Open', 'ok'], soon: ['Opens soon', 'mute'], offline: ['Rewards offline', 'mute'] };
+const stateOf = (job) => (isDone(job) ? 'done' : !S.api ? 'offline' : programEnded() ? 'closed' : !isOpen(job) ? 'soon' : 'open');
+const PILL = { done: ['Done', 'ok'], open: ['Open', 'ok'], soon: ['Opens soon', 'mute'], closed: ['Closed', 'mute'], offline: ['Rewards offline', 'mute'] };
 const firstOpen = () => S.jobs.find((j) => stateOf(j) !== 'done');
 // Open jobs show in full; a job that is done shows its tile and opens when clicked (what the visitor chose stays as chosen).
 const isExpanded = (job) => (S.expanded.has(job.id) ? S.expanded.get(job.id) : stateOf(job) !== 'done');
@@ -337,6 +344,7 @@ function openBody(job) {
   const est = todo.map((s) => aj?.steps.find((y) => y.id === s.id)?.estimateWei);
   const payNow = !open || !aj || !todo.length ? null : todo.length === job.steps.length && eco ? eco.pays : est.every((e) => e != null) ? est.reduce((x, e) => x + BigInt(e), 0n) : null;
   const hint = !S.api ? 'The rewards service did not answer, so sending is paused: a step sent now might not be paid.'
+    : programEnded() ? 'Rewards for these jobs are over, so a step sent now would not be paid.'
     : !open ? 'Rewards for this job are not open yet. Sending opens with them.'
     : todo.length ? 'Each step is paid to the account that sends it: send all or some, and leave the rest to others. Pick a slower speed in your wallet to keep your network fee below what a step pays.' : 'Everything in this job is on the chain.';
   return `
@@ -452,6 +460,7 @@ async function go(job, only = null) {
     for (const [i, s] of job.steps.entries()) {
       if (only && s.id !== only) continue;
       S.done[job.id] = await readDone(job, { chain: true });
+      if (S.done[job.id][s.id] === null) throw new Error('Could not read that step from the chain just now, so nothing was sent for it. Try again in a moment.');
       if (S.done[job.id][s.id]) { if (only) say('That step is already on the chain.'); continue; }
       // A point goes to the registry, which must be on that chain first.
       if (s.kind === 'post') {
@@ -479,7 +488,7 @@ async function go(job, only = null) {
 // ── naming steps to the service ──
 function track(hash, chainId = 1) {
   const h = hash.toLowerCase();
-  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId };
+  if (!S.hashes[h]) S.hashes[h] = { state: 'pending', note: 'waiting for confirmations', chainId, at: Date.now() };
   remember(S.hashes);
 }
 let settling = false;
@@ -501,7 +510,12 @@ async function settle() {
         else if (res.status === 'no step') S.hashes[h] = { state: 'void', note: 'not a step of a listed job' };
         else if (res.status === 'failed') S.hashes[h] = { state: 'void', note: 'the transaction failed' };
         else if (res.status === 'ok') S.hashes[h].note = steps.map((x) => x.status).filter((x) => !['queued', 'credited'].includes(x))[0] ?? 'waiting';
-        else S.hashes[h].note = res.status === 'confirming' ? `${res.confirmationsLeft} confirmations to go` : res.status;
+        else if (res.status === 'unknown chain') S.hashes[h] = { state: 'void', note: 'the rewards service does not know that chain' };
+        else {
+          S.hashes[h].note = res.status === 'confirming' ? `${res.confirmationsLeft} confirmations to go` : res.status;
+          S.hashes[h].at ||= Date.now();
+          if (res.status === 'not found' && Date.now() - S.hashes[h].at > 6 * 3600e3) S.hashes[h] = { state: 'void', note: 'the rewards service has not found it in six hours: check the hash and its chain' };
+        }
       }
     }
   } finally { remember(S.hashes); settling = false; loadApi(); }

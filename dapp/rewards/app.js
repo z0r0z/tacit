@@ -2,9 +2,9 @@ import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=9efdff52';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop, makeRpcCall } from '/tac-airdrop.js?cb=6a6bb45f';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
 import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
-import { rememberOwed } from '/trade/rewards-dot.js?cb=f9cbe2e7';
+import { rememberOwed } from '/trade/rewards-dot.js?cb=31879e27';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
 import { readCampaign, bestApr } from '/trade/lp-campaign.js?cb=9d89e80f';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
@@ -84,12 +84,12 @@ function identify(raw) {
 const claimedOn = (address) => call({ to: DISTRIBUTOR, data: `0xc884ef83${address.slice(2).padStart(64, '0')}` }).then(BigInt);
 const capNow = () => keep('cap', () => get('leaderboard?day=today&limit=1').then((d) => {
   const c = (d?.program?.rateCap || []).filter((x) => x.fromDay <= d.day).sort((a, b) => b.fromDay - a.fromDay)[0];
-  return d?.program ? { program: d.program, day: d.day, cap: c ? BigInt(c.maxWeiPerPoint) : null, programDay: d.programDay, programDays: d.programDays, settleAt: ((d.day + 1) * 86400 + (Number(d.program.settleGraceSecs) || 0)) * 1000 } : null;
+  return d?.program ? { program: d.program, day: d.day, cap: c && c.maxWeiPerPoint != null ? BigInt(c.maxWeiPerPoint) : null, programDay: d.programDay, programDays: d.programDays, settleAt: ((d.day + 1) * 86400 + (Number(d.program.settleGraceSecs) || 0)) * 1000 } : null;
 }));
 function readPoints(address, signal) {
   return keep(`points:${address}`, async () => {
     const [p, c, paid, prog] = await Promise.all([get(`points/${address}`, signal), get(`claim/${address}`, signal), claimedOn(address).catch(() => null), capNow().catch(() => null)]);
-    if (!p) return { error: true };
+    if (!p || !c) return { error: true };                                            // /claim answers 0 for an account with nothing: no answer is a read that failed, not nothing owed
     const earned = BigInt(c?.cumulativeAmount || 0), claimed = paid ?? BigInt(c?.claimedWei || 0);
     const t = p.today, pts = Number(t?.points) || 0, all = Number(t?.totalPoints) || 0;
     let today = null;
@@ -188,7 +188,7 @@ function farmRow(address) {
   const looseWorth = f && f.supply > 0n ? m.loose * f.r0 / f.supply : 0n;
   if (m.staked === 0n && m.earned === 0n && looseWorth < 10n ** 14n) return '';
   const mine = !!W.account && W.account.toLowerCase() === address;
-  const worth = m.staked > 0n ? `${eth4(m.eth)} ETH + ${tac(m.tac, 0)} TAC in the pool` : `${tac(m.loose, 4)} pool shares, not staked`;
+  const worth = m.staked > 0n ? (f && f.supply > 0n ? `${eth4(m.eth)} ETH + ${tac(m.tac, 0)} TAC in the pool` : `${tac(m.staked, 4)} pool shares staked`) : `${tac(m.loose, 4)} pool shares, not staked`;
   return `<div class="rw"><h3>Farm</h3>${figure(Number(m.earned) / 1e18, tac(m.earned, 4), 'TAC')}<p class="st mute">${esc(worth)}${f?.apr != null ? ` · ${aprText(f.apr)} APR` : ''}</p>`
     + `<button class="act" type="button" data-open-farm>${mine && m.earned > 0n ? 'Claim in the farm' : 'Open the farm'}</button></div>`;
 }
@@ -378,7 +378,7 @@ function paintPrivate(list) {
 // The holder's own private positions (rewards/farms.js): loaded on the first press, so the page reads nothing more until then
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=fa4822f8').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=502584e6').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;
@@ -409,7 +409,7 @@ function noteLiquidity(c, tacUsd = 0) {
     row.querySelector('.apr').textContent = apr == null ? '' : aprText(apr);
   }
 }
-const noteTasks = (t) => { $('#tk-f').textContent = t ? tac(t.left, 0) : '—'; };
+const noteTasks = (t) => { $('#tk-f').textContent = t && !(t.endSec && Date.now() / 1000 >= t.endSec) ? tac(t.left, 0) : '—'; };
 function farmChanged() {
   kept.delete('farm');
   farmFacts().then(noteFarm, () => {});
@@ -439,7 +439,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=e3f70b9d'), import('/trade/util.js?cb=dcf3a4f2'), import('/evm-trade-venues.js?cb=10858cc2'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=e3f70b9d'), import('/trade/util.js?cb=aa7aaa7f'), import('/evm-trade-venues.js?cb=10858cc2'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);

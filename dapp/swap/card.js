@@ -4,7 +4,7 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 import { UserStopped } from '/trade/wallet.js?cb=6778fe25';
-import { rpc, RPCS, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=dcf3a4f2';
+import { rpc, RPCS, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=aa7aaa7f';
 import * as R from '/swap/route.js?cb=ce610210';
 import * as A from '/swap/aggregate.js?cb=3c73982e';
 import * as SV from '/swap/solvers.js?cb=2c70b259';
@@ -685,7 +685,7 @@ const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
 const IDS = {};
 const idsOf = (t) => { for (const k of ['eth', 'tac', 'cusd']) IDS[k] = String(t.assetByTicker[POOL_TK[k]]?.assetId || '').toLowerCase(); IDS.cbtc = String(t.pool.CBTC_ZK_ASSET_ID).toLowerCase(); return IDS; };
 // What the relay asks, in ETH on top, to settle a deposit of the wallet's ETH; null when it cannot be read (the swap reads it again before sending).
-const tipFor = (units) => import('/teth/read.js?cb=42b841c9').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
+const tipFor = (units) => import('/teth/read.js?cb=c30286cc').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
 let warmed = false;
 function warmPrivate() {
   if (warmed) return;
@@ -1825,7 +1825,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=35c0f47e').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=60b193e1').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2317,7 +2317,7 @@ let lane = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    lane ||= (await import('/swap/bitcoin.js?cb=cb379b6c')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
+    lane ||= (await import('/swap/bitcoin.js?cb=05241834')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = null; }
 }

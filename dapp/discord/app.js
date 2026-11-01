@@ -1,6 +1,6 @@
-import { makeConnect } from '/trade/connect.js?cb=de979716';
+import { makeConnect } from '/trade/connect.js?cb=27b74cab';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
-import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=dcf3a4f2';
+import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=aa7aaa7f';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
 import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=112a01b9';
 import { readPrecisionTacStake } from '/discord/holdings.js?cb=48f774e8';
