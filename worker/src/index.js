@@ -102,6 +102,7 @@ import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
 import { makeTacAncestry } from './tac-ancestry.js';
+import { makeOutpointClassifier } from './outpoint-classify.js';
 import { makeTacArchive, ARCHIVE_MAX_ROOTS, ARCHIVE_MAX_IMPORT } from './tac-archive.js';
 import { traceBurnDepositProvenance, rebuiltRawTx } from './burndep-live-tracer.js';
 import { admitBridgeMint, admitBridgeStealthMint, BURN_ROOT_SLOT } from './bridgemint-admit.js';
@@ -650,7 +651,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -18084,6 +18085,11 @@ const { verifyTacAncestry } = makeTacAncestry({
   kernelMsg: ammKernelMsgV1, H: PEDERSEN_H,
 });
 
+// POST /outpoints/classify — which coins are Tacit notes, for wallets with no owner key (multisig vaults).
+const { handleClassify: handleOutpointsClassify } = makeOutpointClassifier({
+  apiJson, decodeEnvelopeScript, hexToBytes, verifyTacAncestry,
+});
+
 // T_DEPOSIT kernel sig: BIP-340 over kernel_msg under
 // (C_in − denomination·H).x_only(). Closes the Conservation invariant
 // (invariant 1): proves exactly `denomination` of `asset_id`
@@ -29200,6 +29206,9 @@ async function _routeFetch(req, env, ctx) {
       }
       const result = await _swrDedupedKick(cacheKey.url, () => marketComputeAndCache(env, network, null, _mktOpts));
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    }
+    if (url.pathname === '/outpoints/classify' && req.method === 'POST') {
+      return handleOutpointsClassify(req, env, network, (obj, status) => jsonResponse(obj, status, cors));
     }
     if (url.pathname === '/holdings' && req.method === 'POST') {
       // SWR edge cache. Body-derived key (sha256 of owner + sorted asset_ids).

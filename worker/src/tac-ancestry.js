@@ -280,7 +280,7 @@ export function makeTacAncestry({
     if (!envelope) { const r = { ok: false, reason: `${txidHex} is not a tacit envelope` }; memo.set(key, r); return r; }
 
     if (envelope.opcode === T_CETCH) {
-      if (vout !== 0) { const r = { ok: false, reason: 'CETCH supply lives at vout 0 only' }; memo.set(key, r); return r; }
+      if (vout !== 0) { const r = { ok: false, reason: 'CETCH supply lives at vout 0 only', notTacit: true }; memo.set(key, r); return r; }
       const dec = decCetch(envelope.payload);
       if (!dec) { const r = { ok: false, reason: 'invalid CETCH payload' }; memo.set(key, r); return r; }
       let Cpt;
@@ -296,7 +296,7 @@ export function makeTacAncestry({
     }
 
     if (envelope.opcode === T_MINT) {
-      if (vout !== 0) { const r = { ok: false, reason: 'T_MINT supply lives at vout 0 only' }; memo.set(key, r); return r; }
+      if (vout !== 0) { const r = { ok: false, reason: 'T_MINT supply lives at vout 0 only', notTacit: true }; memo.set(key, r); return r; }
       const dec = decMint(envelope.payload);
       if (!dec) { const r = { ok: false, reason: 'invalid T_MINT payload' }; memo.set(key, r); return r; }
       const etchTxidHex = bytesToHex(dec.etchTxid);
@@ -346,7 +346,7 @@ export function makeTacAncestry({
         : decCxferLike(envelope.payload, envelope.opcode);
       if (!dec) { const r = { ok: false, reason: `invalid opcode 0x${envelope.opcode.toString(16)} payload` }; memo.set(key, r); return r; }
       const N = dec.outputs.length;
-      if (vout >= N) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx` }; memo.set(key, r); return r; }
+      if (vout >= N) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx`, notTacit: true }; memo.set(key, r); return r; }
       const assetInputEnd = isAxfer ? 1 + dec.assetInputCount : tx.vin.length;
       if (isAxfer && (dec.assetInputCount < 1 || dec.assetInputCount > 255)) {
         return memoAll(memo, txidHex, N, { ok: false, reason: 'asset_input_count out of range' });
@@ -403,7 +403,7 @@ export function makeTacAncestry({
       const dec = decCxferBound(envelope.payload);
       if (!dec) { const r = { ok: false, reason: 'invalid T_CXFER_BOUND payload' }; memo.set(key, r); return r; }
       const N = dec.outputs.length;
-      if (vout >= N) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx` }; memo.set(key, r); return r; }
+      if (vout >= N) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx`, notTacit: true }; memo.set(key, r); return r; }
       if (tx.vin.length < 2 || tx.vin.length - 1 > 255) {
         return memoAll(memo, txidHex, N, { ok: false, reason: 'too few or too many inputs for T_CXFER_BOUND' });
       }
@@ -451,7 +451,7 @@ export function makeTacAncestry({
       const dec = decAxferVarLike(envelope.payload, envelope.opcode);
       if (!dec) { const r = { ok: false, reason: 'invalid T_AXFER_VAR payload' }; memo.set(key, r); return r; }
       const outIdx = axferVarOutputIndexForVout(vout);
-      if (outIdx === null) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx` }; memo.set(key, r); return r; }
+      if (outIdx === null) { const r = { ok: false, reason: `vout ${vout} is not a tacit output of this tx`, notTacit: true }; memo.set(key, r); return r; }
       // Only vout 0 and vout 2 are tacit for this opcode (see axferVarOutputIndexForVout) — memoAll's
       // sequential-vout assumption doesn't apply, so memoize those two positions directly instead.
       const markBothTacitVouts = (result) => {
