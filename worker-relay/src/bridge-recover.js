@@ -125,8 +125,8 @@ export function makeRecoverer({ verifier, pool, api, chain, state, wallet, befor
   const opKey = (o) => key0x(pool.outpointKey('0x' + lc(o.txid).match(/../g).reverse().join(''), o.vout));
 
   // Untracked notes first, largest first: an untracked note sent on stays untracked, so its holder can bridge it.
-  function pick(notes, amount, live) {
-    const order = [...notes].sort((a, b) => {
+  function pick(notes, amount, live, skip = null) {
+    const order = notes.filter((n) => !skip || !skip.has(`${lc(n.txid)}:${n.vout}`)).sort((a, b) => {
       const la = live.has(opKey(a)) ? 1 : 0, lb = live.has(opKey(b)) ? 1 : 0;
       if (la !== lb) return la - lb;
       return BigInt(b.amount) > BigInt(a.amount) ? 1 : BigInt(b.amount) < BigInt(a.amount) ? -1 : 0;
@@ -168,7 +168,7 @@ export function makeRecoverer({ verifier, pool, api, chain, state, wallet, befor
 
   // One claim: checked again on its own, its notes chosen, and sent. Returns the outcome, or null when it can wait without
   // holding up the others (a reason that clears by itself, a send that failed this time).
-  async function attempt(claim) {
+  async function attempt(claim, reserved = null) {
     const st = await state();
     if (!st) { logger('reflection state not authenticated yet; retrying'); return { sent: 0, stop: true }; }
     let v;
@@ -195,7 +195,7 @@ export function makeRecoverer({ verifier, pool, api, chain, state, wallet, befor
         return { sent: 0, held: claim.burnTxid };
       }
     }
-    if (!inputs) inputs = pick(notes, v.amount, st.live || new Set());
+    if (!inputs) inputs = pick(notes, v.amount, st.live || new Set(), reserved);
     if (!inputs) { logger(`not enough TAC on hand for ${claim.burnTxid} (${claim.amount}); waiting`); return { sent: 0, short: claim.burnTxid }; }
     if (beforeSend && await beforeSend()) return { sent: 0, toppedUp: true };
     try {
@@ -215,6 +215,7 @@ export function makeRecoverer({ verifier, pool, api, chain, state, wallet, befor
     const all = await api.claims();
     const sending = all.filter((c) => c.status === 'sending').sort(byAt);
     const queued = all.filter((c) => c.status === 'queued').sort(byAt);
+    const reserved = new Set(sending.flatMap((c) => (c.inputs || []).map((o) => `${lc(o.txid)}:${o.vout}`)));      // the notes a send still landing holds
     if (!sending.length && !queued.length) return { sent: 0 };
     let first = null;                                              // what the first claim that did not send was waiting for
     const keep = (r) => { if (r && !first) first = r; };
@@ -226,12 +227,12 @@ export function makeRecoverer({ verifier, pool, api, chain, state, wallet, befor
       if (paid && paid.pays) { await api.mark(claim.burnTxid, 'sent', { txid: paid.txid }); logger(`${claim.burnTxid} was sent in ${paid.txid}`); return { sent: 0, resolved: paid.txid }; }
       if (paid && !paid.pays) { await api.mark(claim.burnTxid, 'held', { note: `its notes were spent by ${paid.txid}, which does not pay the claim` }); return { sent: 0, held: claim.burnTxid }; }
       if (now() - (claim.sendingAt || 0) < graceSecs * 1000) return { sent: 0, waiting: claim.burnTxid };
-      const r = await attempt(claim);
+      const r = await attempt(claim, reserved);
       if (r && (r.sent || r.toppedUp || r.stop)) return r;
       keep(r);
     }
     for (const claim of queued) {
-      const r = await attempt(claim);
+      const r = await attempt(claim, reserved);
       if (r && (r.sent || r.toppedUp || r.stop)) return r;
       keep(r);
     }
