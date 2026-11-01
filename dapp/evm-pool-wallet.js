@@ -1185,7 +1185,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const { proof, publicSignals } = await prove(w.input);
         const tx = toTx(proof, publicSignals, { recipient: ZERO, extAmount: amount.toString(), relayer: ZERO, fee: '0', memo0: '0x', memo1: '0x' });
         const h = await sendSelf(chain.router, sweepData(npk, RECEIVE_FEE_BPS, tx), 0n, onStep);
-        if (h) return h;
+        if (h) { onStep('waiting for the block'); if (await landed(h)) return h; }
         onStep('someone else got in first, proving again');
       }
       throw new Error('the pool kept moving; try again');

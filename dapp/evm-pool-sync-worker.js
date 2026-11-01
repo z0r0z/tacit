@@ -6,7 +6,7 @@
 // Given `pools` (the payments pools a coin picker shows), it reads them all at once, the calls to one chain's nodes going out
 // together in batches, and sends each pool's balance as it is known ({ part }), then { ok } when all are read.
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=9a0cd962';
+import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=b1b58886';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '/vendor/tacit-poseidon.min.js';
 
 const PO = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5, 7: poseidon7 };

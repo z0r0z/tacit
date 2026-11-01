@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5RhTz0cgXZSUWnQuGBj5msayhl8PJFBE9KYcmSpN+Zc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-criRj1OR6mk4dcidsocY6xP4T1UW1kPV/g4G98pkttQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -1181,12 +1181,13 @@ const SATS_DUST = 546n, ASSET_SEND_SATS = 3000n, TAC_ID = 'f0bbe868af10c6c67652a
 const SPENT = new Set(), SPENT_LAST = new Map(), SPENT_ASKED = { at: 0 };
 const OWN_TX = new Map();
 async function ownChange(t, txid, addr) {
-  if (!OWN_TX.has(txid)) {
+  const k = `${addr}|${txid}`;
+  if (!OWN_TX.has(k)) {
     const tx = await t.getTx(txid).catch(() => null);
     if (!tx?.vin) return false;
-    OWN_TX.set(txid, tx.vin.some((v) => v.prevout?.scriptpubkey_address === addr));
+    OWN_TX.set(k, tx.vin.some((v) => v.prevout?.scriptpubkey_address === addr));
   }
-  return OWN_TX.get(txid);
+  return OWN_TX.get(k);
 }
 function loadBtc(force = false) {
   if (!S.key) return Promise.resolve();
@@ -1360,6 +1361,7 @@ async function poolSend(r, v, raw, status, anchor = null) {
       const sk = await X.saleKeys(t, pw, TAC.notes || [], X.TAC_ASSET_MAINNET, { addresses: [info.address] });
       const key = X.saleKey(pw, sk.free);
       putPoolJobs(pub, [...poolJobs(pub), { id, to: r.to, script: bytesToHex(script), sats: v.toString(), units: q.units.toString(), counter: key.counter, state: 'posting', at: Date.now() }]);
+      if (!poolJobs(pub).some((j) => j.id === id)) throw new Error('This browser could not save the payment, so nothing was sent. Free some space or allow this site’s data, then try again.');
       held = true;
       return X.exitToSaleKey(t, { poolWallet: pw, amount: q.units, asset: X.TAC_ASSET_MAINNET, key, anchor, maxFee: fee, say: (m) => going(status, m) });
     }, pub);
@@ -1481,7 +1483,7 @@ function btcSend(f) {
     if (m.max <= SATS_DUST) return toast('Not enough BTC for a payment and its Bitcoin fee.', true);
     fill(m.max);
   });
-  let route = null, seq = 0, timer = 0, armed = null;
+  let route = null, seq = 0, timer = 0, armed = null, armedAt = 0;
   const check = async () => {
     route = null; go.disabled = true;
     const raw = to.value.trim(), v = parseUnits(amt.value, 8), my = ++seq, max = $('#f-max', f);
@@ -1528,7 +1530,7 @@ function btcSend(f) {
   });
   amt.addEventListener('input', check);
   const askHigh = (r, v, rate, fee) => {
-    armed = `${r.to}|${v}|${rate}`;
+    armed = `${r.to}|${v}|${rate}`; armedAt = Date.now();
     say($('#status'), html`<span class="warn">The Bitcoin fee is high: ${rate} sat/vB${fee ? `, about ${fee.toLocaleString('en-US')} sats for this payment` : ''}. Press Send BTC again to pay it.</span>`);
   };
   go.onclick = () => { const anchor = takeAnchor(); return busyBtn(go, async () => {
@@ -1540,7 +1542,10 @@ function btcSend(f) {
       await pinned(r, raw, btcRoute, check);
       if (pooled) { if (await poolSend(r, v, raw, status, anchor)) amt.value = ''; return; }
       const est = await btcFee(r, v).catch(() => null);
-      if (est?.rate > HIGH_RATE && armed !== `${r.to}|${v}|${est.rate}`) return askHigh(r, v, est.rate, est.fee);
+      if (est?.rate > HIGH_RATE) {
+        if (armed !== `${r.to}|${v}|${est.rate}`) return askHigh(r, v, est.rate, est.fee);
+        if (Date.now() - armedAt < 1000) return;                                  // a double click is not the second look the warning asks for
+      }
       armed = null;
       const agreed = Math.max(HIGH_RATE, est?.rate || 0);
       say(status, 'Checking which of your outputs are cBTC locks…');
@@ -2113,7 +2118,7 @@ function lotsView() {
   const r = LOTS.pub === S.key?.pubHex ? LOTS.res : undefined;
   if (r === undefined) return html`<p class="note"><span class="spin" aria-hidden="true"></span>Reading the market…</p>`;
   if (!r) return html`<p class="note err">Could not read the market. <button class="link" type="button" data-lots-re>Try again</button></p>`;
-  if (!r.lots.length) return html`<p class="note">${r.sats == null ? 'Nothing listed.' : html`Nothing listed that the ${r.sats.toLocaleString('en-US')} sats at your Bitcoin address cover with the purchase’s Bitcoin fee.`}${r.smallest ? ` The smallest lot is ${fmt(tacOf(r.smallest), 8, 2)} TAC for ${Number(r.smallest.min_price_sats).toLocaleString('en-US')} sats.` : ''} Add BTC under BTC → Receive.</p>`;
+  if (!r.lots.length) return html`<p class="note">${r.sats == null ? 'Nothing listed.' : html`Nothing listed that the ${r.sats.toLocaleString('en-US')} sats at your Bitcoin address cover with the purchase’s Bitcoin fee.`}${r.smallest ? ` The smallest lot is ${fmt(tacOf(r.smallest), 8, 2)} TAC for ${Number(r.smallest.min_price_sats).toLocaleString('en-US')} sats. Add BTC under BTC → Receive.` : ''}</p>`;
   const can = !!poolWallet() && !S.sending;
   return html`${r.lots.map((s) => {
     const amt = fmt(tacOf(s), 8, 2), price = Number(s.min_price_sats).toLocaleString('en-US'), armed = LOTS.armed === s.sale_id;
@@ -2136,7 +2141,7 @@ function buyLot(btn, root) {
         if (LOTS.armed === id) { LOTS.armed = null; redrawLots(); }
         return say(status, html`<span class="err">This lot and its Bitcoin fee of about ${fee.toLocaleString('en-US')} sats come to ${(price + fee).toLocaleString('en-US')} sats; your Bitcoin address holds ${sats.toLocaleString('en-US')} sats.</span>`);
       }
-      LOTS.armed = id;
+      LOTS.armed = id; LOTS.armedAt = Date.now();
       redrawLots();
       setTimeout(() => { if (LOTS.armed === id) { LOTS.armed = null; redrawLots(); } }, 60e3);
       say(status, html`Buy ${fmt(tacOf(sale), 8, 2)} TAC for ${price.toLocaleString('en-US')} sats, plus ${fee != null ? `about ${fee.toLocaleString('en-US')} sats of` : 'the'} Bitcoin fee, straight into the pool? Press again to buy.`);
@@ -2146,6 +2151,7 @@ function buyLot(btn, root) {
     getSecret().then(async (X) => X.buyFee(await loadTacit())).then((fee) => (LOTS.fee = fee), () => null).then(ask);
     return;
   }
+  if (Date.now() - (LOTS.armedAt || 0) < 1000) return;                            // a double click is not the second look
   LOTS.armed = null;
   busyBtn(btn, async () => {
     const pub = S.key.pubHex, pw = poolWallet();

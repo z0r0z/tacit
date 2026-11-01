@@ -626,7 +626,7 @@ export function makeBurnDepositUx(deps) {
 
   const inFlight = new Set();
   const WAITS = new Set(['migrate-sent', 'migrate-confirmed', 'traced', 'burn-submitted', 'burn-mined', 'registered', 'rburn-sent', 'rburn-mined', 'recovering', 'reclaim-sent']);
-  const passing = (e) => { const st = Number(e && e.status); return st === 429 || st >= 500 || /failed to fetch|networkerror|load failed|timed? ?out|aborted/i.test(String((e && e.message) || e)); };
+  const passing = (e) => { const st = Number(e && e.status); return st === 429 || st >= 500 || (e && e.code === 'trace_reading') || /failed to fetch|networkerror|load failed|timed? ?out|aborted|\bAPI (429|5\d\d)\b|rate limited|chain APIs unreachable|rates failed \(5\d\d\)/i.test(String((e && e.message) || e)); };
   // A signed burn that a busy or unreachable miner (429, 5xx, no network) did not take is not one the miner refused, so it does not count at the pace of a refusal
   // ("The miner did not take this burn" and Move back come after three counted failures, and Move back costs two transactions to undo a burn that may be fine):
   // it counts once in half an hour, so a miner this page cannot reach for about an hour still offers Move back, and a blip of a few minutes does not.
@@ -721,7 +721,7 @@ export function makeBurnDepositUx(deps) {
       // A long history's first check is still reading its blocks, or the API is busy checking others: nothing is sent yet, and the
       // next advance asks again (a holder who pressed Burn it is carried on by the page without a second press, `go`).
       // What the API said about the wait (where the check stands in its line, or that the line is full) is kept for the page to show.
-      const wait = (said) => putRecord({ ...rec, checkWait: { at: now(), go: !!go || !!(rec.checkWait && rec.checkWait.go), burn, ...said } });
+      const wait = (said) => putRecord({ ...rec, feeWait: null, checkWait: { at: now(), go: !!go || !!(rec.checkWait && rec.checkWait.go), burn, ...said } });
       let check;
       try { check = await callWorker('POST', '/reflection/burndep/check', { bundle: rec.bundle, assetId: withHex(tacAssetId), burnTxHex: burn.hex }); }
       catch (e) { if (Number(e && e.status) === 429) return wait({ busy: true }); throw e; }
@@ -1275,8 +1275,11 @@ export function makeBurnDepositUx(deps) {
     try {
       const rec = getRecord(given.walletPub, given.id);
       if (!rec || rec.stage !== given.stage) throw new Error('burndep-ux: this bridge moved on while the move back was being made; look at its row, then try again');
-      if (rec.burn && rec.burn.txid && (await chainTxState(rec.burn.txid)) === 'present') {
-        return putRecord({ ...rec, stage: 'burn-submitted', submittedAt: rec.submittedAt || now(), lastError: null, errorCount: 0 });
+      if (rec.burn && rec.burn.txid) {
+        const burnState = await chainTxState(rec.burn.txid);
+        if (burnState === 'present') return putRecord({ ...rec, stage: 'burn-submitted', submittedAt: rec.submittedAt || now(), lastError: null, errorCount: 0 });
+        // a burn that cannot be looked up may still be mined: moving back races it, and the commit would be left holding the funding coin
+        if (burnState !== 'absent') throw new Error('burndep-ux: Bitcoin could not be asked about the burn just now, so nothing was moved back; try again in a minute');
       }
       const built = await buildCancel({ rec, walletPriv, feeRate });
       const sent = putRecord({ ...rec, stage: 'reclaim-sent', reclaimFrom: rec.stage, reclaim: { commitTxid: built.commitTxid, txid: built.revealTxid, commitHex: built.commitHex, revealHex: built.revealHex, fundingUtxo: built.fundingUtxo }, reclaimSentAt: now(), lastError: null, errorCount: 0 });

@@ -330,9 +330,9 @@ function mineSay(text, front = false) {
   for (const o of [$('#mine-s'), $('#lost-s')]) if (o && o !== el) { o.hidden = true; o.innerHTML = ''; }
   if (!el) return;
   el.hidden = !text;
-  el.innerHTML = text ? `${esc(text)}${front ? ' <a href="/#bridge">Do it on the front page →</a>' : ''}` : '';
+  el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=904d5656').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=c8c11b4c').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

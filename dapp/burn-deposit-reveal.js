@@ -46,7 +46,7 @@ export function makeBurnDepositReveal({ pool, secp, prims: defaultPrims = null }
     if (!(walletPriv instanceof Uint8Array) || walletPriv.length !== 32) throw new Error('burn-deposit-reveal: walletPriv must be Uint8Array(32)');
     const txidBytes = hexToBytesLocal(stripHex(noteTxid));
     if (txidBytes.length !== 32) throw new Error('burn-deposit-reveal: noteTxid must be 32 bytes');
-    const seed = sha256(cat([new TextEncoder().encode('tacit-burnhome-v1'), walletPriv, txidBytes, Uint8Array.of(noteVout >>> 0)]));
+    const seed = sha256(cat([new TextEncoder().encode('tacit-burnhome-v1'), walletPriv, txidBytes, noteVout < 256 ? Uint8Array.of(noteVout >>> 0) : le32(noteVout)]));
     let d = BigInt('0x' + bytesToHexLocal(seed)) % secp.CURVE.n;
     if (d === 0n) throw new Error('burn-deposit-reveal: degenerate burn-home key — pick a different note outpoint');
     let pub = secp.getPublicKey(bigintToBytes32(d), true);

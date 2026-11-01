@@ -122,7 +122,7 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
     const ux = T.bridgeUx(), id = row.id, rec = ux.list(pub).find((r) => r.id === id);
     if (!rec) return say('That bridge is not in this browser’s record any more. Reload the page.');
     const priv = () => key.priv();
-    if (kind === 'mint' && read(SELF_PROVE + pub) === true) return say('You prove your own mints, which the front page does.', true);
+    if (kind === 'mint' && read(SELF_PROVE + pub) === true) return say('You prove your own mints, which the front page does.', row.href || true);
     if (kind === 'burn') {
       say('Signing the burn and sending it to a miner…');
       let after = await TS.withKey(() => ux.advance(pub, id, { walletPriv: priv(), go: true }), pub);
@@ -166,7 +166,7 @@ export function mountMover({ pick, repaint = () => {}, say = () => {}, onState =
       const txid = rec.burn?.txid || rec.migrate?.revealTxid, after = await ux.cancelSigned(pub, id);
       return say(after ? 'Bitcoin has this bridge’s transaction, so it was not cancelled: it goes on from its row.' : `Cancelled. What it held is where it was.${txid ? ` Its transaction id, should it ever show on Bitcoin: ${txid}` : ''}`);
     }
-    say('That press is on the front page.', true);
+    say('That press is on the front page.', row.href || true);
   }
 
   async function pressOut(T, pub, row, kind) {

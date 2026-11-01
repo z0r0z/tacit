@@ -30,9 +30,12 @@ function makeEsplora(bases = [
       const base = bases[a % bases.length];
       try {
         const r = await fetch(base + path, { ...opts, signal: AbortSignal.timeout(8000) });
-        if (!r.ok) throw new Error(`${r.status}`);
+        if (!r.ok) {
+          const body = (await r.text().catch(() => '')).slice(0, 300);
+          throw Object.assign(new Error(`${r.status} ${body}`.trim()), { final: /already[- ]known|already[- ]in[- ](block|mempool)|already in utxo set/i.test(body) });
+        }
         return r;
-      } catch (e) { err = e; await sleep(300 * (a + 1)); }
+      } catch (e) { err = e; if (e.final) throw e; await sleep(300 * (a + 1)); }
     }
     throw err;
   }
