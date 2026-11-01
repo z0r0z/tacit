@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-IdvfHBv3eNhjExJHvYwQrn5SWFIXkAV1Zg759ACApNk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-CRYIKUhPMQY9XHH2rOa8OzpnDFL8wULFrfOXk4H82YM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base.gateway.tenderly.co https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -709,6 +709,7 @@ import { bip352TaggedHash } from '/bip352.js';
 import { addressId } from '/address-id.js?cb=c4fa5a58';
 import { qrSvg as qrMarkup } from '/qr.js?cb=926d16be';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=e1ab5d24';
+import { keeperFetch, available as routeAvailable, enabled as routeOn, turn as routeTurn } from '/private-route.js?cb=da84ce7e';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
@@ -1325,13 +1326,14 @@ async function watchLinkBoxes() {
     syncChain(c, true);
   }
 }
-const timedFetch = (url, init = {}) => fetch(url, { ...init, signal: init.signal || AbortSignal.timeout?.(/\/relay$/.test(String(url)) ? 180e3 : 30e3) });
+const timedFetch = (url, init = {}) => keeperFetch(url, { ...init, signal: init.signal || AbortSignal.timeout?.(/\/relay$/.test(String(url)) ? 180e3 : 30e3) });
+Object.defineProperty(timedFetch, 'sealed', { get: routeOn });   // on the private route a wallet sends without a reservation
 async function keeperJson(c, path) {
   for (let i = 0; ; i++) {
     const stop = new AbortController();
     let quiet = setTimeout(() => stop.abort(), 20e3);
     try {
-      const r = await fetch(chainKeeper(c) + path, { signal: stop.signal });
+      const r = await keeperFetch(chainKeeper(c) + path, { signal: stop.signal });
       if (r.status === 429 && i < 3) {
         r.body?.cancel().catch(() => {});
         clearTimeout(quiet);
@@ -3589,7 +3591,7 @@ async function payFromWallet(btn) {
       if (a < min) throw new Error(`On ${c.full}, a payment from a wallet needs at least ${fmt(min, 18, 6)} ETH for the relay to move it in. Pay privately, or send more.`);
       if (!S.wallet || !S.provider) await connectWallet();
       await ensureChain(c.chainId);
-      fetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: npk.toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
+      keeperFetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: npk.toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
       r.err = null; r.lost = null; r.state = 'confirm'; paintReq();
       const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) }] });
       Object.assign(r, { paid: { h, c, a, self: true }, state: 'mining', paidAt: Date.now() }); rememberPaid(r); paintReq(); clearDraft('f-amt', 'f-to');
@@ -3823,9 +3825,19 @@ function renderWalletSheet() {
       <div class="u">ID <b class="num nw">${addressId(UNIFIED_LIVE ? unifiedAddress() : k.bp)}</b> · a payer sees the same ID</div>
       <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div></div>
     <div class="kv"><span>Pays the network fee when you send it yourself</span>${S.wallet ? html`<b>${short(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b>` : html`<button class="link" type="button" id="w-conn">Connect wallet</button>`}</div>
+    ${routeAvailable() ? html`<label class="kv chk"><span>Hide my address from the relay</span><input type="checkbox" id="w-route" ${routeOn() ? 'checked' : ''}></label>${routeOn() ? html`<p class="more">The nodes you read the chain through still see it.</p>` : ''}` : ''}
     <div id="w-up"></div>
     ${kept ? html`<p class="more"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
     <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab; payments to your addresses reach you here and everywhere on tacit.finance.</p>`);
+  $('#w-route')?.addEventListener('change', async (e) => {
+    const box = e.currentTarget;
+    if (!box.checked) { routeTurn(false); return renderWalletSheet(); }
+    box.disabled = true; routeTurn(true);
+    // on only if the route answers: a relay that cannot be reached through it is not reached at all while it is on
+    try { const r = await keeperFetch(`${chainKeeper(S.chain)}/info`, { signal: AbortSignal.timeout?.(20e3) }); if (!r.ok) throw new Error(`the relay answered ${r.status}`); }
+    catch (err) { routeTurn(false); toast(`The private route did not answer, so it is off. ${errText(err)}`, true); }
+    renderWalletSheet();
+  });
   $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? unifiedAddress() : k.bp, 'Address copied');
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   nameUpgrade().then((plan) => { const el = $('#w-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });

@@ -172,7 +172,7 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 // those modules' CSP hashes are taken (updatePinnedCsp below).
 const WELD_CB_FILES = ['walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'index.html', 'weld/stats/index.html', 'weld/keeper/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
-const PAY_CB_FILES = ['pay/index.html', 'pay/eth/index.html'];
+const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ is the shielded-TAC page: app.js lazy-imports sats.js, so sats.js is hashed first and the page
 // that loads app.js last, same importer-last order as the sats page above.
 const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/app.js', 'tac/index.html'];
