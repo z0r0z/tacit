@@ -138,6 +138,13 @@ export function inActs(r, due, now = Date.now()) {
   if (r.stage === 'traced' && r.lastError && (r.errorCount || 0) >= 3 && !acts.some((a) => a.kind === 'reclaim')) acts.push({ kind: 'reclaim', label: 'Move it back' });
   return acts;
 }
+// The Bitcoin transaction a way in links to, as the front page links it: nothing for a burn only signed (it was never sent), the move for a two-step bridge before its burn.
+function inBtcTx(r, burnTxid) {
+  if (r.stage === 'recovered' && r.recover?.txid) return hex64(r.recover.txid);
+  if (r.stage === 'reclaim-sent' && r.reclaim?.txid) return hex64(r.reclaim.txid);
+  if (burnTxid && ['rburn-sent', 'rburn-mined', 'rfolded', 'burn-mined', 'registered', 'folded', 'minted', 'not-recorded', 'recovering'].includes(r.stage)) return burnTxid;
+  return r.migrate?.revealTxid && r.stage !== 'migrate-signed' ? hex64(r.migrate.revealTxid) : null;
+}
 export function inRow(r, now = Date.now(), plan = null) {
   const key = assetKey(r.source?.assetId, r.source?.ticker);
   const route = ROUTES[key]?.in || ROUTES.tac.in;
@@ -150,7 +157,7 @@ export function inRow(r, now = Date.now(), plan = null) {
     done, back: IN_BACK.includes(r.stage), moving: ['reclaim-sent', 'recovering'].includes(r.stage), held: ['not-recorded', 'stopped'].includes(r.stage),
     due: done ? '' : inDue(r, now, plan), acts: done || IN_BACK.includes(r.stage) ? [] : inActs(r, inDue(r, now, plan), now), armed: !!(r.arm && r.arm.ok), checking: r.stage === 'traced' && !!r.checkWait && !r.lastError,
     checkNote: r.stage === 'traced' && !r.lastError ? checkNote(r.checkWait, now) : '',
-    btcTx: burnTxid, btcHeight: num(r.burnHeight), ethTx: minted ? '0x' + minted : null,
+    btcTx: inBtcTx(r, burnTxid), btcHeight: num(r.burnHeight), ethTx: minted ? '0x' + minted : null,
     since: num(r.createdAt), doneAt: num(r.mintedAt), err: r.lastError?.message ? String(r.lastError.message).slice(0, 240) : null,
     tries: num(r.errorCount), feeWait: r.feeWait && num(r.feeWait.rate) != null && num(r.feeWait.max) != null ? { rate: num(r.feeWait.rate), max: num(r.feeWait.max) } : null,
   };
@@ -165,6 +172,8 @@ export function rowNote(row) {
   if (row.dir === 'in' && row.feeWait) parts.push(`Moved. The miner’s rate is ${row.feeWait.rate.toFixed(1)} sat/vB, over the ${row.feeWait.max} sat/vB allowed (twice the rate quoted), so its burn waits for the rate to fall. Burn it sends it now at today’s rate.`);
   else if (row.err) parts.push(`${String(row.err).replace(/^(crossout-ux|burndep-ux):\s*/, '')}${row.tries > 1 ? ` (${row.tries} tries)` : ''}`);
   const acts = (row.acts || []).map((a) => a.kind);
+  if (row.dir === 'in' && row.stage === 'stopped') parts.push('This bridge paused before its burn, and your TAC is untouched. Move it back to your wallet, then bridge it again: it goes in one step.');
+  if (row.dir === 'in' && row.stage === 'not-recorded' && acts.includes('recover')) parts.push('This bridge did not complete. Recover returns your TAC to your Bitcoin address so you can try again.');
   if (row.dir === 'in' && row.stage === 'not-recorded' && !acts.includes('recover')) parts.push('Bitcoin’s proof on Ethereum passed the burn without recording it, so it cannot be minted. Keep this row and its transaction ids, and ask for help with them.');
   if (row.dir === 'out' && acts.includes('resign')) parts.push('Bitcoin has not taken the signed transaction. Signing again uses a coin that is free now; it is only offered while the first one is not on Bitcoin.');
   if (row.dir === 'out' && acts.includes('retry')) parts.push('Confirmed on Bitcoin, but it was not credited. It can be sent again; that costs another Bitcoin fee.');

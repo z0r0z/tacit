@@ -1,6 +1,6 @@
 
 const TACIT_URL = '/tacit.js?cb=262f9a47';
-const SECRET_URL = '/sats/secret.js?cb=a8c52b0f';
+const SECRET_URL = '/sats/secret.js?cb=d10eac01';
 const MIX_URL = '/sats/mix.js?cb=757a8922';
 const ETH_URL = '/sats/eth.js?cb=6e311b34';
 const POOL_STATUS = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/status';

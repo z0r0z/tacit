@@ -330,6 +330,27 @@ function makeUx(world, extra = {}) {
   ok(covered.stage === 'covered', 'a recovered record advances normally afterward');
 }
 
+// ---- recoverFromEthTx on a bridge Bitcoin has already credited: recorded as done, not signed for a second time ----
+{
+  const world = makeWorld();
+  const ux = makeUx(world);
+  const destXonly = destXonlyOf(WALLET_PRIV);
+  const rDest = deriveCrossoutBlinding(WALLET_PRIV, NOTE.nullifier);
+  const { cx, cy } = pool.commitXY(NOTE.value, rDest);
+  const destCommitment = pool.btcNoteLeaf(ASSET, cx, cy, withHex(destXonly));
+  const settleTxHash = withHex('d1'.repeat(32));
+  world.setEthReceipt(settleTxHash, {
+    blockNumber: '0x' + (77778).toString(16),
+    logs: [buildCrossOutRecordedLog({ claimId: CLAIM_ID, destChain: 1, destCommitment, nullifier: NOTE.nullifier, assetId: ASSET })],
+  });
+  world.setCredit({ decided: true, minted: true, status: 'minted', mintedTxid: 'ab'.repeat(32) });
+  const rec = await ux.recoverFromEthTx(settleTxHash, WALLET_PRIV, { amount: NOTE.value });
+  ok(rec.stage === 'minted' && rec.creditedTxid === 'ab'.repeat(32), 'a bridge the service says is minted is recorded as minted, with its Bitcoin transaction');
+  const before = world.broadcasts ? world.broadcasts.length : 0;
+  await ux.advance(WALLET_PUB, NOTE.nullifier).catch(() => {});
+  ok((world.broadcasts ? world.broadcasts.length : 0) === before, 'and nothing is signed or sent for it again');
+}
+
 // ---- recoverFromEthTx refuses rather than misfiling on any wrong input ----
 {
   const world = makeWorld();

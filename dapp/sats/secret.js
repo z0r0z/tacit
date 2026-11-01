@@ -771,6 +771,13 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
     asset: '0x' + assetHex, hAnchor: a.hAnchor, root: a.root, inputs: a.notes, wallet: poolWallet, bind: q.bind, outputs,
     exit: { exitVout, scriptPubKey: '0x' + key.scriptPubKey, value: amount },
   });
+  // a submit with no answer, or a server error, may be one the relay took: its notes are set aside as when it has not posted yet, and the error says so
+  const unsure = (e) => {
+    if (e?.status >= 400 && e?.status < 500) return e;
+    if (e?.status === 503 && e?.body?.error) return e;                         // the relay's own refusal (busy, behind, carrier full), said before it took anything
+    pendingMark(a.notes, null, 0n, assetHex, 0n, ownerTag(poolWallet), { hold: MAY_STILL_MS });
+    return relayDeclined('The relay did not answer, and it may still take this payment. Nothing else was sent; check your balance before paying again.');
+  };
   let built = build(q.exitVout);
   let { payloadHex } = await proveHere(built, say);
   say('Handing it to the relay…');
@@ -781,10 +788,10 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
       say('The relay’s quote ran out while the proof was made; asking for a new one…');
       return exitToSaleKey(tacit, { poolWallet, amount, asset, key, anchor: a.hAnchor, maxFee, say, inputs: a.notes, requoted: true });
     }
-    if (e?.status !== 409 || !Number.isInteger(e?.body?.exitVout)) throw e;
+    if (e?.status !== 409 || !Number.isInteger(e?.body?.exitVout)) throw unsure(e);
     built = build(e.body.exitVout);
     ({ payloadHex } = await proveHere(built, say));
-    sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId });
+    try { sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId }); } catch (e2) { throw unsure(e2); }
   }
   const exitVout = built.exit.exitVout;
   for (let i = 0; i < 60; i++) {

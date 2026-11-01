@@ -389,3 +389,14 @@ test('a burn the proof passed without recording goes nowhere by itself, and says
   assert.equal(inRow(inRec({ stage: 'reclaim-sent' }), NOW).moving, true);
   assert.equal(inRow(inRec({ stage: 'burn-mined' }), NOW).moving, false);
 });
+
+test('the Bitcoin transaction a way in links to is the one the front page links: never a burn only signed, the move for a two-step bridge before its burn', () => {
+  const tx = (c) => c.repeat(64), row = (stage, extra = {}) => inRow(inRec({ stage, ...extra }), NOW);
+  assert.equal(row('rburn-signed', { burn: { txid: tx('b'), hex: '00' } }).btcTx, null, 'a burn that was only signed was never sent');
+  assert.equal(row('rburn-sent', { burn: { txid: tx('b'), hex: '00' } }).btcTx, tx('b'));
+  assert.equal(row('migrate-sent', { burn: undefined, migrate: { revealTxid: tx('c') } }).btcTx, tx('c'), 'a two-step bridge links its move before its burn');
+  assert.equal(row('migrate-signed', { burn: undefined, migrate: { revealTxid: tx('c') } }).btcTx, null, 'and not before the move was sent');
+  assert.equal(row('reclaim-sent', { reclaim: { txid: tx('d') } }).btcTx, tx('d'), 'a move back links its own transaction');
+  assert.equal(row('recovered', { recover: { txid: tx('e') } }).btcTx, tx('e'), 'and a recovery its own');
+  assert.equal(row('not-recorded', { burn: { txid: 'zz', hex: '00' } }).btcTx, null, 'an id that is not 64 hex digits is dropped');
+});

@@ -497,7 +497,9 @@ export function makeCrossoutUx(deps) {
       id: ev.nullifier, walletPub, a, amount, fee, value, destXonly, dest, ev, txHash: settleTxHash, ethBlock,
       note: 'recovered from the CrossOutRecorded event directly', recovered: true,
     });
-    return putRecord(rec);
+    let st = null;
+    try { st = await callWorker('GET', `/crossout/minted?asset=${stripHex(a.assetId)}&claim=${stripHex(ev.claimId)}&txid=${'00'.repeat(32)}`); } catch { }
+    return putRecord(st && !st.error && st.status === 'minted' ? { ...rec, stage: 'minted', mintedAt: now(), ...(st.mintedTxid ? { creditedTxid: String(st.mintedTxid) } : {}) } : rec);
   }
 
 

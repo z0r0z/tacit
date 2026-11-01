@@ -2404,6 +2404,18 @@ const startMoved = async (world, ux) => {
   const w4 = setup();
   const plain = await makeUx(w4, makeMemStorage()).startReflected({ note, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
   ok(!plain.stealth, 'a bridge to this key\'s own address journals no stealth record');
+
+  // two tabs starting the same note at once: one is refused, and the record that stands is the other's burn
+  const w5 = setup(), shared = makeMemStorage();
+  const tabA = makeUx(w5, shared), tabB = makeUx(w5, shared);
+  const raced = await Promise.allSettled([
+    tabA.startReflected({ note, walletPriv: WALLET_PRIV, feeRate: BASE_RATE }),
+    tabB.startReflected({ note, walletPriv: WALLET_PRIV, feeRate: BASE_RATE }),
+  ]);
+  const won = raced.filter((x) => x.status === 'fulfilled'), lost = raced.filter((x) => x.status === 'rejected');
+  ok(won.length === 1 && lost.length === 1 && /another tab|already exists/.test(String(lost[0].reason && lost[0].reason.message)), 'two tabs starting one note at once: one is refused');
+  const standing = tabA.list(bytesToHex(WALLET_PUB).slice(2));
+  ok(standing.length === 1 && won.length === 1 && standing[0].burn.txid === won[0].value.burn.txid, 'and the one record that stands is the successful start\'s burn');
 }
 
 console.log(failures ? `\n${failures} FAILURES (${n} passed)` : `\nall ${n} burndep-ux checks passed`);

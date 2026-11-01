@@ -108,7 +108,15 @@ export function makeBurnDepositUx(deps) {
     try { const raw = storage.getItem(journalKey(walletPub)); const arr = raw ? deserializeRecord(raw) : []; return Array.isArray(arr) ? arr : []; }
     catch { return []; }
   }
-  function saveAll(walletPub, list) { storage.setItem(journalKey(walletPub), serializeRecord(list)); }
+  function saveAll(walletPub, list) {
+    try { storage.setItem(journalKey(walletPub), serializeRecord(list)); }
+    catch (e) {
+      // a full store: the provenance bundle of a bridge that is finished is not read again, so it is let go and the save is tried once more
+      const slim = list.map((r) => (r.bundle && ['minted', 'reclaimed', 'recovered'].includes(r.stage) ? (({ bundle, ...rest }) => rest)(r) : r));
+      if (slim.every((r, i) => r === list[i])) throw e;
+      storage.setItem(journalKey(walletPub), serializeRecord(slim));
+    }
+  }
   function putRecord(rec) {
     const list = loadAll(rec.walletPub).filter((r) => r.id !== rec.id);
     const saved = { ...rec, updatedAt: now() };
@@ -492,7 +500,15 @@ export function makeBurnDepositUx(deps) {
     return { txid, vout: 1, value: Number(o.value) };
   }
 
-  async function start({ note, walletPriv, fundingUtxo, feeRate = null }) {
+  async function startingLease(id, run) {
+    if (inFlight.has(id)) throw new Error('burndep-ux: this note is being started in this page right now');
+    if (!tryAcquireLease(id)) throw new Error('burndep-ux: this note is being started in another tab right now');
+    inFlight.add(id);
+    const renew = setInterval(() => { try { storage.setItem(leaseKey(id), JSON.stringify({ owner: sessionId, at: now() })); } catch {} }, Math.max(1000, Math.floor(LEASE_TTL_MS / 3)));
+    try { return await run(); } finally { inFlight.delete(id); clearInterval(renew); releaseLease(id); }
+  }
+  const start = (args) => startingLease(recordId(args.note.txid, args.note.vout), () => startNow(args));
+  async function startNow({ note, walletPriv, fundingUtxo, feeRate = null }) {
     const walletPub = secp.getPublicKey(walletPriv, true);
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
@@ -521,6 +537,7 @@ export function makeBurnDepositUx(deps) {
         controlBlock: bytesToHexLocal(mig.burnHome.controlBlock), scriptS: bytesToHexLocal(mig.burnHome.scriptS),
       },
     };
+    if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     return keptRecord(rec);
   }
 
@@ -528,7 +545,8 @@ export function makeBurnDepositUx(deps) {
   const burner = () => _burner || (_burner = makeBridgeBurnBroadcaster({ pool, bridgeMint }));
   // `recipient` { pubHex, name? } pays someone else: the burn names a stealth lock for their address (OP_BRIDGE_STEALTH_MINT) instead
   // of a note for this key, and they claim it under their private payments.
-  async function startReflected({ note, walletPriv, feeRate = null, allowHighFee = false, recipient = null }) {
+  const startReflected = (args) => startingLease(recordId(args.note.txid, args.note.vout), () => startReflectedNow(args));
+  async function startReflectedNow({ note, walletPriv, feeRate = null, allowHighFee = false, recipient = null }) {
     const walletPub = secp.getPublicKey(walletPriv, true);
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
@@ -568,6 +586,7 @@ export function makeBurnDepositUx(deps) {
     });
     const p = built.plan;
     const funding = built.commitTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout }));
+    if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     return keptRecord({
       id, network, walletPub: bytesToHexLocal(walletPub), path: 'reflected', stage: 'rburn-signed', createdAt: now(),
       source: { txid: stripHex(note.txid).toLowerCase(), vout: Number(note.vout), sats: Number(note.sats), assetId: asset.assetId, ticker: asset.ticker, ...(p2tr ? { p2tr: true } : {}), amount: BigInt(note.amount), blinding: BigInt(note.blinding) },
