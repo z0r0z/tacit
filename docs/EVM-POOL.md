@@ -585,7 +585,8 @@ more than the wallet allows:
 
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box
-it is asked to watch; and at `/events`, the start of the day's block range a history read begins in. It cannot change the recipient, amount,
+it is asked to watch; and at `/events`, the block a history read begins in: the start of a range of blocks after an absence, not the wallet's
+own place, and the wallet's own place only when it read the feed in the last ten minutes. It cannot change the recipient, amount,
 relayer or fee, and it holds no key that can spend. Sending from the user's own wallet is always possible.
 
 With the keeper service (each chain's `keeper` URL and `keeperAddress` are in `contracts/deployments/evm-pool.json`):
@@ -620,10 +621,12 @@ endpoints, which drop a reverting transaction and would leave a nonce gap, so ea
 
 **History feed.** `GET /evm-pool/keeper/events?from=<block>` → `{ through, events }`: the pool's `Transact` and the
 router's `Received` events in blocks `from..through`, confirmed, in chain order, whole blocks per page. A wallet syncs
-most of its history from it in a few requests instead of thousands of log queries. It asks from the start of the day's
-block range its place falls in (`feedStart` in `dapp/evm-pool-wallet.js`; a day counted from the pool's first block), not
-from its own place, so the request does not tell the keeper where this wallet is, and keeps only the events from its
-place on. It trusts nothing in it: each page is
+most of its history from it in a few requests instead of thousands of log queries. A wallet that has been away asks from the
+start of the range of blocks its place falls in (`feedStart` in `dapp/evm-pool-wallet.js`; ranges counted from the pool's first
+block, a day on Ethereum and an hour on Base, where a day holds thousands of events), not from its own place, so the request does
+not tell the keeper where this wallet last was, and keeps only the events from its place on. A wallet that read the feed in the
+last ten minutes asks from where that read ended, so a poll is sent only what is new; that block is one the keeper itself gave to
+every wallet that read at the same moment, and says no more than the time of the request does. It trusts nothing in it: each page is
 kept only if the tree it builds is one the pool has held at that size (`rootSize(root) == size`). A feed can at most
 hide a note (by withholding its memo or `Received` event, or by listing its nullifier as spent) or a spend of one;
 `rescan()` rebuilds from chain logs alone, and a spend that keeps failing runs it.
@@ -959,7 +962,7 @@ One transaction spends at most two notes. A balance in more than two parts needs
 ### The relay
 
 **What does the relay see?**
-Your IP address, as any web server does; the transaction it is asked to send, which becomes public anyway; the new note commitments and spent nullifiers when you reserve a slot; the deposit addresses you ask it to watch (chain, note key, fee cap); and the start of the day's block range your history read begins in, not your own place in it. The page also asks each chain's relay for its fee when you start signing in. See [Relaying](#relaying).
+Your IP address, as any web server does; the transaction it is asked to send, which becomes public anyway; the new note commitments and spent nullifiers when you reserve a slot; the deposit addresses you ask it to watch (chain, note key, fee cap); and the block your history read begins in: the start of a range of blocks (a day on Ethereum, an hour on Base) if you have been away, not your own place in it, and where your last read ended if that was in the last ten minutes. The page also asks each chain's relay for its fee when you start signing in. See [Relaying](#relaying).
 
 **What can the relay not do?**
 Redirect funds or change an amount. The proof binds the recipient, amount, relayer address and fee, and the pool recomputes that binding on chain. A copy of the transaction sent by someone else still pays the relay named in it. The relay never holds a key that can spend: a spend needs your signature inside the proof.

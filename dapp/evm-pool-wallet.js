@@ -41,13 +41,17 @@ const RELAYERS = {
 };
 const MAX_RELAY_FEE = { 1: 5n * 10n ** 16n, 8453: 2n * 10n ** 15n, 4663: 2n * 10n ** 15n, 4326: 2n * 10n ** 15n };
 
-// About a day of blocks on each chain. The keeper's history feed is asked from the start of the cell (a day of blocks,
-// counted from the pool's first block) that a wallet's place falls in, not from the place itself, so every wallet in a
-// cell sends the same request and the request does not say which wallet sent it. What the wallet already holds is skipped
-// when the page arrives. A chain not listed here gets Ethereum's cell.
-const FEED_CELL = { 1: 7_200, 8453: 43_200, 4326: 86_400, 4663: 830_000 };
-export function feedStart(chainId, deployBlock, from) {
-  const cell = FEED_CELL[Number(chainId)] ?? FEED_CELL[1], first = Number(deployBlock ?? 0);
+// Where a read of the keeper's history feed starts. A wallet that has been away, its place more than ten minutes behind
+// the tip, asks from the start of the cell its place falls in (a range of blocks counted from the pool's first block: a day
+// on Ethereum, an hour on Base, where a day holds thousands of events), not from the place itself, so every wallet in a cell
+// sends the same request and the request does not say when this one last read. What the wallet already holds is skipped
+// when the page arrives. A wallet that is current asks from its place, which for every current wallet is within a few blocks
+// of the tip, so a poll costs only what is new. A chain not listed here gets Ethereum's.
+const FEED_CELL = { 1: 7_200, 8453: 1_800, 4326: 86_400, 4663: 830_000 };
+const FEED_CURRENT = { 1: 50, 8453: 300, 4326: 600, 4663: 5_770 };
+export function feedStart(chainId, deployBlock, from, tip) {
+  const id = Number(chainId), cell = FEED_CELL[id] ?? FEED_CELL[1], first = Number(deployBlock ?? 0);
+  if (tip !== undefined && tip - from <= (FEED_CURRENT[id] ?? FEED_CURRENT[1])) return from;
   return from > first ? from - ((from - first) % cell) : from;
 }
 const VMAX = 1n << 120n;
@@ -608,11 +612,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // A feed that withholds a memo or a Received event can hide a note until rescan() reads the chain's logs alone
   // (a spend refused for this wallet's state does that itself); it cannot move funds. Each page is kept as soon as it
   // checks, so a failure, or a page closed partway through a long history, loses only the page being read: the next
-  // read, by the feed or the chain-log scan, continues from the last one kept. The first request starts at the cell this
-  // wallet's place falls in (see feedStart) and each later one where the page before it ended, so pages that end before
-  // the wallet's place are passed over, and only events from its place on are kept.
+  // read, by the feed or the chain-log scan, continues from the last one kept. The first request starts where feedStart
+  // says (the cell this wallet's place falls in when it has been away, its place when it is current) and each later one
+  // where the page before it ended, so pages that end before the wallet's place are passed over, and only events from its
+  // place on are kept.
   async function syncFromFeed(safe) {
-    let ask = feedStart(chain.chainId, chain.deployBlock, saved.block + 1);
+    let ask = feedStart(chain.chainId, chain.deployBlock, saved.block + 1, safe);
     for (let pages = 0; pages < 10_000; pages++) {
       const cand = saved, from = cand.block + 1;
       if (from > safe) break;

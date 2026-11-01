@@ -1358,7 +1358,7 @@ client submits the intent; the keeper does not scan for one on its own.
 | `GET /evm-pool/keeper/quote` | `{ relayer, fee, sweepFee, receiveMin, … }` |
 | `POST /evm-pool/keeper/reserve`, `POST /evm-pool/keeper/cancel` | a queue slot for a transaction about to be proven, so concurrent wallets don't race the pool's head |
 | `GET /evm-pool/keeper/head` | the pool's current root/size plus what the queue holds ahead of it |
-| `GET /evm-pool/keeper/events?from=<block>` | confirmed `Transact`/`Received` events, for syncing history without a log scanner. Ask from the start of a day's block range (`feedStart` in `dapp/evm-pool-wallet.js`), not from your own place, and keep only the events after it |
+| `GET /evm-pool/keeper/events?from=<block>` | confirmed `Transact`/`Received` events, for syncing history without a log scanner. After an absence, ask from the start of a range of blocks (`feedStart` in `dapp/evm-pool-wallet.js`: a day on Ethereum, an hour on Base), not from your own place, and keep only the events after it; within ten minutes of the tip, ask from your own place |
 | `POST /evm-pool/keeper/relay` | `{ tx, call?, wrap? }` — submits a proven transfer, withdrawal, `withdrawAndCall` or `withdrawToV1` |
 
 Live at `https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper` (Ethereum), `…-base.onrender.com` (Base),

@@ -1,6 +1,7 @@
 // tacit pay keeps the pool's whole history for its activity view, read from the keeper's feed by a loop of the page's own. The
-// page's source is run here with the modules it leans on stubbed: the first request starts at the start of the cell the stored
-// place falls in, a page that ends before that place is passed over, and what the page already holds is not added twice.
+// page's source is run here with the modules it leans on stubbed: a page that has been away starts its first request at the start
+// of the cell its stored place falls in, a page that is current (within ten minutes of the tip) starts at the place itself and is
+// sent only what is new, a page that ends before the place is passed over, and what the page already holds is not added twice.
 //   node tests/pay-eth-feed-cell.test.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -60,6 +61,24 @@ await check('two stored places in one cell ask from the same block, and a new pa
   const fresh = await run({ tip: 30_000, chain });
   assert.equal(fresh.asked[0], 1_000);
   assert.deepEqual(fresh.blocks, [1_500, 16_000, 19_000, 20_500, 24_000]);
+});
+
+await check('a page whose stored place is within ten minutes of the tip asks from the place itself and is sent only what is new', async () => {
+  const near = [...chain, ev(29_995)];
+  const cur = await run({ through: 29_990, held: chain, tip: 30_000, chain: near });
+  assert.deepEqual(cur.asked, [29_991], 'a poll asks for nothing it already holds');
+  assert.deepEqual(cur.blocks, [1_500, 16_000, 19_000, 20_500, 24_000, 29_995], 'and adds the one new event');
+  const quiet = await run({ through: 29_999, held: chain, tip: 30_000, chain });
+  assert.deepEqual(quiet.asked, [30_000]);
+  assert.deepEqual(quiet.blocks, [1_500, 16_000, 19_000, 20_500, 24_000]);
+});
+
+await check('ten minutes of blocks is the edge: 50 behind the tip is current on Ethereum, 51 asks from the cell', async () => {
+  const edge = await run({ through: 29_949, held: chain, tip: 30_000, chain });
+  assert.deepEqual(edge.asked, [29_950], 'the tip is 50 blocks on');
+  const past = await run({ through: 29_948, held: chain, tip: 30_000, chain });
+  assert.deepEqual(past.asked, [29_800], 'the tip is 51 blocks on: the cell that 29,949 falls in starts at 1,000 + 4 x 7,200');
+  assert.deepEqual(edge.blocks, past.blocks, 'both end with the same history');
 });
 
 console.log(`\n${n} checks passed`);
