@@ -3,7 +3,7 @@
 //   node tests/sealed-request.test.mjs
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
-import { gatewayKeys, newGatewayKey, sealRequest, openRequest, makeSealedFetch, SealedError, REQUEST_OVERHEAD, CLOCK_WINDOW } from '../dapp/sealed-request.js';
+import { gatewayKeys, newGatewayKey, sealRequest, openRequest, makeSealedFetch, SealedError, REQUEST_OVERHEAD, CLOCK_WINDOW, MAX_BATCH } from '../dapp/sealed-request.js';
 
 let n = 0;
 const check = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };
@@ -155,6 +155,181 @@ await check('a page of a million bytes is sealed and opened whole, and sealing i
   const got = await sealed.open(reply);
   assert.equal(got.status, 200);
   assert.ok(Buffer.from(got.body).equals(body), 'every byte');
+});
+
+await check('a list of requests is sealed in one envelope and answered with one answer each, in order', async () => {
+  const reqs = [
+    { method: 'GET', path: '/1/evm-pool/keeper/quote' },
+    { method: 'GET', path: '/8453/evm-pool/keeper/events?from=51864014&facts=1' },
+    { method: 'POST', path: '/1/evm-pool/keeper/receive', body: { chainId: 1, npk: '123' } },
+  ];
+  const sealed = await sealRequest(PUB, reqs, { now: () => T });
+  assert.equal(sealed.bytes.length, 4096 + REQUEST_OVERHEAD, 'the same size as a request alone');
+  const opened = await openRequest(keys, sealed.bytes, { now: () => T });
+  assert.equal(opened.batch, true);
+  assert.deepEqual(opened.requests, [
+    { method: 'GET', path: '/1/evm-pool/keeper/quote', body: null },
+    { method: 'GET', path: '/8453/evm-pool/keeper/events?from=51864014&facts=1', body: null },
+    { method: 'POST', path: '/1/evm-pool/keeper/receive', body: { chainId: 1, npk: '123' } },
+  ]);
+  const z = gzipSync('x'.repeat(5000));
+  const reply = await opened.replyMany([
+    { status: 200, headers: { 'content-type': 'application/json' }, body: te.encode('{"fee":"1"}'), gzip: false },
+    { status: 429, headers: { 'retry-after': '10' }, body: new Uint8Array(0), gzip: false },
+    { status: 200, headers: {}, body: z, gzip: true },
+  ]);
+  const got = await sealed.open(reply);
+  assert.equal(got.length, 3);
+  assert.deepEqual([got[0].status, got[1].status, got[2].status], [200, 429, 200]);
+  assert.equal(Buffer.from(got[0].body).toString(), '{"fee":"1"}');
+  assert.equal(got[1].body.length, 0);
+  assert.equal(got[1].headers['retry-after'], '10');
+  assert.equal(Buffer.from(got[2].body).toString(), 'x'.repeat(5000));
+  await assert.rejects(opened.replyMany([{ status: 200, headers: {}, body: te.encode('{}'), gzip: false }]), /one answer for each/);
+  // a request alone is still opened and answered as before
+  const one = await openRequest(keys, (await sealRequest(PUB, reqs[0], { now: () => T })).bytes, { now: () => T });
+  assert.equal(one.batch, false);
+  assert.equal(one.requests.length, 1);
+});
+
+await check('an envelope carries one to MAX_BATCH requests, and a reply of the wrong shape is refused at the caller', async () => {
+  await assert.rejects(sealRequest(PUB, [], { now: () => T }), /1 to 24/);
+  await assert.rejects(sealRequest(PUB, Array.from({ length: MAX_BATCH + 1 }, () => ({ method: 'GET', path: '/head' })), { now: () => T }), /1 to 24/);
+  const full = await sealRequest(PUB, Array.from({ length: MAX_BATCH }, (_, i) => ({ method: 'GET', path: `/8453-xfde4c96c85/evm-pool/keeper/events?from=${51864014 + i}&facts=1` })), { now: () => T });
+  assert.equal(full.bytes.length, 4096 + REQUEST_OVERHEAD, 'twenty-four reads still fit the smallest size');
+  assert.equal((await openRequest(keys, full.bytes, { now: () => T })).requests.length, MAX_BATCH);
+  // a single answer for a list, and a list for a single request, are both refused
+  const pair = await sealRequest(PUB, [{ method: 'GET', path: '/a' }, { method: 'GET', path: '/b' }], { now: () => T });
+  const openedPair = await openRequest(keys, pair.bytes, { now: () => T });
+  await assert.rejects(pair.open(await openedPair.reply(200, {}, te.encode('{}'))), /not a reply/);
+  const alone = await sealRequest(PUB, { method: 'GET', path: '/a' }, { now: () => T });
+  const openedAlone = await openRequest(keys, alone.bytes, { now: () => T });
+  await assert.rejects(alone.open(await openedAlone.reply(200, {}, te.encode('{}'))).then((r) => { assert.equal(r.status, 200); throw new SealedError('fine'); }), /fine/);
+});
+
+// A forwarder that opens each envelope at a gateway in this process and answers every request in it with `handler(request)`.
+function batchGateway({ handler = (r) => ({ body: JSON.stringify({ path: r.path }) }), hold = () => null } = {}) {
+  const log = [], seen = new Set();
+  const f = async (url, init) => {
+    const opened = await openRequest(keys, init.body, { now: () => T, seen: (id) => (seen.has(id) ? false : (seen.add(id), true)) });
+    log.push({ url, requests: opened.requests, at: Date.now() });
+    await hold(opened.requests);
+    const parts = await Promise.all(opened.requests.map(async (r) => {
+      const a = await handler(r);
+      return { status: a.status ?? 200, headers: a.headers ?? { 'content-type': 'application/json' }, body: te.encode(a.body ?? '{}'), gzip: false };
+    }));
+    const reply = opened.batch ? await opened.replyMany(parts) : await opened.reply(parts[0].status, parts[0].headers, parts[0].body);
+    return new Response(reply, { status: 200 });
+  };
+  return { f, log };
+}
+const sealedFetch = (g, extra = {}) => makeSealedFetch({ keeper: 'https://k.test', chainId: 'k', gateway: PUB, forwarders: ['https://f.test'], fetchImpl: g.f, now: () => T, batchMs: 40, ...extra });
+
+await check('reads made together share envelopes, each caller gets its own answer, and the first one is not held back', async () => {
+  const g = batchGateway();
+  const sf = sealedFetch(g);
+  const paths = Array.from({ length: 24 }, (_, i) => `/${i % 3 ? '1' : '8453'}/evm-pool/keeper/${i % 2 ? 'quote' : 'events'}?n=${i}`);
+  const t0 = Date.now();
+  const answers = await Promise.all(paths.map((p) => sf(`https://k.test${p}`).then((r) => r.json())));
+  assert.deepEqual(answers.map((a) => a.path), paths, 'every caller has the answer to its own request');
+  assert.ok(g.log.length <= 3, `${g.log.length} envelopes for 24 reads`);
+  assert.equal(g.log[0].requests.length, 1, 'the first read went out alone, at once');
+  assert.equal(g.log.reduce((a, e) => a + e.requests.length, 0), 24);
+  assert.ok(g.log.every((e) => e.requests.length <= 16), 'no envelope above maxBatch');
+  assert.ok(Date.now() - t0 < 400, 'and the wait behind it was bounded');
+});
+
+await check('a read that follows another one waits for nothing, so a page after a page costs no more than it did', async () => {
+  const g = batchGateway();
+  const sf = sealedFetch(g, { batchMs: 500 });
+  const t0 = Date.now();
+  for (let i = 0; i < 12; i++) assert.equal((await sf(`https://k.test/1/evm-pool/keeper/events?from=${i}`)).status, 200);
+  assert.equal(g.log.length, 12, 'one envelope each');
+  assert.ok(Date.now() - t0 < 400, `twelve in a row took ${Date.now() - t0} ms against a window of 500`);
+});
+
+await check('a write goes alone and at once, and neither it nor a read held behind it waits for the other', async () => {
+  let releaseRelay;
+  const relayHeld = new Promise((r) => { releaseRelay = r; });
+  const g = batchGateway({ hold: async (rs) => { if (rs.some((r) => r.method === 'POST')) await relayHeld; } });
+  const sf = sealedFetch(g, { batchMs: 30 });
+  const write = sf('https://k.test/1/evm-pool/keeper/relay', { method: 'POST', body: JSON.stringify({ tx: 1 }) });
+  const reads = await Promise.all(['quote', 'head', 'info'].map((r) => sf(`https://k.test/1/evm-pool/keeper/${r}`).then((x) => x.json())));
+  assert.deepEqual(reads.map((r) => r.path), ['/1/evm-pool/keeper/quote', '/1/evm-pool/keeper/head', '/1/evm-pool/keeper/info'], 'the reads were answered while the relay was still waiting');
+  const post = g.log.find((e) => e.requests.some((r) => r.method === 'POST'));
+  assert.equal(post.requests.length, 1, 'the write was alone in its envelope');
+  releaseRelay();
+  assert.equal((await write).status, 200);
+});
+
+await check('a caller that gives up stops waiting alone, and the envelope goes without it', async () => {
+  const g = batchGateway();
+  const sf = sealedFetch(g, { batchMs: 60 });
+  const first = sf('https://k.test/1/evm-pool/keeper/head');   // leaves at once
+  const ctl = new AbortController();
+  const quits = sf('https://k.test/1/evm-pool/keeper/quote', { signal: ctl.signal });
+  const stays = sf('https://k.test/1/evm-pool/keeper/info');
+  ctl.abort();
+  await assert.rejects(quits, (e) => e.name === 'AbortError');
+  assert.equal((await stays).status, 200);
+  assert.equal((await first).status, 200);
+  const sent = g.log.flatMap((e) => e.requests.map((r) => r.path));
+  assert.ok(!sent.includes('/1/evm-pool/keeper/quote'), 'the aborted read was not sent');
+  const pre = new AbortController(); pre.abort();
+  await assert.rejects(sf('https://k.test/1/evm-pool/keeper/head', { signal: pre.signal }), (e) => e.name === 'AbortError');
+});
+
+await check('an envelope that fails fails every request in it after trying the other forwarder, and each try is a new envelope', async () => {
+  const g = batchGateway();
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push(url); if (url.startsWith('https://down.test')) throw new Error('connection refused'); return g.f(url, init); };
+  const sf = makeSealedFetch({ keeper: 'https://k.test', chainId: 'k', gateway: PUB, forwarders: ['https://down.test', 'https://up.test'], fetchImpl, now: () => T, batchMs: 30 });
+  const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => sf(`https://k.test/1/evm-pool/keeper/events?from=${i}`).then((r) => r.json())));
+  assert.equal(answers.length, 6);
+  assert.ok(calls.some((u) => u.startsWith('https://up.test')));
+  const dead = makeSealedFetch({ keeper: 'https://k.test', chainId: 'k', gateway: PUB, forwarders: ['https://down.test'], fetchImpl, now: () => T, batchMs: 30 });
+  const results = await Promise.allSettled(Array.from({ length: 4 }, (_, i) => dead(`https://k.test/1/evm-pool/keeper/events?from=${i}`)));
+  assert.ok(results.every((r) => r.status === 'rejected' && /refused/.test(r.reason.message)), 'all four fail');
+});
+
+await check('an answer too large to share an envelope is asked for again by itself', async () => {
+  let asks = 0;
+  const g = batchGateway({ handler: (r) => {
+    if (!/events/.test(r.path)) return { body: '{"ok":true}' };
+    asks++;
+    return asks === 1 ? { status: 502, headers: { 'content-type': 'application/json', 'x-sealed': 'alone' }, body: '{"error":"too large"}' } : { body: '{"events":"the whole page"}' };
+  } });
+  const sf = sealedFetch(g, { batchMs: 30 });
+  const head = sf('https://k.test/1/evm-pool/keeper/head');
+  const page = sf('https://k.test/1/evm-pool/keeper/events?from=1');
+  const info = sf('https://k.test/1/evm-pool/keeper/info');
+  const [h, p, i] = await Promise.all([head, page, info]);
+  assert.equal(h.status, 200); assert.equal(i.status, 200);
+  assert.equal(p.status, 200, 'the caller sees the page, not the marker');
+  assert.deepEqual(await p.json(), { events: 'the whole page' });
+  assert.equal(g.log.filter((e) => e.requests.length === 1 && /events/.test(e.requests[0].path)).length >= 1, true, 'and it was asked for again alone');
+});
+
+await check('an answer with a status that carries no body is still a response, alone or in a burst', async () => {
+  const g = batchGateway({ handler: (r) => (/nothing/.test(r.path) ? { status: 204, headers: {}, body: '' } : { body: '{"ok":true}' }) });
+  const sf = sealedFetch(g, { batchMs: 30 });
+  const [a, b, c] = await Promise.all([sf('https://k.test/1/evm-pool/keeper/head'), sf('https://k.test/1/evm-pool/keeper/nothing'), sf('https://k.test/1/evm-pool/keeper/info')]);
+  assert.deepEqual([a.status, b.status, c.status], [200, 204, 200]);
+  assert.equal(await b.text(), '');
+  assert.deepEqual(await c.json(), { ok: true });
+  assert.equal((await sf('https://k.test/1/evm-pool/keeper/nothing')).status, 204);
+});
+
+await check('a burst is capped at maxBatch, and batchMs 0 sends every request alone', async () => {
+  const g = batchGateway();
+  const sf = sealedFetch(g, { maxBatch: 5, batchMs: 200 });
+  await Promise.all(Array.from({ length: 20 }, (_, i) => sf(`https://k.test/1/evm-pool/keeper/events?from=${i}`)));
+  assert.ok(g.log.every((e) => e.requests.length <= 5), g.log.map((e) => e.requests.length).join(','));
+  assert.equal(g.log.reduce((a, e) => a + e.requests.length, 0), 20);
+  const g2 = batchGateway();
+  const alone = sealedFetch(g2, { batchMs: 0 });
+  await Promise.all(Array.from({ length: 6 }, (_, i) => alone(`https://k.test/1/evm-pool/keeper/events?from=${i}`)));
+  assert.equal(g2.log.length, 6);
 });
 
 // A forwarder that hands the bytes it is given to a gateway in this process.

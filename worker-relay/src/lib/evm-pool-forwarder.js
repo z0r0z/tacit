@@ -3,10 +3,11 @@
 // of what is in it; it holds no key, forwards no header of the caller's, and keeps nothing. The route hides a caller from the
 // keeper only while the forwarder and the keeper are not one party.
 //
-//   POST /f/<chainId>   a sealed request → the keeper's answer
+//   POST /f/<id>        a sealed request → the answer of the gateway named <id>
 //   GET  /health
 //
-// gateways: { "<chainId>": "<the keeper's /sealed URL>" }. Each caller is limited by its address, as the keeper limits its own.
+// gateways: { "<id>": "<a /sealed URL>" }: an id is a chain's ("1"), a pool's ("1-xdac17f958d") or a service's ("k": the multi-keeper
+// service's POST /sealed, which carries every pool). Each caller is limited by its address, as the keeper limits its own.
 
 import { makeTokenBucket, clientKey } from './token-bucket.js';
 import { MAX_REQUEST } from '../../../dapp/sealed-request.js';
@@ -36,10 +37,10 @@ export function makeForwarder({ gateways, ratePerMin = 60, timeoutMs = 210_000, 
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
     if (url.pathname === '/health' && req.method === 'GET') return reply(res, 200, '{"ok":true}');
-    const m = /^\/f\/(\d+)$/.exec(url.pathname);
+    const m = /^\/f\/([0-9A-Za-z_-]{1,40})$/.exec(url.pathname);
     if (!m || req.method !== 'POST') return reply(res, 404, '{"error":"not found"}');
-    const gateway = gateways[m[1]];
-    if (!gateway) return reply(res, 404, '{"error":"no keeper for that chain"}');
+    const gateway = Object.hasOwn(gateways, m[1]) ? gateways[m[1]] : null;
+    if (!gateway) return reply(res, 404, '{"error":"no keeper for that id"}');
     if (!allowed(clientKey(req))) { res.setHeader?.('Retry-After', '10'); return reply(res, 429, '{"error":"rate limited"}'); }
     let body;
     try { body = await readBody(req, MAX_REQUEST); } catch { return reply(res, 413, '{"error":"body too large"}'); }

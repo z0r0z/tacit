@@ -18,7 +18,8 @@ import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parse
 import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
 import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
-import { makeSealedGateway } from '../src/lib/evm-pool-keeper-sealed.js';
+import { makeSealedGateway, makeServiceGateway } from '../src/lib/evm-pool-keeper-sealed.js';
+import { makeTokenBucket, clientKey } from '../src/lib/token-bucket.js';
 import { gatewayKeys, sealRequest, makeSealedFetch } from '../../dapp/sealed-request.js';
 
 const zk = await loadZk();
@@ -1737,6 +1738,151 @@ await test('the gateway\'s memory of envelopes is bounded, and when full it shed
     assert.equal(await post(envelopes[24]), 400, 'a recent one is still remembered');
     assert.equal(await post(envelopes[0]), 200, 'an old one was shed, and a replay of it is answered afresh');
   } finally { server.close(); }
+});
+
+
+// ── the private route of the multi-keeper service: one POST /sealed for every pool, and a burst of reads in one envelope ──
+
+// The service's handler as the multi-keeper service has it: /<id>/evm-pool/keeper/<route>, each keeper counting the sender by itself.
+function fakeService({ perMin = 1000, big = 0 } = {}) {
+  const seen = [];
+  const limit = new Map();
+  const serve = (req, res) => {
+    const [path, query = ''] = req.url.split('?');
+    const m = /^\/(\d+(?:-x[0-9a-f]+)?)\/evm-pool\/keeper(\/.*)$/.exec(path);
+    const send = (code, body, headers = {}) => { res.writeHead(code, { 'Content-Type': 'application/json', ...headers }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };
+    if (!m) return send(404, { error: 'no such chain' });
+    const [, id, route] = m;
+    if (!limit.has(id)) limit.set(id, makeTokenBucket({ perMin, burst: perMin }));
+    const ip = clientKey(req);
+    if (!limit.get(id)(ip)) return send(429, { error: 'rate limited' }, { 'Retry-After': '10' });
+    seen.push({ id, route, query, ip, method: req.method });
+    if (big && route === '/events') { res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(Buffer.alloc(big, 7 + Number(query.split('=')[1] || 0))); }
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => send(200, { id, route, query, body: body ? JSON.parse(body) : null }));
+  };
+  return { serve, seen };
+}
+const jsonTo = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+
+// A service behind a real server with the service route in front of it, a forwarder in front of that, and a wallet's sealed fetch through it.
+async function serviceRoute({ perMin, big, forwarders = [], ratePerMin = 20, sfOpts = {} } = {}) {
+  const svc = fakeService({ perMin, big });
+  const take = makeServiceGateway({ secret: GATEWAY_SECRET, serve: svc.serve, json: jsonTo, forwarders, ratePerMin, now: () => T0 });
+  const server = createServer((req, res) => (take(req, res) ? undefined : svc.serve(req, res)));
+  await listen(server);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const envelopes = [];
+  const fwd = createServer(makeForwarder({ gateways: { k: `${base}/sealed`, '1-xdac17f958d': `${base}/sealed` }, ratePerMin: 100_000, fetchImpl: async (url, init) => { envelopes.push(init.body.length); return fetch(url, init); } }));
+  await listen(fwd);
+  const fwdUrl = `http://127.0.0.1:${fwd.address().port}`;
+  const sf = makeSealedFetch({ keeper: base, chainId: 'k', gateway: GATEWAY_PUB, forwarders: [fwdUrl], now: () => T0, batchMs: 40, ...sfOpts });
+  return { svc, take, base, fwdUrl, envelopes, sf, close: () => { server.close(); fwd.close(); } };
+}
+
+await test('the service route carries any pool\'s routes, and a burst of reads for a dozen pools is a few envelopes, each answer its keeper\'s own', async () => {
+  const r = await serviceRoute();
+  try {
+    const ids = ['1', '8453', '4663', '1-xdac17f958d', '1-xa0b86991c6', '8453-x833589fcd6'];
+    const paths = ids.flatMap((id) => [`/${id}/evm-pool/keeper/quote`, `/${id}/evm-pool/keeper/head`]);
+    const answers = await Promise.all(paths.map((p) => r.sf(`${r.base}${p}`).then((x) => x.json())));
+    assert.deepEqual(answers.map((a) => `/${a.id}/evm-pool/keeper${a.route}`), paths, 'each caller has its own pool\'s answer');
+    assert.ok(r.envelopes.length <= 3, `${r.envelopes.length} envelopes for ${paths.length} reads`);
+    assert.ok(r.envelopes.every((n) => n === 4096 + 70), 'each is the smallest size, so a burst does not show its size');
+    // a write is carried too, alone, with its body
+    const w = await r.sf(`${r.base}/1/evm-pool/keeper/receive`, jsonInit('POST', { chainId: 1, npk: '42' }));
+    assert.deepEqual((await w.json()).body, { chainId: 1, npk: '42' });
+    // the keepers saw the forwarder's address and not a caller's
+    assert.equal(new Set(r.svc.seen.map((x) => x.ip)).size, 1);
+  } finally { r.close(); }
+});
+
+await test('what the service route does not carry is refused inside the envelope while the rest of it is answered', async () => {
+  const r = await serviceRoute();
+  try {
+    const status = (p, init) => r.sf(`${r.base}${p}`, init).then((x) => x.status);
+    const results = await Promise.all([
+      status('/1/evm-pool/keeper/quote'),
+      status('/health'),
+      status('/token-pools'),
+      status('/chains'),
+      status('/1/evm-pool/keeper/reserve', jsonInit('POST', {})),
+      status('/1/evm-pool/keeper/cancel', jsonInit('POST', {})),
+      status('/1/evm-pool/keeper/../../health'),
+      status('/1/evm-pool/keeperx/quote'),
+      status('/1/evm-pool/keeper/head'),
+      status('/8453/evm-pool/keeper/status/0x' + 'ab'.repeat(20)),
+    ]);
+    assert.deepEqual(results, [200, 403, 403, 403, 403, 403, 403, 403, 200, 200]);
+    assert.ok(r.svc.seen.every((x) => ['/quote', '/head', `/status/0x${'ab'.repeat(20)}`].includes(x.route)), 'a refused request never reached a keeper');
+  } finally { r.close(); }
+});
+
+await test('each request in an envelope is counted by its keeper as if the sender had made it alone', async () => {
+  const r = await serviceRoute({ perMin: 4 });
+  try {
+    const codes = await Promise.all(Array.from({ length: 8 }, (_, i) => r.sf(`${r.base}/1/evm-pool/keeper/events?from=${i}`).then((x) => x.status)));
+    assert.equal(codes.filter((c) => c === 200).length, 4);
+    assert.equal(codes.filter((c) => c === 429).length, 4);
+    const busy = await r.sf(`${r.base}/1/evm-pool/keeper/head`);
+    assert.equal(busy.status, 429);
+    assert.equal(busy.headers.get('retry-after'), '10', 'a keeper\'s Retry-After comes through');
+    assert.equal((await r.sf(`${r.base}/8453/evm-pool/keeper/head`)).status, 200, 'another keeper counts for itself');
+  } finally { r.close(); }
+});
+
+await test('an envelope is counted against its sender before it is opened, and a listed forwarder may send ten times as much', async () => {
+  const post = (base, bytes) => fetch(`${base}/sealed`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: bytes });
+  const fresh = () => sealRequest(GATEWAY_PUB, { method: 'GET', path: '/1/evm-pool/keeper/head' }, { now: () => T0 }).then((x) => x.bytes);
+  const plain = await serviceRoute({ ratePerMin: 1 });
+  try {
+    const codes = []; for (let i = 0; i < 6; i++) codes.push((await post(plain.base, await fresh())).status);
+    assert.deepEqual(codes, [200, 200, 200, 429, 429, 429], 'a burst of three, then the rate');
+    const refused = await post(plain.base, await fresh());
+    assert.equal(refused.headers.get('retry-after'), '10');
+  } finally { plain.close(); }
+  const listed = await serviceRoute({ ratePerMin: 1, forwarders: ['127.0.0.1'] });
+  try {
+    const codes = []; for (let i = 0; i < 12; i++) codes.push((await post(listed.base, await fresh())).status);
+    assert.ok(codes.every((c) => c === 200), codes.join(','));
+  } finally { listed.close(); }
+});
+
+await test('answers too large to share an envelope are told to come alone, and the sealed fetch asks for each again by itself', async () => {
+  const r = await serviceRoute({ big: 3_500_000 });
+  try {
+    const bodies = await Promise.all([1, 2, 3].map((i) => r.sf(`${r.base}/1/evm-pool/keeper/events?from=${i}`).then(async (x) => ({ status: x.status, body: Buffer.from(await x.arrayBuffer()) }))));
+    for (const [i, b] of bodies.entries()) {
+      assert.equal(b.status, 200, `page ${i + 1}`);
+      assert.equal(b.body.length, 3_500_000);
+      assert.equal(b.body[0], 7 + i + 1, 'and it is its own page');
+    }
+  } finally { r.close(); }
+});
+
+await test('the service route is off without a key, a bad key stops the service without saying what it was, and only POST /sealed is taken', async () => {
+  assert.throws(() => makeServiceGateway({ secret: 'nope-not-a-key', serve: () => {}, json: jsonTo }), (e) => /EVM_POOL_KEEPER_GATEWAY_KEY/.test(e.message) && !e.message.includes('nope'));
+  const r = await serviceRoute();
+  try {
+    assert.equal((await fetch(`${r.base}/sealed`)).status, 404);
+    assert.equal(r.take({ url: '/1/evm-pool/keeper/head', method: 'GET', headers: {} }, {}), false, 'any other path is left to the service');
+    assert.equal((await fetch(`${r.base}/1/evm-pool/keeper/head`)).status, 200, 'and a direct read still works');
+  } finally { r.close(); }
+});
+
+await test('the forwarder names a gateway by an id of its own and has no id that is not its own', async () => {
+  const hits = [];
+  const fwd = createServer(makeForwarder({ gateways: { 1: 'http://one.test/s', k: 'http://k.test/s', '1-xdac17f958d': 'http://pool.test/s' }, fetchImpl: async (url) => { hits.push(url); return new Response(new Uint8Array([1]), { status: 200 }); } }));
+  await listen(fwd);
+  const base = `http://127.0.0.1:${fwd.address().port}`;
+  try {
+    const post = (id) => fetch(`${base}/f/${id}`, { method: 'POST', body: new Uint8Array(10) }).then((x) => x.status);
+    assert.deepEqual([await post('1'), await post('k'), await post('1-xdac17f958d')], [200, 200, 200]);
+    assert.deepEqual(hits, ['http://one.test/s', 'http://k.test/s', 'http://pool.test/s']);
+    for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'nope', 'k%20', 'a'.repeat(41)]) assert.equal(await post(id), 404, id);
+    assert.equal(hits.length, 3);
+  } finally { fwd.close(); }
 });
 
 console.log(`\n${n} passed`);

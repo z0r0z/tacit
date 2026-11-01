@@ -10,9 +10,14 @@
 //   key(l)    = keccak256("tacit-sealed-v2" ‖ l ‖ s ‖ E ‖ nonce [‖ reply nonce]), l = 1 request key, 2 request iv,
 //               3 reply key, 4 reply iv (the first 12 bytes of each iv)
 //   ct ‖ tag  AES-256-GCM (WebCrypto) of the plaintext under that key and iv, the bytes before ct as additional data
-//   plaintext be32(n) ‖ JSON { t, m, p, b } (time, method, path, body) ‖ zeros, up to the next of 4, 8, 16, 32, 64 KiB
+//   plaintext be32(n) ‖ JSON { t, m, p, b } (time, method, path, body), or { t, r: [{ m, p, b }, …] } for up to 24 requests
+//             ‖ zeros, up to the next of 4, 8, 16, 32, 64 KiB
 //   reply     0x02 ‖ reply nonce (16) ‖ ct ‖ tag (16); plaintext be32(n) ‖ JSON { s, h, z, l } (status, headers, gzip,
-//             body length) ‖ body ‖ zeros, up to the next of 1, 4, 16, 64 KiB and then each 64 KiB
+//             body length), or { r: [{ s, h, z, l }, …] } one for each request ‖ the bodies in order ‖ zeros, up to the next
+//             of 1, 4, 16, 64 KiB and then each 64 KiB
+//
+// One envelope can carry a burst: a wallet's polls (a quote and a feed read for each of a dozen pools) go out together, so the
+// forwarder and the keeper see one envelope, and the cost of the route is paid once for the burst, not once for each request.
 //
 // Every message has a key of its own (a request's from its one-time key and nonce, a reply's from its own nonce as well), so
 // its iv can be derived with it and is never used twice under a key. Only the gateway's key opens a request or makes a reply
@@ -36,6 +41,7 @@ const REQUEST_SIZES = [4096, 8192, 16384, 32768, 65536];
 const REPLY_SIZES = [1024, 4096, 16384, 65536];
 const REPLY_STEP = 65536;
 export const MAX_REPLY = 8 << 20;
+export const MAX_BATCH = 24;
 export const REQUEST_OVERHEAD = 1 + 4 + 33 + 16 + 16;
 export const MAX_REQUEST = REQUEST_SIZES[REQUEST_SIZES.length - 1] + REQUEST_OVERHEAD;
 export const CLOCK_WINDOW = 300;
@@ -82,22 +88,27 @@ export function newGatewayKey() {
   for (;;) { const b = random(32); const v = toBig(b); if (v > 0n && v < N) return bytesToHex(b); }
 }
 
-// { bytes, open } for a request of this caller: bytes go to a forwarder, open(replyBytes) → { status, headers, body }.
-export async function sealRequest(gatewayPubHex, { method, path, body = null }, { now = () => Math.floor(Date.now() / 1000) } = {}) {
+const wire = ({ method, path, body = null }) => ({ m: method, p: path, b: body });
+
+// { bytes, open } for a request of this caller, or for a list of up to MAX_BATCH of them: bytes go to a forwarder,
+// open(replyBytes) → { status, headers, body }, or one of those for each request of a list.
+export async function sealRequest(gatewayPubHex, req, { now = () => Math.floor(Date.now() / 1000) } = {}) {
+  const many = Array.isArray(req);
+  if (many && (!req.length || req.length > MAX_BATCH)) fail(`an envelope carries 1 to ${MAX_BATCH} requests`);
   const pub = hexToBytes(String(gatewayPubHex).replace(/^0x/, ''));
   const P = pointOf(pub);
   const e = randomScalar();
   const E = G0.multiply(e).toRawBytes(true);
   const s = P.multiply(e).toRawBytes(true);
   const nonce = random(16);
-  const json = te.encode(JSON.stringify({ t: now(), m: method, p: path, b: body }));
+  const json = te.encode(JSON.stringify(many ? { t: now(), r: req.map(wire) } : { t: now(), ...wire(req) }));
   const size = sized(4 + json.length, REQUEST_SIZES);
   const pt = new Uint8Array(size);
   pt.set(be32(json.length));
   pt.set(json, 4);
   const head = concatBytes(Uint8Array.of(VERSION), kidOf(pub), E, nonce);
   const bytes = concatBytes(head, await encrypt(keyOf(1, s, E, nonce), ivOf(2, s, E, nonce), head, pt));
-  return { bytes, open: (reply) => openReply(s, E, nonce, reply) };
+  return { bytes, open: (reply) => openReply(s, E, nonce, reply, many ? req.length : 0) };
 }
 
 async function gunzip(bytes) {
@@ -105,7 +116,7 @@ async function gunzip(bytes) {
   return new Uint8Array(await r.arrayBuffer());
 }
 
-async function openReply(s, E, nonce, bytes) {
+async function openReply(s, E, nonce, bytes, count) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 1 + 16 + REPLY_SIZES[0] + 16 || bytes[0] !== VERSION) fail('not a reply');
   const rn = bytes.subarray(1, 17);
   const pt = await decrypt(keyOf(3, s, E, nonce, rn), ivOf(4, s, E, nonce, rn), bytes.subarray(0, 17), bytes.subarray(17));
@@ -114,15 +125,24 @@ async function openReply(s, E, nonce, bytes) {
   if (4 + metaLen > pt.length) fail('not a reply');
   let meta;
   try { meta = JSON.parse(td.decode(pt.subarray(4, 4 + metaLen))); } catch { fail('not a reply'); }
-  if (!Number.isInteger(meta.s) || !Number.isInteger(meta.l) || 4 + metaLen + meta.l > pt.length) fail('not a reply');
-  let body = pt.subarray(4 + metaLen, 4 + metaLen + meta.l);
-  if (meta.z) body = await gunzip(body);
-  return { status: meta.s, headers: meta.h && typeof meta.h === 'object' ? meta.h : {}, body };
+  const parts = count ? meta?.r : [meta];
+  if (!Array.isArray(parts) || (count && parts.length !== count)) fail('not a reply');
+  const out = [];
+  let at = 4 + metaLen;
+  for (const m of parts) {
+    if (!m || !Number.isInteger(m.s) || !Number.isInteger(m.l) || m.l < 0 || at + m.l > pt.length) fail('not a reply');
+    let body = pt.subarray(at, at + m.l);
+    at += m.l;
+    if (m.z) body = await gunzip(body);
+    out.push({ status: m.s, headers: m.h && typeof m.h === 'object' ? m.h : {}, body });
+  }
+  return count ? out : out[0];
 }
 
 // The gateway's side. `seen(id, until)` answers whether a request is new and remembers it; a request is refused when
 // its time is more than `window` seconds from `now`. Throws SealedError for anything that is not a fresh, whole request
-// for this gateway, and says no more than that. → { method, path, body, reply(status, headers, body, { gzip }) }.
+// for this gateway, and says no more than that. → { requests: [{ method, path, body }], batch, reply(status, headers, body, { gzip }),
+// replyMany([{ status, headers, body, gzip }]) }: a request alone is answered by reply, a list by replyMany, one answer for each.
 export async function openRequest(keys, bytes, { now = () => Math.floor(Date.now() / 1000), window = CLOCK_WINDOW, seen = () => true } = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.length < REQUEST_OVERHEAD + REQUEST_SIZES[0] || bytes.length > MAX_REQUEST || bytes[0] !== VERSION) fail('not a request');
   if (!same(bytes.subarray(1, 5), keys.kid)) fail('not a request');
@@ -135,24 +155,33 @@ export async function openRequest(keys, bytes, { now = () => Math.floor(Date.now
   if (4 + n > pt.length) fail('not a request');
   let req;
   try { req = JSON.parse(td.decode(pt.subarray(4, 4 + n))); } catch { fail('not a request'); }
-  if (!req || typeof req.m !== 'string' || typeof req.p !== 'string' || !Number.isFinite(req.t)) fail('not a request');
+  if (!req || !Number.isFinite(req.t)) fail('not a request');
+  const batch = Array.isArray(req.r);
+  const list = batch ? req.r : [req];
+  if (batch && (!list.length || list.length > MAX_BATCH)) fail('not a request');
+  for (const x of list) if (!x || typeof x.m !== 'string' || typeof x.p !== 'string') fail('not a request');
   const t = now();
   if (Math.abs(t - req.t) > window) fail('the request is off the clock');
   if (!seen(bytesToHex(concatBytes(E, nonce)), t + 2 * window)) fail('the request was seen');
+  const requests = list.map((x) => ({ method: x.m, path: x.p, body: x.b ?? null }));
+  const seal = async (parts, many) => {
+    const rn = random(16);
+    const metas = parts.map((x) => ({ s: x.status, h: x.headers, z: x.gzip ? 1 : 0, l: x.body.length }));
+    const meta = te.encode(JSON.stringify(many ? { r: metas } : metas[0]));
+    const size = sized(4 + meta.length + parts.reduce((a, x) => a + x.body.length, 0), REPLY_SIZES, REPLY_STEP);
+    if (size > MAX_REPLY) fail('the reply is too large');
+    const out = new Uint8Array(size);
+    out.set(be32(meta.length));
+    out.set(meta, 4);
+    let at = 4 + meta.length;
+    for (const x of parts) { out.set(x.body, at); at += x.body.length; }
+    const head = concatBytes(Uint8Array.of(VERSION), rn);
+    return concatBytes(head, await encrypt(keyOf(3, s, E, nonce, rn), ivOf(4, s, E, nonce, rn), head, out));
+  };
   return {
-    method: req.m, path: req.p, body: req.b ?? null,
-    async reply(status, headers, body, { gzip = false } = {}) {
-      const rn = random(16);
-      const meta = te.encode(JSON.stringify({ s: status, h: headers, z: gzip ? 1 : 0, l: body.length }));
-      const size = sized(4 + meta.length + body.length, REPLY_SIZES, REPLY_STEP);
-      if (size > MAX_REPLY) fail('the reply is too large');
-      const out = new Uint8Array(size);
-      out.set(be32(meta.length));
-      out.set(meta, 4);
-      out.set(body, 4 + meta.length);
-      const head = concatBytes(Uint8Array.of(VERSION), rn);
-      return concatBytes(head, await encrypt(keyOf(3, s, E, nonce, rn), ivOf(4, s, E, nonce, rn), head, out));
-    },
+    requests, batch, method: requests[0].method, path: requests[0].path, body: requests[0].body,
+    reply: (status, headers, body, { gzip = false } = {}) => seal([{ status, headers, body, gzip }], false),
+    replyMany: async (parts) => (parts.length === requests.length ? seal(parts, true) : fail('one answer for each request')),
   };
 }
 
@@ -162,25 +191,29 @@ const shuffled = (xs) => {
   return a;
 };
 
-// A fetch for the wallet's `fetchImpl` that carries its requests to `keeper` through the forwarders: each is sealed to the
-// gateway key `gateway` (33 bytes of hex, pinned by the page) and sent to a forwarder chosen at random, the next one if that
+// A fetch for the wallet's `fetchImpl` that carries its requests to `keeper` through the forwarders: each envelope is sealed to
+// the gateway key `gateway` (33 bytes of hex, pinned by the page) and sent to a forwarder chosen at random, the next one if that
 // fails. It answers like fetch, and never falls back to a direct request, which would show the caller's address.
+// A burst of reads goes out together. A read is sent at once unless another read is in flight; then it waits for that one to come
+// back, or `batchMs`, whichever is first, and goes with the others waiting (up to `maxBatch`), so a poll of a dozen pools costs a
+// few envelopes and not a few dozen, while a read that follows another one (a page after a page) waits for nothing. A write
+// always goes alone and at once: a /relay can wait minutes for its turn, and must not hold the reads up. `batchMs: 0` sends
+// every request alone.
 // `fetch.sealed` is true: the wallet then sends without a reservation, which the private route does not carry.
-export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImpl = globalThis.fetch?.bind(globalThis), now }) {
+export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImpl = globalThis.fetch?.bind(globalThis), now, batchMs = 200, maxBatch = 16 }) {
   const base = String(keeper).replace(/\/+$/, '');
   if (!forwarders?.length) fail('the private route needs a forwarder');
   pointOf(hexToBytes(String(gateway).replace(/^0x/, '')));
-  const f = async (url, init = {}) => {
-    const u = String(url);
-    if (!u.startsWith(base + '/')) fail('the private route carries requests to its own keeper only');
-    const method = String(init.method || 'GET').toUpperCase();
-    const body = init.body == null ? null : JSON.parse(init.body);
+  const cap = Math.max(1, Math.min(maxBatch, MAX_BATCH));
+
+  // One envelope, to a forwarder chosen at random and then to the next if that one fails → the answer to each request.
+  async function carry(reqs, signal) {
     let last = new SealedError('the private route did not answer');
     for (const fw of shuffled(forwarders)) {
-      const sealed = await sealRequest(gateway, { method, path: u.slice(base.length), body }, { now });
+      const sealed = await sealRequest(gateway, reqs.length === 1 ? reqs[0] : reqs, { now });
       let r;
       try {
-        r = await fetchImpl(`${String(fw).replace(/\/+$/, '')}/f/${chainId}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: sealed.bytes, signal: init.signal });
+        r = await fetchImpl(`${String(fw).replace(/\/+$/, '')}/f/${chainId}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: sealed.bytes, signal });
       } catch (e) { last = e; continue; }
       if (r.status !== 200) {
         last = new SealedError(`a forwarder answered ${r.status}`);
@@ -189,10 +222,72 @@ export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImp
       }
       try {
         const out = await sealed.open(new Uint8Array(await r.arrayBuffer()));
-        return new Response(out.body, { status: out.status, headers: out.headers });
+        return reqs.length === 1 ? [out] : out;
       } catch (e) { last = e; }
     }
     throw last;
+  }
+
+  const respond = (o) => new Response([101, 204, 205, 304].includes(o.status) ? null : o.body, { status: o.status, headers: o.headers });   // these carry no body
+  const aborted = (signal) => signal?.reason ?? new DOMException('This operation was aborted', 'AbortError');
+  const settle = (x, value, error) => {
+    if (x.settled) return false;
+    x.settled = true;
+    x.off?.();
+    if (error) x.reject(error); else x.resolve(value);
+    return true;
+  };
+
+  // Sends the requests of `items` in one envelope and settles each. A caller that gives up has stopped waiting already (see below)
+  // and its request is not sent if it has not gone yet; the envelope is dropped when every caller in it has given up.
+  async function send(items) {
+    const live = items.filter((x) => !x.settled);
+    if (!live.length) return;
+    const ctl = new AbortController();
+    let waiting = live.length;
+    for (const x of live) x.gone = () => { if (--waiting === 0) ctl.abort(); };
+    let outs;
+    try { outs = await carry(live.map((x) => x.req), live.length === 1 ? live[0].signal : ctl.signal); } catch (e) { for (const x of live) settle(x, null, e); return; }
+    live.forEach((x, i) => {
+      const o = outs[i];
+      if (live.length > 1 && o.status === 502 && o.headers?.['x-sealed'] === 'alone') {
+        // its answer did not fit beside the others: asked again by itself
+        if (!x.settled) carry([x.req], x.signal).then(([a]) => settle(x, respond(a)), (e) => settle(x, null, e));
+        return;
+      }
+      settle(x, respond(o));
+    });
+  }
+
+  let queue = [], timer = null, reading = 0;
+  const read = (items) => { reading++; send(items).finally(() => { reading--; if (!reading && queue.length) flush(); }); };
+  function flush() {
+    clearTimeout(timer);
+    timer = null;
+    const items = queue;
+    queue = [];
+    if (items.length) read(items);
+  }
+  const f = async (url, init = {}) => {
+    const u = String(url);
+    if (!u.startsWith(base + '/')) fail('the private route carries requests to its own keeper only');
+    const method = String(init.method || 'GET').toUpperCase();
+    const body = init.body == null ? null : JSON.parse(init.body);
+    const req = { method, path: u.slice(base.length), body };
+    return new Promise((resolve, reject) => {
+      const item = { req, signal: init.signal, resolve, reject, settled: false, gone: null, off: null };
+      if (init.signal) {
+        const quit = () => { if (settle(item, null, aborted(init.signal))) item.gone?.(); };
+        if (init.signal.aborted) { quit(); return; }
+        init.signal.addEventListener('abort', quit, { once: true });
+        item.off = () => init.signal.removeEventListener('abort', quit);
+      }
+      if (method !== 'GET' || batchMs <= 0) { send([item]); return; }
+      if (!queue.length && !reading) { read([item]); return; }
+      queue.push(item);
+      if (queue.length >= cap) flush();
+      else if (!timer) timer = setTimeout(flush, batchMs);
+    });
   };
   f.sealed = true;
   return f;

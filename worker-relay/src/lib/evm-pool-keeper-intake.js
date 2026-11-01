@@ -583,7 +583,7 @@ export function createIntakeHandler({
       if (p === `${PREFIX}/sealed` && req.method === 'POST') {
         if (!cfg.gatewayKey) return send(404, { error: 'no private route' });
         if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
-        return sealed().handle(req, res, send);
+        return await sealed().handle(req, res, send);
       }
       if (p === `${PREFIX}/events` && req.method === 'GET') {
         if (!leafSync) return send(404, { error: 'no event feed' });

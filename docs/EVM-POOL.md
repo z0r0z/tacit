@@ -645,7 +645,8 @@ relayed, since a deposit is paid by whoever sends it.
 
 A keeper sees the address each request comes from. The private route takes that away. A wallet seals every request to the keeper's
 gateway key and sends it through a forwarder, which hands it to the keeper's `POST /evm-pool/keeper/sealed`. The keeper opens it, runs
-it through the handler a direct request reaches, and seals the answer to the request's one-time key.
+it through the handler a direct request reaches, and seals the answer to the request's one-time key. The multi-keeper service has one
+`POST /sealed` for every pool it serves, which carries any pool's routes (`/<id>/evm-pool/keeper/…`) under one key and one forwarder target.
 
 | | sees |
 |---|---|
@@ -661,24 +662,52 @@ else is refused inside the envelope. It does not carry `reserve` or `cancel`: a 
 wallet on this route proves against the queue's tail and sends without a reservation (`reserveSlot` in `dapp/evm-pool-wallet.js`), as a
 wallet whose reservations are paused does. Limits apply to the address an envelope came from, so every caller behind one forwarder shares its
 allowance. A forwarder named in `EVM_POOL_KEEPER_FORWARDERS` may send ten times as much, and the forwarder limits each caller by its own
-address.
+address. An envelope is counted against its sender before it is opened, and each request inside it by the keeper it names, as if the sender
+had made it alone.
+
+**Bursts.** One envelope carries up to 24 requests and is answered with one answer for each, in order, so a poll of every pool (a quote and a
+feed read for a dozen of them, together, every two minutes) is a few envelopes, not two dozen: in a test over a simulated network the burst
+went from 24 envelopes and 98 KB sent to 3 envelopes and 12 KB, and finished within about 50 ms of the same time. `makeSealedFetch` does this
+itself. A read is sent at once unless another read is in flight; then it waits for that one to come back, or for `batchMs` (200), whichever is
+first, and goes with the reads waiting, so a read that follows another (a page after a page) waits for nothing. A write is always sent alone and
+at once, since a `/relay` can wait minutes for its turn and must not hold the reads up. A caller that aborts stops waiting at once, and an answer
+too large to share an envelope (the answers of an envelope together are at most 8 MB) is asked for again by itself.
 
 **The envelope** (`dapp/sealed-request.js`). The caller makes a one-time secp256k1 key, takes the shared secret with the gateway key, and
 derives an AES-256-GCM key and iv for the request and, from a reply nonce, another pair for the answer (the platform's WebCrypto, which runs
 off the event loop: a page of a million bytes seals in under a millisecond, so the history feed is carried like the rest). Only the gateway
-key opens a request or makes an answer that passes its tag, so a forwarder can drop or delay one but cannot read, change or answer it. A request is single use and must be within five minutes of the keeper's clock. The gateway key is long-lived,
+key opens a request or makes an answer that passes its tag, so a forwarder can drop or delay one but cannot read, change or answer it. A
+request is single use and must be within five minutes of the keeper's clock. The gateway key is long-lived,
 so whoever gets it can read the envelopes they recorded: keep it to the keeper's environment, and if it may have been seen, make a new one
 (a new key id) and update the pages. A wallet that cannot reach any forwarder fails; it never falls back to a direct request, which would
 show its address.
 
-**Turning it on.**
-1. `node worker-relay/src/sealed-keygen.js` makes a key. The secret goes in the keeper's `EVM_POOL_KEEPER_GATEWAY_KEY` (`…_<chainId>` for one
-   chain) and nowhere else; the public key is what a page pins. `GET /evm-pool/keeper/info` shows it as `sealed` once the route is on, so
-   what a page pins can be checked against what the keeper holds.
-2. Run a forwarder: `FORWARDER_GATEWAYS='{"1":"https://…/1/evm-pool/keeper/sealed"}' node worker-relay/src/evm-pool-forwarder.js`. It holds
-   no key, forwards no header of the caller's and keeps nothing.
-3. In a page, `makeSealedFetch({ keeper, chainId, gateway, forwarders })` is the wallet's `fetchImpl`, and the page's `connect-src` names each
-   forwarder.
+**What a page's switch hides.** A page that offers the route (`dapp/private-route.js`; the pay page's wallet sheet: "Hide my address from the relay")
+sends every request it makes to a relay through a forwarder, from its first request of a visit once a person has turned it on, and fails a
+request when no forwarder answers rather than send it directly. It hides the person's address from the relay and from whatever hosts it. It does
+not hide it from the chain nodes the page reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a
+signed-in tab), or from any other service a page asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is
+connected). The page says the first in one line under the switch.
+
+**Turning it on.** Each step can be left standing; nothing a person sees changes until the last.
+1. Deploy the keepers with this code. The route is off without a key: `GET /<id>/evm-pool/keeper/info` has no `sealed`, `POST /sealed` is a 404.
+2. `node worker-relay/src/sealed-keygen.js` makes a key. The secret goes in the keeper's `EVM_POOL_KEEPER_GATEWAY_KEY` (`…_<chainId>` for one
+   chain) and nowhere else; the public key is what a page pins. On the multi-keeper service the one key in the base environment turns on
+   `POST /sealed` for every pool, and `EVM_POOL_KEEPER_FORWARDERS` names the forwarders' addresses (so each may send ten times what a caller
+   may). A restart does not read a changed environment; a deploy does. `GET /<id>/evm-pool/keeper/info` shows the key as `sealed` once the route
+   is on, so what a page pins can be checked against what the keeper holds.
+3. Run a forwarder somewhere that is not the keeper's host, and, for the route to hide anyone from the keeper's operator, not run by the
+   operator: `FORWARDER_GATEWAYS='{"k":"https://<the service>/sealed"}' node worker-relay/src/evm-pool-forwarder.js` (an id is a chain's, a pool's, or a
+   service's; a single keeper's is `{"1":"https://…/1/evm-pool/keeper/sealed"}`). It holds no key, forwards no header of the caller's and keeps nothing.
+4. `node tools/private-route-check.mjs --service https://<the service> --gateway <public key> --forwarder https://<a forwarder>` (once for each
+   forwarder, or with `--forwarder` repeated) checks it from outside: the key a pool holds is the key to pin, a page's origin may call the forwarder,
+   a burst of reads comes back sealed and equal to the direct answers, and what the route does not carry is refused. It must pass before a page is pointed at it.
+5. In `dapp/private-route.js` set `ROUTE.gateway` and `ROUTE.forwarders`, add each forwarder's origin to the pay page's `connect-src`, run
+   `node build/build.mjs` and push. The wallet sheet then offers the switch, off until a person turns it on; turning it on tries the route once and
+   stays off if it does not answer.
+6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder neither offers nor uses the route, so nobody who
+   had turned it on is left unable to reach the relay; clearing the key from the service does the same for a page that still names it, with an
+   error until the page is updated.
 
 ## Keys and recovery
 

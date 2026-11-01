@@ -51,6 +51,7 @@ import { makeRateFeed, parseRateFeed } from './lib/evm-pool-keeper-rates.js';
 import { makeTokenPoolDiscovery } from './lib/evm-pool-token-discovery.js';
 import { makeGasBudget, budgeted } from './lib/evm-pool-gas-budget.js';
 import { createIntakeHandler, IntakeError } from './lib/evm-pool-keeper-intake.js';
+import { makeServiceGateway } from './lib/evm-pool-keeper-sealed.js';
 import { makeTokenPools, keeperIdOf, SERVED, CHAIN_ID as TOKEN_POOLS_CHAIN, TOKEN_POOL_CHAINS } from '../../dapp/evm-pool-tokens.js';
 import { keccak_256 } from '../../dapp/vendor/tacit-deps.min.js';
 import { safeErr } from './lib/safe-err.js';
@@ -316,7 +317,7 @@ async function main() {
   }, 60_000).unref();
 
   const port = Number(process.env.PORT || 10000);
-  createServer((req, res) => {
+  const serve = (req, res) => {
     const url = req.url || '/';
     const [path, query = ''] = url.split('?');
     if (path === '/token-pools' || path === '/token-pools/') {
@@ -355,7 +356,17 @@ async function main() {
     if (!r) { res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); return res.end(JSON.stringify({ error: 'no such chain' })); }
     req.url = r.path;
     return keepers.get(r.id).handler(req, res);
-  }).listen(port, () => log(`listening on ${port}: keepers ${running.join(', ')} (unprefixed routes are ${running[0]}'s)`));
+  };
+
+  // The private route for the whole service (docs/EVM-POOL.md "Private route"): one gateway key in the base environment and one POST /sealed
+  // that carries any pool's routes, so a wallet's burst of reads for every pool is one envelope.
+  const sealed = process.env.EVM_POOL_KEEPER_GATEWAY_KEY ? makeServiceGateway({
+    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log,
+    forwarders: String(process.env.EVM_POOL_KEEPER_FORWARDERS || '').split(',').map((a) => a.trim()).filter(Boolean),
+    ratePerMin: Number(process.env.EVM_POOL_KEEPER_RATE_PER_MIN || 20),
+  }) : null;
+  createServer((req, res) => (sealed?.(req, res) ? undefined : serve(req, res)))
+    .listen(port, () => log(`listening on ${port}: keepers ${running.join(', ')} (unprefixed routes are ${running[0]}'s)${sealed ? '; the private route is on at POST /sealed' : ''}`));
 
   for (const id of running) runKeeper(keepers.get(id));
 

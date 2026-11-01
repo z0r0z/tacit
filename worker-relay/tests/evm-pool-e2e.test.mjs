@@ -4,6 +4,8 @@
 // checks the receive box stays code-free, so a plain 21,000-gas transfer lands after a sweep.
 // Needs anvil, the forge build (contracts/out) and the DEV circuit artifacts; skips without them.
 //   node worker-relay/tests/evm-pool-e2e.test.mjs
+//   E2E_MULTIPLEXED=1 node worker-relay/tests/evm-pool-e2e.test.mjs   the keeper as the multi-keeper service (src/evm-pool-keepers.js), as Render
+//                                                                     runs it: its one POST /sealed also carries a burst and a withdrawal
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -82,13 +84,14 @@ const router = await deploy(r.abi, r.bytecode.object, [pool, ZERO, ZERO, ZERO, p
 
 const GATEWAY_SECRET = '5a'.repeat(32);   // the keeper's private route (dapp/sealed-request.js) is on for the whole run
 const keeperLog = [];
-const keeper = spawn('node', ['src/evm-pool-keeper.js'], {
+const MULTI = !!process.env.E2E_MULTIPLEXED;
+const keeper = spawn('node', [MULTI ? 'src/evm-pool-keepers.js' : 'src/evm-pool-keeper.js'], {
   cwd: join(ROOT, 'worker-relay'),
   env: {
     ...process.env, EVM_POOL_ADDR: pool, EVM_POOL_ROUTER_ADDR: router, EVM_POOL_RPC_URL: RPC, EVM_POOL_CHAIN_ID: '31337',
     EVM_POOL_KEEPER_PRIV: KEYS[1], EVM_POOL_KEEPER_DB: join(tmp, 'keeper.db'), PORT: String(KPORT),
     EVM_POOL_KEEPER_POLL_SECS: '1', EVM_POOL_KEEPER_MIN_FEES: 'eth:1000', EVM_POOL_CONFIRMATIONS: '0',
-    EVM_POOL_KEEPER_GATEWAY_KEY: GATEWAY_SECRET,
+    EVM_POOL_KEEPER_GATEWAY_KEY: GATEWAY_SECRET, ...(MULTI ? { EVM_POOL_CHAINS: '31337', EVM_POOL_KEEPER_FORWARDERS: '127.0.0.1' } : {}),
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -174,6 +177,36 @@ try {
         assert.deepEqual(Object.keys(f.headers), ['content-type']);
         for (const text of [fresh.slice(2).toLowerCase(), 'relay', 'withdraw', 'quote']) assert.ok(!Buffer.from(f.body).includes(Buffer.from(text)), text);
       }
+      assert.ok(!keeperLog.join('').toLowerCase().includes(fresh.slice(2).toLowerCase()), 'the keeper\'s log does not name the recipient');
+    } finally { fwd.close(); }
+  });
+
+  if (MULTI) await test('the service\'s one POST /sealed carries a burst of reads for its pools and a relayed withdrawal, with no reservation', async () => {
+    const SERVICE = `http://127.0.0.1:${KPORT}`, forwarded = [], paths = [];
+    const fwd = createServer(makeForwarder({ gateways: { k: `${SERVICE}/sealed` }, fetchImpl: async (url, init) => { forwarded.push(init.body.length); return fetch(url, init); } }));
+    await new Promise((res) => fwd.listen(0, res));
+    try {
+      const gateway = Buffer.from(gatewayKeys(GATEWAY_SECRET).pub).toString('hex');
+      const sealedFetch = makeSealedFetch({ keeper: SERVICE, chainId: 'k', gateway, forwarders: [`http://127.0.0.1:${fwd.address().port}`] });
+      const base = `${SERVICE}/31337/evm-pool/keeper`;
+      const viaService = Object.assign((u, init) => { paths.push(new URL(u).pathname.slice('/31337/evm-pool/keeper'.length)); return sealedFetch(u, init); }, { sealed: true });
+      // a burst of reads for the pool, together, is a few envelopes, and each answer is the one a direct read gives
+      const reads = await Promise.all(['info', 'head', 'quote', 'point', 'totals'].map((r) => viaService(`${base}/${r}`).then(async (x) => [r, x.status, await x.json()])));
+      const direct = await (await fetch(`${base}/info`)).json();
+      assert.equal(reads[0][2].pool, direct.pool);
+      assert.ok(reads.every(([, status]) => status === 200 || status === 404), JSON.stringify(reads.map(([r, st]) => [r, st])));
+      assert.ok(forwarded.length <= 3, `${forwarded.length} envelopes for 5 reads`);
+      // and what is not a relay's is refused inside the envelope
+      assert.equal((await viaService(`${base}/reserve`, { method: 'POST', body: '{}' })).status, 403);
+      assert.equal((await sealedFetch(`${SERVICE}/health`).catch((e) => e.message)).status, 403);
+      const wallet = makeEvmPoolWallet({ zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(0x22)), chain: chainCfg, keeper: base, prove, fetchImpl: viaService });
+      assert.ok((await wallet.sync()).balance > parseEther('0.02'));
+      const fresh = privateKeyToAccount('0x' + '47'.repeat(32)).address;
+      const hash = await wallet.withdraw({ to: fresh, amount: parseEther('0.02') });
+      assert.equal((await pub.waitForTransactionReceipt({ hash })).status, 'success');
+      assert.equal(await pub.getBalance({ address: fresh }), parseEther('0.02'));
+      assert.ok(paths.includes('/quote') && paths.includes('/relay'), paths.join(' '));
+      assert.ok(!paths.includes('/reserve') || paths.indexOf('/reserve') === paths.lastIndexOf('/reserve'), 'only the refused probe asked for a reservation');
       assert.ok(!keeperLog.join('').toLowerCase().includes(fresh.slice(2).toLowerCase()), 'the keeper\'s log does not name the recipient');
     } finally { fwd.close(); }
   });
