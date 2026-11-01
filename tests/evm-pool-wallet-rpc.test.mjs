@@ -1,6 +1,6 @@
 // jsonRpc over several nodes, and the wallet's log scan against nodes with different eth_getLogs range limits.
 import assert from 'node:assert/strict';
-import { jsonRpc, makeEvmPoolWallet, evmPoolKeys, recipientOf, logFailure, sealNote, openNote, paymentKey, sealState, openState, mergePlan } from '../dapp/evm-pool-wallet.js';
+import { jsonRpc, makeEvmPoolWallet, evmPoolKeys, recipientOf, logFailure, sealNote, openNote, paymentKey, sealState, openState, mergePlan, feedStart } from '../dapp/evm-pool-wallet.js';
 import { poolAsset } from '../dapp/evm-pool-zk.js';
 import { makeEvmPoolZk } from '../dapp/evm-pool-zk.js';
 import { receiveKeys, receiveBoxAddress, RECEIVE_FEE_BPS } from '../dapp/evm-pool-gateway.js';
@@ -862,6 +862,80 @@ await check('a busy relay is asked again after the Retry-After it gives, about t
   const waits = await quickly(() => assert.rejects(s.w.quote(), /rate limited/));
   assert.equal(waits.length, 4);
   assert.ok(waits.reduce((a, b) => a + b, 0) <= 60_000, 'gives up within a minute');
+});
+
+await check('feedStart puts a place at the start of its day\'s cell, counted from the pool\'s first block', () => {
+  assert.equal(feedStart(1, 26_069_245, 26_069_245), 26_069_245, 'a new wallet asks from the pool\'s first block');
+  assert.equal(feedStart(1, 26_069_245, 26_069_245 + 7_199), 26_069_245, 'the last block of the first cell');
+  assert.equal(feedStart(1, 26_069_245, 26_069_245 + 7_200), 26_069_245 + 7_200, 'the first block of the next');
+  assert.equal(feedStart(1, 26_069_245, 26_069_245 + 7_200 * 5 + 123), 26_069_245 + 7_200 * 5);
+  assert.equal(feedStart(8453, 51_864_014, 51_864_014 + 43_200 * 2 + 1), 51_864_014 + 43_200 * 2, 'Base: a day is 43,200 blocks');
+  assert.equal(feedStart(4326, 100, 100 + 86_400 + 9), 100 + 86_400, 'MegaETH: 86,400');
+  assert.equal(feedStart(4663, 100, 100 + 830_000 + 9), 100 + 830_000, 'Robinhood Chain: 830,000');
+  assert.equal(feedStart(999, 100, 100 + 7_200 + 5), 100 + 7_200, 'a chain not listed gets Ethereum\'s cell');
+  assert.equal(feedStart('1', 100, 100 + 7_200 + 5), 100 + 7_200, 'the chain id may be a string');
+  assert.equal(feedStart(1, undefined, 7_205), 7_200, 'no first block: counted from 0');
+  assert.equal(feedStart(1, 500, 100), 100, 'a place before the first block is left alone');
+});
+
+await check('the feed is asked from the start of a cell, the same for every wallet in it, and each wallet ends with what a full read gives', async () => {
+  const DEPLOY = 1_000, CELL = 43_200, SECOND = DEPLOY + CELL;       // chain 8453: a cell is a day of blocks from the first; the second starts at 44,200
+  const pool = fakePool(), put = (b, f) => { pool.tip = b - 1; return f(); };
+  const kA = evmPoolKeys(zk, new Uint8Array(32).fill(21)), kB = evmPoolKeys(zk, new Uint8Array(32).fill(22));
+  const other = (b) => put(b, () => pool.transact({ out: [BigInt(b), BigInt(b) + 1n] }));
+  other(2_000); other(40_000); put(45_000, () => pool.sweep(kA, 1, 111n)); other(50_000); other(60_000);
+  const keeper = (page) => { const asked = [], inner = feedOf(pool, page); return { asked, fetchImpl: async (url) => { asked.push(Number(new URL(url).searchParams.get('from'))); return inner(url); } }; };
+  const make = (keys, store, k) => makeEvmPoolWallet({ zk, keys, prove: null, store, keeper: 'https://k.test', fetchImpl: k.fetchImpl,
+    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc: nodeOf(pool), deployBlock: DEPLOY, confirmations: 0 } });
+  const stores = [new Map(), new Map()], at = (kv) => ({ get: (k) => kv.get(k) ?? null, set: (k, v) => kv.set(k, v) });
+  // Two wallets read to different places in the second cell; a new wallet has no place.
+  pool.tip = 60_500; await make(kA, at(stores[0]), keeper()).sync();
+  pool.tip = 70_000; await make(kB, at(stores[1]), keeper()).sync();
+  other(80_000); put(95_000, () => pool.sweep(kA, 1, 222n)); other(100_000);
+  pool.tip = 110_000;
+  const full = async (keys) => { const k = keeper(); const s = await make(keys, at(new Map()), k).sync(); assert.equal(k.asked[0], DEPLOY, 'a new wallet asks from the pool\'s first block'); return s; };
+  const wantA = await full(kA), wantB = await full(kB);
+  assert.equal(wantA.balance, 333n);
+  const runs = {};
+  for (const [how, page] of [['one page', Infinity], ['pages of 10,000 blocks, the first ending before either wallet\'s place', 10_000]]) {
+    const a = keeper(page), b = keeper(page);
+    const sA = await make(kA, at(new Map(stores[0])), a).sync(), sB = await make(kB, at(new Map(stores[1])), b).sync();
+    assert.equal(a.asked[0], SECOND, `${how}: wallet A, at 60,501, asks from the start of its cell`);
+    assert.equal(b.asked[0], SECOND, `${how}: wallet B, at 70,001, asks from the same block`);
+    assert.deepEqual(a.asked, b.asked, `${how}: and the requests after it are the same too`);
+    for (const [who, got, want] of [['A', sA, wantA], ['B', sB, wantB]]) {
+      assert.equal(got.leaves, want.leaves, `${how}: ${who} has every leaf`);
+      assert.equal(got.notes, want.notes, `${how}: ${who} has its notes`);
+      assert.equal(got.balance, want.balance, `${how}: ${who} has its balance`);
+    }
+    runs[how] = a.asked;
+  }
+  assert.deepEqual(runs['one page'], [SECOND]);
+  assert.deepEqual(runs['pages of 10,000 blocks, the first ending before either wallet\'s place'], [44_200, 54_200, 64_200, 74_200, 84_200, 94_200, 104_200],
+    'a page that ends before the wallet\'s place is passed over, and the next request starts where it ended');
+});
+
+await check('a wallet ahead of the keeper\'s history asks once from its cell and once past the keeper\'s end, and reads the rest from the chain', async () => {
+  const DEPLOY = 1_000, SECOND = DEPLOY + 43_200, HEAD = 55_000;
+  const pool = fakePool(), put = (b, f) => { pool.tip = b - 1; return f(); };
+  const keys = evmPoolKeys(zk, new Uint8Array(32).fill(23));
+  put(45_000, () => pool.sweep(keys, 1, 50n)); put(56_000, () => pool.transact({ out: [7n, 8n] })); put(57_000, () => pool.sweep(keys, 1, 60n));
+  // The keeper's history ends at block 55,000.
+  const asked = [], fetchImpl = async (url) => {
+    const from = Number(new URL(url).searchParams.get('from'));
+    asked.push(from);
+    return { ok: true, status: 200, headers: new Map(), json: async () => ({ chainId: 8453, pool: POOLF, through: HEAD, events: pool.events.filter((e) => e.block >= from && e.block <= HEAD) }) };
+  };
+  const kv = new Map(), store = { get: (k) => kv.get(k) ?? null, set: (k, v) => kv.set(k, v) };
+  const make = (feed) => makeEvmPoolWallet({ zk, keys, prove: null, store, keeper: 'https://k.test', feed, fetchImpl,
+    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc: nodeOf(pool), deployBlock: DEPLOY, confirmations: 0 } });
+  pool.tip = 58_000; await make(false).sync();                      // read from the chain alone to 58,000, past where the keeper's history ends
+  pool.tip = 70_000; asked.length = 0;
+  const s = await make(true).sync();
+  assert.deepEqual(asked, [SECOND, HEAD + 1], 'from the start of its cell, then just past the end of the keeper\'s history, and no more');
+  assert.equal(s.balance, 110n);
+  assert.equal(s.notes, 2);
+  assert.equal(s.leaves, pool.size, 'every leaf');
 });
 
 console.log(`\n${n} checks passed`);
