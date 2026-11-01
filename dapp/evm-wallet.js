@@ -232,6 +232,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     const provider = via || currentProvider();
     if (!provider) throw new Error('no Ethereum wallet connected');
     const cid = via ? BigInt(await via.request({ method: 'eth_chainId' })) : await chainId();
+    if (cid == null) throw new Error('could not read the wallet\'s network');
     const payload = {
       types: {
         EIP712Domain: [

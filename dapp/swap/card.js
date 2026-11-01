@@ -1058,7 +1058,7 @@ async function go() {
   const from = W.account, P = { kind, r, q: S.q, wei: S.q.wei, floor: (r.out * BigInt(10000 - S.slip)) / 10000n, pay: S.pay, get: S.get, to: recipient() };
   if (S.toBad) return;
   // a wallet with no ETH for the gas: the swap goes through the gas relay, paid for in TAC or the token spent (dapp/gas-relay.js)
-  if (['tac', 'any', 'in', 'out', 'agg'].includes(P.kind) && !isEth(P.pay)) { const plan = await relayPlan(from).catch(() => null); if (plan) { await relayGo(P, from, plan); return; } }
+  if (['tac', 'any', 'in', 'out', 'agg'].includes(P.kind) && !isEth(P.pay)) { S.busy = true; const plan = await relayPlan(from).catch(() => null); S.busy = false; if (plan) { await relayGo(P, from, plan); return; } }
   S.busy = true; paintQuote();
   const before = P.to ? null : await balanceNow(P.get, from).catch(() => null);
   try {
@@ -1325,7 +1325,7 @@ async function tokenName(token) {
 }
 async function approve(token, spender, amount, from, had) {
   const t = tokenOf(lc(token));
-  if (had > 0n && t?.sym === 'USDT') {
+  if (had > 0n && (t?.sym === 'USDT' || lc(token) === '0xdac17f958d2ee523a2206206994597c13d831ec7')) {
     say('Your USDT allowance is reset to zero first (USDT asks for this).');
     const h0 = await wallet.sendTx({ to: token, data: R.encApprove(spender, 0n), from, label: 'Reset an allowance' });
     if ((await wallet.receipt(h0)).status !== '0x1') throw new Error('The reset did not go through.');
@@ -1825,7 +1825,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=f5a1f42a').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=35c0f47e').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2290,11 +2290,13 @@ function load(p, { fresh = true } = {}) {
   const named = [p.get('from'), p.get('to')].filter((v) => v && !/^0x/i.test(v));
   if (named.some((v) => !listed().some((t) => nameIs(t, linkName(v))) && linkName(v) !== 'teth')) loadList().then(() => { if (ASKED?.p !== p) return; const was = `${S.pay}>${S.get}:${S.inP}${S.outP}`; applyParams(p); if (`${S.pay}>${S.get}:${S.inP}${S.outP}` !== was) { S.q = null; paint(); readBalances().then(paintSides); if (S.amt || moveOf()) requote(true); else syncMove(); } });
   const f = p.get('from');
+  const pair0 = ASKED.pair, amt0 = S.amt;
   if (/^0x[0-9a-fA-F]{40}$/.test(f || '') && !tokenOf(lc(f))) R.readToken({ ethCall, keccak256: keccak_256, address: lc(f) }).then((t) => {
     if (!t || ASKED?.p !== p) return;
     S.custom = [{ addr: lc(f), sym: t.sym, name: t.name, dec: t.dec, permit: t.permit, icon: null, custom: true }, ...S.custom].slice(0, 20);
+    if (`${S.pay}>${S.get}` !== pair0 || S.amt !== amt0) { paint(); return; }   // the user picked a pair or typed an amount while the token was read: theirs stands
     S.inP = false; S.pay = lc(f); if (!kindOf(S.pay, S.get)) S.get = lc(R.TAC);
-    const a = p.get('amt'); if (a && parseUnits(a, t.dec)) S.amt = a;
+    const a = p.get('amt'); if (a && parseUnits(a, t.dec)) S.amt = fitAmt(a);
     paint(); readBalances().then(paintSides); if (S.amt) requote(true);
   }).catch(() => {});
   if ([S.pay, S.get].some((k) => { const t = tokenOf(k); return t && !SPRITE.has(t.icon) && !LOGO[k]; })) loadList();
@@ -2315,7 +2317,7 @@ let lane = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    lane ||= (await import('/swap/bitcoin.js?cb=4b4e3cc7')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
+    lane ||= (await import('/swap/bitcoin.js?cb=cb379b6c')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = null; }
 }

@@ -1,6 +1,6 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=de979716';
-import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=88028d84';
+import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=9ee104a3';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=42b841c9';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=7fc9e504';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=ea8c8b39';
@@ -181,7 +181,7 @@ function notify(msg, kind = '', ms = 5000) {
 }
 async function openBitcoin(prime = null) {
   try {
-    bitcoin ||= (await import('/trade/btc.js?cb=3c571e48')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
+    bitcoin ||= (await import('/trade/btc.js?cb=09215711')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
       asset: { id: BTC_ID, title: 'tETH on Bitcoin', after: 'tETH reaches Bitcoin through the bridge: <a href="/#private/bitcoin/out">Bridge →</a>' } });
     await bitcoin.open(prime);
   } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }
