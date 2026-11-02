@@ -1558,6 +1558,46 @@ async function privateRoute({ cfg = {}, fetchImpl } = {}) {
 }
 const jsonInit = (method, body) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
+await test('wallets that ask for /head at once share one read, a failed read is not kept, and a read begun before the queue moved is not shared after', async () => {
+  const chain = mockChain();
+  const real = chain.poolState;
+  const held = [];
+  let fail = false;
+  chain.poolState = async (b) => {
+    await new Promise((r) => held.push(r));
+    if (fail) throw new Error('node down');
+    return real(b);
+  };
+  let size = 0;
+  const pipeline = { size: () => size, head: async () => { const { root, nextIndex } = await chain.poolState(); return { root: String(root), size: String(nextIndex), pending: [], tail: {} }; } };
+  const keeper = createServer(createIntakeHandler({ store: openKeeperStore(':memory:'), chain, zk, assetField, pipeline, cfg: mkCfg({ ratePerMin: 600 }), now: () => T0 }));
+  await listen(keeper);
+  const url = `http://127.0.0.1:${keeper.address().port}/evm-pool/keeper/head`;
+  const settle = () => new Promise((r) => setTimeout(r, 40));
+  try {
+    fail = true;
+    const failed = Array.from({ length: 5 }, () => fetch(url));
+    await settle();
+    assert.equal(held.length, 1, 'five at once, one read');
+    held.shift()();
+    assert.ok((await Promise.all(failed)).every((r) => r.status >= 500), 'all of them see the failure');
+    fail = false;
+    const before = fetch(url);
+    await settle();
+    assert.equal(held.length, 1, 'a failed read is not kept: the next one reads again');
+    size = 1;
+    const after = fetch(url);
+    await settle();
+    assert.equal(held.length, 2, 'a queue that moved does not join the read begun before it');
+    held.shift()();
+    held.shift()();
+    assert.equal((await before).status, 200);
+    assert.equal((await after).status, 200);
+    assert.equal((await fetch(url)).status, 200);
+    assert.equal(held.length, 0, 'the finished read is cached');
+  } finally { keeper.close(); }
+});
+
 await test('the private route is off without a gateway key, a bad key stops the keeper without saying what it was, and /info names the key when on', async () => {
   assert.equal(loadKeeperConfig(baseEnv).gatewayKey, '');
   assert.equal(loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_GATEWAY_KEY: '0x' + GATEWAY_SECRET.toUpperCase() }).gatewayKey, GATEWAY_SECRET);

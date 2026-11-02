@@ -303,11 +303,10 @@ export function createIntakeHandler({
   // Reads a wallet makes around every spend (head, quote, events) have their own, larger allowance.
   const readLimited = allowance(cfg.ratePerMin * 6, Math.max(1, Math.min(30, cfg.ratePerMin * 3)));
   let gateway = null;   // the private route's, made on first use
-  // /head is cached for a second, and until the queue changes, so many wallets polling it cost a few reads.
-  let headCache = null;
-  async function headNow() {
-    const size = pipeline ? pipeline.size() : 0;
-    if (headCache && Date.now() - headCache.at < 1000 && headCache.size === size) return headCache.value;
+  // /head is cached for a second, and until the queue changes, so many wallets polling it cost a few reads. Those that ask while
+  // a read is under way share it.
+  let headCache = null, headRead = null;
+  async function readHead(size) {
     let value;
     if (pipeline) value = await pipeline.head();
     else {
@@ -317,6 +316,14 @@ export function createIntakeHandler({
     }
     headCache = { at: Date.now(), size, value };
     return value;
+  }
+  async function headNow() {
+    const size = pipeline ? pipeline.size() : 0;
+    if (headCache && Date.now() - headCache.at < 1000 && headCache.size === size) return headCache.value;
+    if (headRead?.size === size) return headRead.value;
+    const read = { size, value: readHead(size).finally(() => { if (headRead === read) headRead = null; }) };
+    headRead = read;
+    return read.value;
   }
   const view = (r) => (r.kind === 'receive'
     ? { box: r.box, kind: r.kind, status: r.status === 'pending' ? 'watching' : r.status, ...(r.note ? { note: r.note } : {}) }
