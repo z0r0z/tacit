@@ -201,4 +201,52 @@ assert.throws(() => decodeZRouterCall('0x12345678'), /not a swap/);
   ok(checkZRouterCall(snwap(), { to: ME, tokenIn: ETH0, tokenOut: USDC }) !== null, 'a snwap is never accepted as a zQuoter answer');
 }
 
+// zRouter's own choice of venue, for a caller that takes it (`sentinel`): a swapV2 with a deadline of 2^256-1 runs on SushiSwap's pool and a swapVZ with one on the
+// hookless zAMM, each with a deadline of its own of 30 minutes from when it runs. Nothing else about a swap is loosened, and a caller that does not ask is refused as before.
+{
+  const MAXD = (1n << 256n) - 1n;
+  const swapV2 = (to, exactOut, tin, tout, amt, lim, dl) => '0x6e0a4f98' + [pad(to), wordN(exactOut ? 1 : 0), pad(tin), pad(tout), wordN(amt), wordN(lim), wordN(dl)].join('');
+  const swapV3 = (to, exactOut, fee, tin, tout, amt, lim, dl) => '0xafeae12b' + [pad(to), wordN(exactOut ? 1 : 0), wordN(fee), pad(tin), pad(tout), wordN(amt), wordN(lim), wordN(dl)].join('');
+  const swapVZ = (to, exactOut, fee, tin, tout, amt, lim, dl) => '0x9d5b5af8' + [pad(to), wordN(exactOut ? 1 : 0), wordN(fee), pad(tin), pad(tout), wordN(0), wordN(0), wordN(amt), wordN(lim), wordN(dl)].join('');
+  const mc = (calls) => {
+    let head = '', body = '', off = 32 * calls.length;
+    for (const c of calls) { const h = c.replace(/^0x/, ''), pd = h.padEnd(Math.ceil(h.length / 64) * 64, '0'); head += wordN(off); body += wordN(h.length / 2) + pd; off += 32 + pd.length / 2; }
+    return '0xac9650d8' + wordN(32) + wordN(calls.length) + head + body;
+  };
+  const setWord = (cd, i, v) => cd.slice(0, 10 + i * 64) + wordN(v) + cd.slice(10 + (i + 1) * 64);
+  const E0 = '0x' + '0'.repeat(40), TO = '0x' + '77'.repeat(20), USDC_ = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', DAI_ = '0x6b175474e89094c44da98b954eedeac495271d0f';
+  const DL = 1893456000n, A = 10n ** 16n, L = 2n * 10n ** 19n, want = { to: TO, tokenIn: E0, tokenOut: USDC_, exactOut: false, amount: A, maxIn: A, minOut: L, deadline: DL };
+  const uni = swapV2(TO, false, E0, USDC_, A, L, DL), sushi = swapV2(TO, false, E0, USDC_, A, L, MAXD), flag = { ...want, sentinel: true };
+
+  ok(checkZRouterCall(uni, want) === null && checkZRouterCall(uni, flag) === null, 'a swapV2 with the deadline asked is accepted with the flag or without it');
+  ok(/deadline/.test(checkZRouterCall(sushi, want) || '') && checkZRouterCall(sushi, { ...want, sentinel: false }) !== null && checkZRouterCall(sushi, { ...want, sentinel: 1 }) !== null, 'a swapV2 that carries the router\'s Sushi selector is refused unless the caller says sentinel: true');
+  ok(checkZRouterCall(sushi, flag) === null, 'and is accepted when it does');
+  ok(decodeZRouterCall(sushi)[0].deadline === MAXD && decodeZRouterCall(sushi)[0].fn === 'swapV2', 'the call that is accepted is the swapV2 with the selector itself, unchanged');
+  for (const [v, why] of [[DL + 1n, 'a later deadline'], [DL - 1n, 'an earlier deadline'], [MAXD - 1n, 'one short of the selector'], [0n, 'none']]) ok(checkZRouterCall(swapV2(TO, false, E0, USDC_, A, L, v), flag) !== null, `the flag does not take ${why}`);
+  const v3 = fixtures.find((f) => f.label.startsWith('ETH->PROVE exactOut=true (swapV3)')), v4 = fixtures.find((f) => f.label.startsWith('ETH->PROVE exactOut=false (swapV4)'));
+  ok(checkZRouterCall(swapV3(TO, false, 500, E0, USDC_, A, L, MAXD), flag) !== null, 'a swapV3 with that deadline is refused even with the flag: it names no venue');
+  ok(checkZRouterCall(setWord(v4.callData, 8, MAXD), { ...v4.want, sentinel: true }) !== null && checkZRouterCall(v4.callData, { ...v4.want, sentinel: true }) === null, 'nor a swapV4; one with the deadline asked is as before');
+  ok(checkZRouterCall(setWord(v3.callData, 7, MAXD), { ...v3.want, sentinel: true }) !== null, 'nor a real swapV3');
+  // the zAMM without a hook
+  const vz = swapVZ(TO, false, 3000, E0, USDC_, A, L, DL), vzMax = swapVZ(TO, false, 3000, E0, USDC_, A, L, MAXD);
+  ok(checkZRouterCall(vz, want) === null && checkZRouterCall(vzMax, want) !== null && checkZRouterCall(vzMax, flag) === null, 'a swapVZ with the selector (the hookless zAMM) is held and taken the same way');
+  // what the flag leaves as it was
+  ok(checkZRouterCall(sushi, { ...flag, to: OTHER }) !== null, 'it still refuses another recipient');
+  ok(checkZRouterCall(sushi, { ...flag, tokenOut: DAI_ }) !== null && checkZRouterCall(sushi, { ...flag, tokenIn: USDC_ }) !== null, 'another token');
+  ok(checkZRouterCall(sushi, { ...flag, amount: A + 1n }) !== null && checkZRouterCall(sushi, { ...flag, maxIn: A - 1n }) !== null, 'another amount, or one that can spend more than allowed');
+  ok(checkZRouterCall(sushi, { ...flag, minOut: L + 1n }) !== null, 'a limit under the least asked');
+  ok(checkZRouterCall(swapV2(TO, true, E0, USDC_, A, L, MAXD), flag) !== null, 'the other kind of swap');
+  ok(checkZRouterCall('0x' + '5f3bd1c8' + '00'.repeat(32), flag) !== null && checkZRouterCall(sushi.slice(0, -64), flag) !== null && checkZRouterCall(sushi + '00'.repeat(32), flag) !== null, 'and anything that is not a swap, or has the wrong length');
+  // chains and splits
+  const wantChain = { to: TO, tokenIn: E0, tokenOut: DAI_, exactOut: false, amount: A, maxIn: A, minOut: L, deadline: DL };
+  const chain = (first, second) => mc([first, second]);
+  const hop1 = swapV2(ZROUTER, false, E0, USDC_, A, 1n, MAXD), hop1ok = swapV2(ZROUTER, false, E0, USDC_, A, 1n, DL), hop2 = swapV3(TO, false, 500, USDC_, DAI_, 0, L, DL), hop2max = swapV3(TO, false, 500, USDC_, DAI_, 0, L, MAXD);
+  ok(checkZRouterCall(chain(hop1ok, hop2), wantChain) === null, 'a chain of a swapV2 and a swapV3 with the deadline asked is accepted (the test\'s own encoding)');
+  ok(checkZRouterCall(chain(hop1, hop2), wantChain) !== null && checkZRouterCall(chain(hop1, hop2), { ...wantChain, sentinel: true }) === null, 'a chain whose first swap is on Sushi is refused, then accepted with the flag');
+  ok(checkZRouterCall(chain(hop1ok, hop2max), { ...wantChain, sentinel: true }) !== null, 'but not one whose swapV3 carries the selector');
+  const half = A / 2n, s1 = swapV2(TO, false, E0, USDC_, half, L / 2n, MAXD), s2 = swapV2(TO, false, E0, USDC_, half, L / 2n, DL);
+  ok(checkZRouterCall(mc([s1, s2]), want) !== null && checkZRouterCall(mc([s1, s2]), flag) === null, 'a split with one leg on Sushi is refused, then accepted with the flag');
+  ok(checkZRouterCall(mc([s1, swapV3(TO, false, 500, E0, USDC_, half, L / 2n, MAXD)]), flag) !== null, 'and one whose other leg is a swapV3 with the selector is not');
+}
+
 console.log(`${n} checks`);

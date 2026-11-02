@@ -78,7 +78,7 @@ export function decodeZRouterCall(callData) {
   return legs;
 }
 
-// `want`: { to, tokenIn, tokenOut } always, plus any of { exactOut, amount, maxIn, minOut, deadline, router, curvePools }.
+// `want`: { to, tokenIn, tokenOut } always, plus any of { exactOut, amount, maxIn, minOut, deadline, router, curvePools, sentinel }.
 //   amount  the swapAmount of the (first) swap: what is spent when exact-in, what is bought when exact-out; for a chain, that of its first swap when it is exact-in.
 //   A chain is exact-in swaps, each after the first with an amount of 0 (it spends what the one before paid): an amount of its own would make the router pull the difference from the sender.
 //   A split is exact-in swaps side by side, each taking the asked token and paying the asked token to the asked recipient: its
@@ -89,6 +89,12 @@ export function decodeZRouterCall(callData) {
 //   maxIn   the most the sender may be made to spend on the first swap (its amount when exact-in, its limit when exact-out).
 //   minOut  the least the last swap may pay (its limit when exact-in, its amount when exact-out).
 // → null when the call is acceptable, else the reason it is refused.
+const NO_DEADLINE = (1n << 256n) - 1n;
+// A swap carries the deadline asked. With `sentinel` (a caller that takes it) it may instead carry zRouter's own choice of venue: a swapV2 with a deadline of
+// type(uint256).max runs on SushiSwap's pool, and a swapVZ with one on the hookless zAMM, each with a deadline of its own of 30 minutes from when it runs, so it
+// has no expiry that the caller sets. Its limit is still held to what was asked, and a caller that sends it simulates it first.
+const deadlineOk = (l, want) => want.deadline == null || l.deadline === BigInt(want.deadline)
+  || (want.sentinel === true && l.deadline === NO_DEADLINE && (l.fn === 'swapV2' || l.fn === 'swapVZ'));
 export function checkZRouterCall(callData, want) {
   let legs;
   try { legs = decodeZRouterCall(callData); } catch (e) { return String((e && e.message) || e); }
@@ -108,7 +114,7 @@ export function checkZRouterCall(callData, want) {
       if (lc(l.tokenOut) !== lc(legs[i + 1].tokenIn)) return 'the swaps do not chain';
     }
     if (l.pools) for (const p of l.pools) if (!pools.has(p)) return 'the curve route uses a pool that is not allowed';
-    if (want.deadline != null && l.deadline !== BigInt(want.deadline)) return 'the swap has another deadline';
+    if (!deadlineOk(l, want)) return 'the swap has another deadline';
   }
   if (legs.length > 1) {
     if (first.exactOut) return 'a chain starts with an exact-out swap';
@@ -150,7 +156,7 @@ function checkPaths(legs, want, pools, router) {
     if (lc(z.to) !== lc(want.to)) return 'the swap does not pay the asked recipient';
     for (const l of p) {
       if (l.pools) for (const q of l.pools) if (!pools.has(q)) return 'the curve route uses a pool that is not allowed';
-      if (want.deadline != null && l.deadline !== BigInt(want.deadline)) return 'the swap has another deadline';
+      if (!deadlineOk(l, want)) return 'the swap has another deadline';
     }
     spent += a.amount; paid += z.limit;
   }
@@ -166,7 +172,7 @@ function checkSplit(legs, want, pools) {
     if (l.exactOut) return 'a split holds an exact-out swap';
     if (l.amount === 0n) return 'a split leg spends nothing of its own';
     if (l.pools) for (const p of l.pools) if (!pools.has(p)) return 'the curve route uses a pool that is not allowed';
-    if (want.deadline != null && l.deadline !== BigInt(want.deadline)) return 'the swap has another deadline';
+    if (!deadlineOk(l, want)) return 'the swap has another deadline';
     spent += l.amount; paid += l.limit;
   }
   if (want.exactOut) return 'the swap is not the asked kind';

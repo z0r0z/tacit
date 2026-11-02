@@ -70,6 +70,7 @@ server = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream' });
   res.end(readFileSync(f));
 }).listen(WEB);
+let simNo = null;
 const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io'];
 
 let n = 0, fails = 0;
@@ -129,6 +130,8 @@ async function openPage(viewport, { wallet = null, path = '/swap/', scheme = 'li
   for (const h of RPC_HOSTS) await ctx.route(`https://${h}/**`, async (route) => {
     try {
       const body = route.request().postData() || '{}', j = JSON.parse(body);
+      // a test can have the check a swap is run through before it is sent (zRouter, from an address, no gas given) say no
+      if (simNo && j.method === 'eth_call' && String(j.params?.[0]?.to || '').toLowerCase() === ZROUTER && j.params?.[0]?.from && !j.params?.[0]?.gas) { simNo.n++; return await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ jsonrpc: '2.0', id: j.id, error: { code: 3, message: 'execution reverted' } }) }); }
       // zQuoter's scan reads too many slots for a fork: the upstream node answers it at the fork's block.
       // and so does the token list's registry, whose JSON a fork would read one storage slot at a time.
       const toZq = j.method === 'eth_call' && (String(j.params?.[0]?.to || '').toLowerCase() === ZQUOTER || body.toLowerCase().includes('0000006013df75a31678b786061c2b54bf531524'));
@@ -714,20 +717,16 @@ if (!process.env.SKIP_GASRELAY) {
   // the check against the chain says no (the price moved under the floor): nothing reaches the wallet, the card says so and prices again; then the swap lands
   await typeAmt(page, '0.05'); await quoted(page); await ackIf(page);
   { await route('agg');
-    const sends0 = walletLog.sends.length, signs0 = walletLog.signs; let refused = 0;
-    const handler = async (rt) => {
-      try { const j = JSON.parse(rt.request().postData() || '{}'); if (j.method === 'eth_call' && String(j.params?.[0]?.to || '').toLowerCase() === ZROUTER && j.params?.[0]?.from && !j.params?.[0]?.gas) { refused++; return rt.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ jsonrpc: '2.0', id: j.id, error: { code: 3, message: 'execution reverted' } }) }); } } catch { /* not JSON */ }
-      return rt.fallback();
-    };
-    for (const h of RPC_HOSTS) await page.route(`https://${h}/**`, handler);
+    const sends0 = walletLog.sends.length, signs0 = walletLog.signs;
+    simNo = { n: 0 };
     await page.click('#go');
     await until(page, () => /price moved|would fail|Nothing was sent|Done/i.test(document.querySelector('#q').textContent), null, 60000);
     const said = (await page.textContent('#q')).trim();
+    const refused = simNo.n; simNo = null;
     ok(refused >= 1 && /price moved/i.test(said), `a check that says no sends nothing and says why (${said.slice(0, 80)})`);
     ok(walletLog.sends.length === sends0 && walletLog.signs === signs0, 'and nothing reached the wallet');
     await quoted(page);
     ok(/Buy USDC/.test(await page.textContent('#go')), `the card prices it again and offers it (${(await page.textContent('#go')).trim()})`);
-    for (const h of RPC_HOSTS) await page.unroute(`https://${h}/**`, handler);
     const u0 = await bal(USDC, w.account), said2 = await swapped(), u1 = await bal(USDC, w.account);
     ok(/Done/.test(said2) && u1 > u0, `and once the check agrees it lands: ${Number(u1 - u0) / 1e6} USDC`); }
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);

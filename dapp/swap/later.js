@@ -7,9 +7,8 @@
 // zRouter for exactly the deposit's ETH and deposits it with this device's proof; from there the swap is the same. (The TAC pool deployed with
 // the TAC vaults could hold TAC itself, but nothing is in it yet and no keeper sends for it, so a hop through it would hide nothing.)
 import { hexToBytes, keccak_256 } from '/vendor/tacit-deps.min.js';
-import { checkZRouterCall } from '/zrouter-guard.js?cb=f5ae4bcd';
-import { bestRoute } from '/swap/aggregate.js?cb=a115d220';
-import { readAccess, readToken, permitTyped, permit2Typed, splitSig, randomNonce as permit2Nonce, encApprove, quoteTacitToToken, buildTacitToToken, quoteAnyToTac, buildAnyToTac } from '/swap/route.js?cb=ce610210';
+import { bestRoute } from '/swap/aggregate.js?cb=ec27933f';
+import { checkRoute, readAccess, readToken, permitTyped, permit2Typed, splitSig, randomNonce as permit2Nonce, encApprove, quoteTacitToToken, buildTacitToToken, quoteAnyToTac, buildAnyToTac } from '/swap/route.js?cb=45fd31f8';
 import { makeTokenPools, poolState, RELAYER, KEEPERS, SERVED } from '/evm-pool-tokens.js?cb=e1ab5d24';
 export { SERVED };
 
@@ -45,7 +44,7 @@ export async function routeOut({ ethCall, token, amount, to, slippageBps, deadli
   if (!q) return null;
   const data = q.callData.split(word(stand)).join(word(to));
   if (data === q.callData) return null;
-  if (checkZRouterCall(data, { to, tokenIn: ZERO, tokenOut: token, exactOut: false, amount, maxIn: amount, minOut: q.min, deadline, curvePools: q.curvePools || [] }) !== null) return null;
+  if (checkRoute(data, { to, tokenIn: ZERO, tokenOut: token, exactOut: false, amount, maxIn: amount, minOut: q.min, deadline, curvePools: q.curvePools || [] }) !== null) return null;
   // `standData`: the route as the nodes saw it, for any later read (a gas estimate) that should not name `to` either
   return { ...q, callData: data, standData: q.callData, to };
 }
@@ -154,7 +153,7 @@ export async function routeFrom({ ethCall, venues, tokenIn, token, amount, to, s
     const r = await bestRoute({ ethCall, to: stand, refundTo: stand, tokenIn, tokenOut: token, amountIn: amt, slippageBps, deadline: dl });
     if (!r) return null;
     const data = write(r.callData);
-    if (data === r.callData || checkZRouterCall(data, { to, tokenIn, tokenOut: token, exactOut: false, amount: amt, maxIn: amt, minOut: r.min, deadline: dl, curvePools: r.curvePools || [] }) !== null) return null;
+    if (data === r.callData || checkRoute(data, { to, tokenIn, tokenOut: token, exactOut: false, amount: amt, maxIn: amt, minOut: r.min, deadline: dl, curvePools: r.curvePools || [] }) !== null) return null;
     return { callData: data, standData: r.callData, min: r.min, out: r.out, name: r.name, deadline: dl };
   }
   const data = write(q.callData);

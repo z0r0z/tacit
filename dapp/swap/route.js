@@ -20,6 +20,9 @@
 // that reads what zQuoter returns against what was asked: its bytes run as the sender.
 
 import { checkZRouterCall, decodeZRouterCall } from '../zrouter-guard.js';
+// The card's check of a zQuoter answer: the guard's, taking zRouter's own choice of SushiSwap's pool or the hookless zAMM (a deadline of type(uint256).max, which runs with a
+// window of its own of 30 minutes from when it runs) as the deadline asked. The least the swap pays is still held to what was asked, and the swap is simulated before it is sent.
+export const checkRoute = (callData, want) => checkZRouterCall(callData, { sentinel: true, ...want });
 
 export const ZERO = '0x0000000000000000000000000000000000000000';
 export const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
@@ -183,7 +186,7 @@ export async function quoteEthToToken({ ethCall, to, tokenOut, amount, slippageB
   if (same(tokenOut, ZERO) || same(tokenOut, WETH) || tacitToken(tokenOut)) return null;
   const q = await zqBest({ ethCall, to, tokenIn: ZERO, tokenOut, amount, exactOut: false, slippageBps, deadline });
   if (!q || q.amountOut <= 0n || q.amountLimit <= 0n || q.amountIn !== BigInt(amount) || q.msgValue !== BigInt(amount)) return null;
-  if (checkZRouterCall(q.callData, { to, tokenIn: ZERO, tokenOut, exactOut: false, amount, maxIn: amount, minOut: q.amountLimit, deadline })) return null;
+  if (checkRoute(q.callData, { to, tokenIn: ZERO, tokenOut, exactOut: false, amount, maxIn: amount, minOut: q.amountLimit, deadline })) return null;
   return { ...q, name: SOURCES[q.source] || 'a pool', to, tokenOut, deadline };
 }
 const bestToWeth = ({ ethCall, tokenIn, amount, exactOut, slippageBps, deadline, reuse }) => zqSwap({ ethCall, to: PRECISION_ROUTE, tokenIn, tokenOut: WETH, amount, exactOut, slippageBps, deadline, reuse });
@@ -208,7 +211,7 @@ export async function quoteAnyToTac({ ethCall, venues, token, amountIn, account,
     }
     if (!hop) return null;
     // The leg must be one swap that buys exactly `weth` of WETH for PrecisionRoute and spends no more than was typed.
-    if (checkZRouterCall(hop.callData, { to: PRECISION_ROUTE, tokenIn: token, tokenOut: WETH, exactOut: true, amount: weth, maxIn: amountIn, deadline: dl })) return null;
+    if (checkRoute(hop.callData, { to: PRECISION_ROUTE, tokenIn: token, tokenOut: WETH, exactOut: true, amount: weth, maxIn: amountIn, deadline: dl })) return null;
     if (decodeZRouterCall(hop.callData)[0].limit !== hop.amountLimit) return null;
   }
   if (weth <= 0n) return null;
@@ -304,7 +307,7 @@ export async function quoteTacitToToken({ ethCall, venues, tokenIn, tokenOut, am
     hop = await zqSwap({ ethCall, to, tokenIn: WETH, tokenOut, amount: floor1, exactOut: false, slippageBps: slip, deadline: dl, reuse });
     if (!hop || hop.amountLimit <= 0n) return null;
     // The second leg must be one swap that sells exactly the ETH the first leg is sure to pay, pays the recipient, and pays at least what is shown.
-    if (checkZRouterCall(hop.callData, { to, tokenIn: WETH, tokenOut, exactOut: false, amount: floor1, maxIn: floor1, minOut: hop.amountLimit, deadline: dl })) return null;
+    if (checkRoute(hop.callData, { to, tokenIn: WETH, tokenOut, exactOut: false, amount: floor1, maxIn: floor1, minOut: hop.amountLimit, deadline: dl })) return null;
     out = hop.amountOut; min = hop.amountLimit;       // what the ETH the first leg is sure to pay buys; the rest of what it pays goes to the recipient as WETH
     rest = leg.eth - floor1; val = (hop.amountOut * leg.eth) / floor1;       // `val`: the whole sale at that rate, for the price and the comparison with the market
   } else { out = leg.eth; val = out; }
@@ -353,7 +356,7 @@ export async function quoteTokenToTacit({ ethCall, token, tokenOut, amountIn, ac
     hop = null;
   }
   if (!hop || weth <= 0n) return null;
-  if (checkZRouterCall(hop.callData, { to: ZROUTER, tokenIn: token, tokenOut: WETH, exactOut: true, amount: weth + 1n, maxIn: amountIn, deadline: dl })) return null;
+  if (checkRoute(hop.callData, { to: ZROUTER, tokenIn: token, tokenOut: WETH, exactOut: true, amount: weth + 1n, maxIn: amountIn, deadline: dl })) return null;
   if (decodeZRouterCall(hop.callData)[0].limit !== hop.amountLimit) return null;
   const amm = await quoteAmm({ ethCall, tokenIn: ZERO, tokenOut, amountIn: weth });
   if (!amm || amm.amountIn !== weth) return null;

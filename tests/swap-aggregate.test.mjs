@@ -9,7 +9,8 @@ import { register } from 'node:module';
 
 register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
 export async function resolve(spec, ctx, next) { if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx); return next(spec, ctx); }`));
-const { bestRoute } = await import('../dapp/swap/aggregate.js');
+const { bestRoute, legsOf } = await import('../dapp/swap/aggregate.js');
+const { decodeZRouterCall } = await import('../dapp/zrouter-guard.js');
 const F = JSON.parse(readFileSync(new URL('./fixtures/aggregate-curve-26257675.json', import.meta.url), 'utf8'));
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -132,4 +133,50 @@ test('a Curve route the guard does not list is never told: only a simulation can
 test('no route at all is no call', async () => {
   const heard = [], none = async () => { throw Object.assign(new Error('execution reverted'), { revert: true }); };
   assert.strictEqual(await askEth(none, { onRoute: (r) => heard.push(r) }), null); assert.deepEqual(heard, []);
+});
+
+// ── a route on SushiSwap: zRouter is told to use its pool by a deadline of 2^256-1 on the swapV2, which the card takes as the deadline asked ──
+const V2F = JSON.parse(readFileSync(new URL('./fixtures/aggregate-eth-v2.json', import.meta.url), 'utf8'));
+const MAXD = (1n << 256n) - 1n, hexw = (v) => BigInt(v).toString(16).padStart(64, '0');
+const DEADLINE_AT = { swapV2: 6, swapV3: 7, swapV4: 8, swapVZ: 9 };
+// a recorded viaEth answer with the deadline word of each of its swaps (and, when given, its venue word) as given: zQuoter writes a Sushi swap as a Uniswap v2 one with both changed
+function reworded(raw, { deadline, source }) {
+  let h = raw.replace(/^0x/, '');
+  const o = Number(BigInt('0x' + h.slice(9 * 64, 10 * 64))) / 32, len = Number(BigInt('0x' + h.slice(o * 64, (o + 1) * 64)));
+  const inner = '0x' + h.slice((o + 1) * 64, (o + 1) * 64 + len * 2);
+  for (const leg of legsOf(inner)) {
+    const fn = decodeZRouterCall(leg)[0].fn, at = 8 + DEADLINE_AT[fn] * 64, bent = leg.replace(/^0x/, '').slice(0, at) + hexw(deadline) + leg.replace(/^0x/, '').slice(at + 64);
+    h = h.split(leg.replace(/^0x/, '')).join(bent);                                // the answer holds the swap's bytes more than once, as zQuoter wrote them
+  }
+  return '0x' + (source == null ? h : hexw(source) + h.slice(64));
+}
+const onlyViaEth = (F_, derive) => async (to, data) => {
+  const sel = data.slice(2, 10);
+  if (sel === 'e453166e') return derive(F_.calls.e453166e);
+  if (sel === 'e1fd10bc') return F_.calls.e1fd10bc;
+  throw Object.assign(new Error('execution reverted'), { revert: true });                        // no split, no mix
+};
+const askOne = (F_, derive, over = {}) => bestRoute({ ethCall: onlyViaEth(F_, derive), to: F_.to, tokenIn: ZERO, tokenOut: F_.tokenOut, amountIn: BigInt(F_.amountIn), slippageBps: F_.slippageBps, deadline: BigInt(F_.deadline), block: '0x1', ...over });
+
+test('a Uniswap v2 swap with the deadline asked is the route, as recorded', async () => {
+  const q = await askOne(V2F, (raw) => raw);
+  assert.ok(q && /^Uniswap v2/.test(q.name) && q.min > 0n, `the recorded route (${q?.name})`);
+  assert.strictEqual(decodeZRouterCall(q.callData)[0].deadline, BigInt(V2F.deadline));
+});
+
+test('the same swap on SushiSwap (the router\'s selector as its deadline) is a route, sent as zQuoter wrote it', async () => {
+  const sushi = (raw) => reworded(raw, { deadline: MAXD, source: 1n });
+  const heard = [], q = await askOne(V2F, sushi, { onRoute: (r) => heard.push(r) });
+  assert.ok(q, 'a route: the card takes the selector');
+  assert.match(q.name, /^Sushi/);
+  assert.strictEqual(decodeZRouterCall(q.callData)[0].deadline, MAXD, 'its swap still carries the selector: nothing was rewritten');
+  assert.ok(q.min > 0n && q.out >= q.min, 'with its floor');
+  assert.ok(heard.length === 1 && heard[0].callData === q.callData, 'and it is told as it comes');
+});
+
+test('the selector is taken on a swapV2 only: any other deadline, or a swapV3 or swapV4 with it, is no route', async () => {
+  assert.strictEqual(await askOne(V2F, (raw) => reworded(raw, { deadline: BigInt(V2F.deadline) + 1n, source: 1n })), null, 'a later deadline');
+  assert.strictEqual(await askOne(V2F, (raw) => reworded(raw, { deadline: MAXD - 1n, source: 1n })), null, 'one short of the selector');
+  assert.strictEqual(await askOne(E, (raw) => reworded(raw, { deadline: MAXD })), null, 'a swapV3 or swapV4 with the selector as its deadline');
+  assert.ok(await askOne(E, (raw) => raw), 'while the recorded ETH → DAI route is one');
 });

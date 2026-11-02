@@ -6,13 +6,13 @@ import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venue
 import { UserStopped } from '/trade/wallet.js?cb=6778fe25';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=e53086bb';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js?cb=cd769487';
-import * as R from '/swap/route.js?cb=ce610210';
-import * as A from '/swap/aggregate.js?cb=a115d220';
-import * as SV from '/swap/solvers.js?cb=2c70b259';
+import * as R from '/swap/route.js?cb=45fd31f8';
+import * as A from '/swap/aggregate.js?cb=ec27933f';
+import * as SV from '/swap/solvers.js?cb=28273640';
 import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
 import { routeLine } from '/swap/route-name.js?cb=1bc2443b';
 import * as GR from '/gas-relay.js?cb=d9662caa';
-import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js?cb=f5ae4bcd';
+import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.js?cb=2841d896';
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
 import { aprText, readPrecision, readSpot, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
@@ -1387,7 +1387,7 @@ function modsSoon() {
   modsAsked = true;
   ltLoad().then((lt) => lt.modules()).catch(() => { modsAsked = false; });
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=56c53a63').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=d302b377').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));

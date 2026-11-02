@@ -5,8 +5,8 @@
 // the asked recipient, spends exactly the amount and pays at least its claimed output less the slippage) before it may be offered; the best
 // that passes is the route. All of it is views on the chain: nothing here leaves the page.
 // by the same paths the page imports them by, so the page holds one copy of each
-import { checkZRouterCall, decodeZRouterCall, ZROUTER } from '/zrouter-guard.js?cb=f5ae4bcd';
-import { ZQUOTER, ZERO, SOURCES } from '/swap/route.js?cb=ce610210';
+import { decodeZRouterCall, ZROUTER } from '/zrouter-guard.js?cb=2841d896';
+import { ZQUOTER, ZERO, SOURCES, checkRoute } from '/swap/route.js?cb=45fd31f8';
 
 const SEL = { viaEth: 'e453166e', split: '892af013', hybrid: '85f86a90', quotes: 'e1fd10bc' };
 const HEAVY = '0x11E1A300';                                          // 300M gas: a split's scan of every pool is far over a default call
@@ -73,7 +73,7 @@ function judged({ v, sp, hy }, { to, tokenIn, tokenOut, amt, dl, slip, ethIn }) 
     // the least it pays: the limits of the swaps that pay the recipient (the one swap, a split's swaps, a chain's last, a mix's direct and last)
     c.min = legs.filter((l) => lc(l.to) === lc(to)).reduce((s, l) => s + l.limit, 0n);
     const want = { to, tokenIn, tokenOut, exactOut: false, amount: amt, maxIn: amt, minOut: (c.out * (10000n - c.slip - 1n)) / 10000n, deadline: dl };
-    const why = checkZRouterCall(c.callData, want);
+    const why = checkRoute(c.callData, want);
     if (why === null) ok.push(c);
     else if (why === CURVE_UNKNOWN && ethIn && legs.length === 1) unknown.push({ c, want: { ...want, curvePools: legs[0].pools } });
   }
@@ -111,7 +111,7 @@ export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut,
   // a Curve pool the guard does not list is taken as anon.wei takes a route it cannot cross-check: only when the route, run as it stands
   // from an address given the ETH, pays the recipient at least its floor (and only when it beats every route the guard knows)
   const known = ok.reduce((m, c) => (c.out > m ? c.out : m), 0n);
-  for (const { c, want } of unknown) if (c.out > known && !ok.some((x) => x.callData === c.callData) && checkZRouterCall(c.callData, want) === null && await paysFloor(ethCall, c, block)) { c.curvePools = want.curvePools; ok.push(c); }
+  for (const { c, want } of unknown) if (c.out > known && !ok.some((x) => x.callData === c.callData) && checkRoute(c.callData, want) === null && await paysFloor(ethCall, c, block)) { c.curvePools = want.curvePools; ok.push(c); }
   if (!ok.length) return null;
   const best = bestOf(ok);
   const quotes = [];
