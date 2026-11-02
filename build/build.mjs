@@ -202,6 +202,9 @@ const BRIDGE_CB_FILES = ['bridge/track.js', 'bridge/mover.js', 'bridge/app.js', 
 // dapp/swap/ is the swap card the front page's Swap tab draws (its own address only forwards there): its routes first (and the aggregated route
 // over them), the private swaps (later.js reads the aggregated route), then the card.
 const SWAP_CB_FILES = ['gas-relay.js', 'swap/route.js', 'swap/aggregate.js', 'swap/solvers.js', 'swap/bitcoin.js', 'swap/private.js', 'swap/later.js', 'swap/link.js', 'swap/route-name.js', 'swap/card.js'];
+// tests/swap-harness/ is the swap card's test page. It names the card's modules by their tokens, which must be the ones the card's own imports carry or the page
+// loads a second copy of each module, so it is swept last, after every file it names has its own.
+const HARNESS_CB_FILES = ['../tests/swap-harness/app.js', '../tests/swap-harness/index.html'];
 // dapp/splitter/ is the tip splitter page: its encodings and the contract's creation code first, then app.js, then the page.
 const SPLITTER_CB_FILES = ['splitter/abi.js', 'splitter/bytecode.js', 'splitter/app.js', 'splitter/index.html'];
 // dapp/relay/ is the public page on what the relay earns and spends and what the buyback has bought, the settles it holds for any sender, and
@@ -544,7 +547,7 @@ async function main() {
     if (gotPreboot !== wantPreboot) drift.push(`classic.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
     drift.push(...siteChrome(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
-    drift.push(...pageImportMaps(false), ...pagePreloads(false));
+    drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false));
     if (drift.length) {
       console.error('✗ cache-bust tokens or preload links are stale — run `npm run build` and commit the result:');
       for (const d of drift) console.error(`    ${d}`);
@@ -617,6 +620,8 @@ async function main() {
     console.log(`• page preloads: ${preDrift.length ? 'updated' : 'unchanged'}`);
     if (preDrift.length) tradeAssetPages(true);                 // the trade page's copy for each asset carries its preloads too
     if (preDrift.length) pageCacheBust(TRADE_CB_FILES, true);   // and the preloads sit in the head the page's own tokens are read from
+    const harnessDrift = pageCacheBust(HARNESS_CB_FILES, true);
+    console.log(`• swap test page cache-bust: ${harnessDrift.length ? `${harnessDrift.length} token(s) updated` : 'unchanged'}`);
 
     for (const page of PINNED_PAGES) {
       if (!existsSync(page.file)) continue;

@@ -625,15 +625,15 @@ if (!process.env.SKIP_GASRELAY) {
   await page.reload();
   await until(page, () => !document.querySelector('#steps').hidden);
   const t = (await page.textContent('#steps')).replace(/\s+/g, ' ');
-  ok(/0\.02 ETH → USDC\s*to 0x2222…2222/.test(t) && /Deposit/.test(t) && /In the pool\s*30 min so far/.test(t) && /Swap now/.test(t), `a kept swap shows its deposit, how long it has been in the pool and a way to swap it out (${t.slice(0, 160)})`);
-  ok(/0\.026 ETH is in the private pool, yours and hidden\. Swap it out when you like\./.test(t), 'and one line says where the ETH is now');
+  ok(/0\.02 ETH → USDC\s*to 0x2222…2222/.test(t) && /Deposit/.test(t) && /Hidden in the pool\s*30 min so far/.test(t) && /Swap now/.test(t), `a kept swap shows its deposit, how long it has been in the pool and a way to swap it out (${t.slice(0, 160)})`);
+  ok(/0\.026 ETH is in the private ETH pool, yours and hidden\. Swap it out when you like\./.test(t), 'and one line says where the ETH is now');
   ok((await page.$$eval('#steps .st li', (l) => l.map((x) => x.className))).join(',') === 'done,now,todo' && (await page.getAttribute('#steps .st li.now', 'aria-current')) === 'step', 'its steps read done, now, to do, the current one marked for a screen reader');
   ok(!!(await page.$('#steps use[href="#tk-peth"]')), 'drawn with the private ETH mark');
   // Swap now reads the price and shows it; nothing is sent until it is confirmed, and Cancel drops it
   await page.click('[data-later-go="p1"]');
   await until(page, () => !!document.querySelector('[data-later-ok]'), null, 120000);
   { const t2 = (await page.textContent('#steps')).replace(/\s+/g, ' ');
-    ok(/At least [\d.,]+ USDC/.test(t2) && /Confirm/.test(t2) && /Cancel/.test(t2), `Swap now shows the least it pays before anything is sent (${t2.slice(0, 200)})`); }
+    ok(/You get at least\s*[\d.,]+ USDC/.test(t2) && /Confirm swap/.test(t2) && /Not now/.test(t2), `Swap now shows the least it pays before anything is sent (${t2.slice(0, 200)})`); }
   ok((await page.textContent('#q')).trim() === '', 'and the status line under the swap button does not repeat it');
   await page.click('[data-later-no="p1"]');
   ok(!(await page.$('[data-later-ok]')) && !!(await page.$('[data-later-go="p1"]')), 'Cancel drops the price and offers Swap now again');
@@ -664,7 +664,7 @@ if (!process.env.SKIP_GASRELAY) {
   ok((await cls(3)) === 'done,done,now' && /sending…/.test(await plan(3).textContent()) && (await plan(3).locator('button').count()) === 0, 'a swap being sent offers nothing to press');
   ok((await cls(4)) === 'done,done,fail' && (await plan(4).locator('[data-later-check]').count()) === 1 && (await plan(4).locator('.note.err').count()) === 1 && /may still have sent/.test(await plan(4).locator('.note').textContent()), 'a swap in doubt says so in its own note and offers Check it, not Swap now');
   ok((await cls(5)) === 'done,done,done' && (await plan(5).locator('a[href*="etherscan.io/tx/"]').count()) === 2, 'a finished swap shows both transactions');
-  ok(/In the pool\s*1 h 9 min(?! so far)/.test(await plan(5).textContent()) && /In the pool\s*42 min so far/.test(await plan(2).textContent()), 'a finished swap says how long it was in the pool, a waiting one how long so far');
+  ok(/Hidden in the pool\s*1 h 9 min(?! so far)/.test(await plan(5).textContent()) && /Hidden in the pool\s*42 min so far/.test(await plan(2).textContent()), 'a finished swap says how long it was in the pool, a waiting one how long so far');
   ok(/1,190 USDC or more/.test(await plan(5).textContent()) && (await plan(5).locator('.now a[href="/pay/eth/"]').count()) === 1, 'what it paid at least, and the rest of the deposit is pointed to where it stays private');
   ok(/to alice\.eth/.test(await plan(2).locator('header').textContent()), 'a swap kept for a name shows the name');
   ok((await cls(6)) === 'fail,todo,todo' && (await plan(6).locator('.x').count()) === 1 && (await plan(6).locator('.note.err').count()) === 1, 'a deposit that did not go through says so and can be removed');
@@ -1135,11 +1135,22 @@ if (!process.env.SKIP_GASRELAY) {
   await page.click('button:has-text("Test Wallet")');
   await until(page, () => /Balance/.test(document.querySelector('#pay-side').textContent));
   await quoted(page); await ackIf(page);
+  const keyAsked = []; page.on('request', (r) => { if (/transact_final\.zkey/.test(r.url())) keyAsked.push(Date.now()); });
   await page.click('#later-on');
+  await page.fill('#to-in', '0x4f4f');
+  await page.waitForTimeout(1500);
+  ok(keyAsked.length === 0, 'a half-typed address fetches no proving key');
   await page.fill('#to-in', '0x' + '4f'.repeat(20));
   await until(page, () => /^Deposit [\d.,]+ ETH$/.test(document.querySelector('#go').textContent), null, 90000);
-  const sheet = '.bsheet.top [data-in="eth"]', t0 = Date.now();
+  for (let i = 0; i < 50 && !keyAsked.length; i++) await page.waitForTimeout(200);
+  ok(keyAsked.length >= 1, 'and a valid one does');
+  const sheet = '.bsheet.top [data-in="eth"]';
   ok(!(await page.$(sheet)), 'the sheet is not there the moment the button is');
+  await page.click('#pay-coin');
+  await page.waitForTimeout(3500);
+  ok(!(await page.$(sheet)), 'the sheet is not opened over the token picker');
+  await page.keyboard.press('Escape');
+  const t0 = Date.now();
   await page.waitForSelector(sheet, { timeout: 30000 });
   ok(Date.now() - t0 >= 1200, `nothing was pressed: the sheet opens by itself once the card has been left alone (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   await page.keyboard.press('Escape');
@@ -1178,8 +1189,10 @@ if (!process.env.SKIP_GASRELAY) {
   await until(page, () => (window.__proofs || []).length >= 1, null, 300000);       // the proof is made while the button waits
   ok((await page.textContent('#go')) === `Deposit ${shown} ETH` && walletLog.sends.length === 0, `the proof is made with nothing pressed, and the button still offers the deposit (${shown} ETH)`);
   const said = [], poll = setInterval(() => { page.textContent('#q').then((t) => said.push(t), () => {}); }, 80);
+  // the quote is a minute and more old by the press (the deposit of ETH is sized by the amount typed and the relay's fee, so it is not read again for that)
+  await page.evaluate(() => { const was = Date.now; Date.now = () => was.call(Date) + 70e3; });
   await page.click('#go');
-  await until(page, () => /Deposited\.|did not|failed|revert|Not enough|moved|Nothing was sent/i.test(document.querySelector('#q')?.textContent || ''), null, 240000).catch(() => {});
+  await until(page, () => /Deposited\.|did not|failed|revert|Not enough|moved|Nothing was sent|price was read again/i.test(document.querySelector('#q')?.textContent || ''), null, 240000).catch(() => {});
   clearInterval(poll);
   const msg = await page.textContent('#q');
   const plan = await page.evaluate(() => JSON.parse(localStorage.getItem('tacit-swap-later-v1') || '[]')[0] || null);
@@ -1304,7 +1317,8 @@ if (!process.env.SKIP_GASRELAY) {
     ok(!!now.k && now.k !== was && now.on === 'true', 'the arrow keys choose the next route and keep the focus on it');
   }
   const fit = await page.evaluate(() => ({ bar: document.querySelector('.act').getBoundingClientRect().top, last: Math.max(...[...document.querySelectorAll('#rcpt div')].map((e) => e.getBoundingClientRect().bottom)) }));
-  ok(fit.last <= fit.bar + 1, `the whole receipt clears the button's bar at 900 px (ends ${Math.round(fit.last)}, the bar starts ${Math.round(fit.bar)})`);
+  // a few pixels of give: the test page's own header sits above the card, and the row heights follow the fonts the machine has
+  ok(fit.last <= fit.bar + 4, `the whole receipt clears the button's bar at 900 px (ends ${Math.round(fit.last)}, the bar starts ${Math.round(fit.bar)})`);
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   await browser.close();
 }

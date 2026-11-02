@@ -1383,7 +1383,7 @@ const pageSigner = { get address() { return W.account; }, ready: async () => { i
   get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: W.account, sent, label: 'Swap privately' }) : null; } };
 // Swap privately's deposit needs the pool wallet's modules (some 220 KB), which were fetched when it was pressed: once its price is up they are fetched, so the press finds them in.
 // Swap privately's deposit is proved in this browser: its proving key (28.6 MB) and circuit (4.9 MB), kept in the browser's cache once fetched as /pay/eth keeps them, are fetched and loaded into
-// a worker when the swap is pressed, and the wallet is asked only after the proof. They are fetched and the prover started when an address is typed for the swap, which is someone about to press,
+// a worker when the swap is pressed, and the wallet is asked only after the proof. They are fetched and the prover started once the address typed for the swap is a valid one, which is someone about to press,
 // so the press has only the proof to make. Not on a data saver or a slow link, and not again within a minute of a failure.
 let proverAsked = 0;
 function proverSoon() {
@@ -1399,12 +1399,13 @@ function modsSoon() {
   ltLoad().then((lt) => lt.modules()).catch(() => { modsAsked = false; });
 }
 // The deposit is proved while its button waits to be pressed, so the press finds the proof made and goes straight to the wallet (the proof takes some
-// seconds on a computer and many on a phone). It starts when the card has been left alone for two seconds, so a hand on the controls neither meets a sheet
-// it did not open nor leaves a proof for the press to wait behind. The Tacit key it is proved under is opened then, once a visit: a sheet closed without a
-// key is not shown again until the button is pressed. Not on a data saver or a slow link or in a hidden page; a figure is asked for once, and again after
+// seconds on a computer and many on a phone). It starts when the page has been left alone for two seconds, so a hand on the controls neither meets a sheet
+// it did not open nor leaves a proof for the press to wait behind. The Tacit key it is proved under is opened then, once a visit and not over another sheet: a
+// sheet closed without a key is not shown again until the button is pressed. Not on a data saver or a slow link or in a hidden page; a figure is asked for once, and again after
 // a minute if it failed.
 let depAsked = '', depTimer = 0, depDeclined = false, depTouched = 0;
 const depKeyed = () => !!(PV?.unlocked || H.key?.session?.unlocked);
+const sheetOpen = () => !!document.querySelector('dialog[open], .bsheet, .bm-modal') || !$('#pk').hidden;
 function depositSoon(q) {
   const net = navigator.connection, hop = picked(q)?.hop ? tokHop()?.hop : null, dep = laterDeposit(q), k = `${hop?.pool || ''}:${dep}`;
   if (net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || dep == null || k === depAsked || (depDeclined && !depKeyed())) return;
@@ -1413,6 +1414,7 @@ function depositSoon(q) {
     if (document.hidden) { depAsked = ''; return; }
     const left = depTouched + 2000 - Date.now();
     if (left > 0) { depTimer = setTimeout(ask, left); return; }
+    if (!depKeyed() && sheetOpen()) { depTimer = setTimeout(ask, 2000); return; }
     ltLoad().then((lt) => lt.ahead({ depositWei: dep, hop })).catch((e) => {
       if (e?.unlockCancelled) depDeclined = true;
       else setTimeout(() => { if (depAsked === k) depAsked = ''; }, 60e3);
@@ -1421,7 +1423,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=5d858250').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=658d4f1d').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1568,7 +1570,8 @@ const laterStep = (s) => ({ 'proving on this device': 'Proving on this device…
 async function laterGo() {
   const q = S.q, to = S.to, get = tokenOf(S.get), dest = laterDest();
   if (!q || (!to && dest.kind === 'address') || laterDeposit(q) == null || S.busy) return;
-  if (now() - (q.at || 0) > 60) { say('The price was read again. Check it and press once more.', '', true); requote(true); return; }
+  // a deposit sized by a route's price (a token sold for it) is shown again when the quote is old; one sized by the amount typed and the relay's fee depends on no price
+  if (!isEth(S.pay) && !picked(q)?.hop && now() - (q.at || 0) > 60) { say('The price was read again. Check it and press once more.', '', true); requote(true); return; }
   // the relay's fee read again if it is old: the deposit is shown again when it has moved (busy meanwhile, so a second press starts nothing)
   if (picked(q)?.hop ? Date.now() - (tokHop()?.at || 0) > 120e3 : Date.now() - LATER.feeAt > 120e3) {
     const was = laterDeposit(q);
@@ -2497,10 +2500,9 @@ function wire() {
   $('#to-in').addEventListener('input', (e) => {
     S.note = '';
     const raw = e.target.value.trim();
-    if (raw) proverSoon();
     if (!S.outP && !(laterPool() && raw && !/^0x/i.test(raw))) {
       clearTimeout(tacitT); S.toTacit = null; S.toTacitBad = ''; S.toTacitBusy = false; S.toName = null; S.toBusy = false;
-      if (!isName(raw)) { const r = recipientOf(raw); S.to = r.addr; S.toBad = r.bad; paint(); return; }
+      if (!isName(raw)) { const r = recipientOf(raw); S.to = r.addr; S.toBad = r.bad; if (S.to) proverSoon(); paint(); return; }
       S.to = null; S.toBad = ''; S.toBusy = true;
       tacitT = setTimeout(async () => {
         let to = null, bad = '';
@@ -2508,14 +2510,14 @@ function wire() {
         try { const r = await (await names()).resolveAddress(raw); if (!r) bad = `${raw} does not point at an address.`; else { const v = recipientOf(r.address); to = v.addr; bad = v.bad; if (to) name = { name: r.name, addr: to }; } }
         catch (err) { bad = String(err?.message || err).slice(0, 200); }
         if ($('#to-in').value.trim() !== raw) return;
-        S.to = to; S.toBad = bad; S.toName = name; S.toBusy = false; paint();
+        S.to = to; S.toBad = bad; S.toName = name; S.toBusy = false; if (S.to) proverSoon(); paint();
       }, 400);
       paint(); return;
     }
     S.to = null; S.toBad = '';
     clearTimeout(tacitT); S.toTacit = null; S.toTacitBad = ''; S.toTacitBusy = !!raw; S.toName = null; S.toBusy = false;
     if (raw) tacitT = setTimeout(async () => {
-      try { const r = await (await pvLoad()).mod.resolveTacit(raw); if ($('#to-in').value.trim() === raw) S.toTacit = { raw, pubHex: r.pubHex, name: r.name || null }; }
+      try { const r = await (await pvLoad()).mod.resolveTacit(raw); if ($('#to-in').value.trim() === raw) { S.toTacit = { raw, pubHex: r.pubHex, name: r.name || null }; proverSoon(); } }
       catch (err) { if ($('#to-in').value.trim() === raw) S.toTacitBad = String(err?.message || err).slice(0, 200); }
       finally { if ($('#to-in').value.trim() === raw) { S.toTacitBusy = false; paint(); } }
     }, 400);
@@ -2607,14 +2609,14 @@ export function mountSwapCard(root, host = {}) {
   root.classList.toggle('mv', !!host.moves);
   root.innerHTML = markup(host);
   wire();
-  for (const t of ['pointerdown', 'keydown', 'input']) root.addEventListener(t, () => { depTouched = Date.now(); }, true);
+  for (const t of ['pointerdown', 'keydown', 'input']) addEventListener(t, () => { depTouched = Date.now(); }, true);
   slipPaint();
   paint();
   if (W.account) readBalances().then(paintSides, () => {});
   // the prices came in: the routes are ranked by what they pay net of gas and the card is drawn again; the quote is not asked again, except when this clock is more than two
   // minutes from the chain's, whose time the deadline of a quote made before this had to do without
   readPrices().then(() => { rerank(); paint(); if (S.amt && !(S.inP || S.outP) && Math.abs(S.chainT - now()) > 120) requote(true); }).catch(() => {});
-  gasPrice();
+  gasPrice().then(() => { rerank(); paint(); }, () => {});
   checkAmmRoute().then(() => {
     if (S.ammRoute !== true || S.busy || !ASKED || `${S.pay}>${S.get}` !== ASKED.pair) return;
     applyParams(ASKED.p);

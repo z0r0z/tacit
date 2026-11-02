@@ -51,7 +51,8 @@ function fakePool() {
   };
 }
 
-// A wallet on that pool. `ctl.gate`: a promise the prover waits for; `ctl.failFirst`: the first proof throws; `ctl.onCall`: run once when the
+// A wallet on that pool. `ctl.gate`: a promise the prover waits for; `ctl.failFirst`: the first proof throws; `ctl.refuseOnce`: the first send is refused in the
+// wallet; `ctl.onCall`: run once when the
 // deposit's call is built, before the wallet checks it. The signer lands the call in the pool; the check before it refuses a proof that is not
 // on the pool's head.
 function setup(ctl = {}) {
@@ -71,7 +72,7 @@ function setup(ctl = {}) {
     proves.push(r);
     return r;
   };
-  const signer = { address: '0x' + '11'.repeat(20), send: async () => pool.transact({ out: [BigInt(stash.publicInputs[9]), BigInt(stash.publicInputs[10])], memo: [bytes(stash.memo0), bytes(stash.memo1)] }) };
+  const signer = { address: '0x' + '11'.repeat(20), send: async () => { if (ctl.refuseOnce) { ctl.refuseOnce = false; throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); } return pool.transact({ out: [BigInt(stash.publicInputs[9]), BigInt(stash.publicInputs[10])], memo: [bytes(stash.memo0), bytes(stash.memo1)] }); } };
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(9));
   const W = makeEvmPoolWallet({ zk, keys, keeper: null, store: null, feed: false, prove, chain: { chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: 1, confirmations: 0, logChunk: 50000 } });
   W.connect(signer);
@@ -214,6 +215,29 @@ await check('a press that waits for the proof reads the pool after the wait: a h
   assert.equal(sent.length, 1, 'only the proof on the new head went to the wallet');
   assert.equal(sent[0].publicInputs[3], '2');
   assert.ok(!steps.includes('someone else got in first, proving again'));
+  assert.equal(W.summary().balance, A);
+});
+
+await check('a deposit the wallet refuses keeps its proof for the next try', async () => {
+  const { W, proves, sent, deposit } = setup({ refuseOnce: true });
+  await W.prepareDeposit(A);
+  await assert.rejects(deposit(A), /rejected/i);
+  assert.equal(proves.length, 1);
+  await deposit(A);
+  assert.equal(proves.length, 1, 'the second try sent the proof made ahead');
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[0].publicInputs, sent[1].publicInputs);
+  assert.equal(W.summary().balance, A);
+});
+
+await check('and one the wallet refused after the head moved proves again, on the new head', async () => {
+  const { W, pool, proves, sent, deposit } = setup({ refuseOnce: true });
+  await W.prepareDeposit(A);
+  await assert.rejects(deposit(A), /rejected/i);
+  insert(pool);
+  await deposit(A);
+  assert.equal(proves.length, 2);
+  assert.equal(sent[1].publicInputs[3], '2');
   assert.equal(W.summary().balance, A);
 });
 

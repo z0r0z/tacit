@@ -964,7 +964,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       } else {
         const c = selfCall ? selfCall(tx) : { to: chain.pool, data: transactData(tx) };
         // a call that names its own value (the zap, sent no ETH) is sent that; a deposit into the ETH pool is otherwise sent its amount
-        h = await sendSelf(c.to, c.data, c.value ?? (extAmount > 0n && !isToken ? extAmount : 0n), onStep, c.before);
+        try { h = await sendSelf(c.to, c.data, c.value ?? (extAmount > 0n && !isToken ? extAmount : 0n), onStep, c.before); }
+        catch (e) { if (made && tx === made.tx) aheadDeposit ||= ahead; throw e; }   // the proof made ahead stands for the next try: if this send did land, that one is refused before the wallet
         if (!h) { treeRefused = true; continue; }
       }
       for (const n of ins) pending.add(n.nf);

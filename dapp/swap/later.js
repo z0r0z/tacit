@@ -239,7 +239,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   }
   const prover = { ms: null, ready: false };
   const mods = () => (modsP ||= (async () => {
-    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=410f5bb4'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
+    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=5ad65835'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
     const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
     return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), wm, gw, vkHash: pm.vkHash };
   })().catch((e) => { modsP = null; throw e; }));
@@ -480,8 +480,11 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       try {
         for (let want; (want = aheadWant); ) {
           aheadWant = null;
-          const w = await wallet(want.hop);
-          if (!aheadWant) await w.prepareDeposit(BigInt(want.depositWei));
+          // a figure that failed does not stop a newer one asked for meanwhile, unless the key could not be opened
+          try {
+            const w = await wallet(want.hop);
+            if (!aheadWant) await w.prepareDeposit(BigInt(want.depositWei));
+          } catch (e) { if (e?.unlockCancelled || !aheadWant) { aheadWant = null; throw e; } }
         }
       } finally { aheadRun = null; }
     })());

@@ -158,3 +158,30 @@ test('ahead: a wallet that cannot be opened ends the run with that error, and th
   await L.ahead({ depositWei: 6n });
   assert.deepStrictEqual(proved, [6n]);
 });
+
+test('ahead: a figure that fails does not stop a newer one asked for meanwhile', async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const proved = [], L = aheadLater(async () => ({ prepareDeposit: async (a) => { if (a === 1n) { await gate; throw new Error('Proving stopped on this device'); } proved.push(a); } }));
+  const run = L.ahead({ depositWei: 1n });
+  await new Promise((r) => setTimeout(r, 20));
+  L.ahead({ depositWei: 2n });
+  open();
+  await run;
+  assert.deepStrictEqual(proved, [2n]);
+});
+
+test('ahead: a failure with nothing newer asked is the run\'s, and a key that could not be opened ends it even with a newer figure waiting', async () => {
+  const L1 = aheadLater(async () => ({ prepareDeposit: async () => { throw new Error('Proving stopped on this device'); } }));
+  await assert.rejects(L1.ahead({ depositWei: 1n }), /Proving stopped/);
+  let open; const gate = new Promise((r) => { open = r; });
+  const closed = Object.assign(new Error('Cancelled.'), { unlockCancelled: true }), proved = [];
+  let n = 0;
+  const L2 = aheadLater(async () => { if (!n++) { await gate; throw closed; } return { prepareDeposit: async (a) => { proved.push(a); } }; });
+  const run = L2.ahead({ depositWei: 1n });
+  L2.ahead({ depositWei: 2n });
+  open();
+  await assert.rejects(run, (e) => e === closed);
+  assert.deepStrictEqual(proved, [], 'the sheet is not shown a second time for the newer figure');
+  await L2.ahead({ depositWei: 3n });
+  assert.deepStrictEqual(proved, [3n]);
+});

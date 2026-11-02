@@ -1,10 +1,10 @@
 // The test harness for the swap card (tests/swap-page.mjs, tests/swap-bitcoin-lane.mjs), made from the retired /swap/ page; the tests serve it at /swap/app.js.
 // /swap/: the swap card (swap/card.js) with this page's wallet, its Earn tab, the prices under the title, and the address bar kept in step
 // with the card (from, to, amt, private; #earn and #bitcoin).
-import { makeConnect } from '/trade/connect.js?cb=de979716';
-import { rpc, api, esc, fmtUnits, parseUnits, plain, usd, $ } from '/trade/util.js?cb=dcf3a4f2';
+import { makeConnect } from '/trade/connect.js?cb=10471cab';
+import { rpc, api, esc, fmtUnits, parseUnits, plain, usd, $ } from '/trade/util.js?cb=e53086bb';
 import { aprText } from '/trade/farm-read.js?cb=112a01b9';
-import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=73d37f4d';
+import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=a8e458f8';
 
 const txLink = (h) => `<a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(h.slice(0, 10))}…↗</a>`;
 const P = { tab: location.hash === '#earn' ? 'earn' : 'swap', farm: 'precision', farms: null, px: {} };
@@ -41,7 +41,7 @@ function paintEarn() {
   $('#farm').hidden = f.k !== 'precision';
   $('#privfarm').hidden = f.k === 'precision';
   if (f.k === 'precision' && !farmUi) {
-    farmUi = import('/trade/farm.js?cb=1a2388b9').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
+    farmUi = import('/trade/farm.js?cb=e3f70b9d').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
   }
   if (f.k !== 'precision') $('#privfarm').innerHTML = `<a class="go priv" href="/#farm/private-${f.pid}">Farm ${esc(f.name)} privately →</a>`;
 }

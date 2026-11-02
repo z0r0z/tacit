@@ -196,7 +196,7 @@
 .swc .st.pre li + li::before { content: ''; display: block; position: static; flex: 1; min-width: 8px; height: 1px; margin: 0 8px; background: var(--hair-2); }
 .swc .st.pre li span { font-size: 12.5px; color: var(--ink); } .swc .st.pre li b { font-weight: 500; }
 .swc .st.pre .mk { flex: none; width: 18px; height: 18px; font-size: 10px; }
-.swc .steps { display: grid; gap: 10px; margin: 12px 2px 0; font-size: 12.5px; }
+.swc .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 12px 2px 0; font-size: 12.5px; }
 .swc .steps .plan { padding: 12px 14px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 16px; }
 .swc .steps header { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 0 14px; }
 .swc .steps .now { margin: -8px 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--ink); }

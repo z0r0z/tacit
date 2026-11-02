@@ -5,7 +5,7 @@
 // routeOut finds with a stand-in address and then writes for the real one. The token lands at a fresh address, at least the route's floor;
 // the extra stays a private note; nothing is left in the escrow. The relay's path (the keeper) is not exercised here.
 //
-//   node tests/swap-later-fork.mjs        (FORK=<rpc url>, QUOTE_RPC=<rpc url for zQuoter at the fork's block>)
+//   node tests/swap-later-fork.mjs        (FORK=<rpc url>, QUOTE_RPC=<rpc url for zQuoter at the fork's block>; the pool's history is read from the keeper's feed)
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -54,7 +54,7 @@ const zk = makeEvmPoolZk({ poseidon: (xs) => P[xs.length](xs) });
 const keys = evmPoolKeys(zk, crypto.getRandomValues(new Uint8Array(32)));
 const rpc = jsonRpc([RPC]);
 const signer = { address: FROM, send: async ({ to, data, value }) => rpcA('eth_sendTransaction', [{ from: FROM, to, data, value: '0x' + BigInt(value || 0).toString(16), gas: '0x7A1200' }]), rpc };
-const W = makeEvmPoolWallet({ zk, keys, keeper: null, store: null, feed: false, prove, chain: { chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: CHAIN.deployBlock, confirmations: 0, logChunk: 50000 } });
+const W = makeEvmPoolWallet({ zk, keys, keeper: CHAIN.keeper, store: null, feed: true, prove, chain: { chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: CHAIN.deployBlock, confirmations: 0, logChunk: 50000 } });
 W.connect(signer);
 const steps = [];
 const t0 = Date.now();
@@ -107,7 +107,9 @@ console.log(`  proofs: ${times.map((t) => `${(t / 1000).toFixed(1)} s`).join(', 
   const h5 = await W.deposit({ amount: swapWei + gasWei + extraWei, onStep: () => {} });
   ok(/^0x[0-9a-f]{64}$/.test(h5), 'a deposit for a swap that ends private, the gas for the wrap inside it');
   const dl2 = BigInt(Number(BigInt((await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp)) + 1200);
-  const rt2 = await routeOutTac({ venues, amount: swapWei, to: ACCT, slippageBps: 100, deadline: dl2 });
+  // priced from the fork as it stands: the swap above moved the pool, which the fork's original block does not show
+  const venuesNow = makeEvmTradeVenues({ ethCall: (to, data) => rpcA('eth_call', [{ to, data }, 'latest']), keccak256: keccak_256 });
+  const rt2 = await routeOutTac({ venues: venuesNow, amount: swapWei, to: ACCT, slippageBps: 100, deadline: dl2 });
   const refund4 = await W.refundBox();
   const intent4 = callIntent({ calls: [{ target: ZROUTER, value: swapWei, data: rt2.callData }, { target: ACCT, value: gasWei }], refund: refund4, deadline: dl2, nonce: 11n });
   const [tacc0, eth0] = [await bal(TAC, ACCT), await bal(ZERO, ACCT)];
@@ -125,7 +127,7 @@ console.log(`  proofs: ${times.map((t) => `${(t / 1000).toFixed(1)} s`).join(', 
   const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
   const sg = { address: FROM, send: signer.send, rpc, ready: async () => {} };
   const privHex = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
-  const chain = { chainId: 1, rpc: [RPC], keeper: null, deployBlock: CHAIN.deployBlock, confirmations: 0, logChunk: 50000 };
+  const chain = { chainId: 1, rpc: [RPC], keeper: CHAIN.keeper, deployBlock: CHAIN.deployBlock, confirmations: 0, logChunk: 50000 };
   const L = makeLater({ keyHex: async () => privHex, signer: sg, ethCall: upCall, store, chain, prove });
   const swap = 2n * 10n ** 16n, fee = 3n * 10n ** 14n, { depositWei, extraWei } = depositFor({ swapWei: swap, feeWei: fee, pct: 40 });
   ok(depositWei > swap + 2n * fee && extraWei >= swap / 20n, `the deposit is not the swap: ${depositWei} for a swap of ${swap}`);
@@ -148,8 +150,10 @@ console.log(`  proofs: ${times.map((t) => `${(t / 1000).toFixed(1)} s`).join(', 
   const doubt = { ...done, state: 'unsure', balBefore: String(depositWei), swapAt: Date.now() };
   const chk = await L.check({ ...doubt });
   ok(chk.state === 'done', `a plan left in doubt is read against the pool and found done (${chk.state})`);
-  const stuck = await L.check({ ...done, state: 'unsure', balBefore: String(depositWei - swap), swapAt: Date.now() });
-  ok(stuck.state === 'waiting', 'and one whose swap did not spend the pool\'s ETH goes back to waiting, not done');
+  const recent = await L.check({ ...done, state: 'unsure', balBefore: String(depositWei - swap), swapAt: Date.now() });
+  ok(recent.state === 'unsure', 'a swap sent a moment ago that the pool does not show yet stays in doubt, never offered again');
+  const stuck = await L.check({ ...done, state: 'unsure', balBefore: String(depositWei - swap), swapAt: Date.now() - 21 * 60e3 });
+  ok(stuck.state === 'waiting', 'and one whose swap did not spend the pool\'s ETH within twenty minutes goes back to waiting, not done');
   const NEWER = 10 ** 9;                                       // a plan begun after every note the pool has
   const gone = await L.check({ id: 'x', at: Date.now(), state: 'depositing', depositWei: String(7n * 10n ** 15n), swapWei: String(swap), to: DEST2, leaves0: NEWER });
   ok(gone.state === 'stopped', 'a deposit that never reached the pool is found stopped');
