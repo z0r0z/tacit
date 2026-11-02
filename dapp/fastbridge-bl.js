@@ -25,8 +25,8 @@
 //   btc      { prims, wallet:{ pub, priv, xonly }, tx (makeAdaptorBtcTx), satsUtxos(), feeRate(), broadcast(pair),
 //              status(txid) -> { confirmations, height }, tip(), outspend(txid, vout) -> spending txid | null }
 //   evm      { now(), lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
-//              recipient(swapIdHex) -> { xonly, priv }, claim({ rec, evmOffer, sec, position }) -> { jobId },
-//              claimStatus(jobId) -> 'pending' | 'settled' | 'failed' }
+//              recipient(swapIdHex) -> { xonly, priv }, claimOp({ rec, evmOffer, sec, position }) -> an op the adapter sends as it is,
+//              submit(type, op) -> { jobId }, claimStatus(jobId) -> 'pending' | 'settled' | 'failed' }
 //   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null }
 
 import * as X from './adaptor-xswap.js';
@@ -152,16 +152,22 @@ export function makeBitcoinLocker(ctx) {
         return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: nowSecs });
       }
       case 'claiming': {
+        const tooLate = async () => rec.evmOffer.deadline - (await evm.now()) < policy.minClaimSecs;
         if (!rec.claim) {
-          const nowSecs = await evm.now();
-          if (rec.evmOffer.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
+          if (await tooLate()) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
           const position = (await evm.lockPosition(rec.evmOffer.lockLeaf)) || rec.position;
-          const { jobId } = await evm.claim({ rec, evmOffer: rec.evmOffer, sec: secrets(rec), position });
-          return save(rec, { claim: { jobId, at: nowSecs } });
+          // the claim is built and stored before it is sent, and is sent from the stored bytes
+          return save(rec, { claim: { op: await evm.claimOp({ rec, evmOffer: rec.evmOffer, sec: secrets(rec), position }) } });
+        }
+        if (!rec.claim.jobId) {
+          // a claim stored earlier is never sent with less than the minimum time left: it would publish t and miss the deadline
+          if (await tooLate()) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
+          const { jobId } = await evm.submit('adaptorclaim', rec.claim.op);
+          return save(rec, { claim: { ...rec.claim, jobId, at: await evm.now() } });
         }
         const st = await evm.claimStatus(rec.claim.jobId);
         if (st === 'settled') return save(rec, { phase: 'claimed', claimedAt: ctx.now() });
-        if (st === 'failed') return save(rec, { claim: null, claimFailures: (rec.claimFailures || 0) + 1 });
+        if (st === 'failed') return save(rec, { claim: { op: rec.claim.op }, claimFailures: (rec.claimFailures || 0) + 1 });
         // a claim still unanswered after the deadline can no longer land
         if ((await evm.now()) > rec.evmOffer.deadline + margin) return save(rec, { phase: 'refund-wait', why: 'the claim did not land before the deadline' });
         return rec;

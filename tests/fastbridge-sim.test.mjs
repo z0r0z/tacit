@@ -46,7 +46,7 @@ function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver = {}, 
   const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims, kit }), sats });
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
-  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claim: uEvm.claim, claimStatus: evm.jobStatus };
+  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
   const lEvmCtx = { ...base, now: async () => clock.now() + lpNowSkew, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey };
 
   const quotes = new Map();
@@ -263,7 +263,7 @@ test('the user refuses a lock the pool does not show, a changed offer and a dead
 
 
 // ── stuck states and clock skew: each of these held a swap or its funds with no step to move it ──
-const claimSubmitted = async (w) => w.run(async () => !!(await w.user())?.claim);
+const claimSubmitted = async (w) => w.run(async () => !!(await w.user())?.claim?.jobId);
 
 test('the LP takes the Bitcoin when a claim lands in the gap its clock leaves, even after it has decided to refund', async () => {
   const w = world({ lpNowSkew: 900 });

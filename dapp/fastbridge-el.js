@@ -23,15 +23,15 @@
 // ctx = { seed, now(), policy, store, quotes, btc, evm, counter }
 //   quotes   { get(id) -> { btcAsset, btcValue, evmAsset, evmAmount, validUntil } | null }
 //   policy   { minCsv, minConfsFor(value) -> n, evmWindowSecs, minClaimSecs, claimSlackSecs, maxAmount, minAmount, roundSecs,
-//              refundMarginSecs (600), maxOfferAgeSecs (3600) }
+//              refundMarginSecs (600), maxOfferAgeSecs (3600), maxLockFailures (3) }
 //   btc      { prims, wallet:{ pub, priv, xonly }, tx (makeAdaptorBtcTx), satsUtxos(), feeRate(), broadcast(pair),
 //              fetchTx(txid), status(txid) -> { confirmations, height }, tip(), blockTime(height), outspend(txid, vout),
 //              resolveNote(txid, vout) -> { assetIdHex, commitment } | null, crossLaneBlocked(esploraTx) -> reason | null }
-//   evm      { now() (the latest block's timestamp), lockNullifier(lockLeaf) -> hex,
+//   evm      { now() (the latest block's timestamp), lockNullifier(lockLeaf) -> hex, prepare({ rec }) (optional: make the exact note ready),
 //              lockOp({ rec, rEvmLock, T, deadline, recipient, refundXonly }) -> { op, lockLeaf } | null (note not ready),
 //              refundOp({ rec, position }) -> op, submit(type, op) -> { jobId }, jobStatus(jobId) -> 'pending' | 'settled' | 'failed',
 //              lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
-//              findClaim(lockNu) -> null (unspent) | [] (spent by a refund) | [z hex, ...] (spent by claims), refundKey(swapIdHex) -> { xonly } }
+//              findClaim(lockNu, { sinceSecs }) -> null (unspent) | [] (spent by a refund) | [z hex, ...] (spent by claims), refundKey(swapIdHex) -> { xonly } }
 //   counter  { publishEvmOffer(swapIdHex, evmOffer) }
 
 import * as X from './adaptor-xswap.js';
@@ -120,7 +120,7 @@ export function makeEthereumLocker(ctx) {
   // What the pool says about the lock: nothing yet (null), a refund spent it ({ refunded }), a claim whose s opens T
   // ({ t }), or a claim that does not reveal t ({ lost }).
   async function readLock(rec) {
-    const zs = await evm.findClaim(rec.lock.lockNu);
+    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created });
     if (!zs) return null;
     if (!zs.length) return { refunded: true };
     if (!rec.evmOffer) return { lost: true };
@@ -147,7 +147,11 @@ export function makeEthereumLocker(ctx) {
       case 'accepted': {
         const st = await btc.status(rec.lockTxid);
         const need = policy.minConfsFor(BigInt(rec.offer.btc.value));
-        if (st.confirmations < need) return rec;
+        if (st.confirmations < need) {
+          // while the Bitcoin lock confirms, the note of the exact size is made ready, once
+          if (evm.prepare && !rec.prepared) { await evm.prepare({ rec }); return save(rec, { prepared: true }); }
+          return rec;
+        }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
         const consumed = await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
         if (consumed) return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed });
@@ -188,7 +192,11 @@ export function makeEthereumLocker(ctx) {
           return save(rec, { lock: { ...rec.lock, jobId } });
         }
         const st = await evm.jobStatus(rec.lock.jobId);
-        if (st === 'failed') return save(rec, { lock: { ...rec.lock, jobId: null }, lockFailures: (rec.lockFailures || 0) + 1 });
+        if (st === 'failed') {
+          // a lock the relay reports failed will not land: the pool is asked again by leaf before another is built
+          if ((rec.lockFailures || 0) + 1 >= (policy.maxLockFailures ?? 3)) return save(rec, { phase: 'aborted', why: 'the lock failed repeatedly' });
+          return save(rec, { lock: null, lockFailures: (rec.lockFailures || 0) + 1 });
+        }
         return rec;
       }
       case 'locked': {

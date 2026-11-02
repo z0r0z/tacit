@@ -247,7 +247,7 @@ export function makeEvmParty({ evm, keys, clock }) {
   party.refundKey = async () => ({ xonly: G.multiply(keys.dRefund).toRawBytes(true).slice(1) });
   // BL adapter pieces
   party.recipient = async () => ({ xonly: G.multiply(keys.dAuth).toRawBytes(true).slice(1), priv: keys.dAuth });
-  party.claim = async ({ rec, evmOffer, sec, position }) => {
+  party.claimOp = async ({ rec, evmOffer, sec, position }) => {
     const nowSecs = clock.now();
     const kernel = X.completeEvmClaim({ offer: evmOffer, t: sec.t, rOut: sec.rOut, nowSecs, minClaimSecs: 1800 });
     const T = { tx: '0x' + bytesToHex(sec.T.toRawBytes(false).slice(1, 33)), ty: '0x' + bytesToHex(sec.T.toRawBytes(false).slice(33, 65)) };
@@ -257,7 +257,7 @@ export function makeEvmParty({ evm, keys, clock }) {
       deadline: evmOffer.deadline, recipient: '0x' + strip(evmOffer.recipient), locker: '0x' + strip(evmOffer.locker), lIndex: position.lIndex, lPath: position.lPath,
       amount: BigInt(evmOffer.amount), oBlinding: scalarHex(sec.rOut), kernel, outOwner: pool.nkToOwner(keys.nkOut), recipientPriv: scalarHex(keys.dAuth),
     });
-    return evm.submit('adaptorclaim', op);
+    return op;
   };
   return party;
 }
