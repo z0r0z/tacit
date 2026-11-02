@@ -43,7 +43,7 @@ export const adaptorPoint = (t) => mulG(t);
 // and leak the leg's excess scalar d (a bearer spend of that note). Never returns 0.
 export function deriveNonce(dPriv, msg32, T) {
   const { d } = evenSigningKey(dPriv);
-  const k = bytes32ToBigint(_tagged('tacit-adaptor-nonce-v1', bigintToBytes32(d), Uint8Array.from(msg32), xbytes(T))) % SECP_N;
+  const k = bytes32ToBigint(_tagged('tacit-adaptor-nonce-v1', bigintToBytes32(d), Uint8Array.from(msg32), T.toRawBytes(true))) % SECP_N;
   return k === 0n ? 1n : k;
 }
 
@@ -125,10 +125,11 @@ export function evmKernelVerifyPresign({ inC, outC, R, T, sTilde }) {
 export const evmKernelComplete = ({ R, T, sTilde }, t) => ({ R: R.add(T), z: modN(sTilde + modN(t)) });
 export const evmKernelExtract = (sTilde, z) => modN(z - sTilde);
 
-// Deterministic per-leg nonce for a claim kernel, bound to the excess, the (L, O) pair and T (as deriveNonce is for
-// a BIP-340 leg), so one excess never signs two different claim kernels with the same nonce.
-export function evmKernelNonce({ excess, inC, outC, T }) {
-  const msg32 = keccak_256(concatBytes(EVM_KERNEL_DOMAIN, ...inC.map(compressed), ...outC.map(compressed)));
+// Deterministic per-leg nonce for a claim kernel, bound to the excess, the (L, O) pair, the whole adaptor point T (both
+// y parities) and `context`, the bytes of the lock the kernel will claim (its lock leaf), so one excess never signs
+// two different claim kernels with the same nonce.
+export function evmKernelNonce({ excess, inC, outC, T, context = new Uint8Array(0) }) {
+  const msg32 = keccak_256(concatBytes(EVM_KERNEL_DOMAIN, ...inC.map(compressed), ...outC.map(compressed), context));
   return deriveNonce(modN(excess), msg32, T);
 }
 
