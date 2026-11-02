@@ -1381,6 +1381,16 @@ const pageSigner = { get address() { return W.account; }, ready: async () => { i
   canBatch: () => (wallet.canBatch ? wallet.canBatch() : false),
   get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: W.account, sent, label: 'Swap privately' }) : null; } };
 // Swap privately's deposit needs the pool wallet's modules (some 220 KB), which were fetched when it was pressed: once its price is up they are fetched, so the press finds them in.
+// Swap privately's deposit is proved in this browser: its proving key (28.6 MB) and circuit (4.9 MB), kept in the browser's cache once fetched as /pay/eth keeps them, are fetched and loaded into
+// a worker when the swap is pressed, and the wallet is asked only after the proof. They are fetched and the prover started when an address is typed for the swap, which is someone about to press,
+// so the press has only the proof to make. Not on a data saver or a slow link, and not again within a minute of a failure.
+let proverAsked = 0;
+function proverSoon() {
+  const net = navigator.connection;
+  if (proverAsked || net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || !laterOn(kindOf(S.pay, S.get))) return;
+  proverAsked = Date.now();
+  ltLoad().then((lt) => lt.warm()).catch(() => { setTimeout(() => { proverAsked = 0; }, 60e3); });
+}
 let modsAsked = false;
 function modsSoon() {
   if (modsAsked || !laterOn(kindOf(S.pay, S.get))) return;
@@ -2462,6 +2472,7 @@ function wire() {
   $('#to-in').addEventListener('input', (e) => {
     S.note = '';
     const raw = e.target.value.trim();
+    if (raw) proverSoon();
     if (!S.outP && !(laterPool() && raw && !/^0x/i.test(raw))) {
       clearTimeout(tacitT); S.toTacit = null; S.toTacitBad = ''; S.toTacitBusy = false; S.toName = null; S.toBusy = false;
       if (!isName(raw)) { const r = recipientOf(raw); S.to = r.addr; S.toBad = r.bad; paint(); return; }

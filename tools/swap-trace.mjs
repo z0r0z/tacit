@@ -11,6 +11,7 @@
 //   --wallet   a connected wallet that answers eth_accounts after this many ms (a stand-in for an extension), on chain 1
 //   --fault    host=how for host in publicnode drpc mevblocker blast tenderly onerpc keeper api and how in hang | reset | 429 | slow:ms | flake:p (a heavy
 //              scan's first read answered with a gas-cap error with probability p)
+//   --address  type this destination into the card once its price is up, wait --after ms (default 8000), and list the proving files fetched and the worker started because of it
 //   --cpu/--rtt  4x CPU throttling, added round trip in ms
 //   PLAYWRIGHT   path to playwright-core when it is not installed here
 import { createRequire } from 'node:module';
@@ -23,7 +24,7 @@ const opt = (n, d = null) => { const i = args.indexOf(n); return i < 0 ? d : arg
 const url = args.find((a) => a.startsWith('http')) || 'https://tacit.finance/?to=DAI&amt=0.01&private=to';
 const local = opt('--local'), base = opt('--base'), runs = Number(opt('--runs', base ? 6 : 1)), quiet = args.includes('--quiet'), pub = args.includes('--public');
 const walletMs = opt('--wallet'), cpu = Number(opt('--cpu', 1)), rtt = Number(opt('--rtt', 0)), limit = Number(opt('--timeout', 25000));
-const faults = args.filter((a, i) => args[i - 1] === '--fault');
+const faults = args.filter((a, i) => args[i - 1] === '--fault'), address = opt('--address'), after = Number(opt('--after', 8000));
 const HOSTS = { publicnode: 'ethereum-rpc.publicnode.com', drpc: 'eth.drpc.org', mevblocker: 'rpc.mevblocker.io', blast: 'eth-mainnet.public.blastapi.io', tenderly: 'mainnet.gateway.tenderly.co', onerpc: '1rpc.io', keeper: 'tacit-evm-pool-keepers.onrender.com', api: 'api.tacit.finance' };
 const MIME = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2' };
 const stat = (xs, unit = ' ms') => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); if (!v.length) return 'n/a'; const q = (p) => v[Math.min(v.length - 1, Math.floor(p * v.length))]; return `${q(0.5)}${unit} (p90 ${q(0.9)}, n=${v.length}/${xs.length})`; };
@@ -63,7 +64,9 @@ async function trace() {
   const t0 = { v: Date.now() }, rows = [], by = new Map(), logs = [];
   page.on('request', (r) => { const x = { t: Date.now() - t0.v, url: r.url(), method: r.method(), label: label(r) }; by.set(r, x); rows.push(x); });
   page.on('response', (r) => { const x = by.get(r.request()); if (x) x.status = r.status(); });
-  page.on('requestfinished', (r) => { const x = by.get(r); if (x) x.end = Date.now() - t0.v; });
+  page.on('requestfinished', async (r) => { const x = by.get(r); if (x) { x.end = Date.now() - t0.v; if (/\/evm-pool\//.test(x.url)) x.bytes = (await r.sizes().catch(() => ({}))).responseBodySize; } });
+  const workers = [];
+  page.on('worker', (w) => workers.push({ url: w.url(), t: Date.now() - t0.v }));
   page.on('requestfailed', (r) => { const x = by.get(r); if (x) { x.end = Date.now() - t0.v; x.failed = r.failure()?.errorText; } });
   page.on('console', (m) => { if (['error', 'warning'].includes(m.type()) && !/Failed to load resource/.test(m.text())) logs.push(m.text().slice(0, 200)); });
   page.on('pageerror', (e) => logs.push(String(e).slice(0, 200)));
@@ -130,16 +133,26 @@ async function trace() {
     }
     await page.waitForTimeout(40);
   }
+  let typedAt = null;
+  if (address) { await page.fill('#to-in', address); typedAt = Date.now() - t0.v; await page.waitForTimeout(after); }
   await page.waitForTimeout(500);
   await browser.close();
-  return { rows, marks, logs };
+  return { rows, marks, logs, typedAt, workers };
 }
 
-const { rows, marks, logs } = await trace();
+const { rows, marks, logs, typedAt, workers } = await trace();
 const data = rows.filter((r) => r.method === 'POST' || /onrender|api\./.test(r.url)), heavy = data.filter((r) => /gas=0x11E1A300/.test(r.label));
 const hostOf = (r) => new URL(r.url).host;
 const by = {}; for (const r of heavy) by[hostOf(r)] = (by[hostOf(r)] || 0) + 1;
 console.log(`price ${marks.price != null && marks.tile != null ? marks.price - marks.tile : 'n/a'} ms after the tile was drawn   marks: ${JSON.stringify(marks)}`);
 if (!quiet) for (const r of data.sort((a, b) => a.t - b.t)) console.log(`${String(r.t).padStart(6)} → ${String(r.end ?? '?').padStart(6)}  ${String(r.status ?? r.failed ?? '').padEnd(8)} ${hostOf(r)}  ${r.label}`);
+// the outside solvers: how many answered, how many failed, and when the last one was in (that is how long "checking more routes" stays up)
+{ const SOLVERS = /api\.zfi\.wei\.is|api\.paraswap\.io|aggregator-api\.kyberswap\.com/, sv = rows.filter((r) => SOLVERS.test(r.url) && r.method === 'GET' && !/\/(quote|swap)\b.*(build|swap\/allowance-holder\/quote)/.test(r.url));
+  if (sv.length) { const done = sv.filter((r) => r.end != null && !r.failed && r.status === 200), bad = sv.filter((r) => r.failed || (r.status && r.status !== 200) || r.end == null);
+    console.log(`solvers: ${sv.length} asked, ${done.length} answered, ${bad.length} failed or hung${bad.length ? ` (${bad.map((r) => hostOf(r).replace(/^api\.|^aggregator-api\./, '') + ':' + (r.failed || r.status || 'open')).join(', ')})` : ''}; last answer ${done.length ? Math.max(...done.map((r) => r.end)) - (marks.tile ?? 0) : 'n/a'} ms after the tile, first ${done.length ? Math.min(...done.map((r) => r.end)) - (marks.tile ?? 0) : 'n/a'} ms`); } }
+if (address) {
+  const files = rows.filter((r) => /\/evm-pool\/[^?]+\.(zkey|wasm|json)/.test(r.url));
+  console.log(`typed a destination at ${typedAt} ms; proving files fetched after it: ${files.length ? files.map((r) => `${r.url.split('/').pop().split('?')[0]} ${((r.bytes || 0) / 1e6).toFixed(1)} MB ${r.t - typedAt}→${(r.end ?? NaN) - typedAt} ms`).join(', ') : 'none'}; prover worker: ${workers.filter((w) => /prove-worker/.test(w.url)).map((w) => `started ${w.t - typedAt} ms after`).join(', ') || 'none'}`);
+}
 console.log(`heavy zQuoter scans: ${heavy.length} requests ${JSON.stringify(by)}; ${data.length} fetch/POST requests in all`);
 if (logs.length) console.log(`console: ${logs.slice(0, 5).join(' | ')}`);
