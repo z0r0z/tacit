@@ -1,4 +1,4 @@
 {
   "providers": [],
-  "boards": []
+  "boards": ["https://tacit-fast-board.onrender.com"]
 }

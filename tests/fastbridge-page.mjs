@@ -70,6 +70,8 @@ mountProvide({
 `;
 
 const web = createServer((req, res) => {
+  // the page's own list names live services: here each check passes the ones it wants
+  if (req.url.split('?')[0] === '/fast/lp.json') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"providers":[],"boards":[]}'); return; }
   let f = normalize(join(DAPP, decodeURIComponent(new URL(req.url, 'http://x').pathname)));
   if (!f.startsWith(DAPP)) { res.writeHead(403); return res.end(); }
   if (existsSync(f) && statSync(f).isDirectory()) f = join(f, 'index.html');
