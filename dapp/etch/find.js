@@ -1,6 +1,6 @@
 // tacit.finance/etch, Discover: the assets etched on Bitcoin, from the registry the API keeps, searched in the page. The registry is read once (about 70 KB for
 // every asset), a name and a logo come from each asset's metadata on IPFS through the API's batch read, and nothing here needs tacit.js or a key.
-import { API } from '/trade/util.js?cb=aa7aaa7f';
+import { API } from '/trade/util.js?cb=e53086bb';
 
 const NET = 'mainnet';
 const CID = /^(?:Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z0-9]{50,80})$/i;

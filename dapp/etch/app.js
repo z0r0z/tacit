@@ -1,11 +1,11 @@
 // tacit.finance/etch: an asset made on Bitcoin, and a search of the ones that exist. Create takes a ticker and a supply (a name, a logo and a link are optional)
 // and etches it from the Tacit key the visitor opens; Discover searches the registry. tacit.js and the key come in when the visitor first touches the form
 // (/trade/btc.js signs them in), not before. The asset is the key's own the moment the reveal is sent, so the front page's wallet lists it as it lists TAC.
-import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=aa7aaa7f';
+import { $, esc, fmtUnits, parseUnits, short } from '/trade/util.js?cb=e53086bb';
 import { day } from '/trade/fmt.js?cb=32b1744b';
-import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=985dce07';
+import { loadAssets, readNames, search, ipfs } from '/etch/find.js?cb=2dd01b3c';
 
-const BTC_MODULE = '/trade/btc.js?cb=44c2a4f9', ETH_MODULE = '/etch/eth.js?cb=258db1fd', WALLET_MODULE = '/trade/wallet.js?cb=6778fe25', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=aa7aaa7f';
+const BTC_MODULE = '/trade/btc.js?cb=44c2a4f9', ETH_MODULE = '/etch/eth.js?cb=258db1fd', WALLET_MODULE = '/trade/wallet.js?cb=6778fe25', SHEET_MODULE = '/trade/sheet.js?cb=84cda8f2', UTIL_MODULE = '/trade/util.js?cb=e53086bb';
 const DECIMALS_OF = { btc: [0, 2, 6, 8], eth: [0, 6, 8, 18] };
 // What the pool can hold of an asset, in its base units (2^64 − 1 in-system units); on Bitcoin, the etch's own limit.
 const maxFor = (dec) => (S.chain === 'eth' ? ((1n << 64n) - 1n) * 10n ** BigInt(dec - Math.min(dec, 8)) : MAX_BASE);

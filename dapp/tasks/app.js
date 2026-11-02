@@ -6,10 +6,10 @@
 // is a step the service has read from the chain), so that a visit does not download the code of every contract a job deployed.
 //
 // Open jobs are shown in full; a job that is done is a tile with its result, and opens to what it did when it is clicked.
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=10471cab';
 import { esc } from '/trade/sheet.js?cb=84cda8f2';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=aa7aaa7f';
-import { bodyType } from '/trade/rpc.js?cb=bf34356a';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=e53086bb';
+import { bodyType } from '/trade/rpc.js?cb=cd769487';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
 
 const POINTS = 'https://tacit-points.onrender.com';

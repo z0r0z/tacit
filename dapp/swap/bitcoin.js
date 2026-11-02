@@ -1,6 +1,6 @@
 // The swap page's Bitcoin lane: tETH and TAC swapped in the Bitcoin pool, signed by a Tacit key. The page loads this when the lane is first opened. tacit.js
 // comes with it through the trade page's Bitcoin module, which also holds the key's sign-in. Nothing here builds or signs a transaction: tacit.js does.
-import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=aa7aaa7f';
+import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=e53086bb';
 import { moveSatsNeeded, MOVE_SATS_FLAT } from '/btc-book.js?cb=0a09ab9e';
 
 const BTC_MODULE = '/trade/btc.js?cb=44c2a4f9';

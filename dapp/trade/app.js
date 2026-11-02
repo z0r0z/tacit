@@ -9,8 +9,8 @@ import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, cand
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=27b74cab';
-import { takeEarly } from '/trade/rpc.js?cb=bf34356a';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=10471cab';
+import { takeEarly } from '/trade/rpc.js?cb=cd769487';
 import { mountFarm } from '/trade/farm.js?cb=e3f70b9d';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';

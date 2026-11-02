@@ -4,9 +4,10 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 import { UserStopped } from '/trade/wallet.js?cb=6778fe25';
-import { rpc, RPCS, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=aa7aaa7f';
+import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=e53086bb';
+import { nodeHealth, hedgeDelay } from '/trade/rpc.js?cb=cd769487';
 import * as R from '/swap/route.js?cb=ce610210';
-import * as A from '/swap/aggregate.js?cb=3c73982e';
+import * as A from '/swap/aggregate.js?cb=a115d220';
 import * as SV from '/swap/solvers.js?cb=2c70b259';
 import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
 import { routeLine } from '/swap/route-name.js?cb=1bc2443b';
@@ -28,8 +29,24 @@ const wordAt = (h, i) => BigInt('0x' + (strip(h).slice(i * 64, (i + 1) * 64) || 
 const addrWord = (a) => strip(a).toLowerCase().padStart(64, '0');
 const lc = (a) => String(a).toLowerCase();
 
-const HEAVY_HOSTS = [RPCS[RPCS.length - 1], ...RPCS.slice(0, -1)];
-export const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: '0x' + BigInt(o.value).toString(16) } : {}), ...(o.gas ? { gas: o.gas } : {}) }, block, ...(o.state ? [o.state] : [])], o.gas ? HEAVY_HOSTS : undefined);
+// The nodes a read asks (public ones: the page runs none and holds no key). A quote's scan asks zQuoter for 300M gas, which only some nodes allow: drpc stops at 50M, 1rpc.io is
+// gone, and publicnode gives way on about one scan in six, so the scan has a list of its own, MEV Blocker's and Blast's first, which also keeps the heaviest reads off the node the
+// page's other reads use. What each node did is remembered (nodeHealth): one that failed rests and is asked last, and the next page of the visit starts from that.
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://mainnet.gateway.tenderly.co'];
+const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co'];
+const memory = (() => { try { return localStorage; } catch { return null; } })();
+const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: memory, key: 'tacit-rpc-rest-scan-v1', strict: true });
+// The connected wallet's own node, the last resort for a plain read once every public node has failed (rate limits, an outage): not through WalletConnect (a relay hop), not while the
+// wallet is on another chain, and never for the scan's gas or a state override, which wallets' nodes do not serve. A private swap's quote reads nothing that names the wallet.
+const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionReceipt']);
+const walletNode = {
+  id: 'wallet',
+  usable: (m, p) => WALLET_READS.has(m) && typeof W?.prov?.request === 'function' && !W.prov.isWalletConnect && W.prov.chainId === '0x1' && !(m === 'eth_call' && (p[0]?.gas || p[2])),
+  send: (m, p) => W.prov.request({ method: m, params: p }),
+};
+const light = (method, params) => rpc(method, params, [...NODES, walletNode], { health, hedgeMs: hedgeDelay(1000) });
+const heavy = (method, params) => rpc(method, params, SCAN_NODES, { health: scanHealth, hedgeMs: hedgeDelay(1500) });
+export const ethCall = (to, data, block = 'latest', o = {}) => (o.gas ? heavy : light)('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: '0x' + BigInt(o.value).toString(16) } : {}), ...(o.gas ? { gas: o.gas } : {}) }, block, ...(o.state ? [o.state] : [])]);
 export const batch = async (calls) => V.decAggregate3(await ethCall(MULTICALL3, V.encAggregate3(calls)), calls.length);
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
@@ -449,16 +466,25 @@ async function readPrices() {
   if (r[4]) S.px.wstEth = Number(wordAt(r[4], 0)) / 1e18;
   if (S.px.ethUsd) H.onPrices?.(S.px);
 }
-const chainDeadline = (s = 1200) => BigInt((S.chainT ? S.chainT + (now() - S.chainAt) : now()) + s);
+// Rounded up to the minute, so a quote made again within it asks zQuoter for exactly what the first asked (the nodes' answer is then shared, not read twice).
+const chainDeadline = (s = 1200) => BigInt(Math.ceil(((S.chainT ? S.chainT + (now() - S.chainAt) : now()) + s) / 60) * 60);
 // One read at a time: an ask while one is out takes that read, and a quote hands the promise on (route() reads the quotes beside it and waits for the price after them).
-const gasPrice = (() => { let at = 0, out = null; return () => (S.gasPrice != null && now() - at < 20 ? Promise.resolve(S.gasPrice) : (out ||= (async () => { try { S.gasPrice = BigInt(await rpc('eth_gasPrice', [])); at = now(); } catch { } return S.gasPrice; })().finally(() => { out = null; }))); })();
+const gasPrice = (() => { let at = 0, out = null; return () => (S.gasPrice != null && now() - at < 20 ? Promise.resolve(S.gasPrice) : (out ||= (async () => { try { S.gasPrice = BigInt(await light('eth_gasPrice', [])); at = now(); } catch { } return S.gasPrice; })().finally(() => { out = null; }))); })();
+// What a route pays in dollars less its network fee where both can be priced, else what it pays: the rows of a swap are ranked by it. Prices and the gas price arrive while a
+// quote is out or after it, so the rows are ranked again then (rerank) in place of asking the nodes for the quote again; the pick follows the best unless it was chosen by hand.
+const netOf = (r) => { const v = usdOf(S.get, r.out), f = S.gasPrice && S.px.ethUsd ? (Number(r.gas * S.gasPrice) / 1e18) * S.px.ethUsd : null; return v != null && f != null ? v - f : Number(r.out); };
+function rerank(q = S.q) {
+  if (q?.kind !== 'agg' || !q.rows || q.rows.length < 2) return;
+  q.rows.sort((a, b) => netOf(b) - netOf(a)); q.rows.forEach((x, i) => { x.best = i === 0; });
+  if (!S.hold || !q.rows.some((r) => r.k === S.pick)) S.pick = q.rows.find((r) => r.best)?.k || q.rows[0]?.k || null;
+}
 // The wallet's balances: of the card's own tokens, the registry's, the ones added by address and the pair chosen; a token of the Uniswap
 // list is read once it is chosen (all of them at once would be some five hundred reads a time)
 async function readBalances() {
   const who = W.account;
   if (!who) { S.bal = {}; return; }
   const toks = listed().filter((t) => !isEth(t.addr) && (!t.uni || t.addr === S.pay || t.addr === S.get));
-  const [eth, r] = await Promise.all([rpc('eth_getBalance', [who, 'latest']).then(BigInt, () => null), batch(toks.map((t) => ({ to: t.addr, data: '0x70a08231' + addrWord(who) }))).catch(() => [])]);
+  const [eth, r] = await Promise.all([light('eth_getBalance', [who, 'latest']).then(BigInt, () => null), batch(toks.map((t) => ({ to: t.addr, data: '0x70a08231' + addrWord(who) }))).catch(() => [])]);
   const bal = {};
   if (eth != null) bal[lc(R.ZERO)] = eth;
   toks.forEach((t, i) => { if (r[i]) bal[t.addr] = wordAt(r[i], 0); });
@@ -521,7 +547,7 @@ function requote(now_ = false) {
 }
 async function quote(my, wei) {
   const kind = kindOf(S.pay, S.get), pay = tokenOf(S.pay), get = tokenOf(S.get);
-  const done = (q) => { if (my !== S.seq) return; S.q = { ...q, kind, wei, at: now() }; if (!S.hold || !S.q.rows?.some((r) => r.k === S.pick)) S.pick = S.q.rows?.find((r) => r.best)?.k || S.q.rows?.[0]?.k || null; const ak = `${S.pay}>${S.get}:${S.amt}:${S.pick}`; if (ak !== S.ackKey) { S.ack = false; S.ackKey = ak; } paint(); aheadSoon(); };
+  const done = (q) => { if (my !== S.seq) return; S.q = { ...q, kind, wei, at: now() }; if (!S.hold || !S.q.rows?.some((r) => r.k === S.pick)) S.pick = S.q.rows?.find((r) => r.best)?.k || S.q.rows?.[0]?.k || null; const ak = `${S.pay}>${S.get}:${S.amt}:${S.pick}`; if (ak !== S.ackKey) { S.ack = false; S.ackKey = ak; } paint(); aheadSoon(); modsSoon(); };
   if (!kind) return done({ none: true });
   const account = W.account || undefined;
   // Swap privately from a token: sold for ETH into the private pool (the zap), and the swap's share of that ETH sold for the token on the way
@@ -583,18 +609,15 @@ async function quote(my, wei) {
     const sols = hide ? [] : SV.SOLVERS.filter((v) => !(AVOID.get(v.id) > Date.now()));   // a solver whose route was just refused is left out for a few minutes
     let left = 1 + sols.length, zerr = null;
     gasPrice();
-    // in dollars where the token and the gas can both be priced, else what it pays
-    const net = (r) => { const v = usdOf(S.get, r.out), f = S.gasPrice && S.px.ethUsd ? (Number(r.gas * S.gasPrice) / 1e18) * S.px.ethUsd : null; return v != null && f != null ? v - f : Number(r.out); };
-    // each source settles once: its route (or none) joins the list, which is ranked and drawn again with how many are still asked
-    const settle = (r) => {
-      left--; if (r) rows.push(r);
-      if (!rows.length || my !== S.seq) return;
-      rows.sort((a, b) => net(b) - net(a)); rows.forEach((x, i) => { x.best = i === 0; });
-      done({ rows: rows.slice(), more: left });
-    };
+    // each source settles once: its route (or none) joins the list, which is ranked and drawn again with how many are still asked. zQuoter's scans answer one after the other
+    // (0.3 s to 0.9 s): its best route so far is drawn as soon as one has, and replaced by the best of all when the last has
+    const put = (r) => { const i = rows.findIndex((x) => x.k === r.k); if (i < 0) rows.push(r); else rows[i] = r; };
+    const show = () => { if (!rows.length || my !== S.seq) return; rows.sort((a, b) => netOf(b) - netOf(a)); rows.forEach((x, i) => { x.best = i === 0; }); done({ rows: rows.slice(), more: left }); };
+    const settle = (r) => { left--; if (r) put(r); show(); };
+    const zRow = (zq) => ({ k: 'agg', name: zq.name, note: 'onchain', out: zq.out, min: zq.min, agg: zq, gas: GAS[zq.kind] || GAS.split, at: now() });
     await Promise.all([
-      within(A.bestRoute({ ethCall, to: who, refundTo: hide ? PREVIEW : account || who, tokenIn: S.pay, tokenOut: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.')
-        .then((zq) => settle(zq ? { k: 'agg', name: zq.name, note: 'onchain', out: zq.out, min: zq.min, agg: zq, gas: GAS[zq.kind] || GAS.split } : null), (e) => { zerr = e; settle(null); }),
+      within(A.bestRoute({ ethCall, to: who, refundTo: hide ? PREVIEW : account || who, tokenIn: S.pay, tokenOut: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200), onRoute: (zq) => { put(zRow(zq)); show(); } }), 20e3, 'zQuoter did not answer in time. Try again.')
+        .then((zq) => settle(zq ? zRow(zq) : null), (e) => { zerr = e; settle(null); }),
       ...(sols.map((v) => SV.priceOf(v, sq).then((p) => settle(p ? { k: `sv:${p.id}`, name: p.name, note: 'solver', out: p.out, sv: { id: p.id, ctx: p.ctx }, gas: GAS.snwap } : null)))),
     ]);
     if (rows.length) return;
@@ -685,7 +708,7 @@ const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
 const IDS = {};
 const idsOf = (t) => { for (const k of ['eth', 'tac', 'cusd']) IDS[k] = String(t.assetByTicker[POOL_TK[k]]?.assetId || '').toLowerCase(); IDS.cbtc = String(t.pool.CBTC_ZK_ASSET_ID).toLowerCase(); return IDS; };
 // What the relay asks, in ETH on top, to settle a deposit of the wallet's ETH; null when it cannot be read (the swap reads it again before sending).
-const tipFor = (units) => import('/teth/read.js?cb=c30286cc').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
+const tipFor = (units) => import('/teth/read.js?cb=3485885e').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
 let warmed = false;
 function warmPrivate() {
   if (warmed) return;
@@ -1060,11 +1083,14 @@ async function go() {
   // a wallet with no ETH for the gas: the swap goes through the gas relay, paid for in TAC or the token spent (dapp/gas-relay.js)
   if (['tac', 'any', 'in', 'out', 'agg'].includes(P.kind) && !isEth(P.pay)) { S.busy = true; const plan = await relayPlan(from).catch(() => null); S.busy = false; if (plan) { await relayGo(P, from, plan); return; } }
   S.busy = true; paintQuote();
-  const before = P.to ? null : await balanceNow(P.get, from).catch(() => null);
+  // what the wallet holds of what it buys, to tell what the swap brought, is read while the swap is made ready (nothing is sent before it is in)
+  const beforeP = P.to ? null : balanceNow(P.get, from).catch(() => null);
+  let before = null;
   try {
     say('Reading the price again…');
     const tx = await prepare(P, from);
     if (!tx) return;
+    before = await beforeP;
     say(P.to ? `Confirm the swap in your wallet. It sends the ${esc(tokenOf(P.get).sym)} to ${esc(who(P.to))}.` : 'Confirm the swap in your wallet.');
     const h = await wallet.sendTx({ to: tx.to, data: tx.data, value: tx.value || 0n, from, label: 'Swap' });
     say(`Sent ${txLink(h)}. Waiting for it to land…`);
@@ -1095,7 +1121,7 @@ let GR_LIVE = null;
 // Whether the card would send this public swap through the relay: the relay is on the chain, the token paid is not ETH and the wallet holds too little ETH for the gas
 const RELAY_KINDS = ['tac', 'any', 'in', 'out', 'agg'];
 const relayNoEth = (kind) => !!(GR_LIVE && W.account && RELAY_KINDS.includes(kind) && !isEth(S.pay) && S.bal[lc(R.ZERO)] != null && S.gasPrice && GR.needsRelay({ ethWei: S.bal[lc(R.ZERO)], gasPriceWei: S.gasPrice }));
-const relayLiveCheck = () => { if (GR_LIVE == null) rpc('eth_getCode', [GR.GAS_RELAY[1], 'latest']).then((c) => { GR_LIVE = String(c).length > 2; if (GR_LIVE) paintQuote(); }, () => {}); };
+const relayLiveCheck = () => { if (GR_LIVE == null) light('eth_getCode', [GR.GAS_RELAY[1], 'latest']).then((c) => { GR_LIVE = String(c).length > 2; if (GR_LIVE) paintQuote(); }, () => {}); };
 async function relayPlan(from) {
   const relay = GR.GAS_RELAY[1];
   if (GR_LIVE == null) GR_LIVE = String(await rpc('eth_getCode', [relay, 'latest']).catch(() => '0x')).length > 2;
@@ -1241,7 +1267,11 @@ async function prepare(P, from) {
     const access = isEth(P.pay) ? null : await anyAccess({ token: P.pay, maxIn: P.wei, deadline: dl }, from, { permit2: false });
     tx = snwapTx(call, P, access);
   } else if (P.kind === 'agg') {
-    const q = await within(A.bestRoute({ ethCall, to: dest, refundTo: from, tokenIn: P.pay, tokenOut: P.get, amountIn: P.wei, slippageBps: S.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
+    // the route the card showed goes as it is while it is a few seconds old and was built for this wallet and this recipient: what is signed is what was shown, and the check
+    // below (the swap run against the chain now) refuses it if the price has since moved under its floor. An older one, or one built for another address, is read again.
+    const shown = P.r.agg;
+    P.reused = !!shown && now() - (P.r.at || 0) <= 20 && lc(shown.to) === lc(dest) && lc(shown.refundTo) === lc(from) && shown.amountIn === P.wei && lc(shown.tokenIn) === lc(P.pay) && lc(shown.tokenOut) === lc(P.get);
+    const q = P.reused ? shown : await within(A.bestRoute({ ethCall, to: dest, refundTo: from, tokenIn: P.pay, tokenOut: P.get, amountIn: P.wei, slippageBps: S.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     // the calldata's own limits are the swap's floor: it is sent only when they still pay at least what was shown
     if (!q || q.out < P.floor || q.min < (P.r.min ?? P.floor)) return moved();
     tx = await aggTx(q, from);
@@ -1251,6 +1281,7 @@ async function prepare(P, from) {
   const sim = await venues.simulate({ tx, from });
   if (!sim.ok) {
     if (P.r.sv) { AVOID.set(P.r.sv.id, Date.now() + 5 * 60e3); say(`${esc(tokenOf(P.get).sym)} through ${esc(P.r.name)} would fail, so nothing was sent. The next best route is shown.`, '', true); S.busy = false; S.hold = false; requote(true); return null; }
+    if (P.reused) { say('The price moved, so nothing was sent. It is read again: check it and press once more.', '', true); S.busy = false; requote(true); return null; }
     throw new Error('This swap would fail, so nothing was sent. Try a smaller amount or try again.');
   }
   return tx;
@@ -1348,7 +1379,14 @@ const pageSigner = { get address() { return W.account; }, ready: async () => { i
   // an approval and the zap in one confirmation, where the host's wallet sends batches (EIP-5792)
   canBatch: () => (wallet.canBatch ? wallet.canBatch() : false),
   get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: W.account, sent, label: 'Swap privately' }) : null; } };
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=d1597151').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+// Swap privately's deposit needs the pool wallet's modules (some 220 KB), which were fetched when it was pressed: once its price is up they are fetched, so the press finds them in.
+let modsAsked = false;
+function modsSoon() {
+  if (modsAsked || !laterOn(kindOf(S.pay, S.get))) return;
+  modsAsked = true;
+  ltLoad().then((lt) => lt.modules()).catch(() => { modsAsked = false; });
+}
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=56c53a63').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1825,7 +1863,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=60b193e1').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=e4a2b07f').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2317,7 +2355,7 @@ let lane = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    lane ||= (await import('/swap/bitcoin.js?cb=05241834')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
+    lane ||= (await import('/swap/bitcoin.js?cb=480373f9')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = null; }
 }
@@ -2535,7 +2573,9 @@ export function mountSwapCard(root, host = {}) {
   slipPaint();
   paint();
   if (W.account) readBalances().then(paintSides, () => {});
-  readPrices().then(() => { paint(); if (S.amt && !(S.inP || S.outP)) requote(true); }).catch(() => { if (S.amt && !(S.inP || S.outP)) requote(true); });
+  // the prices came in: the routes are ranked by what they pay net of gas and the card is drawn again; the quote is not asked again, except when this clock is more than two
+  // minutes from the chain's, whose time the deadline of a quote made before this had to do without
+  readPrices().then(() => { rerank(); paint(); if (S.amt && !(S.inP || S.outP) && Math.abs(S.chainT - now()) > 120) requote(true); }).catch(() => {});
   gasPrice();
   checkAmmRoute().then(() => {
     if (S.ammRoute !== true || S.busy || !ASKED || `${S.pay}>${S.get}` !== ASKED.pair) return;

@@ -1,6 +1,6 @@
 // Small helpers the tETH page's modules share: markup, numbers, and the page's reads of the chain and the API.
 
-import { hedgedRpc } from '/trade/rpc.js?cb=bf34356a';
+import { hedgedRpc, shareReads } from '/trade/rpc.js?cb=cd769487';
 import { grp, sig, group } from '/trade/fmt.js?cb=32b1744b';
 
 export const API = 'https://api.tacit.finance';
@@ -18,7 +18,9 @@ export const short = (a, n = 4) => (!a ? '' : a.length > 2 * n + 4 ? `${a.slice(
 
 // ── reading the chain ──
 // `hosts` orders the nodes asked: a read only one of them serves (a wide log range) names it first, so the others do not each refuse it before it.
-export const rpc = (method, params, hosts = RPCS) => hedgedRpc(hosts, method, params);
+// `opts` are hedgedRpc's (`health`, `hedgeMs`). The same read asked for twice at once goes to the nodes once (shareReads).
+const shared = shareReads(hedgedRpc);
+export const rpc = (method, params, hosts = RPCS, opts) => shared(hosts, method, params, opts);
 export const ethCall = (to, data, block = 'latest') => rpc('eth_call', [{ to, data }, block]);
 export const api = (path) => fetch(`${API}${path}`, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 

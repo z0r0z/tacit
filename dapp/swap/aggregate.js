@@ -50,21 +50,9 @@ async function read(ethCall, data, block, fail) {
   catch (e) { if (!(e?.revert || /revert|out of gas|gas required/i.test(e?.message || ''))) fail.push(e); return null; }
 }
 
-// → { out, min, callData, value, name, kind, legs, quotes } for the best route that passes the guard, or null when none does.
-//   `to` is paid; `refundTo` gets what a two-hop chain leaves (the payer); `slippageBps` is each leg's own bound, a split's too, so every
-//   route's floor is its output less the same slippage and the best output is also the best floor.
-export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut, amountIn, slippageBps = 50, deadline, block = 'latest' }) {
-  const slip = BigInt(slippageBps);
-  const amt = BigInt(amountIn), dl = BigInt(deadline), ethIn = lc(tokenIn) === ZERO;
-  const terms = (s) => [addr(to), addr(tokenIn), addr(tokenOut), word(amt), word(s), word(dl)].join('');
-  const fail = [];
-  const [v, sp, hy, qs] = await Promise.all([
-    read(ethCall, SEL.viaEth + addr(to) + addr(refundTo) + word(0) + addr(tokenIn) + addr(tokenOut) + word(amt) + word(slip) + word(dl), block, fail),
-    read(ethCall, SEL.split + terms(slip), block, fail),
-    read(ethCall, SEL.hybrid + terms(slip), block, fail),
-    read(ethCall, SEL.quotes + word(0) + addr(tokenIn) + addr(tokenOut) + word(amt), block, []),
-  ]);
-  if (!v && !sp && !hy && fail.length >= 3) throw fail[0];
+// The routes the answers hold, each held to the terms: the asked tokens and recipient, exactly the amount, sent exactly the ETH it spends, and paying at least
+// what it claims less its slippage. `ok` pass the guard; `unknown` are the single-pool Curve routes it refuses only for a pool it does not list.
+function judged({ v, sp, hy }, { to, tokenIn, tokenOut, amt, dl, slip, ethIn }) {
   const cands = [];
   if (v) {
     const a = quoteAt(v, 0), b = quoteAt(v, 4), two = b.amountOut > 0n;
@@ -77,7 +65,6 @@ export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut,
     cands.push({ kind: both ? kind : 'single', out: l0.amountOut + l1.amountOut, callData: bytesAt(h, 8), value: at(h, 9), slip, legs,
       name: both ? legs.map((l, i) => `${nameOf(l)}${kind === 'hybrid' && i === 1 ? ' via a hub' : ''} ${share(l)}%`).join(' + ') : nameOf(legs[0] || l0) });
   }
-  // held to the terms: the asked tokens and recipient, exactly the amount, sent exactly the ETH it spends, and paying at least what it claims less its slippage
   const ok = [], unknown = [];
   for (const c of cands) {
     if (c.out <= 0n || c.value !== (ethIn ? amt : 0n)) continue;
@@ -90,12 +77,43 @@ export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut,
     if (why === null) ok.push(c);
     else if (why === CURVE_UNKNOWN && ethIn && legs.length === 1) unknown.push({ c, want: { ...want, curvePools: legs[0].pools } });
   }
+  return { ok, unknown };
+}
+const bestOf = (routes) => (routes.length ? routes.reduce((x, y) => (y.out > x.out ? y : x)) : null);
+
+// → { out, min, callData, value, name, kind, legs, quotes } for the best route that passes the guard, or null when none does.
+//   `to` is paid; `refundTo` gets what a two-hop chain leaves (the payer); `slippageBps` is each leg's own bound, a split's too, so every
+//   route's floor is its output less the same slippage and the best output is also the best floor.
+//   `onRoute(route)` is told of the best route so far as the scans answer (the scans take 0.3 s to 0.9 s, a split's and a mix's the longest), so a page can show a
+//   price at once and the better one when it comes; the route it is told is held to the same terms, and what is returned is still the best of all.
+export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut, amountIn, slippageBps = 50, deadline, block = 'latest', onRoute = null }) {
+  const slip = BigInt(slippageBps);
+  const amt = BigInt(amountIn), dl = BigInt(deadline), ethIn = lc(tokenIn) === ZERO;
+  const terms = (s) => [addr(to), addr(tokenIn), addr(tokenOut), word(amt), word(s), word(dl)].join('');
+  const fail = [], got = {}, T = { to, tokenIn, tokenOut, amt, dl, slip, ethIn };
+  const result = (best, quotes) => ({ out: best.out, min: best.min, callData: best.callData, value: best.value, name: best.name, kind: best.kind, legs: best.legs, quotes, tokenIn, tokenOut, amountIn: amt, to, refundTo, deadline: dl, curvePools: best.curvePools || [] });
+  let shown = null;
+  const early = () => {
+    const best = onRoute && bestOf(judged(got, T).ok);
+    if (!best || (shown && best.out <= shown.out)) return;
+    shown = best;
+    try { onRoute(result(best, [])); } catch { }
+  };
+  const ask = (k, data) => read(ethCall, data, block, fail).then((r) => { got[k] = r; early(); return r; });
+  const [v, sp, hy, qs] = await Promise.all([
+    ask('v', SEL.viaEth + addr(to) + addr(refundTo) + word(0) + addr(tokenIn) + addr(tokenOut) + word(amt) + word(slip) + word(dl)),
+    ask('sp', SEL.split + terms(slip)),
+    ask('hy', SEL.hybrid + terms(slip)),
+    read(ethCall, SEL.quotes + word(0) + addr(tokenIn) + addr(tokenOut) + word(amt), block, []),
+  ]);
+  if (!v && !sp && !hy && fail.length >= 3) throw fail[0];
+  const { ok, unknown } = judged({ v, sp, hy }, T);
   // a Curve pool the guard does not list is taken as anon.wei takes a route it cannot cross-check: only when the route, run as it stands
   // from an address given the ETH, pays the recipient at least its floor (and only when it beats every route the guard knows)
   const known = ok.reduce((m, c) => (c.out > m ? c.out : m), 0n);
   for (const { c, want } of unknown) if (c.out > known && !ok.some((x) => x.callData === c.callData) && checkZRouterCall(c.callData, want) === null && await paysFloor(ethCall, c, block)) { c.curvePools = want.curvePools; ok.push(c); }
   if (!ok.length) return null;
-  const best = ok.reduce((x, y) => (y.out > x.out ? y : x));
+  const best = bestOf(ok);
   const quotes = [];
   if (qs) {
     const o = Number(at(qs, 4)) / 32, n = Math.min(Number(at(qs, o)), 24);
@@ -103,5 +121,5 @@ export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut,
     quotes.sort((x, y) => (y.out > x.out ? 1 : y.out < x.out ? -1 : 0));
   }
   // `curvePools`: the unlisted Curve pools a simulation let through, for a caller that checks the route again (later.js writes another recipient in)
-  return { out: best.out, min: best.min, callData: best.callData, value: best.value, name: best.name, kind: best.kind, legs: best.legs, quotes, tokenIn, tokenOut, amountIn: amt, to, deadline: dl, curvePools: best.curvePools || [] };
+  return result(best, quotes);
 }

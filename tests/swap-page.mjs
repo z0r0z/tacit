@@ -35,9 +35,10 @@ if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 const ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b';
 const ZROUTER = '0x000000000000fb114709235f1ccbffb925f600e4';
 // A node that caps a call's gas below what zQuoter's scan asks for (50M on some public nodes), or that is unreachable, is followed by the next. publicnode takes the
-// scan at the latest block only (an older one is capped at 50M, then wants an archive token), MEV Blocker's node takes it at any depth, and Tenderly's gateway
-// resets the connection from some networks, so it is the last.
-const UPSTREAMS = [FORK, 'https://rpc.mevblocker.io', 'https://mainnet.gateway.tenderly.co'];
+// scan at the latest block only (an older one is capped at 50M, then wants an archive token) and gives way on about one scan in six (a gas-cap error, or a revert
+// that is not the contract's), MEV Blocker's and Blast's nodes took every scan at any depth in a 120-scan burst, and Tenderly's gateway resets the connection from
+// some networks, so it is the last.
+const UPSTREAMS = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', FORK, 'https://mainnet.gateway.tenderly.co'];
 const up = async (method, params) => {
   let last;
   for (const url of UPSTREAMS) {
@@ -69,7 +70,7 @@ server = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream' });
   res.end(readFileSync(f));
 }).listen(WEB);
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io'];
 
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };

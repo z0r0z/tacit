@@ -1,6 +1,6 @@
 // The farms row on /assets/: where liquidity earns TAC, each with the APR it pays now. The TAC/ETH farm and the private pools' farms are read as the
 // rewards page reads them (trade/farm-read.js); TACD's and TACE's pools are the ones the points service's liquidity campaign pays for (trade/lp-campaign.js).
-import { ethCall, api, $ } from '/trade/util.js?cb=aa7aaa7f';
+import { ethCall, api, $ } from '/trade/util.js?cb=e53086bb';
 import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
 import { readCampaign, bestApr } from '/trade/lp-campaign.js?cb=9d89e80f';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';

@@ -8,7 +8,7 @@
 // the TAC vaults could hold TAC itself, but nothing is in it yet and no keeper sends for it, so a hop through it would hide nothing.)
 import { hexToBytes, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { checkZRouterCall } from '/zrouter-guard.js?cb=f5ae4bcd';
-import { bestRoute } from '/swap/aggregate.js?cb=3c73982e';
+import { bestRoute } from '/swap/aggregate.js?cb=a115d220';
 import { readAccess, readToken, permitTyped, permit2Typed, splitSig, randomNonce as permit2Nonce, encApprove, quoteTacitToToken, buildTacitToToken, quoteAnyToTac, buildAnyToTac } from '/swap/route.js?cb=ce610210';
 import { makeTokenPools, poolState, RELAYER, KEEPERS, SERVED } from '/evm-pool-tokens.js?cb=e1ab5d24';
 export { SERVED };
@@ -692,5 +692,5 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     } finally { save(plan); }
   }
 
-  return { start, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
+  return { start, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
 }

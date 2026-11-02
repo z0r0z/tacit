@@ -75,7 +75,7 @@ async function fresh(path = '/swap/', viewport = { width: 1100, height: 1000 }, 
   page.on('console', (m) => { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) csp.push(t.slice(0, 160)); });
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const req = route.request();
-    if (/publicnode|drpc|1rpc|tenderly/.test(req.url())) {
+    if (/publicnode|drpc|1rpc|tenderly|mevblocker|blastapi/.test(req.url())) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
       const err = (id) => ({ jsonrpc: '2.0', id, error: { code: -32000, message: 'offline in this test' } });
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(Array.isArray(body) ? body.map((x) => err(x.id)) : err(body.id)) });

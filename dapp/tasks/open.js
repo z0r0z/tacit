@@ -35,7 +35,7 @@ async function deployedSteps(jobs, api, live) {
     }
   }
   if (!asks.length) return new Set();
-  const { rpc } = await import('/trade/util.js?cb=aa7aaa7f');
+  const { rpc } = await import('/trade/util.js?cb=e53086bb');
   const code = await Promise.all(asks.map(([, to]) => rpc('eth_getCode', [to, 'latest']).catch(() => '0x')));
   return new Set(asks.filter((_, i) => code[i] !== '0x').map(([key]) => key));
 }

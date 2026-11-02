@@ -4,32 +4,83 @@
 // moves on to the next at once. A revert is the contract's answer, not a node's failure, so it ends the call. Never more requests than nodes.
 // `hedgeMs` 0 asks one node at a time. A browser can set it: localStorage['tacit-trade-hedge-ms'] (milliseconds; 0 switches hedging off).
 // A JSON-RPC body goes out as text/plain to the nodes that take it, so the browser does not ask first (see ../rpc-body.js).
+// A node is a URL, or { id, usable?(method, params), send(method, params, signal) } for one that is not (the connected wallet's): `usable` says whether
+// it can serve this call, and it is asked only when it is reached, so last in the list it is the last resort. `health` (nodeHealth, below) is what the page
+// has learned of its nodes: those that failed lately are asked last, and what happens to each call is told to it. Neither is used unless asked for.
 import { bodyType } from '../rpc-body.js';
 export { bodyType };
-export const hedgeDelay = () => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? 2500 : Math.max(0, Number(v)); } catch { return 2500; } };
-export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeoutMs = 12e3, lastTimeoutMs = 30e3, fetchImpl = (...a) => fetch(...a) } = {}) {
+export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
+const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
+const LIMITED = /rate.?limit|too many|\b429\b|compute units|capacity|quota|throttl|slow down/i;
+
+// What a page has learned about its nodes. A node that does not answer rests: for 15 s when it limits the rate, 20 s when it hung, 30 s when it failed, doubled for
+// each failure in a row (never over two minutes), and the calls that come while it rests ask the others first. It is never left out: a node that is resting is asked
+// last, and once it answers it is forgiven. `store` (localStorage) carries the rests to the next page of the visit; `strict` counts a node's own refusal of a call
+// (a gas cap on a heavy read) as a failure too, which a list of nodes asked only for what any node serves does not need.
+export function nodeHealth({ now = () => Date.now(), store = null, key = 'tacit-rpc-rest-v1', strict = false } = {}) {
+  const REST = { limited: 15e3, slow: 20e3, down: 30e3 }, LONGEST = 120e3, until = new Map(), strikes = new Map();
+  try { for (const [id, t] of Object.entries(JSON.parse(store?.getItem(key) || 'null') || {})) if (t > now()) until.set(id, Math.min(t, now() + LONGEST)); } catch { }
+  const save = () => { try { store?.setItem(key, JSON.stringify(Object.fromEntries([...until].filter(([, t]) => t > now())))); } catch { } };
+  return {
+    strict,
+    order(hosts) { const t = now(), tired = (h) => (until.get(idOf(h)) || 0) > t; return [...hosts.filter((h) => !tired(h)), ...hosts.filter(tired)]; },
+    fail(h, kind = 'down') { const id = idOf(h), n = Math.min((strikes.get(id) || 0) + 1, 4); strikes.set(id, n); until.set(id, now() + Math.min(REST[kind] * 2 ** (n - 1), LONGEST)); save(); },
+    ok(h) { const id = idOf(h); strikes.delete(id); if (until.delete(id)) save(); },
+  };
+}
+// A node that is not a URL answers through its own `send`; a request cannot be taken back from it, so the call stops waiting when it is cancelled.
+const sendVia = (h, method, params, signal) => new Promise((resolve, reject) => {
+  if (signal.aborted) return reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+  Promise.resolve(h.send(method, params, signal)).then(resolve, (e) => reject(Object.assign(e instanceof Error ? e : new Error(e?.message || 'the node refused'), { rpc: true, revert: e?.code === 3 || /revert/i.test(e?.message || '') })));
+});
+export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeoutMs = 12e3, lastTimeoutMs = 30e3, fetchImpl = (...a) => fetch(...a), health = null } = {}) {
   return new Promise((resolve, reject) => {
-    if (!hosts.length) return reject(new Error('no RPC answered'));
+    const usable = hosts.filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
+    if (!usable.length) return reject(new Error('no RPC answered'));
+    const list = health ? health.order(usable) : usable;
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), ctrls = new Set();
     let next = 0, live = 0, over = false, last = null, hedge = 0, hedged = false;
     const finish = (f, v) => { if (over) return; over = true; clearTimeout(hedge); for (const c of ctrls) c.abort(); f(v); };
     const launch = () => {
-      if (over || next >= hosts.length) return;
-      const n = next++, ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), n === hosts.length - 1 ? lastTimeoutMs : timeoutMs);
+      if (over || next >= list.length) return;
+      const n = next++, h = list[n], ctrl = Object.assign(new AbortController(), { node: h, at: Date.now() }), timer = setTimeout(() => { ctrl.timedOut = true; ctrl.abort(); }, n === list.length - 1 ? lastTimeoutMs : timeoutMs);
       ctrls.add(ctrl); live++;
-      clearTimeout(hedge); if (hedgeMs > 0 && !hedged && next < hosts.length) hedge = setTimeout(() => { hedged = true; launch(); }, hedgeMs);
+      clearTimeout(hedge); if (hedgeMs > 0 && !hedged && next < list.length) hedge = setTimeout(() => { hedged = true; launch(); }, hedgeMs);
       (async () => {
-        const j = await (await fetchImpl(hosts[n], { method: 'POST', headers: { 'content-type': bodyType(hosts[n]) }, body, signal: ctrl.signal })).json();
-        if (j.error) throw Object.assign(new Error(j.error.message), { revert: j.error.code === 3 || /revert/i.test(j.error.message || '') });
+        if (typeof h !== 'string') return sendVia(h, method, params, ctrl.signal);
+        const r = await fetchImpl(h, { method: 'POST', headers: { 'content-type': bodyType(h) }, body, signal: ctrl.signal });
+        let j; try { j = await r.json(); } catch (e) { throw Object.assign(new Error(`${idOf(h)} answered ${r.status ?? 'with no JSON'}`), { status: r.status }); }
+        if (j.error) throw Object.assign(new Error(j.error.message), { rpc: true, revert: j.error.code === 3 || /revert/i.test(j.error.message || '') });
         if (!('result' in j)) throw new Error('rpc: no result');
         return j.result;
       })().then(
-        (v) => { clearTimeout(timer); ctrls.delete(ctrl); finish(resolve, v); },
-        (e) => { clearTimeout(timer); ctrls.delete(ctrl); live--; if (over) return; if (e.revert) return finish(reject, e); last = e; if (next < hosts.length) launch(); else if (!live) finish(reject, last); },
+        // a node still out that was asked a hedge ago has been beaten by the one that answered: it is slow, and rests
+        (v) => { clearTimeout(timer); ctrls.delete(ctrl); health?.ok(h); if (hedgeMs > 0) for (const c of ctrls) if (Date.now() - c.at >= hedgeMs) health?.fail(c.node, 'slow'); finish(resolve, v); },
+        (e) => {
+          clearTimeout(timer); ctrls.delete(ctrl); live--; if (over) return;
+          if (e.revert) return finish(reject, e);
+          // a refusal in the node's own words (it answered) is no failure of the node, unless it says it is being limited or `health` is strict
+          if (health && (!e.rpc || health.strict || LIMITED.test(e.message))) health.fail(h, ctrl.timedOut ? 'slow' : e.status === 429 || LIMITED.test(e.message) ? 'limited' : 'down');
+          last = e; if (next < list.length) launch(); else if (!live) finish(reject, last);
+        },
       );
     };
     launch();
   });
+}
+// A read asked for twice at once is asked once: a call for exactly what another is still waiting for takes that one's answer, so a page that asks for the same
+// thing from two places (or again, as a quote is made again) sends one request to the nodes. Only reads of the chain; the nodes asked are part of what is the same.
+const READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_chainId', 'eth_getCode', 'eth_getStorageAt', 'eth_getLogs', 'eth_getBlockByNumber', 'eth_getTransactionReceipt', 'eth_feeHistory', 'eth_maxPriorityFeePerGas', 'eth_getProof']);
+export function shareReads(rpc = hedgedRpc) {
+  const out = new Map();
+  return (hosts, method, params, o) => {
+    if (!READS.has(method)) return rpc(hosts, method, params, o);
+    const k = `${method}${JSON.stringify(params)}|${hosts.map(idOf).join()}`;
+    let p = out.get(k);
+    if (!p) out.set(k, p = rpc(hosts, method, params, o).finally(() => out.delete(k)));
+    return p;
+  };
 }
 // hedgedRpc over `hosts`, except that a read the page's head has already sent to the first of them (the inline script in trade/index.html keeps them in `__tradeEarly`, by method and
 // params) is taken by the first call that asks for exactly it, once. That read stands for the first node: when it fails the rest are asked as usual, and when
