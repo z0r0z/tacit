@@ -1,4 +1,4 @@
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=ef6b24d1';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=55a25559';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
 import { mountFast } from '/fast/ui.js?cb=0049f948';
