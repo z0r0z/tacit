@@ -60,6 +60,7 @@ fn main() {
         println!("VKEY={}", pk.verifying_key().bytes32());
         let (pv, report) = client.execute(Elf::Static(ELF), stdin).run().expect("execute failed");
         println!("EXECUTE_OK cycles={} pv_bytes={} fee={}", report.total_instruction_count(), pv.as_slice().len(), f["fee"].as_u64().unwrap_or(0));
+        if let Ok(p) = std::env::var("PV_OUT") { std::fs::write(p, hex::encode(pv.as_slice())).expect("PV_OUT"); }
         return;
     }
     let client = ProverClient::builder().network().build();

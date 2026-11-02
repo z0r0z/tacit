@@ -127,6 +127,23 @@ export function makeConfidentialLockScan({ pool }) {
     return { leaves, leavesCount: leaves.length, lockSetRoot, lockLeaves, nullifiers };
   }
 
+  // The adaptor-swap fields of a settle's public values: what a lock appended, what a claim or refund spent, and
+  // each claim's completed kernel s (the value the claimed lock's counterparty reads t from).
+  function decodePublicValuesAdaptorFields(publicValuesHex) {
+    const outer = strip0x(publicValuesHex);
+    const data = outer.slice(Number(u256At(outer, 0)) * 2);
+    return {
+      nullifiers: readBytes32Array(data, 3 * 32),
+      leaves: readBytes32Array(data, 4 * 32),
+      deadline: Number(u256At(data, 15 * 32)),
+      lockSetRoot: '0x' + hexWord(data, 16 * 32),
+      lockLeaves: readBytes32Array(data, 17 * 32),
+      lockNullifiers: readBytes32Array(data, 18 * 32),
+      adaptorClaimS: readBytes32Array(data, 19 * 32),
+      refundNotBefore: Number(u256At(data, 20 * 32)),
+    };
+  }
+
   async function scanLockLeaves({ events, getTxInput, getTx, getLockState, strict = false, poolAddress = MAINNET_POOL, relayerAddress = MAINNET_RELAYER }) {
     const sameArray = (a, b) => a.length === b.length && a.every((x, i) => String(x).toLowerCase() === String(b[i]).toLowerCase());
     const poolTo = String(poolAddress).toLowerCase();
@@ -277,5 +294,5 @@ export function makeConfidentialLockScan({ pool }) {
     return { ...all, verified: false, excluded: [] };
   }
 
-  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodeSettleCalls, decodePublicValuesLockFields, scanLockLeaves };
+  return { decodeSettleCalldata, decodeRelaySettleCalldata, decodeNestedSettles, decodeSettleCalls, decodePublicValuesLockFields, decodePublicValuesAdaptorFields, scanLockLeaves };
 }
