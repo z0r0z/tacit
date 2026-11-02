@@ -119,3 +119,42 @@ test('a held swap with no amount, no address or a pool not open is refused, and 
   await assert.rejects(L.adopt({ ...base, hop: { state: { pool: true, router: false } }, pay: { sym: 'USDC', dec: 6 } }), /USDC pool is not open/);
   assert.strictEqual(L.plans().length, 0, 'nothing was kept');
 });
+
+// ── a deposit proved ahead of the press: proofs run one at a time, and of the deposits asked for the latest is the one proved ──
+const { oneAtATime } = await import('../dapp/swap/later.js');
+test('oneAtATime runs one call at a time in the order asked, and a failure does not stop the next', async () => {
+  let running = 0, peak = 0;
+  const order = [], f = oneAtATime(async (x) => { running++; peak = Math.max(peak, running); await new Promise((r) => setTimeout(r, 10)); order.push(x); running--; if (x === 'bad') throw new Error('stopped'); return x; });
+  const done = await Promise.allSettled([f('a'), f('bad'), f('c')]);
+  assert.strictEqual(peak, 1);
+  assert.deepStrictEqual(order, ['a', 'bad', 'c']);
+  assert.strictEqual(done[1].status, 'rejected');
+  assert.strictEqual(done[2].value, 'c');
+});
+
+function aheadLater(walletOf) {
+  const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  return makeLater({ keyHex: async () => '11'.repeat(32), signer: {}, ethCall: async () => '0x', store, walletOf, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] } });
+}
+test('ahead proves the latest deposit asked for on the pool it goes into, and one run serves every ask meanwhile', async () => {
+  let open; const gate = new Promise((r) => { open = r; });
+  const proved = [], L = aheadLater(async (hop) => { await gate; return { prepareDeposit: async (a) => { proved.push([hop?.id ?? null, a]); } }; });
+  const first = L.ahead({ depositWei: 1n });
+  L.ahead({ depositWei: 2n });
+  const last = L.ahead({ depositWei: 3n, hop: { id: 'usdc' } });
+  assert.strictEqual(first, last, 'one run');
+  open();
+  await last;
+  assert.deepStrictEqual(proved, [['usdc', 3n]], 'only the latest, on its pool');
+  await L.ahead({ depositWei: '40' });
+  assert.deepStrictEqual(proved[1], [null, 40n], 'a new ask after the run ended starts another, and an amount may be a string');
+});
+
+test('ahead: a wallet that cannot be opened ends the run with that error, and the next ask tries again', async () => {
+  let n = 0;
+  const closed = Object.assign(new Error('Cancelled.'), { unlockCancelled: true }), proved = [];
+  const L = aheadLater(async () => { if (!n++) throw closed; return { prepareDeposit: async (a) => { proved.push(a); } }; });
+  await assert.rejects(L.ahead({ depositWei: 5n }), (e) => e === closed);
+  await L.ahead({ depositWei: 6n });
+  assert.deepStrictEqual(proved, [6n]);
+});

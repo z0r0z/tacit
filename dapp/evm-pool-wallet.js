@@ -759,6 +759,18 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     publicInputs: publicSignals.map(String),
     ...rest,
   });
+  // The proof of a transaction that spends `inputs` and creates `sealed`, built on `tree`, as pool.transact takes it.
+  async function proveTx({ tree, inputs, sealed, extAmount, recipient, relayer, fee, onStep = () => {} }) {
+    const memo0 = sealed[0]?.memo ?? new Uint8Array(), memo1 = sealed[1]?.memo ?? new Uint8Array();
+    const eh = extDataHash({ chainId: BigInt(chain.chainId), pool: chain.pool, recipient, extAmount, relayer, fee, memo0, memo1 });
+    const w = zk.buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => (o ? { v: o.v, npk: o.npk, rho: o.rho } : null)), extAmount, fee, extDataHash: eh });
+    onStep('proving on this device');
+    const { proof, publicSignals } = await prove(w.input);
+    return toTx(proof, publicSignals, { recipient, extAmount: extAmount.toString(), relayer, fee: fee.toString(), memo0: hex(memo0), memo1: hex(memo1) });
+  }
+  // The deposit proved ahead (prepareDeposit): its amount, when it is done, and the proof with the head it was built on. The deposit of that amount takes it, once.
+  let aheadDeposit = null;
+  const takeAheadDeposit = (a) => { const t = aheadDeposit?.amount === a ? aheadDeposit : null; if (t) aheadDeposit = null; return t; };
 
   // Submits from the signer after checking the call on chain. → tx hash, or null when another transaction landed
   // first (prove again).
@@ -887,16 +899,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // it to be mined and proves again when another transaction lands first. A spend whose notes are spent already, or
   // that the relay holds or is sending already, is not proved again: it ends with that said. → tx hash.
   // selfCall(tx) → { to, data }: what the signer submits, when not pool.transact (withdrawToV1).
-  async function transact({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, onStep = () => {} }) {
+  // ahead: a deposit proved before it was asked for (prepareDeposit), sent as it is while the pool's head is the one it was proved against.
+  async function transact({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, ahead = null, onStep = () => {} }) {
     // A spend's outputs take one-time keys the sender can derive again (paymentKey); a deposit's are random.
     const attempt = ins.length ? nextAttempt(ins[0].nf) : 0;
     const eOf = (k) => (ins.length ? paymentKey(keys, { chainId: chain.chainId, nf: BigInt(ins[0].nf), k, attempt }) : undefined);
     const sealed = outs.map((o, k) => (o ? sealNote(zk, { to: o.to, value: o.value, asset, e: eOf(k) }) : null));
-    const memo0 = sealed[0]?.memo ?? new Uint8Array(), memo1 = sealed[1]?.memo ?? new Uint8Array();
     const fee = q ? BigInt(q.fee) : 0n, relayer = q ? q.relayer : ZERO;
     const inputs = [...ins.map(asInput), ...Array(2 - ins.length).fill({ dummy: true })];
     const inserts = sealed.some(Boolean);
     const simulated = !!(extra.call || extra.wrap);
+    const made = ahead ? await ahead.done.catch(() => null) : null;
     let treeRefused = false;
     for (let round = 0; round < 8; round++) {
       if (round) { onStep('someone else got in first, proving again'); await jitter(round); await sync(); }
@@ -916,13 +929,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (r === 'tail') tree = (await queueTail(false)) || tree;
         else if (r) { slot = r.id; tree = r.tree; }
       } else if (q && inserts) tree = (await queueTail(true)) || tree;
-      const eh = extDataHash({ chainId: BigInt(chain.chainId), pool: chain.pool, recipient, extAmount, relayer, fee, memo0, memo1 });
-      const w = zk.buildWitness({ asset, tree, inputs, outputs: sealed.map((o) => (o ? { v: o.v, npk: o.npk, rho: o.rho } : null)), extAmount, fee, extDataHash: eh });
-      onStep('proving on this device');
-      let proved;
-      try { proved = await prove(w.input); } catch (e) { if (slot) await releaseSlot(slot); throw e; }
-      const { proof, publicSignals } = proved;
-      const tx = toTx(proof, publicSignals, { recipient, extAmount: extAmount.toString(), relayer, fee: fee.toString(), memo0: hex(memo0), memo1: hex(memo1) });
+      let tx = !round && made && made.root === tree.root && made.size === tree.size ? made.tx : null;
+      if (!tx) {
+        try { tx = await proveTx({ tree, inputs, sealed, extAmount, recipient, relayer, fee, onStep }); } catch (e) { if (slot) await releaseSlot(slot); throw e; }
+      }
       let h;
       if (q) {
         onStep('sending through the relayer');
@@ -1149,11 +1159,33 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     async deposit({ amount, selfCall = null, onStep = () => {} }) {
       const a = BigInt(amount);
       if (a <= 0n) throw new Error('enter an amount');
+      const ahead = takeAheadDeposit(a);
+      if (ahead && !ahead.ready) onStep('proving on this device');
+      await ahead?.done.catch(() => {});                          // a proof still being made is waited for before the pool is read, so a head that moved meanwhile is found
       const before = (await sync()).balance;
-      const h = await transact({ ins: [], outs: [{ to: self, value: a }, null], extAmount: a, selfCall, onStep });
+      const h = await transact({ ins: [], outs: [{ to: self, value: a }, null], extAmount: a, selfCall, ahead, onStep });
       // Returns once the note is spendable here (log providers can trail the receipt by a few seconds).
       await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
       return h;
+    },
+
+    // Proves a deposit of `amount` before it is asked for: the deposit of that amount made next finds its proof made. The proof builds on the
+    // pool's head, so it stands until another transaction inserts into the pool; a deposit that finds the head moved proves its own. One proof
+    // is kept, the latest asked for, and taken by the deposit of its amount, once.
+    async prepareDeposit(amount) {
+      const a = BigInt(amount);
+      if (a <= 0n) throw new Error('enter an amount');
+      if (aheadDeposit?.amount === a) return aheadDeposit.done.then(() => true);
+      const mine = aheadDeposit = { amount: a, ready: false };
+      mine.done = (async () => {
+        await sync();
+        const tree = state().tree, sealed = [sealNote(zk, { to: self, value: a, asset }), null];
+        const tx = await proveTx({ tree, inputs: [{ dummy: true }, { dummy: true }], sealed, extAmount: a, recipient: ZERO, relayer: ZERO, fee: 0n });
+        mine.ready = true;
+        return { tx, root: tree.root, size: tree.size };
+      })();
+      mine.done.catch(() => { if (aheadDeposit === mine) aheadDeposit = null; });
+      return mine.done.then(() => true);
     },
 
     // Deposits `amount` wei from the signer straight into a private note for someone else's pool address (bp1…),

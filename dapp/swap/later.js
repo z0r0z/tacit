@@ -161,6 +161,12 @@ export async function routeFrom({ ethCall, venues, tokenIn, token, amount, to, s
   return { ...q, callData: data, standData: q.callData, deadline: dl };
 }
 const declined = (e) => e?.code === 4001 || e?.userStopped || e?.name === 'UserStopped' || /reject|denied|cancel/i.test(String(e?.message || ''));
+// `fn` called one at a time, in the order asked: the prover holds a wasm heap for each thread it proves with, so two proofs at once slow each other and
+// can run a small device out of memory.
+export function oneAtATime(fn) {
+  let tail = Promise.resolve();
+  return (...args) => { const run = tail.then(() => fn(...args)); tail = run.catch(() => {}); return run; };
+}
 
 // A deposit that is not an amount of its own: the swap, the relay's fee twice and an extra (the slider's share of the swap, drawn at random
 // between three quarters and one and a quarter of it, never under a twentieth), rounded up to two significant figures.
@@ -233,7 +239,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   }
   const prover = { ms: null, ready: false };
   const mods = () => (modsP ||= (async () => {
-    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=b1b58886'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
+    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=410f5bb4'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
     const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
     return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), wm, gw, vkHash: pm.vkHash };
   })().catch((e) => { modsP = null; throw e; }));
@@ -266,7 +272,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       return async (input) => { const t = performance.now(), r = await call({ op: 'prove', input }); prover.ms = performance.now() - t; return { proof: r.proof, publicSignals: r.publicSignals }; };
     })().catch((e) => { proverP = null; throw e; }));
   }
-  const prove = async (input) => (await warm())(input);
+  const prove = oneAtATime(async (input) => (await warm())(input));
 
   // The key's pool wallet, its state kept where /pay/eth keeps it, so either page sees the same notes: the ETH pool's, or with `hop` (a plan's
   // token pool) that pool's, its fees in the token and sent by the same relay.
@@ -463,6 +469,22 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       plan.err = String(e?.message || e).slice(0, 200); throw e;
     } finally { save(plan); }
     return plan;
+  }
+  // The deposit that start (or startHop) will make is proved while its button waits to be pressed (the pool wallet's prepareDeposit), so the press
+  // finds the proof made. One at a time, and the latest asked for: a figure the card has moved on from while one is being proved is not proved after
+  // it. `hop` is the token pool the deposit goes into, else the ETH pool's. Opens the key first if it is not open.
+  let aheadWant = null, aheadRun = null;
+  function ahead({ depositWei, hop = null }) {
+    aheadWant = { depositWei, hop };
+    return (aheadRun ||= (async () => {
+      try {
+        for (let want; (want = aheadWant); ) {
+          aheadWant = null;
+          const w = await wallet(want.hop);
+          if (!aheadWant) await w.prepareDeposit(BigInt(want.depositWei));
+        }
+      } finally { aheadRun = null; }
+    })());
   }
   // A swap out of what a pool already holds for the key (paid to it, or left from an earlier deposit), so there is no deposit now: the plan
   // starts at its wait with the deposit done, and its swap out goes as any plan's (offer, then the confirmed price). `hop` is a token pool
@@ -691,5 +713,5 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     } finally { save(plan); }
   }
 
-  return { start, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
+  return { start, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
 }

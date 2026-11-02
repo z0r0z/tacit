@@ -1126,6 +1126,71 @@ if (!process.env.SKIP_GASRELAY) {
   await browser.close();
 }
 {
+  // the deposit is proved while its button waits to be pressed. The sheet for the key opens by itself once the card has been left alone for two seconds; closed without a
+  // key it is not shown again until the button is pressed, and then the deposit is proved at the press, as before
+  const w = { ...(await fundedWallet()), eip6963: true };
+  const { browser, page, errors, walletLog } = await openPage({ width: 1280, height: 900 }, { wallet: w, path: '/swap/?to=USDC&amt=0.1' });
+  await page.context().route(/tacit-evm-pool-keepers\.onrender\.com\/.*\/events/, (route) => route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: '{}' }));
+  await page.click('#wallet-chip');
+  await page.click('button:has-text("Test Wallet")');
+  await until(page, () => /Balance/.test(document.querySelector('#pay-side').textContent));
+  await quoted(page); await ackIf(page);
+  await page.click('#later-on');
+  await page.fill('#to-in', '0x' + '4f'.repeat(20));
+  await until(page, () => /^Deposit [\d.,]+ ETH$/.test(document.querySelector('#go').textContent), null, 90000);
+  const sheet = '.bsheet.top [data-in="eth"]', t0 = Date.now();
+  ok(!(await page.$(sheet)), 'the sheet is not there the moment the button is');
+  await page.waitForSelector(sheet, { timeout: 30000 });
+  ok(Date.now() - t0 >= 1200, `nothing was pressed: the sheet opens by itself once the card has been left alone (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(6000);
+  ok(!(await page.$(sheet)) && walletLog.sends.length === 0, 'closed without a key, it is not shown again by itself, and nothing was sent');
+  await page.click('#go');
+  await page.waitForSelector(sheet, { timeout: 60000 });
+  ok(true, 'the press shows it');
+  { const own = errors.filter((e) => !/status of 404/.test(e));                 // the browser logs the 404 the keeper's feed stub returns on purpose
+    ok(!own.length, `no page errors${own.length ? ': ' + own.slice(0, 3).join(' | ') : ''}`); }
+  await browser.close();
+}
+{
+  // and signed in from that sheet, the deposit is proved while the button waits: the press goes to the wallet without proving anything
+  const w = { ...(await fundedWallet()), eip6963: true };
+  const { browser, page, errors, walletLog } = await openPage({ width: 1280, height: 900 }, { wallet: w, path: '/swap/?to=USDC&amt=0.1' });
+  await page.context().route(/tacit-evm-pool-keepers\.onrender\.com\/.*\/events/, (route) => route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: '{}' }));
+  // the proofs the prover worker hands back, counted in the page
+  await page.addInitScript(() => {
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+      constructor(url, opts) { super(url, opts); if (/prove-worker/.test(String(url))) this.addEventListener('message', (e) => { if (e.data?.ok && e.data.proof) (window.__proofs ||= []).push(Date.now()); }); }
+    };
+  });
+  await page.reload();
+  const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
+  await page.click('#wallet-chip');
+  await page.click('button:has-text("Test Wallet")');
+  await until(page, () => /Balance/.test(document.querySelector('#pay-side').textContent));
+  await quoted(page); await ackIf(page);
+  await page.click('#later-on');
+  await page.fill('#to-in', '0x' + '4e'.repeat(20));
+  await until(page, () => /^Deposit [\d.,]+ ETH$/.test(document.querySelector('#go').textContent), null, 90000);
+  const shown = (await page.textContent('#go')).match(/[\d.,]+/)[0];
+  await page.click('.bsheet.top [data-in="eth"]', { timeout: 30000 });
+  await until(page, () => (window.__proofs || []).length >= 1, null, 300000);       // the proof is made while the button waits
+  ok((await page.textContent('#go')) === `Deposit ${shown} ETH` && walletLog.sends.length === 0, `the proof is made with nothing pressed, and the button still offers the deposit (${shown} ETH)`);
+  const said = [], poll = setInterval(() => { page.textContent('#q').then((t) => said.push(t), () => {}); }, 80);
+  await page.click('#go');
+  await until(page, () => /Deposited\.|did not|failed|revert|Not enough|moved|Nothing was sent/i.test(document.querySelector('#q')?.textContent || ''), null, 240000).catch(() => {});
+  clearInterval(poll);
+  const msg = await page.textContent('#q');
+  const plan = await page.evaluate(() => JSON.parse(localStorage.getItem('tacit-swap-later-v1') || '[]')[0] || null);
+  ok(/Deposited\./.test(msg) && plan?.state === 'waiting', `pressed, the ETH is deposited and the plan waits (${msg.trim().slice(0, 120)})`);
+  ok(walletLog.sends.length === 1 && walletLog.sends[0].to.toLowerCase() === POOL.toLowerCase(), 'one transaction, to the pool');
+  ok((await page.evaluate(() => window.__proofs.length)) === 1 && !said.some((t) => /Proving on this device/.test(t)), `the press proved nothing: the one proof was the one made ahead (${[...new Set(said.map((t) => t.trim()).filter(Boolean))].join(' | ').slice(0, 160)})`);
+  { const own = errors.filter((e) => !/status of 404/.test(e));                 // the browser logs the 404 the keeper's feed stub returns on purpose
+    ok(!own.length, `no page errors${own.length ? ': ' + own.slice(0, 3).join(' | ') : ''}`); }
+  await browser.close();
+}
+{
   // a token's own private pool, for any token (here DAI, which has none): that there is none yet and the offer to open it (one transaction from
   // the wallet, for everyone), named to the relay once open; then the swap goes through it, the token in as it is, priced as one swap out; the
   // ETH pool stays a press away

@@ -974,8 +974,9 @@ function paintQuote() {
       $('#ack').checked = S.ack;
     } else { ackbox.querySelector('input').checked = S.ack; ackbox.querySelector('b').textContent = `${(Math.abs(m) * 100).toFixed(0)}%${S.pay === lc(R.TAC) || S.get === lc(R.TAC) ? '' : ' under'}`; }
   } else { ackbox.innerHTML = ''; ackbox.dataset.k = ''; }
-  const [label, can, cls] = button(q, r, kind, gate);
+  const [label, can, cls, deposit] = button(q, r, kind, gate);
   go.textContent = label; go.disabled = !can; go.className = `go${cls ? ` ${cls}` : ''}`;
+  if (deposit) depositSoon(q);
   if (!S.busy) { if (S.note) say(S.note.h, S.note.cls); else say(lineFor(q, r, kind)); }
 }
 // Far under the market into cUSD or cBTC, the vault makes them at their own price: that is the button, and swapping anyway is the box ticked above it
@@ -1038,7 +1039,7 @@ function button(q, r, kind, gate) {
     if (tok ? eth != null && 2n * gasKeep() > eth : eth != null && dep + gasKeep() > eth) return [tok ? 'Leave some ETH for the network fee' : 'Not enough ETH for the deposit', false];
     if (gate && !S.ack) return gateButton();
     const d = laterDest(), tail = d.kind === 'me' ? ' → private' : d.kind === 'tacit' ? ` → ${tacitName(S.toTacit)}` : '';
-    return [`Deposit ${tok ? `${tidy(amtFmt(tin, pay.dec))} ${pay.sym}` : `${tidy(amtFmt(dep, 18))} ETH`}${tail}`, true, 'priv'];
+    return [`Deposit ${tok ? `${tidy(amtFmt(tin, pay.dec))} ${pay.sym}` : `${tidy(amtFmt(dep, 18))} ETH`}${tail}`, true, 'priv', true];
   }
   const bal = S.bal[S.pay], wei = q.wei;
   if (bal != null && wei > bal) return [`Not enough ${pay.sym}`, false];
@@ -1397,7 +1398,30 @@ function modsSoon() {
   modsAsked = true;
   ltLoad().then((lt) => lt.modules()).catch(() => { modsAsked = false; });
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=d302b377').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+// The deposit is proved while its button waits to be pressed, so the press finds the proof made and goes straight to the wallet (the proof takes some
+// seconds on a computer and many on a phone). It starts when the card has been left alone for two seconds, so a hand on the controls neither meets a sheet
+// it did not open nor leaves a proof for the press to wait behind. The Tacit key it is proved under is opened then, once a visit: a sheet closed without a
+// key is not shown again until the button is pressed. Not on a data saver or a slow link or in a hidden page; a figure is asked for once, and again after
+// a minute if it failed.
+let depAsked = '', depTimer = 0, depDeclined = false, depTouched = 0;
+const depKeyed = () => !!(PV?.unlocked || H.key?.session?.unlocked);
+function depositSoon(q) {
+  const net = navigator.connection, hop = picked(q)?.hop ? tokHop()?.hop : null, dep = laterDeposit(q), k = `${hop?.pool || ''}:${dep}`;
+  if (net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || dep == null || k === depAsked || (depDeclined && !depKeyed())) return;
+  depAsked = k;
+  const ask = () => {
+    if (document.hidden) { depAsked = ''; return; }
+    const left = depTouched + 2000 - Date.now();
+    if (left > 0) { depTimer = setTimeout(ask, left); return; }
+    ltLoad().then((lt) => lt.ahead({ depositWei: dep, hop })).catch((e) => {
+      if (e?.unlockCancelled) depDeclined = true;
+      else setTimeout(() => { if (depAsked === k) depAsked = ''; }, 60e3);
+    });
+  };
+  clearTimeout(depTimer);
+  depTimer = setTimeout(ask, 0);
+}
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=5d858250').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1560,6 +1584,7 @@ async function laterGo() {
   // from a token: the amount typed and its route's floor, from which later.js sizes the token sold for the deposit again, refused above what the
   // button showed by more than the slippage
   const pay = v ? { token: S.pay, sym: pt.sym, dec: pt.dec, amountIn: q.wei, min: v.r0.min, most: (tin * BigInt(10000 + S.slip)) / 10000n, slippageBps: S.slip } : null;
+  clearTimeout(depTimer);
   S.busy = true; S.note = ''; paintQuote();
   let moved = false, popped = false;
   const earned = laterPts(q, picked(q));
@@ -1577,7 +1602,7 @@ async function laterGo() {
     const unsure = !stopped && plans().some((x) => x.state === 'unsure' && Date.now() - x.at < 10 * 60e3);
     say(stopped ? 'Nothing was sent.' : `${esc(e?.message || String(e))}${unsure ? ' It may have been sent: check the steps below before depositing again.' : ''}`, stopped ? '' : 'err', true);
   }
-  finally { S.busy = false; changed(); paint(); paintSteps(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
+  finally { S.busy = false; depAsked = ''; changed(); paint(); paintSteps(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
   if (moved) requote(true);
 }
 // Each kept swap as steps: its deposit, its wait (the pool's new notes since, once the key is open here) and its swap out, with the price to
@@ -2582,6 +2607,7 @@ export function mountSwapCard(root, host = {}) {
   root.classList.toggle('mv', !!host.moves);
   root.innerHTML = markup(host);
   wire();
+  for (const t of ['pointerdown', 'keydown', 'input']) root.addEventListener(t, () => { depTouched = Date.now(); }, true);
   slipPaint();
   paint();
   if (W.account) readBalances().then(paintSides, () => {});
