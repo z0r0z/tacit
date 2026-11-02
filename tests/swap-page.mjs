@@ -714,6 +714,17 @@ if (!process.env.SKIP_GASRELAY) {
     ok(via === 'agg' && /Done/.test(said) && u1 > u0, `ETH → USDC through zQuoter's own route: ${Number(u1 - u0) / 1e6} USDC (${via}; ${said.slice(0, 70)})`);
     ok(t && String(t.to).toLowerCase() === ZROUTER && !/^0x5f3bd1c8/.test(String(t.data)), 'it went to zRouter as zQuoter built it, not as a solver\'s snwap');
     ok(scans === 0, `zQuoter was not read again between the press and the wallet (${scans} scans)`); }
+  // a route that has been on screen for a minute goes as it was shown too: a price that has ticked down since is no reason to refuse it, the check against the chain decides
+  await typeAmt(page, '0.06'); await quoted(page); await ackIf(page);
+  { await route('agg'); let scans = 0, counting = false;
+    const count = (r) => { if (counting && r.method() === 'POST') { const b = r.postData() || ''; if (/11E1A300/i.test(b) && /(e453166e|892af013|85f86a90)/.test(b)) scans++; } };
+    page.on('request', count);
+    await page.evaluate(() => { window.__realNow ||= Date.now; Date.now = () => window.__realNow.call(Date) + 60e3; });
+    const u0 = await bal(USDC, w.account); counting = true; const said = await swapped(); counting = false; page.off('request', count);
+    await page.evaluate(() => { Date.now = window.__realNow; });
+    const u1 = await bal(USDC, w.account);
+    ok(/Done/.test(said) && u1 > u0, `a route a minute old is sent as it was shown: ${Number(u1 - u0) / 1e6} USDC (${said.slice(0, 70)})`);
+    ok(scans === 0, `and zQuoter was not read for it again (${scans} scans)`); }
   // the check against the chain says no (the price moved under the floor): nothing reaches the wallet, the card says so and prices again; then the swap lands
   await typeAmt(page, '0.05'); await quoted(page); await ackIf(page);
   { await route('agg');

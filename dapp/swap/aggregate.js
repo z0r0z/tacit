@@ -91,7 +91,7 @@ export async function bestRoute({ ethCall, to, refundTo = to, tokenIn, tokenOut,
   const amt = BigInt(amountIn), dl = BigInt(deadline), ethIn = lc(tokenIn) === ZERO;
   const terms = (s) => [addr(to), addr(tokenIn), addr(tokenOut), word(amt), word(s), word(dl)].join('');
   const fail = [], got = {}, T = { to, tokenIn, tokenOut, amt, dl, slip, ethIn };
-  const result = (best, quotes) => ({ out: best.out, min: best.min, callData: best.callData, value: best.value, name: best.name, kind: best.kind, legs: best.legs, quotes, tokenIn, tokenOut, amountIn: amt, to, refundTo, deadline: dl, curvePools: best.curvePools || [] });
+  const result = (best, quotes) => ({ out: best.out, min: best.min, callData: best.callData, value: best.value, name: best.name, kind: best.kind, legs: best.legs, quotes, tokenIn, tokenOut, amountIn: amt, to, refundTo, deadline: dl, slippageBps: Number(slippageBps), curvePools: best.curvePools || [] });
   let shown = null;
   const early = () => {
     const best = onRoute && bestOf(judged(got, T).ok);

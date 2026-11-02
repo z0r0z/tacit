@@ -36,6 +36,8 @@ test('the Curve route is offered once the simulation shows it pays at least its 
   assert.ok(q, 'a route');
   assert.match(q.name, /Curve/);
   assert.ok(q.out >= q.min && q.min > 0n);
+  assert.strictEqual(q.slippageBps, 50, 'the route says which slippage its floor was built with');
+  assert.strictEqual((await ask(node().ethCall, { slippageBps: 100 })).slippageBps, 100);
   const sims = seen.filter((s) => s.sim);
   assert.strictEqual(sims.length, 1, 'simulated once, not once for each answer that carries the same route');
   assert.ok(BigInt(sims[0].state[sims[0].from].balance) > BigInt(F.amountIn), 'from a fresh address the node is told holds the ETH');

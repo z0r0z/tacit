@@ -213,13 +213,14 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
     try { return !!(await req('wallet_watchAsset', { type: 'ERC20', options })); } catch { return false; }
   }
   // Through the page's own RPCs, so a wallet that is slow to report a receipt does not stall the page.
-  async function receipt(hash, { timeoutMs = 5 * 60e3, every = 3000, read = rpc, where = 'Etherscan' } = {}) {
+  // `every` is the time between reads: by default each second for the first minute and a half, so a block is seen within a second of its coming, then every three seconds.
+  async function receipt(hash, { timeoutMs = 5 * 60e3, every = null, read = rpc, where = 'Etherscan' } = {}) {
     const t0 = Date.now();
     for (;;) {
       const r = await read('eth_getTransactionReceipt', [hash]).catch(() => null);
       if (r) return r;
       if (Date.now() - t0 > timeoutMs) throw new Error(`Sent, not confirmed yet. Check it on ${where} before sending anything again.`);
-      await new Promise((res) => setTimeout(res, every));
+      await new Promise((res) => setTimeout(res, every ?? (Date.now() - t0 < 90e3 ? 1000 : 3000)));
     }
   }
   return { state: W, available, connect, restore, disconnect, chooseAccount, ensureMainnet, ensureChain, sendTx, canBatch, sendCalls, signPermit, signMessage, receipt, watchAsset, onChange: (f) => W.listeners.add(f) };

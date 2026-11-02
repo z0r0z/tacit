@@ -3,11 +3,11 @@
 // pool module and its Activity journal). One card to a page: its state is this module's.
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
-import { UserStopped } from '/trade/wallet.js?cb=6778fe25';
+import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=e53086bb';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js?cb=cd769487';
 import * as R from '/swap/route.js?cb=45fd31f8';
-import * as A from '/swap/aggregate.js?cb=ec27933f';
+import * as A from '/swap/aggregate.js?cb=29aa40e7';
 import * as SV from '/swap/solvers.js?cb=28273640';
 import { linkName, linkSides } from '/swap/link.js?cb=c30e2cdb';
 import { routeLine } from '/swap/route-name.js?cb=1bc2443b';
@@ -1269,10 +1269,12 @@ async function prepare(P, from) {
     const access = isEth(P.pay) ? null : await anyAccess({ token: P.pay, maxIn: P.wei, deadline: dl }, from, { permit2: false });
     tx = snwapTx(call, P, access);
   } else if (P.kind === 'agg') {
-    // the route the card showed goes as it is while it is a few seconds old and was built for this wallet and this recipient: what is signed is what was shown, and the check
-    // below (the swap run against the chain now) refuses it if the price has since moved under its floor. An older one, or one built for another address, is read again.
+    // the route the card showed goes as it is while it is on screen (the card replaces a quote after about a minute) and was built for this wallet, this recipient and the slippage
+    // now chosen: what is signed is what was shown, its floor is the one the person was shown, and the check below (the swap run against the chain now) refuses it if the price has
+    // since moved under that floor. A route read again would carry a floor of its own, a little lower whenever the price has ticked down, and be refused for it. An older route, or one
+    // built for another address, is read again.
     const shown = P.r.agg;
-    P.reused = !!shown && now() - (P.r.at || 0) <= 20 && lc(shown.to) === lc(dest) && lc(shown.refundTo) === lc(from) && shown.amountIn === P.wei && lc(shown.tokenIn) === lc(P.pay) && lc(shown.tokenOut) === lc(P.get);
+    P.reused = !!shown && now() - (P.r.at || 0) <= 90 && lc(shown.to) === lc(dest) && lc(shown.refundTo) === lc(from) && shown.amountIn === P.wei && lc(shown.tokenIn) === lc(P.pay) && lc(shown.tokenOut) === lc(P.get) && shown.slippageBps === S.slip;
     const q = P.reused ? shown : await within(A.bestRoute({ ethCall, to: dest, refundTo: from, tokenIn: P.pay, tokenOut: P.get, amountIn: P.wei, slippageBps: S.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     // the calldata's own limits are the swap's floor: it is sent only when they still pay at least what was shown
     if (!q || q.out < P.floor || q.min < (P.r.min ?? P.floor)) return moved();
@@ -1405,13 +1407,13 @@ function modsSoon() {
 // a minute if it failed.
 let depAsked = '', depTimer = 0, depDeclined = false, depTouched = 0;
 const depKeyed = () => !!(PV?.unlocked || H.key?.session?.unlocked);
-const sheetOpen = () => !!document.querySelector('dialog[open], .bsheet, .bm-modal') || !$('#pk').hidden;
+const sheetOpen = () => !!document.querySelector('dialog[open], .bsheet, .bm-modal') || $('#pk')?.hidden === false;
 function depositSoon(q) {
   const net = navigator.connection, hop = picked(q)?.hop ? tokHop()?.hop : null, dep = laterDeposit(q), k = `${hop?.pool || ''}:${dep}`;
   if (net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || dep == null || k === depAsked || (depDeclined && !depKeyed())) return;
   depAsked = k;
   const ask = () => {
-    if (document.hidden) { depAsked = ''; return; }
+    if (document.hidden) { depAsked = ''; document.addEventListener('visibilitychange', () => { if (!document.hidden && S.q) paintQuote(); }, { once: true }); return; }
     const left = depTouched + 2000 - Date.now();
     if (left > 0) { depTimer = setTimeout(ask, left); return; }
     if (!depKeyed() && sheetOpen()) { depTimer = setTimeout(ask, 2000); return; }
@@ -1423,7 +1425,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=658d4f1d').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=35f69937').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));

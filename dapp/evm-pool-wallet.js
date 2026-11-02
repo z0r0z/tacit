@@ -870,9 +870,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // only when the receipt carries the pool's Transact for its nullifiers, so a hash for some other transaction is not
   // taken as this payment.
   async function landed(hash, nfs = [], read = chain.rpc) {
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < 120; i++) {
       const r = await read('eth_getTransactionReceipt', [hash]).catch(() => null);
-      if (!r) { await sleep(2000); continue; }
+      if (!r) { await sleep(i < 60 ? 1000 : 2000); continue; }       // each second for the first minute, then every two: three minutes in all
       if (!(r.status === '0x1' || r.status === 1 || r.status === 'success')) return false;
       return !nfs.length || (r.logs || []).some((l) => String(l.address).toLowerCase() === String(chain.pool).toLowerCase()
         && String(l.topics?.[0]).toLowerCase() === TRANSACT_TOPIC && nfs.every((nf) => [l.topics[1], l.topics[2]].some((t) => t != null && BigInt(t) === BigInt(nf))));
