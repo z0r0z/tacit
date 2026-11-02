@@ -40,12 +40,23 @@ locked note holds exactly the quoted amount.
 ## Rules that keep a swap whole
 
 - The counterparty's Bitcoin claim key is fixed before `t` exists, and the lock is built to that key.
-- The claim kernel is over `(L, O)`. Every lock therefore has its own `L`: the Ethereum locker derives the blinding
-  of `L` from its seed, the swap id and the whole adaptor point, and a restarted locker finds its lock again from the
-  pool before it builds a new one. The Ethereum deadline is derived from the block time at which the Bitcoin lock
-  reached its confirmations, so the same lock leaf comes out after a restart or with the record gone.
+- Each swap has exactly one Ethereum lock, and no two locks share an `L`: the claim kernel is over `(L, O)`. The
+  Ethereum locker derives the blinding of `L` from its seed, the swap id and the whole adaptor point. It computes the
+  Ethereum deadline once, from the block time at which the Bitcoin lock reached its confirmations, and stores it with the
+  swap. A lock that is stored is sent from its stored bytes; a lock that may already be in the pool is looked up by its
+  leaf before anything new is built; a lock that is found too late to answer is still watched and refunded. The record
+  of an open swap is the safety state of the Ethereum locker and is kept durably and backed up. An offer that reaches
+  the Ethereum locker long after its lock confirmed is not answered, which bounds what a lost record can lead to.
+- Steps of one swap run one at a time, so overlapping ticks never build the same transaction twice.
 - No claim is built with less than `minClaimSecs` left before the deadline: a claim that is sent and misses the
   deadline still publishes `t`.
+- Time on Ethereum is the latest block's timestamp. The Ethereum locker refunds only after the deadline plus a margin,
+  and looks for a claim again before every refund step, so a claim that lands near the deadline still opens the
+  Bitcoin lock.
+- Once the Bitcoin timelock has run, the Bitcoin locker takes its note back from any waiting phase, so a claim job
+  that never answers or an offer that cannot be read does not hold it.
+- The Ethereum locker signs its take over the sats value the lock output really carries, read from the transaction.
+- Every field of an offer is checked for shape before it is used; a field that does not parse is refused with a reason.
 - The pre-signature nonce binds the excess, `(L, O)`, the full compressed `T` and the lock leaf.
 - Every record is stored before the step that sends it, and the step is resumed from the stored bytes.
 
