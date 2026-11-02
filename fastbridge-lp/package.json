@@ -1,0 +1,9 @@
+{
+  "name": "tacit-fastbridge-lp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The fast bridge liquidity provider: quotes and offers over HTTP, and the Ethereum-locker machine over a durable store. Run from the repository root with Node 22.",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node server.mjs", "dry-run": "node server.mjs --dry-run" }
+}
