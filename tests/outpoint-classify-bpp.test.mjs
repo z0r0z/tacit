@@ -40,10 +40,10 @@ test.before(() => {
 });
 test.after(() => { globalThis.fetch = realFetch; });
 
-const classify = async (op) => {
+const classify = async (op, env = { SIGNET_API: 'https://stub.test/api' }) => {
   const r = await worker.fetch(new Request('https://api.test/outpoints/classify?network=signet', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outpoints: [op] }),
-  }), { SIGNET_API: 'https://stub.test/api' }, { waitUntil() {} });
+  }), env, { waitUntil() {} });
   assert.equal(r.status, 200);
   return (await r.json()).coins[op];
 };
@@ -59,4 +59,17 @@ test('a corrupted Bulletproofs+ proof is still refused, never reported as an ass
   const c = await classify(fx.target);
   assert.equal(c.status, 'unverified');
   assert.notEqual(c.reason, 'ancestry walk failed', 'the verifier must answer, not throw');
+});
+
+// Last in the file: a 503 from every source puts them all on cooldown for the rest of the process.
+test('a proven Bulletproofs+ asset still answers when every explorer is down', async () => {
+  served = fx.txs;
+  const kv = new Map();
+  const env = { SIGNET_API: 'https://stub.test/api', REGISTRY_KV: { get: async (k) => (kv.has(k) ? JSON.parse(kv.get(k)) : null), put: async (k, v) => { kv.set(k, v); } } };
+  assert.equal((await classify(fx.target, env)).status, 'asset');
+
+  globalThis.fetch = async () => new Response('unavailable', { status: 503 });
+  assert.deepEqual(await classify(fx.target, env), { status: 'asset', asset_ids: [ETCH_ASSET] });
+  const other = `${'cd'.repeat(32)}:0`;
+  assert.equal((await classify(other, env)).status, 'unverified');
 });

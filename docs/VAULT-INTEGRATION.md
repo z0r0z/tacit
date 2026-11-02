@@ -45,6 +45,10 @@ Retrying `unverified` coins converges: every hop a walk proves is cached permane
 time or walk budget (25 walks, about 20 s) returns the rest as `unverified` with `reason: "request over budget, retry"`.
 A coin that has never been looked up can take tens of seconds the first time.
 
+A note once proven `asset` (its transaction confirmed) keeps answering `asset` when the block explorers are down. A
+coin not proven before, and every `plain`, answers `unverified` until they return, so a wallet that cannot spend
+during an outage is working as intended.
+
 ### Drop-in guard
 
 ```js

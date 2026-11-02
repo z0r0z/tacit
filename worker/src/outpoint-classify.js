@@ -25,6 +25,26 @@ const WALK_BUDGET = 25;
 const DEADLINE_MS = 20_000;
 const CONCURRENCY = 6;
 
+// A proven asset note is a fact about immutable history, so its verdict is kept in KV and answered without the
+// explorer: when every explorer is down, notes already proven still answer `asset` rather than `unverified`.
+// Only `asset` is kept. It is the answer that blocks a sats spend, so a stale entry can only over-block; `plain`
+// is always read off the chain. Written once the creating transaction is confirmed. Bump the version to drop the
+// entries if the classification rules change. Best-effort like the ancestry cache: no KV, or a KV error, is a miss.
+const assetKey = (network, txid, vout) => `tacclass:v1:${network}:${txid}:${vout}`;
+async function loadAsset(env, network, txid, vout) {
+  if (!env?.REGISTRY_KV) return null;
+  try {
+    const v = await env.REGISTRY_KV.get(assetKey(network, txid, vout), 'json');
+    const ids = v?.asset_ids;
+    return Array.isArray(ids) && ids.length === 1 && /^[0-9a-f]{64}$/.test(ids[0]) ? ids : null;
+  } catch { return null; }
+}
+async function saveAsset(env, network, txid, vout, assetIds) {
+  if (!env?.REGISTRY_KV) return;
+  try { await env.REGISTRY_KV.put(assetKey(network, txid, vout), JSON.stringify({ asset_ids: assetIds })); }
+  catch { /* the next call re-verifies */ }
+}
+
 export function makeOutpointClassifier({ apiJson, decodeEnvelopeScript, hexToBytes, verifyTacAncestry }) {
   // A taproot script-path witness ends [..., script, control_block] with an optional annex after, so scan
   // every element rather than guess the position. decodeEnvelopeScript returns null for anything else.
@@ -62,8 +82,13 @@ export function makeOutpointClassifier({ apiJson, decodeEnvelopeScript, hexToByt
     const t0 = Date.now();
     let walks = 0;
     await mapLimit([...byTx.keys()], CONCURRENCY, async (txid) => {
-      const vouts = byTx.get(txid);
       const mark = (vout, verdict) => { coins[`${txid}:${vout}`] = verdict; };
+      const kept = await Promise.all(byTx.get(txid).map((v) => loadAsset(env, network, txid, v)));
+      const vouts = byTx.get(txid).filter((v, i) => {
+        if (kept[i]) mark(v, { status: 'asset', asset_ids: kept[i] });
+        return !kept[i];
+      });
+      if (!vouts.length) return;
       let tx;
       try { tx = await apiJson(env, `/tx/${txid}`, {}, network); }
       catch (e) { for (const v of vouts) mark(v, { status: 'unverified', reason: 'transaction lookup failed' }); return; }
@@ -85,8 +110,10 @@ export function makeOutpointClassifier({ apiJson, decodeEnvelopeScript, hexToByt
         let r;
         try { r = await verifyTacAncestry(env, txid, v, network, { memo }); }
         catch (e) { r = { ok: false, reason: 'ancestry walk failed' }; }
-        if (r.ok) mark(v, { status: 'asset', asset_ids: [r.assetIdHex] });
-        else if (r.notTacit) mark(v, { status: 'plain' });
+        if (r.ok) {
+          mark(v, { status: 'asset', asset_ids: [r.assetIdHex] });
+          if (tx.status?.confirmed === true) await saveAsset(env, network, txid, v, [r.assetIdHex]);
+        } else if (r.notTacit) mark(v, { status: 'plain' });
         else mark(v, { status: 'unverified', reason: String(r.reason || 'not verified').slice(0, 160) });
       }
     });

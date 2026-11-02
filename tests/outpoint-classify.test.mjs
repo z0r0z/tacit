@@ -106,3 +106,45 @@ test('a verified ancestry walk reports the asset; walk errors and an exhausted b
   assert.equal(Object.values(res).filter((x) => x.status === 'unverified').length, 5);
   assert.equal(Object.values(res).filter((x) => x.status === 'plain').length, 0);
 });
+
+test('a proven asset keeps answering when the explorer is down; plain, unconfirmed and unproven coins do not', async () => {
+  const asset = 'ab'.repeat(32);
+  const kv = new Map();
+  const REGISTRY_KV = { get: async (k) => (kv.has(k) ? JSON.parse(kv.get(k)) : null), put: async (k, v) => { kv.set(k, v); } };
+  let down = false;
+  const lookups = [];
+  const txOf = (txid) => (txid === T(7)
+    ? { status: { confirmed: true }, vin: [{ witness: p2wpkhWitness }], vout: [{}, {}] }
+    : { status: { confirmed: txid !== T(6) }, vin: [{ witness: taprootWitness(0x22) }], vout: [{}, {}] });
+  const c = makeOutpointClassifier({
+    apiJson: async (_e, path) => { lookups.push(path); if (down) throw new Error('all sources failed'); return txOf(path.split('/')[2]); },
+    decodeEnvelopeScript: (b) => (b.length > 40 ? { opcode: 0x22, payload: b } : null),
+    hexToBytes: (h) => Buffer.from(h, 'hex'),
+    verifyTacAncestry: async () => ({ ok: true, assetIdHex: asset }),
+  });
+  const env = { REGISTRY_KV };
+  const ops = [`${T(5)}:0`, `${T(6)}:0`, `${T(7)}:0`, `${T(8)}:0`];
+
+  const up = await c.classifyOutpoints(env, 'mainnet', ops);
+  assert.equal(up[ops[0]].status, 'asset');
+  assert.equal(up[ops[1]].status, 'asset');   // proven, but its transaction is not confirmed yet
+  assert.equal(up[ops[2]].status, 'plain');
+  assert.deepEqual([...kv.keys()].filter((k) => k.includes(T(5))), [`tacclass:v1:mainnet:${T(5)}:0`]);
+  assert.equal(kv.size, 2, 'only the confirmed assets (T(5), T(8)) are kept');
+
+  // The explorer goes down, and one kept entry is damaged: it is a miss, never an answer.
+  down = true;
+  kv.set(`tacclass:v1:mainnet:${T(8)}:0`, JSON.stringify({ asset_ids: ['zz'] }));
+  lookups.length = 0;
+  const out = await c.classifyOutpoints(env, 'mainnet', ops);
+  assert.deepEqual(out[ops[0]], { status: 'asset', asset_ids: [asset] });
+  assert.equal(out[ops[1]].status, 'unverified');
+  assert.equal(out[ops[2]].status, 'unverified');   // plain is never answered from memory
+  assert.equal(out[ops[3]].status, 'unverified');
+  assert.ok(!lookups.some((p) => p.includes(T(5))), 'a kept asset needs no explorer call');
+
+  // A kv failure is a miss, not an error.
+  const broken = { REGISTRY_KV: { get: async () => { throw new Error('kv down'); }, put: async () => { throw new Error('kv down'); } } };
+  down = false;
+  assert.equal((await c.classifyOutpoints(broken, 'mainnet', [ops[0]]))[ops[0]].status, 'asset');
+});
