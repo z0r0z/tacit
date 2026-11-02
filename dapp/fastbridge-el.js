@@ -54,7 +54,13 @@ export function makeEthereumLocker(ctx) {
   const { seed, store, policy, quotes, btc, evm, counter } = ctx;
   const margin = policy.refundMarginSecs ?? 600;
   const maxOfferAge = policy.maxOfferAgeSecs ?? 3600;
-  const save = async (rec, patch) => { Object.assign(rec, patch, { updated: ctx.now() }); await store.put(rec); return rec; };
+  // `updated` moves with every save, a failed step's included; `phaseAt` moves only when the phase does
+  const save = async (rec, patch) => {
+    const entered = patch.phase && patch.phase !== rec.phase ? { phaseAt: ctx.now() } : {};
+    Object.assign(rec, patch, entered, { updated: ctx.now() });
+    await store.put(rec);
+    return rec;
+  };
   const sidOf = (rec) => hexToBytes(rec.id);
 
   // Work on one swap runs one step at a time, so two overlapping ticks never build the same thing twice.
@@ -71,6 +77,7 @@ export function makeEthereumLocker(ctx) {
   // time, so a lock this side has not seen yet is not refused for good. A swap already stored answers with its record.
   function receive({ quoteId, offer }) {
     const id = strip((offer && offer.swapId) || '');
+    if (!/^[0-9a-f]{72}$/.test(id)) return Promise.resolve({ ok: false, retry: false, why: 'malformed offer: the swap id' });
     return serial(id, () => receiveOnce({ quoteId, offer, id }));
   }
 
@@ -176,12 +183,22 @@ export function makeEthereumLocker(ctx) {
           }));
           const lockNu = evm.lockNullifier(expected);
           if (await evm.lockPosition(expected)) return save(rec, { lock: { lockLeaf: expected, lockNu }, phase: 'locked' });
+          // making the lock reads the wallet's notes, which is slow: a try that finds none is not repeated on every tick
+          if (rec.buildRetryAt && ctx.now() < rec.buildRetryAt) return rec;
           const nowSecs = await evm.now();
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'aborted', why: 'too late to lock' });
-          const built = await evm.lockOp({ rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly });
-          if (!built) return rec;
+          const args = { rec, rEvmLock, T, deadline: rec.deadline, recipient: rec.offer.evm.recipient, refundXonly: refund.xonly };
+          const failures = rec.buildFailures || 0;
+          const next = { buildRetryAt: ctx.now() + Math.min(policy.buildRetryMaxSecs ?? 600, (policy.buildRetrySecs ?? 30) * 2 ** Math.min(failures, 10)), buildFailures: failures + 1 };
+          let built;
+          try {
+            built = await evm.lockOp(args);
+            // no note of the exact size yet: one is made from a larger note (once), and the lock is tried again
+            if (!built && evm.prepare && !rec.prepared) { await evm.prepare({ rec }); await save(rec, { prepared: true }); built = await evm.lockOp(args); }
+          } catch (e) { await save(rec, next); throw e; }
+          if (!built) return save(rec, { ...next, why: 'waiting for a pool note of the exact size' });
           if (strip(built.lockLeaf) !== strip(expected)) return save(rec, { phase: 'aborted', why: 'the lock built is not the lock this swap names' });
-          return save(rec, { lock: { lockLeaf: expected, lockNu, op: built.op } });
+          return save(rec, { lock: { lockLeaf: expected, lockNu, op: built.op }, why: null, buildRetryAt: null, buildFailures: 0 });
         }
         if (await evm.lockPosition(rec.lock.lockLeaf)) return save(rec, { phase: 'locked' });
         if (!rec.lock.jobId) {

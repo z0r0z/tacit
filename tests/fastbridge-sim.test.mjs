@@ -5,87 +5,16 @@
 //   node tests/fastbridge-sim.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
-import { makeAdaptorBtcTx, tacitKit } from '../dapp/adaptor-btc-tx.js';
-import { makeBitcoinLocker } from '../dapp/fastbridge-bl.js';
-import { makeEthereumLocker } from '../dapp/fastbridge-el.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { G, bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
-import { fetched, tacit, te, scalar, etchNote } from './lib/btc-sim.mjs';
-import { makeClock, makeBitcoinSim, makeEvmSim, makeEvmParty, partyKeys, pool, sha256, ASSET } from './lib/chain-sim.mjs';
+import { fetched } from './lib/btc-sim.mjs';
+import { pool, ASSET } from './lib/chain-sim.mjs';
+import { world, memStore, VALUE } from './lib/fastbridge-world.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
-const VALUE = 5000n;
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
-
-const memStore = () => {
-  const m = new Map();
-  return { m, get: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), put: async (r) => { m.set(r.id, JSON.stringify(r)); }, list: async () => [...m.values()].map((v) => JSON.parse(v)) };
-};
-
-function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver = {}, funds = 1, lpNowSkew = 0 } = {}) {
-  const clock = makeClock();
-  const btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
-  const kit = tacitKit(tacit);
-  const wallet = (name) => makeBtcWallet({ priv: bigintToBytes32(scalar(name + '/btc-wallet')), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
-  const uW = wallet('user'), lW = wallet('lp');
-  const uKeys = partyKeys('user'), lKeys = partyKeys('lp');
-  const uEvm = makeEvmParty({ evm, keys: uKeys, clock }), lEvm = makeEvmParty({ evm, keys: lKeys, clock });
-  for (let i = 0; i < funds; i++) lEvm.fund(VALUE, 'inv' + i);
-
-  // the user's Bitcoin note
-  const r0 = scalar('user/note');
-  const etch = etchNote({ ticker: 'TP', value: VALUE, r: r0, script: uW.prims.p2wpkhScript(uW.wallet.pub), signerD: scalar('etcher') });
-  btc.addConfirmed(etch);
-  const note = { txid: etch.txid, vout: 0, value: 546, amount: VALUE, blinding: r0 };
-  let coinN = 0;
-  const sats = () => [{ txid: bytesToHex(sha256(te('coin/' + coinN++))), vout: 0, value: 200_000 }];
-
-  const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims, kit }), sats });
-  const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
-  const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
-  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
-  const lEvmCtx = { ...base, now: async () => clock.now() + lpNowSkew, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey };
-
-  const quotes = new Map();
-  const quote = { id: 'q1', btcAsset: bytesToHex(etch.asset), btcValue: VALUE, evmAsset: ASSET, evmAmount: VALUE, validUntil: clock.now() + 3600 };
-  quotes.set(quote.id, quote);
-  const lpOffers = new Map();
-  const w = { clock, btc, evm, etch, note, quote, quotes, uW, lW, uKeys, lKeys, lBtc, lEvm, lpUp: true, lpOffers, userStore: memStore(), lpStore: memStore() };
-  const toLp = { sendOffer: async (msg) => { if (!w.lpUp) throw new Error('the liquidity provider is unreachable'); return w.lp_.receive(msg); }, getEvmOffer: async (id) => lpOffers.get(id) || null };
-  const toUser = { publishEvmOffer: async (id, o) => { lpOffers.set(id, o); } };
-  const userPolicy = { csvBlocks: 144, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600, ...userPolicyOver };
-  const lpPolicy = { minCsv: 72, minConfsFor: () => lpConfs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, minAmount: 1000, maxAmount: 1_000_000, roundSecs: 600, ...lpPolicyOver };
-  w.userBl = makeBitcoinLocker({ seed: uKeys.seed, now: clock.now, policy: userPolicy, store: w.userStore, btc: uBtc, evm: uEvmCtx, counter: toLp });
-  w.makeLp = () => makeEthereumLocker({ seed: lKeys.seed, now: clock.now, policy: lpPolicy, store: w.lpStore, quotes: { get: async (id) => quotes.get(id) || null }, btc: lBtc, evm: lEvmCtx, counter: toUser });
-  w.lp_ = w.makeLp();
-  w.restartLp = () => { w.lp_ = w.makeLp(); };
-  w.user = async () => (await w.userStore.list())[0];
-  w.lp = async () => (await w.lpStore.list())[0];
-  w.userOnline = true; w.lpOnline = true;
-  w.start = () => w.userBl.start({ asset: etch.asset, amount: VALUE, notes: [note], counterClaimPub: lW.wallet.pub, evmAsset: ASSET, evmAmount: VALUE, quoteId: quote.id });
-  w.step = async () => {
-    if (w.userOnline) for (const r of await w.userStore.list()) await w.userBl.step(r);
-    if (w.lpOnline) for (const r of await w.lpStore.list()) await w.lp_.step(r);
-    evm.process();
-  };
-  // one tick is a minute; a block is found every ten
-  let ticks = 0;
-  w.run = async (until, max = 2000) => {
-    for (let i = 0; i < max; i++) {
-      if (await until()) return i;
-      await w.step();
-      clock.advance(60); ticks++;
-      if (ticks % 10 === 0) btc.mine(1, { advance: false });
-    }
-    throw new Error('did not finish: user ' + JSON.stringify(await w.user()).slice(0, 400) + ' lp ' + JSON.stringify(await w.lp()).slice(0, 400));
-  };
-  w.noteOf = async (txid, vout) => btc.resolveNote(txid, vout);
-  w.poolHolds = (leaf) => evm.notes.leaves.some((l) => bytesToHex(l) === strip(leaf));
-  return w;
-}
 
 test('Bitcoin -> Ethereum: the LP ends with the Bitcoin note and the user with the pool note, and each lock is spent once', async () => {
   const w = world();
@@ -375,6 +304,36 @@ test('an offer that reaches the LP long after the lock confirmed is not answered
   const got = await w.lp_.receive({ quoteId: 'q1', offer: await offer() });
   assert.equal(got.ok, false);
   assert.match(got.why, /too late/);
+});
+
+test('an LP with no note of the exact size has one made, once, and does not look for it on every tick', async () => {
+  const w = world({ funds: 0 });
+  w.lEvm.fund(VALUE * 2n, 'big');                                   // one note, twice the size
+  let made = 0, tries = 0;
+  const lockOp = w.lEvmCtx.lockOp;
+  w.lEvmCtx.lockOp = async (a) => { tries++; return lockOp(a); };
+  w.lEvmCtx.prepare = async ({ rec }) => { made++; w.lEvm.fund(BigInt(rec.offer.evm.amount), 'cut'); };
+  await w.start();
+  await w.run(async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done');
+  assert.equal(made, 1);
+  assert.equal(tries, 2, 'once without the note, once with it');
+  assert.equal(w.evm.locks.leaves.length, 1);
+});
+
+test('an LP that cannot make a note of the exact size tries at a slowing pace and gives up when it is too late to lock', async () => {
+  const w = world({ funds: 0 });
+  let prepares = 0, tries = 0;
+  w.lEvmCtx.prepare = async () => { prepares++; throw new Error('no single note covers the amount'); };
+  const lockOp = w.lEvmCtx.lockOp;
+  w.lEvmCtx.lockOp = async (a) => { tries++; return lockOp(a); };
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'aborted');
+  const lp = await w.lp();
+  assert.match(lp.why, /too late to lock/);
+  assert.equal(w.evm.locks.leaves.length, 0, 'nothing was locked');
+  assert.ok(tries <= 30, `${tries} tries in about three hours`);
+  assert.ok(prepares >= 5 && prepares === tries, `${prepares} prepares, ${tries} tries`);
+  assert.match(lp.lastError || '', /no single note covers/);
 });
 
 let passed = 0, ran = 0;
