@@ -682,7 +682,7 @@ if (!process.env.SKIP_GASRELAY) {
   await until(page, () => /Balance/.test(document.querySelector('#pay-side').textContent));
   const swapped = async (what) => { await page.click('#go'); await until(page, () => /Done|failed|would fail|Nothing was sent/i.test(document.querySelector('#q').textContent), null, 180000); return (await page.textContent('#q')).trim(); };
   // the route picked by hand: an outside solver's (KyberSwap's when it answered), or zQuoter's own
-  const route = async (k) => { await until(page, () => !document.querySelector('#rows[data-more]') && !document.querySelector('#out').classList.contains('busy'), null, 30000).catch(() => {}); if (await page.$('#rows [data-routes-all]')) await page.click('#rows [data-routes-all]'); const ks = await page.$$eval('#rows [data-route]', (b) => b.map((x) => x.dataset.route)); const pickK = k === 'sv' ? (ks.includes('sv:kyber') ? 'sv:kyber' : ks.find((x) => x.startsWith('sv:'))) : k; if (pickK) await page.click(`#rows [data-route="${pickK}"]`); return pickK; };
+  const route = async (k) => { await until(page, () => !document.querySelector('#rows[data-more]') && !document.querySelector('#out').classList.contains('busy'), null, 30000).catch(() => {}); if (await page.$('#rows [data-routes-all]')) await page.click('#rows [data-routes-all]'); const ks = await page.$$eval('#rows [data-route]', (b) => b.map((x) => x.dataset.route)); const pickK = k === 'sv' ? (ks.includes('sv:kyber') ? 'sv:kyber' : ks.find((x) => x.startsWith('sv:'))) : k; if (!pickK || !ks.includes(pickK)) return null; await page.click(`#rows [data-route="${pickK}"]`); return pickK; };
   const snwapSent = () => { const t = walletLog.sends[walletLog.sends.length - 1]; return t && String(t.to).toLowerCase() === ZROUTER && /5f3bd1c8/.test(String(t.data)); };
   await pick(page, 'get', 'USDC');
   await typeAmt(page, '0.1'); await quoted(page); await ackIf(page);
@@ -700,6 +700,36 @@ if (!process.env.SKIP_GASRELAY) {
   { const d0 = await bal(DAI, w.account), u0 = await bal(USDC, w.account), signs = walletLog.signs, said = await swapped(), d1 = await bal(DAI, w.account), u1 = await bal(USDC, w.account);
     ok(/Done/.test(said) && d1 > d0 && u0 - u1 === 50n * 10n ** 6n, `USDC → DAI: exactly 50 USDC spent, ${Number(d1 - d0) / 1e18} DAI got (${said.slice(0, 80)})`);
     ok(walletLog.signs > signs || walletLog.sends.length >= 2, 'the USDC reached zRouter by its permit or an allowance'); }
+  // zQuoter's own route is sent as the card showed it: it is not read again between the press and the wallet
+  await pick(page, 'pay', 'ETH'); await pick(page, 'get', 'USDC');
+  await typeAmt(page, '0.1'); await quoted(page); await ackIf(page);
+  { const via = await route('agg'); let scans = 0, counting = false;
+    const count = (r) => { if (counting && r.method() === 'POST') { const b = r.postData() || ''; if (/11E1A300/i.test(b) && /(e453166e|892af013|85f86a90)/.test(b)) scans++; } };
+    page.on('request', count);
+    const u0 = await bal(USDC, w.account); counting = true; const said = await swapped(); counting = false; page.off('request', count);
+    const u1 = await bal(USDC, w.account), t = walletLog.sends[walletLog.sends.length - 1];
+    ok(via === 'agg' && /Done/.test(said) && u1 > u0, `ETH → USDC through zQuoter's own route: ${Number(u1 - u0) / 1e6} USDC (${via}; ${said.slice(0, 70)})`);
+    ok(t && String(t.to).toLowerCase() === ZROUTER && !/^0x5f3bd1c8/.test(String(t.data)), 'it went to zRouter as zQuoter built it, not as a solver\'s snwap');
+    ok(scans === 0, `zQuoter was not read again between the press and the wallet (${scans} scans)`); }
+  // the check against the chain says no (the price moved under the floor): nothing reaches the wallet, the card says so and prices again; then the swap lands
+  await typeAmt(page, '0.05'); await quoted(page); await ackIf(page);
+  { await route('agg');
+    const sends0 = walletLog.sends.length, signs0 = walletLog.signs; let refused = 0;
+    const handler = async (rt) => {
+      try { const j = JSON.parse(rt.request().postData() || '{}'); if (j.method === 'eth_call' && String(j.params?.[0]?.to || '').toLowerCase() === ZROUTER && j.params?.[0]?.from && !j.params?.[0]?.gas) { refused++; return rt.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ jsonrpc: '2.0', id: j.id, error: { code: 3, message: 'execution reverted' } }) }); } } catch { /* not JSON */ }
+      return rt.fallback();
+    };
+    for (const h of RPC_HOSTS) await page.route(`https://${h}/**`, handler);
+    await page.click('#go');
+    await until(page, () => /price moved|would fail|Nothing was sent|Done/i.test(document.querySelector('#q').textContent), null, 60000);
+    const said = (await page.textContent('#q')).trim();
+    ok(refused >= 1 && /price moved/i.test(said), `a check that says no sends nothing and says why (${said.slice(0, 80)})`);
+    ok(walletLog.sends.length === sends0 && walletLog.signs === signs0, 'and nothing reached the wallet');
+    await quoted(page);
+    ok(/Buy USDC/.test(await page.textContent('#go')), `the card prices it again and offers it (${(await page.textContent('#go')).trim()})`);
+    for (const h of RPC_HOSTS) await page.unroute(`https://${h}/**`, handler);
+    const u0 = await bal(USDC, w.account), said2 = await swapped(), u1 = await bal(USDC, w.account);
+    ok(/Done/.test(said2) && u1 > u0, `and once the check agrees it lands: ${Number(u1 - u0) / 1e6} USDC`); }
   ok(!errors.length, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   await browser.close();
 }

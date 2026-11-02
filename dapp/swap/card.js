@@ -612,7 +612,8 @@ async function quote(my, wei) {
     // each source settles once: its route (or none) joins the list, which is ranked and drawn again with how many are still asked. zQuoter's scans answer one after the other
     // (0.3 s to 0.9 s): its best route so far is drawn as soon as one has, and replaced by the best of all when the last has
     const put = (r) => { const i = rows.findIndex((x) => x.k === r.k); if (i < 0) rows.push(r); else rows[i] = r; };
-    const show = () => { if (!rows.length || my !== S.seq) return; rows.sort((a, b) => netOf(b) - netOf(a)); rows.forEach((x, i) => { x.best = i === 0; }); done({ rows: rows.slice(), more: left }); };
+    // with no outside solver asked (Swap privately) the first route is already a price, and a "checking more routes" line that came and went would move the button: nothing is said of what is still out
+    const show = () => { if (!rows.length || my !== S.seq) return; rows.sort((a, b) => netOf(b) - netOf(a)); rows.forEach((x, i) => { x.best = i === 0; }); done({ rows: rows.slice(), more: sols.length ? left : 0 }); };
     const settle = (r) => { left--; if (r) put(r); show(); };
     const zRow = (zq) => ({ k: 'agg', name: zq.name, note: 'onchain', out: zq.out, min: zq.min, agg: zq, gas: GAS[zq.kind] || GAS.split, at: now() });
     await Promise.all([
