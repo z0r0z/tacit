@@ -47,6 +47,10 @@ locked note holds exactly the quoted amount.
   leaf before anything new is built; a lock that is found too late to answer is still watched and refunded. The record
   of an open swap is the safety state of the Ethereum locker and is kept durably and backed up. An offer that reaches
   the Ethereum locker long after its lock confirmed is not answered, which bounds what a lost record can lead to.
+- The Ethereum locker takes only what it can lock. A quote checks its inventory and holds nothing; a reservation holds the
+  payout when the user commits, before it locks any Bitcoin, and is extended once the lock is on the network and held
+  through its confirmation. An offer whose payout is not held is held at that moment or declined. A provider that is out of
+  inventory is therefore found out while the user's TAC is still in hand.
 - Steps of one swap run one at a time, so overlapping ticks never build the same transaction twice.
 - A lock is made from a pool note of exactly the amount. When there is none, one is cut from a larger note, once, and
   the tries that follow are spaced by growing waits, since each reads the wallet's notes.

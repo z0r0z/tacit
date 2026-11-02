@@ -37,6 +37,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     const t = {
       claimPub: strip(i.claimPub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: big(i.minAmount, 'minimum'), maxAmount: big(i.maxAmount, 'maximum'),
       feeBps: Number(i.feeBps) || 0, flatFee: big(i.flatFee ?? 0, 'flat fee'), csvBlocks: Number(i.csvBlocks), evmWindowSecs: Number(i.evmWindowSecs),
+      available: i.available == null ? null : big(i.available, 'capacity'),
     };
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== t[k]) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     return t;
@@ -78,6 +79,12 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
     const pick = pickNotes(notes, q.btcValue);
     if (!pick) throw new Error('these notes do not cover the amount');
+    if (await store.get(bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
+    // the provider holds the payout before anything is locked: a provider that cannot is found out while the TAC is still in hand
+    if (counter.reserve) {
+      const r = await counter.reserve({ quoteId: q.id });
+      if (!r || r.ok === false) throw new Error(`the provider cannot hold that amount${r && r.why ? `: ${r.why}` : ''}`);
+    }
     policy.csvBlocks = q.csvBlocks;
     return bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),

@@ -30,6 +30,7 @@ export function makeFileStore(dir) {
       return null;
     },
     async put(rec) { writeAtomic(path(rec.id), JSON.stringify(rec)); broken.delete(rec.id); },
+    async del(id) { const f = path(id); for (const g of [f, f + '.bak']) { try { unlinkSync(g); } catch { /* already gone */ } } broken.delete(id); },
     // every record that can be read, each from its backup if its file cannot be; one that cannot be read at all is
     // reported by problems() and left alone
     async list() {
@@ -53,6 +54,7 @@ export function makeMemoryStore() {
   return {
     async get(id) { return m.has(id) ? JSON.parse(m.get(id)) : null; },
     async put(rec) { m.set(rec.id, JSON.stringify(rec)); },
+    async del(id) { m.delete(id); },
     async list() { return [...m.values()].map((v) => JSON.parse(v)); },
     problems() { return []; },
   };

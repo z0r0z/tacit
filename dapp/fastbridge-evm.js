@@ -133,6 +133,9 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return (byAsset[assetId] && byAsset[assetId].notes) || [];
   }
 
+  // What the wallet holds of the asset, less the notes already given to a lock: the most a new lock can use.
+  const available = async () => (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf))).reduce((s, n) => s + BigInt(n.value), 0n);
+
   // ── the Ethereum locker ──
   const refundKey = async (id) => ({ xonly: xonlyOf(derive('evm-refund', id)) });
   // A note of exactly the amount, cut from a larger one when there is none; one cut at a time.
@@ -193,5 +196,5 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return { op, leaves: [op.outLeaf], outputs: [output], ephSeed: scalarHex(derive('claim-eph', id)) };
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, recipient, claimOp };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, prepare, lockOp, refundOp, refundKey, reserve, available, recipient, claimOp };
 }

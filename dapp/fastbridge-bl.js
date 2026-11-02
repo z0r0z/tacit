@@ -27,7 +27,8 @@
 //   evm      { now(), lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
 //              recipient(swapIdHex) -> { xonly, priv }, claimOp({ rec, evmOffer, sec, position }) -> an op the adapter sends as it is,
 //              submit(type, op) -> { jobId }, claimStatus(jobId) -> 'pending' | 'settled' | 'failed' }
-//   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null }
+//   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null,
+//              extend?({ quoteId, txid }) -> { ok, retry?, why? } }
 
 import * as X from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
@@ -112,6 +113,13 @@ export function makeBitcoinLocker(ctx) {
         return save(rec, { phase: 'broadcast', broadcastAt: ctx.now() });
       }
       case 'broadcast': {
+        // the provider is asked to hold the payout through the confirmation; a provider that does not answer this is not waited on
+        if (!rec.extended && counter.extend && rec.quoteId) {
+          try {
+            const r = await counter.extend({ quoteId: rec.quoteId, txid: rec.lock.txid });
+            if (!(r && r.ok === false && r.retry)) await save(rec, { extended: !(r && r.ok === false), extendWhy: r && r.ok === false ? String(r.why || '') : null });
+          } catch { /* asked again on the next step */ }
+        }
         const st = await btc.status(rec.lock.txid);
         if (!st.confirmations) return rec;
         if (!rec.confirmedAt) await save(rec, { confirmedAt: ctx.now(), lockHeight: st.height });

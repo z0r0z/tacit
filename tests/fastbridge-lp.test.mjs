@@ -59,6 +59,7 @@ test('/info and /health: the LP\'s terms, and 503 once a tick has failed', async
 
 test('/quote: the fee is a share of the amount plus a flat part, within limits, and the quote is kept', async () => {
   const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
   const s = await serve(w, { config: configFor(w, { quote: { feeBps: 30, flatFee: 200, minAmount: 1000, maxAmount: 100_000 } }) });
   const q = (await call(s.base, 'POST', '/quote', { amount: '5000' })).body;
   assert.equal(q.btcValue, '5000');
@@ -88,6 +89,7 @@ test('/quote: the fee is a share of the amount plus a flat part, within limits, 
 
 test('the number of confirmations asked for rises with the amount', async () => {
   const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
   const s = await serve(w, { config: configFor(w, { policy: { minConfsFor: (v) => (BigInt(v) >= 10_000n ? 3 : 1) } }) });
   assert.equal((await call(s.base, 'POST', '/quote', { amount: '5000' })).body.minConfs, 1);
   assert.equal((await call(s.base, 'POST', '/quote', { amount: '50000' })).body.minConfs, 3);
@@ -249,6 +251,7 @@ test('the service restarts on its files: quotes, swaps and the pool lock\'s offe
 
 test('an expired quote ends the swap before anything is locked: the user takes its note back', async () => {
   const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'same-size');
   const s = await serve(w, { config: configFor(w, { quote: { validSecs: 100 } }) });
   ref.base = s.base;
   const q = await makeHttpCounter({ base: s.base, fetchImpl: realFetch }).quote(VALUE);
@@ -284,6 +287,155 @@ test('a swap that stays in the take is reported once an hour, with the reason', 
   await w.run(bothDone(w));
   const lp = await w.lp();
   assert.ok(lp.take);
+});
+
+// ── what the LP can take ──
+
+// the simulated wallet pays a take from one coin; more coins let more swaps be open at once
+const manyCoins = (w, n = 5, value = 200_000) => { w.lBtc.satsUtxos = async () => Array.from({ length: n }, (_, i) => ({ txid: String(i).repeat(64), vout: 0, value })); };
+const post = (s, path, body) => call(s.base, 'POST', path, body);
+const infoOf = async (s) => (await call(s.base, 'GET', '/info')).body;
+
+test('what can be taken: /info says it, a quote beyond it is refused, and a quote holds nothing', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  assert.equal((await infoOf(s)).available, '6000');
+  const over = await post(s, '/quote', { amount: '6001' });
+  assert.equal(over.status, 400);
+  assert.match(over.body.error, /cannot take that amount right now/);
+  const [a, b] = [await post(s, '/quote', { amount: '5000' }), await post(s, '/quote', { amount: '5000' })];
+  assert.deepEqual([a.status, b.status], [200, 200], 'two users comparing providers hold nothing');
+  assert.equal((await infoOf(s)).available, '6000');
+  // a provider that cannot say what it holds says so, and quotes as before
+  const blind = await serve(w, { config: configFor(w) });
+  delete w.lEvmCtx.available;
+  assert.equal((await infoOf(blind)).available, null);
+  assert.equal((await post(blind, '/quote', { amount: '999999' })).status, 200);
+});
+
+test('a reservation holds the payout: the next quote and reservation see less, and it lets go when it runs out', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q = (await post(s, '/quote', { amount: '4000' })).body;
+  const r1 = await post(s, '/reserve', { quoteId: q.id });
+  assert.deepEqual([r1.status, r1.body.ok, r1.body.until], [200, true, w.clock.now() + 900]);
+  assert.equal((await infoOf(s)).available, '2000');
+  assert.equal((await post(s, '/quote', { amount: '3000' })).status, 400, 'what is left does not cover it');
+  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 200);
+  assert.deepEqual((await post(s, '/reserve', { quoteId: q.id })).body, r1.body, 'the same reservation again is the same reservation');
+  assert.deepEqual((await post(s, '/reserve', { quoteId: '0'.repeat(32) })).body, { ok: false, retry: false, why: 'unknown quote' });
+  assert.equal((await post(s, '/reserve', { quoteId: 'nope' })).status, 400);
+  w.clock.advance(901);
+  assert.equal((await infoOf(s)).available, '6000', 'the payout is free again');
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true, 'a quote still valid can be reserved again');
+});
+
+test('reservations are made one at a time: two users asking for the same inventory at once get one reservation between them', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  const q1 = (await post(s, '/quote', { amount: '4000' })).body, q2 = (await post(s, '/quote', { amount: '4000' })).body;
+  const got = await Promise.all([post(s, '/reserve', { quoteId: q1.id }), post(s, '/reserve', { quoteId: q2.id })]);
+  assert.deepEqual(got.map((r) => r.body.ok).sort(), [false, true]);
+  assert.match(got.find((r) => !r.body.ok).body.why, /cannot take that amount right now/);
+});
+
+test('the Bitcoin coins that pay for the takes limit the swaps open at once, and a coin too small to pay one does not count', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  const s = await serve(w);
+  w.lBtc.satsUtxos = async () => [];
+  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 400);
+  assert.equal((await infoOf(s)).available, '0');
+  w.lBtc.satsUtxos = async () => [{ txid: 'a'.repeat(64), vout: 0, value: 1000 }];
+  w.clock.advance(61);
+  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 400, 'a coin of 1,000 sats does not pay a take at 3 sat/vB with margin');
+  manyCoins(w, 1);
+  w.clock.advance(61);
+  const q = (await post(s, '/quote', { amount: '2000' })).body;
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
+  const q2 = await post(s, '/quote', { amount: '2000' });
+  assert.equal(q2.status, 400, 'one coin, one swap');
+  manyCoins(w, 2);
+  w.clock.advance(61);
+  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 200);
+});
+
+test('extending a reservation: held through the confirmation, for the transaction it was made for', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
+  const s = await serve(w, { config: configFor(w, { reserve: { reserveSecs: 900, extendSecs: 7200 } }) });
+  ref.base = s.base;
+  const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+  const q = await counter.quote(VALUE);
+  assert.deepEqual((await post(s, '/extend', { quoteId: q.id, txid: 'f'.repeat(64) })).body, { ok: false, retry: false, why: 'no reservation' });
+  await counter.reserve({ quoteId: q.id });
+  assert.deepEqual((await post(s, '/extend', { quoteId: q.id, txid: 'f'.repeat(64) })).body, { ok: false, retry: true, why: 'the lock transaction is not visible yet' });
+  assert.equal((await post(s, '/extend', { quoteId: q.id, txid: 'zz' })).status, 400);
+  const rec = await startSwap(w, q);
+  await w.userBl.step(rec);                                    // the lock goes out
+  await w.userBl.step(rec);                                    // and the machine asks for the extension itself
+  const held = s.svc.reservations.get(q.id);
+  assert.equal(held.txid, rec.lock.txid);
+  assert.equal(held.until, w.clock.now() + 7200);
+  assert.equal((await w.user()).extended, true);
+  assert.match((await post(s, '/extend', { quoteId: q.id, txid: 'e'.repeat(64) })).body.why, /another transaction/);
+  assert.equal((await post(s, '/extend', { quoteId: q.id, txid: rec.lock.txid })).body.ok, true, 'the same transaction again is fine');
+});
+
+test('a swap whose lock confirms after its quote ran out still goes through: the reservation was extended', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
+  const s = await serve(w, { config: configFor(w, { quote: { validSecs: 100 } }) });
+  ref.base = s.base;
+  const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+  const q = await counter.quote(VALUE);
+  assert.equal((await counter.reserve({ quoteId: q.id })).ok, true);
+  await startSwap(w, q);
+  await w.run(bothDone(w));
+  assert.equal((await w.user()).phase, 'done');
+  assert.ok(w.clock.now() > q.created + 100, 'the offer came after the quote\'s own time');
+  assert.equal(s.svc.reservations.size, 0, 'the swap carries the payout from here');
+});
+
+test('an offer that holds nothing and finds nothing left is declined before anything is checked of it', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  ref.base = s.base;
+  const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
+  const mine = await counter.quote(VALUE), theirs = await counter.quote(VALUE);
+  assert.equal((await counter.reserve({ quoteId: theirs.id })).ok, true);
+  assert.deepEqual(await counter.reserve({ quoteId: mine.id }), { ok: false, retry: false, why: 'the provider cannot take that amount right now' });
+  // a user who locks anyway is answered no, and takes the note back
+  await startSwap(w, mine);
+  await w.run(async () => (await w.user())?.phase === 'refund-wait');
+  assert.match((await w.user()).why, /cannot take that amount right now/);
+  assert.equal(w.evm.locks.leaves.length, 0);
+  assert.deepEqual(await w.lpStore.list(), []);
+});
+
+test('reservations survive a restart of the service, and quotes never used are forgotten after two days', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const dir = tmp();
+  const quoteStore = makeFileStore(join(dir, 'quotes'));
+  let s = await serve(w, { quoteStore });
+  const q = (await post(s, '/quote', { amount: '4000' })).body, unused = (await post(s, '/quote', { amount: '1000' })).body;
+  await post(s, '/reserve', { quoteId: q.id });
+  await s.close();
+  s = await serve(w, { quoteStore: makeFileStore(join(dir, 'quotes')) });
+  assert.equal((await infoOf(s)).available, '2000', 'the reservation was kept');
+  assert.equal(s.svc.reservations.get(q.id).amount, 4000n);
+  w.clock.advance(3 * 86400);
+  await s.svc.tick();
+  assert.equal(await quoteStore.get(unused.id), null, 'an unused quote is forgotten');
+  assert.equal((await s.svc.quoter.get(q.id)), null, 'and so is a reserved one whose time is long past');
+  const fresh = (await post(s, '/quote', { amount: '1000' })).body;
+  await s.svc.tick();
+  assert.ok(await s.svc.quoter.get(fresh.id), 'a quote that is not old is kept');
 });
 
 // ── the files ──

@@ -2,6 +2,8 @@
   "network": "mainnet",
   "dataDir": "fastbridge-lp/data",
   "port": 8787,
+  "name": "Tacit",
+  "boards": [],
   "origins": ["https://tacit.finance"],
   "trustProxy": true,
   "tickSecs": 15,
@@ -11,6 +13,8 @@
   "btcAsset": "f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
   "evmAsset": "0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
   "csvBlocks": 144,
+  "reserve": { "reserveSecs": 900, "extendSecs": 7200 },
+  "inventory": { "refreshSecs": 60 },
   "quote": {
     "minAmount": "1000000000",
     "maxAmount": "100000000000",

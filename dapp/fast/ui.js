@@ -30,9 +30,9 @@ export function parseTac(text) {
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountFast({ root, providers = [], keyS, signIn, open, info, quoteDelayMs = 350, say = () => {} }) {
+export function mountFast({ root, providers = [], keyS, signIn, open, info, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { provider: null, terms: null, offline: false, sess: null, pub: null, bal: null, amt: '', quote: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null };
+  const S = { provider: null, terms: null, termsAt: 0, offline: false, sess: null, pub: null, bal: null, amt: '', quote: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null };
 
   root.innerHTML = `
     <div id="fx-lp" class="rows flat" aria-live="polite"></div>
@@ -55,7 +55,8 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
     if (!t) { e.innerHTML = '<p class="empty">Reading the provider…</p>'; return; }
     e.innerHTML = `<div class="kv"><span>Provider</span><b>${esc(S.provider.name || 'Provider')}</b></div>
       <div class="kv"><span>Fee</span><b class="num">${esc((t.feeBps / 100).toFixed(2))}%${t.flatFee > 0n ? ` + ${esc(fmtTac(t.flatFee))} TAC` : ''}</b></div>
-      <div class="kv"><span>Amount</span><b class="num">${esc(fmtTac(t.minAmount))} to ${esc(fmtTac(t.maxAmount))} TAC</b></div>`;
+      <div class="kv"><span>Amount</span><b class="num">${esc(fmtTac(t.minAmount))} to ${esc(fmtTac(t.maxAmount))} TAC</b></div>${t.available != null && t.available < t.maxAmount ? `
+      <div class="kv"><span>Available now</span><b class="num">${esc(fmtTac(t.available))} TAC</b></div>` : ''}`;
   }
 
   // the amount typed: what is wrong with it, or null
@@ -64,6 +65,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
     if (units == null) return S.amt.trim() ? 'That is not an amount.' : '';
     if (t && units < t.minAmount) return `The least is ${fmtTac(t.minAmount)} TAC.`;
     if (t && units > t.maxAmount) return `The most is ${fmtTac(t.maxAmount)} TAC.`;
+    if (t && t.available != null && units > t.available) return t.available > 0n ? `The provider can take up to ${fmtTac(t.available)} TAC right now.` : 'The provider cannot take more right now.';
     if (S.bal != null && units > S.bal) return 'That is more than your TAC on Bitcoin.';
     return '';
   }
@@ -101,6 +103,13 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
   const paint = () => { paintProvider(); paintForm(); paintNote(); paintList(); };
 
   // ── the provider ──
+  const termsOf = (i) => ({ feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available) });
+  // what the provider can take changes with every bridge: read again when a session opens and while an amount is typed
+  async function refreshTerms() {
+    if (!S.provider || Date.now() - S.termsAt < refreshMs) return;
+    S.termsAt = Date.now();
+    try { S.terms = termsOf(await info(S.provider)); paintProvider(); paintForm(); } catch { /* the terms already read stand */ }
+  }
   async function readProvider() {
     S.offline = false; S.terms = null; paint();
     for (const p of providers) {
@@ -109,7 +118,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
         const claimPub = String(i.claimPub || '').toLowerCase();
         if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) continue;
         S.provider = p;
-        S.terms = { feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount) };
+        S.terms = termsOf(i); S.termsAt = Date.now();
         paint(); return;
       } catch { /* the next provider */ }
     }
@@ -152,6 +161,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
 
   // ── the amount ──
   function typed() {
+    refreshTerms();
     S.amt = $('fx-amt').value; S.quote = null; S.note = '';
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
@@ -167,7 +177,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
   }
   $('fx-amt').addEventListener('input', typed);
   $('fx-max').addEventListener('click', () => {
-    const cap = S.terms && S.bal > S.terms.maxAmount ? S.terms.maxAmount : S.bal;
+    const t = S.terms, lim = t ? (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount) : S.bal, cap = S.bal > lim ? lim : S.bal;
     $('fx-amt').value = (cap / ONE).toString() + (cap % ONE ? '.' + (cap % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
     typed();
   });
@@ -203,6 +213,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
     if (/quote expired|expires too soon/.test(m)) return 'The quote ran out. Try again.';
     if (/fee is above the limit/.test(m)) return 'The provider\'s fee is above what this page accepts.';
     if (/is not the one this page expects/.test(m)) return 'This provider is not the one this page knows.';
+    if (/cannot hold that amount|cannot take that amount/.test(m)) return 'The provider cannot take that amount right now. Try a smaller amount.';
     return m.length > 160 ? `${m.slice(0, 157)}…` : m || 'Something went wrong. Try again.';
   }
 

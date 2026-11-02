@@ -1,9 +1,9 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=ef6b24d1';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
-import { makeHttpCounter } from '/fastbridge-http.js?cb=0f1eaf65';
-import { mountFast } from '/fast/ui.js?cb=9814204a';
-import { openFast } from '/fast/wire.js?cb=5beb8904';
+import { makeHttpCounter } from '/fastbridge-http.js?cb=11295986';
+import { mountFast } from '/fast/ui.js?cb=0168ba89';
+import { openFast } from '/fast/wire.js?cb=6dab14bf';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a liquidity provider (docs/FAST-BRIDGE.md).

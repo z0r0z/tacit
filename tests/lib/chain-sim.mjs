@@ -245,6 +245,7 @@ export function makeEvmParty({ evm, keys, clock }) {
       oBlinding: scalarHex(derive(keys.seed, 'refund-out/' + rec.id)), fee: 0n, refundOwner: pool.nkToOwner(keys.nkRefund),
     });
   };
+  party.available = async () => holdings.filter((x) => !x.used).reduce((s, x) => s + x.amount, 0n);
   party.refundKey = async () => ({ xonly: G.multiply(keys.dRefund).toRawBytes(true).slice(1) });
   // BL adapter pieces
   party.recipient = async () => ({ xonly: G.multiply(keys.dAuth).toRawBytes(true).slice(1), priv: keys.dAuth });

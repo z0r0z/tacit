@@ -46,7 +46,7 @@ function mount(over = {}) {
   const ui = mountFast({
     root: p.root, providers: over.providers ?? [{ name: 'Tacit', base: 'https://lp.example', claimPub: TERMS.claimPub }], keyS: key, quoteDelayMs: 1,
     signIn: over.signIn || (async () => { state.signIns++; key.open(); }),
-    open: over.open || (async () => { state.opens++; return st.session; }),
+    open: over.open || (async () => { state.opens++; return st.session; }), refreshMs: over.refreshMs ?? 30000,
     info: over.info || (async () => TERMS), say: (t) => state.says.push(t),
   });
   return { ...p, key, st, state, ui, $: (id) => p.doc.getElementById(id) };
@@ -201,6 +201,36 @@ test('a key that locks or changes drops the session: the form closes, the timer 
   assert.equal(m.st.calls.stops, 2);
   assert.equal(m.$('fx-form').hidden, true);
   m.ui.lock('Your wallet switched accounts.'); assert.match(m.$('fx-st').textContent, /switched accounts/);
+});
+
+test('what the provider can take now: shown when it is under the most, the amount capped by it, read again as an amount is typed', async () => {
+  let avail = String(300n * TAC);
+  const m = mount({ info: async () => ({ ...TERMS, available: avail }), refreshMs: 1, session: sessionStub({ balance: 900n * TAC }) });
+  await until(() => /Available now/.test(text(m.$('fx-lp'))), 'the available row');
+  assert.match(text(m.$('fx-lp')), /Available now 300 TAC/);
+  await until(() => !m.$('fx-go').hidden, 'the button'); m.$('fx-go').click(); await until(() => !m.$('fx-form').hidden, 'the form');
+  const type = (v) => { m.$('fx-amt').value = v; m.$('fx-amt').dispatchEvent(new m.dom.window.Event('input')); };
+  type('400'); await tick(10);
+  assert.match(m.$('fx-st').textContent, /The provider can take up to 300 TAC right now/); assert.equal(m.$('fx-go').disabled, true);
+  m.$('fx-max').click(); await until(() => m.$('fx-amt').value === '300', 'Max at what the provider can take');
+  // what the provider can take drops while the page is open: the next amount typed is judged by the new figure
+  avail = String(50n * TAC); await tick(5);
+  type('100'); await until(() => /up to 50 TAC/.test(m.$('fx-st').textContent), 'the refreshed limit');
+  avail = '0'; await tick(5); type('20'); await until(() => /cannot take more right now/.test(m.$('fx-st').textContent), 'none left');
+  // a provider that does not say what it can take is limited by its most alone
+  const plain = mount({ info: async () => ({ ...TERMS }) });
+  await until(() => /Fee/.test(text(plain.$('fx-lp'))), 'the terms');
+  assert.doesNotMatch(text(plain.$('fx-lp')), /Available now/);
+});
+
+test('a provider that cannot hold the amount at the press is said in the page\'s words and the press can be tried again', async () => {
+  const m = mount({ session: sessionStub({ startError: new Error('the provider cannot hold that amount: the provider cannot take that amount right now') }) });
+  await until(() => !m.$('fx-go').hidden, 'the button'); m.$('fx-go').click(); await until(() => !m.$('fx-form').hidden, 'the form');
+  m.$('fx-amt').value = '50'; m.$('fx-amt').dispatchEvent(new m.dom.window.Event('input'));
+  await until(() => !m.$('fx-go').disabled, 'a quote'); m.$('fx-go').click();
+  await until(() => m.$('fx-st').className === 'status err', 'the error');
+  assert.equal(m.$('fx-st').textContent, 'The provider cannot take that amount right now. Try a smaller amount.');
+  assert.equal(m.$('fx-go').disabled, false);
 });
 
 test('the wallet failing to open is said and the page can be pressed again', async () => {

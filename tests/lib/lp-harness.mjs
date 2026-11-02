@@ -10,9 +10,9 @@ import { makeHttpServer } from '../../fastbridge-lp/lib/http.mjs';
 
 export const closers = [];
 
-export function configFor(w, { quote = {}, policy = {}, alertSecs } = {}) {
+export function configFor(w, { quote = {}, policy = {}, alertSecs, reserve, inventory } = {}) {
   return {
-    claimPub: bytesToHex(w.lW.wallet.pub), csvBlocks: 144, alertSecs,
+    claimPub: bytesToHex(w.lW.wallet.pub), csvBlocks: 144, alertSecs, ...(reserve ? { reserve } : {}), ...(inventory ? { inventory } : {}),
     quote: { btcAsset: bytesToHex(w.etch.asset), evmAsset: ASSET, minAmount: 1000, maxAmount: 1_000_000, feeBps: 0, flatFee: 0, validSecs: 3600, ...quote },
     policy: {
       minCsv: 72, minConfsFor: () => 1, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600,
@@ -22,17 +22,23 @@ export function configFor(w, { quote = {}, policy = {}, alertSecs } = {}) {
 }
 
 // The service on a socket of its own, driven by the world's clock: `w.lpTick` becomes its tick.
-export async function serve(w, { config = configFor(w), quoteStore = memStore(), swaps = w.lpStore, btc = w.lBtc, origins = ['*'], limits, maxBody, trustProxy } = {}) {
+// The provider's service over a world, without a front: for a test that reaches it some other way than HTTP.
+export async function service(w, { config = configFor(w), quoteStore = memStore(), swaps = w.lpStore, btc = w.lBtc } = {}) {
   const alerts = [], logs = [];
   const svc = makeLpService({ seed: w.lKeys.seed, btc, evm: w.lEvmCtx, swaps, quoteStore, config, now: w.clock.now, log: (o) => logs.push(o), alert: (o) => alerts.push(o) });
   await svc.start();
-  const server = makeHttpServer({ handle: svc.handle, origins, ...(limits ? { limits } : {}), ...(maxBody ? { maxBody } : {}), ...(trustProxy ? { trustProxy } : {}) });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const s = { svc, server, config, quoteStore, swaps, alerts, logs, base: `http://127.0.0.1:${server.address().port}` };
-  s.close = () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
-  closers.push(s.close);
   w.lpStore = swaps;
   w.lpTick = () => svc.tick();
+  return { svc, config, quoteStore, swaps, alerts, logs };
+}
+
+export async function serve(w, { origins = ['*'], limits, maxBody, trustProxy, ...rest } = {}) {
+  const base = await service(w, rest);
+  const server = makeHttpServer({ handle: base.svc.handle, origins, ...(limits ? { limits } : {}), ...(maxBody ? { maxBody } : {}), ...(trustProxy ? { trustProxy } : {}) });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const s = { ...base, server, base: `http://127.0.0.1:${server.address().port}` };
+  s.close = () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
+  closers.push(s.close);
   return s;
 }
 

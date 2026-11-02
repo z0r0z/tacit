@@ -41,6 +41,8 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `network`, `poolAddress`, `btcAsset`, `evmAsset` | the chain, the pool, and the asset on each side (the same 32-byte id for TAC) |
 | `btcBases` | esplora bases, asked in order for reads; a broadcast goes to every one |
 | `csvBlocks` | the Bitcoin refund timelock the user's lock must carry (at least `policy.minCsv`) |
+| `reserve.reserveSecs`, `reserve.extendSecs` | how long a reservation holds the payout while the user builds and sends its lock (15 min), and for how long once the lock is on the network (2 h) |
+| `inventory.refreshSecs` | how often the pool wallet's balance and the Bitcoin coins are read again (60 s) |
 | `quote.minAmount`, `quote.maxAmount` | amounts in base units, both sides; set `maxAmount` below `minAmount` to stop quoting while open swaps finish |
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units, which has to cover the Bitcoin take and the relay's fee at the prices you expect |
 | `quote.validSecs`, `quote.rate` | how long a quote holds; `{num, den}` converts what is left after the fee (1/1 for one asset on both sides) |
@@ -48,6 +50,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `policy.minClaimSecs`, `policy.claimSlackSecs` | the least time a claim may be built with (1 h), and the gap between the pool deadline and the opening of the user's refund (2 h) |
 | `policy.confs` | `[amountFrom, confirmations]` pairs: how many Bitcoin confirmations the LP waits for, by amount |
 | `policy.maxOfferAgeSecs` | an offer for a lock confirmed longer ago than this is not answered |
+| `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
 
 ## API
@@ -55,13 +58,23 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | | |
 |---|---|
 | `GET /health` | 200 while the last tick succeeded, 503 with the error otherwise |
-| `GET /info` | the claim key, the asset pair, limits and windows |
-| `POST /quote {amount}` | what the user pays on Bitcoin and receives in the pool, fixed for `validSecs` |
+| `GET /info` | the claim key, the asset pair, limits, windows, and `available`: the most it can take now |
+| `POST /quote {amount}` | what the user pays on Bitcoin and receives in the pool, fixed for `validSecs`; it holds nothing |
+| `POST /reserve {quoteId}` | holds the payout while the user builds and sends its lock |
+| `POST /extend {quoteId, txid}` | once the lock is on the network, holds the payout through its confirmation |
 | `POST /offer {quoteId, offer}` | the user's lock offer; `{ok}` or `{ok: false, retry, why}`, recomputed from the chain each time |
 | `GET /swap/:id`, `GET /swap/:id/offer` | the swap's phase; the pool lock's offer once the lock is made |
 
 Bodies are capped at 64 KB, and each client has a bucket (60 requests a minute, offers 6). `dapp/fastbridge-http.js` is
 the user's side of this API.
+
+## What it can take
+
+A provider takes only what it can lock. The most it can take is the TAC its pool wallet holds, less what is already promised (a
+reservation, or a swap whose lock is not made yet), and it needs one Bitcoin coin that pays a take's fee for each swap open at
+once. A quote checks that and holds nothing, so a user comparing providers holds nothing at any of them. The reservation holds the
+payout when the user commits, before it locks any Bitcoin, so a provider that cannot is found out while the TAC is still in hand.
+Keep several coins at the Bitcoin address, or one swap at a time is all it takes.
 
 ## Watching it
 

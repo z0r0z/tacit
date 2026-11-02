@@ -60,7 +60,7 @@ const btc = makeNodeBtcChain({
 
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 const config = {
-  claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600,
+  claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
@@ -81,3 +81,20 @@ let busy = false;
 if (!DRY) setInterval(async () => { if (busy) return; busy = true; try { await service.tick(); } finally { busy = false; } }, (C.tickSecs ?? 15) * 1000);
 const server = makeHttpServer({ handle: service.handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
+
+// Boards the LP is on as well: its ad is posted there and the requests left for it are answered, so a user finds it without its URL.
+if (C.boards && C.boards.length) {
+  if (DRY) log({ level: 'info', msg: 'dry run: no board is joined' });
+  else {
+    const { makeBoardClient } = await import('../dapp/fastbridge-board-client.js');
+    const { gatewayOf, makeMailboxServer, makeAdPublisher } = await import('../dapp/fastbridge-mailbox.js');
+    const { signSchnorr } = await import('../dapp/bulletproofs.js');
+    const keys = gatewayOf(key);
+    for (const url of C.boards) {
+      const board = makeBoardClient({ base: url });
+      makeMailboxServer({ board, keys, handle: service.handle, signReply: (d) => signSchnorr(d, key), pollMs: (C.mailboxPollSecs ?? 3) * 1000, log }).start();
+      makeAdPublisher({ board, handle: service.handle, claimPriv: key, claimPub: config.claimPub, keys, name: C.name || null, everySecs: 60, log }).start();
+      log({ level: 'info', msg: 'on the board', board: url, gateway: Buffer.from(keys.pub).toString('hex') });
+    }
+  }
+}

@@ -34,6 +34,7 @@ function fakeLp(w, over = {}) {
 
 test('terms and quote: the provider\'s numbers, the fee in base units, and a refusal for a key or asset the page did not pin', async () => {
   const { w } = httpWorld();
+  w.lEvm.fund(NET, 'net');
   const s = await serve(w, { config: feeConfig(w) });
   const fb = clientFor(w, counterAt(s.base));
   const t = await fb.terms();
@@ -120,6 +121,7 @@ test('a new instance on the same store carries a swap on: the page closed and op
 
 test('a provider that goes away: the lock returns on its timelock, said as such, and the note is valid', async () => {
   const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
   const s = await serve(w, { config: feeConfig(w) });
   ref.base = s.base;
   const fb = clientFor(w, counterAt(s.base));
@@ -140,6 +142,7 @@ test('a provider that goes away: the lock returns on its timelock, said as such,
 
 test('a lock the browser has no record of is found again from the key, and taken back on its timelock', async () => {
   const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
   const s = await serve(w, { config: feeConfig(w) });
   ref.base = s.base;
   const fb = clientFor(w, counterAt(s.base));
@@ -164,6 +167,32 @@ test('a lock the browser has no record of is found again from the key, and taken
   const back = (await fb2.records())[0];
   assert.deepEqual([back.title, back.ended], ['Returned', true]);
   assert.ok(await w.noteOf((await store2.get(rec.id)).refund.txid, 0), 'the note came back to the key');
+});
+
+test('a provider that cannot hold the payout is found out before anything is locked, and one that can holds it through the confirmation', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  w.lBtc.satsUtxos = async () => Array.from({ length: 4 }, (_, i) => ({ txid: String(i).repeat(64), vout: 0, value: 200_000 }));
+  const s = await serve(w, { config: feeConfig(w) });
+  ref.base = s.base;
+  const counter = counterAt(s.base);
+  const fb = clientFor(w, counter);
+  assert.equal((await fb.terms()).available, VALUE, 'what the provider can take now, in the amount the user pays');
+  const q = await fb.quote(VALUE);
+  // another user's reservation takes the inventory between the quote and the press
+  const other = await counter.quote(VALUE);
+  assert.equal((await counter.reserve({ quoteId: other.id })).ok, true);
+  await assert.rejects(() => fb.start({ quote: q, notes: [w.note] }), /cannot hold that amount: the provider cannot take that amount right now/);
+  assert.deepEqual(await w.userStore.list(), [], 'no lock was built');
+  assert.deepEqual(w.btc.broadcasts, [], 'and nothing was sent to Bitcoin');
+  // the reservation lapses; the same quote can be taken, and the lock's broadcast extends it
+  w.clock.advance(901);
+  const rec = await fb.start({ quote: q, notes: [w.note] });
+  assert.ok(s.svc.reservations.get(q.id), 'the payout is held');
+  w.userTick = () => fb.tick();
+  await w.step(); await w.step();
+  assert.equal(s.svc.reservations.get(q.id).txid, rec.lock.txid, 'held for the lock that went out');
+  assert.equal(s.svc.reservations.get(q.id).until > w.clock.now() + 3600, true);
 });
 
 test('the words for each phase, and for one the page does not know', () => {

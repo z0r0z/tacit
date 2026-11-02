@@ -13,7 +13,7 @@ function readBody(req, max) {
   });
 }
 
-export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits = { default: [60, 60], offer: [6, 60] }, trustProxy = false }) {
+export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits = { default: [60, 60], offer: [6, 60] }, trustProxy = false, kindOf = (method, path) => (path === '/offer' ? 'offer' : 'default') }) {
   const buckets = new Map();
   function allowed(ip, kind) {
     const [cap, perSecs] = limits[kind] || limits.default;
@@ -26,17 +26,17 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
   }
   setInterval(() => { const t = Date.now() / 1000; for (const [k, b] of buckets) if (t - b.at > 600) buckets.delete(k); }, 60000).unref();
 
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     const origin = req.headers.origin;
-    const cors = origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
+    const cors = origin && (origins.includes('*') || origins.includes(origin)) ? { 'access-control-allow-origin': origin, vary: 'origin', 'access-control-allow-methods': 'GET, POST, PUT, OPTIONS', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '600' } : {};
     const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
     const url = new URL(req.url, 'http://x');
-    const kind = url.pathname === '/offer' ? 'offer' : 'default';
+    const kind = kindOf(req.method, url.pathname);
     if (!allowed(ip, kind)) return send(429, { error: 'too many requests' });
     let body = null;
-    if (req.method === 'POST') {
+    if (req.method === 'POST' || req.method === 'PUT') {
       const tooBig = () => { res.shouldKeepAlive = false; send(413, { error: 'body too large' }); res.once('finish', () => req.destroy()); };
       if (Number(req.headers['content-length']) > maxBody) return tooBig();
       let text;
@@ -47,4 +47,8 @@ export function makeHttpServer({ handle, origins = [], maxBody = 65536, limits =
     const r = await handle({ method: req.method, path: url.pathname, body });
     send(r.status, r.body);
   });
+  // a connection is kept longer than a proxy in front keeps its own idle ones, so the proxy never reuses one this side has closed
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
+  return server;
 }
