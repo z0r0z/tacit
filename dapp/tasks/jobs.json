@@ -749,6 +749,65 @@
       "verified": false,
       "created": [],
       "payloadUrl": "/tasks/token-pool-usdt-payload.json"
+    },
+    {
+      "id": "fast-bridge-test",
+      "chainId": 1,
+      "opensAt": 1793664000,
+      "title": "Test the fast bridge",
+      "tagline": "One small swap from Bitcoin to Ethereum, in minutes.",
+      "verified": false,
+      "created": [],
+      "steps": [
+        {
+          "id": "01-provider",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "60000000000000000000",
+          "maxWei": "60000000000000000000",
+          "label": "Provider",
+          "detail": "Hold 10 TAC private and a few thousand sats. Set the most per bridge to 10 TAC and keep the page open until the bridge is done.",
+          "ask": "Your take: the Bitcoin transaction that took the lock"
+        },
+        {
+          "id": "02-bridger",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "60000000000000000000",
+          "maxWei": "60000000000000000000",
+          "label": "Bridger",
+          "detail": "Hold 10 TAC on Bitcoin and a few thousand sats. Bridge 10 TAC.",
+          "ask": "Your lock: the Bitcoin transaction that locked your TAC"
+        }
+      ],
+      "about": [
+        {
+          "h": "What it does",
+          "p": "Proves the fast bridge on mainnet with one real swap of 10 TAC. One person can take both roles, or two people can meet on the page."
+        },
+        {
+          "h": "What it costs",
+          "p": "You pay the Bitcoin and network fees up front, and the reward covers them. Your TAC stays yours, less the provider's fee."
+        },
+        {
+          "h": "If a bridge stops",
+          "p": "Your Bitcoin comes back on its timelock, after about a day. Use 10 TAC only."
+        },
+        {
+          "h": "How it pays",
+          "p": "Each role pays once, for the first swap reviewed on both chains. Claim from the wallet to be paid, then post the link in Discord."
+        }
+      ],
+      "links": [
+        {
+          "label": "The fast bridge",
+          "href": "/fast/"
+        }
+      ]
     }
   ]
 }

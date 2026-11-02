@@ -120,6 +120,10 @@ export function stepsCompleted(job, tx, receipt, chainId = job.chainId) {
       // `minSize` (a point near the pool's head, not a trivial early one) is the step.
       const hit = logs.find((l) => lower(l.address) === lower(step.to) && l.topics?.[0] === POSTED && l.topics[1] && BigInt(l.topics[1]) >= BigInt(step.minSize));
       if (hit) out.push({ step, proof: { log: hit.logIndex } });
+    } else if (step.kind === 'review') {
+      // What is done off this chain is read by hand: the sender names the Bitcoin transaction in a transaction to itself, and the
+      // step lists the hash of that transaction once the work has been read on both chains.
+      if (tx.to && lower(tx.to) === lower(tx.from) && /^0x[0-9a-fA-F]{64}$/.test(tx.input ?? '') && step.approved.some((h) => lower(h) === lower(tx.hash))) out.push({ step, proof: { reviewed: true } });
     }
   }
   return out;
@@ -143,6 +147,7 @@ export function checkJob(job) {
     else if (s.kind === 'post') { if (!Number.isInteger(s.minSize) || s.minSize < 2) throw new Error(`${job.id}/${s.id}: minSize`); }
     else if (s.kind === 'register') { if (!hex(s.asset, 64)) throw new Error(`${job.id}/${s.id}: asset`); }
     else if (s.kind === 'pair') { if (!hex(s.dataHash, 64)) throw new Error(`${job.id}/${s.id}: dataHash`); }
+    else if (s.kind === 'review') { if (!Array.isArray(s.approved) || !s.approved.every((h) => hex(h, 64)) || s.minWei == null || s.minWei !== s.maxWei) throw new Error(`${job.id}/${s.id}: review fields`); }
     else throw new Error(`${job.id}/${s.id}: kind ${s.kind}`);
   }
   return job;

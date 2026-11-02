@@ -35,6 +35,7 @@ kept between the step's share of the job's floor and its share of the job's cap 
      `keccak256(salt)` alone): the same log, with that salt, for an address that is the same on every chain and fixed by the init code;
    - a point posted to the catch-up registry (`"kind": "post"`): the registry's own `Posted` event for a count of at least the
      step's `minSize`, so an early, trivial point is not the step.
+   - a step read by hand (`"kind": "review"`): the sender's transaction to itself, naming a Bitcoin transaction in its data, once its hash is on the step's `approved` list. For work whose chain transactions are sent by someone else, such as a fast bridge swap (`worker-relay/scripts/tasks-fast-bridge.mjs`).
 3. The reward is fixed then, for the account that **sent** the transaction (`tx.from`; nobody can name another account).
    It is recorded as a pending claim, once per step.
 4. Each cycle a pending claim becomes a ledger adjustment (`task:<job>:<step>`), when

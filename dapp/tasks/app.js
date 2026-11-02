@@ -63,6 +63,7 @@ const day = (t) => new Date(t * 1000).toLocaleDateString('en-GB', { day: 'numeri
 const hhmm = (t) => new Date(t * 1000).toISOString().slice(11, 16);
 const link = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 
+const DISCORD = 'https://discord.gg/VxYx9XSBrM';
 const S = { jobs: [], folded: [], api: null, asked: false, done: {}, loaded: false, payload: {}, verdict: {}, running: null, hashes: {}, expanded: new Map() };
 
 // ── what the browser remembers: the transactions this visitor sent or named, until the service has answered for each ──
@@ -116,6 +117,7 @@ async function readDone(job, { chain = false } = {}) {
     const id = chainOf(job, s);
     if (prev[s.id] === true || (!ownNodes(id) && seenDone.has(stepKey(job, s)))) { out[s.id] = true; continue; }
     if (aj && !ownNodes(id) && aj.steps.find((x) => x.id === s.id)?.claim) { out[s.id] = true; continue; }
+    if (s.kind === 'review') { out[s.id] = !!apiJob(job)?.steps.find((x) => x.id === s.id)?.claim; continue; }
     if (s.kind === 'createx') ask(id, s, 'eth_getCode', [s.expected, 'latest'], (r) => r !== '0x');
     else if (s.kind === 'post') ask(id, s, 'eth_call', [{ to: s.to, data: LATEST }, 'latest'], (r) => r !== '0x' && BigInt(r) >= BigInt(s.minSize));
     else if (s.kind === 'register') ask(id, s, 'eth_call', [{ to: s.to, data: `0x9fda5b66${s.asset.slice(2)}` }, 'latest'], flagged);
@@ -185,9 +187,9 @@ function economics(job) {
 // ── drawing ──
 function renderAll() {
   renderStats();
-  const typed = Object.fromEntries([...document.querySelectorAll('.paste textarea')].map((t) => [t.dataset.for, t.value]));
+  const typed = Object.fromEntries([...document.querySelectorAll('.paste textarea, .review textarea')].map((t) => [t.dataset.for, t.value]));
   renderJobs();
-  for (const t of document.querySelectorAll('.paste textarea')) if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
+  for (const t of document.querySelectorAll('.paste textarea, .review textarea')) if (typed[t.dataset.for]) t.value = typed[t.dataset.for];
   paintNotice();
 }
 
@@ -226,6 +228,7 @@ function renderJobs() {
   root.querySelectorAll('[data-one]').forEach((b) => { b.onclick = () => go(S.jobs.find((j) => j.id === b.dataset.job), b.dataset.one); });
   root.querySelectorAll('[data-verify]').forEach((b) => { b.onclick = () => verify(S.jobs.find((j) => j.id === b.dataset.verify), true); });
   root.querySelectorAll('.paste').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); paste(f); }; });
+  root.querySelectorAll('.review').forEach((f) => { f.onsubmit = (e) => { e.preventDefault(); sendReview(f); }; });
   gasNote();
 }
 
@@ -262,7 +265,7 @@ const verifiedOn = (addr) => ` · source on ${link(`${ETHERSCAN}/address/${addr}
 function doneRow(job, s, i) {
   const cs = claimsOf(job).filter((c) => c.step === s.id);
   const id = chainOf(job, s), ex = CHAINS[id].explorer;
-  const where = s.kind === 'createx' ? link(`${ex}/address/${s.expected}`, esc(s.expected)) : s.kind === 'post' ? `A point posted to ${link(`${ex}/address/${s.to}`, 'the registry')}` : 'Call to the confidential pool';
+  const where = s.kind === 'createx' ? link(`${ex}/address/${s.expected}`, esc(s.expected)) : s.kind === 'post' ? `A point posted to ${link(`${ex}/address/${s.to}`, 'the registry')}` : s.kind === 'review' ? 'Reviewed on both chains' : 'Call to the confidential pool';
   const proof = s.kind === 'createx' && job.verified && id === 1 ? verifiedOn(s.expected) : '';
   return `<li class="step is-done">
     <span class="n num">${i + 1}</span>
@@ -335,7 +338,49 @@ function rewardsPanel(job) {
     <div class="rows"><div class="kv"><span>Budget left</span><b class="num">${tac(left, 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div>`;
 }
 
+// A job read by hand: each step names its Bitcoin transaction from the account to be paid, and pays a fixed sum once it has been reviewed.
+function reviewRow(job, s, i) {
+  const c = apiJob(job)?.steps.find((x) => x.id === s.id)?.claim;
+  return `<li class="step${c ? ' is-done' : ''}">
+    <span class="n num">${i + 1}</span>
+    <span class="what"><b>${esc(s.label)}</b><small>${esc(s.detail)}</small></span>
+    <span class="chip-s ${c ? (c.state === 'credited' ? 'credited' : 'claimed') : 'open'}">${c ? (c.state === 'credited' ? 'Credited' : 'Claimed') : `${tac(s.minWei, 0)} TAC`}</span>
+    ${c ? `<span class="by">${c.state === 'credited' ? 'Credited' : 'Claimed'} to ${link(`${ETHERSCAN}/address/${c.address}`, esc(short(c.address)))} · ${tac(c.wei)} TAC</span>` : ''}
+  </li>`;
+}
+function reviewBody(job) {
+  const todo = job.steps.filter((s) => !onChain(job, s)), open = isOpen(job), a = S.api;
+  return `
+    <div class="grid">
+      <div class="col">
+        <section class="panel p-about" aria-label="About the job">
+          <p class="eyebrow">About</p>
+          ${about(job)}
+          ${links(job)}
+        </section>
+        <section class="panel p-steps" aria-label="Steps">
+          <p class="eyebrow">Roles</p>
+          <ol class="steps">${job.steps.map((s, i) => reviewRow(job, s, i)).join('')}</ol>
+        </section>
+      </div>
+      <div class="col">
+        <section class="panel p-ticket" aria-label="Do it">
+          <p class="eyebrow">Claim</p>
+          ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
+            <label class="lbl"><span>${esc(s.ask)}</span>
+              <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
+            <button class="btn ghost" type="submit" ${open ? '' : 'disabled'}>${W.account ? `Claim as ${esc(s.label.toLowerCase())}` : 'Connect wallet'}</button>
+          </form>`).join('')}
+          <div class="status" role="status" data-for="${esc(job.id)}"></div>
+        </section>
+        ${a?.enabled ? `<section class="panel p-rewards" aria-label="Rewards"><p class="eyebrow">Rewards</p>
+          <div class="rows"><div class="kv"><span>Budget left</span><b class="num">${tac(BigInt(a.budget.remainingWei), 0)} of ${tac(a.budget.totalWei, 0)} TAC</b></div><div class="kv"><span>Open until</span><b>${esc(day(a.endSec))}</b></div></div></section>` : ''}
+      </div>
+    </div>`;
+}
+
 function openBody(job) {
+  if (job.steps.every((s) => s.kind === 'review')) return reviewBody(job);
   const todo = job.steps.filter((s) => !onChain(job, s));
   const aj = apiJob(job), open = isOpen(job), n = doneCount(job), eco = economics(job);
   const gas = todo.filter((s) => chainOf(job, s) === job.chainId).reduce((x, s) => x + s.gas, 0);
@@ -483,6 +528,18 @@ async function go(job, only = null) {
   } catch (e) {
     say(esc(e instanceof UserStopped ? 'Cancelled in your wallet. Send again to continue where it left off.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped));
   } finally { const id = S.running; S.running = null; S.done[id] = await readDone(job, { chain: true }).catch(() => S.done[id]); renderAll(); settle(); }
+}
+
+// The account to be paid sends itself the Bitcoin transaction id, so nobody else can name that account for this work.
+async function sendReview(form) {
+  if (!W.account) { await conn.connect(); return; }
+  const job = S.jobs.find((j) => j.id === form.dataset.job), txid = form.querySelector('textarea').value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(txid)) { say('That is not a Bitcoin transaction id.', true, job.id); return; }
+  try {
+    say('Confirm in your wallet…', false, job.id);
+    const hash = await conn.wallet.sendTx({ to: W.account, data: `0x${txid}`, value: 0n, from: W.account, chain: null });
+    say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(DISCORD, 'Discord')} for review.`, false, job.id);
+  } catch (e) { say(esc(e instanceof UserStopped ? 'Cancelled in your wallet.' : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
 }
 
 // ── naming steps to the service ──

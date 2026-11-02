@@ -19,6 +19,22 @@ const TAC = WAD;
 const GWEI = 10n ** 9n;
 const A = (n) => `0x${n.toString(16).padStart(40, '0')}`;
 
+// ── a step read by hand ──
+{
+  const hash = `0x${'ab'.repeat(32)}`, me = A(9), input = `0x${'cd'.repeat(32)}`;
+  const step = { id: '01-role', kind: 'review', to: A(0), gas: 22000, approved: [hash], minWei: '60', maxWei: '60' };
+  const reviewed = checkJob({ id: 'reviewed', chainId: 1, opensAt: 1, steps: [step] });
+  const done = (tx) => stepsCompleted(reviewed, tx, { status: 'success', logs: [] }).map((d) => d.step.id);
+  assert.deepEqual(done({ hash, from: me, to: me, input }), ['01-role'], 'the listed transaction, sent to itself and naming a Bitcoin transaction');
+  assert.deepEqual(done({ hash: `0x${'ef'.repeat(32)}`, from: me, to: me, input }), [], 'a transaction not reviewed is nothing');
+  assert.deepEqual(done({ hash, from: me, to: A(8), input }), [], 'nor one sent to another account');
+  assert.deepEqual(done({ hash, from: me, to: me, input: '0x' }), [], 'nor one that names nothing');
+  assert.deepEqual(stepsCompleted(reviewed, { hash, from: me, to: me, input }, { status: 'reverted', logs: [] }), [], 'nor a failed one');
+  assert.throws(() => checkJob({ id: 'reviewed', chainId: 1, steps: [{ ...step, minWei: '10' }] }), /review fields/, 'a reviewed step pays one sum');
+  assert.throws(() => checkJob({ id: 'reviewed', chainId: 1, steps: [{ ...step, approved: ['0x12'] }] }), /review fields/, 'and lists whole hashes');
+  console.log('ok - a reviewed step is the listed transaction and nothing else');
+}
+
 // ── the price of gas ──
 {
   const tx = (g) => ({ gasPrice: g });
