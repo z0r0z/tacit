@@ -347,7 +347,7 @@ function homesHtml() {
   // or for one ETH before one is
   const wei = isEth(S.pay) && pa === 'wallet' ? parseUnits(S.amt, 18) || 0n : null;
   const cue = (act) => { const p = wei == null ? null : ptsFor(act, wei > 0n ? wei : 10n ** 18n); return `<span class="ra">${p ? `<span>${ptsTag(p, false)}</span><small>${wei > 0n ? 'points' : 'points/ETH'}</small>` : ''}</span>`; };
-  const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}<span class="rd" aria-hidden="true"></span></button>`;
+  const row = (home, t, sub, icon, act) => `<button type="button" role="radio" class="c${HOMES_OPEN ? '' : ' one'}" data-home="${home}" aria-checked="${String(at === home)}" tabindex="${at === home ? 0 : -1}"><svg class="tk" aria-hidden="true"><use href="#tk-${icon}"/></svg><span class="rt"><b>${t}</b><small>${sub}</small></span>${cue(act)}${HOMES_OPEN ? '<span class="rd" aria-hidden="true"></span>' : ''}</button>`;
   // the chosen home alone, with a way to change it, until the choice is opened
   const defi = row('defi', 'DeFi pool', 'swap, farm, borrow', eth ? 'teth' : 'tac', 'wrap'), pay = row('pay', 'Pay pool', `pay on ${where}`, eth ? 'peth' : 'tac', 'dev');
   if (!HOMES_OPEN) return `<div class="rows-h"><span>Private in</span><span class="chg">Change</span></div>${at === 'pay' ? pay : defi}`;
