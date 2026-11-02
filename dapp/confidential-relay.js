@@ -1,6 +1,6 @@
 
 export const EXPIRY_TYPES = ['unwrap', 'sendunwrap', 'swap', 'swap_var', 'swap_route', 'route', 'wrapswap', 'wraplp',
-  'lpadd', 'lp_add', 'lpbond', 'lp_bond', 'lpremove', 'lp_remove', 'stealthclaim'];
+  'lpadd', 'lp_add', 'lpbond', 'lp_bond', 'lpremove', 'lp_remove', 'stealthclaim', 'adaptorlock', 'adaptorclaim'];
 export function opExpiry(type, op) {
   if (!EXPIRY_TYPES.includes(String(type))) return 0;
   const v = Number(op && (op.opDeadline ?? op.deadline) || 0);

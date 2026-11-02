@@ -39,7 +39,7 @@ export async function revertSelector(e, call, { chainId = 1, rpcs = REVERT_RPCS,
 // `Expired()` gate: settle at or before it). Others carry a deadline that means something else, a lock's refund time
 // among them, which is only valid AFTER it, so they are never read here. 0 or absent = no expiry.
 const EXPIRY_TYPES = new Set(['unwrap', 'sendunwrap', 'swap', 'swap_var', 'swap_route', 'route', 'wrapswap', 'wraplp',
-  'lpadd', 'lp_add', 'lpbond', 'lp_bond', 'lpremove', 'lp_remove', 'stealthclaim']);
+  'lpadd', 'lp_add', 'lpbond', 'lp_bond', 'lpremove', 'lp_remove', 'stealthclaim', 'adaptorlock', 'adaptorclaim']);
 export function opExpiry(job) {
   if (!job || !EXPIRY_TYPES.has(String(job.type))) return 0;
   const v = Number(job.op?.opDeadline ?? job.op?.deadline ?? 0);
