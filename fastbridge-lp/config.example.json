@@ -13,7 +13,7 @@
   "btcAsset": "f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
   "evmAsset": "0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
   "csvBlocks": 144,
-  "reserve": { "reserveSecs": 900, "extendSecs": 7200 },
+  "reserve": { "reserveSecs": 300, "extendSecs": 7200, "maxUnbackedShare": 0.5 },
   "inventory": { "refreshSecs": 60 },
   "quote": {
     "minAmount": "1000000000",

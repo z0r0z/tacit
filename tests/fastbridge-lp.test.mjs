@@ -320,14 +320,14 @@ test('a reservation holds the payout: the next quote and reservation see less, a
   const s = await serve(w);
   const q = (await post(s, '/quote', { amount: '4000' })).body;
   const r1 = await post(s, '/reserve', { quoteId: q.id });
-  assert.deepEqual([r1.status, r1.body.ok, r1.body.until], [200, true, w.clock.now() + 900]);
+  assert.deepEqual([r1.status, r1.body.ok, r1.body.until], [200, true, w.clock.now() + 300]);
   assert.equal((await infoOf(s)).available, '2000');
   assert.equal((await post(s, '/quote', { amount: '3000' })).status, 400, 'what is left does not cover it');
   assert.equal((await post(s, '/quote', { amount: '2000' })).status, 200);
   assert.deepEqual((await post(s, '/reserve', { quoteId: q.id })).body, r1.body, 'the same reservation again is the same reservation');
   assert.deepEqual((await post(s, '/reserve', { quoteId: '0'.repeat(32) })).body, { ok: false, retry: false, why: 'unknown quote' });
   assert.equal((await post(s, '/reserve', { quoteId: 'nope' })).status, 400);
-  w.clock.advance(901);
+  w.clock.advance(301);
   assert.equal((await infoOf(s)).available, '6000', 'the payout is free again');
   assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true, 'a quote still valid can be reserved again');
 });
@@ -340,6 +340,25 @@ test('reservations are made one at a time: two users asking for the same invento
   const got = await Promise.all([post(s, '/reserve', { quoteId: q1.id }), post(s, '/reserve', { quoteId: q2.id })]);
   assert.deepEqual(got.map((r) => r.body.ok).sort(), [false, true]);
   assert.match(got.find((r) => !r.body.ok).body.why, /cannot take that amount right now/);
+});
+
+test('reservations with no transaction behind them hold only a share of the pool balance together, one alone may hold more, and a transaction makes one count as real', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  ref.base = s.base;
+  const quote = async (a) => (await post(s, '/quote', { amount: String(a) })).body;
+  const a = await quote(5000);
+  assert.equal((await post(s, '/reserve', { quoteId: a.id })).body.ok, true, 'a reservation alone may hold most of it');
+  const b = await quote(1000);
+  assert.deepEqual((await post(s, '/reserve', { quoteId: b.id })).body.ok, false, 'a second with nothing behind it does not fit under half');
+  // the first goes out as a lock: its transaction is on the network, and the held payout is real
+  s.svc.reservations.get(a.id).txid = 'e'.repeat(64);
+  assert.equal((await post(s, '/reserve', { quoteId: b.id })).body.ok, true, 'once the first has a transaction behind it, the second fits');
+  const tight = await serve(w, { config: configFor(w, { reserve: { maxUnbackedShare: 0.25 } }) });
+  const q1 = (await post(tight, '/quote', { amount: '1000' })).body, q2 = (await post(tight, '/quote', { amount: '1000' })).body;
+  assert.equal((await post(tight, '/reserve', { quoteId: q1.id })).body.ok, true);
+  assert.equal((await post(tight, '/reserve', { quoteId: q2.id })).body.ok, false, 'a quarter of 6,000 is 1,500: two thousand do not fit');
 });
 
 test('the Bitcoin coins that pay for the takes limit the swaps open at once, and a coin too small to pay one does not count', async () => {
@@ -403,7 +422,7 @@ test('a swap whose lock confirms after its quote ran out still goes through: the
 test('an offer that holds nothing and finds nothing left is declined before anything is checked of it', async () => {
   const { w, ref } = httpWorld();
   w.lEvm.fund(VALUE, 'inv'); manyCoins(w);
-  const s = await serve(w);
+  const s = await serve(w, { config: configFor(w, { reserve: { reserveSecs: 100000, extendSecs: 7200, maxUnbackedShare: 1 } }) });
   ref.base = s.base;
   const counter = makeHttpCounter({ base: s.base, fetchImpl: realFetch });
   const mine = await counter.quote(VALUE), theirs = await counter.quote(VALUE);

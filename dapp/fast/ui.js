@@ -44,9 +44,12 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     e.className = `status${S.bad && S.note ? ' err' : ''}`;
   }
 
+  // the providers to bridge with: not the key's own, which would only cost it the fees of a bridge with itself
+  const others = () => S.providers.filter((p) => !(keyS.unlocked && keyS.key && p.id === keyS.key.pubHex));
+
   // what the providers together offer: the amounts they take, and the lowest fee
   function summary() {
-    const ps = S.providers;
+    const ps = others();
     if (!ps.length) return null;
     const mins = ps.map((p) => p.terms.minAmount).sort((a, b) => (a < b ? -1 : 1));
     const best = ps.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && b.terms.flatFee < a.terms.flatFee) ? b : a));
@@ -164,7 +167,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     if (units == null || problem(units) || !S.sess) return;
     S.timer = setTimeout(async () => {
       try {
-        const eligible = S.providers.filter((p) => units >= p.terms.minAmount && units <= capOf(p));
+        const eligible = others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
         if (!eligible.length) { if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', true); return; }
         const r = await S.sess.quoteAll(eligible, units);
         if (seq !== S.seq) return;

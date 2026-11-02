@@ -111,6 +111,17 @@ test('several providers: how many, the lowest fee, the widest range, and what th
   assert.match(t, /Available now 1,000 TAC/, 'the most any one of them can take now, when it is under the most they take');
 });
 
+test('the key\'s own provider is not one to bridge with: it is left out of the summary and of the quotes', async () => {
+  const mine = '03' + 'cd'.repeat(32);                                         // the pub keyStub opens
+  const m = mount({ providers: [{ ...provider('Mine', { feeBps: 1 }), id: mine }, provider('Other', { feeBps: 40 })] });
+  await until(() => /Providers 2 online/.test(text(m.$('fx-lp'))), 'both listed before a key');
+  await signIn(m);
+  await until(() => /Provider Other/.test(text(m.$('fx-lp'))), 'the summary without the key\'s own');
+  assert.match(text(m.$('fx-lp')), /Fee 0\.40%/);
+  typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
+  assert.deepEqual(m.st.calls.asked[0].names, ['Other']);
+});
+
 test('Open wallet: the key sheet, then the TAC on Bitcoin and an amount field', async () => {
   const m = mount();
   await signIn(m);

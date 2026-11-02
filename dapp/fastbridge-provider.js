@@ -7,7 +7,7 @@
 //   GET  /health            200 while the last tick succeeded
 //   GET  /info              the LP's Bitcoin claim key, the asset pair, limits, windows and what it can take now
 //   POST /quote   { amount }              a price: what the user pays on Bitcoin and receives in the pool (holds nothing)
-//   POST /reserve { quoteId }             holds the payout for the swap while the user builds and sends its lock
+//   POST /reserve { quoteId }             holds the payout for the swap while the user builds and sends its lock (minutes)
 //   POST /extend  { quoteId, txid }       once the lock is on the network: holds it through its confirmation
 //   POST /offer   { quoteId, offer }      the user's Bitcoin lock offer; answers { ok } or { ok: false, retry, why }
 //   GET  /swap/:id          { phase, why }
@@ -69,7 +69,7 @@ const cannotTake = () => Object.assign(new Error('the provider cannot take that 
 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor } });
-  const hold = { reserveSecs: 900, extendSecs: 7200, ...(config.reserve || {}) };
+  const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
   const reservations = new Map();                       // quote id -> { amount, until, txid }
   const published = new Map();
@@ -123,6 +123,15 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     const i = await readInventory(), p = await promised();
     if (i.held != null && payout > i.held - p.sum) throw cannotTake();
     if (i.coins != null && p.count >= i.coins) throw cannotTake();
+  }
+  // A reservation with no transaction behind it costs its holder nothing: those together may hold only a share of the pool balance,
+  // unless there is just the one, so a request that holds nothing real cannot take all of what the provider could lend.
+  async function unbackedFits(payout) {
+    const i = await readInventory();
+    if (i.held == null) return true;
+    let unbacked = 0n;
+    for (const r of reservations.values()) if (!r.txid && r.until > now()) unbacked += r.amount;
+    return unbacked === 0n || unbacked + payout <= (i.held * BigInt(Math.round(hold.maxUnbackedShare * 100))) / 100n;
   }
   async function availableAmount() {
     try {
@@ -208,7 +217,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           if (!q) return no('unknown quote');
           if (have && have.until > now()) return reply({ ok: true, until: have.until });
           if (now() > q.validUntil) return no('quote expired');
-          try { await capacity(BigInt(q.evmAmount)); } catch (e) { if (e.status) return no(e.message); throw e; }
+          try { await capacity(BigInt(q.evmAmount)); if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake(); } catch (e) { if (e.status) return no(e.message); throw e; }
           const until = now() + hold.reserveSecs;
           reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null });
           await keep(q.id);

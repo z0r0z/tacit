@@ -41,7 +41,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `network`, `poolAddress`, `btcAsset`, `evmAsset` | the chain, the pool, and the asset on each side (the same 32-byte id for TAC) |
 | `btcBases` | esplora bases, asked in order for reads; a broadcast goes to every one |
 | `csvBlocks` | the Bitcoin refund timelock the user's lock must carry (at least `policy.minCsv`) |
-| `reserve.reserveSecs`, `reserve.extendSecs` | how long a reservation holds the payout while the user builds and sends its lock (15 min), and for how long once the lock is on the network (2 h) |
+| `reserve.reserveSecs`, `reserve.extendSecs`, `reserve.maxUnbackedShare` | how long a reservation holds the payout while the user builds and sends its lock (5 min), for how long once the lock is on the network (2 h), and the share of the pool balance that reservations with no transaction behind them may hold together (half; one alone may hold more) |
 | `inventory.refreshSecs` | how often the pool wallet's balance and the Bitcoin coins are read again (60 s) |
 | `quote.minAmount`, `quote.maxAmount` | amounts in base units, both sides; set `maxAmount` below `minAmount` to stop quoting while open swaps finish |
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units, which has to cover the Bitcoin take and the relay's fee at the prices you expect |
