@@ -37,6 +37,27 @@ accepts an Ethereum offer only when the lock leaf is in the pool's lock set, the
 terms, and the pre-signature verifies against the output it chose. A pre-signature over `(L − O)` exists only if the
 locked note holds exactly the quoted amount.
 
+## Anyone can be the provider
+
+Nothing in the pool or the swap is specific to one provider: a provider is a Tacit key with private TAC and a few Bitcoin
+coins that answers a user's requests and takes the Bitcoin. Providers find users, and users find them, without a server of
+the provider's own:
+
+- **An ad.** A provider signs an ad with its claim key: its terms (fee, limits, timelock), what it can take now, and the gateway
+  key requests are sealed to. An ad stands for a few minutes and is posted again every minute. A user's page checks each
+  ad's signature itself, whoever delivered it.
+- **A board.** The ads are posted to a small board, which also carries requests and answers: a request is sealed to the
+  provider's gateway key and an answer to the request's one-time key (the private route's sealing, `dapp/sealed-request.js`),
+  and only the provider the request was for can post its answer. The board can drop or delay a message and can read, change
+  or answer none. The requests are the ones of the HTTP API, so a provider in a browser tab, which cannot serve a request,
+  answers what a daemon does. A provider that serves HTTP can be listed directly as well.
+- **A choice.** The page asks every provider that can take the amount for a quote, shows the best, and asks the next best
+  when the first cannot hold the payout.
+
+A provider in a page is for modest amounts: it answers requests and takes the Bitcoin while the page is open, and swaps that
+are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)
+keeps them tended without a page.
+
 ## Rules that keep a swap whole
 
 - The counterparty's Bitcoin claim key is fixed before `t` exists, and the lock is built to that key.
@@ -100,10 +121,14 @@ that is paused or held skips a job whose deadline has passed instead of sending 
 | `dapp/fastbridge-bl.js` | the Bitcoin locker's state machine |
 | `dapp/fastbridge-el.js` | the Ethereum locker's state machine |
 | `dapp/fastbridge-evm.js` | the pool side of both machines on the pool wallet module: time, the lock set, who claimed, the lock, claim and refund ops, sending them through the relay |
-| `dapp/fastbridge-http.js` | the user's side of an LP's HTTP API: the terms, a quote, the offer, the pool lock's offer |
+| `dapp/fastbridge-http.js` | the user's side of a provider's API: the terms, a quote, a reservation, the offer, the pool lock's offer, over HTTP or any other transport |
+| `dapp/fastbridge-provider.js` | a provider's engine: its quotes, what it can take, reservations and the handler of a user's requests, over the Ethereum-locker machine; one module for a page and a process |
+| `dapp/fastbridge-board.js` | the board's rules: signed ads, sealed requests and answers, bounded queues |
+| `dapp/fastbridge-board-client.js` | a board reached over HTTP |
+| `dapp/fastbridge-mailbox.js` | requests sealed to a provider and carried by a board: the user's counter, the provider's mailbox, its ad |
 | `dapp/fastbridge-btc.js` | the Bitcoin side of either machine on esplora explorers, shared by the page and the LP |
 | `dapp/fastbridge-client.js` | the user's side as a whole: terms and quote checked before they are shown, the notes to lock, the machine over a store, the words for each phase, a lock found again from the key |
-| `dapp/fast/` | the bridge page at `/fast/`: the wiring to a Tacit key and tacit.js (`wire.js`), the page's logic (`ui.js`), the providers it knows (`lp.json`) |
+| `dapp/fast/` | the bridge page at `/fast/`: the wiring to a Tacit key and tacit.js (`wire.js`), the page's logic for bridging (`ui.js`) and for providing (`provide.js`), the providers and boards it knows (`lp.json`) |
 | `fastbridge-lp/` | the LP as a process: the HTTP API, the Ethereum locker over a durable store, the explorer adapter (see its README) |
 
 Each machine takes its chain access as arguments (`ctx`, documented in its header), keeps one JSON record per swap,
@@ -120,7 +145,9 @@ node tests/adaptor-btc-tx.test.mjs         # the transaction builder: funding, f
 node tests/fastbridge-sim.test.mjs         # both machines against a simulated Bitcoin and pool: restarts, timeouts, refusals
 node tests/fastbridge-lp.test.mjs          # the LP process: API on a socket, quotes, store, explorer adapter, a swap through all of it
 node tests/fastbridge-client.test.mjs      # the page's client against the LP service: quotes, a swap, a swap carried on, the refund, recovery from the key
-node tests/fastbridge-ui.test.mjs          # the page's logic on a DOM
+node tests/fastbridge-board.test.mjs       # the board and the mailbox: ads, sealed requests and answers, a whole swap over a board
+node tests/fastbridge-ui.test.mjs          # the page's bridging logic on a DOM
+node tests/fastbridge-provide.test.mjs     # the page's provider panel on a DOM
 node tests/fastbridge-wire.test.mjs        # the page's wiring on the real tacit.js
 PLAYWRIGHT=<path> node tests/fastbridge-page.mjs   # the page in a browser, under its content-security policy
 FORK=<rpc> EXEC=<exec-stdin> node tests/fastbridge-fork.mjs   # the Ethereum side on a mainnet fork of the live pool
@@ -136,8 +163,9 @@ pinned `elf/cxfer-guest`, whose verifying key is the one inside the deployed poo
 
 Built and tested: the protocol, the transaction builders, both role machines, a simulated chain, the full swap in both
 directions against the real settle guest and the real note validator, the pool adapter, the LP process with its
-HTTP API, store and explorer adapter, and the bridge page (`/fast/`) with its client, recovery from the key and browser
-check. The page lists no provider yet (`dapp/fast/lp.json`).
+HTTP API, store and explorer adapter, the board and the mailbox over it, and the bridge page (`/fast/`) with its client,
+recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page lists no provider
+or board yet (`dapp/fast/lp.json`).
 
-Not built: a link to the page from the front page's Bridge tab, the Ethereum to Bitcoin direction of the LP process,
-the claim prover's options (the relay that is not the LP, the user's device, a prover network), and a run with real funds.
+Not built: a link to the page from the front page's Bridge tab, the Ethereum to Bitcoin direction, the claim prover's options
+(the relay that is not the provider, the user's device, a prover network), and a run with real funds.

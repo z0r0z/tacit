@@ -68,6 +68,15 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 Bodies are capped at 64 KB, and each client has a bucket (60 requests a minute, offers 6). `dapp/fastbridge-http.js` is
 the user's side of this API.
 
+## The board
+
+`node fastbridge-lp/board.mjs` runs a board: providers post their ads there (they are signed, and a page checks each one), and
+users reach a provider through it with requests sealed to the provider, so a provider in a browser tab is found and answered
+like a daemon. It holds nothing that has to be trusted and keeps everything in memory for ten minutes. Set `FB_BOARD_PORT`,
+`FB_BOARD_ORIGINS` (the pages that may call it, comma separated) and `FB_BOARD_TRUST_PROXY=1` behind a proxy; serve it over TLS.
+List it in the page's `dapp/fast/lp.json` under `boards`, and in a daemon's `boards`. Anyone can also provide from the bridge
+page (`/fast/`, "Provide liquidity") with the key they bridge with.
+
 ## What it can take
 
 A provider takes only what it can lock. The most it can take is the TAC its pool wallet holds, less what is already promised (a

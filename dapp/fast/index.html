@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /fast/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=e7c7b556">
+<link rel="modulepreload" href="/fast/app.js?cb=0cc28c13">
 <link rel="modulepreload" href="/trade/key.js?cb=55a25559">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -37,9 +37,10 @@
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/trade/poolux.js?cb=ac4a1175">
-<link rel="modulepreload" href="/fastbridge-http.js?cb=11295986">
-<link rel="modulepreload" href="/fast/ui.js?cb=0168ba89">
-<link rel="modulepreload" href="/fast/wire.js?cb=6dab14bf">
+<link rel="modulepreload" href="/fast/ui.js?cb=7eda4ef1">
+<link rel="modulepreload" href="/fast/fmt.js">
+<link rel="modulepreload" href="/fast/provide.js?cb=a3a33ad5">
+<link rel="modulepreload" href="/fast/wire.js?cb=616be109">
 <link rel="modulepreload" href="/bitcoin-taproot-wallet.js?cb=6e90dd96">
 <link rel="modulepreload" href="/adaptor-btc-tx.js?cb=bc74dcba">
 <link rel="modulepreload" href="/bulletproofs.js">
@@ -52,9 +53,17 @@
 <link rel="modulepreload" href="/adaptor-xswap.js">
 <link rel="modulepreload" href="/adaptor-signature.js">
 <link rel="modulepreload" href="/adaptor-btc-lock.js">
-<link rel="modulepreload" href="/fastbridge-client.js?cb=ad95b8d6">
+<link rel="modulepreload" href="/fastbridge-http.js?cb=11295986">
+<link rel="modulepreload" href="/fastbridge-client.js?cb=99d3bb3a">
 <link rel="modulepreload" href="/fastbridge-bl.js">
 <link rel="modulepreload" href="/fastbridge-http.js">
+<link rel="modulepreload" href="/fastbridge-provider.js?cb=7d76855b">
+<link rel="modulepreload" href="/fastbridge-el.js">
+<link rel="modulepreload" href="/fastbridge-mailbox.js?cb=d00c9623">
+<link rel="modulepreload" href="/sealed-request.js">
+<link rel="modulepreload" href="/fastbridge-board.js">
+<link rel="modulepreload" href="/fastbridge-board-client.js?cb=8d928552">
+<link rel="modulepreload" href="/bulletproofs.js?cb=132d3648">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -183,6 +192,17 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-amt:focus-within { border-color: var(--ink); }
 .fx-amt span { color: var(--mute); }
 .fx-keep { max-width: 560px; }
+.pv { padding: 0; margin-top: 22px; }
+.pv > summary { cursor: pointer; padding: 18px 22px; list-style: none; font-weight: 500; }
+.pv > summary::-webkit-details-marker { display: none; }
+.pv > summary::after { content: '+'; float: right; color: var(--mute); }
+.pv[open] > summary::after { content: '–'; }
+.pv-in { padding: 0 22px 22px; }
+.pv-in .note { margin-top: 0; }
+.pv-f { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
+.pv-f input { width: 10ch; text-align: right; font: inherit; color: var(--ink); background: transparent; border: 0; outline: 0; padding: 0; }
+.pv-f:focus-within { border-color: var(--ink); }
+.pv code { overflow-wrap: anywhere; font-size: 11.5px; }
 .fx-rec { padding: 12px 0; border-top: 1px solid var(--hair); }
 .fx-rec:first-of-type { border-top: 0; }
 .fx-rec .kv { padding: 0; }
@@ -360,6 +380,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
     <section class="panel gate" id="gate"></section>
     <p class="note fx-keep">Keep this page open until a bridge is done.</p>
+    <details class="panel gate pv" id="provide" hidden></details>
   </main>
 
   <!-- chrome:foot:begin -->
@@ -377,6 +398,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=e7c7b556"></script>
+<script type="module" src="/fast/app.js?cb=0cc28c13"></script>
 </body>
 </html>

@@ -1,38 +1,28 @@
-// The fast bridge page: a provider's terms, the key's TAC on Bitcoin, an amount and its quote, and the swaps under way. What
-// is not DOM is passed in, so the page's logic runs without a wallet.
+// The fast bridge page: the providers there are, the key's TAC on Bitcoin, an amount and the best quote for it, and the swaps under
+// way. What is not DOM is passed in, so the page's logic runs without a wallet.
 //
-//   const ui = mountFast({ root, providers, keyS, signIn, open, info })
+//   const ui = mountFast({ root, keyS, signIn, open, discover })
 //   root        the element the page draws in
-//   providers   [{ name, base, claimPub }]: the providers the page knows; the first that answers is used
 //   keyS        the key session (trade/key.js): unlocked, key, onChange(fn)
 //   signIn()    opens the key; resolves once one is open, rejects when the sheet is closed
-//   open({ provider })  -> { fb, notes(), balance() } for the open key (fast/wire.js)
-//   info(provider)      -> the provider's terms (fastbridge-http.js info)
+//   discover()  -> [{ id, name, ref, terms }]: the providers to bridge with, terms as fastbridge-client.js termsOf makes them
+//   open()      -> { balance(), quoteAll(providers, units), start({ quotes }), records(), run({ onChange }), recover() } for the open key
+//               (fast/wire.js openFast)
 //   -> { lock(text), destroy() }
 
-const DEC = 8, ONE = 10n ** BigInt(DEC);
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const group = (s) => s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-export function fmtTac(units, max = 4) {
-  const n = BigInt(units), whole = n / ONE, frac = (n % ONE).toString().padStart(DEC, '0');
-  const short = frac.slice(0, max).replace(/0+$/, '');
-  const text = (k) => `${group(String(whole))}${k ? `.${k}` : ''}`;
-  return n > 0n && whole === 0n && !short ? text(frac.replace(/0+$/, '')) : text(short);
-}
-export function parseTac(text) {
-  const t = String(text).trim().replace(/,/g, '');
-  if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
-  const [w, f = ''] = t.split('.');
-  if (f.length > DEC) return null;
-  const n = BigInt(w || '0') * ONE + BigInt(f.padEnd(DEC, '0') || '0');
-  return n > 0n ? n : null;
-}
+import { DEC, ONE, esc, fmtTac, parseTac } from './fmt.js';
+export { fmtTac, parseTac };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
+const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 
-export function mountFast({ root, providers = [], keyS, signIn, open, info, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
+// what a provider can take now: its most, or less when it says so
+const capOf = (p) => { const t = p.terms; return t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount; };
+const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
+
+export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { provider: null, terms: null, termsAt: 0, offline: false, sess: null, pub: null, bal: null, amt: '', quote: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null };
+  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null };
 
   root.innerHTML = `
     <div id="fx-lp" class="rows flat" aria-live="polite"></div>
@@ -47,46 +37,61 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
   const $ = (id) => doc.getElementById(id);
 
   const note = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); say(text); };
-  function paintNote() { const e = $('fx-st'); e.textContent = S.note; e.className = `status${S.bad ? ' err' : ''}`; }
-
-  function paintProvider() {
-    const e = $('fx-lp'), t = S.terms;
-    if (S.offline) { e.innerHTML = '<p class="empty">No provider is online right now. Bridging from the <a href="/">front page</a> takes a few hours.</p>'; return; }
-    if (!t) { e.innerHTML = '<p class="empty">Reading the provider…</p>'; return; }
-    e.innerHTML = `<div class="kv"><span>Provider</span><b>${esc(S.provider.name || 'Provider')}</b></div>
-      <div class="kv"><span>Fee</span><b class="num">${esc((t.feeBps / 100).toFixed(2))}%${t.flatFee > 0n ? ` + ${esc(fmtTac(t.flatFee))} TAC` : ''}</b></div>
-      <div class="kv"><span>Amount</span><b class="num">${esc(fmtTac(t.minAmount))} to ${esc(fmtTac(t.maxAmount))} TAC</b></div>${t.available != null && t.available < t.maxAmount ? `
-      <div class="kv"><span>Available now</span><b class="num">${esc(fmtTac(t.available))} TAC</b></div>` : ''}`;
+  // what the status line says: the last thing that happened, or else what is wrong with the amount typed
+  function paintNote() {
+    const e = $('fx-st');
+    e.textContent = S.note || (S.sess && !S.busy ? problem(parseTac(S.amt)) : '');
+    e.className = `status${S.bad && S.note ? ' err' : ''}`;
   }
 
-  // the amount typed: what is wrong with it, or null
+  // what the providers together offer: the amounts they take, and the lowest fee
+  function summary() {
+    const ps = S.providers;
+    if (!ps.length) return null;
+    const mins = ps.map((p) => p.terms.minAmount).sort((a, b) => (a < b ? -1 : 1));
+    const best = ps.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && b.terms.flatFee < a.terms.flatFee) ? b : a));
+    return { count: ps.length, min: mins[0], max: big(ps, (p) => p.terms.maxAmount), cap: big(ps, capOf), best };
+  }
+
+  function paintProvider() {
+    const e = $('fx-lp'), sm = summary();
+    if (S.loaded && !sm) { e.innerHTML = '<p class="empty">No provider is online right now. Bridging from the <a href="/">front page</a> takes a few hours.</p>'; return; }
+    if (!sm) { e.innerHTML = '<p class="empty">Reading the providers…</p>'; return; }
+    const t = sm.best.terms, many = sm.count > 1;
+    e.innerHTML = `<div class="kv"><span>${many ? 'Providers' : 'Provider'}</span><b>${many ? `${sm.count} online` : esc(sm.best.name || 'Provider')}</b></div>
+      <div class="kv"><span>Fee</span><b class="num">${many ? 'from ' : ''}${esc(feeLine(t))}</b></div>
+      <div class="kv"><span>Amount</span><b class="num">${esc(fmtTac(sm.min))} to ${esc(fmtTac(sm.max))} TAC</b></div>${sm.cap < sm.max ? `
+      <div class="kv"><span>Available now</span><b class="num">${esc(fmtTac(sm.cap))} TAC</b></div>` : ''}`;
+  }
+
+  // the amount typed: what is wrong with it, or ''
   function problem(units) {
-    const t = S.terms;
+    const sm = summary();
     if (units == null) return S.amt.trim() ? 'That is not an amount.' : '';
-    if (t && units < t.minAmount) return `The least is ${fmtTac(t.minAmount)} TAC.`;
-    if (t && units > t.maxAmount) return `The most is ${fmtTac(t.maxAmount)} TAC.`;
-    if (t && t.available != null && units > t.available) return t.available > 0n ? `The provider can take up to ${fmtTac(t.available)} TAC right now.` : 'The provider cannot take more right now.';
+    if (sm && units < sm.min) return `The least is ${fmtTac(sm.min)} TAC.`;
+    if (sm && units > sm.max) return `The most is ${fmtTac(sm.max)} TAC.`;
+    if (sm && units > sm.cap) return sm.cap > 0n ? `${sm.count > 1 ? 'The providers can' : 'The provider can'} take up to ${fmtTac(sm.cap)} TAC right now.` : `${sm.count > 1 ? 'The providers cannot' : 'The provider cannot'} take more right now.`;
     if (S.bal != null && units > S.bal) return 'That is more than your TAC on Bitcoin.';
     return '';
   }
 
   function paintForm() {
-    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv');
-    form.hidden = !signed || S.offline;
-    go.hidden = S.offline || !S.terms;
+    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), sm = summary();
+    form.hidden = !signed || !sm;
+    go.hidden = !sm;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
     if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; return; }
     const units = parseTac(S.amt), bad = problem(units), q = S.quote;
     recv.hidden = !q;
     if (q) {
-      recv.innerHTML = `<div class="kv"><span>You pay</span><b class="num">${esc(fmtTac(q.btcValue))} TAC</b></div>
+      recv.innerHTML = `${sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>You pay</span><b class="num">${esc(fmtTac(q.btcValue))} TAC</b></div>
         <div class="kv"><span>You receive, private</span><b class="num">${esc(fmtTac(q.evmAmount))} TAC</b></div>
         <div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>`;
     }
     go.textContent = S.busy ? 'Working…' : 'Bridge';
     go.disabled = S.busy || !!bad || !q || units == null;
-    if (!S.busy && !S.note) { const e = $('fx-st'); e.textContent = bad; e.className = 'status'; }
+    paintNote();
   }
 
   function paintList() {
@@ -102,34 +107,24 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
 
   const paint = () => { paintProvider(); paintForm(); paintNote(); paintList(); };
 
-  // ── the provider ──
-  const termsOf = (i) => ({ feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available) });
-  // what the provider can take changes with every bridge: read again when a session opens and while an amount is typed
-  async function refreshTerms() {
-    if (!S.provider || Date.now() - S.termsAt < refreshMs) return;
+  // ── the providers ──
+  // what they can take changes with every bridge: read again when a session opens and while an amount is typed
+  async function readProviders(force = false) {
+    if (!force && Date.now() - S.termsAt < refreshMs) return;
     S.termsAt = Date.now();
-    try { S.terms = termsOf(await info(S.provider)); paintProvider(); paintForm(); } catch { /* the terms already read stand */ }
-  }
-  async function readProvider() {
-    S.offline = false; S.terms = null; paint();
-    for (const p of providers) {
-      try {
-        const i = await info(p);
-        const claimPub = String(i.claimPub || '').toLowerCase();
-        if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) continue;
-        S.provider = p;
-        S.terms = termsOf(i); S.termsAt = Date.now();
-        paint(); return;
-      } catch { /* the next provider */ }
-    }
-    S.offline = true; paint();
+    try {
+      const ps = await discover();
+      if (ps.length || !S.providers.length) S.providers = ps;
+    } catch { /* the providers already read stand */ }
+    S.loaded = true;
+    paint();
   }
 
   // ── the key ──
   function reset(text) {
     if (S.stop) { S.stop(); S.stop = null; }
     clearTimeout(S.timer); S.seq++;
-    Object.assign(S, { sess: null, pub: null, bal: null, quote: null, amt: '', recs: [], busy: false, opening: null });
+    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null });
     $('fx-amt').value = '';
     note(text || '');
     paint();
@@ -141,12 +136,12 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
     S.opening = (async () => {
       S.busy = true; note('Reading your TAC on Bitcoin…'); paintForm();
       try {
-        const sess = await open({ provider: S.provider });
+        const sess = await open();
         if (!keyS.unlocked || keyS.key.pubHex !== pub) return null;
         S.sess = sess; S.pub = pub;
         S.bal = await sess.balance();
-        S.stop = sess.fb.run({ onChange: (list) => { if (S.sess === sess) { S.recs = list; paintList(); } } });
-        sess.fb.recover().then((found) => { if (found.length && S.sess === sess) sess.fb.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
+        S.stop = sess.run({ onChange: (list) => { if (S.sess === sess) { S.recs = list; paintList(); } } });
+        sess.recover().then((found) => { if (found.length && S.sess === sess) sess.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
         note('');
         return sess;
       } catch (e) { S.sess = null; note(wording(e), true); return null; } finally { S.busy = false; S.opening = null; paint(); }
@@ -161,23 +156,26 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
 
   // ── the amount ──
   function typed() {
-    refreshTerms();
-    S.amt = $('fx-amt').value; S.quote = null; S.note = '';
+    readProviders();
+    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = '';
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
     paintForm();
     if (units == null || problem(units) || !S.sess) return;
     S.timer = setTimeout(async () => {
       try {
-        const q = await S.sess.fb.quote(units);
+        const eligible = S.providers.filter((p) => units >= p.terms.minAmount && units <= capOf(p));
+        if (!eligible.length) { if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', true); return; }
+        const r = await S.sess.quoteAll(eligible, units);
         if (seq !== S.seq) return;
-        S.quote = q; paintForm();
+        if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
+        S.quotes = r.quotes; S.quote = r.quotes[0].quote; S.best = r.quotes[0].provider; paintForm();
       } catch (e) { if (seq === S.seq) note(wording(e), true); }
     }, quoteDelayMs);
   }
   $('fx-amt').addEventListener('input', typed);
   $('fx-max').addEventListener('click', () => {
-    const t = S.terms, lim = t ? (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount) : S.bal, cap = S.bal > lim ? lim : S.bal;
+    const sm = summary(), lim = sm ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
     $('fx-amt').value = (cap / ONE).toString() + (cap % ONE ? '.' + (cap % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
     typed();
   });
@@ -191,14 +189,19 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
       return;
     }
     if (!S.sess) { await openSession(); return; }
-    const q = S.quote;
-    if (!q) return;
+    if (!S.quote) return;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
     try {
-      const fresh = Number(q.validUntil) > Math.floor(Date.now() / 1000) + 90 ? q : await S.sess.fb.quote(q.btcValue);
-      const notes = await S.sess.notes();
-      await S.sess.fb.start({ quote: fresh, notes });
-      S.recs = await S.sess.fb.records(); S.quote = null; S.amt = ''; $('fx-amt').value = '';
+      // a quote close to its end is asked for again, from every provider that gave one
+      const soon = Math.floor(Date.now() / 1000) + 90;
+      let quotes = S.quotes;
+      if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
+        const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
+        if (!r.quotes.length) throw new Error('the quote expired');
+        quotes = r.quotes;
+      }
+      await S.sess.start({ quotes });
+      S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
       note('Started.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
     } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
@@ -218,7 +221,7 @@ export function mountFast({ root, providers = [], keyS, signIn, open, info, quot
   }
 
   paint();
-  readProvider().then(() => { if (keyS.unlocked && S.terms) openSession(); });
+  readProviders(true).then(() => { if (keyS.unlocked && S.providers.length) openSession(); });
   return {
     lock: (text) => reset(text),
     destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); },

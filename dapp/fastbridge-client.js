@@ -24,7 +24,7 @@ export const DEFAULT_POLICY = {
   maxFeeBps: 500, quoteMarginSecs: 120,
 };
 
-export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000) }) {
+export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
   const policy = { ...DEFAULT_POLICY, ...policyIn };
   const counter = typeof lp === 'string' ? makeHttpCounter({ base: lp }) : lp;
   const bl = makeBitcoinLocker({ seed, now, policy, store, btc, evm, counter });
@@ -86,10 +86,13 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       if (!r || r.ok === false) throw new Error(`the provider cannot hold that amount${r && r.why ? `: ${r.why}` : ''}`);
     }
     policy.csvBlocks = q.csvBlocks;
-    return bl.start({
+    const rec = await bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
       evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id,
     });
+    // the provider is kept with the swap, so it is carried on with the one it began with
+    if (provider) { rec.provider = provider; await store.put(rec); }
+    return rec;
   }
 
   async function tick() {
@@ -140,6 +143,60 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   return { terms, quote, pickNotes, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
 }
 
+// Several providers: a quote from each, the best first, and each swap carried on with the provider it began with.
+//   const market = makeFastBridgeMarket({ btc, evm, store, seed, pins, counterFor })
+//   counterFor(ref)   the counter of a provider, from the reference kept with its swaps ({ kind, claimPub, base | boardBase + gateway })
+//   market.quoteAll(providers, amount)   -> { quotes: [{ provider, quote }] best payout first, failed: [{ provider, error }] }
+//   market.start({ quotes, notes })      the best quote a provider will hold, each asked in turn -> { rec, provider }
+//   market.tick() / run() / records() / recover()     as the client's, over the swaps of every provider
+export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy, now, counterFor, makeClient = makeFastBridgeClient }) {
+  const clients = new Map();
+  const keyOf = (ref) => (ref ? JSON.stringify([ref.kind, ref.claimPub || '', ref.gateway || ref.base || '']) : 'none');
+  function clientFor(ref) {
+    const k = keyOf(ref);
+    if (!clients.has(k)) clients.set(k, makeClient({ lp: counterFor(ref), btc, evm, store, seed, pins: { ...pins, claimPub: ref && ref.claimPub ? ref.claimPub : undefined }, policy, provider: ref, ...(now ? { now } : {}) }));
+    return clients.get(k);
+  }
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
+
+  async function quoteAll(providers, amount, { timeoutMs = 8000 } = {}) {
+    const got = await Promise.all(providers.map(async (provider) => {
+      try { return { provider, quote: await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs) }; } catch (error) { return { provider, error }; }
+    }));
+    const quotes = got.filter((r) => r.quote).sort((a, b) => (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
+    return { quotes, failed: got.filter((r) => r.error) };
+  }
+  async function start({ quotes, notes }) {
+    let last = null;
+    for (const { provider, quote } of quotes) {
+      try { return { rec: await clientFor(provider.ref).start({ quote, notes }), provider }; } catch (e) {
+        last = e;
+        if (!/cannot hold that amount/.test(String((e && e.message) || e))) throw e;
+      }
+    }
+    throw last || new Error('the provider cannot hold that amount');
+  }
+  async function tick() {
+    const out = [];
+    for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await clientFor(rec.provider || null).step(rec));
+    return out.map(describe);
+  }
+  function run({ everyMs = 15000, onChange = () => {} } = {}) {
+    let busy = false, stopped = false;
+    const pass = async () => {
+      if (busy || stopped) return;
+      busy = true;
+      try { onChange(await tick()); } catch { /* the next pass tries again */ } finally { busy = false; }
+    };
+    pass();
+    const timer = setInterval(pass, everyMs);
+    return () => { stopped = true; clearInterval(timer); };
+  }
+  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map(describe);
+  const recover = (opts) => clientFor(null).recover(opts);
+  return { quoteAll, start, tick, run, records, recover, clientFor };
+}
+
 // Where a swap is, in words and as a position among the four steps (lock on Bitcoin, lock in the pool, claim, done).
 const STEPS = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'];
 const SAYS = {
@@ -163,11 +220,18 @@ export function describe(rec) {
   };
 }
 
+// A provider's terms from what it says of itself (its /info, or its ad): amounts as BigInt, what it can take now when it says.
+export const termsOf = (i) => ({
+  feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0), minAmount: BigInt(i.minAmount), maxAmount: BigInt(i.maxAmount),
+  available: i.available == null ? null : BigInt(i.available),
+});
+
 // Swaps kept in the page's localStorage under a prefix, one entry each.
 export function makeLocalStore(prefix, storage = globalThis.localStorage) {
   return {
     async get(id) { try { const v = storage.getItem(prefix + id); return v ? JSON.parse(v) : null; } catch { return null; } },
     async put(rec) { storage.setItem(prefix + rec.id, JSON.stringify(rec)); },
+    async del(id) { try { storage.removeItem(prefix + id); } catch { /* nothing kept */ } },
     async list() {
       const out = [];
       for (let i = 0; i < storage.length; i++) {

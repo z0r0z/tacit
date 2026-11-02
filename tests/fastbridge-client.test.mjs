@@ -9,11 +9,11 @@ import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { makeHttpCounter } from '../dapp/fastbridge-http.js';
-import { makeFastBridgeClient, makeLocalStore, describe } from '../dapp/fastbridge-client.js';
+import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf } from '../dapp/fastbridge-client.js';
 import { fetched } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
 import { VALUE, memStore } from './lib/fastbridge-world.mjs';
-import { closers, configFor, serve, httpWorld } from './lib/lp-harness.mjs';
+import { closers, configFor, serve, httpWorld, bothDone } from './lib/lp-harness.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -193,6 +193,52 @@ test('a provider that cannot hold the payout is found out before anything is loc
   await w.step(); await w.step();
   assert.equal(s.svc.reservations.get(q.id).txid, rec.lock.txid, 'held for the lock that went out');
   assert.equal(s.svc.reservations.get(q.id).until > w.clock.now() + 3600, true);
+});
+
+test('several providers: a quote from each, the best first, one that is slow or down left out, and the press goes to the next best when one cannot hold', async () => {
+  const log = [];
+  const fakes = {
+    cheap: { quote: async (a) => ({ id: 'q-cheap', evmAmount: BigInt(a) - 5n }), start: async () => { log.push('cheap'); throw new Error('the provider cannot hold that amount: the provider cannot take that amount right now'); } },
+    fair: { quote: async (a) => ({ id: 'q-fair', evmAmount: BigInt(a) - 20n }), start: async ({ quote }) => { log.push('fair'); return { id: 'swap-' + quote.id }; } },
+    dear: { quote: async (a) => ({ id: 'q-dear', evmAmount: BigInt(a) - 90n }), start: async () => { log.push('dear'); throw new Error('the lock could not be built'); } },
+    slow: { quote: () => new Promise(() => {}) },
+    down: { quote: async () => { throw new Error('no quote: 503'); } },
+  };
+  const market = makeFastBridgeMarket({ btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), counterFor: () => null, makeClient: ({ provider }) => fakes[provider.id] });
+  const providers = Object.keys(fakes).map((id) => ({ id, name: id, ref: { kind: 'http', id, claimPub: id } }));
+  const r = await market.quoteAll(providers, 1000n, { timeoutMs: 30 });
+  assert.deepEqual(r.quotes.map((x) => x.provider.id), ['cheap', 'fair', 'dear']);
+  assert.deepEqual(r.failed.map((x) => x.provider.id).sort(), ['down', 'slow']);
+  assert.match(r.failed.find((x) => x.provider.id === 'slow').error.message, /did not answer in time/);
+  const started = await market.start({ quotes: r.quotes, notes: [] });
+  assert.deepEqual(log, ['cheap', 'fair'], 'the cheapest could not hold, the next was asked');
+  assert.deepEqual([started.provider.id, started.rec.id], ['fair', 'swap-q-fair']);
+  // an error that is not about holding the amount is not tried on another provider
+  log.length = 0;
+  await assert.rejects(() => market.start({ quotes: [r.quotes[2], r.quotes[1]], notes: [] }), /could not be built/);
+  assert.deepEqual(log, ['dear']);
+  await assert.rejects(() => market.start({ quotes: [r.quotes[0]], notes: [] }), /cannot hold that amount/);
+  await assert.rejects(() => market.start({ quotes: [], notes: [] }), /cannot hold that amount/);
+});
+
+test('a swap through the market: the provider is kept with the swap, and a record is carried on with it', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  const s = await serve(w, { config: feeConfig(w) });
+  ref.base = s.base;
+  const provider = { id: bytesToHex(w.lW.wallet.pub), name: 'Tacit', ref: { kind: 'http', base: s.base, claimPub: bytesToHex(w.lW.wallet.pub) }, terms: termsOf(await counterAt(s.base).info()) };
+  const market = makeFastBridgeMarket({ btc: w.uBtc, evm: w.uEvmCtx, store: w.userStore, seed: w.uKeys.seed, now: w.clock.now, pins: { btcAsset: bytesToHex(w.etch.asset), evmAsset: ASSET }, counterFor: (r) => (r && r.kind === 'http' ? counterAt(r.base) : null) });
+  w.userTick = () => market.tick();
+  const { quotes } = await market.quoteAll([provider], VALUE);
+  assert.equal(quotes.length, 1);
+  const { rec } = await market.start({ quotes, notes: [w.note] });
+  assert.deepEqual((await w.userStore.get(rec.id)).provider, provider.ref, 'kept with the swap');
+  await w.run(bothDone(w));
+  assert.equal((await market.records())[0].title, 'Done');
+  assert.equal(w.evm.locks.leaves.length, 1);
+  // a record made before providers were kept is carried on by the client that has no provider, which here is no provider at all
+  const gone = makeFastBridgeMarket({ btc: w.uBtc, evm: w.uEvmCtx, store: memStore(), seed: w.uKeys.seed, now: w.clock.now, counterFor: () => null });
+  assert.deepEqual(await gone.tick(), []);
 });
 
 test('the words for each phase, and for one the page does not know', () => {
