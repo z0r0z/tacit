@@ -18081,7 +18081,11 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
 // displayed. See worker/src/tac-ancestry.js for why this differs from commitmentForUtxo above.
 const { verifyTacAncestry } = makeTacAncestry({
   apiJson, secp, sha256, hexToBytes, bytesToHex, concatBytes,
-  decodeEnvelopeScript, bpRangeAggVerify, bppRangeVerify, verifySchnorr,
+  decodeEnvelopeScript, bpRangeAggVerify,
+  // The BP+ verifier runs on the dapp's vendored secp256k1, a different copy from this file's @noble/secp256k1,
+  // and noble checks `instanceof` on every point op, so the walk's points are re-parsed into the verifier's own class.
+  bppRangeVerify: (pts, proof) => bppRangeVerify(pts.map((p) => bppPoint(p.toRawBytes(true))), proof),
+  verifySchnorr,
   kernelMsg: ammKernelMsgV1, H: PEDERSEN_H,
 });
 
