@@ -755,7 +755,7 @@
       "chainId": 1,
       "opensAt": 1793664000,
       "title": "Test the fast bridge",
-      "tagline": "One small swap from Bitcoin to Ethereum, in minutes.",
+      "tagline": "Move 10 TAC from Bitcoin to Ethereum in minutes, and get paid for it.",
       "verified": false,
       "created": [],
       "steps": [
@@ -768,8 +768,12 @@
           "minWei": "60000000000000000000",
           "maxWei": "60000000000000000000",
           "label": "Provider",
-          "detail": "Hold 10 TAC private and a few thousand sats. Set the most per bridge to 10 TAC and keep the page open until the bridge is done.",
-          "ask": "Your take: the Bitcoin transaction that took the lock"
+          "detail": "You need 10 TAC private and a few thousand sats. Start providing with the most per bridge at 10 TAC, and keep the page open until the bridge is done.",
+          "action": {
+            "label": "Provide 10 TAC",
+            "href": "/fast/#provide"
+          },
+          "ask": "Provider: the Last take link under Provide liquidity"
         },
         {
           "id": "02-bridger",
@@ -780,14 +784,18 @@
           "minWei": "60000000000000000000",
           "maxWei": "60000000000000000000",
           "label": "Bridger",
-          "detail": "Hold 10 TAC on Bitcoin and a few thousand sats. Bridge 10 TAC.",
-          "ask": "Your lock: the Bitcoin transaction that locked your TAC"
+          "detail": "You need 10 TAC on Bitcoin and a few thousand sats. A provider must be online first.",
+          "action": {
+            "label": "Bridge 10 TAC",
+            "href": "/fast/"
+          },
+          "ask": "Bridger: the Bitcoin lock link on your bridge"
         }
       ],
       "about": [
         {
-          "h": "What it does",
-          "p": "Proves the fast bridge on mainnet with one real swap of 10 TAC. One person can take both roles, or two people can meet on the page."
+          "h": "What to do",
+          "p": "Take one side of a 10 TAC bridge, or both sides with two keys. When it is done, claim here with its Bitcoin transaction."
         },
         {
           "h": "What it costs",
@@ -795,17 +803,17 @@
         },
         {
           "h": "If a bridge stops",
-          "p": "Your Bitcoin comes back on its timelock, after about a day. Use 10 TAC only."
+          "p": "Open the fast bridge again after about a day and your TAC returns to your Bitcoin address."
         },
         {
-          "h": "How it pays",
-          "p": "Each role pays once, for the first swap reviewed on both chains. Claim from the wallet to be paid, then post the link in Discord."
+          "h": "Getting paid",
+          "p": "Each role pays once, to the first bridge checked on both chains. Claim from the wallet you want paid, then post the link in Discord."
         }
       ],
       "links": [
         {
-          "label": "The fast bridge",
-          "href": "/fast/"
+          "label": "Discord",
+          "href": "https://discord.gg/VxYx9XSBrM"
         }
       ]
     }

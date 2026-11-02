@@ -122,7 +122,7 @@ test('a provider and a user, each from its own key, find and reach each other th
   providerAddress = provider.address;
   const inv = await provider.inventory();
   assert.deepEqual([inv.pool, inv.coins, inv.address === provider.address], [5000n * TAC, 1, true]);
-  assert.deepEqual(await provider.status(), { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null });
+  assert.deepEqual(await provider.status(), { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null, lastTake: null });
   await provider.start({ settings: { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC }, accept: true });
   try {
     await new Promise((r) => setTimeout(r, 80));

@@ -33,7 +33,7 @@ function sessionStub({ pool = 5000n * TAC, coins = 3, open = 0 } = {}) {
   };
 }
 function mount(over = {}) {
-  const dom = new JSDOM('<!doctype html><body><details id="pv"></details></body>');
+  const dom = new JSDOM('<!doctype html><body><details id="pv"></details></body>', { url: over.url || 'https://tacit.finance/fast/' });
   const doc = dom.window.document, root = doc.getElementById('pv'), key = over.key || keyStub(), stub = over.stub || sessionStub();
   const kept = new Map(over.kept || []), saved = [];
   const state = { opens: 0 };
@@ -142,6 +142,25 @@ test('a key that locks stops the provider and clears the panel', async () => {
   await m.load();
   assert.equal(m.state.opens, 2, 'a new session for the next key');
   assert.equal(m.$('pv-go').textContent, 'Start providing');
+});
+
+test('the last take stays linked once providing has stopped, for a claim that names it', async () => {
+  const m = mount({ stub: sessionStub() });
+  m.stub.st.lastTake = 'ab'.repeat(32);
+  await m.load();
+  const a = m.$('pv-run').querySelector('a');
+  assert.equal(m.$('pv-run').hidden, false);
+  assert.equal(a.href, `https://mempool.space/tx/${'ab'.repeat(32)}`);
+  assert.equal(text(m.$('pv-run')).includes('Open bridges'), false, 'nothing of a running provider is shown');
+});
+
+test('/fast/#provide opens the panel, which reads the key as soon as it is unlocked', async () => {
+  const m = mount({ url: 'https://tacit.finance/fast/#provide' });
+  assert.equal(m.root.open, true);
+  assert.equal(m.state.opens, 0, 'nothing is read before a key is open');
+  m.key.open();
+  await until(() => m.state.opens === 1 && m.$('pv-go').textContent === 'Start providing', 'read');
+  assert.equal(m.root.hidden, false);
 });
 
 let passed = 0, ran = 0;

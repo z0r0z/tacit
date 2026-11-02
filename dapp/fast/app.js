@@ -2,8 +2,8 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=55a25559';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
 import { mountFast } from '/fast/ui.js?cb=0049f948';
-import { mountProvide } from '/fast/provide.js?cb=a3a33ad5';
-import { openFast, openProvider, discoverProviders } from '/fast/wire.js?cb=03f3cf1a';
+import { mountProvide } from '/fast/provide.js?cb=d692b332';
+import { openFast, openProvider, discoverProviders } from '/fast/wire.js?cb=6a034ab8';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider

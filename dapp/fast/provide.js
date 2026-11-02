@@ -16,6 +16,7 @@ const MIN_AMOUNT = 10n * ONE;
 const DEFAULT_MOST = 1000n * ONE;
 const percent = (text) => { const t = String(text).trim().replace('%', ''); if (!/^\d+(\.\d{0,2})?$/.test(t)) return null; const bps = Math.round(Number(t) * 100); return bps >= 0 && bps <= 500 ? bps : null; };
 const every = 5000;
+const SCAN = 'https://mempool.space/tx/';
 
 export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, refreshMs = every }) {
   const doc = root.ownerDocument;
@@ -50,12 +51,13 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
       <p class="note">Send a few thousand sats to <code>${esc(inv.address)}</code> to pay for the takes.</p>`}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
-    run.hidden = !st || !st.running;
-    if (st && st.running) {
-      run.innerHTML = `<div class="kv"><span>${st.accepting ? 'Providing' : 'Finishing'}</span><b class="num">${st.accepting ? 'on' : 'no new bridges'}</b></div>
+    run.hidden = !st || !(st.running || st.lastTake);
+    if (st) {
+      run.innerHTML = `${st.running ? `<div class="kv"><span>${st.accepting ? 'Providing' : 'Finishing'}</span><b class="num">${st.accepting ? 'on' : 'no new bridges'}</b></div>
         <div class="kv"><span>Open bridges</span><b class="num">${st.open}</b></div>
         <div class="kv"><span>Done</span><b class="num">${st.done}</b></div>
-        <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>`;
+        <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>` : ''}${st.lastTake ? `
+        <div class="kv"><span>Last take</span><b><a href="${SCAN}${esc(st.lastTake)}" target="_blank" rel="noopener noreferrer">Bitcoin transaction ↗</a></b></div>` : ''}`;
     }
     const go = $('pv-go');
     go.hidden = !inv;
@@ -133,8 +135,11 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     paint();
     // a key that has swaps open to tend is not left waiting for the panel to be opened
     if (keyS.unlocked && !S.sess && hasOpen(keyS.key.pubHex)) { root.open = true; load(); }
+    else if (keyS.unlocked && !S.sess && root.open) load();
   });
 
+  // /fast/#provide comes straight to this panel
+  if (doc.defaultView?.location.hash === '#provide') root.open = true;
   paint();
   return { busy: () => !!(S.st && S.st.running && (S.st.accepting || S.st.open > 0)) };
 }

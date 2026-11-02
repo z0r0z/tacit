@@ -120,6 +120,7 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     return {
       running, accepting, open: recs.filter((r) => !TERMINAL.includes(r.phase)).length, done: done.length,
       earned: done.reduce((a, r) => a + (BigInt(r.offer.btc.value) - BigInt(r.offer.evm.amount)), 0n), lastError,
+      lastTake: done.filter((r) => r.take).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0]?.take.txid ?? null,
     };
   }
   async function inventory() {

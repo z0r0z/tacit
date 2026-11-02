@@ -236,20 +236,25 @@ function card(job) {
   const st = stateOf(job), exp = isExpanded(job), [label, cls] = PILL[st];
   const n = doneCount(job), total = job.steps.length, eco = economics(job), res = resultOf(job);
   const own = job.steps.filter((s) => chainOf(job, s) === job.chainId);
-  let fig = '—', cap = 'shown when rewards open', foot = `${(own.reduce((x, s) => x + s.gas, 0) / 1e6).toFixed(1)}M gas${manyChains(job) ? ` ${mark(job.chainId)}` : ''}`;
+  const reviewed = job.steps.every((s) => s.kind === 'review');
+  let fig = '—', cap = 'shown when rewards open', foot = reviewed ? '' : `${(own.reduce((x, s) => x + s.gas, 0) / 1e6).toFixed(1)}M gas${manyChains(job) ? ` ${mark(job.chainId)}` : ''}`;
   if (st === 'done') {
     fig = res.count ? `${tac(res.total)}<small>TAC</small>` : '—';
     const waiting = Object.values(S.hashes).filter((v) => v.state === 'pending').length;
     cap = res.count ? `paid to ${res.senders.map((a) => short(a)).join(', ')}` : waiting ? 'waiting for twelve confirmations' : S.api?.enabled && job.opensAt && Date.now() / 1000 >= job.opensAt ? 'no reward claimed yet' : 'deployed outside the rewards';
     foot = res.last ? `Done ${day(res.last)}` : 'Done';
+  } else if (reviewed) {
+    fig = `${tac(job.steps.reduce((x, s) => x + BigInt(s.minWei), 0n), 0)}<small>TAC</small>`;
+    cap = `${tac(job.steps[0].minWei, 0)} TAC for each role, paid once`;
   } else if (eco || apiJob(job)?.estimateWei != null) { fig = `≈ ${tacR(eco ? eco.pays : apiJob(job).estimateWei)}<small>TAC</small>`; cap = 'for the whole job, at today’s network fees'; }
+  const where = reviewed ? 'roles claimed' : `${steps(total)} on the chain`;
   return `<article class="job ${st}${exp ? ' is-open' : ''}" id="${esc(job.id)}">
     <button class="job-head" type="button" data-toggle="${esc(job.id)}" aria-expanded="${exp}" aria-controls="body-${esc(job.id)}">
       <span class="job-top"><b>${esc(job.title)}</b><span class="pill ${cls}">${label}</span></span>
       <span class="job-sub">${esc(job.tagline)}${manyChains(job) ? ` ${jobChains(job).map(mark).join('')}` : ''}</span>
       <span class="job-fig"><span class="big num">${fig}</span><span class="cap">${cap}</span></span>
-      <span class="bar" role="img" aria-label="${n} of ${total} ${steps(total)} on the chain"><i style="width:${(100 * n) / total}%"></i></span>
-      <span class="job-foot"><span>${n} of ${total} ${steps(total)} on the chain</span><span>${foot}</span></span>
+      <span class="bar" role="img" aria-label="${n} of ${total} ${where}"><i style="width:${(100 * n) / total}%"></i></span>
+      <span class="job-foot"><span>${n} of ${total} ${where}</span><span>${foot}</span></span>
     </button>
     <div class="job-body" id="body-${esc(job.id)}"${exp ? '' : ' hidden'}>${exp ? (st === 'done' ? doneBody(job, res) : openBody(job)) : ''}</div>
   </article>`;
@@ -364,7 +369,12 @@ function reviewBody(job) {
         </section>
       </div>
       <div class="col">
-        <section class="panel p-ticket" aria-label="Do it">
+        ${todo.length ? `<section class="panel p-ticket" aria-label="Do it">
+          <p class="eyebrow">Do it</p>
+          <div class="acts">${todo.map((s) => `<a class="btn" href="${esc(s.action.href)}" target="_blank" rel="noopener noreferrer">${esc(s.action.label)} ↗</a>`).join('')}</div>
+          <p class="hint">Opens the fast bridge. Come back here to claim when the bridge is done.</p>
+        </section>` : ''}
+        <section class="panel p-mine" aria-label="Claim">
           <p class="eyebrow">Claim</p>
           ${todo.map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
             <label class="lbl"><span>${esc(s.ask)}</span>
