@@ -168,11 +168,13 @@ export function makeEvmSim(clock) {
 
   // A relayed job lands when the test lets it (`sim.process()`), or at once when `eager`.
   sim.dieOnce = null;
+  sim.dieAfter = null;
   sim.submit = async (type, op) => {
     if (sim.dieOnce === type) { sim.dieOnce = null; throw new Error('process died before the job was sent'); }
     const id = jobId(type, op);
     if (!sim.jobs.has(id)) { sim.jobs.set(id, { type, op, status: 'pending' }); sim.submitted.push({ type, id }); }
     if (sim.eager) sim.process();
+    if (sim.dieAfter === type) { sim.dieAfter = null; throw new Error('process died after the job was sent'); }
     return { jobId: id };
   };
   sim.process = () => {

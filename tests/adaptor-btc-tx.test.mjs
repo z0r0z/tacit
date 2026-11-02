@@ -138,6 +138,13 @@ test('the builder refuses what would not be a transfer: unbalanced amounts, too 
   assert.throws(() => user.lockTransfer({ asset: etch.asset, notes: [note], lock, lockAmount: VALUE + 1n, rLock: sec.rLock, hint, satsUtxos: [coin('y', 200000)], feeRate: FEE_RATE }), /within the notes/);
 });
 
+test('a coin of dust size, which may carry a note, never funds a commit', () => {
+  const dust = coin('could-be-a-note', 546);
+  const pair = user.lockTransfer({ asset: etch.asset, notes: [note], lock, lockAmount: VALUE, rLock: sec.rLock, hint, satsUtxos: [dust, coin('plain', 200_000)], feeRate: FEE_RATE });
+  assert.ok(pair.commitTx.inputs.every((i) => i.txid !== dust.txid), 'the dust coin is left alone');
+  assert.throws(() => user.lockTransfer({ asset: etch.asset, notes: [note], lock, lockAmount: VALUE, rLock: sec.rLock, hint, satsUtxos: [dust], feeRate: FEE_RATE }), /not enough sats/);
+});
+
 test('a lock of part of a note returns the rest to the wallet as a note it can read', async () => {
   const part = user.lockTransfer({ asset: etch.asset, notes: [note], lock, lockAmount: 2000n, rLock: sec.rLock, hint, satsUtxos: [coin('user-sats4', 200_000)], feeRate: FEE_RATE });
   const f = fetchOf(etch, toEsplora(part));

@@ -135,6 +135,23 @@ test('the swap id is the outpoint the lock transaction spends: an offer that nam
   assert.equal(hex(X.swapIdFromLockTx({ vin: [{ txid: 'ee'.repeat(32), vout: 0 }, { txid: NOTE_TXID, vout: 0 }] })), hex(r.swapId));
 });
 
+test('offers with fields that do not parse are refused with reasons and never throw', () => {
+  const r = run({ btcLocker: user, evmLocker: lp });
+  for (const [name, f] of [
+    ['rOut not hex', (o) => ({ ...o, evm: { ...o.evm, rOut: 'not-hex' } })],
+    ['value not a number', (o) => ({ ...o, btc: { ...o.btc, value: 'abc' } })],
+    ['swap id short', (o) => ({ ...o, swapId: '00' })],
+    ['no btc section', (o) => ({ ...o, btc: undefined })],
+  ]) {
+    const v = X.verifyBtcLockOffer(f(JSON.parse(JSON.stringify(r.offer))), { prims: P, myClaimerPub: pub33(lp.dBtc), expect: QUOTE, chain: r.chain });
+    assert.equal(v.ok, false, name);
+    assert.match(v.reasons.join(';'), /malformed offer/, name);
+  }
+  const e = X.verifyEvmOffer({ ...r.evmOffer, amount: 'abc' }, { mine: r.mine, expect: QUOTE, inLockSet: true, nowSecs: NOW });
+  assert.equal(e.ok, false);
+  assert.match(e.reasons.join(';'), /malformed offer/);
+});
+
 test('the recovery hint: the locker finds its lock and its opening from key + chain; nobody else does', () => {
   const r = run({ btcLocker: user, evmLocker: lp });
   const hint = X.lockHintScript({ seed: user.seed, swapId: r.swapId, claimerPub: pub33(lp.dBtc), csvBlocks: CSV, value: QUOTE.btcValue });

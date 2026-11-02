@@ -158,11 +158,36 @@ export function makeBtcLockOffer({ swapId, asset, value, rLock, txid, vout, csvB
 // scriptPubKey and Tacit commitment, whether the validator accepts it as a note of the offered asset, its
 // confirmations, and the outpoints the lock transaction spends as notes (`noteInputs`, in order). `expect` is its
 // own quote. Every field of `chain` is read from the chain by the caller; nothing in the offer stands in for one.
-export function verifyBtcLockOffer(offer, { prims, myClaimerPub, expect, chain, minConfs = 1, minCsv = 72 }) {
+export function verifyBtcLockOffer(offer, opts) {
+  try { return checkBtcLockOffer(offer, opts); } catch (err) { return { ok: false, reasons: ['malformed offer: ' + String((err && err.message) || err).slice(0, 120)], lock: null }; }
+}
+
+const HEX = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
+const scalarOk = (h) => { try { const v = BigInt('0x' + strip(h)); return HEX(64).test(strip(h)) && v > 0n && v < SECP_N; } catch { return false; } };
+// Every field of a Bitcoin lock offer has the shape the later steps parse; a field that does not is refused here and
+// not found out after the Ethereum lock is made.
+function offerShape(o) {
+  const b = o.btc || {}, e = o.evm || {};
+  const bad = [];
+  if (!HEX(72).test(strip(o.swapId || ''))) bad.push('swap id');
+  if (!HEX(64).test(strip(b.txid || '')) || !Number.isInteger(b.vout) || b.vout < 0) bad.push('lock outpoint');
+  if (!HEX(64).test(strip(b.asset || '')) || !/^\d+$/.test(String(b.value))) bad.push('Bitcoin side');
+  if (!scalarOk(b.rLock || '')) bad.push('lock blinding');
+  if (!Number.isInteger(b.csvBlocks) || b.csvBlocks < 1 || b.csvBlocks > 0xffff) bad.push('timelock');
+  if (!HEX(64).test(strip(b.lockerXonly || '')) || !xonlyOk(b.lockerXonly)) bad.push('refund key');
+  if (!HEX(64).test(strip(e.asset || '')) || !/^\d+$/.test(String(e.amount))) bad.push('Ethereum side');
+  if (!HEX(64).test(strip(e.recipient || ''))) bad.push('recipient');
+  if (!scalarOk(e.rOut || '')) bad.push('output blinding');
+  return bad;
+}
+
+function checkBtcLockOffer(offer, { prims, myClaimerPub, expect, chain, minConfs = 1, minCsv = 72 }) {
   const reasons = [];
   const o = offer || {};
   const b = o.btc || {}, e = o.evm || {};
   if (o.v !== 1) reasons.push('unknown offer version');
+  const bad = offerShape(o);
+  if (bad.length) return { ok: false, reasons: ['malformed offer: ' + bad.join(', ')], lock: null };
   if (strip(o.claimerPub) !== hs(myClaimerPub)) reasons.push('the lock is not keyed to my claim key');
   if (strip(b.asset) !== hs(expect.btcAsset) || BigInt(b.value) !== BigInt(expect.btcValue)) reasons.push('the Bitcoin side differs from the quote');
   if (strip(e.asset) !== hs(expect.evmAsset) || BigInt(e.amount) !== BigInt(expect.evmAmount)) reasons.push('the Ethereum side differs from the quote');
@@ -214,7 +239,11 @@ export function makeEvmOffer({ asset, amount, rEvmLock, T, deadline, recipient, 
 // The Bitcoin locker's check of an Ethereum offer before it reveals anything. `inLockSet` is whether it found
 // `offer.lockLeaf` among the pool's lock leaves itself. A valid pre-signature over (L − O) also proves L holds
 // exactly `amount`: otherwise L − O would have an H component and nobody could sign for it.
-export function verifyEvmOffer(offer, { mine, expect, inLockSet, nowSecs, minClaimSecs = 1800 }) {
+export function verifyEvmOffer(offer, opts) {
+  try { return checkEvmOffer(offer, opts); } catch (err) { return { ok: false, reasons: ['malformed offer: ' + String((err && err.message) || err).slice(0, 120)] }; }
+}
+
+function checkEvmOffer(offer, { mine, expect, inLockSet, nowSecs, minClaimSecs = 1800 }) {
   const reasons = [];
   const o = offer || {};
   if (o.v !== 1) reasons.push('unknown offer version');

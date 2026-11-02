@@ -13,12 +13,15 @@
 //     misses the deadline still publishes t
 //   - the Bitcoin refund is taken once the timelock has run and the lock is still unspent
 //
+// From the moment the timelock has run, a lock that is still unspent is refunded whatever the phase, so no stuck
+// step (a claim job that never answers, an offer that cannot be read) holds the note; steps of one record run one at a time.
+//
 // Phases:  built -> broadcast -> offered -> claiming -> claimed(-> done)       refund path from any phase before claimed:
 //          ... -> refund-wait -> refunded            counter-took  (the lock was spent by the counterparty with t)
 //
 // ctx = { seed, now(), policy, store, btc, evm, counter }
 //   store    { get(id), put(rec), list() }
-//   policy   { csvBlocks, minClaimSecs, offerWaitSecs, maxEvmWindowSecs }
+//   policy   { csvBlocks, minClaimSecs, offerWaitSecs, maxEvmWindowSecs, claimMarginSecs (600) }
 //   btc      { prims, wallet:{ pub, priv, xonly }, tx (makeAdaptorBtcTx), satsUtxos(), feeRate(), broadcast(pair),
 //              status(txid) -> { confirmations, height }, tip(), outspend(txid, vout) -> spending txid | null }
 //   evm      { now(), lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
@@ -38,6 +41,14 @@ export function makeBitcoinLocker(ctx) {
   const secrets = (rec) => X.deriveSwapSecrets({ seed, swapId: hexToBytes(rec.id) });
   const lockOf = (rec) => deriveLock({ prims: btc.prims, claimerPub: rec.counterClaimPub, T: secrets(rec).T, lockerXonly: btc.wallet.xonly, csvBlocks: rec.csvBlocks });
   const save = async (rec, patch) => { Object.assign(rec, patch, { updated: ctx.now() }); await store.put(rec); return rec; };
+  const margin = policy.claimMarginSecs ?? 600;
+  const queues = new Map();
+  const serial = (id, fn) => {
+    const run = (queues.get(id) || Promise.resolve()).catch(() => {}).then(fn);
+    queues.set(id, run);
+    run.catch(() => {}).finally(() => { if (queues.get(id) === run) queues.delete(id); });
+    return run;
+  };
 
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call.
@@ -54,7 +65,7 @@ export function makeBitcoinLocker(ctx) {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
       counterClaimPub: hx(counterClaimPub), csvBlocks,
-      lock: { txid: pair.revealTxid, vout: 0, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
+      lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
       noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
     };
     await store.put(rec);
@@ -72,7 +83,7 @@ export function makeBitcoinLocker(ctx) {
     if (!rec.refund) {
       const lock = lockOf(rec), sec = secrets(rec);
       const pair = btc.tx.refundTransfer({
-        asset: hexToBytes(rec.asset), lockOut: { txid: rec.lock.txid, vout: rec.lock.vout, value: 546 }, lock, dLocker: btc.wallet.priv,
+        asset: hexToBytes(rec.asset), lockOut: { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value ?? 546 }, lock, dLocker: btc.wallet.priv,
         amount: BigInt(rec.amount), rLock: sec.rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
       });
       await save(rec, { refund: { txid: pair.revealTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid } });
@@ -81,7 +92,20 @@ export function makeBitcoinLocker(ctx) {
     return null;
   }
 
+  // Whether the lock is spent already, or unspent with its timelock run, for the phases that wait on the counterparty.
+  async function lockState(rec) {
+    const st = await btc.status(rec.lock.txid);
+    if (!st.confirmations) return null;
+    if (await btc.outspend(rec.lock.txid, rec.lock.vout)) return 'spent';
+    return (await btc.tip()) >= st.height + rec.csvBlocks - 1 ? 'due' : null;
+  }
+
   async function advance(rec) {
+    if (rec.phase === 'broadcast' || rec.phase === 'offered' || rec.phase === 'claiming') {
+      const state = await lockState(rec);
+      if (state === 'spent') return save(rec, { phase: rec.phase === 'claiming' ? 'done' : 'counter-took', why: 'the lock was spent' });
+      if (state === 'due') return save(rec, { phase: 'refund-wait', why: 'the timelock has run' });
+    }
     switch (rec.phase) {
       case 'built': {
         await btc.broadcast(rec.lock, null);
@@ -110,6 +134,7 @@ export function makeBitcoinLocker(ctx) {
       }
       case 'offered': {
         const evmOffer = await counter.getEvmOffer(rec.id);
+        if (evmOffer && !/^[0-9a-f]{64}$/.test(strip(evmOffer.lockLeaf || ''))) return save(rec, { phase: 'refund-wait', why: 'offer: malformed lock leaf' });
         // An offer whose lock the pool does not show yet is waited for, not refused: the lock may still be landing.
         const position = evmOffer ? await evm.lockPosition(evmOffer.lockLeaf) : null;
         if (!position) {
@@ -137,6 +162,8 @@ export function makeBitcoinLocker(ctx) {
         const st = await evm.claimStatus(rec.claim.jobId);
         if (st === 'settled') return save(rec, { phase: 'claimed', claimedAt: ctx.now() });
         if (st === 'failed') return save(rec, { claim: null, claimFailures: (rec.claimFailures || 0) + 1 });
+        // a claim still unanswered after the deadline can no longer land
+        if ((await evm.now()) > rec.evmOffer.deadline + margin) return save(rec, { phase: 'refund-wait', why: 'the claim did not land before the deadline' });
         return rec;
       }
       case 'claimed': {
@@ -160,8 +187,11 @@ export function makeBitcoinLocker(ctx) {
   }
 
   // One step; a failing adapter call is recorded and the phase kept, so the next tick tries again.
-  async function step(rec) {
-    try { return await advance(rec); } catch (e) { return save(rec, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+  function step(rec) {
+    return serial(rec.id, async () => {
+      const cur = (await store.get(rec.id)) || rec;
+      try { return await advance(cur); } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+    });
   }
 
   return { start, step };

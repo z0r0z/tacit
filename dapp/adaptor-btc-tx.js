@@ -95,9 +95,10 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     if (commitValue < DUST) { commitValue = DUST + revealFee; satsChange = commitValue + noteSats - outTotal - revealFee; }
     if (satsChange < DUST) satsChange = 0;
 
+    // A coin of dust size may carry a note, and funding a commit from it would spend the note: only larger coins fund.
     const picked = [];
     let total = 0, commitFee = prims.feeFor(prims.estCommitVb(1), feeRate);
-    for (const u of satsUtxos) {
+    for (const u of satsUtxos.filter((c) => c.value > DUST)) {
       picked.push(u); total += u.value;
       commitFee = prims.feeFor(prims.estCommitVb(picked.length), feeRate);
       if (total >= commitValue + commitFee + DUST) break;

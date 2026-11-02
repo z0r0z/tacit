@@ -25,7 +25,7 @@ const memStore = () => {
   return { m, get: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), put: async (r) => { m.set(r.id, JSON.stringify(r)); }, list: async () => [...m.values()].map((v) => JSON.parse(v)) };
 };
 
-function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver = {}, funds = 1 } = {}) {
+function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver = {}, funds = 1, lpNowSkew = 0 } = {}) {
   const clock = makeClock();
   const btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
   const kit = tacitKit(tacit);
@@ -47,13 +47,13 @@ function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver = {}, 
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
   const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claim: uEvm.claim, claimStatus: evm.jobStatus };
-  const lEvmCtx = { ...base, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey };
+  const lEvmCtx = { ...base, now: async () => clock.now() + lpNowSkew, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey };
 
   const quotes = new Map();
   const quote = { id: 'q1', btcAsset: bytesToHex(etch.asset), btcValue: VALUE, evmAsset: ASSET, evmAmount: VALUE, validUntil: clock.now() + 3600 };
   quotes.set(quote.id, quote);
   const lpOffers = new Map();
-  const w = { clock, btc, evm, etch, note, quote, quotes, uW, lW, uKeys, lKeys, lpUp: true, lpOffers, userStore: memStore(), lpStore: memStore() };
+  const w = { clock, btc, evm, etch, note, quote, quotes, uW, lW, uKeys, lKeys, lBtc, lEvm, lpUp: true, lpOffers, userStore: memStore(), lpStore: memStore() };
   const toLp = { sendOffer: async (msg) => { if (!w.lpUp) throw new Error('the liquidity provider is unreachable'); return w.lp_.receive(msg); }, getEvmOffer: async (id) => lpOffers.get(id) || null };
   const toUser = { publishEvmOffer: async (id, o) => { lpOffers.set(id, o); } };
   const userPolicy = { csvBlocks: 144, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600, ...userPolicyOver };
@@ -195,7 +195,7 @@ test('the LP refuses an offer it cannot check against the chain and its quote, a
     ['a swap id that is not the outpoint the lock spends', (o) => ({ ...o, swapId: bytesToHex(X.swapIdOf('d0'.repeat(32), 0)) }), /swap id is not the outpoint/],
     ['a lock to someone else\'s claim key', (o) => ({ ...o, claimerPub: bytesToHex(G.multiply(12345n).toRawBytes(true)) }), /not keyed to my claim key/],
     ['a value the quote does not name', (o) => ({ ...o, btc: { ...o.btc, value: '4000' } }), /differs from the quote|amounts differ/],
-    ['an output that does not exist', (o) => ({ ...o, btc: { ...o.btc, vout: 7 } }), /does not pay the lock|not a valid note/],
+    ['an output that does not exist', (o) => ({ ...o, btc: { ...o.btc, vout: 7 } }), /no spendable amount|does not pay the lock|not a valid note/],
   ];
   for (const [name, tamper, why] of cases) {
     const { w, offer } = await confirmedLock();
@@ -261,10 +261,130 @@ test('the user refuses a lock the pool does not show, a changed offer and a dead
   assert.equal(w.evm.claims.size, 0);
 });
 
-let passed = 0;
+
+// ── stuck states and clock skew: each of these held a swap or its funds with no step to move it ──
+const claimSubmitted = async (w) => w.run(async () => !!(await w.user())?.claim);
+
+test('the LP takes the Bitcoin when a claim lands in the gap its clock leaves, even after it has decided to refund', async () => {
+  const w = world({ lpNowSkew: 900 });
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'offered');
+  w.evm.paused = true;
+  await claimSubmitted(w);
+  const deadline = (await w.lp()).deadline;
+  w.clock.advance(deadline - 200 - w.clock.now());
+  await w.step();
+  assert.equal((await w.lp()).phase, 'refunding', 'the LP\'s clock is ahead of the chain, so it has decided to refund');
+  w.evm.paused = false;
+  w.evm.process();
+  await w.run(async () => (await w.lp())?.phase === 'done' && (await w.user())?.phase === 'done');
+  assert.ok((await w.lp()).take, 'it found the claim and took the lock');
+  assert.equal(w.evm.claims.size, 1);
+});
+
+test('a claim the relay never answers does not hold the user: after the deadline the note comes back on the timelock', async () => {
+  const w = world();
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'offered');
+  w.evm.paused = true;
+  await claimSubmitted(w);
+  w.clock.advance((await w.lp()).deadline - w.clock.now() + 700);
+  await w.step();
+  assert.equal((await w.user()).phase, 'refund-wait');
+  assert.match((await w.user()).why, /did not land/);
+  w.btc.mine(144);
+  await w.run(async () => (await w.user())?.phase === 'refunded');
+});
+
+test('the timelock refunds the note from any waiting phase, whatever step is stuck', async () => {
+  const w = world();
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'offered');
+  w.lpOffers.set((await w.user()).id, { ...w.lpOffers.get((await w.user()).id), lockLeaf: 'zz' }); // an offer nothing can read
+  w.btc.mine(150);
+  w.userOnline = true;
+  await w.run(async () => (await w.user())?.phase === 'refunded');
+});
+
+test('a lock sent just before the process died, found too late to answer, is still watched and refunded', async () => {
+  const w = world({ funds: 2 });
+  await w.start();
+  w.evm.dieAfter = 'adaptorlock';
+  await w.run(async () => (await w.lp())?.lock?.op !== undefined && !!(await w.lp())?.lastError);
+  assert.equal(w.evm.locks.leaves.length, 1, 'the job went through before the process died');
+  w.restartLp();
+  const lp = await w.lp();
+  w.clock.advance(lp.deadline - 3000 - w.clock.now());
+  await w.run(async () => (await w.lp())?.phase === 'refunded', 400);
+  assert.equal(w.evm.lockSpent.size, 1);
+  assert.equal(w.evm.submitted.filter((j) => j.type === 'adaptorlock').length, 1, 'no second lock');
+});
+
+test('two overlapping steps of one swap build one lock', async () => {
+  const w = world({ funds: 2 });
+  w.evm.paused = true;
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'locking');
+  const rec = await w.lp();
+  await Promise.all([w.lp_.step(rec), w.lp_.step(rec), w.lp_.step(rec)]);
+  assert.equal(w.lEvm.holdings.filter((h) => h.used).length, 1, 'one note was taken for the lock');
+  assert.ok(w.evm.submitted.filter((j) => j.type === 'adaptorlock').length <= 1);
+});
+
+test('an offer with a field the later steps cannot read is refused before anything is locked', async () => {
+  for (const [name, tamper] of [
+    ['an output blinding that is not hex', (o) => ({ ...o, evm: { ...o.evm, rOut: 'not-hex' } })],
+    ['an output blinding of zero', (o) => ({ ...o, evm: { ...o.evm, rOut: '00'.repeat(32) } })],
+    ['a value that is not a number', (o) => ({ ...o, btc: { ...o.btc, value: 'abc' } })],
+    ['a refund key that is not a point', (o) => ({ ...o, btc: { ...o.btc, lockerXonly: '00'.repeat(32) } })],
+  ]) {
+    const { w, offer } = await confirmedLock();
+    const got = await w.lp_.receive({ quoteId: 'q1', offer: tamper(await offer()) });
+    assert.equal(got.ok, false, name);
+    assert.equal(w.evm.locks.leaves.length, 0, name);
+  }
+});
+
+test('a published Ethereum offer with a field that is not a number is refused and the user goes to its refund', async () => {
+  const w = world();
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'offered');
+  const id = (await w.user()).id;
+  w.lpOffers.set(id, { ...w.lpOffers.get(id), amount: 'abc' });
+  await w.run(async () => (await w.user())?.phase === 'refund-wait');
+  assert.match((await w.user()).why, /malformed offer/);
+  assert.equal(w.evm.claims.size, 0);
+});
+
+test('the take is signed over the lock output\'s real sats value, whatever the locker chose', async () => {
+  const { w, rec, offer } = await confirmedLock();
+  w.btc.txs.get(rec.lock.txid).esplora.vout[0].value = 1000;
+  const seen = [];
+  const claimTransfer = w.lBtc.tx.claimTransfer;
+  w.lBtc.tx.claimTransfer = (a) => { seen.push(a.lockOut.value); return claimTransfer(a); };
+  w.lpUp = true; w.lpOnline = true;
+  assert.equal((await w.lp_.receive({ quoteId: 'q1', offer: await offer() })).ok, true);
+  await w.run(async () => (await w.lp())?.phase === 'done' || !!(await w.lp())?.take, 600);
+  assert.deepEqual(seen, [1000]);
+});
+
+test('an offer that reaches the LP long after the lock confirmed is not answered', async () => {
+  const { w, offer } = await confirmedLock();
+  w.quote.validUntil += 100_000;
+  w.clock.advance(4000);
+  const got = await w.lp_.receive({ quoteId: 'q1', offer: await offer() });
+  assert.equal(got.ok, false);
+  assert.match(got.why, /too late/);
+});
+
+let passed = 0, ran = 0;
+const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {
-  try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
+  if (ONLY && !ONLY.test(name)) continue;
+  ran++;
+  const t0 = Date.now();
+  try { await fn(); passed++; console.log(`  ok - ${name} (${((Date.now() - t0) / 1000).toFixed(1)} s)`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
 }
 if (fetched.length) { console.log('network reads attempted:', [...new Set(fetched)]); process.exitCode = 1; }
-console.log(`\n${passed}/${tests.length} fastbridge simulation checks passed`);
+console.log(`\n${passed}/${ran} fastbridge simulation checks passed`);
 process.exit(process.exitCode || 0);
