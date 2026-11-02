@@ -84,7 +84,8 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
   sim.crossLaneBlocked = async (tx) => { for (const i of tx.vin.slice(1)) if (sim.consumed.has(`${i.txid}:${i.vout}`)) return `${i.txid}:${i.vout}`; return null; };
   // the seam both machines use; `builder` is a makeAdaptorBtcTx whose pairs the sim records, `sats()` the wallet's plain coins
   sim.adapter = ({ prims, builder, sats }) => ({
-    prims, wallet: { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) }, tx: recordingBuilder(builder),
+    prims, wallet: { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) }, address: prims.wallet.address(), tx: recordingBuilder(builder),
+    history: async () => [...sim.txs.entries()].reverse().map(([txid, e]) => ({ ...e.esplora, txid, status: { confirmed: e.height != null, block_height: e.height ?? undefined } })),
     satsUtxos: async () => sats(), feeRate: async () => 3,
     broadcast: async (p) => {
       const id = p.revealTxid || p.txid, tx = pairs.get(id);

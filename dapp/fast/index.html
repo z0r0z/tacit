@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://fast.tacit.finance http://127.0.0.1:* http://localhost:* https://api.tacit.finance https://tacit-btc-pool-mainnet.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>tacit fast</title>
+<meta name="description" content="TAC from Bitcoin to your private balance in minutes, through a liquidity provider.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tacit">
+<link rel="canonical" href="https://tacit.finance/fast/">
+<meta property="og:url" content="https://tacit.finance/fast/">
+<meta property="og:title" content="tacit fast">
+<meta property="og:description" content="TAC from Bitcoin to your private balance in minutes, through a liquidity provider.">
+<meta property="og:image" content="https://tacit.finance/tacit-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
+<link rel="preconnect" href="https://api.tacit.finance" crossorigin>
+<!-- preload-roots: /fast/app.js -->
+<!-- preload:begin -->
+<link rel="modulepreload" href="/fast/app.js?cb=07b9ee52">
+<link rel="modulepreload" href="/trade/key.js?cb=ef6b24d1">
+<link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/prf-wallet.js">
+<link rel="modulepreload" href="/tacit-wallet-known.js?cb=ed4c75b7">
+<link rel="modulepreload" href="/evm-wallet.js?cb=f3072d82">
+<link rel="modulepreload" href="/identity-message.js">
+<link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
+<link rel="modulepreload" href="/trade/util.js?cb=aa7aaa7f">
+<link rel="modulepreload" href="/trade/rpc.js?cb=bf34356a">
+<link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
+<link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
+<link rel="modulepreload" href="/trade/poolux.js?cb=ac4a1175">
+<link rel="modulepreload" href="/fastbridge-http.js?cb=0f1eaf65">
+<link rel="modulepreload" href="/fast/ui.js?cb=9814204a">
+<link rel="modulepreload" href="/fast/wire.js?cb=5beb8904">
+<link rel="modulepreload" href="/bitcoin-taproot-wallet.js?cb=6e90dd96">
+<link rel="modulepreload" href="/adaptor-btc-tx.js?cb=bc74dcba">
+<link rel="modulepreload" href="/bulletproofs.js">
+<link rel="modulepreload" href="/bulletproofs-plus.js">
+<link rel="modulepreload" href="/fastbridge-btc.js?cb=8216bdd8">
+<link rel="modulepreload" href="/btc-pool-zap.js">
+<link rel="modulepreload" href="/confidential-crosslane-guard.js">
+<link rel="modulepreload" href="/fastbridge-evm.js?cb=64c9dc6a">
+<link rel="modulepreload" href="/confidential-adaptor.js">
+<link rel="modulepreload" href="/adaptor-xswap.js">
+<link rel="modulepreload" href="/adaptor-signature.js">
+<link rel="modulepreload" href="/adaptor-btc-lock.js">
+<link rel="modulepreload" href="/fastbridge-client.js?cb=85d2ea5f">
+<link rel="modulepreload" href="/fastbridge-bl.js">
+<link rel="modulepreload" href="/fastbridge-http.js">
+<!-- preload:end -->
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA;
+  --ink: #1A1A1A; --mute: #625C4F;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --orange: #f7931a; --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
+  --scrim: rgba(26,26,26,.36); --lift: 0 22px 44px -28px rgba(26,26,26,.45);
+  --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
+  --tap: 44px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15130E; --card: #1F1C15; --field: #191711;
+    --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28);
+    --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c;
+    --scrim: rgba(0,0,0,.6); --lift: 0 22px 44px -28px rgba(0,0,0,.9);
+    --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+}
+:root { --red: var(--err); --amber: var(--warn); --green: var(--ok); }
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body {
+  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
+  background-image: radial-gradient(var(--hair) 1px, transparent 1px); background-size: 24px 24px;
+  padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
+}
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+button, select, input { font: inherit; color: inherit; letter-spacing: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.num { font-variant-numeric: tabular-nums; }
+.mute { color: var(--mute); }
+.err { color: var(--err); }
+.ok { color: var(--ok); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tk { width: 28px; height: 28px; display: block; flex: none; border-radius: 50%; }
+.tk.xs { width: 14px; height: 14px; }
+.kv b .tk { display: inline-block; vertical-align: -3px; margin-right: 6px; }
+
+.shell { max-width: 1060px; margin: 0 auto; padding-bottom: 56px; }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 0 8px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; flex: none; }
+.brand b { font: italic 400 30px/1 var(--serif); letter-spacing: -.01em; }
+.brand i { font-style: normal; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .12em; }
+
+/* the head */
+.hero { padding: 26px 0 18px; }
+.hero h1 { font: 400 clamp(40px, 7vw, 72px)/.95 var(--serif); letter-spacing: -.025em; margin: 0; display: flex; align-items: center; gap: .2em; }
+.hero h1 .tk { width: .62em; height: .62em; margin-top: .04em; }
+.hero h1 em { font-style: italic; }
+.hero .sub { margin: 12px 0 0; color: var(--mute); font-size: 13px; max-width: 64ch; }
+
+/* the page */
+.panel { background: var(--card); border: 1px solid var(--hair); padding: 22px; min-width: 0; }
+@media (max-width: 480px) { .panel { padding: 18px 14px; } }
+.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 12px; }
+.eyebrow .who { letter-spacing: 0; text-transform: none; font-size: 11.5px; }
+.note { font-size: 12.5px; color: var(--mute); margin: 12px 0 0; }
+.note a { color: var(--ink); }
+.kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
+.kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
+.kv b small { display: block; font-size: 11.5px; color: var(--mute); }
+.rows { margin: 12px 0 0; border-top: 1px solid var(--hair); padding-top: 8px; }
+.rows.flat { margin-top: 0; border-top: 0; padding-top: 0; }
+.empty { margin: 0; font-size: 13px; color: var(--mute); }
+
+.linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
+.hint { margin: 12px 0 0; font-size: 12.5px; color: var(--mute); }
+.hint:empty { display: none; }
+.btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; margin-top: 16px; padding: 10px 16px; font-weight: 500; text-decoration: none;
+  color: var(--card); background: var(--ink); border: 1px solid var(--ink); cursor: pointer; transition: background .15s, color .15s; }
+.btn:hover:not(:disabled) { background: transparent; color: var(--ink); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); min-height: 44px; margin-top: 0; }
+.btn.ghost:hover:not(:disabled) { border-color: var(--ink); }
+.status { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
+.status:empty { margin-top: 0; }
+.status a { color: var(--ink); }
+
+/* sheets: the wallet picker, the pairing code, the wallet */
+.bsheet { position: fixed; inset: 0; z-index: 900; display: grid; grid-template-columns: minmax(0, 1fr); place-items: start center; padding: 16px; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--scrim); backdrop-filter: blur(2px); }
+.bsheet.top { z-index: 1100; place-items: center; }
+.bsheet-in { min-width: 0; width: min(520px, 100%); padding: 22px 22px 24px; color: var(--ink); background: var(--card); border: 1px solid var(--ink); box-shadow: var(--sheet-shadow); }
+.bsheet-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.bsheet-head h2 { font: 400 28px/1 var(--serif); letter-spacing: -.01em; margin: 0 auto 0 0; }
+.bsheet-head h2:focus { outline: none; }
+.bsheet .x { padding: 4px 8px; font-size: 26px; line-height: 1; cursor: pointer; color: var(--mute); background: none; border: 0; }
+.bsheet .x:hover { color: var(--ink); }
+.bsheet-actions { display: grid; grid-auto-flow: column; gap: 10px; } .bsheet-actions .btn { margin-top: 0; }
+.wc-qr { margin: 0 auto 14px; width: 224px; padding: 10px; background: #fff; } .wc-qr svg { display: block; width: 100%; height: auto; }
+.addr-s { font-size: 11.5px; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .bsheet { padding: 0; place-items: end center; } .bsheet-in { width: 100%; } }
+.picker { display: grid; gap: 8px; }
+.way { display: grid; gap: 3px; width: 100%; padding: 12px 14px; text-align: left; cursor: pointer; background: var(--field); border: 1px solid var(--hair-2); transition: border-color .15s; }
+@media (hover: hover) { .way:hover:not(:disabled) { border-color: var(--ink); } }
+.way-t { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* the bridge */
+.gate { max-width: 560px; margin: 22px 0 0; }
+.gate .rows { margin-top: 12px; }
+.gate .rows.flat { margin-top: 0; }
+.gate #fx-form { margin-top: 20px; }
+.gate .rows-h { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 6px; }
+.fx-amt { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
+.fx-amt input { flex: 1 1 auto; min-width: 0; font: 400 clamp(30px, 6vw, 40px)/1.1 var(--serif); letter-spacing: -.01em; background: transparent; border: 0; outline: 0; padding: 0; }
+.fx-amt input:focus-visible { outline: none; }
+.fx-amt:focus-within { border-color: var(--ink); }
+.fx-amt span { color: var(--mute); }
+.fx-keep { max-width: 560px; }
+.fx-rec { padding: 12px 0; border-top: 1px solid var(--hair); }
+.fx-rec:first-of-type { border-top: 0; }
+.fx-rec .kv { padding: 0; }
+.fx-rec .kv b { font-weight: 500; text-align: left; }
+.fx-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 10px 0 2px; padding: 0; list-style: none; font-size: 11px; color: var(--mute); }
+.fx-steps li { padding-top: 6px; border-top: 2px solid var(--hair-2); }
+.fx-steps li.on { border-top-color: var(--ok); color: var(--ink); }
+.fx-steps li.at { border-top-color: var(--orange); color: var(--ink); }
+@media (max-width: 480px) { .fx-steps { font-size: 10.5px; gap: 4px; } }
+</style>
+<!-- chrome:head:begin inline -->
+<style>
+/* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
+   into the pages (`npm run build`); a page keeps only its own tokens (--ink --mute --card --hair --hair-2 --orange --mono --spring)
+   and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
+
+header.top { position: relative; z-index: 30; container: top / inline-size; }
+header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
+.sn { display: flex; align-items: center; gap: 2px; }
+.sn > a, .sn summary {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
+  height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
+  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+.sn summary::-webkit-details-marker { display: none; }
+/* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
+header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
+header.top .sm > summary { display: flex; min-height: 0; }
+header.top .sm > summary::before, header.top .sm > summary::after { content: none; }
+.sn svg, .sf svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sn svg.fill, .sf svg.fill { fill: currentColor; stroke: none; }
+.sn > a { display: none; }
+.sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+@media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
+.sn > a:active, .sn summary:active { transform: scale(.93); }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+@container top (min-width: 540px) { .sn > a { display: inline-flex; } }
+.sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
+.sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
+@container top (min-width: 540px) { .sn[data-owed] .sm > summary::after { display: none; } }
+@container top (max-width: 539px) { .sn[data-owed] > a[href="/rewards/"]::after { display: none; } }
+/* a bridge under way: a dot on the header's Bridge link, or on the menu button where the links are in the menu (chrome.js adds both) */
+.sn .bd { position: absolute; top: 5px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); pointer-events: none; }
+.sn > a > .bd { top: 8px; right: auto; left: 26px; width: 7px; height: 7px; }
+@container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
+/* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
+.sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
+@container top (min-width: 900px) {
+  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+}
+
+/* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
+@container top (max-width: 340px) { header.top .brand i { display: none; } }
+
+/* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
+header.top .chip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
+  color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
+  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
+}
+header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
+header.top .chip .dot.on { background: var(--ok); }
+header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
+@media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
+header.top .chip:active { transform: scale(.97); }
+header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+@container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
+@media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
+
+/* the menu: under the header's right edge, whatever the width */
+.sm-p {
+  position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
+  width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
+  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
+  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  transform-origin: 100% 0; animation: sm-in .16s ease-out;
+}
+@keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
+.sm-p a[aria-current="page"] { background: var(--hair); }
+.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+.sm-p .pr { display: flex; }
+@container top (min-width: 540px) { .sm-p .pr { display: none; } }
+@media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+@media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
+
+/* the footer: where it is said to be, then the places outside the app, as icons that say their name on hover and to a screen reader */
+footer.sf { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf nav { display: flex; align-items: center; margin: 0 -10px 0 auto; }
+footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 40px; height: 40px; border-radius: 12px; color: var(--mute); transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
+footer.sf nav a:active { transform: scale(.92); }
+footer.sf svg { width: 18px; height: 18px; }
+footer.sf svg.fill { width: 16px; height: 16px; }
+@media (hover: hover) { footer.sf nav a:hover { color: var(--ink); background: var(--hair); } }
+@media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
+
+/* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
+.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x + footer.sf { margin-top: 12px; }
+.sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
+@media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
+@font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 78.8%; ascent-override: 125.6%; descent-override: 39.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 83.1%; ascent-override: 119.1%; descent-override: 37.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
+@font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+</style>
+<script src="/chrome.js?cb=73051f76" defer></script>
+<!-- chrome:head:end -->
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="tk-tac" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="#f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="#f7931a" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="c-eth" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0a0a0a"/><circle cx="16" cy="16" r="13" fill="none" stroke="#f4efe6" stroke-width="2.5"/><g fill="#8ea2f0" transform="translate(16 16) scale(1.05) translate(-16.3 -16)"><path fill-opacity=".7" d="M16.3 7v6.6l5.6 2.5z"/><path d="M16.3 7L10.7 16.1l5.6-2.5z"/><path fill-opacity=".7" d="M16.3 20.4v4.5l5.6-7.8z"/><path d="M16.3 24.9v-4.5l-5.6-3.3z"/><path fill-opacity=".35" d="M16.3 19.4l5.6-3.3-5.6-2.5z"/><path fill-opacity=".7" d="M10.7 16.1l5.6 3.3v-5.8z"/></g></symbol>
+  </defs>
+</svg>
+<div class="shell">
+
+  <header class="top">
+    <a class="brand" href="/" aria-label="tacit fast"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>fast</i></a>
+    <div class="top-r">
+      <!-- chrome:nav:begin -->
+      <nav class="sn" aria-label="Pages">
+          <a href="/assets/" title="Assets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg><span>Assets</span></a>
+          <a href="/pay/" title="Pay"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg><span>Pay</span></a>
+          <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
+          <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
+          <details class="sm">
+            <summary aria-label="More pages" title="More" class="here"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
+            <div class="sm-p">
+            <a class="pr" href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
+            <a class="pr" href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
+            <a class="pr" href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
+            <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
+            <hr class="pr">
+            <a href="/bridge/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
+            <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>Shielded TAC</a>
+            <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
+            <hr>
+            <a href="/weld/stats/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
+            <a href="/build/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/></svg>Build</a>
+            <a href="/weld/keeper/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16.5 5.3a3 3 0 0 1 0 5.6"/><path d="M18 14.2c1.8.7 3 2.6 3 5.8"/></svg>Community ops</a>
+            <a href="/classic.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Classic app</a>
+            </div>
+          </details>
+        </nav>
+      <!-- chrome:nav:end -->
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="h">
+      <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>fast</em></span></h1>
+      <p class="sub">TAC from Bitcoin to your private balance, in minutes.</p>
+      <noscript><p class="note">This page needs JavaScript.</p></noscript>
+    </section>
+
+    <section class="panel gate" id="gate"></section>
+    <p class="note fx-keep">Keep this page open until a bridge is done.</p>
+  </main>
+
+  <!-- chrome:foot:begin -->
+  <footer class="sf">
+    <span>tacit.finance · mainnet</span>
+    <nav aria-label="Elsewhere">
+      <a href="/tacit-v1.pdf" title="Whitepaper" aria-label="Whitepaper"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></a>
+      <a href="https://github.com/src-company/tacit/blob/main/SECURITY.md" title="Security" aria-label="Security" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></a>
+      <a href="https://github.com/src-company/tacit" title="Source" aria-label="Source" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
+      <a href="https://etherscan.io/address/0x000000000Ed1eabD231Be41d93b719056F7febFC" title="Pool contract" aria-label="Pool contract" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg></a>
+      <a href="https://defillama.com/protocol/tacit" title="DefiLlama" aria-label="DefiLlama" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><g transform="translate(2.2 1) scale(.34375)"><path d="M17.62 51.872 17.21 64H5.786a5.8 5.8 0 0 1-4.09-1.691A5.77 5.77 0 0 1 0 58.23v-2.58a42.7 42.7 0 0 0 17.62-3.78"/><path d="M14.08 20.449a1.46 1.46 0 0 1-.121 1.149 1.46 1.46 0 0 1-.938.677 1.43 1.43 0 0 1-1.137-.234l-3.618-2.605a.973.973 0 0 1 .976-1.675l4.067 1.821a1.43 1.43 0 0 1 .772.867m0 23.74a1.42 1.42 0 0 1-.776.861l-4.067 1.826a.98.98 0 0 1-1.267-.39.97.97 0 0 1 .29-1.29l3.619-2.6a1.434 1.434 0 0 1 1.997.322c.029.039.053.083.078.122a1.46 1.46 0 0 1 .122 1.149M6.752 33.72 5.2 33.19a1.19 1.19 0 0 1-.804-1.12 1.18 1.18 0 0 1 .804-1.12l1.552-.531a1.75 1.75 0 0 1 1.892.49 1.742 1.742 0 0 1-.769 2.81 1.77 1.77 0 0 1-1.123 0M24.763 0H15.79a15.73 15.73 0 0 1-4.625 11.134A15.82 15.82 0 0 1 0 15.75v39.9a42.7 42.7 0 0 0 17.62-3.779l.698-20.623c-1.235-.609-2.118-2.226-2.118-4.114 0-2.128 1.113-3.896 2.582-4.295.2-1.28.655-2.509 1.338-3.612a2.13 2.13 0 0 1-1.567-1.013c-1.328-1.947-3.12-3.944-4.492-7.172a1.71 1.71 0 0 1 .186-1.728.855.855 0 0 1 1.303-.063c2.124 2.006 4.677 2.604 6.089 4.528q.155-.36.405-.663a2.96 2.96 0 0 1 3.496-.915 3 3 0 0 1 1.089-1.559 3.028 3.028 0 0 1 4.706 1.56 2.8 2.8 0 0 1 2.03-.098A42.2 42.2 0 0 1 39.372 3.5 32 32 0 0 0 24.763 0"/><path d="m51.668 33.185-1.557.53a1.75 1.75 0 0 1-2.197-1.097 1.74 1.74 0 0 1 1.074-2.204 1.77 1.77 0 0 1 1.123 0l1.557.531a1.19 1.19 0 0 1 .804 1.12 1.18 1.18 0 0 1-.804 1.12m-3.286 13.282a.976.976 0 0 1-1.245.404l-4.067-1.826a1.42 1.42 0 0 1-.722-1.87l.073-.14a1.42 1.42 0 0 1 1.425-.704c.186.025.366.087.528.182l.122.078 3.618 2.6a.973.973 0 0 1 .273 1.276m-6.093-26.019a1.43 1.43 0 0 1 .776-.862l4.067-1.82a.98.98 0 0 1 1.247.397.97.97 0 0 1-.27 1.277l-3.618 2.605a1.44 1.44 0 0 1-2.002-.336l-.068-.107a1.43 1.43 0 0 1-.132-1.154m-.161-15.356A32 32 0 0 0 39.37 3.5a42.2 42.2 0 0 0-6.006 8.603 3.05 3.05 0 0 1 1.465 1.013q.244.305.405.662c1.323-1.806 3.652-2.215 5.693-4.153a1.198 1.198 0 0 1 1.816.112 1.17 1.17 0 0 1 .142 1.217l-.059.136c-1.367 3.165-3.149 5.18-4.467 7.123a2.14 2.14 0 0 1-1.592 1.013 9.6 9.6 0 0 1 1.314 3.613c1.323.36 2.353 1.82 2.548 3.66q.036.316.034.634c0 1.777-.78 3.315-1.909 3.992a1.3 1.3 0 0 1-.21.122v.307l.977 28.852A32.05 32.05 0 0 0 52.163 48.62a31.93 31.93 0 0 0 4.666-16.618 31.9 31.9 0 0 0-3.906-15.325 32 32 0 0 0-10.79-11.585"/><path d="M15.79 0a15.73 15.73 0 0 1-4.626 11.134A15.82 15.82 0 0 1 0 15.75V5.77A5.77 5.77 0 0 1 1.696 1.69 5.8 5.8 0 0 1 5.786 0z"/><path d="M34.535 30.187a1.91 1.91 0 0 1-.107 2.03c-1.392 2.025-3.34 3.564-5.82 3.564h-.527c-2.144-.185-4.395-1.582-5.786-3.262a1.945 1.945 0 0 1-.18-2.206 5.83 5.83 0 0 0 .834-3.004c0-.993-.244-1.971-.713-2.848a1.9 1.9 0 0 1 .108-2.01q.16.212.366.384a2.856 2.856 0 0 0 3.462.049c0 1.105 1.118 2 2.49 2q.187.015.376 0c1.2-.146 2.118-.973 2.118-1.976a2.86 2.86 0 0 0 3.51-.073l.138-.122a1.94 1.94 0 0 1-.181 1.631 5.8 5.8 0 0 0-.82 2.985 6 6 0 0 0 .732 2.872m8.197-20.463a1 1 0 0 0-.268-.263 1.2 1.2 0 0 0-1.528.151c-2.041 1.947-4.394 2.347-5.693 4.153a3.2 3.2 0 0 0-.405-.662 3.05 3.05 0 0 0-1.465-1.013 2.8 2.8 0 0 0-2.031.098 3 3 0 0 0-1.09-1.56 3.028 3.028 0 0 0-4.705 1.56 2.966 2.966 0 0 0-3.496.915q-.25.302-.405.662c-1.411-1.923-3.965-2.522-6.089-4.528a.85.85 0 0 0-1.206-.063.7.7 0 0 0-.117.126 1.71 1.71 0 0 0-.185 1.729c1.372 3.228 3.163 5.214 4.492 7.171a2.13 2.13 0 0 0 1.586 1.013 9.7 9.7 0 0 0-1.337 3.613c-1.465.399-2.583 2.166-2.583 4.294 0 1.889.883 3.505 2.119 4.114l-.698 20.624L17.218 64h7.547a32 32 0 0 0 14.608-3.5l.171-.093-.971-28.852v-.307q.11-.051.21-.122c1.127-.677 1.909-2.215 1.909-3.992q0-.318-.035-.633c-.195-1.84-1.225-3.301-2.548-3.661a9.5 9.5 0 0 0-1.338-3.613 2.15 2.15 0 0 0 1.592-1.013c1.318-1.947 3.1-3.958 4.467-7.122l.059-.137a1.17 1.17 0 0 0-.142-1.217" fill-opacity="0.3"/><path d="m31.334 27.854-1.626 1.49c-.14.131-.24.3-.288.486-.107.429-.317 1.271-.488 2.07a.49.49 0 0 1-.488.37.49.49 0 0 1-.489-.37l-.517-2.07a.97.97 0 0 0-.288-.487l-1.626-1.49a.486.486 0 0 1 0-.686.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .488.273.485.485 0 0 1-.112.565m2.441-.546a5.8 5.8 0 0 1 .85-2.965 1.94 1.94 0 0 0 .156-1.611l-.112.102a2.86 2.86 0 0 1-3.486.03c0 .992-.908 1.83-2.12 1.966q-.187.015-.375 0c-1.372 0-2.49-.896-2.49-2.001a2.856 2.856 0 0 1-3.486-.03 2.3 2.3 0 0 1-.366-.384 1.9 1.9 0 0 0-.108 2.011 6 6 0 0 1 .713 2.882 5.8 5.8 0 0 1-.81 2.975 1.94 1.94 0 0 0-.255 1.13c.033.395.137.788.388 1.094 1.4 1.68 3.69 3.059 5.833 3.244h.527c2.48 0 4.428-1.539 5.82-3.564a1.91 1.91 0 0 0 .083-2.001 6 6 0 0 1-.732-2.873" fill-rule="evenodd" fill-opacity="0.3"/><path d="m31.337 27.854-1.626 1.49c-.14.131-.24.3-.288.486a64 64 0 0 0-.488 2.07.486.486 0 0 1-.488.37.49.49 0 0 1-.488-.37l-.518-2.07a.97.97 0 0 0-.288-.486l-1.626-1.49a.486.486 0 0 1 0-.687.49.49 0 0 1 .415-.15l2.441.33h.132l.19-.024 2.251-.307a.49.49 0 0 1 .489.273.485.485 0 0 1-.113.565" fill-rule="evenodd"/></g></svg></a>
+      <a href="https://x.com/tacitfi" title="@tacitfi on X" aria-label="@tacitfi on X" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a>
+      <a href="https://discord.gg/VxYx9XSBrM" title="Tacit Discord community" aria-label="Tacit Discord community" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></a>
+    </nav>
+  </footer>
+  <!-- chrome:foot:end -->
+</div>
+<script type="module" src="/fast/app.js?cb=07b9ee52"></script>
+</body>
+</html>

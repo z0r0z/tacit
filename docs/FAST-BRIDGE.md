@@ -97,6 +97,9 @@ that is paused or held skips a job whose deadline has passed instead of sending 
 | `dapp/fastbridge-el.js` | the Ethereum locker's state machine |
 | `dapp/fastbridge-evm.js` | the pool side of both machines on the pool wallet module: time, the lock set, who claimed, the lock, claim and refund ops, sending them through the relay |
 | `dapp/fastbridge-http.js` | the user's side of an LP's HTTP API: the terms, a quote, the offer, the pool lock's offer |
+| `dapp/fastbridge-btc.js` | the Bitcoin side of either machine on esplora explorers, shared by the page and the LP |
+| `dapp/fastbridge-client.js` | the user's side as a whole: terms and quote checked before they are shown, the notes to lock, the machine over a store, the words for each phase, a lock found again from the key |
+| `dapp/fast/` | the bridge page at `/fast/`: the wiring to a Tacit key and tacit.js (`wire.js`), the page's logic (`ui.js`), the providers it knows (`lp.json`) |
 | `fastbridge-lp/` | the LP as a process: the HTTP API, the Ethereum locker over a durable store, the explorer adapter (see its README) |
 
 Each machine takes its chain access as arguments (`ctx`, documented in its header), keeps one JSON record per swap,
@@ -112,6 +115,10 @@ node tests/adaptor-btc-lock.test.mjs       # the Bitcoin lock under the real not
 node tests/adaptor-btc-tx.test.mjs         # the transaction builder: funding, fees, signatures
 node tests/fastbridge-sim.test.mjs         # both machines against a simulated Bitcoin and pool: restarts, timeouts, refusals
 node tests/fastbridge-lp.test.mjs          # the LP process: API on a socket, quotes, store, explorer adapter, a swap through all of it
+node tests/fastbridge-client.test.mjs      # the page's client against the LP service: quotes, a swap, a swap carried on, the refund, recovery from the key
+node tests/fastbridge-ui.test.mjs          # the page's logic on a DOM
+node tests/fastbridge-wire.test.mjs        # the page's wiring on the real tacit.js
+PLAYWRIGHT=<path> node tests/fastbridge-page.mjs   # the page in a browser, under its content-security policy
 FORK=<rpc> EXEC=<exec-stdin> node tests/fastbridge-fork.mjs   # the Ethereum side on a mainnet fork of the live pool
 HARNESS=contracts/sp1/confidential/harnesses/target/release node tests/fast-lane-e2e.test.mjs   # the real settle guest
 ```
@@ -124,9 +131,9 @@ pinned `elf/cxfer-guest`, whose verifying key is the one inside the deployed poo
 ## Status
 
 Built and tested: the protocol, the transaction builders, both role machines, a simulated chain, the full swap in both
-directions against the real settle guest and the real note validator, the pool adapter, and the LP process with its
-HTTP API, store and explorer adapter.
+directions against the real settle guest and the real note validator, the pool adapter, the LP process with its
+HTTP API, store and explorer adapter, and the bridge page (`/fast/`) with its client, recovery from the key and browser
+check. The page lists no provider yet (`dapp/fast/lp.json`).
 
-Not built: the Bridge tab's fast route and the page's store for the Bitcoin locker's record, the Ethereum to Bitcoin
-direction of the LP process, the claim prover's options (the relay that is not the LP, the user's device, a prover
-network), and a run with real funds.
+Not built: a link to the page from the front page's Bridge tab, the Ethereum to Bitcoin direction of the LP process,
+the claim prover's options (the relay that is not the LP, the user's device, a prover network), and a run with real funds.

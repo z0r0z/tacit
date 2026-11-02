@@ -46,7 +46,7 @@ export function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver
   const quote = { id: 'q1', btcAsset: bytesToHex(etch.asset), btcValue: VALUE, evmAsset: ASSET, evmAmount: VALUE, validUntil: clock.now() + 3600 };
   quotes.set(quote.id, quote);
   const lpOffers = new Map();
-  const w = { clock, btc, evm, etch, note, quote, quotes, uW, lW, uKeys, lKeys, lBtc, lEvm, lEvmCtx, uEvmCtx, lpUp: true, lpOffers, userStore: memStore(), lpStore: memStore() };
+  const w = { clock, btc, evm, etch, note, quote, quotes, uW, lW, uKeys, lKeys, uBtc, lBtc, lEvm, lEvmCtx, uEvmCtx, lpUp: true, lpOffers, userStore: memStore(), lpStore: memStore() };
   const toLp = { sendOffer: async (msg) => { if (!w.lpUp) throw new Error('the liquidity provider is unreachable'); return w.lp_.receive(msg); }, getEvmOffer: async (id) => lpOffers.get(id) || null };
   const toUser = { publishEvmOffer: async (id, o) => { lpOffers.set(id, o); } };
   const userPolicy = { csvBlocks: 144, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600, ...userPolicyOver };
@@ -59,10 +59,11 @@ export function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver
   w.lp = async () => (await w.lpStore.list())[0];
   w.userOnline = true; w.lpOnline = true;
   w.start = () => w.userBl.start({ asset: etch.asset, amount: VALUE, notes: [note], counterClaimPub: lW.wallet.pub, evmAsset: ASSET, evmAmount: VALUE, quoteId: quote.id });
-  // the LP's turn; a test that runs the LP as a service replaces it
+  // each party's turn; a test that runs the LP as a service, or the user through the page's client, replaces it
+  w.userTick = async () => { for (const r of await w.userStore.list()) await w.userBl.step(r); };
   w.lpTick = async () => { for (const r of await w.lpStore.list()) await w.lp_.step(r); };
   w.step = async () => {
-    if (w.userOnline) for (const r of await w.userStore.list()) await w.userBl.step(r);
+    if (w.userOnline) await w.userTick();
     if (w.lpOnline) await w.lpTick();
     evm.process();
   };

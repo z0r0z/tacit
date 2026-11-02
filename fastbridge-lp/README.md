@@ -30,6 +30,10 @@ node fastbridge-lp/server.mjs
 At start it prints one JSON line with the Bitcoin address, the claim key, the pool account and the data directory. Put the
 URL of the process (behind TLS) where the users' pages can read it, and name the pages in `origins`.
 
+To offer it on the bridge page (`/fast/`), add `{ "name": "…", "base": "https://…", "claimPub": "<the claimPub printed at start>" }` to `dapp/fast/lp.json`, and the
+origin to the page's `connect-src` if it is not `https://fast.tacit.finance`. The page pins the key: a provider that answers with another one is not offered. A provider
+run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&claimPub=<hex>`.
+
 ### Config
 
 | field | meaning |

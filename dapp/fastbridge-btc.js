@@ -1,0 +1,138 @@
+// The Bitcoin side of a fast bridge party on esplora explorers (a list of bases, asked in order, with the same bytes sent to
+// every base on a broadcast): the `btc` context of both role machines. Runs in a page and in the LP process.
+//
+//   makeEsploraBtcChain({ bases, prims, builder, fetchImpl, timeoutMs, feeTarget, retryMs, tacit, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp })
+//     bases     ['https://mempool.space/api', 'https://blockstream.info/api', ...]
+//     prims     makeBtcWallet({ priv, hrp }).prims        builder  makeAdaptorBtcTx({ prims, kit })
+//   The Ethereum locker also reads notes and whether they are spent on Ethereum, which takes the rest:
+//     tacit     the dapp's tacit.js namespace                 pool    the pool wallet's .pool
+//     ethGetStorageAt(to, slot, tag)   poolAddress   binding  chain binding hex   keccak256   secp
+
+import { makeNoteResolver } from './btc-pool-zap.js';
+import { makeCrossLaneGuard } from './confidential-crosslane-guard.js';
+
+const DUST = 546;
+const ZERO_AUTH = '0x' + '00'.repeat(32);
+const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
+
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', retryMs = 1500 }) {
+  const list = bases.map((b) => b.replace(/\/$/, ''));
+  const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
+  const address = prims.wallet.address();
+  const guard = keccak256 ? makeCrossLaneGuard({ keccak256 }) : null;
+
+  // The first explorer that has the answer. A 404 from one is not the end of the search (another may know a newer
+  // transaction); when none has it the 404 is the answer, and when none could answer it is an error.
+  async function req(path, init) {
+    let last = null, notFound = null;
+    for (const b of list) {
+      try {
+        const r = await fetchImpl(b + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const text = (await r.text()).trim();
+        if (r.ok) return text;
+        const err = Object.assign(new Error(`${path} -> ${r.status} ${text.slice(0, 160)}`), { status: r.status });
+        if (r.status === 404) notFound ||= err; else last = err;
+      } catch (e) { last = e; }
+    }
+    throw notFound || last;
+  }
+  const getJson = async (path) => JSON.parse(await req(path));
+  const orNull = async (fn) => { try { return await fn(); } catch (e) { if (e && e.status === 404) return null; throw e; } };
+
+  // confirmed transactions never change: they are kept
+  const txs = new Map();
+  async function fetchTx(txid) {
+    if (txs.has(txid)) return txs.get(txid);
+    const tx = await orNull(() => getJson(`/tx/${txid}`));
+    if (tx && tx.status && tx.status.confirmed) txs.set(txid, tx);
+    return tx;
+  }
+  const tip = async () => Number(await req('/blocks/tip/height'));
+  async function status(txid) {
+    const st = await orNull(() => getJson(`/tx/${txid}/status`));
+    if (!st || !st.confirmed) return { confirmations: 0, height: 0 };
+    return { confirmations: (await tip()) - st.block_height + 1, height: st.block_height };
+  }
+  const blockTimes = new Map();
+  async function blockTime(height) {
+    if (!blockTimes.has(height)) blockTimes.set(height, (await getJson(`/block/${await req(`/block-height/${height}`)}`)).timestamp);
+    return blockTimes.get(height);
+  }
+  async function outspend(txid, vout) {
+    const o = await getJson(`/tx/${txid}/outspend/${vout}`);
+    return o && o.spent ? o.txid : null;
+  }
+  async function feeRate() {
+    const seen = (await Promise.all(list.map(async (b) => {
+      try { const r = await fetchImpl(b + '/fee-estimates', { signal: AbortSignal.timeout(timeoutMs) }); if (!r.ok) return null; const f = await r.json(); const v = Number(f[feeTarget] ?? f['6']); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; }
+    }))).filter((v) => v != null).sort((a, b) => a - b);
+    if (!seen.length) throw new Error('no explorer answered a fee estimate');
+    return Math.max(1, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
+  }
+  // the address's transactions, newest first, a page at a time (esplora gives the unconfirmed ones and 25 confirmed, then 25 after the last seen)
+  async function history(addr = address, pages = 4) {
+    const out = [];
+    for (let i = 0, last = null; i < pages; i++) {
+      const page = await getJson(`/address/${addr}/txs${last ? `/chain/${last}` : ''}`);
+      if (!Array.isArray(page) || !page.length) break;
+      out.push(...page);
+      const confirmed = page.filter((t) => t.status && t.status.confirmed);
+      if (confirmed.length < 25) break;
+      last = confirmed[confirmed.length - 1].txid;
+    }
+    return out;
+  }
+  // plain-sat coins only: a coin of dust size may carry a note
+  async function satsUtxos() {
+    const all = await getJson(`/address/${address}/utxo`);
+    return all.filter((u) => u.status && u.status.confirmed && u.value > DUST).sort((a, b) => b.value - a.value).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
+  }
+  // the same bytes to every explorer; one that takes it (or already has it) is enough
+  async function post(hex) {
+    let took = false, last = 'no explorer answered';
+    for (const b of list) {
+      try {
+        const r = await fetchImpl(b + '/tx', { method: 'POST', body: hex, headers: { 'content-type': 'text/plain' }, signal: AbortSignal.timeout(timeoutMs) });
+        const text = (await r.text()).trim();
+        if (r.ok || KNOWN.test(text)) took = true; else last = text.slice(0, 160);
+      } catch (e) { last = String((e && e.message) || e).slice(0, 160); }
+    }
+    if (!took) throw new Error(`broadcast refused: ${last}`);
+  }
+  // the commit first, then the reveal, which is asked again while the commit spreads
+  async function broadcast(pair) {
+    await post(pair.commitHex);
+    let last;
+    for (let i = 0; i < 6; i++) {
+      try { await post(pair.revealHex); return; } catch (e) { last = e; await new Promise((r) => setTimeout(r, retryMs * (i + 1))); }
+    }
+    throw last;
+  }
+
+  const resolveNote = tacit ? makeNoteResolver({ validateOutpoint: (a, b, c, f) => tacit.validateOutpoint(a, b, c, f), txOutputEnvelope: tacit.txOutputEnvelope, getParentEnvelopeData: tacit.getParentEnvelopeData, fetchTx }) : null;
+
+  // Whether a note the lock spends is already consumed on Ethereum, as the wallet asks before it spends a note. A reason
+  // when it is (or cannot be told), null when the pool shows none of the note's identities spent.
+  async function crossLaneBlocked(tx) {
+    for (const i of tx.vin.slice(1)) {
+      const note = await resolveNote(i.txid, i.vout);
+      if (!note) return `${i.txid}:${i.vout} is not a valid note`;
+      const parent = await fetchTx(i.txid);
+      const spk = String(parent.vout[i.vout].scriptpubkey || '').toLowerCase();
+      const P = secp.ProjectivePoint.fromHex(Buffer.from(note.commitment).toString('hex')).toRawBytes(false);
+      const cx = '0x' + Buffer.from(P.slice(1, 33)).toString('hex'), cy = '0x' + Buffer.from(P.slice(33, 65)).toString('hex');
+      const asset = '0x' + String(note.assetIdHex).replace(/^0x/, '');
+      const auths = spk.startsWith('5120') ? ['0x' + spk.slice(4)] : [ZERO_AUTH];
+      const nus = [];
+      for (const a of auths) {
+        nus.push(pool.nullifier(pool.btcNoteLeaf(asset, cx, cy, a)));
+        if (binding && pool.btcNoteLeafBound) nus.push(pool.nullifier(pool.btcNoteLeafBound(asset, cx, cy, a, binding)));
+      }
+      const v = await guard.bitcoinSpendBlockedAny(ethGetStorageAt, poolAddress, nus);
+      if (v.blocked) return `${i.txid}:${i.vout} (${v.reason})`;
+    }
+    return null;
+  }
+
+  return { prims, wallet, tx: builder, address, satsUtxos, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
+}

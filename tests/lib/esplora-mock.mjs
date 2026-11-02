@@ -85,6 +85,11 @@ export function startEsploraMock({ sim, addressUtxos = () => [], feeEstimates = 
     if ((m = /^\/block-height\/(\d+)$/.exec(path))) return sim.blockTimes.has(Number(m[1])) ? send(res, 200, 'b'.repeat(60) + m[1], 'text/plain') : send(res, 404, 'Block not found', 'text/plain');
     if ((m = /^\/block\/b{60}(\d+)$/.exec(path))) return send(res, 200, { height: Number(m[1]), timestamp: await sim.blockTime(Number(m[1])) });
     if ((m = /^\/address\/([0-9a-z]+)\/utxo$/.exec(path))) return send(res, 200, addressUtxos(m[1]));
+    if ((m = /^\/address\/([0-9a-z]+)\/txs(?:\/chain\/[0-9a-f]{64})?$/.exec(path))) {
+      // every transaction the simulator holds, newest first, whoever it belongs to
+      const all = [...sim.txs.entries()].reverse().map(([txid, e]) => ({ ...e.esplora, txid, status: { confirmed: e.height != null, block_height: e.height ?? undefined } }));
+      return send(res, 200, /\/chain\//.test(path) ? [] : all.slice(0, 75));
+    }
     if (path === '/fee-estimates') return send(res, 200, feeEstimates);
     return send(res, 404, 'not found', 'text/plain');
   }
