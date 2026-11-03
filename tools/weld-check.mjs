@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -7853,9 +7853,7 @@ await step('hxsendtac', async () => {
     await until(p, () => /Sent: in one transaction from your (wallet|Tacit account), with a permit/.test(window.__said()), null, 60000);
     ok(await goText(p) === 'Make TAC private', `hxsendtac: the Swap card offers wallet TAC as private TAC (${await line()})`);
     await look('hxsendtac-shield');
-    await p.click(MV.go);
-    await until(p, () => document.querySelector('#sheet-tac[open] #tsh-amt')?.value === '10', null, 120000);
-    ok(true, 'hxsendtac: and its button opens the TAC sheet\'s Make private form with the amount');
+    // its button makes the TAC private from the card itself (step tachere does it end to end), so the card is left alone here
     // The other way: payments, in the TAC pool whose proofs are made on this device; the card opens its Deposit with the amount.
     await lander(p);
     await move(p, 'shield:wtac:pay', '10');
@@ -8246,6 +8244,43 @@ await step('payhere', async () => {
     await until(p, () => /Deposited|err/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000);
     ok(await chainUntil(async () => (await tacOf(TPOOL)) - t0 === 5n * unit, 600000) && (await p.evaluate(() => window.__sheetSeen)) === '', `payhere: 5 TAC went into the TAC Pay pool from the card with a permit (${(await text(p, '#hx-mz')).slice(0, 80)})`);
     if (r.errors.length) { fails++; console.log('FAIL payhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// Make TAC private from the Swap card, no sheet over it: the wallet's TAC goes into the pool in one transaction with a permit (the first press of a visit connects the wallet and opens the key), the steps said
+// under the button; the relay's settle is the stub's here, so what is checked is that the TAC left the wallet and no sheet opened.
+await step('tachere', async () => {
+  const unit = 10n ** 18n;
+  await fundTac(A0, 50n * unit);
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
+    await move(p, 'shield:wtac:defi', '5');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Make TAC private' && !document.querySelector('#hx-swap #go').disabled, null, 420000);
+    const t0 = await tacOf(A0);
+    await sheetsSeen(p);
+    await p.click(MV.go);
+    ok(await chainUntil(async () => t0 - (await tacOf(A0)) === 5n * unit, 600000), 'tachere: 5 TAC left the wallet from the card, in one transaction');
+    await until(p, () => (document.querySelector('#hx-mz')?.textContent || '').trim() !== '', null, 120000);
+    await shot(p, 'tachere');
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `tachere: and no sheet opened, the steps said under the button (${(await text(p, '#hx-mz')).slice(0, 100)})`);
+    if (r.errors.length) { fails++; console.log('FAIL tachere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// Make TAC public from the Swap card, no sheet over it: all the private TAC goes out one relay step a note, said under the button. The stub's notes cannot make a real proof, so the run ends in the error it
+// says: what is checked is that it went from the card, step by step.
+await step('tacpubhere', async () => {
+  const r = await openFarmKey('7a1c'.padEnd(64, '6'), { notes: [[FARM_CTAC, 50000000000n]], positions: [], swap: true, fees: { transfer: 10000, route: 10000 } }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await move(p, 'shield:tac:wallet');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Make TAC public' && !document.querySelector('#hx-swap #go').disabled, null, 420000);
+    await sheetsSeen(p);
+    await p.evaluate(() => { window.__mz = []; new MutationObserver(() => { const t = document.querySelector('#hx-mz')?.textContent; if (t && window.__mz[window.__mz.length - 1] !== t) window.__mz.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true }); });
+    await p.click(MV.go);
+    await until(p, () => (window.__mz || []).length > 0, null, 240000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && /The relay is moving your TAC|worth less than the relay fee/.test((await p.evaluate(() => window.__mz)).join(' | ')), `tacpubhere: Make TAC public goes from the card: no sheet opens and its steps are said under the button (${(await p.evaluate(() => window.__mz)).join(' | ').slice(0, 160)})`);
+    if (r.errors.length) { fails++; console.log('FAIL tacpubhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 

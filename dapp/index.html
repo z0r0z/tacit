@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-IP9uRx/zO/0JRUXTx/lwGGEBDUBwWiiUW9wkc3mJquQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-lyKyTiPh1OiMdlOVkFEiYJQ65H0SiogA7X39S7J9wv0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -8693,6 +8693,47 @@ async function loadTacHoldings(force = false) {
     acct: acctAt >= 0 && out[acctAt] ? wordAt(out[acctAt], 0) : S.acct ? 0n : null });
   tacMore();
 }
+// Private TAC made public (ERC-20 TAC in the paying account, or at the address `raw`): each private note worth more than the relay fee is moved, one relay step a note. Pressed from the TAC sheet or
+// the Swap card; `status` is the element the steps are said in, `line()` the one Activity and a failure use, `after` redraws when it is over.
+async function tacPublicNow({ run, raw = '', status, line, sheet = 'tac', after }) {
+  try {
+    const t = await getUx(), priv = walletPriv(), to = raw ? recipientOf(raw) : await payingAccount();
+    const dest = raw ? short(to, 8) : `${your()} (${short(to, 6)})`;
+    const minFee = BigInt(await t.quoteOpFee('cTAC', 'sendunwrap')), types = ['unwrap', 'sendunwrap'], self = await proveOwn(types);
+    const worth = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse().filter((n) => self || BigInt(n.value) > t.quoteUnwrapFee(BigInt(n.value), 'cTAC', { minFee }).fee);
+    if (!worth.length) {
+      const biggest = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse()[0];
+      const small = new Error('Each private TAC note is worth less than the relay fee to move it.');
+      if (!biggest) throw small;
+      offerSelf({ exit: true, go: exitGo(biggest, to, biggest.value), label: `Make ${fmt(BigInt(biggest.value), 8, 2)} TAC public`, sheet, after: loadTacHoldings, status: line }, small);
+      return;
+    }
+    run.take(...worth.map(kNote));
+    const sum = worth.reduce((a, n) => a + BigInt(n.value), 0n);
+    run.go({ label: `Making ${fmt(sum * E10, 18, 2)} TAC public`, one: false, dest, status: line });
+    let offered = false, moved = 0;
+    for (const [i, n] of worth.entries()) {
+      if (run.switched()) { run.fail(status, new Error('Another Tacit wallet was opened, so the rest stopped.')); break; }
+      run.say(status, `The relay is moving your TAC${worth.length > 1 ? ` (${i + 1} of ${worth.length})` : ''}…`);
+      const label = `Make ${fmt(BigInt(n.value), 8, 2)} TAC public`;
+      try {
+        await proveOr({ run, self, types, exit: true, quiet: true, go: exitGo(n, to, n.value), label, sheet, after: loadTacHoldings, status: line, wait: () => run.wait(label, 15 * 60e3),
+          relayed: () => t.unwrap({ note: n, walletPriv: priv, recipient: to, wait: true, waitOpts: run.wait(label, 15 * 60e3, { exit: { to, units: String(n.value), note: kNote(n), from: 'tac', sheet: 'tac' } }) }) });
+        moved++;
+      } catch (e) {
+        if (e?.offered) { offered = true; break; }
+        if (!run.away) {
+          if (moved) { await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]); after(); throw Object.assign(new Error(`${moved} of ${worth.length} notes are public now; the rest did not go. ${errText(e)}`), { said: true }); }
+          throw e;
+        }
+        run.fail(status, e);
+      }
+    }
+    if (offered) return;
+    if (!run.away) { toast('Private TAC made public'); say(status, html`<span class="ok">Public TAC in ${your()}.</span>`); }
+    await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]); after();
+  } catch (e) { run.fail(status, e); }
+}
 function renderTacBal(el) {
   const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
   if (!S.key) {
@@ -8742,47 +8783,7 @@ function renderTacBal(el) {
   if (k) tacShield($('#tac-shield'), $('#tac-bal-status'), TACB.who === who ? TACB.acct : null, TACB.who === who ? TACB.erc - (TACB.acct || 0n) : null);
   tacSend($('#tac-send'), $('#tac-bal-status'));
   const pub = $('#tac-pub', el);
-  if (pub) pub.onclick = () => busy(pub, async (run) => {
-    const status = $('#tac-bal-status');
-    try {
-      const raw = ($('#tac-pub-to')?.value || '').trim();
-      const t = await getUx(), priv = walletPriv(), to = raw ? recipientOf(raw) : await payingAccount();
-      const dest = raw ? short(to, 8) : `${your()} (${short(to, 6)})`;
-      const minFee = BigInt(await t.quoteOpFee('cTAC', 'sendunwrap')), types = ['unwrap', 'sendunwrap'], self = await proveOwn(types);
-      const worth = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse().filter((n) => self || BigInt(n.value) > t.quoteUnwrapFee(BigInt(n.value), 'cTAC', { minFee }).fee);
-      if (!worth.length) {
-        const biggest = freeNotes(P.scan?.tac?.notes).sort(byValue).reverse()[0];
-        const small = new Error('Each private TAC note is worth less than the relay fee to move it.');
-        if (!biggest) throw small;
-        offerSelf({ exit: true, go: exitGo(biggest, to, biggest.value), label: `Make ${fmt(BigInt(biggest.value), 8, 2)} TAC public`, sheet: 'tac', after: loadTacHoldings, status: () => $('#tac-bal-status') }, small);
-        return;
-      }
-      run.take(...worth.map(kNote));
-      const sum = worth.reduce((a, n) => a + BigInt(n.value), 0n);
-      run.go({ label: `Making ${fmt(sum * E10, 18, 2)} TAC public`, one: false, dest, status: () => $('#tac-bal-status') });
-      let offered = false, moved = 0;
-      for (const [i, n] of worth.entries()) {
-        if (run.switched()) { run.fail(status, new Error('Another Tacit wallet was opened, so the rest stopped.')); break; }
-        run.say(status, `The relay is moving your TAC${worth.length > 1 ? ` (${i + 1} of ${worth.length})` : ''}…`);
-        const label = `Make ${fmt(BigInt(n.value), 8, 2)} TAC public`;
-        try {
-          await proveOr({ run, self, types, exit: true, quiet: true, go: exitGo(n, to, n.value), label, sheet: 'tac', after: loadTacHoldings, status: () => $('#tac-bal-status'), wait: () => run.wait(label, 15 * 60e3),
-            relayed: () => t.unwrap({ note: n, walletPriv: priv, recipient: to, wait: true, waitOpts: run.wait(label, 15 * 60e3, { exit: { to, units: String(n.value), note: kNote(n), from: 'tac', sheet: 'tac' } }) }) });
-          moved++;
-        } catch (e) {
-          if (e?.offered) { offered = true; break; }
-          if (!run.away) {
-            if (moved) { await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]); rerender('tac'); throw Object.assign(new Error(`${moved} of ${worth.length} notes are public now; the rest did not go. ${errText(e)}`), { said: true }); }
-            throw e;
-          }
-          run.fail(status, e);
-        }
-      }
-      if (offered) return;
-      if (!run.away) { toast('Private TAC made public'); say(status, html`<span class="ok">Public TAC in ${your()}.</span>`); }
-      await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]); rerender('tac');
-    } catch (e) { run.fail(status, e); }
-  });
+  if (pub) pub.onclick = () => busy(pub, (run) => tacPublicNow({ run, raw: ($('#tac-pub-to')?.value || '').trim(), status: $('#tac-bal-status'), line: () => $('#tac-bal-status'), sheet: 'tac', after: () => rerender('tac') }));
 }
 // Wraps proved ahead (/wrap-vouchers.js): the sizes picked in the prove sheet, kept ready on this computer while its prover is idle,
 // and any wrap proved here or with your credit that was then not sent (a wallet that declined, say). A wrap the vouchers make up
@@ -9150,6 +9151,52 @@ async function tacWrapFromWallet(t, priv, wei, status) {
   const txHash = await sendTx({ to: t.cfg.router, data, value: 0n, label: `Deposit ${fmt(wei, 18, 6)} TAC to shield` });
   return { ...w, txHash };
 }
+// A TAC wrap's steps (TAC from the paying account into the pool as private TAC), pressed from the TAC sheet's Make private form or from the Swap card: `src` is the account that sends it
+// ('tacit' or 'wallet'). A wrap of this amount kept ready goes out at once; else it is proved here or with the holder's own credit first, or deposited with a permit and settled by the relay.
+// `status` is the element the steps are said in, `line()` the one Activity and a failure use; `clear` empties the amount, `after` redraws when it is over.
+async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, after }) {
+  run.go({ label: `Make ${fmt(wei, 18, 6)} TAC private`, status: line, clear });
+  let sent = false, landed = false;
+  try {
+    const t = await getUx(), priv = walletPriv();
+    // A TAC wrap of exactly this amount kept ready goes out at once on any lane: its proof is made, its permit is signed as it is sent.
+    const ready = S.key ? (await vouchers()).pick(S.key.pubHex, 'TAC', wei) : null;
+    if (ready?.length === 1) {
+      await sendVouchers({ run, t, via: src, list: ready, status, sheet, token: TAC_TOKEN });
+      await loadTacHoldings(true).catch(() => {}); after();
+      return;
+    }
+    // Proved here or with your own credit: the proof first, then one transaction deposits and settles it.
+    if (ownNow(['wrap']) && (await proveOwn(['wrap']))) {
+      await ownReady('wrap');
+      await proveFirstWrap({ run, t, priv, via: src, wei, status, sheet, ticker: 'TAC', token: TAC_TOKEN });
+      await loadTacHoldings(true).catch(() => {}); after();
+      return;
+    }
+    say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from your Tacit account…');
+    run.check();
+    const w = src === 'wallet' ? await tacWrapFromWallet(t, priv, wei, status) : await t.routerWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: 'TAC' });
+    sent = true;
+    run.take(kDep(w));
+    runTx(run, src === 'wallet' ? w.txHash : actTx(w.txHash, { label: `Deposit ${fmt(wei, 18, 6)} TAC to shield` }), 'Deposit', 'Depositing');
+    say(status, html`Sent ${txLink(w.txHash)}. Waiting for it to land…`);
+    await waitTx(w.txHash);
+    landed = true;
+    say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
+    await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
+      go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: w.txHash }) });
+    await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
+    after();
+  } catch (e) {
+    if (sent && !run.away && !e?.offered && !waitRanOut(e) && (landed || !/reverted/i.test(e?.message))) {
+      run.to.clear(); run.release(true);
+      e = keptDeposit(e, landed);
+    }
+    run.fail(run.to.status?.() || status, e);
+    if (sent) Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(after).catch(() => {});
+  }
+}
 function tacShield(el, status, acctBal, walletBal) {
   if (!el) return;
   const via = payer(), src = acctBal > 0n && (via === 'tacit' || !(walletBal > 0n)) ? 'tacit' : via === 'wallet' && walletBal > 0n ? 'wallet' : null;
@@ -9183,49 +9230,8 @@ function tacShield(el, status, acctBal, walletBal) {
   });
   if (hxLive('tacwrap')) { takeDraft('tacwrap', amt); setTimeout(() => document.getElementById('tac-shield')?.scrollIntoView({ block: 'center' }), 400); }
   go.onclick = () => busy(go, async (run) => {
-    const x = q;
-    if (!x) return;
-    run.go({ label: `Make ${fmt(x.wei, 18, 6)} TAC private`, status: () => $('#tac-bal-status'), clear: () => { clearField(amt); amt.dispatchEvent(new Event('input')); } });
-    let sent = false, landed = false;
-    try {
-      const t = await getUx(), priv = walletPriv();
-      // A TAC wrap of exactly this amount kept ready goes out at once on any lane: its proof is made, its permit is signed as it is sent.
-      const ready = S.key ? (await vouchers()).pick(S.key.pubHex, 'TAC', x.wei) : null;
-      if (ready?.length === 1) {
-        await sendVouchers({ run, t, via: src, list: ready, status, sheet: 'tac', token: TAC_TOKEN });
-        await loadTacHoldings(true).catch(() => {}); rerender('tac');
-        return;
-      }
-      // Proved here or with your own credit: the proof first, then one transaction deposits and settles it.
-      if (ownNow(['wrap']) && (await proveOwn(['wrap']))) {
-        await ownReady('wrap');
-        await proveFirstWrap({ run, t, priv, via: src, wei: x.wei, status, sheet: 'tac', ticker: 'TAC', token: TAC_TOKEN });
-        await loadTacHoldings(true).catch(() => {}); rerender('tac');
-        return;
-      }
-      say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from your Tacit account…');
-      run.check();
-      const w = src === 'wallet' ? await tacWrapFromWallet(t, priv, x.wei, status) : await t.routerWrap({ walletPriv: priv, amountWei: x.wei.toString(), ticker: 'TAC' });
-      sent = true;
-      run.take(kDep(w));
-      runTx(run, src === 'wallet' ? w.txHash : actTx(w.txHash, { label: `Deposit ${fmt(x.wei, 18, 6)} TAC to shield` }), 'Deposit', 'Depositing');
-      say(status, html`Sent ${txLink(w.txHash)}. Waiting for it to land…`);
-      await waitTx(w.txHash);
-      landed = true;
-      say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
-      await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet: 'tac', status: () => $('#tac-bal-status'),
-        go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-        relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: w.txHash }) });
-      await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
-      rerender('tac');
-    } catch (e) {
-      if (sent && !run.away && !e?.offered && !waitRanOut(e) && (landed || !/reverted/i.test(e?.message))) {
-        run.to.clear(); amt.dispatchEvent(new Event('input')); run.release(true);
-        e = keptDeposit(e, landed);
-      }
-      run.fail(run.to.status?.() || status, e);
-      if (sent) Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(() => rerender('tac')).catch(() => {});
-    }
+    if (!q) return;
+    await tacWrapNow({ run, wei: q.wei, src, status, line: () => $('#tac-bal-status'), sheet: 'tac', clear: () => { clearField(amt); amt.dispatchEvent(new Event('input')); }, after: () => rerender('tac') });
   });
 }
 
@@ -14738,7 +14744,7 @@ function hxGo() {
   // A first visit's press on a way in from the wallet (making ETH private, a deposit for payments, or zapping ETH into a farm) connects the wallet and opens the Tacit
   // wallet with it first, one signature (two the first time): the proofs this goes with are made for that key, so the default sizes start being made
   // now, not when a sheet asks. Asked once a visit: declined, the press goes on to the sheet that asks as ever.
-  if (!HX.keyAsked && !S.key && !signing && (m === 'private' || m === 'pay' || m === 'paytac' || m === 'paytok' || (m === 'earn' && HX.from === 'ether')) && !knownWallet() && !otherWallet()) {
+  if (!HX.keyAsked && !S.key && !signing && (m === 'private' || m === 'pay' || m === 'paytac' || m === 'paytok' || m === 'tacwrap' || (m === 'earn' && HX.from === 'ether')) && !knownWallet() && !otherWallet()) {
     HX.keyAsked = true;
     connect({ key: true }).catch(() => {}).then(async () => { if (S.key && m === 'earn') await hxQuote().catch(() => {}); hxGo(); });          // the zap priced for the key, so it goes from this card
     return;
@@ -14748,8 +14754,8 @@ function hxGo() {
   if (m === 'pay' || m === 'paytac' || m === 'paytok') return hxDepositGo(m, amt);
   if (m === 'btcpool') { location.href = '/tac/'; return; }
   if (m === 'unwrap') return hxUnwrapGo(units);
-  if (m === 'tacpub') return openLink('tac');
-  if (m === 'tacwrap') { hxDraft({ mode: 'tacwrap', amt }); return openLink('tac'); }
+  if (m === 'tacpub') return hxTacPublicGo();
+  if (m === 'tacwrap') return hxTacWrapGo(units);
   if (m === 'ppout' || m === 'ppv1') { const c = hxChain(); DEV.dest = m === 'ppv1' ? 'v1' : 'addr'; hxDraft({ mode: 'dout', amt, chain: c.chainId, all: HX.max }); return openLink(`device/${chainSlug(c)}/withdraw`); }
   if (m === 'tbback') return openLink('private/bitcoin/back');
   if (m === 'xo') { const a = XA[HX.xa]; hxDraft({ mode: a.pre, amt }); return openLink(`${xoLink(a)}/out`); }
@@ -14919,6 +14925,7 @@ async function hxUnwrapGo(units) {
   SWC.card?.working?.(true);
   return busy(go, async (run) => {
     try {
+      if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said to be too little
       const raw = await payingAccount(), t = await getUx(), own = ownNow(['sendunwrap', 'unwrap']), held = spendable('eth'), notes = freeNotes(P.scan?.eth.notes);
       const minFee = own ? 0n : await t.quoteOpFee('cETH', exitKind('eth', units)), fee = own ? 0n : t.quoteUnwrapFee(units, 'cETH', { minFee }).fee;
       const size = own || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee('cETH', 'transfer'));
@@ -14928,6 +14935,35 @@ async function hxUnwrapGo(units) {
       say(st, '');
       await unwrapNow({ run, x: { units, fee, minFee, own }, raw, status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
     } catch (e) { run.fail(st, e); }
+  }).finally(() => SWC.card?.working?.(false));
+}
+// TAC made private from the card: what the TAC sheet's Make private form does (tacWrapNow), from the paying account
+async function hxTacWrapGo(units) {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || !units || go.getAttribute('aria-busy') === 'true') return;
+  const wei = units * E10, held = hxWalletBal('wtac'), st = hxMoveSlot();
+  say(st, '');
+  if (held != null && wei > held) return say(st, html`<span class="err">More than the ${fmt(held, 18, 4)} TAC in ${your()}.</span>`);
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    PROVE_AT.el = st;
+    try { await tacWrapNow({ run, wei, src: payer(), status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), after: hxMoveAfter }); }
+    catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
+  }).finally(() => SWC.card?.working?.(false));
+}
+// All the private TAC made public (ERC-20 TAC in the paying account): what the TAC sheet's Make public does (tacPublicNow), one relay step a note
+async function hxTacPublicGo() {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || go.getAttribute('aria-busy') === 'true') return;
+  const st = hxMoveSlot();
+  say(st, '');
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said there is none
+    if (!(spendable('tac') > 0n)) return say(st, html`<span class="err">You hold no private TAC.</span>`);
+    await tacPublicNow({ run, status: st, line: () => st, sheet: '', after: hxMoveAfter });
   }).finally(() => SWC.card?.working?.(false));
 }
 // Deposits into the Pay pools from the card: ETH (the pool of the chain picked under the field) or TAC, USDC, USDT. Each is proved on this device (the proving key is fetched once, said under the
