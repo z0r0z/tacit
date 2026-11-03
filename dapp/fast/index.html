@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /fast/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=43539232">
+<link rel="modulepreload" href="/fast/app.js?cb=43302c32">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=0f0a650d">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -38,7 +38,7 @@
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/trade/poolux.js?cb=ac4a1175">
-<link rel="modulepreload" href="/fast/ui.js?cb=cd73e371">
+<link rel="modulepreload" href="/fast/ui.js?cb=6f7d0555">
 <link rel="modulepreload" href="/fast/fmt.js">
 <link rel="modulepreload" href="/fast/provide.js?cb=c95bfb67">
 <link rel="modulepreload" href="/fast/wire.js?cb=3ce66630">
@@ -217,6 +217,16 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-amt span { color: var(--mute); }
 .fx-keep { max-width: 560px; }
 .pv { padding: 0; margin-top: 22px; }
+/* every provider online, the key's own among them */
+.lp-tiles { max-width: 560px; margin: 22px 0 0; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.lp-tile { min-width: 0; padding: 14px 16px; background: var(--card); border: 1px solid var(--hair); }
+.lp-tile.mine { border-color: var(--ink); }
+.lp-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.lp-top b { font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
+.lp-tag { flex: none; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
+.lp-tile .kv { flex-wrap: wrap; column-gap: 8px; row-gap: 0; padding: 3px 0; }
+.lp-tile .kv b { margin-left: auto; white-space: nowrap; }
 .pv > summary { cursor: pointer; padding: 18px 22px; list-style: none; font-weight: 500; }
 .pv > summary::-webkit-details-marker { display: none; }
 .pv > summary::after { content: '+'; float: right; color: var(--mute); }
@@ -407,6 +417,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 
     <section class="panel gate" id="gate"></section>
     <p class="note fx-keep">Keep this page open until a bridge is done.</p>
+    <section class="lp-tiles" id="fx-tiles" aria-label="Providers online" hidden></section>
     <details class="panel gate pv" id="provide" hidden></details>
   </main>
 
@@ -425,6 +436,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=43539232"></script>
+<script type="module" src="/fast/app.js?cb=43302c32"></script>
 </body>
 </html>

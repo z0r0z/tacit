@@ -17,7 +17,7 @@ const TERMS = { claimPub: '02' + 'ab'.repeat(32), minAmount: String(10n * TAC), 
 const provider = (name, over = {}) => ({ id: name, name, ref: { kind: 'http', base: `https://${name}.example`, claimPub: name }, terms: termsOf({ ...TERMS, ...over }) });
 
 function page() {
-  const dom = new JSDOM('<!doctype html><body><section id="gate"></section></body>');
+  const dom = new JSDOM('<!doctype html><body><section id="gate"></section><section id="fx-tiles" hidden></section></body>');
   return { dom, doc: dom.window.document, root: dom.window.document.getElementById('gate') };
 }
 function keyStub() {
@@ -119,6 +119,19 @@ test('several providers: how many, the lowest fee, the widest range, and what th
   const t = text(m.$('fx-lp'));
   assert.match(t, /Providers 3 online/); assert.match(t, /Fee from 0\.20% \+ 1 TAC/); assert.match(t, /Amount 10 to 5,000 TAC/);
   assert.match(t, /Available now 1,000 TAC/, 'the most any one of them can take now, when it is under the most they take');
+});
+
+test('every provider online is a tile, the key\'s own first and marked, with its fee and what it takes', async () => {
+  const mine = '03' + 'cd'.repeat(32);
+  const m = mount({ providers: [provider('Other', { feeBps: 40 }), { ...provider('Mine', { feeBps: 1 }), id: mine }] });
+  await until(() => !m.$('fx-tiles').hidden, 'the tiles');
+  assert.equal(m.$('fx-tiles').querySelectorAll('.lp-tile').length, 2);
+  assert.equal(m.$('fx-tiles').querySelector('.mine'), null, 'nothing is marked before a key');
+  await signIn(m);
+  await until(() => !!m.$('fx-tiles').querySelector('.mine'), 'the key\'s own marked');
+  const first = m.$('fx-tiles').querySelector('.lp-tile');
+  assert.ok(first.classList.contains('mine')); assert.match(text(first), /^Mine You Fee 0\.01% \+ 1 TAC Takes 10 to/);
+  m.ui.destroy();
 });
 
 test('the key\'s own provider is not one to bridge with: it is left out of the summary and of the quotes', async () => {

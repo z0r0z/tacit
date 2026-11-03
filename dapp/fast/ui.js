@@ -113,7 +113,22 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
       </div>`).join('') : '';
   }
 
-  const paint = () => { paintProvider(); paintForm(); paintNote(); paintList(); };
+  // every provider online as a tile, the key's own first and marked: what a provider sees of its own offer, and a bridger of the market
+  function paintTiles() {
+    const e = doc.getElementById('fx-tiles');
+    if (!e) return;
+    const me = keyS.unlocked && keyS.key ? keyS.key.pubHex : null;
+    const ps = S.providers.slice().sort((a, b) => (a.id === me ? -1 : b.id === me ? 1 : a.terms.feeBps - b.terms.feeBps));
+    e.hidden = !ps.length;
+    e.innerHTML = ps.length ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
+      <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
+        <div class="lp-top"><b>${esc(p.name || 'Provider')}</b>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
+        <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
+        <div class="kv"><span>Takes</span><b class="num">${esc(fmtTac(p.terms.minAmount))} to ${esc(fmtTac(capOf(p)))} TAC</b></div>
+      </div>`).join('')}</div>` : '';
+  }
+
+  const paint = () => { paintProvider(); paintTiles(); paintForm(); paintNote(); paintList(); };
 
   // ── the providers ──
   // what they can take changes with every bridge: read again when a session opens and while an amount is typed
