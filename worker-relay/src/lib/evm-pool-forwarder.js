@@ -34,7 +34,8 @@ export function makeForwarder({ gateways, ratePerMin = 60, timeoutMs = 210_000, 
     res.end(body);
   };
   return async function forward(req, res) {
-    const url = new URL(req.url, 'http://localhost');
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch { return reply(res, 400, '{"error":"bad request"}'); }
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
     if (url.pathname === '/health' && req.method === 'GET') return reply(res, 200, '{"ok":true}');
     const m = /^\/f\/([0-9A-Za-z_-]{1,40})$/.exec(url.pathname);

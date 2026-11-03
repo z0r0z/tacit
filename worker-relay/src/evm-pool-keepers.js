@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import { poolAsset } from '../../dapp/evm-pool-zk.js';
 import { loadKeeperConfig, checkKeeperSigner } from './lib/evm-pool-keeper-config.js';
+import { clientKey } from './lib/token-bucket.js';
 import { openKeeperStore } from './lib/evm-pool-keeper-store.js';
 import { makeKeeperChain } from './lib/evm-pool-keeper-chain.js';
 import { makeLeafSync, makeFactsSync } from './lib/evm-pool-keeper-leaves.js';
@@ -327,7 +328,7 @@ async function main() {
       if (req.method === 'GET') { const c = new URLSearchParams(query).get('chainId'); const api = apiOf(c); return api ? json(res, 200, api.list()) : none(c); }
       if (req.method !== 'POST') return json(res, 405, { error: 'GET or POST' });
       if (!tokenApis.size) return none(null);
-      const who = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      const who = clientKey(req);                                  // not the client's own X-Forwarded-For, which it can change on every call
       if (!askedOk(who)) return json(res, 429, { error: 'rate limited' });
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 1024) req.destroy(); });
@@ -365,7 +366,14 @@ async function main() {
     forwarders: String(process.env.EVM_POOL_KEEPER_FORWARDERS || '').split(',').map((a) => a.trim()).filter(Boolean),
     ratePerMin: Number(process.env.EVM_POOL_KEEPER_RATE_PER_MIN || 20),
   }) : null;
-  createServer((req, res) => (sealed?.(req, res) ? undefined : serve(req, res)))
+  // A request that throws, or whose handler rejects, is answered 500 and logged: it never reaches the process, which every chain's keeper shares.
+  const failed = (res) => (e) => {
+    log(`request failed: ${safeErr(e)}`);
+    try { if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end('{"error":"internal error"}'); } catch { /* the socket is gone */ }
+  };
+  createServer((req, res) => {
+    try { Promise.resolve(sealed?.(req, res) ? undefined : serve(req, res)).catch(failed(res)); } catch (e) { failed(res)(e); }
+  })
     .listen(port, () => log(`listening on ${port}: keepers ${running.join(', ')} (unprefixed routes are ${running[0]}'s)${sealed ? '; the private route is on at POST /sealed' : ''}`));
 
   for (const id of running) runKeeper(keepers.get(id));

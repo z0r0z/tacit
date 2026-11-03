@@ -388,6 +388,13 @@ export function createIntakeHandler({
     return keys;
   };
   const busyKeys = (keys, t) => keys.some((k) => (inflight.get(k) ?? 0) > t);
+  // Why a send must wait: these notes are being relayed already (the wallet waits for them to show spent), or another wallet's send holds the
+  // slot this one was proved for (the wallet proves again against the root now: nothing of its own is on its way).
+  const conflict = (keys, t) => {
+    if (keys.some((k) => k.startsWith('nf:') && (inflight.get(k) ?? 0) > t)) return Object.assign(new IntakeError(409, 'this spend is already being relayed'), { stale: true });
+    if (busyKeys(keys, t)) return Object.assign(new IntakeError(409, "StaleRoot: another relay is taking this slot; re-prove against the pool's current root"), { stale: true });
+    return null;
+  };
 
   // A keeper that cannot front a send says so up front, so a wallet sends it itself instead of proving for a relay
   // that would fail. Its own fees refill it once it is running.
@@ -521,7 +528,7 @@ export function createIntakeHandler({
   async function relayChecked({ args, fee, functionName, sendArgs }, { queued = false } = {}) {
     const keys = relayKeys(args);
     const t0 = Date.now();
-    if (busyKeys(keys, t0)) throw Object.assign(new IntakeError(409, 'this spend is already being relayed'), { stale: true });
+    { const c = conflict(keys, t0); if (c) throw c; }
     let est = cfg.relayGas;
     if (!queued) {
       try { est = await chain.estimate(functionName, sendArgs); }
@@ -536,7 +543,7 @@ export function createIntakeHandler({
     if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg }).toString() });
     await mustFront(cov.gas);
     if (cfg.dryRun) return { dryRun: true, gas: est.toString() };
-    if (busyKeys(keys, Date.now())) throw Object.assign(new IntakeError(409, 'this spend is already being relayed'), { stale: true });
+    { const c = conflict(keys, Date.now()); if (c) throw c; }
     const hold = Date.now() + cfg.receiptWaitSecs * 1000;
     for (const k of keys) inflight.set(k, hold);
     let hash;
@@ -556,7 +563,12 @@ export function createIntakeHandler({
   }
 
   return async function handle(req, res) {
-    const url = new URL(req.url, 'http://localhost');
+    // a request line that is no URL (`//`, `/\`) is answered, not thrown: an async handler that throws here ends the service
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+      return res.end('{"error":"bad request"}');
+    }
     const p = url.pathname.replace(/\/$/, '');
     const sealed = () => (gateway ||= makeSealedGateway({ secret: cfg.gatewayKey, handle, prefix: PREFIX, now }));
     const send = (code, body) => {
