@@ -585,7 +585,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     try {
       onStep('opening your deposit box');
       const box = await w.depositBox({ amount, fee, refund: back, deadline: secs() + 2 * DEADLINE_S });       // counted from the chain's time, as every deadline here is
-      plan.box = box.box; plan.boxWei = String(amount); save(plan);
+      plan.box = box.box; plan.boxWei = String(amount); plan.boxIntent = box.intent ?? null; plan.boxDeadline = box.deadline ?? null; save(plan);      // (the intent is what sending the box's balance back needs: the keeper has it too)
       // `fund` gives the relay's transaction hash, or { hash, amountIn, route } where the amount sold is found only now (the box did not exist when the page sized it)
       const sold = await fund({ box: box.box, amount, fee, onStep });
       ran = true;

@@ -81,7 +81,7 @@ function setup({ fee = 1000n, depositFee: own = null, leaves = 10, found = true,
     sync: async () => { M.syncs++; if (M.failSyncAfter != null && M.syncs > M.failSyncAfter) throw new Error('request rejected by the node'); return { leaves: M.leaves, balance: 0n, notes: M.notes.length }; },
     refundBox: async () => REFUND_BOX,
     notes: () => M.notes,
-    depositBox: async (a) => { M.boxes.push(a); return { box: BOX, amount: a.amount, value: a.amount - a.fee, deadline: a.deadline }; },
+    depositBox: async (a) => { M.boxes.push(a); return { box: BOX, amount: a.amount, value: a.amount - a.fee, deadline: a.deadline, intent: { amount: String(a.amount), refund: a.refund, deadline: String(a.deadline) } }; },
   };
   const L = makeLater({ keyHex: async () => { throw new Error('the key is not needed'); }, signer: { address: PAYER }, ethCall: async () => '0x', store, walletOf: async () => pool, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] } });
   // the keeper completing the box: a note of the deposit's amount at the next leaf
@@ -113,6 +113,8 @@ test('a box is made for the deposit and the keeper\'s fee, the relay sells into 
   assert.strictEqual(plan.depositTx, HASH);
   assert.strictEqual(plan.box, BOX);
   assert.strictEqual(plan.boxWei, String(base.depositWei + 1500n));
+  assert.deepStrictEqual(plan.boxIntent, { amount: String(base.depositWei + 1500n), refund: REFUND, deadline: String(M.boxes[0].deadline) }, 'the box\'s intent is kept: sending its balance back needs it');
+  assert.strictEqual(plan.boxDeadline, M.boxes[0].deadline);
   assert.strictEqual(plan.pay.amountWei, '71234567', 'what was sold is what the funder found, not what the page sized before the box existed');
   assert.strictEqual(plan.pay.route, 'Uniswap v3 0.05%');
   assert.strictEqual(plan.from, PAYER, 'the wallet that deposited is kept, so the swap out is never sent from it');
