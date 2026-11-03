@@ -7,8 +7,8 @@
 // relay proves and sends each step. Nothing here is loaded until the first private swap, or the first ask for a private balance; the key is
 // held in this visit's memory only.
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=709c122d';
-import { forgetUx } from '/trade/poolux.js?cb=ced562d4';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=dbf625f6';
+import { forgetUx } from '/trade/poolux.js?cb=04aa55d4';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=8b8ca51f';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=3485885e';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=5bc9627f';
@@ -288,6 +288,27 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     return big || exactNote({ asset, units, ticker, say });
   }
 
+  // A deposit staged from one of the key's tETH notes (confidential-stage.js: one only the key spends, waiting in the pool) of exactly the
+  // amount, swapped through one pool from it: the press's proof holds no secret, so it is the relay's board (or any prover) that makes it, and
+  // the note's key was used only when the deposit was staged. → { txHash, out } or null when no staged deposit fits.
+  let stageP = null;
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js'); return makeConfidentialStage({ ux: t }); })());
+  async function stagedSwap(plan, say) {
+    const t = await getUx();
+    if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
+    const h = await read(true);
+    if (!h?.pending?.length) return null;
+    const st = await stage();
+    const d = (await st.splitPending(h.pending)).staged.find((x) => BigInt(x.value) === BigInt(plan.units));
+    if (!d) return null;
+    say('swap');
+    const hop = plan.path[0];
+    const r = await st.pressSwap({ walletPriv: key.priv(), deposit: { index: d.index, wei: BigInt(d.value) * E10, depositId: d.depositId }, toAsset: hop.assetNext,
+      feeBps: Number(hop.feeBps), fee: BigInt(plan.fee), minOut: BigInt(plan.minOut), waitOpts: { ...run().wait(plan.label || 'Swap privately', 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+    held = null;
+    return { txHash: r.txHash || null, out: r.amountOut, staged: true };
+  }
+
   // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line while the relay is held.
   async function relayOpen() {
     const rs = await relayState();
@@ -498,6 +519,9 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       if (!plan.path?.length) return sendOn({ plan, made: { made: plan.units, txHash: hash }, before, say, direct: note });
     } else {
       await price(plan.asset, plan.units, plan.path, plan.fee, plan.minOut);
+      // a deposit of exactly this tETH staged from a note of the key's: swapped from it in one proof that holds no secret
+      const fast = !plan.sendTo && await stagedSwap(plan, say).catch(() => null);
+      if (fast) return fast;
       note = await coveringNote({ asset: plan.asset, units: plan.units, ticker: plan.ticker, say });
     }
     // the notes the swap's own asset has now, so the one the route makes is told from them

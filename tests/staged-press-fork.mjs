@@ -8,6 +8,7 @@
 // verifier is replaced.
 //
 //   node tests/staged-press-fork.mjs        (FORK=<rpc url>; FORK_BLOCK=<n>; EXEC=<the exec-stdin binary>, built from tests/exec-stdin when not given)
+//   Where no one public node serves the fork (state, the pool's log history), run `node tools/fork-proxy.mjs` and fork from http://127.0.0.1:8590.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -143,7 +144,8 @@ const server = createServer(async (req, res) => {
     let r;
     try { r = await settler.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode || 'settle', feeAsset: body.feeAsset || null, exit: body.exit || null, publicValues: body.publicValues || null, proof: body.proof || null }); }
     catch (e) { return json(400, { error: String(e.message || e) }); }
-    queue = queue.then(async () => { const claimed = body.mode === 'preproven' ? await settler.nextOpen({ id: r.jobId }) : await settler.nextJob(); if (claimed) await runJob(claimed); });
+    if (process.env.DEBUG_RELAY) console.error(`[relay] submit ${body.type}/${body.mode || 'settle'} -> ${JSON.stringify(r).slice(0, 160)}`);
+    queue = queue.then(async () => { const claimed = body.mode === 'preproven' ? await settler.nextOpen({ id: r.jobId }) : await settler.nextJob(); if (process.env.DEBUG_RELAY) console.error(`[relay] took ${claimed ? `${claimed.type}/${claimed.mode}` : 'nothing'}`); if (claimed) await runJob(claimed); });
     return json(200, { ok: true, ...r });
   }
   if (u.pathname === '/confidential/status') { const j = await settler.jobStatus(u.searchParams.get('id')); return j ? json(200, j) : json(404, { error: 'unknown' }); }
@@ -321,6 +323,49 @@ ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved a
   ok(asked.length === 1 && asked[0].mode === 'preproven' && !asked[0].op && asked[0].exit && ownStdin.includes(BigInt(note.secret).toString(16).padStart(64, '0')),
     `the relay was sent only the finished proof and its recipe, never the op holding the note's key, which stayed on this machine (${asked.map((x) => `${x.type}/${x.mode}${x.op ? '+op' : ''}${x.exit ? '+exit' : ''}`).join(', ')})`);
   ok(activations.length === acts0 + 1 && activations[activations.length - 1].cover.ok, 'and the relay activated the recipe of a proof it did not make, its checks reading the recipient and fee from the public values');
+}
+
+// ── 9. fixed sizes: exactly 0.01 ETH staged out of a 0.05 note (a partial unwrap, the rest a hidden change note), relay-proved and then on the
+// holder's machine, and the 0.01 swapped ──
+{
+  const wrapNote = async (wei) => {
+    const index = await ux.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
+    const w = ux.buildWrap({ walletPriv: priv, amountWei: wei, ticker: 'cETH', index });
+    await send(FROM, WRAP_TIP, '0xfc24c435' + w.commit.slice(2).padStart(64, '0') + wei.toString(16).padStart(64, '0') + TIPTO.slice(2).toLowerCase().padStart(64, '0'), hex(wei + 10n ** 14n));
+    await ux.submitWrapSettle({ built: w, waitOpts: wait });
+    return (await notesOf(priv, mkUx(), teth)).find((x) => BigInt(x.value) * 10n ** 10n === wei);
+  };
+  const BIG = 5n * ETH, SIZE = ETH;
+  let note = await wrapNote(BIG);
+  const acts0 = activations.length;
+  const r = await st.stageNote({ note, walletPriv: priv, amountWei: SIZE, waitOpts: wait }).catch((e) => ({ error: e }));
+  ok(!r.error && r.wei === SIZE && await depositStatus(r.depositId) === 1n && activations.length === acts0 + 1 && activations[activations.length - 1].cover.ok,
+    `exactly 0.01 ETH is staged out of a 0.05 note, its activation paid for (${r.error ? r.error.message : `index ${r.index}; ${log.slice(-1)[0]}`})`);
+  const change = (await notesOf(priv, mkUx(), teth)).filter((x) => r.change && BigInt(x.value) === r.change.value);
+  ok(!r.error && change.length === 1 && r.change.value > 0n, `and the rest, ${r.change ? Number(r.change.value) / 1e8 : '?'} tETH, is a hidden change note a fresh wallet finds`);
+  const p = await st.pressSwap({ walletPriv: priv, deposit: { index: r.index, wei: r.wei, depositId: r.depositId }, toTicker: 'cTAC', feeBps, waitOpts: wait }).catch((e) => ({ error: e }));
+  ok(!p.error && await depositStatus(r.depositId) === 2n, `and the 0.01 is swapped from its deposit (${p.error ? p.error.message : `${fmtTac(p.amountOut)} TAC`})`);
+  // the same on the holder's machine: the relay is sent the finished proof of the partial unwrap and its recipe only
+  note = await wrapNote(BIG);
+  const ox = mkUx();
+  const own = async ({ type, op, memos: ms }) => {
+    const memoHashes = (ms || []).map((m) => keccak256(m.startsWith('0x') ? m : `0x${m}`));
+    const f = join(tmp, 'own2.stdin'), out = join(tmp, 'own2.pv');
+    writeFileSync(f, stdinFor(type, { ...JSON.parse(JSON.stringify(op)), memoHashes }));
+    const g = await execGuest({ ...process.env, STDIN: f, OUT: out });
+    if (g.status !== 0 || !existsSync(out)) throw new Error('the guest rejected the op');
+    return { requestId: 'own-part', publicValues: `0x${readFileSync(out, 'utf8').trim()}`, proof: '0x' + '00'.repeat(32), private: true };
+  };
+  own.supports = (t) => t === 'unwrap' || t === 'sendunwrap';
+  ox.relay.useProver(own);
+  const so = makeConfidentialStage({ ux: ox });
+  const seen0 = submitsSeen.length;
+  const r2 = await so.stageNote({ note, walletPriv: priv, amountWei: 2n * SIZE, waitOpts: wait }).catch((e) => ({ error: e }));
+  const asked = submitsSeen.slice(seen0);
+  ok(!r2.error && r2.own && r2.wei === 2n * SIZE && await depositStatus(r2.depositId) === 1n && asked.length === 1 && asked[0].type === 'sendunwrap' && asked[0].mode === 'preproven' && !asked[0].op && asked[0].exit,
+    `on the holder's machine: exactly 0.02 ETH staged, the relay sent only the proof and its recipe (${r2.error ? r2.error.message : asked.map((x) => `${x.type}/${x.mode}${x.exit ? '+exit' : ''}`).join(', ')})`);
+  const change2 = (await notesOf(priv, mkUx(), teth)).filter((x) => r2.change && BigInt(x.value) === r2.change.value);
+  ok(!r2.error && change2.length === 1, 'and its change note, made from the memo posted with the proof, is found from the key');
 }
 
 if (fails) console.error(log.join('\n'));

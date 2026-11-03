@@ -110,6 +110,8 @@ is what the current code derives from the key alone.
 | cBTC bearer notes (owner 0, empty memo) | blinding derived from the wallet's Bitcoin funding prevout, so it needs the wallet's Bitcoin history (`balance` and `recover` read it from a public Bitcoin index unless you pass `btcHistory`) | no, but the scan must include that channel |
 | Stealth locks received / sent | trial-decrypt of lock memos; the sender's own tail restores its refund key | no |
 | Send-and-unwrap change | read from the settle calldata of the spent parent | no |
+| Staged deposits (a note withdrawn into a deposit only its key spends: [3d](#3d-staged-deposits-and-receive-codes)) | the wrap walk finds them as pending deposits at the key's wrap indexes; the transaction that made each (an `activateExit` on the router) tells a staged one from a wallet deposit not yet settled | no |
+| Payments to a receive code | memo scan; the memo carries a receive index where a note's `nk` goes, and the `nk` is re-derived from the key and that index | no, but the memo opener must take that form ([3d](#3d-staged-deposits-and-receive-codes)) |
 | Farm positions opened under a random receipt key (an explicit `bondFarm` with a generated `ownerPriv`) | not derivable | **yes**: keep `{ lpAsset, shares, receiptLeaf, owner, nonce, ownerPriv }` |
 | A note whose emitted memo differs from the one sealed | the sealed memo | **yes**: the client keeps it locally under the settle's tx hash |
 | The destination blinding of a cross-out | returned by `tacit.crossOut` | **yes**: persist it |
@@ -139,7 +141,7 @@ Recommended UX:
 
 - **Address them by pubkey, not a 0x address.** The receiver's confidential spend pubkey is the address. A 0x address is a hash and does not reveal it, and the pool has no registry from one to the other. Use their `tacit1…` address, or a name: the dapp reads the `finance.tacit` text record of a `.wei`, `.gwei` or `.eth` name (Ethereum mainnet only, no off-chain lookups) and pays the Ethereum-side key its `tacit1…` value decodes to. Look the name up at send time, show `name → tacit1…` before signing, and refuse a missing or invalid record. `dapp/confidential-names.js` implements the read, the strict decoder, and publishing a user's address to their verified primary name ([`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md), "Paying someone else"). To receive by name, show the user a "publish my Tacit address" action, or have them show their `tacit1…` address.
 - **A plain 0x address can be paid publicly from your own confidential balance.** Deposit, then pay it with a relayed `sendUnwrap`: the address and the amount are public and only the sender is hidden, weakly. The pattern, fees and limits are in [`PRIVATE-PAYOUT.md`](./PRIVATE-PAYOUT.md).
-- **`wrapAndSend` is for your own wallet.** It wraps and settles in one transaction and splits the deposit into an amount plus change. It refuses a third-party recipient, because that note could never be spent. Use `stealthSend` to pay someone else.
+- **`wrapAndSend` is for your own wallet.** It wraps and settles in one transaction and splits the deposit into an amount plus change. It refuses a third-party recipient, because that note could never be spent: a note's owner is the hash of an `nk` only its holder knows. Use `stealthSend` to pay someone else, or pay the receive code they gave you from a staged deposit ([3d](#3d-staged-deposits-and-receive-codes)).
 - **The receiver recovers from the key alone.** `tacit.recover({ walletPriv })` returns the lock under `receivedLocks`, and the note its claim mints is derived, so it comes back too.
 - **Show a claim-by date.** After a lock's deadline (about 90 days by default) the sender can refund. Warn the receiver as it nears.
 - **Run the memo check before sending.** A lock with an unopenable memo cannot be found by the receiver.
@@ -203,6 +205,17 @@ For a DEX, an aggregator, a lending market, a wallet or a market-data site addin
 - **Watch `successor()`.** It reads zero today. If the lineage steward deploys a successor pool, that pool mints its own canonical TAC at
   another address. This token keeps working and can still be wrapped into this pool and crossed to Bitcoin, so tell users which TAC they
   hold. See [Lineage](./DEPLOYMENTS.md#lineage).
+
+---
+
+## 3d. Staged deposits and receive codes
+
+A swap from a private note needs the note's key and pins the pool's reserves in one proof, so whoever proves it fast sees the key. A **staged deposit** splits the two. The note is withdrawn into an exit escrow whose recipe wraps exactly that ETH back as the key's own pending deposit at a wrap index (`dapp/confidential-stage.js` `stageNote`; with `amountWei` a fixed size comes out of a larger note and the rest is a hidden change note). That step pins nothing that moves, so the holder's own prover can make it at its own pace and post it with its recipe (`relay.postProof({ exit })`), and the relay never sees the key. The deposit then waits: only an opening proof from the key spends it, it never expires and nothing refunds it. Spending it is an op whose program input holds no secret, so any prover may make it, ahead of the press: a swap (`pressSwap`, OP 33), a payment or split (`buildWrapTransferOp`, OP 27), liquidity (OP 32) or a cUSD borrow (OP 30).
+
+- **Do not "finish" a staged deposit.** A wallet that settles every pending deposit of the key as a plain wrap turns staged ones back into notes, paying a fee for nothing. Split them first: `splitPending(pending)` → `{ staged, waiting }`, where staged ones were made by a transaction to the router calling `activateExit`.
+- **The amount is public.** A staged deposit's value is on chain, as a wallet deposit's is; who staged it is not. Stage fixed sizes (0.01, 0.1, 1) so that is all it says.
+- **A recipe's leftover and a recipe nobody ran** go to a rescue address made from the Tacit key (`rescueKey(walletPriv)`), never to the user's account, which the activation would then name on chain.
+- **Receive codes.** To be paid from someone's staged deposit, a key gives out `tacitrecv1:<pubkey>:<index>:<owner>` (`receiveCode({ walletPriv, index })`, one index per payer). The `nk` behind `owner` is derived from the key and the index and never sent. The payer's memo carries the index where a note's `nk` goes (`memo.receiveSecret(index)`): `openMemo` returns such a note with `receiveIndex` and no secret, and the wallet derives the `nk` and keeps the note only if it hashes to `owner`. **A wallet that opens memos itself must take this form, or it will not see these payments.** Old memos open as before.
 
 ---
 

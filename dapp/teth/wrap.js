@@ -1,4 +1,4 @@
-import { getUx, forgetUx } from '/trade/poolux.js?cb=ced562d4';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=04aa55d4';
 import { WRAP_TIP, WRAP_WITH_TIP, CETH_ID, POOL } from '/teth/read.js?cb=3485885e';
 import { strip, word, rpc, ethCall, api, E10 } from '/trade/util.js?cb=e53086bb';
 
@@ -245,12 +245,19 @@ export async function selfFinish({ t = null, built, hash = null, jobId = null, o
   } finally { w?.quiet(); }
 }
 
+const stages = new WeakMap();
+const stageOf = async (t) => stages.get(t) || (await import('/confidential-stage.js').then(({ makeConfidentialStage }) => { const st = makeConfidentialStage({ ux: t }); stages.set(t, st); return st; }));
 export async function readHeld({ priv, ux = null }) {
   const t = ux || await getUx();
   const r = await t.balance(priv(), { cbtc: false, bridge: false, positions: true });
   const g = r.byAsset?.[CETH_ID], notes = g?.notes || [];
-  const pending = (r.diag?.wrap?.pending || []).filter((d) => String(d.asset).toLowerCase() === CETH_ID).map((d) => ({ index: d.index, value: BigInt(d.value), txHash: d.txHash || null, depositId: d.depositId || null }));
-  return { value: g ? BigInt(g.value) : 0n, notes: notes.length, pending, positions: Array.isArray(r.farmPositions) && !r.diag?.errors?.farm ? r.farmPositions : null, partial: Object.keys(r.diag?.errors || {}).length > 0, errors: r.diag?.errors || {} };
+  const all = (r.diag?.wrap?.pending || []).filter((d) => String(d.asset).toLowerCase() === CETH_ID).map((d) => ({ index: d.index, value: BigInt(d.value), txHash: d.txHash || null, depositId: d.depositId || null }));
+  // a deposit staged from a note (confidential-stage.js: one only the key spends, kept for a fast swap) is not one waiting to be finished
+  let pending = all, staged = [];
+  if (all.length) {
+    try { ({ waiting: pending, staged } = await (await stageOf(t)).splitPending(all)); } catch { pending = all; staged = []; }
+  }
+  return { value: g ? BigInt(g.value) : 0n, notes: notes.length, pending, staged, stagedValue: staged.reduce((a, d) => a + d.value, 0n), positions: Array.isArray(r.farmPositions) && !r.diag?.errors?.farm ? r.farmPositions : null, partial: Object.keys(r.diag?.errors || {}).length > 0, errors: r.diag?.errors || {} };
 }
 export async function finish({ priv, pending, ux = null, say = () => {}, self = null, own = null }) {
   const t = ux || await getUx();
