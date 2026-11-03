@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io; img-src 'self' data: blob: https://api.tacit.finance https://ipfs.filebase.io; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data: blob: https://api.tacit.finance https://ipfs.filebase.io; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit etch</title>
 <meta name="description" content="Create an asset on Bitcoin or Ethereum, or find one that exists.">
@@ -25,12 +25,13 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /etch/app.js | | /trade/btc.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/etch/app.js?cb=300d4fea">
-<link rel="modulepreload" href="/trade/util.js?cb=e53086bb">
-<link rel="modulepreload" href="/trade/rpc.js?cb=cd769487">
+<link rel="modulepreload" href="/etch/app.js?cb=50d1710f">
+<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
+<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
 <link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/etch/find.js?cb=2dd01b3c">
+<link rel="modulepreload" href="/etch/find.js?cb=28fe6e0c">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -495,12 +496,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 </div>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/trade/btc.js?cb=2f4434ea">
-<link rel="modulepreload" href="/trade/btc-session.js?cb=d20424a1">
+<link rel="modulepreload" href="/trade/btc.js?cb=b5cefe5f">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=40875d95">
 <link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
 </template>
 <!-- warm:end -->
 <div class="sr" id="live" role="status" aria-live="polite"></div>
-<script type="module" src="/etch/app.js?cb=300d4fea"></script>
+<script type="module" src="/etch/app.js?cb=50d1710f"></script>
 </body>
 </html>

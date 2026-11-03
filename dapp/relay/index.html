@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit relay</title>
 <meta name="description" content="What the relay earns, what it spends keeping settles and the bridge running, and the tenth of its fee income that buys TAC. Send a settle it has proved, or pay for its proofs.">
@@ -14,23 +14,24 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /relay/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/relay/app.js?cb=427586a8">
-<link rel="modulepreload" href="/trade/connect.js?cb=9858916e">
+<link rel="modulepreload" href="/relay/app.js?cb=8266b67e">
+<link rel="modulepreload" href="/trade/connect.js?cb=a64b9cec">
 <link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
-<link rel="modulepreload" href="/trade/util.js?cb=e53086bb">
-<link rel="modulepreload" href="/trade/rpc.js?cb=cd769487">
+<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
+<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
 <link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
-<link rel="modulepreload" href="/relay/open.js?cb=866e6441">
+<link rel="modulepreload" href="/relay/open.js?cb=06024a15">
 <link rel="modulepreload" href="/confidential-relay.js?cb=636a6a72">
-<link rel="modulepreload" href="/confidential-deployments.js?cb=477f3312">
+<link rel="modulepreload" href="/confidential-deployments.js?cb=36501936">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-deployments.generated.js">
 <link rel="modulepreload" href="/relay/abi.js?cb=5078b247">
 <link rel="modulepreload" href="/zrouter-guard.js">
-<link rel="modulepreload" href="/relay/prove.js?cb=b1d2182a">
+<link rel="modulepreload" href="/relay/prove.js?cb=6b6b60f5">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -439,6 +440,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/relay/app.js?cb=427586a8"></script>
+<script type="module" src="/relay/app.js?cb=8266b67e"></script>
 </body>
 </html>

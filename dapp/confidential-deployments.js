@@ -1,4 +1,5 @@
 import { sha256, keccak_256 } from './vendor/tacit-deps.min.js';
+import { ETH_NODES, ETH_LOG_NODES } from './eth-nodes.js';
 
 const SEPOLIA_RPCS = [
   'https://ethereum-sepolia-rpc.publicnode.com',
@@ -6,11 +7,7 @@ const SEPOLIA_RPCS = [
   'https://sepolia.drpc.org',
   'https://sepolia.gateway.tenderly.co',
 ];
-const MAINNET_RPCS = [
-  'https://mainnet.gateway.tenderly.co',
-  'https://eth.drpc.org',
-  'https://1rpc.io/eth',
-];
+const MAINNET_RPCS = ETH_NODES;
 const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
 const ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4';
 const TAC_ASSET_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -163,6 +160,7 @@ export const CONFIDENTIAL_DEPLOYMENTS = {
     zRouter: ZROUTER,
     deployBlock: 0,
     rpcs: MAINNET_RPCS,
+    logRpcs: ETH_LOG_NODES,
     relayBase: 'https://api.tacit.finance',
     evmNetwork: 'mainnet',
     externalErc20: EXTERNAL_ERC20_MAINNET,

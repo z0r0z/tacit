@@ -7,13 +7,14 @@
 // zRouter for exactly the deposit's ETH and deposits it with this device's proof; from there the swap is the same. (The TAC pool deployed with
 // the TAC vaults could hold TAC itself, but nothing is in it yet and no keeper sends for it, so a hop through it would hide nothing.)
 import { hexToBytes, keccak_256 } from '/vendor/tacit-deps.min.js';
+import { ETH_NODES } from '/eth-nodes.js';
 import { bestRoute } from '/swap/aggregate.js?cb=29aa40e7';
 import { checkRoute, readAccess, readToken, permitTyped, permit2Typed, splitSig, randomNonce as permit2Nonce, encApprove, quoteTacitToToken, buildTacitToToken, quoteAnyToTac, buildAnyToTac } from '/swap/route.js?cb=45fd31f8';
 import { makeTokenPools, poolState, RELAYER, KEEPERS, SERVED } from '/evm-pool-tokens.js?cb=e1ab5d24';
 export { SERVED };
 
 export const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
-export const CHAIN = { chainId: 1, rpc: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org', 'https://1rpc.io/eth'],
+export const CHAIN = { chainId: 1, rpc: ETH_NODES,
   keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 };
 const ZERO = '0x0000000000000000000000000000000000000000', ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4', TAC = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
 const USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7', DAI = '0x6b175474e89094c44da98b954eedeac495271d0f', PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3';

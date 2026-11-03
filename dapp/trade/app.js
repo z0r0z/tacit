@@ -1,5 +1,6 @@
 if (/^\/trade\/(index\.html)?$/.test(location.pathname)) history.replaceState(null, '', `/trade/tac/${location.search}${location.hash}`);
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
+import { ETH_NODES } from '/eth-nodes.js';
 import {
   makeEvmTradeVenues, zswapDeepLink, encErc20Approve, PRECISION_POOL, TAC_ERC20, TACIT_AMM, MULTICALL3, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, _internal,
 } from '/evm-trade-venues.js?cb=10858cc2';
@@ -9,15 +10,15 @@ import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, cand
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=04207026';
 import { mountDepth } from '/trade/depth.js?cb=438b534c';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=9858916e';
-import { takeEarly } from '/trade/rpc.js?cb=cd769487';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=a64b9cec';
+import { takeEarly } from '/trade/rpc.js?cb=f575ef91';
 import { mountFarm } from '/trade/farm.js?cb=e3f70b9d';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=32b1744b';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
 
 const API = 'https://api.tacit.finance';
 const TAC_BTC_ID = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
-const RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://mainnet.gateway.tenderly.co'];
+const RPCS = ETH_NODES;
 const CHAINLINK = { ethUsd: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', btcUsd: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
 const ZSWAP_HOST = 'https://zswap.wei.limo';
 const SCAN = 'https://etherscan.io/address/';
@@ -660,7 +661,7 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=2f4434ea').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=b5cefe5f').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));
@@ -1009,7 +1010,7 @@ function renderBorrow() {
   if (BW.q && BW.key === key) setHtml(el, borrowHtml(BW.q, tac));
   if ((BW.key === key && now() - BW.at < 60) || BW.busy) return;
   BW.busy = true;
-  (BW.mod ||= import('/vault/quote.js?cb=fb39da87').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
+  (BW.mod ||= import('/vault/quote.js?cb=18ccfc09').catch((e) => { BW.mod = null; throw e; })).then((m) => m.quoteBorrow({ tac, account: who, rpc }))
     .then((q) => { BW.q = q; }, (e) => { console.warn('borrow quote:', e?.message || e); BW.q = null; })
     .then(() => { BW.key = key; BW.at = now(); })
     .finally(() => { BW.busy = false; if (W.account && `${lc(W.account)}:${S.bal?.tac}` === key) setHtml(el, borrowHtml(BW.q, tac)); else renderBorrow(); });

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+ySauBdA7o06lee6GK1a9aJEEW5zBhOpXBUJfSzgT2g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ojJdEFkUBF/ei1Z4b0bgfxGg0mi9gMVc7F/p8+L+Ir4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -63,10 +63,11 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=946da4b2">
+<link rel="modulepreload" href="/swap/card.js?cb=70e70639">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
-<link rel="modulepreload" href="/trade/util.js?cb=e53086bb">
-<link rel="modulepreload" href="/trade/rpc.js?cb=cd769487">
+<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
+<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=32b1744b">
 <link rel="modulepreload" href="/swap/route.js?cb=45fd31f8">
 <link rel="modulepreload" href="/swap/aggregate.js?cb=29aa40e7">
@@ -1653,7 +1654,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/tasks/open.js?cb=112a5fee"></script>
+<script type="module" src="/tasks/open.js?cb=033bb372"></script>
 
 <!-- ── wallet ── -->
 <dialog class="sheet" id="sheet-wallet" aria-labelledby="wallet-h">
@@ -1802,10 +1803,12 @@ footer.sf svg.fill { width: 16px; height: 16px; }
 // preload-later:begin
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=87dac404","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=36f62b6f","/confidential-deployments.js","/confidential-deployments.generated.js","/trade/rpc.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/tac-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
+import { ETH_NODES, ETH_LOG_NODES, walletNode } from '/eth-nodes.js';
+import { hedgedRpc, nodeHealth } from '/trade/rpc.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ed4c75b7';
 import { makeTacitAddress } from '/tacit-address.js';
@@ -1842,7 +1845,7 @@ document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAtt
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 
-const RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://mainnet.gateway.tenderly.co'];
+const RPCS = ETH_NODES;
 const API = 'https://api.tacit.finance';
 const SCAN = 'https://etherscan.io';
 const MEMPOOL = 'https://mempool.space';
@@ -1880,7 +1883,7 @@ const SEL = {
 };
 const ZERO = '0x0000000000000000000000000000000000000000';
 const DEVICE_CHAINS = [
-  { chainId: 1, name: 'Ethereum', rpc: ['https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co', 'https://eth.drpc.org'], explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
+  { chainId: 1, name: 'Ethereum', rpc: ETH_NODES, explorer: 'https://etherscan.io', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', deployBlock: 26069245, confirmations: 3 },
   { chainId: 8453, name: 'Base', rpc: ['https://mainnet.base.org', 'https://base.drpc.org', 'https://base.rpc.blxrbdn.com'], explorer: 'https://basescan.org', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', deployBlock: 51864014, confirmations: 10 },
   { chainId: 4663, name: 'Robinhood', rpc: ['https://rpc.mainnet.chain.robinhood.com'], explorer: 'https://robinhoodchain.blockscout.com', keeper: 'https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper', deployBlock: 73991661, confirmations: 10 },
 ];
@@ -2265,23 +2268,25 @@ function lossOk(box, pct) {
 }
 const lossLine = (pct) => !(pct >= 0.5) ? html`` : html`<div class="kv"><span>Price impact</span><b class="${pct >= 5 ? 'err' : ''}">${pctFmt(pct)}</b></div>`;
 
-const RPC_PLAIN = /^https:\/\/([a-z0-9-]+\.)*(publicnode\.com|drpc\.org|gateway\.tenderly\.co|mainnet\.base\.org)\//;
-async function rpc(method, params, urls = RPCS) {
-  let last;
-  const send = method === 'eth_sendRawTransaction';
-  for (const [n, url] of urls.entries()) {
-    try {
-      const r = await fetch(url, { method: 'POST', headers: { 'content-type': RPC_PLAIN.test(url + '/') ? 'text/plain' : 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: within(send || n === urls.length - 1 ? 60e3 : 15e3) });
-      const j = await r.json();
-      if (j.error) {
-        if (j.error.code === 3 || /revert/i.test(j.error.message || '')) throw Object.assign(new Error(j.error.message), { revert: true, data: j.error.data });
-        last = new Error(j.error.message); continue;
-      }
-      if (!('result' in j)) { last = new Error('rpc: no result'); continue; }
-      return j.result;
-    } catch (e) { if (e.revert) throw e; last = e; }
+// The page's reads go through trade/rpc.js: one node at a time, a second asked beside it when the first is slow (the first answer is taken), and what each node
+// did remembered for the visit, so one that failed rests and is asked last. On Ethereum mainnet the wallet connected here is the last resort for a read.
+const RPC_HEALTH = nodeHealth({ store: (() => { try { return localStorage; } catch { return null; } })() });
+const WALLET_CHAIN = { p: null, id: null };
+const walletOnMainnet = () => {
+  const p = S.provider;
+  if (!p?.request) return null;
+  if (WALLET_CHAIN.p !== p) {
+    Object.assign(WALLET_CHAIN, { p, id: null });
+    const look = () => p.request({ method: 'eth_chainId' }).then((c) => { if (WALLET_CHAIN.p === p) WALLET_CHAIN.id = Number(c); }, () => {});
+    look(); try { p.on?.('chainChanged', look); } catch {}
   }
-  throw last || new Error('Ethereum is unreachable');
+  return WALLET_CHAIN.id === 1 ? p : null;
+};
+const WALLET_NODE = walletNode(walletOnMainnet);
+async function rpc(method, params, urls = RPCS) {
+  const mainnet = urls === RPCS || urls === ETH_LOG_NODES;
+  try { return await hedgedRpc(mainnet ? [...urls, WALLET_NODE] : urls, method, params, { health: RPC_HEALTH, hedgeMs: 1500, timeoutMs: 30e3, lastTimeoutMs: 60e3 }); }
+  catch (e) { if (e.revert) throw e; throw Object.assign(new Error(e?.message && !/no RPC answered/.test(e.message) ? e.message : 'Ethereum is unreachable'), { cause: e }); }
 }
 const ethCall = (to, data, extra = {}) => rpc('eth_call', [{ to, data: '0x' + strip(data), ...extra }, 'latest']);
 
@@ -3591,7 +3596,7 @@ function setKey(k) {
   });
 }
 
-const TACIT_URL = '/tacit.js?cb=af7dba7a';
+const TACIT_URL = '/tacit.js?cb=ebb75ca0';
 let T = null;
 // tacit.js under this page's key, one call at a time (/tacit-session.js)
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; } });
@@ -4609,10 +4614,11 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=87dac404'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=36f62b6f'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
+  ux.useWallet(walletOnMainnet);   // the wallet connected here is the pool's last resort for a read too
   SP.ux = ux; spApply();
   return ux;
 });
@@ -4912,7 +4918,7 @@ const STATS = { p: null, at: 0 };
 function readStats() {
   if (STATS.p && Date.now() - STATS.at < 300e3) return STATS.p;
   STATS.at = Date.now();
-  return (STATS.p = Promise.all([import('/weld/stats/read.js?cb=baa63d5f'), fetch(`${API}/stats?network=mainnet&view=front`, { signal: within(20e3) })])
+  return (STATS.p = Promise.all([import('/weld/stats/read.js?cb=e44a640c'), fetch(`${API}/stats?network=mainnet&view=front`, { signal: within(20e3) })])
     .then(([{ fromJson }, r]) => (r.ok ? r.text().then(fromJson) : Promise.reject(new Error(`stats ${r.status}`))))
     .catch((e) => { STATS.p = null; throw e; }));
 }
@@ -5141,7 +5147,7 @@ function v1Wrap(el, status) {
   });
 }
 const getNames = lazy(async () => {
-  const { makeConfidentialNames, makeMainnetCall } = await import('/confidential-names.js?cb=9efdff52');
+  const { makeConfidentialNames, makeMainnetCall } = await import('/confidential-names.js?cb=d41cb8bd');
   return makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 });
 });
 async function resolveTo(raw) {
@@ -6561,7 +6567,7 @@ async function devResolve(raw) {
 }
 
 const T_TRANSACT = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Transact(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,address,int256,address,uint256,bytes,bytes)')));
-const LOG_RPC = { 1: ['https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'], 8453: ['https://base.gateway.tenderly.co', 'https://mainnet.base.org'] };
+const LOG_RPC = { 1: ETH_LOG_NODES, 8453: ['https://base.gateway.tenderly.co', 'https://mainnet.base.org'] };
 const POOLQ = {};
 function poolStats(c) {
   const key = `tacit-pay-pool-v1:${c.chainId}:${EVM_POOL.toLowerCase()}`, part = `${key}:part`, q = POOLQ[c.chainId] ||= { v: store.get(key), p: null, at: 0, failAt: 0 };
@@ -9962,7 +9968,7 @@ async function loadCampaign() {
 const WTAC = '0x2018139a8fdd3666855be3315c7683b4d6ab7aef';
 const FARM_FIRST_BLOCK = 26033952;
 const REWARD_PAID = '0xe2403640ba68fed3a2f88b7557551d1993f84b99bb10ff833f0cf8db0c5e0486';
-const LOG_RPCS = ['https://mainnet.gateway.tenderly.co', ...RPCS];
+const LOG_RPCS = ETH_LOG_NODES;
 let precisionSeq = 0;
 async function loadPrecision() {
   const my = ++precisionSeq, who = S.address;
@@ -13065,7 +13071,7 @@ function paintNums(p) {
 }
 async function loadNums() {
   numsAt = Date.now();
-  const [{ privateEth }, r] = await Promise.all([import('/weld/stats/read.js?cb=baa63d5f'), readStats()]);
+  const [{ privateEth }, r] = await Promise.all([import('/weld/stats/read.js?cb=e44a640c'), readStats()]);
   if (!r?.at) throw new Error('no reading');
   const v = { ...store.get(NUMS_KEY)?.v };
   if (r.eth && r.dev) { const t = privateEth(r.eth, r.dev); v.in = fmt(t.inWei, 18, 0); v.held = fmt(t.held, 18, 2); }
@@ -13893,7 +13899,7 @@ const VE = { p: null, E: null, M: null, VS: null, at: 0, who: null, feedAt: 0, s
 class VaultStop extends Error { constructor() { super('Cancelled in your wallet. Nothing was sent.'); } }
 const veNo = (e) => (swcNo(e)?.userStopped ? new VaultStop() : e);
 const veEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => escMap[c]);
-const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=697d8316'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=c20b4576'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
+const vaultEng = () => (VE.p ||= Promise.all([import('/vault/engine.js?cb=89d3ad20'), import('/vault/deployments.js?cb=4af96594'), import('/vault/chain.js?cb=fd24e94d'), import('/vault/feed.js?cb=5f8dd137'), import('/vault/math.js?cb=ac1ed53e')])
   .then(([eng, { DEPLOYMENTS }, C, Fd, M]) => {
     const A = /^0x[0-9a-fA-F]{40}$/, hint = (h) => (h && ['tac', 'synth', 'oracle', 'feed'].every((k) => A.test(h[k] || '')) ? Object.fromEntries(['tac', 'synth', 'oracle', 'feed'].map((k) => [k, h[k].toLowerCase()])) : null);
     VE.M = M;
@@ -15420,7 +15426,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=946da4b2').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=70e70639').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };

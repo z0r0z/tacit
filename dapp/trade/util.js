@@ -1,10 +1,11 @@
 // Small helpers the tETH page's modules share: markup, numbers, and the page's reads of the chain and the API.
 
-import { hedgedRpc, shareReads } from '/trade/rpc.js?cb=cd769487';
+import { hedgedRpc, shareReads } from '/trade/rpc.js?cb=f575ef91';
+import { ETH_NODES } from '/eth-nodes.js';
 import { grp, sig, group } from '/trade/fmt.js?cb=32b1744b';
 
 export const API = 'https://api.tacit.finance';
-export const RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://mainnet.gateway.tenderly.co'];
+export const RPCS = ETH_NODES;
 export const E10 = 10n ** 10n, E18 = 10n ** 18n;
 
 export const $ = (s, r = document) => r.querySelector(s);

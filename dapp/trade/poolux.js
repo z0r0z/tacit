@@ -5,12 +5,12 @@ import { secp, sha256, keccak_256 } from '/vendor/tacit-deps.min.js';
 let uxP = null;
 export function getUx() {
   return (uxP ||= (async () => {
-    const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=87dac404'), import('/confidential-deployments.js')]);
+    const [{ makeConfidentialPoolUx }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=36f62b6f'), import('/confidential-deployments.js')]);
     dep.setActiveNetwork('mainnet');
     return makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
   })().catch((e) => { uxP = null; throw e; }));
 }
 // Dropped when the key is locked, with the copies of it the pool module keeps.
 export async function forgetUx() {
-  try { (await import('/confidential-pool-ux.js?cb=87dac404')).forgetKeys(); } catch { /* the module was never loaded */ }
+  try { (await import('/confidential-pool-ux.js?cb=36f62b6f')).forgetKeys(); } catch { /* the module was never loaded */ }
 }

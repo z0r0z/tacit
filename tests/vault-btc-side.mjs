@@ -80,7 +80,7 @@ if (!chromium) {
     res.writeHead(200, { 'content-type': TYPES[extname(file)] || 'application/octet-stream' });
     res.end(readFileSync(file));
   }).listen(WEB);
-  const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', '1rpc.io', 'mainnet.gateway.tenderly.co'];
+  const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', '1rpc.io', 'mainnet.gateway.tenderly.co', 'eth-mainnet.nodereal.io', 'rpc.flashbots.net'];
   const ENGINE = btc.ENGINE.slice(2).toLowerCase();
   const { DEPLOYMENTS } = await import(join(DAPP, 'vault/deployments.js'));
   const VAULTS = DEPLOYMENTS.vaults.map((v) => v.vault.slice(2).toLowerCase());

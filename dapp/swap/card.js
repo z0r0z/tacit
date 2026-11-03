@@ -4,8 +4,8 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3 } from '/evm-trade-venues.js?cb=10858cc2';
 import { UserStopped } from '/trade/wallet.js?cb=88b623b8';
-import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=e53086bb';
-import { nodeHealth, hedgeDelay } from '/trade/rpc.js?cb=cd769487';
+import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=e8317464';
+import { nodeHealth, hedgeDelay } from '/trade/rpc.js?cb=f575ef91';
 import * as R from '/swap/route.js?cb=45fd31f8';
 import * as A from '/swap/aggregate.js?cb=29aa40e7';
 import * as SV from '/swap/solvers.js?cb=28273640';
@@ -32,8 +32,8 @@ const lc = (a) => String(a).toLowerCase();
 // The nodes a read asks (public ones: the page runs none and holds no key). A quote's scan asks zQuoter for 300M gas, which only some nodes allow: drpc stops at 50M, 1rpc.io is
 // gone, and publicnode gives way on about one scan in six, so the scan has a list of its own, MEV Blocker's and Blast's first, which also keeps the heaviest reads off the node the
 // page's other reads use. What each node did is remembered (nodeHealth): one that failed rests and is asked last, and the next page of the visit starts from that.
-const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://mainnet.gateway.tenderly.co'];
-const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com', 'https://mainnet.gateway.tenderly.co'];
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com'];
+const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com'];
 const memory = (() => { try { return localStorage; } catch { return null; } })();
 const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: memory, key: 'tacit-rpc-rest-scan-v1', strict: true });
 // The connected wallet's own node, the last resort for a plain read once every public node has failed (rate limits, an outage): not through WalletConnect (a relay hop), not while the
@@ -701,7 +701,7 @@ const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
 // The pool module, one copy for the quotes and the private swap (private.js is handed it).
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=87dac404'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=36f62b6f'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -709,13 +709,13 @@ const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
 const IDS = {};
 const idsOf = (t) => { for (const k of ['eth', 'tac', 'cusd']) IDS[k] = String(t.assetByTicker[POOL_TK[k]]?.assetId || '').toLowerCase(); IDS.cbtc = String(t.pool.CBTC_ZK_ASSET_ID).toLowerCase(); return IDS; };
 // What the relay asks, in ETH on top, to settle a deposit of the wallet's ETH; null when it cannot be read (the swap reads it again before sending).
-const tipFor = (units) => import('/teth/read.js?cb=3485885e').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
+const tipFor = (units) => import('/teth/read.js?cb=eaa2aca3').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => null);
 let warmed = false;
 function warmPrivate() {
   if (warmed) return;
   warmed = true;
   H.warm?.();
-  document.head.append(Object.assign(document.createElement('link'), { rel: 'preconnect', href: 'https://mainnet.gateway.tenderly.co', crossOrigin: '' }));
+  document.head.append(Object.assign(document.createElement('link'), { rel: 'preconnect', href: 'https://rpc.mevblocker.io', crossOrigin: '' }));
   getUx().then((t) => t.quoteOpFee('cETH', 'route')).catch(() => {});
 }
 const twoDigits = (v) => { if (v <= 0n) return 0n; const d = BigInt(String(v).length); if (d <= 2n) return v; const m = 10n ** (d - 2n); return ((v + m - 1n) / m) * m; };
@@ -1425,7 +1425,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=35f69937').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=0f35a1a8').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1904,7 +1904,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=6ad9ceeb').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=0d4119af').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2396,7 +2396,7 @@ let lane = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    lane ||= (await import('/swap/bitcoin.js?cb=5020066b')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
+    lane ||= (await import('/swap/bitcoin.js?cb=86ab560b')).makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' });
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = null; }
 }

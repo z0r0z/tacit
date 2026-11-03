@@ -48,7 +48,7 @@ export const pxState = { fresh: false };
 
 // aggregate3 with every call allowed to fail, over plain JSON-RPC: the hosts that take it as text/plain are sent a simple request, one the
 // browser makes without asking first.
-const HOSTS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'];
+const HOSTS = ['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://eth.drpc.org'];
 async function read() {
   const bodies = PX_CALLS.map(({ to, data }) => strip0x(to).toLowerCase().padStart(64, '0') + word(1) + word(0x60) + word(data.length / 2) + data.padEnd(Math.ceil(data.length / 64) * 64, '0'));
   let off = PX_CALLS.length * 32;

@@ -72,7 +72,7 @@ const campaign = (over = {}) => ({
 });
 const weighted = (c) => c.pools.reduce((s, p) => s + Number(p.valueUsdWei) / 1e18 * Number(p.weightBps) / 1e4, 0);
 
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
 
 async function openPage({ prog = program(), lp = campaign(), viewport = { width: 1100, height: 900 } } = {}) {

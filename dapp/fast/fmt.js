@@ -17,3 +17,6 @@ export function parseTac(text) {
   const n = BigInt(w || '0') * ONE + BigInt(f.padEnd(DEC, '0') || '0');
   return n > 0n ? n : null;
 }
+
+// A read that failed because no node answered (the pool module's `unreachable`, or the browser's own words for a connection that failed), not because of what was asked.
+export const slowNet = (e) => !!e && (e.unreachable === true || /public nodes did not answer|failed to fetch|networkerror|load failed|network request failed/i.test(String(e.message || e)));

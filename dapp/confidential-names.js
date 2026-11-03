@@ -1,16 +1,13 @@
 
 import { decodeBech32m, poolAddressOf } from './tacit-address.js';
 import { bodyType } from './rpc-body.js';
+import { ETH_NODES } from './eth-nodes.js';
 
 export const RECORD_KEY = 'finance.tacit';
 export const WNS = '0x0000000000696760E15f265e828DB644A0c242EB';
 export const GNS = '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6';
 export const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
-export const MAINNET_RPCS = [
-  'https://ethereum-rpc.publicnode.com',
-  'https://1rpc.io/eth',
-  'https://eth.drpc.org',
-];
+export const MAINNET_RPCS = ETH_NODES;
 
 const SEL = {
   text: '59d1d43c',

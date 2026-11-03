@@ -1,7 +1,8 @@
 import { MULTICALL3, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID, _internal } from '/evm-trade-venues.js?cb=10858cc2';
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=e53086bb';
-import { POOL, heldHistory } from '/teth/read.js?cb=3485885e';
+import { ETH_LOG_NODES } from '/eth-nodes.js';
+import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=e8317464';
+import { POOL, heldHistory } from '/teth/read.js?cb=eaa2aca3';
 
 export const ENGINE = '0x000000003f608BDdF0ca45934003ffb9DbDF70DB';
 export const WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';
@@ -83,9 +84,17 @@ export function farmApr(row, program, { ethUsd, tacEth }) {
 
 const TOPIC = { posted: '0x0c008a699968f2a24063b7eb14d9239b2430c502fda280245345c78cbc47b7c1', minted: '0x232c7d098ca44092999087e6ee530a2171f95f9ecb1caa363f6dcf448fb7dd57',
   closed: '0xc0ede5b75ee32986e50a2a39fa32dbf5e8eff1c91a46cd127591edebd91b4db9', liquidated: '0x28d08a2db16236ca56b1223ba30ba49824b860a3e7eb8c5a1c1224697aa3ebd1' };
-const FROM_BLOCK = 25998000, ARCHIVE = ['https://mainnet.gateway.tenderly.co'];
+// The engine's events since it was deployed, read in ranges the public nodes serve (the widest of them takes 50,000 blocks).
+const FROM_BLOCK = 25998000, SPAN = 45000;
+async function engineLogs() {
+  const head = Number(BigInt(await rpc('eth_blockNumber', [], ETH_LOG_NODES))), out = [];
+  for (let from = FROM_BLOCK; from <= head; from += SPAN) {
+    out.push(...await rpc('eth_getLogs', [{ address: ENGINE, topics: [Object.values(TOPIC)], fromBlock: '0x' + from.toString(16), toBlock: '0x' + Math.min(from + SPAN - 1, head).toString(16) }], ETH_LOG_NODES));
+  }
+  return out;
+}
 export async function readHistory({ locked, out }) {
-  const logs = await rpc('eth_getLogs', [{ address: ENGINE, topics: [Object.values(TOPIC)], fromBlock: '0x' + FROM_BLOCK.toString(16), toBlock: 'latest' }], ARCHIVE);
+  const logs = await engineLogs();
   const sorted = logs.map((l) => ({ ...l, b: Number(BigInt(l.blockNumber)), i: Number(BigInt(l.logIndex)), t: l.blockTimestamp ? Number(BigInt(l.blockTimestamp)) : null })).sort((a, b) => a.b - b.b || a.i - b.i);
   if (sorted.some((l) => !l.t)) throw new Error('the node gave no block times');
   const amount = (l) => BigInt(l.data.slice(0, 66));

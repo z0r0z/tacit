@@ -8,9 +8,10 @@ import {
 } from '/splitter/abi.js?cb=44661448';
 import { SPLITTER_INITCODE } from '/splitter/bytecode.js?cb=6e21588e';
 import { bodyType } from '../rpc-body.js';
+import { ETH_NODES } from '/eth-nodes.js';
 
 const API = 'https://api.tacit.finance';
-const RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://mainnet.gateway.tenderly.co'];
+const RPCS = ETH_NODES;
 const OPS_MULTISIG = '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2';
 const DEPLOYER = '0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7';
 const SETTLE = '0x7a0F0511E1DcF399C2F7bbe8414b6a0D1ABc4331';

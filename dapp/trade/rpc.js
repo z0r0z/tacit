@@ -51,7 +51,7 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
         if (typeof h !== 'string') return sendVia(h, method, params, ctrl.signal);
         const r = await fetchImpl(h, { method: 'POST', headers: { 'content-type': bodyType(h) }, body, signal: ctrl.signal });
         let j; try { j = await r.json(); } catch (e) { throw Object.assign(new Error(`${idOf(h)} answered ${r.status ?? 'with no JSON'}`), { status: r.status }); }
-        if (j.error) throw Object.assign(new Error(j.error.message), { rpc: true, revert: j.error.code === 3 || /revert/i.test(j.error.message || '') });
+        if (j.error) throw Object.assign(new Error(j.error.message), { rpc: true, revert: j.error.code === 3 || /revert/i.test(j.error.message || ''), data: j.error.data });
         if (!('result' in j)) throw new Error('rpc: no result');
         return j.result;
       })().then(

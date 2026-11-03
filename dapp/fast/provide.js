@@ -11,7 +11,7 @@
 //   waiting()   -> { count, total }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
 //   -> { busy() }   whether closing the page now would leave a swap untended
 
-import { DEC, ONE, esc, fmtTac, parseTac } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
 
 const MIN_AMOUNT = 10n * ONE;
 const DEFAULT_MOST = 1000n * ONE;
@@ -19,7 +19,7 @@ const percent = (text) => { const t = String(text).trim().replace('%', ''); if (
 const every = 5000;
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, refreshMs = every }) {
+export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, retryMs = 15000, refreshMs = every }) {
   const doc = root.ownerDocument;
   const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null };
 
@@ -94,7 +94,13 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
       note('');
       // swaps left open by an earlier visit are tended as soon as the key is open, whether or not the key provides again
       if (!S.st.running && hasOpen(pub)) { await sess.start({ accept: false }); S.st = await sess.status(); note('Bridges you provided are still open. Keep this page open until they are done.'); }
-    } catch (e) { S.sess = null; note(String((e && e.message) || e).slice(0, 160), true); } finally { S.loading = false; paint(); poll(); }
+    } catch (e) {
+      S.sess = null;
+      if (slowNet(e)) {
+        note('Ethereum is slow to answer right now. This panel tries again on its own.');
+        setTimeout(() => { if (keyS.unlocked && keyS.key.pubHex === pub && !S.sess && root.open) load(); }, retryMs);
+      } else note(String((e && e.message) || e).slice(0, 160), true);
+    } finally { S.loading = false; paint(); poll(); }
   }
 
   function poll() {

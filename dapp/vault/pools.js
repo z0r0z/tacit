@@ -1,4 +1,4 @@
-import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=c20b4576';
+import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=fd24e94d';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { MULTICALL3 } from '/vault/batch.js?cb=51bced2e';
 

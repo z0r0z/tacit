@@ -1,6 +1,8 @@
 
 import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker } from './confidential-deployments.js';
 import { bodyType } from './rpc-body.js';
+import { hedgedRpc, nodeHealth } from './trade/rpc.js';
+import { walletNode, connectedInjected } from './eth-nodes.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
@@ -127,9 +129,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
-  const RPC_COOL_MS = 60000;
-  const _eps = cfg.rpcs.map((url) => ({ url, coolUntil: 0, span: Infinity }));
-  const _byHealth = () => { const now = Date.now(); return [..._eps.filter((e) => e.coolUntil <= now), ..._eps.filter((e) => e.coolUntil > now)]; };
+  // Ethereum reads go to the public nodes (eth-nodes.js) through trade/rpc.js: one node at a time, a second one asked beside it when the first is slow,
+  // the first answer taken. What each node did is remembered for the visit (a node that failed rests and is asked last), and so is the widest range of
+  // logs each serves, so the next page starts from what this one learned. The connected wallet's own node is the last resort for a read.
+  const _store = (() => { try { return globalThis.localStorage || null; } catch { return null; } })();
+  const _health = nodeHealth({ store: _store, key: `tacit-pool-rpc-rest-v1:${cfg.chainId}` });
+  // logs keep their own: a node that refuses old or wide ranges (publicnode's archive, a plan's cap no narrower range meets) rests for logs only
+  const _logHealth = nodeHealth({ store: _store, key: `tacit-pool-rpc-logrest-v1:${cfg.chainId}`, strict: true });
+  let _walletGet = null;
+  const _wallet = walletNode(() => (_walletGet ? _walletGet() : Number(cfg.chainId) === 1 ? connectedInjected() : null));
+  const SPANS = `tacit-pool-rpc-span-v1:${cfg.chainId}`;
+  const _spans = (() => { try { return JSON.parse(_store?.getItem(SPANS) || 'null') || {}; } catch { return {}; } })();
+  const _eps = (cfg.logRpcs || cfg.rpcs).map((url) => ({ url, span: Number(_spans[url]) > 0 ? Number(_spans[url]) : Infinity }));
+  const _keepSpan = (ep) => { _spans[ep.url] = ep.span; try { _store?.setItem(SPANS, JSON.stringify(_spans)); } catch { } };
   async function _post(ep, method, params, ms = 10000) {
     let r;
     try {
@@ -150,12 +162,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (!_fetch) throw new Error('no fetch implementation');
     let lastErr;
     for (let pass = 0; pass < retryPasses; pass++) {
-      if (pass > 0) await new Promise((res) => setTimeout(res, 400 * pass));
-      for (const ep of _byHealth()) {
-        try { return await _post(ep, method, params); } catch (e) { lastErr = e; if (e.kind !== 'rpc') ep.coolUntil = Date.now() + RPC_COOL_MS; }
+      if (pass > 0) await new Promise((res) => setTimeout(res, 800 * pass));
+      try { return await hedgedRpc([...cfg.rpcs, _wallet], method, params, { health: _health, fetchImpl: _fetch, hedgeMs: 1500, timeoutMs: 30e3, lastTimeoutMs: 60e3 }); } catch (e) {
+        if (e.revert) throw Object.assign(e, { kind: 'rpc' });
+        lastErr = e;
       }
     }
-    throw lastErr || new Error('all RPCs failed');
+    // a node that answered with an error said why (a send's "insufficient funds", "nonce too low"): that is the call's answer
+    if (lastErr?.rpc) throw Object.assign(lastErr, { kind: 'rpc' });
+    throw Object.assign(new Error(`Ethereum's public nodes did not answer (${String(lastErr?.message || 'no answer').slice(0, 80)})`), { kind: 'transport', unreachable: true, cause: lastErr });
   }
 
   function ethCall(to, data) { return rpc('eth_call', [{ to: String(to).toLowerCase(), data }, 'latest']); }
@@ -173,8 +188,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       let got = null;
       for (let pass = 0; pass < 2 && !got; pass++) {
         if (pass > 0) await new Promise((res) => setTimeout(res, 400));
-        const now = Date.now();
-        const eps = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (a.coolUntil > now) - (b.coolUntil > now) || (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        // the widest range first, those resting after a failure last
+        const wide = _eps.map((e, i) => [e, i]).sort(([a, i], [b, j]) => (a.span < b.span) - (a.span > b.span) || i - j).map(([e]) => e);
+        const byUrl = new Map(wide.map((e) => [e.url, e]));
+        const eps = _logHealth.order(wide.map((e) => e.url)).map((u) => byUrl.get(u));
         for (const ep of eps) {
           let span = Math.min(to - start + 1, ep.span);
           for (let tries = 0; tries < 16 && !got; tries++) {
@@ -182,11 +199,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
             try {
               const logs = await _post(ep, 'eth_getLogs', [{ ...params, fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }], 25000);
               got = { logs: Array.isArray(logs) ? logs : [], end };
+              _logHealth.ok(ep.url);
             } catch (e) {
               lastErr = e;
               const n = _narrower(e, span);
-              if (!n) { if (e.kind !== 'rpc') ep.coolUntil = Date.now() + RPC_COOL_MS; break; }
-              if (n.cap) ep.span = Math.min(ep.span, n.cap);
+              if (!n) { _logHealth.fail(ep.url, e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down'); break; }
+              if (n.cap && n.cap < ep.span) { ep.span = n.cap; _keepSpan(ep); }
               span = n.span;
             }
           }
@@ -3364,7 +3382,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     ux: { cfg, assetByTicker, buildWrap, nextWrapIndex, submitWrapSettle },
   });
 
-  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
+  // useWallet(get): the page's own connected-wallet provider for Ethereum mainnet reads as a last resort (get() -> provider or null); without one, an
+  // injected wallet this site is already connected to is used.
+  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,

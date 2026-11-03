@@ -7,6 +7,8 @@
 // that is final is kept (`keep`, returned with each reading and handed back to the next), so a later reading asks only
 // for what is new.
 
+import { ETH_LOG_NODES } from '../../eth-nodes.js';
+
 export const A = {
   pool: '0x000000000Ed1eabD231Be41d93b719056F7febFC',
   engine: '0x000000003f608BDdF0ca45934003ffb9DbDF70DB',
@@ -50,7 +52,7 @@ export const SEL = {
 // `final`: how deep a block must be before what was read up to it is kept rather than read again (about a quarter of an
 // hour on each chain, so neither a reorg nor an endpoint or explorer running behind leaves anything out for good).
 export const CHAINS = {
-  1: { rpc: ['https://mainnet.gateway.tenderly.co', 'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'], bs: 'https://eth.blockscout.com', final: 75, slot: 12 },
+  1: { rpc: ETH_LOG_NODES, bs: 'https://eth.blockscout.com', final: 75, slot: 12 },
   8453: { rpc: ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://base.gateway.tenderly.co'], bs: 'https://base.blockscout.com', final: 450, slot: 2 },
   4663: { rpc: ['https://rpc.mainnet.chain.robinhood.com'], bs: null, final: 3600, slot: 0.1 },
 };

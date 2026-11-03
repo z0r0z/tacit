@@ -266,7 +266,7 @@ const server = createServer((req, res) => {
 }).listen(WEB);
 
 const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'cloudflare-eth.com', 'rpc.flashbots.net',
-  'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com'];   // and the TAC vaults' own (vault/chain.js)
+  'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', 'eth-mainnet.nodereal.io'];   // and the TAC vaults' own (vault/chain.js)
 const submits = [], refused = [], relays = [], walletTxs = [];
 // What the wallet stub does beyond sending: takes EIP-5792 batches (batch), cannot sign typed data (noTyped), turns it down (rejectTyped),
 // or signs a permit for another amount than the one asked (badPermit). The batches it was sent, and where each one landed.

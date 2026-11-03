@@ -104,7 +104,7 @@ const vaultOf = (v, who) => { const [c, d, a] = view(v, 'vaults(address)(uint256
 const snap = async () => (await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp;
 
 // ── the page ──
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', '1rpc.io', 'mainnet.gateway.tenderly.co'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', 'rpc.mevblocker.io', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io', 'eth.rpc.blxrbdn.com', '1.rpc.thirdweb.com', '1rpc.io', 'mainnet.gateway.tenderly.co', 'eth-mainnet.nodereal.io', 'rpc.flashbots.net'];
 // `batch`: a wallet that is a smart account and sends several calls as one transaction (EIP-5792): its account is given BatchRun's code (a 7702-style delegation), so each call
 // comes from the account, as it would from a real one.
 const BATCH_RUN_HEX = /BATCH_RUN = '(0x[0-9a-f]+)'/.exec(readFileSync(join(DAPP, 'vault/batch.js'), 'utf8'))[1];

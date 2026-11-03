@@ -3,6 +3,7 @@ import { sha256 } from './vendor/tacit-deps.min.js';
 import { ripemd160 } from './vendor/tacit-deps.min.js';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 import { hmac } from './vendor/tacit-deps.min.js';
+import { ETH_NODES } from './eth-nodes.js';
 import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
 import { bech32, base58, base32 } from './vendor/tacit-deps.min.js';
 import { assertFreshRefundKey } from './amm-refund-key.js';
@@ -8408,12 +8409,7 @@ function _updateBridgeBadge() {
 }
 
 const _ETH_PUBLIC_RPCS = {
-  1: [
-    'https://ethereum-rpc.publicnode.com',
-    'https://mainnet.gateway.tenderly.co',
-    'https://eth.drpc.org',
-    'https://1rpc.io/eth',
-  ],
+  1: ETH_NODES,
   11155111: [
     'https://ethereum-sepolia-rpc.publicnode.com',
     'https://sepolia.gateway.tenderly.co',

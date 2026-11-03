@@ -4,7 +4,7 @@
 <!-- Made from /trade/index.html by `npm run build` (build/build.mjs): edit that file, not this one. -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kRM9MOK8+Ke34hhNITGwuere+wJYBKBHthKySnP8fy8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kRM9MOK8+Ke34hhNITGwuere+wJYBKBHthKySnP8fy8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit trade · TAC</title>
 <meta name="description" content="Trade TAC for ETH or sats at the best price across the Precision pool, the Tacit pool, the Bitcoin order book and other pools. See TAC’s price history on Ethereum and Bitcoin.">
@@ -57,8 +57,9 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=c139a0c0">
+<link rel="modulepreload" href="/trade/app.js?cb=528911e4">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
+<link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/evm-trade-venues.js?cb=10858cc2">
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/confidential-deployments.js">
@@ -70,12 +71,12 @@
 <link rel="modulepreload" href="/trade/depth.js?cb=438b534c">
 <link rel="modulepreload" href="/trade/book.js?cb=577d1f94">
 <link rel="modulepreload" href="/zboards.js?cb=e8d21aec">
-<link rel="modulepreload" href="/trade/connect.js?cb=9858916e">
+<link rel="modulepreload" href="/trade/connect.js?cb=a64b9cec">
 <link rel="modulepreload" href="/walletconnect.js?cb=e0b29a34">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/sheet.js?cb=84cda8f2">
-<link rel="modulepreload" href="/trade/util.js?cb=e53086bb">
-<link rel="modulepreload" href="/trade/rpc.js?cb=cd769487">
+<link rel="modulepreload" href="/trade/util.js?cb=e8317464">
+<link rel="modulepreload" href="/trade/rpc.js?cb=f575ef91">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/trade/farm.js?cb=e3f70b9d">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=112a01b9">
@@ -766,6 +767,6 @@ footer.sf svg.fill { width: 16px; height: 16px; }
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=c139a0c0"></script>
+<script type="module" src="/trade/app.js?cb=528911e4"></script>
 </body>
 </html>

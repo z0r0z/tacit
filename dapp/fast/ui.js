@@ -12,8 +12,8 @@
 //   notify(text)  tells the holder, also when the page is in the background, that a provider can take what it waits with
 //   -> { lock(text), destroy() }
 
-import { DEC, ONE, esc, fmtTac, parseTac } from './fmt.js';
-export { fmtTac, parseTac };
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet } from './fmt.js';
+export { fmtTac, parseTac, slowNet };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
@@ -22,7 +22,7 @@ const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 const capOf = (p) => { const t = p.terms; return t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount; };
 const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
 
-export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
+export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
   const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0 };
 
@@ -181,7 +181,12 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         sess.recover().then((found) => { if (found.length && S.sess === sess) sess.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
         note('');
         return sess;
-      } catch (e) { S.sess = null; note(wording(e), true); return null; } finally { S.busy = false; S.opening = null; paint(); }
+      } catch (e) {
+        S.sess = null; note(wording(e), !slowNet(e));
+        // Ethereum's nodes not answering is passing: the key is read again on its own
+        if (slowNet(e)) setTimeout(() => { if (keyS.unlocked && keyS.key.pubHex === pub && !S.sess) openSession(); }, retryMs);
+        return null;
+      } finally { S.busy = false; S.opening = null; paint(); }
     })();
     return S.opening;
   }
@@ -286,6 +291,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   // a message in the page's words for what went wrong
   function wording(e) {
     const m = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e || '');
+    if (slowNet(e)) return 'Ethereum is slow to answer right now. This page tries again on its own.';
     if (/already part of a swap/.test(m)) return 'This note is already in a bridge.';
     if (/do not cover the amount/.test(m)) return 'Your TAC on Bitcoin does not cover that amount in one go.';
     if (/quote expired|expires too soon/.test(m)) return 'The quote ran out. Try again.';

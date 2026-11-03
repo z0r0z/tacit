@@ -8,7 +8,7 @@ import { bodyType } from '../rpc-body.js';
 // price feed needs for eth_getProof (a node that has pruned it answers with an error); HISTORY are the nodes asked for the headers of those blocks.
 export const RPCS = [
   'https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io',
-  'https://ethereum-json-rpc.stakely.io', 'https://eth.rpc.blxrbdn.com', 'https://1rpc.io/eth', 'https://mainnet.gateway.tenderly.co',
+  'https://ethereum-json-rpc.stakely.io', 'https://eth.rpc.blxrbdn.com', 'https://1rpc.io/eth', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com',
 ];
 export const ARCHIVE = ['https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://1.rpc.thirdweb.com', 'https://eth-mainnet.public.blastapi.io'];
 export const HISTORY = [...new Set([...ARCHIVE, ...RPCS])];
