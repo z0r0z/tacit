@@ -110,10 +110,20 @@ const NULLIFIER_SPENT_SLOT = 70n;
 
 //   const b = await openBound({ T, withKey, ux, priv, pubHex, witnessBase })
 //   -> { notes(), balance(), bound(), bind({ amount }), move(note) }
-// notes() are the key's TAC at its trading address (what a bind spends); bound() the bound notes at its Taproot address, each
+// notes() are what a bind spends: the key's TAC at its trading address and TAC back from Ethereum at its Taproot address; bound() the bound notes there, each
 // { txid, vout, amount, state: 'waiting' | 'ready' | 'moved' | 'spent', etaMins }; move() spends one into the key's private balance,
 // the relay settling it for a fee taken from the note.
-export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'https://api.tacit.finance', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
+// TAC that came back from Ethereum: cross-out mints at the Taproot address, opened from the key (tacit.js crossoutNotes), the ones
+// the worker says were minted. A bind spends them where they are, by key path, with no move to the trading address first.
+export async function returnedNotesOf(t) {
+  const known = {};
+  try { for (const r of t.crossoutUx().list(hex(t.wallet.pub))) if (r.settle && r.settle.claimId) known[String(r.settle.claimId).toLowerCase()] = { amount: BigInt(r.source.amount ?? r.source.value), nullifier: r.id }; } catch { /* opened from the chain instead */ }
+  const found = await t.crossoutNotes().discover({ walletPriv: t.wallet.priv, assetIds: [TAC_ASSET], known });
+  return found.filter((n) => n.confirmed && n.credited === true && n.amount != null && n.blinding != null)
+    .map((n) => ({ txid: n.txid, vout: n.vout, value: n.sats, amount: BigInt(n.amount), blinding: BigInt(n.blinding), taproot: true }));
+}
+
+export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'https://api.tacit.finance', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', returnedNotes = returnedNotesOf }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
   const binding = ux.chainBindingHex();
@@ -139,7 +149,8 @@ export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'h
     throw new Error('no explorer answered for the Taproot address');
   };
 
-  const notes = () => withKey((t) => notesOf(t, TAC_ASSET));
+  // what a bind can spend: the trading address's notes and the returned ones
+  const notes = async () => [...(await withKey((t) => notesOf(t, TAC_ASSET))), ...(await withKey(returnedNotes).catch(() => []))];
   const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
 
   async function bound() {

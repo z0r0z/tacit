@@ -147,6 +147,27 @@ test('a move hands the pool module the fast lane\'s input, the wallet key as the
   await assert.rejects(b.move(after.find((x) => x.vout !== n.vout)), /differ for now/);
 });
 
+test('TAC back from Ethereum (a cross-out mint at the Taproot address) is made ready where it is, spent by key path beside a trading-address note', async () => {
+  const rBack = scalar('returned-note');
+  const back = etchNote({ ticker: 'TAC', value: 20n * TAC, r: rBack, script: prims.p2trScript(prims.wallet.xonly()) });
+  const returnedNotes = async () => [{ txid: back.txid, vout: 0, value: 546, amount: 20n * TAC, blinding: rBack, taproot: true }];
+  const b2 = await openBound({ T, withKey: async (fn) => fn(T), ux, priv, pubHex: bytesToHex(T.wallet.pub), fetchImpl, bases: ['https://explorer.test/api'], witnessBase: 'https://relay.test', hrp: 'tb', returnedNotes });
+  assert.equal(await b2.balance(), 120n * TAC, 'the returned note counts');
+  W.posted.length = 0;
+  // untracked, it is left out; tracked, it is spent with the other
+  await assert.rejects(b2.bind({ amount: 110n * TAC }), /only 100 TAC of yours can be made ready now/);
+  W.live.add(liveKey(back.txid, 0));
+  await b2.bind({ amount: 110n * TAC });
+  const { parseTx } = await import('../worker-relay/src/lib/btc-pool-chain.js');
+  const p = parseTx(hexToBytes(W.posted[1])).tx;
+  const ins = p.vin.slice(1).map((i) => [i.txid, i.witness.map((w) => w.length)]);
+  assert.deepEqual(ins.map(([id]) => id).sort(), [etch.txid, back.txid].sort(), 'both notes are spent');
+  assert.deepEqual(ins.find(([id]) => id === back.txid)[1], [64], 'the returned note by key path, one signature');
+  assert.equal(ins.find(([id]) => id === etch.txid)[1].length, 2, 'the trading-address note by its key and public key');
+  const env = T.txOutputEnvelope({ vin: p.vin.map((i) => ({ txid: i.txid, vout: i.vout, witness: i.witness.map(bytesToHex) })), vout: p.vout.map((o) => ({ scriptpubkey: bytesToHex(o.scriptPubKey), value: Number(o.value) })) });
+  assert.equal(env.opcode, 0x39);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); console.log(`  ok ${name}`); } catch (e) { failed++; console.log(`  FAIL ${name}\n    ${e.stack?.split('\n').slice(0, 4).join('\n    ')}`); }
