@@ -8,7 +8,7 @@ import http, { createServer } from 'node:http';
 import { gunzipSync } from 'node:zlib';
 import { keccak_256 } from '../../dapp/vendor/tacit-deps.min.js';
 import { poolAsset } from '../../dapp/evm-pool-zk.js';
-import { encodeAbiParameters, keccak256 as viemKeccak, encodeFunctionData, decodeFunctionData, toHex } from 'viem';
+import { encodeAbiParameters, keccak256 as viemKeccak, encodeFunctionData, decodeFunctionData, toHex, createPublicClient, http as viemHttp } from 'viem';
 import { depositIntent, receiveRho, receiveKeys, callIntent, callIntentJson, callEscrowAddress, v1ZapShieldedNoteCall } from '../../dapp/evm-pool-gateway.js';
 import { ROUTER_ABI, frontFees, makeKeeperChain, readerFor } from '../src/lib/evm-pool-keeper-chain.js';
 import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '../src/lib/evm-pool-keeper-config.js';
@@ -961,16 +961,20 @@ await test('the leftover sweep is off unless reclaim is on, looks at most every 
   assert.equal(s.store.get(later).note, 'swept');
 });
 
-await test('a leftover sweep that finds the box empty, or emptied by another sender, closes it; one the router still refuses, or one not seen mined, is looked at again without a second send', async () => {
+await test('a leftover sweep that finds the box empty, or emptied by another sender, closes it, as does one the router refuses for good; one it still calls early, or one not seen mined, is looked at again without a second send', async () => {
   const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 0 } });
   const none = await leftover(s, 0n, { deadline: T0 + 3000 });
+  const bad = await leftover(s, 500n, { nonce: 4n, deadline: T0 + 3100 });
   const raced = await leftover(s, 700n, { nonce: 1n, deadline: T0 + 3600 });
   const early = await leftover(s, 900n, { nonce: 2n, deadline: T0 + 4200 });
   const slow = await leftover(s, 1100n, { nonce: 3n, deadline: T0 + 4800 });
-  s.advance(3100);
+  s.advance(3200);
+  s.chain.estimateError = revert('BadIntent');                                  // a revert waiting does not change
   await s.keeper.tick();
-  assert.equal(reclaims(s).length, 0, 'nothing in it: nothing to send');
+  s.chain.estimateError = null;
+  assert.equal(reclaims(s).length, 0, 'nothing in one, and the router refuses the other: nothing to send');
   assert.equal(s.store.get(none).note, 'swept');
+  assert.equal(s.store.get(bad).note, 'refused');
 
   s.advance(600);
   s.chain.beforeEstimate = () => { s.chain.fund(TOKEN, raced, -700n); };        // another sender's reclaim lands between the read and the estimate
@@ -997,6 +1001,8 @@ await test('a leftover sweep that finds the box empty, or emptied by another sen
   assert.equal(reclaims(s).length, 2, 'looked at again: the box is empty now, nothing is sent twice');
   assert.equal(s.store.get(early).note, 'swept');
   assert.equal(s.store.get(slow).note, 'swept');
+  assert.equal(s.store.get(bad).note, 'refused', 'and the refused one stays so');
+  assert.equal(await s.chain.balanceOf(TOKEN, bad), 500n);
   assert.equal(await s.chain.balanceOf(TOKEN, REFUND), 2000n);
 });
 
@@ -1613,17 +1619,48 @@ await test('HTTP relay sends withdrawAndCall and withdrawToV1 through the router
   } finally { server.close(); }
 });
 
+// The error viem raises when a node answers an estimate with `reply`: { error } is a JSON-RPC error, { status } an HTTP failure, { reset } a dropped line.
+async function viemEstimateError(reply) {
+  const node = createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      if (reply.reset) return req.socket.destroy();
+      if (reply.status) { res.writeHead(reply.status); return res.end('no'); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(b).id, error: reply.error }));
+    });
+  });
+  await new Promise((r) => node.listen(0, r));
+  const client = createPublicClient({ transport: viemHttp(`http://127.0.0.1:${node.address().port}`, { retryCount: 0, timeout: 3000 }) });
+  const intent = { amount: 1n, outLeaf0: 1n, outLeaf1: 2n, memo0Hash: '0x' + '11'.repeat(32), memo1Hash: '0x' + '22'.repeat(32), refund: REFUND, deadline: 1n, nonce: 1n };
+  try { await client.estimateContractGas({ address: ROUTER, abi: ROUTER_ABI, functionName: 'reclaimDeposit', args: [intent, ETH], account: KEEPER }); }
+  catch (e) { return e; }
+  finally { node.closeAllConnections?.(); node.close(); }
+  throw new Error('the stub node was meant to fail the estimate');
+}
+
 await test('a relay whose estimate fails says why: a revert is final and named, a node that did not answer is a try-again', async () => {
-  const cfg = mkCfg({ ratePerMin: 1000 });
+  const cfg = mkCfg({ ratePerMin: 100_000 });
   const intent = makeCall();
   const escrow = callEscrowAddress(intent, ROUTER);
   const timeout = Object.assign(new Error('The request took too long to respond.'), { name: 'TimeoutError' });
+  const tryAgain = /could not check this transaction right now/;
   const cases = [
-    [timeout, 503, /could not check this transaction right now/],
-    [new Error('HTTP request failed. Status: 429 Too Many Requests'), 503, /could not check this transaction right now/],
+    [timeout, 503, tryAgain],
+    [new Error('HTTP request failed. Status: 429 Too Many Requests'), 503, tryAgain],
     [revert('BadProof'), 400, /^the transaction reverts: BadProof$/],
     [new Error('execution reverted'), 400, /^the transaction reverts$/],
     [revert('StaleRoot'), 409, /StaleRoot/],
+    // as viem shapes what a node says: a JSON-RPC internal error comes back as a ContractFunctionRevertedError too, and is not a revert
+    [await viemEstimateError({ error: { code: 3, message: 'execution reverted: custom error 0xfddb35b3', data: '0xfddb35b3' } }), 400, /^the transaction reverts: NothingToReclaim$/],
+    [await viemEstimateError({ error: { code: 3, message: 'execution reverted', data: '0x' } }), 400, /^the transaction reverts$/],
+    [await viemEstimateError({ error: { code: -32000, message: 'execution reverted' } }), 400, /^the transaction reverts$/],
+    [await viemEstimateError({ error: { code: -32603, message: 'internal error' } }), 503, tryAgain],
+    [await viemEstimateError({ error: { code: -32603, message: 'backend error: failed to get account for 0x44: error sending request for url' } }), 503, tryAgain],
+    [await viemEstimateError({ error: { code: -32005, message: 'rate limit exceeded' } }), 503, tryAgain],
+    [await viemEstimateError({ status: 502 }), 503, tryAgain],
+    [await viemEstimateError({ reset: true }), 503, tryAgain],
   ];
   // The two places a relay is checked: straight against the chain (a transaction that inserts nothing, or a keeper with no queue), and at the front of the queue (a call that inserts a note).
   for (const queued of [false, true]) {

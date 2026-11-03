@@ -332,11 +332,12 @@ export function createIntakeHandler({
     : { box: r.box, kind: r.kind, status: r.status, reward: r.reward, ...(r.tx_hash ? { txHash: r.tx_hash } : {}) });
   const STALE = new Set(['StaleRoot', 'WrongInsertionIndex']);
   // What a failed estimate means: the call reverts (named when it is an error the pool has), or the node said nothing of it (a timeout, a rate limit, a dropped
-  // line), which is a try-again and not "the transaction reverts", a refusal that reads as final.
+  // line, a JSON-RPC "internal error"), which is a try-again and not "the transaction reverts", a refusal that reads as final. viem reports an internal error from
+  // the node as a ContractFunctionRevertedError too, so a revert is told by the node's own execution-reverted answer, not by that class.
   const estimateFailure = (e) => {
     const name = revertName(e);
     if (STALE.has(name)) return Object.assign(new IntakeError(409, `${name}: re-prove against the pool's current root`), { stale: true });
-    const reverted = !!name || !!e?.walk?.((x) => x?.name === 'ContractFunctionRevertedError' || x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''));
+    const reverted = !!name || !!e?.walk?.((x) => x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''));
     if (!reverted) return new IntakeError(503, 'the relay could not check this transaction right now: its node could not be reached. Nothing was sent; try again in a moment');
     return bad(name ? `the transaction reverts: ${name}` : 'the transaction reverts');
   };

@@ -265,13 +265,19 @@ export function createKeeper({
 
   // What a completed deposit box still holds (what its funding paid above the intent's amount) is nobody's after the box's deadline but its refund address's, and the router
   // lets anyone send it there. With reclaim on, the keeper does, once, when the leftover is worth the gas: three times what the send costs for ETH, and for a token
-  // what coverCheck accepts (at least its minimum fee, and its price against the gas). A box with nothing left, or too little, is marked and not looked at again.
+  // what coverCheck accepts (at least its minimum fee, and its price against the gas). A box with nothing left, or too little, or one the router refuses for good (a
+  // revert that waiting does not change: NotExpired is the one that does) is marked and not looked at again, so none of them holds a place in the batch.
   async function sweepSurplus(r, t) {
     const intent = depositIntentArgs(r.intent), bal = BigInt(await chain.balanceOf(r.token, r.box));
     if (bal === 0n) return store.update(r.box, { note: 'swept', updated: t });
     let est;
     try { est = await chain.estimate('reclaimDeposit', [intent, r.token]); }
-    catch (e) { const name = revertName(e); if (name === 'NothingToReclaim') return store.update(r.box, { note: 'swept', updated: t }); return log(`deposit ${r.box}: surplus not sent yet (${name || safeErr(e)})`); }
+    catch (e) {
+      const name = revertName(e);
+      if (name === 'NothingToReclaim') return store.update(r.box, { note: 'swept', updated: t });
+      if (name && name !== 'NotExpired') { log(`deposit ${r.box}: surplus refused (${name})`); return store.update(r.box, { note: 'refused', updated: t }); }
+      return log(`deposit ${r.box}: surplus not sent yet (${name || safeErr(e)})`);
+    }
     const price = await chain.gasPrice(), asEth = String(r.token).toLowerCase() === '0x0000000000000000000000000000000000000000';
     const worth = asEth ? bal >= BigInt(est) * BigInt(price) * 3n : coverCheck({ reward: bal, token: r.token, gas: est, gasPrice: price, cfg }).ok;
     if (!worth) return store.update(r.box, { note: 'dust', updated: t });

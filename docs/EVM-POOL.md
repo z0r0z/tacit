@@ -364,9 +364,10 @@ completion does not strand the box); an older keeper without the fields is asked
 
 With `EVM_POOL_KEEPER_RECLAIM=1` the keeper also sends back what a box still holds once its deadline has passed, to the intent's `refund` (the router
 lets anyone do this): the whole of a box it never completed, and what a completed one holds above its `amount` (what a swap that funded it paid over).
-It does the second only when it is worth the send (ETH: three times the gas of the send; a token: the keeper's minimum fee and, where it has a price,
-the gas at that price), looks every `EVM_POOL_KEEPER_SURPLUS_SECS` (600) at `EVM_POOL_KEEPER_SURPLUS_BATCH` (10) boxes, oldest deadline first, and marks a
-box it has looked at, so a leftover too small to send stays where it is. Reclaim is off by default.
+It does the second only when it is worth the send (ETH: three times the gas of the send, about 44,000 gas; a token: the keeper's minimum fee and, where it has
+a price, the gas at that price), looks every `EVM_POOL_KEEPER_SURPLUS_SECS` (600) at `EVM_POOL_KEEPER_SURPLUS_BATCH` (10) boxes, oldest deadline first, and
+marks a box it has settled (sent, nothing left, too small to send, or refused by the router for good), so a leftover too small to send stays where it is.
+Reclaim is off by default.
 
 **Handing a box to a funding page.** A page that funds boxes on the user's behalf takes
 `#tacit-box=<base64url(JSON.stringify({ chainId, intent, hint }))>`, where `intent` and `hint` are exactly the
