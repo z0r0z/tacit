@@ -41,6 +41,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HttpError, clientIp, makeLock, loadTacitHeadless, setWalletKey, openStateFile } from './sats-faucet.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DAPP = path.resolve(HERE, '../../dapp');
@@ -458,7 +459,8 @@ export function makeHandler(maker, { corsOrigins = [], logger = log } = {}) {
   const allowed = new Set(corsOrigins);
   return async (req, res) => {
     const origin = req.headers.origin;
-    const url = new URL(req.url, 'http://x');
+    const url = parseUrl(req, 'http://x');
+    if (!url) return badRequest(res);
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
     // Routes that reserve or spend the maker's coins: allow-listed origins only.
     const ROUTES = { '/maker/quote': { method: 'GET', label: 'quote' }, '/maker/fill': { method: 'POST', label: 'fill' } };

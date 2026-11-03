@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac } from './lib/points-merkle.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
 } from './lib/evm-pool-points.js';
@@ -1651,7 +1652,9 @@ function startHttp(store, evmState) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
-    const url = new URL(req.url, 'http://localhost');
+    const url = parseUrl(req, 'http://localhost');
+
+    if (!url) return badRequest(res);
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'content-type');

@@ -158,7 +158,9 @@ export function parseCallIntent(j, { now, cfg }) {
   if (outTokens.length !== minOuts.length || outTokens.length > MAX_CALLS) throw bad('call.outTokens and call.minOuts must match in length');
   const anyAddr = (x, name) => { if (typeof x !== 'string' || !isAddress(x)) throw bad(`${name} must be an address`); return getAddress(x); };
   const d = uint(c.deadline, 'call.deadline', 1n << 64n);
+  const margin = cfg?.minCallDeadlineSecs ?? 120;
   if (d <= BigInt(now)) throw bad('call.deadline has passed');
+  if (d < BigInt(now + margin)) throw bad(`call.deadline must be at least ${margin}s away`);
   try {
     return callIntent({
       calls: c.calls.map((k, i) => {

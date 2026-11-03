@@ -8,6 +8,7 @@
 // Mounted by btc-pool-indexer.js when BTC_POOL_SP_HINTS=1.
 
 import { clientKey, makeRateLimiter } from './btc-pool-relayer.js';
+import { parseUrl } from './safe-url.js';
 
 const E_RE = /^0[23][0-9a-f]{64}$/;
 const C_RE = /^[0-9a-f]{96}$/;
@@ -31,7 +32,8 @@ export function makeSpHints({ db, now = () => Date.now(), keepDays = 45, rateLim
   });
 
   async function handle(req, res) {
-    const url = new URL(req.url, 'http://localhost');
+    const url = parseUrl(req);
+    if (!url) return false;                      // no URL: not this handler's, and the next one answers it
     if (url.pathname.replace(/\/$/, '') !== '/sp/hints') return false;
     const send = (code, body) => {
       res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', ...(code === 429 ? { 'Retry-After': '30' } : {}) });

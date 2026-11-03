@@ -42,6 +42,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clientKey } from './lib/token-bucket.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DAPP = path.resolve(HERE, '../../dapp');
@@ -856,7 +857,8 @@ export function makeHandler(faucet, { corsOrigins = [], logger = log } = {}) {
   const allowed = new Set(corsOrigins);
   return async (req, res) => {
     const origin = req.headers.origin;
-    const url = new URL(req.url, 'http://x');
+    const url = parseUrl(req, 'http://x');
+    if (!url) return badRequest(res);
     const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
     // Routes that spend or reserve the faucet's coins: allow-listed origins only.
     const ROUTES = {

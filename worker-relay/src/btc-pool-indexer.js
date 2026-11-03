@@ -17,6 +17,7 @@ import {
 import { makeShieldInputResolver } from './lib/btc-pool-transparent.js';
 import { openBtcPoolStore } from './lib/btc-pool-store.js';
 import { makeBtcPoolVerifier } from './lib/btc-pool-verify.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 
 const x0 = (b) => '0x' + bytesToHex(b);
 const pre = (s) => (s == null ? null : '0x' + s);
@@ -316,7 +317,8 @@ export function createHandler(ix, store) {
       return res.end();
     }
     if (req.method !== 'GET') return send(405, { error: 'read-only' });
-    const url = new URL(req.url, 'http://localhost');
+    const url = parseUrl(req, 'http://localhost');
+    if (!url) return badRequest(res);
     const p = url.pathname.replace(/\/$/, '');
     let m;
     try {

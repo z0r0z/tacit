@@ -16,6 +16,7 @@ import { makeBtcWallet } from '../../../dapp/bitcoin-taproot-wallet.js';
 import { parseTx, decodeEnvelopeScript } from './btc-pool-chain.js';
 import { clientKey } from './token-bucket.js';
 import { encodeAggregate, aggregateStatement, AGG_WRAP_PLONK, AGG_WRAP_GROTH16 } from '../../../worker/src/btc-shielded-pool.js';
+import { parseUrl } from './safe-url.js';
 
 // RFC 6979 nonces for the ECDSA commit-input signatures.
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
@@ -1116,7 +1117,8 @@ export function createRelayer({
   const setRateLimit = (opts) => { limiter = makeRateLimiter({ now, ...opts }); };
   if (rateLimit) setRateLimit(rateLimit);
   async function handle(req, res) {
-    const url = new URL(req.url, 'http://localhost');
+    const url = parseUrl(req);
+    if (!url) return false;                      // no URL: not this handler's, and the next one answers it
     const p = url.pathname.replace(/\/$/, '');
     if (!p.startsWith(PREFIX)) return false;
     const send = (code, body) => {

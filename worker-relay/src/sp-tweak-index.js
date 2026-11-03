@@ -31,6 +31,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bip352PublicTweakFromEsploraTx } from '../../dapp/bip352.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 
 const log = (...a) => console.log(`[sp-index ${new Date().toISOString()}]`, ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -303,7 +304,8 @@ export function createHandler({ store, network, sourceName = '' }) {
       return res.end();
     }
     if (req.method !== 'GET') return send(405, { error: 'GET only' });
-    const url = new URL(req.url, 'http://x');
+    const url = parseUrl(req, 'http://x');
+    if (!url) return badRequest(res);
     const p = url.pathname.replace(/\/+$/, '') || '/';
     if (p === '/health' || p === '/') { const t = tipInfo(); return send(200, { ok: t.height !== null, network, height: t.height, source: sourceName }); }
     if (p === '/sp/tip') return send(200, tipInfo());

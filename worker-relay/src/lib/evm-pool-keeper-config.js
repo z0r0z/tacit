@@ -213,6 +213,8 @@ export function loadKeeperConfig(env = process.env) {
     maxMemoBytes: int(env, 'EVM_POOL_KEEPER_MAX_MEMO_BYTES', 1024),
     maxPending: int(env, 'EVM_POOL_KEEPER_MAX_PENDING', 5000),
     minDeadlineSecs: int(env, 'EVM_POOL_KEEPER_MIN_DEADLINE_SECS', 600),
+    // a call that is sent for a wallet must outlast the send, the block and the router's own run: one a few seconds from its deadline reverts at the keeper's cost
+    minCallDeadlineSecs: int(env, 'EVM_POOL_KEEPER_MIN_CALL_DEADLINE_SECS', 120),
     maxDeadlineSecs: int(env, 'EVM_POOL_KEEPER_MAX_DEADLINE_SECS', 30 * 86400),
     ratePerMin: int(env, 'EVM_POOL_KEEPER_RATE_PER_MIN', 20),
     // The private route (docs/EVM-POOL.md): a gateway key turns on POST /sealed. The addresses listed as forwarders carry many callers

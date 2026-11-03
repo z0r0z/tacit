@@ -6,7 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import net from 'node:net';
-import { createIntakeHandler } from '../src/lib/evm-pool-keeper-intake.js';
+import { createIntakeHandler, parseCallIntent } from '../src/lib/evm-pool-keeper-intake.js';
+import { callIntent, callIntentJson } from '../../dapp/evm-pool-gateway.js';
+import { loadKeeperConfig as loadCfg } from '../src/lib/evm-pool-keeper-config.js';
 import { loadKeeperConfig } from '../src/lib/evm-pool-keeper-config.js';
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
 import { makeForwarder } from '../src/lib/evm-pool-forwarder.js';
@@ -69,4 +71,17 @@ test('the same notes already being relayed say so; another wallet holding the sl
     assert.equal(other.body.stale, true);
     assert.equal(s.sent.length, 1, 'one send');
   } finally { s.close(); }
+});
+
+test('a call the keeper is to send must outlast the send: a deadline a few seconds away is refused, one with room is taken', () => {
+  const now = 1_800_000_000, T = '0x' + '77'.repeat(20);
+  const json = (deadline) => callIntentJson(callIntent({ calls: [{ target: T, value: 1n, data: '0x' }], outputs: [], to: REFUND, refund: REFUND, deadline: BigInt(deadline), nonce: 1n }));
+  const cfg = loadCfg({ EVM_POOL_ADDR: POOL, EVM_POOL_ROUTER_ADDR: ROUTER, EVM_POOL_RPC_URL: 'http://127.0.0.1:1' });
+  assert.equal(cfg.minCallDeadlineSecs, 120, 'two minutes by default');
+  assert.throws(() => parseCallIntent(json(now - 5), { now, cfg }), /has passed/);
+  assert.throws(() => parseCallIntent(json(now + 30), { now, cfg }), /at least 120s away/);
+  assert.throws(() => parseCallIntent(json(now + 119), { now, cfg }), /at least 120s away/);
+  assert.ok(parseCallIntent(json(now + 300), { now, cfg }), 'five minutes is taken');
+  assert.ok(parseCallIntent(json(now + 1200), { now, cfg }), 'and the dapp\'s twenty');
+  assert.ok(parseCallIntent(json(now + 30), { now, cfg: { ...cfg, minCallDeadlineSecs: 10 } }), 'the floor is the operator\'s to lower');
 });

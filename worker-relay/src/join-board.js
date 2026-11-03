@@ -40,6 +40,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clientKey } from './lib/token-bucket.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   NETWORKS, BUCKETS, STEP, topicId, verifyJoin, verifyMsg, verifyEvidenceSig, makeClose, xonlyOfPriv,
   randomScalar, checkBucket,
@@ -351,7 +352,8 @@ export function createHandler({ core, cfg }) {
     }
     const send = (status, body) => { res.writeHead(status, headers); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') { res.writeHead(204, headers); res.end(); return; }
-    const url = new URL(req.url, 'http://board');
+    const url = parseUrl(req, 'http://board');
+    if (!url) return badRequest(res);
     const parts = url.pathname.split('/').filter(Boolean);
     const ip = clientIp(req);
     try {
