@@ -19,10 +19,14 @@ const PORT = Number(process.env.PORT || 8590);
 const CACHE = process.env.CACHE_DIR || join(process.env.TMPDIR || '/tmp', 'tacit-fork-cache');
 const LOG_SPAN = BigInt(process.env.LOG_SPAN || 10000);
 const list = (v, d) => String(v || d).split(',').map((s) => s.trim()).filter(Boolean);
-const STATE = list(process.env.STATE_UPSTREAMS, 'https://rpc.mevblocker.io,https://eth-mainnet.public.blastapi.io');
-// dRPC's free tier counts a range of 10,000 blocks as over its limit: it is asked for one block fewer
-const LOGS = list(process.env.LOG_UPSTREAMS, 'https://rpc.mevblocker.io,https://eth.drpc.org');
-const LOG_SPAN_AT = { 'https://eth.drpc.org': 9999n };
+// Free endpoints probed on 2026-11-04 from z's machine: archive storage and proofs (MEV Blocker, Blast, ZAN), archive storage only (NodeReal's
+// public key, dRPC, 1rpc, POKT), log reads of 10,000 blocks (MEV Blocker, NodeReal; dRPC counts 10,000 as over its limit, BlockPI takes 5,000).
+// A node that refuses one kind of call is passed over for that call, so the lists can mix them.
+const STATE = list(process.env.STATE_UPSTREAMS, ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://api.zan.top/eth-mainnet',
+  'https://rpc.mevblocker.io/fast', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://eth-pokt.nodies.app'].join(','));
+const LOGS = list(process.env.LOG_UPSTREAMS, ['https://rpc.mevblocker.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://rpc.mevblocker.io/fast',
+  'https://eth.drpc.org', 'https://ethereum.public.blockpi.network/v1/rpc/public'].join(','));
+const LOG_SPAN_AT = { 'https://eth.drpc.org': 9999n, 'https://ethereum.public.blockpi.network/v1/rpc/public': 5000n };
 const INFLIGHT = Number(process.env.INFLIGHT || 4);
 mkdirSync(CACHE, { recursive: true });
 
@@ -56,7 +60,8 @@ async function anyOf(urls, method, params, span = null) {
       const a = await ask(url, method, params);
       if (!a.error) return a;
       last = a.error;
-      if (!a.retry) break;                                                      // a refusal of the call itself: no other node will differ
+      // a call that reverted fails the same everywhere; any other refusal (no old state, a method off this plan, a range too long) is this node's
+      if (/revert/i.test(String(a.error.message || ''))) return a;
     }
     if (last && !busy.test(String(last.message || ''))) break;
     await sleep(Math.min(30_000, 1000 * 2 ** round));
@@ -81,7 +86,8 @@ async function getLogs(params) {
   const q = params && params[0] ? params[0] : {};
   if (!fixed(q.fromBlock) || !fixed(q.toBlock) || q.blockHash) return cached('eth_getLogs', params, () => anyOf(LOGS, 'eth_getLogs', params));
   const from = BigInt(q.fromBlock), to = BigInt(q.toBlock), out = [];
-  const span = Object.values(LOG_SPAN_AT).reduce((a, b) => (b < a ? b : a), LOG_SPAN);
+  // chunks of LOG_SPAN: a node with a shorter limit is a fallback for a smaller LOG_SPAN, not a reason to halve every read
+  const span = LOG_SPAN;
   for (let a = from; a <= to; a += span) {
     const b = a + span - 1n < to ? a + span - 1n : to;
     const part = [{ ...q, fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }];

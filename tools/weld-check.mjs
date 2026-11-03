@@ -244,14 +244,16 @@ function wrapPvOf(leaf, dep) {
   head[4] = w(40 * 32); head[5] = w(42 * 32); head[3] = w(44 * 32); head[7] = w(45 * 32);
   return '0x' + w(32) + head.join('') + w(1) + leaf.replace(/^0x/, '') + w(1) + dep.replace(/^0x/, '') + w(0) + w(0);
 }
-const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, '--chain-id', '1', '--silent', '--no-rate-limit'], { stdio: 'ignore' });
+// FORK_BLOCK pins the fork, so a caching proxy in front of the fork URL (tools/fork-proxy.mjs) answers a rerun from its cache; the fork's
+// upstream calls get a long timeout, as a proxy retrying a busy public node takes a while.
+const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, ...(process.env.FORK_BLOCK ? ['--fork-block-number', process.env.FORK_BLOCK] : []), '--timeout', '600000', '--chain-id', '1', '--silent', '--no-rate-limit'], { stdio: 'ignore' });
 process.on('exit', () => anvil.kill('SIGKILL'));
 const rpc = async (method, params = []) => {
   const r = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
   if (r.error) throw Object.assign(new Error(r.error.message), { data: r.error.data });
   return r.result;
 };
-for (let i = 0; ; i++) { try { await rpc('eth_chainId'); break; } catch { if (i > 120) throw new Error('anvil did not start'); await sleep(500); } }
+for (let i = 0; ; i++) { try { await rpc('eth_chainId'); break; } catch { if (i > 600) throw new Error('anvil did not start'); await sleep(500); } }
 
 const TYPES = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.zkey': 'application/octet-stream' };
 const server = createServer((req, res) => {
