@@ -407,7 +407,7 @@ export function makeBurnDepositUx(deps) {
   function unprovableThrough(m) {
     const kind = /classified as '([a-z_]+)'/.exec(m), op = /resolvable leaf \(opcode 0x([0-9a-f]{2})\)/i.exec(m);
     if (kind) return kind[1] === 'crossout_mint' ? 'arrived' : /^(swap|lp_|harvest|protocol_fee|farm)/.test(kind[1]) ? 'pool' : 'other';
-    if (op) return op[1].toLowerCase() === '6c' ? 'shielded' : 'other';
+    if (op) return /^6[cd]$/i.test(op[1]) ? 'shielded' : 'other'; // 0x6c shields into the pool, 0x6d spends from it (an exit is the note a spend makes)
     if (/not produced by a known cxfer and not a supply leaf|non-confidential input at index|atomic settlement whose asset input/.test(m)) return 'other';
     return null;
   }

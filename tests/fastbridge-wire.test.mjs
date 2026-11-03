@@ -16,7 +16,7 @@ import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { makeBoard } from '../dapp/fastbridge-board.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
-const { openFast, openProvider, discoverProviders, counterFor, notesOf, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
+const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -66,6 +66,18 @@ test('openFast: the address, the notes and the balance of the key, and the quote
   const bad = await s.quoteAll([{ name: 'D', ref: { kind: 'http', claimPub: claimD } }], 1000n);
   assert.match(bad.failed[0].error.message, /key is not the one this page expects/);
   T._testSetScanHoldingsOverride(null);
+});
+
+test('a swap spends the notes the bridge does not take directly (out of the shielded pool, untracked) when they alone cover it', () => {
+  const n = (c, amount) => ({ txid: c.repeat(64), vout: 0, amount });
+  const pool = n('a', 1000n), tracked = n('b', 5000n), fresh = n('c', 300n), all = [tracked, pool, fresh];
+  const tracks = new Map([[`${tracked.txid}:0`, 'tracked'], [`${pool.txid}:0`, 'untracked'], [`${fresh.txid}:0`, 'new']]);
+  const covers = (want) => (rest) => rest.reduce((s, x) => s + x.amount, 0n) >= want;
+  assert.deepEqual(untrackedFirst(all, tracks, covers(1000n)), [pool, fresh], 'the untracked notes cover it: the tracked one is kept');
+  assert.deepEqual(untrackedFirst(all, tracks, covers(2000n)), all, 'they do not: every note may be spent');
+  assert.deepEqual(untrackedFirst(all, null, covers(10n)), all, 'tracking unknown: every note');
+  assert.deepEqual(untrackedFirst([tracked], tracks, covers(10n)), [tracked], 'only tracked notes: those');
+  assert.deepEqual(untrackedFirst([pool], tracks, () => false), [pool], 'only untracked notes: those, without asking');
 });
 
 test('a key whose Bitcoin address is not the wallet\'s is refused before anything is built', async () => {

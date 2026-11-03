@@ -39,6 +39,14 @@ export async function notesOf(T, asset = TAC_ASSET) {
     .map((x) => ({ txid: x.utxo.txid, vout: x.utxo.vout, value: x.utxo.value, amount: BigInt(x.amount), blinding: BigInt(x.blinding) }));
 }
 
+// The notes a swap may spend. TAC that Bitcoin's proof tracks (`tracks`, note id -> 'tracked' | ...) also bridges directly, so a swap
+// spends the other notes (one out of the shielded pool, or with a history the bridge does not follow) whenever `covers` says they alone do.
+export function untrackedFirst(notes, tracks, covers) {
+  if (!tracks) return notes;
+  const rest = notes.filter((n) => tracks.get(`${n.txid}:${n.vout}`) !== 'tracked');
+  return rest.length < notes.length && rest.length && covers(rest) ? rest : notes;
+}
+
 // The counter of a provider from the reference kept with its swaps: one that serves HTTP, or one reached through a board.
 export function counterFor(ref, { fetchImpl = (...a) => fetch(...a), call = {} } = {}) {
   if (ref && ref.kind === 'http') return makeHttpCounter({ base: ref.base, fetchImpl });
@@ -92,10 +100,12 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, fetchI
   const market = makeFastBridgeMarket({ btc, evm, store, seed, pins: asset, counterFor: counterOf, ...(now ? { now } : {}) });
   const notes = () => withKey((t) => notesOf(t, asset.btcAsset));
   const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
+  const fastFirst = async (all, quotes) => untrackedFirst(all, await withKey((t) => t.bridgeUx().noteTracking(all)).catch(() => null),
+    (rest) => quotes.length > 0 && quotes.every(({ provider, quote }) => market.clientFor(provider.ref).pickNotes(rest, quote.btcValue)));
   return {
     address: prims.wallet.address(), notes, balance, market,
     quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
-    start: async ({ quotes }) => market.start({ quotes, notes: await notes() }),
+    start: async ({ quotes }) => market.start({ quotes, notes: await fastFirst(await notes(), quotes) }),
     records: market.records, run: market.run, recover: market.recover,
   };
 }

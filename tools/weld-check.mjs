@@ -3471,7 +3471,7 @@ await step('bridgedeep', async () => {
     await r.page.check(`#bridge-body input[value="${N1}:0"]`);
     await until(r.page, () => /in its history, and the bridge proves/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, 120000);
     const first = await warn();
-    ok(/This TAC has more than 256 transfers in its history, and the bridge proves up to 255, so this note stays on Bitcoin, where it can be sent and traded as usual\./.test(first) && !/hop\(s\)|try again|etch|too long|cannot/i.test(first), `bridgedeep: a history over the walk says how long it is, the limit, and what happens to the note, plainly (${first})`);
+    ok(/This TAC has more than 256 transfers in its history, and the bridge proves up to 255, so it goes to Ethereum by the fast bridge instead\./.test(first) && !/hop\(s\)|try again|etch|too long|cannot/i.test(first), `bridgedeep: a history over the walk says how long it is, the limit, and what happens to the note, plainly (${first})`);
     const seen = await r.page.evaluate(() => globalThis.__rcptSeen);
     ok(seen.some((t) => /Reading this TAC’s history from Bitcoin: 120 transfers so far/.test(t)) && seen.some((t) => /240 transfers so far/.test(t)),
       `bridgedeep: while the API reads a long history in parts the receipt says how far it has got (${[...new Set(seen.filter((t) => /Reading/.test(t)))].join(' | ')})`);
@@ -3484,8 +3484,9 @@ await step('bridgedeep', async () => {
     await r.page.check(`#bridge-body input[value="${N3}:0"]`);
     await until(r.page, () => /does not follow/.test(document.querySelector('#br-rcpt')?.textContent || '') && document.querySelectorAll('#bridge-body .brn small').length === 3, null, 120000);
     const poolText = await warn();
-    ok(/This TAC’s history includes a pool or farm trade on Bitcoin, which the bridge’s proof does not follow, so this note stays on Bitcoin, where it can be sent and traded as usual\./.test(poolText) && !/try again|cannot/i.test(poolText),
-      `bridgedeep: a history through a pool trade says the bridge does not follow it and the note stays on Bitcoin, not to try again (${poolText})`);
+    ok(/This TAC’s history includes a pool or farm trade on Bitcoin, which the bridge’s proof does not follow, so it goes to Ethereum by the fast bridge instead\./.test(poolText) && !/try again|cannot/i.test(poolText),
+      `bridgedeep: a history through a pool trade says the bridge does not follow it and the note goes by the fast bridge, not to try again (${poolText})`);
+    ok(await r.page.isVisible('#br-rcpt a[href="/fast/"]'), 'bridgedeep: and offers the fast bridge for it');
     ok(/Its history includes a pool or farm trade on Bitcoin, which the bridge does not follow\./.test(await row(N3)) && traces === 7, `bridgedeep: and its row says so at once, after one ask (${await row(N3)})`);
     // The sheet drawn again lists both as not to be picked, without reading either history again.
     await redrawTac(r.page);

@@ -6,7 +6,7 @@ import { getUx, forgetUx } from '/trade/poolux.js?cb=ced562d4';
 import { mountFast } from '/fast/ui.js?cb=6f7d0555';
 import { mountProvide } from '/fast/provide.js?cb=c95bfb67';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=1aa16415';
+import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=0f0105e8';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
