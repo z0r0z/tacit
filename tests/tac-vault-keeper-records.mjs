@@ -58,6 +58,16 @@ keeper({ BATCH_RECORDS: '4' });
 const used4 = nonce(KEEPER_ADDR) - before;
 ok(used4 >= 5 && used4 <= 6, `with BATCH_RECORDS=4 the same kind of backlog takes more transactions (${used4})`);
 
+// 2b. a batch's calldata goes to cast as one argument, which Linux caps at 128 KiB: past BATCH_ARG_CHARS a batch is split, every record still lands
+await rpc('anvil_mine', ['0x1f4']);
+const top2 = Math.floor(((await head()) - 1) / 50) - 1;
+for (const v of [A, B]) send(DEPLOYER, v, 'fill(uint256,uint256)', String(top + 2), String(top2 - 2));
+const due2 = Array.from({ length: 10 }, (_, i) => top2 - 9 + i);
+before = nonce(KEEPER_ADDR);
+out = keeper({ BATCH_ARG_CHARS: '3000' });
+const usedArg = nonce(KEEPER_ADDR) - before;
+ok(due2.every(recorded) && usedArg > Math.ceil(due2.length * 2 / 12) && !/E2BIG|failed/.test(out), `with BATCH_ARG_CHARS=3000 the batch is split under the size cap (${usedArg} transactions) and every record lands`);
+
 // 3. a wallet with nothing is told so
 out = keeper({}, '0x' + '11'.repeat(32));
 ok(/ALERT the keeper wallet 0x[0-9a-fA-F]{40} holds 0 ETH, about 0 hours of recording at the current base fee; send it ETH/.test(out) || /ALERT the keeper wallet .* send it ETH/.test(out), `an empty wallet is reported (${(out.split('\n').find((l) => /ALERT/.test(l)) || 'no alert').slice(0, 140)})`);

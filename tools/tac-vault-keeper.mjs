@@ -84,6 +84,8 @@ const DEFER_PCT = Math.min(100, Math.max(0, Number(process.env.DEFER_PCT || 30))
 // The wallet's balance under which an ALERT is raised, in ETH (about 40 records at 0.06 gwei).
 const LOW_BALANCE = gwei(process.env.LOW_BALANCE_ETH || 0.004) * 10n ** 9n;
 const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
+// The longest batch argument handed to cast, in characters: under Linux's 128 KiB cap on one argument, with room to spare.
+const BATCH_ARG_CHARS = Number(process.env.BATCH_ARG_CHARS || 100_000);
 const MAX_CHUNK = BigInt(process.env.LOG_CHUNK || 5000);
 let logChunk = MAX_CHUNK;
 const ONCE = process.env.ONCE === '1';
@@ -331,14 +333,26 @@ function submit(due, baseFee) {
   if (ready.length > 1 && multicall()) {
     // Every call must succeed (allowFailure false): the gas estimate then covers all of them, and a batch that
     // loses a race to another keeper reverts whole and is sent again one at a time.
-    try {
-      const calls = ready.map((d) => `(${d.oracle},false,${cast(['calldata', RECORD_SIG, ...d.args])})`);
-      const hash = send(MULTICALL3, 'aggregate3((address,bool,bytes)[])', [`[${calls.join(',')}]`], cap, tip);
-      for (const d of ready) log(d.oracle, 'record', String(d.k), String(d.n), hash);
-    } catch (e) {
-      noteAfford(e);
-      log('batch failed, recording one at a time:', errLine(e));
-      each(ready.filter((d) => !recorded(d.oracle, d.k)));
+    // A batch goes to cast as one argument, which Linux caps at 128 KiB (E2BIG): a backlog of records, each carrying its block
+    // headers, is sent in batches that each stay under BATCH_ARG_CHARS.
+    const calls = ready.map((d) => ({ d, call: `(${d.oracle},false,${cast(['calldata', RECORD_SIG, ...d.args])})` }));
+    const batches = [];
+    for (const c of calls) {
+      const last = batches[batches.length - 1];
+      if (last && last.chars + c.call.length + 1 <= BATCH_ARG_CHARS) { last.items.push(c); last.chars += c.call.length + 1; }
+      else batches.push({ items: [c], chars: c.call.length + 2 });
+    }
+    for (const b of batches) {
+      const list = b.items.map((c) => c.d);
+      if (list.length === 1) { each(list); continue; }
+      try {
+        const hash = send(MULTICALL3, 'aggregate3((address,bool,bytes)[])', [`[${b.items.map((c) => c.call).join(',')}]`], cap, tip);
+        for (const d of list) log(d.oracle, 'record', String(d.k), String(d.n), hash);
+      } catch (e) {
+        noteAfford(e);
+        log('batch failed, recording one at a time:', errLine(e));
+        each(list.filter((d) => !recorded(d.oracle, d.k)));
+      }
     }
   } else {
     each(ready);
