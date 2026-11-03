@@ -4,8 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { decodeFunctionData, parseAbi } from 'viem';
-import { OPEN_TYPES, openable, pvFees, ethFeeWei, pickOpen, STALE_PROOF_SELECTORS } from '../src/lib/open-board.js';
-import { OPEN_TYPES as WORKER_OPEN_TYPES } from '../../worker/src/confidential-settle.js';
+import { OPEN_TYPES, POSTED_TYPES, openable, pvFees, ethFeeWei, pickOpen, STALE_PROOF_SELECTORS } from '../src/lib/open-board.js';
+import { OPEN_TYPES as WORKER_OPEN_TYPES, POSTED_TYPES as WORKER_POSTED_TYPES } from '../../worker/src/confidential-settle.js';
 import { pvFees as workerPvFees } from '../../worker/src/confidential-open.js';
 
 const ETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
@@ -15,6 +15,7 @@ const PV = decodeFunctionData({ abi: parseAbi(['function settle(bytes,bytes,byte
 
 test('the relay and the API agree on which op types go on the board', () => {
   assert.deepEqual([...OPEN_TYPES].sort(), [...WORKER_OPEN_TYPES].sort());
+  assert.deepEqual([...POSTED_TYPES].sort(), [...WORKER_POSTED_TYPES].sort());
 });
 
 test('fee legs read from a real settle, the same as the API reads them', () => {

@@ -152,6 +152,11 @@ test('a posted proof is simulated first, deduplicated by its public values, and 
   assert.equal(board[0].posted, true);
   const none = setup();
   await assert.rejects(() => none.q.submitJob({ type: 'transfer', mode: 'preproven', publicValues: PV, proof: PROOF, memos: [] }), /not taken here/);
+  // a wrap-swap posts only while its deposit waits in the pool: the simulated settle is what tells the two apart
+  const ws = setup({ verifyPosted: async ({ publicValues }) => (publicValues === PV ? { ok: true } : { ok: false, error: 'settle reverts (DepositNotPending)' }) });
+  await assert.rejects(() => ws.q.submitJob({ type: 'wrapswap', mode: 'preproven', publicValues: '0x' + 'cd'.repeat(64), proof: PROOF, memos: [] }), /would not take this proof now \(settle reverts \(DepositNotPending\)\)/);
+  assert.equal((await ws.q.submitJob({ type: 'wrapswap', mode: 'preproven', publicValues: PV, proof: PROOF, memos: MEMOS })).status, 'open');
+  assert.ok(!OPEN_TYPES.includes('wrapswap'), 'a relayed wrap-swap job is not put on the board by the relay');
 });
 
 test('a reported landing closes the job only when the check passes, and a proven prove-mode job can be closed too', async () => {

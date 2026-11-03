@@ -23,6 +23,10 @@ const MAX_OPEN_JOBS = 256;
 // a root that moves with the reflection, and an adaptor lock, claim or refund is one leg of a swap whose other leg keys off
 // when it lands (a claim's public values carry the completed kernel s), so none of those go on the board.
 export const OPEN_TYPES = ['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'cdpclose', 'cdpliquidate', 'cdptopup', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'sendunwrap', 'lpbond', 'lpremove'];
+// A proof posted from elsewhere may also be a wrap-swap whose deposit already waits in the pool (a staged deposit, or one sent first): its settle
+// is then a plain pool.settle too, and verifyPosted's simulation refuses one whose deposit is not there, so a proof meant to go with its deposit
+// through the router never goes on the board.
+export const POSTED_TYPES = [...OPEN_TYPES, 'wrapswap'];
 // KV has no compare-and-swap (real Cloudflare KV doesn't either, and this queue must stay portable to
 // it — see server/kv-store.mjs), so a plain read-then-write claim races once more than one poller hits
 // the same pending job. CLAIM_VERIFY_DELAY_MS narrows that window from "the whole poll interval" to
@@ -233,7 +237,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // prove. Its id is taken over its public values, so the same proof posted twice is one job, and verifyPosted
   // simulates its settle first, so the board carries only proofs the pool would take at the time they were posted.
   async function postProven({ type, memos, publicValues, proof }) {
-    if (!OPEN_TYPES.includes(type)) throw new Error(`submitJob: a ${type} proof cannot be posted for any sender`);
+    if (!POSTED_TYPES.includes(type)) throw new Error(`submitJob: a ${type} proof cannot be posted for any sender`);
     if (typeof verifyPosted !== 'function') throw new Error('submitJob: posted proofs are not taken here');
     const pv = String(publicValues || '').toLowerCase(), pf = String(proof || '').toLowerCase();
     const ms = Array.isArray(memos) ? memos.map((m) => String(m).toLowerCase()) : null;

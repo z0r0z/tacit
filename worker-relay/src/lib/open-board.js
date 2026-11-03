@@ -8,6 +8,8 @@
 // is a plain pool.settle(publicValues, proof, memos). A router-embedded proof pulls from its sender, a bridge mint or a
 // fast-lane exit is pinned to a root that moves with the reflection, and an adaptor leg's landing is part of a swap.
 export const OPEN_TYPES = ['wrap', 'unwrap', 'transfer', 'swap', 'route', 'lp', 'otc', 'bid', 'bridgeburn', 'cdpmint', 'farmbond', 'farmharvest', 'farmunbond', 'cdpclose', 'cdpliquidate', 'cdptopup', 'stealthlock', 'stealthlockbatch', 'stealthclaim', 'stealthrefund', 'sendunwrap', 'lpbond', 'lpremove'];
+// And a posted proof may be a wrap-swap whose deposit already waits in the pool (POSTED_TYPES there, kept equal by the same test).
+export const POSTED_TYPES = [...OPEN_TYPES, 'wrapswap'];
 
 // Reverts that mean the proof no longer fits the chain rather than the op being wrong: proved again from the witness.
 export const STALE_PROOF_SELECTORS = ['0x8a98f245' /* StaleBitcoinBurnRoot */, '0xb14b466c' /* StaleBitcoinSpentRoot */, '0xe677decb' /* StaleReflectionDigest */];
@@ -49,7 +51,7 @@ export function ethFeeWei(publicValues, { ethAssetId, ethUnitScale }) {
 // were told a relay sends them), oldest first; then a posted proof whose tETH fee covers its settle at today's gas with
 // `marginBps` to spare. A job that expires within `expiryMarginMs` is left alone: it could not land in time.
 export function pickOpen(jobs, { settleCostWei, ethAssetId, ethUnitScale, marginBps = 2000n, nowMs = Date.now(), expiryMarginMs = 120_000 } = {}) {
-  const live = (jobs || []).filter((j) => j && j.status === 'open' && j.publicValues && j.proof && OPEN_TYPES.includes(j.type)
+  const live = (jobs || []).filter((j) => j && j.status === 'open' && j.publicValues && j.proof && (j.posted ? POSTED_TYPES : OPEN_TYPES).includes(j.type)
     && !(j.expiresAt > 0 && j.expiresAt - nowMs < expiryMarginMs));
   const byAge = (a, b) => (a.openSince || 0) - (b.openSince || 0);
   const own = live.filter((j) => !j.posted).sort(byAge);
