@@ -102,6 +102,18 @@ test('a wrap not mined yet is waited for, never sent again; one that reverted is
   assert.strictEqual(done.state, 'done');
 });
 
+test('a swap that went out while the tab was closed (no hash on the plan) is made private from what it paid, not from all the TAC the account holds', async () => {
+  const paid = 40n * SCALE, older = 500n * SCALE;
+  // the plan was marked as sending with the TAC the account held before it and the floor, and a later check found the balance down: shielding, with no swap hash
+  const s = setup({ paid, held: older + paid, plan: { swapTx: undefined, swapDoneAt: Date.now(), tacBefore: String(older), min: String(paid - SCALE), dest: { kind: 'me' } } });
+  const done = await s.L.shield(s.plan);
+  assert.deepStrictEqual(s.M.wraps, [paid], 'only what the swap paid: not the 500 held before');
+  assert.strictEqual(done.state, 'done');
+  const none = setup({ paid, held: paid, plan: { swapTx: undefined, swapDoneAt: undefined, dest: { kind: 'me' } } });
+  await assert.rejects(none.L.shield(none.plan), /not been made yet/);
+  assert.strictEqual(none.M.wraps.length, 0, 'a swap not made is not shielded');
+});
+
 // ── a swap out of what a pool already holds (adopt): refused before anything is read or kept when it cannot go ──
 const { heldSwapMax } = await import('../dapp/swap/later.js');
 test('the most a pool balance can swap leaves the relay’s fee twice, and nothing when the balance is no more than that', () => {

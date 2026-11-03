@@ -111,3 +111,89 @@ test('the wallet’s ETH into a pool is sent only at a price within a thousandth
   assert.strictEqual(ok.box, BOX);
   assert.strictEqual(ok.arrives, (100n * 10n ** 6n * 997n) / 1000n - 100_000n);
 });
+
+// ── the states a plan keeps: only a waiting swap is sent, a read that failed before anything went is not a doubt, the browser must keep the plan ──
+const withPlans = (plans) => { const mem = new Map([['tacit-swap-later-v1', JSON.stringify(plans)]]); return { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), mem }; };
+const stateOf = (store, id) => JSON.parse(store.getItem('tacit-swap-later-v1')).find((p) => p.id === id)?.state;
+
+test('a swap that is not waiting is not sent again, whichever tab moved it', async () => {
+  for (const state of ['done', 'swapping', 'unsure', 'shielding']) {
+    const w = wallets({ balance: 5_000n * 10n ** 6n }), { L, store } = make({ w, r: routesOf([E18, E18]) });
+    const plan = await L.adopt(args()), shown = await L.offer(plan);
+    // this tab still holds the plan as waiting; the copy kept (the other tab's) has moved on
+    store.setItem('tacit-swap-later-v1', JSON.stringify(JSON.parse(store.getItem('tacit-swap-later-v1')).map((p) => ({ ...p, state }))));
+    await assert.rejects(L.swapOut(plan, { shown, via: 'relay' }), /not waiting to be sent/, state);
+    assert.strictEqual(w.calls.withdrawAndCall.length + w.calls.withdraw.length, 0, `${state}: nothing was sent`);
+    assert.strictEqual(stateOf(store, plan.id), state, `${state}: and the plan is left as it was`);
+  }
+});
+
+test('an unanswered read before the send is a refusal to try again, not a doubt that locks the plan; a pool that kept moving still is one', async () => {
+  for (const [msg, state] of [['The operation timed out.', 'waiting'], ['signal timed out', 'waiting'], ['timed out waiting for the previous transaction', 'waiting'], ['the pool kept moving; try again', 'unsure']]) {
+    const { L, store } = make({ w: wallets({ failWith: msg }), r: routesOf([E18, E18]) });
+    const plan = await L.adopt(args());
+    await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }));
+    assert.strictEqual(stateOf(store, plan.id), state, msg);
+    assert.strictEqual((await L.check(JSON.parse(store.getItem('tacit-swap-later-v1'))[0])).state, state, `${msg}: and a check leaves it so`);
+  }
+});
+
+test('the keeper’s own words for a relay that will not send offer the wallet; a swap error does not', async () => {
+  for (const [msg, refused] of [
+    ['the relay is busy with other sends; try again in a minute. Sending it from your own wallet also works, and shows your address as the sender', true],
+    ["the relay can't price its fee in this token right now; try again in a few minutes. Sending it from your own wallet also works, and shows your address as the sender", true],
+    ["the relay has used today's gas for this pool; try again tomorrow. Sending it from your own wallet also works, and shows your address as the sender", true],
+    ['gas above the 1500000 cap', true], ['relaying is off', true], ['relayer returned 503', true], ['the transaction reverts: ShortOutput', false]]) {
+    const { L, store } = make({ w: wallets({ failWith: msg }), r: routesOf([E18, E18]) });
+    const plan = await L.adopt(args());
+    await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }));
+    assert.strictEqual(JSON.parse(store.getItem('tacit-swap-later-v1'))[0].refused, refused, msg);
+  }
+});
+
+test('a hash the chain does not know is a swap in doubt, kept with its hash, not a swap made', async () => {
+  const w = wallets();
+  const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18, E18]).routes, knows: async () => false });
+  const plan = await L.adopt(args());
+  await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }), /may still have sent/);
+  const kept = JSON.parse(store.getItem('tacit-swap-later-v1'))[0];
+  assert.strictEqual(kept.state, 'unsure');
+  assert.strictEqual(kept.swapTx, '0x' + 'ab'.repeat(32), 'the hash is kept for the check');
+});
+
+test('what a check or the making private reads is kept before the send, so a closed tab leaves it', async () => {
+  const w = wallets(), seen = [];
+  const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => { seen.push(JSON.parse(v)[0]); mem.set(k, String(v)); } };
+  w.withdrawAndCall = async () => { throw new Error('the tab was closed'); };
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18, E18]).routes });
+  const plan = await L.adopt(args());
+  await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }));
+  const swapping = seen.find((p) => p.state === 'swapping');
+  assert.strictEqual(swapping?.min, String(E18), 'the floor is in the plan when it is first marked as sending');
+  assert.ok(swapping?.route, 'and so is the route');
+});
+
+test('twenty plans are kept, and a swap that still waits is not the one that goes', async () => {
+  const { L, store } = make({ w: wallets({ balance: 9_000n * 10n ** 6n }), r: routesOf([E18]) });
+  const first = await L.adopt(args());
+  for (let i = 0; i < 25; i++) {
+    const p = await L.adopt(args());
+    store.setItem('tacit-swap-later-v1', JSON.stringify(JSON.parse(store.getItem('tacit-swap-later-v1')).map((x) => (x.id === p.id ? { ...x, state: 'done' } : x))));
+  }
+  const kept = JSON.parse(store.getItem('tacit-swap-later-v1'));
+  assert.ok(kept.length <= 20, `${kept.length} kept`);
+  assert.ok(kept.some((x) => x.id === first.id && x.state === 'waiting'), 'the swap that waits is still kept');
+});
+
+test('a browser that cannot keep the plan stops the swap before anything is sent', async () => {
+  const w = wallets(), store = { getItem: () => null, setItem: () => { throw new Error('QuotaExceededError'); } };
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18]).routes });
+  await assert.rejects(L.adopt(args()), /could not keep the swap’s plan, so nothing was sent/);
+});
+
+test('a pool that takes another token than the swap pays is refused before a box is made', async () => {
+  const w = wallets(), { L } = make({ w, r: routesOf([E18, E18]) });
+  await assert.rejects(L.adopt(args({ token: ZERO, sym: 'ETH', into: into(DST) })), /takes another token/);
+  assert.strictEqual(w.calls.depositBox.length, 0);
+});

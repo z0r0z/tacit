@@ -59,6 +59,7 @@ function setup(ctl = {}) {
   const pool = fakePool(), proves = [], sent = [], steps = [];
   let stash = null;
   const rpc = async (m, p) => {
+    if (m === 'eth_blockNumber') { ctl.reads = (ctl.reads || 0) + 1; if (ctl.failRead) throw new Error('fetch failed'); }
     if (m === 'eth_call' && p[0]?.from) {
       if (stash && (stash.publicInputs[1] !== String(pool.root) || stash.publicInputs[3] !== String(pool.size))) throw Object.assign(new Error('execution reverted'), { data: STALE_ROOT });
       return '0x';
@@ -76,8 +77,8 @@ function setup(ctl = {}) {
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(9));
   const W = makeEvmPoolWallet({ zk, keys, keeper: null, store: null, feed: false, prove, chain: { chainId: 1, pool: POOL, router: ROUTER, rpc, deployBlock: 1, confirmations: 0, logChunk: 50000 } });
   W.connect(signer);
-  const selfCall = (tx) => { const f = ctl.onCall; ctl.onCall = null; f?.(pool); stash = tx; sent.push(tx); return { to: POOL, data: '0x00000000' }; };
-  const deposit = (amount) => W.deposit({ amount, selfCall, onStep: (s) => steps.push(s) });
+  const selfCall = (tx) => { const f = ctl.onCall; ctl.onCall = null; f?.(pool); ctl.readsAtSend = ctl.reads; stash = tx; sent.push(tx); return { to: POOL, data: '0x00000000' }; };
+  const deposit = (amount, extra = {}) => W.deposit({ amount, selfCall, onStep: (s) => steps.push(s), ...extra });
   return { W, pool, proves, sent, steps, deposit };
 }
 const insert = (pool, a = 11n, b = 12n) => pool.transact({ out: [a, b], memo: [Buffer.from('aa'), Buffer.from('bb')] });
@@ -244,6 +245,42 @@ await check('and one the wallet refused after the head moved proves again, on th
 await check('an amount that is not positive is refused', async () => {
   const { W } = setup();
   await assert.rejects(W.prepareDeposit(0n), /enter an amount/);
+});
+
+
+await check('a read that fails at the press does not cost the proof made ahead', async () => {
+  const ctl = {}, { W, proves, deposit } = setup(ctl);
+  await W.prepareDeposit(A);
+  ctl.failRead = true;
+  await assert.rejects(deposit(A), /fetch failed/);
+  ctl.failRead = false;
+  await deposit(A);
+  assert.equal(proves.length, 1, 'the proof made ahead stood for the next press');
+  assert.equal(W.summary().balance, A);
+});
+
+await check('a read the caller made just before the press, after the proof was done, stands for the press; one begun before the proof does not', async () => {
+  const early = {}, a = setup(early), t0 = Date.now() - 1;
+  await a.W.prepareDeposit(A);
+  await new Promise((r) => setTimeout(r, 5));
+  const readAt = Date.now(); await a.W.sync();
+  const reads = early.reads;
+  await a.deposit(A, { readAt });
+  assert.equal(early.readsAtSend, reads, 'no read of the pool between the caller\'s and the wallet');
+  const stale = {}, b = setup(stale);
+  await b.W.prepareDeposit(A);
+  const reads2 = stale.reads;
+  await b.deposit(A, { readAt: t0 });
+  assert.equal(stale.readsAtSend, reads2 + 1, 'a read begun before the proof was done is not trusted: the pool is read again');
+  // and a head that moved after the caller\'s read is found by the check before the wallet, which proves again
+  const ctl = {}, c = setup(ctl);
+  await c.W.prepareDeposit(A);
+  await new Promise((r) => setTimeout(r, 5));
+  const at = Date.now(); await c.W.sync();
+  insert(c.pool);
+  await c.deposit(A, { readAt: at });
+  assert.equal(c.proves.length, 2, 'proved again on the new head');
+  assert.equal(c.W.summary().balance, A);
 });
 
 console.log(`${n} passed`);

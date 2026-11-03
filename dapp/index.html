@@ -78,7 +78,7 @@
 <link rel="modulepreload" href="/gas-relay.js?cb=d9662caa">
 <link rel="modulepreload" href="/reward-pop.js?cb=1b53f6d4">
 <link rel="modulepreload" href="/points-note.js?cb=dc44d257">
-<link rel="modulepreload" href="/evm-pool-tokens.js?cb=e1ab5d24">
+<link rel="modulepreload" href="/evm-pool-tokens.js?cb=a3c182f7">
 <link rel="modulepreload" href="/net-pick.js?cb=8f57c360">
 <!-- preload:end -->
 <style>
@@ -1833,7 +1833,7 @@ import { relayCode, proveCapped, proved, relayRefused, jobSaid } from '/relay-ou
 import { makeLoans, bondGap, lockPad as lockPadOf } from '/btc-borrow.js?cb=13923518';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=ecf49203';
 import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=31e3a58f';
-import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=e1ab5d24';
+import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=4a6878a3';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=b9adb91d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
@@ -6262,7 +6262,7 @@ function xoOut(el, status, a) {
 const DEV = { chain: DEVICE_CHAINS.find((c) => c.chainId === store.get('tacit-lite-device-chain')) || DEVICE_CHAINS[1], tok: null, mode: 'deposit', dest: 'addr', W: null, bal: null, key: null, quote: null, gq: {}, err: null, self: false };
 const getDeviceMods = lazy(async () => {
   const [zkm, wm, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js?cb=2f062779'), import('/evm-pool-wallet.js?cb=cfdb7659'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
+    import('/evm-pool-zk.js?cb=2f062779'), import('/evm-pool-wallet.js?cb=2f1c7179'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), ...wm, vkHash: pm.vkHash };
@@ -6332,7 +6332,7 @@ const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
     if (PSW.w) return PSW.w;
-    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=32aada81', { type: 'module' });
+    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=60da0749', { type: 'module' });
     w.onmessage = (e) => { const f = PSW.wait.get(e.data?.id); if (f) { if (!e.data.write && e.data.part == null) PSW.wait.delete(e.data.id); f(e.data); } };
     w.onerror = () => { for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); PSW.w = null; };
     return w;
@@ -14256,7 +14256,7 @@ const hxMoves = {
   go: (key, amt) => { if (HX.tab !== 'swap') return; hxMoveSet(key, amt); hxNorm(); hxGo(); },
   idle: () => { HXM.key = null; HXM.cb = null; },
   // what a move's source holds, in the card's units (18 decimals), and what Max puts in: that, less what its own fees keep back
-  warm: () => hxWarmBals(Object.values(HX_MV_SRC)),
+  warm: () => hxWarmBals(Object.values(HX_MV_SRC).filter((k) => k !== 'btc')),      // (the Bitcoin TAC row shows no amount here: reading it would load the Bitcoin wallet for nothing)
   // a pool's balance changed (something left it): read again at once, not after the minute the page keeps it
   stale: (k, at) => { const sf = HX_MV_SRC[`${hxMvCoin(k)}@${at}`], id = sf && hxPayId(sf); if (id != null && PB.pub) PB.at[String(id)] = 0; if (sf) hxWarmBals([sf]); },
   loading: (k, at) => { const sf = HX_MV_SRC[`${hxMvCoin(k)}@${at}`]; return sf ? hxLoading(sf) : false; },
@@ -14644,6 +14644,7 @@ async function hxKeep(src, cid = hxWalletChain()) {
   if (src === 'ether' && cid === 1 && HX.tab === 'send' && HX.send === 'ether' && hxSendWay()?.k === 'public') { const g = await gasNow().catch(() => null); return g ? g * 63000n + 5n * 10n ** 13n : 3n * 10n ** 15n; }   // a plain send is 21k gas, kept three times over
   if (src === 'ether') return cid !== 1 ? 2n * 10n ** 14n : ethKeep(hxWrapMode() && ownNow(['wrap']));
   if (src === 'btc') return lockPad().catch(() => 10000n);
+  if (src === 'pp') return hxDevKeep(hxPp());                 // the Pay pool's ETH: its relay's fee stays back, or the withdrawal is refused for lack of it
   return noteKeep(src);
 }
 // Under the amount, as on the swap card: what is held there and Max; with nothing held to show, the amounts most often typed, until one is
@@ -15664,8 +15665,8 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=68b8b758').catch((e) => { SWC.p = null; throw e; }));
-function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=bdf709c1').catch((e) => { SWC.p = null; throw e; }));
+function swcAsk() { if (SWC.ask && SWC.card?.busy) SWC.ask = null; else if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };
   if (SWC.el) return put();
@@ -15679,7 +15680,7 @@ function hxSwap() {
         key: { session: { get unlocked() { return !!S.key; }, get key() { return S.key; }, priv: walletPriv }, openKey: swcKey, wait: swcWait },
         // the pair and its sides are kept in this browser, the amount for the visit only, as the other tabs keep theirs
         onChange: () => { if (SWC.auto) return; const p = SWC.card.params(), amt = p.get('amt') || ''; p.delete('amt'); HX.swq = p.toString(); hxRemember(); try { sessionStorage.setItem(HX_AMT, JSON.stringify({ sig: 'swap', amt })); } catch { } },
-        onDone: () => { HXW.clear(); hxBalPaint(); if (S.key) scanPrivate(true).catch(() => {}); dashSoon(); },
+        onDone: () => { HXW.clear(); HXWB.at = 0; hxBalPaint(); if (S.key) scanPrivate(true).catch(() => {}); dashSoon(); },
         farmIt: (wei) => hxPreset('earn:wtac:public', wei ? plain(wei / E10, 8) : '', true),
       });
       if (!SWC.ask) {

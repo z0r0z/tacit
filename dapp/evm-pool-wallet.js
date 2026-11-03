@@ -222,6 +222,7 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
         const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout?.(timeoutMs) });
         const j = await r.json();
         if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { rpc: j.error });
+        if (j.result === undefined) throw new Error(`rpc: no result (HTTP ${r.status})`);
         if (found && j.result == null) { none = true; continue; }
         first = at;
         return j.result;
@@ -362,6 +363,7 @@ const V1_UNIT = 10n ** 10n;
 const sweepData = (npk, feeBps, t) => calldata(`sweepReceive(uint256,uint16,${TX_SIG})`, ['uint256', 'uint16', { tuple: TX_TYPES }], [npk, feeBps, txValues(t)]);
 // Reverts meaning another transaction landed first: prove again against the new state.
 const RACED = new Set(['StaleRoot()', 'WrongInsertionIndex()', 'UnknownMembershipRoot()', 'BadIntent()'].map((e) => hex(selector(e))));
+const ALREADY_SPENT = hex(selector('AlreadyNullified()'));
 const revertData = (e) => { for (let x = e; x; x = x.cause) { const d = x.rpc?.data?.data ?? x.rpc?.data ?? x.data?.data ?? x.data; if (typeof d === 'string' && d.startsWith('0x')) return d; } return ''; };
 
 // The router calls that pay a token pool's deposit (TacitEvmPoolRouter), as the `selfCall` of deposit/depositTo. `pull` is how the
@@ -616,14 +618,20 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // says (the cell this wallet's place falls in when it has been away, its place when it is current) and each later one
   // where the page before it ended, so pages that end before the wallet's place are passed over, and only events from its
   // place on are kept.
+  let feedBusyUntil = 0;
   async function syncFromFeed(safe) {
+    // A wallet within a few thousand blocks of the head reads the chain's logs in a call or two: a busy feed (429) is not waited for, and not asked again for half a minute.
+    const near = safe - saved.block <= 20_000;
+    if (near && Date.now() < feedBusyUntil) return;
     let ask = feedStart(chain.chainId, chain.deployBlock, saved.block + 1, safe);
     for (let pages = 0; pages < 10_000; pages++) {
       const cand = saved, from = cand.block + 1;
       if (from > safe) break;
-      const r = await keeperGet(`/events?from=${ask}`);
+      let r;
+      try { r = await keeperGet(`/events?from=${ask}`, near ? 0 : 4); } catch (e) { if (near) feedBusyUntil = Date.now() + 30_000; throw e; }
       if (Number(r.chainId) !== Number(chain.chainId) || String(r.pool).toLowerCase() !== chain.pool.toLowerCase()) throw new Error('feed is for another pool');
       const through = Math.min(Number(r.through), safe);
+      if (!Number.isInteger(through)) throw new Error('the feed named no block');
       if (through < ask) break;
       ask = through + 1;
       if (through < from) continue;
@@ -648,9 +656,11 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // Reads new events: those `confirmations` deep are kept, the rest are re-read next time. With a keeper, confirmed
   // history comes from its feed first when it can. One read at a time: each absorbs into the state the last one left,
   // so a caller arriving while one runs waits for it, then reads what came after.
-  let reading = Promise.resolve(), healedAt = 0;
-  function sync() {
-    const run = reading.catch(() => {}).then(readHealed);
+  // `maxAge` (ms): a read that finished that recently stands for this one (a screen that asks every half minute for each of its swaps reads the pool once).
+  let reading = Promise.resolve(), healedAt = 0, readAt = 0;
+  function sync(maxAge = 0) {
+    if (maxAge > 0 && Date.now() - readAt < maxAge) return reading.catch(() => {}).then(summary);
+    const run = reading.catch(() => {}).then(readHealed).then((r) => { readAt = Date.now(); return r; });
     reading = run;
     return run;
   }
@@ -662,7 +672,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       // A gap in the unconfirmed tail alone is a node a block behind, not a tree missing leaves: the next read sees it whole.
       if (e?.tail || !/ out of order /.test(e?.message || '') || Date.now() - healedAt < 600_000) throw e;
       healedAt = Date.now();
-      saved = rebuilt(); view = null; persist();
+      saved = rebuilt(); view = null; readAt = 0; persist();
       const f = feed; feed = false;
       try { return await readNew(); } finally { feed = f; }
     }
@@ -707,11 +717,11 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // A busy keeper answers 429 with Retry-After (10 s from this keeper), which a page on another origin cannot read: wait
   // what it says, 10 s when unread, at most 30 s, and ask again up to four times. A keeper that never answers gives up
   // in time (a relay may wait on the chain; everything else answers fast), so no read or action waits on it forever.
-  async function keeperFetch(path, init = {}) {
+  async function keeperFetch(path, init = {}, tries = 4) {
     if (!keeper) throw new Error('no relayer is configured for this chain');
     for (let i = 0; ; i++) {
       const r = await fetchImpl(`${keeper}${path}`, { ...init, signal: init.signal || AbortSignal.timeout?.(path === '/relay' ? 180_000 : 30_000) });
-      if (r.status !== 429 || i >= 4) return r;
+      if (r.status !== 429 || i >= tries) return r;
       const after = Number(r.headers?.get?.('retry-after'));
       await sleep(Math.min(after > 0 ? after : 10, 30) * 1000 * (0.5 + Math.random()));
     }
@@ -731,8 +741,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     }
     return q;
   }
-  async function keeperGet(path) {
-    const r = await keeperFetch(path);
+  async function keeperGet(path, tries = 4) {
+    const r = await keeperFetch(path, {}, tries);
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `relayer returned ${r.status}`);
     return path.startsWith('/quote') ? vetQuote(j) : j;
@@ -801,6 +811,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     catch (e) {
       const d = revertData(e);
       if (RACED.has(d.slice(0, 10))) return null;
+      // notes this wallet holds that the pool has spent: said so, and the state read again from the chain (the relay path does the same)
+      if (d.slice(0, 10) === ALREADY_SPENT) throw Object.assign(new Error('Those funds were already spent. Check Activity.'), { said: true, spent: true });
+      // no revert in the answer: the check itself failed (every node), which is not the pool refusing the call
+      if (!d && !e?.rpc) throw Object.assign(new Error('Could not check the transaction just now, so nothing was sent. Try again in a moment.'), { said: true });
       throw new Error(`the transaction would revert: ${e.message || e}${d ? ` (${d.slice(0, 10)})` : ''}`);
     }
     onStep('confirm in your wallet');
@@ -852,7 +866,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     } catch { return null; }
     for (let i = 0; i < 3; i++) {
       let t = state().tree;
-      if (BigInt(r.root) !== t.root) { await sync(); t = state().tree; }
+      if (BigInt(r.root) !== t.root) { await sync().catch(async (e) => { await releaseSlot(r.id); throw e; }); t = state().tree; }
       if (BigInt(r.root) === t.root) {
         const c = t.clone();
         c.append(r.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
@@ -944,7 +958,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const r = await keeperPost('/relay', { tx, ...extra, ...(slot ? { reservation: slot } : {}) }).catch(() => { throw unanswered(); });
         // A gateway's own timeout or error (502-504, 520-524) says nothing of whether the relay sent it: the same as no answer.
         // The relay's own refusals come with its JSON error (a 503 when it cannot front the gas or is full) and send nothing.
-        if (((r.status >= 502 && r.status <= 504) || (r.status >= 520 && r.status <= 524)) && !r.body?.error) throw unanswered();
+        if (((r.status >= 502 && r.status <= 504) || (r.status >= 520 && r.status <= 524) || r.status === 200) && !r.body?.error && !r.body?.txHash) throw unanswered();
         if (r.status !== 200 || !r.body.txHash) {
           if (slot) await releaseSlot(slot);
           const why = String(r.body?.error || '');
@@ -965,7 +979,11 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const c = selfCall ? selfCall(tx) : { to: chain.pool, data: transactData(tx) };
         // a call that names its own value (the zap, sent no ETH) is sent that; a deposit into the ETH pool is otherwise sent its amount
         try { h = await sendSelf(c.to, c.data, c.value ?? (extAmount > 0n && !isToken ? extAmount : 0n), onStep, c.before); }
-        catch (e) { if (made && tx === made.tx) aheadDeposit ||= ahead; throw e; }   // the proof made ahead stands for the next try: if this send did land, that one is refused before the wallet
+        catch (e) {
+          if (made && tx === made.tx) aheadDeposit ||= ahead;   // the proof made ahead stands for the next try: if this send did land, that one is refused before the wallet
+          if (e?.spent) await rescanFromChain().catch(() => {});
+          throw e;
+        }
         if (!h) { treeRefused = true; continue; }
       }
       for (const n of ins) pending.add(n.nf);
@@ -976,7 +994,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const seen = await waitFor(() => !state().notes.some((n) => spent.has(n.nf)), 60_000).then(() => true, () => false);
         // Not seen landing (no receipt in time, or dropped or replaced): its notes come back if the chain still has
         // them unspent a while later. A late landing then only makes a spend of them fail and read the chain again.
-        if (!seen) setTimeout(() => { sync().then(() => { if (state().notes.some((n) => spent.has(n.nf))) for (const nf of spent) pending.delete(nf); }).catch(() => {}); }, 15 * 60_000).unref?.();
+        if (!seen) setTimeout(() => { sync().catch(() => {}).then(() => { for (const nf of spent) pending.delete(nf); }); }, 15 * 60_000).unref?.();
         return h;
       }
       for (const n of ins) pending.delete(n.nf);
@@ -988,11 +1006,14 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   }
 
   // Forgets the synced state and rebuilds it from chain logs alone (no feed).
+  // (Overlapping rescans share one switch: the feed is back on when the last has finished, not off for good because a second one found it already off.)
+  let feedOffs = 0, feedWas = false;
   async function rescanFromChain() {
     await reading.catch(() => {});
-    saved = rebuilt(); view = null; persist();
-    const f = feed; feed = false;
-    try { return await sync(); } finally { feed = f; }
+    saved = rebuilt(); view = null; readAt = 0; persist();
+    if (!feedOffs++) feedWas = feed;
+    feed = false;
+    try { return await sync(); } finally { if (!--feedOffs) feed = feedWas; }
   }
 
   // A quote above `maxFee`, the most the caller showed for it, is refused so the spend never costs more than shown. The
@@ -1157,13 +1178,18 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // `selfCall(tx)` → { to, data, value?, before? }: what the signer submits in place of pool.transact; a token pool takes its
     // deposit through the router (routerDeposit), with `before` (an approval) sent in the same batch; the ETH pool can take one
     // through the zap (zapDeposit), from a token swapped for the deposit's ETH in the same transaction.
-    async deposit({ amount, selfCall = null, onStep = () => {} }) {
+    // `readAt`: when the caller began reading the pool just before this call. That read stands for the one made here, when it began after any proof made ahead was
+    // done and is a few seconds old at most; a head that moves after it is found by the check before the wallet, which proves again.
+    async deposit({ amount, selfCall = null, onStep = () => {}, readAt = 0 }) {
       const a = BigInt(amount);
       if (a <= 0n) throw new Error('enter an amount');
       const ahead = takeAheadDeposit(a);
       if (ahead && !ahead.ready) onStep('proving on this device');
-      await ahead?.done.catch(() => {});                          // a proof still being made is waited for before the pool is read, so a head that moved meanwhile is found
-      const before = (await sync()).balance;
+      let before;
+      try {
+        await ahead?.done.catch(() => {});                          // a proof still being made is waited for before the pool is read, so a head that moved meanwhile is found
+        before = (readAt && Date.now() - readAt < 5000 && (!ahead || (ahead.at ?? Infinity) <= readAt) ? summary() : await sync()).balance;
+      } catch (e) { if (ahead && !aheadDeposit) aheadDeposit = ahead; throw e; }   // a read that failed does not cost the proof
       const h = await transact({ ins: [], outs: [{ to: self, value: a }, null], extAmount: a, selfCall, ahead, onStep });
       // Returns once the note is spendable here (log providers can trail the receipt by a few seconds).
       await waitFor(() => summary().balance >= before + a, 60_000).catch(() => {});
@@ -1182,7 +1208,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         await sync();
         const tree = state().tree, sealed = [sealNote(zk, { to: self, value: a, asset }), null];
         const tx = await proveTx({ tree, inputs: [{ dummy: true }, { dummy: true }], sealed, extAmount: a, recipient: ZERO, relayer: ZERO, fee: 0n });
-        mine.ready = true;
+        mine.ready = true; mine.at = Date.now();
         return { tx, root: tree.root, size: tree.size };
       })();
       mine.done.catch(() => { if (aheadDeposit === mine) aheadDeposit = null; });

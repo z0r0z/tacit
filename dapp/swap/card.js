@@ -16,7 +16,7 @@ import { checkSnwapCall, SNWAP_EXECUTORS, SAFE_EXECUTOR } from '/zrouter-guard.j
 import { rewardPop } from '/reward-pop.js?cb=1b53f6d4';
 import { makePointsNote } from '/points-note.js?cb=dc44d257';
 import { aprText, readPrecision, readSpot, privateFarms } from '/trade/farm-read.js?cb=112a01b9';
-import { SERVED } from '/evm-pool-tokens.js?cb=e1ab5d24';
+import { SERVED } from '/evm-pool-tokens.js?cb=a3c182f7';
 import { netPicker } from '/net-pick.js?cb=8f57c360';
 
 const CHAINLINK = { eth: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', btc: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c' };
@@ -49,6 +49,7 @@ const heavy = (method, params) => rpc(method, params, SCAN_NODES, { health: scan
 export const ethCall = (to, data, block = 'latest', o = {}) => (o.gas ? heavy : light)('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: '0x' + BigInt(o.value).toString(16) } : {}), ...(o.gas ? { gas: o.gas } : {}) }, block, ...(o.state ? [o.state] : [])]);
 export const batch = async (calls) => V.decAggregate3(await ethCall(MULTICALL3, V.encAggregate3(calls)), calls.length);
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
+const standIn = () => '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
 const PN = makePointsNote({ read: () => fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null)) });
 const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(/class="splitbar"/.test(x.note || '') ? '' : ' · ');
@@ -192,7 +193,9 @@ const tacitKey = (k) => R.tacitToken(k);
 const POOLID = (k) => (k === 'teth' ? CETH_ID : R.POOL_ID[Object.keys(R.POOL_ID).find((a) => lc(a) === k)]);
 
 // ── the output to another address (public swaps only; never read from the address bar, so a shared link cannot name one) ──
-const NOT_A_WALLET = new Set([R.ZERO, R.TAC, R.CUSD, R.CBTC, R.WETH, R.ZROUTER, R.ZQUOTER, R.PERMIT2, R.PRECISION_ROUTE, R.PRECISION_GUARD, R.TACIT_AMM, R.TACIT_AMM_ROUTE, R.CONF_ROUTER, PRECISION_POOL, MULTICALL3, SAFE_EXECUTOR, ...Object.keys(SNWAP_EXECUTORS)].map(lc));
+// the pool Swap privately deposits into, its router and its zap (later.js)
+const LT_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', LT_ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', LT_ZAP = '0x0000008EbBF2323f95c4fBc18254f3D65C53998c';
+const NOT_A_WALLET = new Set([LT_POOL, LT_ROUTER, LT_ZAP, R.ZERO, R.TAC, R.CUSD, R.CBTC, R.WETH, R.ZROUTER, R.ZQUOTER, R.PERMIT2, R.PRECISION_ROUTE, R.PRECISION_GUARD, R.TACIT_AMM, R.TACIT_AMM_ROUTE, R.CONF_ROUTER, PRECISION_POOL, MULTICALL3, SAFE_EXECUTOR, ...Object.keys(SNWAP_EXECUTORS)].map(lc));
 // EIP-55: the capitals of an address are its checksum
 const checksum = (a) => {
   const body = lc(a).slice(2), h = Array.from(keccak_256(new TextEncoder().encode(body)), (x) => x.toString(16).padStart(2, '0')).join('');
@@ -437,7 +440,11 @@ const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 // What goes into the pool is counted in 8 decimals, its unit (a private balance, or ETH made private): a longer amount (Max on a wallet balance,
 // a pasted figure) is cut there, never refused.
 const poolUnits = () => S.inP || (S.outP && isEth(S.pay));
-const fitAmt = (s, on = poolUnits()) => (on ? String(s).replace(/([.,]\d{8})\d+$/, '$1') : s);
+// ETH into TAC out of the private pool (Swap privately, or a Pay pool exit) is swapped by one pool whose unit is 1e10 wei: an amount with more decimals cannot be swapped out
+const tacSwap = () => isEth(S.pay) && S.get === lc(R.TAC);
+const tacUnits = () => tacSwap() && (exiting() || laterOn(kindOf(S.pay, S.get)));
+const alignTac = (w) => w - (w % R.UNIT);
+const fitAmt = (s, on = poolUnits() || tacUnits()) => (on ? String(s).replace(/([.,]\d{8})\d+$/, '$1') : s);
 // What a swap from the wallet's ETH leaves behind for the network fee, in wei: what Max keeps back, and what an amount is checked against.
 const gasKeep = () => (S.gasPrice || 3n * 10n ** 9n) * 400000n;
 // What a private swap from the wallet's ETH also keeps back for the relay's deposit tip: the last one quoted, twice over, or 0.001 ETH before any.
@@ -563,6 +570,14 @@ async function quote(my, wei) {
     const lt = await ltLoad(), v = await within(lt.mod.quoteThrough({ ethCall, venues, pay: S.pay, get: S.get, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 25e3, 'zQuoter did not answer in time. Try again.');
     if (!v) return done({ rows: [], why: `No onchain route takes ${esc(pay.sym)} through the private pool to ${esc(get.sym)} right now.`, lt: 'zap' });
     return done({ rows: [{ k: 'later', name: `${v.r0.name} → ETH pool → ${v.r1.name}`, note: '', out: v.r1.out, min: v.r1.min, via: { ...v, spend: (wei * v.ethWei) / v.r0.out }, gas: GAS.zap, best: true }], lt: 'zap' });
+  }
+  // Swap privately into TAC is swapped out by later.js's routeOutTac: one pool, in the pool's unit. That is the price shown (not the best of the split, which
+  // the swap out cannot use), asked for a stand-in so no node is shown the wallet or where the TAC goes.
+  if (kind === 'tac' && isEth(S.pay) && laterOn(kind)) {
+    const lt = await ltLoad(), w = alignTac(wei);
+    const r = w > 0n ? await within(lt.mod.routeOutTac({ venues, amount: w, to: standIn(), slippageBps: S.slip, deadline: chainDeadline(1200) }), 25e3, 'The pools did not answer in time. Try again.') : null;
+    if (!r) return done({ rows: [], why: 'No pool can fill this right now.' });
+    return done({ rows: [{ k: r.name === 'Precision pool' ? 'precision' : 'tacit-amm', name: r.name, note: '', out: r.out, min: r.min, gas: GAS.tac, best: true }], dir: 'ETH_TO_TAC' });
   }
   if (kind === 'tac') {
     const dir = isEth(S.pay) ? 'ETH_TO_TAC' : 'TAC_TO_ETH';
@@ -871,7 +886,7 @@ const shareSync = () => {
     if (u) { const w = new URL(u); want = w.pathname + (w.hash ? cur.search : w.search || cur.search) + w.hash; if (!w.hash) { const q = new URLSearchParams(cur.search); for (const [k, v] of new URLSearchParams(w.search)) q.set(k, v); want = cur.pathname + (q.toString() ? `?${q}` : '') + cur.hash; } }
     else { const q = new URLSearchParams(cur.search); q.delete('amt'); want = cur.pathname + (q.toString() ? `?${q}` : '') + (/^#card=(?:shield|earn|send):/.test(cur.hash) ? '' : cur.hash); }
     // a private swap's amount is not written into the address bar (history, referrers, a screenshot): the copy link still carries it when the holder presses it
-    if (S.inP || S.outP || laterOn(kindOf(S.pay, S.get))) { const w2 = new URL(want, location.origin); w2.searchParams.delete('amt'); want = w2.pathname + w2.search + w2.hash; }
+    if (S.inP || S.outP || placed() || laterOn(kindOf(S.pay, S.get))) { const w2 = new URL(want, location.origin); w2.searchParams.delete('amt'); w2.hash = w2.hash.replace(/&amt=[^&]*/, ''); want = w2.pathname + w2.search + w2.hash; }
     if (want !== at) history.replaceState(null, '', want);
   } catch { }
 };
@@ -894,7 +909,7 @@ function paintQuote() {
   $('#get-usd').innerHTML = vo != null ? `≈ ${usd(vo)}${m != null && Math.abs(m) >= 0.0005 ? ` <span class="${m <= BAD ? 'warn' : m > 0.02 ? 'ok' : 'mute'}">(${m > 0 ? '+' : '−'}${Math.abs(m * 100).toFixed(Math.abs(m) >= 0.1 ? 0 : 2)}%)</span>` : ''}` : '';
   const busy = !!q?.busy, first = busy && !r;
   rows.classList.toggle('stale', busy); rc.classList.toggle('stale', busy);
-  const list = first && kind === 'tac' ? [{ k: 'precision', name: 'Precision pool' }, { k: 'tacit-amm', name: 'Tacit pool' }, { k: 'split', name: 'Both pools' }] : (q?.rows || []);
+  const list = first && kind === 'tac' && !laterOn(kind) ? [{ k: 'precision', name: 'Precision pool' }, { k: 'tacit-amm', name: 'Tacit pool' }, { k: 'split', name: 'Both pools' }] : (q?.rows || []);
   rows.hidden = !(list.length > 1);
   // whether routes are still being asked for, shown or not; a list that is not shown holds no rows of an older quote
   rows.toggleAttribute('data-more', q?.more > 0);
@@ -962,6 +977,7 @@ function paintQuote() {
   rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${href ? `<a href="${esc(href)}">${esc(v)}</a>` : act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : esc(v)}</dd></div>`).join('');
   paintLater(q, r, kind);
   const gate = r && !q.busy && m != null && m <= GATE;
+  if (gate) { S.gapNow = Math.abs(m); if (S.ack && S.gapNow > (S.ackGap ?? 0) + 0.02) S.ack = false; }      // ticked for the gap that was shown: a price that fell further asks again
   if (busy) { } else if (gate) {
     const pub = r.priv ? '.' : ', then make it public.';
     const alt = S.get === lc(R.CUSD) ? ` <a href="/vault/#btc">Borrow cUSD at $1</a>${pub}` : S.get === lc(R.CBTC) ? ` <a href="/vault/#btc">Mint cBTC 1:1</a>${pub}` : '';
@@ -1050,7 +1066,7 @@ function button(q, r, kind, gate) {
 }
 function lineFor(q, r, kind) {
   if (!kind) return S.inP && S.outP && S.pay === S.get ? 'Pick another coin to get.' : S.inP && tacitKey(S.get) && !S.outP ? `To take it out as ${esc(tokenOf(S.get).sym)}, <a href="/">use the Tacit app</a>.` : !S.inP && S.outP && tacitKey(S.pay) ? `To make ${esc(tokenOf(S.pay).sym)} private, <a href="/">use the Tacit app</a>.` : 'No route for this pair.';
-  if (q?.err) return `<span class="err">${esc(q.err)}</span>`;
+  if (q?.err && !q.busy) return `<span class="err">${esc(q.err)}</span>`;
   if (!q?.busy && S.amt && (q?.none || !r) && q?.why) return esc(q.why);
   return '';
 }
@@ -1377,20 +1393,21 @@ const LATER = { on: false, auto: false, pct: 25, rand: Math.random(), fee: null,
 const PLANS_KEY = 'tacit-swap-later-v1';
 const plans = () => { try { return (JSON.parse(localStorage.getItem(PLANS_KEY) || '[]') || []).filter((p) => p?.id); } catch { return []; } };
 let LTP = null, LT = null;
-const pageSigner = { get address() { return W.account; }, ready: async () => { if (!W.account) await H.connect(); await wallet.ensureMainnet(); },
-  send: ({ to, data, value }) => wallet.sendTx({ to, data, value: BigInt(value || 0), from: W.account, label: 'Swap privately' }), rpc: (m, p) => rpc(m, p),
-  signTyped: (typed) => signTyped(typed, W.account), receipt: (h) => wallet.receipt(h),
+// `pin`: the account a press was made for. A wallet that switches account while the proof is made does not deposit from the new one.
+const pageSigner = { pin: null, get address() { return pageSigner.pin || W.account; }, ready: async () => { if (!W.account) await H.connect(); await wallet.ensureMainnet(); },
+  send: ({ to, data, value }) => { if (pageSigner.pin && lc(W.account || '') !== lc(pageSigner.pin)) throw new Error('The wallet switched account since you pressed. Nothing was sent.'); return wallet.sendTx({ to, data, value: BigInt(value || 0), from: pageSigner.pin || W.account, label: 'Swap privately' }); }, rpc: (m, p) => rpc(m, p),
+  signTyped: (typed) => signTyped(typed, pageSigner.pin || W.account), receipt: (h) => wallet.receipt(h),
   // an approval and the zap in one confirmation, where the host's wallet sends batches (EIP-5792)
   canBatch: () => (wallet.canBatch ? wallet.canBatch() : false),
-  get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: W.account, sent, label: 'Swap privately' }) : null; } };
+  get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: pageSigner.pin || W.account, sent, label: 'Swap privately' }) : null; } };
 // Swap privately's deposit needs the pool wallet's modules (some 220 KB), which were fetched when it was pressed: once its price is up they are fetched, so the press finds them in.
 // Swap privately's deposit is proved in this browser: its proving key (28.6 MB) and circuit (4.9 MB), kept in the browser's cache once fetched as /pay/eth keeps them, are fetched and loaded into
 // a worker when the swap is pressed, and the wallet is asked only after the proof. They are fetched and the prover started once the address typed for the swap is a valid one, which is someone about to press,
 // so the press has only the proof to make. Not on a data saver or a slow link, and not again within a minute of a failure.
 let proverAsked = 0;
-function proverSoon() {
+function proverSoon(force = false) {
   const net = navigator.connection;
-  if (proverAsked || net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || !laterOn(kindOf(S.pay, S.get))) return;
+  if (proverAsked || net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || !(force || exiting() || laterOn(kindOf(S.pay, S.get)))) return;
   proverAsked = Date.now();
   ltLoad().then((lt) => lt.warm()).catch(() => { setTimeout(() => { proverAsked = 0; }, 60e3); });
 }
@@ -1413,6 +1430,7 @@ function depositSoon(q) {
   if (net?.saveData || /^(slow-)?2g$/.test(net?.effectiveType || '') || dep == null || k === depAsked || (depDeclined && !depKeyed())) return;
   depAsked = k;
   const ask = () => {
+    if (!ROOT?.isConnected) { depAsked = ''; return; }          // the front page takes the card off the page on its other tabs: no sheet is opened over them
     if (document.hidden) { depAsked = ''; document.addEventListener('visibilitychange', () => { if (!document.hidden && S.q) paintQuote(); }, { once: true }); return; }
     const left = depTouched + 2000 - Date.now();
     if (left > 0) { depTimer = setTimeout(ask, left); return; }
@@ -1425,7 +1443,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=0f35a1a8').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=cc0441ab').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1445,15 +1463,18 @@ function hopDefault() {
   if (LATER.on && LATER.auto && !S.busy && !isEth(S.pay)) { LATER.on = false; LATER.auto = false; return true; }
   if (LATER.on || S.hopPublic || hopPref() === 'public' || S.busy || !isEth(S.pay) || S.inP || S.outP || placed() || inPool(S.get) || outRoute(S.get) !== 'later') return false;
   LATER.on = true; LATER.auto = true; laterUp();
+  if (S.amt) S.amt = fitAmt(S.amt);
   return true;
 }
 // Swap privately turned on or off by its switch: the way is kept for the browser, the swap is priced again for it (the hop
 // swaps out through zQuoter alone), and an address typed for the hop is not carried into a public swap
 function hopSet(on) {
   LATER.on = on; hopSave(on ? 'private' : 'public');
+  if (on && S.amt) S.amt = fitAmt(S.amt);
   if (on) laterUp(); else clearTo();
   changed(); paint();
-  if (S.q && kindOf(S.pay, S.get) === 'agg') requote(true);
+  // the swap is priced as the swap out will make it (a token: zQuoter's route; TAC: one pool, not the split), so the figure on screen is asked again
+  if (S.q && ['agg', 'tac'].includes(kindOf(S.pay, S.get))) requote(true);
 }
 // TAC can end in a private balance: the key's own (the field empty), or a Tacit address typed there (tacit1… or name.wei); a 0x address is paid as such
 // (a swap through a token's own pool pays an address only)
@@ -1464,7 +1485,7 @@ const laterGas = () => { if (laterDest().kind === 'address') return 0n; const g 
 // the deposit and its extra as later.js draws them (a random share around the slider's, rounded up), drawn again only when the slider moves
 // (from a token the swap is the ETH its route into the pool pays, three figures rounded down)
 // (through the token's own pool, the swap is the amount typed and the fee is that pool's relay's, both in the token)
-const laterSwapWei = (q) => (isEth(S.pay) || picked(q)?.hop ? q?.wei : picked(q)?.via?.ethWei);
+const laterSwapWei = (q) => (isEth(S.pay) || picked(q)?.hop ? (tacSwap() && q?.wei ? alignTac(q.wei) : q?.wei) : picked(q)?.via?.ethWei);
 const laterFee = (q) => (picked(q)?.hop ? tokHop()?.fee ?? null : LATER.fee);
 const laterAmounts = (q) => (laterSwapWei(q) && laterFee(q) != null && LT ? LT.mod.depositFor({ swapWei: laterSwapWei(q), feeWei: laterFee(q), pct: LATER.pct, rand: () => LATER.rand, gasWei: picked(q)?.hop ? 0n : laterGas() }) : null);
 const laterExtra = (q) => laterAmounts(q)?.extraWei ?? 0n;
@@ -1518,7 +1539,7 @@ function readFee() {
 }
 // The box under the receipt: one row that switches it and, while it is on, the buffer and the three steps it takes. Drawn again only when it is
 // switched, so the slider keeps its hold while dragged; its figures are written in place.
-const eth2 = (wei) => { const n = Number(wei) / 1e18; return tidy(n >= 1 ? n.toFixed(2) : n.toPrecision(2)); };
+const eth2 = (wei) => { const n = Number(wei) / 1e18; return tidy(n >= 1 || !(n > 0) ? n.toFixed(2) : n.toFixed(Math.min(18, 1 - Math.floor(Math.log10(n))))); };
 const LATER_TIP = 'Deposit now into a private pool and swap out later, so nothing onchain links your wallet to where the tokens go.';
 function paintLater(q, r, kind) {
   // kept while on with no route through the pool, so it can be switched off again; and kept while a first quote is being made, so the button below does not move when it lands
@@ -1552,7 +1573,6 @@ function paintLater(q, r, kind) {
     : `${tin != null ? `${inTok(tin)} sold for ${eth2(dep)} ETH in the same transaction: ` : ''}The swap (${eth2(laterSwapWei(q))} ETH), the relay’s fee for the swap out set aside twice (${eth2(2n * LATER.fee)} ETH) and the buffer (${eth2(laterExtra(q))} ETH), rounded up. What is not swapped stays in your private balance.`;
 }
 // The row that says which pool the swap goes through, from a wallet token: its own (with the notes each holds), or the offer to open it.
-const LT_POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
 function viaHtml(th) {
   const sym = esc(tokenOf(S.pay).sym);
   if (!hopOpen(th)) return `<div class="via"><span>No private ${sym} pool yet</span><button type="button" class="link" data-open-pool title="One transaction from your wallet (about 4.4M gas) opens a private ${sym} pool for everyone, served by the relay${th.served ? '' : ' on a daily allowance of gas'}. Its first deposits have little company; until it is open, the swap goes through the ETH pool.">Open one</button></div>`;
@@ -1590,7 +1610,7 @@ async function laterGo() {
   // button showed by more than the slippage
   const pay = v ? { token: S.pay, sym: pt.sym, dec: pt.dec, amountIn: q.wei, min: v.r0.min, most: (tin * BigInt(10000 + S.slip)) / 10000n, slippageBps: S.slip } : null;
   clearTimeout(depTimer);
-  S.busy = true; S.note = ''; paintQuote();
+  S.busy = true; S.note = ''; pageSigner.pin = W.account || null; paintQuote();
   let moved = false, popped = false;
   const earned = laterPts(q, picked(q));
   try {
@@ -1602,12 +1622,12 @@ async function laterGo() {
     say('<span class="ok">Deposited.</span> The swap waits below.', 'ok', true);
   } catch (e) {
     moved = !!e?.moved;
-    const stopped = e instanceof UserStopped || e?.userStopped;
+    const stopped = e instanceof UserStopped || e?.userStopped || e?.unlockCancelled;
     // a deposit that was sent and then failed to confirm is marked unsure by the steps: say so, so no second deposit is sent
     const unsure = !stopped && plans().some((x) => x.state === 'unsure' && Date.now() - x.at < 10 * 60e3);
     say(stopped ? 'Nothing was sent.' : `${esc(e?.message || String(e))}${unsure ? ' It may have been sent: check the steps below before depositing again.' : ''}`, stopped ? '' : 'err', true);
   }
-  finally { S.busy = false; depAsked = ''; changed(); paint(); paintSteps(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
+  finally { S.busy = false; pageSigner.pin = null; depAsked = ''; changed(); paint(); paintSteps(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
   if (moved) requote(true);
 }
 // Each kept swap as steps: its deposit, its wait (the pool's new notes since, once the key is open here) and its swap out, with the price to
@@ -1615,10 +1635,15 @@ async function laterGo() {
 const BLEND = {};
 const ago_ = (t, to = Date.now()) => { const m = Math.max(0, Math.floor((to - t) / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 const stepLi = (state, n, title, detail = '', action = '') => `<li class="${state}"${state === 'now' ? ' aria-current="step"' : ''}><i class="mk" aria-hidden="true">${state === 'done' ? '✓' : state === 'fail' ? '!' : state === 'now' ? '' : n}</i><div class="t"><span>${title}</span>${detail ? `<small>${detail}</small>` : ''}</div>${action ? `<div class="a">${action}</div>` : ''}</li>`;
+let STEPS_HTML = null;
 function paintSteps() {
-  const el = $('#steps'), ps = plans().filter((p) => p.state !== 'done' || Date.now() - (p.doneAt || 0) < 864e5).slice(0, 6);
+  // every swap still going is shown (a waiting one is not pushed out of view by newer ones); finished ones fill what is left of six places
+  const all = plans().filter((p) => p.state !== 'done' || Date.now() - (p.doneAt || 0) < 864e5);
+  let room = Math.max(0, 6 - all.filter((p) => p.state !== 'done').length);
+  const el = $('#steps'), ps = all.filter((p) => p.state !== 'done' || room-- > 0);
   el.hidden = !ps.length;
-  el.innerHTML = ps.map((p) => {
+  // drawn again only when it has changed: a button with the keyboard's focus, or under a press, is not replaced by the half-minute read of the blend
+  const html = ps.map((p) => {
     const b = BLEND[p.id], o = LATER.offers[p.id], id = esc(p.id), hd = p.hop ? Number(p.hop.dec) : 18, unit = p.hop ? p.hop.sym : 'ETH', amt = tidy(amtFmt(BigInt(p.swapWei), hd));
     const link = (h) => `<a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer" aria-label="Transaction ${esc(h.slice(0, 10))}">${esc(h.slice(0, 8))}…↗</a>`;
     const pool = !!p.dest && p.dest.kind !== 'address', shielding = p.state === 'shielding', held = p.state === 'held';
@@ -1626,7 +1651,7 @@ function paintSteps() {
     const depDoubt = !deposited && !stopped && (p.state === 'unsure' || Date.now() - p.at > 3 * 60e3);
     const swapDoubt = deposited && !done && (p.state === 'unsure' || (swapping && Date.now() - (p.swapAt || p.at) > 10 * 60e3));
     const marks = b ? Math.min(5, Math.ceil(b.since / 2)) : 0;
-    const meter = b ? ` <span class="mix" role="img" aria-label="Mixed with ${b.since} since yours">${[0, 1, 2, 3, 4].map((i) => `<i${i < marks ? ' class="on"' : ''}></i>`).join('')}</span>` : '';
+    const meter = b ? ` <span class="mix" role="img" aria-label="Mixed with ${Math.ceil(b.since / 2)} other transactions since yours">${[0, 1, 2, 3, 4].map((i) => `<i${i < marks ? ' class="on"' : ''}></i>`).join('')}</span>` : '';
     const left = p.swapAt || p.doneAt, inFor = left ? ago_(p.depositedAt || p.at, left) : ago_(p.depositedAt || p.at);
     const mix = b ? `${b.since ? `mixed with ${b.since} since yours` : 'nothing new in the pool yet'} · ${inFor}${meter}` : left ? inFor : `${inFor} so far`;
     const check = `<button type="button" class="btn sm ghost" data-later-check="${id}">Check it</button>`;
@@ -1647,7 +1672,7 @@ function paintSteps() {
     const offer = waiting && o ? `<div class="offer"><div><small>You get at least</small><b>${esc(tidy(amtFmt(o.min, dec)))} ${esc(p.sym)}</b>${o.ks ? `<small>KyberSwap ${esc(tidy(amtFmt(o.ks, dec)))}</small>` : ''}</div>`
       + `<div class="acts"><button type="button" class="btn" data-later-ok="${id}" data-via="${self ? 'self' : 'relay'}">${self ? 'Confirm from this wallet' : 'Confirm swap'}</button><button type="button" class="btn ghost" data-later-no="${id}">Not now</button></div></div>` : '';
     // the one thing to do while it waits: swap it out now (the price is shown first, and nothing is sent until it is confirmed)
-    const cta = waiting && !o ? `<div class="cta"><button type="button" class="btn" data-later-go="${id}">${out3 ? 'Pay out now' : 'Swap now'}</button><small>${p.held ? 'You see the price and confirm it before anything is sent.' : b?.since ? `Mixed with ${b.since} other deposit${b.since > 1 ? 's' : ''} since yours. Swap now, or wait for more. You confirm the price first.` : 'The longer it waits, the more deposits mix with it. You confirm the price before anything is sent.'}</small></div>` : '';
+    const cta = waiting && !o ? `<div class="cta"><button type="button" class="btn" data-later-go="${id}">${out3 ? 'Pay out now' : 'Swap now'}</button><small>${p.held ? 'You see the price and confirm it before anything is sent.' : b?.since ? `Mixed with ${Math.ceil(b.since / 2)} other transaction${b.since > 2 ? 's' : ''} in the pool since yours. Swap now, or wait for more. You confirm the price first.` : 'The longer it waits, the more deposits mix with it. You confirm the price before anything is sent.'}</small></div>` : '';
     const chip = stopped || depDoubt || swapDoubt ? ['Needs a look', 'err'] : done ? ['Done', 'ok'] : swapping || shielding ? ['Swapping', ''] : !deposited ? ['Depositing', ''] : waiting && o ? ['Confirm price', ''] : waiting ? ['Ready', 'ok'] : null;
     const selfOk = p.refused && waiting && W.account && lc(W.account) !== p.from;
     const note = p.err && !done ? `<p class="note ${stopped || depDoubt || swapDoubt ? 'err' : 'warn'}" role="status">${esc(p.err)}${selfOk ? ` <button type="button" class="link" data-later-self="${id}">Send it from this wallet</button>` : ''}</p>` : '';
@@ -1664,11 +1689,14 @@ function paintSteps() {
       : done ? `Done. The rest of the deposit stays private in the pool. <a href="${seeIt}">See it →</a>` : '';
     return `<section class="plan" aria-label="Private swap of ${esc(amt)} ${esc(unit)} to ${esc(p.sym)}"><header><svg class="tk sm" aria-hidden="true"><use href="#tk-peth"/></svg><b>${esc(amt)} ${esc(unit)} → ${esc(p.sym)}</b><small>${esc(where)}</small>${chip ? `<em class="chip ${chip[1]}">${chip[0]}</em>` : ''}${x}</header>${now ? `<p class="now">${now}</p>` : ''}<ol class="st">${s1}${s2}${s3}${s4}</ol>${offer}${cta}${note}</section>`;
   }).join('');
+  if (html !== STEPS_HTML || el.innerHTML === '') { el.innerHTML = html; STEPS_HTML = html; }
 }
 // Swap now: the route read now (with the stand-in) and shown with KyberSwap's figure; Confirm sends it while it pays at least that.
 async function laterOffer(id, via = 'relay') {
   const p = plans().find((x) => x.id === id);
   if (!p || S.busy) return;
+  if (p.state !== 'waiting') { paintSteps(); return; }          // moved on (here or in another tab) since it was drawn
+  proverSoon(true);                                             // the swap out is proved when it is confirmed: the files load while the price is read and checked
   S.busy = true; paintQuote(); say('Reading the price…');
   try {
     const lt = await ltLoad(), o = await lt.offer(p, { slippageBps: S.slip });
@@ -1690,6 +1718,7 @@ async function laterSwap(id, via = 'relay') {
   const p = plans().find((x) => x.id === id);
   let shown = LATER.offers[id];
   if (!p || S.busy || !shown) return;
+  if (p.state !== 'waiting') { delete LATER.offers[id]; paintSteps(); return; }
   if (via === 'self' && !confirm('This wallet pays for the swap out and is seen sending it. Send it from this wallet?')) return;
   S.busy = true; paintQuote();
   let again = false;
@@ -1724,6 +1753,7 @@ async function laterSwap(id, via = 'relay') {
 async function laterShield(id) {
   const p = plans().find((x) => x.id === id);
   if (!p || S.busy) return;
+  if (p.state !== 'shielding' && p.state !== 'held') { paintSteps(); return; }
   S.busy = true; paintQuote(); paintSteps();
   try {
     const lt = await ltLoad();
@@ -1735,7 +1765,7 @@ async function laterShield(id) {
 }
 async function readBlend() {
   const ps = plans().filter((p) => p.state === 'waiting');
-  if (!ps.length || !LT || !PV?.unlocked) return;
+  if (!ps.length || !LT || !depKeyed()) return;
   for (const p of ps) { try { BLEND[p.id] = await LT.blend(p); } catch { } }
   paintSteps();
 }
@@ -1770,18 +1800,26 @@ async function exitPool(k) {
 }
 async function quoteExit(my, wei) {
   const pay = tokenOf(S.pay), get = tokenOf(S.get);
+  if (tacSwap()) wei = alignTac(wei);                 // ETH into TAC is swapped in the Tacit pool's unit
   const done = (q) => { if (my !== S.seq) return; S.q = { ...q, kind: 'exit', wei, at: now() }; paint(); };
-  const lt = await ltLoad(), pool = exitOf()?.wallet ? { open: true, fee: null, hop: null } : await exitPool(S.pay);
-  if (!pool.open) return done({ rows: [], why: `The private ${pay.sym} pool is not open yet.` });
-  if (pool.fee == null && !exitOf()?.wallet) return done({ rows: [], why: `The relay is not quoting for the private ${pay.sym} pool right now. Try again in a moment.` });
-  if (S.pay === S.get) return done({ rows: [{ k: 'exit', name: `${pay.sym} itself`, out: wei, min: wei, best: true }], fee: pool.fee });
-  const stand = '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join(''), deadline = chainDeadline(1200);
-  const out = exitOf()?.wallet && !isEth(S.pay)
+  const lt = await ltLoad();
+  // The route is asked while the pool's fee is read (neither waits on the other); a route that fails is told after the pool's own answers, which come first.
+  const stand = standIn(), deadline = chainDeadline(1200);
+  const price = () => {
+    const out = exitOf()?.wallet && !isEth(S.pay)
     ? A.bestRoute({ ethCall, to: PREVIEW, refundTo: PREVIEW, tokenIn: S.pay, tokenOut: S.get, amountIn: wei, slippageBps: S.slip, deadline })
     : isEth(S.pay)
     ? (S.get === lc(R.TAC) ? lt.mod.routeOutTac({ venues, amount: wei, to: stand, slippageBps: S.slip, deadline }) : lt.mod.routeOut({ ethCall, token: S.get, amount: wei, to: stand, slippageBps: S.slip, deadline }))
     : lt.mod.routeFrom({ ethCall, venues, tokenIn: S.pay, token: isEth(S.get) ? R.ZERO : S.get, amount: wei, to: stand, slippageBps: S.slip, deadline });
-  const r = await within(out, 25e3, 'zQuoter did not answer in time. Try again.');
+    return within(out, 25e3, 'zQuoter did not answer in time. Try again.').then((r) => ({ r }), (e) => ({ e }));
+  };
+  const routeP = S.pay === S.get ? null : price();
+  const pool = exitOf()?.wallet ? { open: true, fee: null, hop: null } : await exitPool(S.pay);
+  if (!pool.open) return done({ rows: [], why: `The private ${pay.sym} pool is not open yet.` });
+  if (pool.fee == null && !exitOf()?.wallet) return done({ rows: [], why: `The relay is not quoting for the private ${pay.sym} pool right now. Try again in a moment.` });
+  if (S.pay === S.get) return done({ rows: [{ k: 'exit', name: `${pay.sym} itself`, out: wei, min: wei, best: true }], fee: pool.fee });
+  const { r, e } = await routeP;
+  if (e) throw e;
   if (!r) return done({ rows: [], why: `No onchain route sells ${pay.sym} for ${get.sym} right now.` });
   // into another pool: what lands is a little under the floor, less that pool's own relay fee (read and shown, not left to be found after the press)
   const dst = exitOf()?.into ? await exitPool(S.get) : null;
@@ -2106,9 +2144,9 @@ async function pinGo(r) {
   if (!from) { await H.connect({ key: true }); return; }
   if (now() - (q.at || 0) > 60) { say('The price was read again. Check it and press once more.', '', true); requote(true); return; }
   // the coins are the ones pressed for, read once: the pair cannot change while this runs, and nothing after an await reads it again
-  const pay = tokenOf(S.pay), get = tokenOf(S.get), what = `${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym}`, payKey = S.pay, getKey = S.get;
+  const pay = tokenOf(S.pay), get = tokenOf(S.get), what = `${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym}`, payKey = S.pay, getKey = S.get, earned = rowPts(r, q);
   S.busy = true; S.note = ''; paintQuote();
-  let h = null, swapped = false;
+  let h = null, swapped = false, popped = false;
   try {
     const pv = await pvLoad(), t = await getUx();
     idsOf(t);
@@ -2389,8 +2427,8 @@ function load(p, { fresh = true } = {}) {
   applyParams(p);
   ASKED = { p, pair: `${S.pay}>${S.get}` };
   S.q = null; S.pick = null; S.hold = false; S.ack = false; S.note = '';
-  const named = [p.get('from'), p.get('to')].filter((v) => v && !/^0x/i.test(v));
-  if (named.some((v) => !listed().some((t) => nameIs(t, linkName(v))) && linkName(v) !== 'teth')) loadList().then(() => { if (ASKED?.p !== p) return; const was = `${S.pay}>${S.get}:${S.inP}${S.outP}`; applyParams(p); if (`${S.pay}>${S.get}:${S.inP}${S.outP}` !== was) { S.q = null; paint(); readBalances().then(paintSides); if (S.amt || moveOf()) requote(true); else syncMove(); } });
+  const named = [p.get('from'), p.get('to')].filter((v) => v && !/^0x/i.test(v)), mine = `${S.pay}>${S.get}:${S.amt}:${S.inP}${S.outP}`;
+  if (named.some((v) => !listed().some((t) => nameIs(t, linkName(v))) && linkName(v) !== 'teth')) loadList().then(() => { if (ASKED?.p !== p || S.busy || `${S.pay}>${S.get}:${S.amt}:${S.inP}${S.outP}` !== mine) return; const was = `${S.pay}>${S.get}:${S.inP}${S.outP}`; applyParams(p); if (`${S.pay}>${S.get}:${S.inP}${S.outP}` !== was) { S.q = null; changed(); paint(); readBalances().then(paintSides); if (S.amt || moveOf()) requote(true); else syncMove(); } });
   const f = p.get('from');
   const pair0 = ASKED.pair, amt0 = S.amt;
   if (/^0x[0-9a-fA-F]{40}$/.test(f || '') && !tokenOf(lc(f))) R.readToken({ ethCall, keccak256: keccak_256, address: lc(f) }).then((t) => {
@@ -2575,7 +2613,7 @@ function wire() {
     }
     if (e.target.closest('#max') && exiting() && !exitOf().wallet) {
       const was = S.pay, bal = H.moves?.held?.(S.pay, 'pay'), same = `${S.get}${S.inP}${S.outP}${LATER.on}`;
-      if (bal != null) exitPool(was).then(async (p) => { if (S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same || !exiting() || p.fee == null) return; const v = (await ltLoad()).mod.heldSwapMax(bal, p.fee); S.amt = tidy(plain(v, tokenOf(was).dec)); S.note = ''; changed(); paintSides(); requote(true); }, () => {});
+      if (bal != null) exitPool(was).then(async (p) => { if (S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same || !exiting() || p.fee == null) return; const v = (await ltLoad()).mod.heldSwapMax(bal, p.fee); S.amt = tidy(fitAmt(plain(v, tokenOf(was).dec))); S.note = ''; changed(); paintSides(); requote(true); }, () => {});
       return;
     }
     if (e.target.closest('#max')) {
@@ -2599,7 +2637,7 @@ function wire() {
     const xr = e.target.closest('[data-exit-run], [data-exit-back]');
     if (xr) exitAct(xr.dataset.exitRun || xr.dataset.exitBack, !!xr.dataset.exitBack).catch(() => {});
   });
-  $('#ackbox').addEventListener('change', (e) => { if (e.target.id === 'ack') { S.ack = e.target.checked; paintQuote(); } });
+  $('#ackbox').addEventListener('change', (e) => { if (e.target.id === 'ack') { S.ack = e.target.checked; S.ackGap = S.gapNow; paintQuote(); } });
   $('.mode')?.addEventListener('click', (e) => {
     const b = e.target.closest('[data-mode]'); if (!b) return;
     // on the front page the switch shows only in the lane, and Ethereum leaves it for the card's first swap
@@ -2609,7 +2647,7 @@ function wire() {
   });
   if ($('.mode')) arrows($('.mode'), 'data-mode');
   arrows($('#rows'), 'data-route');
-  addEventListener('storage', (e) => { if (e.key === BRIDGED_KEY || e.key === null) paintNudge(); });
+  addEventListener('storage', (e) => { if (e.key === BRIDGED_KEY || e.key === null) paintNudge(); if ((e.key === PLANS_KEY || e.key === null) && ROOT?.isConnected) paintSteps(); });
 }
 
 // Draws the card in `root` and starts it. `host` is the page:
@@ -2667,6 +2705,7 @@ export function mountSwapCard(root, host = {}) {
   document.addEventListener('visibilitychange', tick);
   return {
     load: (p) => load(p),
+    get busy() { return S.busy; },
     params,
     get lane() { return S.btc; },
     setLane: (on) => setBtc(!!on),

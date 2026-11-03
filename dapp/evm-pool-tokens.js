@@ -141,7 +141,8 @@ export async function poolState(tp, token, ethCall) {
     const got = decodeAggregate3(strip(await ethCall(MULTICALL3, encodeAggregate3(asks.map(([to, data]) => [to, data])))));
     if (got?.length === 2) return { pool: got[0].ok && is(got[0].data, p.token), router: got[1].ok && is(got[1].data, p.pool) };
   } catch { /* one by one, below */ }
-  const ask = async (to, data, want) => { try { return is(strip(await ethCall(to, data)), want); } catch { return false; } };
+  // a revert means there is no such contract function here; a node that failed to answer says nothing of the pool, so that is thrown, not read as "not open"
+  const ask = async (to, data, want) => { try { return is(strip(await ethCall(to, data)), want); } catch (e) { if (/revert|execution|invalid opcode|out of gas/i.test(String(e?.message || e))) return false; throw e; } };
   const [pool, router] = await Promise.all(asks.map(([to, data, want]) => ask(to, data, want)));
   return { pool, router };
 }

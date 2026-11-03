@@ -725,13 +725,19 @@ function spender(seed, { sealed = false } = {}) {
     ready: async () => { const sum = await s.w.sync(); base = fromStart(); return sum; },
     count: (path) => s.asked.filter((p) => p === path).length,
   };
-  const rpc = async (m, p) => { if (m === 'eth_blockNumber' && after && !--after) s.spend(); return inner(m, p); };
+  const rpc = async (m, p) => {
+    if (s.rpcFail?.(m)) throw new Error('fetch failed');
+    if (m === 'eth_call' && p[0]?.from && s.callFail) throw new Error('fetch failed');
+    if (m === 'eth_call' && p[0]?.from && s.callRevert) throw Object.assign(new Error('execution reverted'), { data: s.callRevert });
+    if (m === 'eth_blockNumber' && after && !--after) s.spend();
+    return inner(m, p);
+  };
   const fetchImpl = async (url, init) => {
     const path = url.slice('https://k.test'.length).split('?')[0];
     s.asked.push(path);
     const [status, body] = path === '/quote' ? s.quote(s.count(path)) : path === '/reserve' ? s.reserve(s.count(path), JSON.parse(init.body))
       : path === '/relay' ? s.relay(s.count(path), JSON.parse(init.body)) : path === '/cancel' ? [200, { ok: true }]
-        : path === '/events' && s.feed ? [200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }];
+        : path === '/events' && s.feed ? [s.feedStatus ?? 200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }];
     return { ok: status === 200, status, headers: { get: (h) => s.keeperHeaders(h) }, json: async () => body };
   };
   fetchImpl.sealed = sealed;
@@ -986,6 +992,70 @@ await check('on the private route a spend is sent without a reservation, and the
     assert.ok(!('reservation' in s.relayed), `${route}: no slot named in the relay`);
     assert.equal(s.proofs, 1, `${route}: proved once`);
   }
+});
+
+await check('a node whose answer has neither a result nor an error (a throttle\'s plain message) is a failed node, and the next one serves', async () => {
+  const calls = [];
+  const f = async (url) => { calls.push(url); return url === 'throttled' ? { ok: false, status: 429, json: async () => ({ message: 'Too Many Requests' }) } : { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x10' }) }; };
+  assert.equal(await jsonRpc(['throttled', 'fine'], f)('eth_blockNumber'), '0x10');
+  assert.deepEqual(calls, ['throttled', 'fine']);
+  assert.equal(await jsonRpc(['a'], async () => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: null }) }))('eth_getTransactionReceipt', ['0x1']), null, 'a null result is an answer');
+});
+
+await check('a read that fails while the relay holds a slot gives the slot back', async () => {
+  const s = spender(31);
+  s.reserve = () => [200, { id: 'b'.repeat(24), root: '12345', size: String(s.pool.size), pending: [], oldRoot: '12345', start: String(s.pool.size) }];
+  s.make();
+  await s.ready();
+  s.rpcFail = (m) => m === 'eth_blockNumber' && s.count('/reserve') > 0;
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), /fetch failed/));
+  assert.equal(s.count('/cancel'), 1, 'the slot was cancelled, not left for the keeper to time out');
+});
+
+await check('a spend the signer sends of a note the pool has spent is final, and the wallet reads the chain again', async () => {
+  const s = spender(32);
+  s.make();
+  s.w.connect({ address: '0x' + '11'.repeat(20), send: async () => { throw new Error('the wallet must not be asked'); } });
+  await s.ready();
+  s.callRevert = '0x9bf42639';                                    // AlreadyNullified()
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'self' }), isSpent));
+  assert.equal(s.proofs, 1, 'one proof, not one per retry');
+  assert.ok(s.rescans >= 1, 'the state was rebuilt from the chain');
+});
+
+await check('a send whose check could not be made says so, and does not call it a revert', async () => {
+  const s = spender(33);
+  s.make();
+  s.w.connect({ address: '0x' + '11'.repeat(20), send: async () => { throw new Error('the wallet must not be asked'); } });
+  await s.ready();
+  s.callFail = true;                                              // every node fails the check before the wallet: a network error, no revert in it
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'self' }), (e) => e.said === true && /Could not check the transaction just now, so nothing was sent/.test(e.message) && !/would revert/.test(e.message)));
+});
+
+await check('a busy feed (429) is not waited out by a wallet that is near the head, and is not asked again for a while', async () => {
+  const s = spender(34);
+  s.feed = (from) => ({ chainId: 8453, pool: POOLF, through: from + 1000, events: [] });
+  s.feedStatus = 429;
+  s.keeperHeaders = (h) => (/retry-after/i.test(h) ? '10' : null);
+  s.make();
+  await s.ready();
+  s.pool.transact({ out: [31n, 32n], memo: [Buffer.from('aa'), Buffer.from('bb')] });
+  const delays = await quickly(async () => { await s.w.sync(); s.pool.transact({ out: [33n, 34n], memo: [Buffer.from('aa'), Buffer.from('bb')] }); await s.w.sync(); });
+  assert.ok(delays.every((d) => d < 1000), `no wait on the feed: ${delays.join(', ')}`);
+  assert.equal(s.count('/events'), 1, 'asked once; the second read went straight to the chain');
+  assert.equal((await s.w.sync()).leaves, s.pool.size, 'and the chain\'s logs served both');
+});
+
+await check('overlapping rescans leave the feed on when they are done', async () => {
+  const s = spender(35);
+  s.feed = (from) => ({ chainId: 8453, pool: POOLF, through: from + 1000, events: [] });
+  s.make();
+  await s.ready();
+  await Promise.all([s.w.rescan(), s.w.rescan()]);
+  const before = s.count('/events');
+  s.pool.transact({ out: [41n, 42n], memo: [Buffer.from('aa'), Buffer.from('bb')] });
+  await s.w.sync();
+  assert.ok(s.count('/events') > before, 'a read after them still asks the feed');
 });
 
 console.log(`\n${n} checks passed`);

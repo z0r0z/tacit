@@ -1120,9 +1120,12 @@ if (!process.env.SKIP_GASRELAY) {
   await until(page, () => /^Deposit [\d.,]+ USDC$/.test(document.querySelector('#go').textContent), null, 90000);
   const shownIn = Number((await page.textContent('#go')).match(/[\d.,]+/)[0].replace(/,/g, '')) * 1e6;
   const u0 = await bal(USDC, w.account), p0 = BigInt(await rpcA('eth_getBalance', [POOL, 'latest']));
-  await page.click('#go');
+  // the press. The sheet for the key may have opened by itself by now (the deposit is proved ahead once the card has been left alone for two seconds, and the reads above can
+  // take that long on a slow fork): it then stops this click, and the press comes after the sign-in
+  const pressed = await page.click('#go', { timeout: 5000 }).then(() => true, () => false);
   await page.waitForSelector('.bsheet.top [data-in="eth"]', { timeout: 60000 });
   await page.click('.bsheet.top [data-in="eth"]');
+  if (!pressed) { await until(page, () => /^Deposit [\d.,]+ USDC$/.test(document.querySelector('#go')?.textContent || ''), null, 60000); await page.click('#go'); }
   await until(page, () => /Deposited\.|did not|failed|revert|Not enough|moved|Nothing was sent/i.test(document.querySelector('#q')?.textContent || ''), null, 480000).catch(() => {});
   const msg = await page.textContent('#q');
   const plan = await page.evaluate(() => JSON.parse(localStorage.getItem('tacit-swap-later-v1') || '[]')[0] || null);
