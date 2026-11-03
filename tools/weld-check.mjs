@@ -4387,7 +4387,7 @@ await step('xbring', async () => {
   await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   await bridgeTo(r.page, 'tb');
   await until(r.page, () => !!document.querySelector('#hx-routes [data-hxr="all"]'), null, 240000)
-    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | card: ${(await text(r.page, '#hx-body')).replace(/\s+/g, ' ').slice(0, 300)}`); });
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(r.page, '#hx-q')} | go: ${await text(r.page, '#hx-go')} | routes: ${(await text(r.page, '#hx-routes')).replace(/\s+/g, ' ').slice(0, 200)} | hash: ${await r.page.evaluate(() => location.hash)} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
   await r.page.click('#hx-routes [data-hxr="all"]');
   await until(r.page, () => /Bring 2 notes back/.test(document.querySelector('#hx-go')?.textContent || '') && /Bitcoin fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(r.page, '#hx-go')} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
@@ -7280,8 +7280,15 @@ await step('sendkey', async () => {
 await step('sendbtc', async () => {
   const r = await openPage({ account: A0, key: K0 }), p = r.page;
   try {
+    // Bitcoin answers from here (nothing at the key's address, no holdings), so what the press says does not depend on a public explorer being up
+    await p.route(/^https:\/\/(mempool\.space|blockstream\.info|api\.tacit\.finance\/chain)\/(api\/)?address\/[^/]+\/utxo/, (route) => json(route, []));
     await p.goto(r.url);
     await p.waitForSelector('#hx-body .hx-h');
+    await p.evaluate(async () => {
+      globalThis.__TACIT_NO_INIT__ = true; localStorage.setItem('tacit-network-v1', 'mainnet');
+      const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
+      T._testSetScanHoldingsOverride(() => new Map());
+    });
     await pasteKey(p, 'b17d'.padEnd(64, '5'));
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="send"]');
@@ -7565,7 +7572,13 @@ await step('hxsend', async () => {
   const fees = { transfer: 100000, stealthclaim: 100000, sendunwrap: 100000 };                 // fixed relay fees: no cold DEX reads
   const to = tacit1('abc'.padEnd(64, '9'));
   const lander = (p) => p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-  const r = await openFarmKey('7d7d'.padEnd(64, '5'), { notes: [[FARM_CETH, 25000000n], ['@cTAC', 5000000000n], [CUSD, 2500000000n], [CBTC, 50000000n]], fees });
+  // (Bitcoin answers from here, so the press on TAC on Bitcoin says what this key holds there whether or not a public explorer is up)
+  const r = await openFarmKey('7d7d'.padEnd(64, '5'), { notes: [[FARM_CETH, 25000000n], ['@cTAC', 5000000000n], [CUSD, 2500000000n], [CBTC, 50000000n]], fees }, undefined, (pg) => pg.route(/^https:\/\/(mempool\.space|blockstream\.info|api\.tacit\.finance\/chain)\/(api\/)?address\/[^/]+\/utxo/, (route) => json(route, [])));
+  await r.page.evaluate(async () => {
+    globalThis.__TACIT_NO_INIT__ = true;
+    const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
+    T._testSetScanHoldingsOverride(() => new Map());
+  });
   const p = r.page, urls = [];
   p.on('framenavigated', (f) => { if (f === p.mainFrame()) urls.push(f.url()); });
   const line = () => said(p);
