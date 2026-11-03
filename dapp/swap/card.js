@@ -823,7 +823,7 @@ function paintSides() {
   $('#get-side').textContent = getBal ? `Balance ${amtFmt(getBal, get.dec)}` : '';
   // a move's own quick amounts (the page's sizes kept ready, marked once proved) stand where the dollar value goes until one is typed
   const v = wei && !fixed ? usdOf(S.pay, wei) : null, pu = $('#pay-usd');
-  const h = sizes ? `<span class="quick">${sizes.map((x) => `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ' class="rd" title="Proved already: one transaction"' : ''}>${x.rd ? '<svg aria-hidden="true"><use href="#i-bolt"/></svg>' : ''}${esc(x.v)}</button>`).join('')}</span>` : '';
+  const h = sizes ? `<span class="quick">${sizes.map((x) => x.act ? `<button type="button" data-stage${x.off ? ' disabled' : ''}>${esc(x.v)}</button>` : `<button type="button" data-quick="${esc(x.v)}"${x.rd ? ` class="rd" title="${esc(x.t || 'Proved already: one transaction')}"` : ''}>${x.rd ? '<svg aria-hidden="true"><use href="#i-bolt"/></svg>' : ''}${esc(x.v)}</button>`).join('')}</span>` : '';
   if (h) { if (pu.dataset.h !== h) { pu.innerHTML = h; pu.dataset.h = h; } }
   else { pu.dataset.h = ''; pu.textContent = v != null ? `≈ ${usd(v)}` : ''; }
 }
@@ -1904,7 +1904,7 @@ async function exitGo() {
 // ── a private swap, made on this card: the Tacit key is opened here (private.js), and the relay proves and sends each step ──
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=0d4119af').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=c065e2c9').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -1917,9 +1917,31 @@ const aheadArgs = (q) => { const p = q?.pools; const units = parseUnits(S.amt, 8
 const KEEP_SWAP = ['0.01', '0.1'];
 const KS = { tier: {}, at: 0 };
 const keptPair = () => (!S.inP && isEth(S.pay) && S.get !== 'teth' && PK[S.get] && kindOf(S.pay, S.get) === 'private' && IDS[PK[S.get]] && (PV?.unlocked || H.key?.session?.unlocked) ? IDS[PK[S.get]] : null);
+// The private balance's tETH into another private coin: the same sizes, each marked once a deposit of exactly that much is staged from the
+// key's notes (private.js `stageSizes`), which the press swaps in one proof that holds no secret. Staging spends a relay fee, so it waits for
+// Keep ready to be pressed.
+const stagePair = () => (S.inP && S.outP && S.pay === 'teth' && S.get !== 'teth' && PK[S.get] && IDS[PK[S.get]] && kindOf(S.pay, S.get) === 'private' && (PV?.unlocked || H.key?.session?.unlocked) ? IDS[PK[S.get]] : null);
+function stagedChips() {
+  if (!stagePair() || !PV) return null;
+  const have = PV.stagedSizes(paint);
+  if (!have) return null;
+  const units = KEEP_SWAP.map((v) => parseUnits(v, 8)), bal = privBal('teth'), miss = units.filter((u) => !have.includes(u));
+  const chips = KEEP_SWAP.map((v, i) => ({ v, rd: have.includes(units[i]), t: 'Kept ready: one fast proof' }));
+  if (PV.isStaging()) chips.push({ v: 'Keeping ready…', act: true, off: true });
+  else if (miss.length && bal != null && bal > miss[0] * E10) chips.push({ v: 'Keep ready', act: true });
+  return chips;
+}
+async function stageGo() {
+  const pv = await pvLoad(), missing = KEEP_SWAP.map((v) => parseUnits(v, 8));
+  const p = pv.stageSizes({ sizes: missing, say: (u) => { say(`Keeping ${esc(tidy(amtFmt(u * E10, 18)))} tETH ready to swap…`, '', true); paint(); }, onStaged: () => pv.read(true).then(paint, paint) });
+  paint();
+  try { const n = await p; S.note = ''; say(n ? 'Kept ready. Pick a size to swap it in one fast proof.' : 'Nothing to keep ready: no tETH note holds a size and its fees.', n ? '' : 'err', true); }
+  catch (e) { say(esc(e?.message || String(e)), 'err', true); }
+  finally { pv.read(true).then(paint, paint); }
+}
 function keptChips() {
   const to = keptPair(), f = to ? KS.tier[to] : null;
-  if (!to) return null;
+  if (!to) return stagedChips();
   if (f === undefined) { KS.tier[to] = null; pvLoad().then((pv) => pv.tierOf(to)).then((x) => { KS.tier[to] = x; paint(); }, () => {}); }
   if (Date.now() - KS.at > 60e3 && f) { KS.at = Date.now(); pvLoad().then((pv) => pv.keep({ sizes: KEEP_SWAP.map((v) => String(parseUnits(v, 8) * E10)), toAsset: to, feeBps: f, onReady: paint })).catch(() => {}); }
   return f ? KEEP_SWAP.map((v) => ({ v, rd: PV?.aheadOf?.({ wei: parseUnits(v, 8) * E10, toAsset: to, feeBps: f }) === 'ready' })) : null;
@@ -1928,6 +1950,7 @@ function keptChips() {
 const routeAheadArgs = (q) => {
   if (q?.kind !== 'private' || !S.inP || !S.outP || isEth(S.pay) || !q.pools?.length) return null;
   const r = picked(q), units = parseUnits(S.amt, 8), k0 = PK[S.pay];
+  if (S.pay === 'teth' && q.pools.length === 1 && units && PV?.stagedSizes?.()?.includes(units)) return null;       // a staged deposit of it is swapped instead
   return r && units && IDS[k0] ? { wallet: false, asset: IDS[k0], units, ticker: POOL_TK[k0], fee: q.fee ?? 0n, path: q.pools.map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), minOut: poolFloor(r.out / E10) } : null;
 };
 let ahT = 0;
@@ -2538,6 +2561,7 @@ function wire() {
   $('#rows').addEventListener('click', (e) => { if (e.target.closest('[data-routes-all]')) { S.routesAll = `${S.pay}>${S.get}`; paintQuote(); $('#rows [aria-checked="true"]')?.focus(); return; } const b = e.target.closest('[data-route]'); if (!b) return; S.pick = b.dataset.route; S.hold = true; S.ack = false; S.ackKey = `${S.pay}>${S.get}:${S.amt}:${S.pick}`; paintQuote(); });
   ROOT.addEventListener('click', (e) => {
     if (e.target.closest('[data-px-flip]')) { S.pxFlip = !S.pxFlip; paintQuote(); $('#rcpt [data-px-flip]')?.focus(); return; }
+    if (e.target.closest('[data-stage]')) { stageGo(); return; }
     const q = e.target.closest('[data-quick]');
     if (q) { S.amt = q.dataset.quick; S.note = ''; changed(); paintSides(); requote(true); return; }
     // a move's Max is the page's: what its source holds, less what its own fees keep back

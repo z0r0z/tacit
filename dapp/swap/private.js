@@ -292,14 +292,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   // amount, swapped through one pool from it: the press's proof holds no secret, so it is the relay's board (or any prover) that makes it, and
   // the note's key was used only when the deposit was staged. → { txHash, out } or null when no staged deposit fits.
   let stageP = null;
-  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js'); return makeConfidentialStage({ ux: t }); })());
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=99fb6aa1'); return makeConfidentialStage({ ux: t }); })());
   async function stagedSwap(plan, say) {
     const t = await getUx();
     if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;
     const h = await read(true);
-    if (!h?.pending?.length) return null;
+    if (!h) return null;
     const st = await stage();
-    const d = (await st.splitPending(h.pending)).staged.find((x) => BigInt(x.value) === BigInt(plan.units));
+    const d = (await st.splitPending(h.pending || [])).staged.find((x) => BigInt(x.value) === BigInt(plan.units));
     if (!d) return null;
     say('swap');
     const hop = plan.path[0];
@@ -308,6 +308,46 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     held = null;
     return { txHash: r.txHash || null, out: r.amountOut, staged: true };
   }
+  // The sizes of the key's staged deposits, in tETH units, as of the last read: null until they are told apart from its wallet deposits.
+  let stagedAt = null, stagedP = null;
+  function stagedSizes(onReady = () => {}) {
+    if (!held?.pending) return null;
+    if (stagedAt?.held === held) return stagedAt.sizes;
+    const h = held;
+    stagedP ||= stage().then((st) => st.splitPending(h.pending)).then((s) => { stagedAt = { held: h, sizes: s.staged.map((x) => BigInt(x.value)) }; onReady(); }, () => {}).finally(() => { stagedP = null; });
+    return stagedAt?.sizes ?? null;
+  }
+  // Each size not staged yet is staged from the smallest tETH note that holds more than it, one after another; the relay's fee and the
+  // activation's gas come out of that note and the rest comes back as a hidden change note. → how many were staged.
+  let staging = null;
+  function stageSizes({ sizes, say = () => {}, onStaged = () => {} }) {
+    if (!key.unlocked || staging) return staging;
+    return (staging = (async () => {
+      const t = await getUx(), st = await stage(), eth = t.assetByTicker.cETH.assetId;
+      let n = 0;
+      for (const units of sizes) {
+        // the note an earlier stage spent comes back as change once the pool's new notes are read: a few looks, a few seconds apart
+        let note = null, have = [];
+        for (let i = 0; i < (n ? 12 : 1) && !note; i++) {
+          if (i) await sleep(5000);
+          await read(true);
+          have = await st.splitPending(held.pending).then((s) => s.staged.map((x) => BigInt(x.value)), () => []);
+          if (have.includes(units)) break;
+          note = of(eth).notes.filter((x) => BigInt(x.value) > units).sort(byValue)[0] || null;
+        }
+        if (have.includes(units)) continue;
+        if (!note) break;
+        say(units);
+        busy.set(lc(note.leaf), Date.now());
+        await st.stageNote({ note, walletPriv: key.priv(), amountWei: units * E10, waitOpts: { ...run().wait('Keep tETH ready to swap', 30 * 60e3), intervalMs: 4000, viaRelay: true } });
+        n++;
+        held = null; stagedAt = null;
+        onStaged();
+      }
+      return n;
+    })().finally(() => { staging = null; }));
+  }
+  const isStaging = () => !!staging;
 
   // The relay is asked before anything is sent: a swap is a step that expires, so it cannot wait in line while the relay is held.
   async function relayOpen() {
@@ -624,7 +664,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   return {
-    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf,
+    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageSizes, isStaging,
     // the checks a swap makes before anything leaves a wallet, for a page that first sells a token for the ETH it will make private
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),
     get unlocked() { return key.unlocked; },
