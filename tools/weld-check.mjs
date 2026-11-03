@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -968,14 +968,15 @@ await step('farm', async () => {
   // the Earn tab lists the stake too: its pair in a ring, public, with Claim, Add and Withdraw
   await page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   await page.click('[data-hxm="earn"]');
-  await until(page, () => [...document.querySelectorAll('#hx-pos .hx-pr')].some((x) => /TAC \/ ETH/.test(x.textContent) && /public/.test(x.textContent) && !!x.querySelector('.pair.farm') && !!x.querySelector('[data-pclaim]') && !!x.querySelector('a[data-link="farm/public"]')), null, 120000)
+  await until(page, () => [...document.querySelectorAll('#hx-pos .hx-pr')].some((x) => /TAC \/ ETH/.test(x.textContent) && /public/.test(x.textContent) && !!x.querySelector('.pair.farm') && !!x.querySelector('[data-pclaim]') && !!x.querySelector('[data-pwd]')), null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(page, '#hx-pos').catch(() => '?')).replace(/\s+/g, ' ')}`); });
   ok(true, 'farm: the Earn tab lists the public stake in a ring, with Claim, Add and Withdraw');
-  // its Claim opens the farm and presses the farm's own Claim
+  // its Claim claims from the card itself (no sheet), and the sheet then shows it under Claimed so far
   const before = await tacOf(A0);
   await page.click('#hx-pos [data-pclaim]');
   await until(page, () => /TAC claimed/.test(document.querySelector('#toast-container')?.textContent || ''));
-  ok((await tacOf(A0)) > before && await page.evaluate(() => !!document.querySelector('#sheet-farm')?.open), 'farm: claim pays TAC, from the Earn tab\'s Claim');
+  ok((await tacOf(A0)) > before && !(await page.evaluate(() => !!document.querySelector('#sheet-farm')?.open)), 'farm: claim pays TAC from the Earn tab\'s Claim, with no sheet');
+  await page.evaluate(() => { location.hash = ''; location.hash = '#farm'; });
   const got = Number((await tacOf(A0)) - before) / 1e18;
   await until(page, () => /Claimed so far/.test(document.querySelector('#farm-precision')?.textContent || ''), null, 180000);
   const shown = parseFloat(((await text(page, '#farm-precision')).match(/Claimed so far\s*([\d.,]+) TAC/) || [])[1]?.replace(/,/g, ''));
@@ -7122,7 +7123,7 @@ await step('hxpos', async () => {
     await p.click('[data-hxm="earn"]');
     await until(p, () => !document.querySelector('#hx-pos')?.hidden && document.querySelectorAll('#hx-pos .hx-pr').length === 3, null, 300000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#hx-pos').catch(() => '?')).replace(/\s+/g, ' ')}`); });
-    const rows = await p.$$eval('#hx-pos .hx-pr', (rs) => rs.map((x) => ({ t: x.textContent.replace(/\s+/g, ' ').trim(), ring: !!x.querySelector('.pair.farm'), harv: x.querySelector('[data-pharv]') ? !x.querySelector('[data-pharv]').disabled : null, farm: !!x.querySelector('a[data-link="farm/private-0"]') })));
+    const rows = await p.$$eval('#hx-pos .hx-pr', (rs) => rs.map((x) => ({ t: x.textContent.replace(/\s+/g, ' ').trim(), ring: !!x.querySelector('.pair.farm'), harv: x.querySelector('[data-pharv]') ? !x.querySelector('[data-pharv]').disabled : null, farm: !!x.querySelector('[data-pbond]') && !!x.querySelector('[data-ptake]') })));
     ok(rows[0].ring && /tETH \/ TAC/.test(rows[0].t) && /\+1234\.56 TAC/.test(rows[0].t) && rows[0].harv === true, `hxpos: a farming position is its pair in a ring, with what it has earned and Harvest (${rows[0].t})`);
     ok(rows[1].ring && /farming/.test(rows[1].t) && rows[1].harv === false, `hxpos: one with nothing earned yet cannot be harvested (${rows[1].t})`);
     await p.$eval('#hx', (e) => e.scrollIntoView({ block: 'end' })); await shot(p, 'hxpos');
@@ -7142,7 +7143,7 @@ await step('hxpos', async () => {
     await p.click('#hx-pos [data-pharv="0"]');
     await until(p, () => /Harvested to a wTAC note/.test(document.querySelector('#hx-pos-s')?.textContent || ''), null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-pos-s')}`); });
-    ok((await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('harvest:')) && !!(await p.$('#hx-pos-s a[data-link="farm"]')), 'hxpos: Harvest runs the farm\'s harvest and says where to turn it into TAC');
+    ok((await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('harvest:')) && !!(await p.$('#hx-pos-s [data-pturn]')), 'hxpos: Harvest runs the farm\'s harvest and offers turning it into TAC there');
     if (r.errors.length) { fails++; console.log('FAIL hxpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -8312,6 +8313,47 @@ await step('payout', async () => {
     await shot(p, 'payout');
     ok(/Withdrawn/.test(await mz()) && (await p.evaluate(() => window.__sheetSeen)) === '', `payout: 0.01 ETH came out of the Pay pool to the paying account from the card, no sheet (${tries + 1} press${tries ? 'es' : ''}; ${(await mz()).slice(0, 80)})`);
     if (r.errors.length) { fails++; console.log('FAIL payout page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// The farm's positions are acted on from the Earn tab, no sheet over it: a public stake is claimed and then withdrawn whole (as ETH and TAC) from its row.
+await step('earnrows', async () => {
+  const hex = '5c1e'.padEnd(64, '6'), acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
+  const r = await openFarmKey(hex, { notes: [], positions: [] }, { width: 1280, height: 1500 }), p = r.page;
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="earn"]'); await p.fill('#hx-amt', '0.3');
+    await p.waitForSelector('[data-hxr="precision"]', { timeout: 600000 }); await p.click('[data-hxr="precision"]');
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with ETH', null, 600000);
+    await p.click('#hx-go');
+    ok(await chainUntil(async () => (await stakedOf(acct)) > 0n, 600000), 'earnrows: 0.3 ETH staked in the public farm from the card');
+    await rpc('evm_increaseTime', [3600]); await rpc('evm_mine', []);
+    await until(p, () => { const b = document.querySelector('#hx-pos [data-pclaim]'); return b && !b.disabled; }, null, 300000);
+    await sheetsSeen(p);
+    const t0 = await tacOf(acct);
+    await p.click('#hx-pos [data-pclaim]');
+    await until(p, () => /Claimed to/.test(document.querySelector('#hx-pos-s')?.textContent || '') || /err/.test(document.querySelector('#hx-pos-s')?.innerHTML || ''), null, 300000);
+    ok((await tacOf(acct)) > t0 && /Claimed to/.test(await text(p, '#hx-pos-s')) && (await p.evaluate(() => window.__sheetSeen)) === '', `earnrows: Claim pays TAC from the row, said under it, no sheet (${(await text(p, '#hx-pos-s')).slice(0, 80)})`);
+    await until(p, () => { const b = document.querySelector('#hx-pos [data-pwd]'); return b && !b.disabled; }, null, 120000);
+    await p.click('#hx-pos [data-pwd]');
+    await until(p, () => /Withdrawn to/.test(document.querySelector('#hx-pos-s')?.textContent || '') || /err/.test(document.querySelector('#hx-pos-s')?.innerHTML || ''), null, 300000);
+    ok((await stakedOf(acct)) === 0n && (await p.evaluate(() => window.__sheetSeen)) === '', `earnrows: Withdraw takes the whole stake out from the row, no sheet (${(await text(p, '#hx-pos-s')).slice(0, 80)})`);
+    if (r.errors.length) { fails++; console.log('FAIL earnrows page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// Liquidity held but not farming: Take out and Farm it are buttons in its row and run there. The stub's notes cannot make a real proof, so the run ends in the error it says: what is checked is that it
+// went from the card, step by step, with no sheet.
+await step('lprows', async () => {
+  const r = await openFarmKey('b05f'.padEnd(64, '7'), { notes: [[FARM_LP0, 50000000n]], positions: [] }, { width: 1280, height: 1500 }), p = r.page;
+  try {
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="earn"]');
+    await until(p, () => !!document.querySelector('#hx-pos [data-ptake]') && !!document.querySelector('#hx-pos [data-pbond]'), null, 300000);
+    await sheetsSeen(p);
+    await p.evaluate(() => { window.__ps = []; new MutationObserver(() => { const t = document.querySelector('#hx-pos-s')?.textContent; if (t && window.__ps[window.__ps.length - 1] !== t) window.__ps.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true }); });
+    await p.click('#hx-pos [data-ptake]');
+    await until(p, () => (window.__ps || []).length > 0, null, 240000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && /taking your liquidity out|worth less than the relay fee/.test((await p.evaluate(() => window.__ps)).join(' | ')), `lprows: Take out goes from the Earn tab's row: no sheet opens and its steps are said under it (${(await p.evaluate(() => window.__ps)).join(' | ').slice(0, 140)})`);
+    if (r.errors.length) { fails++; console.log('FAIL lprows page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 

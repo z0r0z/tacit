@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KNTb30J2Y+jbsENDyWoa5RC0YiW+S8z3hQ089NWsDx8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cI6D6k+6nDziSoN88BpuMBW6F0dizUQxZsmlM5LrjXY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -10385,6 +10385,16 @@ const ETH_DP = 8, TAC_DP = 6;
 const cutTo = (v, dp) => v - v % 10n ** BigInt(18 - dp);
 const upTo = (v, dp) => { const u = 10n ** BigInt(18 - dp); return (v + u - 1n) / u * u; };
 
+// The calldata of a withdrawal from the public farm: all of the stake, or `shares` of it, as both assets, or as ETH or TAC alone (the other half swapped inside the pool)
+const pubOutData = (all, as, shares, m0, m1, dl) => (as === 'both'
+  ? (all ? SEL.exitAndRemove : SEL.withdrawAndRemove + word(shares)) + word(m0) + word(m1) + word(dl)
+  : (all ? SEL.exitTo + word(as === 'eth' ? 1 : 0) : SEL.withdrawTo + word(as === 'eth' ? 1 : 0) + word(shares)) + word(m0) + word(dl));
+// ... sent from the paying account with the least it may pay out read from the call as it stands, half a percent under: the farm sheet's Withdraw and the card's. → the transaction's hash
+async function pubExitSend({ all, as, shares, label }) {
+  const dl = deadline(), sim = strip(await ethCall(ADDR.precisionFarm, pubOutData(all, as, shares, 0n, 0n, dl), { from: S.address }));
+  const min0 = wordAt(sim, 0) * 995n / 1000n, min1 = as === 'both' ? wordAt(sim, 1) * 995n / 1000n : 0n;
+  return sendTx({ to: ADDR.precisionFarm, data: pubOutData(all, as, shares, min0, min1, dl), label });
+}
 // A deposit into the public Precision farm, quoted and sent: the farm sheet's form and the card's Earn tab both go through these. `mode` is 'eth' or 'tac' (about half swapped inside the
 // pool, then both staked) or 'pair' (both at the pool's ratio); `x` is the read of the farm and the paying account (loadPrecision).
 // → { wei, tac, lp, loss (the swap's cost in percent), share, day, myApr, over }; throws when the pool would refuse it
@@ -10639,9 +10649,7 @@ function renderPrecision(el) {
   const ex = $('#pf-exit');
   if (!ex) return;
   const outRc = $('#pf-out-rcpt'), outAck = $('#pf-out-ack');
-  const outData = (all, as, shares, m0, m1, dl) => (as === 'both'
-    ? (all ? SEL.exitAndRemove : SEL.withdrawAndRemove + word(shares)) + word(m0) + word(m1) + word(dl)
-    : (all ? SEL.exitTo + word(as === 'eth' ? 1 : 0) : SEL.withdrawTo + word(as === 'eth' ? 1 : 0) + word(shares)) + word(m0) + word(dl));
+  const outData = pubOutData;
   let w = null, wseq = 0;
   const outGateOk = () => { ex.disabled = !w || !lossOk(outAck, w.loss); };
   const preview = async () => {
@@ -10674,9 +10682,7 @@ function renderPrecision(el) {
     const z = w;
     if (!z || !lossOk(outAck, z.loss)) return;
     try {
-      const dl = deadline(), sim = strip(await ethCall(ADDR.precisionFarm, outData(z.all, z.as, z.shares, 0n, 0n, dl), { from: S.address }));
-      const min0 = wordAt(sim, 0) * 995n / 1000n, min1 = z.as === 'both' ? wordAt(sim, 1) * 995n / 1000n : 0n;
-      const hash = await sendTx({ to: ADDR.precisionFarm, data: outData(z.all, z.as, z.shares, min0, min1, dl), label: `Withdraw ${z.all ? 'all' : `${FARM.outPct}%`} from the farm${z.as === 'both' ? '' : ` as ${z.as === 'eth' ? 'ETH' : 'TAC'}`}` });
+      const hash = await pubExitSend({ all: z.all, as: z.as, shares: z.shares, label: `Withdraw ${z.all ? 'all' : `${FARM.outPct}%`} from the farm${z.as === 'both' ? '' : ` as ${z.as === 'eth' ? 'ETH' : 'TAC'}`}` });
       delete acked['pf-outv'];
       await done(hash, 'Withdrawing', `Withdrawn to ${your()}.`, outStatus);
       toast(`Withdrawn to ${your()}`);
@@ -15438,10 +15444,10 @@ function hxPosPaint() {
       return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>TAC / ETH</b><small>${aboutEth(r.pub.mine.eth * 2n)} · ${has ? `+${tacShort(e)} TAC` : 'farming'} · public</small></span><span class="hx-pa">
         <button class="link" type="button" data-pclaim${has ? '' : ' disabled'}>Claim</button>
         <button class="link" type="button" data-padd="${i}">Add</button>
-        <a class="link" href="#farm/public" data-link="farm/public">Withdraw</a></span></div>`;
+        <button class="link" type="button" data-pwd="${i}"${HX.posBusy ? ' disabled' : ''}>Withdraw</button></span></div>`;
     }
     const worth = sharesEth(r.p, r.pos ? big(r.pos.shares) : r.loose), name = pairName(r.p.pair), off = HX.posBusy ? ' disabled' : '';
-    if (!r.pos) return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}LP only</small></span><span class="hx-pa"><a class="link" href="#farm/private-${r.p.pid}" data-link="farm/private-${r.p.pid}">Farm it</a><a class="link" href="#farm/private-${r.p.pid}" data-link="farm/private-${r.p.pid}">Take out</a></span></div>`;
+    if (!r.pos) return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}LP only</small></span><span class="hx-pa"><button class="link" type="button" data-pbond="${i}"${off}>Farm it</button><button class="link" type="button" data-ptake="${i}"${off}>Take out</button></span></div>`;
     const locked = Number(r.pos.unlockAt || 0) > chainNow(), earned = BigInt(r.pos.pendingUnits || 0) > 0n;
     return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}${earned ? `+${r.pos.pendingTac} TAC` : 'farming'}</small></span><span class="hx-pa">
       <button class="link" type="button" data-pharv="${i}"${earned && !HX.posBusy ? '' : ' disabled'}>Harvest</button>
@@ -15451,26 +15457,53 @@ function hxPosPaint() {
   const view = html`${rows.map(row)}`;
   if (list.__h !== view.s) { list.__h = view.s; mount(list, view); }
   el.onclick = (e) => {
-    const b = e.target.closest('[data-pharv], [data-padd], [data-pexit], [data-pclaim]');
+    const b = e.target.closest('[data-pharv], [data-padd], [data-pexit], [data-pclaim], [data-pwd], [data-pbond], [data-ptake], [data-pturn]');
     if (!b || b.disabled) return;
-    if (b.hasAttribute('data-pclaim')) return dashDo('farm');
-    const r = rows[Number(b.dataset.pharv ?? b.dataset.padd ?? b.dataset.pexit)], st = $('#hx-pos-s');
-    if (!r) return;
+    const turn = b.hasAttribute('data-pturn'), claim = b.hasAttribute('data-pclaim'), st = $('#hx-pos-s');
+    const r = claim ? rows.find((x) => x.pub) : rows[Number(b.dataset.pharv ?? b.dataset.padd ?? b.dataset.pexit ?? b.dataset.pwd ?? b.dataset.pbond ?? b.dataset.ptake)];
+    if (!r && !turn) return;
     if (b.dataset.padd != null) { if (r.pub) HX.ern = HX.ern === 'wtac' ? 'wtac' : 'ether'; HX.pool = HX.earnPick = r.pub ? 'precision' : String(r.p.pid); HX.q = null; paintHx(); $('#hx-amt')?.focus(); return; }
     HX.posBusy = true; list.__h = ''; hxPosPaint();
     busy(b, async (run) => {
       const tell = (m) => say(st, m);
       try {
-        if (b.dataset.pharv != null) {
+        if (claim) {
+          // the public stake's rewards, to the paying account
+          const h = await sendTx({ to: ADDR.precisionFarm, data: SEL.claim, label: 'Claim TAC from the farm' });
+          tell(html`Claiming… ${txLink(h)}`); await waitTx(h);
+          toast('TAC claimed'); say(st, html`<span class="ok">Claimed to ${your()}.</span> ${txLink(h)}`);
+          await loadFarms(true);
+        } else if (b.dataset.pwd != null) {
+          // all of the public stake, as ETH and TAC (the farm's Withdraw takes a part, or one asset alone)
+          const h = await pubExitSend({ all: true, as: 'both', shares: r.pub.staked, label: 'Withdraw all from the farm' });
+          tell(html`Withdrawing… ${txLink(h)}`); await waitTx(h);
+          toast(`Withdrawn to ${your()}`); say(st, html`<span class="ok">Withdrawn to ${your()}.</span> ${txLink(h)}`);
+          await loadFarms(true);
+        } else if (b.dataset.pbond != null) {
+          await stepBond(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, st);
+          toast('In the farm'); say(st, html`<span class="ok">In the farm: TAC streams to your private position.</span>`);
+          await Promise.allSettled([loadPositions()]); await refreshFarm();
+        } else if (b.dataset.ptake != null) {
+          if (await stepTakeOut(run, r.p, freeNotes(P.scan?.notes).filter(isLp(r.p)), tell, st)) { toast('Liquidity taken out'); say(st, html`<span class="ok">Taken out: both assets are private notes again.</span>`); }
+          await refreshFarm();
+        } else if (turn) {
+          await stepRedeem(run, tell, st);
+          toast('Rewards turned into TAC'); say(st, html`<span class="ok">Your rewards are TAC in ${your()}.</span>`);
+          await refreshFarm();
+        } else if (b.dataset.pharv != null) {
           await stepHarvest(run, r.pos, tell, st);
-          say(st, html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <a class="link" href="#farm" data-link="farm">Turn it into TAC</a>`); toast('Harvested');
+          say(st, html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <button class="link" type="button" data-pturn>Turn it into TAC</button>`); toast('Harvested');
         } else {
           const out = await exitPosition(run, r.p, r.pos, tell, st);
           if (out === 'out') { toast('Out of the farm'); say(st, html`<span class="ok">Out: your liquidity is private ${pairName(r.p.pair)} notes again${run.harvested ? ', the rewards wTAC notes' : ''}.</span>`); }
           else if (out === 'unseen') say(st, html`<span class="ok">Unbonded.</span> The liquidity note has not shown up yet.`);
           await refreshFarm();
         }
-      } catch (e) { sayErr(st, /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.') : e); }
+      } catch (e) {
+        if (claim || b.dataset.pwd != null) txFail(run, st, e);
+        else sayErr(st, /locked until/.test(e?.message || '') ? new Error('This device’s clock says the bond is not over yet. Try again in a few minutes, or set the clock right.')
+          : /not covered by this withdrawal/.test(e?.message || '') ? new Error('This liquidity is worth less than the relay fee to take it out.') : e);
+      }
       finally { HX.posBusy = false; list.__h = ''; hxPosPaint(); dashSoon(); }
     });
   };
