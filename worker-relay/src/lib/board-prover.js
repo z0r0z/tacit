@@ -5,7 +5,9 @@
 // never lose a job. `post`, `status`, `cancel` and `verify` are injected (lib/worker-client.js and the chain), so this is
 // tested without either.
 
-export function makeBoardProver({ post, status, cancel, verify, alive = null, waitMs = 240_000, pollMs = 1000, now = Date.now, sleep, log = () => {} } = {}) {
+// `race(jobId, worker, ok)`: the relay's verdict on a community machine's candidate (a public job's racers, worker/src/prover-board.js); each
+// candidate is checked as the board's own proof is, and the first that passes is the job's proof while Tacit's worker goes on with it.
+export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, waitMs = 240_000, pollMs = 1000, now = Date.now, sleep, log = () => {} } = {}) {
   const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const miss = (reason, extra = {}) => Object.assign(new Error(`prover board: ${reason}`), { code: 'board_miss', reason, ...extra });
 
@@ -30,9 +32,19 @@ export function makeBoardProver({ post, status, cancel, verify, alive = null, wa
     if (!posted || !posted.ok || !posted.jobId) throw miss(`not posted: ${(posted && posted.error) || 'no answer from the API'}`);
     const { jobId } = posted;
     let lastSeen = null;
+    const judged = new Set();
     for (;;) {
       const st = await status(jobId).catch(() => null);
       const s = st && st.status;
+      for (const c of (race && st && Array.isArray(st.race) ? st.race : [])) {
+        const key = `${c.worker}|${c.proof}`;
+        if (judged.has(key)) continue;
+        judged.add(key);
+        const ok = await Promise.resolve((check || verify)({ publicValues: c.publicValues, proof: c.proof, memos })).catch(() => (check ? 'unchecked' : false));
+        log(`prover board: job ${jobId.slice(0, 10)} candidate from ${c.worker}: ${ok === true ? 'taken' : ok}`);
+        await Promise.resolve(race(jobId, c.worker, ok === true ? true : ok === false ? false : null)).catch(() => {});
+        if (ok === true) return { publicValues: c.publicValues, proof: c.proof, worker: c.worker, jobId };
+      }
       if (s && s !== lastSeen) { lastSeen = s; log(`prover board: job ${jobId.slice(0, 10)} ${s}${st.worker ? ` (${st.worker})` : ''}`); }
       if (s === 'proved') {
         const ok = await Promise.resolve((check || verify)({ publicValues: st.publicValues, proof: st.proof, memos })).catch(() => (check ? 'unchecked' : false));

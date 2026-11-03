@@ -651,7 +651,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3708,7 +3708,7 @@ async function handleProverBoard(req, env, url, cors) {
   if (!board) return jsonResponse({ error: 'not found' }, 404, cors);
   const body = async () => { try { return await req.json(); } catch { return null; } };
   if (url.pathname === '/prover/board' && req.method === 'GET') return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
-  if (url.pathname === '/prover/jobs' || url.pathname === '/prover/jobs/cancel') {
+  if (url.pathname === '/prover/jobs' || url.pathname === '/prover/jobs/cancel' || url.pathname === '/prover/jobs/race') {
     if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
     if (url.pathname === '/prover/jobs' && req.method === 'GET') {
       const st = await board.status(url.searchParams.get('id') || '');
@@ -3719,8 +3719,26 @@ async function handleProverBoard(req, env, url, cors) {
     if (!b) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
     try {
       if (url.pathname === '/prover/jobs/cancel') return jsonResponse(await board.cancel({ jobId: b.jobId, reason: b.reason ?? null }), 200, nostore);
+      if (url.pathname === '/prover/jobs/race') return jsonResponse(await board.raceVerdict({ jobId: b.jobId, worker: b.worker, ok: b.ok === true ? true : b.ok === false ? false : null }), 200, nostore);
       return jsonResponse({ ok: true, ...(await board.post(b)) }, 200, nostore);
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e), code: e.code || null }, e.code === 'full' ? 503 : 400, nostore); }
+  }
+  // Community provers: anyone races Tacit's own workers for public jobs (prover-board.js), named by the address their points go to, a few
+  // asks a minute from one place. PROVER_BOARD_COMMUNITY=0 closes it.
+  if (url.pathname === '/prover/community/claim' || url.pathname === '/prover/community/result') {
+    if (env.PROVER_BOARD_COMMUNITY === '0') return jsonResponse({ ok: false, error: 'community proving is closed' }, 404, nostore);
+    if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
+    const b = await body();
+    if (!b || typeof b.miner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(b.miner)) return jsonResponse({ ok: false, error: 'miner must be the 0x address the points go to' }, 400, nostore);
+    const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+    const claimPath = url.pathname === '/prover/community/claim';
+    const rl = await proveRateLimit(env, ip, claimPath ? 'board-community-claim' : 'board-community-result', claimPath ? 20 : 6, claimPath ? 3000 : 20000);
+    if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many asks, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
+    const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true };
+    try {
+      if (claimPath) { const job = await board.claim({ worker, classes: ['public'] }); return jsonResponse(job ? { job } : {}, 200, nostore); }
+      return jsonResponse(await board.result({ worker, jobId: b.jobId, publicValues: b.publicValues ?? null, proof: b.proof ?? null, error: b.error ?? null }), 200, nostore);
+    } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, nostore); }
   }
   if (url.pathname === '/prover/claim' || url.pathname === '/prover/result') {
     const worker = workerOf(req.headers.get('Authorization'), env.PROVER_WORKER_TOKENS);

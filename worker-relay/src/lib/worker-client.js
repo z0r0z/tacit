@@ -243,6 +243,11 @@ export async function boardSummary() {
 export async function boardCancel(jobId, reason) {
   try { await postJson('/prover/jobs/cancel', { jobId, reason }, { timeoutMs: 10_000 }); } catch { /* the job expires on its own */ }
 }
+// The relay's word on a community machine's candidate proof (worker/src/prover-board.js raceVerdict): `ok` true takes it as the job's proof,
+// false drops it and marks its maker.
+export async function boardRace(jobId, worker, ok) {
+  try { await postJson('/prover/jobs/race', { jobId, worker, ok }, { timeoutMs: 10_000 }); } catch { /* the candidate stays; it is read again */ }
+}
 // `mixed`: ops of different types too (the relay proves those from one program input; lib/prover.js proveMixed).
 export async function confidentialBatch(max = 8, { mixed = false } = {}) {
   const r = await getJson(`/confidential/job?batch=${max}${mixed ? '&mixed=1' : ''}`);

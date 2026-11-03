@@ -22,7 +22,7 @@ test('configuration: modes, defaults, and what is refused', () => {
   assert.equal(c.rpcUrl, 'https://ethereum-rpc.publicnode.com');
   assert.equal(c.sendRpcUrl, 'https://rpc.flashbots.net/fast?hint=hash');
   assert.equal(c.api, 'https://api.tacit.finance');
-  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, prove: 10 });
+  assert.deepEqual(c.secs, { headers: 300, attest: 60, settles: 15, prove: 10, board: 5 });
   assert.deepEqual(readConfig({ DRY_RUN: '1' }, ['prove']).modes, ['prove'], 'proving for the market is opt-in: a mode of its own');
   assert.ok(!c.modes.includes('prove'), 'and not part of all');
   assert.equal(c.marginBps, 2000n);
@@ -182,4 +182,32 @@ test('the unpaid modes wait for gas under the ceiling; a settle is priced by its
   assert.equal(seen.sent.length, 0);
   assert.equal(await r.passes.settles(), true, '0.02 ETH pays 400k gas at 20 gwei with the margin');
   assert.equal(seen.sent.length, 1);
+});
+
+test('board: races the prover board\'s public jobs with the tacit-prover beside it and hands the proof back under the miner\'s address; a job due before this machine could prove it is passed over', async () => {
+  const MINER = '0x' + 'ab'.repeat(20);
+  const cfg = readConfig({ MINER, API_BASE: 'https://api.example', DEVICE_PROVER: 'http://prover.local' }, ['board']);
+  assert.deepEqual(cfg.modes, ['board']);
+  assert.throws(() => readConfig({}, ['board']), /MINER/, 'a board run names the address the board credits');
+  const posted = [];
+  let jobs = [];
+  const fetchImpl = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    const reply = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (url === 'https://api.example/prover/community/claim') return reply(jobs.length ? { job: jobs.shift() } : {});
+    if (url === 'https://api.example/prover/community/result') { posted.push(body); return reply({ ok: true, status: body.error ? 'dropped' : 'candidate' }); }
+    if (url === 'http://prover.local/prove') { assert.equal(body.stdin, '0x' + Buffer.from('program input').toString('hex'), 'the board\'s base64 input goes to the prover as hex'); return reply({ id: 'j1' }); }
+    if (url.startsWith('http://prover.local/job')) return reply({ status: 'done', publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) });
+    throw new Error(`unexpected ${url}`);
+  };
+  const r = makeRunner(cfg, { fetchImpl, log: () => {} });
+  assert.equal(await r.passes.board(), false, 'nothing on the board: nothing done');
+  const stdin = Buffer.from('program input').toString('base64');
+  jobs = [{ jobId: '0xjob1', stdin, deadline: Math.floor(Date.now() / 1000) + 300, label: 'wrapswap', race: true }];
+  assert.equal(await r.passes.board(), true);
+  assert.deepEqual(posted[0], { miner: MINER, jobId: '0xjob1', publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) });
+  // its last proof took a couple of seconds: a job due in one second is passed over, and said so
+  jobs = [{ jobId: '0xjob2', stdin, deadline: Math.floor(Date.now() / 1000) + 1, label: 'wrap', race: true }];
+  assert.equal(await r.passes.board(), false);
+  assert.deepEqual(posted[1], { miner: MINER, jobId: '0xjob2', error: 'too slow for its deadline' });
 });

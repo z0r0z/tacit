@@ -263,3 +263,77 @@ test('the summary says how long the last hour\'s finished jobs waited for a clai
   await b.post({ class: 'public', stdin: Buffer.from('queued').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 3600 });
   assert.equal((await b.summary()).recent.n, 4);
 });
+
+test('community: anyone races a public job without taking it; a candidate is the job\'s proof only once the relay takes it, a bad one marks its maker', async () => {
+  t = 2_000_000;
+  const b = makeProverBoard({ storage: store(), now });
+  const c1 = { name: 'c-0x' + '11'.repeat(20), classes: ['public'], community: true }, c2 = { name: 'c-0x' + '22'.repeat(20), classes: ['public'], community: true };
+  const priv = await b.post({ class: 'private', stdin: Buffer.from('a witness').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  const pub = await b.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600, label: 'wrapswap' });
+  const j1 = await b.claim({ worker: c1, classes: ['public'] });
+  assert.equal(j1.jobId, pub.jobId, 'a community machine is offered the public job, never the private one');
+  assert.equal(j1.race, true);
+  assert.equal(await b.claim({ worker: c1, classes: ['public'] }), null, 'one race at a time per machine');
+  assert.equal((await b.status(pub.jobId)).status, 'queued', 'the claim took the job from no one');
+  const house = await b.claim({ worker: tacit, classes: ['private', 'public'] });
+  assert.equal(house.jobId, priv.jobId, 'Tacit\'s worker takes the oldest, the private job');
+  const house2 = await b.claim({ worker: tacit, classes: ['private', 'public'] });
+  assert.equal(house2.jobId, pub.jobId, 'and still the public one a community machine races');
+  assert.equal((await b.claim({ worker: c2, classes: ['public'] })).jobId, pub.jobId, 'a second machine joins the race');
+  // a bad candidate: dropped, marked, the job goes on
+  assert.deepEqual(await b.result({ worker: c2, jobId: pub.jobId, publicValues: '0x' + '33'.repeat(64), proof: '0x' + '44'.repeat(260) }), { ok: true, status: 'candidate' });
+  let st = await b.status(pub.jobId);
+  assert.equal(st.status, 'claimed'); assert.equal(st.race.length, 1, 'the relay sees the candidate');
+  assert.deepEqual(await b.raceVerdict({ jobId: pub.jobId, worker: c2.name, ok: false }), { ok: true, status: 'claimed' });
+  assert.equal((await b.status(pub.jobId)).race.length, 0);
+  // a good candidate wins over the house worker still proving
+  await b.result({ worker: c1, jobId: pub.jobId, publicValues: '0x' + '55'.repeat(64), proof: '0x' + '66'.repeat(260) });
+  assert.deepEqual(await b.raceVerdict({ jobId: pub.jobId, worker: c1.name, ok: true }), { ok: true, status: 'proved' });
+  st = await b.status(pub.jobId);
+  assert.equal(st.status, 'proved'); assert.equal(st.worker, c1.name); assert.equal(st.proof, '0x' + '66'.repeat(260)); assert.deepEqual(st.race, []);
+  assert.equal((await b.result({ worker: tacit, jobId: pub.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) })).ok, false, 'the house worker\'s late answer is not taken');
+  const s = await b.summary();
+  const row = (n) => s.workers.find((w) => w.name === n);
+  assert.equal(row(c1.name).proved, 1); assert.equal(row(c1.name).community, true);
+  assert.equal(row(c2.name).bad, 1);
+  assert.equal(row('tacit-a5000').community, undefined);
+});
+
+test('community: a sealed public job, or a racer that drops out, are handled; a machine not racing cannot answer', async () => {
+  t = 3_000_000;
+  const b = makeProverBoard({ storage: store(), now });
+  const c = { name: 'c-0x' + '77'.repeat(20), classes: ['public'], community: true };
+  const pub = await b.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  assert.equal((await b.result({ worker: c, jobId: pub.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) })).ok, false, 'not racing it');
+  await b.claim({ worker: c, classes: ['public'] });
+  assert.deepEqual(await b.result({ worker: c, jobId: pub.jobId, error: 'out of memory' }), { ok: true, status: 'dropped' });
+  assert.equal((await b.status(pub.jobId)).status, 'queued', 'a racer that could not prove it fails nothing');
+  assert.equal((await b.claim({ worker: c, classes: ['public'] })), null, 'nor is it offered the job again');
+});
+
+test('tokens: a token trusted with private work takes public work too', () => {
+  assert.deepEqual(parseWorkerTokens('box:aaaaaaaaaaaaaaaaaaaa:private')[0].classes, ['private', 'eth-state', 'public']);
+});
+
+test('routes: a community machine claims and answers with only an address; the relay judges its candidate with the box token; PROVER_BOARD_COMMUNITY=0 closes it', async () => {
+  const kv = () => { const m = new Map(); return { async get(k) { return m.has(k) ? m.get(k) : null; }, async put(k, v) { m.set(k, String(v)); }, async delete(k) { m.delete(k); } }; };
+  const env = { REGISTRY_KV: kv(), CONFIDENTIAL_BOX_TOKEN: 'box-token-box-token-box', PROVER_WORKER_TOKENS: 'gpu1:worker-token-worker-tok:private' };
+  const call = (path, init = {}, e = env) => worker.fetch(new Request(`https://api.tacit.finance${path}`, { ...init, headers: { 'content-type': 'application/json', ...(init.headers || {}) } }), e, { waitUntil() {} });
+  const post = (o, headers = {}) => ({ method: 'POST', body: JSON.stringify(o), headers });
+  const box = { Authorization: 'Bearer box-token-box-token-box' };
+  const MINER = '0x' + 'ab'.repeat(20);
+  const pub = await (await call('/prover/jobs', post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: Math.floor(Date.now() / 1000) + 600, label: 'wrapswap' }, box))).json();
+  assert.equal((await call('/prover/community/claim', post({ miner: 'nobody' }))).status, 400, 'a claim names the address its points go to');
+  const { job } = await (await call('/prover/community/claim', post({ miner: MINER }))).json();
+  assert.equal(job.jobId, pub.jobId); assert.equal(job.stdin, stdin); assert.equal(job.race, true);
+  assert.deepEqual(await (await call('/prover/community/result', post({ miner: MINER, jobId: job.jobId, publicValues: '0x' + 'ab'.repeat(64), proof: '0x' + 'cd'.repeat(260) }))).json(), { ok: true, status: 'candidate' });
+  let st = await (await call(`/prover/jobs?id=${pub.jobId}`, { headers: box })).json();
+  assert.equal(st.race.length, 1); assert.equal(st.race[0].worker, `c-${MINER}`);
+  assert.equal((await call('/prover/jobs/race', post({ jobId: pub.jobId, worker: `c-${MINER}`, ok: true }))).status, 404, 'only the relay judges a candidate');
+  assert.deepEqual(await (await call('/prover/jobs/race', post({ jobId: pub.jobId, worker: `c-${MINER}`, ok: true }, box))).json(), { ok: true, status: 'proved' });
+  st = await (await call(`/prover/jobs?id=${pub.jobId}`, { headers: box })).json();
+  assert.equal(st.status, 'proved'); assert.equal(st.worker, `c-${MINER}`);
+  const sum = await (await call('/prover/board')).json();
+  assert.equal(sum.workers.find((w) => w.name === `c-${MINER}`).community, true);
+  assert.equal((await call('/prover/community/claim', post({ miner: MINER }), { ...env, PROVER_BOARD_COMMUNITY: '0' })).status, 404);
+});

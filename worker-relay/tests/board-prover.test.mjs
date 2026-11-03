@@ -107,3 +107,33 @@ test('a check that could not run cancels without a mark against the worker; a re
   await assert.rejects(makeBoardProver(f.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, program: 'eth-state', check: async () => false }), (e) => e.code === 'board_miss' && /did not pass the check/.test(e.message));
   assert.deepEqual(f.calls.cancel, [{ jobId: '0xjob1234567890', reason: 'bad' }]);
 });
+
+test('community candidates: each is checked as a board proof is; a bad one is reported and the wait goes on, the first good one is the proof', async () => {
+  const BAD = '0x' + 'cc'.repeat(260);
+  const { api, calls } = fakeBoard({ script: [
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: PV, proof: BAD }] },
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: PV, proof: BAD }, { worker: 'c-0x02', publicValues: PV, proof: PROOF }] },
+  ] });
+  const verdicts = [];
+  api.verify = async (a) => { calls.verify.push(a); return a.proof === PROOF; };
+  api.race = async (jobId, worker, ok) => { verdicts.push([worker, ok]); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', label: 'wrapswap', memos: [] });
+  assert.deepEqual(r, { publicValues: PV, proof: PROOF, worker: 'c-0x02', jobId: '0xjob1234567890' });
+  assert.deepEqual(verdicts, [['c-0x01', false], ['c-0x02', true]], 'each candidate judged once');
+  assert.equal(calls.verify.length, 2);
+  assert.equal(calls.post[0].class, 'public');
+});
+
+test('community candidates: with only bad ones, the house worker\'s proof is still taken', async () => {
+  const BAD = '0x' + 'cc'.repeat(260);
+  const { api } = fakeBoard({ script: [
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: PV, proof: BAD }] },
+    { status: 'proved', worker: 'tacit-a5000', publicValues: PV, proof: PROOF },
+  ] });
+  api.verify = async (a) => a.proof === PROOF;
+  const verdicts = [];
+  api.race = async (jobId, worker, ok) => { verdicts.push([worker, ok]); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [] });
+  assert.equal(r.worker, 'tacit-a5000');
+  assert.deepEqual(verdicts, [['c-0x01', false]]);
+});

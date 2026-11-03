@@ -104,6 +104,15 @@ Prove wraps for the proof market and be paid in TAC. A holder who wants a proof 
 
 `MARKET_ADDR` names the market (default `0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609`). `PROVE_SECS` is the poll cadence (default 10).
 
+### board (opt-in, not part of `all`)
+
+Race Tacit's own prover for the prover board's public jobs. These are ops whose program input holds no one's secret: a wrap, and a swap or a payment from a staged deposit (a deposit only its key can spend, made ahead of the press). `board` claims one at a time (`POST /prover/community/claim` with your address), proves it with `tacit-prover` beside it and hands the proof back. Claiming takes the job from no one: Tacit's worker goes on with it, the relay checks each proof that comes back as it checks its own (a simulated settle) and uses the first that passes. A proof that does not pass costs nothing but a mark on the board's summary against the address.
+
+- **Needs:** `tacit-prover` running, and `MINER=0x…`, the address the board credits. No key and no ETH: nothing is sent on chain.
+- **Who wins:** a press waits a few minutes at most, so a machine that proves in under a minute (a desktop GPU) wins races; a laptop's 10 to 15 minutes does not. After its first proof the runner passes over a job due sooner than its last proof took. Laptops earn more from [Prove for the wrap pool](#prove-for-the-wrap-pool), whose wraps wait.
+- **Not yet:** points for board proofs. The summary (`GET /prover/board`) counts each address's proofs taken and refused; nothing pays them yet.
+- **Off:** `PROVER_BOARD_COMMUNITY=0` on the API closes the routes.
+
 ### Not included: overflow drains
 
 `drainOverflow` and `drainOverflowRoots` apply effects a batch deferred past its per-attest cap. Their inputs are

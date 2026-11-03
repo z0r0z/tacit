@@ -616,6 +616,8 @@ async function checkProverBoard() {
     s = res.ok ? await res.json() : null;
   } catch (e) { s = null; }
   if (!s || !Array.isArray(s.workers)) { await alert('warning', `prover board unreadable: settle proofs may be going to the prover network`); return; }
+  // community machines race public jobs only: they neither keep the board alive for Tacit's jobs nor are Tacit's boxes to check
+  s = { ...s, workers: s.workers.filter((w) => !w.community) };
   const live = s.workers.filter((w) => Number(w.lastSeenSeconds) <= CFG.proverBoardQuietSecs);
   if (!live.length) {
     const seen = s.workers.map((w) => `${w.name} ${Math.round(Number(w.lastSeenSeconds) / 60)} min ago`).join(', ') || 'none ever';

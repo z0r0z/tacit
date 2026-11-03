@@ -9,6 +9,10 @@
 //   all      the three, each on its own cadence (the default)
 //   prove    (opt-in, not in `all`) take the proof market's orders: prove each holder's wrap on this machine with tacit-prover and be paid in TAC
 //            from their permit when the pool accepts it. Run `node tools/community-runner.mjs prove` beside tacit-prover (127.0.0.1:47815).
+//   board    (opt-in, not in `all`, needs no key) race Tacit's own prover for the prover board's public jobs: ops whose program input holds
+//            no one's secret (a wrap, a staged deposit's swap or payment). Each is proved with tacit-prover beside it; the first proof the
+//            relay checks and takes is the one used, and its maker's address is credited on the board (MINER=0x…, default the key's
+//            address). A job whose deadline is nearer than this machine's last proof took is passed over: a press is for a fast machine.
 // Each transaction is simulated against the latest block before it is signed, and work someone else has done meanwhile is passed
 // over. Signed transactions go to SEND_RPC_URL (Flashbots Protect by default, which does not include one that would revert), one at a
 // time, each waited for before the next.
@@ -61,16 +65,19 @@ export function readConfig(env = process.env, argv = process.argv.slice(2)) {
   const v = (k, d) => (env[k] != null && String(env[k]).trim() !== '' ? String(env[k]).trim() : d);
   const num = (k, d) => { const n = Number(v(k, d)); if (!Number.isFinite(n) || n < 0) throw new Error(`${k} must be a number of 0 or more`); return n; };
   const mode = String(argv.find((a) => !a.startsWith('-')) || v('MODE', 'all')).toLowerCase();
-  if (mode !== 'all' && mode !== 'prove' && !MODES.includes(mode)) throw new Error(`unknown mode "${mode}": headers, attest, settles, prove or all`);
+  if (mode !== 'all' && mode !== 'prove' && mode !== 'board' && !MODES.includes(mode)) throw new Error(`unknown mode "${mode}": headers, attest, settles, prove, board or all`);
   const need = v('HEADERS_NEED', null);
   if (need != null && !/^\d{1,8}$/.test(need)) throw new Error('HEADERS_NEED must be a Bitcoin block height');
   const dryRun = v('DRY_RUN', '0') === '1', key = v('RUNNER_KEY', null);
-  if (!key && !dryRun) throw new Error('set RUNNER_KEY=0x<a key holding a little ETH for gas>, or DRY_RUN=1 to see what would be sent');
+  const miner = v('MINER', null);
+  if (miner != null && !/^0x[0-9a-fA-F]{40}$/.test(miner)) throw new Error('MINER must be the 0x address the board credits');
+  if (mode === 'board' && !key && !miner) throw new Error('set MINER=0x<the address the board credits>');
+  if (!key && !dryRun && mode !== 'board') throw new Error('set RUNNER_KEY=0x<a key holding a little ETH for gas>, or DRY_RUN=1 to see what would be sent');
   return {
-    modes: mode === 'all' ? MODES.slice() : [mode], dryRun, once: v('ONCE', '0') === '1', key,
+    modes: mode === 'all' ? MODES.slice() : [mode], dryRun, once: v('ONCE', '0') === '1', key, miner,
     rpcUrl: v('RPC_URL', 'https://ethereum-rpc.publicnode.com'), sendRpcUrl: v('SEND_RPC_URL', 'https://rpc.flashbots.net/fast?hint=hash'),
     api: v('API_BASE', 'https://api.tacit.finance').replace(/\/+$/, ''), esplora: v('ESPLORA_URL', 'https://blockstream.info/api').replace(/\/+$/, ''),
-    secs: { headers: num('HEADERS_SECS', 300), attest: num('ATTEST_SECS', 60), settles: num('SETTLES_SECS', 15), prove: num('PROVE_SECS', 10) },
+    secs: { headers: num('HEADERS_SECS', 300), attest: num('ATTEST_SECS', 60), settles: num('SETTLES_SECS', 15), prove: num('PROVE_SECS', 10), board: num('BOARD_SECS', 5) },
     marketAddr: v('MARKET_ADDR', '0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609'), deviceProver: v('DEVICE_PROVER', 'http://127.0.0.1:47815').replace(/\/+$/, ''), minTacWei: BigInt(v('MIN_TAC_WEI', '0')),
     headersMinBehind: num('HEADERS_MIN_BEHIND', 3), headersNeed: need == null ? null : Number(need),
     attestAfterMs: num('ATTEST_AFTER_SECS', 120) * 1000, marginBps: BigInt(Math.round(num('MARGIN_BPS', 2000))),
@@ -288,6 +295,43 @@ export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Dat
   });
   async function prove() { return proveSolver.pass(); }
 
+  // The board's public jobs, raced against Tacit's own prover: claim one, prove it beside this runner, hand the proof back. The board keeps
+  // it as a candidate; the relay checks it and takes the first that passes.
+  const miner = (cfg.miner || from).toLowerCase();
+  let lastProveMs = null;
+  const boardPost = (path, body) => jget(`${cfg.api}/prover/community/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ miner, ...body }) });
+  async function board() {
+    const { job } = await boardPost('claim', {});
+    if (!job) return false;
+    const left = job.deadline * 1000 - Date.now();
+    if (lastProveMs != null && lastProveMs > left) {
+      log(`board: ${job.label || 'a job'} is due in ${Math.round(left / 1000)} s and this machine's last proof took ${Math.round(lastProveMs / 1000)} s: left to a faster one`);
+      await boardPost('result', { jobId: job.jobId, error: 'too slow for its deadline' }).catch(() => {});
+      return false;
+    }
+    const t0 = Date.now();
+    try {
+      const stdinHex = '0x' + Buffer.from(job.stdin, 'base64').toString('hex');
+      const { id } = await jget(`${cfg.deviceProver}/prove`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stdin: stdinHex }) });
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const s = await jget(`${cfg.deviceProver}/job?id=${encodeURIComponent(id)}`);
+        if (s.status === 'done') {
+          lastProveMs = Date.now() - t0;
+          const r = await boardPost('result', { jobId: job.jobId, publicValues: s.publicValues, proof: s.proof });
+          log(`board: ${job.label || job.jobId.slice(0, 10)} proved in ${Math.round(lastProveMs / 1000)} s: ${r.status || r.error}`);
+          return true;
+        }
+        if (s.status === 'failed') throw new Error(s.error || 'tacit-prover could not make the proof');
+        if (Date.now() > job.deadline * 1000) throw new Error('its deadline passed while it was proved');
+      }
+    } catch (e) {
+      log(`board: ${job.label || job.jobId.slice(0, 10)}: ${e.message}`);
+      await boardPost('result', { jobId: job.jobId, error: String(e.message).slice(0, 200) }).catch(() => {});
+      return false;
+    }
+  }
+
   // A send's outcome: null for a dry run, else { hash, receipt } (receipt null when it was not included in time).
   async function settled(p) {
     try { const hash = await p; return { hash, receipt: receipts.get(hash) ?? null }; }
@@ -310,7 +354,7 @@ export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Dat
     if (code && code !== '0x') log(`${from} has code (${code.slice(0, 10)}…): the board's ETH fees go to that code. Use a fresh key`);
   }
 
-  return { from, start, passes: { headers, attest, settles, prove } };
+  return { from, start, passes: { headers, attest, settles, prove, board } };
 }
 
 async function main() {

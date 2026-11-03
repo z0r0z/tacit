@@ -19,7 +19,7 @@ import { CREDIT_SHORT } from './prove-pause.js';
 import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
 import { makeEthBoard, boardProves, finishVerdict } from './eth-board.js';
-import { boardPost, boardStatus, boardCancel, boardSummary } from './worker-client.js';
+import { boardPost, boardStatus, boardCancel, boardSummary, boardRace } from './worker-client.js';
 import { stdinFor, SELF_PROVE_TYPES, LIMITS } from './spn/sp1-stdin.js';
 import { assertMemosMatchProof } from './memo-root.js';
 import { makeReflectPriceCap } from './reflect-price-cap.js';
@@ -392,7 +392,7 @@ let board = null;
 const boardLog = (m) => console.log(`[prover ${new Date().toISOString()}] ${m}`);
 function boardLane() {
   if (!CFG.proverBoard) return null;
-  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, verify: verifySettle, alive: boardAlive, waitMs: CFG.proverBoardWaitSecs * 1000, log: boardLog });
+  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, race: boardRace, verify: verifySettle, alive: boardAlive, waitMs: CFG.proverBoardWaitSecs * 1000, log: boardLog });
   return board;
 }
 // Whether a worker has polled the board in the last half minute (the worker polls every few seconds), read at most every
@@ -402,7 +402,8 @@ export async function boardAlive() {
   if (Date.now() - aliveAt < 10_000) return aliveWas;
   const s = await boardSummary();
   aliveAt = Date.now();
-  aliveWas = !s || s.workers.some((w) => Number(w.lastSeenSeconds) <= 30);
+  // community machines (who race public jobs only) are not what keeps the board alive for the jobs Tacit's own workers take
+  aliveWas = !s || s.workers.some((w) => !w.community && Number(w.lastSeenSeconds) <= 30);
   return aliveWas;
 }
 // → true (the pool takes it), 'stale' (the proof is sound but its roots have moved on: the op's fault, not the worker's), 'unchecked' (the
@@ -423,12 +424,16 @@ async function verifySettle({ publicValues, proof, memos }) {
   }
 }
 // The board lane for `stdin`, or null when it missed; the time it took comes off `timeoutMs` for the lane after it.
-async function viaBoard({ stdin, cycleLimit, gasLimit, label, memos, timeoutMs, check = null }) {
+// Ops whose program input holds nothing secret of anyone's (checked byte for byte in tests/staged-press-fork.mjs: a wrap, a staged deposit's
+// wrap-and-send and wrap-swap carry commitments, owners and signatures, never a key or a blinding): their board jobs are 'public', which
+// community machines may race (worker/src/prover-board.js). Every other op stays 'private'.
+export const PUBLIC_BOARD_TYPES = Object.freeze(['wrap', 'wraptransfer', 'wrapswap']);
+async function viaBoard({ stdin, cycleLimit, gasLimit, label, memos, timeoutMs, check = null, cls = 'private' }) {
   const lane = boardLane();
   if (!lane) return { proof: null, spentMs: 0 };
   const t0 = Date.now();
   try {
-    const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls: 'private', label, memos, timeoutMs, ...(check ? { check } : {}) });
+    const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls, label, memos, timeoutMs, ...(check ? { check } : {}) });
     boardLog(`${label}: proved on the board by ${r.worker} in ${Math.round((Date.now() - t0) / 1000)} s`);
     return { proof: { publicValues: r.publicValues, proof: r.proof, lane: 'board', worker: r.worker }, spentMs: Date.now() - t0 };
   } catch (e) {
@@ -519,7 +524,7 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     let stdin = null;
     try { stdin = stdinFor(type, { ...op, memoHashes }); } catch (e) { console.log(`[prover] ${type}: no board input (${e.message}); the binary proves it`); }
     if (stdin) {
-      const first = await viaBoard({ stdin, ...LIMITS[type], label: type, memos: memos || [], timeoutMs });
+      const first = await viaBoard({ stdin, ...LIMITS[type], label: type, memos: memos || [], timeoutMs, cls: PUBLIC_BOARD_TYPES.includes(type) ? 'public' : 'private' });
       if (first.proof) return first.proof;
       timeoutMs = Math.max(60_000, timeoutMs - first.spentMs);
     }
