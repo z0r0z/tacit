@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ojJdEFkUBF/ei1Z4b0bgfxGg0mi9gMVc7F/p8+L+Ir4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-TUb7qoZNN0edyNMu4vbQv1Dic+ucQ8GCTQBc6qUDGsM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -5913,6 +5913,90 @@ function xbSection(pub, a = XA.teth) {
       <div class="status" role="status" id="${a.bpre}-fstatus"></div>
     </details>`;
 }
+// The return from Bitcoin's burns, pressed from the bring-back form or the card's Bridge tab: `r` is what was reviewed, one note ({ note, pf }) or all that are ready ({ all }). Each note is signed and sent through the key's
+// Bitcoin address, and what the record says is said if the send did not go through. `where` says where the returns are followed, `after` redraws when it is over. → false when a single burn failed (the review stands), else true.
+async function xbBringNow({ run, a, pub, r, status, where, after }) {
+  const XB = xbOf(a), noteArg = (n) => ({ txid: n.txid, vout: n.vout, amount: n.amount, blinding: n.blinding, assetId: a.id });
+  // One burn, signed and sent through the page's key; what the record says if the send did not go through.
+  const burnOne = (n, pf) => withKey(async (t) => {
+    const ux = t.bridgeUx(), priv = walletPriv();
+    const made = await ux.startReflected({ note: { txid: n.txid, vout: n.vout, sats: n.sats, amount: n.amount, blinding: n.blinding, assetId: a.id, p2tr: true }, walletPriv: priv, feeRate: pf.burnFeeRate });
+    try { return await ux.advance(made.walletPub, made.id); } catch { return ux.list(made.walletPub).find((x) => x.id === made.id) || made; }
+  }, pub);
+  // Each ready note in turn, the largest first, each checked again just before its burn. A shortage of sats or a full chain of unconfirmed
+  // transactions ends the run there (after one look at the coin list afresh, as the TAC run does), and what is left is said.
+  const bringAll = async () => {
+    const list = [...r.all].sort((x, y) => (BigInt(y.amount) > BigInt(x.amount) ? 1 : BigInt(y.amount) < BigInt(x.amount) ? -1 : 0)), left = [];
+    let did = 0, at = 0, halted = false;
+    for (const n of list) {
+      const amt = `${fmt(n.amount, 8, a.dp)} ${a.ticker}`;
+      run.say(status, `Bringing ${amt} back (${++at} of ${list.length})…`);
+      try {
+        const ux = await brUx(), pf = await ux.preflightHeld({ note: noteArg(n), walletPub: hexToBytes(pub) });
+        if (!pf.ok) { left.push(`${amt}: ${xbCheckText(pf.steps.find((x) => !x.ok) || { name: '' })}`); continue; }
+        if (pf.burnFeeRate > ux.RETURN_FEE_CEILING) { left.push(`${amt}: Bitcoin’s fees are high right now`); halted = true; break; }
+        await brTry(pub, () => did > 0, () => burnOne(n, pf));
+        did++; await brFresh(pub);
+      } catch (e) { left.push(`${amt}: ${brHalts(e) ? brHaltText(e) : brErr(e)}`); if (brHalts(e)) { halted = true; break; } }
+    }
+    const waiting = list.length - did - left.length;
+    XB.pick = null; XB.rv = null; XB.at = 0;
+    if (did) toast(`Bringing ${did} ${a.ticker} note${did === 1 ? '' : 's'} back to Ethereum`);
+    say(status, html`${did ? html`<span class="ok">✓ ${did} burn${did === 1 ? '' : 's'} sent.</span> ${did === 1 ? 'It shows' : 'They show'} ${where}, and finish${did === 1 ? 'es' : ''} on their own whenever this page is open with your key.` : ''}${left.length ? html`<br><span class="err">${left.join(' · ')}</span>` : ''}${halted && waiting > 0 ? html`<br>${waiting} more ${waiting === 1 ? 'is' : 'are'} still here: press again once that is sorted.` : ''}`);
+    Promise.allSettled([loadBridged(true, a), loadBtc(true)]).then(after);
+  };
+  if (r.all) { try { await bringAll(); } catch (e) { run.fail(status, brFail(e)); } return true; }
+  const amtText = `${fmt(r.note.amount, 8, a.dp)} ${a.ticker}`;
+  try {
+    run.say(status, 'Signing the burn and sending it to Bitcoin…');
+    const rec = await withKey(async (t) => {
+      const ux = t.bridgeUx(), priv = walletPriv();
+      const made = await ux.startReflected({ note: { txid: r.note.txid, vout: r.note.vout, sats: r.note.sats, amount: r.note.amount, blinding: r.note.blinding, assetId: a.id, p2tr: true }, walletPriv: priv, feeRate: r.pf.burnFeeRate });
+      try { return await ux.advance(made.walletPub, made.id); } catch { return ux.list(made.walletPub).find((x) => x.id === made.id) || made; }
+    }, pub);
+    XB.pick = null; XB.rv = null;
+    const sent = !/-signed$/.test(rec.stage);
+    toast(sent ? `Bringing ${amtText} back to Ethereum` : `${amtText}: signed, not yet sent`, !sent);
+    say(status, sent ? html`<span class="ok">✓ Burn sent</span> ${rec.burn?.txid ? html`<a href="${MEMPOOL}/tx/${rec.burn.txid}" target="_blank" rel="noopener">${short(rec.burn.txid, 6)} ↗</a>` : ''}. It shows ${where}, and finishes on its own whenever this page is open with your key.`
+      : html`<span class="err">Signed, but Bitcoin did not take it yet. Try again from its row ${where}.</span>`);
+    XB.at = 0;
+    Promise.allSettled([loadBridged(true, a), loadBtc(true)]).then(after);
+  } catch (e) { run.fail(status, brFail(e)); return false; }
+  return true;
+}
+// What bringing bridged notes back from Bitcoin has checked before the burn, read as the bring-back form reads it: each note against Bitcoin and its proof, the fee Bitcoin asks, and what the key's Bitcoin address holds to pay
+// it. `xbOf(a).pick` is one note, or 'all' of those that are ready. → { r, total, count, fee, short, have, reach, need, stop }: `r` goes to xbBringNow, `short` means the address holds too little for any of them, `stop` is what holds it back
+async function xbReview(a, pub) {
+  const XB = xbOf(a), ux = await brUx(), noteArg = (n) => ({ txid: n.txid, vout: n.vout, amount: n.amount, blinding: n.blinding, assetId: a.id });
+  const ready = (XB.notes || []).filter((n) => xbReady(n) && !T.bridgeUx().isReserved(n.txid, n.vout));
+  const coinsOf = () => withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+  const high = (rate, fee, what) => `Bitcoin’s fees are high right now (${Math.round(rate)} sat/vB, about ${fee.toLocaleString('en-US')} sats for ${what}). Bringing ${a.ticker} back waits for them to fall under ${ux.RETURN_FEE_CEILING} sat/vB.`;
+  if (XB.pick === 'all') {
+    const pfs = await Promise.all(ready.map((n) => ux.preflightHeld({ note: noteArg(n), walletPub: hexToBytes(pub) }).catch((e) => ({ ok: false, steps: [{ name: 'fee-estimate', detail: brErr(e) }] }))));
+    const good = ready.filter((_, i) => pfs[i].ok);
+    if (!good.length) return { stop: xbCheckText(pfs[0]?.steps.find((x) => !x.ok) || { name: '' }) };
+    const rate = Math.max(...pfs.filter((x) => x.ok).map((x) => x.burnFeeRate)), coins = await coinsOf();
+    const costs = good.map((n) => ux.bridgeCost({ path: 'reflected', feeRate: rate, coins: coins || [], noteSats: n.sats, p2tr: true })), fee = costs.reduce((t, c) => t + c.fee, 0);
+    if (rate > ux.RETURN_FEE_CEILING) return { stop: high(rate, fee, 'these') };
+    // how many the sats on the key's address reach, the cheapest first: the rest come back when more is added and the press is repeated
+    const have = (coins || []).reduce((t, c) => t + Number(c.value || 0), 0);
+    let left = have, reach = 0;
+    for (const c of costs.map((x) => x.need).sort((x, y) => x - y)) { if (left < c) break; left -= c; reach++; }
+    return { r: { all: good }, total: good.reduce((t, n) => t + BigInt(n.amount), 0n), count: good.length, fee, short: !!coins && reach === 0, have, reach, skipped: ready.length - good.length };
+  }
+  const n = ready.find((x) => xbId(x) === XB.pick);
+  if (!n) return { stop: null };
+  const key = `${pub}:${xbId(n)}`, kept = XB.rv?.key === key && Date.now() - XB.rv.at < 120e3 ? XB.rv.pf : null;
+  const pf = kept || await ux.preflightHeld({ note: noteArg(n), walletPub: hexToBytes(pub) });
+  if (!kept && pf.ok && !(pf.burnFeeRate > ux.RETURN_FEE_CEILING)) XB.rv = { key, at: Date.now(), pf };
+  if (!pf.ok) return { stop: xbCheckText(pf.steps.find((x) => !x.ok) || { name: '' }) };
+  const coins = await coinsOf(), cost = ux.bridgeCost({ path: 'reflected', feeRate: pf.burnFeeRate, coins: coins || [], noteSats: n.sats, p2tr: true });
+  if (pf.burnFeeRate > ux.RETURN_FEE_CEILING) return { stop: high(pf.burnFeeRate, cost.fee, 'this') };
+  return { r: { note: n, pf }, total: BigInt(n.amount), count: 1, fee: cost.fee, short: !!coins && !cost.ok, have: cost.have || 0, need: cost.need };
+}
+// What a review says when the key's Bitcoin address cannot pay for the burn (or all of them): plain words, for a line under the button
+const xbShortText = (R, pub) => (R.count > 1 ? `This key’s Bitcoin address has ${fmt(BigInt(R.have), 8, 8)} BTC free for fees, enough for ${R.reach} of ${R.count}. ${R.reach ? 'The rest come back when you add bitcoin and press again.' : 'Add some from Receive on the Bitcoin tab.'}`
+  : `This key’s Bitcoin address has ${fmt(BigInt(R.have || 0), 8, 8)} BTC free for fees, short of the ${(R.need || 0).toLocaleString('en-US')} sats this needs.${BTC.pub === pub && BTC.pending > 0n ? ` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : ' Add some from Receive on the Bitcoin tab.'}`);
 function wireHeld(el, status, a = XA.teth) {
   const pub = S.key.pubHex, XB = xbOf(a), q = (name) => $(`#${a.bpre}-${name}`, el);
   $$('[data-bract]', el).forEach((x) => x.onclick = () => busy(x, (run) => brAct(run, x.dataset.bract, x.dataset.brid)));
@@ -6010,57 +6094,58 @@ function wireHeld(el, status, a = XA.teth) {
   };
   $$(`input[name="${a.bpre}-note"]`, el).forEach((r) => r.onchange = () => { XB.pick = r.value; check(); });
   if (XB.pick) check();
-  // One burn, signed and sent through the page's key; what the record says if the send did not go through.
-  const burnOne = (n, pf) => withKey(async (t) => {
-    const ux = t.bridgeUx(), priv = walletPriv();
-    const made = await ux.startReflected({ note: { txid: n.txid, vout: n.vout, sats: n.sats, amount: n.amount, blinding: n.blinding, assetId: a.id, p2tr: true }, walletPriv: priv, feeRate: pf.burnFeeRate });
-    try { return await ux.advance(made.walletPub, made.id); } catch { return ux.list(made.walletPub).find((x) => x.id === made.id) || made; }
-  }, pub);
-  // Each ready note in turn, the largest first, each checked again just before its burn. A shortage of sats or a full chain of unconfirmed
-  // transactions ends the run there (after one look at the coin list afresh, as the TAC run does), and what is left is said.
-  const bringAll = async (run, r) => {
-    const list = [...r.all].sort((x, y) => (BigInt(y.amount) > BigInt(x.amount) ? 1 : BigInt(y.amount) < BigInt(x.amount) ? -1 : 0)), left = [];
-    let did = 0, at = 0, halted = false;
-    for (const n of list) {
-      const amt = `${fmt(n.amount, 8, a.dp)} ${a.ticker}`;
-      run.say(status, `Bringing ${amt} back (${++at} of ${list.length})…`);
-      try {
-        const ux = await brUx(), pf = await ux.preflightHeld({ note: noteArg(n), walletPub: hexToBytes(pub) });
-        if (!pf.ok) { left.push(`${amt}: ${xbCheckText(pf.steps.find((x) => !x.ok) || { name: '' })}`); continue; }
-        if (pf.burnFeeRate > ux.RETURN_FEE_CEILING) { left.push(`${amt}: Bitcoin’s fees are high right now`); halted = true; break; }
-        await brTry(pub, () => did > 0, () => burnOne(n, pf));
-        did++; await brFresh(pub);
-      } catch (e) { left.push(`${amt}: ${brHalts(e) ? brHaltText(e) : brErr(e)}`); if (brHalts(e)) { halted = true; break; } }
-    }
-    const waiting = list.length - did - left.length;
-    XB.pick = null; XB.rv = null; XB.at = 0;
-    if (did) toast(`Bringing ${did} ${a.ticker} note${did === 1 ? '' : 's'} back to Ethereum`);
-    say(status, html`${did ? html`<span class="ok">✓ ${did} burn${did === 1 ? '' : 's'} sent.</span> ${did === 1 ? 'It shows' : 'They show'} under Coming back, and finish${did === 1 ? 'es' : ''} on their own whenever this page is open with your key.` : ''}${left.length ? html`<br><span class="err">${left.join(' · ')}</span>` : ''}${halted && waiting > 0 ? html`<br>${waiting} more ${waiting === 1 ? 'is' : 'are'} still here: press again once that is sorted.` : ''}`);
-    Promise.allSettled([loadBridged(true, a), loadBtc(true)]).then(() => rerender(a.sheet));
-  };
   go.onclick = () => busy(go, async (run) => {
     const r = review;
     if (!r) return;
-    if (r.all) { try { review = null; await bringAll(run, r); } catch (e) { run.fail(status, brFail(e)); } return; }
-    const amtText = `${fmt(r.note.amount, 8, a.dp)} ${a.ticker}`;
-    try {
-      run.say(status, 'Signing the burn and sending it to Bitcoin…');
-      const rec = await withKey(async (t) => {
-        const ux = t.bridgeUx(), priv = walletPriv();
-        const made = await ux.startReflected({ note: { txid: r.note.txid, vout: r.note.vout, sats: r.note.sats, amount: r.note.amount, blinding: r.note.blinding, assetId: a.id, p2tr: true }, walletPriv: priv, feeRate: r.pf.burnFeeRate });
-        try { return await ux.advance(made.walletPub, made.id); } catch { return ux.list(made.walletPub).find((x) => x.id === made.id) || made; }
-      }, pub);
-      XB.pick = null; XB.rv = null; review = null;
-      const sent = !/-signed$/.test(rec.stage);
-      toast(sent ? `Bringing ${amtText} back to Ethereum` : `${amtText}: signed, not yet sent`, !sent);
-      say(status, sent ? html`<span class="ok">✓ Burn sent</span> ${rec.burn?.txid ? html`<a href="${MEMPOOL}/tx/${rec.burn.txid}" target="_blank" rel="noopener">${short(rec.burn.txid, 6)} ↗</a>` : ''}. It shows under Coming back, and finishes on its own whenever this page is open with your key.`
-        : html`<span class="err">Signed, but Bitcoin did not take it yet. Try again from its row under Coming back.</span>`);
-      XB.at = 0;
-      Promise.allSettled([loadBridged(true, a), loadBtc(true)]).then(() => rerender(a.sheet));
-    } catch (e) { run.fail(status, brFail(e)); }
+    if (r.all) review = null;
+    if (await xbBringNow({ run, a, pub, r, status, where: 'under Coming back', after: () => rerender(a.sheet) })) review = null;
   });
 }
 function v1Btc(el, status) { return xoOut(el, status, XA.teth); }
+// The bridge to Bitcoin's burn, pressed from a bridge form or the card's Bridge tab: `x` is the quote that was checked ({ units, fee }), `a` the asset (XA). Bitcoin and its proof are read once more, the note is cut to size, and the relay
+// proves the burn (or, with the key's own proof, the Tacit account sends it, or it is offered when the relay will not). `status` is the element the steps are said in, `line()` the one Activity and a failure use, `where` says where the bridge
+// is followed, `clear` empties the amount once it is going and `after` redraws when it is over. Said, not thrown.
+async function xoBurnNow({ run, a, x, ready, pub, status, line, where, sheet = a.sheet, clear, after }) {
+  const amtText = `${fmt(x.units, 8, a.dp)} ${a.ticker}`;
+  run.go({ label: `Bridge ${amtText} to Bitcoin`, status: line, clear });
+  try {
+    const [t, ux] = await Promise.all([getUx(), xoUx()]), priv = walletPriv();
+    run.say(status, 'Checking Bitcoin and the proof once more…');
+    const pf = await xoPreflight(ux, pub);
+    if (!pf.ok) throw Object.assign(new Error('Bitcoin or its proof could not be read, so nothing was burned. Try again in a minute.'), { said: true });
+    const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) === x.units, status, a.k);
+    if (String(note.asset).toLowerCase() !== a.id) throw Object.assign(new Error(`The note picked for this is not ${a.ticker}, so nothing was burned.`), { said: true });
+    run.say(status, 'The relay is proving the burn…');
+    const startWith = (o) => ux.start({ note, walletPriv: priv, fee: o.fee, selfSettle: o.selfSettle, waitOpts: o.waitOpts, ready });
+    let rec;
+    if (!a.redeem && await proveOwn(['bridgeburn'])) {
+      try { rec = await selfNow({ run, types: ['bridgeburn'], quiet: true, label: `Bridge ${amtText} to Bitcoin`, sheet, status: line, go: (y) => startWith({ fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }) }); }
+      catch (e) { if (e?.offered) return; throw e; }
+    } else try {
+      try { rec = await startWith({ fee: x.fee, waitOpts: run.wait(null, 15 * 60e3) }); }
+      catch (e0) { const up = xoLadder(x.fee * 2n); if (xoFeeShort(e0) && !waitRanOut(e0) && up * 2n < x.units && a.floor && !a.redeem) rec = await startWith({ fee: up, waitOpts: run.wait(null, 15 * 60e3) }); else throw e0; }
+    } catch (e) {
+      if (proved(e)) { offerSelf({ run, label: `Bridge ${amtText} to Bitcoin`, sheet, status: line, then: 'Burned. The Bitcoin step goes on by itself from here.', after: () => xoTick(true) }, e); return; }
+      if (!(relayRefused(e) || xoFeeShort(e)) || waitRanOut(e)) throw e;
+      if (!/relay 5\d\d\b|temporarily unavailable/i.test(String(e?.message || e))) await ux.cancelIntent(pub, note.nullifier).catch(() => {});
+      if (a.redeem) throw e;
+      offerSelf({ run, label: `Bridge ${amtText} to Bitcoin`, sheet, status: line, then: 'Burned. The Bitcoin step goes on by itself from here.', after: () => xoTick(true),
+        go: async (y) => {
+          const again = await xoPreflight(ux, pub, [note.nullifier]);
+          if (!again.ok) throw Object.assign(new Error('The proof’s state could not be read, so nothing was burned. Check the bridge again.'), { said: true });
+          try { return await startWith({ fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }); }
+          catch (e2) { throw waitRanOut(e2) || jobSaid(e2) ? e2 : xoFail(e2); }
+        } }, e);
+      return;
+    }
+    try { rec = await xoAdvance(ux, pub, rec); } catch {}
+    toast(`Bridging ${amtText} to Bitcoin`);
+    if (rec.settle?.claimIdVerified === false) say(status, html`<span class="err">Burned on Ethereum, but its claim was not matched to the record there, so the Bitcoin step is held back.</span> ${where}: press Check it again.`);
+    else say(status, html`<span class="ok">✓ Burned on Ethereum</span> ${rec.settle?.txHash ? txLink(xoHash(rec.settle.txHash)) : ''}. ${where}. The Bitcoin step goes on by itself while this page is open with your key.${pf.warnings.some((w) => w.name === 'funding') ? html` It needs about ${pf.needSats.toLocaleString('en-US')} sats on your Bitcoin address: send them from any wallet or exchange to ${addrLine(pf.address)}` : ''}`);
+    await scanPrivate(true).catch(() => {});
+    after();
+  } catch (e) { run.fail(status, waitRanOut(e) || jobSaid(e) ? e : xoFail(e)); }
+}
 function xoOut(el, status, a) {
   const pub = S.key.pubHex, held = spendable(a.k), recs = xoRecords(pub, a), p = (name) => `${a.pre}-${name}`;
   xoDiscover(pub);
@@ -6170,46 +6255,7 @@ function xoOut(el, status, a) {
   go.onclick = () => busy(go, async (run) => {
     const x = q;
     if (!x?.ok) return;
-    const amtText = `${fmt(x.units, 8, a.dp)} ${a.ticker}`;
-    run.go({ label: `Bridge ${amtText} to Bitcoin`, status: () => $(a.status), clear: () => { clearField(amt); XO.acked = null; } });
-    try {
-      const [t, ux] = await Promise.all([getUx(), xoUx()]), priv = walletPriv();
-      run.say(status, 'Checking Bitcoin and the proof once more…');
-      const pf = await xoPreflight(ux, pub);
-      if (!pf.ok) throw Object.assign(new Error('Bitcoin or its proof could not be read, so nothing was burned. Try again in a minute.'), { said: true });
-      const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) === x.units, status, a.k);
-      if (String(note.asset).toLowerCase() !== a.id) throw Object.assign(new Error(`The note picked for this is not ${a.ticker}, so nothing was burned.`), { said: true });
-      run.say(status, 'The relay is proving the burn…');
-      const ready = !!$(`#${p('ready')}`)?.checked;
-      const startWith = (o) => ux.start({ note, walletPriv: priv, fee: o.fee, selfSettle: o.selfSettle, waitOpts: o.waitOpts, ready });
-      let rec;
-      if (!a.redeem && await proveOwn(['bridgeburn'])) {
-        try { rec = await selfNow({ run, types: ['bridgeburn'], quiet: true, label: `Bridge ${amtText} to Bitcoin`, sheet: a.sheet, status: () => $(a.status), go: (y) => startWith({ fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }) }); }
-        catch (e) { if (e?.offered) return; throw e; }
-      } else try {
-        try { rec = await startWith({ fee: x.fee, waitOpts: run.wait(null, 15 * 60e3) }); }
-        catch (e0) { const up = xoLadder(x.fee * 2n); if (xoFeeShort(e0) && !waitRanOut(e0) && up * 2n < x.units && a.floor && !a.redeem) rec = await startWith({ fee: up, waitOpts: run.wait(null, 15 * 60e3) }); else throw e0; }
-      } catch (e) {
-        if (proved(e)) { offerSelf({ run, label: `Bridge ${amtText} to Bitcoin`, sheet: a.sheet, status: () => $(a.status), then: 'Burned. The Bitcoin step goes on by itself from here.', after: () => xoTick(true) }, e); return; }
-        if (!(relayRefused(e) || xoFeeShort(e)) || waitRanOut(e)) throw e;
-        if (!/relay 5\d\d\b|temporarily unavailable/i.test(String(e?.message || e))) await ux.cancelIntent(pub, note.nullifier).catch(() => {});
-        if (a.redeem) throw e;
-        offerSelf({ run, label: `Bridge ${amtText} to Bitcoin`, sheet: a.sheet, status: () => $(a.status), then: 'Burned. The Bitcoin step goes on by itself from here.', after: () => xoTick(true),
-          go: async (y) => {
-            const again = await xoPreflight(ux, pub, [note.nullifier]);
-            if (!again.ok) throw Object.assign(new Error('The proof’s state could not be read, so nothing was burned. Check the bridge again.'), { said: true });
-            try { return await startWith({ fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }); }
-            catch (e2) { throw waitRanOut(e2) || jobSaid(e2) ? e2 : xoFail(e2); }
-          } }, e);
-        return;
-      }
-      try { rec = await xoAdvance(ux, pub, rec); } catch {}
-      toast(`Bridging ${amtText} to Bitcoin`);
-      if (rec.settle?.claimIdVerified === false) say(status, html`<span class="err">Burned on Ethereum, but its claim was not matched to the record there, so the Bitcoin step is held back.</span> It shows under On the way: press Check it again.`);
-      else say(status, html`<span class="ok">✓ Burned on Ethereum</span> ${rec.settle?.txHash ? txLink(xoHash(rec.settle.txHash)) : ''}. It shows under On the way. The Bitcoin step goes on by itself while this page is open with your key.${pf.warnings.some((w) => w.name === 'funding') ? html` It needs about ${pf.needSats.toLocaleString('en-US')} sats on your Bitcoin address: send them from any wallet or exchange to ${addrLine(pf.address)}` : ''}`);
-      await scanPrivate(true).catch(() => {});
-      rerender(a.sheet);
-    } catch (e) { run.fail(status, waitRanOut(e) || jobSaid(e) ? e : xoFail(e)); }
+    await xoBurnNow({ run, a, x, ready: !!$(`#${p('ready')}`)?.checked, pub, status, line: () => $(a.status), where: 'It shows under On the way', clear: () => { clearField(amt); XO.acked = null; }, after: () => rerender(a.sheet) });
   });
 }
 
@@ -13711,13 +13757,14 @@ function hxSendGo() {
   (k === 'tac' ? TACSEND : CSEND).pick = k;
   openLink(k === 'tac' ? 'tac' : 'borrow');
 }
-// Whatever the Send tab does in place runs under its button, saying each step in one line kept across repaints (HX.ss); the button stays busy until it is over, and the line is
-// left standing until the next amount is typed.
+// Whatever the Send or Bridge tab does in place runs under its button, saying each step in one line kept across repaints (HX.ss); the button stays busy until it is over, and the line is
+// left standing until the next amount is typed (or another coin or way is picked).
+const hxSsKey = () => (HX.tab === 'send' ? `send:${HX.send}` : `${HX.tab}:${HX.br}`);
 async function hxSendRun(job) {
   const go = $('#hx-go');
   if (!go || go.getAttribute('aria-busy') === 'true') return;
   HX.ss ||= Object.assign(document.createElement('p'), { className: 'q', id: 'hx-ss' });
-  HX.ss.setAttribute('aria-live', 'polite'); HX.ss.dataset.k = HX.send; say(HX.ss, '');
+  HX.ss.setAttribute('aria-live', 'polite'); HX.ss.dataset.k = hxSsKey(); say(HX.ss, '');
   $('#hx-ss-at')?.replaceWith(HX.ss);
   HX.sending = true;
   try { await busy(go, job); } finally {
@@ -14302,10 +14349,10 @@ async function hxQuote() {
   if (m === 'send' && hxIsLp()) { const p = hxLpPool(), n = p && P.scan ? hxLpShares(p) : 0n; return done({ go: 'Send privately', rc: [['Sends', n > 0n ? lpSays(p, n) : 'a quarter, half or all of it'], ['Relay fee', 'none'], ['They get', 'a private payment to claim, with no fee']] }); }
   if (m === 'send' && hxSendFit()) return done({ warn: true, line: hxSendFit() });
   if (m === 'send' && hxSendBtc()) return done({ rc: hxSendSees() });
+  if (m === 'tbback' || m === 'xb') return hxBackQuote(my, done);
   if (m === 'btc' && HX.dir === 'in' && S.key) loadBridge().then(() => paintHxQ(), () => paintHxQ());
   if (m === 'btc' && HX.dir === 'in') return done({ out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', '1,000 TAC a bridge'], ['Bitcoin fee', 'in sats'], ['Time', 'a few hours, at most a day']] });
-  if (m === 'btcpool' || m === 'tbback' || m === 'tacpub') return done(hxHandoff(m, null));
-  if (m === 'xb') { const a = XA[HX.xa]; return done({ out: 'All', go: `Bring ${a.ticker} back`, rc: [['Arrives', `private ${a.ticker} on Ethereum`], ['How', 'by proof of Bitcoin'], ['Notes', 'listed next']] }); }
+  if (m === 'btcpool' || m === 'tacpub') return done(hxHandoff(m, null));
   if (units === null && /\d|[^\d.,\s]/.test(HX.amt)) {
     const t = HX.amt.trim(), two = /^[1-9]\d{0,2},\d{3}$/.test(t);
     return done({ out: null, line: two ? `Write ${t.replace(',', '')} or ${Number(t.replace(',', '.'))}: a comma before three digits could mean either.` : new RegExp(`^\\d*[.,]\\d{${hxDec() + 1},}$`).test(t) ? `Enter an amount with up to ${hxDec()} decimals.` : 'Enter the amount as a number, like 0.5.' });
@@ -14836,15 +14883,16 @@ function paintHxQ() {
   const rows = $('#hx-routes');
   if (rows && !q.busy) {
     rows.hidden = !q.rows;
-    const name = HX.mode === 'earn' ? (HX.lp && HX.from === 'ether' ? 'Where it earns' : 'Where it farms') : 'Route', had = rows.contains(document.activeElement);
+    const name = q.rowsName || (HX.mode === 'earn' ? (HX.lp && HX.from === 'ether' ? 'Where it earns' : 'Where it farms') : 'Route'), had = rows.contains(document.activeElement);
     rows.setAttribute('aria-label', name);
-    mount(rows, html`<div class="rows-h"><span>${name}</span>${HX.mode === 'earn' ? html`<span>${HX.lp && HX.from === 'ether' ? 'Fee APR' : 'APR'}</span>` : ''}</div>${(q.rows || []).map((r) => html`<button type="button" role="radio" class="${r.icons ? 'c' : ''}" aria-checked="${String(r.k === q.pick)}" tabindex="${r.k === q.pick ? 0 : -1}" data-hxr="${r.k}"${r.wait ? html` data-wait aria-busy="true"` : ''}>${r.icons ? html`<span class="pair" aria-hidden="true">${r.icons.map((i) => html`<svg class="tk"><use href="#${i}"/></svg>`)}</span>` : ''}<span class="rt"><b>${r.name}</b><small>${hxNb(r.note)}</small></span><span class="ra"><span>${r.show}</span>${r.best ? html`<em>best</em>` : ''}</span><span class="rd" aria-hidden="true"></span></button>`)}`);
+    mount(rows, html`<div class="rows-h"><span>${name}</span>${HX.mode === 'earn' ? html`<span>${HX.lp && HX.from === 'ether' ? 'Fee APR' : 'APR'}</span>` : ''}</div>${(q.rows || []).map((r) => html`<button type="button" role="radio" class="${r.icons ? 'c' : ''}" aria-checked="${String(r.k === q.pick)}" tabindex="${r.k === q.pick ? 0 : -1}" data-hxr="${r.k}"${r.wait ? html` data-wait aria-busy="true"` : ''}${r.off ? ' disabled' : ''}>${r.icons ? html`<span class="pair" aria-hidden="true">${r.icons.map((i) => html`<svg class="tk"><use href="#${i}"/></svg>`)}</span>` : ''}<span class="rt"><b>${r.name}</b><small>${hxNb(r.note)}</small></span><span class="ra"><span>${r.show}</span>${r.best ? html`<em>best</em>` : ''}</span><span class="rd" aria-hidden="true"></span></button>`)}`);
     const live = $$('[data-hxr]', rows);
     const choose = (b) => {
       for (const x of live) { x.setAttribute('aria-checked', x === b); x.tabIndex = x === b ? 0 : -1; }
       b.focus();
       HX.pool = b.dataset.hxr;
       if (HX.mode === 'earn') HX.earnPick = b.dataset.hxr;
+      if (HX.mode === 'tbback' || HX.mode === 'xb') xbOf(hxBackA()).pick = b.dataset.hxr;
       if (b.hasAttribute('data-wait')) { HX.q = { ...HX.q, busy: true }; paintHxQ(); } else hxQuote();
     };
     for (const b of live) b.onclick = () => choose(b);
@@ -14941,9 +14989,8 @@ function hxGo() {
   if (m === 'tacpub') return hxTacPublicGo();
   if (m === 'tacwrap') return hxTacWrapGo(units);
   if (m === 'ppout' || m === 'ppv1') return hxPoolOutGo(m, amt);
-  if (m === 'tbback') return openLink('private/bitcoin/back');
-  if (m === 'xo') { const a = XA[HX.xa]; hxDraft({ mode: a.pre, amt }); return openLink(`${xoLink(a)}/out`); }
-  if (m === 'xb') return openLink(`${xoLink(XA[HX.xa])}/back`);
+  if (m === 'tbback' || m === 'xb') return hxBackGo();
+  if (m === 'xo') return hxBridgeOutGo(XA[HX.xa], units);
   if (m === 'borrow' && HX.bsrc === 'cbtc') { if (!S.key) return openSheet('wallet'); return hxHeldGo(); }
   if (m === 'borrow' && HX.bsrc === 'tac') {
     // the engine's own borrow: the TAC deposited with it, the missing prices recorded with it (or before it), as on the vault page
@@ -14969,13 +15016,8 @@ function hxGo() {
   }
   if (m === 'btc') {
     if (HX.dir === 'in') return openLink('bridge');
-    if (HX.from === 'tac') {
-      if (HX.q?.needPrivate) return openLink('tac');
-      hxDraft({ mode: XA.tac.pre, amt }); return openLink('bridge/out');
-    }
-    const xo = () => { hxDraft({ mode: 'xo', amt }); };
-    if (hxTwo(units)) return wrapFirst('private/bitcoin/out', 'send it to Bitcoin', xo);
-    xo(); return openLink('private/bitcoin/out');
+    if (HX.from === 'tac') return HX.q?.needPrivate ? hxBridgeTacWrapGo(units) : hxBridgeOutGo(XA.tac, units);
+    return hxTwo(units) ? hxBridgeWrapGo(units) : hxBridgeOutGo(XA.teth, units);
   }
 }
 // A zap sent from the card itself, one press: its steps are said under the button (one line kept across repaints) and in Activity, as from
@@ -15241,6 +15283,126 @@ async function tokOutNow({ run, t, op, amt, raw, st, clear, after }) {
   } finally { PROVE_AT.el = null; }
 }
 const hxSendTokGo = (t, amt, raw, out) => hxSendRun((run) => tokOutNow({ run, t, op: out ? 'withdraw' : 'send', amt, raw, st: HX.ss, clear: hxSendClear, after: hxSendAfter }));
+// What a bridge of `units` of `a` to Bitcoin has checked before it is burned, read as the bridge form reads it: the relay fee, the limits, a cut first when no note is the amount, and Bitcoin with its proof (kept two
+// minutes). → { fee, size, pf, stop }: `stop` is what holds it back, if anything
+async function xoReview(a, units, pub) {
+  const held = spendable(a.k), [t, ux] = await Promise.all([getUx(), xoUx()]), lim = ux.assetOf(a.id);
+  if (!lim) throw new Error(`${a.ticker} cannot be bridged to Bitcoin from this deployment.`);
+  const min = lim.minRaw > 0n ? lim.minRaw : (a.min || 0n), fee = await xoFee(t, a);
+  const exact = freeNotes(P.scan?.[a.k].notes).some((n) => BigInt(n.value) === units), size = exact ? 0n : BigInt(await t.quoteOpFee(a.pool, 'transfer'));
+  const kept = XO.pf && XO.pf.pub === pub && Date.now() - XO.pf.at < 120e3 ? XO.pf.v : null, pf = kept || await xoPreflight(ux, pub);
+  if (!kept && pf.ok) XO.pf = { pub, at: Date.now(), v: pf };
+  const limit = limitText({ units, fee, min, cap: lim.capRaw, ticker: a.ticker, fmt: (v, max = 8) => fmt(v, 8, max) });
+  const stop = limit || (units + size > held ? feeRoom(units, size, held, P.scan?.[a.k].notes, (v) => `${fmt(v, 8, 6)} ${a.ticker}`) || overBalance() : '') || (pf.problems[0] ? xoProblemText() : '') || null;
+  return { fee, size, pf, stop };
+}
+// A bridge to Bitcoin from the Bridge tab (tETH, TAC, cBTC or cUSD): what the bridge form does (xoBurnNow), the steps said under the button. A burn cannot be undone, so the first press reads Bitcoin and says what the
+// Bitcoin step will cost and need, and the same press again (this amount, within three minutes) burns it.
+async function hxBridgeOutGo(a, units) {
+  if (!S.key) return openSheet('wallet');
+  const pub = S.key.pubHex, key = `${a.key}|${pub}|${units}`, amtText = `${fmt(units, 8, a.dp)} ${a.ticker}`;
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    PROVE_AT.el = st;
+    try {
+      if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said to be too little
+      const R = await xoReview(a, units, pub);
+      if (R.stop) { say(st, html`<span class="err">${R.stop}</span>`); HX.xoSure = null; return; }
+      const { pf } = R, sure = HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3;
+      if (!sure) {
+        HX.xoSure = { key, at: Date.now() };
+        const warns = pf.warnings.filter((w) => w.name !== 'funding').map((w) => xoWarn(w, pf.reflection?.lagBlocks || 0)).filter(Boolean);
+        say(st, html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${short(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
+        return;
+      }
+      HX.xoSure = null;
+      await xoBurnNow({ run, a, x: { units, fee: R.fee }, ready: a.key === 'tac' && fastReadyOn() && fastReadyLast(), pub, status: st, line: () => st, where: html`It is followed on <a href="/bridge/">the bridge page</a>`, sheet: '',
+        clear: hxSendClear, after: hxSendAfter });
+    } catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
+  });
+}
+// Bringing bridged notes back from Bitcoin, on the Bridge tab: the notes the key holds on its Bitcoin address are the card's list (the route rows), the one picked, or all that are ready, is reviewed as the bring-back
+// form reviews it (xbReview), and the press does what the form does (xbBringNow). The asset is tETH's, or the one the way names.
+const hxBackA = () => (HX.mode === 'tbback' ? XA.teth : XA[HX.xa]);
+async function hxBackQuote(my, done) {
+  const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, base = { out: 'All', go: `Bring ${a.ticker} back`, rc: [['Arrives', `private ${a.ticker} on Ethereum`], ['How', 'by proof of Bitcoin'], ['Notes', 'listed below']] };
+  if (!S.key) return done(base);
+  const XB = xbOf(a), pub = S.key.pubHex;
+  await loadBridged(false, a);
+  if (my !== HX.seq) return;
+  const b = XB.pub === pub ? XB : null;
+  if (!b?.notes) return done({ ...base, line: b?.err ? errText(b.err) : `Reading your ${a.ticker} on Bitcoin…`, warn: !!b?.err });
+  const notes = b.notes.filter((n) => !T.bridgeUx().isReserved(n.txid, n.vout)), open = notes.filter(xbReady);
+  if (XB.pick === 'all' ? open.length < 2 : XB.pick && !open.some((n) => xbId(n) === XB.pick)) XB.pick = null;
+  if (!XB.pick && open.length === 1) XB.pick = xbId(open[0]);
+  if (!notes.length) return done({ ...base, line: `No bridged ${a.ticker} on this key’s Bitcoin address.` });
+  const sum = open.reduce((t, n) => t + BigInt(n.amount), 0n);
+  const rows = [...(open.length > 1 ? [{ k: 'all', name: `All ${open.length} ready notes`, note: 'each burned on its own', show: fmt(sum, 8, a.dp) }] : []),
+    ...notes.map((n) => ({ k: xbId(n), name: `${n.amount != null ? fmt(n.amount, 8, a.dp) : '?'} ${a.ticker}`, note: xbReady(n) ? 'ready to come back' : xbWhy(n), show: '', off: !xbReady(n) }))];
+  const shown = { ...base, rows, rowsName: name };
+  if (!XB.pick) return done({ ...shown, line: open.length ? 'Pick the notes to bring back.' : '' });
+  const R = await xbReview(a, pub).catch((e) => ({ stop: errText(brFail(e)) }));
+  if (my !== HX.seq) return;
+  if (!R.r) return done({ ...shown, pick: XB.pick, warn: true, line: R.stop || '' });
+  return done({ ...shown, pick: XB.pick, out: fmt(R.total, 8, a.dp), go: R.count > 1 ? `Bring ${R.count} notes back` : `Bring ${a.ticker} back`,
+    rc: [['Arrives', `${fmt(R.total, 8, a.dp)} private ${a.ticker} on Ethereum${R.count > 1 ? `, in ${R.count} notes` : ''}`], ['Bitcoin fee', `about ${R.fee.toLocaleString('en-US')} sats${R.count > 1 ? ' in all' : ''}`], ['Relay fee', 'none'], ['Time', 'a few hours, at most a day']],
+    warn: R.short || (R.count > 1 && R.reach < R.count), line: R.short || (R.count > 1 && R.reach < R.count) ? xbShortText(R, pub) : '' });
+}
+// Bringing bridged notes back from the Bridge tab. A burn cannot be undone, so the first press reviews the pick and says what the Bitcoin step costs, and the same press again (the same pick, within three minutes) sends it.
+async function hxBackGo() {
+  if (!S.key) return openSheet('wallet');
+  const a = hxBackA(), pub = S.key.pubHex, XB = xbOf(a);
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    try {
+      const R = await xbReview(a, pub);
+      if (!R.r) { say(st, html`<span class="err">${R.stop || 'Pick the notes to bring back.'}</span>`); HX.xoSure = null; return; }
+      if (R.short) { say(st, html`<span class="err">${xbShortText(R, pub)}</span>`); HX.xoSure = null; return; }
+      const key = `back|${a.key}|${pub}|${XB.pick}`, what = R.count > 1 ? `${R.count} notes` : `${fmt(R.total, 8, a.dp)} ${a.ticker}`;
+      if (!(HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3)) {
+        HX.xoSure = { key, at: Date.now() };
+        say(st, `Bringing ${what} back costs about ${R.fee.toLocaleString('en-US')} sats from your Bitcoin address. A burn can’t be undone once it confirms on Bitcoin. Press again to bring ${R.count > 1 ? 'them' : 'it'} back.`);
+        return;
+      }
+      HX.xoSure = null;
+      await xbBringNow({ run, a, pub, r: R.r, status: st, where: html`on <a href="/bridge/">the bridge page</a>`, after: hxSendAfter });
+    } catch (e) { run.fail(st, brFail(e)); }
+  });
+}
+// ETH made private first, from the Bridge tab: what the Private sheet's Make private does (wrapNow). The relay's tip is not in this tab's receipt, so the first press says it and the same press again (this amount,
+// within three minutes) makes it private; the bridge itself is the next press.
+async function hxBridgeWrapGo(units) {
+  if (!S.key) return openSheet('wallet');
+  const wei = units * E10, key = `wrap|${S.key.pubHex}|${units}`;
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    PROVE_AT.el = st;
+    try {
+      const fresh = await readWrapTip(wei), bal = await ethBalance();
+      if (bal != null && wei + (fresh.own ? 0n : fresh.tip) > bal) { say(st, html`<span class="err">More than ${your()} holds, with the relay’s tip.</span>`); return; }
+      if (!(HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3)) {
+        HX.xoSure = { key, at: Date.now() };
+        say(st, fresh.own ? `Making ${fmt(wei, 18, 6)} ETH private costs no relay tip. Press again to make it private, then bridge it.` : `Making ${fmt(wei, 18, 6)} ETH private costs the relay’s tip of about ${fmt(fresh.tip, 18, 6)} ETH. Press again to make it private, then bridge it.`);
+        return;
+      }
+      HX.xoSure = null;
+      const x = { wei, tip: fresh.own ? 0n : fresh.tip, to: fresh.to, at: Date.now() };
+      await wrapNow({ run, x, status: st, line: () => st, anchor: $('#hx-go'), sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
+    } catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
+  });
+}
+// TAC made private first, from the Bridge tab: what the TAC sheet's Make private does (tacWrapNow), from the paying account
+async function hxBridgeTacWrapGo(units) {
+  if (!S.key) return openSheet('wallet');
+  const wei = units * E10, held = hxWalletBal('wtac');
+  if (held != null && wei > held) return hxSendRun(async () => { say(HX.ss, html`<span class="err">More than the ${fmt(held, 18, 4)} TAC in ${your()}.</span>`); });
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    PROVE_AT.el = st;
+    try { await tacWrapNow({ run, wei, src: payer(), status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter }); }
+    catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
+  });
+}
 // Deposits into the Pay pools from the card: ETH (the pool of the chain picked under the field) or TAC, USDC, USDT. Each is proved on this device (the proving key is fetched once, said under the
 // button) and sent from the paying account: what the Deposit forms do (devDepositSend, tokDepositSend), to yourself.
 async function hxDepositGo(m, amt) {
@@ -15510,6 +15672,7 @@ function paintHx() {
       ${field('To', heldAt(to), out(), html`<span class="coin one">${hxIco(w.ic)}${w.u}</span>`, false, to === 'private')}
       <ol class="hx-brs${to === 'bitcoin' ? ' out' : ''}" aria-label="Steps">${hxBrSteps(HX.sf).map(step)}</ol>
       ${tail}
+      <p class="q" id="hx-ss-at" hidden></p>
       <p class="q" id="hx-brl"></p>`;
   } else if (m === 'earn') {
     const groups = hxGroups('earn'), place = hxPlaceOf('earn', HX.from);
@@ -15592,7 +15755,7 @@ function paintHx() {
   if (m === 'borrow' && HX.bsrc === 'btc' && HX.bwFace === 'track') { hxBwPaint(); return; }
   if (m === 'borrow' && $('#hx-bw-s') && FLASH['hx-bw-s']) mount($('#hx-bw-s'), FLASH['hx-bw-s']);
   if (HX.zs && $('#hx-zs-at')) $('#hx-zs-at').replaceWith(HX.zs);
-  if (HX.ss && $('#hx-ss-at')) { if (!HX.sending && HX.ss.dataset.k !== HX.send) say(HX.ss, ''); $('#hx-ss-at').replaceWith(HX.ss); }
+  if (HX.ss && $('#hx-ss-at')) { if (!HX.sending && HX.ss.dataset.k !== hxSsKey()) say(HX.ss, ''); $('#hx-ss-at').replaceWith(HX.ss); }
   if (HX.zapping || HX.sending) { const g = $('#hx-go'); if (g) { g.setAttribute('aria-busy', 'true'); g.disabled = true; } }
   $('#hx-bw-back')?.addEventListener('click', () => { HX.bwMore = false; paintHx(); });
   const press = m === 'send' ? hxSendGo : hxGo;
