@@ -15932,6 +15932,9 @@ function _crossoutUxSingleton() {
     chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     postHint,
     nullifierSpent: (nu) => makeCrossLaneGuard({ keccak256: keccak_256 }).evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
+    // a bridge that arrives ready for Ethereum binds what it minted with the wallet's own transfer codec (the shape adaptor-btc-tx.js tacitKit gives)
+    bindKit: { computeKernelMsg, rangeProve: bppRangeProve, encodePayload: encodeCXferBppPayload, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount },
+    bindTarget: () => _confidentialChainBinding(),
   }));
 }
 function _crossoutReserved(txid, vout) {

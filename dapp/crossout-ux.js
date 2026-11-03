@@ -1,5 +1,6 @@
 import { makeCrossoutMintReveal } from './crossout-mint-reveal.js';
 import { makeBtcWallet } from './bitcoin-taproot-wallet.js';
+import { makeBtcBind } from './btc-bind.js';
 
 export const CROSSOUT_BETA_CAP_RAW = 100_000_000_000n;
 export const CROSSOUT_TETH_CAP_RAW = 50_000_000n;
@@ -49,6 +50,8 @@ export function makeCrossoutUx(deps) {
   const {
     network = 'mainnet', hrp = 'bc', workerBase, fetchImpl, storage: storageIn = null,
     secp, hmac, sha256, crossOut, pool, rpc, evmLog, tacAssetId, assets: assetsIn = null, chain, postHint = null, feeCeiling = CROSSOUT_MINT_FEE_CEILING, poolAddress = null, deployBlock = 0, nullifierSpent = null,
+    // a bridge that arrives ready for Ethereum: Tacit's transfer codec (adaptor-btc-tx.js tacitKit) and the pool's chain binding
+    bindKit = null, bindTarget = null,
   } = deps || {};
   for (const [k, v] of Object.entries({ workerBase, secp, hmac, sha256, crossOut, pool, rpc, evmLog, chain })) {
     if (v == null) throw new Error(`crossout-ux: deps.${k} required`);
@@ -132,7 +135,7 @@ export function makeCrossoutUx(deps) {
     return _anyRecordMatching((r) => r.mint && r.mint.fundingUtxo && `${stripHex(r.mint.fundingUtxo.txid).toLowerCase()}:${Number(r.mint.fundingUtxo.vout)}` === id);
   }
 
-  function deriveDest(walletPriv, nullifier, amount, assetId, destXonly) {
+  function destBlinding(walletPriv, nullifier) {
     const privBytes = walletPriv instanceof Uint8Array ? walletPriv : hexToBytesLocal(stripHex(walletPriv));
     const domain = new TextEncoder().encode('tacit-crossout-blinding-v1');
     const nullifierBytes = hexToBytesLocal(stripHex(nullifier));
@@ -141,7 +144,10 @@ export function makeCrossoutUx(deps) {
     const raw = hmac(sha256, privBytes, msg);
     let b = 0n; for (const x of raw) b = (b << 8n) | BigInt(x);
     b %= secp.CURVE.n;
-    const { cx, cy } = pool.commitXY(BigInt(amount), b === 0n ? 1n : b);
+    return b === 0n ? 1n : b;
+  }
+  function deriveDest(walletPriv, nullifier, amount, assetId, destXonly) {
+    const { cx, cy } = pool.commitXY(BigInt(amount), destBlinding(walletPriv, nullifier));
     return { cx, cy, destCommitment: pool.btcNoteLeaf(withHex(assetId), cx, cy, withHex(destXonly)) };
   }
 
@@ -196,7 +202,7 @@ export function makeCrossoutUx(deps) {
     return d;
   }
 
-  async function start({ note, walletPriv, fee = 0n, selfRelay = false, selfSettle = null, waitOpts = undefined }) {
+  async function start({ note, walletPriv, fee = 0n, selfRelay = false, selfSettle = null, waitOpts = undefined, ready = false }) {
     const walletPub = secp.getPublicKey(walletPriv, true);
     const id = note.nullifier;
     const a = assetOf(note.asset);
@@ -208,6 +214,8 @@ export function makeCrossoutUx(deps) {
     if (value > a.capRaw) throw new Error('crossout-ux: over the beta cap');
     if (value < a.minRaw) throw new Error('crossout-ux: under the minimum');
     if (fee < 0n || fee >= value) throw new Error('crossout-ux: the relay fee must be under the note');
+    // ready: the note it mints on Bitcoin is bound to the pool right after, so it can come back by the fast lane (TAC only)
+    const bindOnArrival = !!ready && !!bindKit && !!bindTarget && a.ticker === 'TAC';
 
     const destXonly = bytesToHexLocal(freshPrims(walletPriv).wallet.xonly());
     const amount = value - fee;
@@ -217,7 +225,7 @@ export function makeCrossoutUx(deps) {
     const attempts = [...new Set([...(earlier ? earlier.source.attempts || [earlier.source.fee] : []), fee].map(String))];
     const intent = putRecord({
       id, network, walletPub: bytesToHexLocal(walletPub), stage: 'settling', createdAt: earlier ? earlier.createdAt : now(), startBlock, dests,
-      source: { nullifier: id, value, amount, fee, attempts, assetId: a.assetId, ticker: a.ticker }, destXonly,
+      source: { nullifier: id, value, amount, fee, attempts, assetId: a.assetId, ticker: a.ticker }, destXonly, ...(bindOnArrival ? { ready: true } : {}),
     });
     if (!getRecord(walletPub, id)) throw new Error('crossout-ux: this browser cannot keep the bridge record (its storage is blocked), so nothing was burned');
     if (earlier) {
@@ -235,7 +243,7 @@ export function makeCrossoutUx(deps) {
     const rec = {
       id, network, walletPub: bytesToHexLocal(walletPub), stage: 'settled', createdAt: intent.createdAt,
       source: { nullifier: id, value, amount, fee, assetId: a.assetId, ticker: a.ticker },
-      destXonly,
+      destXonly, ...(bindOnArrival ? { ready: true } : {}),
       settle: {
         txHash: r.txHash || null, claimId: co.claimId, cx: co.cx, cy: co.cy, destCommitment: co.destCommitment,
         ethBlock: r.ethBlock, claimIdVerified: !!r.claimIdVerified, claimIdNote: r.claimIdNote,
@@ -366,24 +374,63 @@ export function makeCrossoutUx(deps) {
       if (rv.state === 'absent' && refused.length) throw new Error(`crossout-ux: Bitcoin did not take the signed transactions again: ${refused[0].slice(0, 160)}`);
       return rec;
     },
-    'mint-confirmed': async (rec) => {
+    'mint-confirmed': async (rec, { walletPriv, allowHighFee } = {}) => {
       const rv = await chainTx(rec.mint.revealTxid);
       if (rv.state === 'absent' || (rv.state === 'present' && rv.confirmed === false)) return putRecord({ ...rec, stage: 'mint-submitted', confirmedAt: null });
+      if (rec.ready && !(rec.bind && rec.bind.sent)) {
+        if (!walletPriv) return rec;
+        const credited = await checkCredited({ ...rec, stage: 'mint-confirmed' }, { store: false });
+        if (credited.stage !== 'minted') return credited.stage === 'mint-rejected' ? putRecord(credited) : rec;
+        return checkCredited(await bindArrived(rec, { walletPriv, allowHighFee }));
+      }
       return checkCredited(rec);
     },
     'mint-rejected': async (rec) => checkCredited(rec),
   };
-  async function checkCredited(rec) {
+  async function checkCredited(rec, { store = true } = {}) {
+    const keep = store ? putRecord : (r) => r;
     let st;
     try {
       const q = `asset=${stripHex(rec.source.assetId)}&claim=${stripHex(rec.settle.claimId)}&txid=${stripHex(rec.mint.revealTxid)}`;
       st = await callWorker('GET', `/crossout/minted?${q}`);
     } catch { return rec; }
     if (!st || st.error || st.decided !== true) return rec;
-    if (st.minted === true) return putRecord({ ...rec, stage: 'minted', mintedAt: now() });
-    if (st.mintedTxid) return putRecord({ ...rec, stage: 'minted', mintedAt: now(), creditedTxid: String(st.mintedTxid) });
+    if (st.minted === true) return keep({ ...rec, stage: 'minted', mintedAt: now() });
+    if (st.mintedTxid) return keep({ ...rec, stage: 'minted', mintedAt: now(), creditedTxid: String(st.mintedTxid) });
     if (rec.stage === 'mint-rejected') return rec;
-    return putRecord({ ...rec, stage: 'mint-rejected', rejectedAt: now(), rejectedStatus: st.status || null });
+    return keep({ ...rec, stage: 'mint-rejected', rejectedAt: now(), rejectedStatus: st.status || null });
+  }
+
+  // The note a ready bridge minted, bound to the pool where it landed (btc-bind.js): one transfer from the key's Taproot address to
+  // itself, signed by key path, so once the reflection has it the note moves back to Ethereum by the fast lane. Its opening is the
+  // one the burn committed (destBlinding), checked against the minted commitment. The pair is kept before it is sent, and sent again
+  // until Bitcoin has it.
+  async function bindArrived(rec, { walletPriv, allowHighFee = false }) {
+    if (rec.bind && rec.bind.revealHex && !rec.bind.sent) {
+      await chain.broadcastWithRetry(rec.bind.commitHex);
+      await chain.broadcastWithRetry(rec.bind.revealHex);
+      return putRecord({ ...rec, bind: { ...rec.bind, sent: true, sentAt: now() } });
+    }
+    const P = freshPrims(walletPriv);
+    const amount = BigInt(rec.source.amount), blinding = destBlinding(walletPriv, rec.id);
+    const { cx, cy } = pool.commitXY(amount, blinding);
+    if (lc(stripHex(cx)) !== lc(stripHex(rec.settle.cx)) || lc(stripHex(cy)) !== lc(stripHex(rec.settle.cy))) throw new Error('crossout-ux: the minted note does not open from this key, so it was not made ready');
+    if (lc(rec.destXonly) !== lc(bytesToHexLocal(P.wallet.xonly()))) throw new Error('crossout-ux: the minted note is not at this key\'s Taproot address');
+    const feeRate = await chain.getFeeRate('priority');
+    if (!allowHighFee && Number(feeRate) > feeCeiling) throw Object.assign(new Error(`crossout-ux: Bitcoin fees are high right now (${Math.round(feeRate)} sat/vB), so making it ready waits for them to fall under ${feeCeiling}`), { feeWait: true });
+    const satsUtxos = (await chain.pickSafeCommitSats(await chain.getUtxos(P.wallet.address()))).map((u) => ({ txid: u.txid, vout: u.vout, value: Number(u.value) }));
+    const binder = makeBtcBind({ prims: P, kit: bindKit, target: bindTarget() });
+    let pair;
+    try {
+      pair = binder.bindTransfer({ asset: hexToBytesLocal(stripHex(rec.source.assetId)), notes: [{ txid: stripHex(rec.mint.revealTxid), vout: 0, value: P.DUST, amount, blinding, taproot: true }], sizes: [amount], satsUtxos, feeRate: Math.max(1, Math.ceil(Number(feeRate) || 3)) });
+    } catch (e) {
+      if (/not enough sats/.test(String(e && e.message))) throw Object.assign(new Error(`crossout-ux: making it ready needs a free coin at ${P.wallet.address()}`), { fundWait: true, address: P.wallet.address() });
+      throw e;
+    }
+    const kept = putRecord({ ...rec, bind: { commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid, txid: pair.revealTxid, sent: false } });
+    await chain.broadcastWithRetry(pair.commitHex);
+    await chain.broadcastWithRetry(pair.revealHex);
+    return putRecord({ ...kept, bind: { ...kept.bind, sent: true, sentAt: now() } });
   }
 
   async function callWorker(method, path, body) {

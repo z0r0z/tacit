@@ -38,12 +38,14 @@ export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, aliv
 
 // ── the way out: crossout-ux's stages ──
 // A bridge out moved as far as it goes now: its proof, coverage and credit are read from the chains with no key; only the Bitcoin step
-// (from `covered`) is signed, and only under the bridge's own key.
+// (from `covered`) is signed, and only under the bridge's own key, and for a bridge that arrives ready for Ethereum, the bind of what it
+// minted once the mint confirms (crossout-ux.js bindArrived).
+export const signsNext = (rec) => rec.stage === 'covered' || (rec.stage === 'mint-confirmed' && !!rec.ready && !(rec.bind && rec.bind.sent));
 export async function advanceOut(ux, pub, rec, { withKey, priv, keyPub, allowHighFee = false }) {
   let cur = rec;
   for (let i = 0; i < 4; i++) {
-    if (cur.stage === 'covered' && keyPub() !== pub) return cur;
-    const next = cur.stage === 'covered' ? await withKey(() => ux.advance(pub, cur.id, { walletPriv: priv(), allowHighFee }), pub) : await ux.advance(pub, cur.id);
+    if (signsNext(cur) && keyPub() !== pub) return cur;
+    const next = signsNext(cur) ? await withKey(() => ux.advance(pub, cur.id, { walletPriv: priv(), allowHighFee }), pub) : await ux.advance(pub, cur.id);
     if (next.stage === cur.stage) return next;
     cur = next;
     if (cur.stage === 'mint-submitted' || cur.stage === 'minted') return cur;
@@ -64,7 +66,7 @@ export async function stepOut({ ux, pubs, records, keyPub, withKey, priv, rechec
       try { rec = await ux.recoverFromEthTx('0x' + String(rec.settle.txHash).replace(/^0x/, ''), priv(), { amount: BigInt(rec.source.amount ?? rec.source.value) }); } catch { rec = listed; }
       if (rec.settle?.claimIdVerified !== false) moved.push(rec);
     }
-    const sends = rec.stage === 'covered' || rec.stage === 'mint-signed';
+    const sends = signsNext(rec) || rec.stage === 'mint-signed';
     if (rec.lastError && sends && ((!rec.lastError.feeWait && !rec.lastError.fundWait && (Number(rec.errorCount) || 0) >= 6) || Date.now() - Number(rec.lastError.at || 0) < (rec.lastError.fundWait ? 2 : 10) * 60e3)) continue;
     try {
       const after = await advanceOut(ux, pub, rec, { withKey, priv, keyPub });

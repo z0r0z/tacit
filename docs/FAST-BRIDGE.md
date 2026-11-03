@@ -129,6 +129,10 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
   and void the buyer's side until the reflection passes the spend; a note bound to a pool the wallet cannot read is pending; the
   Bitcoin shielded pool's replay refuses any input whose history holds a bound note. A transfer out of a bound note is pending
   until the reflection passes its block, so a provider's lock check already refuses a lock that spends one too early.
+- A bridge to Bitcoin can arrive ready (`crossout-ux.js` `start({ ready })`, the front page's "Arrive ready to come back fast",
+  offered in a browser that has opened `/fast/#ready`): once its mint confirms and the worker credits it, the engine binds the
+  minted note where it landed (`bindArrived`, key path at the Taproot address), so the round trip needs no step of the holder's
+  and the TAC is ready about four hours later. The pool and guests are unchanged: a cross-out still mints an ordinary note.
 - Not yet: a way back to an ordinary note from the page, and the guest-side items of the fast-lane review (a deadline on the
   fast lane's signature, a binding kept per note across pool generations, the attest gate on the consumed count), which wait
   for the next pool generation.

@@ -116,7 +116,12 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
   });
 
   // While the fast lane is new the panel is unlisted: /fast/#ready shows it, open, and it stays for the visit.
-  const reveal = () => { if (doc.defaultView?.location.hash === '#ready' && !S.shown) { S.shown = true; root.open = true; paint(); if (keyS.unlocked) load(); } };
+  const reveal = () => {
+    if (doc.defaultView?.location.hash !== '#ready' || S.shown) return;
+    S.shown = true; root.open = true; paint(); if (keyS.unlocked) load();
+    // the front page then offers TAC bridged to Bitcoin arriving ready for this panel
+    try { doc.defaultView.localStorage.setItem('tacit-fast-ready-v1', '1'); } catch { /* a convenience */ }
+  };
   doc.defaultView?.addEventListener('hashchange', reveal);
   reveal();
   paint();

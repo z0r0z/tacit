@@ -1176,5 +1176,53 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 4_000_000n, blinding
   finally { Date.now = real; }
 }
 
+// ---- a bridge that arrives ready for Ethereum: once its mint confirms and is credited, the minted note is bound where it landed ----
+{
+  const { tacit } = await import('./lib/btc-sim.mjs');
+  const { tacitKit } = await import('../dapp/adaptor-btc-tx.js');
+  const BINDING = withHex('b1'.repeat(32));
+  const world = makeWorld();
+  // the burn commits the note the key opens (the default crossOut blinding), as the live pool does
+  const crossOut = async (args) => {
+    const r = await world.crossOut(args);
+    const { cx, cy } = pool.commitXY(args.amount, deriveCrossoutBlinding(WALLET_PRIV, NOTE.nullifier));
+    return { ...r, crossOuts: [{ ...r.crossOuts[0], cx, cy }] };
+  };
+  const ux = makeUx(world, { crossOut, bindKit: tacitKit(tacit), bindTarget: () => BINDING });
+  const plain = makeUx(world, { crossOut });
+  const rec0 = await ux.start({ note: NOTE, walletPriv: WALLET_PRIV, ready: true });
+  ok(rec0.ready === true, 'a TAC bridge started ready is marked so');
+  world.setEthCovered(true);
+  await ux.advance(WALLET_PUB, NOTE.nullifier);
+  await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+  const sub = await ux.advance(WALLET_PUB, NOTE.nullifier);
+  world.mineRevealTxid(sub.mint.revealTxid);
+  ok((await ux.advance(WALLET_PUB, NOTE.nullifier)).stage === 'mint-confirmed', 'its mint confirms');
+  const sent = world.broadcasts.length;
+  const waiting = await ux.advance(WALLET_PUB, NOTE.nullifier);
+  ok(waiting.stage === 'mint-confirmed' && !waiting.bind && world.broadcasts.length === sent, 'without the key it waits at mint-confirmed: nothing is signed');
+  world.setCredit({ decided: false, minted: false });
+  const undecided = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(undecided.stage === 'mint-confirmed' && !undecided.bind && world.broadcasts.length === sent, 'a mint the worker has not credited yet is not bound: it waits');
+  world.setCredit({ decided: true, minted: true });
+  {
+    world.setUtxos([{ txid: '62'.repeat(32), vout: 0, value: 40_000 }]);
+    const done = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+    ok(done.stage === 'minted' && done.bind && done.bind.sent === true, 'with the key, the credited mint is bound and the bridge is done');
+    ok(world.broadcasts.length === sent + 2 && world.broadcasts[sent] === done.bind.commitHex && world.broadcasts[sent + 1] === done.bind.revealHex, 'the bind is sent commit then reveal');
+    const { parseTx } = await import('../worker-relay/src/lib/btc-pool-chain.js');
+    const p = parseTx(hexToBytes(done.bind.revealHex)).tx;
+    ok(p.vin[1].txid === done.mint.revealTxid && p.vin[1].vout === 0 && p.vin[1].witness.length === 1 && p.vin[1].witness[0].length === 64, 'it spends the minted note by key path');
+    const env = tacit.txOutputEnvelope({ vin: p.vin.map((i) => ({ txid: i.txid, vout: i.vout, witness: i.witness.map(bytesToHex) })), vout: p.vout.map((o) => ({ scriptpubkey: bytesToHex(o.scriptPubKey), value: Number(o.value) })) });
+    ok(env.opcode === 0x39 && bytesToHex(env.payload.subarray(1, 33)) === stripHex(BINDING), 'as a bound transfer naming the pool');
+    ok(bytesToHex(p.vout[0].scriptPubKey) === '5120' + stripHex(done.destXonly), 'to the same Taproot address');
+  }
+  // a bridge not started ready, or an engine with no codec, is not bound
+  const world2 = makeWorld();
+  const ux2 = makeUx(world2, { crossOut: async (a) => world2.crossOut(a) });
+  ok(!(await ux2.start({ note: NOTE, walletPriv: WALLET_PRIV, ready: true })).ready, 'an engine with no bind codec starts no ready bridge');
+  void plain;
+}
+
 console.log(`\n${n} crossout-ux checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

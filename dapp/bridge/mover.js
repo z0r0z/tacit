@@ -4,14 +4,14 @@
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=db96a3a9';
+import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=58e5d6c0';
 import { ROUTES } from '/bridge/track.js?cb=31e3a58f';
 import { parseUnits } from '/trade/util.js?cb=e53086bb';
 import { forgetUx } from '/trade/poolux.js?cb=ced562d4';
 import { relayWords } from '/relay-outcome.js?cb=26298b8e';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
-const TACIT_URL = '/tacit.js?cb=5223e0d0';
+const TACIT_URL = '/tacit.js?cb=af7dba7a';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';
 const EVERY = 75e3;                                                                  // as often as the front page's pass
 const read = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
