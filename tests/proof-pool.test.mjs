@@ -306,6 +306,28 @@ test('house: with no miner asking for work lately, Tacit\'s own prover takes a p
   assert.equal((await h.pool.lease({ client: 'house:b', house: 'b', minAgeMs: 10 * 60_000 })).body.id, b.id, 'the miner gone quiet for over five minutes: the house takes it');
 });
 
+test('hold: while a page is about to ask for a proof, Tacit\'s own provers lease nothing (miners still do); holds that run on unbroken past the cap are not extended', async () => {
+  const h = harness({ cfg: { holdMs: 45_000, holdMaxMs: 120_000 } });
+  const a = wrapJob(0), b = wrapJob(1);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page' });
+  assert.equal((await h.pool.hold()).body.until, T0 + 45_000);
+  assert.equal((await h.pool.lease({ client: 'house:a5000', house: 'a5000' })).status, 204, 'held: the GPU stays free for the page');
+  assert.equal((await h.pool.lease({ client: 'm1', miner: MINER })).body.id, a.id, 'a miner still leases');
+  h.t += 46_000;
+  assert.equal((await h.pool.lease({ client: 'house:a5000', house: 'a5000' })).body.id, b.id, 'the hold lapsed: the house takes work again');
+  // a page asking without end: extended while the run is under the cap, then left to lapse
+  h.t += 60_000;
+  const start = h.t;
+  for (let i = 0; i < 4; i++) { await h.pool.hold(); h.t += 30_000; }
+  assert.equal(h.t - start, 120_000);
+  assert.equal((await h.pool.hold()).body.until, start + 90_000 + 45_000, 'past the cap the hold is not extended');
+  h.t = start + 90_000 + 45_000 + 1;
+  assert.equal((await h.pool.hold()).body.until, h.t + 45_000, 'once it lapsed, a new run starts');
+  const off = harness({ cfg: { holdMs: 0 } });
+  assert.equal((await off.pool.hold()).body.until, 0, 'POOL_HOLD_MS=0 turns holds off');
+});
+
 test('urgent: the size a page expects to press first is taken by Tacit\'s own prover at once, even with a miner about and older jobs waiting; past the daily cap it is asked as any other', async () => {
   const h = harness();
   const old = wrapJob(0), hot = wrapJob(1), more = Array.from({ length: 7 }, (_, i) => wrapJob(10 + i));

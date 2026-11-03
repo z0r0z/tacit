@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UgB0v3ZRpM7khpXe2DCxAtIgkCHSkjlBwV28ZKQ8Z6k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KsAQA2WvqZgVUGZmRHstHnjWjLaNd4EXJ0kJSeXoyqg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -5115,6 +5115,8 @@ function v1Wrap(el, status) {
       if (my !== seq || !input.isConnected) return;
       // the relay's sponsored proof of this amount, asked for once it has stood a moment (one at a time, a few a page)
       clearTimeout(VOUCH.typing);
+      // Tacit's prover is kept free for this amount's proof from now, before it is asked for
+      if (!own && !ready && S.key) getUx().then((t) => t.relay.hold()).catch(() => {});
       if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (input.isConnected && parseUnits(input.value) === wei && !(await poolMaking(S.key.pubHex, 'cETH', wei)) && (await relayProving())) proveAhead('cETH', wei, { relay: true }); }, 1500);
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(wei, 18, 8)} tETH</b></div>
@@ -13249,6 +13251,7 @@ const hxWrapMaking = (units) => !!(units && VOUCH.ahead?.relay && VOUCH.ahead.we
 function hxWrapAhead(units) {
   clearTimeout(hxWaT);
   if (!units || !S.key || ownOn() || hxWrapReady(units) || hxWrapMaking(units)) return;
+  getUx().then((t) => t.relay.hold()).catch(() => {});
   hxWaT = setTimeout(async () => {
     // not under an open sheet: the wrap form there asks for its own, and one proof is made at a time
     if (hxUnits() !== units || !hxWrapMode() || document.querySelector('dialog[open]') || !(await relayProving())) return;

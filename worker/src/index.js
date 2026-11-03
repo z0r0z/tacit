@@ -651,7 +651,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3743,12 +3743,18 @@ async function handleProofPool(req, env, url, cors) {
     }
     return jsonResponse({ error: 'not found' }, 404, cors);
   }
-  if (!['/prover/pool/request', '/prover/pool/lease', '/prover/pool/submit'].includes(p)) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (!['/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit'].includes(p)) return jsonResponse({ error: 'not found' }, 404, cors);
   if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
   let b;
   try { b = await req.json(); } catch { b = null; }
   if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
   if (p === '/prover/pool/request') return send(await pool.request({ type: b.type, stdin: b.stdin, expect: b.expect, client, urgent: b.urgent === true }));
+  if (p === '/prover/pool/hold') {
+    // A page about to ask for a wrap no kept proof covers: Tacit's own provers stay off the pool briefly (proof-pool.js hold).
+    const rl = await proveRateLimit(env, ip, 'pool-hold', 6, 10000);
+    if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many holds — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
+    return send(await pool.hold());
+  }
   if (p === '/prover/pool/lease') {
     // A board worker's token makes the lease Tacit's own (no points, only jobs that have waited: see proof-pool.js lease).
     const auth = req.headers.get('Authorization'), house = auth ? workerOf(auth, env.PROVER_WORKER_TOKENS) : null;

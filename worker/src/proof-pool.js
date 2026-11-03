@@ -42,6 +42,8 @@ export const PROOF_POOL = Object.freeze({
   strikesPerDay: 3,
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
+  holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
+  holdMaxMs: 10 * 60_000,            // POOL_HOLD_MAX_MS: holds that run on longer than this unbroken are ignored until they lapse, so the pool is never starved
   maxTries: 3,
   maxResultIds: 32,
   top: 20,
@@ -62,6 +64,8 @@ export function proofPoolConfig(env = {}) {
     maxPending: n(env.POOL_MAX_PENDING, PROOF_POOL.maxPending, 1, 100_000),
     leaseMs: n(env.POOL_LEASE_MS, PROOF_POOL.leaseMs, 60_000, 86_400_000),
     minerIdleMs: n(env.POOL_MINER_IDLE_MS, PROOF_POOL.minerIdleMs, 0, 86_400_000),
+    holdMs: n(env.POOL_HOLD_MS, PROOF_POOL.holdMs, 0, 600_000),
+    holdMaxMs: n(env.POOL_HOLD_MAX_MS, PROOF_POOL.holdMaxMs, 0, 86_400_000),
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 0, 100_000),
@@ -196,7 +200,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
@@ -289,6 +293,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const seen = Number(await read(K.minerSeen, 0)) || 0;
       if (!house && t - seen > 60_000) await write(K.minerSeen, t, 86400);
       if (house && minAge && t - seen > cfg.minerIdleMs) minAge = 0;
+      // a page is about to ask for a proof that is not in the pool: Tacit's own provers stay free for it (a proof cannot be stopped once
+      // it starts, so one begun now would hold the person up for its whole run); miners lease as ever
+      if (house && t < (await read(K.hold, { until: 0 })).until) return reply(204, null);
       const q = await read(K.queue, []), L = await read(K.leases, {});
       let changed = await reclaim(q, L, t);
       const save = async () => { if (changed) { await write(K.queue, q); await write(K.leases, L); } };
@@ -316,6 +323,21 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       }
       await save();
       return reply(204, null);
+    });
+  }
+
+  // A page's word that a proof is about to be asked of Tacit's own provers (an amount typed that no kept proof covers): for `holdMs` they
+  // lease nothing from the pool, so the proof asked for finds the GPU free. Holds that run on unbroken past `holdMaxMs` are not
+  // extended until they lapse, so a page (or anyone) asking without end cannot keep the pool's own work from being done.
+  async function hold() {
+    if (!cfg.holdMs) return reply(200, { ok: true, until: 0 });
+    return exclusive(async () => {
+      const t = clock(), h = await read(K.hold, { until: 0, since: 0 });
+      const since = t < h.until ? h.since : t;
+      if (t - since >= cfg.holdMaxMs) return reply(200, { ok: true, until: h.until });
+      const until = Math.max(h.until, t + cfg.holdMs);
+      await write(K.hold, { until, since }, Math.ceil(cfg.holdMaxMs / 1000) + 60);
+      return reply(200, { ok: true, until });
     });
   }
 
@@ -428,7 +450,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     return reply(200, { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: cfg.pointsPerProof, miners });
   }
 
-  return { request, lease, submit, results, stats, credits };
+  return { request, lease, hold, submit, results, stats, credits };
 }
 
 const kvLocks = new WeakMap();

@@ -62,6 +62,16 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     } finally { stateReading = null; }
   }
 
+  // Tacit's own provers stay off the proof pool's stock wraps for a little while (worker/src/proof-pool.js hold), so a proof about to be
+  // asked of them does not wait out a stock wrap begun just before it (a proof cannot be stopped once it starts). A page asks it as soon
+  // as an amount is typed that no kept proof covers, seconds before it asks for the proof. At most once in 20 s, never waited on.
+  let heldAt = 0;
+  function hold() {
+    if (Date.now() - heldAt < 20_000) return;
+    heldAt = Date.now();
+    try { Promise.resolve(f(`${root}/prover/pool/hold`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).catch(() => {}); } catch { }
+  }
+
   // `exit`: a relayed unwrap's ConfidentialRouter ExitRecipe, which the relay activates once the settle has paid its escrow (never sealed).
   // `ahead`: a prove-only job asked for before its press, which the API takes only while the prover board is up (it costs no credit)
   async function submitOp({ type, op, leaves = [], outputs = null, ephRand, memos = null, mode, feeAsset = null, lockMemos = null, depositTx = null, exit = null, ahead = false } = {}, waitOpts) {
@@ -315,5 +325,5 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     }
   }
 
-  return { submitOp, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
+  return { submitOp, hold, sealFor, status, state, waitForSettle, settle, waitForProof, prove, provenMemos, verifyEmittedMemos, landed, openJobs, postProof, useProver, ownProving: () => !!ownProver, useSealer, sealing: () => !!sealer };
 }

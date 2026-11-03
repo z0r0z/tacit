@@ -281,6 +281,7 @@ const provenJobs = {};
 let refuseWith = null, refuseTypes = null, openNext = 0, pendingNext = 0;
 const postedJobs = {};                                                                  // proofs a page posted (preproven), sent by the stub relay
 const poolReqs = [];                                                                    // proof pool requests the pages posted
+const poolHolds = [];                                                                   // holds the pages asked (Tacit's prover kept free for a typed amount)
 let poolDone = false;                                                                   // the pool's miners have proved them
 // What GET /confidential/relay says of the relay: 'ok' unless a scenario sets 'held', 'paused', 'down' or 'busy' (null: the route is missing).
 let relayStateNow = 'ok';
@@ -341,6 +342,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
       const b = JSON.parse(route.request().postData() || '{}');
       return json(route, { ok: true, id: 'pool-' + poolReqs.push(b) });
     }
+    if (u.pathname === '/prover/pool/hold') { poolHolds.push(Date.now()); return json(route, { ok: true, until: Date.now() + 45000 }); }
     if (u.pathname === '/prover/pool/result') {
       const results = {};
       for (const id of String(u.searchParams.get('ids') || '').split(',').filter(Boolean)) {
@@ -385,7 +387,7 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
     }
   };
   await ctx.route(/^https:\/\/api\.tacit\.finance\/(confidential\/(submit|status|landed|relay)|prover\/pool\/)/, relay);
-  await ctx.route(new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${WEB}/(confidential|farm|reflection)/`), relay);
+  await ctx.route(new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${WEB}/(confidential/|farm/|reflection/|prover/pool/hold$)`), relay);
   // Keepers: quotes are canned and the queue is absent (wallets prove against their own tree). A move into V1 is
   // relayed for real, router.withdrawToV1 sent as a keeper would; any other relay is recorded and refused.
   await ctx.route('https://tacit-evm-pool-keeper*.onrender.com/**', async (route) => {
@@ -11674,11 +11676,12 @@ await step('wrapfirst', async () => {
     await r.page.waitForSelector('[data-v1="wrap"]', { timeout: 600000 });
     await r.page.click('[data-v1="wrap"]').catch(() => {});
     await r.page.waitForSelector('#w-amt', { timeout: 120000 });
-    const s0 = submits.length, w0 = walletTxs.length;
+    const s0 = submits.length, w0 = walletTxs.length, h0 = poolHolds.length;
     await r.page.fill('#w-amt', '0.05');
     await until(r.page, () => !document.querySelector('#w-go').disabled, null, QUOTE_WAIT);
     // asked for once the amount has stood a moment
     await chainUntil(async () => submits.slice(s0).some((x) => x.type === 'wrap' && x.mode === 'prove'), 60000);
+    ok(poolHolds.length > h0, `wrapfirst: the amount typed keeps Tacit's prover free for it first (${poolHolds.length - h0} hold asked)`);
     ok(submits.slice(s0).filter((x) => x.type === 'wrap' && x.mode === 'prove').length === 1, `wrapfirst: the relay's proof is asked for once the amount settles (${submits.slice(s0).map((x) => `${x.type}/${x.mode}`)})`);
     await until(r.page, () => /ready now/.test(document.querySelector('#w-rcpt')?.textContent || ''), null, 60000).catch(() => {});
     ok(/ready now/.test(await text(r.page, '#w-rcpt')), `wrapfirst: the receipt says the proof is ready (${(await text(r.page, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 140)})`);
