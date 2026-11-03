@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -8281,6 +8281,37 @@ await step('tacpubhere', async () => {
     await until(p, () => (window.__mz || []).length > 0, null, 240000);
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && /The relay is moving your TAC|worth less than the relay fee/.test((await p.evaluate(() => window.__mz)).join(' | ')), `tacpubhere: Make TAC public goes from the card: no sheet opens and its steps are said under the button (${(await p.evaluate(() => window.__mz)).join(' | ').slice(0, 160)})`);
     if (r.errors.length) { fails++; console.log('FAIL tacpubhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// The Pay pool's ETH comes out from the Swap card, no sheet over it: 0.02 ETH goes in from the card (proved here), then 0.01 comes out to the paying account (proved here, sent by the relay for its fee out of the
+// private balance or, when the relay is out of reach on the fork, by the wallet once the line has said so and the button is pressed again), each saying what it did under the button.
+await step('payout', async () => {
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  const mz = () => p.evaluate(() => document.querySelector('#hx-mz')?.textContent || '');
+  const said = (re) => until(p, (s) => new RegExp(s).test(document.querySelector('#hx-mz')?.textContent || ''), re, 900000);
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
+    await move(p, 'shield:ether:pay', '0.02');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Deposit privately' && !document.querySelector('#hx-swap #go').disabled, null, 420000);
+    await sheetsSeen(p);
+    await p.click(MV.go);
+    await said('Deposited|did not|could not|More than');
+    ok(/Deposited/.test(await mz()), `payout: 0.02 ETH deposited into the Pay pool from the card (${(await mz()).slice(0, 80)})`);
+    await move(p, 'shield:pp:addr', '0.01');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Withdraw ETH' && !document.querySelector('#hx-swap #go').disabled, null, 420000);
+    let tries = 0;
+    for (; tries < 3; tries++) {
+      await p.click(MV.go);
+      await sleep(2000);
+      await said('Withdrawn|Press it again|More than|did not|could not');
+      if (/Withdrawn/.test(await mz())) break;
+      console.log(`     payout … ${(await mz()).slice(0, 140)}`);
+      await until(p, () => !document.querySelector('#hx-swap #go').disabled, null, 120000);
+    }
+    await shot(p, 'payout');
+    ok(/Withdrawn/.test(await mz()) && (await p.evaluate(() => window.__sheetSeen)) === '', `payout: 0.01 ETH came out of the Pay pool to the paying account from the card, no sheet (${tries + 1} press${tries ? 'es' : ''}; ${(await mz()).slice(0, 80)})`);
+    if (r.errors.length) { fails++; console.log('FAIL payout page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 

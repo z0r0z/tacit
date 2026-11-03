@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-7/I73VVSLHYO6mSAfXZ301kIk0oA3FogPk+vbQmtKOY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hYorFJzb8+cmpeACwXk3KfxRcNwvZZYT2OLj5w87eb4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6619,6 +6619,19 @@ function privacyView(c, amount, to, self) {
     <p class="note">${p.crowd}</p>${full}</div>`;
 }
 
+// ETH out of the Pay pool of chain `c` (the Withdraw form's press and the Swap card's), proved on this device: to an address (`dest` 'addr'), or into the Tacit pool as tETH on Ethereum ('v1'); by the relay,
+// its fee out of the private balance (`maxFee` the most it may take), or from the paying account (`self`). → { h, done }: the transaction's hash and what to say once it has landed
+async function devOutSend({ run, c, amount, dest, to = null, self = false, maxFee = null, step }) {
+  DEV.chain = c;
+  const W2 = await deviceWallet(), via = self ? 'self' : null;
+  if (dest === 'addr') {
+    const label = `Withdraw ${fmt(amount, 18, 6)} ETH from this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`;
+    if (via) { await payingAccount(); W2.connect(payFrom(c.chainId, label)); }
+    const sent = await W2.withdraw({ to: recipientOf(to), amount, via, maxFee, onStep: step });
+    return { h: via ? sent : keeperTx(sent, c.chainId, label), done: 'Withdrawn.' };
+  }
+  return { h: await moveToV1(run, W2, amount, step, via, maxFee), done: 'Moved into the Tacit pool as tETH.' };
+}
 // A deposit into the Pay pool of chain `c` (ETH), proved on this device and sent from the paying account: the Deposit form's and the Swap card's. `step` says each stage. → the transaction's hash
 async function devDepositSend({ c, amount, to = null, step }) {
   DEV.chain = c;
@@ -6845,16 +6858,10 @@ function renderDevice(el) {
       try {
         const amount = parseUnits(amt.value), maxFee = capOf(shown);
         if (!amount) throw new Error('Enter an amount.');
-        const W2 = await deviceWallet(), via = walletRoute() ? 'self' : null;
         let h, done;
-        if (dest === 'addr') {
-          const label = `Withdraw ${fmt(amount, 18, 6)} ETH from this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`;
-          if (via) { await payingAccount(); W2.connect(payFrom(c.chainId, label)); }
-          const sent = await W2.withdraw({ to: recipientOf(toEl.value), amount, via, maxFee, onStep: step });
-          h = via ? sent : keeperTx(sent, c.chainId, label); done = 'Withdrawn.';
-        }
-        else if (dest === 'v1') { h = await moveToV1(run, W2, amount, step, via, maxFee); done = 'Moved into the Tacit pool as tETH.'; }
+        if (dest === 'addr' || dest === 'v1') ({ h, done } = await devOutSend({ run, c, amount, dest, to: toEl?.value, self: walletRoute(), maxFee, step }));
         else {
+          const W2 = await deviceWallet();
           h = keeperTx(await W2.bridgeOut({ toChainId: l2.chainId, amount, maxFee, now: chainNow(), l2Rpc: (await getDeviceMods()).jsonRpc(l2.rpc), onStep: step }), 1, `Move ${fmt(amount, 18, 6)} ETH to ${chainFull(l2.chainId)}`);
           devWalletOn(l2.chainId).then((w) => w.watchReceive()).catch(() => {});
           done = `On its way to ${chainFull(l2.chainId)}.`;
@@ -13406,7 +13413,7 @@ function hxHandoff(m, units) {
   if (m === 'paytok') return { out: amt, go: 'Deposit privately', rc: deposit(HX_WAY[`${HX.sf}>${HX.sd}`].u, 'Ethereum') };
   if (m === 'tacwrap') return { out: amt, go: 'Make TAC private', rc: [['Arrives', n('TAC, private')], ['Sent', `in one transaction from ${your()}, with a permit`]] };
   if (m === 'tacpub') return { out: 'All', go: 'Make TAC public', rc: [['Arrives', 'all your private TAC, as ERC-20 TAC'], ['Relay fee', 'shown next']] };
-  if (m === 'ppout') return { out: amt, go: 'Withdraw ETH', rc: [['Arrives', n('ETH at any address')], ['Fee', 'a relay fee, or the network fee from your wallet'], ['Chain sees', 'the address and the amount']] };
+  if (m === 'ppout') return { out: amt, go: 'Withdraw ETH', rc: [['Arrives', n('ETH in your wallet')], ['Fee', 'a relay fee, or the network fee from your wallet'], ['Chain sees', 'the address and the amount']] };
   if (m === 'ppv1') return { out: amt, go: 'Move ETH into tETH', rc: [['Arrives', n('tETH')], ['Chain sees', 'no public stop on the way'], ['Relay fee', 'shown next']] };
   if (m === 'tbback') return { out: 'All', go: 'Bring tETH back', rc: [['Arrives', 'private tETH on Ethereum'], ['How', 'by proof of Bitcoin'], ['Notes', 'listed next']] };
   return null;
@@ -14760,7 +14767,7 @@ function hxGo() {
   if (m === 'unwrap') return hxUnwrapGo(units);
   if (m === 'tacpub') return hxTacPublicGo();
   if (m === 'tacwrap') return hxTacWrapGo(units);
-  if (m === 'ppout' || m === 'ppv1') { const c = hxChain(); DEV.dest = m === 'ppv1' ? 'v1' : 'addr'; hxDraft({ mode: 'dout', amt, chain: c.chainId, all: HX.max }); return openLink(`device/${chainSlug(c)}/withdraw`); }
+  if (m === 'ppout' || m === 'ppv1') return hxPoolOutGo(m, amt);
   if (m === 'tbback') return openLink('private/bitcoin/back');
   if (m === 'xo') { const a = XA[HX.xa]; hxDraft({ mode: a.pre, amt }); return openLink(`${xoLink(a)}/out`); }
   if (m === 'xb') return openLink(`${xoLink(XA[HX.xa])}/back`);
@@ -14968,6 +14975,50 @@ async function hxTacPublicGo() {
     if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said there is none
     if (!(spendable('tac') > 0n)) return say(st, html`<span class="err">You hold no private TAC.</span>`);
     await tacPublicNow({ run, status: st, line: () => st, sheet: '', after: hxMoveAfter });
+  }).finally(() => SWC.card?.working?.(false));
+}
+// ETH out of the Pay pool from the card: to the paying account ('ppout') or into the Tacit pool as tETH ('ppv1', Ethereum's pool): what the Withdraw form does (devOutSend), by the relay with its fee out
+// of the private balance, or, once the relay has failed it, from the paying account (said under the button; the next press goes that way). Another address is the Send tab's.
+async function hxPoolOutGo(m, amt) {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || !amt || go.getAttribute('aria-busy') === 'true') return;
+  const c = hxChain(), dest = m === 'ppv1' ? 'v1' : 'addr', st = hxMoveSlot(), step = (x) => { x = String(x).replace(/relayer/gi, 'relay'); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
+  const viaWallet = (why) => { DEV.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); };
+  const pre = (text) => Object.assign(new Error(text), { said: true, pre: true });
+  say(st, '');
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    PROVE_AT.el = st;
+    try {
+      const amount = parseUnits(amt, 18);
+      if (!amount) throw pre('Enter an amount.');
+      if (dest === 'v1' && amount % E10) throw pre('The Tacit pool takes up to 8 decimals.');
+      DEV.chain = c;
+      await deviceSync();                                                  // the notes and the relay's fee, read (kept for a minute)
+      const W = await deviceWallet(), mods = await getDeviceMods(), self = !!DEV.self;
+      DEV.quote ||= await W.quote().catch(() => null);
+      if (!self && !DEV.quote) return viaWallet('The relay’s fee could not be read.');
+      const fee = self ? 0n : BigInt(DEV.quote.fee || 0), maxFee = fee ? (fee * 5n) / 4n : null;
+      if (mods.mergePlan(W.notes().map((n) => n.v), amount + fee, fee) == null) {
+        throw pre(amount + fee > (DEV.bal ?? 0n) ? `More than your private balance${fee ? ', once the relay fee is counted' : ''}.` : 'More than one withdrawal can take: your private balance is spread over too many notes.');
+      }
+      const { h, done } = await devOutSend({ run, c, amount, dest, to: dest === 'addr' ? await payingAccount() : null, self, maxFee, step });
+      if (dest !== 'v1') await waitTx(h, { timeoutMs: 20e3, chainId: c.chainId });
+      DEV.self = false;
+      SWC.card?.clear?.();
+      say(st, html`<span class="ok">${done}</span> ${txLink(h, c.explorer)}`);
+      PB.at[String(c.chainId)] = 0;
+      hxWalletBals(true); payBals([String(c.chainId)]).catch(() => {}); deviceSync(true).catch(() => {});
+      hxMoveAfter();
+    } catch (e) {
+      if (e?.pre) say(st, html`<span class="err">${errText(e)}</span>`);
+      else if (e?.feeMoved != null) { DEV.quote = (await DEV.W?.quote().catch(() => null)) || { ...DEV.quote, fee: String(e.feeMoved) }; say(st, html`<span class="err">The relay fee changed to ${fmt(e.feeMoved, 18, 6)} ETH. Check it and press again.</span>`); }
+      else if (e?.pending) { SWC.card?.clear?.(); txFail(run, st, e); }
+      else if (e?.said || waitRanOut(e)) { SWC.card?.clear?.(); say(st, html`<span class="err">${errText(e)}</span>`); }
+      else if (!DEV.self && keeperTrouble(e)) viaWallet(errText(e));
+      else txFail(run, st, e);
+    } finally { PROVE_AT.el = null; }
   }).finally(() => SWC.card?.working?.(false));
 }
 // Deposits into the Pay pools from the card: ETH (the pool of the chain picked under the field) or TAC, USDC, USDT. Each is proved on this device (the proving key is fetched once, said under the
