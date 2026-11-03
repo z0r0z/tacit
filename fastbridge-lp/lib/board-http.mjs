@@ -2,6 +2,7 @@
 // Bodies are JSON with the sealed bytes in base64.
 //
 //   GET  /health   GET /ads   PUT /ad {ad}   POST /m/<gateway> {b}   GET /m/<gateway>/<after>   PUT /r/<id> {b, sig}   GET /r/<id>
+//   GET  /wants    PUT /want {want}
 
 import { BoardError } from '../../dapp/fastbridge-board.js';
 
@@ -20,6 +21,8 @@ export function makeBoardHandler(board) {
       if (method === 'GET' && path === '/health') return reply({ ok: true, ...board.stats() });
       if (method === 'GET' && path === '/ads') return reply({ ads: board.ads() });
       if (method === 'PUT' && path === '/ad') return reply(board.putAd(body));
+      if (method === 'GET' && path === '/wants') return reply({ wants: board.wants() });
+      if (method === 'PUT' && path === '/want') return reply(board.putWant(body));
       let m;
       if (method === 'POST' && (m = /^\/m\/([0-9a-f]{66})$/.exec(path))) return reply(board.post(m[1], unb64(body && body.b)));
       if (method === 'GET' && (m = /^\/m\/([0-9a-f]{66})\/(\d{1,12})$/.exec(path))) {

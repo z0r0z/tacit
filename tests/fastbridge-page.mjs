@@ -161,11 +161,11 @@ try {
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
   }
-  // no provider named: the list the page ships (none yet) says so, with a way to the regular bridge
+  // no provider named: the list the page ships (none yet) says so, and that one can be waited for
   {
     const { page, bad, shot } = await visit('/fast/');
     await page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(!!(await page.$('#fx-lp a[href="/"]')), 'a link to the front page');
+    ok(/wait for one/.test(await page.textContent('#fx-lp')), 'says one can be waited for');
     await shot('fast-no-provider');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
@@ -230,6 +230,56 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
     await shot('fast-phone');
     ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'no sideways scroll on a phone');
+    ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
+    await page.context().close();
+  }
+  // nobody online: the amount is waited for, the want reaches the board under a key of its own and is kept in the browser, the holder
+  // is told when a provider comes online, and the bridge it then starts takes the want down
+  {
+    const entry = `
+import { mountFast } from '/fast/ui.js';
+import { makeWants } from '/fast/want.js';
+const TAC = 10n ** 8n, fns = new Set();
+const keyS = { unlocked: false, key: null, onChange: (f) => { fns.add(f); } };
+const terms = { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 2000n * TAC, available: null };
+window.__said = [];
+mountFast({
+  root: document.getElementById('gate'), keyS, refreshMs: 300,
+  wants: makeWants({ boards: [${JSON.stringify(BOARD)}] }), notify: (t) => window.__said.push(t),
+  signIn: async () => { keyS.unlocked = true; keyS.key = { pubHex: '03' + 'cd'.repeat(32) }; fns.forEach((f) => f()); },
+  discover: async () => (window.__online ? [{ id: 'a', name: 'Tacit', ref: { kind: 'http', claimPub: 'a' }, terms }] : []),
+  open: async () => ({
+    balance: async () => 1500n * TAC,
+    quoteAll: async (ps, units) => ({ quotes: ps.map((p) => ({ provider: p, quote: { id: 'q', btcValue: units, evmAmount: units - TAC, fee: TAC, validUntil: Math.floor(Date.now() / 1000) + 600 } })), failed: [] }),
+    start: async () => { window.__started = true; return { rec: {}, provider: null }; },
+    records: async () => [], run: () => () => {}, recover: async () => [],
+  }),
+});`;
+    const { page, bad, shot } = await visit(`/fast/?board=${encodeURIComponent(BOARD)}`, { entry });
+    await page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp').textContent), null, { timeout: 15000 });
+    await page.click('#fx-go');
+    await page.waitForFunction(() => !document.getElementById('fx-form').hidden, null, { timeout: 5000 });
+    await page.fill('#fx-amt', '1000');
+    await page.waitForFunction(() => document.getElementById('fx-go').textContent === 'Wait for a provider', null, { timeout: 5000 });
+    ok(true, 'an amount nobody takes offers to wait for a provider');
+    await shot('fast-wait-offer');
+    const before = board.wants().length;
+    await page.click('#fx-go');
+    await page.waitForFunction(() => !document.getElementById('fx-wait').hidden, null, { timeout: 5000 });
+    ok(/Waiting for a provider for 1,000 TAC/.test(await text(page, '#fx-wait')), `the page says it waits (${await text(page, '#fx-wait')})`);
+    const posted = board.wants();
+    ok(posted.length === before + 1 && posted[0].amount === String(1000n * 10n ** 8n) && posted[0].pub !== '03' + 'cd'.repeat(32), 'the want is on the board, under a key of its own');
+    ok(await page.evaluate(() => !!localStorage.getItem('tacit-fastbridge-want-v1:03' + 'cd'.repeat(32))), 'and kept in the browser for the front page');
+    await shot('fast-waiting');
+    await page.evaluate(() => { window.__online = true; });
+    await page.waitForFunction(() => window.__said.length === 1, null, { timeout: 5000 });
+    ok(/A provider can take your 1,000 TAC now/.test(await page.evaluate(() => window.__said[0])), 'told when a provider can take it');
+    await page.waitForFunction(() => document.getElementById('fx-go').textContent === 'Bridge' && !document.getElementById('fx-go').disabled, null, { timeout: 5000 });
+    await shot('fast-wait-met');
+    await page.click('#fx-go');
+    await page.waitForFunction(() => window.__started && !localStorage.getItem('tacit-fastbridge-want-v1:03' + 'cd'.repeat(32)), null, { timeout: 5000 });
+    await page.waitForFunction(() => document.getElementById('fx-wait').hidden, null, { timeout: 5000 });
+    ok(board.wants().length === before, 'the bridge takes the want down, here and on the board');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
   }

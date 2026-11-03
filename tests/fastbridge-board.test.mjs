@@ -4,12 +4,19 @@
 // between the user and the provider but the board.
 //   node tests/fastbridge-board.test.mjs        (Node 22)
 
+import { register } from 'node:module';
+// fast/want.js imports by site path ("/x.js?cb=..."), which this maps to dapp/
+register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
+export async function resolve(spec, ctx, next) {
+  if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx);
+  return next(spec, ctx);
+}`));
 import assert from 'node:assert/strict';
 import { realFetch } from './lib/real-fetch.mjs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { signSchnorr } from '../dapp/bulletproofs.js';
 import { sealRequest } from '../dapp/sealed-request.js';
-import { makeBoard, signAd, checkAd, replyDigest, messageId, LIMITS } from '../dapp/fastbridge-board.js';
+import { makeBoard, signAd, checkAd, signWant, checkWant, replyDigest, messageId, LIMITS } from '../dapp/fastbridge-board.js';
 import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
@@ -34,6 +41,71 @@ const adOf = (n, t, over = {}) => {
 const clock = (start = T0) => { const c = { t: start, now: () => c.t, advance: (s) => { c.t += s; } }; return c; };
 const bytesOf = (n, seed = 1) => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed) & 255);
 const thrown = (fn) => { try { fn(); } catch (e) { return e; } return null; };
+
+// ── wants ──
+
+test('a want: signed by its one-time key, kept a day at most, replaced only by a later one of that key, taken down by amount 0, bounded', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxWants: 2 } });
+  const w = (n, t, amount = '100000000000', over = {}) => signWant({ pub: pubOf(priv(n)), btcAsset: 'ab'.repeat(32), amount, at: t, until: t + 86400, ...over }, priv(n));
+  const a = w(1, T0);
+  assert.equal(checkWant(a, T0), a);
+  for (const [k, v] of [['amount', '1'], ['btcAsset', 'cd'.repeat(32)], ['until', T0 + 10]]) assert.match(thrown(() => checkWant({ ...a, [k]: v }, T0)).message, /not signed by its key/, k);
+  assert.match(thrown(() => checkWant({ ...a, pub: pubOf(priv(2)) }, T0)).message, /not signed by its key/, 'another key');
+  assert.match(thrown(() => checkWant(w(1, T0, '1', { until: T0 + 86401 }), T0)).message, /time is not valid/, 'more than a day');
+  assert.match(thrown(() => checkWant(a, T0 + 86400)).message, /run out/);
+  assert.match(thrown(() => checkWant(w(1, T0 + 1000), T0)).message, /from the future/);
+  assert.match(thrown(() => checkWant({ ...a, amount: '-1' }, T0)).message, /not an amount/);
+  board.putWant(a);
+  assert.deepEqual(board.wants(), [a]);
+  assert.equal(board.putWant(w(1, T0, '5')).kept, true, 'not a later one: the first stands');
+  board.putWant(w(1, T0 + 1, '7'));
+  assert.equal(board.wants()[0].amount, '7', 'a later one of the key replaces it');
+  board.putWant(w(2, T0));
+  assert.equal(thrown(() => board.putWant(w(3, T0))).status, 503, 'the board keeps a bounded number');
+  assert.equal(board.putWant(w(2, T0 + 2, '0')).dropped, true);
+  assert.deepEqual(board.wants().map((x) => x.pub), [pubOf(priv(1))], 'amount 0 takes it down');
+  assert.equal(board.stats().wants, 1);
+  c.advance(86401);
+  assert.deepEqual(board.wants(), [], 'gone after its day');
+});
+
+test('wants over HTTP, and fast/want.js: kept in the browser, posted under a one-time key, taken down, and what providers online take', async () => {
+  const c = clock(), board = makeBoard({ now: c.now }), handle = makeBoardHandler(board);
+  const fetchImpl = async (url, opts = {}) => {
+    const u = new URL(url);
+    const r = await handle({ method: opts.method || 'GET', path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
+  };
+  const mem = new Map(), storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+  const { makeWants } = await import('../dapp/fast/want.js');
+  const asset = 'ab'.repeat(32), user = '03' + 'cd'.repeat(32);
+  const w = makeWants({ boards: ['https://board.example'], storage, fetchImpl, now: c.now, asset });
+  assert.equal(w.kept(user), null);
+  const k = await w.start(user, 1000n);
+  assert.equal(k.amount, 1000n);
+  const posted = board.wants();
+  assert.equal(posted.length, 1);
+  assert.notEqual(posted[0].pub, user, 'signed by a key made for it, not the wallet\'s');
+  assert.ok(!JSON.stringify(posted[0]).includes(user.slice(2)), 'nothing of the wallet in it');
+  assert.deepEqual(await w.waiting(), { count: 1, total: 1000n });
+  assert.equal(w.kept(user).amount, 1000n, 'kept in this browser');
+  assert.deepEqual(await w.takers(1000n), [], 'nobody online');
+  board.putAd(adOf(7, T0, { btcAsset: asset, minAmount: '500', maxAmount: '5000', available: '800' }));
+  assert.deepEqual(await w.takers(1000n), [], 'a provider that can take only 800 now does not take 1,000');
+  assert.deepEqual((await w.takers(700n)).map((p) => p.name), ['p7']);
+  board.putAd(adOf(8, T0 + 1, { btcAsset: 'ee'.repeat(32), minAmount: '1', maxAmount: '5000', available: null }));
+  assert.deepEqual(await w.takers(1000n), [], 'a provider of another asset does not count');
+  c.advance(1);
+  await w.stop(user);
+  assert.equal(w.kept(user), null);
+  assert.deepEqual(board.wants(), [], 'taken down on the board too');
+  assert.deepEqual(await w.waiting(), { count: 0, total: 0n });
+  await w.start(user, 5n);
+  c.advance(86400);
+  assert.equal(w.kept(user), null, 'a want past its day is forgotten');
+  const down = makeWants({ boards: ['https://board.example'], storage, fetchImpl: async () => { throw new Error('offline'); }, now: c.now, asset });
+  assert.equal((await down.start(user, 9n)).amount, 9n, 'a board that cannot be reached: the want is still kept here');
+});
 
 // ── ads ──
 

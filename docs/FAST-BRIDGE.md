@@ -55,6 +55,9 @@ the provider's own:
   answers what a daemon does. A provider that serves HTTP can be listed directly as well.
 - **A choice.** The page asks every provider that can take the amount for a quote, shows the best, and asks the next best
   when the first cannot hold the payout.
+- **A wait.** When no provider online takes the amount, the page keeps a want for the key in the browser and posts it to the
+  boards, signed by a key made for it alone, for up to a day. Providers see what is waiting (the provider panel, and an alert in
+  the daemon); the holder is told on `/fast/`, and on the front page once, when a provider can take it. A want moves nothing.
 
 A provider in a page is for modest amounts: it answers requests and takes the Bitcoin while the page is open, and swaps that
 are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)

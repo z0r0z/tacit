@@ -41,6 +41,7 @@ function mount(over = {}) {
     root, keyS: key, refreshMs: over.refreshMs ?? 5000,
     open: async () => { state.opens++; return stub.session; }, hasOpen: over.hasOpen || (() => false),
     settings: { get: (p) => kept.get(p) || null, set: (p, v) => { kept.set(p, v); saved.push(v); } },
+    waiting: over.waiting || null, waitMs: over.waitMs ?? 60000,
   });
   return { dom, doc, root, key, stub, ui, state, saved, $: (id) => doc.getElementById(id), load: async () => { key.open(); root.open = true; root.dispatchEvent(new dom.window.Event('toggle')); await until(() => !root.querySelector('#pv-go').hidden, 'the panel'); } };
 }
@@ -147,6 +148,19 @@ test('the last take stays linked once providing has stopped, for a claim that na
   assert.equal(m.$('pv-run').hidden, false);
   assert.equal(a.href, `https://mempool.space/tx/${'ab'.repeat(32)}`);
   assert.equal(text(m.$('pv-run')).includes('Open bridges'), false, 'nothing of a running provider is shown');
+});
+
+test('bridges waiting for a provider: counted beside the panel title and in it, read again while the page is open', async () => {
+  let w = { count: 0, total: 0n };
+  const m = mount({ waiting: async () => w, waitMs: 20 });
+  m.key.open();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(m.$('pv-want').hidden, true, 'nothing waiting: nothing said');
+  assert.equal(m.$('pv-waiting').textContent, '');
+  w = { count: 2, total: 1500n * 10n ** 8n };
+  await until(() => !m.$('pv-want').hidden, 'the waiting line');
+  assert.match(text(m.$('pv-want')), /Waiting for a provider 2 bridges, 1,500 TAC/);
+  assert.equal(m.$('pv-waiting').textContent, ' · 2 waiting');
 });
 
 test('/fast/#provide opens the panel, which reads the key as soon as it is unlocked', async () => {

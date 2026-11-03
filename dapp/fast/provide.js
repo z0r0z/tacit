@@ -8,6 +8,7 @@
 //   open()      -> { inventory(), start({ settings, accept }), stop(), status() } for the open key (fast/wire.js openProvider)
 //   hasOpen(pub)  whether this key has provider swaps that are not finished: they are tended as soon as the key is open
 //   settings    { get(pub), set(pub, settings) } the fee and size kept for a key
+//   waiting()   -> { count, total }: the bridges waiting on the boards for a provider (fast/want.js), shown to anyone who could provide
 //   -> { busy() }   whether closing the page now would leave a swap untended
 
 import { DEC, ONE, esc, fmtTac, parseTac } from './fmt.js';
@@ -18,15 +19,16 @@ const percent = (text) => { const t = String(text).trim().replace('%', ''); if (
 const every = 5000;
 const SCAN = 'https://mempool.space/tx/';
 
-export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, refreshMs = every }) {
+export function mountProvide({ root, keyS, open, hasOpen = () => false, settings = { get: () => null, set: () => {} }, waiting = null, waitMs = 60000, refreshMs = every }) {
   const doc = root.ownerDocument;
-  const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false };
+  const S = { sess: null, pub: null, inv: null, st: null, loading: false, note: '', bad: false, timer: 0, opened: false, wait: null };
 
   root.hidden = true;
   root.innerHTML = `
-    <summary>Provide liquidity</summary>
+    <summary>Provide liquidity<span class="pv-waiting" id="pv-waiting"></span></summary>
     <div class="pv-in">
       <p class="note">Earn the fee on each bridge. Keep this page open while you provide.</p>
+      <div class="kv" id="pv-want" hidden><span>Waiting for a provider</span><b class="num"></b></div>
       <div class="rows flat" id="pv-inv"></div>
       <div id="pv-set" hidden>
         <label class="pv-f"><span>Fee, %</span><input id="pv-fee" inputmode="decimal" autocomplete="off" aria-label="Fee in percent"></label>
@@ -44,7 +46,10 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
 
   function paint() {
     root.hidden = !keyS.unlocked;
-    const inv = S.inv, st = S.st;
+    const inv = S.inv, st = S.st, w = S.wait && S.wait.count ? S.wait : null;
+    $('pv-waiting').textContent = w ? ` · ${w.count} waiting` : '';
+    $('pv-want').hidden = !w;
+    if (w) $('pv-want').lastElementChild.textContent = `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>` : '';
     $('pv-set').hidden = !inv || accepting();
@@ -137,6 +142,11 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
 
   // /fast/#provide comes straight to this panel
   if (doc.defaultView?.location.hash === '#provide') root.open = true;
+  // what is waiting for a provider, read now and every minute
+  if (waiting) {
+    const look = () => waiting().then((w) => { S.wait = w; paint(); }).catch(() => {});
+    look(); setInterval(look, waitMs);
+  }
   paint();
   return { busy: () => !!(S.st && S.st.running && (S.st.accepting || S.st.open > 0)) };
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The board for fast bridge providers and users: ads that providers sign, sealed requests for a provider and its sealed answers.
-// It holds nothing that has to be trusted (dapp/fastbridge-board.js) and keeps everything in memory for ten minutes.
+// It holds nothing that has to be trusted (dapp/fastbridge-board.js) and keeps everything in memory: ads and messages for ten minutes,
+// the wants of users waiting for a provider for a day.
 //
 //   FB_BOARD_PORT=8788  FB_BOARD_ORIGINS=https://tacit.finance,https://www.tacit.finance  FB_BOARD_TRUST_PROXY=1
 //   node fastbridge-lp/board.mjs        (Node 22; run from the repository root)

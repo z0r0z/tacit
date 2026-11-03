@@ -72,7 +72,9 @@ the user's side of this API.
 
 `node fastbridge-lp/board.mjs` runs a board: providers post their ads there (they are signed, and a page checks each one), and
 users reach a provider through it with requests sealed to the provider, so a provider in a browser tab is found and answered
-like a daemon. It holds nothing that has to be trusted and keeps everything in memory for ten minutes. Set `FB_BOARD_PORT`,
+like a daemon. A user that no provider online can take posts a want there (`PUT /want`: an amount, signed by a key made for it alone,
+standing up to a day; amount 0 takes it down), and providers read what is waiting (`GET /wants`). It holds nothing that has to be
+trusted and keeps everything in memory: ads and messages for ten minutes, wants for a day. Set `FB_BOARD_PORT`,
 `FB_BOARD_ORIGINS` (the pages that may call it, comma separated) and `FB_BOARD_TRUST_PROXY=1` behind a proxy; serve it over TLS.
 List it in the page's `dapp/fast/lp.json` under `boards`, and in a daemon's `boards`. Anyone can also provide from the bridge
 page (`/fast/`, "Provide liquidity") with the key they bridge with.
@@ -96,6 +98,7 @@ Keep several coins at the Bitcoin address, or one swap at a time is all it takes
 | `a lock was claimed without revealing t` | a claim spent a lock without the signature that opens the Bitcoin | should not happen; stop quoting and look at the claim's settle before anything else |
 | `a swap record cannot be read` | a file in `swaps/` is torn or corrupt and has no readable backup | restore it from the backup; the other swaps go on |
 | `tick failed` in the log, `/health` 503 | a read of the store failed | the disk; the process retries on the next tick |
+| `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes) | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take |
 
 The same swap in the log: `swap` lines show each phase change (`accepted`, `locking`, `locked`, `offered`, `taking`,
 `done`; or `refunding`, `refunded`, `rejected`, `aborted`).

@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -3493,6 +3493,46 @@ await step('bridgedeep', async () => {
     await until(r.page, () => document.querySelectorAll('#bridge-body .brn.off').length === 3, null, 60000);
     ok(traces === 7 && (await r.page.$$('#bridge-body input[name="br-note"]:not([disabled])')).length === 0, `bridgedeep: a note found too long or unprovable is not traced again, and all three are listed as not to be picked (${traces} asks)`);
     if (r.errors.length) { fails++; console.log('FAIL bridgedeep page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// A key waiting for a fast bridge provider (its want kept by /fast/ in this browser) is told on the front page, once, when a provider on
+// the board can take what it waits with; a provider that cannot take that much says nothing.
+await step('fastwant', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const hex = 'fa57'.padEnd(64, '9'), pub = Buffer.from(secp.getPublicKey(hex, true)).toString('hex'), BOARD = 'https://tacit-fast-board.onrender.com';
+  const { signAd } = await import(new URL('../dapp/fastbridge-board.js', import.meta.url));
+  const { gatewayOf } = await import(new URL('../dapp/fastbridge-mailbox.js', import.meta.url));
+  const lpPriv = new Uint8Array(32).fill(7), TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+  let available = '50000000000';
+  const ad = () => { const t = Math.floor(Date.now() / 1000); return signAd({ claimPub: Buffer.from(secp.getPublicKey(lpPriv, true)).toString('hex'), gateway: Buffer.from(gatewayOf(lpPriv).pub).toString('hex'), btcAsset: TAC, evmAsset: TAC, minAmount: '1000000000', maxAmount: '100000000000', available, feeBps: 30, flatFee: '100000000', csvBlocks: 144, evmWindowSecs: 14400, name: 'Tacit', at: t, until: t + 300 }, lpPriv); };
+  try {
+    await r.page.route(/\/fast\/lp\.json/, (route) => json(route, { providers: [], boards: [BOARD] }));
+    await r.page.route(/^https:\/\/tacit-fast-board\.onrender\.com\/ads/, (route) => json(route, { ads: [ad()] }));
+    // the page opened again with the key, as a holder coming back to it
+    const visit = async () => {
+      await r.page.goto(r.url + '#wallet');
+      await r.page.waitForSelector('#wallet-body [data-in="paste"], #wallet-dot.on', { timeout: 60000 });
+      if (!(await r.page.$('#wallet-dot.on'))) {
+        await r.page.click('#wallet-body [data-in="paste"]');
+        await r.page.fill('#ws-hex', hex);
+        await r.page.click('#wallet-body [data-in="key"]');
+      }
+      await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
+    };
+    await r.page.goto(r.url);
+    await r.page.evaluate(([p]) => { const t = Math.floor(Date.now() / 1000); localStorage.setItem(`tacit-fastbridge-want-v1:${p}`, JSON.stringify({ amount: '100000000000', at: t, until: t + 86400, priv: '11'.repeat(32) })); }, [pub]);
+    await visit();
+    await new Promise((res) => setTimeout(res, 9000));
+    ok(!/fast bridge provider/.test(await text(r.page, '#toast-container')), 'fastwant: a provider that can take only 500 TAC now says nothing to a key waiting with 1,000');
+    available = null;
+    await r.page.evaluate(() => { localStorage.removeItem('tacit-fast-want-told-v1'); });
+    await r.page.goto('about:blank'); await visit();
+    await until(r.page, () => /A fast bridge provider can take your 1,000 TAC now\./.test(document.getElementById('toast-container')?.textContent || ''), null, 60000);
+    ok(!!(await r.page.$('#toast-container a[href="/fast/"]')), 'fastwant: once one can take it, the front page says so, with a way to /fast/');
+    await r.page.goto('about:blank'); await visit();
+    await new Promise((res) => setTimeout(res, 9000));
+    ok(!/fast bridge provider/.test(await text(r.page, '#toast-container')), 'fastwant: and says it once');
+    if (r.errors.length) { fails++; console.log('FAIL fastwant page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 // Merge notes and Bridge all, the two presses over the Bridge tab's whole list. The key holds three notes in the proof's tree (950 TAC), two the

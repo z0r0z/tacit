@@ -63,7 +63,7 @@ function mount(over = {}) {
   const p = page(), key = over.key || keyStub(), st = over.session || sessionStub();
   const state = { signIns: 0, opens: 0, says: [], discovers: 0 };
   const ui = mountFast({
-    root: p.root, keyS: key, quoteDelayMs: 1, refreshMs: over.refreshMs ?? 30000,
+    root: p.root, keyS: key, quoteDelayMs: 1, refreshMs: over.refreshMs ?? 30000, wants: over.wants ?? null, notify: over.notify,
     discover: over.discover || (async () => { state.discovers++; return over.providers ?? [provider('Tacit')]; }),
     signIn: over.signIn || (async () => { state.signIns++; key.open(); }),
     open: over.open || (async () => { state.opens++; return st.session; }), say: (t) => state.says.push(t),
@@ -90,16 +90,67 @@ test('a key whose own offer is the only one is told it is the provider online, n
   m.ui.destroy();
 });
 
-test('no provider listed, or none answering: the page says none is online and offers the regular bridge', async () => {
+test('no provider listed, or none answering: the page says none is online and that one can be waited for', async () => {
   for (const over of [{ providers: [] }, { discover: async () => { throw new Error('down'); } }]) {
     const m = mount(over);
     await until(() => /No provider is online/.test(text(m.$('fx-lp'))), 'the offline line');
-    assert.ok(m.$('fx-lp').querySelector('a[href="/"]'), 'a way to the regular bridge');
+    assert.match(text(m.$('fx-lp')), /Open your wallet to wait for one, or to provide/);
     assert.equal(m.$('fx-go').hidden, false, 'with nobody providing, the wallet still opens: it is how the first provider starts');
     assert.equal(m.$('fx-go').textContent, 'Open wallet');
     assert.equal(m.$('fx-form').hidden, true);
     m.ui.destroy();
   }
+});
+
+test('waiting for a provider: an amount nobody takes is waited for, kept for the key, told once when a provider can take it, and dropped by a bridge', async () => {
+  const kept = new Map(), told = [];
+  const wants = {
+    asks: 0, ask: async () => { wants.asks++; },
+    kept: (pub) => kept.get(pub) || null,
+    start: async (pub, amount) => { kept.set(pub, { amount, at: 1, until: 2 }); return kept.get(pub); },
+    stop: async (pub) => { kept.delete(pub); },
+  };
+  let online = [];
+  const m = mount({ wants, notify: (t) => told.push(t), refreshMs: 20, discover: async () => online });
+  await until(() => /No provider is online/.test(text(m.$('fx-lp'))), 'the offline line');
+  await signIn(m);
+  assert.match(text(m.$('fx-lp')), /Enter an amount to wait for one, or provide below/);
+  typeIn(m, '1000');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait button');
+  assert.equal(m.$('fx-go').disabled, false);
+  typeIn(m, '20000');
+  await until(() => m.$('fx-go').textContent === 'Bridge' && m.$('fx-go').disabled, 'more than is held is not waited for');
+  typeIn(m, '1000');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait button again');
+  m.$('fx-go').click();
+  const pub = m.key.key.pubHex;
+  await until(() => kept.has(pub), 'the want kept');
+  assert.equal(kept.get(pub).amount, 1000n * TAC);
+  assert.equal(wants.asks, 1, 'notifications are asked for with the press');
+  await until(() => !m.$('fx-wait').hidden && /Waiting for a provider for 1,000 TAC/.test(text(m.$('fx-wait'))), 'the waiting line');
+  assert.equal(told.length, 0, 'nothing told while nobody can take it');
+  online = [provider('Tacit')];
+  await until(() => told.length === 1, 'told once a provider can take it');
+  assert.match(told[0], /A provider can take your 1,000 TAC now/);
+  await until(() => m.$('fx-go').textContent === 'Bridge' && !m.$('fx-go').disabled, 'the quote for it');
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(told.length, 1, 'told once, not on every look');
+  m.$('fx-go').click();
+  await until(() => m.st.calls.starts.length === 1 && !kept.has(pub), 'the bridge starts and the want is dropped');
+  m.ui.destroy();
+});
+
+test('a want kept from an earlier visit is shown, and Stop waiting takes it down', async () => {
+  const pub = '03' + 'cd'.repeat(32), kept = new Map([[pub, { amount: 500n * TAC, at: 1, until: 2 }]]);
+  const wants = { kept: (p) => kept.get(p) || null, start: async () => null, stop: async (p) => { kept.delete(p); } };
+  const m = mount({ wants, discover: async () => [] });
+  await signIn(m);
+  await until(() => !m.$('fx-wait').hidden, 'the waiting line');
+  assert.match(text(m.$('fx-wait')), /Waiting for a provider for 500 TAC/);
+  assert.equal(m.$('fx-go').hidden, true, 'nothing to press while it waits and nothing is typed');
+  m.$('fx-unwait').click();
+  await until(() => m.$('fx-wait').hidden && !kept.has(pub), 'taken down');
+  m.ui.destroy();
 });
 
 test('a provider\'s terms are shown, and its name is text, not markup', async () => {

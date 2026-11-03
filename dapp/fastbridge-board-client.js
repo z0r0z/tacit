@@ -22,6 +22,8 @@ export function makeBoardClient({ base, fetchImpl = (...a) => fetch(...a), timeo
   return {
     async ads() { return must(await call('GET', '/ads'), 'the board did not list its ads').ads; },
     async putAd(ad) { return must(await call('PUT', '/ad', ad), 'the ad was not taken'); },
+    async wants() { return must(await call('GET', '/wants'), 'the board did not list its wants').wants; },
+    async putWant(want) { return must(await call('PUT', '/want', want), 'the want was not taken'); },
     async post(gateway, bytes) { return must(await call('POST', `/m/${gateway}`, { b: b64(bytes) }), 'the request was not taken'); },
     async inbox(gateway, after = 0) {
       const r = must(await call('GET', `/m/${gateway}/${after}`), 'the inbox could not be read');

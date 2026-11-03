@@ -10,6 +10,8 @@
 //   board.inbox(gateway, after)         the requests after a cursor -> { next, items: [{ seq, id, bytes }] }
 //   board.putReply(id, bytes, sig)      the provider's sealed answer, with its signature over it (replySignature)
 //   board.reply(id)                     the answer, or null
+//   board.putWant(want)                 a user waiting for a provider: a signed want (signWant) under a one-time key; amount 0 takes it down
+//   board.wants()                       the wants still standing, so a provider sees what is waiting
 //
 // A request or an answer is judged by its two ends, not by the board; the board only keeps the traffic bounded (sizes, a queue for
 // each provider, lifetimes) and lets only the provider the request was for answer it.
@@ -19,7 +21,7 @@ import { signSchnorr, verifySchnorr, bigintToBytes32 } from './bulletproofs.js';
 
 export class BoardError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
-export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40 };
+export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500 };
 
 const te = new TextEncoder();
 const hex = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
@@ -29,6 +31,7 @@ const canonical = (o) => JSON.stringify(Object.keys(o).sort().reduce((a, k) => {
 
 // what an ad says (everything but its signature), as the bytes that are signed
 export const adDigest = (ad) => { const { sig, ...body } = ad; return sha256(concatBytes(te.encode('tacit-fast-ad-v1'), te.encode(canonical(body)))); };
+export const wantDigest = (w) => { const { sig, ...body } = w; return sha256(concatBytes(te.encode('tacit-fast-want-v1'), te.encode(canonical(body)))); };
 export const replyDigest = (id, bytes) => sha256(concatBytes(te.encode('tacit-fast-reply-v1'), te.encode(id), sha256(bytes)));
 export const messageId = (bytes) => bytesToHex(sha256(bytes)).slice(0, 32);
 
@@ -61,17 +64,43 @@ export function checkAd(ad, now) {
   return ad;
 }
 
+// A user's want: TAC on Bitcoin waiting for a provider, signed with a key made for it alone, so it names no wallet. It moves no funds;
+// a provider that sees it starts providing, and the user bridges as with any provider.
+export function signWant(want, priv) {
+  const body = { v: 1, ...want };
+  return { ...body, sig: bytesToHex(signSchnorr(wantDigest(body), scalar32(priv))) };
+}
+
+// Throws a BoardError for a want that is not whole, not signed by its key, or not current.
+export function checkWant(w, now, wantSecs = LIMITS.wantSecs) {
+  const bad = (m) => { throw new BoardError(400, m); };
+  if (!w || typeof w !== 'object' || w.v !== 1) bad('not a want');
+  if (!hex(66).test(String(w.pub))) bad('the want\'s pub is not a key');
+  if (!hex(64).test(strip(w.btcAsset || ''))) bad('the want\'s btcAsset is not an asset');
+  if (!uint.test(String(w.amount))) bad('the want\'s amount is not an amount');
+  if (!Number.isInteger(w.at) || !Number.isInteger(w.until) || w.until <= w.at || w.until - w.at > wantSecs) bad('the want\'s time is not valid');
+  if (w.until <= now) bad('the want has run out');
+  if (w.at > now + LIMITS.skewSecs) bad('the want is from the future');
+  if (typeof w.sig !== 'string' || !hex(128).test(w.sig)) bad('the want is not signed');
+  let ok = false;
+  try { ok = verifySchnorr(hexToBytes(w.sig), wantDigest(w), xonly(w.pub)); } catch { ok = false; }
+  if (!ok) bad('the want is not signed by its key');
+  return w;
+}
+
 export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = {} } = {}) {
   const L = { ...LIMITS, ...limits };
   const adsBy = new Map();                 // claimPub -> ad
   const queues = new Map();                // gateway -> [{ seq, id, bytes, until }]
   const byId = new Map();                  // message id -> { gateway, claimPub, until }
   const replies = new Map();               // message id -> { bytes, until }
+  const wantsBy = new Map();               // want pub -> want
   let seq = 0;
 
   function prune() {
     const t = now();
     for (const [k, ad] of adsBy) if (ad.until <= t) adsBy.delete(k);
+    for (const [k, w] of wantsBy) if (w.until <= t) wantsBy.delete(k);
     for (const [g, q] of queues) {
       const live = q.filter((m) => m.until > t);
       if (live.length) queues.set(g, live); else queues.delete(g);
@@ -126,6 +155,17 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       return { ok: true };
     },
     reply(id) { prune(); const r = replies.get(id); return r ? r.bytes : null; },
-    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), replies: replies.size }; },
+    putWant(w) {
+      prune();
+      checkWant(w, now(), L.wantSecs);
+      const have = wantsBy.get(w.pub);
+      if (have && have.at >= w.at) return { ok: true, kept: true };
+      if (BigInt(w.amount) === 0n) { wantsBy.delete(w.pub); return { ok: true, dropped: true }; }
+      if (!have && wantsBy.size >= L.maxWants) throw new BoardError(503, 'the board has all the wants it takes');
+      wantsBy.set(w.pub, w);
+      return { ok: true };
+    },
+    wants() { prune(); return [...wantsBy.values()].sort((a, b) => b.at - a.at); },
+    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), replies: replies.size, wants: wantsBy.size }; },
   };
 }

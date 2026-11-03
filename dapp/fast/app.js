@@ -3,10 +3,11 @@ import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ced562d4';
-import { mountFast } from '/fast/ui.js?cb=6f7d0555';
-import { mountProvide } from '/fast/provide.js?cb=c95bfb67';
+import { mountFast } from '/fast/ui.js?cb=80cb7853';
+import { mountProvide } from '/fast/provide.js?cb=ac9a2fdc';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=0f0105e8';
+import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=4e61e589';
+import { makeWants } from '/fast/want.js?cb=c2c4221a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
@@ -50,8 +51,16 @@ const keyS = makeKeySession({ moved: (why) => ui?.lock(why), ways: { btc: (k) =>
 TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
 keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 
+// a want kept while no provider takes the amount, and the notification when one can (asked for with the press that starts waiting)
+const wants = Object.assign(makeWants({ boards: LISTS.boards, providers: LISTS.providers }), {
+  ask: async () => { try { if (typeof Notification === 'function' && Notification.permission === 'default') await Notification.requestPermission(); } catch { /* the page says it as well */ } },
+});
+const notify = (text) => {
+  try { if (document.hidden && typeof Notification === 'function' && Notification.permission === 'granted') { const n = new Notification('Fast bridge', { body: text, tag: 'tacit-fast-want', icon: '/favicon.svg' }); n.onclick = () => { focus(); n.close(); }; } } catch { /* the page says it */ }
+};
+
 ui = mountFast({
-  root: document.getElementById('gate'), keyS,
+  root: document.getElementById('gate'), keyS, wants, notify,
   signIn: () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' }),
   discover: () => discoverProviders(LISTS),
   open: async () => {
@@ -69,7 +78,7 @@ mountBound({
 });
 
 const provide = mountProvide({
-  root: document.getElementById('provide'), keyS, hasOpen, settings,
+  root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();
     return TS.withKey((T) => openProvider({ T, ux, priv, pubHex, boards: LISTS.boards }), pubHex);

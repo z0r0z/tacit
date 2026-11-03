@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-WdoNADgykAG3UT2saCC8bwOQUNcVJvokWGT/ja2N9Nc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Od4HcrRAx9HRdnnO9eqYIITLNF+sVeoFgt58QFnBt4U=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3573,6 +3573,7 @@ function setKey(k) {
   for (const w of [...SWC.keyw]) w.ok();
   setTimeout(() => brTick(true), 4000);
   setTimeout(() => brPrepTick(true).catch(() => {}), 5000);
+  setTimeout(() => fastTick(true).catch(() => {}), 5500);
   setTimeout(() => xoTick(true), 6000);
   setTimeout(() => xoDiscover(pubHex, true), 25000);
   setTimeout(() => brDiscover(pubHex), brUnsearched(pubHex) ? 10000 : 28000);
@@ -8025,6 +8026,25 @@ function brPlanSet(pub, id, plan) {
   store.set(BR_PLAN, all);
 }
 const brPlanOf = (rec) => (rec && S.key ? brPlans(S.key.pubHex)[rec.id] || null : null);
+// A key waiting for a fast bridge provider (/fast/ keeps its want in this browser) is told once, here too, when one can take it.
+const FAST_TOLD = 'tacit-fast-want-told-v1';
+const fastWants = lazy(async () => {
+  const [{ makeWants }, lists] = await Promise.all([import('/fast/want.js?cb=c2c4221a'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]);
+  return makeWants({ boards: lists.boards || [], providers: lists.providers || [] });
+});
+let fastAt = 0;
+async function fastTick(first = false) {
+  const pub = S.key?.pubHex, kept = pub ? store.get(`tacit-fastbridge-want-v1:${pub}`) : null;
+  if (!kept || !(Number(kept.until) > Date.now() / 1000) || store.get(FAST_TOLD) === `${pub}:${kept.at}`) return;
+  if (!first && Date.now() - fastAt < 5 * 60e3) return;
+  fastAt = Date.now();
+  const amt = BigInt(kept.amount);
+  if (!(await (await fastWants()).takers(amt)).length || S.key?.pubHex !== pub) return;
+  store.set(FAST_TOLD, `${pub}:${kept.at}`);
+  const text = `A fast bridge provider can take your ${fmt(amt, 8, 4)} TAC now.`;
+  toast(html`${text} <a href="/fast/">Bridge it</a>`, false, 15000);
+  osNote('Fast bridge', text, 'tacit-fast-want', () => { location.href = '/fast/'; });
+}
 let brPrepAt = 0;
 async function brPrepTick(first = false) {
   const pub = S.key?.pubHex, ps = brPreps(pub);
@@ -15800,7 +15820,7 @@ setTimeout(() => xoTick(), 8000);                       // saved bridges go on w
 restoreWallet();
 evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
-const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
+const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {

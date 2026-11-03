@@ -8,6 +8,8 @@
 //   discover()  -> [{ id, name, ref, terms }]: the providers to bridge with, terms as fastbridge-client.js termsOf makes them
 //   open()      -> { balance(), quoteAll(providers, units), start({ quotes }), records(), run({ onChange }), recover() } for the open key
 //               (fast/wire.js openFast)
+//   wants       waiting for a provider when none takes the amount (fast/want.js makeWants): kept(pub), start(pub, units), stop(pub)
+//   notify(text)  tells the holder, also when the page is in the background, that a provider can take what it waits with
 //   -> { lock(text), destroy() }
 
 import { DEC, ONE, esc, fmtTac, parseTac } from './fmt.js';
@@ -20,9 +22,9 @@ const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 const capOf = (p) => { const t = p.terms; return t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount; };
 const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
 
-export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
+export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, quoteDelayMs = 350, refreshMs = 30000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null };
+  const S = { providers: [], loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0 };
 
   root.innerHTML = `
     <div id="fx-lp" class="rows flat" aria-live="polite"></div>
@@ -30,6 +32,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
       <p class="eyebrow"><span>Bridge TAC</span><span class="who num" id="fx-bal"></span></p>
       <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
       <div class="rows" id="fx-recv" hidden></div>
+      <div class="kv" id="fx-wait" hidden><span></span><button class="linkbtn" id="fx-unwait" type="button">Stop waiting</button></div>
     </div>
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
@@ -62,7 +65,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     // the key's own offer is not one to bridge with, but it is online: the provider is told so, not that nobody is
     const mine = keyS.unlocked && keyS.key && S.providers.some((p) => p.id === keyS.key.pubHex);
     if (S.loaded && !sm && mine) { e.innerHTML = '<p class="empty">You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.</p>'; return; }
-    if (S.loaded && !sm) { e.innerHTML = `<p class="empty">No provider is online right now. ${keyS.unlocked ? 'Provide below' : 'Open your wallet to provide'}, or bridge from the <a href="/">front page</a>, which takes a few hours.</p>`; return; }
+    if (S.loaded && !sm) { e.innerHTML = `<p class="empty">No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'}</p>`; return; }
     if (!sm) { e.innerHTML = '<p class="empty">Reading the providers…</p>'; return; }
     const t = sm.best.terms, many = sm.count > 1;
     e.innerHTML = `<div class="kv"><span>${many ? 'Providers' : 'Provider'}</span><b>${many ? `${sm.count} online` : esc(sm.best.name || 'Provider')}</b></div>
@@ -82,14 +85,24 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     return '';
   }
 
+  // the providers that take an amount now
+  const takersOf = (units) => others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
+  // an amount the key holds that no provider online takes now: one to wait with
+  const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units > 0n && (S.bal == null || units <= S.bal) && !takersOf(units).length;
+  const plain = (units) => (units / ONE).toString() + (units % ONE ? '.' + (units % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
+
   function paintForm() {
-    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), sm = summary();
-    form.hidden = !signed || !sm;
-    go.hidden = signed && !sm;
+    const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), sm = summary(), wt = $('fx-wait');
+    form.hidden = !signed;
+    go.hidden = false;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
+    wt.hidden = !(signed && S.want);
+    if (!wt.hidden) wt.firstElementChild.textContent = `Waiting for a provider for ${fmtTac(S.want.amount)} TAC`;
     if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; return; }
-    const units = parseTac(S.amt), bad = problem(units), q = S.quote;
+    const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
+    go.hidden = !!S.want && !q;
+    if (wait) { recv.hidden = true; go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return; }
     recv.hidden = !q;
     if (q) {
       recv.innerHTML = `${sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>You pay</span><b class="num">${esc(fmtTac(q.btcValue))} TAC</b></div>
@@ -146,8 +159,8 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
   // ── the key ──
   function reset(text) {
     if (S.stop) { S.stop(); S.stop = null; }
-    clearTimeout(S.timer); S.seq++;
-    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null });
+    clearTimeout(S.timer); clearInterval(S.watch); S.seq++;
+    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false });
     $('fx-amt').value = '';
     note(text || '');
     paint();
@@ -162,6 +175,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
         const sess = await open();
         if (!keyS.unlocked || keyS.key.pubHex !== pub) return null;
         S.sess = sess; S.pub = pub;
+        S.want = wants ? wants.kept(pub) : null; S.told = false; watchWant();
         S.bal = await sess.balance();
         S.stop = sess.run({ onChange: (list) => { if (S.sess === sess) { S.recs = list; paintList(); } } });
         sess.recover().then((found) => { if (found.length && S.sess === sess) sess.records().then((l) => { S.recs = l; paintList(); }); }).catch(() => {});
@@ -188,7 +202,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     S.timer = setTimeout(async () => {
       try {
         const eligible = others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
-        if (!eligible.length) { if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', true); return; }
+        if (!eligible.length) { if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', !wants); return; }
         const r = await S.sess.quoteAll(eligible, units);
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
@@ -199,9 +213,45 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
   $('fx-amt').addEventListener('input', typed);
   $('fx-max').addEventListener('click', () => {
     const sm = summary(), lim = sm ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
-    $('fx-amt').value = (cap / ONE).toString() + (cap % ONE ? '.' + (cap % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
+    $('fx-amt').value = plain(cap);
     typed();
   });
+
+  // ── waiting for a provider ──
+  // the want is kept in this browser and posted to the boards; the providers are read again every refresh while it stands, and the
+  // holder is told once, here and in a notification, when one can take it
+  function watchWant() {
+    clearInterval(S.watch);
+    if (!S.want) return;
+    const look = async () => {
+      if (!S.want || S.told) return;
+      await readProviders(true);
+      if (!S.want || S.told || !takersOf(S.want.amount).length) return;
+      S.told = true;
+      const text = `A provider can take your ${fmtTac(S.want.amount)} TAC now.`;
+      note(text); notify(text);
+      if (!S.amt.trim() || parseTac(S.amt) === S.want.amount) { $('fx-amt').value = plain(S.want.amount); typed(); }
+    };
+    S.watch = setInterval(look, refreshMs);
+    look();
+  }
+  async function wait(units) {
+    S.busy = true; paintForm();
+    try {
+      await (wants.ask ? wants.ask() : null);
+      S.want = await wants.start(S.pub, units); S.told = false;
+      note('You are told here, and on the front page, when one can take it.');
+      watchWant();
+    } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
+  }
+  function unwait() {
+    if (!S.want || !S.pub) return;
+    const pub = S.pub;
+    S.want = null; S.told = false; clearInterval(S.watch);
+    wants.stop(pub).catch(() => {});
+    note(''); paint();
+  }
+  $('fx-unwait').addEventListener('click', unwait);
 
   // ── the press ──
   async function go() {
@@ -212,6 +262,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
       return;
     }
     if (!S.sess) { await openSession(); return; }
+    if (!S.quote && waitable(parseTac(S.amt))) { await wait(parseTac(S.amt)); return; }
     if (!S.quote) return;
     S.busy = true; note('Locking your TAC on Bitcoin…'); paintForm();
     try {
@@ -224,6 +275,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
         quotes = r.quotes;
       }
       await S.sess.start({ quotes });
+      if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
       note('Started.');
       S.sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
@@ -247,6 +299,6 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
   readProviders(true).then(() => { if (keyS.unlocked && S.providers.length) openSession(); });
   return {
     lock: (text) => reset(text),
-    destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); },
+    destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); },
   };
 }
