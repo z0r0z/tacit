@@ -1423,7 +1423,6 @@ function modsSoon() {
 // sheet closed without a key is not shown again until the button is pressed. Not on a data saver or a slow link or in a hidden page; a figure is asked for once, and again after
 // a minute if it failed.
 let depAsked = '', depTimer = 0, depDeclined = false, depTouched = 0;
-const LOADED = Date.now(), IDLE_MS = 180e3, idleFor = () => Date.now() - Math.max(depTouched, LOADED);
 const depKeyed = () => !!(PV?.unlocked || H.key?.session?.unlocked);
 const sheetOpen = () => !!document.querySelector('dialog[open], .bsheet, .bm-modal') || $('#pk')?.hidden === false;
 function depositSoon(q) {
@@ -2682,11 +2681,7 @@ export function mountSwapCard(root, host = {}) {
   root.classList.toggle('mv', !!host.moves);
   root.innerHTML = markup(host);
   wire();
-  for (const t of ['pointerdown', 'keydown', 'input']) addEventListener(t, () => {
-    const rested = idleFor() > IDLE_MS;
-    depTouched = Date.now();
-    if (rested && ROOT?.isConnected && !document.hidden && S.q && !S.busy && !S.q.busy) requote(true);          // back after a long rest: the price on screen is read again at once
-  }, true);
+  for (const t of ['pointerdown', 'keydown', 'input']) addEventListener(t, () => { depTouched = Date.now(); }, true);
   slipPaint();
   paint();
   if (W.account) readBalances().then(paintSides, () => {});
@@ -2709,7 +2704,7 @@ export function mountSwapCard(root, host = {}) {
     ticked = now();
     readPrices().catch(() => {});
     if (now() - routeAt > 300) { routeAt = now(); checkAmmRoute(); }
-    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (idleFor() > IDLE_MS ? 240 : ['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit'].includes(S.q.kind) ? 55 : 25)) requote(true);      // (a card left alone for three minutes is read every four, not every half minute)
+    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit'].includes(S.q.kind) ? 55 : 25)) requote(true);
     if (S.inP && PV?.unlocked && !PV.held && !S.busy) PV.read(true).then(paint, () => {});                 // a private balance whose read failed is read again
   };
   setInterval(tick, 30e3);
