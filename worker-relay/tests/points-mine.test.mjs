@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../src/lib/points-store.js';
 import { parseLpSchedule, WAD } from '../src/lib/points-lp.js';
-import { createMine, readTally, allocateMineDay, dayId, CREDIT_PREFIX } from '../src/lib/points-mine-service.js';
+import { createMine, readTally, mergeTallies, allocateMineDay, dayId, CREDIT_PREFIX } from '../src/lib/points-mine-service.js';
 import { makeProofPool, wrapExpect, readWrapStdin, PROOF_POOL } from '../../worker/src/proof-pool.js';
+import { makeProverBoard, PROVER_BOARD } from '../../worker/src/prover-board.js';
 import { stdinFor } from '../../dapp/sp1-stdin.js';
 
 const A = '0x1111111111111111111111111111111111111111', B = '0x2222222222222222222222222222222222222222';
@@ -34,16 +35,22 @@ test('the rules: a tally is read only for its own day once the API calls it over
   assert.deepEqual(allocateMineDay({ tally: [], dailyWei: tac(10), capWeiPerPoint: tac(0.05) }), []);
 });
 
-// The API's proof pool and the campaign on one clock (seconds), the campaign reading the pool's /prover/pool/credits answer.
+// The API's proof pool and prover board and the campaign on one clock (seconds), the campaign reading the pool's /prover/pool/credits
+// answer, and the board's /prover/board/credits when it is given that feed too.
 function world(over = {}) {
   const clock = { t: T(D0, 1) }, dir = mkdtempSync(join(tmpdir(), 'mine-')), said = [], m = new Map();
   const kv = { async get(k) { return m.has(k) ? m.get(k) : null; }, async put(k, v) { m.set(k, String(v)); }, async delete(k) { m.delete(k); } };
   const pool = makeProofPool({ kv, cfg: { ...PROOF_POOL, proofsPerMinerDay: 2 }, now: () => clock.t * 1000, verify: async () => ({ ok: true }) });
-  const feed = { down: false, asked: [] };
+  const days = new Map(), bw = {}, jobs = new Map(); let pend = [];
+  const board = makeProverBoard({ now: () => clock.t * 1000, cfg: { ...PROVER_BOARD, proofsPerMinerDay: 2 }, storage: {
+    getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (jobs.has(id) ? JSON.parse(jobs.get(id)) : null), putJob: async (id, j) => { jobs.set(id, JSON.stringify(j)); },
+    getWorkers: async () => JSON.parse(JSON.stringify(bw)), putWorkers: async (w) => { Object.assign(bw, w); }, getDay: async (d) => (days.has(d) ? JSON.parse(days.get(d)) : null), putDay: async (d, r) => { days.set(d, JSON.stringify(r)); } } });
+  const feed = { down: false, boardDown: false, asked: [] };
   const fetchJson = async (url) => {
     feed.asked.push(url);
-    if (feed.down) throw new Error('api.tacit.finance answered 502');
-    const r = await pool.credits(Number(new URL(url).searchParams.get('day')));
+    const u = new URL(url), onBoard = u.pathname === '/prover/board/credits';
+    if (feed.down || (onBoard && feed.boardDown)) throw new Error('api.tacit.finance answered 502');
+    const r = await (onBoard ? board : pool).credits(Number(u.searchParams.get('day')));
     if (r.status !== 200) throw new Error(`answered ${r.status}`);
     return JSON.parse(JSON.stringify(r.body));
   };
@@ -64,8 +71,16 @@ function world(over = {}) {
     const pv = '0x' + head.join('') + w(1) + e.leaf.slice(2) + w(1) + e.depositId.slice(2);
     return (await pool.submit({ id: l.id, lease: l.lease, publicValues: pv, proof: '0x' + 'ab'.repeat(260) })).body;
   };
+  // A community machine's proof of a public board job, which the relay takes.
+  const race = async (miner) => {
+    const c = { name: `c-${miner}`, classes: ['public'], community: true };
+    const p = await board.post({ class: 'public', stdin: Buffer.from(`board ${++n}`).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: clock.t + 600 });
+    await board.claim({ worker: c, classes: ['public'] });
+    await board.result({ worker: c, jobId: p.jobId, publicValues: '0x' + '55'.repeat(64), proof: '0x' + '66'.repeat(260) });
+    return board.raceVerdict({ jobId: p.jobId, worker: c.name, ok: true });
+  };
   const credits = () => store.listAdjustments().filter((a) => a.id.startsWith(CREDIT_PREFIX)).map((a) => ({ id: a.id, address: a.address, wei: BigInt(a.wei) }));
-  return { s, store, clock, said, feed, prove, credits, done: () => rmSync(dir, { recursive: true, force: true }) };
+  return { s, store, clock, said, feed, prove, race, credits, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 test('a day: proofs that passed at the API are paid once the day is over, once, by points under the cap; the day keeps its record', async () => {
@@ -126,6 +141,31 @@ test('waits: the API unreadable, the pocket, the distributor\'s funding; each ho
       await again.s.cycle();
       assert.deepEqual(again.credits(), [{ id: dayId(D0, A), address: A, wei: tac(1) }]);
     } finally { again.done(); }
+  } finally { done(); }
+});
+
+test('two feeds: the pool\'s and the board\'s tallies for a day are summed per address, each under its own cap; one unreadable holds the day', async () => {
+  const POOL = 'https://api.tacit.finance/prover/pool/credits', BOARD = 'https://api.tacit.finance/prover/board/credits';
+  assert.deepEqual(mergeTallies([[{ miner: A, proofs: 1, points: 20 }], [{ miner: A, proofs: 2, points: 40 }, { miner: B, proofs: 1, points: 20 }]]),
+    [{ miner: A, proofs: 3, points: 60 }, { miner: B, proofs: 1, points: 20 }]);
+  const { s, clock, said, feed, prove, race, credits, done } = world({ cfg: { feedUrl: [POOL, BOARD] } });
+  try {
+    await prove(A); await prove(A); await prove(A);      // the pool: 40 points (its cap is two proofs)
+    await race(A); await race(A); await race(A);         // the board: 40 more, under its own cap
+    await race(B);                                       // B proves on the board only
+    await s.cycle();
+    clock.t = T(D0 + 1, 1);
+    feed.boardDown = true;
+    await s.cycle();
+    assert.deepEqual(credits(), [], 'the board unreadable: the day waits, the pool\'s half is not paid alone');
+    assert.ok(said.some((x) => /wait: feed/.test(x)));
+    feed.boardDown = false;
+    await s.cycle();
+    assert.deepEqual(credits(), [{ id: dayId(D0, A), address: A, wei: tac(4) }, { id: dayId(D0, B), address: B, wei: tac(1) }]);
+    const kept = s.dayRecord(D0).record;
+    assert.deepEqual(kept.tally, [{ miner: A, proofs: 6, points: 80 }, { miner: B, proofs: 1, points: 20 }]);
+    assert.deepEqual(kept.feed, [POOL, BOARD]);
+    assert.ok(feed.asked.includes(`${BOARD}?day=${D0}`) && feed.asked.includes(`${POOL}?day=${D0}`));
   } finally { done(); }
 });
 

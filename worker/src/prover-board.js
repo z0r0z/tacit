@@ -15,7 +15,8 @@
 // A worker says which programs it proves when it claims (old workers say nothing: 'confidential'), and is offered only those.
 //
 // Storage (KV, portable to Cloudflare's): pb:pending (ids, oldest first), pb:job:<id>, pb:proof:<id> (a compressed proof,
-// kept apart from its job so the record every claim reads stays small), pb:workers (name → record).
+// kept apart from its job so the record every claim reads stays small), pb:workers (name → record), pb:day:<day> (the UTC day's
+// community proofs taken, per address, and the points they earned: GET /prover/board/credits, which the points service pays from).
 
 export const PROVER_BOARD = Object.freeze({
   classes: Object.freeze(['private', 'public', 'eth-state']),
@@ -39,7 +40,25 @@ export const PROVER_BOARD = Object.freeze({
   communityRacers: 8,                                  // community machines racing one job at most
   communityOpen: 1,                                    // jobs one community machine races at a time
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
+  pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
+  proofsPerMinerDay: 30,                               // POINTS_BOARD_DAILY_CAP: proofs an address is credited for in a UTC day
+  daySecs: 40 * 86400,                                 // a day's tally outlives the campaign's reading of it
 });
+
+// The board's points from the environment, each checked: a value out of range keeps the default, and 0 pays nothing.
+export function proverBoardConfig(env = {}) {
+  const n = (v, dflt) => {
+    if (v === undefined || v === null || v === '') return dflt;
+    const x = Number(v);
+    return Number.isInteger(x) && x >= 0 && x <= 100_000 ? x : dflt;
+  };
+  return Object.freeze({
+    pointsPerProof: n(env.POINTS_BOARD_PER_PROOF, PROVER_BOARD.pointsPerProof),
+    proofsPerMinerDay: n(env.POINTS_BOARD_DAILY_CAP, PROVER_BOARD.proofsPerMinerDay),
+  });
+}
+const DAY_MS = 86_400_000;
+const dayOf = (t) => Math.floor(t / DAY_MS);
 
 // PROVER_WORKER_TOKENS: "name:token[:class+class],name:token" — each worker's name, its bearer token and the classes it may
 // claim (default: public only). A token under 16 characters is ignored, so a typo cannot open the board.
@@ -80,10 +99,12 @@ function makeLock() {
 
 // The input is a user's witness: it stays on a record only while a worker may still need it (queued or claimed) and is
 // dropped the moment the job is over, and a record leaves storage when it leaves the list.
-// storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job), deleteJob?(id), getWorkers()->{}, putWorkers({}) }
-export function makeProverBoard({ storage, hash, now, lock } = {}) {
+// storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job), deleteJob?(id), getWorkers()->{}, putWorkers({}),
+// getDay?(day)->rec|null, putDay?(day, rec) } (without the day records nothing is tallied for points).
+export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD } = {}) {
   if (!storage) throw new Error('prover-board: storage is required');
   const clock = now || (() => Date.now());
+  const pay = { pointsPerProof: cfg.pointsPerProof ?? PROVER_BOARD.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay ?? PROVER_BOARD.proofsPerMinerDay };
   const exclusive = lock || makeLock();
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
   const workers = async () => (await storage.getWorkers()) || {};
@@ -170,6 +191,7 @@ export function makeProverBoard({ storage, hash, now, lock } = {}) {
         if (!j.claimedAt) j.claimedAt = c.at;
         await storage.putJob(j.id, j);
         await bump(c.worker, 'proved', null, null, true);
+        await credit(c.worker);
         return { ok: true, status: 'proved' };
       }
       await storage.putJob(j.id, j);
@@ -190,6 +212,31 @@ export function makeProverBoard({ storage, hash, now, lock } = {}) {
       await storage.putJob(j.id, j);
       return { ok: true, status: 'cancelled' };
     });
+  }
+
+  // A community proof the relay took counts for its address on the day it was taken, with points up to the day's cap. Only `c-0x…`
+  // names are community machines; Tacit's own workers never prove through a race.
+  async function credit(name) {
+    const m = /^c-(0x[0-9a-f]{40})$/.exec(String(name));
+    if (!m || !storage.putDay) return;
+    const d = dayOf(clock()), r = (storage.getDay && await storage.getDay(d)) || {};
+    const rec = { done: 0, points: 0, miners: {}, ...r };
+    const mr = rec.miners[m[1]] || (rec.miners[m[1]] = { proofs: 0, credited: 0, points: 0 });
+    const points = mr.credited < pay.proofsPerMinerDay ? pay.pointsPerProof : 0;
+    rec.done++; mr.proofs++;
+    if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
+    await storage.putDay(d, rec);
+  }
+
+  // A UTC day's tally, for the points service's mining campaign, in the proof pool's shape (worker/src/proof-pool.js credits): each
+  // address's proofs taken and the points they earned, `over` once the day has ended.
+  async function credits(day) {
+    const t = clock();
+    if (!Number.isSafeInteger(day) || day < 0 || day > dayOf(t)) return { status: 400, body: { ok: false, error: 'day must be a UTC day number, today or before' } };
+    const rec = (storage.getDay && await storage.getDay(day)) || { miners: {} };
+    const miners = Object.entries(rec.miners || {}).filter(([, m]) => m.points > 0).map(([miner, m]) => ({ miner, proofs: m.proofs, points: m.points }))
+      .sort((a, b) => (a.miner < b.miner ? -1 : 1));
+    return { status: 200, body: { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: pay.pointsPerProof, miners } };
   }
 
   async function bump(name, field, pubkey = null, programs = null, community = false) {
@@ -326,7 +373,7 @@ export function makeProverBoard({ storage, hash, now, lock } = {}) {
     return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000 };
   }
 
-  return { post, status, cancel, claim, result, raceVerdict, summary };
+  return { post, status, cancel, claim, result, raceVerdict, summary, credits };
 }
 
 const kvLocks = new WeakMap();
@@ -345,6 +392,8 @@ export function buildProverBoard(env, { hash } = {}) {
     deleteProof: async (id) => KV.delete('pb:proof:' + id),
     getWorkers: async () => { const s = await KV.get('pb:workers'); return s ? JSON.parse(s) : {}; },
     putWorkers: async (ws) => KV.put('pb:workers', JSON.stringify(ws)),
+    getDay: async (d) => { const s = await KV.get('pb:day:' + d); return s ? JSON.parse(s) : null; },
+    putDay: async (d, rec) => KV.put('pb:day:' + d, JSON.stringify(rec), { expirationTtl: PROVER_BOARD.daySecs }),
   };
-  return makeProverBoard({ storage, hash, lock: kvLocks.get(KV) });
+  return makeProverBoard({ storage, hash, lock: kvLocks.get(KV), cfg: { ...PROVER_BOARD, ...proverBoardConfig(env) } });
 }

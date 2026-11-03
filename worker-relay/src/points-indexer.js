@@ -2039,9 +2039,12 @@ function setupTokPool(store) {
 function setupMine(store) {
   const schedule = parseLpSchedule(CFG.pointsMineSchedule, (m) => log(m.replace('POINTS_LP_SCHEDULE', 'POINTS_MINE_SCHEDULE')));
   const set = parseLpSettings({ pocket: CFG.pointsMinePocket, endSec: CFG.pointsMineEndSec }, (m) => log(m.replace(/POINTS_LP_/g, 'POINTS_MINE_')));
-  const feedUrl = CFG.pointsMineFeed.trim();
-  // https, or this machine's own address for a local run.
-  if (feedUrl && !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])[^\s?#]+$/.test(feedUrl)) { log(`ignoring POINTS_MINE_FEED="${feedUrl}": expected an https URL with no query`); return null; }
+  // One URL, or several separated by commas whose tallies are summed (the proof pool's and the prover board's); each https, or this
+  // machine's own address for a local run.
+  const feeds = CFG.pointsMineFeed.split(',').map((f) => f.trim()).filter(Boolean);
+  const bad = feeds.find((f) => !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])[^\s?#,]+$/.test(f));
+  if (bad) { log(`ignoring POINTS_MINE_FEED="${bad}": expected an https URL with no query`); return null; }
+  const feedUrl = feeds.length > 1 ? feeds : feeds[0];
   if (!feedUrl || !set || !CFG.pointsProgramStartSec || !schedule.length) return null;
   const fetchJson = async (url) => {
     const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
@@ -2049,7 +2052,7 @@ function setupMine(store) {
     return r.json();
   };
   const m = createMine({ ...lpDeps(store), fetchJson, cfg: { schedule, feedUrl, pocketWei: set.pocketWei, endSec: set.endSec } });
-  log(`proof mining on: tally from ${feedUrl}, pocket ${formatTac(set.pocketWei)} TAC, until ${new Date(set.endSec * 1000).toISOString()}`);
+  log(`proof mining on: tally from ${feeds.join(' + ')}, pocket ${formatTac(set.pocketWei)} TAC, until ${new Date(set.endSec * 1000).toISOString()}`);
   return m;
 }
 

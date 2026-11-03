@@ -5,12 +5,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeProverBoard, parseWorkerTokens, workerOf, PROVER_BOARD } from '../worker/src/prover-board.js';
+import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, PROVER_BOARD } from '../worker/src/prover-board.js';
 import worker from '../worker/src/index.js';
 
 const store = () => {
-  const m = new Map(); let pend = [], ws = {};
-  return { getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), putJob: async (id, j) => { m.set(id, JSON.stringify(j)); }, getWorkers: async () => JSON.parse(JSON.stringify(ws)), putWorkers: async (w) => { ws = JSON.parse(JSON.stringify(w)); } };
+  const m = new Map(), days = new Map(); let pend = [], ws = {};
+  return { getDay: async (d) => (days.has(d) ? JSON.parse(days.get(d)) : null), putDay: async (d, r) => { days.set(d, JSON.stringify(r)); }, getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(m.get(id)) : null), putJob: async (id, j) => { m.set(id, JSON.stringify(j)); }, getWorkers: async () => JSON.parse(JSON.stringify(ws)), putWorkers: async (w) => { ws = JSON.parse(JSON.stringify(w)); } };
 };
 const stdin = Buffer.from('program input bytes').toString('base64');
 let t = 1_000_000;
@@ -336,4 +336,60 @@ test('routes: a community machine claims and answers with only an address; the r
   const sum = await (await call('/prover/board')).json();
   assert.equal(sum.workers.find((w) => w.name === `c-${MINER}`).community, true);
   assert.equal((await call('/prover/community/claim', post({ miner: MINER }), { ...env, PROVER_BOARD_COMMUNITY: '0' })).status, 404);
+  // the taken proof is credited to the address for today, open to any page
+  const today = Math.floor(Date.now() / 86400e3);
+  const cr = await call(`/prover/board/credits?day=${today}`, { headers: { Origin: 'https://some-page.example' } });
+  assert.equal(cr.status, 200); assert.equal(cr.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.deepEqual(await cr.json(), { day: today, over: false, pointsPerProof: 20, miners: [{ miner: MINER, proofs: 1, points: 20 }] });
+  assert.ok(env.REGISTRY_KV && JSON.parse(await env.REGISTRY_KV.get(`pb:day:${today}`)).miners[MINER].credited === 1, 'kept under pb:day:<day>');
+  assert.equal((await call(`/prover/board/credits?day=${today + 1}`)).status, 400, 'not a day in the future');
+  assert.equal((await call('/prover/board/credits?day=x')).status, 400);
+  assert.deepEqual((await (await call(`/prover/board/credits?day=${today}`, {}, { ...env, POINTS_BOARD_PER_PROOF: '0' })).json()).pointsPerProof, 0);
+});
+
+test('points: each proof the relay takes from a community machine counts for its address on its UTC day, up to the day\'s cap; bad ones, house workers and unchecked ones earn nothing', async () => {
+  const DAY = 86_400_000, D = 20_800;
+  t = D * DAY + 3600_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, pointsPerProof: 20, proofsPerMinerDay: 2 } });
+  const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20);
+  const ca = { name: `c-${A}`, classes: ['public'], community: true }, cb = { name: `c-${B}`, classes: ['public'], community: true };
+  let n = 0;
+  // a public job raced by `c`, answered, and judged `ok`
+  const race = async (c, ok) => {
+    const p = await b.post({ class: 'public', stdin: Buffer.from(`input ${++n}`).toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+    assert.equal((await b.claim({ worker: c, classes: ['public'] })).jobId, p.jobId);
+    await b.result({ worker: c, jobId: p.jobId, publicValues: '0x' + '55'.repeat(64), proof: '0x' + '66'.repeat(260) });
+    if (ok !== undefined) await b.raceVerdict({ jobId: p.jobId, worker: c.name, ok });
+    return p.jobId;
+  };
+  await race(ca, true); await race(ca, true); await race(ca, true);
+  await race(cb, false);
+  const unchecked = await race(cb);
+  await b.raceVerdict({ jobId: unchecked, worker: cb.name, ok: null });
+  // a house worker's proof of a public job (the oldest still open: the one the bad candidate raced)
+  const h = await b.claim({ worker: tacit, classes: ['public'] });
+  assert.equal((await b.result({ worker: tacit, jobId: h.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) })).status, 'proved');
+  assert.deepEqual((await b.credits(D)).body, { day: D, over: false, pointsPerProof: 20, miners: [{ miner: A, proofs: 3, points: 40 }] }, 'past the cap a proof is counted, not credited');
+  await race(cb, true);
+  t = (D + 1) * DAY + 1;
+  await race(ca, true);
+  assert.deepEqual((await b.credits(D)).body, { day: D, over: true, pointsPerProof: 20, miners: [{ miner: A, proofs: 3, points: 40 }, { miner: B, proofs: 1, points: 20 }] });
+  assert.deepEqual((await b.credits(D + 1)).body.miners, [{ miner: A, proofs: 1, points: 20 }], 'a new day, a new cap');
+  assert.equal((await b.credits(D + 2)).status, 400);
+  assert.equal((await b.credits(1.5)).status, 400);
+  assert.equal((await b.credits(-1)).status, 400);
+  // switched off: proofs counted, nothing listed
+  const off = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, pointsPerProof: 0 } });
+  const p = await off.post({ class: 'public', stdin, cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  await off.claim({ worker: ca, classes: ['public'] });
+  await off.result({ worker: ca, jobId: p.jobId, publicValues: '0x' + '55'.repeat(64), proof: '0x' + '66'.repeat(260) });
+  await off.raceVerdict({ jobId: p.jobId, worker: ca.name, ok: true });
+  assert.deepEqual((await off.credits(D + 1)).body, { day: D + 1, over: false, pointsPerProof: 0, miners: [] });
+});
+
+test('points config: env sets the points and the cap, 0 switches them off, nonsense keeps the default', () => {
+  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: 30 });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10' }), { pointsPerProof: 50, proofsPerMinerDay: 10 });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0' }), { pointsPerProof: 0, proofsPerMinerDay: 0 });
+  assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: 30 });
 });

@@ -10,7 +10,11 @@
 // distributor's funding would stop covering the regular pot, and while the API cannot be read; what waits is credited later, never
 // dropped. Each paid day keeps the terms and the tally it was paid from, with its hash (/mine/day/<n>).
 //
-// deps: store, cfg { schedule (lib/points-lp.js parseLpSchedule: daily, and cap as the most TAC one point earns), feedUrl, pocketWei,
+// More than one feed (the proof pool's and the prover board's, GET /prover/board/credits, which credits community proofs the relay took)
+// is one tally: each address's points summed across them, every feed read for the day before any of it is paid. Each feed caps an
+// address's day on its own, so an address that proves for both may earn both caps.
+//
+// deps: store, cfg { schedule (lib/points-lp.js parseLpSchedule: daily, and cap as the most TAC one point earns), feedUrl (a URL, or a list), pocketWei,
 // endSec, reserveDays? }, fetchJson(url) -> the parsed body (throws unless the API answered 200), fundingInputs() -> { heldWei,
 // claimedWei, nextDay } | null, budgetFor(day), graceSecs, nowSec, log.
 import { fundingStatus } from './points-funding.js';
@@ -42,6 +46,16 @@ export function readTally(body, day) {
   }).filter((m) => m.points > 0).sort((a, b) => (a.miner < b.miner ? -1 : 1));
 }
 
+// Tallies from several feeds as one: each address once, its proofs and points summed.
+export function mergeTallies(tallies) {
+  const by = new Map();
+  for (const m of tallies.flat()) {
+    const have = by.get(m.miner);
+    by.set(m.miner, have ? { miner: m.miner, proofs: have.proofs + m.proofs, points: have.points + m.points } : { ...m });
+  }
+  return [...by.values()].sort((a, b) => (a.miner < b.miner ? -1 : 1));
+}
+
 // The day's amount shared by points, no point paid more than `capWeiPerPoint`: lib/points-lp.js allocateLpDay with a point where it has
 // a dollar, so it is rounded down and the campaign never pays more in a day than it says.
 export function allocateMineDay({ tally, dailyWei, capWeiPerPoint }) {
@@ -49,7 +63,8 @@ export function allocateMineDay({ tally, dailyWei, capWeiPerPoint }) {
 }
 
 export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, graceSecs = 0, nowSec = () => Math.floor(Date.now() / 1000), log = () => {} }) {
-  const enabled = !!cfg.feedUrl && cfg.pocketWei > 0n && cfg.endSec > 0 && (cfg.schedule ?? []).length > 0;
+  const feeds = [].concat(cfg.feedUrl || []).filter(Boolean);
+  const enabled = feeds.length > 0 && cfg.pocketWei > 0n && cfg.endSec > 0 && (cfg.schedule ?? []).length > 0;
   const reserveDays = cfg.reserveDays ?? 2;
   const db = store.db;
   if (enabled) {
@@ -92,7 +107,7 @@ export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, gr
       const terms = lpTermsForDay(cfg.schedule, day);
       let tally = [];
       if (terms) {
-        try { tally = readTally(await fetchJson(`${cfg.feedUrl}?day=${day}`), day); }
+        try { const all = []; for (const f of feeds) all.push(readTally(await fetchJson(`${f}?day=${day}`), day)); tally = mergeTallies(all); }
         catch (err) { said('feed', `day ${day}: ${short(err)}`); return; }
       }
       const credits = terms

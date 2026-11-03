@@ -651,7 +651,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/market/order', '/market/orders', '/market/done', '/market/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -3708,6 +3708,11 @@ async function handleProverBoard(req, env, url, cors) {
   if (!board) return jsonResponse({ error: 'not found' }, 404, cors);
   const body = async () => { try { return await req.json(); } catch { return null; } };
   if (url.pathname === '/prover/board' && req.method === 'GET') return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
+  // A UTC day's community proofs taken and their points, for the points service (POINTS_BOARD_PER_PROOF, POINTS_BOARD_DAILY_CAP).
+  if (url.pathname === '/prover/board/credits' && req.method === 'GET') {
+    const r = await board.credits(Number(url.searchParams.get('day') ?? NaN));
+    return jsonResponse(r.body, r.status, { ...cors, 'Cache-Control': 'max-age=60' });
+  }
   if (url.pathname === '/prover/jobs' || url.pathname === '/prover/jobs/cancel' || url.pathname === '/prover/jobs/race') {
     if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
     if (url.pathname === '/prover/jobs' && req.method === 'GET') {

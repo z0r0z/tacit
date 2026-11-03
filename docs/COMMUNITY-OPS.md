@@ -110,7 +110,7 @@ Race Tacit's own prover for the prover board's public jobs. These are ops whose 
 
 - **Needs:** `tacit-prover` running, and `MINER=0x…`, the address the board credits. No key and no ETH: nothing is sent on chain.
 - **Who wins:** a press waits a few minutes at most, so a machine that proves in under a minute (a desktop GPU) wins races; a laptop's 10 to 15 minutes does not. After its first proof the runner passes over a job due sooner than its last proof took. Laptops earn more from [Prove for the wrap pool](#prove-for-the-wrap-pool), whose wraps wait.
-- **Not yet:** points for board proofs. The summary (`GET /prover/board`) counts each address's proofs taken and refused; nothing pays them yet.
+- **Points:** each proof the relay takes earns the address `POINTS_BOARD_PER_PROOF` points (20 by default) for at most `POINTS_BOARD_DAILY_CAP` proofs a UTC day (30); a refused or unchecked proof earns nothing, and 0 for either switches it off. The day's tally is at `GET /prover/board/credits?day=<n>`, the proof pool's shape. The mining campaign pays it once its URL is added to the points service's `POINTS_MINE_FEED` after the pool's, comma-separated: each address's points from both are summed for the day, and each feed caps the day on its own.
 - **Off:** `PROVER_BOARD_COMMUNITY=0` on the API closes the routes.
 
 ### Not included: overflow drains

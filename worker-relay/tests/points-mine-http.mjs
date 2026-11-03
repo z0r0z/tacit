@@ -1,7 +1,7 @@
 // The real points service (src/points-indexer.js) on a temporary database with proof mining configured, and what its /mine endpoint and the
 // /rewards funding report say; and with it left unconfigured. Not part of the automatic tests (it starts the service); run it after changing
 // how the campaign is wired:
-//   node worker-relay/tests/points-mine-http.mjs [on|off]
+//   node worker-relay/tests/points-mine-http.mjs [on|off|badfeed|two]
 // Every chain RPC points at a dead local port, so nothing reaches the network, and the main loop never gets as far as the campaign's cycle
 // (tests/points-mine.test.mjs runs that against the API's own proof pool): what is checked is that it starts, and what it shows.
 import { spawn } from 'node:child_process';
@@ -21,6 +21,12 @@ const env = {
   POINTS_PROGRAM_START_SEC: String((today - 24) * DAY),
   ...(mode === 'on' ? {
     POINTS_MINE_FEED: 'https://api.tacit.finance/prover/pool/credits', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05;${today + 50}:off;nonsense`,
+    POINTS_MINE_POCKET_WEI: String(1000n * TAC), POINTS_MINE_END_SEC: String((today + 53) * DAY),
+  } : mode === 'two' ? {
+    POINTS_MINE_FEED: 'https://api.tacit.finance/prover/pool/credits, https://api.tacit.finance/prover/board/credits', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05`,
+    POINTS_MINE_POCKET_WEI: String(1000n * TAC), POINTS_MINE_END_SEC: String((today + 53) * DAY),
+  } : mode === 'badfeed2' ? {
+    POINTS_MINE_FEED: 'https://api.tacit.finance/prover/pool/credits,http://api.tacit.finance/prover/board/credits', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05`,
     POINTS_MINE_POCKET_WEI: String(1000n * TAC), POINTS_MINE_END_SEC: String((today + 53) * DAY),
   } : mode === 'badfeed' ? {
     POINTS_MINE_FEED: 'http://api.tacit.finance/prover/pool/credits?day=1', POINTS_MINE_SCHEDULE: `${today}:daily=10,cap=0.05`,
@@ -54,6 +60,15 @@ try {
     const pk = (rw.pockets || []).find((p) => p.name === 'mine');
     assert.ok(pk && pk.remainingWei === String(1000n * TAC), `the funding report lists the pocket: ${JSON.stringify(rw.pockets)}`);
     console.log('ok - /rewards lists the mining pocket:', JSON.stringify(pk));
+  } else if (mode === 'two') {
+    assert.equal(v.enabled, true, JSON.stringify(v));
+    assert.deepEqual(v.feed, ['https://api.tacit.finance/prover/pool/credits', 'https://api.tacit.finance/prover/board/credits']);
+    assert.match(out, /proof mining on: tally from https:\/\/api\.tacit\.finance\/prover\/pool\/credits \+ https:\/\/api\.tacit\.finance\/prover\/board\/credits, pocket 1000 TAC/);
+    console.log('ok - two feeds, the pool\'s and the board\'s, read as one campaign');
+  } else if (mode === 'badfeed2') {
+    assert.deepEqual(v, { enabled: false });
+    assert.match(out, /ignoring POINTS_MINE_FEED="http:\/\/api\.tacit\.finance\/prover\/board\/credits"/);
+    console.log('ok - one feed in the list that is not https keeps mining off');
   } else if (mode === 'badfeed') {
     assert.deepEqual(v, { enabled: false });
     assert.match(out, /ignoring POINTS_MINE_FEED="http:\/\/api\.tacit\.finance\/prover\/pool\/credits\?day=1"/);
