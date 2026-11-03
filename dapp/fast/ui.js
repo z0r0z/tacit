@@ -59,6 +59,9 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
   function paintProvider() {
     const e = $('fx-lp'), sm = summary();
     // with nobody providing, a key must still be able to open: it is how the first provider starts
+    // the key's own offer is not one to bridge with, but it is online: the provider is told so, not that nobody is
+    const mine = keyS.unlocked && keyS.key && S.providers.some((p) => p.id === keyS.key.pubHex);
+    if (S.loaded && !sm && mine) { e.innerHTML = '<p class="empty">You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.</p>'; return; }
     if (S.loaded && !sm) { e.innerHTML = `<p class="empty">No provider is online right now. ${keyS.unlocked ? 'Provide below' : 'Open your wallet to provide'}, or bridge from the <a href="/">front page</a>, which takes a few hours.</p>`; return; }
     if (!sm) { e.innerHTML = '<p class="empty">Reading the providers…</p>'; return; }
     const t = sm.best.terms, many = sm.count > 1;

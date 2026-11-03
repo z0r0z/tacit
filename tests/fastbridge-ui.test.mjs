@@ -81,6 +81,15 @@ test('amounts: shown with thousands and up to four places, read back exactly, an
   for (const bad of ['', '0', '0.0', 'abc', '1.123456789', '-1', '1e5', '1 2']) assert.equal(parseTac(bad), null, JSON.stringify(bad));
 });
 
+test('a key whose own offer is the only one is told it is the provider online, not that nobody is', async () => {
+  const pub = '03' + 'cd'.repeat(32);
+  const m = mount({ providers: [{ id: pub, name: 'Provider cdcdcd', ref: { kind: 'http', base: 'x' }, terms: { minAmount: 10n * 10n ** 8n, maxAmount: 20n * 10n ** 8n, feeBps: 30, flatFee: 10n ** 8n, available: null } }] });
+  m.key.open(pub);
+  await until(() => /You are the provider online/.test(text(m.$('fx-lp'))), 'the line for the provider');
+  assert.doesNotMatch(text(m.$('fx-lp')), /No provider/);
+  m.ui.destroy();
+});
+
 test('no provider listed, or none answering: the page says none is online and offers the regular bridge', async () => {
   for (const over of [{ providers: [] }, { discover: async () => { throw new Error('down'); } }]) {
     const m = mount(over);
