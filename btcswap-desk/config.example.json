@@ -1,0 +1,25 @@
+{
+  "network": "mainnet",
+  "dataDir": "btcswap-desk/data",
+  "port": 8788,
+  "origins": ["https://tacit.finance"],
+  "trustProxy": true,
+  "tickSecs": 15,
+  "apiBase": "https://tacit-api.onrender.com",
+  "btcBases": ["https://mempool.space/api", "https://mempool.emzy.de/api", "https://mempool.bitaroo.net/api", "https://blockstream.info/api"],
+  "poolAddress": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
+  "asset": "f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b",
+  "quote": {
+    "minAmount": "100000000",
+    "maxAmount": "100000000000",
+    "feeBps": 30,
+    "flatFee": "100000000",
+    "validSecs": 600
+  },
+  "policy": {
+    "csvHolder": 288,
+    "csvDesk": 144,
+    "acceptWaitSecs": 21600,
+    "confs": [["0", 1], ["50000000000", 2], ["100000000000", 3]]
+  }
+}

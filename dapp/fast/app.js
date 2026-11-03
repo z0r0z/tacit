@@ -6,7 +6,7 @@ import { getUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
 import { mountFast } from '/fast/ui.js?cb=bc085677';
 import { mountProvide } from '/fast/provide.js?cb=3f9c1782';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
-import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=4e61e589';
+import { openFast, openProvider, openBound, discoverProviders } from '/fast/wire.js?cb=9f8a6866';
 import { makeWants } from '/fast/want.js?cb=c2c4221a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 

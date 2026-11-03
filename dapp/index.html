@@ -8083,6 +8083,43 @@ function brMarkLong(el, n, step) {
   lab.classList.add('off');
   $('span', lab)?.insertAdjacentHTML('beforeend', html`<small>${brLongReason(step)}</small>`.s);
 }
+// TAC the proof does not follow, swapped on Bitcoin at the swap desk for TAC it does (btcswap-page.js). A key's swaps run while this page is open.
+const bswMod = lazy(() => import('/btcswap-page.js?cb=673a7d4c'));
+const BSW = { pub: null, s: null, say: null, recs: [] };
+const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
+async function bswOpen() {
+  const pub = S.key?.pubHex;
+  if (!pub) return null;
+  if (BSW.pub !== pub) {
+    const [m, t, ux] = await Promise.all([bswMod(), loadTacit(), getUx()]);
+    Object.assign(BSW, { pub, s: m.openBtcSwap({ T: t, withKey, ux, priv: walletPriv(), pubHex: pub }), say: m.sayBtcSwap });
+    BSW.recs = await BSW.s.records();
+  }
+  return BSW.s;
+}
+let bswAt = 0;
+async function bswTick(first = false) {
+  const pub = S.key?.pubHex;
+  if (!pub || !bswHas(pub) || (!first && Date.now() - bswAt < 55e3)) return;
+  bswAt = Date.now();
+  const s = await bswOpen(), was = BSW.recs.map((r) => r.phase).join();
+  await s.run();
+  BSW.recs = await s.records();
+  if (BSW.recs.map((r) => r.phase).join() !== was) rerender('tac');
+}
+// The desk's offer under a note the bridge cannot take, when the desk answers and holds enough.
+async function bswOffer(box, n) {
+  const s = await bswOpen(), q = s ? await s.quote(n.amount).catch(() => null) : null;
+  if (!box.isConnected || !q?.id) return;
+  mount(box, html`<p class="note">Or swap it on Bitcoin for ${fmt(BigInt(q.out), 8, 4)} TAC that bridges in one step, in about a day.</p><button class="btn ghost" type="button" id="br-swapgo">Swap it</button>`);
+  const go = $('#br-swapgo', box);
+  go.onclick = () => busy(go, async () => {
+    await s.start({ txid: n.txid, vout: n.vout, value: n.sats, amount: BigInt(n.amount), blinding: BigInt(n.blinding) }, q);
+    BSW.recs = await s.records();
+    rerender('tac');
+  });
+}
+const bswRow = (r) => html`<li class="brr"><span><b class="num">${fmt(BigInt(r.amount), 8, 4)} TAC</b><small>${BSW.say?.(r) || ''}</small></span></li>`;
 const BR_PREP = 'tacit-lite-bridge-prep-v1', BR_PREP_DAYS = 14;
 const brPreps = (pub) => (!pub ? [] : (store.get(BR_PREP)?.[pub] || []).filter((p) => p?.txid && Date.now() - (p.at || 0) < BR_PREP_DAYS * 86400e3));
 function brPrepSet(pub, list) { const m = store.get(BR_PREP) || {}; if (list.length) m[pub] = list; else delete m[pub]; store.set(BR_PREP, m); }
@@ -8207,6 +8244,8 @@ function renderBridgeIn(el) {
   const recs = brRecords(pub), done = brArrived(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging').map(brMarkDeep).map(brMarkEmpty), open = notes.filter((n) => n.eligible);
   const preps = brPreps(pub);
   if (preps.some((p) => !p.height || brPrepState(p) !== 'ready')) brPrepTick().catch(() => {});
+  const swaps = BSW.pub === pub ? BSW.recs.filter((r) => r.phase !== 'refunded' && !(r.phase === 'done' && Date.now() / 1000 - (r.doneAt || 0) > 86400)) : [];
+  if (bswHas(pub) && BSW.pub !== pub) bswTick(true).catch(() => {});
   if (BR.pick && !open.some((n) => brId(n) === BR.pick)) BR.pick = null;
   if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
   const capRaw = T ? BigInt(T.bridgeUx().BURNDEP_BETA_CAP_RAW) : 0n;
@@ -8217,7 +8256,7 @@ function renderBridgeIn(el) {
   mount(el, html`
     <p class="lede-s">TAC on your Bitcoin address becomes private TAC on Ethereum. You pay a Bitcoin fee, in sats. It arrives once Bitcoin’s proof on Ethereum records the burn, usually a few hours, up to a day. Tick the receipt’s choice to arrive as public TAC (ERC20), or press Make public after. <a href="/bridge/">How the bridge is proven</a></p>
     ${brLooking === pub ? html`<p class="note">Looking through your Bitcoin history for bridges this browser has no record of…</p>` : ''}
-    ${preps.length ? html`<div class="lbl"><span>Getting ready</span></div><ul class="acts brs">${preps.map(brPrepRow)}</ul>` : ''}
+    ${preps.length || swaps.length ? html`<div class="lbl"><span>Getting ready</span></div><ul class="acts brs">${preps.map(brPrepRow)}${swaps.map(bswRow)}</ul>` : ''}
     ${recs.length ? html`<div class="lbl"><span>On the way</span></div><ul class="acts brs">${recs.map(brRow)}</ul>` : ''}
     ${done.length ? html`<div class="lbl"><span>Arrived</span></div><ul class="acts brs">${done.map(brRow)}</ul>` : ''}
     ${recs.length || done.length ? html`<div class="status" role="status" id="br-rstatus"></div>` : ''}
@@ -8298,7 +8337,8 @@ function renderBridgeIn(el) {
         mount(rc, html``); warn(rc, brCheckText(bad));
         if (bad.tooLong || bad.unprovable) {
           brMarkLong(el, n, bad);
-          rc.insertAdjacentHTML('beforeend', html`<a class="btn ghost" href="/fast/">Bridge it with the fast bridge</a>`.s);
+          rc.insertAdjacentHTML('beforeend', html`<a class="btn ghost" href="/fast/">Bridge it with the fast bridge</a><div id="br-swap"></div>`.s);
+          bswOffer($('#br-swap', rc), n).catch(() => {});
         }
         if (bad.name === 'reflected' || bad.name === 'old-leaf') {
           const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
@@ -16277,7 +16317,7 @@ setTimeout(() => xoTick(), 8000);                       // saved bridges go on w
 restoreWallet();
 evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
-const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
+const tick = () => { lastTick = Date.now(); paintEarn(); refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if ($(`#sheet-${n}`).open && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {

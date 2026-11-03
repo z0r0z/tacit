@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Build a FULL-SCAN reflection prover input from transactions a test kept (DUMP=<file>): one block [coinbase, ...txs] with a valid BIP141
-// witness commitment and an easy header, over a prior live set holding the dump's `live` notes (value 0, blinding k). The pinned
+// witness commitment and an easy header, over a prior live set holding the dump's `live` notes (value `amount`, 0 if none, blinding k). The pinned
 // reflection guest (reflect-execute) must land on the JS assembler's newDigest.
 //   DUMP=/tmp/d.json node tests/btc-swap-lock-reflect.test.mjs
 //   node tests/gen-reflection-dump-synth.mjs /tmp/d.json swap > /tmp/in.json
@@ -13,6 +13,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
 import { classifyConfidentialTx } from '../dapp/burn-deposit-bitcoin.js';
 import { computeTxid, computeMerkleRoot, mineHeader, cat } from './btc-mini.mjs';
+import { pedersenCommit } from '../dapp/bulletproofs.js';
 
 const [dumpPath, which] = process.argv.slice(2);
 const dump = JSON.parse(readFileSync(dumpPath, 'utf8'));
@@ -42,7 +43,7 @@ const ix = makeScanReflectionIndexer({ secp, keccak256: keccak_256, sha256 });
 const cp = ix.pool, st = ix.state();
 st.setHeight(BLOCK_HEIGHT - 1);
 for (const n of set.live) {
-  const P = secp.ProjectivePoint.BASE.multiply(BigInt(n.k)).toAffine();
+  const P = (n.amount ? pedersenCommit(BigInt(n.amount), BigInt(n.k)) : secp.ProjectivePoint.BASE.multiply(BigInt(n.k))).toAffine();
   const cx = '0x' + P.x.toString(16).padStart(64, '0'), cy = '0x' + P.y.toString(16).padStart(64, '0');
   const key = cp.outpointKey('0x' + rev(n.txid), n.vout);
   st.foldOutput(cp.leaf('0x' + dump.tac, cx, cy, '0x' + '00'.repeat(32)), key, cp.commitmentHash(cx, cy), '0x' + dump.tac);

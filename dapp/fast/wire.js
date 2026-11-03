@@ -10,7 +10,7 @@
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key (tacit-session.js)     ux  the pool module (trade/poolux.js)
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js?cb=6e90dd96';
-import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=7bb8d689';
+import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=586b3ee3';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=8216bdd8';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=2391fffd';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';

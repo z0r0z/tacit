@@ -173,6 +173,27 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return transfer({ asset, inputs: [input], outputs: [selfOut(anchorOf(input), 0, amount)], satsUtxos, feeRate });
   }
 
+  // CLAIM of a two-party lock (dapp/btcswap.js jointLock): the whole lock output to the wallet, built with an empty
+  // signature in the lock's witness. `sighash` is what the two parties sign together; withKeyPathSig puts their signature
+  // in. A witness is not part of the txid, so the commit and the reveal's txid are final here.
+  function jointClaimTransfer({ asset, lockOut, lock, amount, rLock, satsUtxos, feeRate }) {
+    let sighash = null;
+    const input = {
+      txid: lockOut.txid, vout: lockOut.vout, value: lockOut.value ?? DUST, amount, blinding: asBig(rLock), spk: lock.spk, witnessSizes: [64],
+      sign: (tx, idx, prevouts) => { sighash = prims.tapSighashKeyPath(tx, idx, prevouts, 0x00); return [new Uint8Array(64)]; },
+    };
+    const pair = transfer({ asset, inputs: [input], outputs: [selfOut(anchorOf(input), 0, amount)], satsUtxos, feeRate });
+    return { ...pair, sighash, revealJson: txToJson(pair.revealTx) };
+  }
+
+  // The stored claim with the parties' signature in the lock's witness (vin[1]); refused unless it verifies under the lock.
+  function withKeyPathSig({ revealJson, sighash, sig, outputXonly }) {
+    if (!verifySchnorr(sig, sighash, outputXonly)) throw new Error('adaptor-btc-tx: the joint signature does not verify under the lock output key');
+    const tx = txFromJson(revealJson);
+    tx.inputs[1].witness = [sig];
+    return { revealTx: tx, revealJson: txToJson(tx), revealHex: bytesToHex(prims.serializeTx(tx)) };
+  }
+
   // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'.
   async function broadcastPair(pair, { onStage = null } = {}) {
     if (onStage) onStage('commit');
@@ -182,6 +203,18 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, broadcastPair, vsizeOf };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, broadcastPair, vsizeOf };
 }
+
+// A transaction as JSON a record can keep (bytes as hex), and back.
+export const txToJson = (tx) => ({
+  version: tx.version, locktime: tx.locktime,
+  inputs: tx.inputs.map((i) => ({ txid: i.txid, vout: i.vout, sequence: i.sequence, witness: i.witness.map((w) => bytesToHex(w)) })),
+  outputs: tx.outputs.map((o) => ({ value: o.value, script: bytesToHex(o.script) })),
+});
+export const txFromJson = (j) => ({
+  version: j.version, locktime: j.locktime,
+  inputs: j.inputs.map((i) => ({ txid: i.txid, vout: i.vout, sequence: i.sequence, witness: i.witness.map((w) => hexToBytes(w)) })),
+  outputs: j.outputs.map((o) => ({ value: o.value, script: hexToBytes(o.script) })),
+});
 
