@@ -1,4 +1,4 @@
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=55a25559';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=7dcdc872';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
 import { mountFast } from '/fast/ui.js?cb=4b8f2670';
@@ -48,7 +48,7 @@ keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 
 ui = mountFast({
   root: document.getElementById('gate'), keyS,
-  signIn: () => signInSheet(keyS, { why: 'Open your Tacit wallet to bridge or provide TAC.' }),
+  signIn: () => signInSheet(keyS, { icons: true, why: 'Open your Tacit wallet to bridge or provide TAC.' }),
   discover: () => discoverProviders(LISTS),
   open: async () => {
     const pubHex = keyS.key.pubHex, priv = keyS.priv(), ux = await getUx();

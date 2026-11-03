@@ -87,19 +87,21 @@ export function makeKeySession({ moved = null } = {}) {
 }
 
 // The ways in, in a sheet. Resolves once a key is open; rejects with Cancelled when the sheet is closed without one.
-// `pick(list)` chooses among several Ethereum wallets; `why` says what the key is for.
-export function signInSheet(session, { pick, why = 'Open your Tacit wallet to make ETH private. This page never stores the key.' } = {}) {
+// `pick(list)` chooses among several Ethereum wallets; `why` says what the key is for; `icons` puts the front page's mark on each way in.
+export function signInSheet(session, { pick, icons = false, why = 'Open your Tacit wallet to make ETH private. This page never stores the key.' } = {}) {
   return new Promise((resolve, reject) => {
     const known = session.known(), other = session.other(), away = session.elsewhere();
     const via = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, passkey: `passkey “${k.label || 'Tacit'}”` })[k?.mode] || 'your wallet';
     const o = overlay({ title: 'Open your Tacit wallet', top: true, onClose: () => { if (!session.unlocked) reject(new Cancelled()); } });
-    const opt = (k, t, m, cls = '') => `<button class="way ${cls}" type="button" data-in="${k}"><span class="way-t">${t}</span><span class="way-m">${m}</span></button>`;
+    // the front page's mark for each way in, on a page that draws the sheet as the front page does and has the marks
+    const ic = (id) => (icons && id && document.getElementById(id) ? `<svg class="way-ic" width="22" height="22" aria-hidden="true"><use href="#${id}"/></svg>` : '');
+    const opt = (k, t, m, cls = '', icon = null) => `<button class="way ${cls}" type="button" data-in="${k}"><span class="way-t">${ic(icon)}${t}</span><span class="way-m">${m}</span></button>`;
     const pk = session.passkeyAvailable(), hasEth = session.ethAvailable();
     o.body.innerHTML = `<p class="note" style="margin-top:0">${esc(why)}</p><div class="ways">
-      ${known ? opt('known', 'Continue with your Tacit wallet', `Opens with ${esc(via(known))}, the same wallet as everywhere on tacit.finance.`, 'main') : ''}
-      ${other ? opt('other', 'Your other Tacit wallet', `A different wallet, opened here before with ${esc(via(other))}.`) : ''}
-      ${opt('eth', 'Ethereum wallet', hasEth ? 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect. One free signature, two the first time.' : 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect.')}
-      ${pk ? opt('passkey', 'Passkey', 'Touch ID, Windows Hello or a security key.') : ''}
+      ${known ? opt('known', 'Continue with your Tacit wallet', `Opens with ${esc(via(known))}, the same wallet as everywhere on tacit.finance.`, 'main', 'tk-tac') : ''}
+      ${other ? opt('other', 'Your other Tacit wallet', `A different wallet, opened here before with ${esc(via(other))}.`, '', 'tk-tac') : ''}
+      ${opt('eth', 'Ethereum wallet', hasEth ? 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect. One free signature, two the first time.' : 'MetaMask, Rabby, Rainbow or any browser wallet, or a wallet app through WalletConnect.', '', 'tk-eth')}
+      ${pk ? opt('passkey', 'Passkey', 'Touch ID, Windows Hello or a security key.', '', 'i-key') : ''}
       <p class="ways-err" role="alert" hidden></p>
       ${away ? '<p class="note">The wallet open on tacit.finance was opened another way (a Bitcoin wallet or a key saved in the browser). That one opens on <a href="/">tacit.finance</a>.</p>' : ''}
       ${pk ? '<p class="more"><button class="linkbtn" type="button" data-in="new">New passkey wallet</button></p>' : ''}
