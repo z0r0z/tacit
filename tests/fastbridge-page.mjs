@@ -142,7 +142,7 @@ try {
   {
     const { page, bad } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=02${'ab'.repeat(32)}`);
     await page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok(await page.$eval('#fx-go', (e) => e.hidden), 'a provider with another key than the pinned one is not offered');
+    ok(!/Fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Open wallet', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
   }

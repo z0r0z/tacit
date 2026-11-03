@@ -58,7 +58,8 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
 
   function paintProvider() {
     const e = $('fx-lp'), sm = summary();
-    if (S.loaded && !sm) { e.innerHTML = '<p class="empty">No provider is online right now. Bridging from the <a href="/">front page</a> takes a few hours.</p>'; return; }
+    // with nobody providing, a key must still be able to open: it is how the first provider starts
+    if (S.loaded && !sm) { e.innerHTML = `<p class="empty">No provider is online right now. ${keyS.unlocked ? 'Provide below' : 'Open your wallet to provide'}, or bridge from the <a href="/">front page</a>, which takes a few hours.</p>`; return; }
     if (!sm) { e.innerHTML = '<p class="empty">Reading the providers…</p>'; return; }
     const t = sm.best.terms, many = sm.count > 1;
     e.innerHTML = `<div class="kv"><span>${many ? 'Providers' : 'Provider'}</span><b>${many ? `${sm.count} online` : esc(sm.best.name || 'Provider')}</b></div>
@@ -81,7 +82,7 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
   function paintForm() {
     const signed = !!S.sess, form = $('fx-form'), go = $('fx-go'), recv = $('fx-recv'), sm = summary();
     form.hidden = !signed || !sm;
-    go.hidden = !sm;
+    go.hidden = signed && !sm;
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
     if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; return; }

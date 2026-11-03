@@ -86,7 +86,8 @@ test('no provider listed, or none answering: the page says none is online and of
     const m = mount(over);
     await until(() => /No provider is online/.test(text(m.$('fx-lp'))), 'the offline line');
     assert.ok(m.$('fx-lp').querySelector('a[href="/"]'), 'a way to the regular bridge');
-    assert.equal(m.$('fx-go').hidden, true);
+    assert.equal(m.$('fx-go').hidden, false, 'with nobody providing, the wallet still opens: it is how the first provider starts');
+    assert.equal(m.$('fx-go').textContent, 'Open wallet');
     assert.equal(m.$('fx-form').hidden, true);
     m.ui.destroy();
   }
