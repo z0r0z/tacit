@@ -187,8 +187,8 @@ const { makeConfidentialStage, rescueKey } = await import('../dapp/confidential-
 const st = makeConfidentialStage({ ux });
 const NOTE = 3n * ETH;
 
-// ── 1. two private tETH notes to stage (plain wraps) ──
-for (let k = 0; k < 2; k++) {
+// ── 1. three private tETH notes to stage (plain wraps) ──
+for (let k = 0; k < 3; k++) {
   const index = await ux.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
   const w = ux.buildWrap({ walletPriv: priv, amountWei: NOTE + BigInt(k) * ETH, ticker: 'cETH', index });
   await send(FROM, WRAP_TIP, '0xfc24c435' + w.commit.slice(2).padStart(64, '0') + (NOTE + BigInt(k) * ETH).toString(16).padStart(64, '0') + TIPTO.slice(2).toLowerCase().padStart(64, '0'), hex(NOTE + BigInt(k) * ETH + 10n ** 14n));
@@ -214,18 +214,18 @@ for (const note of (await notesOf(priv, ux, teth)).sort((a, b) => (BigInt(a.valu
     stagedList.push(r);
   }
 }
-ok((await notesOf(priv, ux, teth)).length === 0, 'both notes are spent: nothing of the key\'s is left as a note');
+ok((await notesOf(priv, ux, teth)).length === 0, 'every note is spent: nothing of the key\'s is left as a note');
 
 // ── 3. found again from the key alone ──
 {
   const fresh = makeConfidentialStage({ ux: mkUx() });
   const found = await fresh.staged({ walletPriv: priv });
   const want = stagedList.map((r) => `${r.index}:${r.wei}`).sort().join(',');
-  ok(found.map((d) => `${d.index}:${d.wei}`).sort().join(',') === want, `a fresh wallet holding only the key finds both staged deposits (${found.map((d) => `index ${d.index}, ${Number(d.wei) / 1e18} ETH`).join('; ')})`);
+  ok(found.map((d) => `${d.index}:${d.wei}`).sort().join(',') === want, `a fresh wallet holding only the key finds every staged deposit (${found.map((d) => `index ${d.index}, ${Number(d.wei) / 1e18} ETH`).join('; ')})`);
 }
 
 // ── 4. the swap of the first is proved ahead, its input holding no secret of the key's ──
-const [d1, d2] = (await st.staged({ walletPriv: priv })).sort((a, b) => a.index - b.index);
+const [d1, d2, d3] = (await st.staged({ walletPriv: priv })).sort((a, b) => a.index - b.index);
 const a1 = await st.proveSwap({ walletPriv: priv, deposit: d1, toTicker: 'cTAC', feeBps, ahead: true, waitOpts: wait }).catch((e) => ({ error: e }));
 ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved ahead, while its amount is on screen (${a1.error ? a1.error.message : `${fmtTac(a1.built.amountOut)} TAC; ${log.slice(-1)[0]}`})`);
 {
@@ -258,6 +258,24 @@ ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved a
   const got = (await notesOf(priv, ux, tac)).filter((x) => BigInt(x.value) === r.amountOut);
   ok(!r.error && r.ahead === true && proved === 0 && await depositStatus(d2.depositId) === 2n && got.length === 1,
     `the press sends the proof made ahead, nothing proved at the press: a private ${fmtTac(r.amountOut)} TAC note, ${Date.now() - t} ms from press to settled here (${r.error ? r.error.message : log.slice(before).join('; ')})`);
+}
+
+// ── 7. a private split of the third, into two hidden notes of the key's own, nothing secret in its input (paying another key needs an owner
+// that key gives out: a note's owner is the hash of its nullifier key, which only the receiver holds) ──
+{
+  const fee = BigInt(await ux.quoteOpFee('cETH', 'transfer')), part = (d3.wei / 10n ** 10n) * 4n / 10n, rest = d3.wei / 10n ** 10n - part - fee;
+  const b = ux.buildWrapTransferOp({ walletPriv: priv, amountWei: d3.wei, ticker: 'cETH', recipientPubHex: ux.identity(priv).pubHex, amount: part, fee, index: d3.index });
+  ok(String(b.depositId).toLowerCase() === String(d3.depositId).toLowerCase(), 'the wrap-and-send spends the staged deposit at its index');
+  const t = Date.now();
+  const sub = await ux.relay.submitOp({ type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos }, wait).catch((e) => ({ error: e }));
+  const stt = sub.error ? sub : await ux.relay.waitForSettle(sub.jobId, wait).catch((e) => ({ error: e }));
+  const w3 = ux.buildWrap({ walletPriv: priv, amountWei: d3.wei, ticker: 'cETH', index: d3.index }).note;
+  const secrets = [['the wallet key', '0x' + Buffer.from(priv).toString('hex')], ['the deposit\'s blinding', w3.blinding], ['the deposit\'s nullifier key', w3.secret],
+    ...b.outputs.flatMap((o, i) => [[`output ${i}'s blinding`, o.blinding], [`output ${i}'s nullifier key`, o.secret]])];
+  const leaked = secrets.filter(([, v]) => v && (lastStdin.wraptransfer || '').includes(BigInt(v).toString(16).padStart(64, '0'))).map(([w]) => w);
+  ok(!stt.error && lastStdin.wraptransfer && leaked.length === 0, `the relay proves and settles it, its input holding none of: ${secrets.map(([w]) => w).join(', ')}${leaked.length ? ` (FOUND: ${leaked.join(', ')})` : ''} (${stt.error ? stt.error.message : `${Date.now() - t} ms; ${log.slice(-1)[0]}`})`);
+  const mine = (await notesOf(priv, mkUx(), teth)).map((x) => BigInt(x.value));
+  ok(await depositStatus(d3.depositId) === 2n && mine.includes(part) && mine.includes(rest), `a fresh wallet finds both hidden notes from the key alone (${Number(part) / 1e8} and ${Number(rest) / 1e8} tETH)`);
 }
 
 if (fails) console.error(log.join('\n'));
