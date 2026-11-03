@@ -7,7 +7,7 @@
 //   node tests/pool-swap-carrier.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as rootSecp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -41,6 +41,9 @@ const p2wpkh = (tag) => cat(Uint8Array.of(0x00, 0x14), sha(new TextEncoder().enc
 
 let passed = 0;
 const tests = [];
+// SWAP_DUMP=<file> keeps the transactions checked here, for the pinned reflection guest (tests/gen-reflection-pool-swap-synth.mjs).
+const dumped = {};
+const keep = (name, t) => { dumped[name] = { hex: t.hex, txid: t.txid, vins: t.vins.map((i) => ({ txid: i.txid, vout: i.vout })) }; };
 const test = (name, fn) => tests.push([name, fn]);
 
 // A segwit transaction from its inputs ({ txid display, vout, witness: [bytes] }) and outputs ({ value, script }): its raw hex and txid.
@@ -166,6 +169,7 @@ const side = async () => (SIDE ??= await poolSide());
 test('the swap folds: the reflection tracks the holder\'s new note, the pool pays the desk, and the dapp takes the note as TAC', async () => {
   const { st, desk, payload } = await side();
   const t = swapTx({ axfer: settlement().payload, spend: payload });
+  keep('swap', t);
   const d = classifyConfidentialTx('0x' + t.hex);
   assert.equal(d.type, 'cxfer'); assert.equal(d.opcode, 0x3c); assert.equal(d.assetInputCount, 1);
   const rf = await reflect(t);
@@ -191,6 +195,7 @@ test('the spend copied into a carrier without the holder\'s coin is refused, so 
 test('a settlement that does not conserve, or whose asset input is not the desk\'s tracked note, folds nothing and does not validate', async () => {
   const { payload } = await side();
   const bad = swapTx({ axfer: settlement({ input: { txid: rev(DESK_LOT), vout: 0, k: kIn + 5n } }).payload, spend: payload });
+  keep('bad', bad);
   const rf = await reflect(bad);
   assert.equal(rf.folded, 0, 'a kernel over the wrong input value folds nothing');
   assert.equal(rf.tracked, false);
@@ -203,5 +208,6 @@ test('a settlement that does not conserve, or whose asset input is not the desk\
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); }
 }
+if (process.env.SWAP_DUMP) writeFileSync(process.env.SWAP_DUMP, JSON.stringify({ tac: TAC, deskLot: DESK_LOT, kIn: String(kIn), ...dumped }));
 console.log(`\n${passed}/${tests.length} pool swap carrier checks passed`);
 process.exit(passed === tests.length ? 0 : 1);
