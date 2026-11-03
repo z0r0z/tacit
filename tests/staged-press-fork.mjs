@@ -304,6 +304,7 @@ ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved a
     const f = join(tmp, 'own.stdin'), out = join(tmp, 'own.pv');
     const bytes = stdinFor(type, { ...JSON.parse(JSON.stringify(op)), memoHashes });
     ownStdin = Buffer.from(bytes).toString('hex');
+    if (process.env.DUMP_STAGE) writeFileSync(process.env.DUMP_STAGE, bytes);   // the stage's program input, for a real prover to prove
     writeFileSync(f, bytes);
     const r = await execGuest({ ...process.env, STDIN: f, OUT: out });
     if (r.status !== 0 || !existsSync(out)) throw new Error('the guest rejected the op');
