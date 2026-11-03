@@ -3282,7 +3282,7 @@ await step('bridge', async () => {
   ok(/Your bridge of [\d,.]+ TAC is ready to mint\. Today’s free settles are used up, so this page asks again every hour while it is open with your wallet, or send it from your wallet now\./.test(dueText), `bridge: a mint held by the day's allowance is said with when it goes on and what the holder can do (${dueText.slice(0, 300)})`);
   // It is announced once (a toast and, with notices on, a system notice), and remembered so the next look does not say it again.
   // said by the bridge's tick, which runs at most every 75 s: if its first run came before the journal above was seeded, the next one says it
-  await until(r.page, ([k]) => /:held:/.test(localStorage.getItem(k) || ''), ['tacit-lite-bridge-told-v1'], 180000);
+  await until(r.page, ([k]) => /:held:/.test(localStorage.getItem(k) || ''), ['tacit-lite-bridge-told-v1'], 600000);                // (the tick steps every bridge on first, which a slow node takes minutes over)
   const toldKeys = await r.page.evaluate(([k, p]) => (JSON.parse(localStorage.getItem(k) || '{}')[p] || []), ['tacit-lite-bridge-told-v1', pub]);
   ok(toldKeys.length === 1 && toldKeys[0] === `${'d2'.repeat(32)}:0:held:${new Date().toISOString().slice(0, 10)}`, `bridge: the held mint is announced once and remembered (${JSON.stringify(toldKeys)})`);
   // The tile's Bridge tab is a handoff: it says in one line what the one-step bridge costs and how long it takes, and its button opens the
@@ -3299,9 +3299,24 @@ await step('bridge', async () => {
   ok(/3 notes to pick from \(320 TAC\)\. Each bridges whole, and is checked first/.test(have) && /1 note over 1,000 TAC: split it in the Bridge tab first/.test(have) && !/not ready yet/.test(have) && /4 bridges on their way: 2 need you/.test(have),
     `bridge: the tile's Bridge tab says what the key holds on Bitcoin and what is under way (${have.slice(0, 260)})`);
   await shot(r.page, 'hx-bitcoin-have');
+  // its list: the notes the key holds, the one over the limit and the ones already bridging not offered
+  await until(r.page, () => document.querySelectorAll('#hx-routes [data-hxr]').length >= 3, null, 240000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | routes: ${(await text(r.page, '#hx-routes')).replace(/\s+/g, ' ').slice(0, 200)} | q: ${await text(r.page, '#hx-q')}`); });
+  const tileRows = await r.page.$$eval('#hx-routes [data-hxr]', (b) => b.map((x) => ({ k: x.dataset.hxr, off: x.disabled, t: x.textContent.replace(/\s+/g, ' ').trim() })));
+  ok(tileRows.filter((x) => !x.off).length === 3 && tileRows.some((x) => x.off && /1,500 TAC/.test(x.t)), `bridge: the tile lists the key's TAC on Bitcoin: three notes to pick, the one over the limit greyed out with its reason (${tileRows.map((x) => x.t).join(' | ').slice(0, 220)})`);
+  // pressed with none picked it asks for one, from the tile
+  await sheetsSeen(r.page);
   await r.page.click(BRG.go);
-  await until(r.page, () => location.hash === '#bridge' && !!document.querySelector('#sheet-tac[open] #bridge-body'), null, 120000);
-  ok(true, 'bridge: the tile\'s Bridge TAC from Bitcoin opens the TAC sheet on its Bridge tab, and the link reads #bridge');
+  await until(r.page, () => /Pick the note to bridge/.test(document.querySelector('#hx-ss')?.textContent || ''), null, 60000);
+  ok((await r.page.evaluate(() => window.__sheetSeen)) === '' && !/#bridge/.test(await r.page.evaluate(() => location.hash)), 'bridge: the tile\'s Bridge TAC from Bitcoin, pressed with no note picked, asks for one under the button and opens no sheet');
+  // picked, the note is checked as the sheet checks it; this key holds no sats for the Bitcoin fee, which the receipt and the press say
+  await r.page.click(`#hx-routes [data-hxr="${tileRows.find((x) => !x.off).k}"]`);
+  await until(r.page, () => /short of the [\d,]+ sats this needs/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(r.page, '#hx-q')} | rc: ${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+  ok(/Bitcoin fee/.test(await text(r.page, '#hx-receipt')) && /Relay fee\s*none/.test(await text(r.page, '#hx-receipt')), `bridge: a note picked in the tile is checked and its receipt names the Bitcoin fee (${(await text(r.page, '#hx-receipt')).replace(/\s+/g, ' ').slice(0, 160)})`);
+  await r.page.click(BRG.go);
+  await until(r.page, () => /short of the [\d,]+ sats this needs/.test(document.querySelector('#hx-ss')?.textContent || ''), null, 240000);
+  ok((await r.page.evaluate(() => window.__sheetSeen)) === '', 'bridge: and its press says the address cannot pay the Bitcoin fee, and sends nothing');
   await shot(r.page, 'hx-bitcoin-bridge-tab');
   // The Bitcoin sheet's TAC line links here.
   await go(r.page, '#bitcoin');
@@ -9627,9 +9642,9 @@ await step('hxnudge', async () => {
     await until(p, () => (document.querySelector('#hx-mz')?.textContent || '').trim() !== '' || /err/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 120000);
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && (await p.$eval(MV.go, (b) => b.textContent)) === 'Working…', `hxnudge: with an amount the Shield press goes from the card: its steps said under the button, which is busy, and no sheet opens (${await text(p, '#hx-mz')})`);
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
-    await bridgeTo(p, 'btc'); await p.click(BRG.go);
-    await until(p, () => document.querySelector('#sheet-tac')?.open, null, 60000);
-    ok(true, 'hxnudge: TAC from Bitcoin, which has no amount to type, still opens its sheet');
+    await bridgeTo(p, 'btc'); await sheetsSeen(p); await p.click(BRG.go);
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `hxnudge: TAC from Bitcoin, which has no amount to type, goes from the tile too (${(await text(p, '#hx-ss')).slice(0, 80)})`);
     if (r.errors.length) { fails++; console.log('FAIL hxnudge page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });

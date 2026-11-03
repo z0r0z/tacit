@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-1o1cl15vh33MaPKNbd92Gu3RI2lTMhBx+q0HiCfpFRo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AD6oGoYIIZr4CbAVMfXqf2vR25w3L14dcqo0/O1xDcg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -8384,16 +8384,8 @@ function renderBridgeIn(el) {
     const plan = brPlanFrom(rc, { burnMaxRate: r.pf.path === 'reflected' ? null : Math.ceil(Math.max(10, base * 2)) });
     if (recipient) delete plan.publicTo;
     try {
-      run.say(status, r.pf.path === 'reflected' ? 'Signing the burn and sending it to Bitcoin…' : 'Signing the move to its burn address and sending it to Bitcoin…');
-      const rec = await brBegin(pub, r, recipient);
-      if (plan.burn || plan.publicTo) brPlanSet(pub, rec.id, plan);
-      BR.pick = null; BR.rv = null; BR.acked = null; review = null;
-      const tx = rec.burn?.txid || rec.migrate?.revealTxid, sent = !/-signed$/.test(rec.stage);
-      toast(sent ? `Bridging ${amt} to Ethereum` : `${amt}: signed, not yet sent`, !sent);
-      say(status, sent ? html`<span class="ok">✓ ${r.pf.path === 'reflected' ? 'Burn' : 'Move'} sent</span> ${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${short(tx, 6)} ↗</a>` : ''}. It shows under On the way, and ${r.pf.path === 'reflected' || plan.burn ? `finishes on its own whenever this page is open with your wallet${plan.publicTo ? ', and ends as public TAC' : ''}` : 'goes on by itself to its burn, which waits for your press when the move is ready'}.`
-        : html`<span class="err">Signed, but Bitcoin did not take it yet. Try again from its row under On the way.</span>`);
-      BR.at = 0;
-      Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => rerender('tac'));
+      await brBridgeNow({ run, pub, r, recipient, plan, amt, status, where: 'under On the way', after: () => rerender('tac') });
+      review = null;
     } catch (e) { run.fail(status, brFail(e)); }
   });
   const find = $('#br-find'), txid = $('#br-txid'), amtRow = $('#br-amtrow'), ramt = $('#br-ramt'), fst = $('#br-fstatus');
@@ -8433,6 +8425,20 @@ async function brPublicFee(amount) {
     note.textContent = BR.noPublic ? 'This is worth less than the relay’s fee to make public, so it stays private. ' : `A relay fee of ${fmt(fee, 8, 2)} TAC or a little more comes out of it. `;
     if (BR.noPublic) { el.checked = false; el.disabled = true; BR.opts.public = false; }
   } catch { }
+}
+// A TAC note on Bitcoin bridged to Ethereum, pressed from the bridge form or the card's Bridge tab: `r` is the review that was checked ({ note, pf, cost }), `plan` what the form's options chose (none from the card). The burn (or the move to
+// its burn address) is signed and sent through the key's Bitcoin address, and the record says if the send did not go through. `where` says where the bridge is followed, `after` redraws when it is over. A failure is thrown for the press to say.
+async function brBridgeNow({ run, pub, r, recipient = null, plan = {}, amt = `${fmt(BigInt(r.note.amount), 8, 4)} TAC`, status, where, after }) {
+  run.say(status, r.pf.path === 'reflected' ? 'Signing the burn and sending it to Bitcoin…' : 'Signing the move to its burn address and sending it to Bitcoin…');
+  const rec = await brBegin(pub, r, recipient);
+  if (plan.burn || plan.publicTo) brPlanSet(pub, rec.id, plan);
+  BR.pick = null; BR.rv = null; BR.acked = null;
+  const tx = rec.burn?.txid || rec.migrate?.revealTxid, sent = !/-signed$/.test(rec.stage);
+  toast(sent ? `Bridging ${amt} to Ethereum` : `${amt}: signed, not yet sent`, !sent);
+  say(status, sent ? html`<span class="ok">✓ ${r.pf.path === 'reflected' ? 'Burn' : 'Move'} sent</span> ${tx ? html`<a href="${MEMPOOL}/tx/${tx}" target="_blank" rel="noopener">${short(tx, 6)} ↗</a>` : ''}. It shows ${where}, and ${r.pf.path === 'reflected' || plan.burn ? `finishes on its own whenever this page is open with your wallet${plan.publicTo ? ', and ends as public TAC' : ''}` : 'goes on by itself to its burn, which waits for your press when the move is ready'}.`
+    : html`<span class="err">Signed, but Bitcoin did not take it yet. Try again from its row ${where}.</span>`);
+  BR.at = 0;
+  Promise.allSettled([loadBridge(true), loadBtc(true)]).then(after);
 }
 function brPlanFrom(root, { burnMaxRate = null, autoMaxFee = null } = {}) {
   const on = (id) => { const x = $(id, root); return !!x && x.checked && !x.disabled; };
@@ -14350,8 +14356,7 @@ async function hxQuote() {
   if (m === 'send' && hxSendFit()) return done({ warn: true, line: hxSendFit() });
   if (m === 'send' && hxSendBtc()) return done({ rc: hxSendSees() });
   if (m === 'tbback' || m === 'xb') return hxBackQuote(my, done);
-  if (m === 'btc' && HX.dir === 'in' && S.key) loadBridge().then(() => paintHxQ(), () => paintHxQ());
-  if (m === 'btc' && HX.dir === 'in') return done({ out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', '1,000 TAC a bridge'], ['Bitcoin fee', 'in sats'], ['Time', 'a few hours, at most a day']] });
+  if (m === 'btc' && HX.dir === 'in') return hxBridgeInQuote(my, done);
   if (m === 'btcpool' || m === 'tacpub') return done(hxHandoff(m, null));
   if (units === null && /\d|[^\d.,\s]/.test(HX.amt)) {
     const t = HX.amt.trim(), two = /^[1-9]\d{0,2},\d{3}$/.test(t);
@@ -14893,6 +14898,7 @@ function paintHxQ() {
       HX.pool = b.dataset.hxr;
       if (HX.mode === 'earn') HX.earnPick = b.dataset.hxr;
       if (HX.mode === 'tbback' || HX.mode === 'xb') xbOf(hxBackA()).pick = b.dataset.hxr;
+      if (HX.mode === 'btc' && HX.dir === 'in') { BR.pick = b.dataset.hxr; BR.act = null; }
       if (b.hasAttribute('data-wait')) { HX.q = { ...HX.q, busy: true }; paintHxQ(); } else hxQuote();
     };
     for (const b of live) b.onclick = () => choose(b);
@@ -15015,7 +15021,7 @@ function hxGo() {
     return void hxJoinGo(p, units);
   }
   if (m === 'btc') {
-    if (HX.dir === 'in') return openLink('bridge');
+    if (HX.dir === 'in') return hxBridgeInGo();
     if (HX.from === 'tac') return HX.q?.needPrivate ? hxBridgeTacWrapGo(units) : hxBridgeOutGo(XA.tac, units);
     return hxTwo(units) ? hxBridgeWrapGo(units) : hxBridgeOutGo(XA.teth, units);
   }
@@ -15367,6 +15373,75 @@ async function hxBackGo() {
       }
       HX.xoSure = null;
       await xbBringNow({ run, a, pub, r: R.r, status: st, where: html`on <a href="/bridge/">the bridge page</a>`, after: hxSendAfter });
+    } catch (e) { run.fail(st, brFail(e)); }
+  });
+}
+// TAC brought in from Bitcoin, on the Bridge tab: the TAC notes the key holds on its Bitcoin address are the card's list, the one picked is checked as the bridge form checks it (its history read from Bitcoin, the fee, what the address holds
+// to pay it), and the press does what the form does (brBridgeNow). The card does the ordinary case, one whole note burned in one Bitcoin transaction; a note that has to be prepared, moved first or merged, and the options of sending it on to
+// someone else, are the bridge page's, said where they come up.
+async function brReview(pub, n, onProgress) {
+  const rvKey = `${pub}:${brId(n)}`, kept = BR.rv?.key === rvKey && Date.now() - BR.rv.at < 120e3 ? BR.rv.pf : null;
+  let pfP = kept ? Promise.resolve(kept) : BR.checks.get(rvKey)?.p;
+  if (!pfP) {
+    const run = { key: rvKey, read: 0 };
+    run.p = brUx().then((ux) => ux.preflight({ note: n, walletPub: hexToBytes(pub), onProgress: (read) => { run.read = read; onProgress?.(read); } })).finally(() => { if (BR.checks.get(rvKey) === run) BR.checks.delete(rvKey); });
+    BR.checks.set(rvKey, run);
+    pfP = run.p;
+  }
+  const pf = await pfP;
+  if (!kept && pf.ok) BR.rv = { key: rvKey, at: Date.now(), pf };
+  if (!pf.ok) {
+    const bad = pf.steps.find((x) => !x.ok) || { name: '' };
+    return { stop: `${brCheckText(bad)} ${bad.tooLong || bad.unprovable ? 'The bridge page has the fast bridge for it.' : bad.name === 'reflected' || bad.name === 'old-leaf' ? 'The bridge page can prepare it: it sends the note to your own address first.' : ''}`.trim() };
+  }
+  if (pf.path !== 'reflected') return { stop: 'This note is moved first, then burned through a miner, which the bridge page does step by step.' };
+  const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+  const cost = (await brUx()).bridgeCost({ path: pf.path, feeRate: pf.burnFeeRate, coins: coins || [], noteSats: n.sats, burnRate: pf.burnRate });
+  return { r: { key: rvKey, note: n, pf, cost, short: !!coins && !cost.ok }, cost };
+}
+async function hxBridgeInQuote(my, done) {
+  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', '1,000 TAC a bridge'], ['Bitcoin fee', 'in sats'], ['Time', 'a few hours, at most a day']] };
+  if (!S.key) return done(base);
+  const pub = S.key.pubHex;
+  await loadBridge().catch(() => {});
+  if (my !== HX.seq) return;
+  const b = BR.pub === pub ? BR : null;
+  if (!b?.notes) return done({ ...base, line: b?.err ? errText(b.err) : 'Reading your TAC on Bitcoin…', warn: !!b?.err });
+  const notes = b.notes.filter((n) => n.reason !== 'already bridging').map(brMarkDeep).map(brMarkEmpty), open = notes.filter((n) => n.eligible);
+  if (!notes.length) return done({ ...base, line: 'No TAC on this key’s Bitcoin address.' });
+  if (BR.pick && !open.some((n) => brId(n) === BR.pick)) BR.pick = null;
+  if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
+  const shown = { ...base, rowsName: 'Your TAC on Bitcoin', rows: notes.map((n) => ({ k: brId(n), name: `${fmt(BigInt(n.amount), 8, 4)} TAC`, note: n.eligible ? 'ready to bridge' : n.reason, show: '', off: !n.eligible })) };
+  const n = open.find((x) => brId(x) === BR.pick);
+  if (!n) return done({ ...shown, line: open.length ? 'Pick the note to bridge.' : '' });
+  done({ ...shown, pick: BR.pick, line: 'Checking this TAC and Bitcoin’s fees…' });
+  const R = await brReview(pub, n, (read) => { if (my === HX.seq) { const q = $('#hx-q'); if (q) q.textContent = `Reading this TAC’s history from Bitcoin: ${brTransfers(read)} so far…`; } }).catch((e) => ({ stop: errText(brFail(e)) }));
+  if (my !== HX.seq) return;
+  if (!R.r) return done({ ...shown, pick: BR.pick, warn: true, line: R.stop || '' });
+  const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`, amtText = fmt(BigInt(n.amount), 8, 4);
+  return done({ ...shown, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `≈ ${sats(R.cost.fee)}`], ['Relay fee', 'none'], ['Time', 'usually within a few hours, once Bitcoin’s proof on Ethereum records the burn']],
+    warn: R.r.short, line: R.r.short ? `This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${sats(R.cost.need)} this needs. Add some from Receive on the Bitcoin tab.` : '' });
+}
+// TAC brought in from Bitcoin from the Bridge tab. A burn cannot be undone, so the first press checks the note and says what the Bitcoin step costs, and the same press again (this note, within three minutes) sends it.
+async function hxBridgeInGo() {
+  if (!S.key) return openSheet('wallet');
+  const pub = S.key.pubHex;
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    try {
+      const n = (BR.pub === pub ? BR.notes || [] : []).map(brMarkDeep).map(brMarkEmpty).find((x) => x.eligible && brId(x) === BR.pick);
+      if (!n) { say(st, html`<span class="err">Pick the note to bridge.</span>`); return; }
+      const R = await brReview(pub, n, (read) => say(st, `Reading this TAC’s history from Bitcoin: ${brTransfers(read)} so far…`));
+      if (!R.r) { say(st, html`<span class="err">${R.stop}</span>`); HX.xoSure = null; return; }
+      if (R.r.short) { say(st, html`<span class="err">This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${Number(R.cost.need).toLocaleString('en-US')} sats this needs. Add some from Receive on the Bitcoin tab.</span>`); HX.xoSure = null; return; }
+      const key = `in|${pub}|${brId(n)}`, amt = `${fmt(BigInt(n.amount), 8, 4)} TAC`;
+      if (!(HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3)) {
+        HX.xoSure = { key, at: Date.now() };
+        say(st, `Bridging ${amt} costs about ${Number(R.cost.fee).toLocaleString('en-US')} sats from your Bitcoin address. A bridge can’t be undone once its burn confirms on Bitcoin. Press again to bridge it.`);
+        return;
+      }
+      HX.xoSure = null;
+      await brBridgeNow({ run, pub, r: R.r, amt, status: st, where: html`on <a href="/bridge/">the bridge page</a>`, after: hxSendAfter });
     } catch (e) { run.fail(st, brFail(e)); }
   });
 }
