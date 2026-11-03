@@ -19,8 +19,8 @@ import { makeLpService } from '/fastbridge-provider.js?cb=7208616b';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=d00c9623';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=8d928552';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
-import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=0';
-import { p2trAddress } from '/crossout-notes.js?cb=0';
+import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b366fa29';
+import { p2trAddress } from '/crossout-notes.js?cb=591df470';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

@@ -15,7 +15,7 @@ const hours = (mins) => (mins < 90 ? 'about an hour' : `about ${Math.round(mins 
 
 export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
   const doc = root.ownerDocument;
-  const S = { sess: null, pub: null, bal: null, notes: null, loading: false, busy: null, timer: 0, last: null };
+  const S = { sess: null, pub: null, bal: null, notes: null, loading: false, busy: null, timer: 0, last: null, shown: false };
 
   root.hidden = true;
   root.innerHTML = `
@@ -39,7 +39,7 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
   }
 
   function paint() {
-    root.hidden = !keyS.unlocked;
+    root.hidden = !keyS.unlocked || !S.shown;
     const list = $('bd-list'), ns = (S.notes || []).filter((n) => n.state !== 'moved' && n.state !== 'spent');
     list.innerHTML = S.loading && !S.notes ? '<p class="empty">Reading your TAC ready for Ethereum…</p>'
       : ns.length ? ns.map((n) => `<div class="kv bd-note" data-k="${esc(n.txid)}:${n.vout}">
@@ -115,8 +115,10 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
     if (keyS.unlocked && !S.sess && root.open) load();
   });
 
-  // /fast/#ready comes straight to this panel
-  if (doc.defaultView?.location.hash === '#ready') root.open = true;
+  // While the fast lane is new the panel is unlisted: /fast/#ready shows it, open, and it stays for the visit.
+  const reveal = () => { if (doc.defaultView?.location.hash === '#ready' && !S.shown) { S.shown = true; root.open = true; paint(); if (keyS.unlocked) load(); } };
+  doc.defaultView?.addEventListener('hashchange', reveal);
+  reveal();
   paint();
   return { refresh };
 }

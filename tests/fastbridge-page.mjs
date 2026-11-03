@@ -26,6 +26,7 @@ const TYPES = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '
 const STAND_IN = `
 import { mountFast } from '/fast/ui.js';
 import { mountProvide } from '/fast/provide.js';
+import { mountBound } from '/fast/bound.js';
 const TAC = 10n ** 8n, fns = new Set();
 const keyS = { unlocked: false, key: null, onChange: (f) => { fns.add(f); }, };
 const STEPS = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'];
@@ -57,6 +58,19 @@ mountFast({
   signIn: async () => { keyS.unlocked = true; keyS.key = { pubHex: '03' + 'cd'.repeat(32) }; fns.forEach((f) => f()); },
   discover: async () => providers,
   open: async () => session,
+});
+let boundNotes = [
+  { txid: 'c1'.repeat(32), vout: 0, amount: 250n * TAC, state: 'ready', etaMins: 0 },
+  { txid: 'c2'.repeat(32), vout: 0, amount: 40n * TAC, state: 'waiting', etaMins: 190 },
+];
+mountBound({
+  root: document.getElementById('ready'), keyS, refreshMs: 100000,
+  open: async () => ({
+    balance: async () => 1234550000000n,
+    bound: async () => boundNotes,
+    bind: async ({ amount }) => { boundNotes = [...boundNotes, { txid: 'c3'.repeat(32), vout: 0, amount, state: 'waiting', etaMins: 280 }]; return { txid: 'c3'.repeat(32) }; },
+    move: async (n) => { boundNotes = boundNotes.map((x) => (x.txid === n.txid ? { ...x, state: 'moved' } : x)); },
+  }),
 });
 const st = { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null };
 mountProvide({
@@ -185,6 +199,22 @@ try {
     await page.waitForFunction(() => /Started/.test(document.getElementById('fx-st').textContent), null, { timeout: 5000 });
     ok((await page.$$('#fx-list .fx-rec')).length === 5 && (await page.inputValue('#fx-amt')) === '', 'the new bridge is at the top and the amount is cleared');
     await shot('fast-bridges');
+    // the ready-for-Ethereum panel: bound notes listed, a ready one moved, a bind sent
+    ok(await page.$eval('#ready', (e) => e.hidden), 'the ready-for-Ethereum panel is unlisted');
+    await page.evaluate(() => { location.hash = '#ready'; });
+    await page.waitForFunction(() => !document.getElementById('ready').hidden && document.getElementById('ready').open, null, { timeout: 5000 });
+    ok(true, 'and /fast/#ready shows it, open');
+    await page.waitForFunction(() => document.querySelector('#bd-list [data-move]'), null, { timeout: 5000 });
+    ok(/250 TAC\s*Move to Ethereum/.test(await text(page, '#bd-list')) && /40 TAC\s*Ready in about 3 hours/.test(await text(page, '#bd-list')), `the bound notes are listed (${await text(page, '#bd-list')})`);
+    await shot('fast-ready');
+    await page.click('#bd-list [data-move]');
+    await page.waitForFunction(() => /moved to your private balance/.test(document.getElementById('bd-st').textContent), null, { timeout: 5000 });
+    ok(!/250 TAC/.test(await text(page, '#bd-list')), 'a moved note leaves the list');
+    await page.fill('#bd-amt', '100');
+    await page.click('#bd-go');
+    await page.waitForFunction(() => /ready in about 4 hours/.test(document.getElementById('bd-st').textContent), null, { timeout: 5000 });
+    ok(/100 TAC/.test(await text(page, '#bd-list')), 'a bind is listed as waiting');
+    await shot('fast-ready-bound');
     // the provider panel: shown once a key is open, read when opened, started with a fee and a size, stopped
     ok(!(await page.$eval('#provide', (e) => e.hidden)), 'the provider panel shows once a key is open');
     await page.click('#provide > summary');

@@ -32,7 +32,7 @@ function sessionStub({ bal = 500n * TAC, notes = [] } = {}) {
   };
 }
 function mount(over = {}) {
-  const dom = new JSDOM('<!doctype html><body><details id="ready"></details></body>', { url: over.url || 'https://tacit.finance/fast/' });
+  const dom = new JSDOM('<!doctype html><body><details id="ready"></details></body>', { url: over.url || 'https://tacit.finance/fast/#ready' });
   const doc = dom.window.document, root = doc.getElementById('ready'), key = keyStub(), stub = over.stub || sessionStub();
   const state = { opens: 0 };
   mountBound({ root, keyS: key, refreshMs: 60000, open: async () => { state.opens++; return stub.session; } });
@@ -42,14 +42,22 @@ function mount(over = {}) {
 }
 const text = (e) => e.textContent.replace(/\s+/g, ' ').trim();
 
-test('hidden until a key is open; nothing is read until the panel is opened', async () => {
+test('unlisted: hidden without /fast/#ready even with a key open, shown when the address names it', async () => {
+  const m = mount({ url: 'https://tacit.finance/fast/' });
+  m.key.open();
+  assert.equal(m.root.hidden, true);
+  await tick();
+  assert.equal(m.state.opens, 0, 'nothing read');
+  m.dom.window.location.hash = '#ready';
+  await until(() => !m.root.hidden && m.state.opens === 1, 'shown and read');
+  assert.equal(m.root.open, true);
+});
+
+test('with /fast/#ready: hidden until a key is open, then read; hidden again when it locks', async () => {
   const m = mount();
   assert.equal(m.root.hidden, true);
   m.key.open();
   assert.equal(m.root.hidden, false);
-  await tick();
-  assert.equal(m.state.opens, 0);
-  m.root.open = true; m.root.dispatchEvent(new m.dom.window.Event('toggle'));
   await until(() => m.state.opens === 1, 'opened');
   m.key.lock();
   assert.equal(m.root.hidden, true);
@@ -94,10 +102,6 @@ test('a ready note moves in one press and then leaves the list; spent and moved 
   await until(() => !/40 TAC/.test(text(m.$('bd-list'))), 'gone from the list');
 });
 
-test('/fast/#ready opens the panel', async () => {
-  const m = mount({ url: 'https://tacit.finance/fast/#ready' });
-  assert.equal(m.root.open, true);
-});
 
 let failed = 0;
 for (const [name, fn] of tests) {

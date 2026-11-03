@@ -122,8 +122,8 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
 - `dapp/btc-bind.js`: the bind (`bindTransfer`, at most 8 notes of chosen sizes), `openBoundNote`, and `fastLaneNote`, which asks
   `POST /reflection/note-witness` (leaves and nullifiers) and checks its roots against the pool's (`knownBitcoinRoot`, slot 78,
   and `knownBitcoinSpentRoot`, slot 79) before anything is proven; a settle against any other spent root reverts.
-- `dapp/fast/wire.js` `openBound` and `dapp/fast/bound.js`: the "Ready for Ethereum" panel on `/fast/` (`/fast/#ready`), 10 to
-  1,000 TAC a bind while it is new.
+- `dapp/fast/wire.js` `openBound` and `dapp/fast/bound.js`: the "Ready for Ethereum" panel on `/fast/`, unlisted while it is
+  new (only `/fast/#ready` shows it), 10 to 1,000 TAC a bind.
 - Rules that keep it whole: a bound note is never a lot (a purchase refuses it), since its holder could still move it to Ethereum
   and void the buyer's side until the reflection passes the spend; a note bound to a pool the wallet cannot read is pending; the
   Bitcoin shielded pool's replay refuses any input whose history holds a bound note. A transfer out of a bound note is pending
