@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -7122,7 +7122,7 @@ await step('hxpos', async () => {
     ok(rows[0].ring && /tETH \/ TAC/.test(rows[0].t) && /\+1234\.56 TAC/.test(rows[0].t) && rows[0].harv === true, `hxpos: a farming position is its pair in a ring, with what it has earned and Harvest (${rows[0].t})`);
     ok(rows[1].ring && /farming/.test(rows[1].t) && rows[1].harv === false, `hxpos: one with nothing earned yet cannot be harvested (${rows[1].t})`);
     await p.$eval('#hx', (e) => e.scrollIntoView({ block: 'end' })); await shot(p, 'hxpos');
-    ok(!rows[2].ring && /not farming/.test(rows[2].t) && rows[2].farm, `hxpos: liquidity not farming is the pair alone, with the way to farm it (${rows[2].t})`);
+    ok(!rows[2].ring && /LP only/.test(rows[2].t) && rows[2].farm, `hxpos: liquidity not farming is the pair alone, with the way to farm it (${rows[2].t})`);
     await p.click('#hx-pos [data-padd="0"]');
     await until(p, () => document.querySelector('#hx-routes [data-hxr="0"]')?.getAttribute('aria-checked') === 'true', null, 120000);
     ok(true, 'hxpos: Add picks that pool in the card above');
@@ -8114,6 +8114,104 @@ await step('farmzap', async () => {
   } finally { await r.browser.close(); }
 });
 
+// The Earn tab does a private join itself, with no sheet: tETH alone is quoted in the card (what half swapped adds, the relay's fees, the network fee), Max takes
+// what the pool takes of it, and the press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both, each step said
+// under the button. Holding both sides, the card offers them together (nothing swapped); a swap that costs 15% or more waits for its acceptance in the card.
+const sheetsSeen = (p) => p.evaluate(() => { window.__sheetSeen = ''; new MutationObserver((ms) => { for (const m of ms) if (m.target.tagName === 'DIALOG' && m.target.open) window.__sheetSeen += m.target.id + ','; }).observe(document, { subtree: true, attributes: true, attributeFilter: ['open'] }); });
+const earnCard = async (p, from, route) => {
+  await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+  await p.click('[data-hxm="earn"]');
+  await p.selectOption('#hx-from', from);
+  await p.waitForSelector(`#hx-routes [data-hxr="${route}"]`, { timeout: 420000 });
+  await p.click(`#hx-routes [data-hxr="${route}"]`);
+};
+await step('earnhere', async () => {
+  const r = await openFarmKey('7a9b'.padEnd(64, '7'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await earnCard(p, 'eth', '0');
+    await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await sheetsSeen(p);
+    await p.click('#hx-max');
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with tETH' && !document.querySelector('#hx-go').disabled && /Relay fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    const rc = (await text(p, '#hx-receipt')).replace(/\s+/g, ' ');
+    ok((await p.inputValue('#hx-amt')) === '0.02' && /Adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(rc) && /Relay fee\s*[\d.]+ tETH/.test(rc) && /Network fee\s*about [\d.]+ ETH/.test(rc) && /Time/.test(rc),
+      `earnhere: Max takes the whole balance, and the card quotes what half swapped adds, the relay's fees and the network fee (${rc})`);
+    await shot(p, 'earnhere');
+    await p.click('#hx-go');
+    await until(p, () => !!window.__join || (/err/.test(document.querySelector('#hx-zs')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#hx-zs')?.textContent || '')), null, 240000);
+    const j = await p.evaluate(() => window.__join), calls = await p.evaluate(() => window.__swapCalls);
+    if (!j) throw new Error(`no bond: ${await text(p, '#hx-zs')} ${JSON.stringify(calls)}`);
+    const sw = calls.find((c) => c.amountIn), cuts = calls.filter((c) => c.split);
+    const poolId = '0x248497bf6f943cd2b39a04bf5841056c58dfd7ef196188cb4f0ac1fd11dc7c00';
+    const sel = Buffer.from(keccak_256('pools(bytes32)')).toString('hex').slice(0, 8);
+    const w = (await rpc('eth_call', [{ to: '0x000000000Ed1eabD231Be41d93b719056F7febFC', data: '0x' + sel + poolId.slice(2) }, 'latest'])).slice(2);
+    const rA = BigInt('0x' + w.slice(3 * 64, 4 * 64)), rB = BigInt('0x' + w.slice(4 * 64, 5 * 64)), a = BigInt(j.a), b = BigInt(j.b), need = b * rA / rB;
+    ok(sw && cuts[0] && cuts[0].split === sw.amountIn && sw.noteValue === sw.amountIn && sw.path[0].endsWith(FARM_CTAC) && BigInt(sw.minOut) === BigInt(sw.out) * 99n / 100n && !sw.self,
+      `earnhere: the press cuts a note of the swap amount and swaps it whole in the farm's pool, at most 1% under the quote (${JSON.stringify(calls)})`);
+    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && b === BigInt(sw.out) && a >= need && (a - need) * 250n <= a && a + BigInt(sw.amountIn) <= 2000000n && j.selfSettle === 'function',
+      `earnhere: the bond spends the swap's return whole and pairs tETH with it at the live ratio, within what was held (${a} : ${b}, pool ${rA} : ${rB}, swapped ${sw.amountIn})`);
+    await until(p, () => /In the farm/.test(document.querySelector('#hx-zs')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/In the farm/.test(await text(p, '#hx-zs')), `earnhere: the line under the button says it is in (${await text(p, '#hx-zs')})`);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `earnhere: and no sheet opened at any point (${await p.evaluate(() => window.__sheetSeen)})`);
+    if (r.errors.length) { fails++; console.log('FAIL earnhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+await step('earnboth', async () => {
+  const r = await openFarmKey('7a9b'.padEnd(64, '8'), { notes: [[FARM_CETH, 2000000n], [FARM_CTAC, 50000000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await earnCard(p, 'eth', '0');
+    await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await sheetsSeen(p);
+    await p.click('#hx-max');
+    await until(p, () => /Add your TAC too: no swap/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | alt: ${await text(p, '#hx-alt')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    ok(true, 'earnboth: holding TAC too, the card offers both sides together');
+    await p.click('#hx-alt button');
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with both' && /Swap half instead/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 120000);
+    await p.click('#hx-max');
+    await until(p, () => !document.querySelector('#hx-go').disabled && /both at the pool/.test(document.querySelector('#hx-receipt')?.textContent || '') && /Adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | amt: ${await p.inputValue('#hx-amt')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    ok(/nothing swapped/.test(await text(p, '#hx-receipt')), `earnboth: both sides at the pool's ratio, nothing swapped (${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')})`);
+    await p.click('#hx-go');
+    await until(p, () => !!window.__join || /err/.test(document.querySelector('#hx-zs')?.innerHTML || ''), null, 240000);
+    const j = await p.evaluate(() => window.__join), calls = await p.evaluate(() => window.__swapCalls);
+    if (!j) throw new Error(`no bond: ${await text(p, '#hx-zs')} ${JSON.stringify(calls)}`);
+    ok(j.aAsset === FARM_CETH && j.bAsset === FARM_CTAC && !calls.some((c) => c.amountIn) && j.selfSettle === 'function', `earnboth: the bond adds both notes with no swap (${JSON.stringify(calls)})`);
+    await until(p, () => /In the farm/.test(document.querySelector('#hx-zs')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/In the farm/.test(await text(p, '#hx-zs')) && (await p.evaluate(() => window.__sheetSeen)) === '', `earnboth: said under the button, and no sheet opened (${await text(p, '#hx-zs')})`);
+    if (r.errors.length) { fails++; console.log('FAIL earnboth page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+await step('earngate', async () => {
+  const CUSD_POOL = '0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7';
+  const r = await openFarmKey('b4d1'.padEnd(64, '7'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true, fees: { transfer: 10000, route: 10000 }, reserves: { [CUSD_POOL]: { reserveA: '10000000000', reserveB: '10000000000000' } } }, { width: 1280, height: 1500 }, async (pg) => {
+    await pg.route(/api\.tacit\.finance\/farm\/program/, async (route) => {
+      const res = await route.fetch(), j = await res.json(), p1 = j.pools.find((x) => Number(x.pid) === 1);
+      if (p1) { p1.reserves.reserveA = '10000000000'; p1.reserves.reserveB = '10000000000000'; }       // 100 tETH against 100,000 cUSD: 1 ETH = 1,000 cUSD
+      await route.fulfill({ response: res, json: j });
+    });
+  });
+  const p = r.page;
+  try {
+    await earnCard(p, 'eth', '1');
+    await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await p.click('#hx-max');
+    await until(p, () => /Against the market/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    const rc = (await text(p, '#hx-receipt')).replace(/\s+/g, ' ');
+    ok(/Against the market\s*\d+% of this deposit/.test(rc) && /above the market’s/.test(await text(p, '#hx-q')), `earngate: tETH alone into a pool far from the market shows what the swap costs against it (${rc.slice(0, 240)} | ${await text(p, '#hx-q')})`);
+    ok(await p.isDisabled('#hx-go') && !!(await p.$('#hx-ackv')), 'earngate: and the button waits for that to be accepted, in the card');
+    if (await p.$eval('#hx-ackv', (x) => x.type === 'checkbox')) await p.check('#hx-ackv'); else await p.fill('#hx-ackv', await p.$eval('#hx-ack b', (b) => b.textContent));
+    await until(p, () => !document.querySelector('#hx-go').disabled, null, 30000);
+    ok(true, 'earngate: accepted, the button goes ahead');
+    await shot(p, 'earngate');
+    if (r.errors.length) { fails++; console.log('FAIL earngate page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
 // ETH from the paying account into a private farm in one transaction. The Earn tab offers the zap first for ETH not yet private (making it
 // private first stays a link) and opens the farm on ETH with the amount. The quote says what is swapped inside the pool and what is added;
 // the press sends the router's zap, which runs here on the fork: the pool's shares rise by exactly the quoted count, held as a deposit bound
@@ -8174,19 +8272,16 @@ await step('farmzapeth', async () => {
   // the deposit is still pending on the fork (the settle above was the stub's): a fresh browser has no record of the zap, and finds it from the key
   const q = await openFarmKey(hex, { notes: [], positions: [], zap: true }, { width: 1280, height: 900 });
   try {
-    // the tile's Earn tab says so first, and its link opens the farm with Finish it
+    // the tile's Earn tab says so first, and its link finishes it there, with no sheet
     await q.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await q.page.click('[data-hxm="earn"]');
     await until(q.page, () => /Finish your zap into tETH \/ TAC/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 300000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | alt: ${await text(q.page, '#hx-alt')} | q: ${await text(q.page, '#hx-q')}`); });
     ok(/A zap of yours is waiting to be farmed/.test(await text(q.page, '#hx-q')), 'farmzapeth: a fresh browser with the same key finds the pending zap from the chain, and the Earn tab leads with finishing it');
     await q.page.click('#hx-alt button');
-    await q.page.waitForSelector('#farm-pid0 [data-zap-kept] #sz-finish-0', { timeout: 300000 });
-    ok(true, 'farmzapeth: and its link opens the farm offering Finish it');
-    await q.page.click('#sz-finish-0');
-    await until(q.page, () => window.__farmCalls.some((c) => c.startsWith('bond:')) || (/err/.test(document.querySelector('#sf-status-0')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#sf-status-0')?.textContent || '')), null, 300000);
+    await until(q.page, () => window.__farmCalls.some((c) => c.startsWith('bond:')) || (/err/.test(document.querySelector('#hx-zs')?.innerHTML || '') && !/taking longer than usual|not available right now/.test(document.querySelector('#hx-zs')?.textContent || '')), null, 300000);
     const w = await q.page.evaluate(() => window.__zapWrap);
-    ok(w?.depositId?.toLowerCase() === dep.toLowerCase() && (await q.page.evaluate(() => window.__farmCalls)).join().startsWith('wrap:'), `farmzapeth: and Finish it settles that same deposit into its note and farms it (${await text(q.page, '#sf-status-0')})`);
+    ok(w?.depositId?.toLowerCase() === dep.toLowerCase() && (await q.page.evaluate(() => window.__farmCalls)).join().startsWith('wrap:') && !(await q.page.$('#sheet-farm[open]')), `farmzapeth: and its link finishes it from the card: that same deposit is settled into its note and farmed, no sheet (${await text(q.page, '#hx-zs')})`);
     if (q.errors.length) { fails++; console.log('FAIL farmzapeth page errors: ' + q.errors.slice(0, 3).join(' | ')); }
   } finally { await q.browser.close(); }
 });
@@ -8536,10 +8631,12 @@ await step('hxearntac', async () => {
     const wallet = await rows();
     ok(wallet.length === 1 && /Precision pool/.test(wallet[0]) && /\d%/.test(wallet[0]) && /APR/.test(await text(p, '#hx-routes .rows-h')), `hxearntac: a wallet's TAC lists the public pool alone, with its APR (${wallet.join(' | ')})`);
     ok(/2,000/.test(await text(p, '#hx-bal')), `hxearntac: and the balance line is the wallet's TAC (${await text(p, '#hx-bal')})`);
+    const s0 = await stakedOf(acct);
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await p.waitForSelector('#sheet-farm[open] #pf-tac', { timeout: 120000 }).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(p, '#farm-precision')).replace(/\s+/g, ' ').slice(-300)} | ${JSON.stringify(await p.evaluate(() => ({ modes: [...document.querySelectorAll('[data-pfm]')].map((b) => b.dataset.pfm + ':' + b.getAttribute('aria-pressed') + b.className), ids: ['pf-amt', 'pf-tac', 'pf-go', 'pf-connect'].filter((i) => document.getElementById(i)) })))}`); });
-    await until(p, () => document.querySelector('#pf-tac')?.value === '1000', null, 60000);
-    ok(await p.$eval('[data-pfm="tac"]', (b) => b.getAttribute('aria-pressed') === 'true' || b.classList.contains('on') || b.getAttribute('aria-selected') === 'true'), 'hxearntac: its button opens the public form on TAC with the amount in it');
+    ok(await chainUntil(async () => (await stakedOf(acct)) > s0, 300000), `hxearntac: its button deposits the wallet's TAC into the public farm from the card, with a permit (${await text(p, '#hx-zs')})`);
+    await until(p, () => /Staked/.test(document.querySelector('#hx-zs')?.textContent || ''), null, 120000).catch(() => {});
+    ok(/Staked/.test(await text(p, '#hx-zs')) && (await p.evaluate(() => window.__sheetSeen)) === '', `hxearntac: and says so under the button, with no sheet opened (${await text(p, '#hx-zs')} | ${await p.evaluate(() => window.__sheetSeen)})`);
     await closeAll();
     await p.click('[data-hxm="earn"]');
     await p.selectOption('#hx-from', 'tac');
@@ -8548,22 +8645,18 @@ await step('hxearntac', async () => {
     // what the key holds privately is known once its scan lands (minutes on a cold fork): only then does the button take it all
     await until(p, () => /^Balance 500 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000);
     await p.click('#hx-go');
-    await p.waitForSelector('#sheet-farm[open] #sj-b-0', { timeout: 300000 })
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash: ${await p.evaluate(() => location.hash)} | q: ${await text(p, '#hx-q')} | go: ${await text(p, '#hx-go')} | bal: ${await text(p, '#hx-bal')} | amt: ${JSON.stringify(await p.inputValue('#hx-amt'))} | routes: ${(await rows()).join(' / ')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
-    ok((await text(p, '#hx-q')).trim() !== 'Enter an amount first.' && !(await p.$('#sj-a-0')), 'hxearntac: private TAC held, the button needs no amount typed: it opens the pool and the pool takes what is held');
-    await until(p, () => Number(document.querySelector('#sj-b-0')?.value) > 400, null, 420000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | value=${await p.inputValue('#sj-b-0')} | ${(await text(p, '#sj-rcpt-0')).replace(/\s+/g, ' ')} | ${(await text(p, '#farm-pid0')).replace(/\s+/g, ' ').slice(0, 300)}`); });
+    await until(p, () => Number(document.querySelector('#hx-amt')?.value) > 400, null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | q: ${await text(p, '#hx-q')} | go: ${await text(p, '#hx-go')} | bal: ${await text(p, '#hx-bal')} | amt: ${JSON.stringify(await p.inputValue('#hx-amt'))} | routes: ${(await rows()).join(' / ')} | errors: ${r.errors.slice(0, 3).join(' | ')}`); });
+    ok((await text(p, '#hx-q')).trim() !== 'Enter an amount first.' && !(await p.$('#sheet-farm[open]')), 'hxearntac: private TAC held, the button needs no amount typed: it fills in what the pool takes, in the card, to look at before it goes');
     await closeAll();
     await p.click('[data-hxm="earn"]');
     await p.selectOption('#hx-from', 'tac');
     await p.fill('#hx-amt', '100');
-    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm privately' && /tETH \/ TAC/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000);
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with TAC' && /tETH \/ TAC/.test(document.querySelector('#hx-routes')?.textContent || ''), null, 240000);
     const priv = await rows();
     ok(priv.length === 1 && /tETH \/ TAC/.test(priv[0]) && !/2 steps/.test(priv[0]), `hxearntac: private TAC lists the pool that pairs it alone, in one step (${priv.join(' | ')})`);
-    await p.click('#hx-go');
-    await p.waitForSelector('#sheet-farm[open] #sj-b-0', { timeout: 300000 });
-    await until(p, () => document.querySelector('#sj-b-0')?.value === '100', null, 60000);
-    ok(!(await p.$('#sj-a-0')), 'hxearntac: its button opens the TAC pool on the TAC side alone with the amount in it');
+    const jrc = (await text(p, '#hx-receipt')).replace(/\s+/g, ' ');
+    ok(/Adds\s*[\d.,]+ tETH \+ [\d.,]+ TAC/.test(jrc) && /Relay fee/.test(jrc) && /Network fee/.test(jrc) && !(await p.$('#sheet-farm[open]')), `hxearntac: its quote is the join's own, in the card: what both sides add and the fees (${jrc.slice(0, 200)})`);
     await shot(p, 'hxearn');
     if (r.errors.length) { fails++; console.log('FAIL hxearntac page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
@@ -8916,14 +9009,18 @@ await step('hxpanel', async () => {
   };
   const form = (sel, v) => until(p, ([s, x]) => document.querySelector(s)?.value === x, [sel, v], 120000).then(() => true, () => false);
   try {
+    const acctP = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from('4a7e'.padEnd(64, '6'), 'hex'), 'mainnet').address, st0 = await stakedOf(acctP);
     await press('earn', '0.05', 'precision', 'Farm with ETH');
-    ok(await form('#pf-amt', '0.05'), 'hxpanel: Earn opens the public farm with the ETH in');
-    await press('earn', '0.01', '0', 'Farm privately');
-    ok(await form('#sj-a-0', '0.01'), 'hxpanel: a private farm, with tETH held, opens on tETH alone with the amount');
+    ok(await chainUntil(async () => (await stakedOf(acctP)) > st0, 300000), `hxpanel: Earn deposits ETH into the public farm from the card (${await text(p, '#hx-zs')})`);
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="earn"]'); await p.fill('#hx-amt', '0.01'); await p.waitForSelector('[data-hxr="0"]', { timeout: 600000 }); await p.click('[data-hxr="0"]');
+    await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with tETH' && /Adds/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 900000);
+    ok(/Adds\s*0\.0\d+ tETH \+ [\d.,]+ TAC/.test(await text(p, '#hx-receipt')) && !(await p.$('#sheet-farm[open]')), 'hxpanel: a private farm, with tETH held, is quoted in the card (half swapped inside the pool) and its button joins from there');
     // More than the tETH held: the zap, which opens the farm on ETH with the amount; or, by its link, the ETH made private first, and the
     // wrap's sheet names the farm next, which then opens with the same amount.
     await press('earn', '1', '0', 'Zap into the farm');
-    ok(await form('#sz-a-0', '1') && await p.$eval('#farm-pid0 [data-sjm="eth"]', (b) => b.getAttribute('aria-selected') === 'true'), 'hxpanel: a private farm for more than the tETH held is the zap, opened on ETH with the amount');
+    await until(p, () => /More ETH than your Tacit account holds/.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000);
+    ok(!(await p.$('#sheet-farm[open]')), 'hxpanel: a private farm for more than the tETH held is the zap, from the card: with more ETH than the account holds it says so and opens nothing');
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Zap into the farm', null, 120000);
@@ -8932,7 +9029,8 @@ await step('hxpanel', async () => {
     await p.click('#hx-go');
     ok(await form('#w-amt', '1') && /Then farm it in/.test(await text(p, '#sheet-eth .farm-back')), `hxpanel: a private farm for more than the tETH held makes the ETH private first, and names the farm next (${(await text(p, '#sheet-eth .farm-back')).trim()})`);
     await p.click('#sheet-eth .farm-back a');
-    ok(await form('#sj-a-0', '1') && !!(await p.$('#sheet-farm[open]')), 'hxpanel: the second step opens that farm on tETH alone with the same amount');
+    await until(p, () => document.querySelector('#hx-amt')?.value === '1' && !document.querySelector('#sheet-eth')?.open, null, 120000).catch(() => {});
+    ok((await p.inputValue('#hx-amt')) === '1' && (await p.$eval('#hx-from', (s) => s.value)) === 'eth' && !(await p.$('#sheet-farm[open]')) && !(await p.$('#sheet-eth[open]')), 'hxpanel: the second step is the card itself, on the tETH that was made with the same amount, and no sheet opens');
     // The card's points figure for a wrap is the Private sheet's own: the same number, before and after the hand-off.
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await move(p, 'shield:ether:defi', '0.02');
