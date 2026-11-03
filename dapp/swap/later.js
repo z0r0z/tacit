@@ -30,8 +30,12 @@ const word = (a) => lc(a).replace(/^0x/, '').padStart(64, '0');
 const hexOf = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, '0')).join('');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+// The router's event for a call that ran, with the call's escrow as its first topic: how a plan knows its swap went out
+const CALL_EXECUTED = '0x' + hexOf(keccak_256(new TextEncoder().encode('CallExecuted(address,address)')));
 // How long the swap's route may take to run once quoted, and the gas the relay is asked to price beyond the route's own: the withdrawal and its escrow.
 const DEADLINE_S = 1200, BASE_GAS = 520_000n;
+// The swap card keeps no ETH-pool note worth less than a millionth of an ETH (see makeEvmPoolWallet's dustFloor): none is worth spending, and dust paid to a public address would otherwise grow what this device saves and reads.
+const DUST_ETH = 10n ** 12n;
 
 // The plans kept in this browser: amounts, the token, the address it goes to, the deposit and swap transactions, and (while one waits) the wallet
 // that deposited, so a swap out is never sent from it; that is dropped once the swap is done.
@@ -211,6 +215,8 @@ export async function notifyPool(token, get = globalThis.fetch, keepers = KEEPER
 }
 // The gas a swap out of a token pool is quoted and sent with: the withdrawal, its escrow's approval and the route.
 export const HOP_GAS = BASE_GAS + 900_000n;
+// (A deposit box into another pool is also priced at HOP_GAS, though its completion uses about a third of that: the keeper completes a box only while the fee still covers its gas at the
+// price then, and a box it will not complete is not reclaimed unless the keeper's reclaim is on, so the extra is the margin against a rise in gas between the swap and the completion.)
 // The keeper's fee for a withdrawal into a swap, read without a key (the card quotes the deposit before the key is open). → wei, or for a
 // token pool's keeper (`keeper`, its route; `pool`, the pool it must answer for) the token's base units.
 export async function relayFee(gas = Number(BASE_GAS + 400_000n), get = globalThis.fetch, keeper = CHAIN.keeper, pool = null) {
@@ -229,8 +235,8 @@ export async function relayFee(gas = Number(BASE_GAS + 400_000n), get = globalTh
 // `sendPrivate` the page's send of a private note to a Tacit address (swap/private.js), both for a swap that ends in a private balance.
 // `tokens` (a makeTokenPools instance), `chain.keepers` (the keeper service's base) and `chain.tokenRelayer` (its address) are for tests, as
 // `chain` is.
-export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, now = Date.now }) {
-  // `walletOf(hop)`, `routes` ({ routeOut, routeFrom, routeOutTac }) and `knows(hash)` (→ true, false or undefined) are for tests: a pool's wallet, the swap routes and the chain's receipts without a chain
+export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, sendPrivate = null, store = globalThis.localStorage, chain = CHAIN, prove: proveWith = null, tokens = null, walletOf = null, routes = {}, knows = null, callRan = null, now = Date.now }) {
+  // `walletOf(hop)`, `routes` ({ routeOut, routeFrom, routeOutTac }) and `knows(hash)` (→ true, false or undefined) and `callRan(plan)` (→ { tx }, null or undefined) are for tests: a pool's wallet, the swap routes and the chain's receipts without a chain
   // `now()` is the time in ms the deadlines are counted from: the card passes the chain's, so a device clock that is slow cannot make them past
   const rt = { routeOut, routeFrom, routeOutTac, ...routes };
   const secs = () => Math.floor(now() / 1000);
@@ -250,7 +256,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   }
   const prover = { ms: null, ready: false };
   const mods = () => (modsP ||= (async () => {
-    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=2f1c7179'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
+    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=ab50b44e'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
     const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
     return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), wm, gw, vkHash: pm.vkHash };
   })().catch((e) => { modsP = null; throw e; }));
@@ -309,7 +315,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const w = hop
       ? m.wm.makeEvmPoolWallet({ zk: m.zk, keys, keeper: keeperOf(hop), store: kv, feed: true, prove,
         chain: { ...base, pool: hop.pool, router: hop.router, token: hop.token, deployBlock: hop.from || TOKEN_POOLS_FROM, relayer: chain.tokenRelayer || RELAYER, maxRelayFee: SERVED[lc(hop.token)]?.maxRelayFee ?? 10n ** 36n } })
-      : m.wm.makeEvmPoolWallet({ zk: m.zk, keys, keeper: chain.keeper, store: kv, feed: true, prove, chain: { ...base, pool: POOL, router: ROUTER, deployBlock: chain.deployBlock } });
+      : m.wm.makeEvmPoolWallet({ zk: m.zk, keys, keeper: chain.keeper, store: kv, feed: true, prove, chain: { ...base, pool: POOL, router: ROUTER, deployBlock: chain.deployBlock, dustFloor: DUST_ETH } });
     w.connect(signer);
     wallets.set(key, w);
     return w;
@@ -341,6 +347,18 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (knows) return knows(h);
     if (walletOf || !h) return undefined;
     try { rpc ||= (await mods()).wm.jsonRpc(chain.rpc); return (await rpc('eth_getTransactionReceipt', [h], { found: true })) != null; } catch { return undefined; }
+  }
+  // The transaction in which a plan's call ran: the router's CallExecuted for the plan's escrow, read from the block the plan was sent at. → { tx }, null (it has not
+  // run), or undefined when that cannot be read (a plan from before the escrow was kept, or no chain), which leaves the caller to judge by the pool's balance.
+  async function ranCall(plan) {
+    if (!plan.escrow) return undefined;
+    if (callRan) return callRan(plan);
+    if (!plan.swapBlock || walletOf) return undefined;
+    try {
+      rpc ||= (await mods()).wm.jsonRpc(chain.rpc);
+      const logs = await rpc('eth_getLogs', [{ address: plan.hop?.router || ROUTER, topics: [CALL_EXECUTED, '0x' + word(plan.escrow)], fromBlock: '0x' + Math.max(0, Number(plan.swapBlock) - 2).toString(16), toBlock: 'latest' }]);
+      return Array.isArray(logs) && logs.length ? { tx: logs[0].transactionHash } : null;
+    } catch { return undefined; }
   }
   // A transaction the wallet sent, until it is in a block (an approval that must land before the call that uses it). → its receipt
   async function mined(h, failed = 'The approval did not go through. Nothing was deposited.') {
@@ -583,7 +601,10 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     if (signer.ready) await signer.ready();
     onStep('confirm in your wallet');
     const h = await signer.send({ to: ZROUTER, data: r.callData, value: swap });
-    return { hash: h, box: box.box, arrives: box.value };
+    onStep('waiting for the block');
+    const rc = signer.receipt ? await signer.receipt(h).catch(() => null) : null;
+    if (rc && !(rc.status === '0x1' || rc.status === 1 || rc.status === 'success')) throw new Error('The swap was sent but failed on chain, so nothing reached the deposit box.');
+    return { hash: h, box: box.box, arrives: box.value, intent: box.intent ?? null, deadline: box.deadline ?? null };
   }
   function save(plan) { keepPlans([plan, ...readPlans(store).filter((p) => p.id !== plan.id)], store); }
   // A deposit with no plan to find it again is a swap that waits for nobody: a browser that cannot keep the plan (full, blocked) stops it before anything is sent.
@@ -600,7 +621,13 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       // a note of exactly its amount that the pool made after the plan began: an older note of the same size is some other money
       if (notes.some((n) => BigInt(n.v) === BigInt(plan.depositWei) && Number(n.index) >= Number(plan.leaves0 || 0))) { plan.state = 'waiting'; plan.depositedAt = plan.at; plan.err = null; }
       else { plan.state = 'stopped'; plan.err = 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a minute.'; }
-    } else if (plan.balBefore != null && s.balance + BigInt(plan.swapWei) <= BigInt(plan.balBefore)) {
+    } else if (await (async () => {
+      // Did the swap go out? The router says so for a plan that kept its escrow (an unrelated spend from the pool cannot be taken for it); a plan without one is judged by the pool's balance
+      const ran = await ranCall(plan);
+      const went = ran !== undefined ? ran !== null : plan.balBefore != null && s.balance + BigInt(plan.swapWei) <= BigInt(plan.balBefore);
+      if (went && ran?.tx && !plan.swapTx) plan.swapTx = ran.tx;
+      return went;
+    })()) {
       if (poolDest(plan)) { plan.state = 'shielding'; plan.swapDoneAt = Date.now(); } else { plan.state = 'done'; plan.doneAt = Date.now(); }
       plan.err = null; delete plan.from;
     } else if (plan.state === 'unsure' && plan.swapAt && Date.now() - plan.swapAt < 20 * 60e3) { /* sent a moment ago and not seen yet: it stays in doubt, never offered again */ }
@@ -673,7 +700,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     // (the TAC the account held before, so only this swap's is taken; the floor and the route)
     if (poolDest(plan) && !plan.hop && !same) { const { t, acct } = await tacitAccount(); plan.tacBefore = String(BigInt(await t.ethCall(TAC, '0x70a08231' + word(acct.address)) || '0x0')); }
     plan.min = String(r.min); plan.route = r.name;
-    plan.state = 'swapping'; plan.balBefore = String(s.balance); plan.swapAt = Date.now(); plan.err = null; save(plan);
+    plan.state = 'swapping'; plan.balBefore = String(s.balance); plan.swapBlock = s.block ?? null; plan.swapAt = Date.now(); plan.err = null; save(plan);
     try {
       warm().catch(() => {});
       let h;
@@ -682,12 +709,14 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         // the escrow holds the token: one call approves zRouter for exactly the swap's amount and runs the route, which pays the address
         const m = await mods(), refund = await w.refundBox();
         const intent = m.gw.callIntent({ calls: [{ target: ZROUTER, value: 0n, token: plan.hop.token, amount, push: false, data: r.callData }], refund, deadline: r.deadline, nonce: randomNonce() });
+        plan.escrow = m.gw.callEscrowAddress(intent, plan.hop.router); save(plan);          // kept before the send: a check asks the router whether this call ran
         h = await w.withdrawAndCall({ intent, amount, gas: Number(HOP_GAS), maxFee, via, onStep });
       } else {
         const m = await mods(), refund = await w.refundBox();
         // a swap into a private balance pays the key's own account, and hands it the gas to make the TAC private from there, in the same withdrawal
         const calls = [{ target: ZROUTER, value: amount, data: r.callData }, ...(gas > 0n ? [{ target: plan.to, value: gas }] : [])];
         const intent = m.gw.callIntent({ calls, refund, deadline: r.deadline, nonce: randomNonce() });
+        plan.escrow = m.gw.callEscrowAddress(intent, ROUTER); save(plan);
         // the relay is paid for the gas it buys: the withdrawal and its escrow, and the route as sent from the pool (which holds the ETH), estimated
         // with the stand-in still in it, so the node never sees where the tokens go
         const multi = r.standData.startsWith('0xac9650d8');
@@ -695,7 +724,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
         h = await w.withdrawAndCall({ intent, amount: amount + gas, gas: Number(BASE_GAS + (routeGas * 3n) / 2n + (gas > 0n ? 40_000n : 0n)), via, onStep });
       }
       plan.swapTx = h; plan.proveMs = prover.ms; delete plan.from;
-      if (plan.into && r.intoBox) plan.intoBox = r.intoBox.box;
+      if (plan.into && r.intoBox) { plan.intoBox = r.intoBox.box; plan.intoIntent = r.intoBox.intent ?? null; plan.intoDeadline = r.intoBox.deadline ?? null; }      // (the intent a reclaim of the surplus needs)
       // The wallet lets a send stand when no receipt shows in three minutes (it may yet land). A hash that no node has is not a swap that was made:
       // it is kept in doubt, with its hash, for a check against the pool, and never shown as done.
       if (await chainKnows(h) === false) throw new Error('The swap was sent but is not in a block yet; it may still have sent. Check it in a few minutes before swapping again.');

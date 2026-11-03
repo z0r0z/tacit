@@ -22,7 +22,7 @@ function wallets({ balance = 2_000n * 10n ** 6n, fee = 100_000n, failWith = null
   Object.assign(w, {
     sync: async () => ({ balance: w.balance, leaves: 40 }), notes: () => [{ index: 30, v: String(w.balance) }], summary: () => ({ balance: w.balance }),
     quote: async () => ({ fee: String(fee) }), refundBox: async () => REFUND,
-    depositBox: async (a) => { w.calls.depositBox.push(a); return { box: BOX, amount: a.amount, value: a.amount - BigInt(a.fee), deadline: a.deadline }; },
+    depositBox: async (a) => { w.calls.depositBox.push(a); return { box: BOX, amount: a.amount, value: a.amount - BigInt(a.fee), deadline: a.deadline, intent: { refund: a.refund, deadline: String(a.deadline), amount: a.amount.toString() } }; },
     withdrawAndCall: async (a) => { w.calls.withdrawAndCall.push(a); if (failWith) throw new Error(failWith); return '0x' + 'ab'.repeat(32); },
     withdraw: async (a) => { w.calls.withdraw.push(a); return '0x' + 'cd'.repeat(32); },
   });
@@ -79,6 +79,7 @@ test('the swap out into another pool is sent once and remembers the box', async 
   const done = await L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' });
   assert.strictEqual(done.state, 'done');
   assert.strictEqual(done.intoBox, BOX);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(done.intoIntent)), { refund: REFUND, deadline: String(done.intoDeadline), amount: done.intoIntent.amount }, 'and the intent a reclaim of the surplus needs, with its deadline')
   assert.strictEqual(w.calls.withdrawAndCall.length, 1);
   assert.strictEqual(w.calls.withdrawAndCall[0].amount, 500n * 10n ** 6n);
 });
@@ -143,11 +144,13 @@ test('the keeper’s own words for a relay that will not send offer the wallet; 
     ['the relay is busy with other sends; try again in a minute. Sending it from your own wallet also works, and shows your address as the sender', true],
     ["the relay can't price its fee in this token right now; try again in a few minutes. Sending it from your own wallet also works, and shows your address as the sender", true],
     ["the relay has used today's gas for this pool; try again tomorrow. Sending it from your own wallet also works, and shows your address as the sender", true],
+    ['The relay is rate limiting this connection, so nothing was sent. Try again in a minute, or send it from your own wallet.', true],
     ['gas above the 1500000 cap', true], ['relaying is off', true], ['relayer returned 503', true], ['the transaction reverts: ShortOutput', false]]) {
     const { L, store } = make({ w: wallets({ failWith: msg }), r: routesOf([E18, E18]) });
     const plan = await L.adopt(args());
     await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }));
     assert.strictEqual(JSON.parse(store.getItem('tacit-swap-later-v1'))[0].refused, refused, msg);
+    if (refused) assert.strictEqual(JSON.parse(store.getItem('tacit-swap-later-v1'))[0].state, 'waiting', `${msg}: nothing went, so the plan waits`);
   }
 });
 
@@ -196,4 +199,44 @@ test('a pool that takes another token than the swap pays is refused before a box
   const w = wallets(), { L } = make({ w, r: routesOf([E18, E18]) });
   await assert.rejects(L.adopt(args({ token: ZERO, sym: 'ETH', into: into(DST) })), /takes another token/);
   assert.strictEqual(w.calls.depositBox.length, 0);
+});
+
+// ── did the swap go out: the router's CallExecuted for the plan's escrow says so; a plan without one is judged by the pool's balance as before ──
+const withRan = (ran, w = wallets()) => {
+  const mem = new Map(), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  return { L: makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18, E18]).routes, callRan: ran }), store, w };
+};
+const TXR = '0x' + '7e'.repeat(32);
+
+test('a swap is kept with the escrow its call will run in, before it is sent', async () => {
+  const mem = new Map(), seen = [], store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => { seen.push(JSON.parse(v)[0]); mem.set(k, String(v)); } };
+  const w = wallets(); w.withdrawAndCall = async () => { throw new Error('the tab was closed'); };
+  const L = makeLater({ keyHex: async () => '22'.repeat(32), signer: { address: '0x' + '01'.repeat(20) }, ethCall: async () => '0x', store, chain: { chainId: 1, rpc: ['http://127.0.0.1:1'] }, walletOf: () => w, routes: routesOf([E18, E18]).routes });
+  const plan = await L.adopt(args());
+  await assert.rejects(L.swapOut(plan, { shown: await L.offer(plan), via: 'relay' }));
+  const sending = seen.find((p) => p.state === 'swapping' && p.escrow);
+  assert.match(sending?.escrow || '', /^0x[0-9a-fA-F]{40}$/, 'the escrow is in the plan while it is marked as sending');
+});
+
+test('a plan in doubt whose call the router says ran is done, with the hash of the transaction it ran in', async () => {
+  const { L, store } = withRan(async () => ({ tx: TXR }));
+  const plan = { ...(await L.adopt(args())), state: 'unsure', escrow: '0x' + 'e5'.repeat(20), swapBlock: 100, swapAt: Date.now(), balBefore: String(10n ** 12n) };
+  const checked = await L.check(plan);
+  assert.strictEqual(checked.state, 'done');
+  assert.strictEqual(checked.swapTx, TXR, 'the swap\'s own transaction is found again');
+});
+
+test('another spend from the pool is not taken for the swap: with an escrow, the router must say so', async () => {
+  // the pool's balance is down by more than the swap (a payment from /pay/eth), but the router has no call for this plan's escrow
+  const w = wallets(), { L } = withRan(async () => null, w);
+  const base = await L.adopt(args());
+  w.balance = 10n;                                                  // spent down by something else since
+  const plan = { ...base, state: 'unsure', escrow: '0x' + 'e5'.repeat(20), swapBlock: 100, swapAt: Date.now() - 30 * 60e3, balBefore: String(10n ** 12n) };
+  const checked = await L.check(plan);
+  assert.notStrictEqual(checked.state, 'done', 'not done: nothing ran');
+  assert.strictEqual(checked.state, 'waiting', 'and long enough has passed for it to be offered again');
+  // a plan from before the escrow was kept is still judged by the balance
+  const old = { ...base, state: 'unsure', balBefore: String(10n ** 12n), swapAt: Date.now() - 30 * 60e3 };
+  delete old.escrow;
+  assert.strictEqual((await L.check(old)).state, 'done');
 });

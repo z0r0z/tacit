@@ -433,6 +433,10 @@ export function zapDeposit(zap, tx, { token, amountIn, swap, pull = { kind: 'all
 // from chain logs.
 export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store = null, signer = null, feed = true, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
   const token = chain.token ?? ZERO, isToken = BigInt(token) !== 0n;
+  // `chain.dustFloor`: a note worth less than this is not kept (default 0: every note is). Anyone can pay a public pool address, and every note kept costs this device about
+  // 6 KB of saved state and a pass over it with each block (150 of them are 860 KB and over a second a read). A caller that never spends such notes sets it: a note under a
+  // millionth of an ETH is worth less than a thousandth of what it costs to spend.
+  const dustFloor = chain.dustFloor != null ? BigInt(chain.dustFloor) : 0n;
   const ethOnly = (what) => { if (isToken) throw new Error(`${what} is for the ETH pools, not a token pool`); };
   const asset = poolAsset({ chainId: BigInt(chain.chainId), pool: chain.pool, token });
   const boxes = new Map();      // an index's address is fixed by the key, so each is derived once
@@ -565,7 +569,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (received.has(index)) { track.push(index); continue; }
         if (!t.memo[k].length) continue;
         const o = opens.get(`${i}:${k}`);
-        if (o && o.v > 0n) {
+        if (o && o.v > 0n && o.v >= dustFloor) {
           track.push(index);
           notes.set(`${index}`, withKeys({ index, leaf: t.outLeaf[k].toString(), v: o.v.toString(), rho: o.rho.toString(), s: hex(o.s), block: t.block, tx: t.tx, kind: 'memo' }));
         }
@@ -577,7 +581,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const i = boxIndex.get(r.box) ?? RECEIVE_INDEX;
       const n = receivedNote(zk, keys.zkWallet, i, r);
       const leaf = leafAt.get(r.index) ?? -1n;
-      if (leaf < 0n || n.v === 0n || zk.leafOf(asset, n.v, receiveKeys(zk, keys.zkWallet, i).npk, n.rho) !== leaf) { tree.untrack(r.index); continue; }
+      if (leaf < 0n || n.v === 0n || n.v < dustFloor || zk.leafOf(asset, n.v, receiveKeys(zk, keys.zkWallet, i).npk, n.rho) !== leaf) { tree.untrack(r.index); continue; }
       notes.set(`${r.index}`, withKeys({ index: r.index, leaf: leaf.toString(), v: n.v.toString(), rho: n.rho.toString(), block: r.block, tx: r.tx, kind: 'receive', box: i }));
     }
     // A spent note is dropped with its path; nullifiers that are not ours are not kept. It is remembered for a few days apart from
@@ -707,6 +711,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const state = () => view || saved;
   const unspent = () => state().notes.filter((n) => !pending.has(n.nf));
   const pending = new Set();
+  // Notes a spend under way has chosen. A claim lasts until that spend's transaction ends (or ten minutes, so a failure between two steps cannot hold notes for good): a second
+  // spend from this wallet takes other notes, or says that the funds are in use, and does not build a proof on the same ones. The balance still counts them.
+  const claimed = new Map();
+  const claim = (ins) => { const t = Date.now(); for (const n of ins) claimed.set(n.nf, t); };
+  const taken = (n) => (claimed.get(n.nf) ?? 0) > Date.now() - 600_000;
+  const free = () => unspent().filter((n) => !taken(n));
   function summary() {
     const u = unspent();
     return { balance: u.reduce((a, n) => a + BigInt(n.v), 0n), notes: u.length, leaves: state().tree.size, block: saved.block };
@@ -755,7 +765,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
 
   // Up to two unspent notes covering `need`, smallest sufficient first; null if no two do.
   function select(need) {
-    const u = unspent().sort((a, b) => (BigInt(a.v) < BigInt(b.v) ? -1 : 1));
+    const u = free().sort((a, b) => (BigInt(a.v) < BigInt(b.v) ? -1 : 1));
     const one = u.find((n) => BigInt(n.v) >= need);
     if (one) return [one];
     for (let i = u.length - 1; i > 0; i--) for (let j = i - 1; j >= 0; j--) if (BigInt(u[i].v) + BigInt(u[j].v) >= need) return [u[i], u[j]];
@@ -914,7 +924,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // that the relay holds or is sending already, is not proved again: it ends with that said. → tx hash.
   // selfCall(tx) → { to, data }: what the signer submits, when not pool.transact (withdrawToV1).
   // ahead: a deposit proved before it was asked for (prepareDeposit), sent as it is while the pool's head is the one it was proved against.
-  async function transact({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, ahead = null, onStep = () => {} }) {
+  async function transact(args) {
+    try { return await transactOnce(args); } finally { for (const n of args.ins) claimed.delete(n.nf); }
+  }
+  async function transactOnce({ ins, outs, extAmount = 0n, recipient = ZERO, q = null, extra = {}, selfCall = null, ahead = null, onStep = () => {} }) {
     // A spend's outputs take one-time keys the sender can derive again (paymentKey); a deposit's are random.
     const attempt = ins.length ? nextAttempt(ins[0].nf) : 0;
     const eOf = (k) => (ins.length ? paymentKey(keys, { chainId: chain.chainId, nf: BigInt(ins[0].nf), k, attempt }) : undefined);
@@ -970,7 +983,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
               : Object.assign(new Error('A spend of these funds is already on its way. Check Activity before sending again.'), { said: true });
           }
           if (r.status === 409 && r.body.stale) { if (/StaleRoot|WrongInsertionIndex|unknown membership root/i.test(why)) treeRefused = true; continue; }
-          if (r.status === 429) { await sleep(5000); continue; }
+          // A relay that rate limits this connection has been asked over the time it asked to be waited for (keeperFetch). Proving again cannot help a limiter and costs
+          // half a minute a round, so this ends here, with nothing sent, in words that offer the wallet's own send.
+          if (r.status === 429) throw Object.assign(new Error('The relay is rate limiting this connection, so nothing was sent. Try again in a minute, or send it from your own wallet.'), { said: true, busy: true });
           if (/^\d+$/.test(String(r.body?.needFee ?? ''))) throw feeWentUp(r.body.needFee);
           throw new Error(why || `relayer returned ${r.status}`);
         }
@@ -1037,15 +1052,18 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // before the first merge when no run of them would, so no fee is paid for a spend that cannot happen.
   async function prepare(need, q, onStep) {
     const fee = q ? BigInt(q.fee) : 0n;
-    if (mergePlan(unspent().map((n) => n.v), need, fee) == null) throw new Error('not enough in the pool for this amount and its fee');
+    if (mergePlan(free().map((n) => n.v), need, fee) == null) {
+      throw new Error(mergePlan(unspent().map((n) => n.v), need, fee) == null ? 'not enough in the pool for this amount and its fee' : 'another spend from this wallet is under way and holds those funds; try again when it has finished');
+    }
     for (let guard = 0; guard < 8; guard++) {
       const pick = select(need);
-      if (pick) return pick;
-      const u = unspent().sort((a, b) => (BigInt(b.v) < BigInt(a.v) ? -1 : 1));
+      if (pick) { claim(pick); return pick; }
+      const u = free().sort((a, b) => (BigInt(b.v) < BigInt(a.v) ? -1 : 1));
       if (u.length < 2) break;
       const total = BigInt(u[0].v) + BigInt(u[1].v);
       if (total <= fee) break;
       onStep('combining notes first');
+      claim([u[0], u[1]]);
       await transact({ ins: [u[0], u[1]], outs: [{ to: keys, value: total - fee }, null], q, onStep });
       await waitFor(() => unspent().some((n) => BigInt(n.v) === total - fee));
     }
@@ -1064,7 +1082,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const self = { V: keys.V, A: keys.A, N: keys.N };
   // amount 'max': all that one spend takes out, its two largest notes, less the fee quoted for that very spend.
   const maxOf = (fee) => {
-    const u = unspent().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), total = (u[0] ?? 0n) + (u[1] ?? 0n);
+    const u = free().map((n) => BigInt(n.v)).sort((a, b) => (b < a ? -1 : 1)), total = (u[0] ?? 0n) + (u[1] ?? 0n);
     if (total <= fee) throw new Error('not enough in the pool for this amount and its fee');
     return total - fee;
   };
@@ -1128,7 +1146,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const str = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'bigint' ? v.toString() : v]));
       const res = await keeperPost('/deposit', { intent: str(intent), hint: { outputs: [{ v: n.v.toString(), npk: n.npk.toString(), rho: n.rho.toString() }, null], memo0: hex(n.memo), memo1: '0x' } });
       if (res.status !== 200 || String(res.body?.box || '').toLowerCase() !== box.toLowerCase()) throw new Error(`The relay did not take this deposit (${res.body?.error || res.status}), so nothing was sent.`);
-      return { box, amount: a, value: a - f, deadline: Number(deadline) };
+      // `intent` is what a reclaim of whatever the box holds above its floor needs (public: the pool emits it with the deposit); it cannot be built again from the keys, as its nonce and note are random
+      return { box, amount: a, value: a - f, deadline: Number(deadline), intent: str(intent) };
     },
 
     // A fresh receive box for a call intent's refund (anything returned is swept back into a note here), and asks

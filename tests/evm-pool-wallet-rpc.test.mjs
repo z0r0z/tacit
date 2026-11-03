@@ -704,11 +704,13 @@ async function quickly(fn) {
 // the k-th read of the chain's tip from now. s.ready() is the wallet's first sync; s.rescans counts the reads from the
 // deploy block after it.
 const RELAYER = '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec';
-function spender(seed, { sealed = false } = {}) {
+function spender(seed, { sealed = false, extra = [] } = {}) {
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(seed)), self = { V: keys.V, A: keys.A, N: keys.N };
   const pool = fakePool();
   const o = sealNote(zk, { to: self, value: 10n ** 16n, asset: ASSETF });
   const { firstIndex } = pool.transact({ out: [o.leaf, 21n], memo: [o.memo, null] });
+  // further notes of the wallet's, of the values given
+  for (const [i, v] of extra.entries()) { const e = sealNote(zk, { to: self, value: v, asset: ASSETF }); pool.transact({ out: [e.leaf, 40n + BigInt(i)], memo: [e.memo, null] }); }
   const nf = zk.nullifier(openNote(zk, keys, { memo: o.memo, leaf: o.leaf, asset: ASSETF }).nk, o.leaf, firstIndex);
   const seen = [], inner = nodeOf(pool, seen);
   let proofs = 0, after = 0, base = 0;
@@ -743,7 +745,7 @@ function spender(seed, { sealed = false } = {}) {
   fetchImpl.sealed = sealed;
   s.make = () => (s.w = makeEvmPoolWallet({
     zk, keys, keeper: 'https://k.test', fetchImpl, feed: !!s.feed, store: null,
-    prove: async () => { proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
+    prove: async () => { if (s.gate) await s.gate; proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
     chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc, deployBlock: 1, confirmations: 0, relayer: RELAYER },
   }));
   return s;
@@ -837,8 +839,10 @@ await check('the wallet rebuilds from the chain after rounds the pool\'s tree re
   t.relay = () => [429, { error: 'rate limited' }];
   t.make();
   await t.ready();
-  await quickly(() => assert.rejects(t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), /the pool kept moving/));
-  assert.equal(t.proofs, 8);
+  // a relay that rate limits is not proved against again and again: the spend ends at once, nothing sent, with the wallet's own send offered
+  await quickly(() => assert.rejects(t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && e.busy === true && /rate limiting this connection, so nothing was sent/.test(e.message) && /own wallet/.test(e.message)));
+  assert.equal(t.proofs, 1, 'one proof, not eight');
+  assert.equal(t.count('/relay'), 5, 'asked, and asked again for as long as it asked to be waited for, then no more');
   assert.equal(t.rescans, 0, 'rate limits are no reason to rebuild');
 });
 
@@ -1056,6 +1060,48 @@ await check('overlapping rescans leave the feed on when they are done', async ()
   s.pool.transact({ out: [41n, 42n], memo: [Buffer.from('aa'), Buffer.from('bb')] });
   await s.w.sync();
   assert.ok(s.count('/events') > before, 'a read after them still asks the feed');
+});
+
+await check('two spends at once take different notes, and one that needs funds the other holds says so instead of proving on them', async () => {
+  const s = spender(36, { extra: [2n * 10n ** 16n] });                       // notes of 0.01 and 0.02 ETH
+  const asked = [];
+  s.reserve = (_, body) => { asked.push(body.nfs.join()); return slotOf(s.pool); };
+  s.relay = () => [400, { error: 'stop here' }];
+  s.make();
+  await s.ready();
+  const both = await Promise.allSettled([s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' })]);
+  assert.ok(both.every((r) => r.status === 'rejected' && /stop here/.test(r.reason.message)), 'both reached the relay');
+  assert.equal(asked.length, 2);
+  assert.notEqual(asked[0], asked[1], 'each spend was proved on its own note');
+  // and one that needs both notes while the first holds one of them
+  const t = spender(37, { extra: [2n * 10n ** 16n] });
+  let open; t.gate = new Promise((r) => { open = r; });
+  t.reserve = () => slotOf(t.pool);
+  t.relay = () => [400, { error: 'stop here' }];
+  t.make();
+  await t.ready();
+  const first = t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 50));                                // the first has chosen its note and waits at its proof
+  await assert.rejects(t.w.withdraw({ to: TO, amount: 2n * 10n ** 16n + 5n * 10n ** 15n, via: 'relay' }), /another spend from this wallet is under way/);
+  assert.equal((await t.w.sync()).balance, 3n * 10n ** 16n, 'the balance still counts the funds the first holds');
+  open();
+  assert.match((await first).message, /stop here/);
+  await assert.rejects(t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), /stop here/, 'and once it has ended its note is free again');
+});
+
+await check('notes under the dust floor are not kept, whoever pays them; with no floor set every note is', async () => {
+  const keys = evmPoolKeys(zk, new Uint8Array(32).fill(41)), self = { V: keys.V, A: keys.A, N: keys.N };
+  const mk = (floor) => { const pool = fakePool(); return { pool, w: makeEvmPoolWallet({ zk, keys, prove: null, store: null, keeper: null, feed: false, chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc: nodeOf(pool, []), deployBlock: 1, confirmations: 0, ...(floor === undefined ? {} : { dustFloor: floor }) } }) }; };
+  const fill = (pool) => { for (const v of [1n, 7n, 10n ** 11n, 10n ** 12n - 1n, 10n ** 12n, 10n ** 16n]) { const o = sealNote(zk, { to: self, value: v, asset: ASSETF }); pool.transact({ out: [o.leaf, 11n], memo: [o.memo, null] }); } };
+  const a = mk(10n ** 12n); fill(a.pool);
+  const sum = await a.w.sync();
+  assert.equal(sum.notes, 2, 'only the note at the floor and the one above it are kept');
+  assert.equal(sum.balance, 10n ** 12n + 10n ** 16n);
+  const b = mk(); fill(b.pool);
+  assert.equal((await b.w.sync()).notes, 6, 'with no floor set, all six are kept as before');
+  // a sweep to a receive box is under the same floor
+  const c = mk(10n ** 12n); c.pool.sweep(keys, 1, 500n); c.pool.sweep(keys, 2, 5n * 10n ** 12n); c.pool.tip += 5;
+  assert.equal((await c.w.sync()).balance, 5n * 10n ** 12n, 'a sweep of 500 wei is not kept, one of 5e12 is');
 });
 
 console.log(`\n${n} checks passed`);

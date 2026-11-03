@@ -1002,7 +1002,7 @@ function button(q, r, kind, gate) {
   const pay = tokenOf(S.pay), get = tokenOf(S.get);
   if (S.busy) return ['Working…', false];
   if (!kind) return ['Choose another pair', false];
-  if (!S.amt || !parseUnits(S.amt, pay.dec)) return ['Enter an amount', false];
+  if (!S.amt || !parseUnits(S.amt, pay.dec)) return [amountWord(S.amt, pay.dec), false];
   // an address already refused is said at once, even while the price is read again
   if (S.toBad && !S.outP) return ['Check the address', false];
   if (q?.busy) return ['Finding the best price…', false];
@@ -1423,6 +1423,7 @@ function modsSoon() {
 // sheet closed without a key is not shown again until the button is pressed. Not on a data saver or a slow link or in a hidden page; a figure is asked for once, and again after
 // a minute if it failed.
 let depAsked = '', depTimer = 0, depDeclined = false, depTouched = 0;
+const LOADED = Date.now(), IDLE_MS = 180e3, idleFor = () => Date.now() - Math.max(depTouched, LOADED);
 const depKeyed = () => !!(PV?.unlocked || H.key?.session?.unlocked);
 const sheetOpen = () => !!document.querySelector('dialog[open], .bsheet, .bm-modal') || $('#pk')?.hidden === false;
 function depositSoon(q) {
@@ -1443,7 +1444,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=a91742c7').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=cb9985ae').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 // what Swap privately starts from: the wallet's ETH, or a token the zap sells for the deposit's ETH (any listed token zQuoter routes, or TAC through
 // the Precision pool; WETH, tacUSD and tacBTC have their own ways in)
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
@@ -1539,6 +1540,8 @@ function readFee() {
 }
 // The box under the receipt: one row that switches it and, while it is on, the buffer and the three steps it takes. Drawn again only when it is
 // switched, so the slider keeps its hold while dragged; its figures are written in place.
+// what the button says when the amount cannot be read: more decimals than the coin has is not "no amount"
+const amountWord = (amt, dec) => (/^\s*\d*[.,]\d+\s*$/.test(String(amt || '')) && String(amt).split(/[.,]/)[1].trim().length > dec ? `At most ${dec} decimals` : 'Enter an amount');
 const eth2 = (wei) => { const n = Number(wei) / 1e18; return tidy(n >= 1 || !(n > 0) ? n.toFixed(2) : n.toFixed(Math.min(18, 1 - Math.floor(Math.log10(n))))); };
 const LATER_TIP = 'Deposit now into a private pool and swap out later, so nothing onchain links your wallet to where the tokens go.';
 function paintLater(q, r, kind) {
@@ -1600,6 +1603,7 @@ async function laterGo() {
     S.busy = true;
     try { if (picked(q)?.hop) { readHop(S.pay, true); for (let i = 0; i < 40 && tokHop()?.busy; i++) await new Promise((r) => setTimeout(r, 250)); } else await readFee(); } finally { S.busy = false; }
     if (picked(q)?.hop && (Date.now() - (tokHop()?.at || 0) > 120e3 || tokHop()?.fee == null)) { say('The relay could not quote its fee right now. Try again in a moment.', 'err', true); paint(); return; }
+    if (!picked(q)?.hop && Date.now() - LATER.feeAt > 120e3) { say('The relay could not quote its fee right now. Try again in a moment.', 'err', true); paint(); return; }
     if (laterDeposit(q) !== was) { say('The relay’s fee moved, so the deposit is shown again. Check it and press once more.', '', true); paint(); return; }
   }
   const dep = laterDeposit(q), extra = laterExtra(q), hopQ = !!picked(q)?.hop, v = isEth(S.pay) || hopQ ? null : picked(q)?.via, tin = v ? laterIn(q) : null, pt = tokenOf(S.pay);
@@ -1618,6 +1622,7 @@ async function laterGo() {
     await lt.start({ swapWei: laterSwapWei(q), extraWei: extra, token: S.get, sym: get.sym, dec: get.dec, to, toName: to && S.toName?.addr === lc(to) ? S.toName.name : null, depositWei: dep,
       dest: hop ? { kind: 'address' } : dest, gasWei: hop ? 0n : laterGas(), pay: hop ? { token: S.pay, sym: pt.sym, dec: pt.dec } : pay, hop, onStep: (s) => { say(esc(laterStep(s))); } });
     popped = true; reward(earned);                  // the points pop once the deposit has landed, not when it is sent
+    LATER.rand = Math.random();                     // the next swap draws its own extra: a session of them is not one fixed ratio
     LATER.on = false; S.amt = ''; S.q = null; S.to = null; S.toTacit = null; S.toTacitBad = ''; S.toOpen = false; $('#to-in').value = '';
     say('<span class="ok">Deposited.</span> The swap waits below.', 'ok', true);
   } catch (e) {
@@ -1673,7 +1678,7 @@ function paintSteps() {
       + `<div class="acts"><button type="button" class="btn" data-later-ok="${id}" data-via="${self ? 'self' : 'relay'}">${self ? 'Confirm from this wallet' : 'Confirm swap'}</button><button type="button" class="btn ghost" data-later-no="${id}">Not now</button></div></div>` : '';
     // the one thing to do while it waits: swap it out now (the price is shown first, and nothing is sent until it is confirmed)
     const cta = waiting && !o ? `<div class="cta"><button type="button" class="btn" data-later-go="${id}">${out3 ? 'Pay out now' : 'Swap now'}</button><small>${p.held ? 'You see the price and confirm it before anything is sent.' : b?.since ? `Mixed with ${Math.ceil(b.since / 2)} other transaction${b.since > 2 ? 's' : ''} in the pool since yours. Swap now, or wait for more. You confirm the price first.` : 'The longer it waits, the more deposits mix with it. You confirm the price before anything is sent.'}</small></div>` : '';
-    const chip = stopped || depDoubt || swapDoubt ? ['Needs a look', 'err'] : done ? ['Done', 'ok'] : swapping || shielding ? ['Swapping', ''] : !deposited ? ['Depositing', ''] : waiting && o ? ['Confirm price', ''] : waiting ? ['Ready', 'ok'] : null;
+    const chip = stopped || depDoubt || swapDoubt ? ['Needs a look', 'err'] : done ? ['Done', 'ok'] : swapping ? ['Swapping', ''] : shielding ? ['Making private', ''] : !deposited ? ['Depositing', ''] : waiting && o ? ['Confirm price', ''] : waiting ? ['Ready', 'ok'] : null;
     const selfOk = p.refused && waiting && W.account && lc(W.account) !== p.from;
     const note = p.err && !done ? `<p class="note ${stopped || depDoubt || swapDoubt ? 'err' : 'warn'}" role="status">${esc(p.err)}${selfOk ? ` <button type="button" class="link" data-later-self="${id}">Send it from this wallet</button>` : ''}</p>` : '';
     const x = done ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Hide">×</button>` : stopped || held ? `<button type="button" class="x" data-later-forget="${id}" aria-label="Remove">×</button>`
@@ -1778,7 +1783,7 @@ function stepsClick(e) {
   if (no) { delete LATER.offers[no.dataset.laterNo]; say(''); paintSteps(); }
   if (c) laterCheck(c.dataset.laterCheck);
   if (s) laterOffer(s.dataset.laterSelf, 'self');
-  if (f && (!f.dataset.ask || confirm(plans().find((p) => p.id === f.dataset.laterForget)?.held ? 'Remove this plan? The balance stays in the pool, yours.' : 'Remove this plan? Its deposit stays in your private ETH balance, on the private ETH page.'))) { try { localStorage.setItem(PLANS_KEY, JSON.stringify(plans().filter((p) => p.id !== f.dataset.laterForget))); } catch { } paintSteps(); }
+  if (f && (!f.dataset.ask || confirm((() => { const pl = plans().find((p) => p.id === f.dataset.laterForget); return pl?.held ? 'Remove this plan? The balance stays in the pool, yours.' : pl?.hop ? `Remove this plan? Its deposit stays in your private ${pl.hop.sym} balance.` : 'Remove this plan? Its deposit stays in your private ETH balance, on the private ETH page.'; })()))) { try { localStorage.setItem(PLANS_KEY, JSON.stringify(plans().filter((p) => p.id !== f.dataset.laterForget))); } catch { } paintSteps(); }
 }
 
 // ── out of the Pay pool: what a pool holds for this key, swapped (or paid) out to an address ──────────────────────────────────────────────────
@@ -1832,7 +1837,7 @@ const exitDest = () => S.to || (W.account ? lc(W.account) : null);
 function exitButton(q, r) {
   const pay = tokenOf(S.pay), get = tokenOf(S.get), wei = parseUnits(S.amt, pay.dec), wal = !!exitOf()?.wallet, bal = wal ? (W.account ? S.bal[S.pay] ?? null : null) : H.moves?.held?.(S.pay, 'pay') ?? null, same = S.pay === S.get;
   if (S.busy) return ['Working…', false];
-  if (!wei) return ['Enter an amount', false];
+  if (!wei) return [amountWord(S.amt, pay.dec), false];
   if (wal && !W.account) return ['Connect wallet', true];
   if (S.toBad) return ['Check the address', false];
   if (S.toBusy) return ['Finding the address…', false];
@@ -1840,7 +1845,7 @@ function exitButton(q, r) {
   if (!r) return [q?.err ? 'Try again' : 'No route', !!q?.err];
   const dest = intoPool() ? 'pool' : exitDest();
   if (!dest) return ['Add the address it goes to', false];
-  if (bal != null && wei > bal) return [`Not enough private ${pay.sym}`, false];
+  if (bal != null && wei > bal) return [wal ? `Not enough ${pay.sym}` : `Not enough private ${pay.sym}`, false];
   if (bal != null && q.fee != null && wei + 2n * q.fee > bal) return ['Leave room for the relay’s fee', false];
   if (wal && isEth(S.pay) && bal != null && wei + gasKeep() > bal) return ['Leave some ETH for the network fee', false];
   if (wal && !isEth(S.pay) && S.bal[lc(R.ZERO)] != null && 2n * gasKeep() > S.bal[lc(R.ZERO)]) return ['Leave some ETH for the network fee', false];
@@ -1907,6 +1912,9 @@ async function walletIntoGo(q, r) {
       if (!(await venues.simulate({ tx, from })).ok) throw new Error('This swap would fail, so nothing was sent. Try a smaller amount or try again.');
       say('Confirm the swap in your wallet.');
       const hash = await wallet.sendTx({ to: tx.to, data: tx.data, value: tx.value || 0n, from, label: 'Swap privately' });
+      say('Waiting for the block…');
+      const rc = await wallet.receipt(hash).catch(() => null);
+      if (rc && !(rc.status === '0x1' || rc.status === 1 || rc.status === 'success')) throw new Error('The swap was sent but failed on chain, so nothing reached your private balance.');
       out = { hash, box: bx.box, arrives: bx.value };
     }
     remember(out.hash, `${tidy(amtFmt(wei, pay.dec))} ${pay.sym} → ${get.sym}, privately, into your pool`);
@@ -2613,7 +2621,7 @@ function wire() {
     }
     if (e.target.closest('#max') && exiting() && !exitOf().wallet) {
       const was = S.pay, bal = H.moves?.held?.(S.pay, 'pay'), same = `${S.get}${S.inP}${S.outP}${LATER.on}`;
-      if (bal != null) exitPool(was).then(async (p) => { if (S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same || !exiting() || p.fee == null) return; const v = (await ltLoad()).mod.heldSwapMax(bal, p.fee); S.amt = tidy(fitAmt(plain(v, tokenOf(was).dec))); S.note = ''; changed(); paintSides(); requote(true); }, () => {});
+      if (bal != null) exitPool(was).then(async (p) => { if (S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same || !exiting() || p.fee == null) return; const v = (await ltLoad()).mod.heldSwapMax(bal, p.fee); S.amt = v > 0n ? tidy(fitAmt(plain(v, tokenOf(was).dec))) : ''; S.note = v > 0n ? '' : { h: 'The relay’s fee takes all of this balance, so there is nothing to swap out.', cls: '' }; changed(); paintSides(); requote(true); }, () => {});
       return;
     }
     if (e.target.closest('#max')) {
@@ -2674,7 +2682,11 @@ export function mountSwapCard(root, host = {}) {
   root.classList.toggle('mv', !!host.moves);
   root.innerHTML = markup(host);
   wire();
-  for (const t of ['pointerdown', 'keydown', 'input']) addEventListener(t, () => { depTouched = Date.now(); }, true);
+  for (const t of ['pointerdown', 'keydown', 'input']) addEventListener(t, () => {
+    const rested = idleFor() > IDLE_MS;
+    depTouched = Date.now();
+    if (rested && ROOT?.isConnected && !document.hidden && S.q && !S.busy && !S.q.busy) requote(true);          // back after a long rest: the price on screen is read again at once
+  }, true);
   slipPaint();
   paint();
   if (W.account) readBalances().then(paintSides, () => {});
@@ -2697,7 +2709,7 @@ export function mountSwapCard(root, host = {}) {
     ticked = now();
     readPrices().catch(() => {});
     if (now() - routeAt > 300) { routeAt = now(); checkAmmRoute(); }
-    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit'].includes(S.q.kind) ? 55 : 25)) requote(true);
+    if (S.q && !S.busy && !S.q.busy && now() - (S.q.at || 0) > (idleFor() > IDLE_MS ? 240 : ['any', 'out', 'in', 'pout', 'agg', 'pin', 'exit'].includes(S.q.kind) ? 55 : 25)) requote(true);      // (a card left alone for three minutes is read every four, not every half minute)
     if (S.inP && PV?.unlocked && !PV.held && !S.busy) PV.read(true).then(paint, () => {});                 // a private balance whose read failed is read again
   };
   setInterval(tick, 30e3);
