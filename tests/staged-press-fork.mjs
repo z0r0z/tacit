@@ -260,22 +260,33 @@ ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved a
     `the press sends the proof made ahead, nothing proved at the press: a private ${fmtTac(r.amountOut)} TAC note, ${Date.now() - t} ms from press to settled here (${r.error ? r.error.message : log.slice(before).join('; ')})`);
 }
 
-// ── 7. a private split of the third, into two hidden notes of the key's own, nothing secret in its input (paying another key needs an owner
-// that key gives out: a note's owner is the hash of its nullifier key, which only the receiver holds) ──
+// ── 7. a private payment from the third to another key, at a receive code that key gave out: the payer never learns the note's nk, the
+// receiver finds the note from its key alone and spends it, the change comes back hidden, and nothing secret is in the payment's input ──
 {
-  const fee = BigInt(await ux.quoteOpFee('cETH', 'transfer')), part = (d3.wei / 10n ** 10n) * 4n / 10n, rest = d3.wei / 10n ** 10n - part - fee;
-  const b = ux.buildWrapTransferOp({ walletPriv: priv, amountWei: d3.wei, ticker: 'cETH', recipientPubHex: ux.identity(priv).pubHex, amount: part, fee, index: d3.index });
-  ok(String(b.depositId).toLowerCase() === String(d3.depositId).toLowerCase(), 'the wrap-and-send spends the staged deposit at its index');
+  const other = crypto.getRandomValues(new Uint8Array(32)), ox = mkUx();
+  const code = ox.receiveCode({ walletPriv: other, index: 7 });
+  const fee = BigInt(await ux.quoteOpFee('cETH', 'transfer')), give = (d3.wei / 10n ** 10n) * 4n / 10n, rest = d3.wei / 10n ** 10n - give - fee;
+  const b = ux.buildWrapTransferOp({ walletPriv: priv, amountWei: d3.wei, ticker: 'cETH', receiveCode: code, amount: give, fee, index: d3.index });
+  ok(String(b.depositId).toLowerCase() === String(d3.depositId).toLowerCase() && String(b.op.outputs[0].owner).toLowerCase() === code.split(':')[3].toLowerCase(),
+    `the wrap-and-send spends the staged deposit and pays the owner the receiver gave out (${code.slice(0, 22)}…)`);
   const t = Date.now();
   const sub = await ux.relay.submitOp({ type: 'wraptransfer', op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand, memos: b.memos }, wait).catch((e) => ({ error: e }));
   const stt = sub.error ? sub : await ux.relay.waitForSettle(sub.jobId, wait).catch((e) => ({ error: e }));
   const w3 = ux.buildWrap({ walletPriv: priv, amountWei: d3.wei, ticker: 'cETH', index: d3.index }).note;
-  const secrets = [['the wallet key', '0x' + Buffer.from(priv).toString('hex')], ['the deposit\'s blinding', w3.blinding], ['the deposit\'s nullifier key', w3.secret],
-    ...b.outputs.flatMap((o, i) => [[`output ${i}'s blinding`, o.blinding], [`output ${i}'s nullifier key`, o.secret]])];
-  const leaked = secrets.filter(([, v]) => v && (lastStdin.wraptransfer || '').includes(BigInt(v).toString(16).padStart(64, '0'))).map(([w]) => w);
-  ok(!stt.error && lastStdin.wraptransfer && leaked.length === 0, `the relay proves and settles it, its input holding none of: ${secrets.map(([w]) => w).join(', ')}${leaked.length ? ` (FOUND: ${leaked.join(', ')})` : ''} (${stt.error ? stt.error.message : `${Date.now() - t} ms; ${log.slice(-1)[0]}`})`);
-  const mine = (await notesOf(priv, mkUx(), teth)).map((x) => BigInt(x.value));
-  ok(await depositStatus(d3.depositId) === 2n && mine.includes(part) && mine.includes(rest), `a fresh wallet finds both hidden notes from the key alone (${Number(part) / 1e8} and ${Number(rest) / 1e8} tETH)`);
+  const secrets = [['the payer\'s wallet key', '0x' + Buffer.from(priv).toString('hex')], ['the deposit\'s blinding', w3.blinding], ['the deposit\'s nullifier key', w3.secret],
+    ['the payment\'s blinding', b.outputs[0].blinding], ...(b.outputs[1] ? [['the change\'s blinding', b.outputs[1].blinding], ['the change\'s nullifier key', b.outputs[1].secret]] : [])];
+  const wire = JSON.stringify(b.op).toLowerCase();
+  const leaked = secrets.filter(([, v]) => v && ((lastStdin.wraptransfer || '').includes(BigInt(v).toString(16).padStart(64, '0')) || wire.includes(BigInt(v).toString(16).padStart(64, '0')))).map(([w]) => w);
+  ok(!stt.error && lastStdin.wraptransfer && leaked.length === 0, `the relay proves and settles it, its input and the op it was sent hold none of: ${secrets.map(([w]) => w).join(', ')}${leaked.length ? ` (FOUND: ${leaked.join(', ')})` : ''} (${stt.error ? stt.error.message : `${Date.now() - t} ms; ${log.slice(-1)[0]}`})`);
+  const got = (await notesOf(other, mkUx(), teth)).filter((x) => BigInt(x.value) === give);
+  const change = (await notesOf(priv, mkUx(), teth)).filter((x) => BigInt(x.value) === rest);
+  ok(await depositStatus(d3.depositId) === 2n && got.length === 1 && got[0].secret && change.length === 1, `the receiver's fresh wallet finds its ${Number(give) / 1e8} tETH from its key alone, with the nk derived for index 7, and the payer's ${Number(rest) / 1e8} change comes back hidden`);
+  if (got[0]) {
+    const to = '0x' + 'be'.repeat(20), b0 = BigInt(await rpcA('eth_getBalance', [to, 'latest']));
+    const u = await ox.unwrap({ note: got[0], walletPriv: other, recipient: to, waitOpts: wait }).catch((e) => ({ error: e }));
+    const paid = BigInt(await rpcA('eth_getBalance', [to, 'latest'])) - b0;
+    ok(!u.error && paid > 0n, `and the receiver spends it: the settle program takes the derived nk and the note leaves to an address (${u.error ? u.error.message : `${Number(paid) / 1e18} ETH paid; ${log.slice(-1)[0]}`})`);
+  }
 }
 
 if (fails) console.error(log.join('\n'));

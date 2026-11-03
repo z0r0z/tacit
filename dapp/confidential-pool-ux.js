@@ -543,6 +543,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const slot = new Map();
     leaves.forEach((l, i) => { if (l) slot.set(lc(l.leaf), i); });
     const nu = (n, leaf) => pool.nativeNu(n.owner, n.secret, leaf);
+    // a payment to one of this key's receive codes: its nk is derived here from the index its memo names, and the note kept only if it hashes
+    // to the owner (anything else is not this key's to spend, and is skipped by the scan)
+    const memoNu = (n, leaf) => {
+      if (n.receiveIndex != null) {
+        const nk = receiveNk(walletPriv, n.receiveIndex);
+        if (lc(pool.nkToOwner(nk)) !== lc(n.owner)) throw new Error('not this key\'s receive owner');
+        n.secret = nk;
+      }
+      return nu(n, leaf);
+    };
     const all = new Map();
     const diag = { errors: {} };
     const addDerived = (n, source, extra = {}) => {
@@ -569,7 +579,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (btcHist) btcHist.catch(() => {});
 
     const held = leaves.filter(Boolean);
-    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], nu, { covered });
+    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], memoNu, { covered });
     if (!quick) _saveMemoCk(_ck, leaves, fromMemos);
     diag.quick = quick;
     for (const n of fromMemos) all.set(lc(n.leaf), { ...n, inboundUnverified: true });
@@ -830,6 +840,20 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const freshEph = () => randomScalar();
 
   const deriveOutput = (walletPriv, anchor, role, index = 0) => deriveOutputKeys({ hmac, sha256: vendorSha256, curveOrder: SECP_N }, walletPriv, anchor, role, index);
+  // Receive codes: an owner this key gives out to be paid at (from a staged deposit's wrap-and-send, by anyone), one per index so two payers
+  // are not linked by it. The nk behind it is derived from the key and the index, never sent; the payment's memo carries the index
+  // (confidential-memo.js receiveSecret) and the scan derives the nk back. A code reads tacitrecv1:<pubkey>:<index>:<owner>.
+  const RECEIVE_ANCHOR = '0x' + _hex(vendorSha256(new TextEncoder().encode('tacit-receive-v1')));
+  const receiveNk = (walletPriv, index) => deriveOutput(walletPriv, RECEIVE_ANCHOR, 'receive', index).nk;
+  function receiveCode({ walletPriv, index }) {
+    if (!Number.isInteger(index) || index < 0 || index > 0xffffffff) throw new Error('receiveCode: index must be a uint32');
+    return `tacitrecv1:${identity(walletPriv).pubHex}:${index}:${pool.nkToOwner(receiveNk(walletPriv, index))}`;
+  }
+  function parseReceiveCode(code) {
+    const m = /^tacitrecv1:(0x0[23][0-9a-fA-F]{64}):(\d{1,10}):(0x[0-9a-fA-F]{64})$/.exec(String(code || '').trim());
+    if (!m || Number(m[2]) > 0xffffffff) throw new Error('not a Tacit receive code');
+    return { pubHex: m[1].toLowerCase(), index: Number(m[2]), owner: m[3].toLowerCase() };
+  }
   const _lockLeafOf = (r) => r.leaf || r.lockLeaf || _stealth.stealthLockLeafBlind(r.asset, r.lCx, r.lCy, r.ownerPub, r.deadline, r.refundPub);
   const _noteAnchor = (n, id) => {
     const owner = n.owner || id.owner;
@@ -1209,7 +1233,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { ...w, from: acct.address, nonce: sent.nonce.toString(), signedRaw: sent.signedRaw, txHash: sent.txHash };
   }
 
-  function buildWrapTransferOp({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, amount, fee = 0n, index = 0 }) {
+  // `receiveCode`: pay another key at a code it gave out (receiveCode above), in place of `recipientPubHex`, which may only be this key's own.
+  function buildWrapTransferOp({ walletPriv, amountWei, ticker = 'cETH', recipientPubHex, receiveCode: code = null, amount, fee = 0n, index = 0 }) {
     const meta = assetByTicker[ticker];
     if (!meta) throw new Error(`unknown asset ${ticker}`);
     const deposit = BigInt(amountWei);
@@ -1223,8 +1248,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const change = depositValue - amount - fee;
 
     const id = identity(walletPriv);
+    const to = code ? parseReceiveCode(code) : null;
+    if (to) recipientPubHex = to.pubHex;
     const isSelf = String(recipientPubHex).toLowerCase() === String(id.pubHex).toLowerCase();
-    if (!isSelf) {
+    if (!isSelf && !to) {
       throw new Error(
         'wrap-and-send: cannot send to a third party directly — a native note owner is keccak(nk ‖ dom), so a '
         + 'pubkey-derived owner mints a note that is unspendable forever and burns the wrapped ETH. Use the '
@@ -1239,8 +1266,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const depositId = pool.depositId(meta.assetId, depositValue, dcx, dcy, depOwner);
 
     const recvKeys = deriveOutput(walletPriv, depositId, 'send', 0);
-    const recvNk = recvKeys.nk;
-    const recipientOwner = pool.nkToOwner(recvNk);
+    // to a receive code the owner is the receiver's and the memo names its index; the nk stays the receiver's alone
+    const recvNk = to ? null : recvKeys.nk;
+    const recipientOwner = to ? to.owner : pool.nkToOwner(recvNk);
 
     const rRecv = recvKeys.blinding;
     const txOutputs = [{ value: amount, blinding: rRecv, owner: recipientOwner }];
@@ -1271,14 +1299,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
     const op = {
       chainBinding: cb, asset: meta.assetId, value: depositValue.toString(),
-      deposit: { cx: dcx, cy: dcy, owner: depOwner, nk: depSecret, sigR: sig.R, sigZ: sig.z },
+      deposit: { cx: dcx, cy: dcy, owner: depOwner, sigR: sig.R, sigZ: sig.z },
       outputs: outMeta.map((m) => ({ cx: m.cx, cy: m.cy, owner: m.owner })),
       rangeProof: '0x' + _hex(t.rangeProof), kernel: { R: ptHex(t.kernel.R), z: beHex(t.kernel.z) },
       fee: fee.toString(),
     };
 
     const leaves = outMeta.map((m) => pool.leaf(meta.assetId, m.cx, m.cy, m.owner));
-    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: recvNk, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
+    const outputs = [{ value: amount.toString(), blinding: beHex(rRecv), secret: to ? memo.receiveSecret(to.index) : recvNk, asset: meta.assetId, owner: recipientOwner, cx: outMeta[0].cx, cy: outMeta[0].cy, ownerPub: recipientPubHex }];
     if (change > 0n) outputs.push({ value: change.toString(), blinding: beHex(rChange), secret: changeNk, asset: meta.assetId, owner: changeOwner, cx: outMeta[1].cx, cy: outMeta[1].cy, ownerPub: id.pubHex });
     const ephRand = freshEph;
     const memos = guard.sealMemosForOutputs({ outputs, ephRand });
@@ -3336,7 +3364,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   });
 
   return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
-    deriveOutput, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
+    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, exitAhead, exitAheadSend, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

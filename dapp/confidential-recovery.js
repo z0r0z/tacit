@@ -27,7 +27,7 @@ export function derivePositionOwnerPriv({ hmac, sha256, curveOrder }, walletPriv
   return '0x' + (b === 0n ? 1n : b).toString(16).padStart(64, '0');
 }
 
-export const OUTPUT_ROLES = Object.freeze(['send', 'change', 'lpShare', 'lpOut', 'swapOut', 'harvest', 'harvestNonce', 'unbond', 'cdpDebt', 'cdpRelease', 'claim', 'refund', 'exit']);
+export const OUTPUT_ROLES = Object.freeze(['send', 'change', 'lpShare', 'lpOut', 'swapOut', 'harvest', 'harvestNonce', 'unbond', 'cdpDebt', 'cdpRelease', 'claim', 'refund', 'exit', 'receive']);
 
 export function deriveOutputKeys({ hmac, sha256, curveOrder }, walletPriv, anchor, role, index = 0) {
   if (!OUTPUT_ROLES.includes(role)) throw new Error(`deriveOutputKeys: unknown role "${role}"`);

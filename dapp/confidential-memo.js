@@ -43,6 +43,14 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const NATIVE_OWNER_DOM = new TextEncoder().encode('tacit-native-owner-v1');
   const nkToOwner = (nk) => '0x' + bytesToHex(keccak256(concat([b32(nk), NATIVE_OWNER_DOM])));
 
+  // A receive memo: a payment to an owner the receiver gave out (its receive code) carries, where a note's nk goes, a tag and the receive
+  // index the receiver derives that nk from. The sender never knows the nk, so only the receiver can spend the note. openMemo returns such
+  // an opening with `receiveIndex` and no secret: the leaf still authenticates value, blinding, asset and owner, and the wallet, which holds
+  // the spend key, derives the nk for that index and keeps the note only if it hashes to the owner.
+  const RECEIVE_TAG = sha256(new TextEncoder().encode('tacit-receive-memo-v1')).subarray(0, 24);
+  const receiveSecret = (index) => '0x' + bytesToHex(RECEIVE_TAG) + BigInt(index).toString(16).padStart(16, '0');
+  const receiveIndexOf = (s) => (s.subarray(0, 24).every((x, i) => x === RECEIVE_TAG[i]) ? Number(bToBig(s.subarray(24, 32))) : null);
+
   // Seal a note's opening to ownerPub. note = {value, blinding, secret, asset,
   // owner}; ephRand() → a fresh scalar.
   function sealMemo(ownerPubHex, note, ephRand) {
@@ -82,12 +90,14 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
       const secret = '0x' + bytesToHex(plain.subarray(40, 72));
       const asset = '0x' + bytesToHex(plain.subarray(72, 104));
       const owner = '0x' + bytesToHex(plain.subarray(104, 136));
+      const receiveIndex = BigInt(owner) !== 0n ? receiveIndexOf(plain.subarray(40, 72)) : null;
       // Noise from a memo that is not mine fails the owner binding in one hash, so it is asked before the commitment's two multiplications.
-      if (BigInt(owner) !== 0n && nkToOwner(secret) !== owner.toLowerCase()) return null;
+      if (BigInt(owner) !== 0n && receiveIndex == null && nkToOwner(secret) !== owner.toLowerCase()) return null;
       // The decrypted value/blinding are sender-chosen for a memo sealed to my public key: a zero or
       // out-of-range scalar has no commitment, so it is not an opening of any leaf.
       const { cx, cy } = commitXY(value, blinding);
       if (leafHash(asset, cx, cy, owner).toLowerCase() !== String(leaf).toLowerCase()) return null;
+      if (receiveIndex != null) return { value, blinding, secret: null, receiveIndex, asset, owner, cx, cy };
       return { value, blinding, secret, asset, owner, cx, cy };
     } catch { return null; }
   }
@@ -156,5 +166,5 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     return mine;
   }
 
-  return { sealMemo, openMemo, scan, scanSliced, commitXY, leafHash, encodeMemo, decodeMemo };
+  return { sealMemo, openMemo, scan, scanSliced, commitXY, leafHash, encodeMemo, decodeMemo, receiveSecret };
 }

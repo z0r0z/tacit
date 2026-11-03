@@ -2,7 +2,7 @@ import { openBtcWallet } from '/trade/btc-session.js?cb=65c7fc69';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
+import { getUx, forgetUx } from '/trade/poolux.js?cb=ced562d4';
 import { mountFast } from '/fast/ui.js?cb=6f7d0555';
 import { mountProvide } from '/fast/provide.js?cb=c95bfb67';
 import { mountBound } from '/fast/bound.js?cb=c4582a58';
