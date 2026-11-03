@@ -1,13 +1,16 @@
-// Every image that runs a worker-relay service copies the dapp files by name (`COPY dapp/*.js` takes the top level only), so a service whose import chain
-// reaches a dapp file the Dockerfile does not copy builds, deploys, and exits at once: "Cannot find module '/app/dapp/trade/rpc.js'". This follows each
-// entrypoint's imports (static, dynamic with a string, and `path.join(DAPP, 'file.js')`) and checks that each dapp file in them is one the image copies.
+// What a worker-relay image can run is what its Dockerfile COPY lines take from the build context, and the context is the tracked files that the root
+// .dockerignore (an allowlist: `*`, then `!` for each path let through) does not leave out. Two ways this has gone wrong, and Render only says so at deploy:
+//   - a service imports a dapp file the Dockerfile does not copy (`COPY dapp/*.js` takes the top level only): the image builds and the service exits at once,
+//     "Cannot find module '/app/dapp/trade/rpc.js'";
+//   - a COPY names a file the .dockerignore leaves out: the build stops, `"/dapp/trade/rpc.js": not found`.
+// This follows each entrypoint's imports (static, dynamic with a string, and `path.join(DAPP, 'file.js')`) and checks both.
 //   node --test tests/dockerfile-imports.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
+import { ROOT, contextFiles, copyLines, takenBy } from './helpers/docker-context.mjs';
 
-const ROOT = new URL('../../', import.meta.url).pathname;
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 const IMPORT = /(?:import|export)\s[^;'"]*?from\s*['"]([^'"]+)['"]|import\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
 const DAPP_JOIN = /DAPP\s*,\s*['"]([^'"]+\.m?js)['"]/g, DAPP_LITERAL = /['"](?:\.\.\/)+dapp\/([^'"]+\.m?js)['"]/g;
@@ -27,16 +30,6 @@ function chainOf(entry) {
   while (todo.length) { const f = todo.pop(); if (seen.has(f)) continue; seen.add(f); todo.push(...depsOf(f)); }
   return [...seen];
 }
-// the sources of the Dockerfile's COPY lines, as patterns on repo paths (a `*` stays inside one directory)
-function copiedBy(dockerfile) {
-  const pats = [];
-  for (const line of read(`worker-relay/${dockerfile}`).split('\n')) {
-    const t = line.trim();
-    if (!t.startsWith('COPY') || t.includes('--from')) continue;
-    for (const src of t.split(/\s+/).slice(1, -1)) pats.push(new RegExp(`^${src.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`));
-  }
-  return pats;
-}
 
 // image → what it runs (worker-relay/render.yaml, and the dashboard for the keepers)
 const IMAGES = {
@@ -47,16 +40,28 @@ const IMAGES = {
   'Dockerfile.join-board': ['worker-relay/src/join-board.js'],
   'Dockerfile.evm-pool-keeper': ['worker-relay/src/evm-pool-keeper.js', 'worker-relay/src/evm-pool-keepers.js'],
 };
+const FILES = contextFiles();
 
 for (const [dockerfile, entries] of Object.entries(IMAGES)) {
-  test(`${dockerfile} copies every dapp file its services import`, () => {
-    const pats = copiedBy(dockerfile), missing = new Set();
-    for (const entry of entries) for (const f of chainOf(entry)) if (f.startsWith('dapp/') && existsSync(join(ROOT, f)) && !pats.some((re) => re.test(f))) missing.add(f);
-    assert.deepEqual([...missing], [], `${dockerfile} does not copy: ${[...missing].join(', ')} (add a COPY for each; the service exits at start without them)`);
+  test(`${dockerfile}: every COPY finds its files in the build context`, () => {
+    const empty = [];
+    for (const { sources } of copyLines(dockerfile)) for (const s of sources) if (!takenBy(s, FILES).length) empty.push(s);
+    assert.deepEqual(empty, [], `${dockerfile} copies ${empty.join(', ')}, which the build context does not have (a path the root .dockerignore leaves out needs a "!" line there)`);
+  });
+  test(`${dockerfile}: every dapp file its services import is copied`, () => {
+    const taken = new Set();
+    for (const { sources } of copyLines(dockerfile)) for (const s of sources) for (const f of takenBy(s, FILES)) taken.add(f);
+    const missing = new Set();
+    for (const entry of entries) for (const f of chainOf(entry)) if (f.startsWith('dapp/') && existsSync(join(ROOT, f)) && !taken.has(f)) missing.add(f);
+    assert.deepEqual([...missing], [], `${dockerfile} does not take: ${[...missing].join(', ')} (the service exits at start without them)`);
   });
 }
 
-test('the follower finds what it should: pool-maker reaches trade/rpc.js through tacit.js and confidential-pool-ux.js', () => {
+test('the context follows Docker: the allowlist lets the top of dapp/ through and leaves the rest out unless a line names it', () => {
+  assert.ok(FILES.includes('dapp/tacit.js') && FILES.includes('dapp/vendor/tacit-deps.min.js') && FILES.includes('worker-relay/src/pool-maker.js'));
+  assert.ok(!FILES.includes('dapp/swap/card.js') && !FILES.includes('worker-relay/tests/dockerfile-imports.test.mjs'), 'files nothing names are out');
+});
+test('pool-maker reaches trade/rpc.js through tacit.js and confidential-pool-ux.js', () => {
   const chain = chainOf('worker-relay/src/pool-maker.js');
   for (const f of ['dapp/tacit.js', 'dapp/confidential-pool-ux.js', 'dapp/trade/rpc.js', 'dapp/rpc-body.js']) assert.ok(chain.includes(f), `${f} is in its chain`);
 });
