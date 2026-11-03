@@ -60,6 +60,9 @@ It runs the page as it is on disk, the keeper as the real process (`worker-relay
 two things only: the relay's order board (`api.tacit.finance/gas/order`: each order is checked as the board checks it and sent as the settle relay sends
 it) and the chain (an anvil fork). A fork run's first pass over the pool's history is slow on a cold cache; pin `FORK_BLOCK` so a second run asks the same
 questions and the proxy answers them.
+A pinned block keeps its own time: the harness sets the fork's clock to the wall clock (the keeper judges a call's deadline by it) and has the two Chainlink feeds answer
+their block's price as updated now (the card drops a price older than six hours, and without one it cannot price a token's gas, so offers none of the relay's ways).
+A scenario that fails ends the run: start them one at a time (`node tests/swap-demo-run.mjs pick`).
 
 The unit and fork tests under it: `tests/swap-boxed.test.mjs` (the sizing and the plan's states), `tests/swap-later-boxed-fork.mjs` (the relay-paid deposit
 and the swap out with the real keeper and the live relay and router contracts).
@@ -74,15 +77,19 @@ and the swap out with the real keeper and the live relay and router contracts).
   - `tacit-points`: a box funded by a gas-relay order now credits the order's payer. Until it is deployed such a deposit earns nobody points, because the
     transaction that funds the box is sent by the settle relay, whose address the points program excludes.
 - **The surplus.** What the sale pays above the box (about 0.45% of it) stays in the box, and the router lets anyone send a box's whole balance to the intent's
-  refund address (a fresh receive box of the key) once its deadline has passed. With `EVM_POOL_KEEPER_RECLAIM=1` the keeper does that, for a completed box
-  too, but only when the leftover is worth the send (ETH: three times what the send's gas costs, 0.00045 ETH at 1 gwei). A box under about 0.03 ETH at 0.3 gwei,
-  or 0.1 ETH at 1 gwei, leaves less than that: it is left where it is, and is the price of this way in. Reclaim is off until it is set.
+  refund address (a fresh receive box of the key) once its deadline has passed; a box that is already completed is no obstacle (checked on a mainnet fork against
+  the live router: a second reclaim of a box that already has code paid its leftover to the refund, and one with nothing left reverts NothingToReclaim). With
+  `EVM_POOL_KEEPER_RECLAIM=1` the keeper does that for a completed box too, but only when the leftover is worth the send: ETH, three times what the send's gas
+  costs (about 44,000 gas on the live router, 0.00013 ETH at 1 gwei). A box under about 0.03 ETH at 1 gwei, or 0.009 ETH at 0.3 gwei, leaves less than that:
+  it is left where it is, and is the price of this way in. Reclaim is off until it is set.
 - **A box the keeper never completes** (down past its deadline, a gas rise above the keeper's 1.5 times margin) is sent back whole by the same reclaim, to the
-  refund address, when that keeper is up again with its store: only the keeper holds the intent. If its store is lost the ETH stays in the box; deriving the
-  intent's nonce from the key would make it recoverable from the key alone, as the rest of the pool is. Not done.
+  refund address, when that keeper is up again with its store. The plan in the browser keeps the box's intent too (`boxIntent`, `boxDeadline`), which is all
+  the router's `reclaimDeposit` needs from anyone after the deadline, but no screen sends it yet. With the keeper's store and the browser's plan both lost the
+  ETH stays in the box; deriving the intent's nonce from the key would make it recoverable from the key alone, as the rest of the pool is. Not done.
 - The relay's way pays an address. A swap into TAC that ends in the key's own private balance or at a Tacit address is still the wallet's own deposit (it hands the
   key's account its gas), so a wallet with no ETH is told what is missing.
 - Three times in about twenty fork swap-outs (once for a plain ETH exit) the keeper answered "the transaction reverts" with nothing reverting. It reported every
-  failure of its estimate, a node that timed out among them, as a revert, which fits the fork's slow nodes; it now says a node could not be reached (503, nothing was
-  sent) and a revert only for a revert. Not reproduced to confirm, and not run again against the live keeper.
+  failure of its estimate as a revert, and the client library turns a node's JSON-RPC "internal error" (what the fork gives when its upstream times out) into a revert
+  too. It now calls a revert only the node's own execution-reverted answer, and otherwise says a node could not be reached (503, nothing was sent). Tested with
+  the library's real error shapes; the original refusals were not reproduced, and the live keeper has not run this.
 - The pools of USDC and USDT are thin (tens of leaves against the ETH pool's hundreds): the relay's way in therefore goes through the ETH pool.

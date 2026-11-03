@@ -61,6 +61,14 @@ procs.push(spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, '--fork-b
 for (let i = 0; ; i++) { try { await rpcA('eth_chainId'); break; } catch { if (i > 200) throw new Error('anvil did not start'); await sleep(250); } }
 for (const a of [keeperAddr, SENDER]) { await rpcA('anvil_setBalance', [a, hex(10n ** 19n)]); }
 await rpcA('anvil_impersonateAccount', [SENDER]);
+// a fork pinned back keeps that block's time, and the keeper judges a call's deadline by the clock on the wall: the fork's clock is set to it (the state stays the pinned block's)
+await rpcA('anvil_setTime', [Math.floor(Date.now() / 1000)]);
+await rpcA('anvil_mine', ['0x1']);
+// The pinned block's Chainlink rounds are as old as the block, and the page drops a price older than six hours: each feed answers its own price, updated now.
+for (const feed of ['0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c']) {
+  const answer = (await rpcA('eth_call', [{ to: feed, data: '0xfeaf968c' }, 'latest'])).slice(2 + 64, 2 + 128);
+  await rpcA('anvil_setCode', [feed, '0x6001600052' + '7f' + answer + '602052' + '42604052' + '42606052' + '6001608052' + '60a06000f3']);       // (roundId 1, the answer, now, now, 1)
+}
 // a block every two seconds, as the chain makes them, for the pages' three confirmations (a transaction is still mined as it is sent)
 const ticker = setInterval(() => { rpcA('anvil_mine', ['0x1']).catch(() => {}); }, 2000);
 ok(String(await rpcA('eth_getCode', [RELAY, 'latest'])).length > 2, 'the gas relay is on the fork');
@@ -180,7 +188,7 @@ const shot = async (r, s) => {
   if (SLOW) await sleep(SLOW);
 };
 const until = (page, fn, arg, timeout = 180000) => page.waitForFunction(fn, arg, { timeout }).catch(async (e) => {
-  const seen = await page.evaluate(() => ({ go: document.querySelector('#hx-swap #go')?.textContent, q: document.querySelector('#hx-swap #q')?.textContent?.replace(/\s+/g, ' ').slice(0, 200), steps: document.querySelector('#hx-swap #steps')?.innerText?.replace(/\s+/g, ' ').slice(0, 300), later: document.querySelector('#hx-swap #later')?.innerText?.replace(/\s+/g, ' ').slice(0, 260), bal: document.querySelector('#hx-swap #pay-side')?.innerText?.replace(/\s+/g, ' '), sheet: [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join() })).catch(() => ({}));
+  const seen = await page.evaluate(() => ({ go: document.querySelector('#hx-swap #go')?.textContent, q: document.querySelector('#hx-swap #q')?.textContent?.replace(/\s+/g, ' ').slice(0, 200), steps: document.querySelector('#hx-swap #steps')?.innerText?.replace(/\s+/g, ' ').slice(0, 300), later: document.querySelector('#hx-swap #later')?.innerText?.replace(/\s+/g, ' ').slice(0, 260), bal: document.querySelector('#hx-swap #pay-side')?.innerText?.replace(/\s+/g, ' '), sheet: [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join(), rcpt: document.querySelector('#hx-swap #rcpt')?.innerText?.replace(/\s+/g, ' ').slice(0, 300), pills: [...document.querySelectorAll('#hx-swap [data-dg]')].map((b) => b.dataset.dg).join() })).catch(() => ({}));
   console.log('  ..     the card said: ' + JSON.stringify(seen));
   throw e;
 });
