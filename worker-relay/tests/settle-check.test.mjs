@@ -28,3 +28,9 @@ test('stale wins over a funds message, and a cause that cannot be written down d
   assert.equal(readSettleCheck(null, STALE).verdict, 'bad');
   assert.equal(readSettleCheck('plain string', []).verdict, 'bad');
 });
+
+test('a proof whose deposit is not in the pool yet (proved first) is nodeposit, by the selector or the name, never bad', () => {
+  assert.equal(readSettleCheck({ shortMessage: 'reverted', cause: { data: '0x070d817c' } }, STALE).verdict, 'nodeposit');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error DepositNotPending()' }, STALE).verdict, 'nodeposit');
+  assert.equal(readSettleCheck({ shortMessage: 'reverted with custom error DepositExists()' }, STALE).verdict, 'bad');
+});

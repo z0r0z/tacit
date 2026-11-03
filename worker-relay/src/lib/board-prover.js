@@ -40,7 +40,7 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
         const key = `${c.worker}|${c.proof}`;
         if (judged.has(key)) continue;
         judged.add(key);
-        const ok = await Promise.resolve((check || verify)({ publicValues: c.publicValues, proof: c.proof, memos })).catch(() => (check ? 'unchecked' : false));
+        const ok = await Promise.resolve((check || verify)({ publicValues: c.publicValues, proof: c.proof, memos, community: true })).catch(() => (check ? 'unchecked' : false));
         log(`prover board: job ${jobId.slice(0, 10)} candidate from ${c.worker}: ${ok === true ? 'taken' : ok}`);
         await Promise.resolve(race(jobId, c.worker, ok === true ? true : ok === false ? false : null)).catch(() => {});
         if (ok === true) return { publicValues: c.publicValues, proof: c.proof, worker: c.worker, jobId };

@@ -137,3 +137,18 @@ test('community candidates: with only bad ones, the house worker\'s proof is sti
   assert.equal(r.worker, 'tacit-a5000');
   assert.deepEqual(verdicts, [['c-0x01', false]]);
 });
+
+test('a community candidate is judged as such (community: true), Tacit\'s own worker\'s proof without it', async () => {
+  const { api } = fakeBoard({ script: [
+    { status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0x01', publicValues: PV, proof: PROOF }] },
+    { status: 'proved', worker: 'tacit-a5000', publicValues: PV, proof: PROOF },
+  ] });
+  const seen = [];
+  api.verify = async (a) => { seen.push(!!a.community); return a.community ? 'unchecked' : true; };
+  const verdicts = [];
+  api.race = async (jobId, worker, ok) => { verdicts.push([worker, ok]); };
+  const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [] });
+  assert.equal(r.worker, 'tacit-a5000', 'an unchecked candidate is not taken; the house proof is');
+  assert.deepEqual(seen, [true, false]);
+  assert.deepEqual(verdicts, [['c-0x01', null]], 'nor marked');
+});

@@ -13,14 +13,20 @@ const text = (e) => {
   return parts.filter(Boolean).join(' ');
 };
 
+// The pool's DepositNotPending(): the proof consumes a deposit that is not waiting in the pool. A proof made before its deposit (a wrap proved
+// first, sent with its deposit through the router) is refused this way by any settle simulation however sound it is, so it is 'nodeposit',
+// for the caller to judge the proof another way, never a mark against the worker that made it.
+export const DEPOSIT_NOT_PENDING = '0x070d817c';
+
 // A node's refusal to run a call the account cannot pay for.
 export const fundsRefusal = (e) => /exceeds allowance|insufficient funds/i.test(text(e));
 
-// → { verdict: 'stale' | 'unchecked' | 'bad', said }
+// → { verdict: 'stale' | 'nodeposit' | 'unchecked' | 'bad', said }
 export function readSettleCheck(e, staleSelectors = []) {
   const said = String((e && e.shortMessage) || (e && e.message) || e);
   const hay = text(e).toLowerCase();
   if (staleSelectors.some((sel) => hay.includes(String(sel).toLowerCase()))) return { verdict: 'stale', said };
+  if (hay.includes(DEPOSIT_NOT_PENDING) || hay.includes('depositnotpending')) return { verdict: 'nodeposit', said };
   if (fundsRefusal(e)) return { verdict: 'unchecked', said };
   return { verdict: 'bad', said };
 }

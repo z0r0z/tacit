@@ -411,13 +411,23 @@ export async function boardAlive() {
 // An eth_call, not a gas estimate: the question is only whether the pool would take the proof, and an estimate is refused outright for a wallet
 // that cannot pay for the gas it finds ('gas required exceeds allowance (47755)', which marked two good farm-harvest proofs bad on 2026-10-29/30
 // and sent their jobs to the network); the send that follows estimates for itself.
-async function verifySettle({ publicValues, proof, memos }) {
+// A proof made before its deposit ('nodeposit': a wrap, wrap-swap or wrap-and-send proved first, sent with its deposit through the router) cannot
+// pass a settle simulation, however sound: from one of Tacit's own workers, which proved exactly the input it was given, it is judged by the SP1
+// verifier instead (the page also checks the proof is its op's before it uses it); from a community machine (`community`) it is left unchecked,
+// since a sound proof of some other input would pass the verifier too, and Tacit's worker's proof is the one taken.
+async function verifySettle({ publicValues, proof, memos, community = false }) {
   try {
     assertMemosMatchProof(publicValues, memos);
     await publicClient.simulateContract({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [publicValues, proof, memos], account: settleWallet.account });
     return true;
   } catch (e) {
     const { verdict, said } = readSettleCheck(e, STALE_PROOF_SELECTORS);
+    if (verdict === 'nodeposit') {
+      if (community) return 'unchecked';
+      const v = await proofOnly(null)({ publicValues, proof });
+      boardLog(`a board proof whose deposit is not in the pool yet (proved first): ${v === true ? 'the verifier takes it' : v === 'unchecked' ? 'the verifier could not be asked' : 'the verifier refuses it'}`);
+      return v;
+    }
     const note = verdict === 'stale' ? ' (stale roots: the op is behind the pool, the proof itself is fine)' : verdict === 'unchecked' ? ' (the settle wallet cannot pay for the call: the proof is not judged)' : '';
     boardLog(`a board proof did not pass the settle check${note}: ${said.slice(0, 200)}`);
     return verdict === 'bad' ? false : verdict;
