@@ -1,6 +1,6 @@
-// dapp/swap/private.js: the swap card's private swap. Paid from the wallet's ETH it makes the ETH private (the tETH page's deposit), finds the
-// new note by its leaf and routes it; paid from the private balance it routes a note of exactly the amount, cutting one to size first (a route
-// spends its note whole: the pool module refuses change, and the stand-in here does too). Its imports (the key
+// dapp/swap/private.js: the swap card's private swap. Paid from the wallet's ETH through one pool it deposits once and the relay proves and
+// settles the deposit's own swap; paid from the private balance it routes the smallest note that covers the amount, its change in the same
+// proof, and combines notes too small singly. Its imports (the key
 // sheet, the deposit, the relay's state, the activity journal) are stood in for here, and so is the pool module it is handed.
 //   node --test tests/swap-private.test.mjs
 import { test } from 'node:test';
@@ -16,8 +16,12 @@ const STUBS = {
   '/teth/wrap.js': `export const wrapEth = (a) => globalThis.M.wrapEth(a);
     export const relayState = async () => globalThis.M.relay;
     export const relayStopped = (rs) => rs?.state === 'paused' || rs?.state === 'down';
-    export const relayWords = (e) => 'relay: ' + (e?.message || e);`,
-  '/teth/read.js': 'export const wrapQuote = async (wei) => { globalThis.M.quoted.push(wei); return { tip: 7n, to: "0xtip" }; };',
+    export const relayWords = (e) => 'relay: ' + (e?.message || e);
+    export const wrapFirst = async () => { throw Object.assign(new Error('no proof made ahead here'), { ready: true }); };
+    export const wrapCalldata = () => '0x';
+    export const settle = async (a) => { globalThis.M.settled.push(a); return {}; };`,
+  '/teth/read.js': 'export const WRAP_TIP = "0x000000D218B03db5837943b0b05DeA2965AE956e"; export const wrapQuote = async (wei) => { globalThis.M.quoted.push(wei); return { tip: 7n, to: "0xtip" }; };',
+  '/wrap-vouchers.js': 'export function makeVouchers() { return { pick: () => null, list: () => [], drop() {}, put() {}, call: () => null }; }',
   '/activity.js': 'export function makeRunner() { return { wait: (label, ms) => ({ timeoutMs: ms, label, onJob() {} }) }; }',
   '/vendor/tacit-deps.min.js': 'export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join(""); export const secp = {}; export const keccak_256 = () => new Uint8Array(32); export const sha256 = () => new Uint8Array(32);',
   '/confidential-secret-store.js': 'export const makeStealthSendStore = () => ({ add: async (priv, rec) => { globalThis.M.stored.push(rec); } });',
@@ -37,7 +41,7 @@ const ETH = '0xeth', TAC = '0xtac';
 const note = (leaf, value, asset = ETH) => ({ leaf, value: BigInt(value), asset, root: '0xroot' });
 
 function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeErr = [], cutErr = [], fee = 20n, cutFee = 5n, submitErr = [], activation = 'done', routeOut = null, stealthErr = null } = {}) {
-  const M = globalThis.M = { sheets: 0, forgot: 0, quoted: [], relay: { state: 'ok' }, cancel: false, wraps: [], routes: [], cuts: [], reads: 0, unwraps: [], submits: [], stealths: [], stored: [] };
+  const M = globalThis.M = { sheets: 0, forgot: 0, quoted: [], relay: { state: 'ok' }, cancel: false, wraps: [], routes: [], cuts: [], reads: 0, unwraps: [], submits: [], stealths: [], stored: [], sent: [], wrapSwaps: [], wrapSwapSubmits: [], released: [], settled: [] };
   let byAsset = {};
   const put = (ns) => { byAsset = {}; for (const n of ns) { const g = (byAsset[n.asset] ||= { value: 0n, notes: [] }); g.value += n.value; g.notes.push(n); } };
   put(notes);
@@ -48,7 +52,6 @@ function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeE
     quoteRoute: async ({ fee: f }) => ({ amountOut: qs ? qs.shift() : quote, f }),
     route: async (a) => {
       M.routes.push(a);
-      if (BigInt(a.inNote.value) !== BigInt(a.amountIn)) throw new Error('route: partial-spend change is not yet implemented in buildRoute');
       const e = routeErr.shift(); if (e) throw new Error(e);
       // the route's output note: tETH, worth what the swap paid
       if (routeOut) { notes = [...notes.filter((n) => n.leaf !== a.inNote.leaf), note('0xrouted', routeOut, a.path?.length ? a.path[a.path.length - 1].assetNext : ETH)]; put(notes); }
@@ -84,28 +87,35 @@ function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeE
       return { txHash: '0xlocktx' };
     },
     quoteOpFee: async (tk, kind) => (kind === 'transfer' ? cutFee : fee),
+    // wallet ETH through one pool: the deposit's own swap, built at the next wrap index and settled by the relay in one step (depositSwap)
+    nextWrapIndex: async () => 5,
+    releaseWrapIndex: ({ index }) => { M.released.push(index); },
+    buildWrapSwap: async (a) => { M.wrapSwaps.push(a); const out = qs ? qs.shift() : quote; if (out < BigInt(a.minOut)) throw new Error('wrapswap: amountOut below minOut'); return { commit: '0xc0', amountOut: out, index: a.index }; },
+    submitWrapSwap: async (a) => { M.wrapSwapSubmits.push(a); const e = routeErr.shift(); if (e) throw new Error(e); return { txHash: '0xswap' }; },
+    buildWrap: (a) => ({ leaf: '0xwrapleaf', commit: '0xc0', ...a }),
     ladderFee: (v) => v,
   };
   return { M, ux };
 }
 const load = async (ux) => (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null });
 const plan = (o = {}) => ({ wallet: false, units: 1000n, wei: 1000n * 10n ** 10n, asset: ETH, ticker: 'cETH', fee: 10n, path: [{ assetNext: TAC, feeBps: 30 }], minOut: 800n, label: 'Swap', ...o });
-const run = (pv, p, steps = []) => pv.swap(p, { wallet: {}, from: '0xme', say: (k) => steps.push(k) });
+const wallet = { sendTx: async (tx) => { globalThis.M.sent.push(tx); return '0xdep'; }, receipt: async () => ({ status: '0x1' }) };
+const run = (pv, p, steps = []) => pv.swap(p, { wallet, from: '0xme', say: (k) => steps.push(k) });
 
-test('from the wallet: the ETH is made private, its note found by its leaf, then routed', async () => {
-  const { M, ux } = setup({ deposit: note('0xnew', 1000), notes: [note('0xold', 1000)] });
+test('from the wallet through one pool: one deposit, and the relay proves and settles its swap in one step, with no route', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
   const pv = await load(ux), steps = [];
   const r = await run(pv, plan({ wallet: true }), steps);
   assert.strictEqual(M.sheets, 1, 'the key sheet opened once');
   assert.deepStrictEqual(M.quoted, [1000n * 10n ** 10n], 'the relay tip is read for the deposit');
-  assert.strictEqual(M.wraps[0].wei, 1000n * 10n ** 10n); assert.strictEqual(M.wraps[0].tip, 7n); assert.strictEqual(M.wraps[0].to, '0xtip');
-  assert.strictEqual(M.routes.length, 1);
-  assert.strictEqual(M.routes[0].inNote.leaf, '0xnew', 'the new note is routed, not an old one of the same value');
-  assert.strictEqual(M.routes[0].amountIn, 1000n); assert.strictEqual(M.routes[0].minOut, 800n); assert.strictEqual(M.routes[0].fee, 10n);
-  assert.deepStrictEqual(M.routes[0].path, [{ assetNext: TAC, feeBps: 30 }]);
-  assert.strictEqual(M.routes[0].waitOpts.viaRelay, true);
+  assert.strictEqual(M.sent.length, 1);
+  assert.strictEqual(M.sent[0].to.toLowerCase(), '0x000000d218b03db5837943b0b05dea2965ae956e', 'the deposit goes through the tip forwarder');
+  assert.strictEqual(M.sent[0].value, 1000n * 10n ** 10n + 7n, 'the amount and the tip');
+  assert.strictEqual(M.wrapSwaps[0].index, 5); assert.strictEqual(M.wrapSwaps[0].minOut, 800n); assert.strictEqual(M.wrapSwaps[0].fee, 10n); assert.strictEqual(M.wrapSwaps[0].toAsset, TAC);
+  assert.strictEqual(M.wrapSwapSubmits.length, 1); assert.strictEqual(M.wrapSwapSubmits[0].waitOpts.viaRelay, true);
+  assert.strictEqual(M.routes.length + M.wraps.length, 0, 'no separate wrap, no route of an old note');
   assert.deepStrictEqual({ tx: r.txHash, out: r.out }, { tx: '0xswap', out: 900n });
-  assert.ok(steps.includes('note') && steps.includes('route'), `steps said (${steps})`);
+  assert.ok(steps.includes('sent') && steps.includes('swap'), `steps said (${steps})`);
 });
 
 test('ETH made private only: no route, the deposit is what the chain shows', async () => {
@@ -122,15 +132,13 @@ test('from the private balance: a note of exactly the amount is routed as it is'
   assert.strictEqual(M.routes[0].inNote.leaf, '0xexact');
 });
 
-test('a larger note is cut to the amount first (the smallest that covers it and the fee), then the cut note is routed', async () => {
+test('a larger note is spent in part by the route (the smallest that covers it), its change in the same proof, with no cut first', async () => {
   const { M, ux } = setup({ notes: [note('0xbig', 5000), note('0xsmall', 900), note('0xfit', 1200)] }), steps = [];
   await run(await load(ux), plan(), steps);
-  assert.strictEqual(M.cuts.length, 1);
-  assert.deepStrictEqual(M.cuts[0].notes.map((n) => n.leaf), ['0xfit']);
-  assert.strictEqual(M.cuts[0].amount, 1000n); assert.strictEqual(M.cuts[0].fee, 5n); assert.strictEqual(M.cuts[0].recipientPubHex, '02aa');
-  assert.strictEqual(M.routes[0].inNote.leaf, '0xcut', 'the note the cut made is routed');
+  assert.strictEqual(M.cuts.length, 0, 'no send to itself first');
+  assert.strictEqual(M.routes[0].inNote.leaf, '0xfit', 'the smallest note that covers it');
   assert.strictEqual(M.routes[0].amountIn, 1000n);
-  assert.ok(steps.includes('split'));
+  assert.ok(!steps.includes('split'));
 });
 
 test('several notes, none covering it, are combined into one of the amount; too little says how much fits', async () => {
@@ -182,10 +190,11 @@ test('a price already past the quote stops before anything is sent: no deposit, 
   assert.strictEqual(b.M.wraps.length + b.M.routes.length, 0, 'the ETH stays in the wallet');
 });
 
-test('a price that moves while the deposit settles: the ETH is kept as tETH and says so', async () => {
-  const { M, ux } = setup({ deposit: note('0xnew', 1000), quotes: [900n, 700n] });
-  await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.kept && /private now as tETH/.test(e.message) && /price moved/.test(e.message));
-  assert.strictEqual(M.wraps.length, 1); assert.strictEqual(M.routes.length, 0);
+test('a price that moved before the deposit: nothing is sent and the wrap index goes back', async () => {
+  const { M, ux } = setup({ quotes: [900n, 700n] });
+  await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.moved && /price moved/.test(e.message));
+  assert.strictEqual(M.sent.length, 0, 'nothing left the wallet');
+  assert.deepStrictEqual(M.released, [5]);
 });
 
 test('a swap the relay may still finish is not offered again: its note stays out of the next pick', async () => {
@@ -217,10 +226,12 @@ test('a key sheet open once for two presses', async () => {
   assert.strictEqual(M.sheets, 1);
 });
 
-test('a route that fails after the deposit says the ETH is private and kept', async () => {
-  const { M, ux } = setup({ deposit: note('0xnew', 1000), routeErr: ['prove failed: boom'] });
+test('a swap that fails after the deposit settles it as a plain wrap and says the ETH is private and kept', async () => {
+  const { M, ux } = setup({ routeErr: ['prove failed: boom'] });
   await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.kept && /relay: prove failed: boom/.test(e.message));
-  assert.strictEqual(M.routes.length, 1);
+  assert.strictEqual(M.wrapSwapSubmits.length, 1);
+  assert.strictEqual(M.settled.length, 1, 'the same deposit settled as a wrap');
+  assert.strictEqual(M.settled[0].hash, '0xdep');
 });
 
 test('a closed key sheet stops before anything is read or sent', async () => {

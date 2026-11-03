@@ -7564,15 +7564,22 @@ await step('hxteth', async () => {
     await until(p, () => /^They get: about [\d.]+ tETH \| Claim fee: [\d.]+ tETH \| Chain sees: nothing: not how much, not to whom$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     ok(/Balance 0\.25 · Max/.test(await text(p, '#hx-bal')), `hxteth: Send says what the recipient gets (a 0.1 note is held, so nothing is cut), with the balance and Max (${await line()})`);
+    // the press sends from the tile with no form opened (the Send tab's own sends, 2026-11-03): the stub's notes cannot make a proof, so the run says where it stops
     await p.fill('#hx-rcpt', 'name.wei');
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, () => document.querySelector('#sheet-eth[open] #s-amt')?.value === '0.1' && document.querySelector('#s-to')?.value === 'name.wei', null, 120000);
-    ok(true, 'hxteth: Send privately opens the Send form with the amount and the recipient');
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | form: ${await p.evaluate(() => [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join())}`); });
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#s-to')), `hxteth: Send privately to a name sends from the tile with no form opened (${await text(p, '#hx-ss')})`);
     // The forms' own Max keeps the combine fee too: the whole of two notes would be refused.
+    await lander();
+    await go(p, '#private');
+    await p.waitForSelector('[data-v1="send"]', { timeout: 120000 });
+    await p.click('[data-v1="send"]'); await p.waitForSelector('#s-max');
     await p.fill('#s-amt', ''); await p.click('#s-max');
     await until(p, (v) => document.querySelector('#s-amt')?.value === v, String(max), 60000);
     ok(true, `hxteth: the Send form's Max keeps the combine fee as the card's does (${max})`);
-    await p.click('#sheet-eth [data-v1="out"]');
+    await p.click('[data-v1="out"]');
     await p.waitForSelector('#o-max'); await p.fill('#o-amt', ''); await p.click('#o-max');
     await until(p, (v) => document.querySelector('#o-amt')?.value === v, String(max), 60000);
     ok(true, `hxteth: and the Withdraw form's (${max})`);
@@ -9975,7 +9982,8 @@ await step('swap', async () => {
     await p.evaluate(() => { location.hash = '#private/swap'; });
     await p.waitForSelector('#sw-amt', { timeout: 300000 });
     ok(await p.$eval('#sheet-eth [data-v1="swap"]', (b) => b.getAttribute('aria-selected') === 'true') && await p.evaluate(() => location.hash) === '#private/swap', 'swap: #private/swap opens the Swap tab, and it keeps its link');
-    await until(p, () => /Private 0\.1 tETH/.test(document.querySelector('#sw-max')?.textContent || ''), null, 120000)
+    // the first read of the key's notes scans the pool through the fork, minutes on a cold one (the other steps give it as long)
+    await until(p, () => /Private 0\.1 tETH/.test(document.querySelector('#sw-max')?.textContent || ''), null, 600000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | max: ${(await text(p, '#sw-max')).trim()} | net: ${[...new Set(netBad)].slice(0, 12).join(' || ')}`); });
     ok(true, `swap: the balance of what is paid reads on the tab (${(await text(p, '#sw-max')).trim()})`);
 
@@ -12201,7 +12209,7 @@ await step('wrapfirst', async () => {
     await r.page.click('#w-go');
     await chainUntil(async () => walletTxs.length > w1, 120000);
     ok(walletTxs.length > w1 && String(walletTxs[w1].to).toLowerCase() !== ROUTER_ADDR && walletTxs[w1].data.startsWith('0xfc24c435'),
-      `wrapfirst: with no sponsored proofs left the deposit goes first, with its tip (${walletTxs.slice(w1).map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)})`);
+      `wrapfirst: with no sponsored proofs left the deposit goes first, with its tip (${walletTxs.slice(w1).map((x) => `${x.to.slice(0, 10)}/${x.data.slice(0, 10)}`)}; ${(await text(r.page, '#sheet-eth')).replace(/\s+/g, ' ').slice(0, 400)}; ${submits.slice(-3).map((x) => `${x.type}/${x.mode}`)})`);
     if (r.errors.length) { fails++; console.log('FAIL wrapfirst page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { proveStub = false; refuseSubmits = 0; refuseTypes = null; refuseWith = null; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });

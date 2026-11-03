@@ -841,8 +841,8 @@ test('whole-input case: validator accepts NO_CHANGE_SENTINEL', () => {
   const C_receipt = pedersenCommit(deltaOut, r_receipt);
   const rReceiptBytes = (() => { const out = new Uint8Array(32); let x = r_receipt; for (let i = 31; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; } return out; })();
 
-  // m=1 bulletproof with (value=0, blinding=0) — the sentinel slot alone; the receipt is not a subject.
-  const { proof: bpProof } = bpRangeAggProve([0n], [0n], 64);
+  // a whole-input swap carries no range check (the validator skips it, as the guest and the indexer do): any well-formed proof rides along
+  const { proof: bpProof } = bpRangeAggProve([0n], [1n], 64);
 
   const intentMsg = buildSwapVarIntentMsg({
     poolId: POOL_ID, direction: dir, deltaIn, deltaInMin: 1000n, deltaInMax: 10000n,

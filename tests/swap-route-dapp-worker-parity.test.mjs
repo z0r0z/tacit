@@ -100,7 +100,7 @@ const C_RECEIPT = pointToBytes(pedersenCommit(DELTA_OUT_LAST, R_RECEIPT));
 const R_RECEIPT_BYTES = hexToBytes(R_RECEIPT.toString(16).padStart(64, '0'));
 
 // m=1: the receipt is not a bulletproof subject — the consumer forms it from the recomputed clearing.
-const { proof: rangeProof } = bpRangeAggProve([0n], [0n]);
+const { proof: rangeProof } = bpRangeAggProve([0n], [1n]);
 
 // The receipt output's scriptPubKey at reveal-tx vout 1. P2WPKH — the shape the dapp emitter really pays
 // route receipts to; the intent binds these bytes verbatim, so the vector must not be a synthetic P2TR one.

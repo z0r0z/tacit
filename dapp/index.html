@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nZE+CeDJzaISewsvmxSGWq0dal+Wnc+LLFz3FaL6CMw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-T6AmIWx59kbOERTyincHk16bPnniDZ8SWbqxS6FtlAk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -5124,7 +5124,9 @@ function v1Wrap(el, status) {
       clearTimeout(VOUCH.typing);
       // Tacit's prover is kept free for this amount's proof from now, before it is asked for
       if (!own && !ready && S.key) getUx().then((t) => t.relay.hold()).catch(() => {});
-      if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (input.isConnected && parseUnits(input.value) === wei && !(await poolMaking(S.key.pubHex, 'cETH', wei)) && (await relayProving())) proveAhead('cETH', wei, { relay: true }); }, 1500);
+      // once it is proved the receipt is drawn again, so it says the proof is ready while the amount is still the one typed
+      const still = () => input.isConnected && parseUnits(input.value) === wei;
+      if (!own && !ready && S.key) VOUCH.typing = setTimeout(async () => { if (still() && !(await poolMaking(S.key.pubHex, 'cETH', wei)) && (await relayProving())) proveAhead('cETH', wei, { relay: true })?.then(async () => { if (still() && go.getAttribute('aria-busy') !== 'true' && (await vouchers()).pick(S.key.pubHex, 'cETH', wei)) input.dispatchEvent(new Event('input')); }, () => {}); }, 1500);
       mount(rc, html`
         <div class="kv"><span>You get</span><b>${fmt(wei, 18, 8)} tETH</b></div>
         <div class="kv"><span>Relay tip</span><b>${own ? `none: ${devOn() ? 'proved on this computer' : 'you prove it with your own credit'}` : `${fmt(tip, 18, 6)} ETH`}</b></div>
@@ -9251,8 +9253,9 @@ async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip 
   refillSoon();
   tell(html`<span class="ok">Done.</span> ${txLink(hash)}`); toast(`${run.to.label}: done`);
   if (!token && sheet === 'eth') noteLanded(list.reduce((a, x) => a + BigInt(x.amount), 0n));
-  await scanPrivate(true).catch(() => {});
-  rerender(sheet);
+  // the press is free again once it is done: the balance is read again behind it (minutes on a slow node), not before the next press
+  run.release?.();
+  scanPrivate(true).catch(() => {}).then(() => rerender(sheet));
   return hash;
 }
 // A wrap proved before anything is deposited (a wrap's proof pins no chain state), then deposited and settled in one transaction from
@@ -9290,8 +9293,8 @@ async function proveFirstWrap({ run, t, priv, via, wei, status, sheet, ticker = 
     await waitTx(hash);
     tell(html`<span class="ok">Done.</span> ${txLink(hash)}`); toast(`${run.to.label}: done`);
     if (!token && sheet === 'eth') noteLanded(BigInt(r.built.amount));
-    await scanPrivate(true).catch(() => {});
-    rerender(sheet);
+    run.release?.();                                                              // free for the next press, as sendVouchers
+    scanPrivate(true).catch(() => {}).then(() => rerender(sheet));
     return hash;
   } catch (e) {
     if (e?.code === 'device_prover') throw Object.assign(new Error(`The prover on this computer could not prove it (${String(e.message || '').replace(/\.$/, '')}). Nothing was sent: press again, or switch it off to let the relay wrap it.`), { said: true });

@@ -133,7 +133,7 @@ function quoteHops(amountIn, ab = POOL_AB, bc = POOL_BC) {
 // The validator does not read the range proof, so one proof per receipt amount is enough.
 const _proofs = new Map();
 function receiptRangeProof(v) {
-  if (!_proofs.has(v)) _proofs.set(v, bpRangeAggProve([0n, v], [0n, R_RECEIPT]).proof);
+  if (!_proofs.has(v)) _proofs.set(v, bpRangeAggProve([0n, v], [1n, R_RECEIPT]).proof);
   return _proofs.get(v);
 }
 

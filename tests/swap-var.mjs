@@ -695,21 +695,18 @@ export function validateSwapVar({
   // (wire-format parity with T_AXFER_VAR); the credited amount's range-
   // safety is established by derivation.
   //
-  // No-change case: the prover supplies the additive identity in slot 0,
-  // which trivially opens to (value=0, blinding=0).
-  let cChangeForBP;
-  if (isNoChangeSentinel(env.cChangeOrSentinel)) {
-    cChangeForBP = ZERO;
-  } else {
-    try { cChangeForBP = secp.ProjectivePoint.fromHex(bytesToHex(env.cChangeOrSentinel)); }
-    catch (e) { return { outcome: 'invalid', valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
-  }
   // m=1 over the change ALONE. The receipt is not a subject: the consumer recomputes the clearing amount
   // against the current reserves and forms C_receipt from it, so its range holds by arithmetic (the payout is
   // strictly below the out-side reserve). The change is trader-supplied and still needs proving, because the
-  // kernel conserves only modulo the group order.
-  if (!bulletproofVerify([cChangeForBP], env.rangeProof)) {
-    return { outcome: 'invalid', valid: false, reason: 'bulletproof verification failed' };
+  // kernel conserves only modulo the group order. A whole-input swap (the sentinel) has no change, so no range
+  // check at all, as the guest's fold_swap_var and the worker's indexer have it.
+  if (!isNoChangeSentinel(env.cChangeOrSentinel)) {
+    let cChangeForBP;
+    try { cChangeForBP = secp.ProjectivePoint.fromHex(bytesToHex(env.cChangeOrSentinel)); }
+    catch (e) { return { outcome: 'invalid', valid: false, reason: `cChangeOrSentinel decode: ${e.message}` }; }
+    if (!bulletproofVerify([cChangeForBP], env.rangeProof)) {
+      return { outcome: 'invalid', valid: false, reason: 'bulletproof verification failed' };
+    }
   }
 
   // ════════ Stage B — EXECUTABILITY (any failure ⇒ PASS-THROUGH) ════════
