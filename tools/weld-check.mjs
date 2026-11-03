@@ -2694,9 +2694,10 @@ await step('selflocks', async () => {
     await until(r.page, () => (window.__selfCalls || []).some((c) => c.kind === 'refund' && c.self === 'function'), null, 120000).catch(() => {});
     const refund = (await selfCalls()).find((c) => c.kind === 'refund' && c.self === 'function');
     ok(refund && refund.fee === '0', `selflocks: and is settled by the account with no relay fee (${JSON.stringify(refund)})`);
-    // A withdrawal. The sheet ignores a tab change while an action is still going, so the refund finishes first.
+    // A withdrawal. The sheet ignores a tab change while an action is still going, so the refund finishes first: it says Done, then rescans the private balance, and its buttons are busy until that is read
     await until(r.page, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || ''), null, 180000);
-    await sleep(2000);
+    await until(r.page, () => !document.querySelector('#sheet-eth [aria-busy="true"]'), null, 600000);
+    await sleep(500);
     await r.page.click('[data-v1="out"]');
     await r.page.fill('#o-to', '0x000000000000000000000000000000000000dEaD');
     await r.page.fill('#o-amt', '0.1');
