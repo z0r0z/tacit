@@ -284,6 +284,83 @@ await test('explorer down keeps the box pending and credits nobody, then resolve
   w.cleanup();
 });
 
+await test('a box funded by an order of the gas relay credits the order\'s payer, not the settle relay that sent it; hops and a missing event still earn nothing', async () => {
+  const GAS_RELAY = '0x000000197e8f0b64463b2010e568ff42090af88d', ZROUTER = '0x000000000000fb114709235f1ccbfffe47b4b2f4', EXECUTED = '0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519';
+  const word = (a) => '0x' + '0'.repeat(24) + a.replace(/^0x/, '');
+  const w = world();
+  w.ctx.gasRelay = GAS_RELAY;
+  w.chain.receipts = new Map();
+  w.ctx.client.getTransactionReceipt = async ({ hash }) => { if (w.chain.receiptsDown) throw new Error('node 503'); return w.chain.receipts.get(hash); };
+  const executed = (payer) => ({ logs: [{ address: GAS_RELAY, topics: [EXECUTED, word(payer), word(RELAY), '0x' + '0'.repeat(63) + '7'], data: '0x' }] });
+  // BOB signs an order the settle relay sends: the sale pays ETH into BOX, and the keeper completes it
+  internal(w.explorer, { hash: h(60), block: 150n, index: 4, from: ZROUTER, to: BOX, value: ETH });
+  w.chain.txs.set(h(60), { from: RELAY, to: GAS_RELAY, typeHex: '0x2' });
+  w.chain.receipts.set(h(60), executed(BOB));
+  transact(w.chain, { hash: h(61), block: 400n, logIndex: 3, extAmount: ETH });
+  boxCompleted(w.chain, { hash: h(61), block: 400n, logIndex: 4 });
+  internal(w.explorer, { hash: h(61), block: 400n, index: 2, from: BOX, to: ROUTER, value: ETH });
+  w.chain.txs.set(h(61), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  w.chain.receiptsDown = true;
+  await resolvePendingBoxes(w.ctx);
+  assert.equal(w.state.countPending(8453), 1, 'a receipt the node will not give keeps the box pending, credited to nobody');
+  assert.equal(w.store.countByActivity(EVM_POOL_ACTIVITY), 0);
+  w.chain.receiptsDown = false;
+  await resolvePendingBoxes(w.ctx);
+  assert.equal(w.state.countPending(8453), 0);
+  assert.equal(creditedWei(w.store, BOB), ETH, 'the payer who sold the tokens is credited');
+  assert.equal(rows(w.store, BOB)[0].tx_hash, h(61));
+  assert.equal(rows(w.store, RELAY).length, 0, 'never the settle relay that sent the order');
+  assert.equal(rows(w.store, KEEPER).length, 0);
+  w.cleanup();
+
+  // a transaction to the relay with no Executed event of its own (or one from another contract) names nobody: its sender is the excluded settle relay
+  const x = world();
+  x.ctx.gasRelay = GAS_RELAY;
+  x.ctx.client.getTransactionReceipt = async () => ({ logs: [{ address: ZROUTER, topics: [EXECUTED, word(BOB)], data: '0x' }] });
+  internal(x.explorer, { hash: h(62), block: 150n, index: 4, from: ZROUTER, to: BOX, value: ETH });
+  x.chain.txs.set(h(62), { from: RELAY, to: GAS_RELAY, typeHex: '0x2' });
+  transact(x.chain, { hash: h(63), block: 400n, logIndex: 3, extAmount: ETH });
+  boxCompleted(x.chain, { hash: h(63), block: 400n, logIndex: 4 });
+  internal(x.explorer, { hash: h(63), block: 400n, index: 2, from: BOX, to: ROUTER, value: ETH });
+  x.chain.txs.set(h(63), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(x.ctx);
+  await resolvePendingBoxes(x.ctx);
+  assert.equal(x.state.countPending(8453), 0);
+  assert.equal(x.store.countByActivity(EVM_POOL_ACTIVITY), 0, 'an event from another address does not name a payer');
+  x.cleanup();
+
+  // an order whose call withdrew from V1 into the box is a hop out of Tacit, whoever signed it
+  const y = world();
+  y.ctx.gasRelay = GAS_RELAY;
+  y.ctx.client.getTransactionReceipt = async () => executed(BOB);
+  internal(y.explorer, { hash: h(64), block: 150n, index: 4, from: V1_POOL, to: BOX, value: ETH });
+  y.chain.txs.set(h(64), { from: RELAY, to: GAS_RELAY, typeHex: '0x2' });
+  transact(y.chain, { hash: h(65), block: 400n, logIndex: 3, extAmount: ETH });
+  boxCompleted(y.chain, { hash: h(65), block: 400n, logIndex: 4 });
+  internal(y.explorer, { hash: h(65), block: 400n, index: 2, from: BOX, to: ROUTER, value: ETH });
+  y.chain.txs.set(h(65), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(y.ctx);
+  await resolvePendingBoxes(y.ctx);
+  assert.equal(y.store.countByActivity(EVM_POOL_ACTIVITY), 0, 'funding that is itself out of V1 earns nothing');
+  y.cleanup();
+
+  // a chain with no gas relay set reads the transaction as before, and asks for no receipt
+  const z = world();
+  z.ctx.client.getTransactionReceipt = async () => { throw new Error('a receipt is not read without a gas relay'); };
+  internal(z.explorer, { hash: h(66), block: 150n, index: 4, from: ZROUTER, to: BOX, value: ETH });
+  z.chain.txs.set(h(66), { from: RELAY, to: GAS_RELAY, typeHex: '0x2' });
+  transact(z.chain, { hash: h(67), block: 400n, logIndex: 3, extAmount: ETH });
+  boxCompleted(z.chain, { hash: h(67), block: 400n, logIndex: 4 });
+  internal(z.explorer, { hash: h(67), block: 400n, index: 2, from: BOX, to: ROUTER, value: ETH });
+  z.chain.txs.set(h(67), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(z.ctx);
+  await resolvePendingBoxes(z.ctx);
+  assert.equal(z.state.countPending(8453), 0);
+  assert.equal(z.store.countByActivity(EVM_POOL_ACTIVITY), 0);
+  z.cleanup();
+});
+
 await test('a sweep the explorer never indexed is read from the chain, and ETH bridged from Ethereum credits its Ethereum sender', async () => {
   const w = world();
   const BRIDGE = '0x4200000000000000000000000000000000000010', MESSENGER_ALIAS = '0x977f82a600a1414e583f7f13623f1ac5d58b1c0b';

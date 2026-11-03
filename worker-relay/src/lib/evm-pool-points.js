@@ -6,7 +6,8 @@
 //   - a deposit-box completion or a receive-box sweep (router DepositBoxCompleted / Received in the same tx):
 //     never the completer or sweeper. The box's
 //     funders are found from its explorer history and each is credited for the share of its funding the
-//     completion consumed (FIFO over the box's inflows and outflows). Funding that is itself a hop out of V1 or
+//     completion consumed (FIFO over the box's inflows and outflows). A funding made in a transaction to the gas
+//     relay is the order's payer's, not the settle relay's that sent it. Funding that is itself a hop out of V1 or
 //     this pool, a cross-chain system deposit, or from an excluded sender earns nothing.
 // Box completions wait in a pending table until the explorer has indexed the completion, so an explorer outage
 // holds back only those rows, never the chain's cursor or any other activity.
@@ -229,7 +230,8 @@ function rowKey(base, n) {
   return n === 0 ? base : `${base}:${n}`;
 }
 
-// ctx: { store, state, chainId, client, apiBase, startBlock, pool, router, v1Pool, v1Router, excluded (Set),
+// ctx: { store, state, chainId, client, apiBase, startBlock, pool, router, v1Pool, v1Router, excluded (Set), gasRelay (the
+//        gas relay's address on this chain, or null),
 //        confirmations, chunk, maxChunks, resolvePerCycle, capTip?(tip), explorerGet, pointsFor(amountWei, prior),
 //        evalBlock(chainId, blockNumber, blockTime), covered(evalBlock), multipliers(address, evalBlock) →
 //        { tacB, zShareB, ppB }, log }
@@ -402,6 +404,16 @@ async function bridgedSender(ctx, txHash, box, hops) {
   return null;
 }
 
+// A box funded inside a transaction to the gas relay (ctx.gasRelay) was paid for by that order's payer, who signed it and sold the tokens that bought the ETH; the
+// transaction's own sender is the settle relay that submitted it. The relay's Executed(payer, submitter, nonce, feeToken, fee) names the payer (topic 1).
+const GAS_RELAY_EXECUTED = '0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519'; // Executed(address,address,uint256,address,uint256)
+async function gasRelayPayer(ctx, tx, txHash) {
+  if (!ctx.gasRelay || lc(tx?.to) !== lc(ctx.gasRelay)) return null;
+  const r = await ctx.client.getTransactionReceipt({ hash: txHash });
+  const l = (r?.logs || []).find((x) => lc(x.address) === lc(ctx.gasRelay) && lc(x.topics?.[0]) === GAS_RELAY_EXECUTED && x.topics[1]);
+  return l ? lc('0x' + l.topics[1].slice(26)) : null;
+}
+
 // An explorer can leave a sweep's own transfer out of a box unindexed (Base's Blockscout has left whole block ranges of
 // internal transfers unprocessed), and the release then never shows in the box's history. Once the sweep is old enough that
 // the explorer has had its chance, the release is read from the chain instead: what left the box is the drop in its balance
@@ -468,9 +480,12 @@ export async function resolvePendingBoxes(ctx) {
         if (budget === 0n) break;
         const take = c.amount < budget ? c.amount : budget;
         budget -= take;
-        const funder = lc(c.from) === L2_STANDARD_BRIDGE
-          ? await bridgedSender(ctx, c.txHash, p.box, hops)
-          : creditFor(await getTx(c.txHash), { hops: hops.funding, excluded: ctx.excluded, immediateFrom: c.from });
+        let funder;
+        if (lc(c.from) === L2_STANDARD_BRIDGE) funder = await bridgedSender(ctx, c.txHash, p.box, hops);
+        else {
+          const tx = await getTx(c.txHash), payer = await gasRelayPayer(ctx, tx, c.txHash);
+          funder = creditFor(payer ? { ...tx, from: payer, to: null } : tx, { hops: hops.funding, excluded: ctx.excluded, immediateFrom: c.from });
+        }
         if (funder) credited.set(funder, (credited.get(funder) ?? 0n) + take);
       }
       let n = 0;

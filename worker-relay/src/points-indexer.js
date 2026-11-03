@@ -1203,7 +1203,7 @@ function evmPoolCtx(store, evmState, { chainId, client }) {
     apiBase: CFG.evmPoolExplorerApis[chainId],
     startBlock: CFG.evmPoolPointsStartBlocks[chainId],
     pool: CFG.evmPoolAddr, router: CFG.evmPoolRouterAddr, v1Pool: ADDR.pool, v1Router: ADDR.router,
-    excluded: new Set(CFG.evmPoolPointsExclude),
+    excluded: new Set(CFG.evmPoolPointsExclude), gasRelay: chainId === 1 ? CFG.gasRelayAddr : null,
     confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk,
     maxChunks: CFG.evmPoolScanMaxChunks, resolvePerCycle: CFG.evmPoolResolvePerCycle,
     capTip: chainId === 1 ? capToBoostCoverage : null,
