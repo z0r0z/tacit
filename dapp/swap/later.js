@@ -106,6 +106,35 @@ export async function sizeIn({ route, amountIn, min, depositWei, tries = 3 }) {
   }
   return null;
 }
+// A token start whose gas the relay pays (no ETH in the wallet, or the token or TAC chosen): the gas relay's order sells the token for ETH straight into a deposit
+// box of the ETH pool for this key, and the pool's keeper completes the box into the deposit's note. The box holds exactly what the plan's deposit needs (the note and
+// the keeper's fee for completing it), so the token sold is sized to its route's expected output, a little over, not to a floor: the order's signed minimum is the box's
+// amount, and what the sale pays above it stays in the box, refundable to the key's own address after its deadline.
+// The gas a keeper that does not say what it prices a deposit box's completion at is asked to quote for: its default (EVM_POOL_KEEPER_DEPOSIT_GAS, 500,000). A keeper that
+// does says it, with its fee (`depositFee` on its /quote), and that is the fee used.
+export const BOX_GAS = 500_000;
+// The least fee a keeper takes for completing a deposit box, from its /quote: its own `depositFee`, else its quote for BOX_GAS. → wei as a string, or null
+export const depositFeeOf = (q) => [q?.depositFee, q?.fee].map((x) => String(x ?? '')).find((x) => /^\d+$/.test(x)) ?? null;
+// What the sale's expected output may fall short of the box by before the order's minimum refuses it (the order reverts, nothing is spent), in basis points.
+export const BOXED_MARGIN_BPS = 40n;
+// The keeper's fee for completing a box, a half over its quote so a rise in gas before it is completed does not strand the box. → wei
+export const boxFeeOf = (quoted) => (BigInt(quoted) * 3n) / 2n;
+// The amount of a token whose sale is expected to pay `needWei` of ETH with the margin to spare: `amountIn` (whose route is expected to pay `out`) scaled to it, and
+// asked again while its expected output still falls short (a route pays less per token as it grows). `route(amount)` → { out, … } or null. → that route with its
+// `amountIn`, or null.
+export async function sizeBoxed({ route, amountIn, out, needWei, tries = 3 }) {
+  let a = BigInt(amountIn), o = BigInt(out);
+  const keep = 10000n - BOXED_MARGIN_BPS, want = (BigInt(needWei) * 10000n + keep - 1n) / keep;
+  if (a <= 0n || o <= 0n || want <= 0n) return null;
+  for (let i = 0; i < tries; i++) {
+    a = (a * want * 10005n + o * 10000n - 1n) / (o * 10000n);
+    const r = await route(a);
+    if (!r) return null;
+    if (BigInt(r.out) >= want) return { ...r, amountIn: a };
+    o = BigInt(r.out);
+  }
+  return null;
+}
 // The swap's ETH, from what a token's route into the pool pays: three significant figures, rounded down (the rest stays in the pool with the
 // buffer), so the swap out is no exact image of the deposit.
 export const swapOf = (wei) => { const v = BigInt(wei), unit = 10n ** BigInt(Math.max(0, v.toString().length - 3)); return (v / unit) * unit; };
@@ -224,6 +253,13 @@ export async function relayFee(gas = Number(BASE_GAS + 400_000n), get = globalTh
   const j = await r.json().catch(() => ({}));
   if (!r.ok || !/^\d+$/.test(String(j.fee ?? '')) || (pool && lc(j.pool) !== lc(pool))) throw new Error('The relay could not quote its fee right now. Try again in a moment.');
   return BigInt(j.fee);
+}
+// The keeper's fee for completing a deposit box, read the same way (see depositFeeOf). → wei
+export async function depositFee(get = globalThis.fetch, keeper = CHAIN.keeper) {
+  const r = await get(`${keeper}/quote?gas=${BOX_GAS}`, { signal: AbortSignal.timeout(10_000) });
+  const least = depositFeeOf(await r.json().catch(() => ({})));
+  if (!r.ok || least == null) throw new Error('The relay could not quote its fee right now. Try again in a moment.');
+  return BigInt(least);
 }
 
 // `keyHex()` opens the Tacit key and gives its private key (hex); `signer` sends from the connected wallet ({ address, ready, send, rpc }, and for
@@ -472,7 +508,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       selfCall = (tx) => ({ ...zap(tx), ...(pull.before?.length ? { before: pull.before } : {}) });
       // a wallet that said it batches and then will not: the approvals are sent one by one, then the deposit alone
       batched = pull.before?.length ? { calls: pull.before, alone: zap } : null;
-      paid = { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(r.amountIn), route: r.name };
+      paid = { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(r.amountIn), typed: String(pay.amountIn), route: r.name };      // `typed`: the amount asked for, which the plan's header names
     }
     const s0 = await synced;
     const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
@@ -518,6 +554,59 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.leaves0 = (await w.sync(5000)).leaves; plan.err = null;
     } catch (e) {
       plan.state = notSent(e) ? 'stopped' : 'unsure';
+      plan.err = String(e?.message || e).slice(0, 200); throw e;
+    } finally { save(plan); }
+    return plan;
+  }
+  // A token start with the relay paying the deposit's gas (see BOX_GAS above): a deposit box of the ETH pool is made for this key, for the deposit and the keeper's fee,
+  // and given to the pool's keeper; `fund({ box, amount, fee })` is the page's: it has the gas relay sell the token for the ETH the box holds and gives the relay's
+  // transaction hash. The keeper then completes the box, and the deposit is the note it makes, found here. `pay`: { token, sym, dec, amountIn, route } as sold.
+  // `refund`: where what the sale pays above the box goes after its deadline (an address only this key knows, by default).
+  async function startBoxed({ swapWei, extraWei = 0n, token, sym, dec, to, toName = null, depositWei, pay, fund, refund = null, waitMs = 600_000, pollMs = 3000, onStep = () => {} }) {
+    if (!signer.address) throw new Error('Connect a wallet to deposit from.');
+    if (lc(to) === lc(signer.address)) throw new Error('Send it to another address: the wallet that deposits would tie the two together.');
+    if (lc(pay.token) === ZERO || lc(pay.token) === lc(token)) throw new Error('Pay with another token than the one it buys.');
+    // this way pays an address: a private destination (the key's own balance, a Tacit address) is made by `start`, which hands the gas it needs to the key's account
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(to || ''))) throw Object.assign(new Error('Add the address it goes to. Nothing was sent.'), { nothingSpent: true });
+    // what the sale pays above the box is returned to `refund` after the box's deadline (anyone may send it): by default a fresh receive box of this key, an address nothing else
+    // names (the intent is public once the box is completed, so a stable address there would tie this key's deposits together) and only the key can sweep.
+    // It goes to the keeper in lower case: it takes an address in no case or its own checksum's, and a wrongly cased one is refused.
+    const w = await wallet(), back = lc(refund || (await w.refundBox()));
+    const least = depositFeeOf(await w.quote(BOX_GAS).catch(() => null));
+    if (least == null) throw Object.assign(new Error('The pool’s keeper could not quote its fee right now. Nothing was sent. Try again in a moment.'), { nothingSpent: true });
+    const fee = boxFeeOf(least), amount = BigInt(depositWei) + fee;
+    const s0 = await w.sync();
+    const plan = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), from: lc(signer.address), swapWei: String(swapWei), extraWei: String(extraWei),
+      depositWei: String(depositWei), token: lc(token), sym, dec, to: lc(to), ...(toName ? { toName: String(toName) } : {}),
+      pay: { token: lc(pay.token), sym: pay.sym, dec: pay.dec, amountWei: String(pay.amountIn), ...(pay.typed != null ? { typed: String(pay.typed) } : {}), route: pay.route || 'relay' }, dest: { kind: 'address' }, gasWei: '0',
+      boxed: true, state: 'depositing', leaves0: s0.leaves };
+    keepPlans([plan, ...readPlans(store)], store);
+    let ran = false;                                  // whether the relay's order has run: from then on nothing is called stopped, however the wait ends
+    try {
+      onStep('opening your deposit box');
+      const box = await w.depositBox({ amount, fee, refund: back, deadline: secs() + 2 * DEADLINE_S });       // counted from the chain's time, as every deadline here is
+      plan.box = box.box; plan.boxWei = String(amount); save(plan);
+      // `fund` gives the relay's transaction hash, or { hash, amountIn, route } where the amount sold is found only now (the box did not exist when the page sized it)
+      const sold = await fund({ box: box.box, amount, fee, onStep });
+      ran = true;
+      plan.depositTx = typeof sold === 'string' ? sold : sold?.hash || null;
+      if (sold?.amountIn != null) plan.pay.amountWei = String(sold.amountIn);
+      if (sold?.route) plan.pay.route = sold.route;
+      save(plan);
+      // the hash is for the step's link alone: `fund` returns only once the order has run, so the box is funded and the wait for the keeper goes on without it
+      onStep('making your deposit private');
+      const end = Date.now() + waitMs;
+      for (;;) {
+        const s = await w.sync();
+        if (w.notes().some((n) => BigInt(n.v) === BigInt(depositWei) && Number(n.index) >= Number(s0.leaves))) { plan.leaves0 = s.leaves; break; }
+        if (Date.now() > end) throw Object.assign(new Error('The relay sent the swap, and the pool’s keeper has not made the deposit yet. It is checked again below; nothing is lost.'), { pending: true });
+        await sleep(pollMs);
+      }
+      plan.state = 'waiting'; plan.depositedAt = Date.now(); plan.err = null;
+    } catch (e) {
+      // a relay order that ran leaves the box funded: the keeper completes it, and the plan is checked again; before that, a no or a refusal left nothing spent
+      plan.state = ran ? (plan.depositTx ? 'depositing' : 'unsure')
+        : e?.nothingSpent || declined(e) || /cancel|rejected|denied|nothing was (sent|spent)|did not take|price moved/i.test(String(e?.message || e)) ? 'stopped' : 'unsure';
       plan.err = String(e?.message || e).slice(0, 200); throw e;
     } finally { save(plan); }
     return plan;
@@ -619,8 +708,13 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const w = await wallet(plan.hop), s = await w.sync(), notes = w.notes();
     if (!plan.depositedAt) {
       // a note of exactly its amount that the pool made after the plan began: an older note of the same size is some other money
-      if (notes.some((n) => BigInt(n.v) === BigInt(plan.depositWei) && Number(n.index) >= Number(plan.leaves0 || 0))) { plan.state = 'waiting'; plan.depositedAt = plan.at; plan.err = null; }
-      else { plan.state = 'stopped'; plan.err = 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a minute.'; }
+      if (notes.some((n) => BigInt(n.v) === BigInt(plan.depositWei) && Number(n.index) >= Number(plan.leaves0 || 0))) { plan.state = 'waiting'; plan.depositedAt = plan.at; plan.err = null; if (plan.boxed) plan.leaves0 = s.leaves; }
+      // through a deposit box: the relay's order ran and the keeper has the box to complete (until the box's deadline), or the order was posted and may still run (its own is ten minutes)
+      else if (plan.boxed && plan.box && Date.now() - plan.at < 2 * DEADLINE_S * 1000) {
+        plan.state = plan.depositTx ? 'depositing' : 'unsure';
+        plan.err = plan.depositTx ? null : 'The relay may still send the swap, and the pool’s keeper may still complete the box. Check again in a few minutes.';
+      }
+      else { plan.state = 'stopped'; plan.err = plan.boxed ? 'The deposit did not reach the pool before its box’s deadline. If the relay’s swap ran, what it paid is still in the box, which anyone can send back to an address your key owns.' : 'The deposit is not in the pool yet. If it was sent, it may still be on its way: check again in a minute.'; }
     } else if (await (async () => {
       // Did the swap go out? The router says so for a plan that kept its escrow (an unrelated spend from the pool cannot be taken for it); a plan without one is judged by the pool's balance
       const ran = await ranCall(plan);
@@ -649,6 +743,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
 
   // The swap out in two presses: the route quoted now (with the stand-in) and shown, then sent only while it still pays at least what was shown.
   async function offer(plan, { slippageBps = 50 } = {}) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(plan.to || ''))) throw new Error('This swap has no address to pay. Remove it and start again.');
     // out of a token pool: the same token is paid out as it is; anything else is the token sold on the way out
     const same = !plan.into && (plan.hop ? lc(plan.token) === lc(plan.hop.token) : plan.token === ZERO);
     if (same) return { min: BigInt(plan.swapWei), out: BigInt(plan.swapWei), name: plan.hop ? `${plan.hop.sym} itself` : 'ETH itself', at: Date.now() };
@@ -795,5 +890,5 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     } finally { save(plan); }
   }
 
-  return { start, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
+  return { start, startBoxed, ahead, adopt, swapIntoPool, depositBoxFor, blend, offer, swapOut, shield, check, forget, warm, modules: mods, hopOf, openPool, plans: () => readPlans(store), get proveMs() { return prover.ms; }, get proverReady() { return prover.ready; } };
 }

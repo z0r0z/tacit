@@ -358,6 +358,15 @@ once completed it has code, and a 2300-gas stipend transfer to it can fail.
 A keeper service completes boxes for its fee: `POST /evm-pool/keeper/deposit` with `{ intent, hint }` from
 `depositIntent()` (each chain's keeper URL is `keeper` in `contracts/deployments/evm-pool.json`). Anyone can run one
 (`worker-relay/src/evm-pool-keeper.js`); the same service sweeps receive boxes and relays ([Relaying](#relaying)).
+Its `GET /quote` says what completing a box costs it: `depositGas` (its `EVM_POOL_KEEPER_DEPOSIT_GAS`, default 500,000) and `depositFee`, the
+least fee a box may carry at that gas. A page that makes the box takes its fee from that figure (a half over it, so a rise in gas before the
+completion does not strand the box); an older keeper without the fields is asked for a quote at 500,000 gas.
+
+With `EVM_POOL_KEEPER_RECLAIM=1` the keeper also sends back what a box still holds once its deadline has passed, to the intent's `refund` (the router
+lets anyone do this): the whole of a box it never completed, and what a completed one holds above its `amount` (what a swap that funded it paid over).
+It does the second only when it is worth the send (ETH: three times the gas of the send; a token: the keeper's minimum fee and, where it has a price,
+the gas at that price), looks every `EVM_POOL_KEEPER_SURPLUS_SECS` (600) at `EVM_POOL_KEEPER_SURPLUS_BATCH` (10) boxes, oldest deadline first, and marks a
+box it has looked at, so a leftover too small to send stays where it is. Reclaim is off by default.
 
 **Handing a box to a funding page.** A page that funds boxes on the user's behalf takes
 `#tacit-box=<base64url(JSON.stringify({ chainId, intent, hint }))>`, where `intent` and `hint` are exactly the
@@ -449,6 +458,15 @@ A wallet picks the way that asks least of the user, in this order: an allowance 
 (an ordinary account, or one delegated under EIP-7702); a Permit2 signature when the token is already approved to
 Permit2; the approval and the zap in one atomic batch (EIP-5792 `wallet_sendCalls`) when the wallet supports it; and
 only otherwise an approval transaction first. Approve exactly `amountIn`, so no allowance is left behind.
+
+**With no ETH for the gas.** The deposit above is the wallet's own transaction, so its gas is ETH from the wallet. A wallet that holds a token the gas
+relay (`TacitGasRelay`) takes its fee in (USDC or TAC, or a token approved to Permit2) can sign one order instead: the relay sells the token through
+zRouter for ETH paid to a deposit box of the ETH pool for the wallet's key, and the pool's keeper completes the box for a fee out of it. The box's amount
+is the deposit and that fee; the order's signed `minOut` is the box's amount, so a shortfall reverts it all and nothing is spent; what the sale pays
+above the box stays in it, refundable to an address only the key knows after the box's deadline. No ETH leaves the wallet. ETH itself cannot go this way:
+it moves only in a transaction its holder sends. The swap page does this when the wallet holds too little ETH, or when its holder picks the token or TAC
+for the deposit's gas (`dapp/swap/later.js` `startBoxed`, `dapp/gas-relay.js` `placeOrder`). Every swap out after the deposit is sent by the pool's
+relay and costs the wallet no gas either way.
 
 **Withdraw and call.** A withdrawal can run actions with the funds in the same transaction: a swap, a bridge deposit, a
 wrap or zap into a V1 note, or any call. A `CallIntent` lists the calls (target, value, data, and a token to transfer or

@@ -162,3 +162,70 @@ export function relaySigner({ address, token, router, symbol, amount, plan, rpc,
     return hash;
   } };
 }
+
+// ── an order the wallet signs for any call, sent by the relay and waited for ──
+/// Signs `order` (buildOrder's, with its `data`) with the permits the relay pulls with, posts it to the board and waits until the contract has run it. The permits are an ERC-2612
+/// permit for each token the relay pulls (the input, and TAC when the fee is TAC), or, for an input with none, one Permit2 batch for it (the wallet has approved Permit2 for it
+/// already). The order is run here first as the relay will run it (an eth_call), so one that would revert is never posted. → the relay's transaction hash. Every refusal or lapse
+/// says nothing was spent, and carries `nothingSpent`: a posted order that may still run is never called refused.
+/// `sign.typed(typedData)` → a 65-byte signature; `rpc(method, params)` reads Ethereum; `step(text)` says each stage; `guard()` throws when the page moved on; `minWait` is the least
+/// it waits for the relay, in seconds, however soon the order lapses, and `lookupMs` the pause between reads for the relay's transaction (a test shortens both); `post(body)` stands in for
+/// the board's POST.
+export async function placeOrder({ order, data, from, symbol = 'the token', sign, rpc, step = () => {}, guard = () => {}, api = 'https://api.tacit.finance', now = () => Math.floor(Date.now() / 1000), pollMs = 3000, minWait = 60, lookupMs = 1000, post = null }) {
+  const relay = GAS_RELAY[1], tokenIn = order.tokenIn, feeToken = order.feeToken, fee = BigInt(order.fee), amountIn = BigInt(order.amountIn);
+  const total = lc(feeToken) === lc(tokenIn) ? amountIn + fee : amountIn;
+  const stopped = (m) => Object.assign(new Error(m), { nothingSpent: true });
+  const dl = now() + 900, word = (a) => A32(a);
+  let inPermit = NO_PERMIT, feePermit = NO_PERMIT, p2 = NO_P2;
+  guard();
+  if (PERMIT_TOKENS[lc(tokenIn)]) {
+    const nonceOf = async (t) => BigInt(await rpc('eth_call', [{ to: t, data: '0x7ecebe00' + word(from) }, 'latest']));
+    const sp = async (t, value) => ({ value: String(value), deadline: String(dl), ...splitSig(await sign.typed(permitTypedData({ token: t, owner: from, value, nonce: await nonceOf(t), deadline: dl }))) });
+    inPermit = await sp(tokenIn, total);
+    if (lc(feeToken) !== lc(tokenIn) && fee !== 0n) { if (!PERMIT_TOKENS[lc(feeToken)]) throw stopped('The fee token takes no permit. Nothing was spent.'); feePermit = await sp(feeToken, fee); }
+  } else {
+    if (lc(feeToken) !== lc(tokenIn)) throw stopped(`The fee is paid in ${symbol} here: ${symbol} takes no permit. Nothing was spent.`);
+    const allow = BigInt(await rpc('eth_call', [{ to: tokenIn, data: '0xdd62ed3e' + word(from) + word(PERMIT2) }, 'latest']));
+    if (allow < total) throw stopped(`${symbol} has not been approved for Permit2 from this wallet yet, which takes one transaction with a little ETH. Nothing was sent.`);
+    const info = String(await rpc('eth_call', [{ to: PERMIT2, data: '0x927da105' + word(from) + word(tokenIn) + word(relay) }, 'latest'])).replace(/^0x/, '');
+    const pn = BigInt('0x' + (info.slice(128, 192) || '0'));
+    const b = permit2TypedData({ details: [{ token: tokenIn, amount: total, expiration: dl, nonce: pn }], owner: from, deadline: dl });
+    p2 = { use: true, batch: b.batch, sig: await sign.typed(b.typed) };
+  }
+  guard();
+  const signature = await sign.typed(orderTypedData(order));
+  const posted = { order, data, signature, inPermit, feePermit, p2 };
+  // the order is run here as the relay would run it: one that would revert is not posted, and costs nothing
+  try { await rpc('eth_call', [{ from: PROBE_FROM, to: relay, data: encodeExecute(posted) }, 'latest']); }
+  catch (e) {
+    const d = String(e?.data?.data ?? e?.data ?? e?.message ?? '');
+    throw stopped(`This would not go through, so nothing was sent${d ? ` (${d.slice(0, 40)})` : ''}. Try again.`);
+  }
+  // where the order's run can be looked for: no earlier than now (a short range, which the nodes that limit one will serve)
+  const since = await rpc('eth_blockNumber', []).then((h) => BigInt(h), () => null);
+  step('Sending it to the relay');
+  const send = post || ((body) => fetch(`${api}/gas/order`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15e3) }).then((q) => q.json()).catch(() => null));
+  const r = await send({ order: posted });
+  // the relay saying no is final; no answer at all (a timeout, a dropped line) may be an order the relay has, so it is waited for like one
+  if (r && !r.ok) throw stopped(`The relay did not take the order${r.error ? `: ${r.error}` : ''}. Nothing was spent.`);
+  if (!r) step('The relay did not answer. Checking whether it has the order');
+  const usedSel = '0xad04dc3f' + A32(from) + W32(order.nonce), t0 = Date.now(), end = t0 + Math.max(minWait, Number(order.deadline) - now() + 15) * 1000;
+  let done = false, reads = 0;
+  while (Date.now() < end && !done) {
+    await new Promise((q) => setTimeout(q, pollMs));
+    const used = await rpc('eth_call', [{ to: relay, data: usedSel }, 'latest']).then((x) => { reads++; return x; }, () => '0x0');
+    done = BigInt(used) === 1n;
+    if (!done) step(`Waiting for the relay to send it (${Math.round((Date.now() - t0) / 1000)} s). Nothing leaves your wallet unless it lands`);
+  }
+  // never once able to read the contract's answer (a node down the whole wait): the order may have run, so it is not called unsent
+  if (!done && !reads) throw new Error('The relay’s answer could not be read, so it may have sent the order. Check again in a moment before sending anything more.');
+  if (!done) throw stopped(`The relay did not send it before the order lapsed${r ? '' : ' (it never answered)'}. Nothing was spent. Try again.`);
+  // the contract's Executed event for this payer and nonce, a few times over: a node can answer a moment after the order ran with no log yet, or fail one read
+  const head = since ?? (await rpc('eth_blockNumber', []).then((h) => BigInt(h) - 50n, () => null));
+  let hash = null;
+  for (let i = 0; head != null && i < 5 && !hash; i++) {
+    if (i) await new Promise((q) => setTimeout(q, lookupMs));
+    hash = await rpc('eth_getLogs', [{ address: relay, topics: ['0x533053a5fad9470861fb5df750d47e5f011faa03daba05299fe4bdc65f52d519', '0x' + A32(from), null, '0x' + W32(order.nonce)], fromBlock: '0x' + (head > 3n ? head - 3n : 0n).toString(16), toBlock: 'latest' }]).then((l) => l?.[0]?.transactionHash || null, () => null);
+  }
+  return hash;
+}

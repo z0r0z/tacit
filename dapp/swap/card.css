@@ -166,6 +166,8 @@
 .swc .later .via .link { position: relative; }
 .swc .later .via .link::after { content: ''; position: absolute; inset: -8px -6px; }
 @media (pointer: coarse) { .swc .later .via .vp { min-height: 34px; padding: 1px 12px; } }
+/* on a phone the buffer's label takes a line of its own, so its slider keeps its length beside the figure */
+@media (max-width: 460px) { .swc .later .buf { flex-wrap: wrap; gap: 4px 12px; } .swc .later .buf > span { flex: 1 0 100%; } }
 /* figures of the other route, while this one is priced */
 .swc .later.stale .buf b, .swc .later.stale .st.pre { opacity: .5; transition: opacity .15s; }
 .swc .later .buf input { flex: 1; min-width: 0; accent-color: var(--ink); }
@@ -196,6 +198,8 @@
 .swc .st.pre li + li::before { content: ''; display: block; position: static; flex: 1; min-width: 8px; height: 1px; margin: 0 8px; background: var(--hair-2); }
 .swc .st.pre li span { font-size: 12.5px; color: var(--ink); } .swc .st.pre li b { font-weight: 500; }
 .swc .st.pre .mk { flex: none; width: 18px; height: 18px; font-size: 10px; }
+/* on a phone the deposit's figure may take two lines, so the three steps fit the card */
+@media (max-width: 460px) { .swc .st.pre li:first-child { flex: 0 1 auto; min-width: 0; white-space: normal; } .swc .st.pre li + li::before { margin: 0 5px; min-width: 6px; } }
 .swc .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 12px 2px 0; font-size: 12.5px; }
 .swc .steps .plan { padding: 12px 14px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); border-radius: 16px; }
 .swc .steps header { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 0 14px; }
