@@ -170,7 +170,7 @@ function mockChain({ log = [] } = {}) {
       return () => { c.balances.set(key(WRAP_TOKEN, box), c.balances.get(key(WRAP_TOKEN, box)) - need); c.fund(WRAP_TOKEN, KEEPER, intent.tip); };
     }
     if (functionName === 'reclaimDeposit' || functionName === 'reclaimWrap') {
-      const [tok, box] = functionName === 'reclaimDeposit' ? [TOKEN, c.boxOf('d', intent)] : [WRAP_TOKEN, c.boxOf('w', intent)];
+      const [tok, box] = functionName === 'reclaimDeposit' ? [t, c.boxOf('d', intent)] : [WRAP_TOKEN, c.boxOf('w', intent)];
       if (T0 + c.elapsed <= Number(intent.deadline)) throw revert('NotExpired');
       const bal = c.balances.get(key(tok, box)) || 0n;
       if (bal === 0n) throw revert('NothingToReclaim');
@@ -871,6 +871,135 @@ await test('with reclaim on, a past-deadline underfunded box is reclaimed to its
   assert.equal(await s.chain.balanceOf(TOKEN, REFUND), 10n);
 });
 
+// ── what a completed box still holds ──
+
+const reclaims = (s) => s.chain.sent.filter((x) => x.functionName === 'reclaimDeposit');
+// A deposit box funded `extra` above its amount (a swap that paid it over), completed by the keeper: the box keeps `extra`.
+async function completedWithSurplus(s, extra, opts) {
+  const d = await addDeposit(s, opts);
+  s.chain.fund(TOKEN, d.box, 1000n + extra);
+  await s.keeper.tick();
+  assert.equal(s.store.get(d.box).status, 'completed');
+  assert.equal(await s.chain.balanceOf(TOKEN, d.box), extra);
+  return d;
+}
+// A completed deposit box that holds `extra`, without running its completion.
+async function leftover(s, extra, { token = TOKEN, ...opts } = {}) {
+  const d = makeDeposit(opts);
+  const parsed = parseDepositSubmission(d.body, { zk, asset: assetField, now: s.clock.t, cfg: s.cfg });
+  const box = await s.chain.depositBoxOf(parsed.intent);
+  s.add('deposit', parsed, box, token);
+  s.store.update(box, { status: 'completed' });
+  s.chain.fund(token, box, extra);
+  return box;
+}
+
+await test('with reclaim on, what a completed box holds above its amount goes to its refund once its deadline has passed, and only once', async () => {
+  const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 0 } });
+  const { box } = await completedWithSurplus(s, 700n);
+  s.advance(100);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 0, 'not before the deadline: the router refuses it');
+  s.advance(3600);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1);
+  assert.equal(await s.chain.balanceOf(TOKEN, REFUND), 700n);
+  assert.equal(await s.chain.balanceOf(TOKEN, box), 0n);
+  assert.equal(s.store.get(box).status, 'completed', 'only its leftover moved: the box stays completed');
+  assert.equal(s.store.get(box).note, 'swept');
+  s.advance(100);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1, 'a swept box is not looked at again');
+});
+
+await test('a leftover not worth the send stays, and is marked so it is not looked at again: a token under its minimum fee, ETH under three times the gas', async () => {
+  const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 0 } });
+  const small = await leftover(s, 5n);                                          // the token's minimum fee is 10
+  const ok = await leftover(s, 450_000n, { token: ETH, nonce: 1n });            // a reclaim estimates at 150,000 gas, 1 wei each: 450,000 is exactly three times
+  const dust = await leftover(s, 449_999n, { token: ETH, nonce: 2n });
+  s.advance(3601);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1);
+  assert.equal(reclaims(s)[0].args[1], ETH);
+  assert.equal(await s.chain.balanceOf(ETH, REFUND), 450_000n);
+  assert.equal(s.store.get(ok).note, 'swept');
+  assert.equal(s.store.get(small).note, 'dust');
+  assert.equal(s.store.get(dust).note, 'dust');
+  assert.equal(await s.chain.balanceOf(TOKEN, small), 5n, 'the leftover is left where it is');
+  s.advance(100);
+  s.chain.gas = 0n;                                                             // gas is free now: they are not weighed again
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1);
+});
+
+await test('the leftover sweep is off unless reclaim is on, looks at most every sweepSurplusSecs, and takes sweepSurplusBatch boxes at a time, oldest deadline first', async () => {
+  const cfg = loadKeeperConfig({ ...baseEnv, EVM_POOL_KEEPER_RECLAIM: '1', EVM_POOL_KEEPER_SURPLUS_SECS: '30', EVM_POOL_KEEPER_SURPLUS_BATCH: '3' });
+  assert.deepEqual([cfg.reclaim, cfg.sweepSurplusSecs, cfg.sweepSurplusBatch], [true, 30, 3]);
+  const dflt = loadKeeperConfig(baseEnv);
+  assert.deepEqual([dflt.reclaim, dflt.sweepSurplusSecs, dflt.sweepSurplusBatch], [false, 600, 10]);
+
+  const off = setup({ cfg: { sweepSurplusSecs: 0 } });
+  await leftover(off, 700n);
+  off.advance(4000);
+  await off.keeper.tick();
+  assert.equal(reclaims(off).length, 0, 'reclaim is off by default');
+
+  const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 600, sweepSurplusBatch: 1 } });
+  const later = await leftover(s, 700n);                                        // deadline T0 + 3600
+  const first = await leftover(s, 800n, { nonce: 1n, deadline: T0 + 3000 });
+  s.advance(4000);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1, 'one box to a look');
+  assert.equal(s.store.get(first).note, 'swept', 'the one that lapsed first');
+  assert.notEqual(s.store.get(later).note, 'swept');
+  s.advance(100);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 1, 'not again within sweepSurplusSecs');
+  s.advance(600);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 2);
+  assert.equal(s.store.get(later).note, 'swept');
+});
+
+await test('a leftover sweep that finds the box empty, or emptied by another sender, closes it; one the router still refuses, or one not seen mined, is looked at again without a second send', async () => {
+  const s = setup({ cfg: { reclaim: true, sweepSurplusSecs: 0 } });
+  const none = await leftover(s, 0n, { deadline: T0 + 3000 });
+  const raced = await leftover(s, 700n, { nonce: 1n, deadline: T0 + 3600 });
+  const early = await leftover(s, 900n, { nonce: 2n, deadline: T0 + 4200 });
+  const slow = await leftover(s, 1100n, { nonce: 3n, deadline: T0 + 4800 });
+  s.advance(3100);
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 0, 'nothing in it: nothing to send');
+  assert.equal(s.store.get(none).note, 'swept');
+
+  s.advance(600);
+  s.chain.beforeEstimate = () => { s.chain.fund(TOKEN, raced, -700n); };        // another sender's reclaim lands between the read and the estimate
+  await s.keeper.tick();
+  s.chain.beforeEstimate = null;
+  assert.equal(reclaims(s).length, 0);
+  assert.equal(s.store.get(raced).note, 'swept');
+
+  s.advance(600);
+  s.chain.elapsed -= 400;                                                       // the chain's clock is behind: the router says NotExpired
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 0);
+  assert.notEqual(s.store.get(early).note, 'swept');
+  assert.ok(s.logs.some((m) => m.includes(early) && /surplus not sent yet \(NotExpired\)/.test(m)));
+  s.chain.elapsed += 400;
+  s.advance(600);
+  s.chain.receiptMode = 'pending';                                              // sent, but no receipt yet
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 2, 'the early box and the slow one are sent');
+  assert.notEqual(s.store.get(early).note, 'swept');
+  assert.ok(s.logs.some((m) => /not seen mined yet/.test(m)));
+  s.chain.receiptMode = 'success';
+  await s.keeper.tick();
+  assert.equal(reclaims(s).length, 2, 'looked at again: the box is empty now, nothing is sent twice');
+  assert.equal(s.store.get(early).note, 'swept');
+  assert.equal(s.store.get(slow).note, 'swept');
+  assert.equal(await s.chain.balanceOf(TOKEN, REFUND), 2000n);
+});
+
 await test('a funded box past its deadline is still completed (completion stays open while funded)', async () => {
   const s = setup();
   const { box } = await addDeposit(s);
@@ -1481,6 +1610,58 @@ await test('HTTP relay sends withdrawAndCall and withdrawToV1 through the router
     r = await post({ ...tw2, wrap });
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /wrap intent's box/);
+  } finally { server.close(); }
+});
+
+await test('a relay whose estimate fails says why: a revert is final and named, a node that did not answer is a try-again', async () => {
+  const cfg = mkCfg({ ratePerMin: 1000 });
+  const intent = makeCall();
+  const escrow = callEscrowAddress(intent, ROUTER);
+  const timeout = Object.assign(new Error('The request took too long to respond.'), { name: 'TimeoutError' });
+  const cases = [
+    [timeout, 503, /could not check this transaction right now/],
+    [new Error('HTTP request failed. Status: 429 Too Many Requests'), 503, /could not check this transaction right now/],
+    [revert('BadProof'), 400, /^the transaction reverts: BadProof$/],
+    [new Error('execution reverted'), 400, /^the transaction reverts$/],
+    [revert('StaleRoot'), 409, /StaleRoot/],
+  ];
+  // The two places a relay is checked: straight against the chain (a transaction that inserts nothing, or a keeper with no queue), and at the front of the queue (a call that inserts a note).
+  for (const queued of [false, true]) {
+    const chain = mockChain();
+    const pipeline = queued ? { busy: async () => false, append: async (_tx, send) => send({ simulate: true }), size: () => 0 } : undefined;
+    const server = createServer(createIntakeHandler({ store: openKeeperStore(':memory:'), chain, zk, assetField, pipeline, cfg, now: () => T0 }));
+    await new Promise((r) => server.listen(0, r));
+    const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/evm-pool/keeper/relay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const body = (nf) => { const b = { ...relayTx({ recipient: escrow, leaves: queued ? [11n, 12n] : [0n, 0n] }), call: callIntentJson(intent) }; b.tx.publicInputs[7] = String(nf); return b; };
+    try {
+      for (const [error, status, text] of cases) {
+        chain.estimateError = error;
+        const r = await post(body(900));
+        const j = await r.json();
+        assert.equal(r.status, status, `${queued ? 'queued' : 'direct'}, ${error.message}: ${JSON.stringify(j)}`);
+        assert.match(j.error, text);
+      }
+      assert.equal(chain.sent.length, 0, 'none of the refusals sent anything');
+      chain.estimateError = null;
+      const ok = await post(body(901));
+      assert.equal(ok.status, 200, JSON.stringify(await ok.clone().json()));
+      assert.equal(chain.sent.length, 1, 'and an answering node lets it through');
+    } finally { server.close(); }
+  }
+});
+
+await test('/quote carries what completing a deposit box costs, at the keeper\'s own deposit gas', async () => {
+  const cfg = mkCfg({ ratePerMin: 1000, depositGas: 600_000n, rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]), marginBps: 2000n });
+  const chain = mockChain();
+  chain.gas = 50n;
+  const server = createServer(createIntakeHandler({ store: openKeeperStore(':memory:'), chain, zk, assetField, cfg, now: () => T0 }));
+  await new Promise((r) => server.listen(0, r));
+  try {
+    const q = await (await fetch(`http://127.0.0.1:${server.address().port}/evm-pool/keeper/quote`)).json();
+    assert.equal(q.depositGas, '600000');
+    assert.equal(q.depositFee, String(600_000n * 50n * 12n / 10n), 'the gas at the gas price with the 20% margin, in a token worth a wei');
+    assert.equal(q.depositFee, quoteFee({ token: TOKEN, gas: 600_000n, gasPrice: 50n, cfg }).toString());
+    assert.notEqual(q.depositFee, q.fee, 'a relay\'s own fee is for its own gas');
   } finally { server.close(); }
 });
 

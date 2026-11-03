@@ -206,7 +206,11 @@ export function loadKeeperConfig(env = process.env) {
     quoteStaleMs: int(env, 'EVM_POOL_KEEPER_QUOTE_STALE_MS', 15_000),
     maxAttempts: int(env, 'EVM_POOL_KEEPER_MAX_ATTEMPTS', 5),
     receiptWaitSecs: int(env, 'EVM_POOL_KEEPER_RECEIPT_WAIT_SECS', 180),
+    // reclaim: after a box's deadline the keeper sends what the box still holds back to its refund address: the whole of a box it never completed, and what a completed
+    // one holds above its amount (what a swap that paid it paid over). The second is looked for at most every sweepSurplusSecs, sweepSurplusBatch boxes at a time.
     reclaim: str(env, 'EVM_POOL_KEEPER_RECLAIM', '0') === '1',
+    sweepSurplusSecs: int(env, 'EVM_POOL_KEEPER_SURPLUS_SECS', 600),
+    sweepSurplusBatch: int(env, 'EVM_POOL_KEEPER_SURPLUS_BATCH', 10),
     expireGraceSecs: int(env, 'EVM_POOL_KEEPER_EXPIRE_GRACE_SECS', 86400),
 
     maxBody: int(env, 'EVM_POOL_KEEPER_MAX_BODY', 16384),

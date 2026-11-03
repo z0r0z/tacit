@@ -47,6 +47,8 @@ export function openKeeperStore(dbPath) {
     dueReceive: db.prepare("SELECT * FROM intents WHERE status = 'pending' AND kind = 'receive' AND next_check <= ? ORDER BY next_check LIMIT ?"),
     pending: db.prepare("SELECT COUNT(*) AS n FROM intents WHERE status = 'pending' AND kind != 'receive'"),
     receiving: db.prepare("SELECT COUNT(*) AS n FROM intents WHERE status = 'pending' AND kind = 'receive'"),
+    // completed deposit boxes whose deadline has passed and whose leftover was not looked at yet (swept, or too little to be worth the gas)
+    surplus: db.prepare("SELECT * FROM intents WHERE kind = 'deposit' AND status = 'completed' AND deadline < ? AND COALESCE(note, '') NOT IN ('swept', 'dust') ORDER BY deadline LIMIT ?"),
     lapsed: db.prepare("SELECT box FROM intents WHERE status = 'pending' AND kind = 'receive' AND deadline < ? AND COALESCE(note, '') != 'swept' ORDER BY deadline LIMIT 1"),
     unfunded: db.prepare("SELECT box FROM intents WHERE status = 'pending' AND kind = 'receive' AND funded_at IS NULL AND COALESCE(note, '') != 'swept' ORDER BY created LIMIT 1"),
     unfundedPending: db.prepare("SELECT box FROM intents WHERE status = 'pending' AND kind != 'receive' AND funded_at IS NULL ORDER BY created LIMIT 1"),
@@ -83,6 +85,7 @@ export function openKeeperStore(dbPath) {
     // Deposit and wrap boxes, and receive boxes, are due on separate quotas so neither can starve the other.
     due: (now, limit) => st.due.all(now, limit).map(row),
     dueReceive: (now, limit) => st.dueReceive.all(now, limit).map(row),
+    surplusDue: (now, limit) => st.surplus.all(now, limit).map(row),
     // A receive box last left with a note (skipped, failed) is looked at again now: a restart is a new look, not the end of a wait that grew.
     wakeNoted: (now) => st.wakeNoted.run(now, now).changes,
     nextDue: () => { const t = st.nextDue.get().t; return t == null ? null : Number(t); },

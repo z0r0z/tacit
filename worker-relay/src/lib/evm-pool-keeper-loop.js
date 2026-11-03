@@ -263,6 +263,35 @@ export function createKeeper({
     return soon(r, t);
   }
 
+  // What a completed deposit box still holds (what its funding paid above the intent's amount) is nobody's after the box's deadline but its refund address's, and the router
+  // lets anyone send it there. With reclaim on, the keeper does, once, when the leftover is worth the gas: three times what the send costs for ETH, and for a token
+  // what coverCheck accepts (at least its minimum fee, and its price against the gas). A box with nothing left, or too little, is marked and not looked at again.
+  async function sweepSurplus(r, t) {
+    const intent = depositIntentArgs(r.intent), bal = BigInt(await chain.balanceOf(r.token, r.box));
+    if (bal === 0n) return store.update(r.box, { note: 'swept', updated: t });
+    let est;
+    try { est = await chain.estimate('reclaimDeposit', [intent, r.token]); }
+    catch (e) { const name = revertName(e); if (name === 'NothingToReclaim') return store.update(r.box, { note: 'swept', updated: t }); return log(`deposit ${r.box}: surplus not sent yet (${name || safeErr(e)})`); }
+    const price = await chain.gasPrice(), asEth = String(r.token).toLowerCase() === '0x0000000000000000000000000000000000000000';
+    const worth = asEth ? bal >= BigInt(est) * BigInt(price) * 3n : coverCheck({ reward: bal, token: r.token, gas: est, gasPrice: price, cfg }).ok;
+    if (!worth) return store.update(r.box, { note: 'dust', updated: t });
+    if (cfg.dryRun) return log(`deposit ${r.box}: dry run, would send ${bal} back to its refund`);
+    const limit = (BigInt(est) * 13n) / 10n, hash = await chain.send('reclaimDeposit', [intent, r.token], { gas: limit > cfg.gasCap ? cfg.gasCap : limit });
+    const rc = await chain.waitReceipt(hash, cfg.receiptWaitSecs * 1000);
+    if (!rc) return log(`deposit ${r.box}: surplus sent in ${hash}, not seen mined yet`);
+    if (rc.status !== 'success') return log(`deposit ${r.box}: surplus send ${hash} reverted`);
+    log(`deposit ${r.box}: surplus ${bal} sent back to its refund in ${hash}`);
+    return store.update(r.box, { note: 'swept', updated: t });
+  }
+  let surplusAt = 0;
+  async function sweepSurplusBoxes(t) {
+    if (!cfg.reclaim || t - surplusAt < (cfg.sweepSurplusSecs ?? 600)) return 0;
+    surplusAt = t;
+    const rows = store.surplusDue(t, cfg.sweepSurplusBatch ?? 10);
+    for (const r of rows) { try { await sweepSurplus(r, t); } catch (e) { log(`deposit ${r.box}: surplus: ${safeErr(e)}`); } }
+    return rows.length;
+  }
+
   // Sweep the whole balance for what the sweep costs (gas with the margin), never more than the box's cap. The
   // relay minimum does not apply: the box's owner set its cap, and a priced token's cost check still holds. Another sweep landing first changes the box's counter (BadIntent) or balance: re-read and re-prove.
   async function sweep(r, t) {
@@ -398,6 +427,7 @@ export function createKeeper({
         backoff(r, now(), safeErr(e));
       }
     }
+    await sweepSurplusBoxes(now()).catch((e) => log(`surplus: ${safeErr(e)}`));
     return rows.length;
   }
 

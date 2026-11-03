@@ -331,6 +331,15 @@ export function createIntakeHandler({
     ? { box: r.box, kind: r.kind, status: r.status === 'pending' ? 'watching' : r.status, ...(r.note ? { note: r.note } : {}) }
     : { box: r.box, kind: r.kind, status: r.status, reward: r.reward, ...(r.tx_hash ? { txHash: r.tx_hash } : {}) });
   const STALE = new Set(['StaleRoot', 'WrongInsertionIndex']);
+  // What a failed estimate means: the call reverts (named when it is an error the pool has), or the node said nothing of it (a timeout, a rate limit, a dropped
+  // line), which is a try-again and not "the transaction reverts", a refusal that reads as final.
+  const estimateFailure = (e) => {
+    const name = revertName(e);
+    if (STALE.has(name)) return Object.assign(new IntakeError(409, `${name}: re-prove against the pool's current root`), { stale: true });
+    const reverted = !!name || !!e?.walk?.((x) => x?.name === 'ContractFunctionRevertedError' || x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''));
+    if (!reverted) return new IntakeError(503, 'the relay could not check this transaction right now: its node could not be reached. Nothing was sent; try again in a moment');
+    return bad(name ? `the transaction reverts: ${name}` : 'the transaction reverts');
+  };
 
   async function accept(kind, body) {
     const t = now();
@@ -458,8 +467,11 @@ export function createIntakeHandler({
     const q = quoteFee({ token: chain.asset, gas, gasPrice: price, cfg });
     // What collecting a receive box costs now, and the smallest balance whose 0.25% cap pays for it.
     const sweep = quoteFee({ token: chain.asset, gas: sweepGasOf({ chain, cfg }), gasPrice: price, cfg, floor: !cfg.rates.has(chain.asset.toLowerCase()) });
+    // what completing a deposit box costs, at the gas this keeper prices one at (its setting, not a page's guess): the least fee its box may carry
+    const depositFee = quoteFee({ token: chain.asset, gas: cfg.depositGas, gasPrice: price, cfg });
     return {
       chainId: chain.chainId, pool: chain.pool, relayer: chain.address, asset: chain.asset, fee: q.toString(), gas: gas.toString(),
+      depositGas: cfg.depositGas.toString(), depositFee: depositFee.toString(),
       sweepFee: sweep.toString(), receiveMin: receiveMinOf({ token: chain.asset, sweepFee: sweep, cfg, room: await subsidyRoom({ chain, cfg, at: now() }) }).toString(),
     };
   }
@@ -484,11 +496,7 @@ export function createIntakeHandler({
     let est = cfg.relayGas;
     if (!plain) {
       try { est = await chain.estimate(functionName, sendArgs); }
-      catch (e) {
-        const name = revertName(e);
-        if (STALE.has(name)) throw Object.assign(new IntakeError(409, `${name}: re-prove against the pool's current root`), { stale: true });
-        throw bad(name ? `the transaction reverts: ${name}` : 'the transaction reverts');
-      }
+      catch (e) { throw estimateFailure(e); }
     }
     const price = await gasPrice();
     const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg });
@@ -534,11 +542,7 @@ export function createIntakeHandler({
     let est = cfg.relayGas;
     if (!queued) {
       try { est = await chain.estimate(functionName, sendArgs); }
-      catch (e) {
-        const name = revertName(e);
-        if (STALE.has(name)) throw Object.assign(new IntakeError(409, `${name}: re-prove against the pool's current root`), { stale: true });
-        throw bad(name ? `the transaction reverts: ${name}` : 'the transaction reverts');
-      }
+      catch (e) { throw estimateFailure(e); }
     }
     const price = await gasPrice();
     const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg });
