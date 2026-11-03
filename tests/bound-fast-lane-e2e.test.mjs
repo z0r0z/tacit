@@ -110,6 +110,22 @@ test('each bound note opens again from the key and the chain alone, and nothing 
   assert.equal(openBoundNote({ tacit, priv: P.wallet.priv, pub: P.wallet.pub, tx: etch.esplora, vout: 0 }), null, 'an unbound output is not a bound note');
 });
 
+test('Use on Bitcoin: a bound note goes back to ordinary TAC at the trading address, opened from the key, pending until the reflection passes it', async () => {
+  const un = bind.unbindTransfer({ asset, note: { txid: pair.revealTxid, vout: 0, value: 546, amount: SIZES[0], blinding: pair.bound[0].blinding }, satsUtxos: [coin('unbind-sats', 100_000)], feeRate: 2 });
+  const op = toEsplora(un);
+  const env = tacit.txOutputEnvelope(op.esplora);
+  assert.notEqual(env.opcode, T_CXFER_BOUND, 'an ordinary transfer');
+  assert.equal(bytesToHex(un.revealTx.outputs[0].script), bytesToHex(own), 'to the trading address');
+  assert.equal(un.revealTx.inputs[1].witness.length, 1, 'the bound note spent by key path');
+  const anchor = secp.etc.concatBytes(hexToBytes(pair.revealTxid).reverse(), new Uint8Array(4));
+  const ct = env.payload.subarray(1 + 32 + 64 + 1 + 33, 1 + 32 + 64 + 1 + 41);
+  const opened = tacit.openTransferOutput({ priv: P.wallet.priv, pub: P.wallet.pub, senderPubHex: null, anchorBytes: anchor, vout: 0, ct, commitment: env.payload.subarray(1 + 32 + 64 + 1, 1 + 32 + 64 + 1 + 33) });
+  assert.ok(opened && opened.amount === SIZES[0], 'the key alone opens it');
+  tacit.clearValidatorCaches();
+  const v = await validate(fetchOf(etch, bindOp, op), un.revealTxid, 0);
+  assert.deepEqual(v, { ok: false, reason: 'fetch-failed' }, 'pending while the reflection has not passed its block');
+});
+
 test('the builder refuses sizes that do not add up, empty notes, or more than eight', () => {
   const note = { txid: etch.txid, vout: 0, value: 546, amount: VALUE, blinding: r0 };
   const go = (sizes) => () => bind.bindTransfer({ asset, notes: [note], sizes, satsUtxos: [coin('x', 100_000)], feeRate: 2 });

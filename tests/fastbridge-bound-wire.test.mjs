@@ -147,6 +147,20 @@ test('a move hands the pool module the fast lane\'s input, the wallet key as the
   await assert.rejects(b.move(after.find((x) => x.vout !== n.vout)), /differ for now/);
 });
 
+test('Use on Bitcoin: a bound note goes to the trading address as ordinary TAC, spent by key path', async () => {
+  const [n] = (await b.bound()).filter((x) => x.state !== 'moved');
+  W.posted.length = 0;
+  await b.unbind(n);
+  assert.equal(W.posted.length, 2, 'commit and reveal');
+  const { parseTx } = await import('../worker-relay/src/lib/btc-pool-chain.js');
+  const p = parseTx(hexToBytes(W.posted[1])).tx;
+  assert.equal(p.vin[1].txid, n.txid); assert.equal(p.vin[1].vout, n.vout);
+  assert.deepEqual(p.vin[1].witness.map((w) => w.length), [64]);
+  assert.equal(bytesToHex(p.vout[0].scriptPubKey), bytesToHex(own), 'to the trading address');
+  const env = T.txOutputEnvelope({ vin: p.vin.map((i) => ({ txid: i.txid, vout: i.vout, witness: i.witness.map(bytesToHex) })), vout: p.vout.map((o) => ({ scriptpubkey: bytesToHex(o.scriptPubKey), value: Number(o.value) })) });
+  assert.notEqual(env.opcode, 0x39, 'an ordinary transfer, not bound');
+});
+
 test('TAC back from Ethereum (a cross-out mint at the Taproot address) is made ready where it is, spent by key path beside a trading-address note', async () => {
   const rBack = scalar('returned-note');
   const back = etchNote({ ticker: 'TAC', value: 20n * TAC, r: rBack, script: prims.p2trScript(prims.wallet.xonly()) });

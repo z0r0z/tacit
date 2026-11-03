@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hYorFJzb8+cmpeACwXk3KfxRcNwvZZYT2OLj5w87eb4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KNTb30J2Y+jbsENDyWoa5RC0YiW+S8z3hQ089NWsDx8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -60,7 +60,7 @@
 <link rel="modulepreload" href="/bridge-out.js?cb=ecf49203">
 <link rel="modulepreload" href="/bridge/track.js?cb=31e3a58f">
 <link rel="modulepreload" href="/bridge-in.js?cb=1b8357ef">
-<link rel="modulepreload" href="/bridge-tick.js?cb=58e5d6c0">
+<link rel="modulepreload" href="/bridge-tick.js?cb=b9adb91d">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
 <link rel="modulepreload" href="/swap/card.js?cb=50eb1d62">
@@ -1832,7 +1832,7 @@ import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge
 import { ROUTES as BR_WAYS } from '/bridge/track.js?cb=31e3a58f';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=e1ab5d24';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=1b8357ef';
-import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=58e5d6c0';
+import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=b9adb91d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=5bc9627f';
 if (window.__tacitAway) await new Promise(() => {});
@@ -5726,6 +5726,8 @@ function xoRow(r) {
 }
 // The fast lane is unlisted while it is new: a browser that opened /fast/#ready offers TAC bridged to Bitcoin arriving ready for it.
 const fastReadyOn = () => { try { return localStorage.getItem('tacit-fast-ready-v1') === '1'; } catch { return false; } };
+// ticked unless the holder last unticked it
+const fastReadyLast = () => { try { return localStorage.getItem('tacit-fast-ready-last-v1') !== '0'; } catch { return true; } };
 const xoAdvance = (ux, pub, rec, allowHighFee = false) => advanceOut(ux, pub, rec, { withKey, priv: walletPriv, keyPub: () => S.key?.pubHex, allowHighFee });
 function xoArrived(rec) {
   toast(`${xoAmt(rec)} is on your Bitcoin address. See ${xaOf(rec)?.see || 'To Bitcoin'}.`);
@@ -5768,6 +5770,7 @@ async function xoTick(first = false) {
     const recs = await stepOut({ ux, pubs, records: (p) => Object.values(XA).flatMap((a) => xoRecords(p, a)), keyPub: () => S.key?.pubHex, withKey, priv: walletPriv, rechecked: XO.rechecked,
       on: {
         arrived: xoArrived,
+        readied: (rec) => toast(`${xoAmt(rec)} on your Bitcoin address is being made ready to come back fast, in about 4 hours.`),
         fundWait: (rec, e) => {
           const msg = `Add about ${Number(e.needSats).toLocaleString('en-US')} sats to your Bitcoin address to finish bridging ${xoAmt(rec)}`;
           toast(msg); osNote('Bridge to Bitcoin', msg, `${rec.id}:xfund`, () => openLink('bitcoin/receive'));
@@ -6048,7 +6051,7 @@ function xoOut(el, status, a) {
     <div class="amt"><input id="${p('amt')}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${a.ticker} to bridge to Bitcoin"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${a.icon}"/></svg>${a.ticker}</span></div>
     <div class="rcpt" id="${p('rcpt')}" hidden></div>
     <label class="pick" id="${p('ackrow')}" hidden><input type="checkbox" id="${p('ack')}"><span>I understand a bridge can’t be undone once it is burned on Ethereum. It can be brought back from Bitcoin once Bitcoin’s proof on Ethereum has recorded it, which takes hours.</span></label>
-    ${a.key === 'tac' && !a.redeem && fastReadyOn() ? html`<label class="pick"><input type="checkbox" id="${p('ready')}"><span>Arrive ready to come back fast</span></label>` : ''}
+    ${a.key === 'tac' && !a.redeem && fastReadyOn() ? html`<label class="pick"><input type="checkbox" id="${p('ready')}"${fastReadyLast() ? ' checked' : ''}><span>Arrive ready to come back fast</span></label>` : ''}
     <button class="btn" type="button" id="${p('go')}" disabled>Bridge to Bitcoin</button>` : ''}
     ${toBtc ? html`<details class="lockmore"><summary>A bridge you started is not listed</summary>
       <p class="note">One started on another device, or whose page closed before the burn showed, is rebuilt from the burn’s Ethereum transaction and this key.</p>
@@ -6082,6 +6085,8 @@ function xoOut(el, status, a) {
   let q = null, seq = 0;
   const gateOk = () => { go.disabled = !q?.ok || !ack.checked; };
   ack.onchange = () => { XO.acked = ack.checked && q?.ok ? q.key : null; gateOk(); };
+  const readyBox = $(`#${p('ready')}`);
+  if (readyBox) readyBox.onchange = () => { try { localStorage.setItem('tacit-fast-ready-last-v1', readyBox.checked ? '1' : '0'); } catch { /* a convenience */ } };
   $(`#${p('max')}`).onclick = async () => {
     const cap = (await xoUx().catch(() => null))?.assetOf(a.id)?.capRaw;
     const v = cap != null && cap < held ? cap : held;

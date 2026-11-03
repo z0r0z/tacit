@@ -19,7 +19,7 @@ import { makeLpService } from '/fastbridge-provider.js?cb=7208616b';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=d00c9623';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=8d928552';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
-import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b366fa29';
+import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=591df470';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -109,7 +109,7 @@ const REFLECT_DEPTH = 24, REFLECT_LAG_MINS = 40;
 const NULLIFIER_SPENT_SLOT = 70n;
 
 //   const b = await openBound({ T, withKey, ux, priv, pubHex, witnessBase })
-//   -> { notes(), balance(), bound(), bind({ amount }), move(note) }
+//   -> { notes(), balance(), bound(), bind({ amount }), move(note), unbind(note) }
 // notes() are what a bind spends: the key's TAC at its trading address and TAC back from Ethereum at its Taproot address; bound() the bound notes there, each
 // { txid, vout, amount, state: 'waiting' | 'ready' | 'moved' | 'spent', etaMins }; move() spends one into the key's private balance,
 // the relay settling it for a fee taken from the note.
@@ -160,7 +160,7 @@ export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'h
       const tx = await btc.fetchTx(u.txid);
       const o = tx && openBoundNote({ tacit: T, priv: prims.wallet.priv, pub: prims.wallet.pub, tx, vout: u.vout });
       if (!o || '0x' + o.target !== binding.toLowerCase() || o.asset !== TAC_ASSET) continue;
-      const note = { txid: u.txid, vout: u.vout, amount: o.amount, blinding: o.blinding, asset: '0x' + o.asset };
+      const note = { txid: u.txid, vout: u.vout, value: u.value, amount: o.amount, blinding: o.blinding, asset: '0x' + o.asset };
       const height = u.status && u.status.confirmed ? u.status.block_height : null;
       const lane = height ? await fastLaneNote({ pool: ux.pool, roots, witnessFor, note, authKey, chainBinding: binding }) : { ready: false, why: 'reflecting' };
       const moved = lane.nullifier ? await spentOnEthereum(lane.nullifier) : false;
@@ -213,7 +213,14 @@ export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'h
     return ux.fastlaneExit({ walletPriv: priv, notes: [lane.input], authPriv: '0x' + hex(prims.wallet.priv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee, selfRelay: false });
   }
 
-  return { notes, balance, bound, bind, move, taproot };
+  // UNBIND: one bound note back to ordinary TAC at the trading address (usable on Bitcoin once the reflection passes it)
+  async function unbind(n) {
+    const pair = binder.unbindTransfer({ asset: hexToBytes(TAC_ASSET), note: n, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
+    await btc.broadcast(pair);
+    return { txid: pair.revealTxid };
+  }
+
+  return { notes, balance, bound, bind, move, unbind, taproot };
 }
 
 // ── the key's own provider ──

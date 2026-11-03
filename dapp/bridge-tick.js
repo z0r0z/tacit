@@ -38,9 +38,8 @@ export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, aliv
 
 // ── the way out: crossout-ux's stages ──
 // A bridge out moved as far as it goes now: its proof, coverage and credit are read from the chains with no key; only the Bitcoin step
-// (from `covered`) is signed, and only under the bridge's own key, and for a bridge that arrives ready for Ethereum, the bind of what it
-// minted once the mint confirms (crossout-ux.js bindArrived).
-export const signsNext = (rec) => rec.stage === 'covered' || (rec.stage === 'mint-confirmed' && !!rec.ready && !(rec.bind && rec.bind.sent));
+// (from `covered`) is signed, and only under the bridge's own key.
+export const signsNext = (rec) => rec.stage === 'covered';
 export async function advanceOut(ux, pub, rec, { withKey, priv, keyPub, allowHighFee = false }) {
   let cur = rec;
   for (let i = 0; i < 4; i++) {
@@ -75,6 +74,19 @@ export async function stepOut({ ux, pubs, records, keyPub, withKey, priv, rechec
     } catch (e) {
       moved.push(rec);
       if (e?.fundWait && !rec.lastError?.fundWait) on.fundWait?.(rec, e);
+    }
+  }
+  // Bridges that arrived ready for Ethereum and are not bound yet: bound under the open key (crossout-ux.js bindNow), resting after a
+  // failure as the Bitcoin step does. `on.readied` hears each one made ready.
+  if (ux.bindDue && k) {
+    for (const rec of ux.list(k).filter((r) => ux.bindDue(r))) {
+      if (keyPub() !== k) break;
+      const err = rec.bindError;
+      if (err && Date.now() - Number(err.at || 0) < (err.fundWait || err.feeWait ? 2 : 10) * 60e3) continue;
+      try {
+        const after = await withKey(() => ux.bindNow(k, rec.id, { walletPriv: priv() }), k);
+        if (after?.bind?.sent) { moved.push(after); on.readied?.(after); }
+      } catch (e) { if (e?.fundWait && !err?.fundWait) on.fundWait?.(rec, e); }
     }
   }
   return moved;

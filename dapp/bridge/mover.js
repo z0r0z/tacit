@@ -4,7 +4,7 @@
 // paying the mint from a wallet and proving it oneself stay on the front page, which these rows link to.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
-import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=58e5d6c0';
+import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=b9adb91d';
 import { ROUTES } from '/bridge/track.js?cb=31e3a58f';
 import { parseUnits } from '/trade/util.js?cb=e53086bb';
 import { forgetUx } from '/trade/poolux.js?cb=ced562d4';

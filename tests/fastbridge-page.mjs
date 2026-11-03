@@ -70,6 +70,7 @@ mountBound({
     bound: async () => boundNotes,
     bind: async ({ amount }) => { boundNotes = [...boundNotes, { txid: 'c3'.repeat(32), vout: 0, amount, state: 'waiting', etaMins: 280 }]; return { txid: 'c3'.repeat(32) }; },
     move: async (n) => { boundNotes = boundNotes.map((x) => (x.txid === n.txid ? { ...x, state: 'moved' } : x)); },
+    unbind: async (n) => { boundNotes = boundNotes.filter((x) => x.txid !== n.txid); return { txid: 'c4'.repeat(32) }; },
   }),
 });
 const st = { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null };

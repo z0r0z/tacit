@@ -74,7 +74,21 @@ export function makeBtcBind({ prims, kit, target }) {
     return { ...pair, bound: outputs.map((o, vout) => ({ vout, amount: o.amount, blinding: o.blinding })) };
   }
 
-  return { bindTransfer, fastScript, broadcastPair: tx.broadcastPair };
+  // UNBIND: one bound note back to ordinary TAC at the wallet's trading address, a plain transfer (Bulletproofs+) signed by key path.
+  // The wallet opens it by its own change channel; like any spend of a bound note it is pending until the reflection passes it.
+  const plain = makeAdaptorBtcTx({ prims, kit });
+  function unbindTransfer({ asset, note, satsUtxos, feeRate }) {
+    const input = inputOf({ ...note, taproot: true });
+    const anchor = anchorOf(input);
+    const out = {
+      amount: asBig(note.amount), script: own,
+      blinding: kit.deriveChangeBlinding(wallet.priv, anchor, 0),
+      keystream: kit.deriveAmountKeystreamSelf(wallet.priv, anchor, 0),
+    };
+    return plain.transfer({ asset, inputs: [input], outputs: [out], satsUtxos, feeRate });
+  }
+
+  return { bindTransfer, unbindTransfer, fastScript, broadcastPair: tx.broadcastPair };
 }
 
 // The pool's storage a fast-lane spend is checked against: knownBitcoinRoot (a map, slot 78) and knownBitcoinSpentRoot

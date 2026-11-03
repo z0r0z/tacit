@@ -19,7 +19,7 @@ function keyStub() {
   return k;
 }
 function sessionStub({ bal = 500n * TAC, notes = [] } = {}) {
-  const calls = { binds: [], moves: [] };
+  const calls = { binds: [], moves: [], unbinds: [] };
   const s = { bal, notes: notes.slice() };
   return {
     calls, s,
@@ -28,6 +28,7 @@ function sessionStub({ bal = 500n * TAC, notes = [] } = {}) {
       bound: async () => s.notes.map((n) => ({ ...n })),
       bind: async ({ amount }) => { calls.binds.push(amount); s.bal -= amount; s.notes.push({ txid: 'b'.repeat(64), vout: 0, amount, state: 'waiting', etaMins: 280 }); return { txid: 'b'.repeat(64) }; },
       move: async (n) => { calls.moves.push(n); s.notes = s.notes.map((x) => (x.txid === n.txid && x.vout === n.vout ? { ...x, state: 'moved' } : x)); },
+      unbind: async (n) => { calls.unbinds.push(n); s.notes = s.notes.filter((x) => !(x.txid === n.txid && x.vout === n.vout)); return { txid: 'e'.repeat(64) }; },
     },
   };
 }
@@ -102,6 +103,16 @@ test('a ready note moves in one press and then leaves the list; spent and moved 
   await until(() => !/40 TAC/.test(text(m.$('bd-list'))), 'gone from the list');
 });
 
+
+test('Use on Bitcoin sends a bound note back to the trading address, waiting or ready, and it leaves the list', async () => {
+  const m = mount({ stub: sessionStub({ notes: [{ txid: 'a'.repeat(64), vout: 0, amount: 40n * TAC, state: 'waiting', etaMins: 100 }] }) });
+  await m.load();
+  await until(() => m.$('bd-list').querySelector('[data-unbind]'), 'the note');
+  m.$('bd-list').querySelector('[data-unbind]').click();
+  await until(() => m.stub.calls.unbinds.length === 1 && /back at your Bitcoin address/.test(text(m.$('bd-st'))), 'the unbind');
+  assert.ok(m.$('bd-st').querySelector('a[href$="' + 'e'.repeat(64) + '"]'));
+  await until(() => !/40 TAC/.test(text(m.$('bd-list'))), 'gone from the list');
+});
 
 let failed = 0;
 for (const [name, fn] of tests) {

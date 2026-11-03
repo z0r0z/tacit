@@ -130,12 +130,15 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
   Bitcoin shielded pool's replay refuses any input whose history holds a bound note. A transfer out of a bound note is pending
   until the reflection passes its block, so a provider's lock check already refuses a lock that spends one too early.
 - A bridge to Bitcoin can arrive ready (`crossout-ux.js` `start({ ready })`, the front page's "Arrive ready to come back fast",
-  offered in a browser that has opened `/fast/#ready`): once its mint confirms and the worker credits it, the engine binds the
-  minted note where it landed (`bindArrived`, key path at the Taproot address), so the round trip needs no step of the holder's
-  and the TAC is ready about four hours later. The pool and guests are unchanged: a cross-out still mints an ordinary note.
-- Not yet: a way back to an ordinary note from the page, and the guest-side items of the fast-lane review (a deadline on the
-  fast lane's signature, a binding kept per note across pool generations, the attest gate on the consumed count), which wait
-  for the next pool generation.
+  offered and ticked by default in a browser that has opened `/fast/#ready`, unless the holder last unticked it). It arrives when
+  its mint is credited, like any bridge; then, under the open key, the page's bridge tick binds what it minted where it landed
+  (`bindNow`, key path at the Taproot address, a failure kept as `bindError` and rested), so the TAC is ready about four hours
+  later with no step of the holder's. The pool and guests are unchanged: a cross-out still mints an ordinary note.
+- "Use on Bitcoin" turns a bound note back into ordinary TAC at the trading address (`unbindTransfer`, a plain transfer by key
+  path, opened by the wallet's own change channel), usable on Bitcoin once the reflection passes it.
+- Limits that stay, the pool and guests being kept as they are: the fast lane's signature has no deadline, a bound note names one
+  pool deployment, and a fast-lane spend made while a reflection proof is out makes that proof stale (it is proven again). Binds
+  are kept small (10 to 1,000 TAC) for that reason.
 
 ## Code
 

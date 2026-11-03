@@ -5,7 +5,7 @@
 //   const bd = mountBound({ root, keyS, open })
 //   root        a <details> the panel draws in
 //   keyS        the key session (trade/key.js)
-//   open()      -> { balance(), bound(), bind({ amount }), move(note) } for the open key (fast/wire.js openBound)
+//   open()      -> { balance(), bound(), bind({ amount }), move(note), unbind(note) } for the open key (fast/wire.js openBound)
 
 import { ONE, esc, fmtTac, parseTac } from './fmt.js';
 
@@ -42,12 +42,13 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
     root.hidden = !keyS.unlocked || !S.shown;
     const list = $('bd-list'), ns = (S.notes || []).filter((n) => n.state !== 'moved' && n.state !== 'spent');
     list.innerHTML = S.loading && !S.notes ? '<p class="empty">Reading your TAC ready for Ethereum…</p>'
-      : ns.length ? ns.map((n) => `<div class="kv bd-note" data-k="${esc(n.txid)}:${n.vout}">
+      : ns.length ? ns.map((n) => { const k = `${n.txid}:${n.vout}`, dis = S.busy ? ' disabled' : ''; return `<div class="kv bd-note" data-k="${esc(k)}">
           <span class="num">${esc(fmtTac(n.amount))} TAC</span>
           ${n.state === 'ready'
-            ? `<button class="linkbtn" type="button" data-move="${esc(n.txid)}:${n.vout}"${S.busy ? ' disabled' : ''}>${S.busy === `${n.txid}:${n.vout}` ? 'Moving…' : 'Move to Ethereum'}</button>`
+            ? `<button class="linkbtn" type="button" data-move="${esc(k)}"${dis}>${S.busy === k ? 'Moving…' : 'Move to Ethereum'}</button>`
             : `<b>Ready in ${esc(hours(n.etaMins))}</b>`}
-        </div>`).join('') : '';
+          <button class="linkbtn bd-off" type="button" data-unbind="${esc(k)}"${dis}>${S.busy === 'u' + k ? 'Sending…' : 'Use on Bitcoin'}</button>
+        </div>`; }).join('') : '';
     const units = parseTac($('bd-amt').value), bad = problem(units);
     const go = $('bd-go');
     go.textContent = S.busy === 'bind' ? 'Working…' : 'Make ready';
@@ -101,9 +102,24 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
     } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); } finally { S.busy = null; await refresh(); }
   }
 
+  // a bound note back to ordinary TAC at the trading address: there to send or sell once the reflection passes it
+  async function unbind(key) {
+    const n = (S.notes || []).find((x) => `${x.txid}:${x.vout}` === key);
+    if (!n || S.busy || !S.sess.unbind) return;
+    S.busy = 'u' + key; note('Sending it back to your Bitcoin address…'); paint();
+    try {
+      const r = await S.sess.unbind(n);
+      note(`${fmtTac(n.amount)} TAC is back at your Bitcoin address, to use there in about 4 hours.`);
+      $('bd-st').insertAdjacentHTML('beforeend', ` <a href="${SCAN}${esc(r.txid)}" target="_blank" rel="noopener noreferrer">Bitcoin transaction ↗</a>`);
+    } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); } finally { S.busy = null; await refresh(); }
+  }
+
   $('bd-amt').addEventListener('input', () => { note(''); paint(); });
   $('bd-go').addEventListener('click', bind);
-  $('bd-list').addEventListener('click', (e) => { const k = e.target?.closest?.('[data-move]')?.dataset.move; if (k) move(k); });
+  $('bd-list').addEventListener('click', (e) => {
+    const m = e.target?.closest?.('[data-move]')?.dataset.move, u = e.target?.closest?.('[data-unbind]')?.dataset.unbind;
+    if (m) move(m); else if (u) unbind(u);
+  });
   root.addEventListener('toggle', () => { if (root.open) load(); });
   keyS.onChange(() => {
     if (!keyS.unlocked || (S.pub && keyS.key.pubHex !== S.pub)) {

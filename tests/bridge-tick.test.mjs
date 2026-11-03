@@ -130,4 +130,27 @@ function outUx(steps) {
   const r3 = await discoverIn({ pub: PUB, listed: [{}], esplora: flaky, withKey, priv: () => 'PRIV', memory });
   assert.equal(r3.found.length, 0);
 }
+// ── out: a bridge that arrived ready is bound under the open key, rests after a failure, and is told once ──
+{
+  const recs = [
+    { id: 'r1', stage: 'minted', ready: true },
+    { id: 'r2', stage: 'minted', ready: true, bindError: { at: Date.now(), fundWait: true } },
+    { id: 'r3', stage: 'minted' },
+  ];
+  const calls = [], readied = [];
+  const ux = {
+    list: () => recs, advance: async () => { throw new Error('nothing to advance'); },
+    bindDue: (r) => r.stage === 'minted' && !!r.ready && !(r.bind && r.bind.sent),
+    bindNow: async (pub, id, o) => { calls.push([pub, id, o.walletPriv]); const r = recs.find((x) => x.id === id); r.bind = { sent: true }; return r; },
+  };
+  const moved = await stepOut({ ux, pubs: [PUB], records: () => [], keyPub: () => PUB, withKey, priv, on: { readied: (r) => readied.push(r.id) } });
+  assert.deepEqual(calls, [[PUB, 'r1', 'PRIV']], 'the due one is bound under the key; one that just failed for want of sats rests; one not ready is left');
+  assert.deepEqual(readied, ['r1']);
+  assert.equal(moved.length, 1);
+  await stepOut({ ux, pubs: [PUB], records: () => [], keyPub: () => PUB, withKey, priv, on: { readied: (r) => readied.push(r.id) } });
+  assert.deepEqual(readied, ['r1'], 'a bound one is not bound or told again');
+  calls.length = 0;
+  await stepOut({ ux, pubs: [PUB], records: () => [], keyPub: () => null, withKey, priv });
+  assert.deepEqual(calls, [], 'with no key open nothing is signed');
+}
 console.log('bridge-tick: all checks passed');
