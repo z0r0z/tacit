@@ -56,8 +56,9 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     return BigInt(await t.quoteOpFee('cETH', 'unwrap')) + (ACT_GAS * gp * 4n / 3n + E10 - 1n) / E10;
   }
 
-  // Stages a whole tETH note: the relay proves and settles its unwrap to the escrow, then runs the recipe, and the key's deposit of the note's value
-  // less the fee waits in the pool. → { index, wei, depositId, settleTx, activateTx }
+  // Stages a whole tETH note: its unwrap to the escrow is proved, settled, and the recipe run, and the key's deposit of the note's value less the
+  // fee waits in the pool. With the holder's own prover set (relay.useProver, the device prover takes unwraps) the unwrap is proved on this
+  // machine and posted with its recipe, so no one else sees the note's key; otherwise the relay proves it. → { index, wei, depositId, settleTx, activateTx, own }
   async function stageNote({ note, walletPriv, minFee = null, waitOpts = {}, onStep = () => {} }) {
     if (!note) throw new Error('stageNote: note required');
     const eth = lc(t.assetByTicker.cETH.assetId);
@@ -72,16 +73,27 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     const escrow = await escrowOf(recipe);
     const built = t.buildUnwrap({ note, walletPriv, recipient: escrow, feeOpts: { minFee: floor } });
     if (BigInt(built.op.fee) !== fee || lc(built.op.recipient) !== escrow) throw new Error('The stage did not come out as priced, so nothing was sent.');
-    onStep('settle');
+    const own = t.relay.ownProving();
     let jobId = null;
     try {
-      const sub = await t.relay.submitOp({ type: 'unwrap', op: built.op, memos: [], exit: recipe }, { ...waitOpts, viaRelay: true });
-      jobId = sub.jobId;
+      if (own) {
+        onStep('prove');
+        const p = await t.relay.prove({ type: 'unwrap', op: built.op, memos: [] }, waitOpts);
+        if (!p || !p.publicValues || !p.proof) throw new Error(`this machine's prover returned no proof (${(p && p.status) || 'no status'})`);
+        onStep('settle');
+        const posted = await t.relay.postProof({ type: 'unwrap', publicValues: p.publicValues, proof: p.proof, memos: [], exit: recipe });
+        if (!posted || !posted.jobId) throw new Error((posted && posted.error) || 'the relay would not take the stage');
+        jobId = posted.jobId;
+      } else {
+        onStep('settle');
+        const sub = await t.relay.submitOp({ type: 'unwrap', op: built.op, memos: [], exit: recipe }, { ...waitOpts, viaRelay: true });
+        jobId = sub.jobId;
+      }
       const st = await t.relay.waitForSettle(jobId, { ...waitOpts, viaRelay: true });
       onStep('activate', st.txHash);
       for (let i = 0; i < 60; i++) {
         const s = await t.relay.status(jobId).catch(() => null);
-        if (s?.activation === 'done' && s.activateTx) return { index, wei, depositId: w.depositId, settleTx: st.txHash || null, activateTx: s.activateTx };
+        if (s?.activation === 'done' && s.activateTx) return { index, wei, depositId: w.depositId, settleTx: st.txHash || null, activateTx: s.activateTx, own };
         if (s?.activation === 'failed') throw new Error(`The relay did not wrap the staged ETH (${s.activateError || 'no reason given'}).`);
         await (waitOpts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))))(5000);
       }

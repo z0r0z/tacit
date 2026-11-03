@@ -124,14 +124,14 @@ async function activate(job, s) {
     const gasEstimate = BigInt(await rpcA('eth_estimateGas', [{ from: SETTLER, to: ROUTER, data }]));
     const gp = BigInt(await rpcA('eth_gasPrice'));
     const settleCostWei = BigInt(s.rc.gasUsed) * BigInt(s.rc.effectiveGasPrice || gp);
-    const cover = activationCover({ job, settleCostWei, gasEstimate, gasPriceWei: gp, weiPerUnit: 10n ** 10n, gasCap: 1_500_000n });
+    const cover = activationCover({ job, settleCostWei, gasEstimate, gasPriceWei: gp, weiPerUnit: 10n ** 10n, gasCap: 1_500_000n, ethAssetId: TETH });
     activations.push({ gasEstimate, cover });
     if (!cover.ok) throw new Error(cover.reason);
     const a = await send(SETTLER, ROUTER, data);
     await settler.ackJob(job.jobId, { activateTx: a.hash });
   } catch (e) { log.push(`activation failed: ${e.message}`); await settler.ackJob(job.jobId, { activateError: String(e.message || e).slice(0, 200) }); }
 }
-const activations = [];
+const activations = [], submitsSeen = [];
 const server = createServer(async (req, res) => {
   const u = new URL(req.url, RELAY);
   const json = (code, b) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(b, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))); };
@@ -139,6 +139,7 @@ const server = createServer(async (req, res) => {
   if (u.pathname === '/confidential/relay') return json(200, { state: 'ok', proving: true, settling: true, board: false });
   if (u.pathname === '/confidential/quote') return json(200, { recommendedWrapTipWei: '60000000000000', tipSplitter: '0xf5eBBE5Db610F64D29A0dC5e9534074Af12834F9', gasAwareFloorUnits: '20000', staticFloorUnits: '20000' });
   if (u.pathname === '/confidential/submit' && req.method === 'POST') {
+    submitsSeen.push({ type: body.type, mode: body.mode || 'settle', op: !!body.op, exit: !!body.exit });
     let r;
     try { r = await settler.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode || 'settle', feeAsset: body.feeAsset || null, exit: body.exit || null, publicValues: body.publicValues || null, proof: body.proof || null }); }
     catch (e) { return json(400, { error: String(e.message || e) }); }
@@ -287,6 +288,38 @@ ok(!a1.error && await st.stillFits(a1.built), `the swap of the first is proved a
     const paid = BigInt(await rpcA('eth_getBalance', [to, 'latest'])) - b0;
     ok(!u.error && paid > 0n, `and the receiver spends it: the settle program takes the derived nk and the note leaves to an address (${u.error ? u.error.message : `${Number(paid) / 1e18} ETH paid; ${log.slice(-1)[0]}`})`);
   }
+}
+
+// ── 8. a note staged by the holder's own machine: its unwrap proved here (the settle guest, as tacit-prover runs it), posted with its recipe,
+// sent and activated by the relay, which never receives the op that holds the note's key ──
+{
+  const index = await ux.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
+  const w = ux.buildWrap({ walletPriv: priv, amountWei: NOTE, ticker: 'cETH', index });
+  await send(FROM, WRAP_TIP, '0xfc24c435' + w.commit.slice(2).padStart(64, '0') + NOTE.toString(16).padStart(64, '0') + TIPTO.slice(2).toLowerCase().padStart(64, '0'), hex(NOTE + 10n ** 14n));
+  await ux.submitWrapSettle({ built: w, waitOpts: wait });
+  const ox = mkUx();
+  let ownStdin = '';
+  const own = async ({ type, op, memos: ms }) => {
+    const memoHashes = (ms || []).map((m) => keccak256(m.startsWith('0x') ? m : `0x${m}`));
+    const f = join(tmp, 'own.stdin'), out = join(tmp, 'own.pv');
+    const bytes = stdinFor(type, { ...JSON.parse(JSON.stringify(op)), memoHashes });
+    ownStdin = Buffer.from(bytes).toString('hex');
+    writeFileSync(f, bytes);
+    const r = await execGuest({ ...process.env, STDIN: f, OUT: out });
+    if (r.status !== 0 || !existsSync(out)) throw new Error('the guest rejected the op');
+    return { requestId: 'own-stage', publicValues: `0x${readFileSync(out, 'utf8').trim()}`, proof: '0x' + '00'.repeat(32), private: true };
+  };
+  own.supports = (t) => t === 'unwrap';
+  ox.relay.useProver(own);
+  const so = makeConfidentialStage({ ux: ox });
+  const note = (await notesOf(priv, ox, teth)).find((x) => BigInt(x.value) * 10n ** 10n === NOTE);
+  const seen0 = submitsSeen.length, acts0 = activations.length;
+  const r = await so.stageNote({ note, walletPriv: priv, waitOpts: wait }).catch((e) => ({ error: e }));
+  const asked = submitsSeen.slice(seen0);
+  ok(!r.error && r.own === true && await depositStatus(r.depositId) === 1n, `the holder's machine proves the stage and posts it: the key's deposit of ${Number(r.wei ?? 0n) / 1e18} ETH waits at wrap index ${r.index} (${r.error ? r.error.message : `activated ${String(r.activateTx).slice(0, 10)}…`})`);
+  ok(asked.length === 1 && asked[0].mode === 'preproven' && !asked[0].op && asked[0].exit && ownStdin.includes(BigInt(note.secret).toString(16).padStart(64, '0')),
+    `the relay was sent only the finished proof and its recipe, never the op holding the note's key, which stayed on this machine (${asked.map((x) => `${x.type}/${x.mode}${x.op ? '+op' : ''}${x.exit ? '+exit' : ''}`).join(', ')})`);
+  ok(activations.length === acts0 + 1 && activations[activations.length - 1].cover.ok, 'and the relay activated the recipe of a proof it did not make, its checks reading the recipient and fee from the public values');
 }
 
 if (fails) console.error(log.join('\n'));

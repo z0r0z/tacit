@@ -134,7 +134,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   const chargeOf = (c) => (c && typeof c === 'object' && /^\d{4}-\d{2}-\d{2}$/.test(String(c.day)) && Array.isArray(c.names)
     ? { day: String(c.day), names: c.names.map(String).slice(0, 6) } : null);
   async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false }) {
-    if (mode === 'preproven') return postProven({ type, memos, publicValues, proof });
+    if (mode === 'preproven') return postProven({ type, memos, publicValues, proof, exit });
     if (mode === 'sealed') {
       if (!type || !SEALED_SHAPE(sealed)) throw new Error('submitJob: a sealed job needs type + sealed { worker, epk, iv, ct }');
       if (!OPEN_TYPES.includes(type)) throw new Error(`submitJob: a ${type} cannot be sent sealed (its settle is not a plain pool.settle)`);
@@ -236,8 +236,12 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // A proof made elsewhere (a holder's own prover account) goes straight on the board: there is no witness and nothing to
   // prove. Its id is taken over its public values, so the same proof posted twice is one job, and verifyPosted
   // simulates its settle first, so the board carries only proofs the pool would take at the time they were posted.
-  async function postProven({ type, memos, publicValues, proof }) {
+  // `exit`: an unwrap proved on the holder's own machine may carry its ConfidentialRouter recipe, which the relay that sends it
+  // activates as it does a relayed exit's (it checks there that the recipe's escrow is the recipient the proof pays).
+  async function postProven({ type, memos, publicValues, proof, exit = null }) {
     if (!POSTED_TYPES.includes(type)) throw new Error(`submitJob: a ${type} proof cannot be posted for any sender`);
+    if (exit != null && !EXIT_TYPES.includes(type)) throw new Error('submitJob: an exit recipe rides only on an unwrap or sendunwrap');
+    const recipe = exit == null ? null : normalizeExit(exit);
     if (typeof verifyPosted !== 'function') throw new Error('submitJob: posted proofs are not taken here');
     const pv = String(publicValues || '').toLowerCase(), pf = String(proof || '').toLowerCase();
     const ms = Array.isArray(memos) ? memos.map((m) => String(m).toLowerCase()) : null;
@@ -254,7 +258,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       const open = await getOpen();
       if (open.length >= MAX_OPEN_JOBS) throw new Error('submitJob: the open board is full, retry later');
       const t = clock();
-      const job = { id, type, op: null, mode: 'preproven', memos: ms, feeUnits: null, feeUsd: null, feeAsset: null, exit: null,
+      const job = { id, type, op: null, mode: 'preproven', memos: ms, feeUnits: null, feeUsd: null, feeAsset: null, exit: recipe, activateTx: null, activateError: null,
         status: 'open', createdAt: t, claimedAt: 0, openSince: t, posted: true, txHash: null, error: null, publicValues: pv, proof: pf };
       job.expiresAt = expiresAt(job);
       await storage.putJob(id, job);

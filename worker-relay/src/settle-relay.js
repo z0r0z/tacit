@@ -456,7 +456,7 @@ async function activateRelayedExit(job, settleTx) {
     ]);
     const cover = activationCover({
       job, settleCostWei: rcpt.gasUsed * rcpt.effectiveGasPrice, gasEstimate, gasPriceWei,
-      weiPerUnit: CFG.ethUnitScale, gasCap: CFG.activateGasCap, marginBps: CFG.activateMarginBps,
+      weiPerUnit: CFG.ethUnitScale, gasCap: CFG.activateGasCap, marginBps: CFG.activateMarginBps, ethAssetId: CFG.ethAssetId,
     });
     if (!cover.ok) return refuse(cover.reason);
     // Dry-run at the exact gas limit the transaction carries: an uncapped call succeeds where the capped one
@@ -1007,6 +1007,8 @@ async function openCycle() {
   }
   log(`settled from the open board: job=${jobId} tx=${txHash}`);
   await confidentialAck({ jobId, txHash });
+  // an exit proved on its holder's machine and posted with its recipe: run the recipe as a relayed exit's is
+  if (job.exit) await activateRelayedExit(job, txHash);
   // A posted proof carries no fee the API priced; its tETH legs are what this settle earned, at today's ETH price.
   if (job.posted && job.feeUsd == null) {
     const wei = ethFeeWei(job.publicValues, { ethAssetId: CFG.ethAssetId, ethUnitScale: CFG.ethUnitScale });

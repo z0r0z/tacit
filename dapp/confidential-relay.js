@@ -275,10 +275,11 @@ export function makeConfidentialRelay({ base, fetchImpl, guard, checkEmittedMemo
     return asJson(res);
   }
 
-  async function postProof({ type, publicValues, proof, memos = [] }) {
+  // `exit`: an unwrap's ConfidentialRouter ExitRecipe, which the relay that sends the proof activates once the settle has paid its escrow.
+  async function postProof({ type, publicValues, proof, memos = [], exit = null }) {
     const res = await f(`${root}/confidential/submit`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos }),
+      body: JSON.stringify({ type, mode: 'preproven', publicValues, proof, memos, ...(exit ? { exit } : {}) }),
     });
     const body = await asJson(res);
     if (body && body.jobId) { jobTypes.set(body.jobId, type); announce({ ...body, type }); }

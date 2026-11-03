@@ -5,6 +5,24 @@
 // (tests/confidential-exit-activate.mjs); settle-relay.js does the chain I/O.
 
 import { getAddress } from 'viem';
+import { ethFeeWei } from './open-board.js';
+
+// The withdrawals a proof's public values pay: [{ assetId, recipient, value }] (abi.encode(PublicValues): head word 7 is the offset of
+// `withdrawals`, each Withdrawal three words). For a proof posted without its op, which names its recipient nowhere else.
+export function pvWithdrawals(publicValues) {
+  const h = String(publicValues || '').replace(/^0x/i, '').toLowerCase();
+  const word = (i) => { const w = h.slice(i * 64, i * 64 + 64); if (w.length !== 64) throw new Error('public values too short'); return BigInt('0x' + w); };
+  if (word(0) !== 32n) throw new Error('public values do not start with a tuple offset');
+  const off = word(7);
+  if (off % 32n !== 0n) throw new Error('withdrawals offset not word aligned');
+  const at = 1 + Number(off / 32n), n = Number(word(at));
+  if (n > 64) throw new Error('too many withdrawals');
+  return Array.from({ length: n }, (_, i) => ({
+    assetId: '0x' + word(at + 1 + 3 * i).toString(16).padStart(64, '0'),
+    recipient: '0x' + word(at + 2 + 3 * i).toString(16).padStart(40, '0'),
+    value: word(at + 3 + 3 * i),
+  }));
+}
 
 const EXIT_CALL = [
   { name: 'target', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'token', type: 'address' },
@@ -46,8 +64,15 @@ export function recipeArgs(e) {
 // can still run. `escrow` is the router's own escrowAddressFor(recipe).
 export function exitCheck({ job, escrow, nowSecs, ethAssetId }) {
   const e = job && job.exit;
-  const op = (job && job.op) || {};
+  let op = (job && job.op) || {};
   if (!e) return { ok: false, reason: 'no exit recipe' };
+  // a proof posted from the holder's own machine carries no op: its one withdrawal is read from the public values it settled
+  if (!job.op && job.publicValues) {
+    let w;
+    try { w = pvWithdrawals(job.publicValues); } catch { return { ok: false, reason: 'the public values could not be read' }; }
+    if (w.length !== 1) return { ok: false, reason: 'a posted exit pays exactly one withdrawal' };
+    op = { asset: w[0].assetId, recipient: w[0].recipient };
+  }
   if (job.type !== 'unwrap' && job.type !== 'sendunwrap') return { ok: false, reason: `a ${job.type} job is not an exit` };
   const eth = String(ethAssetId).toLowerCase();
   if (String(e.exitedAsset).toLowerCase() !== eth || String(op.asset || '').toLowerCase() !== eth) {
@@ -63,11 +88,13 @@ export function exitCheck({ job, escrow, nowSecs, ethAssetId }) {
 // Whether the op's bound fee (in-system ETH units × weiPerUnit) pays for the mined settle plus this activation,
 // with `marginBps` on top. On success returns the gas limit to send with: the estimate plus 30%, never above
 // the cap, which is also the limit the pre-flight simulation must use.
-export function activationCover({ job, settleCostWei, gasEstimate, gasPriceWei, weiPerUnit, gasCap, marginBps = 0n }) {
+// A posted proof has no op: its fee is its tETH fee legs, read from the public values (`ethAssetId` names tETH).
+export function activationCover({ job, settleCostWei, gasEstimate, gasPriceWei, weiPerUnit, gasCap, marginBps = 0n, ethAssetId = null }) {
   const est = BigInt(gasEstimate);
   const cap = BigInt(gasCap);
   if (est > cap) return { ok: false, reason: `activation needs ${est} gas, over the ${cap} cap` };
-  const feeWei = BigInt(job.op?.fee ?? 0) * BigInt(weiPerUnit);
+  const feeWei = job.op ? BigInt(job.op.fee ?? 0) * BigInt(weiPerUnit)
+    : ethFeeWei(job.publicValues, { ethAssetId, ethUnitScale: weiPerUnit });
   const cost = BigInt(settleCostWei) + est * BigInt(gasPriceWei);
   const need = cost + (cost * BigInt(marginBps)) / 10000n;
   if (feeWei < need) return { ok: false, reason: `the fee (${feeWei} wei) is below the settle plus activation cost (${need} wei)` };
