@@ -19,7 +19,9 @@ import { makeLpService } from '/fastbridge-provider.js?cb=7208616b';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=d00c9623';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=8d928552';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
-import { secp, sha256, keccak_256, hmac } from '/vendor/tacit-deps.min.js';
+import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=0';
+import { p2trAddress } from '/crossout-notes.js?cb=0';
+import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -96,6 +98,111 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, fetchI
     start: async ({ quotes }) => market.start({ quotes, notes: await notes() }),
     records: market.records, run: market.run, recover: market.recover,
   };
+}
+
+// ── TAC made ready for Ethereum: bound notes and the fast lane ──
+
+// A bind is opt-in and small while the fast lane is new: at most this much at a time, and at least what a move's fee leaves worth moving.
+export const BIND_MIN = 10n * 10n ** 8n, BIND_MAX = 1000n * 10n ** 8n;
+// reflection takes blocks 24 deep, then its proof lands
+const REFLECT_DEPTH = 24, REFLECT_LAG_MINS = 40;
+const NULLIFIER_SPENT_SLOT = 70n;
+
+//   const b = await openBound({ T, withKey, ux, priv, pubHex, witnessBase })
+//   -> { notes(), balance(), bound(), bind({ amount }), move(note) }
+// notes() are the key's TAC at its trading address (what a bind spends); bound() the bound notes at its Taproot address, each
+// { txid, vout, amount, state: 'waiting' | 'ready' | 'moved' | 'spent', etaMins }; move() spends one into the key's private balance,
+// the relay settling it for a fee taken from the note.
+export async function openBound({ T, withKey, ux, priv, pubHex, witnessBase = 'https://api.tacit.finance', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
+  const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
+  if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
+  const binding = ux.chainBindingHex();
+  const btc = makeEsploraBtcChain({ bases, prims, builder: null, fetchImpl });
+  const binder = makeBtcBind({ prims, kit: tacitKit(T), target: binding });
+  const getStorageAt = (to, slot) => ux.rpc('eth_getStorageAt', [to, slot, 'latest']);
+  const roots = makePoolRoots({ pool: ux.cfg.pool, getStorageAt, keccak256: keccak_256 });
+  const authKey = '0x' + hex(prims.wallet.xonly());
+  const taproot = p2trAddress(prims.wallet.xonly(), hrp);
+  const witnessFor = async (body) => {
+    const r = await fetchImpl(`${witnessBase.replace(/\/$/, '')}/reflection/note-witness?network=mainnet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`the relay could not say whether the note is ready (${r.status})`);
+    return r.json();
+  };
+  const spentOnEthereum = async (nu) => {
+    const slot = '0x' + hex(keccak_256(hexToBytes(String(nu).replace(/^0x/, '').padStart(64, '0') + NULLIFIER_SPENT_SLOT.toString(16).padStart(64, '0'))));
+    return BigInt(await getStorageAt(ux.cfg.pool, slot)) !== 0n;
+  };
+  const utxosAt = async (address) => {
+    for (const b of bases) {
+      try { const r = await fetchImpl(`${b}/address/${address}/utxo`, { signal: AbortSignal.timeout(20000) }); if (r.ok) return r.json(); } catch { /* the next explorer */ }
+    }
+    throw new Error('no explorer answered for the Taproot address');
+  };
+
+  const notes = () => withKey((t) => notesOf(t, TAC_ASSET));
+  const balance = async () => (await notes()).reduce((s, n) => s + n.amount, 0n);
+
+  async function bound() {
+    const [utxos, tip] = await Promise.all([utxosAt(taproot), btc.tip()]);
+    const out = [];
+    for (const u of utxos) {
+      const tx = await btc.fetchTx(u.txid);
+      const o = tx && openBoundNote({ tacit: T, priv: prims.wallet.priv, pub: prims.wallet.pub, tx, vout: u.vout });
+      if (!o || '0x' + o.target !== binding.toLowerCase() || o.asset !== TAC_ASSET) continue;
+      const note = { txid: u.txid, vout: u.vout, amount: o.amount, blinding: o.blinding, asset: '0x' + o.asset };
+      const height = u.status && u.status.confirmed ? u.status.block_height : null;
+      const lane = height ? await fastLaneNote({ pool: ux.pool, roots, witnessFor, note, authKey, chainBinding: binding }) : { ready: false, why: 'reflecting' };
+      const moved = lane.nullifier ? await spentOnEthereum(lane.nullifier) : false;
+      const left = height ? Math.max(0, height + REFLECT_DEPTH - tip) * 10 + REFLECT_LAG_MINS : REFLECT_DEPTH * 10 + REFLECT_LAG_MINS + 10;
+      const state = moved ? 'moved' : lane.ready ? 'ready' : lane.why === 'spent' ? 'spent' : 'waiting';
+      out.push({ ...note, state, etaMins: state === 'waiting' ? left : 0, lane });
+    }
+    return out.sort((a, b) => (a.state === b.state ? (a.amount > b.amount ? -1 : 1) : a.state === 'ready' ? -1 : 1));
+  }
+
+  // The notes the reflection tracks (its live set, keyed keccak(txid ‖ vout) in internal byte order). The reflection folds a bind
+  // only when every note it spends is tracked; a bind of any other note would make a bound note that never becomes ready.
+  async function tracked() {
+    const r = await fetchImpl(`${witnessBase.replace(/\/$/, '')}/reflection/live?network=mainnet`, { signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw new Error(`the relay could not list the notes it tracks (${r.status})`);
+    const j = await r.json();
+    if (!Array.isArray(j.liveTriples)) throw new Error('the relay could not list the notes it tracks');
+    return new Set(j.liveTriples.map((t) => String(t[0]).toLowerCase()));
+  }
+  const keyOf = (n) => {
+    const b = new Uint8Array(36);
+    b.set(hexToBytes(n.txid).reverse(), 0);
+    new DataView(b.buffer).setUint32(32, n.vout >>> 0, true);
+    return '0x' + hex(keccak_256(b));
+  };
+
+  // BIND: `amount` of the key's tracked TAC, from its largest notes, into a bound note of that size (and the rest, bound too, when a note is larger)
+  async function bind({ amount }) {
+    const want = BigInt(amount);
+    if (want < BIND_MIN || want > BIND_MAX) throw new Error(`make ready between ${BIND_MIN / 10n ** 8n} and ${BIND_MAX / 10n ** 8n} TAC at a time`);
+    const [mine, live] = await Promise.all([notes(), tracked()]);
+    const all = mine.filter((n) => live.has(keyOf(n))).sort((a, b) => (a.amount > b.amount ? -1 : 1));
+    const held = all.reduce((s, n) => s + n.amount, 0n);
+    if (held < want) throw new Error(held < mine.reduce((s, n) => s + n.amount, 0n) ? `only ${held / 10n ** 8n} TAC of yours can be made ready now: the rest is newer than the bridge's last check, or older than it tracks (bridge that from the front page)` : 'your TAC on Bitcoin does not cover that amount');
+    const picked = [];
+    let sum = 0n;
+    for (const n of all) { if (sum >= want || picked.length >= 8) break; picked.push(n); sum += n.amount; }
+    if (sum < want) throw new Error('your TAC on Bitcoin does not cover that amount in one go');
+    const pair = binder.bindTransfer({ asset: hexToBytes(TAC_ASSET), notes: picked, sizes: sum > want ? [want, sum - want] : [want], satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
+    await btc.broadcast(pair);
+    return { txid: pair.revealTxid };
+  }
+
+  // MOVE: one ready bound note into the key's private balance, the relay settling it for a fee from the note
+  async function move(n) {
+    const lane = await fastLaneNote({ pool: ux.pool, roots, witnessFor, note: n, authKey, chainBinding: binding });
+    if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
+    const fee = await ux.quoteTransferFee(BigInt(n.amount), 'cTAC');
+    if (fee >= BigInt(n.amount)) throw new Error('this note is smaller than the fee of moving it');
+    return ux.fastlaneExit({ walletPriv: priv, notes: [lane.input], authPriv: '0x' + hex(prims.wallet.priv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee, selfRelay: false });
+  }
+
+  return { notes, balance, bound, bind, move, taproot };
 }
 
 // ── the key's own provider ──

@@ -233,6 +233,9 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .pv[open] > summary::after { content: '–'; }
 .pv-in { padding: 0 22px 22px; }
 .pv-in .note { margin-top: 0; }
+.bd-note { align-items: baseline; }
+.bd-note .linkbtn { margin-left: auto; }
+#ready .fx-amt { margin-top: 12px; }
 .pv-f { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
 .pv-f input { width: 10ch; text-align: right; font: inherit; color: var(--ink); background: transparent; border: 0; outline: 0; padding: 0; }
 .pv-f:focus-within { border-color: var(--ink); }
@@ -418,6 +421,7 @@ footer.sf svg.fill { width: 16px; height: 16px; }
     <section class="panel gate" id="gate"></section>
     <p class="note fx-keep">Keep this page open until a bridge is done.</p>
     <section class="lp-tiles" id="fx-tiles" aria-label="Providers online" hidden></section>
+    <details class="panel gate pv" id="ready" hidden></details>
     <details class="panel gate pv" id="provide" hidden></details>
   </main>
 

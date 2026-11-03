@@ -122,6 +122,7 @@ fn main() {
             report.total_instruction_count(),
             pv.as_slice().len()
         );
+        if let Ok(p) = std::env::var("PV_OUT") { std::fs::write(p, hex::encode(pv.as_slice())).expect("PV_OUT"); }
         return;
     }
     let client = ProverClient::builder().network().build();

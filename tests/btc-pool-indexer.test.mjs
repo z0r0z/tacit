@@ -26,6 +26,7 @@ import { proveBoundary, encodeBoundary } from '../dapp/btc-pool-zk-boundary.js';
 import { bodyHash, assetField, P_FR, L_BJJ } from '../dapp/btc-pool-zk.js';
 import { unpackPoint } from '../dapp/amm-bjj.js';
 import { bpRangeAggProve } from './bulletproofs.mjs';
+import { CONFIDENTIAL_DEPLOYMENTS } from '../dapp/confidential-deployments.js';
 
 // Every fetch tacit.js makes goes through here, so tests can answer worker reads.
 const baseFetch = globalThis.fetch;
@@ -1414,35 +1415,49 @@ const validate = async (fetchTx, txid, vout) => {
   return { ok, reason: reasons.get(`${txid}:${vout}`) };
 };
 
-test('dapp validateOutpoint: T_CXFER_BOUND validates like T_CXFER and resolves as a parent', async () => {
+test('dapp validateOutpoint: T_CXFER_BOUND is a note while the pool has not spent it; the shield replay refuses any bound history', async () => {
   const rE = scalar('bnd-e'), r1 = scalar('bnd-1'), r2 = scalar('bnd-2');
   const etch = etchTx(9n, rE);
-  const boundOf = (ins, outs, { forge = false } = {}) => {
+  const dep = CONFIDENTIAL_DEPLOYMENTS.signet;
+  const binding = keccak(hexToBytes(BigInt(dep.chainId).toString(16).padStart(64, '0') + dep.pool.replace(/^0x/, '').toLowerCase()));
+  const boundOf = (ins, outs, { forge = false, target = binding } = {}) => {
     const Cs = outs.map((o) => compress(pedersen(o.value, o.r)));
     const { proof } = bpRangeAggProve(outs.map((o) => o.value), outs.map((o) => o.r));
     const msg = tacit.computeKernelMsg(etch.asset, ins.map((i) => i.outpoint), Cs, 0n);
     const d = outs.reduce((a, o) => a + o.r, 0n) - ins.reduce((a, i) => a + i.r, 0n);
     const cx = tacit.encodeCXferPayload({ assetId: etch.asset, kernelSig: schnorrSign(msg, forge ? scalar('bf') : d), outputs: Cs.map((commitment) => ({ commitment, encryptedAmount: noAmount })), rangeproof: proof });
-    const payload = concat(Uint8Array.of(0x39), keccak(te('target')), cx.subarray(1));
+    const payload = concat(Uint8Array.of(0x39), target, cx.subarray(1));
     return carrier(payload, { inputs: ins.map((i) => i.outpoint), outputs: outs.map((_, k) => ({ spk: Uint8Array.of(0x51, k) })) });
   };
   const ins = [{ outpoint: { txid: etch.txid, vout: 0 }, value: 9n, r: rE }];
   const good = boundOf(ins, [{ value: 4n, r: r1 }, { value: 5n, r: r2 }]);
   const forged = boundOf(ins, [{ value: 900n, r: r1 }], { forge: true });
+  const elsewhere = boundOf(ins, [{ value: 9n, r: r1 }], { target: keccak(te('another pool')) });
   const next = cxferTx(etch.asset, [{ outpoint: { txid: good.txid, vout: 1 }, value: 5n, r: r2 }], [{ value: 5n, r: scalar('bnd-3') }]);
-  const f = fetchFrom(etch, good, forged, next);
-  assert.deepEqual(await validate(f, good.txid, 0), { ok: true, reason: undefined });
-  assert.equal((await validate(f, good.txid, 1)).ok, true);
-  assert.equal((await validate(f, good.txid, 2)).ok, false, 'no third output');
-  assert.equal((await validate(f, forged.txid, 0)).ok, false, 'forged kernel');
-  assert.equal((await validate(f, next.txid, 0)).ok, true, 'a CXFER spending a bound output');
+  const f = fetchFrom(etch, good, forged, elsewhere, next);
+  // Ethereum: the pool's nullifier map reads unspent, and the reflection has passed nothing.
+  const hook = (url, init) => {
+    const body = String(init?.body || '');
+    if (init?.method === 'POST' && body.includes('eth_')) { const req = JSON.parse(body); return jsonRes({ jsonrpc: '2.0', id: req.id, result: '0x' + '00'.repeat(32) }); }
+    if (url.includes('/reflection/status')) return jsonRes({ attestedHeight: 0 });
+    return null;
+  };
+  await withFetch(hook, async () => {
+    assert.deepEqual(await validate(f, good.txid, 0), { ok: true, reason: undefined });
+    assert.equal((await validate(f, good.txid, 1)).ok, true);
+    assert.equal((await validate(f, good.txid, 2)).ok, false, 'no third output');
+    assert.equal((await validate(f, forged.txid, 0)).ok, false, 'forged kernel');
+    assert.deepEqual(await validate(f, elsewhere.txid, 0), { ok: false, reason: 'fetch-failed' }, 'bound to a pool this wallet cannot read: pending');
+    assert.deepEqual(await validate(f, next.txid, 0), { ok: false, reason: 'fetch-failed' }, 'a CXFER spending a bound output waits for the reflection');
+  });
   const env = tacit.txOutputEnvelope(espTx(good));
   const pd = await tacit.getParentEnvelopeData(env, 1, good.txid);
   assert.deepEqual(pd.commitment, compress(pedersen(5n, r2)));
-  const resolve = makeShieldInputResolver({ esplora: recordedEsplora({ extra: new Map([[etch.txid, etch], [good.txid, good]]) }), network: 'signet', exits: noExits });
-  const got = await resolve(good.txid, 0);
-  assert.deepEqual(got.Cx, pointXY(pedersen(4n, r1)).cx);
-  assert.equal(got.bound, true);
+  // The replay decides without Ethereum: a bound note, or a note whose history holds one, is not a shield input.
+  const resolve = makeShieldInputResolver({ esplora: recordedEsplora({ extra: new Map([[etch.txid, etch], [good.txid, good], [next.txid, next]]) }), network: 'signet', exits: noExits });
+  assert.equal(await resolve(good.txid, 0), null, 'a bound note');
+  assert.equal(await resolve(next.txid, 0), null, 'a note spent out of a bound one');
+  assert.ok(await resolve(etch.txid, 0), 'its unbound ancestor still resolves');
   // The indexer refuses a bound note as a shield input.
   const ch = fakeChain();
   ch.add([etch, good]); // 500

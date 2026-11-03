@@ -110,6 +110,28 @@ its own machine, its own credit on a prover network, or a relay that is not the 
 open proof board for the same reason. `adaptorlock` and `adaptorclaim` are expiring job types in the relay, so a relay
 that is paused or held skips a job whose deadline has passed instead of sending it.
 
+## Without a provider: TAC made ready
+
+A holder can also skip the provider. One Bitcoin transaction binds TAC to the pool (`T_CXFER_BOUND`, 0x39): the notes it makes
+sit at the key's Taproot address, keyed to it, with blindings from the key's own change channel, so the key alone finds and
+opens them again. Once the reflection has folded that transaction (24 blocks, then its proof), each bound note moves into the
+pool by the fast lane (SPEC §6.3) in one settle: a transfer whose input is proven in the reflected Bitcoin root and absent from
+the reflected spent set, signed by the note's Taproot key. The relay settles it for a fee taken from the note, so no ETH is
+needed. The wait is paid once, when the TAC is made ready, not when it moves.
+
+- `dapp/btc-bind.js`: the bind (`bindTransfer`, at most 8 notes of chosen sizes), `openBoundNote`, and `fastLaneNote`, which asks
+  `POST /reflection/note-witness` (leaves and nullifiers) and checks its roots against the pool's (`knownBitcoinRoot`, slot 78,
+  and `knownBitcoinSpentRoot`, slot 79) before anything is proven; a settle against any other spent root reverts.
+- `dapp/fast/wire.js` `openBound` and `dapp/fast/bound.js`: the "Ready for Ethereum" panel on `/fast/` (`/fast/#ready`), 10 to
+  1,000 TAC a bind while it is new.
+- Rules that keep it whole: a bound note is never a lot (a purchase refuses it), since its holder could still move it to Ethereum
+  and void the buyer's side until the reflection passes the spend; a note bound to a pool the wallet cannot read is pending; the
+  Bitcoin shielded pool's replay refuses any input whose history holds a bound note. A transfer out of a bound note is pending
+  until the reflection passes its block, so a provider's lock check already refuses a lock that spends one too early.
+- Not yet: a way back to an ordinary note from the page, and the guest-side items of the fast-lane review (a deadline on the
+  fast lane's signature, a binding kept per note across pool generations, the attest gate on the consumed count), which wait
+  for the next pool generation.
+
 ## Code
 
 | | |
@@ -166,8 +188,8 @@ pinned `elf/cxfer-guest`, whose verifying key is the one inside the deployed poo
 Built and tested: the protocol, the transaction builders, both role machines, a simulated chain, the full swap in both
 directions against the real settle guest and the real note validator, the pool adapter, the LP process with its
 HTTP API, store and explorer adapter, the board and the mailbox over it, and the bridge page (`/fast/`) with its client,
-recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page lists no provider
-or board yet (`dapp/fast/lp.json`).
+recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page reads its
+board from `dapp/fast/lp.json`.
 
 Not built: a link to the page from the front page's Bridge tab, the Ethereum to Bitcoin direction, the claim prover's options
 (the relay that is not the provider, the user's device, a prover network), and a run with real funds.

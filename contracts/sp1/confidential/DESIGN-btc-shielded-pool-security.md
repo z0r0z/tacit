@@ -308,7 +308,8 @@ conservation for value of that ancestry holds under A9. Every other ancestry is 
 
 **Bound notes.** A note bound to a pool deployment (`T_CXFER_BOUND`) is also spendable in that
 deployment's fast lane until reflection retires it (SPEC §6.3). Shield acceptance refuses bound notes as
-inputs (design §5), so a bound note never enters the pool.
+inputs (design §5), and any input whose history holds one, so neither a bound note nor value that passed
+through one enters the pool.
 
 Every term is negligible, so
 `Adv^cons ≤ Adv^ext_kernel + 2·Adv^ks_R + Adv^dl_s + 2·(Adv^cr_P + Adv^σ + Adv^bpp + Adv^bind) + Adv^cr_S`,
@@ -671,9 +672,10 @@ knowledge extraction is the non-tight forking argument that already underlies `T
 - **Hosted records.** Shields of cross-out or AMM ancestry rely on A9 until cross-out mints are
   proof-verified (design §9) and the indexer tracks AMM state itself.
 - **Fast-lane lag.** A bound Bitcoin-homed note is spendable in the Ethereum fast lane until reflection
-  retires it on Bitcoin. Wallets and the indexer refuse bound notes as shield inputs, so this lag does
-  not reach the pool. Transparent spends of a bound note during the lag are the fast lane's own rules
-  (SPEC §6.3).
+  retires it on Bitcoin. Wallets and the indexer refuse bound notes as shield inputs, and the replay
+  refuses any shield input whose history holds a bound note, deciding that from Bitcoin alone, so this
+  lag neither reaches the pool nor holds its replay waiting on Ethereum. Transparent spends of a bound
+  note during the lag are the fast lane's own rules (SPEC §6.3).
 - **Relayer exposure.** A relayer pays the Bitcoin fee before the spend confirms. `bind` stops anyone else
   from posting its payload. If a conflicting spend of the same nullifiers, in another body, confirms
   first, its envelope is rejected and it loses that carrier's fee share. The relayer duties (design §6)

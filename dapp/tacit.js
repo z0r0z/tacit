@@ -13492,11 +13492,19 @@ async function _evmNullifierSpentCached(pool, nu) {
   _boundSpentCache.set(nu, { spent, at: Date.now() });
   return spent;
 }
+// A bound output is a note only while the pool it names has not spent it. Bound to a pool this wallet cannot read (an earlier generation, or one it
+// does not know), its standing cannot be known, so it waits. The shielded pool's replay decides without Ethereum: a bound note anywhere in a shield's
+// history is refused there, at every height, rather than waiting on reflection.
 async function _boundOutputFailure(tx, dec, j, outKey) {
   const binding = _confidentialChainBinding();
   const pool = (CROSSLANE_DEPLOYMENTS[currentNetworkName()] || {}).pool;
-  if (!binding || !pool || '0x' + bytesToHex(dec.targetChainBinding) !== binding.toLowerCase()) return null;
+  if (!binding || !pool) return null;
   _boundOutpointKeys.add(outKey);
+  if (_strictValidation) return _REASON_INVALID;
+  if ('0x' + bytesToHex(dec.targetChainBinding) !== binding.toLowerCase()) {
+    _strictUnavailable(`T_CXFER_BOUND ${outKey}: bound to another pool deployment`);
+    return _REASON_FETCH_FAILED;
+  }
   const kit = _leafKitOf();
   const C = bytesToPoint(dec.outputs[j].commitment).toAffine();
   const hex32 = (x) => '0x' + x.toString(16).padStart(64, '0');
@@ -15129,6 +15137,10 @@ async function _requireValidatedLot(txidHex, vout, label, onRead = null) {
     let proofsOk = false;
     try { proofsOk = bpRangeAggBatchVerify(rpBatch); } catch { proofsOk = false; }
     if (!proofsOk) ok = false;
+  }
+  // A bound note's holder can still move it into the pool until reflection passes the spend, which voids the buyer's side, so it is never a lot.
+  if (ok === true && _boundOutpointKeys.has(key)) {
+    throw new Error(`${label} is bound to the Ethereum pool, where its holder can still move it, so it can't be bought on Bitcoin and nothing was sent`);
   }
   if (ok === true) {
     for (const [k, val] of set) if (val === true) proved.set(k, true);

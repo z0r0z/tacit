@@ -2094,7 +2094,11 @@ async function handleReflectionLive(req, env, url, cors) {
 // data derivable from a leaf hash the caller already computed, so it reveals nothing about who owns what.
 // GET  /reflection/note-witness?leaf=0x...              (single leaf, convenience)
 // POST /reflection/note-witness {"leaves":["0x...",...]} (batch, capped below)
+// A POST may also name `nullifiers` (a fast-lane spend's inputs): each gets the reflected spent set's low link and
+// path, the non-membership witness the spend carries, or `spent: true`; `spentRoot` is the set's root, which a spend
+// must match on chain (the pool's knownBitcoinSpentRoot), so a caller checks it there before proving.
 const NOTE_WITNESS_MAX_LEAVES = 64;
+const NOTE_WITNESS_MAX_NULLIFIERS = 8;
 async function handleReflectionNoteWitness(req, env, url, cors) {
   const authed = checkConfidentialAuth(req, env);
   if (!authed) {
@@ -2106,7 +2110,7 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
   }
   if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
   const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
-  let leaves;
+  let leaves, nullifiers = [];
   if (req.method === 'GET') {
     const one = url.searchParams.get('leaf');
     if (!one) return jsonResponse({ error: 'pass ?leaf=0x... (GET) or {leaves:[...]} (POST)' }, 400, cors);
@@ -2116,6 +2120,11 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
     leaves = Array.isArray(body.leaves) ? body.leaves : null;
     if (!leaves || !leaves.length) return jsonResponse({ error: 'missing leaves array' }, 400, cors);
     if (leaves.length > NOTE_WITNESS_MAX_LEAVES) return jsonResponse({ error: `at most ${NOTE_WITNESS_MAX_LEAVES} leaves per request` }, 400, cors);
+    if (body.nullifiers != null) {
+      if (!Array.isArray(body.nullifiers) || body.nullifiers.some((n) => !/^0x[0-9a-fA-F]{64}$/.test(String(n)))) return jsonResponse({ error: 'nullifiers must be 32-byte 0x hex' }, 400, cors);
+      if (body.nullifiers.length > NOTE_WITNESS_MAX_NULLIFIERS) return jsonResponse({ error: `at most ${NOTE_WITNESS_MAX_NULLIFIERS} nullifiers per request` }, 400, cors);
+      nullifiers = body.nullifiers;
+    }
   }
   const raw = await env.REGISTRY_KV.get(`reflection:scan:${network}`);
   if (!raw) return jsonResponse({ error: 'no persisted state' }, 404, { ...cors, 'Cache-Control': 'no-store' });
@@ -2131,7 +2140,19 @@ async function handleReflectionNoteWitness(req, env, url, cors) {
     const idx = index.get(String(leaf).toLowerCase());
     witnesses[leaf] = idx == null ? null : { leafIndex: idx, path: tree.rootAndPath(idx).path };
   }
-  return jsonResponse({ network, root, height: s.attestedHeight ?? null, witnesses }, 200, { ...cors, 'Cache-Control': authed ? 'no-store' : 'public, max-age=10' });
+  const out = { network, root, height: s.attestedHeight ?? null, witnesses };
+  if (nullifiers.length) {
+    const spent = pool.makeImtAccumulator();
+    spent.setLinks((s.snapshot && s.snapshot.spentLinks) || []);
+    out.spentRoot = spent.root();
+    out.unspent = {};
+    for (const nu of nullifiers) {
+      if (spent.contains(nu)) { out.unspent[nu] = { spent: true }; continue; }
+      const w = spent.nonMembershipWitness(nu);
+      out.unspent[nu] = { value: w.lowValue, next: w.lowNext, index: w.lowIndex, path: w.path };
+    }
+  }
+  return jsonResponse(out, 200, { ...cors, 'Cache-Control': authed ? 'no-store' : 'public, max-age=10' });
 }
 
 // Holder-submitted TAC burn-deposit provenance bundle. Stored under the exact key the scan attester's

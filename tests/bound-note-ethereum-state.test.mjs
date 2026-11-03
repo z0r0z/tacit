@@ -2,12 +2,12 @@
 //
 //   - A T_CXFER_BOUND output homed to this deployment is credited only while its bound nullifier is unspent in the
 //     pool (the fast lane can move it to Ethereum while the Bitcoin output stays unspent); an unreadable pool leaves
-//     it pending; an output bound to another deployment is not read at all.
+//     it pending; an output bound to another deployment is pending too, its standing unknowable here.
 //   - A transfer out of a bound output is pending until the reflection has passed its block, then final; the
 //     attested height is read from Ethereum (the pool's attested tip, looked up in the header relay).
 //   - A T_CROSSOUT_MINT note is credited only when the pool's crossOutCommitment[claimId] holds its leaf.
-//   - A purchase reads every transaction of the lot from two sources and refuses when they differ, and a bound
-//     output is re-checked rather than reused from an earlier walk.
+//   - A purchase reads every transaction of the lot from two sources and refuses when they differ, and refuses a
+//     bound lot outright (its holder could still move it to Ethereum and void the buyer's side).
 //
 // Run: node tests/bound-note-ethereum-state.test.mjs
 
@@ -184,7 +184,7 @@ console.log('T_CXFER_BOUND outputs:');
   E.ethDown = true;
   const r4 = await verdict(t4.txid, 0);
   E.ethDown = false;
-  ok('an output bound to another deployment validates without a pool read', r4.v === true, JSON.stringify(r4));
+  ok('an output bound to another deployment is pending, its pool unread', r4.v === false && r4.reason === 'fetch-failed', JSON.stringify(r4));
 }
 
 console.log('\nA transfer out of a bound output:');
@@ -293,8 +293,8 @@ console.log('\nPurchases:');
   const t = transfer(etch(1000n), { bound: true, h: 100 });
   err = null;
   try { await dapp.requireValidatedLot(t.txid, 0); } catch (e) { err = e; }
-  ok('a bound lot unspent on Ethereum is accepted', err === null, String(err?.message || ''));
-  ok('but its outpoints are not kept for the session (they rest on Ethereum state)', !dapp._lotProvedSession.has(`${t.txid}:0`) && !dapp._lotProvedSession.has(`${t.txid}:1`));
+  ok('a bound lot is refused even while unspent on Ethereum', /bound to the Ethereum pool/.test(String(err?.message)), String(err?.message || 'accepted'));
+  ok('and its outpoints are not kept for the session', !dapp._lotProvedSession.has(`${t.txid}:0`) && !dapp._lotProvedSession.has(`${t.txid}:1`));
   E.storage.set(slotOf(boundNu(t, 0), 70).toLowerCase(), hex32(1));
   err = null;
   try { await dapp.requireValidatedLot(t.txid, 0); } catch (e) { err = e; }
