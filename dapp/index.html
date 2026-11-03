@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8DRK77QdPGd2SnVSKb9F/dE1qhoC8pmUVMIQBHUoEvY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kKWoIJRJ3EvnSA4bWsoMKsB5BB7VAkG1Vi70I9WI8cw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -5230,6 +5230,18 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
   after();
   if (r?.memoCheck?.ok === false) run.warn(line(), 'Sent, but the relay published a different note than was built, so the recipient may not find it. If it goes unclaimed, take it back in the classic app after the deadline; its refund record is saved in this browser.');
 }
+// A private asset (TAC, cUSD, cBTC, wTAC) taken out of the pool to an Ethereum address, where it arrives as `as`: the send forms' press and the Send tab's. The note is cut to size first if none is, and the
+// relay proves the exit. `status`, `line`, `clear`, `after` and `proveAfter` are as for stealthSendNow; a failure is thrown for the press to say.
+async function assetOutNow({ run, k, label, units, recipient, as, status, line, sheet = 'eth', clear, after, proveAfter }) {
+  run.go({ label, status: line, clear });
+  const t = await getUx(), priv = walletPriv();
+  const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, status, k);
+  run.say(status, `The relay is proving your transfer, which arrives as ${as}…`);
+  await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, units), label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
+    relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: units, waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(units), note: kNote(note), from: k, sheet } }) }) });
+  await scanPrivate(true).catch(() => {});
+  after();
+}
 function v1Send(el, status) {
   const held = spendable('eth');
   mount(el, html`
@@ -7089,7 +7101,7 @@ async function tokenPull(t, amount, step, status) {
   return approveFirst(t, amount, step);
 }
 // A recipient of a private transfer in the pool, from a tacit1 address, a name or a pool address (bp1…) → { bp, label?, id? } or { error }.
-async function tokRecipient(raw) {
+async function tokRecipient(raw, t = DEV.tok) {
   let r;
   if (/^bp1/i.test(raw)) {
     const m = await getDeviceMods();
@@ -7097,7 +7109,7 @@ async function tokRecipient(raw) {
   } else if (/^tacit1/i.test(raw) || /\.(g?wei|eth)$/i.test(raw)) r = await devResolve(raw);
   else return { error: 'Enter a Tacit address (tacit1…), a name or a pool address (bp1…).' };
   if (r.error) return r;
-  if (r.bp.toLowerCase() === (await tokenWallet()).address.toLowerCase()) return { error: 'That is your own address.' };
+  if (r.bp.toLowerCase() === (await tokenWallet(t)).address.toLowerCase()) return { error: 'That is your own address.' };
   return r;
 }
 
@@ -7501,6 +7513,26 @@ async function btcRoute(raw, token) {
   throw new Error('Enter a tacit1…, sp1… or bc1… address, or a name.');
 }
 const btcRouteM = memoRoute(btcRoute);
+// A send on Bitcoin's steps (BTC, or a Bitcoin asset such as TAC to a Tacit address), pressed from the Bitcoin sheet's form or the Send tab: `r` is the route as it was checked (a name that points elsewhere now stops it,
+// flagged on `field`), `v` the amount in `token`'s decimals (`token` null for BTC), `status` the element the steps are said in. The broadcast is recorded in Activity, and a shielded or silent payment keeps the link its
+// recipient's wallet finds it by (BTC.share). → the transaction's id; a failure is thrown for the press to say.
+async function btcSendNow({ r, raw, v, token, dec, unit, pub, field, status }) {
+  await pinned(r, () => btcRouteM(raw, token, true), field);
+  say(status, 'Checking which of your outputs are cBTC locks…');
+  await (await getUx()).syncCbtcLockReservations(walletPriv());
+  const txid = await withKey(async (t) => {
+    if (!token) { say(status, 'Sending…'); return (await t.buildAndBroadcastSatsSend({ recipientAddr: r.to, amountSats: Number(v) })).txid; }
+    const stage = { 'commit-start': 'Sending the fee transaction…', 'reveal-start': 'Sending the transfer…' };
+    say(status, 'Building the transfer…');
+    const id = (await t.buildAndBroadcastCXfer({ assetIdHex: token.id, amount: v, ...(r.kind === 'stealth' ? { stealthAddress: r.stealthAddress } : { recipientPubHex: r.pubHex }), onProgress: (x) => { if (stage[x]) say(status, stage[x]); } })).revealTxid;
+    try { t.invalidateHoldingsCache?.(); } catch {}
+    return id;
+  }, pub);
+  actBtc(txid, `Send ${fmt(v, dec, 8)} ${unit}${token ? ' on Bitcoin' : ''}`);
+  const kind = r.kind === 'sp' ? 'sp' : r.kind === 'stealth' ? 'st' : null;
+  BTC.share = kind ? { kind, url: `${location.origin}/#${kind}=${txid}` } : null;
+  return txid;
+}
 function btcSendForm(f, status, b) {
   const held = (b?.held || []).filter((a) => a.known);
   if (BTC.asset !== 'btc' && b?.got >= 2 && !held.some((a) => a.id === BTC.asset)) BTC.asset = 'btc';     // a choice waits for the read of what the key holds
@@ -7543,20 +7575,7 @@ function btcSendForm(f, status, b) {
     const r = route, v = parseUnits(amt.value, dec), pub = S.key?.pubHex;
     if (!r || !v || !pub) return;
     try {
-      await pinned(r, () => btcRouteM(to.value, token, true), to);
-      say(status, 'Checking which of your outputs are cBTC locks…');
-      await (await getUx()).syncCbtcLockReservations(walletPriv());
-      const txid = await withKey(async (t) => {
-        if (!token) { say(status, 'Sending…'); return (await t.buildAndBroadcastSatsSend({ recipientAddr: r.to, amountSats: Number(v) })).txid; }
-        const stage = { 'commit-start': 'Sending the fee transaction…', 'reveal-start': 'Sending the transfer…' };
-        say(status, 'Building the transfer…');
-        const id = (await t.buildAndBroadcastCXfer({ assetIdHex: token.id, amount: v, ...(r.kind === 'stealth' ? { stealthAddress: r.stealthAddress } : { recipientPubHex: r.pubHex }), onProgress: (x) => { if (stage[x]) say(status, stage[x]); } })).revealTxid;
-        try { t.invalidateHoldingsCache?.(); } catch {}
-        return id;
-      }, pub);
-      actBtc(txid, `Send ${fmt(v, dec, 8)} ${unit}${token ? ' on Bitcoin' : ''}`);
-      const kind = r.kind === 'sp' ? 'sp' : r.kind === 'stealth' ? 'st' : null;
-      BTC.share = kind ? { kind, url: `${location.origin}/#${kind}=${txid}` } : null;
+      const txid = await btcSendNow({ r, raw: to.value, v, token, dec, unit, pub, field: to, status });
       clearField(amt);
       toast(`Sent ${fmt(v, dec, 8)} ${unit}`);
       await loadBtc(true).catch(() => {});
@@ -10262,6 +10281,23 @@ const LPS = { pid: null, to: '', part: 'all' };
 const RWD_ASSET = { tk: 'cTAC', out: 'wTAC', shown: 'wTAC', icon: 'tac', pubIcon: 'tac', token: WTAC, dp: 2, noMe: true,
   note: 'To a Tacit address it stays private: they claim it in their Tacit wallet, the claim’s relay fee coming out of it. To an Ethereum address the relay sends it as wTAC, which turns into TAC one for one.' };
 const RSEND = { pick: 'rtac', open: false };
+// A part (a quarter, half or all) of a position's biggest share note
+const lpShare = (big, part) => (part === 'q' ? big / 4n : part === 'h' ? big / 2n : big);
+// A private LP position's send: `n` shares of the pool's share notes to `w`, with no relay fee (a note bigger than that is split first), pressed from the farm sheet's form or the Send tab. `line()` is the element the
+// steps are said in and the one Activity and a failure use; `clear` empties the form once it is going and `after` runs when it is over. A failure is thrown for the press to say.
+async function lpSendNow({ run, p, n, w, raw, field, label, line, sheet = 'farm', clear, after }) {
+  run.go({ label, status: line, clear });
+  await pinned(w, () => resolveToM(raw, null, true), field);
+  const t = await getUx(), priv = walletPriv(), note = freeNotes(P.scan?.notes).filter(isLp(p)).filter((y) => BigInt(y.value) >= n).sort(byValue)[0];
+  if (!note) throw new Error('That share note is in an action still going through. Try again once it is done.');
+  run.take(kNote(note));
+  run.say(line(), n === BigInt(note.value) ? 'Locking it to a one-time address only they can open…' : 'Splitting your share note (no fee), then locking the part sent to a one-time address only they can open…');
+  const sendArgs = { t, priv, note, who: w, units: n, ticker: null };
+  await proveOr({ run, types: ['transfer', 'stealthlock'], label, sheet, status: line,
+    go: (y) => lockSend({ ...sendArgs, selfSettle: y.selfSettle, waitOpts: y.waitOpts }),
+    relayed: () => lockSend({ ...sendArgs, waitOpts: run.wait(null, 15 * 60e3) }) });
+  await after();
+}
 function lpSendForm(box, x) {
   const { p, notes } = x, big = notes.map((n) => BigInt(n.value)).sort((a, b) => (a < b ? 1 : -1))[0] || 0n, status = () => $('#fn-status');
   if (LPS.pid !== p.pid) Object.assign(LPS, { pid: p.pid, to: '', part: 'all' });
@@ -10273,7 +10309,7 @@ function lpSendForm(box, x) {
     <button class="btn" type="button" disabled>Send privately</button>`);
   const to = $('.lps-to', box), rc = $('.lps-rc', box), go = $('.btn', box);
   to.value = LPS.to;
-  const shares = () => (part === 'q' ? big / 4n : part === 'h' ? big / 2n : big);
+  const shares = () => lpShare(big, part);
   const check = async () => {
     const my = ++seq, raw = to.value.trim(), n = shares();
     who = null; go.disabled = true;
@@ -10299,20 +10335,12 @@ function lpSendForm(box, x) {
     const w = who, raw = to.value.trim(), n = shares();
     if (!w || !(n > 0n)) return;
     const label = `Send ${lpSays(p, n)} privately to ${w.name || short(raw, 8)}`;
-    run.go({ label, status, clear: () => { LPS.pid = null; box.hidden = true; } });
     try {
-      await pinned(w, () => resolveToM(raw, null, true), to);
-      const t = await getUx(), priv = walletPriv(), note = freeNotes(P.scan?.notes).filter(isLp(p)).filter((y) => BigInt(y.value) >= n).sort(byValue)[0];
-      if (!note) throw new Error('That share note is in an action still going through. Try again once it is done.');
-      run.take(kNote(note));
-      run.say(status(), n === BigInt(note.value) ? 'Locking it to a one-time address only they can open…' : 'Splitting your share note (no fee), then locking the part sent to a one-time address only they can open…');
-      const sendArgs = { t, priv, note, who: w, units: n, ticker: null };
-      await proveOr({ run, types: ['transfer', 'stealthlock'], label, sheet: 'farm', status,
-        go: (y) => lockSend({ ...sendArgs, selfSettle: y.selfSettle, waitOpts: y.waitOpts }),
-        relayed: () => lockSend({ ...sendArgs, waitOpts: run.wait(null, 15 * 60e3) }) });
-      LPS.pid = null;
-      say(status(), html`<span class="ok">Sent.</span> They claim it from their Tacit wallet, with no fee.`); toast(`${label}: done`);
-      await Promise.allSettled([scanPrivate(true)]); rerender('farm');
+      await lpSendNow({ run, p, n, w, raw, field: to, label, line: status, clear: () => { LPS.pid = null; box.hidden = true; }, after: async () => {
+        LPS.pid = null;
+        say(status(), html`<span class="ok">Sent.</span> They claim it from their Tacit wallet, with no fee.`); toast(`${label}: done`);
+        await Promise.allSettled([scanPrivate(true)]); rerender('farm');
+      } });
     } catch (e) { run.fail(status(), e); }
   });
 }
@@ -12684,14 +12712,8 @@ function assetSendForm(el, status0, { prefix, sheet, statusId, sources, pick, af
         rerender(sheet); say(out(), html`<span class="ok">Sent.</span> ${txLink(hash)}`);
         return;
       }
-      run.go({ label: `Send ${show(x.units)} ${dtk} to ${short(raw, 6)} as ${a.out}`, status: out, clear: () => { clearField(to); clearField(amt); } });
-      const t = await getUx(), priv = walletPriv();
-      const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) >= x.units, stat(), k);
-      run.say(stat(), `The relay is proving your transfer, which arrives as ${a.out}…`);
-      await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, x.recipient, x.units), label: `Send ${show(x.units)} ${dtk} to ${short(raw, 6)} as ${a.out}`, sheet, after, status: out,
-        relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient: x.recipient, amount: x.units, waitOpts: run.wait(null, 15 * 60e3, { exit: { to: x.recipient, units: String(x.units), note: kNote(note), from: k, sheet } }) }) });
-      await scanPrivate(true).catch(() => {});
-      rerender(sheet);
+      await assetOutNow({ run, k, label: `Send ${show(x.units)} ${dtk} to ${short(raw, 6)} as ${a.out}`, units: x.units, recipient: x.recipient, as: a.out, status: stat(), line: out, sheet,
+        clear: () => { clearField(to); clearField(amt); }, after: () => rerender(sheet), proveAfter: after });
     } catch (e) { if (pendingSent(stat(), e)) { clearField(amt); run.release(true); } else run.fail(stat(), e); }
   });
 }
@@ -13228,6 +13250,9 @@ const hxWalletBal = (k) => { if (S.address && (HXWB.who !== S.address || Date.no
 // The private LP positions a key holds in share notes (not farmed), as Send's further coins: `lp<pid>`, the pair's two marks, worth in ETH.
 // One is sent as a quarter, a half or all of it, picked in the farm sheet's form, with no relay fee.
 const hxIsLp = (k = HX.send) => /^lp\d+$/.test(String(k));
+const hxLpPart = () => HX.lpPart || 'all';
+// The part of a position's biggest share note the Send tab would send
+const hxLpShares = (p) => lpShare(freeNotes(P.scan?.notes).filter(isLp(p)).reduce((a, n) => (BigInt(n.value) > a ? BigInt(n.value) : a), 0n), hxLpPart());
 const hxLpPool = (k = HX.send) => (hxIsLp(k) ? (FARM.program?.pools || []).find((p) => `lp${p.pid}` === k) || null : null);
 const hxLpSends = () => (S.key && P.scan && FARM.program?.pools ? FARM.program.pools.filter((p) => freeNotes(P.scan.notes).some(isLp(p)))
   .map((p) => [`lp${p.pid}`, `${pairName(p.pair)} LP`, `teth+${String(LOGO[zapTkB(p)] || 'tk-tac').replace(/^tk-/, '')}`, 4]) : []);
@@ -13242,7 +13267,7 @@ const hxIcoCls = (k) => (HX.tab === 'send' && (k === 'tac' || k in HX_DEVK) ? 't
 const hxSendBtc = (k = HX.send) => k === 'tacb' || k === 'btc';
 const hxSendWallet = (k = HX.send) => k in HX_WTOK;
 const hxSendHeld = () => (hxSendWallet() || hxPayP() ? hxHeldOf(HX.send)?.[0] ?? null : S.key && P.scan && !hxSendBtc() ? spendable(HX.send) : null);
-const hxSendLabel = () => { const w = hxSendWay()?.k; return HX.rcBad ? 'Check the address' : hxSendBtc() ? 'Continue in Pay' : w === 'public' || (w === 'how' && hxSendWallet()) ? `Send ${hxSendOf()[1]}` : w === 'deposit' ? (hxSendMe() ? 'Deposit privately' : 'Pay them privately') : hxRcptKind() === 'eth' ? 'Send to the address' : 'Send privately'; };
+const hxSendLabel = () => { const w = hxSendWay()?.k; return HX.rcBad ? 'Check the address' : hxSendBtc() ? (S.key ? `Send ${hxSendOf()[1]}` : 'Continue in Pay') : w === 'public' || (w === 'how' && hxSendWallet()) ? `Send ${hxSendOf()[1]}` : w === 'deposit' ? (hxSendMe() ? 'Deposit privately' : 'Pay them privately') : hxRcptKind() === 'eth' ? 'Send to the address' : 'Send privately'; };
 // Whether the recipient is the key's own Tacit address (a wallet coin then goes into your own payments pool)
 const hxSendMe = () => !!HX.rcpt && !!S.key?.tacit && HX.rcpt.toLowerCase() === S.key.tacit.toLowerCase();
 // What a send does, by where its coin is held and what it is sent to: { k: 'public' | 'deposit' | 'out' | 'private' | 'how', say }. With no
@@ -13632,7 +13657,9 @@ function hxSendGo() {
     const p = hxLpPool();
     if (!p || HX.rcBad) return;
     if (!HX.rcpt) return hxAskTo();
-    hxRecentAdd(HX.rcpt); hxDraft({ mode: 'lpsend', pid: p.pid, to: HX.rcpt });
+    hxRecentAdd(HX.rcpt);
+    if (S.key) return hxSendLpGo(p, HX.rcpt);
+    hxDraft({ mode: 'lpsend', pid: p.pid, to: HX.rcpt, part: hxLpPart() });
     return openLink(`farm/private-${p.pid}`);
   }
   if (hxSendFit() || HX.rcBad) return;
@@ -13641,14 +13668,22 @@ function hxSendGo() {
   const k = HX.send, u = hxUnits(), amt = u ? plain(u, hxDec()) : HX.amt, to = hxRcptKind() === 'eth' ? hxTo() : HX.rcpt;
   HX.draft = null;
   hxRecentAdd(HX.rcpt);
+  // A first visit's press on a payment from a pool connects the wallet and opens the Tacit wallet with it first, one signature (two the first time), then goes on from here; asked once a visit,
+  // declined the press goes on to the sheet that asks as ever. A plain transfer from the wallet needs no key, nor does a Bitcoin send.
+  if (!S.key && !hxSendBtc(k) && !(hxSendWallet(k) && hxSendWay()?.k === 'public') && !HX.keyAsked && !signing && !knownWallet() && !otherWallet()) {
+    HX.keyAsked = true;
+    connect({ key: true }).catch(() => {}).then(() => hxSendGo());
+    return;
+  }
   { const dp = hxDev(k);
-    if (dp) { if (S.key && devBal(dp.slug, S.key.pubHex) === 0n) return; hxDraft({ mode: 'tsend', slug: dp.slug, to, amt }); return openLink(`device/${dp.slug}/${hxRcptKind() === 'eth' ? 'withdraw' : 'send'}`); } }
+    if (dp) { if (S.key && devBal(dp.slug, S.key.pubHex) === 0n) return; if (S.key) return hxSendTokGo(dp, amt, to, hxRcptKind() === 'eth'); hxDraft({ mode: 'tsend', slug: dp.slug, to, amt }); return openLink(`device/${dp.slug}/${hxRcptKind() === 'eth' ? 'withdraw' : 'send'}`); } }
   if (k === 'pp') {
     const c = hxChain();
     if (S.key && devBal(c.chainId, S.key.pubHex) === 0n) return;
     if (hxRcptKind() === 'eth') { if (S.key) return hxSendPoolOutGo(c, amt, to); DEV.dest = 'addr'; hxDraft({ mode: 'dout', amt, to, chain: c.chainId }); return openLink(`device/${chainSlug(c)}/withdraw`); }
     location.href = `/pay/eth/#send&chain=${c.chainId}&to=${encodeURIComponent(to)}${amt ? `&amount=${encodeURIComponent(amt)}` : ''}`; return;
   }
+  if (hxSendBtc(k) && S.key) { if (!u) return hxAskAmt(); if (!to) return hxAskTo(); return hxSendBtcGo(k, to); }
   if (hxSendBtc(k)) { const a = u ? plain(u, 8) : ''; location.href = `/pay/#${k === 'btc' ? 'btc' : 'tac'}${to || a ? `&to=${encodeURIComponent(to)}&amount=${encodeURIComponent(a)}` : ''}`; return; }
   if (hxSendWallet(k)) {
     const w = hxSendWay()?.k;
@@ -13661,8 +13696,8 @@ function hxSendGo() {
     hxDraft({ mode: 'dep', amt, slug, to: dto }); return openLink(`device/${slug}/deposit`);
   }
   if (S.key && P.scan && spendable(k) === 0n) return;
-  // tETH, TAC, cUSD and cBTC go from the card itself: a payment to a Tacit address or a name, and tETH out to an Ethereum address (the other coins out are the sheets')
-  if (S.key && k !== 'rtac' && u && (hxRcptKind() !== 'eth' || k === 'eth')) return hxSendPoolGo(k, u, to, hxRcptKind() === 'eth');
+  // tETH, TAC, cUSD, cBTC and wTAC go from the card itself: a payment to a Tacit address or a name, or out of the pool to an Ethereum address
+  if (S.key && u) return hxSendPoolGo(k, u, to, hxRcptKind() === 'eth');
   if (k === 'eth' && hxRcptKind() === 'eth') { hxDraft({ mode: 'out', to, amt }); return openLink('private/withdraw'); }
   if (k === 'eth') { hxDraft({ mode: 'send', to, amt }); return openLink('private/send'); }
   hxDraft({ mode: 'asend', k, to, amt });
@@ -13688,8 +13723,8 @@ async function hxSendRun(job) {
 // What a send leaves behind once it is going or over: the amount emptied (the recipient stays, to pay again), the quote and balances drawn afresh
 const hxSendClear = () => { HX.amt = ''; const a = $('#hx-amt'); if (a) a.value = ''; hxTyped(true); };
 const hxSendAfter = () => { HX.q = null; hxQuote(); hxBalPaint(); dashSoon(); };
-// The Send tab's pool payments, from the tab: tETH, TAC, cUSD or cBTC to a Tacit address or a name (stealthSendNow, what the sheets' send forms do), or tETH out of the pool to an
-// Ethereum address (unwrapNow). The quote is read again at the press, so what goes is what the card says it costs now; a relay fee that has gone up since is shown first.
+// The Send tab's pool payments, from the tab: tETH, TAC, cUSD, cBTC or wTAC to a Tacit address or a name (stealthSendNow, what the sheets' send forms do), or out of the pool to an
+// Ethereum address (unwrapNow for tETH, assetOutNow for the rest). The quote is read again at the press, so what goes is what the card says it costs now; a relay fee that has gone up since is shown first.
 async function hxSendPoolGo(k, units, raw, out) {
   const [, unit, , dp] = hxSendOf(k), shown = HX.q && !HX.q.busy && HX.q.eth === Number(units) / 1e8 ? HX.q.fee : null, seen = HX.rcRes?.raw === raw ? HX.rcRes.r : null, field = $('#hx-rcpt');
   return hxSendRun(async (run) => {
@@ -13700,12 +13735,61 @@ async function hxSendPoolGo(k, units, raw, out) {
       if (q.warn) { say(st, html`<span class="err">${q.line || overBalance()}</span>`); return; }
       if (out) {
         if (shown != null && q.fee > shown) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
-        await unwrapNow({ run, x: { units, fee: q.fee, minFee: q.minFee, own: q.own }, raw, status: st, line: () => st, sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
+        if (k === 'eth') await unwrapNow({ run, x: { units, fee: q.fee, minFee: q.minFee, own: q.own }, raw, status: st, line: () => st, sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
+        else {
+          const as = { tac: 'TAC', cusd: 'tacUSD', cbtc: 'tacBTC', rtac: 'wTAC' }[k];
+          await assetOutNow({ run, k, label: `Send ${fmt(units, 8, dp)} ${unit} to ${short(raw, 6)} as ${as}`, units, recipient: recipientOf(raw), as, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
+        }
         return;
       }
       const w = seen || await resolveToM(raw);
       if (String(w.pubHex).replace(/^0x/, '').toLowerCase() === S.key?.pubHex) throw Object.assign(new Error('That is your own Tacit address.'), { said: true });
       await stealthSendNow({ run, k, label: `Send ${fmt(units, 8, dp)} ${unit} privately to ${w.name || short(raw, 8)}`, w, raw, units, field, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
+    } catch (e) { run.fail(st, e); }
+  });
+}
+// BTC, or TAC on Bitcoin, sent from the Send tab to a Tacit address, a silent-payment or Bitcoin address or a name (btcSendNow, what the Bitcoin sheet's Send does), the steps said under the button;
+// a shielded or silent payment's link, which its recipient's wallet finds it by, is offered once it is sent. Without a key the press goes on to Pay, which asks for one.
+async function hxSendBtcGo(k, raw) {
+  const tac = k === 'tacb', field = $('#hx-rcpt');
+  return hxSendRun(async () => {
+    const st = HX.ss, pre = (text) => sayErr(st, new Error(text));
+    try {
+      const pub = S.key.pubHex;
+      await loadBtc();                                                    // what is held is read before it is said to be too little
+      const token = tac ? (BTC.held || []).find((a) => a.id === TAC_BTC_ID) || null : null;
+      if (BTC.pub !== pub || BTC.got < (tac ? 2 : 3)) return pre('Your Bitcoin balance could not be read. Try again in a moment.');
+      if (tac && !token) return pre('You hold no TAC on Bitcoin.');
+      const dec = token ? token.decimals : 8, unit = token ? token.ticker : 'BTC', v = parseUnits(HX.amt, dec), avail = token ? token.balance : BTC.sats + BTC.silent;
+      if (!v) return pre('Enter an amount.');
+      if (v > avail) return pre('More than you hold.');
+      if (!token && v <= SATS_DUST) return pre('Send more than 546 sats.');
+      if (token && BTC.sats < ASSET_SEND_SATS) return pre(`A ${unit} send needs about ${Number(ASSET_SEND_SATS).toLocaleString('en-US')} sats at your Bitcoin address for its fees. Add some from Receive.`);
+      const r = await btcRouteM(raw, token), txid = await btcSendNow({ r, raw, v, token, dec, unit, pub, field, status: st });
+      hxSendClear();
+      toast(`Sent ${fmt(v, dec, 8)} ${unit}`);
+      await loadBtc(true).catch(() => {});
+      say(st, html`<span class="ok">Sent.</span> <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>${BTC.share ? html` <button class="link" type="button" data-hxcopy="${BTC.share.url}">Copy the link for them</button>` : ''}`);
+      hxSendAfter();
+    } catch (e) { sayErr(st, /insufficient sats|no plain-sats/i.test(e?.message || '') ? new Error('Not enough BTC for this and its Bitcoin fee.') : e); }
+  });
+}
+// A private LP position sent from the Send tab: the part picked (a quarter, half or all of its biggest share note) to a Tacit address or a name, with no relay fee (lpSendNow, what the farm sheet's form does)
+async function hxSendLpGo(p, raw) {
+  const seen = HX.rcRes?.raw === raw ? HX.rcRes.r : null, field = $('#hx-rcpt');
+  return hxSendRun(async (run) => {
+    const st = HX.ss;
+    try {
+      if (!P.scan) await scanPrivate().catch(() => {});                 // what is held is read before it is said there is none
+      const n = hxLpShares(p);
+      if (!(n > 0n)) { say(st, html`<span class="err">You hold none of this position privately.</span>`); return; }
+      const w = seen || await resolveToM(raw);
+      if (String(w.pubHex).replace(/^0x/, '').toLowerCase() === S.key?.pubHex) throw Object.assign(new Error('That is your own Tacit address.'), { said: true });
+      const label = `Send ${lpSays(p, n)} privately to ${w.name || short(raw, 8)}`;
+      await lpSendNow({ run, p, n, w, raw, field, label, line: () => st, sheet: '', clear: () => {}, after: async () => {
+        say(st, html`<span class="ok">Sent.</span> They claim it from their Tacit wallet, with no fee.`); toast(`${label}: done`);
+        await Promise.allSettled([scanPrivate(true)]); hxSendAfter();
+      } });
     } catch (e) { run.fail(st, e); }
   });
 }
@@ -14209,7 +14293,7 @@ async function hxQuote() {
   HX.held = hxHeld(); HX.heldTac = hxHeldTac(); HX.heldSend = hxSendHeld();
   if (m === 'send') HX.rk = hxRcptKind() + (hxSendFit() ? '!' : '') + (hxSendMe() ? ':me' : '');
   if (m === 'send' && HX.ask) return done({ rc: hxAskSays() });
-  if (m === 'send' && hxIsLp()) return done({ go: 'Send privately', rc: [['Sends', 'a quarter, half or all, picked next'], ['Relay fee', 'none'], ['They get', 'a private payment to claim, with no fee']] });
+  if (m === 'send' && hxIsLp()) { const p = hxLpPool(), n = p && P.scan ? hxLpShares(p) : 0n; return done({ go: 'Send privately', rc: [['Sends', n > 0n ? lpSays(p, n) : 'a quarter, half or all of it'], ['Relay fee', 'none'], ['They get', 'a private payment to claim, with no fee']] }); }
   if (m === 'send' && hxSendFit()) return done({ warn: true, line: hxSendFit() });
   if (m === 'send' && hxSendBtc()) return done({ rc: hxSendSees() });
   if (m === 'btc' && HX.dir === 'in' && S.key) loadBridge().then(() => paintHxQ(), () => paintHxQ());
@@ -14708,6 +14792,12 @@ const hxShareSync = () => {
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 };
 document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-hxlpp]');
+  if (!b || HX.lpPart === b.dataset.hxlpp) return;
+  HX.lpPart = b.dataset.hxlpp; HX.q = null;
+  paintHx(); hxQuote();
+});
+document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-hxlp]');
   if (!b) return;
   const lp = b.dataset.hxlp === '1';
@@ -14716,6 +14806,7 @@ document.addEventListener('click', (e) => {
   paintHx(); hxQuote();
 });
 document.addEventListener('click', (e) => { if (e.target.closest('#hx-copy')) { const u = hxShareLink(); if (u) copy(u, 'Link copied'); } });
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-hxcopy]'); if (b) copy(b.dataset.hxcopy, 'Link copied'); });
 function paintHxQ() {
   if (HX.tab === 'swap') { if (HXM.key) { HXM.cb?.(HX.q); if (!HX.q?.busy) hxPtsPaint(HX.q || {}); hxHave(); } return; }
   const q = HX.q || {}, out = $('#hx-out');
@@ -15105,6 +15196,45 @@ async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
 async function hxSendPoolOutGo(c, amt, to) {
   return hxSendRun((run) => poolOutNow({ run, c, dest: 'addr', amt, to, st: HX.ss, clear: hxSendClear, after: hxSendAfter }));
 }
+// A token Pay pool's (TAC, USDC, USDT) private send to a Tacit address, name or pool address (`op` 'send') or withdrawal to an Ethereum address ('withdraw'), proved on this device: the device sheet's Send and
+// Withdraw press, from the Send tab. By the relay with its fee in the token out of the private balance, or, once the relay has failed it, from the paying account (said under the button; the next press goes that way).
+async function tokOutNow({ run, t, op, amt, raw, st, clear, after }) {
+  const D = t.dec ?? 18, step = (x) => { x = String(x); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
+  const viaWallet = (why) => { TK.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); };
+  const pre = (text) => Object.assign(new Error(text), { said: true, pre: true });
+  PROVE_AT.el = st;
+  try {
+    const amount = parseUnits(amt, D);
+    if (!amount) throw pre('Enter an amount.');
+    let to;
+    if (op === 'send') { const r = await tokRecipient(raw, t); if (r.error) throw pre(r.error); to = r.bp; } else to = recipientOf(raw);
+    const W = await tokenWallet(t), mods = await getDeviceMods();
+    await tokenSync(false, t);                                             // the notes, read (kept for a minute)
+    const relay = !!t.keeper && !TK.self, quote = relay ? await W.quote().catch(() => null) : null;
+    if (relay && !quote) return viaWallet('The relay’s fee could not be read.');
+    const fee = quote ? BigInt(quote.fee || 0) : 0n, maxFee = fee ? (fee * 5n) / 4n : null;
+    if (mods.mergePlan(W.notes().map((n) => n.v), amount + fee, fee) == null) {
+      throw pre(amount + fee > (TK.bal ?? 0n) ? `More than your private balance${fee ? ', once the relay fee is counted' : ''}.` : `More than one ${op === 'send' ? 'payment' : 'withdrawal'} can take: your private balance is spread over too many notes.`);
+    }
+    await payingAccount(); W.connect(payFromTok(op === 'send' ? `Send ${fmt(amount, D, 6)} ${t.sym} privately from this device` : `Withdraw ${fmt(amount, D, 6)} ${t.sym} from this device`));
+    const h = await W[op === 'send' ? 'send' : 'withdraw']({ to, amount, via: relay ? 'relay' : 'self', maxFee, onStep: step });
+    await waitTx(h, { timeoutMs: 20e3, chainId: 1 });
+    TK.self = false;
+    clear();
+    say(st, html`<span class="ok">${op === 'send' ? 'Sent.' : 'Withdrawn.'}</span> ${txLink(h, t.explorer)}`);
+    if (PB.pub) PB.at[t.slug] = 0;
+    hxWalletBals(true); payBals([t.slug]).catch(() => {}); tokenSync(true, t).catch(() => {});
+    after();
+  } catch (e) {
+    if (e?.pre) say(st, html`<span class="err">${errText(e)}</span>`);
+    else if (e?.feeMoved != null) { TK.quote = null; TK.qAt = 0; say(st, html`<span class="err">The relay fee changed to ${fmt(e.feeMoved, D, 4)} ${t.sym}. Check it and press again.</span>`); }
+    else if (e?.pending) { clear(); txFail(run, st, e); }
+    else if (e?.said || waitRanOut(e)) { clear(); say(st, html`<span class="err">${errText(e)}</span>`); }
+    else if (!!t.keeper && !TK.self && keeperTrouble(e)) viaWallet(errText(e));
+    else txFail(run, st, e);
+  } finally { PROVE_AT.el = null; }
+}
+const hxSendTokGo = (t, amt, raw, out) => hxSendRun((run) => tokOutNow({ run, t, op: out ? 'withdraw' : 'send', amt, raw, st: HX.ss, clear: hxSendClear, after: hxSendAfter }));
 // Deposits into the Pay pools from the card: ETH (the pool of the chain picked under the field) or TAC, USDC, USDT. Each is proved on this device (the proving key is fetched once, said under the
 // button) and sent from the paying account: what the Deposit forms do (devDepositSend, tokDepositSend), to yourself.
 async function hxDepositGo(m, amt) {
@@ -15410,7 +15540,8 @@ function paintHx() {
       ${S.key ? html`<p class="hx-bw-f" id="hx-bw-hold" hidden></p><p class="q" id="hx-bw-s" aria-live="polite"></p>${HX.bwMore && LOCK.state?.rec ? html`<p class="hx-bw-f"><button class="link" type="button" id="hx-bw-back">Back to your lock</button></p>` : ''}` : ''}<div class="hx-pos" id="hx-bwl" hidden><div class="rows-h"><span>Yours</span></div><div id="hx-bwl-l"></div><p class="q" id="hx-bwl-s" aria-live="polite"></p></div>`;
   } else {
     const [, unit] = hxSendOf(), btcPay = HX.send === 'btc', groups = hxGroups('send'), place = hxPlaceOf('send', HX.send);
-    const what = (lbl, label) => field(lbl, heldAt(place), hxIsLp() && lbl === 'You send' ? html`<span class="say">a quarter, half or all of it, picked next</span>` : amt(`${unit} ${lbl === 'You ask for' ? 'to ask for' : 'to send'}`), coin('hx-sa', label, groups, HX.send), true, place === 'private');
+    const what = (lbl, label) => field(lbl, heldAt(place), hxIsLp() && lbl === 'You send' ? html`<span class="say">a quarter, half or all of it</span>` : amt(`${unit} ${lbl === 'You ask for' ? 'to ask for' : 'to send'}`), coin('hx-sa', label, groups, HX.send), true, place === 'private',
+      hxIsLp() && lbl === 'You send' ? html`<div class="hx-mode" role="radiogroup" aria-label="How much">${[['q', 'A quarter'], ['h', 'Half'], ['all', 'All']].map(([k, t]) => html`<button type="button" role="radio" aria-checked="${String(hxLpPart() === k)}" data-hxlpp="${k}">${t}</button>`)}</div>` : '');
     HX.askFor = S.key?.tacit || '';
     // Send or Request: the two sides of paying, one switch (a wallet coin is only sent)
     const sw = hxSendWallet() && !HX.ask ? '' : html`<div class="hx-mode hx-sr" role="radiogroup" aria-label="Send or request">${[['hx-pay', 'Send', !HX.ask], ['hx-ask', 'Request', !!HX.ask]].map(([i, t, on]) => html`<button type="button" role="radio" id="${i}" aria-checked="${String(on)}">${t}</button>`)}</div>`;
