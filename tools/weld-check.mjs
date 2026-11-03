@@ -195,7 +195,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -7690,9 +7690,10 @@ await step('hxexit', async () => {
     await p.fill('#hx-swap #amt', '25');
     await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Deposit privately' && /25 USDC, for payments/.test(document.querySelector('#hx-swap #rcpt')?.textContent || ''), null, 120000);
     ok(true, `hxexit: the wallet's USDC into the Pay pool is a private deposit of 25 USDC (${await q('#rcpt')})`.slice(0, 200));
+    await sheetsSeen(p);
     await p.click('#hx-swap #go');
-    await until(p, () => document.querySelector('#sheet-eth[open] #d-amt')?.value === '25' && /Deposit/.test(document.querySelector('#d-go')?.textContent || ''), null, 120000);
-    ok(true, "hxexit: it finishes in the USDC pool's Deposit with 25 filled");
+    await until(p, () => (document.querySelector('#hx-mz')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `hxexit: pressed, the USDC deposit goes from the card: no Deposit sheet opens and the line under the button answers (${await text(p, '#hx-mz')})`);
     if (r.errors.length) { fails++; console.log('FAIL hxexit page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -7861,10 +7862,10 @@ await step('hxsendtac', async () => {
     await until(p, () => /Fee: the network fee only/.test(window.__said()), null, 60000);
     ok(await goText(p) === 'Deposit privately', `hxsendtac: wallet TAC can also go to the TAC pool whose proofs are made on this device (${await line()})`);
     await look('hxsendtac-pay');
-    await p.click(MV.go);
-    await until(p, () => document.querySelector('#sheet-eth[open] #d-amt')?.value === '10' && location.hash === '#device/tac', null, 120000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash=${await p.evaluate(() => location.hash)} amt=${await p.evaluate(() => document.querySelector('#d-amt')?.value)}`); });
-    ok(true, 'hxsendtac: and its button opens the TAC pool\'s Deposit with the amount');
+    // its button deposits from the card (step payhere does it end to end); the pool's own forms follow, by their link
+    await p.evaluate(() => { location.hash = ''; location.hash = '#device/tac'; });
+    await until(p, () => !!document.querySelector('#sheet-eth[open] #d-amt') && location.hash === '#device/tac', null, 120000);
+    ok(true, 'hxsendtac: the TAC pool\'s Deposit opens by its link');
     ok(await text(p, '#eth-h') === 'Private TAC', 'hxsendtac: the sheet is named for the TAC pool it shows');
     await look('hxsendtac-pool', '#sheet-eth .sheet-in');
     for (const m of ['send', 'out', 'receive']) {
@@ -8218,6 +8219,33 @@ await step('earngate', async () => {
     ok(true, 'earngate: accepted, the button goes ahead');
     await shot(p, 'earngate');
     if (r.errors.length) { fails++; console.log('FAIL earngate page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// The Pay pools are deposited into from the Swap card, no sheet over it: ETH into the Ethereum pool (proved in the page's worker, the proving key fetched once and said under the button) and then TAC
+// into its own pool (a permit signed in the wallet), each saying Deposited under the button and moving the money on the fork.
+await step('payhere', async () => {
+  const TPOOL = '0x0000007F401114398b8fa67b4Bf1e1CFEcd28ffe', unit = 10n ** 18n;
+  await fundTac(A0, 200n * unit);
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('[data-hxm="swap"]', { timeout: 120000 });
+    await move(p, 'shield:ether:pay', '0.01');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Deposit privately' && !document.querySelector('#hx-swap #go').disabled, null, 240000);
+    await sheetsSeen(p);
+    await p.click(MV.go);
+    // where it is, once a minute, so a slow proof reads as slow rather than as a silent timeout
+    const where = setInterval(() => p.evaluate(() => `${document.querySelector('#hx-mz')?.textContent || ''} | go: ${document.querySelector('#hx-swap #go')?.textContent}/${document.querySelector('#hx-swap #go')?.disabled}/${document.querySelector('#hx-swap #go')?.getAttribute('aria-busy')}`).then((t) => console.log(`     payhere … ${t.slice(0, 160)}`), () => {}), 60000);
+    try { await until(p, () => /Deposited|err/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000); } finally { clearInterval(where); }
+    await shot(p, 'payhere');
+    ok(/Deposited/.test(await text(p, '#hx-mz')) && (await p.evaluate(() => window.__sheetSeen)) === '' && (await p.$eval(MV.amt, (i) => i.value)) === '', `payhere: 0.01 ETH proved here and deposited into the Pay pool from the card, the amount cleared, no sheet (${(await text(p, '#hx-mz')).slice(0, 80)})`);
+    const t0 = await tacOf(TPOOL);
+    await move(p, 'shield:wtac:pay', '5');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Deposit privately' && !document.querySelector('#hx-swap #go').disabled , null, 240000);
+    await p.click(MV.go);
+    await until(p, () => /Deposited|err/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 900000);
+    ok(await chainUntil(async () => (await tacOf(TPOOL)) - t0 === 5n * unit, 600000) && (await p.evaluate(() => window.__sheetSeen)) === '', `payhere: 5 TAC went into the TAC Pay pool from the card with a permit (${(await text(p, '#hx-mz')).slice(0, 80)})`);
+    if (r.errors.length) { fails++; console.log('FAIL payhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
@@ -9479,17 +9507,10 @@ await step('hxways', async () => {
     await until(p, () => document.querySelector('#hx-swap #out')?.textContent === '0.03' && /Fee: the network fee only/.test(window.__said()), null, 60000);
     await pasteKey(p, 'ab12'.padEnd(64, '7'));
     await closeAll();
+    await sheetsSeen(p);
     await p.click(MV.go);
-    await until(p, () => !!document.querySelector('#sheet-eth[open] #d-amt'), null, 120000);
-    ok((await sheetAt()) === 'eth #device/base', `hxways: payments on Base opens the Deposit form of the Base pool (${await sheetAt()})`);
-    await until(p, () => document.querySelector('#d-amt')?.value === '0.03', null, 60000);
-    ok(true, 'hxways: with the amount in it');
-    await closeAll();
-    await p.selectOption('#hx-swap #chain-sel', '1'); await p.fill(MV.amt, '0.04');
-    await until(p, () => document.querySelector('#hx-swap #out')?.textContent === '0.04', null, 60000);
-    await p.click(MV.go);
-    await until(p, () => document.querySelector('#sheet-eth[open] #d-amt')?.value === '0.04', null, 120000);
-    ok((await sheetAt()) === 'eth #device/ethereum', `hxways: and on Ethereum, the Ethereum pool's (${await sheetAt()})`);
+    await until(p, () => (document.querySelector('#hx-mz')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `hxways: payments on Base deposit from the card, in the Base pool: its steps said under the button, and no sheet opens (${await text(p, '#hx-mz')})`);
     await closeAll();
     // With the key open, Borrow does the lock in the card: the BTC goes to the key's own Bitcoin address first, then is locked there.
     await p.click('[data-hxm="borrow"]'); await p.fill('#hx-amt', '0.002');

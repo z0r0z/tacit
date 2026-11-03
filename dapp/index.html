@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KsAQA2WvqZgVUGZmRHstHnjWjLaNd4EXJ0kJSeXoyqg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fe94yA5YSOaeo808256EURrFgYl5MNfng4jkQ1TRAMY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6243,7 +6243,9 @@ function prover(onProgress) {
   })().catch((e) => { if (proverP === made) proverP = null; throw e; });
   return made;
 }
-const provingNote = (name, got, total) => sayLive($('#d-status'), html`Getting the proving key once (about 33 MB)<span aria-hidden="true" data-tick>: ${name} ${total ? Math.floor((got / total) * 100) + '%' : ''}</span>`);
+// where the proving key's progress is said: the Deposit form's status line, or the line a move running from the Swap card says its steps in
+const PROVE_AT = { el: null };
+const provingNote = (name, got, total) => sayLive(PROVE_AT.el?.isConnected ? PROVE_AT.el : $('#d-status'), html`Getting the proving key once (about 33 MB)<span aria-hidden="true" data-tick>: ${name} ${total ? Math.floor((got / total) * 100) + '%' : ''}</span>`);
 const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
@@ -6613,6 +6615,31 @@ function privacyView(c, amount, to, self) {
     <p class="note">${p.crowd}</p>${full}</div>`;
 }
 
+// A deposit into the Pay pool of chain `c` (ETH), proved on this device and sent from the paying account: the Deposit form's and the Swap card's. `step` says each stage. → the transaction's hash
+async function devDepositSend({ c, amount, to = null, step }) {
+  DEV.chain = c;
+  const W2 = await deviceWallet();
+  await payingAccount(); W2.connect(payFrom(c.chainId, `Deposit ${fmt(amount, 18, 6)} ETH${to ? ' to someone else’s private balance' : ''} on this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`));
+  return to ? W2.depositTo({ to, amount, onStep: step }) : W2.deposit({ amount, onStep: step });
+}
+// A deposit into a token Pay pool `t` (TAC, USDC, USDT): how the router takes the token (an allowance, a permit, Permit2, a batch, an approval first), then the deposit, sent from the paying account, or by
+// the relay when the account holds no ETH (`rplan`). → the transaction's hash
+async function tokDepositSend({ t, amount, to = null, rplan = null, step, status }) {
+  const D = t.dec ?? 18, owner = await payingAccount();
+  if (amount > BigInt(await ethCall(t.token, SEL.balanceOf + addrWord(owner)))) throw new Error(`More than ${your()} holds.`);
+  const [m, W2] = await Promise.all([getDeviceMods(), tokenWallet(t)]);
+  const label = `Deposit ${fmt(amount, D, 6)} ${t.sym}${to ? ' to someone else’s private balance' : ''} on this device`;
+  const rp = rplan || await relayDeposit(t).catch(() => null);
+  if (rp && amount + rp.fee > BigInt(await ethCall(t.token, SEL.balanceOf + addrWord(owner)))) throw new Error(`Leave about ${fmt(rp.fee, D, 3)} ${t.sym} for the network fee: with no ETH, the deposit's gas is paid in ${t.sym}.`);
+  let pull = rp ? { kind: 'allowance' } : await tokenPull(t, amount, step, status), h;
+  for (;;) {
+    W2.connect(rp ? payFromRelay(t, amount, rp, step) : payFromTok(label));
+    const selfCall = (tx) => m.routerDeposit(t.router, tx, pull);
+    try { h = await (to ? W2.depositTo({ to, amount, selfCall, onStep: step }) : W2.deposit({ amount, selfCall, onStep: step })); break; }
+    catch (e) { if (!e?.noBatch || pull.kind !== 'batch') throw e; pull = await approveFirst(t, amount, step); }
+  }
+  return h;
+}
 function renderDevice(el) {
   if (DEV.tok) return renderTokenPool(el);
   if (!needKey(el, html`Keep ETH private on ${chainMarks([1, 8453, 4663])}, proved in your browser.`)) return;
@@ -6740,9 +6767,7 @@ function renderDevice(el) {
           if (r.bp !== dsv.r?.bp) throw new Error('Where that address or name points changed. Check it and deposit again.');
           to = r.bp;
         }
-        const W2 = await deviceWallet();
-        await payingAccount(); W2.connect(payFrom(c.chainId, `Deposit ${fmt(amount, 18, 6)} ETH${to ? ' to someone else’s private balance' : ''} on this device${c.chainId === 1 ? '' : `, on ${chainFull(c.chainId)}`}`));
-        const h = to ? await W2.depositTo({ to, amount, onStep: step }) : await W2.deposit({ amount, onStep: step });
+        const h = await devDepositSend({ c, amount, to, step });
         rewardPop(go, { pts: hxPts('dev', Number(amount) / 1e18)?.pts });
         await waitTx(h, { timeoutMs: 20e3, chainId: c.chainId });
         clearField(amt); rc.hidden = true;
@@ -7187,19 +7212,7 @@ function renderTokenPool(el) {
           if (!r.self && r.bp !== dsv.r?.bp) throw new Error('Where that address or name points changed. Check it and deposit again.');
           to = r.self ? null : r.bp;
         }
-        const owner = await payingAccount();
-        if (amount > BigInt(await ethCall(t.token, SEL.balanceOf + addrWord(owner)))) throw new Error(`More than ${your()} holds.`);
-        const [m, W2] = await Promise.all([getDeviceMods(), tokenWallet(t)]);
-        const label = `Deposit ${fmt(amount, D, 6)} ${t.sym}${to ? ' to someone else’s private balance' : ''} on this device`;
-        const rp = rplan || await relayDeposit(t).catch(() => null);
-        if (rp && amount + rp.fee > BigInt(await ethCall(t.token, SEL.balanceOf + addrWord(owner)))) throw new Error(`Leave about ${fmt(rp.fee, D, 3)} ${t.sym} for the network fee: with no ETH, the deposit's gas is paid in ${t.sym}.`);
-        let pull = rp ? { kind: 'allowance' } : await tokenPull(t, amount, step, status), h;
-        for (;;) {
-          W2.connect(rp ? payFromRelay(t, amount, rp, step) : payFromTok(label));
-          const selfCall = (tx) => m.routerDeposit(t.router, tx, pull);
-          try { h = await (to ? W2.depositTo({ to, amount, selfCall, onStep: step }) : W2.deposit({ amount, selfCall, onStep: step })); break; }
-          catch (e) { if (!e?.noBatch || pull.kind !== 'batch') throw e; pull = await approveFirst(t, amount, step); }
-        }
+        const h = await tokDepositSend({ t, amount, to, rplan, step, status });
         await waitTx(h, { timeoutMs: 20e3, chainId: 1 });
         clearField(amt); rc.hidden = true;
         afterAction(html`<span class="ok">${to ? 'Deposited into their private balance.' : 'Deposited.'}</span> ${explorer(h)}`);
@@ -14722,23 +14735,21 @@ function hxGo() {
   if (HX.q?.busy) { HX.goNext = true; return; }
   HX.draft = null;
   const units = hxUnits(), amt = units ? plain(units, HX.tab === 'swap' ? hxDec() : 8) : HX.amt, m = HX.mode;
-  // A first visit's press on a way in from the wallet's ETH (making it private, or zapping it into a farm) connects the wallet and opens the Tacit
+  // A first visit's press on a way in from the wallet (making ETH private, a deposit for payments, or zapping ETH into a farm) connects the wallet and opens the Tacit
   // wallet with it first, one signature (two the first time): the proofs this goes with are made for that key, so the default sizes start being made
   // now, not when a sheet asks. Asked once a visit: declined, the press goes on to the sheet that asks as ever.
-  if (!HX.keyAsked && !S.key && !signing && (m === 'private' || (m === 'earn' && HX.from === 'ether')) && !knownWallet() && !otherWallet()) {
+  if (!HX.keyAsked && !S.key && !signing && (m === 'private' || m === 'pay' || m === 'paytac' || m === 'paytok' || (m === 'earn' && HX.from === 'ether')) && !knownWallet() && !otherWallet()) {
     HX.keyAsked = true;
     connect({ key: true }).catch(() => {}).then(async () => { if (S.key && m === 'earn') await hxQuote().catch(() => {}); hxGo(); });          // the zap priced for the key, so it goes from this card
     return;
   }
   const wrapFirst = (link, label, then, card = null) => { FARM.back = link ? { link, label, at: Date.now(), then, card, amt } : null; hxDraft({ mode: 'wrap', amt }); openLink('private'); };
   if (m === 'private') return hxWrapGo(units);
-  if (m === 'pay') { const c = hxChain(); hxDraft({ mode: 'dep', amt, chain: c.chainId }); return openLink(`device/${chainSlug(c)}/deposit`); }
+  if (m === 'pay' || m === 'paytac' || m === 'paytok') return hxDepositGo(m, amt);
   if (m === 'btcpool') { location.href = '/tac/'; return; }
   if (m === 'unwrap') return hxUnwrapGo(units);
   if (m === 'tacpub') return openLink('tac');
   if (m === 'tacwrap') { hxDraft({ mode: 'tacwrap', amt }); return openLink('tac'); }
-  if (m === 'paytac') { hxDraft({ mode: 'dep', amt, tac: true }); return openLink('device/tac/deposit'); }
-  if (m === 'paytok') { const slug = hxDevSlug(HX_WPAY[HX.sf]); if (!slug) return; hxDraft({ mode: 'dep', amt, slug }); return openLink(`device/${slug}/deposit`); }
   if (m === 'ppout' || m === 'ppv1') { const c = hxChain(); DEV.dest = m === 'ppv1' ? 'v1' : 'addr'; hxDraft({ mode: 'dout', amt, chain: c.chainId, all: HX.max }); return openLink(`device/${chainSlug(c)}/withdraw`); }
   if (m === 'tbback') return openLink('private/bitcoin/back');
   if (m === 'xo') { const a = XA[HX.xa]; hxDraft({ mode: a.pre, amt }); return openLink(`${xoLink(a)}/out`); }
@@ -14917,6 +14928,43 @@ async function hxUnwrapGo(units) {
       say(st, '');
       await unwrapNow({ run, x: { units, fee, minFee, own }, raw, status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
     } catch (e) { run.fail(st, e); }
+  }).finally(() => SWC.card?.working?.(false));
+}
+// Deposits into the Pay pools from the card: ETH (the pool of the chain picked under the field) or TAC, USDC, USDT. Each is proved on this device (the proving key is fetched once, said under the
+// button) and sent from the paying account: what the Deposit forms do (devDepositSend, tokDepositSend), to yourself.
+async function hxDepositGo(m, amt) {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || !amt || go.getAttribute('aria-busy') === 'true') return;
+  const eth = m === 'pay', c = eth ? hxChain() : null, t = eth ? null : TOKEN_POOLS.find((p) => p.slug === (m === 'paytac' ? 'tac' : hxDevSlug(HX_WPAY[HX.sf])));
+  if (!eth && !t) return;
+  const st = hxMoveSlot(), step = (x) => { x = String(x).replace(/relayer/gi, 'relay'); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
+  say(st, '');
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    PROVE_AT.el = st;
+    try {
+      const amount = parseUnits(amt, eth ? 18 : t.dec ?? 18);
+      if (!amount) throw new Error('Enter an amount.');
+      let h;
+      if (eth) {
+        if (amount > BigInt(await rpc('eth_getBalance', [S.address, 'latest'], c.rpc))) throw new Error('More than your wallet balance.');
+        h = await devDepositSend({ c, amount, step });
+        rewardPop(go, { pts: hxPts('dev', Number(amount) / 1e18)?.pts });
+      } else h = await tokDepositSend({ t, amount, step, status: st });
+      await waitTx(h, { timeoutMs: 20e3, chainId: eth ? c.chainId : 1 });
+      SWC.card?.clear?.();
+      say(st, html`<span class="ok">Deposited.</span> ${txLink(h, (eth ? c : t).explorer)}`);
+      // what the wallet and the pool hold now is read again
+      const id = String(eth ? c.chainId : t.slug);
+      if (PB.pub) PB.at[id] = 0;
+      hxWalletBals(true); payBals([id]).catch(() => {});
+      (eth ? deviceSync(true) : tokenSync(true, t)).catch(() => {});
+      hxMoveAfter();
+    } catch (e) {
+      if (e?.pending || e?.said || waitRanOut(e)) SWC.card?.clear?.();
+      txFail(run, st, e);
+    } finally { PROVE_AT.el = null; }
   }).finally(() => SWC.card?.working?.(false));
 }
 // A zap that landed and is not in the farm yet, finished from the card
