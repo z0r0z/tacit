@@ -55,5 +55,5 @@ export function httpWorld(opts = {}) {
   const w = world({ funds: 0, userCounter: () => makeHttpCounter({ base: () => ref.base, fetchImpl: realFetch }), ...opts });
   return { w, ref };
 }
-export const startSwap = (w, q) => w.userBl.start({ asset: w.etch.asset, amount: BigInt(q.btcValue), notes: [w.note], counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: BigInt(q.evmAmount), quoteId: q.id });
+export const startSwap = (w, q) => w.userBl.start({ asset: w.etch.asset, amount: BigInt(q.btcValue), notes: [w.note], counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: BigInt(q.evmAmount), quoteId: q.id, takeSats: Number(q.takeSats ?? 0) });
 export const bothDone = (w) => async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done';

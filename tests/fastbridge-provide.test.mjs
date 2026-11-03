@@ -19,13 +19,13 @@ function keyStub() {
     open(pubHex = '03' + 'cd'.repeat(32)) { k.unlocked = true; k.key = { pubHex }; fns.forEach((f) => f()); }, lock() { k.unlocked = false; k.key = null; fns.forEach((f) => f()); } };
   return k;
 }
-function sessionStub({ pool = 5000n * TAC, coins = 3, open = 0 } = {}) {
+function sessionStub({ pool = 5000n * TAC, open = 0 } = {}) {
   const calls = { starts: [], stops: 0 };
   const st = { running: false, accepting: false, open, done: 0, earned: 0n, lastError: null };
   return {
     calls, st,
     session: {
-      inventory: async () => ({ pool, coins, address: 'bc1qexampleaddress0000000000000000000000', claimPub: '02' + 'ab'.repeat(32) }),
+      inventory: async () => ({ pool, address: 'bc1qexampleaddress0000000000000000000000', claimPub: '02' + 'ab'.repeat(32) }),
       start: async (a) => { calls.starts.push(a); st.running = true; st.accepting = a.accept !== false; },
       stop: () => { calls.stops++; st.running = false; st.accepting = false; },
       status: async () => ({ ...st }),
@@ -54,7 +54,7 @@ test('the panel shows when a key is open, reads what the key can provide only wh
   assert.equal(m.state.opens, 0, 'nothing is read for a visitor who only bridges');
   m.root.open = true; m.root.dispatchEvent(new m.dom.window.Event('toggle'));
   await until(() => /Your private TAC/.test(text(m.$('pv-inv'))), 'the inventory');
-  assert.match(text(m.$('pv-inv')), /Your private TAC 5,000 TAC/); assert.match(text(m.$('pv-inv')), /Bitcoin coins for fees 3/);
+  assert.match(text(m.$('pv-inv')), /Your private TAC 5,000 TAC/); assert.doesNotMatch(text(m.$('pv-inv')), /Bitcoin|sats/, 'nothing is asked of a provider on Bitcoin');
   assert.equal(m.$('pv-fee').value, '0.30'); assert.equal(m.$('pv-most').value, '1000', 'the most is a thousand, or what the key has');
   assert.equal(m.$('pv-go').textContent, 'Start providing');
   m.key.lock(); assert.equal(m.root.hidden, true);
@@ -63,12 +63,7 @@ test('the panel shows when a key is open, reads what the key can provide only wh
   assert.equal(small.$('pv-most').value, '250');
 });
 
-test('what is asked of a provider before it starts: private TAC, a Bitcoin coin for the fees, a fee that is a percentage, a size it can fill', async () => {
-  const none = mount({ stub: sessionStub({ coins: 0 }) });
-  await none.load();
-  assert.match(text(none.$('pv-inv')), /Send a few thousand sats to bc1q/);
-  none.$('pv-go').click(); await tick(5);
-  assert.match(none.$('pv-st').textContent, /Add a few thousand sats/); assert.equal(none.stub.calls.starts.length, 0);
+test('what is asked of a provider before it starts: private TAC, a fee that is a percentage, a size it can fill (no Bitcoin: each lock pays the take)', async () => {
   const poor = mount({ stub: sessionStub({ pool: 5n * TAC }) });
   await poor.load();
   poor.$('pv-most').value = '10';

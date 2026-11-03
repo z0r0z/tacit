@@ -139,8 +139,9 @@ export function makeAdaptorBtcTx({ prims, kit }) {
   };
 
   // LOCK: `lockAmount` of the wallet's notes (at its P2WPKH address) goes into the lock output; the rest returns to the
-  // wallet. `hint` is the recovery OP_RETURN script (adaptor-xswap lockHintScript), placed after the payload outputs.
-  function lockTransfer({ asset, notes, lock, lockAmount, rLock, hint = null, satsUtxos, feeRate }) {
+  // wallet. `hint` is the recovery OP_RETURN script (adaptor-xswap lockHintScript), placed after the payload outputs, and
+  // `pay` ({ value, script }) a plain-sat output after it: the fee of the counterparty's take, paid to its address.
+  function lockTransfer({ asset, notes, lock, lockAmount, rLock, hint = null, pay = null, satsUtxos, feeRate }) {
     const inputs = notes.map((n) => ({
       txid: n.txid, vout: n.vout, value: n.value, amount: n.amount, blinding: n.blinding, spk: own, witnessSizes: [72, 33],
       sign: (tx, idx, prevouts) => prims.signP2wpkhInput(tx, idx, prevouts[idx].value),
@@ -152,7 +153,9 @@ export function makeAdaptorBtcTx({ prims, kit }) {
       { amount: asBig(lockAmount), blinding: asBig(rLock), script: lock.spk, keystream: kit.deriveAmountKeystreamSelf(wallet.priv, anchor, 0) },
       selfOut(anchor, 1, total - asBig(lockAmount)),
     ];
-    return transfer({ asset, inputs, outputs, extraOutputs: hint ? [{ value: 0, script: hint }] : [], satsUtxos, feeRate });
+    if (pay && !(Number.isInteger(pay.value) && pay.value >= DUST)) throw new Error('adaptor-btc-tx: the take fee is below dust');
+    const extraOutputs = [...(hint ? [{ value: 0, script: hint }] : []), ...(pay ? [{ value: pay.value, script: pay.script }] : [])];
+    return transfer({ asset, inputs, outputs, extraOutputs, satsUtxos, feeRate });
   }
 
   // CLAIM: the whole lock output to the wallet, by key path with the secret `sk` that opens it (claimSecret).

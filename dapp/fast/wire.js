@@ -10,12 +10,12 @@
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key (tacit-session.js)     ux  the pool module (trade/poolux.js)
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js?cb=6e90dd96';
-import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=bc74dcba';
+import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=7bb8d689';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=8216bdd8';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=2391fffd';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js?cb=11295986';
-import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=99d3bb3a';
-import { makeLpService } from '/fastbridge-provider.js?cb=01b88a9e';
+import { makeFastBridgeMarket, makeLocalStore, termsOf } from '/fastbridge-client.js?cb=21e74139';
+import { makeLpService } from '/fastbridge-provider.js?cb=7208616b';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, readProviders, gatewayOf } from '/fastbridge-mailbox.js?cb=d00c9623';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=8d928552';
 import { signSchnorr } from '/bulletproofs.js?cb=132d3648';
@@ -124,8 +124,7 @@ export async function openProvider({ T, ux, priv, pubHex, boards = [], name = nu
     };
   }
   async function inventory() {
-    const [pool, coins] = await Promise.all([evm.available(), btc.satsUtxos()]);
-    return { pool, coins: coins.length, address: btc.address, claimPub };
+    return { pool: await evm.available(), address: btc.address, claimPub };
   }
   const configOf = (s) => ({
     claimPub, csvBlocks: 144, alertSecs: 3600,

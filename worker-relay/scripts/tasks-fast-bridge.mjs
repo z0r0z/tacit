@@ -29,17 +29,17 @@ writeJobs(PAGE_OUT, {
   id: JOB, chainId: 1, opensAt, title: 'Test the fast bridge', tagline: 'Move 10 TAC from Bitcoin to Ethereum in minutes, and get paid for it.', verified: false, created: [],
   steps: [
     {
-      ...steps[0], label: 'Provider', detail: 'You need 10 TAC private and a few thousand sats. Start providing with the most per bridge at 10 TAC, and keep the page open until the bridge is done.',
+      ...steps[0], label: 'Provider', detail: 'You need 10 TAC private, and nothing on Bitcoin. Start providing with the most per bridge at 10 TAC, and keep the page open until the bridge is done.',
       action: { label: 'Provide 10 TAC', href: '/fast/#provide' }, ask: 'Provider: the Last take link under Provide liquidity',
     },
     {
-      ...steps[1], label: 'Bridger', detail: 'You need 10 TAC on Bitcoin and a few thousand sats. A provider must be online first.',
+      ...steps[1], label: 'Bridger', detail: 'You need 10 TAC on Bitcoin and about 10,000 sats for fees. A provider must be online first.',
       action: { label: 'Bridge 10 TAC', href: '/fast/' }, ask: 'Bridger: the Bitcoin lock link on your bridge',
     },
   ],
   about: [
     { h: 'What to do', p: 'Take one side of a 10 TAC bridge, or both sides with two keys. When it is done, claim here with its Bitcoin transaction.' },
-    { h: 'What it costs', p: 'You pay the Bitcoin and network fees up front, and the reward covers them. Your TAC stays yours, less the provider\'s fee.' },
+    { h: 'What it costs', p: 'The bridger pays the Bitcoin fees, including the provider\'s take, and the reward covers them. Your TAC stays yours, less the provider\'s fee.' },
     { h: 'If a bridge stops', p: 'Open the fast bridge again after about a day and your TAC returns to your Bitcoin address.' },
     { h: 'Getting paid', p: 'Each role pays once, to the first bridge checked on both chains. Claim from the wallet you want paid, then post the link in Discord.' },
   ],

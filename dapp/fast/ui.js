@@ -91,7 +91,8 @@ export function mountFast({ root, keyS, signIn, open, discover, quoteDelayMs = 3
     if (q) {
       recv.innerHTML = `${sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}</b></div>` : ''}<div class="kv"><span>You pay</span><b class="num">${esc(fmtTac(q.btcValue))} TAC</b></div>
         <div class="kv"><span>You receive, private</span><b class="num">${esc(fmtTac(q.evmAmount))} TAC</b></div>
-        <div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>`;
+        <div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${q.takeSats ? `
+        <div class="kv"><span>Bitcoin network fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take</small></b></div>` : ''}`;
     }
     go.textContent = S.busy ? 'Working…' : 'Bridge';
     go.disabled = S.busy || !!bad || !q || units == null;

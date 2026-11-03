@@ -20,7 +20,7 @@ const TERMINAL = new Set(['done', 'refunded', 'counter-took']);
 const MAX_INPUTS = 6;
 
 export const DEFAULT_POLICY = {
-  csvBlocks: 144, minCsv: 72, maxCsv: 288, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600,
+  csvBlocks: 144, minCsv: 72, maxCsv: 288, maxTakeSats: 30000, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600,
   maxFeeBps: 500, quoteMarginSecs: 120,
 };
 
@@ -57,7 +57,10 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     const fee = btcValue - evmAmount;
     if (fee * 10000n > btcValue * BigInt(policy.maxFeeBps)) throw new Error('the quote\'s fee is above the limit this page accepts');
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
-    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks };
+    // the provider's take fee, which the lock pays it on Bitcoin: none, or from dust to the most this page pays
+    const takeSats = Number(q.takeSats ?? 0);
+    if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
+    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats };
   }
 
   // Notes to lock for `amount`: the smallest single note that covers it, else the largest first until covered.
@@ -88,7 +91,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     policy.csvBlocks = q.csvBlocks;
     const rec = await bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id,
+      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0,
     });
     // the provider is kept with the swap, so it is carried on with the one it began with
     if (provider) { rec.provider = provider; await store.put(rec); }

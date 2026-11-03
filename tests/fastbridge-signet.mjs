@@ -1,6 +1,8 @@
 // The fast bridge's Bitcoin transactions on signet: a note etched, locked twice with the production builder, one lock taken by the
 // key path with d_claimer + t, the other refunded by the script path once its timelock has run, and a refund sent too early, which the
 // network must refuse. Every output is then read back through the real tacit.validateOutpoint from what the explorers serve.
+// With FB_SIGNET_PAYS=1 the provider has no coin of its own: the first lock pays the fee of its take to the provider's address, and the take
+// spends that output alone.
 // Sends real signet transactions from ~/.tacit-validation/signet.json, which only funds two keys derived from it. Each step is kept
 // in the state file before it is sent, so a run picks up where the last stopped. Takes about four blocks. Node 22.
 //   node tests/fastbridge-signet.mjs
@@ -17,12 +19,14 @@ import { makeEsploraBtcChain } from '../dapp/fastbridge-btc.js';
 import { deriveLock, claimSecret } from '../dapp/adaptor-btc-lock.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { loadTacit } from '../worker-relay/src/lib/btc-pool-transparent.js';
+import { takeSatsAt } from '../dapp/fastbridge-provider.js';
 import { bpRangeAggProve } from './bulletproofs.mjs';
 
 const DIR = join(homedir(), '.tacit-validation');
 const STATE = process.env.FB_SIGNET_STATE || join(DIR, 'fastbridge-signet-state.json');
 const BASES = ['https://mempool.space/signet/api', 'https://blockstream.info/signet/api'];
-const FEE_RATE = 2, FUND_USER = 30_000, FUND_LP = 15_000, NOTE = 10_000n, AMOUNT_TAKEN = 4_000n, CSV_REFUND = 2, CSV_TAKEN = 144, DUST = 546;
+const PAYS = process.env.FB_SIGNET_PAYS === '1';
+const FEE_RATE = 2, FUND_USER = 30_000, FUND_LP = PAYS ? 0 : 15_000, NOTE = 10_000n, AMOUNT_TAKEN = 4_000n, CSV_REFUND = 2, CSV_TAKEN = 144, DUST = 546;
 const POLL_MS = 30_000;
 
 const te = (s) => new TextEncoder().encode(s);
@@ -31,7 +35,7 @@ const u32le = (n) => Uint8Array.of(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff
 const anchorOf = (txid, vout) => concatBytes(hexToBytes(txid).reverse(), u32le(vout));
 
 const funder = JSON.parse(readFileSync(join(DIR, 'signet.json'), 'utf8'));
-const derive = (tag) => sha256(concatBytes(hexToBytes(funder.priv_hex), te(`tacit-fastbridge-rehearsal/${tag}`)));
+const derive = (tag) => sha256(concatBytes(hexToBytes(funder.priv_hex), te(`tacit-fastbridge-rehearsal/${PAYS ? 'pays/' : ''}${tag}`)));
 const walletOf = (priv) => makeBtcWallet({
   priv, hrp: 'tb', fetchUtxos: async () => [], fetchFeeRate: async () => FEE_RATE,
   broadcastTx: async () => { throw new Error('sent through the chain adapter'); },
@@ -84,7 +88,7 @@ if (!S.fund) {
   const coin = coins[0], fee = FEE_RATE * 200, change = coin.value - FUND_USER - FUND_LP - fee;
   const tx = {
     version: 2, locktime: 0, inputs: [{ txid: coin.txid, vout: coin.vout, sequence: 0xfffffffd, witness: [] }],
-    outputs: [{ value: FUND_USER, script: own(user) }, { value: FUND_LP, script: own(lp) }, ...(change >= DUST ? [{ value: change, script: fund.p2wpkhScript(fund.wallet.pub) }] : [])],
+    outputs: [{ value: FUND_USER, script: own(user) }, ...(FUND_LP ? [{ value: FUND_LP, script: own(lp) }] : []), ...(change >= DUST ? [{ value: change, script: fund.p2wpkhScript(fund.wallet.pub) }] : [])],
   };
   fund.signCommitInputs(tx, [coin], fund.p2wpkhScript(fund.wallet.pub));
   S.fund = { txid: fund.txid(tx), hex: bytesToHex(fund.serializeTx(tx)) };
@@ -131,8 +135,10 @@ const lockOf = (n, csvBlocks) => {
   return { swapId, sec, lock, hint: X.lockHintScript({ seed, swapId, claimerPub: lp.prims.wallet.pub, csvBlocks, value: n.amount }) };
 };
 const A = lockOf({ ...note, amount: AMOUNT_TAKEN }, CSV_TAKEN);
+const TAKE_SATS = PAYS ? takeSatsAt(FEE_RATE) : 0;
 const lockA = await once(user, 'lockA', async () => user.tx.lockTransfer({
   asset, notes: [note], lock: A.lock, lockAmount: AMOUNT_TAKEN, rLock: A.sec.rLock, hint: A.hint, satsUtxos: await user.chain.satsUtxos(), feeRate: FEE_RATE,
+  ...(PAYS ? { pay: { value: TAKE_SATS, script: own(lp) } } : {}),
 }));
 const noteB = { txid: lockA.revealTxid, vout: 1, value: DUST, amount: NOTE - AMOUNT_TAKEN, blinding: kit.deriveChangeBlinding(user.prims.wallet.priv, anchorOf(note.txid, note.vout), 1) };
 const B = lockOf(noteB, CSV_REFUND);
@@ -172,10 +178,15 @@ if (!S.earlyRefused) {
   } else { S.earlyRefused = 'skipped: the timelock had already run'; keep(); log('early refund not tried', { reason: S.earlyRefused }); }
 }
 
-// The provider takes lock A by the key path with d_claimer + t.
+// The provider takes lock A by the key path with d_claimer + t; with PAYS, from the coin lock A paid it and nothing else.
+const lpCoins = await lp.chain.satsUtxos();
+if (PAYS) {
+  assert.deepEqual(lpCoins.map((c) => [c.txid, c.value]), [[lockA.revealTxid, TAKE_SATS]], 'the provider\'s only coin is the fee lock A paid it');
+  log('the provider holds only the fee lock A paid', { value: TAKE_SATS });
+}
 const take = await once(lp, 'take', async () => lp.tx.claimTransfer({
   asset, lockOut: { txid: lockA.revealTxid, vout: 0, value: DUST }, lock: A.lock, sk: claimSecret({ dClaimer: lp.prims.wallet.priv, t: A.sec.t, lock: A.lock }),
-  amount: AMOUNT_TAKEN, rLock: A.sec.rLock, satsUtxos: await lp.chain.satsUtxos(), feeRate: FEE_RATE,
+  amount: AMOUNT_TAKEN, rLock: A.sec.rLock, satsUtxos: lpCoins, feeRate: FEE_RATE,
 }));
 await untilConfirmed(take.revealTxid, 'take');
 

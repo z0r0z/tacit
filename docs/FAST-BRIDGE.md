@@ -10,10 +10,13 @@ Bitcoin, the pool's lock set on Ethereum. The only thing that links them is a se
 
 ## A swap, Bitcoin to Ethereum
 
-1. The LP publishes its Bitcoin claim key and a quote (amount in, amount out, windows).
+1. The LP publishes its Bitcoin claim key and a quote (amount in, amount out, windows, and `takeSats`, the fee of its take:
+   `546 + 750 vB × 2 × the fee rate`, which the user's client accepts up to 30,000 sats).
 2. The user picks a note, derives `t` and `T = t·G` from its key and the note's outpoint, and moves the amount into a
    Taproot output keyed `P_LP + T` with a refund leaf `<csv> OP_CHECKSEQUENCEVERIFY OP_DROP <user> OP_CHECKSIG`. A
-   sealed OP_RETURN in the same transaction lets the user find the lock again from its key.
+   sealed OP_RETURN in the same transaction lets the user find the lock again from its key, and a plain output of
+   `takeSats` to the LP's own address pays for the take, so a provider needs no Bitcoin of its own: by the time it takes,
+   that output is confirmed with the lock. The LP refuses a lock that does not pay it, and keeps it if the user refunds.
 3. The user sends the LP its lock offer. The LP reads the lock from the chain: the transaction and the notes it
    spends, the note the validator derives, its asset and commitment, its confirmations, and whether a spent note is
    already consumed on Ethereum.
@@ -39,8 +42,7 @@ locked note holds exactly the quoted amount.
 
 ## Anyone can be the provider
 
-Nothing in the pool or the swap is specific to one provider: a provider is a Tacit key with private TAC and a few Bitcoin
-coins that answers a user's requests and takes the Bitcoin. Providers find users, and users find them, without a server of
+Nothing in the pool or the swap is specific to one provider: a provider is a Tacit key with private TAC that answers a user's requests and takes the Bitcoin. Providers find users, and users find them, without a server of
 the provider's own:
 
 - **An ad.** A provider signs an ad with its claim key: its terms (fee, limits, timelock), what it can take now, and the gateway

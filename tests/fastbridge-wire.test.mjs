@@ -121,7 +121,7 @@ test('a provider and a user, each from its own key, find and reach each other th
   const provider = await openProvider({ T, ux: uxP, priv: pPriv, pubHex: pPub, boards: ['https://board.example'], fetchImpl, hrp: 'tb', pollMs: 15, tickSecs: 1 });
   providerAddress = provider.address;
   const inv = await provider.inventory();
-  assert.deepEqual([inv.pool, inv.coins, inv.address === provider.address], [5000n * TAC, 1, true]);
+  assert.deepEqual([inv.pool, inv.address === provider.address], [5000n * TAC, true]);
   assert.deepEqual(await provider.status(), { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null, lastTake: null });
   await provider.start({ settings: { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC }, accept: true });
   try {

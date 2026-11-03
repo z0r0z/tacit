@@ -361,25 +361,40 @@ test('reservations with no transaction behind them hold only a share of the pool
   assert.equal((await post(tight, '/reserve', { quoteId: q2.id })).body.ok, false, 'a quarter of 6,000 is 1,500: two thousand do not fit');
 });
 
-test('the Bitcoin coins that pay for the takes limit the swaps open at once, and a coin too small to pay one does not count', async () => {
-  const { w } = httpWorld();
+test('a provider with no Bitcoin of its own: each quote names the fee of the take, the lock pays it to the provider, and the take spends it', async () => {
+  const { w, ref } = httpWorld();
   w.lEvm.fund(100_000n, 'inv');
   const s = await serve(w);
-  w.lBtc.satsUtxos = async () => [];
-  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 400);
-  assert.equal((await infoOf(s)).available, '0');
-  w.lBtc.satsUtxos = async () => [{ txid: 'a'.repeat(64), vout: 0, value: 1000 }];
-  w.clock.advance(61);
-  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 400, 'a coin of 1,000 sats does not pay a take at 3 sat/vB with margin');
-  manyCoins(w, 1);
-  w.clock.advance(61);
+  ref.base = s.base;
+  // the provider's coins are what the chain holds at its address: none until a lock pays it
+  const own = bytesToHex(w.lW.prims.p2wpkhScript(w.lW.wallet.pub));
+  const seen = [];
+  w.lBtc.satsUtxos = async () => { const c = await chainCoins(); seen.push(...c); return c; };
+  const chainCoins = async () => [...w.btc.txs].flatMap(([txid, e]) => (e.height == null ? [] : e.esplora.vout.map((o, vout) => ({ txid, vout, value: o.value, spk: o.scriptpubkey }))))
+    .filter((c) => c.spk === own && c.value > 546 && !w.btc.spends.has(`${c.txid}:${c.vout}`)).map(({ txid, vout, value }) => ({ txid, vout, value }));
+  assert.deepEqual(await chainCoins(), [], 'no coins');
   const q = (await post(s, '/quote', { amount: '2000' })).body;
-  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
-  const q2 = await post(s, '/quote', { amount: '2000' });
-  assert.equal(q2.status, 400, 'one coin, one swap');
-  manyCoins(w, 2);
-  w.clock.advance(61);
-  assert.equal((await post(s, '/quote', { amount: '2000' })).status, 200);
+  assert.equal(q.takeSats, 546 + Math.ceil(750 * 3 * 2), 'the take priced at twice the rate, with its dust');
+  w.lEvm.fund(BigInt(q.evmAmount), 'exact');
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true, 'held with no coin');
+  const rec = await startSwap(w, q);
+  await w.run(bothDone(w));
+  assert.ok(w.btc.txs.get(rec.lock.txid).esplora.vout.some((o) => o.scriptpubkey === own && o.value === q.takeSats), 'the lock pays the fee to the provider');
+  assert.ok((await w.lp()).take, 'taken');
+  assert.ok(seen.length && seen.every((c) => c.txid === rec.lock.txid && c.value === q.takeSats), 'the only coin the take could spend was the lock\'s fee output');
+});
+
+test('a lock that does not pay the fee of the take is refused', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  const s = await serve(w);
+  ref.base = s.base;
+  const q = (await post(s, '/quote', { amount: '2000' })).body;
+  assert.ok(q.takeSats > 0);
+  await startSwap(w, { ...q, takeSats: 0 });
+  await w.run(async () => ['rejected', 'refund-wait', 'refunded'].includes((await w.user())?.phase));
+  const u = await w.user();
+  assert.match(String(u.why || u.lastError || ''), /does not pay the fee of the take/, `refused for the fee: ${JSON.stringify({ ...u, lock: undefined, noteInputs: undefined }).slice(0, 700)}`);
 });
 
 test('extending a reservation: held through the confirmation, for the transaction it was made for', async () => {

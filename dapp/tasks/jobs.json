@@ -768,7 +768,7 @@
           "minWei": "60000000000000000000",
           "maxWei": "60000000000000000000",
           "label": "Provider",
-          "detail": "You need 10 TAC private and a few thousand sats. Start providing with the most per bridge at 10 TAC, and keep the page open until the bridge is done.",
+          "detail": "You need 10 TAC private, and nothing on Bitcoin. Start providing with the most per bridge at 10 TAC, and keep the page open until the bridge is done.",
           "action": {
             "label": "Provide 10 TAC",
             "href": "/fast/#provide"
@@ -784,7 +784,7 @@
           "minWei": "60000000000000000000",
           "maxWei": "60000000000000000000",
           "label": "Bridger",
-          "detail": "You need 10 TAC on Bitcoin and a few thousand sats. A provider must be online first.",
+          "detail": "You need 10 TAC on Bitcoin and about 10,000 sats for fees. A provider must be online first.",
           "action": {
             "label": "Bridge 10 TAC",
             "href": "/fast/"
@@ -799,7 +799,7 @@
         },
         {
           "h": "What it costs",
-          "p": "You pay the Bitcoin and network fees up front, and the reward covers them. Your TAC stays yours, less the provider's fee."
+          "p": "The bridger pays the Bitcoin fees, including the provider's take, and the reward covers them. Your TAC stays yours, less the provider's fee."
         },
         {
           "h": "If a bridge stops",

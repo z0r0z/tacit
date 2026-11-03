@@ -109,6 +109,9 @@ export function makeEthereumLocker(ctx) {
     });
     if (!v.ok) return reject(v.reasons.join('; '));
     if (value !== BigInt(quote.btcValue) || amount !== BigInt(quote.evmAmount)) return reject('the amounts differ from the quote');
+    // the lock pays the fee of this side's take, to this side's own address
+    const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
+    if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
     const consumed = await btc.crossLaneBlocked(tx);
     if (consumed) return reject('a spent note is already consumed on Ethereum: ' + consumed);
     const rec = {

@@ -14,8 +14,14 @@
 //   GET  /swap/:id/offer    the pool lock's offer once the lock is made
 //
 // What the LP can take is what its pool wallet holds, less what is already promised (a reservation, or a swap whose
-// lock is not yet made), and the number of Bitcoin coins it has to pay the fee of the takes with. A quote only checks
-// that; the reservation is what holds it, so a user comparing providers holds nothing at any of them.
+// lock is not yet made). A quote only checks that; the reservation is what holds it, so a user comparing providers holds
+// nothing at any of them. Each quote names the fee of the take (`takeSats`), which the user's lock pays to the LP's
+// address, so an LP needs no Bitcoin of its own.
+
+// The take is a commit and a reveal of about this many vbytes in all; it is priced at twice the rate of the quote, and pays
+// for the dust its note keeps.
+export const TAKE_VB = 750;
+export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 
 import { makeEthereumLocker } from './fastbridge-el.js';
 
@@ -41,7 +47,7 @@ export function makeQuoter({ store, now, params }) {
     const q = {
       id: randomHex(16), btcAsset: p.btcAsset, btcValue: String(btcValue), evmAsset: p.evmAsset, evmAmount: String(evmAmount),
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
-      created: now(), validUntil: now() + (p.validSecs ?? 600),
+      takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
     };
     await store.put(q);
     return q;
@@ -62,13 +68,13 @@ export function makeQuoter({ store, now, params }) {
 
 // ── the service ──
 const TERMINAL = new Set(['done', 'refunded', 'rejected', 'aborted', 'lost']);
-const TAKE_VB = 600;
 const DAY = 86400;
 const isId = (v) => /^[0-9a-f]{32}$/.test(String(v));
 const cannotTake = () => Object.assign(new Error('the provider cannot take that amount right now'), { status: 400 });
 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
-  const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor } });
+  const takeSats = btc.feeRate ? async () => takeSatsAt(await btc.feeRate()) : null;
+  const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
   const reservations = new Map();                       // quote id -> { amount, until, txid }
@@ -85,17 +91,13 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
 
   // ── what can be taken ──
-  const inv = { at: -Infinity, held: null, coins: null, p: null };
+  const inv = { at: -Infinity, held: null, p: null };
   function readInventory() {
     if (inv.p) return inv.p;
     if (now() - inv.at < refreshSecs) return Promise.resolve(inv);
     inv.p = (async () => {
       try {
         if (evm.available) inv.held = await evm.available();
-        if (btc.satsUtxos) {
-          const need = Math.ceil(TAKE_VB * (await btc.feeRate()) * 1.5);
-          inv.coins = (await btc.satsUtxos()).filter((c) => c.value >= need).length;
-        }
         inv.at = now();
       } finally { inv.p = null; }
       return inv;
@@ -104,7 +106,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
   const stale = () => { inv.at = -Infinity; };
 
-  // the payout promised and the coins needed: reservations still running, and swaps whose lock is not made yet
+  // the payout promised: reservations still running, and swaps whose lock is not made yet
   async function promised() {
     const t = now();
     let sum = 0n, count = 0;
@@ -122,7 +124,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   async function capacity(payout) {
     const i = await readInventory(), p = await promised();
     if (i.held != null && payout > i.held - p.sum) throw cannotTake();
-    if (i.coins != null && p.count >= i.coins) throw cannotTake();
   }
   // A reservation with no transaction behind it costs its holder nothing: those together may hold only a share of the pool balance,
   // unless there is just the one, so a request that holds nothing real cannot take all of what the provider could lend.
@@ -137,7 +138,6 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     try {
       const i = await readInventory(), p = await promised();
       if (i.held == null) return null;
-      if (i.coins != null && p.count >= i.coins) return 0n;
       return quoter.maxAmountFor(i.held > p.sum ? i.held - p.sum : 0n);
     } catch { return null; }
   }

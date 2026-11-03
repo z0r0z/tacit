@@ -1,4 +1,4 @@
-// The provider panel of the fast bridge page: what the key can provide (its private TAC, its Bitcoin coins), a fee and a size, and
+// The provider panel of the fast bridge page: what the key can provide (its private TAC), a fee and a size, and
 // a switch. Anyone with a Tacit key can be a provider: the page answers requests and takes the Bitcoin while it is open. What is not
 // DOM is passed in, so the panel's logic runs without a wallet.
 //
@@ -46,9 +46,7 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     root.hidden = !keyS.unlocked;
     const inv = S.inv, st = S.st;
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
-      <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>
-      <div class="kv"><span>Bitcoin coins for fees</span><b class="num">${inv.coins}</b></div>${inv.coins ? '' : `
-      <p class="note">Send a few thousand sats to <code>${esc(inv.address)}</code> to pay for the takes.</p>`}` : '';
+      <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
     run.hidden = !st || !(st.running || st.lastTake);
@@ -113,7 +111,6 @@ export function mountProvide({ root, keyS, open, hasOpen = () => false, settings
     const r = read();
     if (r.why) { note(r.why, true); return; }
     if (S.inv.pool < MIN_AMOUNT) { note('Make some TAC private on the front page first.', true); return; }
-    if (!S.inv.coins) { note('Add a few thousand sats at the Bitcoin address above first.', true); return; }
     settings.set(S.pub, { feeBps: r.feeBps, maxAmount: r.maxAmount.toString() });
     try {
       if (running()) S.sess.stop();

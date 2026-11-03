@@ -52,8 +52,9 @@ export function makeBitcoinLocker(ctx) {
   };
 
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
-  // 33-byte Bitcoin key the counterparty committed to before this call.
-  async function start({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null }) {
+  // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
+  // to that key's address so a counterparty needs no coins of its own on Bitcoin.
+  async function start({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0 }) {
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
     if (await store.get(id)) throw new Error('fastbridge: this note is already part of a swap');
@@ -61,11 +62,12 @@ export function makeBitcoinLocker(ctx) {
     const csvBlocks = policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
-    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
+    const pay = takeSats > 0 ? { value: takeSats, script: btc.prims.p2wpkhScript(counterClaimPub) } : null;
+    const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate() });
     const rec = {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
-      counterClaimPub: hx(counterClaimPub), csvBlocks,
+      counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats,
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
       noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
     };
