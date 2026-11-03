@@ -11,14 +11,15 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js?cb=586b3ee3';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=8216bdd8';
 import { makeLocalStore } from '/fastbridge-client.js?cb=21e74139';
 import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
-import { deskClient } from '/btcswap-desk.js?cb=804522fb';
+import { deskClient } from '/btcswap-desk.js?cb=e511951b';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 
-export const DESK = 'https://tacit-btcswap-desk.onrender.com';
+// The desk's URL. None is running yet, so the page offers no swap and asks nothing until this is set.
+export const DESK = null;
 const EXPLORERS = ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://blockstream.info/api'];
 const enc = new TextEncoder();
 
-export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
+export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || 'http://localhost:0', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {
   const { prims } = makeBtcWallet({ priv, hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
   if (prims.wallet.address() !== T.wallet.address()) throw new Error('The Bitcoin address of this key is not the one the wallet reads. Nothing was done.');
   const btc = makeEsploraBtcChain({

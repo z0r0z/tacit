@@ -8084,7 +8084,7 @@ function brMarkLong(el, n, step) {
   $('span', lab)?.insertAdjacentHTML('beforeend', html`<small>${brLongReason(step)}</small>`.s);
 }
 // TAC the proof does not follow, swapped on Bitcoin at the swap desk for TAC it does (btcswap-page.js). A key's swaps run while this page is open.
-const bswMod = lazy(() => import('/btcswap-page.js?cb=673a7d4c'));
+const bswMod = lazy(() => import('/btcswap-page.js?cb=bca56b0c'));
 const BSW = { pub: null, s: null, say: null, recs: [] };
 const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
 async function bswOpen() {
@@ -8109,6 +8109,7 @@ async function bswTick(first = false) {
 }
 // The desk's offer under a note the bridge cannot take, when the desk answers and holds enough.
 async function bswOffer(box, n) {
+  if (!(await bswMod()).DESK) return;
   const s = await bswOpen(), q = s ? await s.quote(n.amount).catch(() => null) : null;
   if (!box.isConnected || !q?.id) return;
   mount(box, html`<p class="note">Or swap it on Bitcoin for ${fmt(BigInt(q.out), 8, 4)} TAC that bridges in one step, in about a day.</p><button class="btn ghost" type="button" id="br-swapgo">Swap it</button>`);
