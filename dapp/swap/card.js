@@ -2450,6 +2450,7 @@ const markup = (o) => `<p class="sr" id="sw-live" role="status" aria-live="polit
     <div id="ackbox"></div>
     <button class="go" id="go" type="button" disabled>Enter an amount</button>
     <p class="q" id="q" role="status"></p>
+    ${o.moves ? '<div class="mv-st" id="mv-st"></div>' : ''}
     ${o.moves ? `<button class="cp" id="copy" type="button" title="Copy link" aria-label="Copy link" hidden>${CP_ICON}</button>` : ''}
   </div>
   <div class="sw-foot"><span>Slippage</span><span class="slip" id="slip" role="group" aria-label="Slippage"></span></div>
@@ -2655,6 +2656,14 @@ export function mountSwapCard(root, host = {}) {
     // the card is shown again: a move is priced again
     requote: () => { if (!S.busy && (moveOf() || exiting())) requote(true); },
     focus: () => $('#amt').focus({ preventScroll: true }),
+    // a move the page does in place: the button reads Working… until it says it is done (its steps are said in the slot under the button, #mv-st)
+    working: (on) => {
+      if (!!on === S.busy) return;
+      S.busy = !!on; paintQuote();
+      if (!on) { paint(); H.onDone?.(); readBalances().then(paintSides, () => {}); }
+    },
+    // the page did what was typed: it is emptied, and the quote with it
+    clear: () => { S.amt = ''; S.q = null; S.mq = null; changed(); paint(); },
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
     get busy() { return S.busy; },

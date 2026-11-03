@@ -6845,6 +6845,8 @@ const stubFarmUxRoute = (page, { notes = [], positions = null, chain = false, sw
   }` }));
 const farmPos = (n, shares, units, tac) => ({ pid: 0, pair: 'TAC/cETH', lpAsset: FARM_LP0, shares: String(shares), receiptLeaf: '0x' + String(n).repeat(64), receiptIndex: n, unlockAt: 0, pendingUnits: String(units), pendingTac: tac });
 // Opens a key by its pasted hex, funds its Tacit account for gas and returns the page.
+// every dialog that opens after this call is named in window.__sheetSeen: a press that must not open a sheet checks it stays empty
+const sheetsSeen = (p) => p.evaluate(() => { window.__sheetSeen = ''; new MutationObserver((ms) => { for (const m of ms) if (m.target.tagName === 'DIALOG' && m.target.open) window.__sheetSeen += m.target.id + ','; }).observe(document, { subtree: true, attributes: true, attributeFilter: ['open'] }); });
 async function openFarmKey(hex, stub, viewport, setup) {
   const r = await openPage({ account: A0, key: K0, viewport });
   const acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
@@ -7220,7 +7222,7 @@ await step('hxteth', async () => {
     const turned = await p.evaluate(() => [document.querySelector('#hx-swap #pay-coin')?.textContent.trim(), document.querySelector('#hx-swap #get-coin')?.textContent.trim(), document.activeElement?.id || document.activeElement?.tagName]);
     ok(/^tETH/.test(turned[0]) && /^ETH/.test(turned[1]) && turned[2] === 'amt', `hxteth: Back to ETH turns the Swap card to taking tETH out, with the keyboard in the amount (${turned.join(' → ')})`);
     await p.fill('#hx-swap #amt', '0.1');
-    await until(p, () => /Arrives: in your wallet or at any address \| Relay fee: [\d.]+ ETH, out of it$/.test(window.__said()), null, 240000)
+    await until(p, () => /Arrives: in your wallet \| Relay fee: [\d.]+ ETH, out of it$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     const fee = Number((await line()).match(/Relay fee: ([\d.]+) ETH/)[1]), out = Number(await text(p, '#hx-swap #out'));
     ok(fee > 0 && Math.abs(out - (0.1 - fee)) < 1e-9, `hxteth: 0.1 tETH back to ETH pays out 0.1 less the relay fee (${out} = 0.1 - ${fee})`);
@@ -7229,9 +7231,15 @@ await step('hxteth', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     const combine = Number((await line()).match(/Combines notes: ([\d.]+) tETH first/)[1]), max = Number(await p.inputValue('#hx-swap #amt'));
     ok(combine > 0 && Math.abs(max + combine - 0.25) < 1e-9, `hxteth: Max over two notes keeps the relay fee that combines them (${max} + ${combine} = 0.25)`);
+    // a note of exactly 0.1 is held, so nothing is cut first: the press goes straight to the proof and waits for the relay (the stub's two notes could not be combined for real)
+    await p.fill('#hx-swap #amt', '0.1');
+    await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Turn tETH into ETH' && !document.querySelector('#hx-swap #go').disabled && /Relay fee: [\d.]+ ETH/.test(window.__said()), null, 240000);
+    await sheetsSeen(p);
+    await p.evaluate(() => { window.__mz = []; new MutationObserver(() => { const t = document.querySelector('#hx-mz')?.textContent; if (t && window.__mz[window.__mz.length - 1] !== t) window.__mz.push(t); }).observe(document.body, { subtree: true, childList: true, characterData: true }); });
     await p.click('#hx-swap #go');
-    await until(p, (v) => document.querySelector('#sheet-eth[open] #o-amt')?.value === v, String(max), 120000);
-    ok(true, 'hxteth: Turn tETH into ETH opens the Withdraw form with that amount');
+    await until(p, () => (window.__mz || []).length > 0, null, 240000);
+    // the stub's notes cannot make a real exit proof, so the run ends in the error it says: what is checked is that it went from the card, step by step
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && /The relay is proving your withdrawal/.test((await p.evaluate(() => window.__mz)).join(' | ')), `hxteth: Turn tETH into ETH goes from the card: the Withdraw sheet stays shut and its steps are said under the button (${(await p.evaluate(() => window.__mz)).join(' | ').slice(0, 160)})`);
     await lander();
     await p.click('[data-hxm="send"]');
     await p.fill('#hx-amt', '0.1');
@@ -8117,7 +8125,6 @@ await step('farmzap', async () => {
 // The Earn tab does a private join itself, with no sheet: tETH alone is quoted in the card (what half swapped adds, the relay's fees, the network fee), Max takes
 // what the pool takes of it, and the press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both, each step said
 // under the button. Holding both sides, the card offers them together (nothing swapped); a swap that costs 15% or more waits for its acceptance in the card.
-const sheetsSeen = (p) => p.evaluate(() => { window.__sheetSeen = ''; new MutationObserver((ms) => { for (const m of ms) if (m.target.tagName === 'DIALOG' && m.target.open) window.__sheetSeen += m.target.id + ','; }).observe(document, { subtree: true, attributes: true, attributeFilter: ['open'] }); });
 const earnCard = async (p, from, route) => {
   await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
   await p.click('[data-hxm="earn"]');
@@ -8403,7 +8410,7 @@ await step('fastzap', async () => {
     ok(r2?.status === '0x1' && m2.length === 1 && z2.input.startsWith('0xc4294fac') && used2 && z2.input.includes(used2.commit.slice(2).toLowerCase()) && !submits.slice(s2).some((x) => x.mode === 'prove')
       && (await p.evaluate(() => window.__farmCalls)).filter((c) => c.startsWith('bond:')).length === bonds && /share is a private note/.test(await text(p, '#hx-zs')),
       `fastzap: and pressed, it goes as one transaction and stays a private LP note, not bonded (${m2.map((x) => x.input.slice(0, 10))}; ${(await text(p, '#hx-zs')).replace(/\s+/g, ' ').slice(0, 110)})`);
-    // (3) ETH made private from the Swap card: its sizes kept ready, the proved one marked; pressed, the wrap sheet opens and sends it at
+    // (3) ETH made private from the Swap card: its sizes kept ready, the proved one marked; pressed, the card sends it itself, at
     // once as one transaction (the deposit and the settle of its proof), nothing asked of the relay
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await until(p, (k) => JSON.parse(localStorage.getItem('tacit-wrap-vouchers-v1:' + k) || '[]').some((v) => v.ticker === 'cETH' && v.amount === '10000000000000000' && v.status === 'ready'), pub, 240000).catch(() => {});
@@ -8417,12 +8424,14 @@ await step('fastzap', async () => {
     ok(/Proof\s*made already: no wait/.test(await text(p, '#hx-swap')), 'fastzap: its receipt says the proof is made');
     const wv = (await kept()).find((v) => v.ticker === 'cETH' && v.amount === '10000000000000000' && v.status === 'ready');
     const b4 = BigInt(await rpc('eth_blockNumber', [])), s4 = submits.length;
+    await sheetsSeen(p);
     await p.click('#hx-swap #go');
-    await until(p, () => /Done\./.test(document.querySelector('#v1-status')?.textContent || '') || /class="err"/.test(document.querySelector('#v1-status')?.innerHTML || ''), null, 300000).catch(() => {});
+    await until(p, () => /Done\./.test(document.querySelector('#hx-mz')?.textContent || '') || /class="err"/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 300000).catch(() => {});
     const m4 = await sent(b4), r4 = m4[0] && await rpc('eth_getTransactionReceipt', [m4[0].hash]);
     const left = await kept();
-    ok(/Done\./.test(await text(p, '#v1-status')) && m4.length === 1 && r4?.status === '0x1' && wv && !left.some((v) => v.depositId === wv.depositId) && !submits.slice(s4).some((x) => x.mode === 'prove'),
-      `fastzap: pressed once, the wrap goes as one transaction with that proof, nothing asked of the relay (${m4.map((x) => x.input.slice(0, 10))}; ${(await text(p, '#v1-status')).replace(/\s+/g, ' ').slice(0, 80)}; used ${!!wv && !left.some((v) => v.depositId === wv.depositId)}, cETH kept ${left.filter((v) => v.ticker === 'cETH').map((v) => `${v.amount}/${v.status}/${v.by}`).join(' ')}; asked ${submits.slice(s4).map((x) => `${x.type}/${x.mode || 'settle'}`).join(' ')}${m4.length ? '' : `; sheet ${await p.evaluate(() => [document.querySelector('#sheet-eth')?.open, document.querySelector('#w-amt')?.value, document.querySelector('#w-go')?.disabled].join('/'))}: ${(await text(p, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 160)}`})`);
+    ok(/Done\./.test(await text(p, '#hx-mz')) && (await p.evaluate(() => window.__sheetSeen)) === '' && m4.length === 1 && r4?.status === '0x1' && wv && !left.some((v) => v.depositId === wv.depositId) && !submits.slice(s4).some((x) => x.mode === 'prove'),
+      `fastzap: pressed once, the wrap goes as one transaction with that proof, nothing asked of the relay (${m4.map((x) => x.input.slice(0, 10))}; ${(await text(p, '#hx-mz')).replace(/\s+/g, ' ').slice(0, 80)}; used ${!!wv && !left.some((v) => v.depositId === wv.depositId)}, cETH kept ${left.filter((v) => v.ticker === 'cETH').map((v) => `${v.amount}/${v.status}/${v.by}`).join(' ')}; asked ${submits.slice(s4).map((x) => `${x.type}/${x.mode || 'settle'}`).join(' ')}${m4.length ? '' : `; sheet ${await p.evaluate(() => [document.querySelector('#sheet-eth')?.open, document.querySelector('#w-amt')?.value, document.querySelector('#w-go')?.disabled].join('/'))}: ${(await text(p, '#w-rcpt')).replace(/\s+/g, ' ').slice(0, 160)}`})`);
+    await shot(p, 'shieldhere');
     if (r.errors.length) { fails++; console.log('FAIL fastzap page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { poolDone = false; proveStub = false; await restore(); await r.browser.close(); }
 });
@@ -9168,9 +9177,10 @@ await step('hxnudge', async () => {
     ok((await goText(p)) === 'Enter an amount' && await p.$eval(MV.go, (b) => b.disabled), 'hxnudge: a zero is no amount either');
     await p.fill(MV.amt, '0.5');
     await until(p, () => document.querySelector('#hx-swap #go')?.textContent === 'Make ETH private' && !document.querySelector('#hx-swap #go').disabled, null, 120000);
+    await sheetsSeen(p);
     await p.click(MV.go);
-    await until(p, () => document.querySelector('#sheet-eth')?.open, null, 60000);
-    ok(true, 'hxnudge: with an amount the button opens its sheet as before');
+    await until(p, () => (document.querySelector('#hx-mz')?.textContent || '').trim() !== '' || /err/.test(document.querySelector('#hx-mz')?.innerHTML || ''), null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && (await p.$eval(MV.go, (b) => b.textContent)) === 'Working…', `hxnudge: with an amount the Shield press goes from the card: its steps said under the button, which is busy, and no sheet opens (${await text(p, '#hx-mz')})`);
     await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
     await bridgeTo(p, 'btc'); await p.click(BRG.go);
     await until(p, () => document.querySelector('#sheet-tac')?.open, null, 60000);

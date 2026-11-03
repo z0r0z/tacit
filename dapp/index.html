@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5akxwFa1Db6rQHUePW0QdM0MyPeEVvem8Pfg0AjALYU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UgB0v3ZRpM7khpXe2DCxAtIgkCHSkjlBwV28ZKQ8Z6k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://eth-mainnet.public.blastapi.io https://base.gateway.tenderly.co https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://base.rpc.blxrbdn.com https://rpc.mainnet.chain.robinhood.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com; frame-src https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -63,7 +63,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=db96a3a9">
 <link rel="modulepreload" href="/tacit-session.js?cb=a2d34bb2">
 <link rel="modulepreload" href="/activity.js?cb=5bc9627f">
-<link rel="modulepreload" href="/swap/card.js?cb=82d9e8c6">
+<link rel="modulepreload" href="/swap/card.js?cb=2f9493d7">
 <link rel="modulepreload" href="/trade/wallet.js?cb=88b623b8">
 <link rel="modulepreload" href="/trade/util.js?cb=e53086bb">
 <link rel="modulepreload" href="/trade/rpc.js?cb=cd769487">
@@ -4985,6 +4985,101 @@ function outlookPaint() {
   }
 }
 
+// What the relay asks as its tip to settle a wrap of `wei`, and where it is paid: the form's read of it and the card's. → { j, own, tip, to }
+async function readWrapTip(wei) {
+  const r = await fetch(`${API}/confidential/quote?asset=cETH&amountWei=${wei}`, { signal: within(20e3) });
+  if (!r.ok) throw new Error('The relay could not quote. Try again in a moment.');
+  const j = await r.json();
+  const own = ownNow(['wrap']);
+  // No figure means the relay could not work one out just now ("ask again"); a wrap sent with no tip draws on its free settles.
+  if (!own && !/^\d+$/.test(String(j.recommendedWrapTipWei ?? ''))) throw new Error('Could not get the relay’s tip, so nothing was sent. Try again in a moment.');
+  const tip = own ? 0n : BigInt(j.recommendedWrapTipWei), named = String(j.tipSplitter || j.recommendedTipRecipient || '').toLowerCase();
+  const to = [ADDR.tipOps, ADDR.tipSplitter].find((a) => a.toLowerCase() === named);
+  if (!to) throw new Error('The relay named a tip address this page does not know, so nothing will be sent. Try again in a moment.');
+  if (tip * 10000n > wei * 500n) throw new Error('The relay asked for more than 5% of this deposit as its tip, so nothing will be sent. A larger deposit pays a smaller share.');
+  return { j, own, tip, to };
+}
+// A wrap's steps, pressed from the Private sheet's form or from the Swap card: `x` is { wei, tip, to, at } (the amount, the relay's tip and where it goes). The proof is made first where it can be
+// (a kept one, the relay's, the holder's own) so one transaction deposits and settles; else the deposit goes first and the relay settles it. `status` is the element the steps are said in, `line()`
+// the one Activity and a failure use, `anchor` the button the points pop from; `moved` asks for a fresh quote, `clear` empties the amount, `after` redraws when it is over.
+async function wrapNow({ run, x, status, line, anchor, sheet = 'eth', clear, moved, after }) {
+  const via = payer();
+  // The relay counts a wrap as paid work while its tip is at least half of what settling costs now. A form left open while gas
+  // climbs could fall short of that, so the tip is read again after a minute and shown anew only if it has moved by half.
+  if (Date.now() - x.at > 60e3) {
+    const fresh = await readWrapTip(x.wei).catch(() => null);
+    if (fresh && fresh.tip * 2n > x.tip * 3n) { say(status, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); moved(); return; }
+  }
+  run.go({ label: `Wrap ${fmt(x.wei, 18, 6)} ETH into tETH`, status: line, clear });
+  let hash = null, landed = false, t = null, priv = null, w = null;
+  try {
+    t = await getUx(); priv = walletPriv();
+    if (ownNow(['wrap'])) await ownReady('wrap');
+    if (ownNow(['wrap']) && (await proveOwn(['wrap']))) {
+      const pop = () => rewardPop(anchor, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
+      if (devOn() && VOUCH.ahead?.ticker === 'cETH' && VOUCH.ahead.wei === String(x.wei)) { say(status, DEV_STAGE.device); await VOUCH.ahead.p; }
+      const ready = (await vouchers()).pick(S.key.pubHex, 'cETH', x.wei);
+      if (ready) {
+        try { await sendVouchers({ run, t, via, list: ready, status, sheet, pop }); return; }
+        catch (e) { if (!e?.stale) throw e; }   // one had been sent already: it is dropped, and the wrap is proved afresh below
+      }
+      await proveFirstWrap({ run, t, priv, via, wei: x.wei, status, sheet, pop });
+      return;
+    }
+    // The relay's sponsored proof, made before anything is deposited: one transaction then deposits and settles it, with the tip in it,
+    // and the private balance shows as soon as it lands. Only while the relay has no sponsored proofs left today does the deposit go
+    // first, as before.
+    if (S.key) {
+      const pop = () => rewardPop(anchor, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts }), pub = S.key.pubHex;
+      // A kept proof found already sent is dropped and the press goes round once more, proving afresh (twice at most).
+      for (let again = 0; again < 2; again++) {
+        let ready = (await vouchers()).pick(pub, 'cETH', x.wei);
+        // The pool is already proving this amount (a key just signed in, or a size just used and made again): a second proof asked of the relay
+        // would queue on the same prover behind it, so the one under way is waited for a little first.
+        if (!ready && (await poolMaking(pub, 'cETH', x.wei))) {
+          say(status, 'Your proof is nearly made. Nothing has left your wallet yet…');
+          ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3);
+        }
+        if (!ready) {
+          say(status, 'Tacit’s relay is proving your wrap first, about a minute. Nothing has left your wallet yet…');
+          if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
+          // started now; the pool's proof of the same amount is still taken if it lands first
+          const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
+          await Promise.race([made, racePoolVoucher(pub, 'cETH', x.wei, 5 * 60e3)]);
+          ready = (await vouchers()).pick(pub, 'cETH', x.wei);
+          if (!ready && (await poolMaking(pub, 'cETH', x.wei))) ready = await waitPoolVoucher(pub, 'cETH', x.wei, 60e3);
+        }
+        if (!ready) break;
+        try { await sendVouchers({ run, t, via, list: ready, status, sheet, pop, tip: { wei: x.tip, to: x.to } }); return; }
+        catch (e) { if (!e?.stale) throw e; }
+      }
+    }
+    say(status, 'Preparing your note…');
+    const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
+    w = t.buildWrap({ walletPriv: priv, amountWei: x.wei, ticker: 'cETH', index });
+    run.take(kDep(w));
+    run.check();
+    hash = runTx(run, await sendTx({ to: ADDR.wrapTip, data: SEL.wrapWithTip + strip(w.commit) + word(x.wei) + addrWord(x.to), value: x.wei + x.tip, via, label: `Deposit ${fmt(x.wei, 18, 6)} ETH to wrap` }), 'Deposit', 'Depositing');
+    rewardPop(anchor, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
+    say(status, html`Deposit sent ${txLink(hash)}. Waiting for it to land…`);
+    await waitTx(hash);
+    landed = true;
+    say(status, html`Deposited ${txLink(hash)}. The relay is proving your note, about a minute…`);
+    await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
+      go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: hash }) });
+    await scanPrivate(true).catch(() => {});
+    after();
+  } catch (e) {
+    if (w && !hash && (via === 'tacit' || walletDeclined(e))) { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'cETH', index: w.index }); } catch { } }
+    if (hash && !run.away && !e?.offered && !waitRanOut(e) && (landed || !/reverted/i.test(e?.message))) {
+      run.to.clear(); run.release(true);
+      e = keptDeposit(e, landed);
+    }
+    run.fail(run.to.status?.() || status, e);
+    scanPrivate(true).then(after).catch(() => {});
+  }
+}
 function v1Wrap(el, status) {
   mount(el, html`
     <div id="w-fund"></div>
@@ -5004,19 +5099,7 @@ function v1Wrap(el, status) {
     input.value = v ? plain(v, 18) : ''; input.dispatchEvent(new Event('input'));
     if (!v) { mount(rc, html``); warn(rc, `${payName()} holds ${fmt(bal, 18, 4)} ETH: the network fee and the relay’s tip need about ${fmt(keep, 18, 4)} ETH on top of what you make private.`); }
   };
-  const readTip = async (wei) => {
-    const r = await fetch(`${API}/confidential/quote?asset=cETH&amountWei=${wei}`, { signal: within(20e3) });
-    if (!r.ok) throw new Error('The relay could not quote. Try again in a moment.');
-    const j = await r.json();
-    const own = ownNow(['wrap']);
-    // No figure means the relay could not work one out just now ("ask again"); a wrap sent with no tip draws on its free settles.
-    if (!own && !/^\d+$/.test(String(j.recommendedWrapTipWei ?? ''))) throw new Error('Could not get the relay’s tip, so nothing was sent. Try again in a moment.');
-    const tip = own ? 0n : BigInt(j.recommendedWrapTipWei), named = String(j.tipSplitter || j.recommendedTipRecipient || '').toLowerCase();
-    const to = [ADDR.tipOps, ADDR.tipSplitter].find((a) => a.toLowerCase() === named);
-    if (!to) throw new Error('The relay named a tip address this page does not know, so nothing will be sent. Try again in a moment.');
-    if (tip * 10000n > wei * 500n) throw new Error('The relay asked for more than 5% of this deposit as its tip, so nothing will be sent. A larger deposit pays a smaller share.');
-    return { j, own, tip, to };
-  };
+  const readTip = readWrapTip;
   onEdit([input], go, async (e) => {
     const my = ++seq;
     const wei = parseUnits(input.value);
@@ -5043,92 +5126,15 @@ function v1Wrap(el, status) {
       const over = bal != null && wei + tip > bal;
       go.disabled = over;
       if (over) warn(rc, lowEth());
-      // pressed on the front card with this amount: it goes on from here, at the tip shown above (held under 5% of the deposit by readTip)
-      const pressed = WRAP_GO.v;
-      if (pressed?.wei === wei && Date.now() - pressed.at < 60e3 && !over) { WRAP_GO.v = null; setTimeout(() => { if (q?.wei === wei && !go.disabled) go.click(); }); }
       const floor = BigInt(j.gasAwareFloorUnits || j.staticFloorUnits || 0) * E10;
       if (!over && floor && wei < 3n * floor) rc.insertAdjacentHTML('beforeend', html`<p class="note">Sending or unwrapping a note this small later costs about ${fmt(floor, 18, 6)} ETH in relay fees.</p>`.s);
     } catch (e) { if (my === seq) quoteErr(rc, e); }
   });
   takeDraft('wrap', input, (d) => !d.all);
   go.onclick = () => busy(go, async (run) => {
-    const x = q, via = payer();
-    if (!x) return;
-    // The relay counts a wrap as paid work while its tip is at least half of what settling costs now. A form left open while gas
-    // climbs could fall short of that, so the tip is read again after a minute and shown anew only if it has moved by half.
-    if (Date.now() - x.at > 60e3) {
-      const fresh = await readTip(x.wei).catch(() => null);
-      if (fresh && fresh.tip * 2n > x.tip * 3n) { say(status, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); q = null; input.dispatchEvent(new Event('input')); return; }
-    }
-    run.go({ label: `Wrap ${fmt(x.wei, 18, 6)} ETH into tETH`, status: () => $('#v1-status'), clear: () => { clearField(input); input.dispatchEvent(new Event('input')); } });
-    let hash = null, landed = false, t = null, priv = null, w = null;
-    try {
-      t = await getUx(); priv = walletPriv();
-      if (ownNow(['wrap'])) await ownReady('wrap');
-      if (ownNow(['wrap']) && (await proveOwn(['wrap']))) {
-        const pop = () => rewardPop(go, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
-        if (devOn() && VOUCH.ahead?.ticker === 'cETH' && VOUCH.ahead.wei === String(x.wei)) { say(status, DEV_STAGE.device); await VOUCH.ahead.p; }
-        const ready = (await vouchers()).pick(S.key.pubHex, 'cETH', x.wei);
-        if (ready) {
-          try { await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop }); return; }
-          catch (e) { if (!e?.stale) throw e; }   // one had been sent already: it is dropped, and the wrap is proved afresh below
-        }
-        await proveFirstWrap({ run, t, priv, via, wei: x.wei, status, sheet: 'eth', pop });
-        return;
-      }
-      // The relay's sponsored proof, made before anything is deposited: one transaction then deposits and settles it, with the tip in it,
-      // and the private balance shows as soon as it lands. Only while the relay has no sponsored proofs left today does the deposit go
-      // first, as before.
-      if (S.key) {
-        const pop = () => rewardPop(go, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts }), pub = S.key.pubHex;
-        // A kept proof found already sent is dropped and the press goes round once more, proving afresh (twice at most).
-        for (let again = 0; again < 2; again++) {
-          let ready = (await vouchers()).pick(pub, 'cETH', x.wei);
-          // The pool is already proving this amount (a key just signed in, or a size just used and made again): a second proof asked of the relay
-          // would queue on the same prover behind it, so the one under way is waited for a little first.
-          if (!ready && (await poolMaking(pub, 'cETH', x.wei))) {
-            say(status, 'Your proof is nearly made. Nothing has left your wallet yet…');
-            ready = await waitPoolVoucher(pub, 'cETH', x.wei, 20e3);
-          }
-          if (!ready) {
-            say(status, 'Tacit’s relay is proving your wrap first, about a minute. Nothing has left your wallet yet…');
-            if (VOUCH.ahead?.relay && VOUCH.ahead.wei !== String(x.wei)) await VOUCH.ahead.p.catch(() => {});
-            // started now; the pool's proof of the same amount is still taken if it lands first
-            const made = (proveAhead('cETH', x.wei, { relay: true, now: true }) || Promise.resolve()).catch(() => {});
-            await Promise.race([made, racePoolVoucher(pub, 'cETH', x.wei, 5 * 60e3)]);
-            ready = (await vouchers()).pick(pub, 'cETH', x.wei);
-            if (!ready && (await poolMaking(pub, 'cETH', x.wei))) ready = await waitPoolVoucher(pub, 'cETH', x.wei, 60e3);
-          }
-          if (!ready) break;
-          try { await sendVouchers({ run, t, via, list: ready, status, sheet: 'eth', pop, tip: { wei: x.tip, to: x.to } }); return; }
-          catch (e) { if (!e?.stale) throw e; }
-        }
-      }
-      say(status, 'Preparing your note…');
-      const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
-      w = t.buildWrap({ walletPriv: priv, amountWei: x.wei, ticker: 'cETH', index });
-      run.take(kDep(w));
-      run.check();
-      hash = runTx(run, await sendTx({ to: ADDR.wrapTip, data: SEL.wrapWithTip + strip(w.commit) + word(x.wei) + addrWord(x.to), value: x.wei + x.tip, via, label: `Deposit ${fmt(x.wei, 18, 6)} ETH to wrap` }), 'Deposit', 'Depositing');
-      rewardPop(go, { pts: hxPts('wrap', Number(x.wei) / 1e18)?.pts });
-      say(status, html`Deposit sent ${txLink(hash)}. Waiting for it to land…`);
-      await waitTx(hash);
-      landed = true;
-      say(status, html`Deposited ${txLink(hash)}. The relay is proving your note, about a minute…`);
-      await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet: 'eth', status: () => $('#v1-status'),
-        go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-        relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: hash }) });
-      await scanPrivate(true).catch(() => {});
-      rerender('eth');
-    } catch (e) {
-      if (w && !hash && (via === 'tacit' || walletDeclined(e))) { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'cETH', index: w.index }); } catch { } }
-      if (hash && !run.away && !e?.offered && !waitRanOut(e) && (landed || !/reverted/i.test(e?.message))) {
-        run.to.clear(); input.dispatchEvent(new Event('input')); run.release(true);
-        e = keptDeposit(e, landed);
-      }
-      run.fail(run.to.status?.() || status, e);
-      scanPrivate(true).then(() => rerender('eth')).catch(() => {});
-    }
+    if (!q) return;
+    await wrapNow({ run, x: q, status, line: () => $('#v1-status') || status, anchor: go, sheet: 'eth', clear: () => { clearField(input); input.dispatchEvent(new Event('input')); },
+      moved: () => { q = null; input.dispatchEvent(new Event('input')); }, after: () => rerender('eth') });
   });
 }
 const getNames = lazy(async () => {
@@ -5391,6 +5397,43 @@ function v1Swap(el, status) {
   });
 }
 
+// A withdrawal's steps (tETH out of the pool as ETH to an address), pressed from the Private sheet's form or from the Swap card: `x` is { units, fee, minFee, own } as quoted and `raw` the
+// address. The note is cut to size first if none is, the fee read again once it is ready, and a proof made ahead is posted if there is one; else the relay proves it. `status` is the element
+// the steps are said in, `line()` the one Activity and a failure use; `moved` asks for a fresh quote when the fee went up, `clear` empties the amount, `after` redraws when it is over.
+async function unwrapNow({ run, x, raw, status, line, sheet = 'eth', clear, moved, after }) {
+  const label = `Withdraw ${fmt(x.units, 8, 6)} ETH to ${short(raw, 6)}`;
+  run.go({ label, status: line, clear });
+  try {
+    const t = await getUx(), priv = walletPriv(), recipient = recipientOf(raw);
+    const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) >= x.units, status);
+    // The fee is read again now that the note is ready (a combine can take minutes). One above what was shown stops here; the one sent is
+    // pinned, so the pool module never raises it behind the form's back.
+    let feeOpts = null;
+    if (!x.own) {
+      const minFee = await t.quoteOpFee('cETH', BigInt(note.value) === x.units ? 'unwrap' : 'sendunwrap'), fee = t.quoteUnwrapFee(x.units, 'cETH', { minFee }).fee;
+      if (fee > x.fee) throw Object.assign(new Error(`The relay fee is now ${fmt(fee, 8, 8)} ETH, up from ${fmt(x.fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
+      feeOpts = { minFee };
+    }
+    const exit = { to: recipient, units: String(x.units), note: kNote(note), from: 'eth', sheet: 'eth' };
+    // Proved already (asked as the form settled): the proof is posted and the relay sends it, if it is for this note, this amount and
+    // this address and its fee still covers the relay's floor. Once posted it is waited for; before, anything amiss exits as before.
+    const ahead = !x.own && !sealOn() ? await exitAheadReady(x.units, raw, note) : null;
+    if (ahead && ahead.fee >= (feeOpts ? t.quoteUnwrapFee(x.units, 'cETH', feeOpts).fee : x.fee)) {
+      run.say(status, 'Proved already. The relay is sending it…');
+      await t.exitAheadSend(ahead, { walletPriv: priv, waitOpts: run.wait(null, 15 * 60e3, { exit }) });
+      EXIT_AHEAD.key = null;
+      run.say(status, html`<span class="ok">Done.</span>`); toast(`${run.to.label}: done`);
+      await scanPrivate(true).catch(() => {});
+      after();
+      return;
+    }
+    run.say(status, 'The relay is proving your withdrawal…');
+    await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, x.units), label, sheet, status: line,
+      relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: x.units, ...(feeOpts ? { feeOpts } : {}), waitOpts: run.wait(null, 15 * 60e3, { exit }) }) });
+    await scanPrivate(true).catch(() => {});
+    after();
+  } catch (e) { run.fail(status, e); if (e?.feeMoved) moved(); }
+}
 function v1Out(el, status) {
   const held = spendable('eth');
   mount(el, html`
@@ -5455,38 +5498,8 @@ function v1Out(el, status) {
   const od = hxLive('out'); if (od?.to) to.value = od.to;
   takeDraft('out', amt);
   go.onclick = () => busy(go, async (run) => {
-    const x = q, raw = to.value.trim();
-    if (!x) return;
-    run.go({ label: `Withdraw ${fmt(x.units, 8, 6)} ETH to ${short(raw, 6)}`, status: () => $('#v1-status'), clear: () => { clearField(amt); } });
-    try {
-      const t = await getUx(), priv = walletPriv(), recipient = recipientOf(raw);
-      const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) >= x.units, status);
-      // The fee is read again now that the note is ready (a combine can take minutes). One above what was shown stops here; the one sent is
-      // pinned, so the pool module never raises it behind the form's back.
-      let feeOpts = null;
-      if (!x.own) {
-        const minFee = await t.quoteOpFee('cETH', BigInt(note.value) === x.units ? 'unwrap' : 'sendunwrap'), fee = t.quoteUnwrapFee(x.units, 'cETH', { minFee }).fee;
-        if (fee > x.fee) throw Object.assign(new Error(`The relay fee is now ${fmt(fee, 8, 8)} ETH, up from ${fmt(x.fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
-        feeOpts = { minFee };
-      }
-      // Proved already (asked as the form settled): the proof is posted and the relay sends it, if it is for this note, this amount and
-      // this address and its fee still covers the relay's floor. Once posted it is waited for; before, anything amiss exits as before.
-      const ahead = !x.own && !sealOn() ? await exitAheadReady(x.units, raw, note) : null;
-      if (ahead && ahead.fee >= (feeOpts ? t.quoteUnwrapFee(x.units, 'cETH', feeOpts).fee : x.fee)) {
-        run.say(status, 'Proved already. The relay is sending it…');
-        await t.exitAheadSend(ahead, { walletPriv: priv, waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(x.units), note: kNote(note), from: 'eth', sheet: 'eth' } }) });
-        EXIT_AHEAD.key = null;
-        run.say(status, html`<span class="ok">Done.</span>`); toast(`${run.to.label}: done`);
-        await scanPrivate(true).catch(() => {});
-        rerender('eth');
-        return;
-      }
-      run.say(status, 'The relay is proving your withdrawal…');
-      await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, x.units), label: `Withdraw ${fmt(x.units, 8, 6)} ETH to ${short(raw, 6)}`, sheet: 'eth', status: () => $('#v1-status'),
-        relayed: () => t.sendUnwrap({ note, walletPriv: priv, recipient, amount: x.units, ...(feeOpts ? { feeOpts } : {}), waitOpts: run.wait(null, 15 * 60e3, { exit: { to: recipient, units: String(x.units), note: kNote(note), from: 'eth', sheet: 'eth' } }) }) });
-      await scanPrivate(true).catch(() => {});
-      rerender('eth');
-    } catch (e) { run.fail(status, e); if (e?.feeMoved) amt.dispatchEvent(new Event('input')); }
+    if (!q) return;
+    await unwrapNow({ run, x: q, raw: to.value.trim(), status, line: () => $('#v1-status'), sheet: 'eth', clear: () => clearField(amt), moved: () => amt.dispatchEvent(new Event('input')), after: () => rerender('eth') });
   });
 }
 
@@ -8778,8 +8791,6 @@ const keepSizes = (tk = 'cETH') => { if (!S.key) return []; const v = store.get(
 // asking before the deposit costs it nothing more), when your own prover is not on. It answers in about a minute, so asking once an
 // amount has settled in the form is cheap: Send then finds the proof made, or nearly. At most RELAY_AHEAD a page, one at a time.
 const RELAY_AHEAD = 4;
-// A wrap pressed on the front card, carried to the wrap form with its amount (one press: the form sends it as it opens).
-const WRAP_GO = { v: null };
 // Tacit's relay is proving now: a proof asked of one that is paused or down would only wait.
 const relayProving = async () => !!(await (await getUx()).relay.state().catch(() => null))?.proving;
 function proveAhead(ticker, wei, { relay = false, now = false } = {}) {
@@ -13379,10 +13390,10 @@ async function hxOutQuote(units) {
   const fee = own ? 0n : t.quoteUnwrapFee(units, 'cETH', { minFee: await t.quoteOpFee('cETH', exitKind('eth', units)) }).fee;
   const size = own || held == null || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee('cETH', 'transfer'));
   const over = held != null && units + size > held, small = units <= fee;
-  return { out: over || small ? '—' : fmt(units - fee, 8, 6), go: 'Turn tETH into ETH', warn: over || small,
+  return { out: over || small ? '—' : fmt(units - fee, 8, 6), go: 'Turn tETH into ETH', warn: over || small, fee,
     line: over ? feeRoom(units, size, held, P.scan?.eth.notes, (v) => `${fmt(v, 8, 6)} tETH`) || `You hold ${fmt(held, 8, 6)} tETH.`
       : small ? `Take out more than ${fmt(fee, 8, 6)} tETH: the relay fee comes out of it.` : '',
-    rc: over || small ? [] : [['Arrives', 'in your wallet or at any address'], own ? ['Relay fee', 'none: your own proof'] : ['Relay fee', `${fmt(fee, 8, 6)} ETH, out of it`],
+    rc: over || small ? [] : [['Arrives', 'in your wallet'], own ? ['Relay fee', 'none: your own proof'] : ['Relay fee', `${fmt(fee, 8, 6)} ETH, out of it`],
       size ? ['Combines notes', `${fmt(size, 8, 6)} tETH first`] : null] };
 }
 function hxSendWalletQuote(units) {
@@ -13989,6 +14000,7 @@ const hxMoves = {
     HXM.cb = (q) => { if (q) cb({ ...q, free: hxMoveFree(), fixed: hxMoveFixed() }); };
     hxMoveSet(key, amt); hxQuote();
   },
+  // a move the page does in place keeps the card's button on Working… (card.working) and says its steps in the slot under it
   go: (key, amt) => { if (HX.tab !== 'swap') return; hxMoveSet(key, amt); hxNorm(); hxGo(); },
   idle: () => { HXM.key = null; HXM.cb = null; },
   // what a move's source holds, in the card's units (18 decimals), and what Max puts in: that, less what its own fees keep back
@@ -14716,10 +14728,10 @@ function hxGo() {
     return;
   }
   const wrapFirst = (link, label, then, card = null) => { FARM.back = link ? { link, label, at: Date.now(), then, card, amt } : null; hxDraft({ mode: 'wrap', amt }); openLink('private'); };
-  if (m === 'private') { WRAP_GO.v = S.key && units ? { wei: units * E10, at: Date.now() } : null; return wrapFirst(); }
+  if (m === 'private') return hxWrapGo(units);
   if (m === 'pay') { const c = hxChain(); hxDraft({ mode: 'dep', amt, chain: c.chainId }); return openLink(`device/${chainSlug(c)}/deposit`); }
   if (m === 'btcpool') { location.href = '/tac/'; return; }
-  if (m === 'unwrap') { hxDraft({ mode: 'out', amt }); return openLink('private/withdraw'); }
+  if (m === 'unwrap') return hxUnwrapGo(units);
   if (m === 'tacpub') return openLink('tac');
   if (m === 'tacwrap') { hxDraft({ mode: 'tacwrap', amt }); return openLink('tac'); }
   if (m === 'paytac') { hxDraft({ mode: 'dep', amt, tac: true }); return openLink('device/tac/deposit'); }
@@ -14858,6 +14870,52 @@ async function hxPubGo(units) {
     } catch (e) { txFail(run, HX.zs, e); }
   });
 }
+// ── Moves the Swap card hands the page, done in place: the card's own button (busy until it is done) and the slot under it (#mv-st) for the steps, one line kept across repaints (HX.mz) ──
+function hxMoveSlot() {
+  HX.mz ||= Object.assign(document.createElement('p'), { className: 'q', id: 'hx-mz' });
+  HX.mz.setAttribute('aria-live', 'polite');
+  SWC.el?.querySelector('#mv-st')?.replaceChildren(HX.mz);
+  return HX.mz;
+}
+const hxMoveAfter = () => { SWC.card?.readBalances?.(); hxBalPaint(); dashSoon(); };
+// ETH made private from the card: what the Private sheet's form does (wrapNow), at the tip the card showed unless the relay's has moved by half since
+async function hxWrapGo(units) {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || !units || go.getAttribute('aria-busy') === 'true') return;
+  const wei = units * E10, key = String(units), shown = HXT.m.get(key)?.v, st = hxMoveSlot();
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    try {
+      const fresh = await readWrapTip(wei);
+      if (!fresh.own && shown != null && fresh.tip * 2n > shown * 3n) { say(st, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); HXT.m.delete(key); HX.q = null; hxQuote(); return; }
+      const x = { wei, tip: fresh.own ? 0n : shown ?? fresh.tip, to: fresh.to, at: Date.now() }, bal = await ethBalance();
+      if (bal != null && wei + x.tip > bal) { say(st, html`<span class="err">More than ${your()} holds, with the relay’s tip.</span>`); return; }
+      say(st, '');
+      await wrapNow({ run, x, status: st, line: () => st, anchor: go, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
+    } catch (e) { run.fail(st, e); }
+  }).finally(() => SWC.card?.working?.(false));
+}
+// tETH back to ETH from the card: what the Private sheet's Withdraw does (unwrapNow), to the paying account, at the relay fee the card showed unless it has gone up since
+async function hxUnwrapGo(units) {
+  if (!S.key) return openSheet('wallet');
+  const go = SWC.el?.querySelector('#go');
+  if (!go || !units || go.getAttribute('aria-busy') === 'true') return;
+  const st = hxMoveSlot(), shown = HX.q?.fee;
+  SWC.card?.working?.(true);
+  return busy(go, async (run) => {
+    try {
+      const raw = await payingAccount(), t = await getUx(), own = ownNow(['sendunwrap', 'unwrap']), held = spendable('eth'), notes = freeNotes(P.scan?.eth.notes);
+      const minFee = own ? 0n : await t.quoteOpFee('cETH', exitKind('eth', units)), fee = own ? 0n : t.quoteUnwrapFee(units, 'cETH', { minFee }).fee;
+      const size = own || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee('cETH', 'transfer'));
+      if (units + size > held) { say(st, html`<span class="err">${feeRoom(units, size, held, P.scan?.eth.notes, (v) => `${fmt(v, 8, 6)} tETH`) || overBalance()}</span>`); return; }
+      if (units <= fee) { say(st, html`<span class="err">Take out more than ${fmt(fee, 8, 6)} tETH: the relay fee comes out of it.</span>`); return; }
+      if (shown != null && fee > shown) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
+      say(st, '');
+      await unwrapNow({ run, x: { units, fee, minFee, own }, raw, status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
+    } catch (e) { run.fail(st, e); }
+  }).finally(() => SWC.card?.working?.(false));
+}
 // A zap that landed and is not in the farm yet, finished from the card
 const hxFinishZap = (p) => hxEarnRun(async (run) => { await zapsFinish(run, p, HX.zs); hxEarnAfter(); });
 // The card's quick amounts for ETH into a farm: the sizes kept ready, each marked once its proof is made for the farm picked (pressed, it
@@ -14977,7 +15035,7 @@ function swcPace(id) {
   if (b) b.dataset.pace = id;
   else q.insertAdjacentHTML('afterend', html`<div class="pace" data-card="1" data-pace="${id}"><div class="actr-bar" role="progressbar" aria-label="How far along" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i style="width:0%"></i></div><span></span></div>`.s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=82d9e8c6').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=2f9493d7').catch((e) => { SWC.p = null; throw e; }));
 function swcAsk() { if (SWC.ask && SWC.card?.load(SWC.ask)) SWC.ask = null; }
 function hxSwap() {
   const put = () => { const s = $('#hx-swap'); if (s && s !== SWC.el) { s.replaceWith(SWC.el); SWC.card?.requote?.(); } swcAsk(); };
