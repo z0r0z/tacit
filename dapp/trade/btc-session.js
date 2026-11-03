@@ -42,6 +42,28 @@ function restoreNetwork() {
 
 // `moved(text)`: the wallet that opened the key has moved to another account or locked, and `text` says so. The page locks the key in full and says it;
 // a page that gives no `moved` has the session lock.
+// A Bitcoin wallet's way in, in a turn of tacit.js (`T`): the wallet signs, and the key it opens is taken out of tacit.js's wallet with `tPriv`.
+// `k` is the record of a wallet opened before, whose account must be the one connected. /trade and the fast bridge page both open a key this way.
+const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new Error('Your Bitcoin wallet is on a test network. Switch it to mainnet.'); };
+export async function openBtcWallet(T, { k = null, tPriv, passkey = false }) {
+  T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null;
+  const av = T.extWallet.available();
+  if (!av.satsConnect && !av.unisat) throw new Error(`No Bitcoin wallet found in this browser. Install Xverse, Leather or UniSat${passkey ? ', or use a passkey' : ''}.`);
+  const st = await T.extWallet.connectDefault();
+  mainnetBtc(st.address);
+  if (k?.address && st.address !== k.address) { T.extWallet.state = null; throw new Error(`Switch your Bitcoin wallet to ${short(k.address, 6)}, the account this Tacit wallet was opened with.`); }
+  // A wallet enrolled before signs once and must open the key it opened then; a new one signs twice, the second proving it signs the same way.
+  const prior = k?.btc?.address === st.address ? k.btc : T.btcWallet._read?.();
+  T.btcWallet.state = prior?.address === st.address ? prior : null;
+  try {
+    if (T.btcWallet.state) await T.btcWallet.login(); else await T.btcWallet.enroll();
+    return { mode: 'btc', priv: tPriv(), pubHex: T.btcWallet.state.tacitPubkey, address: st.address, btc: { ...T.btcWallet.state } };
+  } catch (e) {
+    if (e?._btcNonDeterministic) { T.btcWallet.state = null; T.extWallet.state = null; throw new Error('This Bitcoin wallet signs differently each time, so it cannot open a Tacit wallet by itself. Open your Tacit wallet in the classic app, or use a passkey or an Ethereum wallet.'); }
+    T.extWallet.state = null; throw e;
+  }
+}
+
 export function makeBtcSession({ moved = null } = {}) {
   let T = null, D = null, prf = null, K = null, evm = null, loading = null, key = null, walletQ = Promise.resolve();
   const listeners = new Set(), emit = () => listeners.forEach((f) => { try { f(); } catch { /* a listener must not break the session */ } });
@@ -72,7 +94,6 @@ export function makeBtcSession({ moved = null } = {}) {
 
   const pubOf = (privHex) => D.bytesToHex(D.secp.getPublicKey(D.hexToBytes(privHex), true));
   const tPriv = () => { const h = D.bytesToHex(T.wallet.priv); T.wallet.priv.fill(0); T.wallet.priv = null; return h; };
-  const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new Error('Your Bitcoin wallet is on a test network. Switch it to mainnet.'); };
 
   // Every way in ends here: the key goes into tacit.js for this visit, and only the key the wallet said it would open.
   async function setKey(k) {
@@ -126,24 +147,7 @@ export function makeBtcSession({ moved = null } = {}) {
     },
     async btc(k) {
       await load();
-      await setKey(await turn(async () => {
-        T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null;
-        const av = T.extWallet.available();
-        if (!av.satsConnect && !av.unisat) throw new Error(`No Bitcoin wallet found in this browser. Install Xverse, Leather or UniSat${prf.isPasskeyAvailable() ? ', or use a passkey' : ''}.`);
-        const st = await T.extWallet.connectDefault();
-        mainnetBtc(st.address);
-        if (k?.address && st.address !== k.address) { T.extWallet.state = null; throw new Error(`Switch your Bitcoin wallet to ${short(k.address, 6)}, the account this Tacit wallet was opened with.`); }
-        // A wallet enrolled before signs once and must open the key it opened then; a new one signs twice, the second proving it signs the same way.
-        const prior = k?.btc?.address === st.address ? k.btc : T.btcWallet._read?.();
-        T.btcWallet.state = prior?.address === st.address ? prior : null;
-        try {
-          if (T.btcWallet.state) await T.btcWallet.login(); else await T.btcWallet.enroll();
-          return { mode: 'btc', priv: tPriv(), pubHex: T.btcWallet.state.tacitPubkey, address: st.address, btc: { ...T.btcWallet.state } };
-        } catch (e) {
-          if (e?._btcNonDeterministic) { T.btcWallet.state = null; T.extWallet.state = null; throw new Error('This Bitcoin wallet signs differently each time, so it cannot open a Tacit wallet by itself. Open your Tacit wallet in the classic app, or use a passkey or an Ethereum wallet.'); }
-          T.extWallet.state = null; throw e;
-        }
-      }));
+      await setKey(await turn(() => openBtcWallet(T, { k, tPriv, passkey: prf.isPasskeyAvailable() })));
     },
   };
 

@@ -3,7 +3,7 @@
 // a whole cBTC note and its repayment, the mint and the loans relayed. Paying the deposit address from a wallet in the browser, a note cut to
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=7dcdc872';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
 import { readLocks, readLoans, readHeld, readEngine, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=99c6a3ca';
 import { makeLoans, exactNotes, bondGap, bondCall, outpointOf, lockPad, loanHealth, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=13923518';

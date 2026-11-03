@@ -1,4 +1,6 @@
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=7dcdc872';
+import { openBtcWallet } from '/trade/btc-session.js?cb=0f0a650d';
+import { isPasskeyAvailable } from '/prf-wallet.js';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=709c122d';
 import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=ac4a1175';
 import { mountFast } from '/fast/ui.js?cb=4b8f2670';
@@ -41,9 +43,10 @@ const settings = {
   set: (pub, v) => { try { localStorage.setItem(SETTINGS(pub), JSON.stringify(v)); } catch { /* a convenience */ } },
 };
 
-let ui = null;
-const keyS = makeKeySession({ moved: (why) => ui?.lock(why) });
-const TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
+let ui = null, TS = null;
+// a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway
+const keyS = makeKeySession({ moved: (why) => ui?.lock(why), ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
+TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
 keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 
 ui = mountFast({
