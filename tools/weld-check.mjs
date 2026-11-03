@@ -31,6 +31,7 @@
 //   hxplace  Shield and Earn: the places that hold something are marked on the switch; a card opened on a place that holds nothing moves to the first that does until one is chosen, and keeps the place it opened on for the next visit
 //   hxsendtac TAC in the wallet (the ERC-20): Send offers it, quotes a plain public transfer, and opens the TAC sheet's public source with the amount and the address (which then sends it); a Tacit address is said to need private TAC; Shield offers wallet TAC as private TAC with the amount carried to the TAC sheet; with no private TAC the Send line offers making wallet TAC private; Shield's For payments way opens the TAC pool's Deposit with the amount, the pool's sheet is named for it, and a link naming no pool opens an ETH pool
 //   hxsendwallet a wallet connected with no Tacit key holding TAC: the card's Send quotes its transfer (a small amount whole), and the TAC sheet shows the public send form, which sends it
+//   sendhere  the Send tab's pool payments go from the tile with no sheet, the steps under the button: tETH to a Tacit address (the relay splits a note first, then the lock follows), tETH out to an Ethereum address, and private TAC to a Tacit address, each to its toast
 //   farmcoming a private farm opened while a wrap is settling says the tETH is on its way instead of asking for it again
 //   farmzap  one side alone farms: Max takes the whole balance, the quote says what is swapped and what both sides add, and the
 //            press cuts the swap note, swaps it in the farm's pool, cuts what pairs with the return and bonds both
@@ -195,7 +196,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || '/Users/z/zFi/node_module
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
-const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
+const ONLY = new Set((process.argv[2] || 'airdrop,links,swapurl,swapfield,hints,hxbridge,hxbridgec,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,pxs,pxsback,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,selffund,selfeth,selfprove,exitahead,selfdevice,wrapfirst,poolkeep,poolwait,poolstale,poolfunds,tacvoucher,relaystate,relayfail,selfwallet,slowline').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -6207,11 +6208,8 @@ await step('activity', async () => {
 // to what the key's scan finds and its relayed calls stood in for: each names its job to the caller (as the relay
 // client does), announces it, and waits for the test to let the relay finish it. A send needing a split goes back to
 // the relay on its own, a withdrawal starts meanwhile on another note, and neither reaches for the other's notes.
-await step('receipts', async () => {
-  const served = {};
-  const r = await openPage({ account: A0, key: K0, viewport: { width: 390, height: 900 } });
-  await serveStatus(r.ctx, served);
-  await r.page.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+// The pool's ux with jobs held at a gate the check opens (window.__rx: notes, calls, gates): a send's split, lock or exit waits there, as the relay's would.
+const rxStub = (pg) => pg.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {
@@ -6260,6 +6258,11 @@ await step('receipts', async () => {
       ux.unwrap = async ({ note: n, waitOpts }) => job('unwrap', waitOpts, [n], []);
       return ux;
     }` }));
+await step('receipts', async () => {
+  const served = {};
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 390, height: 900 } });
+  await serveStatus(r.ctx, served);
+  await rxStub(r.page);
   const rx = () => r.page.evaluate(() => ({ calls: window.__rx?.calls || [], notes: (window.__rx?.notes || []).map((n) => [n.leaf, n.value]) }));
   const open = (id, out = 'ok') => r.page.evaluate(([i, o]) => window.__rx.gates[i](o), [id, out]);
   const toastHas = (re, ms = 20000) => until(r.page, (s) => new RegExp(s).test(document.querySelector('#toast-container')?.textContent || ''), re.source, ms).then(() => true, () => false);
@@ -7066,6 +7069,73 @@ await step('swapahead', async () => {
   } finally { proveStub = false; await rpc('anvil_setCode', [ROUTER_ADDR, routerCode]); await r.browser.close(); }
 });
 
+// The Send tab's pool payments go from the tile, no sheet over it, the steps said under the button: tETH to a Tacit address (the relay first splits a note that is not the amount, then the
+// note is locked to them), tETH out to an Ethereum address, and private TAC to a Tacit address (a note of exactly that amount, locked at once). The pool's jobs wait at the gates the check opens.
+await step('sendhere', async () => {
+  const served = {};
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1300 } }), p = r.page;
+  await serveStatus(r.ctx, served);
+  await rxStub(p);
+  const rx = () => p.evaluate(() => ({ calls: window.__rx?.calls || [], notes: (window.__rx?.notes || []).map((n) => [n.leaf, n.value]) }));
+  const open = (id, out = 'ok') => p.evaluate(([i, o]) => window.__rx.gates[i](o), [id, out]);
+  const toastHas = (re, ms = 30000) => until(p, (s) => new RegExp(s).test(document.querySelector('#toast-container')?.textContent || ''), re.source, ms).then(() => true, () => false);
+  const REC = tacit1('d1'.padEnd(64, '7')), DEAD = '0x000000000000000000000000000000000000dEaD';
+  const quoted = (re) => until(p, (s) => new RegExp(s).test(document.querySelector('#hx-receipt')?.textContent || '') && !document.querySelector('#hx-go').disabled, re.source, 120000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, 'e1'.padEnd(64, '5'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    await p.click('[data-hxm="send"]');
+    await p.selectOption('#hx-sa', 'eth');
+    await until(p, () => /^Balance 0\.55 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | bal: ${await text(p, '#hx-bal')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    await sheetsSeen(p);
+    // tETH to a Tacit address: no note is exactly 0.1, so the relay splits the 0.2 note first, the amount is cleared as it takes it, and the lock follows by itself
+    await p.fill('#hx-rcpt', REC); await p.fill('#hx-amt', '0.1');
+    await quoted(/They get\s*about/);
+    await p.click('#hx-go');
+    await until(p, () => /Sent to the relay/.test(document.querySelector('#hx-ss')?.textContent || ''), null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ss: ${await text(p, '#hx-ss')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const a0 = await rx();
+    ok(a0.calls.length === 1 && a0.calls[0].type === 'transfer' && a0.calls[0].spend[0] === a0.notes[1][0], `sendhere: tETH to a Tacit address starts by splitting the 0.2 note, from the tile (${JSON.stringify(a0.calls)})`);
+    ok((await p.inputValue('#hx-amt')) === '' && (await p.evaluate(() => window.__sheetSeen)) === '', `sendhere: the amount is cleared and no sheet opened (${await text(p, '#hx-ss')})`);
+    await shot(p, 'sendhere');
+    await open(a0.calls[0].jobId);
+    await until(p, () => (window.__rx?.calls || []).length === 2, null, 120000).catch(() => {});
+    const a1 = await rx(), made = a1.notes.find(([, v]) => v === '10000000');
+    ok(a1.calls[1]?.type === 'stealthlock' && made && a1.calls[1].spend[0] === made[0], `sendhere: after the split it locks the new 0.1 note on its own (${JSON.stringify(a1.calls[1] || null)})`);
+    await open(a1.calls[1].jobId);
+    ok(await toastHas(/Send 0\.1 tETH privately to [^:]+: done/) && !/class="err"/.test(await p.$eval('#hx-ss', (e) => e.innerHTML)), 'sendhere: the send is toasted done and the line under the button shows no error');
+    // tETH to an Ethereum address: the 0.3 note covers it with no split, and it goes out through the relay
+    await p.fill('#hx-rcpt', DEAD); await p.fill('#hx-amt', '0.25');
+    await quoted(/Relay fee/);
+    ok(/Send to the address/.test(await text(p, '#hx-go')), 'sendhere: an 0x address is paid out of the pool');
+    await p.click('#hx-go');
+    await until(p, () => (window.__rx?.calls || []).length === 3, null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ss: ${await text(p, '#hx-ss')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const b0 = await rx();
+    ok(b0.calls[2].type === 'sendunwrap' && b0.calls[2].spend[0] === b0.notes[0][0] && (await p.evaluate(() => window.__sheetSeen)) === '', `sendhere: tETH out to the address starts at once, on the 0.3 note, from the tile (${JSON.stringify(b0.calls[2])})`);
+    await open(b0.calls[2].jobId);
+    ok(await toastHas(/Withdraw 0\.25 ETH to [^:]+: done/), 'sendhere: and is toasted done');
+    // private TAC to a Tacit address: one note is exactly 3, so it is locked with no split
+    await p.selectOption('#hx-sa', 'tac');
+    await until(p, () => /^Balance 8 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 120000);
+    await p.fill('#hx-rcpt', REC); await p.fill('#hx-amt', '3');
+    await quoted(/They get\s*about/);
+    await p.click('#hx-go');
+    await until(p, () => (window.__rx?.calls || []).length === 4, null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ss: ${await text(p, '#hx-ss')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const c0 = await rx();
+    ok(c0.calls[3].type === 'stealthlock' && c0.calls[3].spend[0] === c0.notes[4][0] && (await p.evaluate(() => window.__sheetSeen)) === '', `sendhere: private TAC to a Tacit address locks the 3 TAC note with no split, from the tile (${JSON.stringify(c0.calls[3])})`);
+    await open(c0.calls[3].jobId);
+    ok(await toastHas(/Send 3 TAC privately to [^:]+: done/), 'sendhere: and is toasted done');
+    ok((await p.evaluate(() => window.__sheetSeen)) === '', `sendhere: no sheet opened at any point (${await p.evaluate(() => window.__sheetSeen)})`);
+    if (r.errors.length) { fails++; console.log('FAIL sendhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
 // A name with no Tacit address published, paid at its Ethereum address instead. The card's Send of private tETH to such a name says, under the
 // field, that it is paid at the name's address, out of the pool, quotes it as a send to an address, and its press opens the withdrawal with that
 // address; the private TAC send form quotes a name like that as arriving at its address, the name named in the receipt. (The name is a stand-in:
@@ -7093,10 +7163,10 @@ await step('hxsendname', async () => {
     const rc = (await text(p, '#hx-rc')).replace(/\s+/g, ' '), rcpt = (await text(p, '#hx-receipt')).replace(/\s+/g, ' ');
     ok(/out-only\.wei has no Tacit address, so it is paid at/.test(rc) && !(await p.$eval('#hx-rc', (e) => e.classList.contains('warn'))) && /at that address/.test(rcpt) && /Send to the address/.test(await text(p, '#hx-go')),
       `hxsendname: a name with no Tacit address is paid at its address, said under the field and quoted as a send there (${rc.slice(0, 90)} | ${rcpt.slice(0, 80)})`);
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, (o) => (document.querySelector('#o-to')?.value || '').toLowerCase() === o, OUT, 120000).catch(() => {});
-    ok((await p.$eval('#o-to', (e) => e.value).catch(() => '')).toLowerCase() === OUT, 'hxsendname: its press opens the withdrawal with the name\'s address in it');
-    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000).catch(() => {});
+    ok((await text(p, '#hx-ss')).trim() !== '' && (await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#o-to')), `hxsendname: its press withdraws to the name's address from the tile, the steps under the button and no withdrawal sheet (${await text(p, '#hx-ss')})`);
     await go(p, '#tac');
     await p.waitForSelector('#ts-to', { timeout: 120000 });
     await p.fill('#ts-to', 'out-only.wei');
@@ -7362,10 +7432,14 @@ await step('hxsend', async () => {
       await pick(k, bal);
       await quote(amt, ticker);
       ok(true, `hxsend: ${ticker} is quoted in its own ticker with its balance and Max (${await line()})`);
+      ok(await text(p, '#hx-go') === 'Send privately', `hxsend: ${ticker}'s button says it sends privately`);
+      if (k !== 'cusd') continue;
+      // the press goes from the tile, no form opened: the stub's notes cannot make a proof, so the run says where it stops (the TAC and tETH sends are done to the end in sendhere)
+      await sheetsSeen(p);
       await p.click('#hx-go');
-      await until(p, ([s, a, t, v, w]) => document.querySelector(`#sheet-${s}[open] #${a}`)?.value === v && document.querySelector(`#${t}`)?.value === w, [sheet, amtId, toId, amt, to], 120000)
+      await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000)
         .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | form: ${await p.evaluate(() => [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join())}`); });
-      ok(true, `hxsend: ${ticker}'s button opens its form with the amount and the recipient`);
+      ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$(`#${toId}`)), `hxsend: ${ticker}'s press sends from the tile with no form opened (${await text(p, '#hx-ss')})`);
     }
     // Recipients a send was started to are offered again under an empty field, and an address paid in the public token is not one of them.
     await lander(p);
@@ -7386,9 +7460,10 @@ await step('hxsend', async () => {
     await until(p, () => /^They get: [\d.]+ ETH at that address \| Relay fee: [\d.]+ tETH, out of it \| Chain sees: the address and the amount, not from whom$/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await line()}`); });
     ok(await text(p, '#hx-go') === 'Send to the address', `hxsend: tETH to an Ethereum address says it arrives as ETH there (${await line()})`);
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, ([x, v]) => document.querySelector('#sheet-eth[open] #o-to')?.value === x && document.querySelector('#o-amt')?.value === v, [eth0, '0.1'], 120000);
-    ok(true, 'hxsend: its button opens Withdraw with the address and the amount');
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#o-to')), `hxsend: its button withdraws to the address from the tile (${await text(p, '#hx-ss')})`);
     await pick('eth', '^Balance 0\\.25 · Max');
     await p.fill('#hx-rcpt', '0x' + '0'.repeat(40)); await p.fill('#hx-amt', '0.1');
     await until(p, () => document.querySelector('#hx-q')?.classList.contains('warn') && !/They get|Chain sees/.test(window.__said()), null, 60000);
@@ -7776,14 +7851,15 @@ await step('hxsendpp', async () => {
     await until(p, () => /^They get: 0\.01 ETH \| Relay fee: about 0\.000329 ETH \| Chain sees: nothing/.test(window.__said()), null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
     ok(await text(p, '#hx-go') === 'Send privately', `hxsendpp: a Tacit address gets a private send, the relay's fee quoted in ETH (${await said(p)})`);
-    // an Ethereum address finishes in the sheet's Withdraw, filled in
+    // an Ethereum address is a withdrawal from the tile
     await p.fill('#hx-rcpt', BEEF); await p.fill('#hx-amt', '0.02');
     await until(p, () => /^They get: 0\.02 ETH at that address \| Relay fee/.test(window.__said()) && /Chain sees: the address and the amount/.test(window.__said()), null, 60000);
     ok(await text(p, '#hx-go') === 'Send to the address', `hxsendpp: an Ethereum address is a withdrawal, said so (${await said(p)})`);
+    // (the notes here are not real, so the run stops at what the pool says of them: said under the button, from the tile)
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, (a) => document.querySelector('#sheet-eth[open] #d-to')?.value === a && document.querySelector('#d-amt')?.value === '0.02' && /Withdraw/.test(document.querySelector('#d-go')?.textContent || ''), BEEF, 120000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | to ${await p.evaluate(() => document.querySelector('#d-to')?.value)} amt ${await p.evaluate(() => document.querySelector('#d-amt')?.value)}`); });
-    ok(true, 'hxsendpp: it finishes in the Ethereum payments pool\'s Withdraw with the address and the amount');
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 120000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#d-to')), `hxsendpp: its press withdraws from the tile, said under the button, no sheet (${await text(p, '#hx-ss')})`);
     await lander();
     // a request for it is a tacit pay link on its chain
     await p.click('[data-hxm="send"]');
@@ -8037,15 +8113,13 @@ await step('hxsendways', async () => {
     ok(true, `hxsendways: a Tacit address with no payments lane is refused under the field, before the sheet (${await text(p, '#hx-rc')})`);
     await p.fill('#hx-rcpt', them);
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Pay them privately' && !document.querySelector('#hx-go').disabled, null, 30000);
-    await p.click('#hx-go');
-    await until(p, ([a]) => document.querySelector('#sheet-eth[open] #d-dto')?.value === a && document.querySelector('#d-amt')?.value === '10' && document.querySelector('#d-go')?.textContent === 'Deposit to them privately' && !document.querySelector('#d-go').disabled, [them], 240000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | open: ${await p.evaluate(() => [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join())} | ${(await text(p, '#d-form')).replace(/\s+/g, ' ').slice(0, 200)}`); });
-    ok(true, 'hxsendways: its button opens the USDC pool\'s Deposit with them and 10 USDC in');
+    // its press deposits from the tile, proved on this device: the steps under the button, no sheet, 10 USDC into their private balance
     const u0 = BigInt(await rpc('eth_call', [{ to: USDC, data: '0x70a08231' + addrWord(acct) }, 'latest']));
-    await p.click('#d-go');
-    await until(p, () => /Deposited into their private balance|class="err"/.test(document.querySelector('#d-status')?.innerHTML || ''), null, 900000);
+    await sheetsSeen(p);
+    await p.click('#hx-go');
+    await until(p, () => /Deposited into their private balance|class="err"/.test(document.querySelector('#hx-ss')?.innerHTML || ''), null, 900000);
     const u1 = BigInt(await rpc('eth_call', [{ to: USDC, data: '0x70a08231' + addrWord(acct) }, 'latest']));
-    ok(/Deposited into their private balance/.test(await text(p, '#d-status')) && u0 - u1 === 10n * unit, `hxsendways: 10 USDC go into their private balance (${await text(p, '#d-status')})`);
+    ok(/Deposited into their private balance/.test(await text(p, '#hx-ss')) && u0 - u1 === 10n * unit && (await p.evaluate(() => window.__sheetSeen)) === '' && (await p.inputValue('#hx-amt')) === '', `hxsendways: its press pays 10 USDC into their private balance from the tile, with no sheet and the amount cleared (${await text(p, '#hx-ss')})`);
     // Me: your own payments pool
     await lander();
     await p.fill('#hx-rcpt', ''); await p.dispatchEvent('#hx-rcpt', 'input');
@@ -8055,10 +8129,10 @@ await step('hxsendways', async () => {
     await p.fill('#hx-amt', '5');
     await until(p, () => /^Into your own private USDC$/.test(document.querySelector('#hx-way')?.textContent || '') && document.querySelector('#hx-go')?.textContent === 'Deposit privately', null, 60000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-way')} | ${await text(p, '#hx-go')}`); });
+    await sheetsSeen(p);
     await p.click('#hx-go');
-    await until(p, () => document.querySelector('#sheet-eth[open] #d-dto')?.value === '' && document.querySelector('#d-amt')?.value === '5' && document.querySelector('#d-go')?.textContent === 'Deposit privately', null, 120000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | open: ${await p.evaluate(() => [...document.querySelectorAll('dialog[open]')].map((d) => d.id).join())} | dto: ${await p.evaluate(() => document.querySelector('#d-dto')?.value)} | amt: ${await p.evaluate(() => document.querySelector('#d-amt')?.value)} | go: ${await text(p, '#d-go')} | hx: ${await text(p, '#hx-go')} ${await text(p, '#hx-rc')} | ${p.url()}`); });
-    ok(true, 'hxsendways: Me opens your own USDC Deposit with 5 USDC in');
+    await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 240000);
+    ok((await p.evaluate(() => window.__sheetSeen)) === '' && (await p.getAttribute('#hx-go', 'aria-busy')) === 'true', `hxsendways: Me deposits into your own USDC pool from the tile too: the steps start under the button (${await text(p, '#hx-ss')}), no sheet`);
     // a private coin: what each kind of address does, and the line for each
     await lander();
     await p.selectOption('#hx-sa', 'usdc');
