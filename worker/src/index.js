@@ -2876,28 +2876,28 @@ export async function burnDepositCheckOutcome(env, network, body, hooks = null) 
 //
 // Bounded per call (`maxCount`): a cold trace is a real per-burn cost — tens of seconds even with the
 // persistent hop cache warming as it goes — so this makes bounded progress per call rather than draining the
-// whole pending set at once. Not wired into the shared cron tick yet (deliberately: that function drives
-// every other scheduled operation this pool depends on, and a slow or wedged trace has no business risking
-// its budget until this has been exercised standalone first) — callable directly for now.
-async function sweepPendingBurnDeposits(env, network, { maxCount = 3 } = {}) {
+// whole pending set at once. It was left out of the shared cron tick until it had been exercised by hand; autoSweepStrandedBurns (below)
+// now runs it from the tick, on a waitUntil of its own so a slow trace never holds up the other stages.
+// Options: `checkStored: false` leaves a burn that has any registration alone (the automatic pass, which would otherwise repeat the checks of
+// registrations waiting for the next fold on every tick); `skip(txid)` passes over a burn the caller has just failed on; `build` stands in
+// for buildBurndepBundle in tests.
+async function sweepPendingBurnDeposits(env, network, { maxCount = 3, checkStored = true, skip = null, build = buildBurndepBundle } = {}) {
   const result = { network, attempted: 0, registered: 0, skipped: 0, checked: 0, errors: [] };
   if (!env.REGISTRY_KV) return result;
   const snap = await getReflectionSnapshotForStatus(env, network);
   if (!snap || !Number.isInteger(snap.attestedHeight)) return result;
-  const deps = { secp, keccak256: keccak_256, sha256 };
-  const kit = makeBurnDepositKit(deps);
-  const admission = makeBurndepAdmission({ env, api: apiText, apiRawBytes, network, kit, deps });
   for (const rec of snap.pendingDepositRecords) {
     if (result.attempted >= maxCount) break;
     if (!rec || rec.completed || !rec.burnedTxid) continue;
     const revealTxidDisplay = String(rec.burnTxidDisplay || '').replace(/^0x/, '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(revealTxidDisplay)) { result.skipped++; continue; }
     const regKey = `reflection:burndep:${network}:${revealTxidDisplay}`;
+    if (skip && skip(revealTxidDisplay)) { result.skipped++; continue; }
     // A registration that passes admission is left for the next fold; one that does not is rebuilt and replaced. Each such check is as costly
     // as a trace, so a call makes at most `maxCount` of them.
     const stored = await env.REGISTRY_KV.get(regKey);
     if (stored) {
-      if (result.checked >= maxCount) { result.skipped++; continue; }
+      if (!checkStored || result.checked >= maxCount) { result.skipped++; continue; }
       result.checked++;
       let storedBundle = null;
       try { storedBundle = JSON.parse(stored); } catch { /* replaced below */ }
@@ -2910,30 +2910,16 @@ async function sweepPendingBurnDeposits(env, network, { maxCount = 3 } = {}) {
       if (!asset || !asset.etch_txid) throw new Error(`asset ${assetIdHex} has no indexed etch on ${network}`);
       // rec.burnedTxid is internal-order (see revHex's own doc comment) — traceBurnDepositProvenance queries
       // esplora by display-hex, same as every other caller in this file.
-      const { bundle } = await buildBurndepBundle({
+      const { bundle } = await build({
         env, network, asset,
         noteTxid: revHex(rec.burnedTxid), noteVout: rec.burnedVout,
       });
-      // Check the assembled bundle against the burn's own on-chain envelope before writing it, the same way
-      // POST /reflection/burndep/check does for a caller-submitted bundle — a mismatch here means this
-      // bundle would sit registered but never fold, blocking a later correct one under first-writer-wins.
-      const burnTxHex = withHex((await apiText(env, `/tx/${revealTxidDisplay}/hex`, {}, network)).trim());
-      const decode = classifyConfidentialTx(burnTxHex);
-      if (!decode || decode.type !== 'burn') throw new Error('burn tx does not classify as a 0x2B burn envelope');
-      const withHeaders = await admission.buildOrExtendProvHeaders(bundle, snap.attestedHeight);
-      const provHeaders = Array.isArray(withHeaders.provHeaders) ? withHeaders.provHeaders : [];
-      const stat = kit.assembler.buildBurnDepositStatic({
-        etch: withHeaders.etch, provHeaders, cxfers: withHeaders.cxfers || [], cmints: withHeaders.cmints || [], poolMemberships: withHeaders.poolMemberships || [],
-      });
-      const blobHex = bytesToHexLocal(kit.assembler.serializeProvenanceBlob(stat));
-      const dsha = (b) => sha256(sha256(b));
-      const lastHeaderHex = provHeaders[provHeaders.length - 1];
-      const batchPrevHash = lastHeaderHex ? bytesToHexLocal(dsha(hexToBytesLocal(lastHeaderHex))) : null;
-      const verdict = admission.admit({
-        burnTxHex, envAsset: decode.assetId, envNu: decode.nullifier, blobHex, provHeaders,
-        burnedCx: withHex(bundle.burned.cx), burnedCy: withHex(bundle.burned.cy), batchPrevHash,
-      });
-      if (!verdict.admitted) throw new Error(`bundle would not be admitted yet: ${verdict.reason}`);
+      // The full check before anything is written, the one POST /reflection/burndep/check runs and the register route runs on a replacement:
+      // every transfer of the history read and verified, the header chain built, the burn read from the chain and its envelope matched. The
+      // sweep used to run a shorter one inline (no per-hop reading) on the main thread; registration stands once made, so a bundle that would
+      // sit registered but never fold would block a later correct one, and this is the same check, on the same worker thread, as the one a
+      // holder's page gets.
+      if (!(await burndepReplacementAdmitted(env, network, revealTxidDisplay, bundle))) throw new Error('the bundle did not pass the full admission check (every transfer read and verified, the header chain, the burn envelope) yet');
       await env.REGISTRY_KV.put(regKey, JSON.stringify(bundle), { expirationTtl: 90 * 86400 });
       result.registered++;
     } catch (e) {
@@ -2941,6 +2927,38 @@ async function sweepPendingBurnDeposits(env, network, { maxCount = 3 } = {}) {
     }
   }
   return result;
+}
+// The sweep run from the 5-minute tick (scheduled()), so a burn whose page never registered a bundle completes without anyone noticing it
+// (2026-11-01 to 11-04: four batches of one to three burns each sat unmintable for hours until they were registered by hand, after every
+// stall of the reflection). It does what that hand registration did, no more: a burn the reflection holds pending with no registration is
+// traced and the bundle runs the full admission check before it is stored. Safe to leave on:
+//  - bounded: `maxCount` burns a pass (two), and only an unregistered burn is built; registrations waiting for a fold are re-checked
+//    only once an hour (tickIdx % checkStoredEvery), since the fold may be hours away during a stall;
+//  - one pass at a time in this process, and a short lease in the store so the two API services that both run the cron do not trace the
+//    same burn twice (a lease that outlives a crashed pass costs four minutes);
+//  - a burn that fails is not tried again for half an hour, so a lineage that cannot be built is not read from the chain every tick;
+//  - BURNDEP_AUTOSWEEP=0 turns it off.
+const _burnAuto = { running: false, failedAt: new Map() };
+const BURN_AUTO_RETRY_MS = 30 * 60_000;
+async function autoSweepStrandedBurns(env, network, { now = Date.now, maxCount = 2, tickIdx = 0, checkStoredEvery = 12, sweep = sweepPendingBurnDeposits } = {}) {
+  if (env.BURNDEP_AUTOSWEEP === '0' || !env.REGISTRY_KV || _burnAuto.running) return null;
+  _burnAuto.running = true;
+  try {
+    const lease = `reflection:burndep:autosweep-lease:${network}`;
+    if (await env.REGISTRY_KV.get(lease)) return null;
+    await env.REGISTRY_KV.put(lease, String(now()), { expirationTtl: 240 });
+    const t = now();
+    const r = await sweep(env, network, {
+      maxCount, checkStored: tickIdx % checkStoredEvery === 0,
+      skip: (txid) => (_burnAuto.failedAt.get(txid) || 0) > t - BURN_AUTO_RETRY_MS,
+    });
+    for (const e of r.errors) _burnAuto.failedAt.set(String(e.burnTxidDisplay || '').replace(/^0x/, '').toLowerCase(), t);
+    for (const [k, at] of _burnAuto.failedAt) if (at <= t - BURN_AUTO_RETRY_MS) _burnAuto.failedAt.delete(k);
+    if (r.attempted || r.registered || r.errors.length) {
+      console.log(`[burn-autosweep] ${network}: attempted ${r.attempted}, registered ${r.registered}, checked ${r.checked}, errors ${r.errors.length}${r.errors.length ? ` (${r.errors.map((e) => `${String(e.burnTxidDisplay || '').replace(/^0x/, '').slice(0, 10)}: ${e.error}`).join('; ').slice(0, 400)})` : ''}`);
+    }
+    return r;
+  } finally { _burnAuto.running = false; }
 }
 // POST /reflection/burndep/sweep?network=&maxCount= — triggers sweepPendingBurnDeposits. Box-token gated:
 // unlike /reflection/burndep/trace (a holder acting on their own note) this acts on every pending record
@@ -27678,7 +27696,7 @@ export {
   apiText, apiRawBytes,
   // Exported so tests can drive the burn-deposit auto-completion sweep and its shared bundle-builder directly
   // against a fake KV + real esplora data, without needing a live REGISTRY_KV.
-  sweepPendingBurnDeposits, buildBurndepBundle, assetKey, handleBurnDepositStatus, handleBurnDepositCheck, handleBridgeRecover, handleBridgeRecoverQueue, handleBridgeRecoverMark,
+  sweepPendingBurnDeposits, autoSweepStrandedBurns, buildBurndepBundle, assetKey, handleBurnDepositStatus, handleBurnDepositCheck, handleBridgeRecover, handleBridgeRecoverQueue, handleBridgeRecoverMark,
   buildProbeBurnTxHex, handleBurndepCacheStatus, applyReflectionAck, publishOpenReflectionJob,
   completeDiscordGate,
   // The forward scan, so a test can hand it one block and see what it keeps (the Tacit transaction archive among it).
@@ -31339,6 +31357,13 @@ export default {
     // other; errors surface via _logCronError so the silent-freeze pattern
     // (signet last_scanned stuck for hours because the catch swallowed the
     // throw) is alertable instead of invisible.
+    //
+    // Burns the reflection holds pending with no bundle registered are registered here (autoSweepStrandedBurns). On a waitUntil of its own, so a
+    // slow trace or check never delays the stages below, and it never throws into the tick.
+    ctx.waitUntil((async () => {
+      const idx = Math.floor(Date.now() / (5 * 60 * 1000));
+      for (const net of cronNetworks(env)) await autoSweepStrandedBurns(env, net, { tickIdx: idx }).catch((e) => _logCronError(env, 'burnAutoSweep', net, e));
+    })());
     ctx.waitUntil((async () => {
       const _tickIdx = Math.floor(Date.now() / (5 * 60 * 1000));
       // Run `fn` over `items` with at most `limit` in flight. Rejections are
