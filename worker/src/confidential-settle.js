@@ -53,7 +53,7 @@ function normalizeExit(e) {
   const uint = (v, what) => (UINT_RE.test(String(v ?? '')) ? BigInt(v).toString() : bad(what));
   if (!e || typeof e !== 'object' || Array.isArray(e)) bad('shape');
   if (!/^0x[0-9a-fA-F]{64}$/.test(e.exitedAsset || '')) bad('exitedAsset');
-  if (!Array.isArray(e.calls) || !e.calls.length || e.calls.length > 8) bad('calls list');
+  if (!Array.isArray(e.calls) || !e.calls.length || e.calls.length > 16) bad('calls list');            // 16: a staged batch's one wrap per note
   if (!Array.isArray(e.sweepTokens) || !Array.isArray(e.minOuts) || e.sweepTokens.length !== e.minOuts.length || e.sweepTokens.length > 8) bad('sweep list');
   return {
     exitedAsset: e.exitedAsset.toLowerCase(),

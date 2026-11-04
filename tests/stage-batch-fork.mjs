@@ -62,6 +62,7 @@ const { stdinFor } = await import('../dapp/sp1-stdin.js');
 const poolAbi = (() => { try { return JSON.parse(readFileSync('/Users/z/tacit/contracts/out/ConfidentialPool.sol/ConfidentialPool.json', 'utf8')).abi; } catch { return []; } })();
 const why = (e) => { try { return decodeErrorResult({ abi: poolAbi, data: e.data }).errorName; } catch { return String(e.message || e).slice(0, 160) + (e.data ? ` ${String(e.data).slice(0, 74)}` : ''); } };
 const { makeConfidentialSettler } = await import('../worker/src/confidential-settle.js');
+const { ROUTER_EXIT_ABI, recipeArgs, exitCheck } = await import('../worker-relay/src/lib/exit-activate.js');
 const store = (() => { const m = new Map(); let pending = []; return { getPending: async () => pending.slice(), putPending: async (ids) => { pending = ids.slice(); }, getJob: async (id) => (m.has(id) ? JSON.parse(JSON.stringify(m.get(id))) : null), putJob: async (id, j) => { m.set(id, JSON.parse(JSON.stringify(j))); } }; })();
 const settleAbi = parseAbi(['function settle(bytes publicValues, bytes proof, bytes[] memos)']);
 const settleData = (pv, pf, memos) => encodeFunctionData({ abi: settleAbi, functionName: 'settle', args: [pv, pf, (memos || []).map((m) => (String(m).startsWith('0x') ? m : `0x${m}`))] });
@@ -120,7 +121,15 @@ const server = createServer(async (req, res) => {
         const o = await settler.nextOpen({ id: r.jobId });
         if (!o) return;
         try { const s = await send(SETTLER, POOL, settleData(o.publicValues, o.proof, o.memos)); await settler.ackJob(o.jobId, { txHash: s.hash }); log.push(`posted ${o.type}: sent`); }
-        catch (e) { await settler.ackJob(o.jobId, { error: String(e.message || e).slice(0, 300) }); }
+        catch (e) { await settler.ackJob(o.jobId, { error: String(e.message || e).slice(0, 300) }); return; }
+        // the relay's activation of a posted exit (worker-relay settle-relay.js activateRelayedExit): its real exitCheck, then activateExit
+        const j = await store.getJob(o.jobId);
+        if (!j?.exit) return;
+        const recipe = recipeArgs(j.exit), escrow = await rpcA('eth_call', [{ to: ROUTER, data: encodeFunctionData({ abi: ROUTER_EXIT_ABI, functionName: 'escrowAddressFor', args: [recipe] }) }, 'latest']).then((r) => '0x' + r.slice(-40));
+        const check = exitCheck({ job: { ...j, op: null, publicValues: o.publicValues }, escrow, nowSecs: Math.floor(Date.now() / 1000), ethAssetId: teth });
+        if (!check.ok) { log.push(`activation refused: ${check.reason}`); await settler.ackJob(o.jobId, { activateError: check.reason }); return; }
+        try { const a = await send(SETTLER, ROUTER, encodeFunctionData({ abi: ROUTER_EXIT_ABI, functionName: 'activateExit', args: [recipe] })); await settler.ackJob(o.jobId, { activateTx: a.hash }); log.push(`posted ${o.type}: activated, ${a.rc.gasUsed ? BigInt(a.rc.gasUsed) : '?'} gas`); }
+        catch (e) { await settler.ackJob(o.jobId, { activateError: String(e.message || e).slice(0, 300) }); }
       });
     } else queue = queue.then(async () => { const claimed = await settler.nextJob(); if (claimed) await runJob(claimed); });
     return json(200, { ok: true, ...r });
@@ -190,16 +199,35 @@ const prove = async (items) => {
   if (r.status !== 0 || !existsSync(out)) throw new Error(`the settle guest rejected the batch: ${((r.stderr || '') + (r.stdout || '')).split('\n').filter((l) => /panick|assert/i.test(l)).slice(0, 2).join(' | ')}`);
   return { publicValues: `0x${readFileSync(out, 'utf8').trim()}`, proof: '0x' + '11'.repeat(32) };
 };
-const activate = async (recipe) => (await send(FROM, ROUTER, ux.router.activateExitCalldata(recipe))).hash;
 const steps = [];
-const done = await so.stageBatch({ notes, walletPriv: priv, prove, activate, waitOpts: wait, onStep: (s) => steps.push(s) }).catch((e) => ({ error: e }));
-ok(!done.error && done.length === notes.length, `${notes.length} notes staged with one proof: ${cycles} (${done.error ? done.error.message : steps.join(' → ')}; ${log.filter((l) => /posted/.test(l)).slice(-1)[0] || ''})`);
+const res = await so.stageBatch({ notes, walletPriv: priv, prove, waitOpts: wait, onStep: (s) => steps.push(s) }).catch((e) => ({ error: e }));
+const done = res.error ? res : res.deposits;
+ok(!res.error && done.length === notes.length && res.activateTx, `${notes.length} notes staged with one proof, the relay settling it and running its one recipe: ${cycles} (${res.error ? res.error.message : steps.join(' → ')}; ${log.filter((l) => /posted|activat/.test(l)).slice(-2).join('; ')})`);
 const status = done.error ? [] : await Promise.all(done.map((d) => depositStatus(d.depositId)));
-ok(status.length === notes.length && status.every((x) => x === 1n), `each is a pending deposit of 0.01 tETH, made by its own activateExit (${status.join(',')})`);
-ok((await notesOf(teth)).filter((n) => BigInt(n.value) * 10n ** 10n === NOTE).length === 0, 'and the notes are spent');
+ok(status.length === notes.length && status.every((x) => x === 1n), `each is a pending deposit of its note less its relay fee, all made by the one activateExit (${status.join(',')})`);
+{ const left = new Set((await notesOf(teth)).map((n) => String(n.leaf).toLowerCase())); ok(notes.every((n) => !left.has(String(n.leaf).toLowerCase())), 'and the staged notes are spent'); }
 {
   const found = await so.staged({ walletPriv: priv }).catch(() => []);
   ok(found.length === notes.length, `the key finds all ${notes.length} as staged deposits from the chain (${found.length})`);
+}
+
+// ── 2b. the same with no relay at all: more notes staged by ONE transaction from the holder's own account (exitAndExecute settles the batch and
+// its one recipe makes every deposit), with no relay fee in the unwraps ──
+let selfDone = null;
+{
+  const SELF = 3;
+  for (let i = 0; i < SELF; i++) {
+    const index = await ux.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
+    const built = ux.buildWrap({ walletPriv: priv, amountWei: NOTE, ticker: 'cETH', index });
+    await send(FROM, WRAP_TIP, '0xfc24c435' + built.commit.slice(2).padStart(64, '0') + NOTE.toString(16).padStart(64, '0') + TIPTO.slice(2).toLowerCase().padStart(64, '0'), hex(NOTE));
+    await ux.submitWrapSettle({ built, waitOpts: wait });
+  }
+  const mine = (await notesOf(teth)).filter((n) => BigInt(n.value) * 10n ** 10n === NOTE);
+  const sendSelf = async ({ to, data }) => (await send(FROM, to, data)).hash;
+  selfDone = await so.stageBatchSelf({ notes: mine, walletPriv: priv, prove, send: sendSelf }).catch((e) => ({ error: e }));
+  const st = selfDone.error ? [] : await Promise.all(selfDone.deposits.map((d) => depositStatus(d.depositId)));
+  ok(!selfDone.error && mine.length >= 2 && st.length === mine.length && st.every((x) => x === 1n) && selfDone.deposits.every((d) => d.wei === NOTE),
+    `${mine.length} notes staged by one transaction from the holder's account, each a pending deposit of its whole note: ${cycles} (${selfDone.error ? selfDone.error.message : selfDone.txHash.slice(0, 12)}; ${st.join(',')})`);
 }
 
 // ── 3. one of them pressed: a swap for TAC from the staged deposit, no secret in its program input ──

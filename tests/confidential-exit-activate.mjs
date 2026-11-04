@@ -75,7 +75,7 @@ const TX = (b) => '0x' + b.repeat(32);
     { ...RECIPE, exitedAsset: '0x1234' },
     { ...RECIPE, minOuts: [] },
     { ...RECIPE, calls: [] },
-    { ...RECIPE, calls: new Array(9).fill(RECIPE.calls[0]) },
+    { ...RECIPE, calls: new Array(17).fill(RECIPE.calls[0]) },
     { ...RECIPE, calls: [{ ...RECIPE.calls[0], push: 'false' }] },
     { ...RECIPE, calls: [{ ...RECIPE.calls[0], data: '0xabc' }] },
     { ...RECIPE, calls: [{ ...RECIPE.calls[0], value: '1e18' }] },
@@ -215,13 +215,14 @@ const TX = (b) => '0x' + b.repeat(32);
   assert.deepStrictEqual(got.map((x) => [x.assetId, x.recipient]), [[ETH_ID, ESCROW]]);
   assert.ok(exitCheck({ job: job(pv(ESCROW, 20000)), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).ok, 'the recipe maps to the withdrawal the proof pays');
   assert.match(exitCheck({ job: job(pv('0x' + '12'.repeat(20), 20000)), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).reason, /does not map/);
-  assert.match(exitCheck({ job: job(pv(ESCROW, 20000, ['0x' + '34'.repeat(20)])), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).reason, /exactly one withdrawal/);
+  assert.match(exitCheck({ job: job(pv(ESCROW, 20000, ['0x' + '34'.repeat(20)])), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).reason, /every withdrawal to its one escrow/);
+  assert.ok(exitCheck({ job: job(pv(ESCROW, 20000, [ESCROW, ESCROW])), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).ok, 'a staged batch: three withdrawals, all to the one escrow');
   assert.match(exitCheck({ job: job('0x1234'), escrow: ESCROW, nowSecs: 1000, ethAssetId: ETH_ID }).reason, /could not be read/);
   const gp = 200_000_000n, fits = { settleCostWei: 400_000n * gp, gasEstimate: 500_000n, gasPriceWei: gp, weiPerUnit: 10n ** 10n, gasCap: 1_500_000n, ethAssetId: ETH_ID };
   const c = activationCover({ ...fits, job: job(pv(ESCROW, 20000)) });
   assert.ok(c.ok && c.feeWei === 2n * 10n ** 14n, 'the tETH fee leg pays for the settle and the activation');
   assert.match(activationCover({ ...fits, job: job(pv(ESCROW, 1000)) }).reason, /below/);
-  ok('a posted exit: its withdrawal and fee are read from the public values; a recipe for another recipient, a second withdrawal or unreadable values are refused');
+  ok('a posted exit: its withdrawals and fee are read from the public values; a recipe for another recipient, a withdrawal to another address or unreadable values are refused, a batch paying one escrow is taken');
 }
 
 {

@@ -66,11 +66,16 @@ export function exitCheck({ job, escrow, nowSecs, ethAssetId }) {
   const e = job && job.exit;
   let op = (job && job.op) || {};
   if (!e) return { ok: false, reason: 'no exit recipe' };
-  // a proof posted from the holder's own machine carries no op: its one withdrawal is read from the public values it settled
+  // a proof posted from the holder's own machine carries no op: its withdrawals are read from the public values it settled. A batch staged with
+  // one proof pays several, every one of them to the one escrow its recipe runs from (confidential-stage.js stageBatch).
   if (!job.op && job.publicValues) {
     let w;
     try { w = pvWithdrawals(job.publicValues); } catch { return { ok: false, reason: 'the public values could not be read' }; }
-    if (w.length !== 1) return { ok: false, reason: 'a posted exit pays exactly one withdrawal' };
+    if (!w.length) return { ok: false, reason: 'a posted exit pays no withdrawal' };
+    const one = (k) => String(w[0][k]).toLowerCase();
+    if (w.some((x) => String(x.assetId).toLowerCase() !== one('assetId') || String(x.recipient).toLowerCase() !== one('recipient'))) {
+      return { ok: false, reason: 'a posted exit pays every withdrawal to its one escrow, in one asset' };
+    }
     op = { asset: w[0].assetId, recipient: w[0].recipient };
   }
   if (job.type !== 'unwrap' && job.type !== 'sendunwrap') return { ok: false, reason: `a ${job.type} job is not an exit` };

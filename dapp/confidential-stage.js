@@ -36,10 +36,14 @@ export function rescueKey(walletPriv) {
 
 // The recipe: the escrow sends exactly `wei` to the forwarder, which wraps it as the deposit for `commit` (no tip).
 export function stageRecipe({ asset, commit, wei, rescue, deadline, nonce: n = nonce() }) {
-  const data = '0x' + 'fc24c435' + word(commit) + word(wei) + word(0);
+  return batchRecipe({ asset, wraps: [{ commit, wei }], rescue, deadline, nonce: n });
+}
+// ... or for several exits paid to one escrow: one wrap call per deposit, each of exactly its `wei`.
+export function batchRecipe({ asset, wraps, rescue, deadline, nonce: n = nonce() }) {
   return {
     exitedAsset: lc(asset), feeAsset: ZERO, finalRecipient: lc(rescue), deadline: String(deadline), nonce: String(n),
-    calls: [{ target: lc(WRAP_TIP_FORWARDER), value: String(wei), token: ZERO, amount: '0', push: false, data }], sweepTokens: [], minOuts: [],
+    calls: wraps.map(({ commit, wei }) => ({ target: lc(WRAP_TIP_FORWARDER), value: String(wei), token: ZERO, amount: '0', push: false, data: '0x' + 'fc24c435' + word(commit) + word(wei) + word(0) })),
+    sweepTokens: [], minOuts: [],
   };
 }
 
@@ -148,26 +152,90 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
   }
 
   // Several whole notes staged with ONE proof: every note's unwrap in one program input, so a machine pays the proof's fixed stages (its
-  // recursion and Groth16, most of a laptop's time) once for all of them. `prove(items)` proves [{ type, op, memos }] as one batch (this
-  // machine's prover over sp1-stdin.js batchStdin) → { publicValues, proof }. The proof is posted with no exit attached (its stage fees pay
-  // whoever sends it); once it has landed each recipe is run through the router's activateExit, which anyone may call, by `activate(recipe)`
-  // (a transaction from the holder's own account). The notes must be read against one root. → [{ index, wei, depositId, activateTx }]
-  async function stageBatch({ notes, walletPriv, prove, activate, waitOpts = {}, onStep = () => {} }) {
+  // recursion and Groth16, most of a laptop's time) once for all of them. Every unwrap pays one escrow whose recipe deposits each note back as
+  // its own pending deposit (its value less its relay fee); the proof is posted with that recipe and the relay settles it and runs the recipe,
+  // its fee legs paying for both, so the holder sends nothing. `prove(items)` proves [{ type, op, memos }] as one batch (this machine's prover
+  // over sp1-stdin.js batchStdin) → { publicValues, proof }. A recipe the relay does not run can still be run by anyone (activateExit) until
+  // its deadline: `activate(recipe)`, if given, does so from the holder's account. The settle shows the exits together, so its deposits are
+  // seen as one holder's (each note is still hidden among the pool's). The notes must be read against one root.
+  // → { deposits: [{ index, wei, depositId }], settleTx, activateTx }
+  async function stageBatch({ notes, walletPriv, prove, activate = null, waitOpts = {}, onStep = () => {} }) {
     if (!notes?.length) throw new Error('stageBatch: notes required');
     if (new Set(notes.map((n) => lc(n.root))).size !== 1) throw new Error('stageBatch: the notes must be read against one root');
-    const stages = [];
-    for (const note of notes) stages.push(await buildStage({ note, walletPriv, own: true }));
-    onStep('prove');
-    const p = await prove(stages.map((x) => ({ type: x.spec.type, op: x.spec.op, memos: x.spec.memos || [] })));
-    if (!p?.publicValues || !p?.proof) throw new Error('this machine’s prover returned no proof for the batch');
-    onStep('settle');
-    const posted = await t.relay.postProof({ type: 'unwrap', publicValues: p.publicValues, proof: p.proof, memos: [] });
-    if (!posted?.jobId) throw new Error(posted?.error || 'the relay would not take the batch');
-    const st = await t.relay.waitForSettle(posted.jobId, { ...waitOpts, viaRelay: true });
+    const eth = lc(t.assetByTicker.cETH.assetId);
+    if (notes.some((n) => lc(n.asset) !== eth)) throw new Error('stageNote: only tETH notes are staged');
+    const floor = await stageFee('unwrap'), deposits = [];
+    let recipe = null, jobId = null;
+    try {
+      for (const note of notes) {
+        const units = t.quoteUnwrapFee(BigInt(note.value), 'cETH', { minFee: floor }).net;
+        if (units <= 0n) throw new Error('A note is too small to stage: the relay’s fee is more than it.');
+        const index = await t.nextWrapIndex({ walletPriv, ticker: 'cETH' }), wei = units * E10;
+        const w = t.buildWrap({ walletPriv, amountWei: wei, ticker: 'cETH', index });
+        deposits.push({ index, wei, depositId: w.depositId, commit: w.commit });
+      }
+      recipe = batchRecipe({ asset: eth, wraps: deposits, rescue: rescueKey(walletPriv).address, deadline: now() + STAGE_TTL });
+      const escrow = await escrowOf(recipe);
+      const items = notes.map((note, i) => {
+        const b = t.buildUnwrap({ note, walletPriv, recipient: escrow, feeOpts: { minFee: floor }, ttlSecs: 6 * 3600 });
+        if (BigInt(note.value) - BigInt(b.op.fee) !== deposits[i].wei / E10 || lc(b.op.recipient) !== escrow) throw new Error('The stage did not come out as priced, so nothing was sent.');
+        return { type: 'unwrap', op: b.op, memos: [] };
+      });
+      onStep('prove');
+      const p = await prove(items);
+      if (!p?.publicValues || !p?.proof) throw new Error('this machine’s prover returned no proof for the batch');
+      onStep('settle');
+      const posted = await t.relay.postProof({ type: 'unwrap', publicValues: p.publicValues, proof: p.proof, memos: [], exit: recipe });
+      if (!posted?.jobId) throw new Error(posted?.error || 'the relay would not take the batch');
+      jobId = posted.jobId;
+    } catch (e) {
+      if (!jobId) for (const d of deposits) { try { t.releaseWrapIndex?.({ walletPriv, ticker: 'cETH', index: d.index }); } catch { } }
+      throw e;
+    }
+    const out = deposits.map(({ index, wei, depositId }) => ({ index, wei, depositId }));
+    const st = await t.relay.waitForSettle(jobId, { ...waitOpts, viaRelay: true });
     onStep('activate', st.txHash);
-    const out = [];
-    for (const x of stages) out.push({ index: x.index, wei: x.wei, depositId: x.depositId, activateTx: await activate(x.recipe) });
-    return out;
+    for (let i = 0; i < 60; i++) {
+      const s = await t.relay.status(jobId).catch(() => null);
+      if (s?.activation === 'done' && s.activateTx) return { deposits: out, settleTx: st.txHash || null, activateTx: s.activateTx };
+      if (s?.activation === 'failed' || !s?.activation) break;
+      await (waitOpts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))))(5000);
+    }
+    // the relay did not run it: the holder's own account may, the recipe being on chain with the settle
+    if (activate) return { deposits: out, settleTx: st.txHash || null, activateTx: await activate(recipe) };
+    throw Object.assign(new Error('The relay has not wrapped the staged ETH yet.'), { stuck: { recipe, jobId, deposits: out } });
+  }
+
+  // Several whole notes staged with ONE proof and ONE transaction from the holder's own account: every note's unwrap pays one escrow, whose
+  // recipe deposits each note back as its own pending deposit, and the router's exitAndExecute settles the proof and runs the recipe at once.
+  // Sent by the holder, the unwraps carry no relay fee, so each deposit is its note's whole value. `prove(items)` as stageBatch; `send({ to,
+  // data })` sends from the holder's account and → its hash once mined. The settle shows the exits together, so its deposits are seen as one
+  // holder's (each note is still hidden among the pool's). → { deposits: [{ index, wei, depositId }], txHash }
+  async function stageBatchSelf({ notes, walletPriv, prove, send, onStep = () => {} }) {
+    if (!notes?.length) throw new Error('stageBatch: notes required');
+    if (new Set(notes.map((n) => lc(n.root))).size !== 1) throw new Error('stageBatch: the notes must be read against one root');
+    const eth = lc(t.assetByTicker.cETH.assetId);
+    if (notes.some((n) => lc(n.asset) !== eth)) throw new Error('stageNote: only tETH notes are staged');
+    const deposits = [];
+    try {
+      for (const note of notes) {
+        const index = await t.nextWrapIndex({ walletPriv, ticker: 'cETH' }), wei = BigInt(note.value) * E10;
+        const w = t.buildWrap({ walletPriv, amountWei: wei, ticker: 'cETH', index });
+        deposits.push({ index, wei, depositId: w.depositId, commit: w.commit });
+      }
+      const recipe = batchRecipe({ asset: eth, wraps: deposits, rescue: rescueKey(walletPriv).address, deadline: now() + STAGE_TTL });
+      const escrow = await escrowOf(recipe);
+      const items = notes.map((note) => ({ type: 'unwrap', op: t.buildUnwrap({ note, walletPriv, recipient: escrow, selfSettle: true, ttlSecs: 6 * 3600 }).op, memos: [] }));
+      onStep('prove');
+      const p = await prove(items);
+      if (!p?.publicValues || !p?.proof) throw new Error('this machine’s prover returned no proof for the batch');
+      onStep('send');
+      const txHash = await send({ to: t.cfg.router, data: t.router.exitAndExecuteCalldata({ publicValues: p.publicValues, proof: p.proof, memos: [], recipe }) });
+      return { deposits: deposits.map(({ index, wei, depositId }) => ({ index, wei, depositId })), txHash };
+    } catch (e) {
+      for (const d of deposits) { try { t.releaseWrapIndex?.({ walletPriv, ticker: 'cETH', index: d.index }); } catch { } }
+      throw e;
+    }
   }
 
   // The key's staged tETH deposits still waiting, from a balance read (or `scan`, one already made). → [{ index, wei, depositId }]
@@ -224,5 +292,5 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     return { jobId: posted.jobId, txHash: st.txHash || null, amountOut: p.built.amountOut, ahead: p === ready };
   }
 
-  return { stageFee, buildStage, stageNote, stageBatch, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
+  return { stageFee, buildStage, stageNote, stageBatch, stageBatchSelf, staged, splitPending, proveSwap, stillFits, pressSwap, rescueKey, stageRecipe };
 }

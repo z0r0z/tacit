@@ -6,7 +6,7 @@
 //
 // A browser asks the user before a site first reaches the local network, so a page calls health() only once the holder has chosen
 // this prover, never on load.
-import { stdinFor, SELF_PROVE_TYPES } from './sp1-stdin.js';
+import { stdinFor, batchStdin, SELF_PROVE_TYPES } from './sp1-stdin.js';
 
 export const DEVICE_PROVER_BASE = 'http://127.0.0.1:47815';
 export const DEVICE_TYPES = Object.freeze(['wrap', 'wraptransfer', 'transfer', 'unwrap', 'sendunwrap', 'stealthlock', 'stealthclaim', 'stealthrefund', 'farmbond']
@@ -44,6 +44,17 @@ export function makeDeviceProver({ keccak256, base = DEVICE_PROVER_BASE, fetchIm
   }
   prove.supports = supports;
 
+  // Several ops in one proof (sp1-stdin.js batchStdin): the machine pays a proof's fixed stages, most of its time, once for all of them. Each
+  // item is { type, op, memos }, of the types it takes. On 8 GB a batch must stay inside one shard (about 4.2M cycles: nine whole-note
+  // unwraps), or the machine runs out of memory.
+  async function proveBatch(items, { onUpdate = () => {} } = {}) {
+    for (const it of items) if (!supports(it.type)) throw Object.assign(new Error(`this computer's prover does not take ${it.type}: its proof would go stale while it works`), { code: 'device_prover' });
+    const b = batchStdin(items.map((it) => ({ type: it.type, op: { ...it.op, memoHashes: (it.memos || []).map((m) => hex(keccak256(unhex(m)))) } })));
+    const { id } = await call('/prove', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'batch', stdin: hex(b.stdin) }) });
+    onUpdate({ requestId: `device-${id}`, status: 'proving', stage: 'queued' });
+    return follow(id, onUpdate);
+  }
+
   // A job followed to its proof. Updates carry the prover's own stage (core, shrink, wrap, groth16) as `phase` and `eta`, the
   // seconds the rest took on this machine last time.
   async function follow(id, onUpdate) {
@@ -60,5 +71,5 @@ export function makeDeviceProver({ keccak256, base = DEVICE_PROVER_BASE, fetchIm
   // A proof asked for before (by its requestId), picked up again after a reload: the prover keeps working on its own.
   const resume = (requestId, { onUpdate = () => {} } = {}) => follow(String(requestId).replace(/^device-/, ''), onUpdate);
 
-  return { health, supports, prove, resume };
+  return { health, supports, prove, proveBatch, resume };
 }
