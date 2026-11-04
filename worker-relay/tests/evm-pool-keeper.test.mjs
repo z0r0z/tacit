@@ -13,7 +13,7 @@ import { depositIntent, receiveRho, receiveKeys, callIntent, callIntentJson, cal
 import { ROUTER_ABI, frontFees, makeKeeperChain, readerFor } from '../src/lib/evm-pool-keeper-chain.js';
 import { loadKeeperConfig, checkKeeperSigner, parseTokenMap, RELAY_EOA } from '../src/lib/evm-pool-keeper-config.js';
 import { openKeeperStore } from '../src/lib/evm-pool-keeper-store.js';
-import { makeLeafSync, makeFactsSync, LeafSyncError, ChunkNotKept, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
+import { makeLeafSync, makeFactsSync, LeafSyncError, ChunkNotKept, CatchingUp, FACT_KEYS } from '../src/lib/evm-pool-keeper-leaves.js';
 import { createIntakeHandler, parseDepositSubmission, parseWrapSubmission, parseReceiveSubmission, parseRelaySubmission, ipKey } from '../src/lib/evm-pool-keeper-intake.js';
 import { createKeeper, coverCheck, quoteFee, receiveMinOf, receiveFloorOf, subsidyOf, subsidyRoom, absorbed, sweepGasOf, forgetSweepGas, reclaimWorth } from '../src/lib/evm-pool-keeper-loop.js';
 import { loadZk } from '../src/lib/evm-pool-keeper-prover.js';
@@ -463,6 +463,28 @@ await test('overlapping syncs over one store do not empty it: the keeper tick, t
   const [bad, good] = await Promise.allSettled([sync.sync(), sync.sync()]);
   assert.equal(bad.status, 'rejected'); assert.match(String(bad.reason), /node down/);
   assert.equal(good.status, 'fulfilled', 'the next caller runs on its own');
+});
+
+await test('a caller that arrives while a long replay runs is told it is catching up at once; a short catch-up still queues', async () => {
+  const store = openKeeperStore(':memory:');
+  const chain = mockChain();
+  const slow = (f) => async (...a) => { await new Promise((r) => setTimeout(r, 4)); return f(...a); };
+  chain.transactLogs = slow(chain.transactLogs); chain.poolState = slow(chain.poolState); chain.blockNumber = slow(chain.blockNumber);
+  const logs = [];
+  const sync = makeLeafSync({ store, chain, zk, startBlock: 0n, confirmations: 2n, logChunk: 2n, log: (m) => logs.push(m) });
+  for (let i = 0; i < 60; i++) chain.foreignTx();                         // 60 blocks behind with a 2-block chunk: a replay (more than 6 chunks)
+  const first = sync.sync();
+  await new Promise((r) => setTimeout(r, 20));                            // the first run has read the head and started
+  const t0 = Date.now();
+  await assert.rejects(sync.sync(), (e) => e instanceof CatchingUp && /blocks behind/.test(e.message), 'refused with CatchingUp');
+  assert.ok(Date.now() - t0 < 20, 'at once, not after the replay');
+  const done = await first;
+  assert.equal(done.nextIndex, BigInt(chain.leaves.length), 'the replay itself went on and finished');
+  assert.deepEqual(logs, [], 'and nothing was emptied');
+  // caught up: two new blocks, and two callers both get an answer (the second queues behind the first)
+  chain.foreignTx(); chain.foreignTx();
+  const [a, b] = await Promise.all([sync.sync(), sync.sync()]);
+  assert.equal(a.nextIndex, BigInt(chain.leaves.length)); assert.equal(b.nextIndex, BigInt(chain.leaves.length));
 });
 
 await test('leaf sync persists confirmed leaves and events, re-reads the tail, and resets on a dropped block', async () => {

@@ -12,6 +12,8 @@
 export class LeafSyncError extends Error {}
 // A chunk that is not kept: nothing was stored for it, so the next sync reads it again (no reset).
 export class ChunkNotKept extends Error {}
+// sync() refused because a replay of the pool's history is already running: no tree to give until it is done.
+export class CatchingUp extends Error {}
 
 const str = (x) => (x === undefined || x === null ? null : typeof x === 'bigint' ? x.toString() : String(x));
 const lc = (a) => (a ? String(a).toLowerCase() : null);
@@ -111,8 +113,17 @@ export function makeLeafSync({ store, chain, zk, startBlock = 0n, confirmations 
   // 2026-11-04: 91 resets in 10 hours, the feed never past its first blocks, relay requests answered "catching up"). A caller that
   // arrives while a run is going waits for it, then runs its own, which finds the store caught up and costs a tail read. A run that
   // fails does not hold up the ones behind it.
+  //
+  // Unless the run in progress is a replay (a fresh disk, a store that was emptied: more than REPLAY_CHUNKS chunks behind the chain, hours of
+  // reading): a caller has no tree to be given for that long, and parked behind it a relay request holds its connection until the gateway
+  // gives up. It is told at once (CatchingUp, which the pipeline answers 429 "catching up"), and the run goes on.
+  const REPLAY_CHUNKS = 6;
   let queue = Promise.resolve();
+  let flight = null;   // { behind }: the run in progress, and how many blocks it started behind the chain
   function sync() {
+    if (flight && flight.behind > REPLAY_CHUNKS * Number(logChunk)) {
+      return Promise.reject(new CatchingUp(`catching up with the chain: the history is ${flight.behind} blocks behind and being read`));
+    }
     const run = queue.then(syncOnce, syncOnce);
     queue = run.then(() => {}, () => {});
     return run;
@@ -121,9 +132,13 @@ export function makeLeafSync({ store, chain, zk, startBlock = 0n, confirmations 
   // Returns { tree, root, nextIndex, head, confirmed }: an incTree over every leaf the pool holds at `head`, and its root
   // there; `confirmed` is the tree over the persisted leaves alone and the block they are read through.
   async function syncOnce() {
+    try { return await syncRun(); } finally { flight = null; }
+  }
+  async function syncRun() {
     progressAt = Date.now();
     const head = BigInt(await chain.blockNumber());
     const safe = head - BigInt(confirmations);
+    flight = { behind: Math.max(0, Number(safe - synced())) };
     try {
       await ensureBase();
       for (let from = synced() + 1n; from <= safe; ) {
