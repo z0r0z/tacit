@@ -362,8 +362,11 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       if (!t.relay.ownProving?.()) return 0;
       const st = await stage(), eth = t.assetByTicker.cETH.assetId;
       await read(true);
-      const notes = of(eth).notes.filter(free).sort(byValue).reverse().slice(0, BATCH_MAX);
-      if (!notes.length) return 0;
+      // a note made by a deposit has the deposit's public amount, and a whole stage exits that amount less a fee: anyone could match the two and
+      // tie the deposit's wallet to what the deposit is used for. Those stay notes (a swap from them reveals only its own amount); the rest,
+      // made inside the pool (change, a swap's return, a payment), have amounts nothing on chain names.
+      const all = of(eth).notes.filter(free), notes = all.filter((n) => n.source !== 'wrap').sort(byValue).reverse().slice(0, BATCH_MAX);
+      if (!notes.length) { if (all.length) throw Object.assign(new Error('Nothing to keep ready yet: your tETH is still the note your deposit made, and staging it whole would show which deposit it was. Swap or send some of it first.'), { said: true }); return 0; }
       const { makeDeviceProver } = await import('/device-prover.js?cb=635b9138');
       const dev = makeDeviceProver({ keccak256: keccak_256 });
       for (const n of notes) busy.set(lc(n.leaf), Date.now());
