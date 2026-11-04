@@ -176,6 +176,9 @@ export function loadKeeperConfig(env = process.env) {
     // default where sends go to private endpoints, which drop a reverting transaction and would leave a nonce gap.
     pipeline: str(env, 'EVM_POOL_KEEPER_PIPELINE', list(str(env, 'EVM_POOL_KEEPER_SEND_RPC_URLS', sendDefault)).length ? '0' : '1') !== '0',
     pipelineDepth: int(env, 'EVM_POOL_KEEPER_PIPELINE_DEPTH', 24),
+    // how long a wallet holds its slot in the queue while it proves: a proof that outlasts it is refused as stale and made again (a slow phone proves for minutes), while a slot held
+    // by a wallet that left delays the ones behind it for this long
+    reserveSecs: int(env, 'EVM_POOL_KEEPER_RESERVE_SECS', 90),
     // The least priority fee a send offers, in wei (a private builder on Ethereum skips a transaction tipping ~0).
     minPriorityFee: big(env, 'EVM_POOL_KEEPER_MIN_PRIORITY_FEE', chainId === 1 ? 50_000_000n : 0n),
     // Public relaying of users' own transactions (withdrawals and transfers) at /evm-pool/keeper/relay.

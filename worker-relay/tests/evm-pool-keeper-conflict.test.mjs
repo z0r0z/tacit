@@ -85,3 +85,13 @@ test('a call the keeper is to send must outlast the send: a deadline a few secon
   assert.ok(parseCallIntent(json(now + 1200), { now, cfg }), 'and the dapp\'s twenty');
   assert.ok(parseCallIntent(json(now + 30), { now, cfg: { ...cfg, minCallDeadlineSecs: 10 } }), 'the floor is the operator\'s to lower');
 });
+
+test('how long a wallet holds its queue slot while it proves is the operator\'s to set, 90 s unless said, and both entrypoints pass it to the pipeline', async () => {
+  const { readFileSync } = await import('node:fs');
+  const env = { EVM_POOL_ADDR: POOL, EVM_POOL_ROUTER_ADDR: ROUTER, EVM_POOL_RPC_URL: 'http://127.0.0.1:1' };
+  assert.equal(loadCfg(env).reserveSecs, 90);
+  assert.equal(loadCfg({ ...env, EVM_POOL_KEEPER_RESERVE_SECS: '240' }).reserveSecs, 240);
+  for (const f of ['evm-pool-keeper.js', 'evm-pool-keepers.js']) {
+    assert.match(readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8'), /makePipeline\(\{[^\n]*reserveMs: cfg\.reserveSecs \* 1000/, `${f} gives the pipeline the setting`);
+  }
+});

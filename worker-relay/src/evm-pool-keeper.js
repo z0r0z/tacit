@@ -46,7 +46,7 @@ async function main() {
   const prover = await makeKeeperProver(cfg);
   const store = openKeeperStore(cfg.dbPath);
   const leafSync = makeLeafSync({ store, chain, zk, startBlock: cfg.startBlock, confirmations: cfg.confirmations, logChunk: cfg.logChunk, log });
-  const pipeline = cfg.pipeline ? makePipeline({ chain, verify: prover.verify, assetField, baseTree: () => leafSync.sync(), maxDepth: cfg.pipelineDepth, log }) : null;
+  const pipeline = cfg.pipeline ? makePipeline({ chain, verify: prover.verify, assetField, baseTree: () => leafSync.sync(), maxDepth: cfg.pipelineDepth, reserveMs: cfg.reserveSecs * 1000, log }) : null;
   const keeper = createKeeper({ store, chain, prover, zk, assetField, leafSync, pipeline, cfg, log });
   const poster = makePointPoster({ chain, cfg, log });
 

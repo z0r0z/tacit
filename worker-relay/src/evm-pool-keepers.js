@@ -236,7 +236,7 @@ async function main() {
       catch (e) { clog(`seed from ${env.EVM_POOL_SEED_FEED} not taken: ${safeErr(e)}`); }
     }
     const leafSync = makeLeafSync({ store, chain, zk, startBlock: cfg.startBlock, confirmations: cfg.confirmations, logChunk: cfg.logChunk, log: clog });
-    const pipeline = cfg.pipeline ? makePipeline({ chain, verify: prover.verify, assetField, baseTree: () => leafSync.sync(), maxDepth: cfg.pipelineDepth, log: clog }) : null;
+    const pipeline = cfg.pipeline ? makePipeline({ chain, verify: prover.verify, assetField, baseTree: () => leafSync.sync(), maxDepth: cfg.pipelineDepth, reserveMs: cfg.reserveSecs * 1000, log: clog }) : null;
     const keeper = createKeeper({ store, chain, prover, zk, assetField, leafSync, pipeline, cfg, log: clog });
     const assetKey = chain.asset.toLowerCase();
     if (!cfg.minFees.has(assetKey) && !cfg.rates.has(assetKey) && !rates) clog(`warning: no EVM_POOL_KEEPER_MIN_FEES, _TOKEN_RATES or _RATE_FEED entry for the pool asset ${assetKey}; deposits will be skipped`);
