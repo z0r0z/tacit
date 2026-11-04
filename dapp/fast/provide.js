@@ -46,6 +46,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   const running = () => !!(S.st && S.st.running);
   const accepting = () => !!(S.st && S.st.accepting);
 
+  // too little private TAC for the smallest bridge, and not providing (a provider that is on can always stop)
+  const short = () => !!(S.inv && S.inv.pool < MIN_AMOUNT && !accepting());
   function paint() {
     root.hidden = !keyS.unlocked;
     const inv = S.inv, st = S.st, w = S.wait && S.wait.count ? S.wait : null;
@@ -55,7 +57,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
-      <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}` : '';
+      <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
+      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC.</p>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
     run.hidden = !st || !(st.running || st.lastTake);
@@ -69,6 +72,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     const go = $('pv-go');
     go.hidden = !inv;
     go.textContent = accepting() ? 'Stop providing' : 'Start providing';
+    go.disabled = short();
     if (st && st.lastError && !S.note) $('pv-st').textContent = st.lastError;
     keepAwake();
   }
@@ -117,7 +121,9 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       const kept = settings.get(pub) || {};
       $('pv-fee').value = ((kept.feeBps ?? 30) / 100).toFixed(2);
       // the default is what is held, down to four places, so it reads whole in the field and is never more than is held
-      const most = kept.maxAmount != null ? BigInt(kept.maxAmount) : (S.inv.pool < DEFAULT_MOST ? S.inv.pool - (S.inv.pool % 10_000n) : DEFAULT_MOST);
+      // a kept most that is more than is held now (bridges paid out since) is brought down to what is held
+      const held = S.inv.pool - (S.inv.pool % 10_000n), was = kept.maxAmount != null ? BigInt(kept.maxAmount) : null;
+      const most = was != null && was <= S.inv.pool ? was : held < DEFAULT_MOST ? held : DEFAULT_MOST;
       $('pv-most').value = (most / ONE).toString() + (most % ONE ? '.' + (most % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
       S.st = await sess.status();
       note('');

@@ -5,7 +5,7 @@ import { makeTacitSession } from '/tacit-session.js?cb=a2d34bb2';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=8222dd8a';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
 import { mountFast } from '/fast/ui.js?cb=7dd8be52';
-import { mountProvide } from '/fast/provide.js?cb=dde49714';
+import { mountProvide } from '/fast/provide.js?cb=d375fbd8';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { openFast, openProvider, openBound, discoverProviders, PROVIDER_DEFAULTS } from '/fast/wire.js?cb=b6506082';
 import { makeWants } from '/fast/want.js?cb=81ee0d3f';
